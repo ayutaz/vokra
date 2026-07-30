@@ -272,6 +272,18 @@ pub mod qwen3_tts;
 // NOT REFERENCED (AGPL-3.0) sources.
 pub mod sbv2;
 pub mod silero_vad;
+// SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR **FSMN-VAD**
+// (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT). Feed-forward
+// Sequential Memory Network for voice activity detection. Distinct
+// posture from Silero VAD v5 (which is 1:1-preserved per FR-LD-06):
+// FSMN's stateless feed-forward + memory blocks lower cleanly to a
+// stack of graph-level ops (numeric core in `vokra-ops::fsmn_vad`).
+// Real-weight parity deferred to owner (`docs/license-audit.md` §3.1
+// sign-off recorded 2026-07-30 yousan); the model wrapper ships
+// structural tests + a features-in streaming API today, PCM entry
+// point returns loud `UnsupportedOp` until the fbank + LFR + CMVN
+// pipeline is wired.
+pub mod fsmn_vad;
 pub mod speaker;
 // StyleTTS 2 (Li et al. 2023, arXiv:2306.07691). Config-only scaffold —
 // the upstream `yl4579/StyleTTS2` release ships weights under a

@@ -61,6 +61,7 @@ USAGE:
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model fsmn-vad --input <model.safetensors> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |

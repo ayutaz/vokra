@@ -1930,9 +1930,12 @@ impl ModelKind {
             | "speechbrain/sepformer-whamr16k" => Some(Self::SepformerWhamr16k),
             "fsmn-vad"
             | "fsmn_vad"
+            | "fsmnvad"
+            | "fsmn-vad-zh-cn-16k-common"
             | "funasr/fsmn-vad"
             | "funaudiollm/fsmn-vad-gguf"
-            | "fsmn-vad-gguf" => Some(Self::FsmnVad),
+            | "fsmn-vad-gguf"
+            | "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch" => Some(Self::FsmnVad),
             "firered-vad" | "firered_vad" | "fireredvad" | "fireredteam/fireredvad" => {
                 Some(Self::FireredVad)
             }
@@ -3928,13 +3931,20 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // === FsmnVad (from wf_022575ce-077-6) ===
+        // === FsmnVad (SoTA plan Phase 5 VAD-2, 2026-07-30) ===
         ModelKind::FsmnVad => {
+            // FSMN-VAD converter — full hparam chunk stamp + verbatim
+            // float pass-through (F32 / F16 / BF16). Every hparam axis
+            // is a compile-time constant transcribed from the released
+            // FunASR checkpoint; a future non-default variant would
+            // introduce a --config side-car (owner follow-up).
             let report = models::fsmn_vad::convert_fsmn_vad_file(input, output, license)?;
             let notes = vec![format!(
                 "fsmn-vad: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped, {} tensors read",
-                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+                 non-float skipped; vokra.fsmn_vad.* hparam chunk group stamped \
+                 (n_blocks=4, input_dim=400, proj_dim=128, hidden_dim=128, lorder=20, \
+                 rorder=0, n_class=2, n_mels=80, lfr_m=5, lfr_n=1, sample_rate=16000)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::FsmnVad,
@@ -4998,6 +5008,13 @@ pub use models::titanet::{TitaNetReport, convert_titanet_file};
 // file-based entry point (not routed through `ModelKind` dispatch)
 // exposes its `pub` API to external callers.
 pub use models::emotion2vec::{Emotion2vecReport, convert_emotion2vec_file};
+// SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD — first-class
+// audio-dialect op posture (distinct from Silero VAD v5's FR-LD-06
+// 1:1 subgraph). Self-contained file-based entry point with SPDX
+// override argument (mirror of the emotion2vec / xy_tokenizer /
+// speaker_3d re-export pattern; `models::fsmn_vad` module is public
+// for symmetry with the ModelKind dispatch above).
+pub use models::fsmn_vad::{FsmnVadReport, convert_fsmn_vad_file};
 pub use models::voxtral::VoxtralConfig;
 
 /// The upstream Silero VAD release tag [`convert_silero_file`] accepts and
@@ -6532,6 +6549,11 @@ mod modelkind_alias_and_roundtrip_tests {
             // spelling in `as_arg` fails loudly (same rationale as the
             // Phase 2-5 additions above).
             Fcpe,
+            // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD —
+            // first-class audio-dialect op posture (distinct from Silero
+            // VAD v5's FR-LD-06 1:1 subgraph). Every hparam axis is
+            // stamped verbatim from the released FunASR checkpoint.
+            FsmnVad,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -6820,6 +6842,24 @@ mod modelkind_alias_and_roundtrip_tests {
                     "style-bert-vits2",
                     "style_bert_vits2",
                     "style-bert-vits2-v2",
+                ],
+            ),
+            // SoTA plan Phase 5 VAD-2 (2026-07-30) — FSMN-VAD. Pins the
+            // union alias set (HEAD's funasr/fsmn-vad + funaudiollm/
+            // fsmn-vad-gguf + fsmn-vad-gguf plus a5763ce's fsmn-vad-
+            // zh-cn-16k-common + fsmnvad + iic/speech_fsmn_vad_zh-cn-
+            // 16k-common-pytorch).
+            (
+                ModelKind::FsmnVad,
+                &[
+                    "fsmn-vad",
+                    "fsmn_vad",
+                    "fsmnvad",
+                    "fsmn-vad-zh-cn-16k-common",
+                    "funasr/fsmn-vad",
+                    "funaudiollm/fsmn-vad-gguf",
+                    "fsmn-vad-gguf",
+                    "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
                 ],
             ),
         ];

@@ -1,65 +1,64 @@
-//! **FSMN-VAD** (FunASR): safetensors → GGUF conversion (TIER 1 F wave,
-//! 2026-07-30).
+//! **FSMN-VAD** (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT):
+//! safetensors → GGUF conversion (SoTA plan Phase 5 VAD-2, 2026-07-30).
 //!
-//! Input: the upstream `funasr/fsmn-vad` release (safetensors form).
-//! FSMN = Feedforward Sequential Memory Network (Zhang et al. 2015 —
-//! `arXiv:1512.08301`), a compact filter-window VAD that FunASR
-//! re-published for streaming voice-activity detection at 200 ms hops.
-//! Output: a GGUF carrying every F32 / F16 / BF16 tensor verbatim under
-//! its upstream name plus the `vokra.provenance.*` / `vokra.model.*`
-//! metadata chunks a future `vokra-models::fsmn_vad::*` loader will
-//! read.
+//! Input: the upstream FunASR release — an `.pt` torch pickle
+//! pre-flattened to safetensors by `tools/parity/nemo_pt_to_safetensors.py`
+//! (the emotion2vec / funcodec / wespeaker path — the upstream ships a
+//! `.pt` state-dict; the pt-to-safetensors bridge is a general FunASR
+//! contract). Output: a GGUF carrying every float tensor under its
+//! upstream state-dict name, plus the `vokra.provenance.*` /
+//! `vokra.model.*` / `vokra.fsmn_vad.*` metadata chunks
+//! `vokra-models::fsmn_vad::FsmnVadV1::from_gguf` binds against.
 //!
-//! # Sibling / alias (F2)
+//! # HF / licence / category
 //!
-//! `FunAudioLLM/fsmn-vad-GGUF` is a re-hosted GGUF sibling carrying the
-//! same weight — no separate `ModelKind`. Callers who hand the CLI
-//! either `funasr/fsmn-vad` (safetensors, this converter) or
-//! `FunAudioLLM/fsmn-vad-GGUF` (already GGUF, no conversion needed) get
-//! the same runtime binding — the alias lives in
-//! [`crate::ModelKind::from_arg`] under `ModelKind::FsmnVad`.
+//! - Upstream HF: `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`
+//!   (recorded under `vokra.provenance.upstream_hf`).
+//! - SPDX: `mit` (`LicenseClass::Permissive`; §3.1 sign-off row landed
+//!   2026-07-30 yousan).
+//! - Model category: `vad` (recorded under `vokra.model.category`).
 //!
-//! # Provenance
+//! # Hparams — always written
 //!
-//! - **HF path (default)**: `funasr/fsmn-vad`.
-//! - **HF path (alias)**: `FunAudioLLM/fsmn-vad-GGUF` (same weight,
-//!   re-hosted; caller-side `--input` distinguishes).
-//! - **SPDX**: `apache-2.0` (`LicenseClass::Permissive`) — per the FunASR
-//!   family license (`github.com/modelscope/FunASR/blob/main/LICENSE`
-//!   ships MIT, but the ModelScope FSMN-VAD model card + HF mirror both
-//!   pin `apache-2.0` for the released weight). Verified 2026-07-30.
-//! - **Category**: `vad` (recorded under `vokra.model.category`) —
-//!   Vokra's second first-party `"vad"` category weight (Silero VAD
-//!   being the first, though Silero uses a bespoke `silero_vad` arch tag
-//!   not shared with generic VADs).
+//! Unlike the `wespeaker` / `funcodec` / `emotion2vec` skeletons (which
+//! defer every hparam to a real-weight follow-up), FSMN-VAD's config
+//! axes are fixed by the released FunASR checkpoint and known ahead of
+//! time (see `docs/superpowers/specs/…` and
+//! `crates/vokra-models/src/fsmn_vad/SPEC.md`), so the converter stamps
+//! [`FsmnEncoderConfig::upstream_default`] + the fbank / LFR / rate
+//! extras unconditionally. A caller who converts a differently-shaped
+//! FSMN checkpoint overrides via a future `--config` side-car (owner
+//! follow-up; today the shape is a compile-time constant).
 //!
-//! # BF16 pass-through (mirror of `wespeaker` / `neucodec` / `ecapa_tdnn`)
+//! # BF16 pass-through (mirror of `qwen3_tts` / `vibevoice` / `voxcpm2`)
 //!
-//! BF16 tensors are emitted verbatim as GGUF type 30 (`GgmlType::BF16`).
-//! Runtime widens BF16 → f32 losslessly at load via the single choke
-//! point `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16 =
-//! top 16 bits of an f32 — `bits << 16` is exact). Every F32 / F16
-//! tensor passes through under its upstream safetensors name.
+//! F32 / F16 / BF16 tensors are emitted verbatim. BF16 stays GGUF type
+//! 30 (`GgmlType::BF16`); runtime widens BF16 → f32 losslessly at load
+//! (single choke point `crates/vokra-core/src/gguf/quant/mod.rs
+//! decode_bf16`).
 //!
-//! # Tensor naming contract
+//! # Tensor naming
 //!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / Neucodec / WeSpeaker contract). Real-weight binding is a
-//! follow-up wave gated on the upstream tensor-name manifest fetch +
-//! §3.1 sign-off; this converter passes every float tensor through
-//! unchanged so a future `FsmnVadWeights::from_gguf` can walk the same
-//! names.
+//! GGUF tensor names are the **upstream state-dict names verbatim** —
+//! the standing FunASR / CosyVoice / Kokoro / CosyVoice2 contract. The
+//! model-level loader (`FsmnVadV1::from_gguf`) walks the exact same
+//! names via the `TENSOR_*` constants in `vokra-models::fsmn_vad`;
+//! silent renames on either side would break the round-trip.
 //!
 //! # Real-weight parity
 //!
 //! Real-weight parity against the upstream FunASR Python pipeline is
-//! deferred to owner (`docs/license-audit.md` §3.1 sign-off) — this
-//! converter provides the byte-parallel GGUF surface only. The internal
-//! FSMN forward is a future
-//! `vokra-models::fsmn_vad::FsmnVad::forward` that will land under the
-//! loud-partial `VokraError::UnsupportedOp` precedent (see RMVPE /
-//! Charsiu) until a real inference topology transcription lands.
+//! deferred to owner (`docs/license-audit.md` §3.1 sign-off recorded
+//! 2026-07-30 yousan). This converter provides the byte-parallel GGUF
+//! surface + hparam chunk group; the fbank + LFR + CMVN reference
+//! script + parity CI land with the first checkpoint pull.
+//!
+//! # No ONNX (permanent)
+//!
+//! FSMN-VAD is distributed as `.pt` + a Python pipeline; this converter
+//! **never** touches ONNX (FR-LD-05). The `.pt` → safetensors bridge is
+//! `tools/parity/nemo_pt_to_safetensors.py` (same pattern as
+//! emotion2vec / funcodec / wespeaker).
 
 use std::path::Path;
 
@@ -69,76 +68,103 @@ use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` for FSMN-VAD GGUFs. Distinct from `silero_vad`
-/// (Vokra's first `category = "vad"` arch) because FSMN uses a
-/// filter-window feed-forward memory topology unlike Silero's
-/// TF-Lite-derived STFT + Conv1d + BiLSTM chain — silently sharing an
-/// arch tag would misroute the runtime dispatch.
-pub const ARCH: &str = "fsmn_vad";
+// Every constant here is deliberately re-declared from
+// `vokra-models::fsmn_vad` to keep the crate boundary one-way
+// (converter never depends on models). The values are documented as
+// the source of truth in `crates/vokra-models/src/fsmn_vad/SPEC.md`;
+// changing either side without the other is a build error caught by
+// the round-trip test in this module.
 
-/// `vokra.model.name` value written for the canonical FSMN-VAD GGUF.
-pub const NAME: &str = "fsmn-vad";
+/// `vokra.model.arch` value for FSMN-VAD GGUFs.
+pub(crate) const ARCH: &str = "fsmn-vad";
 
-/// `vokra.model.category` value — `"vad"`. Consumed by the model-card
-/// generator + zoo manifest tier gate so a VAD is not accidentally
-/// advertised as an ASR / TTS release.
-pub const CATEGORY: &str = "vad";
+/// `vokra.model.name` value for the canonical release.
+pub(crate) const NAME: &str = "fsmn-vad-zh-cn-16k-common";
 
-/// `vokra.provenance.upstream_hf` value — the primary redistribution
-/// source used by the model-card generator. The `FunAudioLLM/fsmn-vad-GGUF`
-/// alias is a caller-side `--input` choice, not a separate GGUF stamp.
-pub const UPSTREAM_HF: &str = "funasr/fsmn-vad";
+/// Model-category tag (`vokra.model.category`).
+pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+/// Model-category value (`vad` — same value the `silero_vad` sibling
+/// stamps; the VAD dispatcher picks the load path by `category`, and
+/// tells FSMN vs Silero apart by `arch`).
+pub(crate) const MODEL_CATEGORY: &str = "vad";
 
-/// Default upstream weight license (SPDX). Overrides via the `license`
-/// parameter of [`convert_fsmn_vad_file`].
-pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
+/// Upstream HF repository slug (`org/name`) — recorded under
+/// `vokra.provenance.upstream_hf`.
+pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+pub(crate) const UPSTREAM_HF: &str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch";
 
-/// Raw metadata key for the model category — kept as a converter-side
-/// constant (the cross-crate constant duplication rule the sibling
-/// converters use applies).
-const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+// ---- `vokra.fsmn_vad.*` hparam keys --------------------------------------
+//
+// Kept as `pub(crate) const` mirrors of the same-named `pub const` in
+// `crates/vokra-models/src/fsmn_vad/mod.rs`; a mismatch surfaces
+// immediately in the round-trip test.
 
-/// Raw metadata key for the upstream HF path.
-const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+pub(crate) const KEY_N_BLOCKS: &str = "vokra.fsmn_vad.n_blocks";
+pub(crate) const KEY_INPUT_DIM: &str = "vokra.fsmn_vad.input_dim";
+pub(crate) const KEY_PROJ_DIM: &str = "vokra.fsmn_vad.proj_dim";
+pub(crate) const KEY_HIDDEN_DIM: &str = "vokra.fsmn_vad.hidden_dim";
+pub(crate) const KEY_LORDER: &str = "vokra.fsmn_vad.lorder";
+pub(crate) const KEY_RORDER: &str = "vokra.fsmn_vad.rorder";
+pub(crate) const KEY_N_CLASS: &str = "vokra.fsmn_vad.n_class";
+pub(crate) const KEY_N_MELS: &str = "vokra.fsmn_vad.n_mels";
+pub(crate) const KEY_LFR_M: &str = "vokra.fsmn_vad.lfr_m";
+pub(crate) const KEY_LFR_N: &str = "vokra.fsmn_vad.lfr_n";
+pub(crate) const KEY_SAMPLE_RATE: &str = "vokra.fsmn_vad.sample_rate";
+
+/// Upstream default hparam values (transcribed from the released
+/// FunASR `speech_fsmn_vad_zh-cn-16k-common-pytorch` `config.yaml` —
+/// see `crates/vokra-models/src/fsmn_vad/SPEC.md` table).
+const DEFAULT_N_BLOCKS: u32 = 4;
+const DEFAULT_INPUT_DIM: u32 = 400;
+const DEFAULT_PROJ_DIM: u32 = 128;
+const DEFAULT_HIDDEN_DIM: u32 = 128;
+const DEFAULT_LORDER: u32 = 20;
+const DEFAULT_RORDER: u32 = 0;
+const DEFAULT_N_CLASS: u32 = 2;
+const DEFAULT_N_MELS: u32 = 80;
+const DEFAULT_LFR_M: u32 = 5;
+const DEFAULT_LFR_N: u32 = 1;
+const DEFAULT_SAMPLE_RATE: u32 = 16000;
+
+/// Default weight license SPDX (`mit`). Override via
+/// [`convert_fsmn_vad_file`]'s `license` parameter — the standing
+/// mechanism for "implementation is clean-room MIT but the upstream
+/// distributed checkpoint has a different SPDX" scenarios.
+pub const DEFAULT_LICENSE: &str = "mit";
 
 /// Outcome of an FSMN-VAD conversion.
 ///
-/// Mirrors the sibling converters' counter shape
-/// ([`super::wespeaker::WespeakerReport`],
-/// [`super::neucodec::NeucodecReport`],
-/// [`super::ecapa_tdnn::EcapaTdnnReport`]) — a leading `read` counter
-/// pinning the total tensor budget the safetensors reader surfaced, so
-/// `read == written + skipped_non_float` is an auditable invariant.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Mirrors the emotion2vec / wespeaker counter set (float pass-through +
+/// BF16 subset + non-float defensive) with a leading `read` budget so a
+/// truncated header cannot silently drop tensors.
+#[derive(Debug, Default)]
 pub struct FsmnVadReport {
     /// Total tensors observed in the input safetensors header.
     pub read: usize,
     /// Float tensors written verbatim (F32 / F16 / BF16).
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter — the safetensors
-    /// reader accepts only `F32` / `F16` / `BF16` at parse time, so a
-    /// non-zero here would signal a reader change upstream).
+    /// Non-float tensors skipped (defensive — the safetensors reader
+    /// rejects other dtypes at parse time; kept for symmetry with the
+    /// sibling `emotion2vec` / `wespeaker` reports).
     pub skipped_non_float: usize,
     /// BF16 tensors that landed on the pass-through arm (subset of
-    /// [`Self::written`]). Additive observability counter — a silent
-    /// widen / downcast cannot slip in undetected.
+    /// `written`).
     pub bf16_passthrough: usize,
 }
 
-/// File-based FSMN-VAD converter (`vokra-cli convert --model fsmn-vad`).
+/// File-based FSMN-VAD converter
+/// (`vokra-cli convert --model fsmn-vad`).
 ///
-/// Reads `input` (upstream `funasr/fsmn-vad` `model.safetensors` — or
-/// any `FunAudioLLM/fsmn-vad-GGUF`-provenanced sibling safetensors),
-/// writes a Vokra GGUF to `output`. `license` overrides the default
-/// `apache-2.0` provenance stamp (Whisper / kokoro-family override
-/// pattern — see `convert_file_licensed` in `lib.rs`); pass `None` to
-/// keep the built-in `apache-2.0` stamp.
+/// Reads `input` (a safetensors-flattened FunASR checkpoint — the `.pt`
+/// bridge is `tools/parity/nemo_pt_to_safetensors.py`), writes a Vokra
+/// GGUF to `output`. `license` overrides the default `mit` provenance
+/// stamp (the standing `convert_file_licensed` pattern).
 ///
 /// # Errors
 ///
-/// [`ConvertError::Io`] for I/O failures reading `input` or writing
-/// `output`; [`ConvertError::Parse`] for malformed safetensors input;
-/// [`ConvertError::Gguf`] if the GGUF serialization fails.
+/// [`ConvertError::Io`] for I/O; [`ConvertError::Parse`] for malformed
+/// safetensors input; [`ConvertError::Gguf`] if the GGUF serialisation
+/// fails.
 pub fn convert_fsmn_vad_file(
     input: &Path,
     output: &Path,
@@ -150,11 +176,17 @@ pub fn convert_fsmn_vad_file(
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    b.add_string(KEY_MODEL_CATEGORY, MODEL_CATEGORY);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
 
+    // Self-describing redistribution. Default = mit (upstream FunASR
+    // FSMN-VAD MIT primary source, §3.1 sign-off 2026-07-30 yousan).
+    // `license` overrides for callers whose actual distribution source
+    // declares a different SPDX (mirror of
+    // `convert_file_licensed` in `lib.rs`).
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
+        _ => (DEFAULT_LICENSE.to_owned(), LicenseClass::Permissive),
     };
     vokra_core::stamp_provenance(
         &mut b,
@@ -162,11 +194,26 @@ pub fn convert_fsmn_vad_file(
         &spdx,
         Some(NAME),
         Some(
-            "funasr/fsmn-vad (FSMN feedforward sequential memory VAD, apache-2.0; \
-             alias FunAudioLLM/fsmn-vad-GGUF re-hosts same weight)",
+            "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch \
+             (FunASR FSMN-VAD, feed-forward sequential memory network for VAD, mit)",
         ),
     );
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+
+    // Hparams — always written (this converter targets the fixed FunASR
+    // release; a future variant with a different backbone will
+    // introduce a `--config` axis). Documented sources for every value:
+    // see `crates/vokra-models/src/fsmn_vad/SPEC.md` table.
+    b.add_u32(KEY_N_BLOCKS, DEFAULT_N_BLOCKS);
+    b.add_u32(KEY_INPUT_DIM, DEFAULT_INPUT_DIM);
+    b.add_u32(KEY_PROJ_DIM, DEFAULT_PROJ_DIM);
+    b.add_u32(KEY_HIDDEN_DIM, DEFAULT_HIDDEN_DIM);
+    b.add_u32(KEY_LORDER, DEFAULT_LORDER);
+    b.add_u32(KEY_RORDER, DEFAULT_RORDER);
+    b.add_u32(KEY_N_CLASS, DEFAULT_N_CLASS);
+    b.add_u32(KEY_N_MELS, DEFAULT_N_MELS);
+    b.add_u32(KEY_LFR_M, DEFAULT_LFR_M);
+    b.add_u32(KEY_LFR_N, DEFAULT_LFR_N);
+    b.add_u32(KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
 
     let mut report = FsmnVadReport::default();
     for t in st.tensors() {
@@ -203,22 +250,11 @@ mod tests {
     use super::*;
     use vokra_core::gguf::GgufFile;
 
-    fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-fsmn-vad-{tag}-{}-{}.bin",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        p
-    }
-
+    /// Builds a single-BF16-tensor safetensors buffer with a
+    /// caller-supplied payload.
     fn safetensors_one_bf16(name: &str, shape: &[u64], bf16_bytes: &[u8]) -> Vec<u8> {
         let elems: u64 = shape.iter().product();
-        assert_eq!(bf16_bytes.len(), elems as usize * 2, "shape × 2 B BF16");
+        assert_eq!(bf16_bytes.len(), elems as usize * 2);
         let shape_str = shape
             .iter()
             .map(|d| d.to_string())
@@ -235,48 +271,74 @@ mod tests {
         out
     }
 
-    /// BF16 tensor round-trips through the file-based converter with its
-    /// dtype preserved and payload byte-identical — the standing
-    /// pass-through pin across the sibling BF16-capable converters.
+    /// Two-tensor safetensors buffer (F32 then F16).
+    fn safetensors_f32_then_f16(
+        f32_name: &str,
+        f32_shape: &[u64],
+        f32_bytes: &[u8],
+        f16_name: &str,
+        f16_shape: &[u64],
+        f16_bytes: &[u8],
+    ) -> Vec<u8> {
+        let f32_len = f32_bytes.len();
+        let total = f32_len + f16_bytes.len();
+        let f32_shape_str = f32_shape
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let f16_shape_str = f16_shape
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let header = format!(
+            r#"{{"{f32_name}":{{"dtype":"F32","shape":[{f32_shape_str}],"data_offsets":[0,{f32_len}]}},"{f16_name}":{{"dtype":"F16","shape":[{f16_shape_str}],"data_offsets":[{f32_len},{total}]}}}}"#
+        );
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(f32_bytes);
+        out.extend_from_slice(f16_bytes);
+        out
+    }
+
+    fn write_temp(kind: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "vokra-fsmn-vad-{kind}-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        // Non-zero bit patterns so a silent widen cannot round-trip
-        // trivially.
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
+    fn bf16_tensor_passes_through_and_stamps_full_hparam_chunk() {
+        // Realistic upstream tensor name (mirror of the FunASR
+        // `encoder.0.ffn.linear1.weight` state-dict entry).
+        let bf16: Vec<u8> = [1.0f32, -2.5, 0.15625, 3.5]
             .iter()
             .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
             .collect();
-        assert_eq!(bf16.len(), 12);
+        let input_bytes = safetensors_one_bf16("encoder.0.ffn.linear1.weight", &[2, 2], &bf16);
+        let input_path = write_temp("bf16-in", &input_bytes);
+        let output_path = write_temp("bf16-out", &[]);
 
-        // FSMN-VAD-flavour upstream tensor name (feedforward memory
-        // block filter). Realistic string so the round-trip exercises
-        // the actual on-disk shape, not a synthetic one.
-        let input_bytes = safetensors_one_bf16("encoder.fsmn.filter.weight", &[2, 3], &bf16);
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        std::fs::write(&input, &input_bytes).expect("write input");
-
-        let report = convert_fsmn_vad_file(&input, &output, None).expect("convert");
-
+        let report = convert_fsmn_vad_file(&input_path, &output_path, None).expect("convert");
         assert_eq!(report.read, 1);
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
         assert_eq!(report.bf16_passthrough, 1);
 
-        let out = std::fs::read(&output).expect("read output");
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+        let out = std::fs::read(&output_path).unwrap();
+        let file = GgufFile::parse(out).unwrap();
 
-        let file = GgufFile::parse(out).expect("parse GGUF");
-        let info = file
-            .tensor_info("encoder.fsmn.filter.weight")
-            .expect("BF16 tensor present");
-        assert_eq!(info.dtype, GgmlType::BF16);
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(info), bf16.as_slice());
-
-        // Provenance + category stamps landed.
+        // Arch + name + category + upstream slug stamps.
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
             Some(ARCH)
@@ -287,56 +349,145 @@ mod tests {
         );
         assert_eq!(
             file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE_SPDX)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
+            Some(MODEL_CATEGORY)
         );
         assert_eq!(
             file.get(KEY_PROVENANCE_UPSTREAM_HF)
                 .and_then(|v| v.as_str()),
             Some(UPSTREAM_HF)
         );
-    }
 
-    /// The `license` override lands on the artifact — `--license
-    /// mit` from the CLI must stamp `mit` + `Permissive` (both remain
-    /// permissive, but the SPDX text changes). Mirror of the
-    /// `convert_file_licensed` outer contract.
-    #[test]
-    fn license_override_lands_on_artifact() {
-        let bf16 = [0u8; 12]; // shape [2,3] BF16 zeros — content irrelevant here.
-        let input_bytes = safetensors_one_bf16("dummy.weight", &[2, 3], &bf16);
-        let input = scratch_path("license-in");
-        let output = scratch_path("license-out");
-        std::fs::write(&input, &input_bytes).expect("write input");
+        // Every hparam chunk pinned.
+        assert_eq!(
+            file.get(KEY_N_BLOCKS).and_then(|v| v.as_u64()),
+            Some(DEFAULT_N_BLOCKS as u64)
+        );
+        assert_eq!(
+            file.get(KEY_INPUT_DIM).and_then(|v| v.as_u64()),
+            Some(DEFAULT_INPUT_DIM as u64)
+        );
+        assert_eq!(
+            file.get(KEY_PROJ_DIM).and_then(|v| v.as_u64()),
+            Some(DEFAULT_PROJ_DIM as u64)
+        );
+        assert_eq!(
+            file.get(KEY_HIDDEN_DIM).and_then(|v| v.as_u64()),
+            Some(DEFAULT_HIDDEN_DIM as u64)
+        );
+        assert_eq!(
+            file.get(KEY_LORDER).and_then(|v| v.as_u64()),
+            Some(DEFAULT_LORDER as u64)
+        );
+        assert_eq!(
+            file.get(KEY_RORDER).and_then(|v| v.as_u64()),
+            Some(DEFAULT_RORDER as u64)
+        );
+        assert_eq!(
+            file.get(KEY_N_CLASS).and_then(|v| v.as_u64()),
+            Some(DEFAULT_N_CLASS as u64)
+        );
+        assert_eq!(
+            file.get(KEY_N_MELS).and_then(|v| v.as_u64()),
+            Some(DEFAULT_N_MELS as u64)
+        );
+        assert_eq!(
+            file.get(KEY_LFR_M).and_then(|v| v.as_u64()),
+            Some(DEFAULT_LFR_M as u64)
+        );
+        assert_eq!(
+            file.get(KEY_LFR_N).and_then(|v| v.as_u64()),
+            Some(DEFAULT_LFR_N as u64)
+        );
+        assert_eq!(
+            file.get(KEY_SAMPLE_RATE).and_then(|v| v.as_u64()),
+            Some(DEFAULT_SAMPLE_RATE as u64)
+        );
 
-        let report = convert_fsmn_vad_file(&input, &output, Some("mit")).expect("convert");
-        assert_eq!(report.written, 1);
+        // BF16 tensor byte-identical + dtype preserved.
+        let info = file.tensor_info("encoder.0.ffn.linear1.weight").unwrap();
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(info.dimensions, vec![2, 2]);
+        assert_eq!(file.tensor_bytes(info), bf16.as_slice());
 
-        let out = std::fs::read(&output).expect("read output");
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
-
-        let file = GgufFile::parse(out).expect("parse GGUF");
+        // Provenance: mit + Permissive.
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
                 .and_then(|v| v.as_str()),
-            Some("mit"),
-            "override SPDX must land verbatim"
+            Some(DEFAULT_LICENSE)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "MIT still resolves to Permissive"
+            Some(LicenseClass::Permissive.as_str())
         );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn f32_and_f16_tensors_pass_through() {
+        let f32_vals: [f32; 2] = [7.0, -8.25];
+        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        // Six F16 half-floats with known non-zero bit patterns.
+        let f16_words: [u16; 6] = [0x3C00, 0xC000, 0xB800, 0x4200, 0x3100, 0x5140];
+        let f16_bytes: Vec<u8> = f16_words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let input_bytes = safetensors_f32_then_f16(
+            "encoder.in_linear.bias",
+            &[1, 2],
+            &f32_bytes,
+            "encoder.0.memory.conv1.weight",
+            &[2, 3],
+            &f16_bytes,
+        );
+        let input_path = write_temp("mixed-in", &input_bytes);
+        let output_path = write_temp("mixed-out", &[]);
+
+        let report = convert_fsmn_vad_file(&input_path, &output_path, None).expect("convert");
+        assert_eq!(report.read, 2);
+        assert_eq!(report.written, 2);
+        assert_eq!(report.bf16_passthrough, 0);
+
+        let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
+        let f32_info = file.tensor_info("encoder.in_linear.bias").unwrap();
+        assert_eq!(f32_info.dtype, GgmlType::F32);
+        assert_eq!(file.tensor_bytes(f32_info), f32_bytes.as_slice());
+        let f16_info = file.tensor_info("encoder.0.memory.conv1.weight").unwrap();
+        assert_eq!(f16_info.dtype, GgmlType::F16);
+        assert_eq!(file.tensor_bytes(f16_info), f16_bytes.as_slice());
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn license_override_updates_the_stamp() {
+        // A caller who redistributes under a different SPDX overrides
+        // the default. cc-by-4.0 → AttributionRequired.
+        let input_bytes = safetensors_one_bf16(
+            "encoder.in_linear.weight",
+            &[1, 1],
+            &(1.0f32.to_bits() >> 16_u32).to_le_bytes()[..2],
+        );
+        let input_path = write_temp("license-in", &input_bytes);
+        let output_path = write_temp("license-out", &[]);
+
+        convert_fsmn_vad_file(&input_path, &output_path, Some("cc-by-4.0"))
+            .expect("convert with override");
+
+        let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("cc-by-4.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::AttributionRequired.as_str())
+        );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
     }
 }

@@ -228,6 +228,56 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-30 — 1.0.0-rc.1-dev (FSMN-VAD backend — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the FSMN-VAD (FunASR
+`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT) first-class
+audio-dialect op posture. The C ABI (`include/vokra.h`) is **untouched**
+(33 fn + 11 typedef baseline unchanged; `scripts/gen-c-abi.sh --check` =
+no diff). Follows the X-Codec-2 / SBV2 precedent for new `ModelKind`
+variants: **advisory Rust-surface entry**, `scripts/check-abi-changelog.sh`
+does not gate on it (no C symbol changed).
+
+- **vokra-ops::fsmn_vad (new module)**: `FsmnEncoderConfig` (fields
+  `n_blocks` / `input_dim` / `proj_dim` / `hidden_dim` / `lorder` /
+  `rorder` / `n_class` + `upstream_default()` + `validate()` +
+  `memory_kernel()`), `FsmnBlockWeights`, `FsmnVadWeights`,
+  `FsmnStreamState` (`zeros()` / `reset()` / `is_zero()` / `matches()`),
+  `fsmn_vad_forward()`, `softmax_last_axis()`. Distinct from the Silero
+  VAD subgraph posture (FR-LD-06) — FSMN's stateless FFN + memory blocks
+  lower to graph-level ops.
+- **vokra-models::fsmn_vad (new module)**: `FsmnVadConfig`,
+  `FsmnVadV1` (`from_gguf` / `open` / `config` / `forward_features`),
+  `FsmnVadStream` (`push_features`), plus `pub const`s
+  (`ARCH="fsmn-vad"`, `DEFAULT_NAME`, `CATEGORY="vad"`, `UPSTREAM_HF`,
+  `KEY_*` for every `vokra.fsmn_vad.*` metadata chunk, `TENSOR_*` names,
+  `tensor_ffn1_weight(i)` / etc formatters). `VadEngine` trait impl for
+  `FsmnVadV1` matches the Silero `VadEngine` surface — a caller sees no
+  FSMN-vs-Silero asymmetry at the trait boundary. `VadStreamHandle::push_pcm`
+  returns loud `VokraError::UnsupportedOp` (FR-EX-08 — the Kaldi fbank +
+  LFR + CMVN front-end pipeline lands with the real-weight parity harness
+  once the checkpoint is fetched; silently zero-padding would be a fake
+  data path).
+- **vokra-convert::ModelKind**: `FsmnVad` variant added (public enum),
+  plus 5 aliases routed to it (`fsmn-vad` / `fsmn_vad` / `fsmnvad` /
+  `fsmn-vad-zh-cn-16k-common` /
+  `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`). New module
+  `crates/vokra-convert/src/models/fsmn_vad.rs`
+  (`convert_fsmn_vad_file(input, output, license) -> Result<FsmnVadReport, _>`
+  with SPDX override per the `convert_file_licensed` standing pattern).
+  BF16 / F16 / F32 pass-through mirror of emotion2vec / wespeaker; full
+  `vokra.fsmn_vad.*` hparam chunk group stamped unconditionally with the
+  released FunASR checkpoint's fixed axes.
+- **vokra-cli**: `convert --model fsmn-vad --input <safetensors> --output
+  <out.gguf>` — the upstream release is `.pt`, so callers pre-flatten with
+  `tools/parity/nemo_pt_to_safetensors.py` (emotion2vec / funcodec /
+  wespeaker precedent).
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+`docs/license-audit.md` §3.1 sign-off row landed 2026-07-30 yousan
+(☑ Commercial — MIT, FunASR upstream repo LICENSE primary source).
+
 ### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: hybrid CTC/attention decode + LSTM LM shallow fusion — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the M5 gap JA-ASR-3 primitive

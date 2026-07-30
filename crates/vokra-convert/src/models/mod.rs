@@ -123,6 +123,17 @@ pub mod emotion2vec;
 // bridge pattern — no pickle ever enters the runtime, FR-LD-05).
 pub(crate) mod fcpe;
 pub mod freevc;
+// SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR **FSMN-VAD**
+// (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, mit) safetensors → GGUF
+// with the `vokra.fsmn_vad.*` chunk group. Feed-forward Sequential Memory
+// Network for voice activity detection — first-class audio-dialect op
+// posture (distinct from Silero VAD v5's FR-LD-06 1:1 subgraph). Every
+// F32 / F16 / BF16 tensor passes through verbatim under the upstream
+// state-dict name; every hparam axis is stamped unconditionally (the
+// released FunASR checkpoint has fixed axes — see the module docstring).
+// Real-weight parity deferred to owner sign-off (§3.1 row landed
+// 2026-07-30 yousan).
+pub mod fsmn_vad;
 // SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
 // distil-large-v3.5 (MIT weight, Permissive) — a distilled Whisper checkpoint
 // that keeps the large-v3 encoder intact (32 layers / d_model=1280 /
@@ -431,7 +442,6 @@ pub mod clap;
 pub mod deepfake_detection;
 pub mod firered_vad;
 pub mod focalcodec;
-pub mod fsmn_vad;
 pub mod hifigan_vocoder;
 pub mod kyutai_tts;
 pub mod melotts;

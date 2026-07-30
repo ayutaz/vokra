@@ -28,7 +28,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -397,7 +397,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
                          dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
-                         distil-whisper | kotoba-whisper | vits-ja | styletts2)"
+                         distil-whisper | kotoba-whisper | vits-ja | styletts2 | fsmn-vad)"
                     )
                 })?);
                 i += 2;
@@ -2300,6 +2300,8 @@ mod tests {
             ("kotoba-whisper", ModelKind::KotobaWhisper),
             ("vits-ja", ModelKind::VitsJa),
             ("styletts2", ModelKind::StyleTts2),
+            // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD.
+            ("fsmn-vad", ModelKind::FsmnVad),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

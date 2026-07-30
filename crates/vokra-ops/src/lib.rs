@@ -145,6 +145,15 @@ pub mod fsq_codec;
 pub mod flow_sampler;
 // -----------------------------------------------------------------------
 pub mod frontend;
+// ---- SoTA plan Phase 5 VAD-2 fsmn_vad primitive ---------------------------
+// FSMN-VAD (funasr/fsmn-vad, MIT) — Feed-forward Sequential Memory Network
+// for voice activity detection. First-class audio-dialect op (distinct
+// posture from Silero VAD v5, which is a 1:1-preserved subgraph per
+// FR-LD-06). FSMN's stateless feed-forward + memory blocks lower cleanly to
+// graph-level ops. Upstream: iic/speech_fsmn_vad_zh-cn-16k-common-pytorch
+// (docs/license-audit.md §3.1 row landed 2026-07-30).
+pub mod fsmn_vad;
+// ---------------------------------------------------------------------------
 pub mod fused_logmel;
 // ---- M3-07 hifigan_generator (vocoder chain, FR-OP-10) ------------------
 // New module + re-export block. INT8 is an opt-in path (per-channel
@@ -320,6 +329,12 @@ pub use fsq_codec::{
 };
 // ---------------------------------------------------------------------------
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
+// ---- SoTA plan Phase 5 VAD-2 fsmn_vad re-exports --------------------------
+pub use fsmn_vad::{
+    FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward,
+    softmax_last_axis,
+};
+// ---------------------------------------------------------------------------
 pub use fused_logmel::fused_log_mel_scalar;
 // ---- M3-07 hifigan_generator re-exports ---------------------------------
 pub use hifigan::{
