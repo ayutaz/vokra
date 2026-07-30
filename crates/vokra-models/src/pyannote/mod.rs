@@ -378,6 +378,128 @@ impl PyanNetWeights {
             .find(|(n, _, _)| n == name)
             .map(|(_, d, p)| (d.as_slice(), p.as_slice()))
     }
+
+    /// Load-time shape gate — promotes the four core PyanNet tensor
+    /// shape assertions previously buried in
+    /// [`sincnet::SincNet::from_weights`] (which only fired when a
+    /// caller crossed the [`PyanNet::segment`] env gate) UP to the
+    /// load path so a drifted / illustrative fixture fails loudly
+    /// *before* the env gate (FR-EX-08 shape-validation-load-time).
+    ///
+    /// # Sentinel-gated strict mode
+    ///
+    /// - Presence of the SincNet filterbank tensor
+    ///   (`sincnet.conv1d.0.filterbank.low_hz_`) is the **sentinel**
+    ///   for "this GGUF claims to be a real PyanNet-3.0 checkpoint".
+    /// - When the sentinel is present, **all four** core tensors must
+    ///   be present with the primary-source shapes derived from
+    ///   `config`. A missing core tensor is a loud
+    ///   [`VokraError::ModelLoad`] naming the absent tensor path.
+    /// - When the sentinel is absent, the fixture is treated as
+    ///   illustrative (binder / plumbing smoke test) and missing
+    ///   tensors pass through silently — the downstream forward will
+    ///   still loud-fail via [`sincnet::SincNet::from_weights`] if a
+    ///   caller crosses the [`PyanNet::segment`] env gate.
+    /// - **Present-but-mis-shaped tensors are always rejected loudly**,
+    ///   regardless of sentinel presence — an obviously-wrong shape is
+    ///   a silent-fake risk that must not survive the load path.
+    ///
+    /// # Expected shapes (primary source: PyanNet.py + PyTorch layouts)
+    ///
+    /// | tensor                                    | shape                            |
+    /// |-------------------------------------------|----------------------------------|
+    /// | `sincnet.conv1d.0.filterbank.low_hz_`     | `[N_FILTERS_SINC/2, 1]` = `[40, 1]` |
+    /// | `lstm.weight_ih_l0`                       | `[4·H, SincNet.out]` = `[512, 60]` |
+    /// | `linear.0.weight`                         | `[linear_h, 2·H]` = `[128, 256]`   |
+    /// | `classifier.weight`                       | `[n_classes, linear_h]` = `[7, 128]` |
+    ///
+    /// Every axis is derived from `config` so a future PyanNet variant
+    /// with a different `hidden_size` / `num_powerset_classes` / etc.
+    /// still gets a correct load-time gate.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] tagged `FR-EX-08` when any present
+    /// core tensor has a shape drift, or when the sentinel is present
+    /// and another core tensor is missing. Every message names the
+    /// offending tensor path + the expected shape so the caller can
+    /// trace back to the converter output.
+    pub fn verify_core_shapes(&self, config: &PyanNetConfig) -> Result<(), VokraError> {
+        // Primary-source constants (mirror of `sincnet.rs`):
+        //   N_FILTERS_SINC = 80 → learnable rows = 40 (torch.abs is applied
+        //     to only the first half, and the second half is the mirror,
+        //     so the on-disk tensor is `(n_filters/2, 1)`).
+        //   SincNet.out = 60 (CONV2_OUT_CH — the SincNet final channel dim
+        //     that feeds the downstream monolithic BiLSTM as `nn.LSTM(60, H)`).
+        const N_SINC_LEARNABLE: usize = 40;
+        const SINCNET_FEATURES: usize = 60;
+
+        let lstm_h = config.lstm_hidden_size as usize;
+        // PyTorch `nn.LSTM` layout: `weight_ih_l0` is `(4·H, input_size)`
+        // (gates concatenated i|f|g|o — see `torch/nn/modules/rnn.py`).
+        let gates_dim = 4 * lstm_h;
+        // Bidirectional LSTMs concatenate forward + reverse outputs, so
+        // the downstream Linear stack sees `2·H` per timestep.
+        let lstm_out_dim = if config.lstm_bidirectional {
+            2 * lstm_h
+        } else {
+            lstm_h
+        };
+        let linear_h = config.linear_hidden_size as usize;
+        let n_classes = config.num_powerset_classes as usize;
+
+        // The four "core" tensors that a real PyanNet-3.0 checkpoint
+        // MUST carry with these exact shapes.
+        let expectations: [(&str, Vec<usize>); 4] = [
+            (
+                "sincnet.conv1d.0.filterbank.low_hz_",
+                vec![N_SINC_LEARNABLE, 1],
+            ),
+            ("lstm.weight_ih_l0", vec![gates_dim, SINCNET_FEATURES]),
+            ("linear.0.weight", vec![linear_h, lstm_out_dim]),
+            ("classifier.weight", vec![n_classes, linear_h]),
+        ];
+
+        // Sentinel: presence of the SincNet filterbank marks the
+        // fixture as "real GGUF topology" and enables the strict
+        // co-presence gate on the rest of the core tensors. Illustrative
+        // fixtures (no filterbank) get a permissive pass-through — the
+        // downstream `SincNet::from_weights` still loud-fails on any
+        // real forward attempt, so silent-fake is not possible either
+        // way (FR-EX-08).
+        let sentinel = "sincnet.conv1d.0.filterbank.low_hz_";
+        let has_sentinel = self.tensor(sentinel).is_some();
+
+        for (name, expect) in &expectations {
+            match self.tensor(name) {
+                Some((dims, _)) if dims != expect.as_slice() => {
+                    return Err(VokraError::ModelLoad(format!(
+                        "pyannote-segmentation: tensor `{name}` has shape {dims:?}, \
+                         expected {expect:?} at load time (FR-EX-08 shape-validation-\
+                         load-time). Primary source: PyanNet.py (CNRS, MIT). Fix the \
+                         converter or checkpoint."
+                    )));
+                }
+                Some(_) => {
+                    // Present and correctly shaped.
+                }
+                None if has_sentinel => {
+                    return Err(VokraError::ModelLoad(format!(
+                        "pyannote-segmentation: GGUF carries the SincNet filterbank sentinel \
+                         (`{sentinel}`) but is missing the core tensor `{name}` (expected \
+                         shape {expect:?}) — a real PyanNet-3.0 checkpoint must carry all \
+                         four core tensors (FR-EX-08 shape-validation-load-time)."
+                    )));
+                }
+                None => {
+                    // Illustrative fixture (no sentinel) — the downstream
+                    // forward will loud-fail via SincNet::from_weights
+                    // if the caller ever crosses the env gate. Skip.
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Widens a GGUF tensor payload to a flat `Vec<f32>`. Supports F32,
@@ -515,6 +637,16 @@ impl PyanNet {
     /// 2. Carry at least one recognized PyanNet state_dict tensor
     ///    ([`REQUIRED_TENSOR_PREFIXES`]) — otherwise
     ///    [`PyanNetWeights::from_gguf`] refuses the bind (FR-EX-08).
+    /// 3. Pass the load-time shape gate
+    ///    ([`PyanNetWeights::verify_core_shapes`]) — a GGUF that
+    ///    carries the SincNet filterbank sentinel
+    ///    (`sincnet.conv1d.0.filterbank.low_hz_`) must carry ALL four
+    ///    core tensors at the primary-source shapes; any present
+    ///    core tensor with a shape drift is a loud
+    ///    [`VokraError::ModelLoad`] regardless of sentinel presence.
+    ///    Illustrative fixtures with no filterbank pass through the
+    ///    gate permissively (the downstream forward still loud-fails
+    ///    via SincNet::from_weights, so silent-fake is impossible).
     ///
     /// `vokra.pyannote.*` metadata is optional (absent keys fall back
     /// to primary-source constants per [`PyanNetConfig::from_gguf`]).
@@ -522,6 +654,13 @@ impl PyanNet {
         let gguf = GgufFile::open(path)?;
         let config = PyanNetConfig::from_gguf(&gguf);
         let weights = PyanNetWeights::from_gguf(&gguf)?;
+        // Load-time shape gate — promote the SincNet forward-time shape
+        // assertions up to the load path so a drifted / illustrative
+        // fixture fails loudly *before* the [`Self::segment`] env gate
+        // (FR-EX-08 shape-validation-load-time; primary source:
+        // PyanNet.py CNRS MIT). See [`PyanNetWeights::verify_core_shapes`]
+        // for the sentinel-gated strict / permissive contract.
+        weights.verify_core_shapes(&config)?;
         Ok(Self { config, weights })
     }
 
@@ -1404,5 +1543,279 @@ mod tests {
         // Any drift in this constant would break the future SincNet
         // primitive's shape contract with the BiLSTM.
         assert_eq!(SINCNET_OUTPUT_FEATURES, 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // Load-time shape gate — FQ-05 coverage
+    // -----------------------------------------------------------------------
+    //
+    // These tests exercise the [`PyanNetWeights::verify_core_shapes`]
+    // load-time gate that promotes the SincNet-forward-time shape
+    // assertions (sincnet.rs `bind_tensor`) UP to
+    // [`PyanNet::from_gguf`] so a drifted or incomplete real GGUF fails
+    // loudly *before* the [`PyanNet::segment`] env gate
+    // (FR-EX-08 shape-validation-load-time).
+    //
+    // Coverage plan (matches the FQ-05 gap description — four core
+    // tensors that a real PyanNet-3.0 checkpoint MUST carry):
+    //   * sincnet.conv1d.0.filterbank.low_hz_  (SincNet learnable sinc)
+    //   * lstm.weight_ih_l0                     (monolithic BiLSTM)
+    //   * linear.0.weight                       (Linear stack)
+    //   * classifier.weight                     (terminal classifier)
+
+    /// Builds a 4-core-tensor GGUF at the primary-source PyanNet-3.0
+    /// shapes; optionally overrides (or drops) one tensor to synthesise
+    /// a shape-drifted / incomplete real fixture for the load-time gate
+    /// tests. Pass `None` for `override_shape` to drop the tensor.
+    fn pyannet_gguf_with_core_override(
+        override_key: &str,
+        override_shape: Option<Vec<u64>>,
+    ) -> Vec<u8> {
+        let mut b = GgufBuilder::new();
+        b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
+        b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
+        b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
+        b.add_u32(GGUF_KEY_LSTM_NUM_LAYERS, DEFAULT_LSTM_NUM_LAYERS);
+        b.add_bool(GGUF_KEY_LSTM_BIDIRECTIONAL, DEFAULT_LSTM_BIDIRECTIONAL);
+        b.add_bool(GGUF_KEY_LSTM_MONOLITHIC, DEFAULT_LSTM_MONOLITHIC);
+        b.add_u32(GGUF_KEY_LINEAR_HIDDEN_SIZE, DEFAULT_LINEAR_HIDDEN_SIZE);
+        b.add_u32(GGUF_KEY_LINEAR_NUM_LAYERS, DEFAULT_LINEAR_NUM_LAYERS);
+        b.add_u32(GGUF_KEY_NUM_POWERSET_CLASSES, DEFAULT_NUM_POWERSET_CLASSES);
+
+        // Primary-source PyanNet-3.0 core tensor shapes (see
+        // PyanNetWeights::verify_core_shapes doc for the derivations).
+        let core: [(&str, Vec<u64>); 4] = [
+            ("sincnet.conv1d.0.filterbank.low_hz_", vec![40, 1]),
+            ("lstm.weight_ih_l0", vec![512, 60]),
+            ("linear.0.weight", vec![128, 256]),
+            ("classifier.weight", vec![7, 128]),
+        ];
+
+        for (name, shape) in &core {
+            let (final_shape, drop) = if *name == override_key {
+                match &override_shape {
+                    Some(s) => (s.clone(), false),
+                    None => (shape.clone(), true),
+                }
+            } else {
+                (shape.clone(), false)
+            };
+            if drop {
+                continue;
+            }
+            let elems: u64 = final_shape.iter().product();
+            let bytes: Vec<u8> = (0..elems as usize)
+                .flat_map(|i| (i as f32 * 0.001).to_le_bytes())
+                .collect();
+            b.add_tensor(name, GgmlType::F32, final_shape, bytes)
+                .expect("add_tensor");
+        }
+        b.to_bytes().expect("gguf serialize")
+    }
+
+    #[test]
+    fn pyannet_from_gguf_rejects_wrong_filterbank_shape_at_load_time() {
+        // Real-GGUF sentinel present (`sincnet.conv1d.0.filterbank.low_hz_`)
+        // at the WRONG shape [10, 1] instead of the primary-source [40, 1].
+        // The load path must reject loudly *before* the env gate — the
+        // previous silent-accept path deferred this check to
+        // SincNet::from_weights which only fired when a caller opted
+        // into VOKRA_PYANNET_ENABLE_FORWARD (the FQ-05 gap).
+        let bytes = pyannet_gguf_with_core_override(
+            "sincnet.conv1d.0.filterbank.low_hz_",
+            Some(vec![10, 1]),
+        );
+        let path = scratch_path("load-gate-filterbank");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PyanNet::from_gguf(&path).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("sincnet.conv1d.0.filterbank.low_hz_") && msg.contains("FR-EX-08"),
+                    "load-time gate must name the offending tensor + FR-EX-08: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pyannet_from_gguf_rejects_wrong_lstm_shape_at_load_time() {
+        // lstm.weight_ih_l0 must be [4·H, SincNet.out] = [512, 60] per
+        // PyTorch nn.LSTM's `(gates * hidden, input)` layout. A drifted
+        // [64, 60] fixture must be caught at load time.
+        let bytes = pyannet_gguf_with_core_override("lstm.weight_ih_l0", Some(vec![64, 60]));
+        let path = scratch_path("load-gate-lstm");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PyanNet::from_gguf(&path).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("lstm.weight_ih_l0") && msg.contains("FR-EX-08"),
+                    "load-time gate must name lstm.weight_ih_l0 + FR-EX-08: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pyannet_from_gguf_rejects_wrong_linear_shape_at_load_time() {
+        // linear.0.weight must be [linear_h, 2·H] = [128, 256] per the
+        // primary-source Linear stack (bidirectional BiLSTM output is
+        // concatenated → 2·H channels feed the first Linear). A drifted
+        // [64, 256] fixture must be caught at load time.
+        let bytes = pyannet_gguf_with_core_override("linear.0.weight", Some(vec![64, 256]));
+        let path = scratch_path("load-gate-linear");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PyanNet::from_gguf(&path).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("linear.0.weight") && msg.contains("FR-EX-08"),
+                    "load-time gate must name linear.0.weight + FR-EX-08: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pyannet_from_gguf_rejects_wrong_classifier_shape_at_load_time() {
+        // classifier.weight must be [n_powerset_classes, linear_h] =
+        // [7, 128] for pyannote/segmentation-3.0. A drifted [3, 128]
+        // (e.g. a `speaker-diarization` variant leaked into a segmentation
+        // GGUF) must be caught at load time so decode_powerset does not
+        // hit an argmax over a wrong-cardinality row.
+        let bytes = pyannet_gguf_with_core_override("classifier.weight", Some(vec![3, 128]));
+        let path = scratch_path("load-gate-classifier");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PyanNet::from_gguf(&path).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("classifier.weight") && msg.contains("FR-EX-08"),
+                    "load-time gate must name classifier.weight + FR-EX-08: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pyannet_from_gguf_rejects_incomplete_real_manifest_loudly() {
+        // Sentinel present (`sincnet.conv1d.0.filterbank.low_hz_` at
+        // the correct [40, 1] shape) but the LSTM core tensor is
+        // dropped entirely. The sentinel-gated strict mode must name
+        // both the missing tensor AND the sentinel that triggered the
+        // co-presence gate (so the caller knows *why* the check fired).
+        let bytes = pyannet_gguf_with_core_override("lstm.weight_ih_l0", None);
+        let path = scratch_path("load-gate-incomplete");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PyanNet::from_gguf(&path).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("lstm.weight_ih_l0")
+                        && msg.contains("sincnet.conv1d.0.filterbank.low_hz_")
+                        && msg.contains("FR-EX-08"),
+                    "co-presence error must name missing tensor + sentinel + FR-EX-08: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn verify_core_shapes_permissive_when_sentinel_absent() {
+        // Illustrative fixture — no filterbank sentinel, all other core
+        // tensor shapes CORRECT. verify_core_shapes must return Ok so
+        // the binder / plumbing smoke-test surface (mod.rs's
+        // `synthetic_pyannet_gguf` and diarization.rs's
+        // `local_synthetic_pyannet_gguf`) keeps working. Silent-fake is
+        // still impossible because the downstream forward loud-fails
+        // via SincNet::from_weights.
+        let bytes = synthetic_pyannet_gguf();
+        let path = scratch_path("permissive-no-sentinel");
+        std::fs::write(&path, &bytes).unwrap();
+        let g = GgufFile::open(&path).unwrap();
+        let w = PyanNetWeights::from_gguf(&g).expect("bind");
+        let cfg = PyanNetConfig::from_gguf(&g);
+
+        // Pin the illustrative-fixture invariant so a future change to
+        // synthetic_pyannet_gguf does not silently promote the fixture
+        // to real-GGUF status without co-updating the load-time gate
+        // contract.
+        assert!(
+            w.tensor("sincnet.conv1d.0.filterbank.low_hz_").is_none(),
+            "synthetic_pyannet_gguf must remain illustrative (no sentinel)"
+        );
+
+        w.verify_core_shapes(&cfg)
+            .expect("permissive pass-through when sentinel is absent");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn verify_core_shapes_rejects_wrong_shape_even_without_sentinel() {
+        // Present-but-mis-shaped is ALWAYS rejected loudly, regardless
+        // of sentinel presence — a wrong-shape core tensor is a
+        // silent-fake risk even in an "illustrative" fixture. This is
+        // the belt-and-braces half of the sentinel gate.
+        let mut b = GgufBuilder::new();
+        b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
+        b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
+        b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
+        b.add_u32(GGUF_KEY_LSTM_NUM_LAYERS, DEFAULT_LSTM_NUM_LAYERS);
+        b.add_bool(GGUF_KEY_LSTM_BIDIRECTIONAL, DEFAULT_LSTM_BIDIRECTIONAL);
+        b.add_bool(GGUF_KEY_LSTM_MONOLITHIC, DEFAULT_LSTM_MONOLITHIC);
+        b.add_u32(GGUF_KEY_LINEAR_HIDDEN_SIZE, DEFAULT_LINEAR_HIDDEN_SIZE);
+        b.add_u32(GGUF_KEY_LINEAR_NUM_LAYERS, DEFAULT_LINEAR_NUM_LAYERS);
+        b.add_u32(GGUF_KEY_NUM_POWERSET_CLASSES, DEFAULT_NUM_POWERSET_CLASSES);
+        // No filterbank sentinel (illustrative). But linear.0.weight
+        // present with the WRONG shape.
+        let bad_elems = 64usize * 256;
+        b.add_tensor(
+            "linear.0.weight",
+            GgmlType::F32,
+            vec![64, 256],
+            vec![0u8; bad_elems * 4],
+        )
+        .unwrap();
+        let bytes = b.to_bytes().unwrap();
+        let path = scratch_path("wrong-shape-no-sentinel");
+        std::fs::write(&path, &bytes).unwrap();
+        let g = GgufFile::open(&path).unwrap();
+        let w = PyanNetWeights::from_gguf(&g).expect("bind");
+        let cfg = PyanNetConfig::from_gguf(&g);
+
+        let err = w.verify_core_shapes(&cfg).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("linear.0.weight") && msg.contains("FR-EX-08"),
+                    "present-but-mis-shaped rejection must name tensor + FR-EX-08: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
     }
 }

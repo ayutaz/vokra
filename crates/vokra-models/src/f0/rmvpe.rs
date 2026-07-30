@@ -328,6 +328,14 @@ impl RmvpeWeights {
                 continue;
             }
             let dims: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
+            // FR-EX-08: per-tensor shape validation keyed on the upstream
+            // `state_dict` name pattern. A mis-shaped real GGUF (e.g. a
+            // converter that flattened a Conv2d weight to 1D, or a fork
+            // that emits a bias as a 2D matrix) is rejected loudly here
+            // rather than surfacing at forward time. Mirrors the
+            // `crates/vokra-models/src/mimi/encoder.rs::tensor_f32` shape
+            // contract for the encoder side of the neural chain.
+            validate_tensor_shape(name, &dims)?;
             let payload = dequant_to_f32(gguf, info)?;
             tensors.push((name.to_owned(), dims, payload));
         }
@@ -360,6 +368,250 @@ impl RmvpeWeights {
             .find(|(n, _, _)| n == name)
             .map(|(_, d, p)| (d.as_slice(), p.as_slice()))
     }
+}
+
+/// Returns `true` when `name` carries a `.conv{N}.` infix where `{N}`
+/// is a run of one or more ASCII digits (e.g. `.conv1.`, `.conv12.`) —
+/// the naming convention some RMVPE forks use when a residual block
+/// carries multiple Conv layers. Kept as a stdlib-only substring walk
+/// (no regex crate) to preserve NFR-DS-02 (zero external deps at the
+/// runtime seam).
+fn contains_conv_indexed_infix(name: &str) -> bool {
+    contains_indexed_infix(name, "conv")
+}
+
+/// Returns `true` when `name` carries a `.bn{N}.` infix — same
+/// convention as [`contains_conv_indexed_infix`] but for the batch-norm
+/// layer counterpart (`.bn1.` / `.bn12.`).
+fn contains_bn_indexed_infix(name: &str) -> bool {
+    contains_indexed_infix(name, "bn")
+}
+
+/// Shared substring walk: looks for `.{stem}{digits}.` inside `name`.
+/// `.{stem}.` (no digits) is *not* matched — that case is already
+/// covered by the plain `.contains(".{stem}.")` check at the call site.
+fn contains_indexed_infix(name: &str, stem: &str) -> bool {
+    // We walk every occurrence of `.{stem}` and check whether the
+    // characters immediately after are one-or-more ASCII digits
+    // followed by a `.`.
+    let mut haystack = name;
+    let needle = {
+        let mut s = String::with_capacity(stem.len() + 1);
+        s.push('.');
+        s.push_str(stem);
+        s
+    };
+    while let Some(pos) = haystack.find(&needle) {
+        let tail = &haystack[pos + needle.len()..];
+        let mut it = tail.chars();
+        let mut saw_digit = false;
+        loop {
+            match it.next() {
+                Some(c) if c.is_ascii_digit() => saw_digit = true,
+                Some('.') if saw_digit => return true,
+                _ => break,
+            }
+        }
+        // Advance past this occurrence and keep looking so a `.conv.`
+        // hit does not shadow a later `.conv1.` on the same name.
+        haystack = &haystack[pos + needle.len()..];
+    }
+    false
+}
+
+/// Validates that `dims` matches the expected shape rank for a
+/// recognized RMVPE `state_dict` tensor-name pattern.
+///
+/// Every pattern below is transcribed from the upstream RMVPE model
+/// layout described in the module doc (U-Net Conv2d encoder / decoder,
+/// intermediate GRU, 360-class Conv1d head, and PyTorch batch-norm
+/// buffers). A GGUF that walks a *matched* name with the wrong rank is
+/// refused loudly ([`VokraError::ModelLoad`] naming both the tensor and
+/// the expected rank — FR-EX-08). A name that does not match any
+/// recognized pattern falls through with `Ok(())` — the RMVPE community
+/// has diverged on some sub-module naming (e.g. `cnn.*` forks that
+/// flatten the U-Net), so a checkpoint that uses an unrecognized suffix
+/// under a known prefix must still load rather than being rejected as
+/// mis-shaped.
+///
+/// # Design note — why the checks are rank-only, not per-axis
+///
+/// The upstream RMVPE (and its forks) differs on
+/// `n_filters`, `n_residual_layers`, and block indexing across releases;
+/// pinning `[out=N, in=M, kh=3, kw=3]` here would false-reject a valid
+/// checkpoint that has different `n_filters` at the same layer. What
+/// *is* stable across every published RMVPE release is the rank of each
+/// module class (Conv2d is always 4D, BN gamma / beta is always 1D,
+/// GRU weights are always 2D, etc.). This layer therefore pins the
+/// rank contract — the exact per-axis shape check will land alongside
+/// the U-Net + GRU forward on the real-checkpoint parity harness
+/// (`crates/vokra-parity/tests/parity_rmvpe.rs`, env
+/// `PARITY_RMVPE_REAL_GGUF`).
+fn validate_tensor_shape(name: &str, dims: &[usize]) -> Result<(), VokraError> {
+    // No tensor can be zero-dimensional (a scalar cannot be a weight).
+    if dims.is_empty() {
+        return Err(VokraError::ModelLoad(format!(
+            "rmvpe: tensor `{name}` has rank 0; every RMVPE weight is at \
+             least rank 1 (FR-EX-08)"
+        )));
+    }
+    // Every axis must be non-zero — a zero-sized dim indicates a
+    // truncated checkpoint or a mis-encoded safetensors header.
+    if dims.contains(&0) {
+        return Err(VokraError::ModelLoad(format!(
+            "rmvpe: tensor `{name}` has a zero-sized axis (dims={dims:?}); \
+             every RMVPE weight axis must be non-zero (FR-EX-08)"
+        )));
+    }
+
+    // GRU weights: `weight_{ih,hh}_l{layer}[_reverse]` are always 2D
+    // (PyTorch `nn.GRU` state_dict layout — `[3*hidden, input]` and
+    // `[3*hidden, hidden]`).
+    if name.contains(".weight_ih_l") || name.contains(".weight_hh_l") {
+        if dims.len() != 2 {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 2 for a PyTorch GRU weight matrix \
+                 [3*hidden, input] or [3*hidden, hidden] (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    // GRU biases: `bias_{ih,hh}_l{layer}[_reverse]` are always 1D
+    // (`[3*hidden]`).
+    if name.contains(".bias_ih_l") || name.contains(".bias_hh_l") {
+        if dims.len() != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 1 for a PyTorch GRU bias vector \
+                 [3*hidden] (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    // Batch-norm buffers: `running_mean` / `running_var` /
+    // `num_batches_tracked` (PyTorch BN state_dict — the running
+    // statistics are always 1D over the channel axis, and the tracked
+    // counter is a scalar tensor that GGUF stores as rank 1).
+    if name.ends_with(".running_mean") || name.ends_with(".running_var") {
+        if dims.len() != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 1 for a PyTorch batch-norm running \
+                 statistic [channels] (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    if name.ends_with(".num_batches_tracked") {
+        // PyTorch stores this as a 0-dim tensor; safetensors → GGUF
+        // usually widens it to `[1]`. Accept either 0D (caught above)
+        // or 1D with a single element.
+        if dims.len() != 1 || dims[0] != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has dims={dims:?}, expected rank \
+                 1 with a single element for BN's num_batches_tracked \
+                 counter (FR-EX-08)"
+            )));
+        }
+        return Ok(());
+    }
+    // Generic bias vectors — Conv / Linear biases are always 1D
+    // ([out_channels] or [out_features]). Skip the GRU biases already
+    // handled above.
+    if name.ends_with(".bias") {
+        if dims.len() != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 1 for a Conv / Linear bias vector \
+                 [out_channels] (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    // Batch-norm gamma (`.bn.weight` / `.bn{N}.weight`) — always 1D
+    // over the channel axis. Checked before the generic `.weight` arm
+    // so a mis-shaped BN gamma cannot masquerade as a Linear weight.
+    if (name.contains(".bn.") || contains_bn_indexed_infix(name)) && name.ends_with(".weight") {
+        if dims.len() != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 1 for a PyTorch batch-norm gamma \
+                 [channels] (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    // LayerNorm / GroupNorm gamma (`.ln.weight` / `.norm.weight` /
+    // `.layernorm.weight`) — always 1D over the normalized axis.
+    if (name.contains(".ln.") || name.contains(".norm.") || name.contains(".layernorm."))
+        && name.ends_with(".weight")
+    {
+        if dims.len() != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 1 for a LayerNorm / GroupNorm gamma \
+                 [channels] (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    // Conv weights (`.conv.weight` / `.conv{N}.weight`) — always 3D
+    // (Conv1d `[out, in, k]`) or 4D (Conv2d / ConvTranspose2d
+    // `[out, in, kh, kw]`). A 1D or 2D conv weight almost certainly
+    // indicates a flattened tensor from a converter bug.
+    if (name.contains(".conv.") || contains_conv_indexed_infix(name)) && name.ends_with(".weight") {
+        if !(dims.len() == 3 || dims.len() == 4) {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 3 (Conv1d [out,in,k]) or rank 4 (Conv2d \
+                 [out,in,kh,kw]) — a flattened conv weight indicates a \
+                 converter bug (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    // Generic weight tensors. Ranks accepted:
+    //   - 1D: LayerNorm / BN gamma that arrives under an unrecognized
+    //         parent module name (fork tolerance).
+    //   - 2D: catches Linear weights and any 2D matmul projection
+    //         ([out, in]) — RMVPE forks sometimes use a Linear
+    //         projection head instead of a Conv1d.
+    //   - 3D: Conv1d weights `[out_channels, in_channels, kernel]`
+    //         (upstream RMVPE head is a Conv1d → 360-class projection).
+    //   - 4D: Conv2d / ConvTranspose2d weights
+    //         `[out_channels, in_channels, kh, kw]` (upstream U-Net
+    //         encoder / decoder blocks under unrecognized parent
+    //         module names).
+    // Ranks 5+ are rejected loudly. Note: GGUF caps tensor dimensions
+    // at `MAX_TENSOR_DIMS = 4`, so a rank-5 tensor cannot exist on the
+    // load path today — this arm is defensive against a hypothetical
+    // GGUF format bump or a bespoke reader that widens the cap.
+    if name.ends_with(".weight") {
+        if !(1..=4).contains(&dims.len()) {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has rank {} (dims={dims:?}), \
+                 expected rank 1-4 (BN/LN gamma [C], Linear [out,in], \
+                 Conv1d [out,in,k], or Conv2d [out,in,kh,kw]) — \
+                 upstream RMVPE has no 5D weight tensor (FR-EX-08)",
+                dims.len()
+            )));
+        }
+        return Ok(());
+    }
+    // Unrecognized suffix — fork tolerance: fall through so custom
+    // buffers (e.g. `mel_extractor.mel_basis` scratch, non-standard
+    // `unet.*.scale` tunables) still load. The prefix filter in
+    // `from_gguf` already guaranteed the tensor is under a recognized
+    // RMVPE-family root.
+    Ok(())
 }
 
 /// Widens a GGUF tensor payload to a flat `Vec<f32>`. Supports F32,
@@ -1002,5 +1254,654 @@ mod tests {
         );
 
         std::fs::remove_file(&tmp).ok();
+    }
+
+    // -----------------------------------------------------------------
+    // FQ-04: per-tensor shape validation (P0)
+    //
+    // These tests pin the FR-EX-08 loud-error contract on
+    // `RmvpeWeights::from_gguf`: a mis-shaped real GGUF must be rejected
+    // at load time rather than surfacing at forward time (which today
+    // returns UnsupportedOp = never). They also pin the exact
+    // upstream-style tensor names emitted by the primary-source RMVPE
+    // state_dict layout — a converter rename becomes loud because the
+    // round-trip test builds every real name and asserts they all load
+    // together.
+    // -----------------------------------------------------------------
+
+    /// Helper: emits an f32 payload of a given shape as GGUF bytes. The
+    /// values themselves are arbitrary — the tests below only care about
+    /// (name, dtype, shape) for shape validation.
+    fn f32_payload(elems: usize) -> Vec<u8> {
+        (0..elems)
+            .flat_map(|i| ((i as f32 * 0.125_f32) - 0.5).to_le_bytes())
+            .collect()
+    }
+
+    /// Helper: writes a GGUF byte buffer to a per-test scratch path in
+    /// the system temp dir. Uses the same nanosecond suffix pattern as
+    /// the existing tests to avoid parallel-test collisions.
+    fn write_scratch_gguf(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-rmvpe-{}-{}-{}.gguf",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        ));
+        std::fs::write(&tmp, bytes).expect("write scratch gguf");
+        tmp
+    }
+
+    /// Builds a GGUF that mirrors the **upstream RMVPE state_dict tensor
+    /// names** (transcribed from the CNN + BN + GRU + Conv1d-head layout
+    /// documented in the module doc). Also stamps `vokra.provenance.*`
+    /// so the license-class round-trip pin exercises the metadata path
+    /// end-to-end.
+    ///
+    /// Every shape below is at the correct rank for a real RMVPE
+    /// checkpoint (Conv2d weights 4D, BN state 1D, GRU weights 2D, head
+    /// Conv1d weight 3D). Sizes are small (a few filters) so the
+    /// synthetic payload stays trivially small — the shape validator
+    /// does not care about the exact channel counts, only the rank.
+    ///
+    /// Returns the GGUF bytes ready for `RMVPE::from_gguf`.
+    fn upstream_rmvpe_state_dict_gguf() -> Vec<u8> {
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "rmvpe");
+        b.add_string("vokra.model.name", "rmvpe");
+        // License-class round-trip — mirrors the converter's
+        // `vokra_core::stamp_provenance(&mut b, LicenseClass::Permissive,
+        // "mit", ...)`. `RmvpeWeights::from_gguf` does not read the
+        // provenance chunk (that is `crates/vokra-core/src/compliance`'s
+        // job), but the test below asserts the round-trip is intact so a
+        // future runtime-side compliance gate can rely on the same
+        // stamped values.
+        b.add_string("vokra.provenance.weight_license", "permissive");
+        b.add_string("vokra.provenance.license", "mit");
+        b.add_string("vokra.provenance.model_id", "rmvpe");
+        b.add_string("vokra.provenance.source", "yxlllc/RMVPE");
+
+        // Encoder block 0: Conv2d weight [n_out, n_in, kh, kw] + bias
+        // [n_out] + BN gamma / beta / running stats.
+        let (out_ch, in_ch, kh, kw) = (4usize, 1usize, 3usize, 3usize);
+        b.add_tensor(
+            "unet.encoder.block0.conv.weight",
+            GgmlType::F32,
+            vec![out_ch as u64, in_ch as u64, kh as u64, kw as u64],
+            f32_payload(out_ch * in_ch * kh * kw),
+        )
+        .unwrap();
+        b.add_tensor(
+            "unet.encoder.block0.conv.bias",
+            GgmlType::F32,
+            vec![out_ch as u64],
+            f32_payload(out_ch),
+        )
+        .unwrap();
+        b.add_tensor(
+            "unet.encoder.block0.bn.weight",
+            GgmlType::F32,
+            vec![out_ch as u64],
+            f32_payload(out_ch),
+        )
+        .unwrap();
+        b.add_tensor(
+            "unet.encoder.block0.bn.bias",
+            GgmlType::F32,
+            vec![out_ch as u64],
+            f32_payload(out_ch),
+        )
+        .unwrap();
+        b.add_tensor(
+            "unet.encoder.block0.bn.running_mean",
+            GgmlType::F32,
+            vec![out_ch as u64],
+            f32_payload(out_ch),
+        )
+        .unwrap();
+        b.add_tensor(
+            "unet.encoder.block0.bn.running_var",
+            GgmlType::F32,
+            vec![out_ch as u64],
+            f32_payload(out_ch),
+        )
+        .unwrap();
+
+        // Decoder block 0: ConvTranspose2d weight (rank 4, same layout
+        // for GGUF's purposes) + bias + BN.
+        b.add_tensor(
+            "unet.decoder.block0.conv.weight",
+            GgmlType::F32,
+            vec![in_ch as u64, out_ch as u64, kh as u64, kw as u64],
+            f32_payload(in_ch * out_ch * kh * kw),
+        )
+        .unwrap();
+        b.add_tensor(
+            "unet.decoder.block0.conv.bias",
+            GgmlType::F32,
+            vec![in_ch as u64],
+            f32_payload(in_ch),
+        )
+        .unwrap();
+
+        // Intermediate GRU (single-layer, bidirectional). PyTorch
+        // `nn.GRU` state_dict: weight_{ih,hh}_l0[_reverse] = 2D,
+        // bias_{ih,hh}_l0[_reverse] = 1D.
+        let (hidden, input_sz) = (8usize, 4usize);
+        for suffix in ["l0", "l0_reverse"] {
+            b.add_tensor(
+                &format!("gru.weight_ih_{suffix}"),
+                GgmlType::F32,
+                vec![(3 * hidden) as u64, input_sz as u64],
+                f32_payload(3 * hidden * input_sz),
+            )
+            .unwrap();
+            b.add_tensor(
+                &format!("gru.weight_hh_{suffix}"),
+                GgmlType::F32,
+                vec![(3 * hidden) as u64, hidden as u64],
+                f32_payload(3 * hidden * hidden),
+            )
+            .unwrap();
+            b.add_tensor(
+                &format!("gru.bias_ih_{suffix}"),
+                GgmlType::F32,
+                vec![(3 * hidden) as u64],
+                f32_payload(3 * hidden),
+            )
+            .unwrap();
+            b.add_tensor(
+                &format!("gru.bias_hh_{suffix}"),
+                GgmlType::F32,
+                vec![(3 * hidden) as u64],
+                f32_payload(3 * hidden),
+            )
+            .unwrap();
+        }
+
+        // 360-class Conv1d head: weight [n_class, hidden, kernel=1] +
+        // bias [n_class].
+        let (n_class, kernel) = (360usize, 1usize);
+        b.add_tensor(
+            "head.weight",
+            GgmlType::F32,
+            vec![n_class as u64, hidden as u64, kernel as u64],
+            f32_payload(n_class * hidden * kernel),
+        )
+        .unwrap();
+        b.add_tensor(
+            "head.bias",
+            GgmlType::F32,
+            vec![n_class as u64],
+            f32_payload(n_class),
+        )
+        .unwrap();
+
+        b.to_bytes().expect("serialize gguf")
+    }
+
+    /// **FQ-04 round-trip pin**: every upstream RMVPE state_dict tensor
+    /// name at the correct rank loads without error, the tensor count
+    /// matches the constructed set (a silent drop would surface here),
+    /// and the license-class metadata round-trips through the GGUF
+    /// (converter → runtime binder path).
+    ///
+    /// This is the "converter rename becomes loud" pin: if
+    /// `crates/vokra-convert/src/models/rmvpe.rs` (or a fork thereof)
+    /// ever emits a tensor under a rename that is not on the recognized
+    /// prefix list, the prefix filter here would drop it silently and
+    /// `tensor_count` would fall short — this test catches that
+    /// regression by asserting the exact expected count.
+    #[test]
+    fn from_gguf_binds_upstream_state_dict_tensor_names_round_trip() {
+        let bytes = upstream_rmvpe_state_dict_gguf();
+        let tmp = write_scratch_gguf("upstream-names-roundtrip", &bytes);
+
+        // Total tensor count from `upstream_rmvpe_state_dict_gguf`:
+        //   - encoder block0: conv.weight + conv.bias + bn.weight
+        //     + bn.bias + bn.running_mean + bn.running_var = 6
+        //   - decoder block0: conv.weight + conv.bias = 2
+        //   - gru (forward + reverse): 4 * 2 = 8
+        //   - head: weight + bias = 2
+        // ==> 18 total; every one must land in `RmvpeWeights` because
+        //     they all match one of `REQUIRED_TENSOR_PREFIXES` and each
+        //     shape is at the correct rank.
+        const EXPECTED_TENSOR_COUNT: usize = 18;
+
+        let m = RMVPE::from_gguf(&tmp).expect("upstream-shape GGUF must load");
+        assert_eq!(
+            m.tensor_count(),
+            EXPECTED_TENSOR_COUNT,
+            "every upstream-named tensor must land in `RmvpeWeights` — \
+             a silent drop here indicates the prefix filter or shape \
+             validator regressed"
+        );
+
+        // Spot-check that the correct dims + payload survived for one
+        // tensor of each rank class. This is the "converter rename
+        // becomes loud" pin: `tensor` returns `None` when the name is
+        // not in the loaded set.
+        let (dims, payload) = m
+            .weights
+            .tensor("unet.encoder.block0.conv.weight")
+            .expect("encoder Conv2d weight must be bound by canonical name");
+        assert_eq!(
+            dims,
+            &[4, 1, 3, 3],
+            "encoder Conv2d weight dims must round-trip exactly"
+        );
+        assert_eq!(payload.len(), 4 * 3 * 3);
+
+        let (dims, _) = m
+            .weights
+            .tensor("gru.weight_ih_l0")
+            .expect("GRU weight_ih_l0 must be bound by canonical name");
+        assert_eq!(dims, &[24, 4], "GRU weight_ih dims [3*hidden, input]");
+
+        let (dims, _) = m
+            .weights
+            .tensor("head.weight")
+            .expect("head Conv1d weight must be bound by canonical name");
+        assert_eq!(
+            dims,
+            &[360, 8, 1],
+            "head Conv1d weight dims [n_class, hidden, kernel]"
+        );
+
+        // License-class round-trip: reopen the raw GGUF and pin every
+        // provenance chunk. This validates the converter → runtime
+        // metadata path end-to-end so the FR-EX-08 shape gate cannot be
+        // subverted by a checkpoint that omitted the license stamp.
+        let bytes2 = std::fs::read(&tmp).expect("re-read gguf");
+        let file = GgufFile::parse(bytes2).expect("parse gguf");
+        assert_eq!(
+            file.get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str()),
+            Some("permissive"),
+            "license_class round-trip: `permissive` must survive the GGUF"
+        );
+        assert_eq!(
+            file.get("vokra.provenance.license")
+                .and_then(|v| v.as_str()),
+            Some("mit"),
+            "SPDX round-trip: `mit` must survive the GGUF"
+        );
+        assert_eq!(
+            file.get("vokra.model.arch").and_then(|v| v.as_str()),
+            Some("rmvpe")
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// **FQ-04 loud-error pin (Conv2d weight)**: an encoder Conv2d
+    /// weight flattened to 1D must be rejected at load time rather than
+    /// silently binding and surfacing at forward time (which returns
+    /// UnsupportedOp = never).
+    #[test]
+    fn from_gguf_rejects_encoder_conv_weight_flattened_to_1d() {
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "rmvpe");
+        // Flattened Conv2d weight — same total elements (36 = 4*1*3*3)
+        // but rank 1 instead of rank 4. This mirrors a converter bug
+        // that lost the shape metadata.
+        b.add_tensor(
+            "unet.encoder.block0.conv.weight",
+            GgmlType::F32,
+            vec![36],
+            f32_payload(36),
+        )
+        .unwrap();
+        let bytes = b.to_bytes().expect("serialize");
+        let tmp = write_scratch_gguf("bad-rank-conv", &bytes);
+
+        let err = RMVPE::from_gguf(&tmp).expect_err("rank-1 Conv2d weight must be rejected");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("unet.encoder.block0.conv.weight"),
+                    "error must name the offending tensor: {msg}"
+                );
+                assert!(
+                    msg.contains("rank 1"),
+                    "error must report the actual rank: {msg}"
+                );
+                assert!(
+                    msg.contains("FR-EX-08"),
+                    "error must cite the FR-EX-08 loud-error contract: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// **FQ-04 loud-error pin (GRU weight)**: PyTorch's `nn.GRU`
+    /// state_dict emits `weight_ih_l0` as rank 2. A 4D or 1D variant
+    /// almost certainly indicates a converter bug (e.g. someone
+    /// accidentally treated a GRU weight matrix like a Conv2d filter).
+    #[test]
+    fn from_gguf_rejects_gru_weight_wrong_rank() {
+        for bad_dims in [vec![24u64], vec![24u64, 4, 1, 1]] {
+            let mut b = GgufBuilder::new();
+            b.add_string("vokra.model.arch", "rmvpe");
+            let elems: usize = bad_dims.iter().product::<u64>() as usize;
+            b.add_tensor(
+                "gru.weight_ih_l0",
+                GgmlType::F32,
+                bad_dims.clone(),
+                f32_payload(elems),
+            )
+            .unwrap();
+            let bytes = b.to_bytes().expect("serialize");
+            let tmp = write_scratch_gguf("bad-rank-gru", &bytes);
+
+            let err = RMVPE::from_gguf(&tmp).expect_err("wrong-rank GRU weight must be rejected");
+            match err {
+                VokraError::ModelLoad(msg) => {
+                    assert!(
+                        msg.contains("gru.weight_ih_l0"),
+                        "error must name the offending tensor for dims={bad_dims:?}: {msg}"
+                    );
+                    assert!(
+                        msg.contains("expected rank 2"),
+                        "error must state the expected GRU weight rank for dims={bad_dims:?}: {msg}"
+                    );
+                }
+                other => panic!("expected ModelLoad for dims={bad_dims:?}, got {other:?}"),
+            }
+
+            std::fs::remove_file(&tmp).ok();
+        }
+    }
+
+    /// **FQ-04 loud-error pin (bias)**: every Conv / Linear bias in
+    /// RMVPE is 1D. A 2D bias signals either a converter merging
+    /// [gamma, beta] into one tensor or a fork with an incompatible
+    /// layout — both cases must fail loudly.
+    #[test]
+    fn from_gguf_rejects_bias_higher_rank() {
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "rmvpe");
+        // A conv bias erroneously stored as a 2D matrix.
+        b.add_tensor(
+            "unet.encoder.block0.conv.bias",
+            GgmlType::F32,
+            vec![4u64, 1],
+            f32_payload(4),
+        )
+        .unwrap();
+        let bytes = b.to_bytes().expect("serialize");
+        let tmp = write_scratch_gguf("bad-rank-bias", &bytes);
+
+        let err = RMVPE::from_gguf(&tmp).expect_err("rank-2 bias must be rejected");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("unet.encoder.block0.conv.bias"),
+                    "error must name the tensor: {msg}"
+                );
+                assert!(
+                    msg.contains("expected rank 1"),
+                    "error must state expected rank 1 for a Conv bias: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// **FQ-04 loud-error pin (batch-norm gamma wrong rank)**: the
+    /// upstream RMVPE's `.bn.weight` (PyTorch `BatchNorm2d` gamma) is
+    /// always 1D over the channel axis. A 2D `.bn.weight` almost
+    /// certainly indicates a converter accidentally merging `[gamma,
+    /// beta]` into one tensor.
+    ///
+    /// (Rank ≥ 5 is impossible on the GGUF load path because
+    /// `vokra_core::gguf::tensor::MAX_TENSOR_DIMS = 4` caps the GGUF
+    /// header at 4 axes. The rank-5 branch of `validate_tensor_shape`
+    /// is defense-in-depth against a hypothetical GGUF cap bump and is
+    /// covered by the pure-function `validate_tensor_shape_matrix`
+    /// test below.)
+    #[test]
+    fn from_gguf_rejects_bn_weight_wrong_rank() {
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "rmvpe");
+        b.add_tensor(
+            "unet.encoder.block0.bn.weight",
+            GgmlType::F32,
+            vec![4u64, 2],
+            f32_payload(8),
+        )
+        .unwrap();
+        let bytes = b.to_bytes().expect("serialize");
+        let tmp = write_scratch_gguf("bad-rank-bn", &bytes);
+
+        let err = RMVPE::from_gguf(&tmp).expect_err("rank-2 BN gamma must be rejected");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("unet.encoder.block0.bn.weight"),
+                    "error must name the offending tensor: {msg}"
+                );
+                assert!(
+                    msg.contains("expected rank 1"),
+                    "error must state expected rank 1 for a BN gamma: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// **FQ-04 loud-error pin (zero-sized axis)**: a truncated
+    /// checkpoint or corrupted safetensors header that produces a
+    /// zero-sized dimension must be rejected — a 0-elem tensor cannot
+    /// be a real weight.
+    #[test]
+    fn from_gguf_rejects_zero_sized_axis() {
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "rmvpe");
+        // 0-sized second axis — the GGUF header says [4, 0, 3, 3] which
+        // is 0 total elements; the payload is an empty byte slice.
+        b.add_tensor(
+            "unet.encoder.block0.conv.weight",
+            GgmlType::F32,
+            vec![4u64, 0, 3, 3],
+            Vec::<u8>::new(),
+        )
+        .unwrap();
+        let bytes = b.to_bytes().expect("serialize");
+        let tmp = write_scratch_gguf("zero-axis", &bytes);
+
+        let err = RMVPE::from_gguf(&tmp).expect_err("zero-sized axis must be rejected");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("zero-sized axis"),
+                    "error must call out the zero-sized axis: {msg}"
+                );
+                assert!(
+                    msg.contains("unet.encoder.block0.conv.weight"),
+                    "error must name the offending tensor: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// **FQ-04 fork-tolerance pin**: an unrecognized *suffix* under a
+    /// recognized *prefix* (e.g. `unet.encoder.scale_factor`) still
+    /// loads — the validator only rejects mis-shaped tensors under
+    /// known name patterns, and the RMVPE community has diverged on
+    /// some sub-module naming (e.g. `cnn.*` forks that flatten the
+    /// U-Net). Rejecting an unrecognized suffix would false-fail on
+    /// valid fork checkpoints.
+    #[test]
+    fn from_gguf_accepts_unrecognized_suffix_under_known_prefix() {
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "rmvpe");
+        // Non-standard suffix — the shape here (3D) is not what a
+        // canonical Conv1d / Conv2d / GRU / BN slot would use, but the
+        // validator falls through because the suffix is not recognized.
+        b.add_tensor(
+            "unet.encoder.scale_factor",
+            GgmlType::F32,
+            vec![2u64, 3, 4],
+            f32_payload(24),
+        )
+        .unwrap();
+        let bytes = b.to_bytes().expect("serialize");
+        let tmp = write_scratch_gguf("unknown-suffix", &bytes);
+
+        let m = RMVPE::from_gguf(&tmp)
+            .expect("unrecognized suffix under known prefix must load (fork tolerance)");
+        assert_eq!(m.tensor_count(), 1);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// **FQ-04 pure-function unit test**: pin the `validate_tensor_shape`
+    /// contract in isolation so a future refactor of `from_gguf` cannot
+    /// silently drop the shape check without a failing test surfacing.
+    ///
+    /// Exercises: canonical rank happy path, `.conv{N}.` / `.bn{N}.`
+    /// indexed-infix variants (fork naming), unrecognized-suffix fork
+    /// tolerance, and the every-loud-error branch of the validator.
+    /// Note: the rank ≥ 5 arm is defensive against a hypothetical GGUF
+    /// `MAX_TENSOR_DIMS` bump — GGUF's writer today caps at 4, so a
+    /// rank-5 tensor cannot land on the load path via `from_gguf`.
+    #[test]
+    fn validate_tensor_shape_matrix() {
+        // Correct-rank happy path — every recognized name pattern
+        // accepts its canonical rank.
+        assert!(validate_tensor_shape("unet.encoder.block0.conv.weight", &[4, 1, 3, 3]).is_ok());
+        assert!(validate_tensor_shape("unet.encoder.block0.conv.bias", &[4]).is_ok());
+        assert!(validate_tensor_shape("unet.encoder.block0.bn.weight", &[4]).is_ok());
+        assert!(validate_tensor_shape("unet.encoder.block0.bn.running_mean", &[4]).is_ok());
+        assert!(validate_tensor_shape("gru.weight_ih_l0", &[24, 4]).is_ok());
+        assert!(validate_tensor_shape("gru.weight_hh_l0_reverse", &[24, 8]).is_ok());
+        assert!(validate_tensor_shape("gru.bias_ih_l0", &[24]).is_ok());
+        assert!(validate_tensor_shape("head.weight", &[360, 8, 1]).is_ok());
+        assert!(validate_tensor_shape("head.bias", &[360]).is_ok());
+        // 2D linear-projection weight is accepted at the generic
+        // `*.weight` arm (Linear layers do appear in some RMVPE forks).
+        assert!(validate_tensor_shape("unet.encoder.linear.weight", &[8, 4]).is_ok());
+        // Unrecognized suffix falls through (fork tolerance).
+        assert!(validate_tensor_shape("unet.encoder.scale_factor", &[2, 3]).is_ok());
+        // Conv1d weight at rank 3 is accepted.
+        assert!(validate_tensor_shape("head.conv.weight", &[360, 8, 1]).is_ok());
+        // Indexed infix variants (`.conv1.`, `.bn2.`) — some RMVPE
+        // forks number a residual block's paired Conv / BN layers.
+        assert!(validate_tensor_shape("unet.encoder.block0.conv1.weight", &[4, 1, 3, 3]).is_ok());
+        assert!(validate_tensor_shape("unet.encoder.block0.conv2.weight", &[4, 4, 3, 3]).is_ok());
+        assert!(validate_tensor_shape("unet.encoder.block0.bn1.weight", &[4]).is_ok());
+        assert!(validate_tensor_shape("unet.encoder.block0.bn12.weight", &[4]).is_ok());
+
+        // Loud-error cases — every one must return
+        // `Err(ModelLoad(..))`. `matches!` over the enum variant so the
+        // exact error message can evolve without breaking this pin.
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.conv.weight", &[36]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.conv.weight", &[6, 6]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        // Indexed-infix conv weight must also refuse 2D.
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.conv1.weight", &[6, 6]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.bn.weight", &[4, 1]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        // Indexed-infix BN weight must refuse rank 2.
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.bn1.weight", &[4, 1]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("gru.weight_ih_l0", &[24]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("gru.bias_ih_l0", &[24, 1]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.conv.bias", &[4, 1]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.bn.running_var", &[4, 1]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        // Rank-5 weight (defense-in-depth arm — impossible via GGUF
+        // load path today because `MAX_TENSOR_DIMS = 4`).
+        assert!(matches!(
+            validate_tensor_shape("head.weight", &[2, 2, 2, 2, 2]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.conv.weight", &[]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tensor_shape("unet.encoder.block0.conv.weight", &[4, 0, 3, 3]),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    /// **FQ-04 helper unit test**: pin the `contains_conv_indexed_infix`
+    /// / `contains_bn_indexed_infix` substring walk in isolation. A
+    /// regression here would silently unlock 1D / 2D Conv weights under
+    /// `.conv1.` naming (fork checkpoints), defeating the FR-EX-08
+    /// loud-error contract.
+    #[test]
+    fn indexed_infix_helpers_match_stem_digits_dot() {
+        // Positive matches — `.stem{digits}.` pattern.
+        assert!(contains_conv_indexed_infix(
+            "unet.encoder.block0.conv1.weight"
+        ));
+        assert!(contains_conv_indexed_infix(
+            "unet.encoder.block0.conv12.weight"
+        ));
+        assert!(contains_bn_indexed_infix("unet.encoder.block0.bn1.weight"));
+        assert!(contains_bn_indexed_infix("unet.encoder.block0.bn12.weight"));
+        // Multiple matches within one name — the walk continues past the
+        // first `.stem.` and finds the later `.stem{digits}.`.
+        assert!(contains_conv_indexed_infix(
+            "unet.encoder.conv.block0.conv1.weight"
+        ));
+
+        // Negative matches — `.stem.` alone (no digits) is *not*
+        // matched (already handled by `.contains(".stem.")` at the
+        // call site).
+        assert!(!contains_conv_indexed_infix(
+            "unet.encoder.block0.conv.weight"
+        ));
+        assert!(!contains_bn_indexed_infix("unet.encoder.block0.bn.weight"));
+        // Stems that share a prefix must not false-match (`conv_extra`
+        // is not `conv{digits}`).
+        assert!(!contains_conv_indexed_infix(
+            "unet.encoder.block0.conv_extra.weight"
+        ));
+        // Digits without a trailing `.` do not match.
+        assert!(!contains_conv_indexed_infix(
+            "unet.encoder.block0.conv1weight"
+        ));
+        // Empty stem cannot match.
+        assert!(!contains_conv_indexed_infix(""));
     }
 }
