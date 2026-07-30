@@ -1809,7 +1809,16 @@ impl ModelKind {
             | "wav2vec2_ctc"
             | "wav2vec2-base-960h"
             | "wav2vec2_base_960h"
-            | "facebook/wav2vec2-base-960h" => Some(Self::Wav2Vec2Ctc),
+            | "facebook/wav2vec2-base-960h"
+            | "wav2vec2-large-xlsr-53"
+            | "wav2vec2_large_xlsr_53"
+            | "facebook/wav2vec2-large-xlsr-53"
+            | "wav2vec2-large-xlsr-53-japanese"
+            | "wav2vec2_large_xlsr_53_japanese"
+            | "jonatasgrosman/wav2vec2-large-xlsr-53-japanese"
+            | "wav2vec2-large-xlsr-53-chinese-zh-cn"
+            | "wav2vec2_large_xlsr_53_chinese_zh_cn"
+            | "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn" => Some(Self::Wav2Vec2Ctc),
             "moss-tts" | "moss_tts" | "moss-tts-delay" | "openmoss-team/moss-tts" => {
                 Some(Self::MossTts)
             }

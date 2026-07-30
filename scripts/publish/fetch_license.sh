@@ -30,6 +30,9 @@ canonical_url() {
     cc-by-nc-4.0) echo "https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt" ;;
     cc-by-nc-sa-4.0) echo "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.txt" ;;
     agpl-3.0)    echo "https://www.gnu.org/licenses/agpl-3.0.txt" ;;
+    bsd-2-clause) echo "https://raw.githubusercontent.com/spdx/license-list-data/main/text/BSD-2-Clause.txt" ;;
+    bsd-3-clause) echo "https://raw.githubusercontent.com/spdx/license-list-data/main/text/BSD-3-Clause.txt" ;;
+    cc0-1.0)      echo "https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt" ;;
     *) return 1 ;;
   esac
 }
