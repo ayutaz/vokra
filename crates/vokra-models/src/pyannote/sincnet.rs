@@ -966,7 +966,7 @@ mod tests {
             n[0]
         );
         // n[124] corresponds to sample -1.
-        let expected_124 = 2.0 * std::f32::consts::PI * (-1.0f32) / (SAMPLE_RATE_SINCNET as f32);
+        let expected_124 = -(2.0 * std::f32::consts::PI) / (SAMPLE_RATE_SINCNET as f32);
         assert!(
             (n[124] - expected_124).abs() < 1e-9,
             "n[124] should be {expected_124}, got {}",
