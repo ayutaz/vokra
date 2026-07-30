@@ -76,6 +76,15 @@ pub mod attrs;
 // SnakeBeta lives here.
 pub mod bigvgan_generator;
 // ---------------------------------------------------------------------------
+// ---- pyannote Wave 4 agglomerative hierarchical clustering (runtime
+// function, NOT an OpKind variant — same posture as `ctc_decode` /
+// `flow_sampler`). Aggregates segment-level speaker embeddings into
+// speaker clusters (pyannote MIT, `docs/license-audit.md` §3.1 row 263).
+// The full `diarize` op remains M5-residual (HF-gated weight license +
+// trigger model blocker); this primitive is the *clustering step alone*
+// and lands independently.
+pub mod clustering;
+// ---------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 Conformer / FastConformer ASR encoder ------------
 // One implementation covers both — FastConformer differs only in the
 // subsampling stem (`ConvSubsampleKind::Stacking { factor }`). Consumed by
@@ -265,6 +274,9 @@ pub use bigvgan_generator::{
     AmpBlock1, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights, SnakeBeta,
     SnakeKind,
 };
+// -------------------------------------------------------------------------
+// ---- pyannote Wave 4 clustering re-exports ------------------------------
+pub use clustering::{AgglomerativeClustering, DistanceMetric, LinkageMethod};
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 ctc_decode re-exports ----------------------------
 pub use ctc_decode::{CtcBeamAttrs, CtcHypothesis, ctc_decode_beam, ctc_decode_greedy};
