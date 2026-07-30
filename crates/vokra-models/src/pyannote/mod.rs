@@ -955,8 +955,7 @@ mod tests {
     /// harness (Wave 3 loud-partial).
     fn synthetic_full_pyannet_gguf() -> Vec<u8> {
         use crate::pyannote::sincnet::{
-            CONV_KERNEL_LATER, CONV1_IN_CH, CONV1_OUT_CH, CONV2_IN_CH, CONV2_OUT_CH,
-            KERNEL_SIZE_SINC, N_FILTERS_SINC,
+            CONV_KERNEL_LATER, CONV1_IN_CH, CONV1_OUT_CH, CONV2_IN_CH, CONV2_OUT_CH, N_FILTERS_SINC,
         };
         let mut b = GgufBuilder::new();
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
