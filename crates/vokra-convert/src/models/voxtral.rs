@@ -87,6 +87,11 @@ pub(crate) const ARCH: &str = "voxtral";
 /// is `voxtral-unknown` (foundation-only path).
 pub(crate) const NAME_MINI: &str = "voxtral-mini-3b";
 pub(crate) const NAME_SMALL: &str = "voxtral-small-24b";
+/// `Voxtral-Mini-4B-Realtime-2602` (Mistral, 2026-02) — shares Mini-3B's
+/// text-hidden width (`3072`) but ships **26** decoder layers instead of
+/// 30. HF `mistralai/Voxtral-Mini-4B-Realtime-2602` `config.json` shipped
+/// 2026-02, verified 2026-07-31.
+pub(crate) const NAME_REALTIME: &str = "voxtral-mini-4b-realtime-2602";
 
 // --- vokra.voxtral.* metadata keys (M3-10-T04 chunk design) -----------------
 
@@ -942,10 +947,15 @@ fn derive_name(
     match (shape.d_model, shape.n_layer) {
         (3072, 30) => Ok(NAME_MINI.to_owned()),
         (5120, 40) => Ok(NAME_SMALL.to_owned()),
+        // Voxtral-Mini-4B-Realtime-2602: same 3072 hidden as Mini-3B but 26
+        // decoder layers (Mistral tightened the LM for realtime, verified
+        // 2026-07-31 against `mistralai/Voxtral-Mini-4B-Realtime-2602/
+        // config.json`: `hidden_size=3072, num_hidden_layers=26`).
+        (3072, 26) => Ok(NAME_REALTIME.to_owned()),
         (d, n) => Err(ConvertError::Parse(format!(
             "unknown voxtral size: (d_text={d}, n_text_layer={n}); expected voxtral-mini-3b \
-             (3072, 30) or voxtral-small-24b (5120, 40) — pass VoxtralConfig::name_override to \
-             label a new release explicitly"
+             (3072, 30), voxtral-small-24b (5120, 40), or voxtral-mini-4b-realtime-2602 \
+             (3072, 26) — pass VoxtralConfig::name_override to label a new release explicitly"
         ))),
     }
 }
@@ -1837,6 +1847,8 @@ mod tests {
         // to a silent `voxtral-unknown`).
         assert_eq!(derive_name(&shape(3072, 30), None).unwrap(), NAME_MINI);
         assert_eq!(derive_name(&shape(5120, 40), None).unwrap(), NAME_SMALL);
+        // Voxtral-Mini-4B-Realtime-2602: 3072 hidden, 26 layers.
+        assert_eq!(derive_name(&shape(3072, 26), None).unwrap(), NAME_REALTIME);
         // Unknown shape → explicit error (never a silent fall back, FR-EX-08).
         assert!(derive_name(&shape(1234, 5), None).is_err());
         // The old (wrong) 28-layer mini row must no longer match.
