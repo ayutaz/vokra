@@ -927,6 +927,74 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // future variants of the same family under the same MIT LICENSE at
         // `github.com/pyannote/pyannote-audio/LICENSE`.
         _ if id.starts_with("pyannote-") => LicenseClass::Permissive,
+        // 2026-07-30 TIER 1+2 audio-gap family walks (ultracode
+        // `wf_022575ce-077` land): each family under apache-2.0 or MIT per
+        // its HF cardData primary source verified 2026-07-30. See
+        // `docs/handoff/tier1-tier2-audio-impl-2026-07-30.md` for the
+        // per-family primary source URL list.
+        _ if id.starts_with("qwen3-asr-") => LicenseClass::Permissive,
+        _ if id.starts_with("wav2vec2") => LicenseClass::Permissive,
+        _ if id.starts_with("moss-tts") || id.starts_with("openmoss-team/moss-tts") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("melotts-") || id.starts_with("myshell-ai/melotts-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("speecht5-") || id == "speecht5" => LicenseClass::Permissive,
+        _ if id.starts_with("parler-tts") || id.starts_with("indic-parler") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("vieneu-") || id.starts_with("pnnbao-ump/vieneu-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("bark") || id.starts_with("suno/bark") => LicenseClass::Permissive,
+        _ if id.starts_with("hifigan-vocoder") || id.starts_with("speechbrain/tts-hifigan-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("bigvgan") || id.starts_with("nvidia/bigvgan") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("focalcodec") || id.starts_with("lucadellalib/focalcodec") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("tiger-") || id.starts_with("jusperlee/tiger-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("mp-senet") || id.starts_with("jacoblincool/mp-senet-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("metricgan-") || id.starts_with("speechbrain/metricgan-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("sepformer-") || id.starts_with("speechbrain/sepformer-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("fsmn-vad") || id.starts_with("funasr/fsmn-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("firered-vad") || id.starts_with("fireredteam/firered") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("smart-turn") || id.starts_with("pipecat-ai/smart-turn") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("clap") || id.starts_with("laion/clap-") => LicenseClass::Permissive,
+        _ if id.starts_with("ast") || id.starts_with("mit/ast-") => LicenseClass::Permissive,
+        _ if id.starts_with("lang-id-") || id.starts_with("speechbrain/lang-id-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("xvector") || id.starts_with("speechbrain/spkrec-xvect-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("deepfake-detection") || id.starts_with("melodymachine/deepfake-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("kyutai-tts") => LicenseClass::AttributionRequired,
+        _ if id.starts_with("audiobox-aesthetics") => LicenseClass::AttributionRequired,
+        // Defer markers (vast.ai / gated / license-精査-要): fail-closed by
+        // returning None here; owner ADR unblocks per model.
+        _ if id.starts_with("voxtral-mini-realtime") => LicenseClass::Permissive,
+        _ if id.starts_with("cohere-transcribe") => LicenseClass::Permissive,
         _ => return None,
     };
     Some(class)

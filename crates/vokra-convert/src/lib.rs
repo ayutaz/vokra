@@ -457,6 +457,39 @@ pub enum ModelKind {
     /// takes no config side-car (every hparam is fixed for the 0.6B
     /// release and transcribed as compile-time constants).
     Qwen3Tts,
+    /// Alibaba **Qwen3-TTS-12Hz-1.7B-CustomVoice** safetensors checkpoint
+    /// (extension of Phase 3, added 2026-07-30). **Apache-2.0 end-to-end** —
+    /// same license posture as the 0.6B sibling. 1.7B backbone variant
+    /// tuned for zero-shot voice cloning (`config.json.tts_model_type =
+    /// "custom_voice"`). Talker axes widen from the 0.6B baseline:
+    /// `hidden_size=2048` (vs 1024), `intermediate_size=6144` (vs 3072),
+    /// `text_hidden_size=2048` (vs 2048 = now identity-sized); the
+    /// code-predictor axes, GQA head split, RoPE / RMSNorm, codec
+    /// handshake, sample rate + speaker embedding are all identical to
+    /// the 0.6B sibling. Primary source
+    /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/raw/main/config.json`
+    /// fetched 2026-07-30 (CLAUDE.md「ハルシネーション厳禁」). The upstream
+    /// release is BF16 (~3.83 GB / 1 916 676 352 params BF16). Convert
+    /// with [`convert_qwen3_tts_1_7b_customvoice_file`] — the converter
+    /// dispatches through the shared `models::qwen3_tts::convert_variant`
+    /// path with `Qwen3TtsVariant::_1_7B_CustomVoice`.
+    Qwen3TtsCustomVoice17B,
+    /// Alibaba **Qwen3-TTS-12Hz-1.7B-VoiceDesign** safetensors checkpoint
+    /// (extension of Phase 3, added 2026-07-30). **Apache-2.0 end-to-end** —
+    /// same license posture as the CustomVoice sibling. 1.7B backbone
+    /// variant tuned for text-prompt voice-design synthesis
+    /// (`config.json.tts_model_type = "voice_design"`). Talker + code-
+    /// predictor axes are byte-identical to
+    /// [`Self::Qwen3TtsCustomVoice17B`]; only the HF release id (and
+    /// therefore the `vokra.model.name` + provenance model_id stamp)
+    /// differs. Primary source
+    /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/raw/main/config.json`
+    /// fetched 2026-07-30 (CLAUDE.md「ハルシネーション厳禁」). The upstream
+    /// release is BF16 (~3.83 GB / 1 916 676 352 params BF16). Convert
+    /// with [`convert_qwen3_tts_1_7b_voicedesign_file`] — the converter
+    /// dispatches through the shared `models::qwen3_tts::convert_variant`
+    /// path with `Qwen3TtsVariant::_1_7B_VoiceDesign`.
+    Qwen3TtsVoiceDesign17B,
     /// OpenBMB **VoxCPM-0.5B** safetensors checkpoint (SoTA plan Phase 4,
     /// 2026-07-24). Apache-2.0 end-to-end — LM + AudioVAE + Python
     /// pipeline all under a single apache-2.0 grant
@@ -954,6 +987,459 @@ pub enum ModelKind {
     /// safetensors only. Convert with
     /// [`convert_pyannote_segmentation_file`].
     PyannoteSegmentation,
+    // ---------------------------------------------------------------------------
+    // TIER 1+2 audio-gap implementation (2026-07-30 ultracode `wf_022575ce-077`)
+    // — 40 new ModelKind variants across 7 WT batches. Each is a BF16 pass-
+    // through converter (models/*.rs); the dispatch wiring lives in the
+    // `convert_file` match below + `from_arg` / `as_arg` above. License class
+    // registrations live in `crates/vokra-core/src/compliance/license_class.rs`;
+    // §3.1 sign-off rows in `docs/license-audit.md` (2026-07-30 yousan CC 判断).
+    // Handoff: `docs/handoff/tier1-tier2-audio-impl-2026-07-30.md`.
+    // ---------------------------------------------------------------------------
+    /// Alibaba **Qwen3-ASR** family safetensors checkpoint (SoTA plan
+    /// Phase 5 ASR fleet, 2026-07-30). Category = `asr`. Two sizes
+    /// share arch / category / provenance stamps: `Qwen/Qwen3-ASR-0.6B`
+    /// (audio encoder 18 × d=896 × 14h × ffn=3584 + Qwen3 text decoder
+    /// 28 × d=1024 × 16Q ÷ 8KV × head_dim=128 × ffn=3072) and
+    /// `Qwen/Qwen3-ASR-1.7B` (audio encoder 24 × d=1024 × 16h ×
+    /// ffn=4096 + Qwen3 text decoder 28 × d=2048 × 16Q ÷ 8KV ×
+    /// head_dim=128 × ffn=6144). Both are BF16 (`dtype=bfloat16` in
+    /// `config.json`) — the pass-through arm handles the release
+    /// checkpoints directly. Every hparam is transcribed verbatim
+    /// from `huggingface.co/Qwen/Qwen3-ASR-{0.6B,1.7B}/raw/main/
+    /// config.json` (CLAUDE.md「ハルシネーション厳禁」, fetched
+    /// 2026-07-30). Provenance = **apache-2.0** (Permissive) per both
+    /// HF model cards' `cardData.license` (CC-verified via HF API
+    /// 2026-07-30). The `--model qwen3-asr-0.6b` / `-1.7b` slug picks
+    /// the [`models::qwen3_asr::Variant`]; the bare `qwen3-asr` slug
+    /// routes to the 1.7B (flagship) default.
+    Qwen3Asr,
+    /// **wav2vec 2.0 CTC** family safetensors checkpoint (SoTA plan
+    /// Phase 5 ASR fleet, 2026-07-30). Category = `asr`. Four
+    /// canonical variants share the 7-layer Conv1D feature-extractor
+    /// topology (`conv_dim=[512×7]`, `conv_kernel=[10,3,3,3,3,2,2]`,
+    /// `conv_stride=[5,2,2,2,2,2,2]`) at 320× total downsampling:
+    /// - `facebook/wav2vec2-base-960h` (95M, base topology 12 × d=768
+    ///   × 12h × ffn=3072, `feat_extract_norm="group"`,
+    ///   `do_stable_layer_norm=false`, English LibriSpeech CTC head
+    ///   `vocab_size=32`),
+    /// - `facebook/wav2vec2-large-xlsr-53` (300M, large topology 24 ×
+    ///   d=1024 × 16h × ffn=4096, `feat_extract_norm="layer"`,
+    ///   `do_stable_layer_norm=true`, `Wav2Vec2ForPreTraining` — no
+    ///   CTC head — reused as encoder base),
+    /// - `jonatasgrosman/wav2vec2-large-xlsr-53-japanese` (large
+    ///   topology + CTC head `vocab_size=2341`),
+    /// - `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn` (large
+    ///   topology + CTC head `vocab_size=3503`).
+    ///
+    /// Every hparam is transcribed verbatim from the primary-source
+    /// `config.json` per variant (CLAUDE.md「ハルシネーション厳禁」,
+    /// fetched 2026-07-30). All four ship **apache-2.0** (Permissive)
+    /// per the HF API `cardData.license` (CC-verified 2026-07-30). The
+    /// `--model wav2vec2-base-960h` / `wav2vec2-large-xlsr-53` /
+    /// `wav2vec2-large-xlsr-53-japanese` /
+    /// `wav2vec2-large-xlsr-53-chinese-zh-cn` slugs pick the
+    /// [`models::wav2vec2_ctc::Variant`]; the bare `wav2vec2` slug
+    /// routes to `base-960h` (the smallest / most widely-used release).
+    Wav2Vec2Ctc,
+    /// OpenMOSS Team **MOSS-TTS** base checkpoint (SoTA follow-on,
+    /// added 2026-07-30) — `OpenMOSS-Team/MOSS-TTS`. Category `tts`.
+    /// LM-based multilingual TTS: `model_type = "moss_tts_delay"`,
+    /// Qwen3-8B backbone (hidden=4096 / ffn=12288 / 36 layers / GQA
+    /// 32Q ÷ 8KV / head_dim=128 / vocab=155_648 / RoPE θ=1e6 /
+    /// RMSNorm ε=1e-6) + 32 parallel audio codebook streams
+    /// (`n_vq=32`, `audio_vocab_size=1024`) at 24 kHz output.
+    /// Primary source: `huggingface.co/OpenMOSS-Team/MOSS-TTS/raw/main/config.json`
+    /// fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」.
+    /// Provenance = **apache-2.0** (Permissive). Ships **~17 GB BF16**
+    /// across 4 safetensors shards, so **vast.ai is required** (memory
+    /// `[[feedback-large-models-on-vast-ai]]`). Convert with
+    /// [`convert_moss_tts_file`] (variant selector
+    /// [`models::moss_tts::MossTtsVariant::Delay`]).
+    MossTts,
+    /// OpenMOSS Team **MOSS-TTS-v1.5** sibling of [`Self::MossTts`]
+    /// (`OpenMOSS-Team/MOSS-TTS-v1.5`, apache-2.0, added 2026-07-30).
+    /// Shares identical Delay axes and BF16 posture with the base
+    /// release; language coverage widens (adds Cantonese `yue` +
+    /// Arabic `ar` + Czech `cs` + Danish `da` per the model-card tags
+    /// fetched 2026-07-30). Every axis matches [`Self::MossTts`];
+    /// only the `vokra.model.name` stamp and the
+    /// `vokra.provenance.upstream_hf` slug differ. Ships **~17 GB
+    /// BF16** across 4 safetensors shards, so **vast.ai is required**.
+    MossTtsV15,
+    /// OpenMOSS Team **MOSS-TTS-Nano-100M** checkpoint (added
+    /// 2026-07-30) — `OpenMOSS-Team/MOSS-TTS-Nano-100M`. Category
+    /// `tts`. Compact `model_type = "moss_tts_nano"` variant with a
+    /// GPT-2 flavour backbone (hidden=768 / 12 layers / 12 MHA heads
+    /// / head_dim=64 / vocab=16_384; `n_positions=32_768`) + 16
+    /// parallel audio codebook streams (`n_vq=16`,
+    /// `audio_vocab_size=1024`) at 48 kHz output
+    /// (`audio_tokenizer_sample_rate`). Primary source:
+    /// `huggingface.co/OpenMOSS-Team/MOSS-TTS-Nano-100M/raw/main/config.json`
+    /// fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」.
+    /// Provenance = **apache-2.0** (Permissive). Ships as a torch
+    /// pickle `pytorch_model.bin` (not safetensors) — callers
+    /// pre-bridge with `tools/parity/bin_to_safetensors.py` (the
+    /// OpenBMB VoxCPM precedent, `docs/license-audit.md` row 281).
+    /// The RoPE / RMSNorm hparam keys carry `0` sentinels (GPT-2 uses
+    /// learned positional embeddings + LayerNorm) so the runtime
+    /// binder can tell "not applicable" apart from a silent default
+    /// (FR-EX-08).
+    MossTtsNano,
+    /// OpenMOSS Team **MOSS-TTS-Local-Transformer-v1.5** checkpoint
+    /// (added 2026-07-30) —
+    /// `OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`. Category
+    /// `tts`. Mid-scale `model_type = "moss_tts_local"` variant with a
+    /// Qwen3-flavour 2.5B backbone (hidden=2560 / ffn=9728 / 36
+    /// layers / GQA 32Q ÷ 8KV / head_dim=128 / vocab=151_936 / RoPE
+    /// θ=1e6 / RMSNorm ε=1e-6) plus a GPT-2 local head +
+    /// 12 parallel audio codebook streams (`n_vq=12`,
+    /// `audio_vocab_size=1024`) at 48 kHz output. Primary source:
+    /// `huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5/raw/main/config.json`
+    /// fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」.
+    /// Provenance = **apache-2.0** (Permissive). Ships **~9 GB BF16**
+    /// as a single safetensors; **vast.ai is required** (borderline
+    /// on M1 iMac 16 GB — too tight for the whole-file
+    /// `std::fs::read` path).
+    MossTtsLocal,
+    /// **MeloTTS-English** (`myshell-ai/MeloTTS-English`, MIT).
+    /// Implementer C wave 2026-07-30. VITS2-family multilingual TTS
+    /// with a modified duration predictor. Category = `tts`. See
+    /// [`convert_melotts_file`] + [`crate::models::melotts::MeloVariant`]
+    /// — one converter serves the 3 language variants; each pins its
+    /// language-specific axes (`n_symbols` / `num_tones` /
+    /// `num_languages` / `n_speakers_active`) as compile-time constants.
+    MeloTtsEnglish,
+    /// **MeloTTS-Chinese** (`myshell-ai/MeloTTS-Chinese`, MIT).
+    /// Implementer C wave 2026-07-30. Same VITS2 backbone as
+    /// [`Self::MeloTtsEnglish`]; distinct only in `n_symbols = 112`,
+    /// `num_tones = 11`, `spk2id = {ZH:1}`.
+    MeloTtsChinese,
+    /// **MeloTTS-Korean** (`myshell-ai/MeloTTS-Korean`, MIT).
+    /// Implementer C wave 2026-07-30. Same VITS2 backbone; distinct in
+    /// `n_symbols = 219`, `num_tones = 16`, `num_languages = 10`,
+    /// `spk2id = {KR:0}`.
+    MeloTtsKorean,
+    /// **SpeechT5 TTS** (`microsoft/speecht5_tts`, MIT). Implementer C
+    /// wave 2026-07-30. Microsoft's unified encoder-decoder pre-training
+    /// TTS head (12-layer encoder / 6-layer decoder × 12 heads × 768
+    /// hidden × 3072 FFN) + speech-decoder prenet / postnet + 512-d
+    /// speaker x-vector conditioning. Category = `tts`. See
+    /// [`convert_speecht5_file`].
+    ///
+    /// The sibling `microsoft/speecht5_vc` (voice-conversion) is
+    /// deliberately out of scope — voice-cloning targets are
+    /// `vokra-voiceclone-experimental` (CLAUDE.md 設計判断 8).
+    SpeechT5Tts,
+    /// **Parler-TTS mini-multilingual** (`parler-tts/parler-tts-mini-
+    /// multilingual-v1.1`, apache-2.0). Implementer C wave 2026-07-30.
+    /// Decoder-only Parler LM (24-layer × 1024d MHA over 9 DAC
+    /// codebooks) + T5 text encoder (24-layer × 1024d × 16h × 2816
+    /// FFN) conditioned on a natural-language voice description.
+    /// Category = `tts`. See [`convert_parler_file`] +
+    /// [`crate::models::parler::ParlerVariant`] — one converter serves
+    /// both the multilingual base and the Indic fine-tune (they share
+    /// the tensor topology).
+    ParlerTtsMiniMultilingual,
+    /// **Indic Parler-TTS** (`ai4bharat/indic-parler-tts`, apache-2.0,
+    /// gated=auto). Implementer C wave 2026-07-30. Same architecture as
+    /// [`Self::ParlerTtsMiniMultilingual`]; a fine-tune on 21 Indic
+    /// languages. The `gated=auto` HF flag is access control — the
+    /// license itself is apache-2.0 per the card front-matter.
+    IndicParlerTts,
+    /// **VieNeu-TTS-v3-Turbo** (`pnnbao-ump/VieNeu-TTS-v3-Turbo`,
+    /// apache-2.0). Implementer C wave 2026-07-30. Novel hierarchical
+    /// AR Vietnamese TTS (`architectures = ["VieNeuV3TurboForTTS"]`) —
+    /// **NOT** a VITS / StyleTTS / Piper fork. LLM-family backbone
+    /// (12L × 12H × 768 hidden, GQA 4 KV, RoPE θ=10000, RMSNorm
+    /// ε=1e-6, max_pos=1024) + 2-layer local acoustic decoder (learned
+    /// slot-position embedding, NOT RoPE) over external
+    /// `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` codec (16 quantizers ×
+    /// 1024 vocab @ 48 kHz). Category = `tts`. See
+    /// [`convert_vieneu_file`].
+    VieNeuTts,
+    /// **Bark (Suno)** family (`suno/bark` + `suno/bark-small`, MIT).
+    /// Implementer C wave 2026-07-30. Hierarchical AR LM TTS in 3
+    /// transformer stages (semantic → coarse EnCodec → fine EnCodec)
+    /// over an external `facebook/encodec_24khz` vocoder
+    /// (CC-BY-NC 4.0 — the M2-13 codec-side gate fires there, not on
+    /// the Bark GGUF). Category = `tts`. See [`convert_bark_file`] +
+    /// [`crate::models::bark::BarkVariant`] — one variant per
+    /// per-stage `num_layers` (small=12, full=24).
+    Bark,
+    /// **Bark-small** (`suno/bark-small`, MIT) explicit variant.
+    /// Implementer C wave 2026-07-30. Distinct dispatch arm from
+    /// [`Self::Bark`] so the CLI slug + verify-time introspection
+    /// surface the exact release. Runs the same
+    /// [`convert_bark_file`] with [`crate::models::bark::BarkVariant::Small`].
+    BarkSmall,
+    /// SpeechBrain **tts-hifigan-libritts-22050Hz** vocoder checkpoint
+    /// (SoTA plan Phase D1, 2026-07-30). Category = `vocoder`. HiFi-GAN
+    /// generator (Kong et al. 2020, arXiv:2010.05646) trained on
+    /// LibriTTS at 22 050 Hz. Ships torch-pickle generator.ckpt +
+    /// hyperparams.yaml; callers pre-flatten to safetensors offline via
+    /// `tools/parity/hifigan_prepare_checkpoint.py`. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name; runtime binding +
+    /// real-weight parity are deferred to owner
+    /// (`docs/license-audit.md` §3.1 sign-off queue). Distinct arch
+    /// tag from `bigvgan` (leaky_relu vs snake activation, no
+    /// alias-free activation wrapper) and from `piper-plus`
+    /// (standalone vocoder, not full TTS). Provenance = **apache-2.0**
+    /// (Permissive — verified 2026-07-30 via HF API cardData).
+    HifiganVocoder,
+    /// NVIDIA **BigVGAN** vocoder family (SoTA plan Phase D2-D5,
+    /// 2026-07-30). Category = `vocoder`. AMPBlock1 with Snake or
+    /// SnakeBeta plus transposed-conv upsample vocoder
+    /// (arXiv:2206.04658). Four variants share this single
+    /// [`ModelKind`], distinguished by a [`bigvgan::BigVGanVariant`]
+    /// discriminator emitted under `vokra.bigvgan.variant`:
+    /// `v2_22khz_80band_256x` (D2), `v2_44khz_128band_512x` (D3),
+    /// `v2_24khz_100band_256x` (D4), `base_v1_24khz_100band` (D5,
+    /// v1 base). All four ship torch-pickle
+    /// (`bigvgan_generator.pt` alongside `config.json`); callers
+    /// pre-flatten to safetensors offline via
+    /// `tools/parity/bigvgan_prepare_checkpoint.py`. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name; runtime binding
+    /// and real-weight parity are deferred to owner. Distinct arch
+    /// tag from `hifigan_vocoder` (snake vs leaky_relu activation
+    /// plus alias-free activation wrapper presence). Provenance =
+    /// **MIT** (Permissive — verified 2026-07-30 via HF API
+    /// cardData; GitHub NVIDIA/BigVGAN LICENSE is standard MIT
+    /// `Copyright (c) 2024 NVIDIA CORPORATION`, CLAUDE.md 2026-07-22
+    /// 訂正).
+    BigVGan,
+    /// **FocalCodec** (`lucadellalib/focalcodec_50hz`, apache-2.0)
+    /// safetensors checkpoint (SoTA plan Phase D6, 2026-07-30).
+    /// Category = `codec`. Focal-modulation-based single-codebook
+    /// low-bitrate audio codec at 50 Hz (arXiv:2502.04465). **Unlike
+    /// the sibling BigVGAN / HiFi-GAN vocoders**, FocalCodec ships
+    /// `model.safetensors` + `config.json` directly (no torch-pickle
+    /// prepare step). BF16 pass-through skeleton — every F32 / F16 /
+    /// BF16 tensor passes through verbatim under its upstream
+    /// safetensors name; runtime binding + real-weight parity are
+    /// deferred to owner (`docs/license-audit.md` §3.1 sign-off
+    /// queue). Distinct arch tag from every sibling codec
+    /// (Mimi / DAC / WavTokenizer / neucodec / step_audio2_mini /
+    /// X-Codec 2 / FunCodec / SpeechTokenizer / bicodec / XyTokenizer)
+    /// because FocalCodec is neither RVQ nor FSQ nor SoundStream
+    /// family. Provenance = **apache-2.0** (Permissive — verified
+    /// 2026-07-30 via HF API cardData; base `microsoft/wavlm-large`
+    /// is MIT, both compatible under `Permissive`).
+    Focalcodec,
+    /// **JusperLee/TIGER-DnR** (Implementer E TIER 1, 2026-07-30).
+    /// Category = `enhancement`. TIGER = Time-frequency Interleaved
+    /// Gain Extraction from a Restructured net — dialog / narration /
+    /// SFX cinematic source separation trained on the DnR benchmark.
+    /// Shares the [`models::tiger::ARCH`] tag `tiger_separator` +
+    /// converter with the `TigerSpeech` sibling; the two differ only
+    /// in training data + `vokra.tiger.variant` / `vokra.model.name` /
+    /// `vokra.provenance.upstream_hf` stamps. Every F32 / F16 / BF16
+    /// tensor passes through verbatim; the internal Time-Frequency
+    /// dual-path body is a `loud-partial` follow-up (real-weight
+    /// forward is deferred). Provenance = **apache-2.0** (Permissive
+    /// — per HF model-card `cardData.license`).
+    TigerSeparator,
+    /// **JusperLee/TIGER-speech** (Implementer E TIER 1, 2026-07-30).
+    /// Category = `enhancement`. Speaker separation on speech mixtures
+    /// — same architecture as [`Self::TigerSeparator`], different
+    /// training data + head count. Both variants route to
+    /// `models::tiger::convert_tiger_file` with distinct
+    /// [`models::tiger::TigerVariant`] arguments. Provenance =
+    /// **apache-2.0** (Permissive).
+    TigerSpeech,
+    /// **JacobLinCool/MP-SENet-DNS** (Implementer E TIER 1, 2026-07-30).
+    /// Category = `denoise`. MP-SENet = dual-branch (magnitude +
+    /// phase) U-Net speech enhancement (arXiv:2305.13686 lineage —
+    /// the JacobLinCool DNS-tuned re-release of `yxlu0057/MP-SENet`).
+    /// Every F32 / F16 / BF16 tensor passes through verbatim; the
+    /// internal dual-branch forward is a `loud-partial` follow-up.
+    /// Provenance = **MIT** (Permissive — inherits the base
+    /// `yxlu0057/MP-SENet` MIT LICENSE).
+    MpSenet,
+    /// **speechbrain/metricgan-plus-voicebank** (Implementer E TIER 1,
+    /// 2026-07-30). Category = `enhancement`. MetricGAN+ =
+    /// generator-only speech-enhancement GAN optimising perceptual
+    /// metrics (PESQ). Every F32 / F16 / BF16 tensor passes through
+    /// verbatim; the internal LSTM-stack + spectral-mask head is a
+    /// `loud-partial` follow-up. Provenance = **apache-2.0**
+    /// (Permissive — SpeechBrain end-to-end Apache-2.0 LICENSE).
+    MetricganPlus,
+    /// **speechbrain/sepformer-wsj02mix** (Implementer E TIER 1,
+    /// 2026-07-30). Category = `separation` (2-speaker source
+    /// separation task — distinct from the enhancement-category
+    /// SepFormer siblings). SepFormer = Transformer-based dual-path
+    /// separator (Subakan et al. 2021). Shares the
+    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// the `SepformerWham16kEnh` / `SepformerWhamr16k` siblings; the
+    /// three differ only in training data + head count +
+    /// `vokra.sepformer.variant` / `vokra.model.category` /
+    /// `vokra.model.name` / `vokra.provenance.upstream_hf` stamps.
+    /// Every F32 / F16 / BF16 tensor passes through verbatim; the
+    /// internal dual-path Transformer body is a `loud-partial`
+    /// follow-up. Provenance = **apache-2.0** (Permissive).
+    SepFormer,
+    /// **speechbrain/sepformer-wham16k-enhancement** (Implementer E
+    /// TIER 1, 2026-07-30). Category = `enhancement`. Single-speaker
+    /// speech enhancement on WHAM! 16 kHz. Shares the
+    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// [`Self::SepFormer`] / [`Self::SepformerWhamr16k`]. Provenance =
+    /// **apache-2.0** (Permissive).
+    SepformerWham16kEnh,
+    /// **speechbrain/sepformer-whamr16k** (Implementer E TIER 1,
+    /// 2026-07-30). Category = `enhancement`. Joint dereverb +
+    /// denoise on WHAMR! 16 kHz. Shares the
+    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`]. Provenance
+    /// = **apache-2.0** (Permissive).
+    SepformerWhamr16k,
+    /// FunASR **fsmn-vad** VAD checkpoint (TIER 1 F wave, 2026-07-30).
+    /// Category = `vad`. FSMN = Feedforward Sequential Memory Network
+    /// (Zhang et al. 2015 arXiv:1512.08301), the classic FunASR
+    /// streaming VAD. BF16 pass-through skeleton — every F32 / F16 /
+    /// BF16 tensor passes through verbatim under its upstream
+    /// safetensors name. `FunAudioLLM/fsmn-vad-GGUF` is a re-hosted
+    /// GGUF sibling of the same weight (from_arg alias) — no separate
+    /// ModelKind. Provenance = **apache-2.0** (Permissive).
+    FsmnVad,
+    /// FireRedTeam **FireRedVAD** checkpoint (TIER 1 F wave,
+    /// 2026-07-30). Category = `vad`. Xiaohongshu's transformer-based
+    /// streaming VAD (part of the FireRedTeam speech family alongside
+    /// FireRedASR / FireRedTTS). BF16 pass-through skeleton —
+    /// distinct arch tag from FSMN-VAD (transformer topology unlike
+    /// FSMN's filter-window feed-forward). Provenance = **apache-2.0**
+    /// (Permissive).
+    FireredVad,
+    /// pipecat-ai **smart-turn-v2** checkpoint (TIER 1 F wave,
+    /// 2026-07-30). Category = `vad` (turn-taking = VAD variant for
+    /// dialogue turn boundaries — Pipecat realtime pipelines).
+    /// Small classifier that decides when a user has finished
+    /// speaking, rather than raw voice activity. BF16 pass-through
+    /// skeleton. Provenance = **bsd-2-clause** (Permissive).
+    SmartTurn,
+    /// LAION **CLAP** (Contrastive Language-Audio Pretraining)
+    /// checkpoint (TIER 1 F wave, 2026-07-30). Category =
+    /// `classification` (audio-text embedding — downstream users pick
+    /// a text prompt vocabulary to get an N-way classifier). HTSAT
+    /// audio encoder + text encoder + fused projection (Wu et al.
+    /// 2023 arXiv:2211.06687). One of the highest-download HF audio
+    /// releases (8.1M+). BF16 pass-through skeleton preserving both
+    /// towers verbatim. Provenance = **apache-2.0** (Permissive).
+    Clap,
+    /// MIT (organization) **Audio Spectrogram Transformer** fine-
+    /// tuned on AudioSet (TIER 1 F wave, 2026-07-30). Category =
+    /// `classification`. Gong et al. 2021 (arXiv:2104.01778) — ViT
+    /// over log-mel spectrogram, 527-class AudioSet classifier.
+    /// BF16 pass-through skeleton. Note: `MIT` is the HF ORGANIZATION
+    /// that published the model, NOT the SPDX license — the actual
+    /// weight license is **bsd-3-clause** (Permissive).
+    Ast,
+    /// SpeechBrain **lang-id-voxlingua107-ecapa** checkpoint (TIER 1
+    /// F wave, 2026-07-30). Category = `classification`. 107-language
+    /// identification (Valk & Alumäe 2021 arXiv:2011.12998) with
+    /// ECAPA-TDNN backbone. BF16 pass-through skeleton — shares the
+    /// [`models::speechbrain_lang_id`] file with the CommonLanguage
+    /// sibling ([`Self::LangIdCommonLanguage`]); both variants share
+    /// the ECAPA-TDNN topology and differ only in the head vocab (a
+    /// shape-derivable hparam). Provenance = **apache-2.0**
+    /// (Permissive).
+    LangIdVoxlingua107,
+    /// SpeechBrain **lang-id-commonlanguage_ecapa** checkpoint (TIER
+    /// 1 F wave, 2026-07-30, sibling of [`Self::LangIdVoxlingua107`]).
+    /// Category = `classification`. CommonLanguage-trained variant
+    /// (~45 languages) sharing the same ECAPA-TDNN topology; the
+    /// distinct ModelKind ensures the correct `vokra.model.name` +
+    /// `vokra.provenance.upstream_hf` land on the artifact. BF16 pass-
+    /// through skeleton. Provenance = **apache-2.0** (Permissive).
+    LangIdCommonLanguage,
+    /// SpeechBrain **spkrec-xvect-voxceleb** X-vector checkpoint
+    /// (TIER 1 F wave, 2026-07-30). Category = `speaker`. TDNN-based
+    /// speaker embedding (Snyder et al. 2018 arXiv:1710.10467) — an
+    /// alternative to CAM++ ([`Self::CamPlus`]) and ECAPA-TDNN
+    /// ([`Self::EcapaTdnn`]) with distinct topology (plain TDNN stack
+    /// with statistics pooling; no SE-Res2Blocks; no D-TDNN). BF16
+    /// pass-through skeleton. Provenance = **apache-2.0** (Permissive).
+    XVector,
+    /// MelodyMachine **Deepfake-audio-detection-V2** checkpoint (TIER
+    /// 1 F wave, 2026-07-30). Category = `classification`. WavLM-based
+    /// binary classifier (real vs synthetic speech) for audio
+    /// deepfake detection — sits in the EU AI Act Article 50 /
+    /// SB-942 compliance surface. BF16 pass-through skeleton — the
+    /// actual deployment decision (threshold, whether to expose to
+    /// end-user) is downstream policy, not runtime. Provenance =
+    /// **apache-2.0** (Permissive).
+    DeepfakeDetection,
+    /// Kyutai **TTS-1.6B-EN/FR** safetensors checkpoint (TIER 2 land,
+    /// 2026-07-30). English + French text-to-speech: Moshi / Helium
+    /// temporal transformer (`num_layers=16 / dim=2048 / num_heads=16`)
+    /// with a 4-layer depformer over 32 Mimi audio codebooks
+    /// (`dep_q=32`, `n_q=32`), cross-attention on a 512-d speaker
+    /// reference embedding + LUT CFG scale (7-bin) + LUT unified
+    /// control token, `depformer_multi_linear=true`,
+    /// `demux_second_stream=true`. Distinct arch from
+    /// `ModelKind::KyutaiStt` — STT and TTS are two directions of the
+    /// same delayed-streams-modeling family (arXiv:2410.00037) but
+    /// live at different `vokra.model.arch` tags because their
+    /// runtime dispatch differs. CC-BY 4.0 weight
+    /// (`AttributionRequired` — the converter stamps the FR-MD-09
+    /// attribution text). Every F32 / F16 / BF16 tensor passes through
+    /// verbatim; real-weight parity is deferred to owner
+    /// (`docs/license-audit.md` §3.1 sign-off). Category = `tts`.
+    KyutaiTts,
+    /// Meta / Facebook **audiobox-aesthetics** safetensors checkpoint
+    /// (TIER 2 land, 2026-07-30). Audio quality-rating classifier /
+    /// regressor: wav2vec2-style SSL backbone + 5-layer projection MLP
+    /// producing a 5-dim quality rating (BALANCED /
+    /// CONTENT_ENJOYMENT / CONTENT_USEFULNESS / PRODUCTION_COMPLEXITY /
+    /// PRODUCTION_QUALITY; arXiv:2502.05139 "Meta Audiobox Aesthetics:
+    /// Unified Automatic Quality Assessment for Speech, Music, and
+    /// Sound"). **First Vokra converter with category =
+    /// `classification`** (sibling categories today: `asr` / `tts` /
+    /// `codec` / `speaker` / `emotion` / `s2s` / `bert` / `vad`).
+    /// CC-BY 4.0 weight (`AttributionRequired` — the converter stamps
+    /// the FR-MD-09 attribution text). Every F32 / F16 / BF16 tensor
+    /// passes through verbatim; upstream is F32 today (~104M
+    /// parameters, ~415 MB on disk) but the BF16 arm accepts a
+    /// future distilled fine-tune of the same architecture without a
+    /// silent widen. Real-weight parity is deferred to owner
+    /// (`docs/license-audit.md` §3.1 sign-off).
+    AudioboxAesthetics,
+    /// Mistral **Voxtral-Mini-4B-Realtime-2602** — apache-2.0 weight,
+    /// ~8 GB, TIER 2 defer marker (2026-07-30). Ministral-3-3B-Base
+    /// derived, streaming-optimised realtime ASR variant. This
+    /// variant's size sits at the M1 iMac 16 GB local-convert ceiling
+    /// (memory [[feedback-large-models-on-vast-ai]] = >8 GB safetensors
+    /// preferred on vast.ai). CC dispatch **refuses local convert**
+    /// and prints an owner-vast-ai flow message; owner runs the actual
+    /// conversion + publish on vast.ai. from_arg + license_class both
+    /// register this variant so an accidental local invocation
+    /// fail-closed on a loud usage error rather than silently starting
+    /// a mmap-heavy convert that may kill the host.
+    VoxtralMiniRealtime,
+    /// Cohere **cohere-transcribe-03-2026** — apache-2.0 weight,
+    /// **HF gate = `auto`** — TIER 2 defer marker (2026-07-30). 14-lang
+    /// ASR (`CohereAsrForConditionalGeneration`, ~1 GB safetensors),
+    /// released 2026 by CohereLabs. HF gate acceptance requires an
+    /// authenticated owner action (a token attached to a HF account that
+    /// has clicked "Accept license" on the model card); CC cannot
+    /// discharge that on its own, so this variant registers in from_arg
+    /// plus license_class only and dispatch **refuses local convert**
+    /// with a `defer-gated` owner message.
+    CohereTranscribe,
+    /// NVIDIA **nemotron-3.5-asr-streaming-0.6b** — `license: other`
+    /// (NVIDIA custom licence text), ~1.2 GB — TIER 2 defer marker
+    /// (2026-07-30). FastConformer cache-aware streaming ASR spanning
+    /// 36 languages. HF cardData carries `license: other` (not a known
+    /// SPDX id), so `LicenseClass::from_license_str` cannot classify
+    /// without a primary-source read of the NVIDIA licence text —
+    /// which is an owner decision (memory
+    /// [[feedback-license-signoff-primary-source]] = fail-closed
+    /// default). CC dispatch **refuses local convert** with a
+    /// `defer-other-license` owner message. from_arg + license_class
+    /// register the variant as `LicenseClass::Unknown` so an
+    /// accidental commercial-mode load fails the M2-13 gate closed.
+    NemotronAsrStreaming,
 }
 
 impl ModelKind {
@@ -1283,6 +1769,226 @@ impl ModelKind {
             | "pyannote-segmentation-3_0"
             | "pyannote/segmentation-3.0"
             | "pyannote/segmentation" => Some(Self::PyannoteSegmentation),
+            "qwen3-tts-1.7b-customvoice"
+            | "qwen3-tts-1_7b-customvoice"
+            | "qwen3-tts-1.7b-custom-voice"
+            | "qwen3-tts-12hz-1.7b-customvoice"
+            | "qwen3-tts-12hz-1_7b-customvoice"
+            | "qwen3-tts-12hz-1.7b-custom-voice"
+            | "qwen/qwen3-tts-12hz-1.7b-customvoice" => Some(Self::Qwen3TtsCustomVoice17B),
+            "qwen3-tts-1.7b-voicedesign"
+            | "qwen3-tts-1_7b-voicedesign"
+            | "qwen3-tts-1.7b-voice-design"
+            | "qwen3-tts-12hz-1.7b-voicedesign"
+            | "qwen3-tts-12hz-1_7b-voicedesign"
+            | "qwen3-tts-12hz-1.7b-voice-design"
+            | "qwen/qwen3-tts-12hz-1.7b-voicedesign" => Some(Self::Qwen3TtsVoiceDesign17B),
+            "qwen3-asr"
+            | "qwen3_asr"
+            | "qwen/qwen3-asr-0.6b"
+            | "qwen/qwen3-asr-1.7b"
+            | "qwen3-asr-0.6b"
+            | "qwen3-asr-0_6b"
+            | "qwen3_asr_0_6b"
+            | "qwen3-asr-1.7b"
+            | "qwen3-asr-1_7b"
+            | "qwen3_asr_1_7b" => Some(Self::Qwen3Asr),
+            "wav2vec2"
+            | "wav2vec2_ctc"
+            | "wav2vec2-base-960h"
+            | "wav2vec2_base_960h"
+            | "facebook/wav2vec2-base-960h" => Some(Self::Wav2Vec2Ctc),
+            "moss-tts" | "moss_tts" | "moss-tts-delay" | "openmoss-team/moss-tts" => {
+                Some(Self::MossTts)
+            }
+            "moss-tts-v1.5"
+            | "moss-tts-v1_5"
+            | "moss_tts_v1.5"
+            | "moss_tts_v1_5"
+            | "openmoss-team/moss-tts-v1.5"
+            | "openmoss-team/moss-tts-v1_5" => Some(Self::MossTtsV15),
+            "moss-tts-nano"
+            | "moss_tts_nano"
+            | "moss-tts-nano-100m"
+            | "moss_tts_nano_100m"
+            | "openmoss-team/moss-tts-nano-100m"
+            | "openmoss-team/moss-tts-nano" => Some(Self::MossTtsNano),
+            "moss-tts-local"
+            | "moss_tts_local"
+            | "moss-tts-local-transformer"
+            | "moss-tts-local-transformer-v1.5"
+            | "moss_tts_local_transformer_v1.5"
+            | "moss_tts_local_transformer_v1_5"
+            | "openmoss-team/moss-tts-local-transformer-v1.5"
+            | "openmoss-team/moss-tts-local-transformer-v1_5" => Some(Self::MossTtsLocal),
+            "melotts-english"
+            | "melotts_english"
+            | "melo-tts-english"
+            | "melo-english"
+            | "myshell-ai/melotts-english" => Some(Self::MeloTtsEnglish),
+            "melotts-chinese"
+            | "melotts_chinese"
+            | "melo-tts-chinese"
+            | "melo-chinese"
+            | "myshell-ai/melotts-chinese" => Some(Self::MeloTtsChinese),
+            "melotts-korean"
+            | "melotts_korean"
+            | "melo-tts-korean"
+            | "melo-korean"
+            | "myshell-ai/melotts-korean" => Some(Self::MeloTtsKorean),
+            "speecht5-tts" | "speecht5_tts" | "speecht5" | "microsoft/speecht5_tts" => {
+                Some(Self::SpeechT5Tts)
+            }
+            "parler-tts"
+            | "parler_tts"
+            | "parler-tts-mini-multilingual"
+            | "parler-tts-mini-multilingual-v1.1"
+            | "parler-tts-mini-multilingual-v1_1"
+            | "parler-tts/parler-tts-mini-multilingual-v1.1" => {
+                Some(Self::ParlerTtsMiniMultilingual)
+            }
+            "indic-parler-tts"
+            | "indic_parler_tts"
+            | "indic-parler"
+            | "ai4bharat/indic-parler-tts" => Some(Self::IndicParlerTts),
+            "vieneu-tts"
+            | "vieneu-tts-v3-turbo"
+            | "vieneu_v3_turbo"
+            | "vieneu_tts_v3_turbo"
+            | "pnnbao-ump/vieneu-tts-v3-turbo" => Some(Self::VieNeuTts),
+            "bark" | "suno/bark" | "bark-full" => Some(Self::Bark),
+            "bark-small" | "bark_small" | "suno/bark-small" => Some(Self::BarkSmall),
+            "hifigan-vocoder"
+            | "hifigan_vocoder"
+            | "hifigan"
+            | "tts-hifigan-libritts-22050hz"
+            | "speechbrain/tts-hifigan-libritts-22050hz" => Some(Self::HifiganVocoder),
+            "bigvgan"
+            | "big-vgan"
+            | "big_vgan"
+            | "bigvgan-v2-22khz-80band-256x"
+            | "bigvgan_v2_22khz_80band_256x"
+            | "nvidia/bigvgan_v2_22khz_80band_256x"
+            | "bigvgan-v2-44khz-128band-512x"
+            | "bigvgan_v2_44khz_128band_512x"
+            | "nvidia/bigvgan_v2_44khz_128band_512x"
+            | "bigvgan-v2-24khz-100band-256x"
+            | "bigvgan_v2_24khz_100band_256x"
+            | "nvidia/bigvgan_v2_24khz_100band_256x"
+            | "bigvgan-base-24khz-100band"
+            | "bigvgan_base_24khz_100band"
+            | "nvidia/bigvgan_base_24khz_100band" => Some(Self::BigVGan),
+            "focalcodec"
+            | "focal-codec"
+            | "focal_codec"
+            | "focalcodec-50hz"
+            | "focalcodec_50hz"
+            | "lucadellalib/focalcodec_50hz" => Some(Self::Focalcodec),
+            "tiger"
+            | "tiger-dnr"
+            | "tiger_dnr"
+            | "tiger-separator"
+            | "tiger_separator"
+            | "jusperlee/tiger-dnr" => Some(Self::TigerSeparator),
+            "tiger-speech" | "tiger_speech" | "jusperlee/tiger-speech" => Some(Self::TigerSpeech),
+            "mp-senet"
+            | "mp_senet"
+            | "mpsenet"
+            | "mp-senet-dns"
+            | "mp_senet_dns"
+            | "jacoblincool/mp-senet-dns" => Some(Self::MpSenet),
+            "metricgan-plus"
+            | "metricgan_plus"
+            | "metricganplus"
+            | "metricgan-plus-voicebank"
+            | "metricgan_plus_voicebank"
+            | "speechbrain/metricgan-plus-voicebank" => Some(Self::MetricganPlus),
+            "sepformer"
+            | "sepformer-wsj02mix"
+            | "sepformer_wsj02mix"
+            | "sepformer-wsj0-2mix"
+            | "speechbrain/sepformer-wsj02mix" => Some(Self::SepFormer),
+            "sepformer-wham16k"
+            | "sepformer-wham16k-enhancement"
+            | "sepformer_wham16k_enhancement"
+            | "speechbrain/sepformer-wham16k-enhancement" => Some(Self::SepformerWham16kEnh),
+            "sepformer-whamr16k"
+            | "sepformer_whamr16k"
+            | "sepformer-whamr"
+            | "speechbrain/sepformer-whamr16k" => Some(Self::SepformerWhamr16k),
+            "fsmn-vad"
+            | "fsmn_vad"
+            | "funasr/fsmn-vad"
+            | "funaudiollm/fsmn-vad-gguf"
+            | "fsmn-vad-gguf" => Some(Self::FsmnVad),
+            "firered-vad" | "firered_vad" | "fireredvad" | "fireredteam/fireredvad" => {
+                Some(Self::FireredVad)
+            }
+            "smart-turn"
+            | "smart_turn"
+            | "smart-turn-v2"
+            | "smart_turn_v2"
+            | "pipecat-ai/smart-turn-v2" => Some(Self::SmartTurn),
+            "clap" | "clap-htsat-fused" | "clap_htsat_fused" | "laion/clap-htsat-fused" => {
+                Some(Self::Clap)
+            }
+            "ast"
+            | "audio-spectrogram-transformer"
+            | "ast-finetuned-audioset"
+            | "ast-finetuned-audioset-10-10-0.4593"
+            | "mit/ast-finetuned-audioset-10-10-0.4593" => Some(Self::Ast),
+            "lang-id-voxlingua107"
+            | "lang_id_voxlingua107"
+            | "lang-id-voxlingua107-ecapa"
+            | "lang_id_voxlingua107_ecapa"
+            | "speechbrain/lang-id-voxlingua107-ecapa" => Some(Self::LangIdVoxlingua107),
+            "lang-id-commonlanguage"
+            | "lang_id_commonlanguage"
+            | "lang-id-commonlanguage-ecapa"
+            | "lang_id_commonlanguage_ecapa"
+            | "speechbrain/lang-id-commonlanguage_ecapa" => Some(Self::LangIdCommonLanguage),
+            "xvector"
+            | "x-vector"
+            | "x_vector"
+            | "spkrec-xvect-voxceleb"
+            | "spkrec_xvect_voxceleb"
+            | "speechbrain/spkrec-xvect-voxceleb" => Some(Self::XVector),
+            "deepfake-detection"
+            | "deepfake_detection"
+            | "deepfake-audio-detection"
+            | "deepfake-audio-detection-v2"
+            | "melodymachine/deepfake-audio-detection-v2" => Some(Self::DeepfakeDetection),
+            "kyutai-tts"
+            | "kyutai_tts"
+            | "kyutai-tts-1.6b"
+            | "kyutai-tts-1.6b-en-fr"
+            | "kyutai-tts-1.6b-en_fr"
+            | "kyutai-tts-1_6b"
+            | "kyutai-tts-1_6b-en-fr"
+            | "kyutai-tts-1_6b-en_fr"
+            | "kyutai/tts-1.6b-en_fr"
+            | "tts-1.6b-en_fr" => Some(Self::KyutaiTts),
+            "audiobox-aesthetics"
+            | "audiobox_aesthetics"
+            | "audiobox"
+            | "facebook/audiobox-aesthetics" => Some(Self::AudioboxAesthetics),
+            "voxtral-mini-4b-realtime-2602"
+            | "voxtral-mini-4b-realtime"
+            | "voxtral-realtime"
+            | "voxtral-realtime-2602"
+            | "voxtral_realtime"
+            | "voxtral_realtime_2602"
+            | "mistralai/voxtral-mini-4b-realtime-2602" => Some(Self::VoxtralMiniRealtime),
+            "cohere-transcribe"
+            | "cohere-transcribe-03-2026"
+            | "cohere_transcribe"
+            | "cohere_transcribe_03_2026"
+            | "coherelabs/cohere-transcribe-03-2026" => Some(Self::CohereTranscribe),
+            "nemotron-asr-streaming"
+            | "nemotron-3.5-asr-streaming"
+            | "nemotron-3.5-asr-streaming-0.6b"
+            | "nemotron-3_5-asr-streaming-0_6b"
+            | "nvidia/nemotron-3.5-asr-streaming-0.6b" => Some(Self::NemotronAsrStreaming),
             _ => None,
         }
     }
@@ -1347,6 +2053,47 @@ impl ModelKind {
             Self::Rmvpe => "rmvpe",
             Self::Crepe => "crepe",
             Self::PyannoteSegmentation => "pyannote-segmentation",
+            Self::Ast => "ast",
+            Self::AudioboxAesthetics => "audiobox-aesthetics",
+            Self::Bark => "bark",
+            Self::BarkSmall => "bark-small",
+            Self::BigVGan => "bigvgan",
+            Self::Clap => "clap",
+            Self::CohereTranscribe => "cohere-transcribe-03-2026",
+            Self::DeepfakeDetection => "deepfake-detection",
+            Self::FireredVad => "firered-vad",
+            Self::Focalcodec => "focalcodec",
+            Self::FsmnVad => "fsmn-vad",
+            Self::HifiganVocoder => "hifigan-vocoder",
+            Self::IndicParlerTts => "indic-parler-tts",
+            Self::KyutaiTts => "kyutai-tts",
+            Self::LangIdCommonLanguage => "lang-id-commonlanguage",
+            Self::LangIdVoxlingua107 => "lang-id-voxlingua107",
+            Self::MeloTtsChinese => "melotts-chinese",
+            Self::MeloTtsEnglish => "melotts-english",
+            Self::MeloTtsKorean => "melotts-korean",
+            Self::MetricganPlus => "metricgan-plus",
+            Self::MossTts => "moss-tts",
+            Self::MossTtsLocal => "moss-tts-local",
+            Self::MossTtsNano => "moss-tts-nano",
+            Self::MossTtsV15 => "moss-tts-v1.5",
+            Self::MpSenet => "mp-senet",
+            Self::NemotronAsrStreaming => "nemotron-3.5-asr-streaming-0.6b",
+            Self::ParlerTtsMiniMultilingual => "parler-tts",
+            Self::Qwen3Asr => "qwen3-asr",
+            Self::Qwen3TtsCustomVoice17B => "qwen3-tts-1.7b-customvoice",
+            Self::Qwen3TtsVoiceDesign17B => "qwen3-tts-1.7b-voicedesign",
+            Self::SepFormer => "sepformer-wsj02mix",
+            Self::SepformerWham16kEnh => "sepformer-wham16k-enhancement",
+            Self::SepformerWhamr16k => "sepformer-whamr16k",
+            Self::SmartTurn => "smart-turn",
+            Self::SpeechT5Tts => "speecht5-tts",
+            Self::TigerSeparator => "tiger-dnr",
+            Self::TigerSpeech => "tiger-speech",
+            Self::VieNeuTts => "vieneu-tts",
+            Self::VoxtralMiniRealtime => "voxtral-mini-4b-realtime-2602",
+            Self::Wav2Vec2Ctc => "wav2vec2",
+            Self::XVector => "xvector",
         }
     }
 }
@@ -2452,6 +3199,814 @@ pub fn convert_file_licensed(
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
+        }
+        // === Qwen3TtsCustomVoice17B (from wf_022575ce-077-2) ===
+        ModelKind::Qwen3TtsCustomVoice17B => {
+            // Phase 3 extension (added 2026-07-30): dispatch through the
+            // shared `models::qwen3_tts::convert_variant` path with the
+            // 1.7B-CustomVoice variant selector. The talker axes widen
+            // to hidden=2048 / ffn=6144 (primary source
+            // `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/config.json.talker_config`,
+            // fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」);
+            // every other constant matches the 0.6B sibling. Provenance
+            // = apache-2.0 end-to-end (Permissive — same posture as the
+            // 0.6B release).
+            let (builder, report) = models::qwen3_tts::convert_variant(
+                bytes,
+                models::qwen3_tts::Qwen3TtsVariant::_1_7B_CustomVoice,
+            )?;
+            let mut notes = vec![format!(
+                "qwen3-tts-1.7b-customvoice: {} float weights written verbatim, {} non-float skipped ({} BF16 passthrough)",
+                report.written, report.skipped_non_float, report.bf16_passthrough,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("qwen3-tts-1.7b-customvoice warning: {n}")),
+            );
+            (builder, notes)
+        }
+        // === Qwen3TtsVoiceDesign17B (from wf_022575ce-077-2) ===
+        ModelKind::Qwen3TtsVoiceDesign17B => {
+            // Phase 3 extension (added 2026-07-30): identical talker /
+            // code-predictor axes to the CustomVoice sibling; only the
+            // `vokra.model.name` stamp + provenance model_id differ
+            // (primary source
+            // `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/config.json.tts_model_type
+            // = "voice_design"` vs `"custom_voice"`, fetched 2026-07-30 —
+            // CLAUDE.md「ハルシネーション厳禁」). Provenance = apache-2.0
+            // end-to-end (Permissive — same posture as CustomVoice).
+            let (builder, report) = models::qwen3_tts::convert_variant(
+                bytes,
+                models::qwen3_tts::Qwen3TtsVariant::_1_7B_VoiceDesign,
+            )?;
+            let mut notes = vec![format!(
+                "qwen3-tts-1.7b-voicedesign: {} float weights written verbatim, {} non-float skipped ({} BF16 passthrough)",
+                report.written, report.skipped_non_float, report.bf16_passthrough,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("qwen3-tts-1.7b-voicedesign warning: {n}")),
+            );
+            (builder, notes)
+        }
+        // === Qwen3Asr (from wf_022575ce-077-1) ===
+        ModelKind::Qwen3Asr => {
+            // SoTA plan Phase 5 ASR fleet (2026-07-30): Alibaba
+            // Qwen3-ASR family. The generic `convert_file` dispatch
+            // path routes to the flagship 1.7B variant default; the
+            // CLI's `--model qwen3-asr-0.6b` slug picks the 0.6B
+            // variant through `convert_qwen3_asr_file_with_variant`
+            // (a `pub use` re-export lower in this file). Provenance
+            // = apache-2.0 end-to-end (Permissive) per both HF
+            // model cards' `cardData.license` (CC-verified 2026-07-30).
+            let report = models::qwen3_asr::convert_qwen3_asr_file(input, output, license)?;
+            let notes = vec![format!(
+                "qwen3-asr: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Qwen3Asr,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Wav2Vec2Ctc (from wf_022575ce-077-1) ===
+        ModelKind::Wav2Vec2Ctc => {
+            // SoTA plan Phase 5 ASR fleet (2026-07-30): wav2vec 2.0
+            // CTC family. The generic `convert_file` dispatch path
+            // routes to `base-960h` (the smallest / most widely-used
+            // release) default; the CLI's per-variant slugs
+            // (`wav2vec2-large-xlsr-53-*` / `wav2vec2-large-xlsr-53-japanese`
+            // / etc.) pick the specific variant through
+            // `convert_wav2vec2_ctc_file_with_variant` (a `pub use`
+            // re-export lower in this file). Provenance = apache-2.0
+            // (Permissive) per each variant's HF `cardData.license`
+            // (CC-verified 2026-07-30).
+            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file(input, output, license)?;
+            let notes = vec![format!(
+                "wav2vec2-ctc: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Wav2Vec2Ctc,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MossTts (from wf_022575ce-077-2) ===
+        ModelKind::MossTts => {
+            let report = models::moss_tts::convert_moss_tts_file(
+                input,
+                output,
+                models::moss_tts::MossTtsVariant::Delay,
+                license,
+            )?;
+            let notes = vec![format!(
+                "moss-tts: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (variant=delay, backbone=qwen3-8b, n_vq=32)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MossTts,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MossTtsV15 (from wf_022575ce-077-2) ===
+        ModelKind::MossTtsV15 => {
+            let report = models::moss_tts::convert_moss_tts_file(
+                input,
+                output,
+                models::moss_tts::MossTtsVariant::DelayV15,
+                license,
+            )?;
+            let notes = vec![format!(
+                "moss-tts-v1.5: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (variant=delay, backbone=qwen3-8b, n_vq=32)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MossTtsV15,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MossTtsNano (from wf_022575ce-077-2) ===
+        ModelKind::MossTtsNano => {
+            let report = models::moss_tts::convert_moss_tts_file(
+                input,
+                output,
+                models::moss_tts::MossTtsVariant::Nano,
+                license,
+            )?;
+            let notes = vec![format!(
+                "moss-tts-nano: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (variant=nano, backbone=gpt2, n_vq=16, sr=48kHz)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MossTtsNano,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MossTtsLocal (from wf_022575ce-077-2) ===
+        ModelKind::MossTtsLocal => {
+            let report = models::moss_tts::convert_moss_tts_file(
+                input,
+                output,
+                models::moss_tts::MossTtsVariant::Local,
+                license,
+            )?;
+            let notes = vec![format!(
+                "moss-tts-local: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (variant=local, backbone=qwen3-2.5b, n_vq=12, sr=48kHz)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MossTtsLocal,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MeloTtsEnglish (from wf_022575ce-077-3) ===
+        ModelKind::MeloTtsEnglish => {
+            let report = models::melotts::convert_melotts_file(
+                input,
+                output,
+                models::melotts::MeloVariant::English,
+                license,
+            )?;
+            let notes = vec![format!(
+                "melotts-english: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MeloTtsEnglish,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MeloTtsChinese (from wf_022575ce-077-3) ===
+        ModelKind::MeloTtsChinese => {
+            let report = models::melotts::convert_melotts_file(
+                input,
+                output,
+                models::melotts::MeloVariant::Chinese,
+                license,
+            )?;
+            let notes = vec![format!(
+                "melotts-chinese: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MeloTtsChinese,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MeloTtsKorean (from wf_022575ce-077-3) ===
+        ModelKind::MeloTtsKorean => {
+            let report = models::melotts::convert_melotts_file(
+                input,
+                output,
+                models::melotts::MeloVariant::Korean,
+                license,
+            )?;
+            let notes = vec![format!(
+                "melotts-korean: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MeloTtsKorean,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SpeechT5Tts (from wf_022575ce-077-3) ===
+        ModelKind::SpeechT5Tts => {
+            let report = models::speecht5::convert_speecht5_file(input, output, license)?;
+            let notes = vec![format!(
+                "speecht5-tts: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SpeechT5Tts,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === ParlerTtsMiniMultilingual (from wf_022575ce-077-3) ===
+        ModelKind::ParlerTtsMiniMultilingual => {
+            let report = models::parler::convert_parler_file(
+                input,
+                output,
+                models::parler::ParlerVariant::MiniMultilingual,
+                license,
+            )?;
+            let notes = vec![format!(
+                "parler-tts (mini-multilingual): {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::ParlerTtsMiniMultilingual,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === IndicParlerTts (from wf_022575ce-077-3) ===
+        ModelKind::IndicParlerTts => {
+            let report = models::parler::convert_parler_file(
+                input,
+                output,
+                models::parler::ParlerVariant::IndicParler,
+                license,
+            )?;
+            let notes = vec![format!(
+                "indic-parler-tts: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::IndicParlerTts,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === VieNeuTts (from wf_022575ce-077-3) ===
+        ModelKind::VieNeuTts => {
+            let report = models::vieneu::convert_vieneu_file(input, output, license)?;
+            let notes = vec![format!(
+                "vieneu-tts: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::VieNeuTts,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Bark (from wf_022575ce-077-3) ===
+        ModelKind::Bark => {
+            let report = models::bark::convert_bark_file(
+                input,
+                output,
+                models::bark::BarkVariant::Full,
+                license,
+            )?;
+            let notes = vec![format!(
+                "bark: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Bark,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === BarkSmall (from wf_022575ce-077-3) ===
+        ModelKind::BarkSmall => {
+            let report = models::bark::convert_bark_file(
+                input,
+                output,
+                models::bark::BarkVariant::Small,
+                license,
+            )?;
+            let notes = vec![format!(
+                "bark-small: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BarkSmall,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === HifiganVocoder (from wf_022575ce-077-4) ===
+        ModelKind::HifiganVocoder => {
+            // SoTA plan Phase D1 (2026-07-30): SpeechBrain HiFi-GAN vocoder
+            // (LibriTTS 22050Hz, apache-2.0). BF16 pass-through skeleton
+            // mirror of wespeaker / ecapa_tdnn; runtime forward primitive
+            // already lives in `vokra_ops::hifigan` (M3-07). Real-weight
+            // parity is deferred to owner (docs/license-audit.md §3.1
+            // sign-off).
+            let report =
+                models::hifigan_vocoder::convert_hifigan_vocoder_file(input, output, license)?;
+            let notes = vec![format!(
+                "hifigan-vocoder: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::HifiganVocoder,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === BigVGan (from wf_022575ce-077-4) ===
+        ModelKind::BigVGan => {
+            // SoTA plan Phase D2-D5 (2026-07-30): NVIDIA BigVGAN vocoder
+            // family (MIT). Default dispatch path tags the GGUF as the
+            // `V2_24khz100Band256x` variant — the most-downloaded release
+            // (per HF API 2026-07-30) and the same variant `bigvgan_v2_*`
+            // shorthand aliases resolve to. Callers who want a different
+            // variant use the standalone `convert_bigvgan_file` entry
+            // point with an explicit `BigVGanVariant`. This mirrors the
+            // Chatterbox default-multilingual dispatch pattern.
+            let report = models::bigvgan::convert_bigvgan_file(
+                input,
+                output,
+                models::bigvgan::BigVGanVariant::V2_24khz100Band256x,
+                license,
+            )?;
+            let notes = vec![format!(
+                "bigvgan: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, variant v2_24khz_100band_256x (default; use \
+                 convert_bigvgan_file for other variants)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BigVGan,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Focalcodec (from wf_022575ce-077-4) ===
+        ModelKind::Focalcodec => {
+            // SoTA plan Phase D6 (2026-07-30): lucadellalib FocalCodec
+            // 50Hz (apache-2.0). Only member of the vocoder+codec fleet
+            // that ships model.safetensors directly (no torch-pickle
+            // prepare step). BF16 pass-through skeleton mirror of
+            // funcodec / wespeaker; runtime binding is deferred to owner.
+            let report = models::focalcodec::convert_focalcodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "focalcodec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Focalcodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === TigerSeparator (from wf_022575ce-077-5) ===
+        ModelKind::TigerSeparator => {
+            let report = models::tiger::convert_tiger_file(
+                input,
+                output,
+                license,
+                models::tiger::TigerVariant::Dnr,
+            )?;
+            let notes = vec![format!(
+                "tiger-dnr: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::TigerSeparator,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === TigerSpeech (from wf_022575ce-077-5) ===
+        ModelKind::TigerSpeech => {
+            let report = models::tiger::convert_tiger_file(
+                input,
+                output,
+                license,
+                models::tiger::TigerVariant::Speech,
+            )?;
+            let notes = vec![format!(
+                "tiger-speech: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::TigerSpeech,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MpSenet (from wf_022575ce-077-5) ===
+        ModelKind::MpSenet => {
+            let report = models::mp_senet::convert_mp_senet_file(input, output, license)?;
+            let notes = vec![format!(
+                "mp-senet: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MpSenet,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MetricganPlus (from wf_022575ce-077-5) ===
+        ModelKind::MetricganPlus => {
+            let report =
+                models::metricgan_plus::convert_metricgan_plus_file(input, output, license)?;
+            let notes = vec![format!(
+                "metricgan-plus: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MetricganPlus,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SepFormer (from wf_022575ce-077-5) ===
+        ModelKind::SepFormer => {
+            let report = models::sepformer::convert_sepformer_file(
+                input,
+                output,
+                license,
+                models::sepformer::SepformerVariant::Wsj02mix,
+            )?;
+            let notes = vec![format!(
+                "sepformer-wsj02mix: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SepFormer,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SepformerWham16kEnh (from wf_022575ce-077-5) ===
+        ModelKind::SepformerWham16kEnh => {
+            let report = models::sepformer::convert_sepformer_file(
+                input,
+                output,
+                license,
+                models::sepformer::SepformerVariant::Wham16kEnhancement,
+            )?;
+            let notes = vec![format!(
+                "sepformer-wham16k-enhancement: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SepformerWham16kEnh,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SepformerWhamr16k (from wf_022575ce-077-5) ===
+        ModelKind::SepformerWhamr16k => {
+            let report = models::sepformer::convert_sepformer_file(
+                input,
+                output,
+                license,
+                models::sepformer::SepformerVariant::Whamr16k,
+            )?;
+            let notes = vec![format!(
+                "sepformer-whamr16k: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SepformerWhamr16k,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === FsmnVad (from wf_022575ce-077-6) ===
+        ModelKind::FsmnVad => {
+            let report = models::fsmn_vad::convert_fsmn_vad_file(input, output, license)?;
+            let notes = vec![format!(
+                "fsmn-vad: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::FsmnVad,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === FireredVad (from wf_022575ce-077-6) ===
+        ModelKind::FireredVad => {
+            let report = models::firered_vad::convert_firered_vad_file(input, output, license)?;
+            let notes = vec![format!(
+                "firered-vad: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::FireredVad,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SmartTurn (from wf_022575ce-077-6) ===
+        ModelKind::SmartTurn => {
+            let report = models::smart_turn::convert_smart_turn_file(input, output, license)?;
+            let notes = vec![format!(
+                "smart-turn: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SmartTurn,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Clap (from wf_022575ce-077-6) ===
+        ModelKind::Clap => {
+            let report = models::clap::convert_clap_file(input, output, license)?;
+            let notes = vec![format!(
+                "clap: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Clap,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Ast (from wf_022575ce-077-6) ===
+        ModelKind::Ast => {
+            let report = models::ast::convert_ast_file(input, output, license)?;
+            let notes = vec![format!(
+                "ast: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Ast,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === LangIdVoxlingua107 (from wf_022575ce-077-6) ===
+        ModelKind::LangIdVoxlingua107 => {
+            // F7 variant — the module's default entry stamps the
+            // VoxLingua107 name + upstream_hf slug.
+            let report = models::speechbrain_lang_id::convert_speechbrain_lang_id_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "lang-id-voxlingua107: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::LangIdVoxlingua107,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === LangIdCommonLanguage (from wf_022575ce-077-6) ===
+        ModelKind::LangIdCommonLanguage => {
+            // F9 sibling — same ECAPA-TDNN topology, distinct
+            // vokra.model.name + upstream_hf via the Variant enum.
+            let report = models::speechbrain_lang_id::convert_speechbrain_lang_id_variant(
+                input,
+                output,
+                license,
+                models::speechbrain_lang_id::Variant::CommonLanguage,
+            )?;
+            let notes = vec![format!(
+                "lang-id-commonlanguage: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::LangIdCommonLanguage,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === XVector (from wf_022575ce-077-6) ===
+        ModelKind::XVector => {
+            let report = models::xvector::convert_xvector_file(input, output, license)?;
+            let notes = vec![format!(
+                "xvector: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::XVector,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === DeepfakeDetection (from wf_022575ce-077-6) ===
+        ModelKind::DeepfakeDetection => {
+            let report = models::deepfake_detection::convert_deepfake_detection_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "deepfake-detection: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::DeepfakeDetection,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === KyutaiTts (from wf_022575ce-077-7) ===
+        ModelKind::KyutaiTts => {
+            let report = models::kyutai_tts::convert_kyutai_tts_file(input, output, license)?;
+            let notes = vec![format!(
+                "kyutai-tts: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::KyutaiTts,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === AudioboxAesthetics (from wf_022575ce-077-7) ===
+        ModelKind::AudioboxAesthetics => {
+            let report = models::audiobox_aesthetics::convert_audiobox_aesthetics_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "audiobox-aesthetics: {} float weights written verbatim ({} BF16 passthrough — \
+                 upstream is F32 today, the arm keeps future distilled BF16 fine-tunes \
+                 verbatim), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::AudioboxAesthetics,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === VoxtralMiniRealtime (from wf_022575ce-077-7) ===
+        ModelKind::VoxtralMiniRealtime => {
+            return Err(ConvertError::Usage(
+                "voxtral-mini-4b-realtime-2602 is a TIER 2 defer marker (~8 GB safetensors; \
+                 vast_ai_required=true per memory [[feedback-large-models-on-vast-ai]] — \
+                 CC-side local convert on a 16 GB host risks swap-death). Owner runs the actual \
+                 conversion + publish on vast.ai using `vokra-convert --model \
+                 voxtral-mini-4b-realtime-2602 --input <ckpt> --output <out.gguf>` on the vast.ai \
+                 box. This arm is fail-closed on the local path per FR-EX-08 (no silent \
+                 fallback)."
+                    .to_owned(),
+            ));
+        }
+        // === CohereTranscribe (from wf_022575ce-077-7) ===
+        ModelKind::CohereTranscribe => {
+            return Err(ConvertError::Usage(
+                "cohere-transcribe-03-2026 is a TIER 2 defer marker (defer-gated=true; HF \
+                 cardData gated=`auto` requires an owner-authenticated HF token that has clicked \
+                 \"Accept license\" on the model card at \
+                 huggingface.co/CohereLabs/cohere-transcribe-03-2026 — CC cannot discharge that \
+                 acceptance step). Owner runs the conversion after acceptance. This arm is \
+                 fail-closed per FR-EX-08 (no silent fallback)."
+                    .to_owned(),
+            ));
+        }
+        // === NemotronAsrStreaming (from wf_022575ce-077-7) ===
+        ModelKind::NemotronAsrStreaming => {
+            return Err(ConvertError::Usage(
+                "nemotron-3.5-asr-streaming-0.6b is a TIER 2 defer marker (defer-other-license=\
+                 true; HF cardData `license: other` = NVIDIA custom licence text, not a known \
+                 SPDX id. Classification requires a primary-source read of the NVIDIA licence + \
+                 owner sign-off per memory [[feedback-license-signoff-primary-source]] fail-\
+                 closed default). Owner reads huggingface.co/nvidia/nemotron-3.5-asr-streaming-\
+                 0.6b/blob/main/LICENSE and decides. This arm is fail-closed per FR-EX-08 (no \
+                 silent fallback)."
+                    .to_owned(),
+            ));
         }
     };
 

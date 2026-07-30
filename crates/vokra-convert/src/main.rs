@@ -1990,7 +1990,54 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // hparam chunk group; grouped with the Phase 5 fleet since the
         // verify surface is identical (arch / name / category /
         // upstream / license lookup).
-        | ModelKind::PyannoteSegmentation => {
+        | ModelKind::PyannoteSegmentation
+        // TIER 1+2 audio-gap 41 new variants (2026-07-30 ultracode
+        // `wf_022575ce-077`) all emit the same standard
+        // `vokra.model.*` + `vokra.provenance.*` chunk triple
+        // (plus arch-specific hparam chunks); grouped here since
+        // the verify surface is a uniform arch/name/category/
+        // upstream/license lookup.
+        | ModelKind::Qwen3TtsCustomVoice17B
+        | ModelKind::Qwen3TtsVoiceDesign17B
+        | ModelKind::Qwen3Asr
+        | ModelKind::Wav2Vec2Ctc
+        | ModelKind::MossTts
+        | ModelKind::MossTtsV15
+        | ModelKind::MossTtsNano
+        | ModelKind::MossTtsLocal
+        | ModelKind::MeloTtsEnglish
+        | ModelKind::MeloTtsChinese
+        | ModelKind::MeloTtsKorean
+        | ModelKind::SpeechT5Tts
+        | ModelKind::ParlerTtsMiniMultilingual
+        | ModelKind::IndicParlerTts
+        | ModelKind::VieNeuTts
+        | ModelKind::Bark
+        | ModelKind::BarkSmall
+        | ModelKind::HifiganVocoder
+        | ModelKind::BigVGan
+        | ModelKind::Focalcodec
+        | ModelKind::TigerSeparator
+        | ModelKind::TigerSpeech
+        | ModelKind::MpSenet
+        | ModelKind::MetricganPlus
+        | ModelKind::SepFormer
+        | ModelKind::SepformerWham16kEnh
+        | ModelKind::SepformerWhamr16k
+        | ModelKind::FsmnVad
+        | ModelKind::FireredVad
+        | ModelKind::SmartTurn
+        | ModelKind::Clap
+        | ModelKind::Ast
+        | ModelKind::LangIdVoxlingua107
+        | ModelKind::LangIdCommonLanguage
+        | ModelKind::XVector
+        | ModelKind::DeepfakeDetection
+        | ModelKind::KyutaiTts
+        | ModelKind::AudioboxAesthetics
+        | ModelKind::VoxtralMiniRealtime
+        | ModelKind::CohereTranscribe
+        | ModelKind::NemotronAsrStreaming => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

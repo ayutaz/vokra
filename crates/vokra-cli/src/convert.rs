@@ -75,7 +75,18 @@ OPTIONS:
                               speechtokenizer | funcodec | xy-tokenizer |
                               bicodec | neucodec | ecapa-tdnn | wespeaker |
                               speaker-3d | titanet-large | emotion2vec |
-                              rmvpe | crepe | styletts2 | pyannote-segmentation
+                              rmvpe | crepe | styletts2 | pyannote-segmentation |
+                              qwen3-asr | wav2vec2 | moss-tts | melotts-english |
+                              melotts-chinese | melotts-korean | speecht5 | parler-tts |
+                              indic-parler-tts | vieneu-tts | bark | bark-small |
+                              hifigan-vocoder | bigvgan | focalcodec |
+                              tiger | tiger-speech | mp-senet | metricgan-plus |
+                              sepformer | sepformer-wham16k | sepformer-whamr16k |
+                              fsmn-vad | firered-vad | smart-turn | clap | ast |
+                              lang-id-voxlingua107 | lang-id-commonlanguage |
+                              xvector | deepfake-detection | kyutai-tts |
+                              audiobox-aesthetics | voxtral-mini-realtime |
+                              cohere-transcribe | nemotron-asr-streaming
                               (crepe: marl/crepe — a prepared safetensors from
                               tools/parity/keras_h5_to_safetensors.py, needs
                               --config <config.json> with the capacity /
