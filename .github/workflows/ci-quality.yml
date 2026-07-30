@@ -83,6 +83,37 @@ jobs:
           bash scripts/check-workflow-hygiene.sh --self-test
           bash scripts/check-workflow-hygiene.sh
 
+  # FQ-03 (2026-07-31): promote `check-catalog-reality.sh` PRODUCTION run
+  # from owner-only publish-time to per-PR. The script's --self-test already
+  # runs in `shell-self-tests` below, but WITHOUT the production run wired
+  # in, a PR that adds a `★ 公式 zoo` row for a nonexistent implementation
+  # (or lands a converter without pruning the EXPECTED_GAPS ledger) only
+  # tripped weeks-to-months later when the owner ran publish-one.sh.
+  #
+  # The script reads ONLY local files (docs/license-audit.md +
+  # crates/vokra-models/src/ + crates/vokra-ops/src/ +
+  # crates/vokra-convert/src/models/) — no cargo, no network, no toolchain
+  # — so this belongs in the checkout-only envelope, sub-second wall time.
+  #
+  # Pattern matches `workflow-hygiene` / `abi-diff`: self-test runs first so
+  # a parser regression cannot mask a real violation. The --self-test entry
+  # in `shell-self-tests` is deliberately kept in place: the aggregator is
+  # the source of truth for "which detectors have --self-test coverage" and
+  # dropping one row would silently shrink that surface.
+  #
+  # ADVISORY start posture: not wired into branch-protection required
+  # checks — promotion is the owner's call after sustained green, matching
+  # the workflow-hygiene / abi-surface cool-off pattern (NFR-MT-07).
+  catalog-audit:
+    name: catalog-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Catalog reality (self-test, then production check)
+        run: |
+          bash scripts/publish/check-catalog-reality.sh --self-test
+          bash scripts/publish/check-catalog-reality.sh
+
   # Unity C# static lints (X-08-T08). Checkout-only: all three scripts are
   # pure grep over bindings/unity/**/*.cs — zero references to cargo / rustc /
   # cbindgen, which is why they do NOT belong in `capi-smoke` below.
@@ -686,25 +717,26 @@ jobs:
         # of the root workspace by mistake), which is a zero-dep breach.
         run: git diff --exit-code Cargo.lock
 
-  # Python parity-workflow oracles (Phase 5c-2, 2026-07-23).
+  # Python parity-workflow oracles (Phase 5c-2, 2026-07-23; +voxtral FQ-07 2026-07-31).
   #
-  # `tools/parity/test_*.py` — five stdlib-only unittest files that pin the
+  # `tools/parity/test_*.py` — stdlib-only unittest files that pin the
   # on-disk shape of the parity workflows so a YAML / format / trigger drift
   # is caught before a schedule-only or license-gated leg silently regresses.
-  # Only test_parity_whisper_workflow.py runs today (in-workflow, invoked by
-  # parity-whisper-real.yml). The other four (nightly_webgl_workflow,
-  # parity_csm_workflow, nightly_tier2_workflow, dump_whisper_vocab_gate)
-  # have never had a PR trigger before this job: they were verified only by
-  # the author running them locally, and their target cron cadences (weekly
-  # for parity-csm-real, daily for nightly-webgl) mean a broken YAML would
-  # take a week to surface without this gate.
+  # Only test_parity_whisper_workflow.py runs in-workflow, invoked by
+  # parity-whisper-real.yml. The others (nightly_webgl_workflow,
+  # parity_csm_workflow, parity_voxtral_workflow, nightly_tier2_workflow,
+  # dump_whisper_vocab_gate) have never had a PR trigger before this job:
+  # they were verified only by the author running them locally, and their
+  # target cron cadences (weekly for parity-csm-real / parity-voxtral-real,
+  # daily for nightly-webgl) mean a broken YAML would take a week to surface
+  # without this gate.
   #
-  # Zero-dep envelope preserved (NFR-DS-02): all five test files import ONLY
-  # from stdlib (unittest / re / json / os / pathlib / subprocess / sys /
+  # Zero-dep envelope preserved (NFR-DS-02): all test files import ONLY from
+  # stdlib (unittest / re / json / os / pathlib / subprocess / sys /
   # tempfile / textwrap / types). pytest is installed inside an isolated
   # venv purely as a nicer runner (test discovery + -v output); the runtime
   # Rust graph is untouched. Total wall-time at commit dd8b683: ~0.02 s
-  # aggregate (10 + 8 + 11 + 5 + N tests across the five files).
+  # aggregate across all six files.
   #
   # ADVISORY (not in branch-protection required checks). Red here means an
   # oracle regressed against the workflow YAML it pins — expected reaction is
@@ -731,7 +763,7 @@ jobs:
           python -m pip install pytest
           python -m pip list | grep -Ei '^pytest\b'
       - name: pytest tools/parity/test_*.py
-        # The five files are stdlib unittest.TestCase suites; pytest discovers
+        # The files are stdlib unittest.TestCase suites; pytest discovers
         # and executes them natively. Explicit file list (no glob) so a NEW
         # oracle must be added here consciously — a glob would silently pull
         # in an unrelated helper named test_* someone drops in later.
@@ -744,6 +776,7 @@ jobs:
             tools/parity/test_nightly_tier2_workflow.py \
             tools/parity/test_nightly_webgl_workflow.py \
             tools/parity/test_parity_csm_workflow.py \
+            tools/parity/test_parity_voxtral_workflow.py \
             tools/parity/test_parity_whisper_workflow.py
 
   # Un-integrated --self-test coverage (Phase 5c-3, 2026-07-23).
@@ -773,6 +806,21 @@ jobs:
   #                                             fixture-driven, safe here.
   #   * scripts/publish/check-catalog-reality — publish-side (owner runs
   #                                             during HF publication).
+  #   * scripts/publish/check-model-size.sh   — publish-side classifier that
+  #                                             partitions safetensors sizes
+  #                                             into LOCAL_SAFE / LOCAL_OK /
+  #                                             LOCAL_BORDERLINE / VAST_AI_
+  #                                             REQUIRED tiers. publish-one.sh
+  #                                             gate 7 partially duplicates
+  #                                             the threshold logic without
+  #                                             importing from this script,
+  #                                             so the two thresholds could
+  #                                             drift silently without this
+  #                                             --self-test tripping first.
+  #                                             10 pure-classifier cases
+  #                                             (thresholds + render_human +
+  #                                             render_json), offline, sub-
+  #                                             second (FQ-09, 2026-07-31).
   #   * scripts/publish/fetch_license.sh      — publish-side.
   #   * scripts/publish/upload.sh             — publish-side.
   #   * scripts/publish/make_model_card.py    — publish-side.
@@ -781,6 +829,32 @@ jobs:
   #                                             T3 (Copyleft) gates 6a-6e.
   #                                             --self-test is hermetic (no
   #                                             network, no real HF token).
+  #   * scripts/publish/x10-mirror-librispeech.sh — publish-side (WP X-10-T02,
+  #                                             owner runs during OpenSLR-12
+  #                                             self-mirror). --self-test is
+  #                                             offline and covers 5 cases:
+  #                                             (a) --push default off,
+  #                                             (b) SHA256 drift vs
+  #                                             nightly-asr-wer.yml
+  #                                             DEV_CLEAN_SHA256 (cross-
+  #                                             workflow drift — previously
+  #                                             a `|| true` silently
+  #                                             swallowed empty extraction;
+  #                                             fixed to fail-loud on the
+  #                                             cross-reference itself),
+  #                                             (c) fetch_license.sh knows
+  #                                             cc-by-4.0, (d) §3.2 audit
+  #                                             row present, (e) upstream
+  #                                             URL is OpenSLR resource 12.
+  #                                             Cross-workflow drift check
+  #                                             currently fires only when
+  #                                             owner manually runs
+  #                                             --self-test before mirroring
+  #                                             — wiring here makes it PR-
+  #                                             time so a nightly-asr-wer.yml
+  #                                             SHA bump without a matching
+  #                                             mirror bump is blocked
+  #                                             (FQ-10, 2026-07-31).
   #
   # DELIBERATELY EXCLUDED: scripts/check-capi-thread-free.sh --self-test —
   # its --self-test already runs in-line inside
@@ -825,10 +899,15 @@ jobs:
           run "check-console-static"          bash scripts/check-console-static.sh       --self-test
           run "kill-switch-metrics"           bash scripts/kill-switch-metrics.sh        --self-test
           run "publish/check-catalog-reality" bash scripts/publish/check-catalog-reality.sh --self-test
+          run "publish/check-converter-signoff" bash scripts/publish/check-converter-signoff.sh --self-test
+          run "publish/check-model-size"      bash scripts/publish/check-model-size.sh   --self-test
           run "publish/fetch_license"         bash scripts/publish/fetch_license.sh      --self-test
           run "publish/upload"                bash scripts/publish/upload.sh             --self-test
           run "publish/make_model_card"       python3 scripts/publish/make_model_card.py --self-test
+          run "publish/publishability-report" python3 scripts/publish/publishability-report.py --self-test
+          run "publish/signoff_match"         python3 scripts/publish/signoff_match.py   --self-test
           run "publish/publish-one"           bash scripts/publish/publish-one.sh        --self-test
+          run "publish/x10-mirror-librispeech" bash scripts/publish/x10-mirror-librispeech.sh --self-test
           echo
           if [ "${fail}" -ne 0 ]; then
               echo "One or more --self-test invocations FAILED (see per-block output above)."
