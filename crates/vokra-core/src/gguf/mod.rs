@@ -54,6 +54,7 @@ pub mod chunks;
 pub mod frontend_spec;
 pub mod quant;
 pub mod schema;
+pub mod silero;
 pub mod tensor;
 pub mod value;
 

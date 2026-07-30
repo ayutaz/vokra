@@ -4394,6 +4394,54 @@ pub fn convert_piper_plus_file(
     })
 }
 
+/// Converts a Silero VAD ONNX checkpoint into a GGUF written to `output`,
+/// stamped with the caller-chosen upstream release variant.
+///
+/// This is the variant-aware sibling of the plain [`convert_file`] path for
+/// Silero VAD. The ONNX weight extraction is identical (topology is
+/// architecturally unchanged across upstream v5 and v6.2.1 per
+/// `snakers4/silero-vad` `tinygrad_model.py` + `utils_vad.py`, verified
+/// 2026-07-30); what this path adds is the `vokra.silero.version`
+/// release-tag metadata and the variant-specific `vokra.model.name` /
+/// `vokra.provenance.source` strings. The result is a self-describing
+/// artifact whose provenance survives publication to a public model hub
+/// (the pre-tagging default path in `convert_file` deliberately omits the
+/// tag to stay byte-identical with the committed parity fixture — SPEC
+/// "Conversion").
+///
+/// The runtime loader accepts either shape: an absent tag defaults to
+/// [`vokra_core::gguf::silero::SileroVariant::V5`] (backward compat with
+/// pre-tagging fixtures), while a present tag with an unknown value is a
+/// fail-closed [`vokra_core::VokraError::ModelLoad`] (FR-EX-08).
+pub fn convert_silero_file(
+    input: &Path,
+    output: &Path,
+    variant: vokra_core::gguf::silero::SileroVariant,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let (builder, report) = models::silero::convert_variant(bytes, variant)?;
+    let notes = vec![format!(
+        "silero {}: {} float weights written (both rates, sr8k.*/sr16k.*), \
+         {} non-float constants skipped, {} op-scope float strays skipped",
+        variant.tag(),
+        report.written,
+        report.skipped_non_float,
+        report.skipped_stray,
+    )];
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::SileroVad,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
 /// Converts a Kokoro-82M safetensors checkpoint plus a Kokoro `config.json`
 /// (misaki phoneme symbol table + voice-name list) into a GGUF written to
 /// `output`, returning a summary (M2-07-T17-fixup #3).
@@ -4951,6 +4999,12 @@ pub use models::titanet::{TitaNetReport, convert_titanet_file};
 // exposes its `pub` API to external callers.
 pub use models::emotion2vec::{Emotion2vecReport, convert_emotion2vec_file};
 pub use models::voxtral::VoxtralConfig;
+
+/// The upstream Silero VAD release tag [`convert_silero_file`] accepts and
+/// stamps into the emitted GGUF. Re-exported here so CLI / publisher /
+/// integration-test call sites can name the enum without depending on
+/// `vokra-core::gguf::silero` directly.
+pub use vokra_core::gguf::silero::SileroVariant;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) — self-contained file-based entry point with an SPDX
 // override argument (mirror of the `denoise` re-export pattern; the

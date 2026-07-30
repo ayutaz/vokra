@@ -102,6 +102,7 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f369
 | モデル | Code License | Weight License | 商用可 | Vokra 公式配布 | 備考 |
 |-------|------------|-------------|-----|-------------|-----|
 | **Silero VAD v5** | MIT | MIT | ○ | ★ 公式 zoo | v5 で 3x faster、size ~2MB (v4 は 1.7MB) |
+| **Silero VAD v6.2.1** | MIT | MIT | ○ | 要 owner sign-off（§3.1、fail-closed） | snakers4/silero-vad、release 2026-02-24（"Make ONNX Runtime optional"）。**アーキ v5 と同一**（upstream `tinygrad_model.py` + `utils_vad.py` @ v6.2.1 primary source で verify、2026-07-30）、weight のみ retrain。**loader は `vokra.silero.version` metadata で分岐**（`crates/vokra-core/src/gguf/silero.rs`、absent → V5 で後方互換 / `"v5"` `"v6.2.1"` 明示 / unknown = fail-closed FR-EX-08）。converter は `vokra-cli convert --model silero-vad --silero-variant v6.2.1` で release tag stamp。parity harness = env-gated `crates/vokra-models/tests/parity_silero_v6.rs`（`VOKRA_SILERO_V6_GGUF` + `VOKRA_SILERO_V6_PROBS_16K_CTX`）。**owner 残**: (a) upstream ONNX の実 checkpoint download + `vokra-cli convert --silero-variant v6.2.1` の実行 + parity CI 用 fixture 再生成、(b) §3.1 sign-off 記入。 |
 | **Whisper base/small/medium/large-v3/turbo** | MIT | MIT | ○ | ★ 公式 zoo | OpenAI 公式 |
 | **piper-plus (ayutaz) 全モデル** | MIT | MIT | ○ | ★ 公式 zoo | 依頼者作、8 言語、eSpeak-NG 依存なし |
 | **Kokoro-82M** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | hexgrad、iSTFTNet 系 vocoder |
@@ -168,6 +169,7 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f369
 | モデル | Weight License | 一次資料（CC 引用） | Registry 分類（機械） | 公式 zoo 適格 | Owner sign-off |
 |---|---|---|---|---|---|
 | **Whisper base/small/medium/large-v3/turbo** | **MIT** | `openai/whisper` GitHub リポジトリ LICENSE ファイル（MIT）；Hugging Face `openai/whisper-base` 〜 `openai/whisper-large-v3-turbo` model cards の license: mit タグ | `Permissive` | ✓ | ______________ |
+| **Silero VAD v6.2.1** | **MIT** | `snakers4/silero-vad` GitHub リポジトリ LICENSE ファイル（MIT、2026-07-30 CC fetch = release tag `v6.2.1`）；v6.2.1 release notes（2026-02-24、"Make ONNX Runtime optional"、architecture unchanged from v5 per upstream `tinygrad_model.py` + `utils_vad.py` primary source）；同 tag の `silero_vad.onnx` git blob sha `80c5592e…` は v5.1.2 blob `b3e3a900…` と別（retrained weights、同一 topology）；同 tag に **`silero_vad_16k.safetensors`**（16k-only redistribution artifact、1.2 MB）も追加 | `Permissive` | ______________ | **判定根拠**: MIT（同一ライセンス継続、architecture unchanged、weight retrain のみ）。______________ |
 | **Kokoro-82M** | **Apache-2.0** | Hugging Face `hexgrad/Kokoro-82M` model card の license: apache-2.0 タグ；同リポジトリ LICENSE | `Permissive` | ✓ | ______________ |
 | **piper-plus (依頼者作) 全モデル** | **MIT** | `ayutaz/piper-plus` GitHub リポジトリ LICENSE (MIT)；ONNX voice model の LICENSE も MIT | `Permissive` | ✓ | ______________ |
 | **CAM++ Speaker Embedding** | **Apache-2.0** | ModelScope `iic/speech_campplus` の license: apache-2.0 タグ；変換元 `ayousanz/campplus-onnx` の LICENSE（Apache-2.0） | `Permissive` | ______________ |

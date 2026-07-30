@@ -42,6 +42,7 @@
 //! tensor names here are the contract M0-05 loads against.
 
 use vokra_core::compliance::LicenseClass;
+use vokra_core::gguf::silero::{self as silero_meta, SileroVariant};
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 
 use crate::ConvertError;
@@ -49,8 +50,10 @@ use crate::onnx::{self, ONNX_DTYPE_FLOAT, ONNX_DTYPE_FLOAT16};
 
 /// `vokra.model.arch` value written for Silero VAD GGUFs.
 pub(crate) const ARCH: &str = "silero-vad";
-/// `vokra.model.name` value written for the Silero VAD v5 GGUF.
-pub(crate) const NAME: &str = "silero-vad-v5";
+/// `vokra.model.name` value written for a v5 Silero VAD GGUF.
+pub(crate) const NAME_V5: &str = "silero-vad-v5";
+/// `vokra.model.name` value written for a v6.2.1 Silero VAD GGUF.
+pub(crate) const NAME_V6_2_1: &str = "silero-vad-v6.2.1";
 
 /// The 16 kHz branch prefix on `Constant` output names: the `If` selector is
 /// `sr == 16000`, so `then` = 16 kHz (verified against the graph's compare
@@ -76,15 +79,76 @@ pub(crate) struct SileroReport {
 /// Converts a Silero VAD ONNX buffer into a populated GGUF builder plus a
 /// report of what was written vs. skipped.
 ///
+/// **Backward-compatible entry**: this path deliberately does **not** stamp
+/// the `vokra.silero.version` release-tag key, so its byte-for-byte output
+/// matches the committed parity fixture
+/// `tests/parity/silero_vad/silero-vad-v5.gguf` produced by
+/// `gen_reference.py` (sha256 `9de80aca…`, SPEC "Conversion"). The runtime
+/// treats an absent key as [`SileroVariant::V5`] (see
+/// [`vokra_core::gguf::silero::SileroVariant::from_gguf`]).
+///
+/// New call sites — CLI `--silero-variant`, HF publisher, v6.2.1 upgrades —
+/// should use [`convert_variant`] to stamp the release tag explicitly.
+///
 /// Errors with [`ConvertError::Parse`] if no `If`-branch weights are found
-/// (not the documented upstream layout — refusing beats emitting a GGUF that
-/// cannot serve either rate, FR-EX-08), and propagates the GGUF writer's
-/// duplicate-name error rather than de-duping.
+/// (not the documented upstream layout — refusing beats emitting a GGUF
+/// that cannot serve either rate, FR-EX-08), and propagates the GGUF
+/// writer's duplicate-name error rather than de-duping.
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, SileroReport), ConvertError> {
+    convert_inner(bytes, None)
+}
+
+/// Converts a Silero VAD ONNX buffer into a populated GGUF builder tagged
+/// with the caller-chosen upstream release variant.
+///
+/// Unlike [`convert`] this stamps the `vokra.silero.version` metadata key
+/// and shifts the `vokra.model.name` / `vokra.provenance.source` strings to
+/// the variant's canonical spelling. Both variants share the same tensor
+/// extraction (topology is identical across v5 and v6.2.1 per upstream
+/// `snakers4/silero-vad` `tinygrad_model.py`, verified 2026-07-30) — the
+/// tag controls **provenance**, not per-tensor shape validation. Because
+/// this path adds metadata that the pre-tagging fixture omits, its output
+/// will diverge byte-wise from the committed fixture even for v5 weights;
+/// that divergence is intentional (new artifacts are self-describing).
+///
+/// Errors with the same conditions as [`convert`].
+pub(crate) fn convert_variant(
+    bytes: Vec<u8>,
+    variant: SileroVariant,
+) -> Result<(GgufBuilder, SileroReport), ConvertError> {
+    convert_inner(bytes, Some(variant))
+}
+
+/// Shared body of [`convert`] and [`convert_variant`]: extracts the
+/// If-branch weights, stamps the license provenance, and — only when the
+/// caller supplied an explicit `variant` — stamps the release tag and the
+/// variant-specific model name / source strings. Passing `None` keeps the
+/// v5-default naming and omits the release tag entirely, matching the
+/// pre-tagging fixture byte-identically.
+fn convert_inner(
+    bytes: Vec<u8>,
+    variant: Option<SileroVariant>,
+) -> Result<(GgufBuilder, SileroReport), ConvertError> {
     let tensors = onnx::read_weight_tensors(&bytes)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Both v5 and v6.2.1 are upstream MIT; the model_id + source string
+    // shift per variant so downstream provenance / license-audit lookups
+    // see the exact tag the weights came from. The `None` (default) path
+    // keeps the historic v5 spellings so the fixture regeneration stays
+    // byte-identical.
+    let (model_id, source, name) = match variant {
+        Some(SileroVariant::V6_2_1) => (
+            "silero-vad-v6.2.1",
+            "snakers4/silero-vad v6.2.1 (MIT)",
+            NAME_V6_2_1,
+        ),
+        // Default (None) and explicit V5 share the same historic strings.
+        None | Some(SileroVariant::V5) => {
+            ("silero-vad-v5", "snakers4/silero-vad v5 (MIT)", NAME_V5)
+        }
+    };
     // Self-describing redistribution (publishing to a public model hub): the
     // artifact must carry its own licence, not rely on a consumer running
     // Vokra's registry resolver. Values transcribed from
@@ -93,10 +157,17 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, SileroReport), Con
         &mut b,
         LicenseClass::Permissive,
         "MIT",
-        Some("silero-vad-v5"),
-        Some("snakers4/silero-vad v5 (MIT)"),
+        Some(model_id),
+        Some(source),
     );
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
+    b.add_string(chunks::KEY_MODEL_NAME, name);
+    // The release-tag key is stamped ONLY when the caller opted into the
+    // variant-aware path. Omitting it under the default path preserves the
+    // fixture's byte-identical regeneration guarantee (SPEC "Conversion"),
+    // while the loader still classifies the absent-key artifact as V5.
+    if let Some(variant) = variant {
+        silero_meta::stamp_variant(&mut b, variant);
+    }
 
     let mut report = SileroReport::default();
     let mut named: Vec<(String, GgmlType, Vec<u64>, Vec<u8>)> = Vec::new();
@@ -349,5 +420,80 @@ mod tests {
             matches!(err, crate::ConvertError::Parse(ref m) if m.contains("If")),
             "want Parse error naming the If-branch layout, got: {err:?}"
         );
+    }
+
+    /// Builds the minimal two-branch ONNX buffer both variant helpers accept
+    /// (one weight per branch), so the metadata-shape tests below stay small.
+    fn two_branch_onnx() -> Vec<u8> {
+        let w16: Vec<u8> = [0.5f32].iter().flat_map(|f| f.to_le_bytes()).collect();
+        let w8: Vec<u8> = [2.5f32].iter().flat_map(|f| f.to_le_bytes()).collect();
+        let then_c = constant_node(
+            &format!("{THEN}stft.forward_basis_buffer"),
+            &tensor("stft.forward_basis_buffer", &[1], ONNX_DTYPE_FLOAT, &w16),
+        );
+        let else_c = constant_node(
+            &format!("{ELSE}stft.forward_basis_buffer"),
+            &tensor("stft.forward_basis_buffer", &[1], ONNX_DTYPE_FLOAT, &w8),
+        );
+        model_with_if_branches(&[then_c], &[else_c])
+    }
+
+    /// The default [`convert`] path deliberately omits the release-tag key
+    /// so its output stays byte-identical to the committed parity fixture
+    /// (SPEC "Conversion" / README "Note on the GGUF"). The loader's
+    /// backward-compat default still resolves the artifact to V5.
+    #[test]
+    fn default_convert_omits_release_tag() {
+        let (builder, _) = convert(two_branch_onnx()).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert!(
+            file.get(chunks::KEY_SILERO_VERSION).is_none(),
+            "default convert() must not stamp the release tag (fixture-parity contract)"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME_V5),
+            "default convert() keeps the historic v5 model name"
+        );
+        // Loader-level default: absent key resolves to V5 (verified by
+        // vokra-core::gguf::silero::from_gguf_absent_key_defaults_to_v5,
+        // pinned here at the converter boundary).
+        assert_eq!(SileroVariant::from_gguf(&file).unwrap(), SileroVariant::V5);
+    }
+
+    /// [`convert_variant`] stamps the release tag and shifts the model
+    /// name / provenance source to the variant-specific spelling for both
+    /// known variants (SPEC "Conversion" — new self-describing artifacts).
+    #[test]
+    fn convert_variant_stamps_release_tag_for_both_variants() {
+        for (variant, name, expect_source) in [
+            (SileroVariant::V5, NAME_V5, "snakers4/silero-vad v5 (MIT)"),
+            (
+                SileroVariant::V6_2_1,
+                NAME_V6_2_1,
+                "snakers4/silero-vad v6.2.1 (MIT)",
+            ),
+        ] {
+            let (builder, _) = convert_variant(two_branch_onnx(), variant).unwrap();
+            let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+            assert_eq!(
+                file.get(chunks::KEY_SILERO_VERSION)
+                    .and_then(|v| v.as_str()),
+                Some(variant.tag()),
+                "convert_variant must stamp the release tag for {variant:?}"
+            );
+            assert_eq!(SileroVariant::from_gguf(&file).unwrap(), variant);
+            assert_eq!(
+                file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+                Some(name),
+                "model name matches variant for {variant:?}"
+            );
+            assert_eq!(
+                file.get(chunks::KEY_PROVENANCE_SOURCE)
+                    .and_then(|v| v.as_str()),
+                Some(expect_source),
+                "provenance.source matches variant for {variant:?}"
+            );
+        }
     }
 }

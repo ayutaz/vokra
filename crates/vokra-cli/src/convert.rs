@@ -11,12 +11,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
-    convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_crepe_file, convert_dac_file, convert_file, convert_file_quantized,
-    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
-    convert_piper_plus_file, convert_qwen3_tts_file, convert_styletts2_file,
-    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    ModelKind, PolicyPreset, SileroVariant, VoxtralConfig, convert_chatterbox_file,
+    convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
+    convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_file,
+    convert_file_quantized, convert_file_with_policy, convert_file_with_slug, convert_irodori_file,
+    convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
     convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
     parse_voxtral_hf_config,
 };
@@ -372,6 +372,14 @@ OPTIONS:
                               exclusive with --quantize / --policy-preset —
                               use `vokra-convert restamp` to change the
                               license on a quantized GGUF after the fact.
+    --silero-variant <tag>    Silero VAD release-tag selector (silero-vad only):
+                              v5 | v6.2.1. Stamps `vokra.silero.version` and
+                              shifts model.name / provenance.source to the
+                              variant's canonical spelling. Omit to keep the
+                              pre-tagging output (byte-identical to the
+                              committed parity fixture; the loader classifies
+                              the absent key as v5 for backward compatibility).
+                              Unknown tags are a fail-closed error (FR-EX-08).
     -h, --help                print this help
 ";
 
@@ -410,6 +418,13 @@ struct Parsed {
     /// their own tailored routes and ignore this flag (loudly, if it is
     /// passed alongside them).
     license: Option<String>,
+    /// Silero VAD release-tag selector (`--model silero-vad` only). When
+    /// present the CLI routes through [`convert_silero_file`] and stamps
+    /// `vokra.silero.version`. When absent the default `convert_file`
+    /// path runs and the emitted GGUF stays byte-identical to the
+    /// pre-tagging fixture (the loader classifies the absent-key artifact
+    /// as v5 for backward compatibility).
+    silero_variant: Option<SileroVariant>,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -433,6 +448,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
     let mut license: Option<String> = None;
+    let mut silero_variant: Option<SileroVariant> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -510,6 +526,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 license = Some(v.clone());
                 i += 2;
             }
+            "--silero-variant" => {
+                // Silero VAD release-tag selector (--model silero-vad only).
+                // Absent = default (byte-identical to the pre-tagging fixture,
+                // absent `vokra.silero.version` key → loader resolves as V5).
+                // Present = stamp the tag explicitly for a self-describing
+                // artifact (fail-closed unknown values, FR-EX-08).
+                let v = args
+                    .get(i + 1)
+                    .ok_or("--silero-variant requires a value (v5 | v6.2.1)")?;
+                silero_variant = Some(SileroVariant::from_tag(v).map_err(|e| e.to_string())?);
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -529,6 +557,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         quant,
         policy,
         license,
+        silero_variant,
     })
 }
 
@@ -561,8 +590,47 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             );
         }
     }
+    // `--silero-variant` is Silero-VAD-only. Silently dropping it on other
+    // models would misrepresent provenance (the flag would appear honored
+    // in the CLI diagnostics but write nothing) — FR-EX-08 fail-closed.
+    if !matches!(model, ModelKind::SileroVad) && p.silero_variant.is_some() {
+        return Err(
+            "--silero-variant is only supported for --model silero-vad (it stamps the \
+             `vokra.silero.version` metadata key)"
+                .to_owned(),
+        );
+    }
 
     let result = match model {
+        ModelKind::SileroVad => {
+            // Silero VAD accepts an optional `--silero-variant` selector
+            // that stamps `vokra.silero.version` and shifts the model
+            // name / provenance source to the variant's canonical
+            // spelling. Absent → fall through to the historic
+            // `convert_file` path, which does NOT stamp the tag so its
+            // output stays byte-identical to the committed fixture
+            // `tests/parity/silero_vad/silero-vad-v5.gguf` (SPEC
+            // "Conversion") — the loader treats the absent key as v5
+            // for backward compatibility.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for --model silero-vad (the ONNX carries \
+                     both rates directly; use --silero-variant v5|v6.2.1 for the release \
+                     tag)"
+                        .to_owned(),
+                );
+            }
+            match p.silero_variant {
+                Some(variant) => convert_silero_file(&p.input, &p.output, variant),
+                None => convert_file(model, &p.input, &p.output),
+            }
+        }
         ModelKind::PiperPlus => {
             if p.quant.is_some() {
                 return Err("--quantize is only supported for whisper-base".to_owned());
@@ -1637,5 +1705,104 @@ mod tests {
             ])))
             .contains("--adapter-config requires a value")
         );
+    }
+
+    #[test]
+    fn parses_silero_variant_v6_2_1() {
+        let p = parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+            "--silero-variant",
+            "v6.2.1",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::SileroVad);
+        assert_eq!(p.silero_variant, Some(SileroVariant::V6_2_1));
+    }
+
+    #[test]
+    fn parses_silero_variant_v5_explicit() {
+        let p = parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+            "--silero-variant",
+            "v5",
+        ]))
+        .expect("valid");
+        assert_eq!(p.silero_variant, Some(SileroVariant::V5));
+    }
+
+    #[test]
+    fn silero_variant_defaults_to_absent() {
+        // Backward compat: omitting the flag preserves the historic
+        // convert_file path (byte-identical to the pre-tagging fixture).
+        let p = parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.silero_variant, None);
+    }
+
+    /// FR-EX-08: unknown tags are surfaced at parse time, never a silent V5
+    /// fallback. Both canonical spellings should be surfaced in the diagnostic
+    /// so the caller sees what the build accepts.
+    #[test]
+    fn silero_variant_rejects_unknown_tag() {
+        let e = err_of(parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+            "--silero-variant",
+            "v7",
+        ])));
+        assert!(e.contains("v7"), "message: {e}");
+        assert!(e.contains("v5") && e.contains("v6.2.1"), "message: {e}");
+    }
+
+    #[test]
+    fn silero_variant_help_documents_flag() {
+        // USAGE section pins the flag name + accepted values so `--help`
+        // documents what a caller can pass.
+        assert!(USAGE.contains("--silero-variant"), "USAGE lists the flag");
+        assert!(
+            USAGE.contains("v5 | v6.2.1"),
+            "USAGE lists the accepted values"
+        );
+    }
+
+    /// Passing `--silero-variant` on the wrong model must be a loud error,
+    /// not a silent drop (mirrors the `--adapter-config` / `--tokenizer`
+    /// Voxtral-only gating pattern — FR-EX-08).
+    #[test]
+    fn silero_variant_on_non_silero_model_is_a_loud_error() {
+        let e = main(&args(&[
+            "--model",
+            "whisper-base",
+            "--input",
+            "/nonexistent/ckpt.pt",
+            "--output",
+            "/nonexistent/out.gguf",
+            "--silero-variant",
+            "v6.2.1",
+        ]))
+        .unwrap_err();
+        assert!(e.contains("--silero-variant is only supported"), "{e}");
+        assert!(e.contains("silero-vad"), "{e}");
     }
 }
