@@ -363,6 +363,51 @@ per the M4-20 T14 mechanism-anchor discipline.
 All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
 baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
 
+### 2026-07-30 — 1.0.0-rc.1-dev (M5-16 / FR-OP-83: FCPE real Conformer forward + converter — Rust surface only, advisory)
+
+Additive **Rust public API** entry promoting `vokra-models::f0::fcpe` from the
+2026-07-25 SoTA Wave-F skeleton (`Fcpe::{from_gguf, extract}` on a metadata-
+only surface) to a real Conformer-based F0 forward: mel[T, n_mels] → Linear
+stem → `vokra_ops::conformer::ConformerEncoder` (SoTA Phase 2 landed
+primitive — no new op) → LayerNorm → Linear head → softmax → cent-grid
+soft-argmax → Hz + V/UV. Follows the X-Codec-2 / SBV2 precedent: **advisory
+Rust-surface entry**, `scripts/check-abi-changelog.sh` does not gate on it
+(no C symbol changed).
+
+- **vokra-models::f0::fcpe** — `FcpeConfig` + `FcpeWeights` types added
+  (`pub struct` with public fields; the fields are the Conformer + head
+  shape descriptors so a downstream that wants to introspect a bound FCPE
+  can walk them without another Rust round-trip). `FCPE::from_gguf` now
+  binds the canonical tensor set when present (loud on partial /
+  mis-shaped sets — FR-EX-08 posture); metadata-only GGUFs continue to
+  return the frame-count-contract skeleton (backward-compat with the
+  Wave-F consumers). New associated fn `FCPE::has_real_weights() -> bool`
+  and `FCPE::config() -> &FcpeConfig` expose the state to callers /
+  tests.
+- **vokra-convert::ModelKind** — `Fcpe` variant added (public enum) plus
+  5 aliases (`fcpe`, `torchfcpe`, `fast-context-pitch-estimator`,
+  `fast_context_pitch_estimator`, `cnchtu/fcpe`). New module
+  `crates/vokra-convert/src/models/fcpe.rs` (`convert_fcpe_file` +
+  internal `models::fcpe::convert(bytes)` helper shared with
+  `convert_file_licensed`) — F32 / F16 / BF16 pass-through, `vokra.model.
+  arch = "fcpe"` + `vokra.model.category = "f0"` + `vokra.provenance.
+  upstream_hf = "CNChTu/FCPE"` + `mit` Permissive stamp.
+- **GGUF metadata schema** — new `vokra.f0.fcpe.*` config chunk group
+  (13 keys: `hop` u32 / `fmin` f32 / `fmax` f32 / `sample_rate` u32 /
+  `n_mels` u32 / `n_fft` u32 / `n_pitch_bins` u32 /
+  `confidence_threshold` f32 / `d_model` u32 / `n_heads` u32 /
+  `ffn_dim` u32 / `n_layers` u32 / `kernel_size` u32) read by
+  `FcpeConfig::from_gguf` with per-key defaults from the FCPE_v001
+  primary source. Additive — every key defaults if absent, so a
+  metadata-only GGUF still loads.
+- **License** — `docs/license-audit.md` §3.1 sign-off row added
+  (`CNChTu/FCPE`, MIT Permissive, 2026-07-30 yousan =
+  ☑ Commercial; primary source `github.com/CNChTu/FCPE/LICENSE`).
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. `scripts/gen-c-abi.sh --check` =
+no diff.
+
 ### 2026-07-30 — 1.0.0-rc.1-dev (M5 gap CC wave 2 — VoxCPM2-2B config + scaffolds — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the M5 owner-checklist CC-side wave 2

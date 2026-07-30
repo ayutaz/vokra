@@ -113,6 +113,15 @@ pub mod deberta_v3;
 pub(crate) mod dia;
 pub mod ecapa_tdnn;
 pub mod emotion2vec;
+// M5-16 (FR-OP-83): FCPE — Fast Context-based Pitch Estimator (CNChTu/FCPE,
+// MIT permissive). safetensors → GGUF pass-through (F32 / F16 / BF16
+// verbatim, `vokra.fcpe.*` / `vokra.provenance.*` stamps). Reuses the
+// shared `vokra_ops::conformer::ConformerEncoder` primitive on the runtime
+// side (SoTA Phase 2 landed op — no per-model op duplication); the upstream
+// release is a torch-pickle `.pt`, so callers pre-flatten it to safetensors
+// via `tools/parity/fcpe_prepare_checkpoint.py` (the DFN3 / DAC / CSM
+// bridge pattern — no pickle ever enters the runtime, FR-LD-05).
+pub(crate) mod fcpe;
 pub mod freevc;
 // SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
 // distil-large-v3.5 (MIT weight, Permissive) — a distilled Whisper checkpoint

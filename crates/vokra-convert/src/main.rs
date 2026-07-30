@@ -2037,7 +2037,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::AudioboxAesthetics
         | ModelKind::VoxtralMiniRealtime
         | ModelKind::CohereTranscribe
-        | ModelKind::NemotronAsrStreaming => {
+        | ModelKind::NemotronAsrStreaming
+        // M5-16 / FR-OP-83: FCPE — pass-through BF16 skeleton verify shares
+        // the same shape as the Phase 5 fleet (arch/name/category +
+        // upstream_hf + license triple). The FCPE-specific `vokra.f0.fcpe.*`
+        // config chunk is written by the model, not the converter, so this
+        // verify path deliberately does not readback it (a follow-up if a
+        // future variant lands a converter-written config).
+        | ModelKind::Fcpe => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

@@ -1440,6 +1440,18 @@ pub enum ModelKind {
     /// register the variant as `LicenseClass::Unknown` so an
     /// accidental commercial-mode load fails the M2-13 gate closed.
     NemotronAsrStreaming,
+    /// **FCPE** (Fast Context-based Pitch Estimator, CNChTu/FCPE, MIT
+    /// Permissive) — Conformer-based 360-bin log-frequency pitch
+    /// classifier. Category = `f0`. Real forward: mel[T, 128] → Linear
+    /// stem → `vokra_ops::conformer::ConformerEncoder` (6 blocks, d_model
+    /// 512, n_heads 8, ffn_dim 2048, kernel_size 9) → LayerNorm → Linear
+    /// head → softmax → cent-grid soft-argmax → Hz + V/UV. Every F32 /
+    /// F16 / BF16 tensor passes through verbatim (the neucodec / xcodec2
+    /// BF16 pass-through contract); upstream ships torch-pickle `.pt` so
+    /// callers pre-flatten to safetensors via
+    /// `tools/parity/fcpe_prepare_checkpoint.py` (the DFN3 / DAC / CSM
+    /// bridge pattern — no pickle ever enters the runtime, FR-LD-05).
+    Fcpe,
 }
 
 impl ModelKind {
@@ -1989,6 +2001,18 @@ impl ModelKind {
             | "nemotron-3.5-asr-streaming-0.6b"
             | "nemotron-3_5-asr-streaming-0_6b"
             | "nvidia/nemotron-3.5-asr-streaming-0.6b" => Some(Self::NemotronAsrStreaming),
+            // CNChTu FCPE — Fast Context-based Pitch Estimator (MIT). Accept
+            // the canonical short arch tag, the family name in both underscore
+            // and hyphen spellings, and the full upstream GitHub slug. Every
+            // spelling routes to the same 360-bin pitch classifier converter
+            // today; a future FCPE_v002 would be a distinct `ModelKind` if its
+            // config axes reshape the Conformer body (task hint: 4-6 layers so
+            // the range is genuinely open).
+            "fcpe"
+            | "torchfcpe"
+            | "fast-context-pitch-estimator"
+            | "fast_context_pitch_estimator"
+            | "cnchtu/fcpe" => Some(Self::Fcpe),
             _ => None,
         }
     }
@@ -2094,6 +2118,7 @@ impl ModelKind {
             Self::VoxtralMiniRealtime => "voxtral-mini-4b-realtime-2602",
             Self::Wav2Vec2Ctc => "wav2vec2",
             Self::XVector => "xvector",
+            Self::Fcpe => "fcpe",
         }
     }
 }
@@ -4138,6 +4163,28 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // M5-16 (FR-OP-83): FCPE — pass every F32 / F16 / BF16 tensor through
+        // verbatim and stamp the `vokra.model.arch = "fcpe"` +
+        // `vokra.model.category = "f0"` + `vokra.provenance.upstream_hf =
+        // "CNChTu/FCPE"` chunk group. Provenance defaults to **mit /
+        // Permissive** (CC-verified 2026-07-30). A caller who trained on a
+        // different corpus (or holds the weight under a distinct SPDX id)
+        // overrides at the outer `--license <spdx>` boundary below.
+        ModelKind::Fcpe => {
+            let report = models::fcpe::convert_fcpe_file(input, output, license)?;
+            let notes = vec![format!(
+                "fcpe: {} float weights written verbatim ({} BF16 passthrough — runtime widens \
+                 to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Fcpe,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -6427,6 +6474,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // F0 pitch-extractor tier (2026-07-30): RMVPE — the first
             // `category = "f0"` binder in the converter tree.
             Rmvpe,
+            // M5-16 / FR-OP-83: FCPE — pin the alias round-trip so a dropped
+            // spelling in `as_arg` fails loudly (same rationale as the
+            // Phase 2-5 additions above).
+            Fcpe,
         ] {
             let arg = kind.as_arg();
             assert!(
