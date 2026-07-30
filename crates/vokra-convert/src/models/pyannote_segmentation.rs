@@ -531,8 +531,8 @@ mod tests {
         // From LSTM_DEFAULTS:
         assert_eq!(DEFAULT_LSTM_HIDDEN_SIZE, 128);
         assert_eq!(DEFAULT_LSTM_NUM_LAYERS, 2);
-        assert!(DEFAULT_LSTM_BIDIRECTIONAL);
-        assert!(DEFAULT_LSTM_MONOLITHIC);
+        const { assert!(DEFAULT_LSTM_BIDIRECTIONAL) };
+        const { assert!(DEFAULT_LSTM_MONOLITHIC) };
         // From LINEAR_DEFAULTS:
         assert_eq!(DEFAULT_LINEAR_HIDDEN_SIZE, 128);
         assert_eq!(DEFAULT_LINEAR_NUM_LAYERS, 2);
