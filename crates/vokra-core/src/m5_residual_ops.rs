@@ -60,7 +60,7 @@
 //! | [`ECAPA_TDNN_SPEAKER_ENCODE_OP`] | FR-OP-80 | CAM++ already covers speaker embedding             |
 //! | [`WESPEAKER_SPEAKER_ENCODE_OP`]  | FR-OP-80 | CAM++ already covers speaker embedding             |
 //! | [`TITANET_SPEAKER_ENCODE_OP`]    | FR-OP-80 | CAM++ already covers speaker embedding             |
-//! | [`DIARIZE_OP`]                   | FR-OP-82 | trigger + license (pyannote HF-gated) double blocker |
+//! | [`DIARIZE_OP`]                   | FR-OP-82 | trigger only (pyannote license MIT primary source 2026-07-30 signed = `docs/license-audit.md` §3.1 row 263, `gated: auto` は access control のみで追加条項なし) |
 
 /// BigVGAN generator op-kind identifier. Re-exported from the M2-08 registry:
 /// the min-dtype audit anchor (fp16 minimum) is already registered there, but
@@ -87,8 +87,13 @@ pub const WESPEAKER_SPEAKER_ENCODE_OP: &str = "wespeaker_speaker_encode";
 /// the runtime op landing is M5-residual). Reserved; unregistered.
 pub const TITANET_SPEAKER_ENCODE_OP: &str = "titanet_speaker_encode";
 
-/// Diarization op-kind identifier (FR-OP-82; trigger + license double blocker).
-/// Reserved; unregistered.
+/// Diarization op-kind identifier (FR-OP-82). Reserved; unregistered.
+/// **2026-07-30 license half unblock**: pyannote weight は MIT primary source
+/// (HF cardData `license: mit, gated: auto` = access control のみ、追加条項なし、
+/// `docs/license-audit.md` §3.1 row 263 で 2026-07-30 yousan sign)。従前の
+/// "license + trigger double blocker" は "trigger only blocker" に縮小
+/// (実 op 実装 + trigger converter + real-checkpoint parity harness が
+/// 残 M5 wave の scope)。
 pub const DIARIZE_OP: &str = "diarize";
 
 /// One M5-residual op anchor: op-kind id + the FR-OP it will satisfy + the
@@ -142,7 +147,7 @@ pub fn m5_residual_op_anchors() -> &'static [M5ResidualAnchor] {
         M5ResidualAnchor {
             op_id: DIARIZE_OP,
             fr_op: "FR-OP-82",
-            blocker: "trigger + license (pyannote HF-gated) double blocker",
+            blocker: "trigger only (pyannote license MIT signed 2026-07-30, §3.1 row 263)",
         },
     ]
 }

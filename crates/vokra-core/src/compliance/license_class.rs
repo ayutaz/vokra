@@ -393,6 +393,21 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "piper-plus" | "piper-plus-mb-istft-vits2" => LicenseClass::Permissive,
         "silero-vad" | "silero-vad-v5" => LicenseClass::Permissive,
         "campplus" | "cam++" => LicenseClass::Permissive,
+        // pyannote speaker diarization / VAD segmentation (2026-07-30 license
+        // half unblock): weight license = **MIT** per HF `pyannote/segmentation-
+        // 3.0` + `pyannote/speaker-diarization-3.1` cardData `license: mit`
+        // (authenticated HF API primary source, `gated: auto` は access control
+        // のみで追加条項なし、`docs/license-audit.md` §3.1 row 263 で 2026-07-30
+        // yousan sign)。The `diarize` op (FR-OP-82) itself is still M5-residual
+        // (op 実装 + trigger converter + real-checkpoint parity は残 wave の
+        // scope)、but the license side is unblocked.
+        "pyannote"
+        | "pyannote-segmentation"
+        | "pyannote-segmentation-3.0"
+        | "pyannote-segmentation-3_0"
+        | "pyannote-speaker-diarization"
+        | "pyannote-speaker-diarization-3.1"
+        | "pyannote-speaker-diarization-3_1" => LicenseClass::Permissive,
         "kokoro" | "kokoro-82m" | "cosyvoice" | "cosyvoice2" | "sesame-csm" | "csm-1b"
         | "voxtral" | "openwakeword" => LicenseClass::Permissive,
         // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B —
@@ -901,6 +916,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // accident. NVIDIA's whole Canary family ships under CC-BY 4.0
         // (per the 1B-v2 model card).
         _ if id.starts_with("canary-") => LicenseClass::AttributionRequired,
+        // pyannote first-party family (MIT weight — 2026-07-30 license half
+        // unblock、`docs/license-audit.md` §3.1 row 263): specific HF variant
+        // ids like `pyannote-segmentation-3.0` / `pyannote-speaker-
+        // diarization-3.1` or future `pyannote-segmentation-4.0` still
+        // resolve permissive. Guarded on the dash so unrelated ids
+        // (`pyannote-something-not-shipped-by-pyannote`) cannot slip
+        // through. Exact-name aliases (`pyannote` / `pyannote-segmentation`
+        // 等) are pinned in the fast-path arm above; this prefix walk covers
+        // future variants of the same family under the same MIT LICENSE at
+        // `github.com/pyannote/pyannote-audio/LICENSE`.
+        _ if id.starts_with("pyannote-") => LicenseClass::Permissive,
         _ => return None,
     };
     Some(class)
@@ -1358,6 +1384,29 @@ mod tests {
         // Guard: a random id starting with "omniasr-ctcxyz" (no dash) is
         // NOT under the family prefix walk.
         assert_eq!(registry_lookup("omniasr-ctcxyz-something"), None);
+        // 2026-07-30 license half unblock: pyannote family (MIT) — canonical
+        // + variant spellings + case-insensitive + family prefix walk.
+        // `docs/license-audit.md` §3.1 row 263 で 2026-07-30 yousan sign。
+        for id in [
+            "pyannote",
+            "pyannote-segmentation",
+            "pyannote-segmentation-3.0",
+            "pyannote-segmentation-3_0",
+            "pyannote-speaker-diarization",
+            "pyannote-speaker-diarization-3.1",
+            // Case-insensitive (via lower-casing before lookup).
+            "PyAnnote-Segmentation-3.0",
+            "PYANNOTE",
+            // Family prefix — a hypothetical future `pyannote-segmentation-
+            // 4.0` / `pyannote-vad-v2` still resolves permissive by the walk.
+            "pyannote-segmentation-4.0",
+            "pyannote-vad-v2",
+        ] {
+            assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
+        }
+        // Guard: a random id starting with "pyannotex" (no dash) is NOT under
+        // the family prefix walk.
+        assert_eq!(registry_lookup("pyannotex-something"), None);
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
         // First-party **variant** ids (not canonical) still resolve permissive by
