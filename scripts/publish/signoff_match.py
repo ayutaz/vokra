@@ -169,6 +169,10 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "wavtokenizer-large-speech-75token": [
         "WavTokenizer-Large-Speech-75token (`novateur/WavTokenizer-large-speech-75token`)"
     ],
+    # 2026-08-01 Wave 3 — IBM Granite Speech 4.1 2B (apache-2.0 audio LLM).
+    "granite-speech-4.1-2b": [
+        "granite-speech-4.1-2b (`ibm-granite/granite-speech-4.1-2b`)"
+    ],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
@@ -349,6 +353,10 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # 2026-08-01 Wave 3 — WavTokenizer FSQ codec (single-codebook 75 tok/s).
     "wavtokenizer": [
         "WavTokenizer-Large-Speech-75token (`novateur/WavTokenizer-large-speech-75token`)"
+    ],
+    # 2026-08-01 Wave 3 — IBM Granite Speech audio LLM.
+    "granite_speech": [
+        "granite-speech-4.1-2b (`ibm-granite/granite-speech-4.1-2b`)"
     ],
     "smart_turn": ["Smart-Turn v2 (`pipecat-ai/smart-turn-v2`)"],
     "speechbrain_lang_id": [

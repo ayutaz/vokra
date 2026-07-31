@@ -694,6 +694,19 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "eres2net"
         | "speech_eres2net_sv_zh-cn_16k-common" => LicenseClass::Permissive,
         "emotion2vec" | "emotion-2vec" | "emotion2vec-plus-large" => LicenseClass::Permissive,
+        // 2026-08-01 wave: IBM Granite Speech 4.1-2B — audio-LLM ASR
+        // (Conformer CTC encoder + Granite-4.0-1b-base LLM decoder +
+        // BLIP-2 q-former projector + optional LoRA adapter). Weight
+        // license = apache-2.0 end-to-end (HF model page + docs page
+        // linking apache.org/licenses/LICENSE-2.0, CC-verified
+        // 2026-08-01). Redundant with the `granite-speech-` family walk
+        // below, but kept as an explicit exact-match arm so an id
+        // lookup returns quickly without hitting the prefix arm.
+        "granite-speech"
+        | "granite-speech-4.1-2b"
+        | "granite_speech"
+        | "granite-speech-4_1-2b"
+        | "ibm-granite/granite-speech-4.1-2b" => LicenseClass::Permissive,
         // 2026-08-01 wave: Charactr AI Vocos family — Fourier-space
         // vocoder (ConvNeXt V2 backbone + iSTFT head, arXiv:2306.00814).
         // Weight license = **MIT** end-to-end (Charactr AI code + trained
@@ -955,6 +968,12 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // `docs/handoff/tier1-tier2-audio-impl-2026-07-30.md` for the
         // per-family primary source URL list.
         _ if id.starts_with("qwen3-asr-") => LicenseClass::Permissive,
+        // 2026-08-01 wave: IBM Granite Speech family (apache-2.0 end-to-
+        // end): future variants like `granite-speech-4.1-8b` /
+        // `granite-speech-3.3-8b` still resolve permissive. Guarded on
+        // the dash so unrelated ids (`granite-speechx-something`) cannot
+        // slip through into the permissive bucket by accident.
+        _ if id.starts_with("granite-speech-") => LicenseClass::Permissive,
         _ if id.starts_with("wav2vec2") => LicenseClass::Permissive,
         _ if id.starts_with("moss-tts") || id.starts_with("openmoss-team/moss-tts") => {
             LicenseClass::Permissive

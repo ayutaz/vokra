@@ -442,6 +442,18 @@ pub mod clap;
 pub mod deepfake_detection;
 pub mod firered_vad;
 pub mod focalcodec;
+// 2026-08-01 wave: IBM Granite Speech 4.1-2B (`ibm-granite/granite-speech-4.1-2b`,
+// apache-2.0). Category = `asr` (audio-LLM ASR). Conformer CTC encoder
+// (16L × d_model 1024 × 8 heads × 128 head_dim × conv_kernel 15) +
+// Granite-4.0-1b-base LLM decoder (40L × hidden 2048 × GQA 16Q ÷ 4KV ×
+// ffn 4096 × RoPE θ 10000 × RMSNorm ε 1e-5 × vocab 100 353, distinctive
+// Granite scalars attention_multiplier 0.0078125 / embedding_multiplier
+// 12.0 / logits_scaling 8.0 / residual_multiplier 0.22) + BLIP-2 q-former
+// projector (2L × hidden 1024 × 16 heads × downsample_rate 5) + optional
+// LoRA adapter. BF16 pass-through skeleton mirror of speecht5_hifigan /
+// canary_qwen; real-weight parity + runtime binding deferred to owner
+// (`docs/license-audit.md` §3.1 sign-off).
+pub mod granite_speech;
 pub mod hifigan_vocoder;
 pub mod kyutai_tts;
 pub mod melotts;

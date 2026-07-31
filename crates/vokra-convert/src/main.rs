@@ -2124,6 +2124,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::VoxtralMiniRealtime
         | ModelKind::CohereTranscribe
         | ModelKind::NemotronAsrStreaming
+        // 2026-08-01 wave: IBM Granite Speech 4.1-2B — Conformer CTC
+        // encoder + Granite-4.0-1b-base LLM decoder + BLIP-2 q-former
+        // projector (audio-LLM ASR, apache-2.0). Emits the same
+        // arch / name / category / upstream_hf / license triple as the
+        // Phase 5 fleet plus a `vokra.granite_speech.*` hparam chunk
+        // group (which this verify path deliberately does not readback
+        // — the triple lookup is the invariant surface). Grouped here
+        // so the verify surface stays a shape-lookup, not a per-model
+        // switch we would have to keep in step with 40+ real
+        // converters.
+        | ModelKind::GraniteSpeech
         // M5-16 / FR-OP-83: FCPE — pass-through BF16 skeleton verify shares
         // the same shape as the Phase 5 fleet (arch/name/category +
         // upstream_hf + license triple). The FCPE-specific `vokra.f0.fcpe.*`

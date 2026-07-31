@@ -1559,6 +1559,12 @@ pub enum ModelKind {
     /// → 75 tokens/sec (Ji et al. 2024, arXiv:2408.16532). MIT.
     /// Upstream ships `.ckpt` (Lightning); bridge required.
     Wavtokenizer,
+    /// **IBM Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b`,
+    /// apache-2.0, 4.8 GB 4-shard). HF Open ASR leaderboard top-tier
+    /// (2026-08-01 Wave 3). FastConformer CTC encoder + Granite LLM
+    /// decoder + LoRA adapter. Distinct arch tag `granite_speech`
+    /// from Voxtral / Canary / omni-asr-ctc.
+    GraniteSpeech,
 }
 
 impl ModelKind {
@@ -2059,6 +2065,11 @@ impl ModelKind {
             | "wavtokenizer-large-speech-75token"
             | "wavtokenizer_large_speech_75token"
             | "novateur/wavtokenizer-large-speech-75token" => Some(Self::Wavtokenizer),
+            "granite-speech"
+            | "granite-speech-4.1-2b"
+            | "granite_speech_4_1_2b"
+            | "granite-speech-4-1-2b"
+            | "ibm-granite/granite-speech-4.1-2b" => Some(Self::GraniteSpeech),
             "tiger"
             | "tiger-dnr"
             | "tiger_dnr"
@@ -2297,6 +2308,7 @@ impl ModelKind {
             Self::SmartTurn => "smart-turn",
             Self::Snac => "snac",
             Self::Wavtokenizer => "wavtokenizer",
+            Self::GraniteSpeech => "granite-speech-4.1-2b",
             Self::SpeechT5Tts => "speecht5-tts",
             Self::TigerSeparator => "tiger-dnr",
             Self::TigerSpeech => "tiger-speech",
@@ -4204,6 +4216,27 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Focalcodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === GraniteSpeech (2026-08-01 Wave 3) ===
+        ModelKind::GraniteSpeech => {
+            let report = models::granite_speech::convert_granite_speech_file(
+                input,
+                output,
+                models::granite_speech::GraniteSpeechVariant::V4_1_2B,
+                license,
+            )?;
+            let notes = vec![format!(
+                "granite-speech-4.1-2b: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
