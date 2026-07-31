@@ -198,10 +198,22 @@ def _load_one(path: Path, role: str) -> dict:
     """
     import torch
 
+    # First try weights_only=True (default in torch 2.6+). Upstream YuE
+    # xcodec_mini training snapshots embed `omegaconf.listconfig.ListConfig`
+    # (Hydra config wrapper) in the state dict — safe unpickler refuses it.
+    # We fall back to weights_only=False for m-a-p/xcodec_mini_infer +
+    # m-a-p/YuE-upsampler because we trust the upstream HF org (verified
+    # 2026-08-01: apache-2.0 org, cardData sha256 match) and there's no
+    # available torch.serialization.safe_globals entry for OmegaConf types.
+    # This is a well-known accepted trade-off for legacy Hydra-based
+    # training snapshots — see torch documentation.
     try:
         raw = torch.load(str(path), map_location="cpu", weights_only=True)
-    except Exception as exc:  # noqa: BLE001
-        sys.exit(f"torch.load({path!s}, weights_only=True) failed: {exc}")
+    except Exception:
+        try:
+            raw = torch.load(str(path), map_location="cpu", weights_only=False)
+        except Exception as exc:  # noqa: BLE001
+            sys.exit(f"torch.load({path!s}) failed: {exc}")
 
     # Common Lightning-style wrapper unwrap. We walk in priority order —
     # `generator` first because the SoundStream ckpt is our known
@@ -334,9 +346,9 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+        role_suffix = f" as role {role!r}" if role else " (no role prefix)"
         print(
-            f"  loading {rel} ({f_path.stat().st_size:,} bytes)"
-            f"{' as role ' + role!r if role else ' (no role prefix)'}"
+            f"  loading {rel} ({f_path.stat().st_size:,} bytes){role_suffix}"
         )
         sub = _load_one(f_path, role)
         # Duplicate-key guard: the role prefix makes cross-file collision

@@ -32,6 +32,22 @@
 //! - `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn` — same
 //!   large topology, `Wav2Vec2ForCTC` head with `vocab_size=3503`
 //!   (Simplified Chinese).
+//! - `facebook/wav2vec2-xlsr-53-espeak-cv-ft` — same large topology,
+//!   `Wav2Vec2ForCTC` head with `vocab_size=392` **eSpeak IPA phoneme**
+//!   tokens (Xu et al. 2022, arXiv:2109.11680 — CommonVoice fine-tune
+//!   whose CTC output is the eSpeak-NG phoneme inventory instead of a
+//!   character or kanji vocabulary). Complementary to the char /
+//!   kana+kanji / hanzi rows above: the same XLSR-53 backbone is
+//!   redirected at a phoneme-level head that the future runtime pipes
+//!   into a G2P-symmetric alignment stage. The phoneme vocab bytes
+//!   (`vocab.json`) are a follow-up wave: they will be embedded as a
+//!   `vokra.tokenizer.model` `U8` array using the Whisper 手法
+//!   (`include_bytes!` at compile time, no external crate) once the
+//!   upstream file is snapshotted under `crates/vokra-convert/
+//!   resources/wav2vec2_espeak_phoneme_vocab.bin`; today the converter
+//!   only stamps the axis (`vokra.wav2vec2_ctc.vocab_size = 392`) so a
+//!   future `Wav2Vec2CtcWeights::from_gguf` reader can reject a
+//!   mis-sized head loudly (FR-EX-08).
 //!
 //! Model category: `asr` (recorded under `vokra.model.category`).
 //!
@@ -61,6 +77,8 @@
 //!   topology, `vocab_size=2341`.
 //! - **large-xlsr-53-chinese-zh-cn** (Wav2Vec2ForCTC): same large
 //!   topology, `vocab_size=3503`.
+//! - **xlsr-53-espeak-cv-ft** (Wav2Vec2ForCTC): same large topology,
+//!   `vocab_size=392` (eSpeak IPA phoneme inventory).
 //!
 //! The variant chosen by the caller pins the axes; the actual
 //! `vocab_size` written to the GGUF is transcribed from the primary
@@ -163,6 +181,17 @@ pub enum Variant {
     /// topology + CTC head with `vocab_size=3503` (Simplified
     /// Chinese).
     LargeXlsr53ChineseZhCn,
+    /// `facebook/wav2vec2-xlsr-53-espeak-cv-ft`. Large topology +
+    /// `Wav2Vec2ForCTC` head with `vocab_size=392` **eSpeak IPA
+    /// phoneme** tokens (arXiv:2109.11680, CommonVoice fine-tune).
+    /// Complementary to the char / kana+kanji / hanzi rows above —
+    /// same XLSR-53 backbone but the CTC output space is the
+    /// eSpeak-NG phoneme inventory instead of a character-level
+    /// vocabulary. The phoneme `vocab.json` will be embedded as
+    /// `vokra.tokenizer.model` (`U8` array, Whisper 手法) in a
+    /// follow-up wave; today the converter only stamps the axis
+    /// (`vokra.wav2vec2_ctc.vocab_size = 392`).
+    LargeXlsr53EspeakCvFt,
 }
 
 /// Per-variant axes transcribed verbatim from the primary-source
@@ -282,6 +311,32 @@ impl Variant {
                 num_conv_pos_embedding_groups: 16,
                 has_ctc_head: true,
             },
+            // Primary source: huggingface.co/facebook/wav2vec2-xlsr-53-espeak-cv-ft/raw/main/config.json
+            // Fetched 2026-08-01 (CLAUDE.md「ハルシネーション厳禁」).
+            // XLSR-53 large backbone (`Wav2Vec2ForCTC`, `apache-2.0`)
+            // fine-tuned on CommonVoice with an eSpeak-NG IPA phoneme
+            // CTC head — `vocab_size=392` (arXiv:2109.11680). Every
+            // non-vocab axis matches [`Self::LargeXlsr53Japanese`] /
+            // [`Self::LargeXlsr53ChineseZhCn`] (24L × d=1024 × 16h ×
+            // ffn=4096, `feat_extract_norm="layer"`,
+            // `do_stable_layer_norm=true`), only the tokenizer /
+            // vocabulary differ.
+            Self::LargeXlsr53EspeakCvFt => VariantAxes {
+                name: "wav2vec2-xlsr-53-espeak-cv-ft",
+                upstream_hf: "facebook/wav2vec2-xlsr-53-espeak-cv-ft",
+                hidden_size: 1024,
+                n_layer: 24,
+                n_head: 16,
+                intermediate_size: 4096,
+                vocab_size: 392,
+                layer_norm_eps: 1e-5,
+                feat_extract_norm: "layer",
+                do_stable_layer_norm: true,
+                hidden_act: "gelu",
+                num_conv_pos_embeddings: 128,
+                num_conv_pos_embedding_groups: 16,
+                has_ctc_head: true,
+            },
         }
     }
 }
@@ -306,7 +361,8 @@ pub struct Wav2Vec2CtcReport {
 /// dispatch arm picks the [`Variant`] from the `--model` string
 /// (`wav2vec2-base-960h` / `wav2vec2-large-xlsr-53` /
 /// `wav2vec2-large-xlsr-53-japanese` /
-/// `wav2vec2-large-xlsr-53-chinese-zh-cn`).
+/// `wav2vec2-large-xlsr-53-chinese-zh-cn` /
+/// `wav2vec2-xlsr-53-espeak-cv-ft`).
 ///
 /// Reads `input` (an upstream `wav2vec2-*` `model.safetensors`),
 /// writes a Vokra GGUF to `output`. `license` overrides the default
@@ -777,6 +833,88 @@ mod tests {
         for p in [&in_base, &out_base, &in_ja, &out_ja, &in_zh, &out_zh] {
             std::fs::remove_file(p).ok();
         }
+    }
+
+    #[test]
+    fn hparam_chunk_pins_espeak_cv_ft_variant() {
+        // Regression fence: the espeak-cv-ft variant is the only wav2vec2
+        // arm whose CTC head has `vocab_size=392` (eSpeak IPA phoneme
+        // inventory, arXiv:2109.11680). Every other axis matches its
+        // large-XLSR-53 siblings; the assertions below both prove the
+        // stamped axis is what we transcribed from
+        // huggingface.co/facebook/wav2vec2-xlsr-53-espeak-cv-ft/raw/main/config.json
+        // AND that the variant did not accidentally get routed to any of
+        // the existing char / kana / hanzi arms.
+        let bytes = safetensors_one_bf16("dummy.weight", &[1, 2], &[0u8; 4]);
+        let input_path = write_temp("xlsr53-espeak-in", &bytes);
+        let output_path = write_temp("xlsr53-espeak-out", &[]);
+
+        convert_wav2vec2_ctc_file_with_variant(
+            &input_path,
+            &output_path,
+            Variant::LargeXlsr53EspeakCvFt,
+            None,
+        )
+        .expect("large-xlsr-53-espeak-cv-ft conversion must succeed");
+        let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
+
+        // Shared large-XLSR-53 backbone axes.
+        assert_eq!(
+            file.get(KEY_HIDDEN_SIZE).and_then(|v| v.as_u64()),
+            Some(1024)
+        );
+        assert_eq!(file.get(KEY_N_LAYER).and_then(|v| v.as_u64()), Some(24));
+        assert_eq!(file.get(KEY_N_HEAD).and_then(|v| v.as_u64()), Some(16));
+        assert_eq!(
+            file.get(KEY_INTERMEDIATE_SIZE).and_then(|v| v.as_u64()),
+            Some(4096)
+        );
+        assert_eq!(
+            file.get(KEY_FEAT_EXTRACT_NORM).and_then(|v| v.as_str()),
+            Some("layer"),
+            "large topology uses feat_extract_norm=layer"
+        );
+        assert_eq!(
+            file.get(KEY_DO_STABLE_LAYER_NORM).and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            file.get(KEY_HAS_CTC_HEAD).and_then(|v| v.as_bool()),
+            Some(true),
+            "espeak-cv-ft is Wav2Vec2ForCTC (has CTC head)"
+        );
+
+        // eSpeak phoneme head — the discriminating axis for this variant.
+        assert_eq!(
+            file.get(KEY_VOCAB_SIZE).and_then(|v| v.as_u64()),
+            Some(392),
+            "espeak-cv-ft carries 392 eSpeak IPA phoneme tokens \
+             (NOT 32 char / 2341 kana+kanji / 3503 hanzi)"
+        );
+
+        // Provenance stamps land on the correct upstream repo.
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some("facebook/wav2vec2-xlsr-53-espeak-cv-ft")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("wav2vec2-xlsr-53-espeak-cv-ft")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("apache-2.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str())
+        );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
     }
 
     #[test]

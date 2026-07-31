@@ -85,9 +85,17 @@
 //!   (talker hidden=1024, ffn=3072). Primary source
 //!   `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`
 //!   fetched 2026-07-24.
+//! - [`Qwen3TtsVariant::_1_7B_Base`] —
+//!   `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (talker hidden=2048,
+//!   ffn=6144; the un-fine-tuned 1.7B backbone that the CustomVoice /
+//!   VoiceDesign 1.7B siblings fine-tune from). Primary source
+//!   `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base/raw/main/config.json`
+//!   fetched 2026-08-01.
 //! - [`Qwen3TtsVariant::_1_7B_CustomVoice`] —
 //!   `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` (talker hidden=2048,
-//!   ffn=6144). Primary source
+//!   ffn=6144; identical talker + code-predictor axes to the 1.7B-Base
+//!   sibling — only the fine-tune target (`tts_model_type =
+//!   "custom_voice"`) + HF release id + NAME stamp differ). Primary source
 //!   `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/raw/main/config.json`
 //!   fetched 2026-07-30.
 //! - [`Qwen3TtsVariant::_1_7B_VoiceDesign`] —
@@ -149,6 +157,11 @@ pub(crate) const ARCH: &str = "qwen3_tts";
 /// `vokra.model.name` value written for the canonical Qwen3-TTS-0.6B-Base
 /// GGUF (default variant of [`convert`]).
 pub(crate) const NAME: &str = "qwen3-tts-12hz-0.6b-base";
+
+/// `vokra.model.name` value written for the
+/// `Qwen/Qwen3-TTS-12Hz-1.7B-Base` variant (un-fine-tuned 1.7B backbone;
+/// added 2026-08-01, Wave 4).
+pub(crate) const NAME_1_7B_BASE: &str = "qwen3-tts-12hz-1.7b-base";
 
 /// `vokra.model.name` value written for the
 /// `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` variant.
@@ -345,18 +358,30 @@ const TALKER_1_7B_TEXT_HIDDEN_SIZE: u32 = 2048;
 /// across every released variant.
 ///
 /// The variant names begin with a numeric-size prefix (`_0_6B_Base`,
-/// `_1_7B_CustomVoice`, `_1_7B_VoiceDesign`) so the enum reads verbatim
-/// against the upstream HF release ids (`0.6B-Base`, `1.7B-CustomVoice`,
-/// `1.7B-VoiceDesign`). Rust's default `non_camel_case_types` lint would
-/// rename them to something like `_0_6bBase` and lose that fidelity, so
-/// it is silenced for this enum only — this is a deliberate deviation
-/// from the workspace style guide, kept confined to this one type.
+/// `_1_7B_Base`, `_1_7B_CustomVoice`, `_1_7B_VoiceDesign`) so the enum
+/// reads verbatim against the upstream HF release ids (`0.6B-Base`,
+/// `1.7B-Base`, `1.7B-CustomVoice`, `1.7B-VoiceDesign`). Rust's default
+/// `non_camel_case_types` lint would rename them to something like
+/// `_0_6bBase` and lose that fidelity, so it is silenced for this enum
+/// only — this is a deliberate deviation from the workspace style
+/// guide, kept confined to this one type.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Qwen3TtsVariant {
     /// `Qwen/Qwen3-TTS-12Hz-0.6B-Base` — the original 0.6B release.
     /// Talker hidden=1024, ffn=3072.
     _0_6B_Base,
+    /// `Qwen/Qwen3-TTS-12Hz-1.7B-Base` — the un-fine-tuned 1.7B backbone
+    /// that the CustomVoice / VoiceDesign 1.7B siblings fine-tune from
+    /// (added 2026-08-01, Wave 4). Talker axes are byte-identical to
+    /// the two 1.7B fine-tuned siblings (hidden=2048, ffn=6144); only
+    /// the HF release id + `vokra.model.name` stamp differ. Distinct
+    /// arm rather than a slug-only add on `_1_7B_CustomVoice` because
+    /// this is the untuned base checkpoint (its `tts_model_type` is
+    /// distinct from `"custom_voice"` / `"voice_design"`) and a
+    /// downstream that ships all three GGUFs side-by-side needs
+    /// distinguishable provenance stamps.
+    _1_7B_Base,
     /// `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` — 1.7B variant tuned for
     /// zero-shot voice cloning (`tts_model_type = "custom_voice"`).
     /// Talker hidden=2048, ffn=6144.
@@ -373,32 +398,44 @@ impl Qwen3TtsVariant {
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::_0_6B_Base => NAME,
+            Self::_1_7B_Base => NAME_1_7B_BASE,
             Self::_1_7B_CustomVoice => NAME_1_7B_CUSTOM_VOICE,
             Self::_1_7B_VoiceDesign => NAME_1_7B_VOICE_DESIGN,
         }
     }
 
-    /// Talker hidden dimension for this variant.
+    /// Talker hidden dimension for this variant. Every 1.7B variant
+    /// (Base / CustomVoice / VoiceDesign) shares the widened axis
+    /// `TALKER_1_7B_HIDDEN_DIM = 2048`.
     pub(crate) const fn talker_hidden_dim(self) -> u32 {
         match self {
             Self::_0_6B_Base => TALKER_HIDDEN_DIM,
-            Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => TALKER_1_7B_HIDDEN_DIM,
+            Self::_1_7B_Base | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => {
+                TALKER_1_7B_HIDDEN_DIM
+            }
         }
     }
 
     /// Talker SwiGLU inner (`intermediate_size`) for this variant.
+    /// Every 1.7B variant shares `TALKER_1_7B_FFN_DIM = 6144`.
     pub(crate) const fn talker_ffn_dim(self) -> u32 {
         match self {
             Self::_0_6B_Base => TALKER_FFN_DIM,
-            Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => TALKER_1_7B_FFN_DIM,
+            Self::_1_7B_Base | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => {
+                TALKER_1_7B_FFN_DIM
+            }
         }
     }
 
-    /// Talker `text_hidden_size` for this variant.
+    /// Talker `text_hidden_size` for this variant. Every 1.7B variant
+    /// shares `TALKER_1_7B_TEXT_HIDDEN_SIZE = 2048` (identity-sized
+    /// against the widened talker hidden).
     pub(crate) const fn talker_text_hidden_size(self) -> u32 {
         match self {
             Self::_0_6B_Base => TALKER_TEXT_HIDDEN_SIZE,
-            Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => TALKER_1_7B_TEXT_HIDDEN_SIZE,
+            Self::_1_7B_Base | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => {
+                TALKER_1_7B_TEXT_HIDDEN_SIZE
+            }
         }
     }
 }
@@ -465,13 +502,15 @@ pub(crate) fn convert_variant(
     write_hparams(&mut b, variant);
     // Self-describing redistribution: the artifact carries its own licence.
     // Every Qwen3-TTS release ships `apache-2.0` end-to-end
-    // (huggingface.co/Qwen/Qwen3-TTS-12Hz-{0.6B-Base,1.7B-CustomVoice,
-    // 1.7B-VoiceDesign} model-card YAML front matter `license: apache-2.0`,
-    // fetched 2026-07-24 / 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
-    // The whole release — LM + codec + tokenizer + speaker encoder —
-    // carries a single apache-2.0 grant.
+    // (huggingface.co/Qwen/Qwen3-TTS-12Hz-{0.6B-Base,1.7B-Base,
+    // 1.7B-CustomVoice,1.7B-VoiceDesign} model-card YAML front matter
+    // `license: apache-2.0`, fetched 2026-07-24 / 2026-07-30 / 2026-08-01
+    // — CLAUDE.md「ハルシネーション厳禁」). The whole release — LM +
+    // codec + tokenizer + speaker encoder — carries a single apache-2.0
+    // grant.
     let source = match variant {
         Qwen3TtsVariant::_0_6B_Base => "Qwen/Qwen3-TTS-12Hz-0.6B-Base (apache-2.0 end-to-end)",
+        Qwen3TtsVariant::_1_7B_Base => "Qwen/Qwen3-TTS-12Hz-1.7B-Base (apache-2.0 end-to-end)",
         Qwen3TtsVariant::_1_7B_CustomVoice => {
             "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (apache-2.0 end-to-end)"
         }
@@ -1475,6 +1514,10 @@ mod tests {
             "qwen3-tts-12hz-0.6b-base"
         );
         assert_eq!(
+            Qwen3TtsVariant::_1_7B_Base.name(),
+            "qwen3-tts-12hz-1.7b-base"
+        );
+        assert_eq!(
             Qwen3TtsVariant::_1_7B_CustomVoice.name(),
             "qwen3-tts-12hz-1.7b-customvoice"
         );
@@ -1482,8 +1525,16 @@ mod tests {
             Qwen3TtsVariant::_1_7B_VoiceDesign.name(),
             "qwen3-tts-12hz-1.7b-voicedesign"
         );
-        // Two 1.7B variants must have DISTINCT NAME stamps so a downstream
-        // that ships the two GGUFs side-by-side can tell them apart.
+        // The three 1.7B variants must have PAIRWISE DISTINCT NAME stamps so
+        // a downstream that ships them side-by-side can tell them apart.
+        assert_ne!(
+            Qwen3TtsVariant::_1_7B_Base.name(),
+            Qwen3TtsVariant::_1_7B_CustomVoice.name(),
+        );
+        assert_ne!(
+            Qwen3TtsVariant::_1_7B_Base.name(),
+            Qwen3TtsVariant::_1_7B_VoiceDesign.name(),
+        );
         assert_ne!(
             Qwen3TtsVariant::_1_7B_CustomVoice.name(),
             Qwen3TtsVariant::_1_7B_VoiceDesign.name(),
@@ -1497,6 +1548,10 @@ mod tests {
             TALKER_HIDDEN_DIM
         );
         assert_eq!(
+            Qwen3TtsVariant::_1_7B_Base.talker_hidden_dim(),
+            TALKER_1_7B_HIDDEN_DIM
+        );
+        assert_eq!(
             Qwen3TtsVariant::_1_7B_CustomVoice.talker_hidden_dim(),
             TALKER_1_7B_HIDDEN_DIM
         );
@@ -1506,6 +1561,10 @@ mod tests {
         );
 
         assert_eq!(Qwen3TtsVariant::_0_6B_Base.talker_ffn_dim(), TALKER_FFN_DIM);
+        assert_eq!(
+            Qwen3TtsVariant::_1_7B_Base.talker_ffn_dim(),
+            TALKER_1_7B_FFN_DIM
+        );
         assert_eq!(
             Qwen3TtsVariant::_1_7B_CustomVoice.talker_ffn_dim(),
             TALKER_1_7B_FFN_DIM
@@ -1520,7 +1579,15 @@ mod tests {
             TALKER_TEXT_HIDDEN_SIZE
         );
         assert_eq!(
+            Qwen3TtsVariant::_1_7B_Base.talker_text_hidden_size(),
+            TALKER_1_7B_TEXT_HIDDEN_SIZE
+        );
+        assert_eq!(
             Qwen3TtsVariant::_1_7B_CustomVoice.talker_text_hidden_size(),
+            TALKER_1_7B_TEXT_HIDDEN_SIZE
+        );
+        assert_eq!(
+            Qwen3TtsVariant::_1_7B_VoiceDesign.talker_text_hidden_size(),
             TALKER_1_7B_TEXT_HIDDEN_SIZE
         );
     }
@@ -1548,6 +1615,87 @@ mod tests {
         assert_eq!(report.skipped_non_float, 0);
         let out = builder.to_bytes().expect("serialize");
         GgufFile::parse(out).expect("parse")
+    }
+
+    /// Mirror of the CustomVoice / VoiceDesign tests below for the
+    /// `_1_7B_Base` variant added 2026-08-01 (Wave 4). Pins the same
+    /// three-fence contract: arch tag is Qwen3-TTS, name stamp is the
+    /// un-fine-tuned 1.7B-Base id, talker axes are the widened 1.7B set
+    /// while every invariant axis (code predictor, sample rate, speaker
+    /// embed, RoPE, RMSNorm, codec handshake) matches the 0.6B sibling.
+    /// Provenance is apache-2.0 permissive under the 1.7B-Base NAME
+    /// (distinct from every other variant).
+    #[test]
+    fn convert_variant_1_7b_base_emits_the_1_7b_axes_and_base_name() {
+        let file = round_trip_variant(Qwen3TtsVariant::_1_7B_Base);
+        // Arch tag never changes with variant — every variant is Qwen3-TTS.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        // Variant-selected name.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME_1_7B_BASE)
+        );
+        // Variant-selected talker axes — 1.7B widened set.
+        assert_eq!(
+            get_u32(&file, KEY_TALKER_HIDDEN_DIM),
+            TALKER_1_7B_HIDDEN_DIM
+        );
+        assert_eq!(get_u32(&file, KEY_TALKER_FFN_DIM), TALKER_1_7B_FFN_DIM);
+        assert_eq!(
+            get_u32(&file, KEY_TALKER_TEXT_HIDDEN_SIZE),
+            TALKER_1_7B_TEXT_HIDDEN_SIZE
+        );
+        // Invariant axes: shared with 0.6B.
+        assert_eq!(get_u32(&file, KEY_TALKER_N_LAYER), TALKER_N_LAYER);
+        assert_eq!(get_u32(&file, KEY_TALKER_N_HEAD), TALKER_N_HEAD);
+        assert_eq!(get_u32(&file, KEY_TALKER_N_HEAD_KV), TALKER_N_HEAD_KV);
+        assert_eq!(get_u32(&file, KEY_TALKER_HEAD_DIM), TALKER_HEAD_DIM);
+        assert_eq!(get_u32(&file, KEY_TALKER_VOCAB_SIZE), TALKER_VOCAB_SIZE);
+        assert_eq!(
+            get_u32(&file, KEY_TALKER_TEXT_VOCAB_SIZE),
+            TALKER_TEXT_VOCAB_SIZE
+        );
+        assert_eq!(
+            get_u32(&file, KEY_TALKER_MAX_POSITIONS),
+            TALKER_MAX_POSITIONS
+        );
+        assert!((get_f32(&file, KEY_TALKER_ROPE_BASE) - TALKER_ROPE_BASE).abs() < 1e-3);
+        assert!((get_f32(&file, KEY_TALKER_RMS_NORM_EPS) - TALKER_RMS_NORM_EPS).abs() < 1e-12);
+        assert_eq!(
+            get_u32(&file, KEY_TALKER_POS_ID_PER_SEC),
+            TALKER_POS_ID_PER_SEC
+        );
+        assert_eq!(
+            get_u32(&file, KEY_TALKER_NUM_CODE_GROUPS),
+            TALKER_NUM_CODE_GROUPS
+        );
+        // Code predictor identical across every released variant.
+        assert_eq!(get_u32(&file, KEY_CP_HIDDEN_DIM), CP_HIDDEN_DIM);
+        assert_eq!(get_u32(&file, KEY_CP_N_LAYER), CP_N_LAYER);
+        assert_eq!(get_u32(&file, KEY_CP_FFN_DIM), CP_FFN_DIM);
+        assert_eq!(get_u32(&file, KEY_CP_VOCAB_SIZE), CP_VOCAB_SIZE);
+        // Provenance: apache-2.0 permissive under the 1.7B-Base NAME
+        // (distinct from every sibling — a downstream that ships all
+        // three 1.7B GGUFs side-by-side must be able to tell them apart
+        // by `vokra.provenance.model_id`).
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some(NAME_1_7B_BASE)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("apache-2.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str())
+        );
     }
 
     #[test]
@@ -1650,14 +1798,18 @@ mod tests {
         );
     }
 
-    /// The two 1.7B GGUFs (CustomVoice + VoiceDesign) built from the same
-    /// synthetic safetensors input must be **identical up to the NAME +
-    /// provenance model_id + source strings**: same arch, same tensor
-    /// count, same variant-selected talker + CP axes. This pins the
-    /// "1.7B variants share topology, differ only in stamp" contract
-    /// against silent drift.
+    /// Every 1.7B GGUF (Base + CustomVoice + VoiceDesign) built from the
+    /// same synthetic safetensors input must be **identical up to the
+    /// NAME + provenance model_id + source strings**: same arch, same
+    /// tensor count, same variant-selected talker + CP axes. This pins
+    /// the "1.7B variants share topology, differ only in stamp" contract
+    /// against silent drift. Extended 2026-08-01 (Wave 4) from the
+    /// original 2-variant sweep to include `_1_7B_Base`; the pin now
+    /// enforces pairwise-identical axes across all three 1.7B variants
+    /// and pairwise-distinct NAME stamps.
     #[test]
-    fn both_1_7b_variants_share_talker_and_cp_axes() {
+    fn all_1_7b_variants_share_talker_and_cp_axes() {
+        let base_17b = round_trip_variant(Qwen3TtsVariant::_1_7B_Base);
         let cv = round_trip_variant(Qwen3TtsVariant::_1_7B_CustomVoice);
         let vd = round_trip_variant(Qwen3TtsVariant::_1_7B_VoiceDesign);
 
@@ -1686,35 +1838,48 @@ mod tests {
             KEY_SPEAKER_EMBED_DIM,
         ] {
             assert_eq!(
+                get_u32(&base_17b, key),
+                get_u32(&cv, key),
+                "{key} must match across 1.7B Base and CustomVoice"
+            );
+            assert_eq!(
                 get_u32(&cv, key),
                 get_u32(&vd, key),
-                "{key} must match across the two 1.7B variants"
+                "{key} must match across 1.7B CustomVoice and VoiceDesign"
             );
         }
-        // NAME must differ.
-        assert_ne!(
-            cv.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            vd.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-        );
+        // NAME must be PAIRWISE distinct.
+        let name_base_17b = base_17b
+            .get(chunks::KEY_MODEL_NAME)
+            .and_then(|v| v.as_str());
+        let name_cv = cv.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str());
+        let name_vd = vd.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str());
+        assert_ne!(name_base_17b, name_cv);
+        assert_ne!(name_base_17b, name_vd);
+        assert_ne!(name_cv, name_vd);
         // But 0.6B and 1.7B talker hidden MUST differ (proves the variant
         // enum actually selects distinct axes).
-        let base = round_trip_variant(Qwen3TtsVariant::_0_6B_Base);
+        let base_06b = round_trip_variant(Qwen3TtsVariant::_0_6B_Base);
         assert_ne!(
-            get_u32(&base, KEY_TALKER_HIDDEN_DIM),
-            get_u32(&cv, KEY_TALKER_HIDDEN_DIM),
+            get_u32(&base_06b, KEY_TALKER_HIDDEN_DIM),
+            get_u32(&base_17b, KEY_TALKER_HIDDEN_DIM),
             "0.6B and 1.7B talker hidden dims MUST differ"
         );
         assert_ne!(
-            get_u32(&base, KEY_TALKER_FFN_DIM),
-            get_u32(&cv, KEY_TALKER_FFN_DIM),
+            get_u32(&base_06b, KEY_TALKER_FFN_DIM),
+            get_u32(&base_17b, KEY_TALKER_FFN_DIM),
             "0.6B and 1.7B talker FFN dims MUST differ"
         );
     }
 
-    /// BF16 pass-through works uniformly for every variant. The 1.7B
+    /// BF16 pass-through works uniformly for every 1.7B variant. The
     /// upstream releases ship BF16 (`safetensors.parameters.BF16 =
-    /// 1_916_676_352` per the HF model card fetched 2026-07-30), so this
-    /// arm is the real production path.
+    /// 1_916_676_352` per the HF model cards fetched 2026-07-30 /
+    /// 2026-08-01 — Base / CustomVoice / VoiceDesign all ship the same
+    /// BF16 tensor count), so this arm is the real production path. The
+    /// `_1_7B_Base` variant (added 2026-08-01, Wave 4) is included in
+    /// the sweep so the BF16 posture is pinned across every 1.7B
+    /// release the converter dispatches.
     #[test]
     fn bf16_pass_through_works_for_1_7b_variants() {
         // Reuse the fixture builder pattern from the top of the test module.
@@ -1730,6 +1895,7 @@ mod tests {
         input.extend_from_slice(&bf16);
 
         for variant in [
+            Qwen3TtsVariant::_1_7B_Base,
             Qwen3TtsVariant::_1_7B_CustomVoice,
             Qwen3TtsVariant::_1_7B_VoiceDesign,
         ] {

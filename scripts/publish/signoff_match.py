@@ -129,6 +129,79 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "SepFormer WHAM 16k enhancement (`speechbrain/sepformer-wham16k-enhancement`)"
     ],
     "sepformer-whamr16k": ["SepFormer WHAM-R 16k (`speechbrain/sepformer-whamr16k`)"],
+    # 2026-08-01 Wave 4 variant-enum extension: sepformer-libri2mix
+    # (`speechbrain/sepformer-libri2mix`, apache-2.0). Same converter as
+    # the sibling SepFormer rows above — a distinct `SepformerVariant::
+    # Libri2Mix` enum arm ensures the artifact carries a distinct
+    # `vokra.model.name` / `vokra.provenance.upstream_hf` /
+    # `vokra.sepformer.variant` = `libri2mix` (fail-loud rather than
+    # silently inheriting the Wsj02mix sibling's provenance — the
+    # weight license is identical apache-2.0 but the training corpus
+    # differs: LibriMix = LibriSpeech-derived CC-BY-4.0 vs WSJ0-2mix =
+    # proprietary WSJ0). §3.1 row signed 2026-08-01 yousan (依頼者許可
+    # = CC 判断) per primary source `https://huggingface.co/speechbrain/
+    # sepformer-libri2mix` (cardData `license: apache-2.0`, SpeechBrain
+    # family, sibling of the three rows above). The row heading matches
+    # this entry byte-for-byte.
+    "sepformer-libri2mix": [
+        "sepformer-libri2mix (`speechbrain/sepformer-libri2mix`)"
+    ],
+    # 2026-08-01 Wave 4 variant-enum extension: sepformer-libri3mix
+    # (`speechbrain/sepformer-libri3mix`, apache-2.0). Same converter as
+    # the sibling SepFormer rows — a distinct `SepformerVariant::Libri3Mix`
+    # enum arm ensures the artifact carries a distinct `vokra.model.name`
+    # / `vokra.provenance.upstream_hf` / `vokra.sepformer.variant = "libri3mix"`
+    # / `vokra.sepformer.n_out = 3` (fail-loud rather than silently
+    # inheriting the 2-speaker Libri2Mix sibling's provenance + n_out).
+    # The weight license is identical apache-2.0 to every SepFormer
+    # sibling; the axis that differs is the masker output head (branches
+    # into 3 parallel speaker streams instead of 2 = cocktail-party
+    # separation head). §3.1 row signed 2026-08-01 yousan (依頼者許可 =
+    # CC 判断) per primary source `https://huggingface.co/speechbrain/
+    # sepformer-libri3mix` (cardData `license: apache-2.0`, SpeechBrain
+    # family, 3-speaker cocktail-party sibling of the libri2mix row above).
+    # The row heading matches this entry byte-for-byte.
+    "sepformer-libri3mix": [
+        "sepformer-libri3mix (`speechbrain/sepformer-libri3mix`)"
+    ],
+    # 2026-08-01 Wave 4 variant-enum extension: sepformer-whamr (8 kHz
+    # WHAMR! sibling of `speechbrain/sepformer-whamr16k`, apache-2.0).
+    # Same converter as the sibling SepFormer rows above — a distinct
+    # `SepformerVariant::Whamr8k` enum arm ensures the artifact carries
+    # a distinct `vokra.model.name` / `vokra.provenance.upstream_hf` /
+    # `vokra.sepformer.variant` = `whamr8k` (fail-loud rather than
+    # silently inheriting the 16 kHz sibling's provenance — the weight
+    # license is identical apache-2.0 but the upstream HF repo differs:
+    # `speechbrain/sepformer-whamr` = 8 kHz vs
+    # `speechbrain/sepformer-whamr16k` = 16 kHz. Both are the WHAMR!
+    # dereverb + denoise task, only the sample rate differs). §3.1 row
+    # signed 2026-08-01 yousan (依頼者許可 = CC 判断) per primary source
+    # `https://huggingface.co/speechbrain/sepformer-whamr` (cardData
+    # `license: apache-2.0`, SpeechBrain family, base-sample-rate sibling
+    # of the whamr16k row above). The row heading matches this entry
+    # byte-for-byte.
+    "sepformer-whamr-8khz": [
+        "sepformer-whamr (`speechbrain/sepformer-whamr`)"
+    ],
+    # 2026-08-01 Wave 4 variant-enum extension: sepformer-dns4-16k-enhancement
+    # (`speechbrain/sepformer-dns4-16k-enhancement`, apache-2.0). Same
+    # converter as the sibling SepFormer rows above — a distinct
+    # `SepformerVariant::Dns4Enhancement` enum arm ensures the artifact
+    # carries a distinct `vokra.model.name` / `vokra.provenance.upstream_hf`
+    # / `vokra.sepformer.variant` = `dns4-16k-enhancement` (fail-loud
+    # rather than silently inheriting any WHAM! / WHAMR! enhancement
+    # sibling's provenance — the weight license is identical apache-2.0
+    # but the training corpus differs: Microsoft DNS-4 (Deep Noise
+    # Suppression Challenge 4) vs WSJ0-derived WHAM! / WHAMR!). All four
+    # enhancement variants share `vokra.sepformer.n_out = 1`, so
+    # provenance is the only surface that discriminates them at load
+    # time — silent misrouting would not fail loudly at the binder.
+    # §3.1 row signed 2026-08-01 yousan (依頼者許可 = CC 判断) per
+    # primary source `https://huggingface.co/speechbrain/sepformer-dns4-16k-enhancement`.
+    # The row heading matches this entry byte-for-byte.
+    "sepformer-dns4-16k-enhancement": [
+        "sepformer-dns4-16k-enhancement (`speechbrain/sepformer-dns4-16k-enhancement`)"
+    ],
     "whisper-tiny": ["Whisper tiny"],
     "whisper-large-v2": ["Whisper large-v2"],
     "whisper-medium.en": ["Whisper medium.en"],
@@ -158,6 +231,35 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "vocos-mel-24khz": [
         "Vocos mel 24kHz (`charactr/vocos-mel-24khz`)"
     ],
+    # 2026-08-01 Wave 4 slug-only add: Charactr AI Vocos EnCodec variant
+    # (`charactr/vocos-encodec-24khz`, MIT). Distinct HF publish target from
+    # the sibling `vocos-mel-24khz` — the single Rust converter
+    # (`crates/vokra-convert/src/models/vocos.rs`) dispatches both variants
+    # through the `VocosVariant` enum; the encodec variant swaps the mel
+    # filterbank front-end for an EnCodec latent front-end (128-d @ 75 Hz)
+    # while sharing the ConvNeXt V2 backbone + iSTFT head verbatim.
+    # `crates/vokra-convert/src/lib.rs::from_arg` already accepts every
+    # slug alias (`vocos-encodec-24khz` / `vocos_encodec_24khz` /
+    # `vocos-encodec` / `charactr/vocos-encodec-24khz`) and the convert
+    # dispatch routes them to `VocosVariant::Encodec24khz` (lines 3289-3295),
+    # so this Wave 4 candidate is purely slug-only — no code changes to the
+    # converter module. `crates/vokra-core/src/compliance/license_class.rs`
+    # already maps `"vocos-encodec-24khz"` to `LicenseClass::Permissive`
+    # end-to-end (lines 770-774). The §3.1 row was signed 2026-08-01 yousan
+    # (依頼者委任 = CC 判断) at row 386 of `docs/license-audit.md`, per
+    # primary source `https://huggingface.co/charactr/vocos-encodec-24khz`
+    # (HF cardData API `license: mit`, verified 2026-08-01 — CLAUDE.md
+    # 「ハルシネーション厳禁」). This REPO map entry lifts the pre-signed
+    # row from UNKNOWN_REPO to APPROVED for the `vokra/vocos-encodec-24khz`
+    # publish. ~161 MB single pytorch pickle → M1 iMac 16 GB でローカル
+    # 変換 safe per memory `[[feedback-large-models-on-vast-ai]]` (≥8 GB
+    # threshold 下 = comfortable margin, vast.ai 不要). The row heading
+    # matches this entry byte-for-byte (`Vocos encodec 24kHz` title case,
+    # sibling of the mel-24khz entry pattern above, distinct from the
+    # `vocos-encodec-24khz` slug this entry keys on).
+    "vocos-encodec-24khz": [
+        "Vocos encodec 24kHz (`charactr/vocos-encodec-24khz`)"
+    ],
     # 2026-08-01 Wave 3 — SNAC codec variants (hubertsiuzdak/snac_{24khz,44khz}, MIT).
     "snac-24khz": ["SNAC 24kHz (`hubertsiuzdak/snac_24khz`)"],
     "snac-44khz": ["SNAC 44kHz (`hubertsiuzdak/snac_44khz`)"],
@@ -181,8 +283,55 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "moss-audio-tokenizer": [
         "MOSS-Audio-Tokenizer (Full) (`OpenMOSS-Team/MOSS-Audio-Tokenizer`)"
     ],
+    "moss-audio-tokenizer-full": [
+        "MOSS-Audio-Tokenizer (Full) (`OpenMOSS-Team/MOSS-Audio-Tokenizer`)"
+    ],
     "moss-audio-tokenizer-nano": [
         "MOSS-Audio-Tokenizer (Nano) (`OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`)"
+    ],
+    # 2026-08-01 Wave 4 slug-only add: OpenMOSS Team MOSS-VoiceGenerator
+    # (`OpenMOSS-Team/MOSS-VoiceGenerator`, apache-2.0). Distinct HF publish
+    # target from the `moss_tts` family (`OpenMOSS-Team/MOSS-TTS[-v1.5|
+    # -Nano-100M|-Local-Transformer-v1.5]`) even though the internal
+    # `model_type = "moss_tts_delay"` tag is shared and the converter
+    # currently dispatches through `MossTtsVariant::Delay`. The distinct
+    # §3.1 row is what a publisher hits — the row heading matches this
+    # entry byte-for-byte.
+    "moss-voice-generator": [
+        "MOSS-VoiceGenerator (`OpenMOSS-Team/MOSS-VoiceGenerator`)"
+    ],
+    # 2026-08-01 Wave 4 slug-only add: Facebook wav2vec2 large 960h with
+    # self-training on LV60 unlabelled audio
+    # (`facebook/wav2vec2-large-960h-lv60-self`, apache-2.0). Distinct HF
+    # publish target from the four `wav2vec2_ctc` family rows
+    # (base-960h / large-xlsr-53 / -xlsr-53-japanese / -xlsr-53-chinese-zh-cn)
+    # in §3.1 because it is a distinct upstream release (Xu et al. 2021,
+    # arXiv:2010.11430 self-training / pseudo-labelling procedure over
+    # LibriVox LV60). The converter currently routes this slug through
+    # `Wav2Vec2CtcVariant::LargeXlsr53Base` (closest arch match — same
+    # large 24L / 1024h / 16h / 4096ffn axes + `feat_extract_norm=layer` +
+    # `do_stable_layer_norm=true` + `vocab_size=32`). The row heading
+    # matches this entry byte-for-byte.
+    "wav2vec2-large-960h-lv60-self": [
+        "wav2vec2-large-960h-lv60-self (`facebook/wav2vec2-large-960h-lv60-self`)"
+    ],
+    # 2026-08-01 Wave 4 variant-enum extension: Facebook wav2vec2 XLSR-53
+    # large backbone with an eSpeak-NG IPA phoneme CTC head
+    # (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`, apache-2.0). Distinct HF
+    # publish target from the five `wav2vec2_ctc` family rows already
+    # covered above (base-960h / large-xlsr-53 / -xlsr-53-japanese /
+    # -xlsr-53-chinese-zh-cn / large-960h-lv60-self) because the
+    # tokenizer / CTC output space is the eSpeak-NG IPA phoneme
+    # inventory (`vocab_size=392`, arXiv:2109.11680 CommonVoice
+    # fine-tune) rather than a character-level vocabulary — this row
+    # complements the char / kana+kanji / hanzi rows above. The
+    # converter routes this slug to the new dedicated
+    # `Wav2Vec2CtcVariant::LargeXlsr53EspeakCvFt` arm (added the same
+    # wave) so `vokra.wav2vec2_ctc.vocab_size=392` +
+    # `has_ctc_head=true` are stamped faithfully. The row heading
+    # matches this entry byte-for-byte.
+    "wav2vec2-xlsr-53-espeak-cv-ft": [
+        "wav2vec2-xlsr-53-espeak-cv-ft (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`)"
     ],
     # 2026-08-01 Wave 3 — Amphion NaturalSpeech 3 FACodec (apache-2.0
     # factorized VQ codec). Single HF repo `amphion/naturalspeech3_facodec`
@@ -205,6 +354,157 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "yue-xcodec-mini": [
         "YuE xcodec-mini (`m-a-p/xcodec_mini_infer`)"
+    ],
+    # 2026-08-01 Wave 4 slug-only add: MeloTTS-Korean
+    # (`myshell-ai/MeloTTS-Korean`, MIT). Distinct HF publish target from
+    # the sibling `melotts` family (MeloTTS-English / MeloTTS-Chinese) —
+    # the single Rust converter (`crates/vokra-convert/src/models/
+    # melotts.rs`) dispatches all three variants through the
+    # `MeloVariant` enum (Korean = `n_symbols=219`, `num_tones=16`,
+    # `num_languages=10`, `spk2id={KR:0}`, per HF cardData
+    # `myshell-ai/MeloTTS-Korean/raw/main/config.json` fetched
+    # 2026-07-30). §3.1 row was signed 2026-07-30 yousan; this REPO map
+    # entry lifts it from UNKNOWN_REPO to APPROVED for the
+    # `vokra/melotts-korean` publish. Sibling `melotts-english` /
+    # `melotts-chinese` repo entries can be added when owner routes
+    # them (row + converter map are already in place).
+    "melotts-korean": [
+        "MeloTTS-Korean (`myshell-ai/MeloTTS-Korean`)"
+    ],
+    # 2026-08-01 Wave 4 slug-only add: MeloTTS-Chinese
+    # (`myshell-ai/MeloTTS-Chinese`, MIT). Distinct HF publish target from
+    # the sibling `melotts` family (MeloTTS-English / MeloTTS-Korean) —
+    # the single Rust converter (`crates/vokra-convert/src/models/
+    # melotts.rs`) dispatches all three variants through the
+    # `MeloVariant` enum (Chinese = `n_symbols=112`, `num_tones=11`,
+    # `num_languages=1`, `spk2id={ZH:1}`, per HF cardData
+    # `myshell-ai/MeloTTS-Chinese/raw/main/config.json` fetched
+    # 2026-07-30). §3.1 row was signed 2026-07-30 yousan; this REPO map
+    # entry lifts it from UNKNOWN_REPO to APPROVED for the
+    # `vokra/melotts-chinese` publish. Sibling `melotts-english` repo
+    # entry can be added when owner routes it (row + converter map are
+    # already in place, mirror of the melotts-korean precedent above).
+    "melotts-chinese": [
+        "MeloTTS-Chinese (`myshell-ai/MeloTTS-Chinese`)"
+    ],
+    # 2026-08-01 Wave 4 slug-only add: AI4Bharat Indic Parler-TTS
+    # (`ai4bharat/indic-parler-tts`, apache-2.0). Distinct HF publish target
+    # from the sibling `parler-tts-mini-multilingual-v1.1` — the single
+    # Rust converter (`crates/vokra-convert/src/models/parler.rs`)
+    # dispatches both variants through the `ParlerVariant` enum
+    # (Indic = fine-tune on 21 Indic languages, same tensor topology as
+    # the multilingual base per parler.rs docstring lines 39-41 = "the
+    # tensor topology and every primary hparam listed above are
+    # unchanged"). The §3.1 row was signed 2026-07-30 yousan
+    # (`docs/license-audit.md` line 343 = **Indic Parler-TTS**); this
+    # REPO map entry lifts it from UNKNOWN_REPO to APPROVED for the
+    # `vokra/indic-parler-tts` publish. The `gated=auto` HF flag on
+    # the upstream is access control only (owner-side accept); the
+    # license itself is apache-2.0 per the card front-matter. Sibling
+    # `parler-tts-mini-multilingual-v1.1` publish is not routed by this
+    # entry — a separate REPO entry can be added when owner routes it
+    # (row + converter map are already in place, mirror of the
+    # melotts-korean / melotts-chinese slug-only precedents above).
+    # ~3.58 GB single safetensors → M1 iMac 16 GB でローカル変換 safe
+    # per memory `[[feedback-large-models-on-vast-ai]]` (≥8 GB threshold
+    # 下 = comfortable margin, vast.ai 不要).
+    "indic-parler-tts": [
+        "Indic Parler-TTS (`ai4bharat/indic-parler-tts`)"
+    ],
+    # 2026-08-01 Wave 4 variant-enum extension: Parler-TTS-Mini-v1
+    # (`parler-tts/parler-tts-mini-v1`, apache-2.0). Distinct HF publish
+    # target from the sibling `parler-tts-mini-multilingual-v1.1` and
+    # `indic-parler-tts` — the single Rust converter
+    # (`crates/vokra-convert/src/models/parler.rs`) dispatches all three
+    # variants through the `ParlerVariant` enum (mini-v1 English-only =
+    # `vocab_size = 32128` T5 text vocab only, no audio-code alphabet
+    # merged in; multilingual = `vocab_size = 90714` with the alphabet
+    # merged). Every T5 / decoder / audio-encoder hparam is identical
+    # across the three variants per HF cardData
+    # `parler-tts/parler-tts-mini-v1/raw/main/config.json` fetched
+    # 2026-08-01 — CLAUDE.md「ハルシネーション厳禁」. Signed 2026-08-01
+    # yousan (依頼者許可 = CC 判断) in `docs/license-audit.md` §3.1;
+    # this REPO map entry lifts it from UNKNOWN_REPO to APPROVED for the
+    # `vokra/parler-tts-mini-v1` publish. ~3.5 GB single safetensors
+    # → M1 iMac 16 GB でローカル変換 safe per memory
+    # `[[feedback-large-models-on-vast-ai]]` (≥8 GB threshold 下 =
+    # comfortable margin, vast.ai 不要).
+    "parler-tts-mini-v1": [
+        "parler-tts-mini-v1 (`parler-tts/parler-tts-mini-v1`)"
+    ],
+    # 2026-08-01 Wave 4 slug-only add: Qwen3-TTS-12Hz-0.6B-CustomVoice
+    # (`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`, apache-2.0). Distinct HF publish
+    # target from the sibling `qwen3-tts-12hz-0.6b-base` (row 288) and the two
+    # 1.7B rows (rows 331/332) — the single Rust converter
+    # (`crates/vokra-convert/src/models/qwen3_tts.rs`) dispatches this slug
+    # through the existing `Qwen3TtsVariant::_0_6B_Base` path per the parent
+    # decision (slug-only = existing 0.6B branch fine-tune shares topology
+    # verbatim; `config.json.tts_model_type = "custom_voice"` head is
+    # identically shaped). The §3.1 row was signed 2026-08-01 yousan
+    # (依頼者許可 = CC 判断) per primary source
+    # `https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` (HF
+    # cardData tag `license: apache-2.0` — Qwen3-TTS family walk); this
+    # REPO map entry lifts it from UNKNOWN_REPO to APPROVED for the
+    # `vokra/qwen3-tts-12hz-0.6b-customvoice` publish. ~3.66 GB single
+    # safetensors → M1 iMac 16 GB でローカル変換 safe per memory
+    # `[[feedback-large-models-on-vast-ai]]` (≥8 GB threshold 下 =
+    # comfortable margin, vast.ai 不要). The row heading matches this entry
+    # byte-for-byte.
+    "qwen3-tts-12hz-0.6b-customvoice": [
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice (`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`)"
+    ],
+    # 2026-08-01 Wave 4 variant-enum extension: Qwen3-TTS-12Hz-1.7B-Base
+    # (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`, apache-2.0). Distinct HF publish
+    # target from the sibling `qwen3-tts-12hz-0.6b-base` (row 288) and the two
+    # 1.7B fine-tuned rows (rows 331/332 = CustomVoice/VoiceDesign) — the
+    # single Rust converter (`crates/vokra-convert/src/models/qwen3_tts.rs`)
+    # dispatches this slug through a NEW `Qwen3TtsVariant::_1_7B_Base` arm
+    # (rather than slug-only on `_1_7B_CustomVoice`) so a downstream that
+    # ships all three 1.7B GGUFs side-by-side can tell them apart by
+    # `vokra.provenance.upstream_hf` / `vokra.model.name`. Talker axes are
+    # byte-identical to the two 1.7B fine-tuned siblings (hidden=2048,
+    # ffn=6144, n_layer=28) — this is the un-fine-tuned 1.7B backbone that
+    # the CustomVoice / VoiceDesign 1.7B siblings fine-tune from. The §3.1
+    # row was signed 2026-08-01 yousan (依頼者許可 = CC 判断) per primary
+    # source `https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base` (HF
+    # cardData tag `license: apache-2.0` — Qwen3-TTS family walk); this
+    # REPO map entry lifts it from UNKNOWN_REPO to APPROVED for the
+    # `vokra/qwen3-tts-12hz-1.7b-base` publish. ~3679 MB single safetensors
+    # → M1 iMac 16 GB でローカル変換 safe per memory
+    # `[[feedback-large-models-on-vast-ai]]` (≥8 GB threshold 下 =
+    # comfortable margin, vast.ai 不要). The row heading matches this entry
+    # byte-for-byte.
+    "qwen3-tts-12hz-1.7b-base": [
+        "Qwen3-TTS-12Hz-1.7B-Base (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`)"
+    ],
+    # 2026-08-01 Wave 4 slug-only add: Qwen3-TTS-12Hz-1.7B-CustomVoice
+    # (`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, apache-2.0). Distinct HF publish
+    # target from the sibling 1.7B-Base (row 334) and 1.7B-VoiceDesign (row 332)
+    # — the single Rust converter (`crates/vokra-convert/src/models/qwen3_tts.rs`)
+    # dispatches this slug through the existing `Qwen3TtsVariant::_1_7B_CustomVoice`
+    # arm (added in an earlier Wave 4 candidate together with the
+    # `ModelKind::Qwen3TtsCustomVoice17B` dispatch at
+    # `crates/vokra-convert/src/lib.rs::from_arg` + convert dispatch; row 331 in
+    # `docs/license-audit.md` §3.1 was signed 2026-07-30 yousan when that
+    # earlier candidate landed). This entry closes the REPO_TO_SIGNOFF_ROWS
+    # loop so `scripts/publish/upload.sh --repo qwen3-tts-12hz-1.7b-customvoice`
+    # resolves from UNKNOWN_REPO to APPROVED against the pre-signed §3.1 row —
+    # sibling of the 1.7B-Base entry above where the variant-enum extension
+    # land + REPO map add went in the same wave. 1.7B-CustomVoice is the
+    # `tts_model_type = "custom_voice"` fine-tune of the un-fine-tuned 1.7B-Base
+    # backbone (row 334); talker + code-predictor axes are byte-identical
+    # between the two (hidden=2048, ffn=6144, n_layer=28, GQA n_head_kv=8,
+    # head_dim=128), only the HF release id + `vokra.model.name` /
+    # `vokra.provenance.upstream_hf` stamps differ (which is why the earlier
+    # candidate landed a distinct `Qwen3TtsVariant::_1_7B_CustomVoice` arm
+    # rather than routing slug-only through `_1_7B_Base` — a downstream that
+    # ships all three 1.7B GGUFs side-by-side needs distinguishable provenance
+    # stamps). ~3656 MB single BF16 safetensors → M1 iMac 16 GB でローカル
+    # 変換 safe per memory `[[feedback-large-models-on-vast-ai]]` (≥8 GB
+    # threshold 下 = comfortable margin, vast.ai 不要). The row heading
+    # matches this entry byte-for-byte.
+    "qwen3-tts-12hz-1.7b-customvoice": [
+        "Qwen3-TTS-12Hz-1.7B-CustomVoice (`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`)"
     ],
 }
 
@@ -263,6 +563,20 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "Qwen/Qwen3-TTS-1.7B",
         "Qwen3-TTS-12Hz-1.7B-CustomVoice (`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`)",
         "Qwen3-TTS-12Hz-1.7B-VoiceDesign (`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`)",
+        # 2026-08-01 Wave 4 slug-only add — same converter dispatches the
+        # 0.6B-CustomVoice fine-tune through the existing 0.6B-Base variant
+        # arm (per parent decision: byte-identical talker + code-predictor
+        # axes; CustomVoice head is same topology). Row heading matches
+        # `docs/license-audit.md` §3.1 byte-for-byte.
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice (`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`)",
+        # 2026-08-01 Wave 4 variant-enum extension — same converter
+        # dispatches the un-fine-tuned 1.7B-Base backbone through the NEW
+        # `Qwen3TtsVariant::_1_7B_Base` arm (rather than slug-only on
+        # `_1_7B_CustomVoice`) so a downstream that ships all three 1.7B
+        # GGUFs side-by-side can tell them apart by
+        # `vokra.provenance.upstream_hf` / `vokra.model.name`. Row heading
+        # matches `docs/license-audit.md` §3.1 byte-for-byte.
+        "Qwen3-TTS-12Hz-1.7B-Base (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`)",
     ],
     "voxcpm2": ["openbmb/VoxCPM2", "openbmb/VoxCPM-0.5B"],
     "vibevoice": ["microsoft/VibeVoice-1.5B", "microsoft/VibeVoice-Large"],
@@ -368,6 +682,11 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "parler": [
         "Parler-TTS-Mini-Multilingual-v1.1 (`parler-tts/parler-tts-mini-multilingual-v1.1`)",
         "Indic Parler-TTS (`ai4bharat/indic-parler-tts`)",
+        # 2026-08-01 Wave 4 variant-enum extension: Parler-TTS-Mini-v1
+        # (`parler-tts/parler-tts-mini-v1`). Same converter dispatches all
+        # three variants via `ParlerVariant` enum. Row heading matches
+        # `docs/license-audit.md` §3.1 byte-for-byte.
+        "parler-tts-mini-v1 (`parler-tts/parler-tts-mini-v1`)",
     ],
     "qwen3_asr": [
         "Qwen3-ASR-0.6B (`Qwen/Qwen3-ASR-0.6B`)",
@@ -377,6 +696,40 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "SepFormer WSJ0-2mix (`speechbrain/sepformer-wsj02mix`)",
         "SepFormer WHAM 16k enhancement (`speechbrain/sepformer-wham16k-enhancement`)",
         "SepFormer WHAM-R 16k (`speechbrain/sepformer-whamr16k`)",
+        # 2026-08-01 Wave 4 variant-enum extension — same converter dispatches
+        # all four SepFormer variants via `SepformerVariant` enum. The distinct
+        # `SepformerVariant::Libri2Mix` arm ensures a distinct
+        # `vokra.sepformer.variant = "libri2mix"` stamp rather than silently
+        # inheriting Wsj02mix's `wsj02mix` tag. Row heading matches
+        # `docs/license-audit.md` §3.1 byte-for-byte.
+        "sepformer-libri2mix (`speechbrain/sepformer-libri2mix`)",
+        # 2026-08-01 Wave 4 variant-enum extension — same converter dispatches
+        # the 3-speaker cocktail-party sibling via `SepformerVariant::Libri3Mix`.
+        # The distinct enum arm ensures a distinct `vokra.sepformer.variant =
+        # "libri3mix"` stamp + `vokra.sepformer.n_out = 3` (new metadata chunk
+        # added the same wave = binder output-stream axis explicit at load
+        # time) rather than silently inheriting the 2-speaker sibling's tags.
+        # Row heading matches `docs/license-audit.md` §3.1 byte-for-byte.
+        "sepformer-libri3mix (`speechbrain/sepformer-libri3mix`)",
+        # 2026-08-01 Wave 4 variant-enum extension — same converter dispatches
+        # the 8 kHz WHAMR! sibling via `SepformerVariant::Whamr8k`. The
+        # distinct enum arm ensures a distinct `vokra.sepformer.variant =
+        # "whamr8k"` stamp + `vokra.provenance.upstream_hf =
+        # "speechbrain/sepformer-whamr"` rather than silently inheriting
+        # the 16 kHz sibling's tags. Row heading matches
+        # `docs/license-audit.md` §3.1 byte-for-byte.
+        "sepformer-whamr (`speechbrain/sepformer-whamr`)",
+        # 2026-08-01 Wave 4 variant-enum extension — same converter dispatches
+        # the Microsoft DNS-4 16 kHz enhancement sibling via
+        # `SepformerVariant::Dns4Enhancement`. The distinct enum arm ensures
+        # a distinct `vokra.sepformer.variant = "dns4-16k-enhancement"` stamp
+        # + `vokra.provenance.upstream_hf =
+        # "speechbrain/sepformer-dns4-16k-enhancement"` rather than silently
+        # inheriting any WHAM! / WHAMR! enhancement sibling's tags (all four
+        # enhancement variants share n_out = 1, so provenance is the only
+        # surface that discriminates them at load time). Row heading matches
+        # `docs/license-audit.md` §3.1 byte-for-byte.
+        "sepformer-dns4-16k-enhancement (`speechbrain/sepformer-dns4-16k-enhancement`)",
     ],
     # 2026-08-01 Wave 3 — SNAC codec (single converter, two variant rows).
     "snac": [
@@ -437,6 +790,22 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "wav2vec2-large-xlsr-53 (`facebook/wav2vec2-large-xlsr-53`)",
         "wav2vec2-large-xlsr-53-japanese (`jonatasgrosman/wav2vec2-large-xlsr-53-japanese`)",
         "wav2vec2-large-xlsr-53-chinese-zh-cn (`jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn`)",
+        # 2026-08-01 Wave 4 slug-only add — Facebook wav2vec2 large 960h
+        # with self-training on LV60 unlabelled audio. Same
+        # `wav2vec2_ctc` converter; the slug is routed to the existing
+        # `Wav2Vec2CtcVariant::LargeXlsr53Base` arm (arch match). See
+        # `docs/license-audit.md` §3.1 for the sign-off.
+        "wav2vec2-large-960h-lv60-self (`facebook/wav2vec2-large-960h-lv60-self`)",
+        # 2026-08-01 Wave 4 variant-enum extension — Facebook wav2vec2
+        # XLSR-53 large backbone with an eSpeak-NG IPA phoneme CTC
+        # head (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`, apache-2.0).
+        # Distinct dedicated arm
+        # `Wav2Vec2CtcVariant::LargeXlsr53EspeakCvFt` (added the same
+        # wave) because vocab_size=392 (eSpeak phoneme inventory) and
+        # has_ctc_head=true both differ from the closest topology
+        # sibling `LargeXlsr53Base` — routing slug-only would stamp
+        # demonstrably wrong axes. See `docs/license-audit.md` §3.1.
+        "wav2vec2-xlsr-53-espeak-cv-ft (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`)",
     ],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
 }

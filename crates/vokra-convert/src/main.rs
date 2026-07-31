@@ -2081,6 +2081,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // (plus arch-specific hparam chunks); grouped here since
         // the verify surface is a uniform arch/name/category/
         // upstream/license lookup.
+        | ModelKind::Qwen3TtsBase17B
         | ModelKind::Qwen3TtsCustomVoice17B
         | ModelKind::Qwen3TtsVoiceDesign17B
         | ModelKind::Qwen3Asr
@@ -2095,6 +2096,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::SpeechT5Tts
         | ModelKind::ParlerTtsMiniMultilingual
         | ModelKind::IndicParlerTts
+        | ModelKind::ParlerTtsMiniV1English
         | ModelKind::VieNeuTts
         | ModelKind::Bark
         | ModelKind::BarkSmall
@@ -2110,6 +2112,10 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::SepFormer
         | ModelKind::SepformerWham16kEnh
         | ModelKind::SepformerWhamr16k
+        | ModelKind::SepformerLibri2Mix
+        | ModelKind::SepformerLibri3Mix
+        | ModelKind::SepformerWhamr8k
+        | ModelKind::SepformerDns4Enh
         | ModelKind::FsmnVad
         | ModelKind::FireredVad
         | ModelKind::SmartTurn

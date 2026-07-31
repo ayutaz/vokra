@@ -43,6 +43,20 @@
 //! `vokra.parler.variant` so a runtime dispatcher can pick a tokenizer
 //! / language table without inspecting the tensor shapes.
 //!
+//! **Variant axis (mini-v1)** — the original English-only Mini release
+//! (`parler-tts/parler-tts-mini-v1`, Wave 4 land 2026-08-01) shares the
+//! tensor topology end-to-end with the multilingual variant. The **only
+//! primary hparam that differs is the top-level `vocab_size`**: 32128
+//! (equal to the T5 text-encoder vocabulary, no audio-code alphabet
+//! merged in — English-only) vs the multilingual's 90714 (description
+//! tokenizer merged with the decoder's audio-code alphabet). Verbatim
+//! from `huggingface.co/parler-tts/parler-tts-mini-v1/raw/main/
+//! config.json` (fetched 2026-08-01 — CLAUDE.md「ハルシネーション厳禁」).
+//! Every T5 / decoder / audio-encoder hparam above is unchanged. Because
+//! only the top-level vocab_size differs, `ParlerVariant::vocab_size_top`
+//! per-variant dispatches the value while the other 14 `pub(crate)`
+//! constants stay shared.
+//!
 //! # BF16 pass-through
 //!
 //! F32 / F16 / BF16 tensors pass through **verbatim** under their
@@ -101,6 +115,16 @@ pub enum ParlerVariant {
     /// Sanskrit, Sindhi, Tamil, Telugu, Urdu). Same tensor topology as
     /// the multilingual base — this is a fine-tune, not a re-arch.
     IndicParler,
+    /// `parler-tts/parler-tts-mini-v1` (apache-2.0). The original
+    /// English-only Mini release (predecessor of the multilingual v1.1
+    /// variant). Same tensor topology as the multilingual base end-to-end
+    /// except the top-level `vocab_size` = 32128 (English T5 vocabulary
+    /// only, no audio-code alphabet merged in) vs the multilingual's
+    /// 90714. Every T5 / decoder / audio-encoder hparam is unchanged.
+    /// Primary source verified 2026-08-01 from
+    /// `huggingface.co/parler-tts/parler-tts-mini-v1/raw/main/config.json`
+    /// — CLAUDE.md「ハルシネーション厳禁」. Wave 4 land 2026-08-01.
+    MiniV1English,
 }
 
 impl ParlerVariant {
@@ -110,6 +134,7 @@ impl ParlerVariant {
         match self {
             Self::MiniMultilingual => "parler-tts-mini-multilingual-v1.1",
             Self::IndicParler => "indic-parler-tts",
+            Self::MiniV1English => "parler-tts-mini-v1",
         }
     }
 
@@ -118,6 +143,7 @@ impl ParlerVariant {
         match self {
             Self::MiniMultilingual => "mini-multilingual",
             Self::IndicParler => "indic",
+            Self::MiniV1English => "mini-v1-en",
         }
     }
 
@@ -127,6 +153,25 @@ impl ParlerVariant {
         match self {
             Self::MiniMultilingual => "parler-tts/parler-tts-mini-multilingual-v1.1",
             Self::IndicParler => "ai4bharat/indic-parler-tts",
+            Self::MiniV1English => "parler-tts/parler-tts-mini-v1",
+        }
+    }
+
+    /// Per-variant top-level `vocab_size` (`vokra.parler.vocab_size`).
+    ///
+    /// The multilingual and Indic-fine-tune variants both carry the
+    /// audio-code alphabet merged into the description tokenizer =
+    /// `VOCAB_SIZE_TOP` (90714). The original mini-v1 English release
+    /// carries only the T5 text-encoder vocabulary here = 32128 (Wave
+    /// 4 land 2026-08-01, primary source verified from
+    /// `huggingface.co/parler-tts/parler-tts-mini-v1/raw/main/
+    /// config.json` — CLAUDE.md「ハルシネーション厳禁」). Every other
+    /// primary hparam (T5 encoder / decoder / audio-encoder / cross-
+    /// attention) is unchanged across the three variants.
+    pub const fn vocab_size_top(self) -> u32 {
+        match self {
+            Self::MiniMultilingual | Self::IndicParler => VOCAB_SIZE_TOP,
+            Self::MiniV1English => VOCAB_SIZE_TOP_MINI_V1_EN,
         }
     }
 }
@@ -155,6 +200,13 @@ pub(crate) const DECODER_VOCAB_SIZE: u32 = 1_088;
 
 // Top-level:
 pub(crate) const VOCAB_SIZE_TOP: u32 = 90_714;
+/// Top-level `vocab_size` for the original English-only mini-v1 release
+/// (`parler-tts/parler-tts-mini-v1`). Verbatim from upstream config.json
+/// fetched 2026-08-01 — no audio-code alphabet merged in, so this equals
+/// the T5 text-encoder vocab_size (`TEXT_ENCODER_VOCAB_SIZE = 32_128`).
+/// The multilingual and Indic-fine-tune variants merge the audio-code
+/// alphabet in and land on `VOCAB_SIZE_TOP` = 90_714 instead.
+pub(crate) const VOCAB_SIZE_TOP_MINI_V1_EN: u32 = 32_128;
 pub(crate) const PROMPT_CROSS_ATTENTION: bool = false;
 
 // ---- Additive metadata keys ---------------------------------------------
@@ -247,8 +299,10 @@ pub fn convert_parler_file(
     b.add_u32(KEY_DECODER_NUM_CODEBOOKS, DECODER_NUM_CODEBOOKS);
     b.add_u32(KEY_DECODER_VOCAB_SIZE, DECODER_VOCAB_SIZE);
 
-    // Top-level.
-    b.add_u32(KEY_VOCAB_SIZE_TOP, VOCAB_SIZE_TOP);
+    // Top-level. `vocab_size` is per-variant: MiniMultilingual + IndicParler
+    // = 90714 (audio-code alphabet merged in), MiniV1English = 32128 (T5 text
+    // vocabulary only, English-only release). Wave 4 land 2026-08-01.
+    b.add_u32(KEY_VOCAB_SIZE_TOP, variant.vocab_size_top());
     b.add_bool(KEY_PROMPT_CROSS_ATTENTION, PROMPT_CROSS_ATTENTION);
 
     // Default license = apache-2.0 (both variants; upstream card
@@ -439,6 +493,76 @@ mod tests {
             file.get(KEY_VARIANT).and_then(|v| v.as_str()),
             Some("indic")
         );
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Wave 4 land 2026-08-01: the English-only mini-v1 variant stamps its
+    /// own upstream_hf / variant / model_name provenance AND — crucially —
+    /// carries `vocab_size = 32128` (T5 text vocab only) rather than the
+    /// multilingual's 90714 (audio-code alphabet merged). Every other
+    /// primary hparam is unchanged across the three variants.
+    #[test]
+    fn mini_v1_english_variant_stamps_distinct_provenance_and_vocab_size() {
+        let (input_bytes, _) = synth_bf16();
+        let input = scratch_path("mini-v1-in");
+        let output = scratch_path("mini-v1-out");
+        std::fs::write(&input, &input_bytes).unwrap();
+
+        convert_parler_file(&input, &output, ParlerVariant::MiniV1English, None).unwrap();
+        let file = GgufFile::parse(std::fs::read(&output).unwrap()).unwrap();
+
+        // Distinct provenance: name / upstream_hf / variant_tag.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("parler-tts-mini-v1")
+        );
+        assert_eq!(
+            file.get(KEY_UPSTREAM_HF).and_then(|v| v.as_str()),
+            Some("parler-tts/parler-tts-mini-v1")
+        );
+        assert_eq!(
+            file.get(KEY_VARIANT).and_then(|v| v.as_str()),
+            Some("mini-v1-en")
+        );
+
+        // Per-variant vocab_size (the whole point of this variant arm).
+        assert_eq!(
+            file.get(KEY_VOCAB_SIZE_TOP).and_then(|v| v.as_u64()),
+            Some(u64::from(VOCAB_SIZE_TOP_MINI_V1_EN)),
+            "MiniV1English must stamp vocab_size=32128, not the multilingual 90714"
+        );
+        assert_ne!(
+            VOCAB_SIZE_TOP_MINI_V1_EN, VOCAB_SIZE_TOP,
+            "regression: mini-v1 vocab_size must differ from multilingual vocab_size — \
+             if these ever equalize, the variant arm has lost its whole justification"
+        );
+
+        // Every shared T5 / decoder / audio-encoder hparam is UNCHANGED
+        // — the whole point of the variant is that only vocab_size differs.
+        for (k, expect) in [
+            (KEY_TEXT_ENCODER_D_MODEL, 1_024u64),
+            (KEY_TEXT_ENCODER_NUM_LAYERS, 24),
+            (KEY_TEXT_ENCODER_NUM_HEADS, 16),
+            (KEY_TEXT_ENCODER_D_FF, 2_816),
+            (KEY_TEXT_ENCODER_VOCAB_SIZE, 32_128),
+            (KEY_DECODER_HIDDEN_SIZE, 1_024),
+            (KEY_DECODER_NUM_HIDDEN_LAYERS, 24),
+            (KEY_DECODER_NUM_ATTENTION_HEADS, 16),
+            (KEY_DECODER_NUM_KEY_VALUE_HEADS, 16),
+            (KEY_DECODER_FFN_DIM, 4_096),
+            (KEY_DECODER_NUM_CODEBOOKS, 9),
+            (KEY_DECODER_VOCAB_SIZE, 1_088),
+            (KEY_AUDIO_ENCODER_CODEBOOK_SIZE, 1_024),
+            (KEY_AUDIO_ENCODER_SAMPLING_RATE, 44_100),
+        ] {
+            assert_eq!(
+                file.get(k).and_then(|v| v.as_u64()),
+                Some(expect),
+                "{k} must be unchanged for mini-v1 (the only variant axis is vocab_size)"
+            );
+        }
+
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
     }

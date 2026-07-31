@@ -1,3 +1,9 @@
+// clippy::doc_lazy_continuation false-positives on multi-paragraph enum-variant
+// docstrings that reference [[memory-slug]] items; the linter can't tell the
+// double-bracket link from a markdown list bullet. Silence file-wide so Wave 4
+// entries stay readable without artificial indentation.
+#![allow(clippy::doc_lazy_continuation)]
+
 //! # vokra-convert
 //!
 //! Vokra's **offline model conversion tool** (FR-TL-01, M0-03): it reads an
@@ -457,6 +463,34 @@ pub enum ModelKind {
     /// takes no config side-car (every hparam is fixed for the 0.6B
     /// release and transcribed as compile-time constants).
     Qwen3Tts,
+    /// Alibaba **Qwen3-TTS-12Hz-1.7B-Base** safetensors checkpoint
+    /// (extension of Phase 3, added 2026-08-01, Wave 4). **Apache-2.0
+    /// end-to-end** — same license posture as every 1.7B sibling. The
+    /// un-fine-tuned 1.7B backbone that the CustomVoice / VoiceDesign
+    /// 1.7B siblings fine-tune from. Talker axes are byte-identical to
+    /// the two 1.7B fine-tuned siblings (widened from the 0.6B baseline
+    /// to `hidden_size=2048` / `intermediate_size=6144` /
+    /// `text_hidden_size=2048`, same `num_hidden_layers=28` /
+    /// `num_attention_heads=16` / GQA `num_key_value_heads=8` /
+    /// `head_dim=128`); the code-predictor axes, RoPE / RMSNorm, codec
+    /// handshake, sample rate + speaker embedding are all identical to
+    /// the 0.6B / CustomVoice / VoiceDesign siblings — only the HF
+    /// release id + `vokra.model.name` stamp differ. A distinct
+    /// `Qwen3TtsVariant::_1_7B_Base` arm (rather than a slug-only
+    /// registration on `_1_7B_CustomVoice`) is required so a downstream
+    /// that ships all three 1.7B GGUFs side-by-side can tell them apart
+    /// by `vokra.provenance.upstream_hf` / `vokra.model.name`. Primary
+    /// source
+    /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base/raw/main/config.json`
+    /// fetched 2026-08-01 (CLAUDE.md「ハルシネーション厳禁」). The
+    /// upstream release is BF16 (~3679 MB single BF16 safetensors,
+    /// same ~1.92 B params as the two 1.7B fine-tuned siblings —
+    /// `hidden_size × num_hidden_layers` widen dominates the parameter
+    /// count). Convert with the CLI alias `qwen3-tts-1.7b-base` — the
+    /// converter dispatches through the shared
+    /// `models::qwen3_tts::convert_variant` path with
+    /// `Qwen3TtsVariant::_1_7B_Base`.
+    Qwen3TtsBase17B,
     /// Alibaba **Qwen3-TTS-12Hz-1.7B-CustomVoice** safetensors checkpoint
     /// (extension of Phase 3, added 2026-07-30). **Apache-2.0 end-to-end** —
     /// same license posture as the 0.6B sibling. 1.7B backbone variant
@@ -1062,15 +1096,20 @@ pub enum ModelKind {
     /// - `jonatasgrosman/wav2vec2-large-xlsr-53-japanese` (large
     ///   topology + CTC head `vocab_size=2341`),
     /// - `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn` (large
-    ///   topology + CTC head `vocab_size=3503`).
+    ///   topology + CTC head `vocab_size=3503`),
+    /// - `facebook/wav2vec2-xlsr-53-espeak-cv-ft` (large topology +
+    ///   CTC head `vocab_size=392` — **eSpeak IPA phoneme** vocabulary,
+    ///   arXiv:2109.11680, CommonVoice fine-tune; complementary to the
+    ///   char / kana+kanji / hanzi rows above).
     ///
     /// Every hparam is transcribed verbatim from the primary-source
     /// `config.json` per variant (CLAUDE.md「ハルシネーション厳禁」,
-    /// fetched 2026-07-30). All four ship **apache-2.0** (Permissive)
-    /// per the HF API `cardData.license` (CC-verified 2026-07-30). The
-    /// `--model wav2vec2-base-960h` / `wav2vec2-large-xlsr-53` /
-    /// `wav2vec2-large-xlsr-53-japanese` /
-    /// `wav2vec2-large-xlsr-53-chinese-zh-cn` slugs pick the
+    /// fetched 2026-07-30, espeak-cv-ft 2026-08-01). All five ship
+    /// **apache-2.0** (Permissive) per the HF API `cardData.license`
+    /// (CC-verified). The `--model wav2vec2-base-960h` /
+    /// `wav2vec2-large-xlsr-53` / `wav2vec2-large-xlsr-53-japanese` /
+    /// `wav2vec2-large-xlsr-53-chinese-zh-cn` /
+    /// `wav2vec2-xlsr-53-espeak-cv-ft` slugs pick the
     /// [`models::wav2vec2_ctc::Variant`]; the bare `wav2vec2` slug
     /// routes to `base-960h` (the smallest / most widely-used release).
     Wav2Vec2Ctc,
@@ -1179,6 +1218,24 @@ pub enum ModelKind {
     /// languages. The `gated=auto` HF flag is access control — the
     /// license itself is apache-2.0 per the card front-matter.
     IndicParlerTts,
+    /// **Parler-TTS mini-v1** (`parler-tts/parler-tts-mini-v1`,
+    /// apache-2.0). Wave 4 land 2026-08-01. The original English-only
+    /// Mini release (predecessor of the multilingual v1.1 variant).
+    /// Same tensor topology as [`Self::ParlerTtsMiniMultilingual`]
+    /// end-to-end except the top-level `vocab_size = 32128` (T5 text
+    /// vocabulary only, no audio-code alphabet merged in) vs the
+    /// multilingual's 90714. Every T5 / decoder / audio-encoder hparam
+    /// is unchanged. Primary source verified 2026-08-01 from
+    /// `huggingface.co/parler-tts/parler-tts-mini-v1/raw/main/config.json`
+    /// — CLAUDE.md「ハルシネーション厳禁」. See [`convert_parler_file`]
+    /// + [`crate::models::parler::ParlerVariant::MiniV1English`] — the
+    /// single [`crate::models::parler::convert_parler_file`] converter
+    /// dispatches the three variants; only `vocab_size` differs on this
+    /// arm. Category = `tts`. ~3.5 GB single safetensors (M1 iMac 16 GB
+    /// でローカル変換 safe per memory
+    /// `[[feedback-large-models-on-vast-ai]]` ≥8 GB threshold 下、
+    /// vast.ai 不要).
+    ParlerTtsMiniV1English,
     /// **VieNeu-TTS-v3-Turbo** (`pnnbao-ump/VieNeu-TTS-v3-Turbo`,
     /// apache-2.0). Implementer C wave 2026-07-30. Novel hierarchical
     /// AR Vietnamese TTS (`architectures = ["VieNeuV3TurboForTTS"]`) —
@@ -1360,6 +1417,91 @@ pub enum ModelKind {
     /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`]. Provenance
     /// = **apache-2.0** (Permissive).
     SepformerWhamr16k,
+    /// **speechbrain/sepformer-libri2mix** (Wave 4 candidate,
+    /// 2026-08-01). Category = `separation` (2-speaker source
+    /// separation — same head as [`Self::SepFormer`], differs only in
+    /// the training corpus: LibriMix is a LibriSpeech-derived
+    /// CC-BY-4.0 mixture set, WSJ0-2mix is proprietary WSJ0-derived).
+    /// Shares the [`models::sepformer::ARCH`] tag `sepformer` +
+    /// converter with [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`]
+    /// / [`Self::SepformerWhamr16k`]; the distinct ModelKind ensures
+    /// the artifact does NOT silently inherit the Wsj02mix sibling's
+    /// `vokra.model.name` / `vokra.provenance.upstream_hf` /
+    /// `vokra.sepformer.variant` stamps. Every F32 / F16 / BF16 tensor
+    /// passes through verbatim; the internal dual-path Transformer
+    /// body is a `loud-partial` follow-up (same posture as the
+    /// SepFormer siblings). Provenance = **apache-2.0** (Permissive
+    /// — SpeechBrain end-to-end Apache-2.0; the LibriMix training
+    /// corpus itself is CC-BY-4.0 but that is a corpus-level
+    /// attribution obligation, not a weight-license restriction).
+    SepformerLibri2Mix,
+    /// **speechbrain/sepformer-libri3mix** (Wave 4 candidate,
+    /// 2026-08-01). Category = `separation` (**3-speaker cocktail-
+    /// party** source separation on LibriMix — same LibriSpeech-derived
+    /// corpus family as [`Self::SepformerLibri2Mix`], and the same
+    /// SepFormer topology as every sibling here; the sole difference
+    /// is the masker output head branches into **3 parallel speaker
+    /// streams instead of 2**). Shares the
+    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`] /
+    /// [`Self::SepformerWhamr16k`] / [`Self::SepformerLibri2Mix`] /
+    /// [`Self::SepformerWhamr8k`]; the distinct ModelKind ensures the
+    /// artifact does NOT silently inherit the 2-speaker sibling's
+    /// `vokra.model.name` / `vokra.provenance.upstream_hf` /
+    /// `vokra.sepformer.variant` = wrong CDN attribution +
+    /// `vokra.sepformer.n_out` = wrong binder output-stream axis (the
+    /// new `vokra.sepformer.n_out = 3` chunk added the same wave makes
+    /// this explicit at load time). Every F32 / F16 / BF16 tensor
+    /// passes through verbatim; the internal dual-path Transformer
+    /// body is a `loud-partial` follow-up (same posture as the
+    /// SepFormer siblings). Provenance = **apache-2.0** (Permissive
+    /// — SpeechBrain end-to-end Apache-2.0; the LibriMix training
+    /// corpus itself is CC-BY-4.0 but that is a corpus-level
+    /// attribution obligation, not a weight-license restriction —
+    /// identical posture to the sibling `libri2mix` row).
+    SepformerLibri3Mix,
+    /// **speechbrain/sepformer-whamr** (Wave 4 candidate, 2026-08-01).
+    /// Category = `enhancement`. Joint dereverb + denoise on WHAMR!
+    /// **8 kHz** — the base-sample-rate sibling of
+    /// [`Self::SepformerWhamr16k`]; same reverberant conditioning +
+    /// masker head, only the sample rate differs (WHAMR paper Chen et
+    /// al. 2022 originally released the 8 kHz variant; the 16 kHz
+    /// sibling was published later for wider-band inputs). Shares the
+    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`] /
+    /// [`Self::SepformerWhamr16k`] / [`Self::SepformerLibri2Mix`]; the
+    /// distinct ModelKind ensures the artifact does NOT silently
+    /// inherit the 16 kHz sibling's `vokra.provenance.upstream_hf` =
+    /// wrong CDN attribution (both repos live under `speechbrain/` but
+    /// with different HF slugs). Every F32 / F16 / BF16 tensor passes
+    /// through verbatim; the internal dual-path Transformer body is a
+    /// `loud-partial` follow-up (same posture as the sibling SepFormer
+    /// variants). Provenance = **apache-2.0** (Permissive — SpeechBrain
+    /// end-to-end Apache-2.0).
+    SepformerWhamr8k,
+    /// **speechbrain/sepformer-dns4-16k-enhancement** (Wave 4 candidate,
+    /// 2026-08-01). Category = `enhancement`. Single-speaker speech
+    /// enhancement trained on the **Microsoft DNS-4** (Deep Noise
+    /// Suppression Challenge 4) corpus at 16 kHz. Shares the
+    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`] /
+    /// [`Self::SepformerWhamr16k`] / [`Self::SepformerLibri2Mix`] /
+    /// [`Self::SepformerLibri3Mix`] / [`Self::SepformerWhamr8k`]; the
+    /// distinct ModelKind ensures the artifact does NOT silently
+    /// inherit any WHAM! / WHAMR! enhancement sibling's
+    /// `vokra.provenance.upstream_hf` = wrong CDN attribution (all
+    /// four enhancement variants share `vokra.sepformer.n_out = 1`,
+    /// so the distinct provenance stamp is the only surface that
+    /// discriminates them at load time — silent misrouting would not
+    /// fail loudly at the binder). Every F32 / F16 / BF16 tensor
+    /// passes through verbatim; the internal dual-path Transformer
+    /// body is a `loud-partial` follow-up (same posture as every
+    /// sibling SepFormer variant). Provenance = **apache-2.0**
+    /// (Permissive — SpeechBrain end-to-end Apache-2.0; the Microsoft
+    /// DNS-4 corpus itself is corpus-level provenance separate from
+    /// the fine-tuned weight license, identical posture to the
+    /// sibling `wham16k-enhancement` / `whamr16k` rows).
+    SepformerDns4Enh,
     /// FunASR **fsmn-vad** VAD checkpoint (TIER 1 F wave, 2026-07-30).
     /// Category = `vad`. FSMN = Feedforward Sequential Memory Network
     /// (Zhang et al. 2015 arXiv:1512.08301), the classic FunASR
@@ -1822,16 +1964,44 @@ impl ModelKind {
             }
             // Alibaba Qwen3-TTS family — canonical HF release + `qwen3_tts`
             // arch-tag underscore spelling + common short forms. All spellings
-            // resolve to the same 0.6B-Base checkpoint today; a future variant
-            // (0.6B-CustomVoice / 0.6B-VoiceDesign / 1.7B) would be a distinct
-            // `ModelKind` when it lands.
+            // in the block below resolve to the 0.6B checkpoint family; the
+            // 1.7B siblings (CustomVoice / VoiceDesign) are distinct
+            // `ModelKind` values (`Qwen3TtsCustomVoice17B` /
+            // `Qwen3TtsVoiceDesign17B`) below because their talker axes widen
+            // (hidden 1024 → 2048, ffn 3072 → 6144). The 0.6B-CustomVoice
+            // spelling set added 2026-08-01 (Wave 4 slug-only add) also
+            // routes here — the CustomVoice release is a fine-tune of
+            // 0.6B-Base with byte-identical talker + code-predictor axes and
+            // an identically-shaped CustomVoice head (`config.json.tts_model_type
+            // = "custom_voice"`), so the existing 0.6B-Base converter branch
+            // covers it verbatim (mirror of the wav2vec2-large-960h-lv60-self
+            // slug-only precedent at rows above). The emitted GGUF stamps
+            // `vokra.model.name = "qwen3-tts-12hz-0.6b-base"` /
+            // `vokra.provenance.upstream_hf = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"`;
+            // a future publish of the CustomVoice checkpoint that needs
+            // faithful provenance either (a) adds a distinct
+            // `Qwen3TtsVariant::_0_6B_CustomVoice` arm to
+            // `crates/vokra-convert/src/models/qwen3_tts.rs` so the stamp
+            // names this row's upstream repo, or (b) runs a `restamp` pass
+            // to rewrite the `vokra.provenance.*` chunks (mirror of the
+            // `restamp_provenance` low-memory rewrite path landed 2026-07-23,
+            // `crates/vokra-convert/src/lib.rs::restamp_file`).
             "qwen3-tts"
             | "qwen3_tts"
             | "qwen3-tts-0.6b"
             | "qwen3-tts-0_6b"
             | "qwen3-tts-12hz-0.6b-base"
             | "qwen3-tts-12hz-0_6b-base"
-            | "qwen3-tts-12hz-0.6b" => Some(Self::Qwen3Tts),
+            | "qwen3-tts-12hz-0.6b"
+            // 2026-08-01 Wave 4 slug-only add: 0.6B-CustomVoice fine-tune
+            // (identical axes to 0.6B-Base per approach directive).
+            | "qwen3-tts-0.6b-customvoice"
+            | "qwen3-tts-0_6b-customvoice"
+            | "qwen3-tts-0.6b-custom-voice"
+            | "qwen3-tts-12hz-0.6b-customvoice"
+            | "qwen3-tts-12hz-0_6b-customvoice"
+            | "qwen3-tts-12hz-0.6b-custom-voice"
+            | "qwen/qwen3-tts-12hz-0.6b-customvoice" => Some(Self::Qwen3Tts),
             // OpenBMB VoxCPM family — canonical HF releases + arch-tag
             // spellings + common short forms. Both `openbmb/VoxCPM-0.5B`
             // and `openbmb/VoxCPM2` (2B scale-up, land 2026-07-30 —
@@ -2033,6 +2203,21 @@ impl ModelKind {
             | "pyannote-segmentation-3_0"
             | "pyannote/segmentation-3.0"
             | "pyannote/segmentation" => Some(Self::PyannoteSegmentation),
+            // 2026-08-01 Wave 4 variant-enum extension: 1.7B-Base — the
+            // un-fine-tuned 1.7B backbone that the CustomVoice / VoiceDesign
+            // 1.7B siblings fine-tune from. Distinct `Qwen3TtsVariant::_1_7B_Base`
+            // arm (rather than slug-only on `_1_7B_CustomVoice`) so a downstream
+            // that ships all three 1.7B GGUFs side-by-side can tell them apart
+            // by `vokra.provenance.upstream_hf` / `vokra.model.name`. Talker +
+            // code-predictor axes are byte-identical to the two 1.7B fine-tuned
+            // siblings (hidden=2048, ffn=6144, n_layer=28).
+            "qwen3-tts-1.7b-base"
+            | "qwen3-tts-1_7b-base"
+            | "qwen3-tts-12hz-1.7b-base"
+            | "qwen3-tts-12hz-1_7b-base"
+            | "qwen3-tts-12hz-1.7b"
+            | "qwen3-tts-12hz-1_7b"
+            | "qwen/qwen3-tts-12hz-1.7b-base" => Some(Self::Qwen3TtsBase17B),
             "qwen3-tts-1.7b-customvoice"
             | "qwen3-tts-1_7b-customvoice"
             | "qwen3-tts-1.7b-custom-voice"
@@ -2070,7 +2255,68 @@ impl ModelKind {
             | "jonatasgrosman/wav2vec2-large-xlsr-53-japanese"
             | "wav2vec2-large-xlsr-53-chinese-zh-cn"
             | "wav2vec2_large_xlsr_53_chinese_zh_cn"
-            | "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn" => Some(Self::Wav2Vec2Ctc),
+            | "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn"
+            // Wave 4 slug-only add (2026-08-01): Facebook wav2vec2 large
+            // 960h with self-training on LV60 unlabelled audio
+            // (`facebook/wav2vec2-large-960h-lv60-self`, apache-2.0). Same
+            // Wav2Vec2ForCTC arch family as the base-960h / xlsr-53 rows
+            // above — large topology (24 × d=1024 × 16h × ffn=4096,
+            // `feat_extract_norm="layer"`, `do_stable_layer_norm=true`)
+            // with an English char CTC head (`vocab_size=32`, same
+            // LibriSpeech 960h tokenizer as base-960h). LV60-self is
+            // trained with the self-training / pseudo-labelling procedure
+            // from Xu et al. 2021 (arXiv:2010.11430) over the LibriVox
+            // LV60 corpus, distinct upstream release from XLSR-53.
+            //
+            // Slug-only routes to the existing
+            // [`models::wav2vec2_ctc::Variant::LargeXlsr53Base`] arm
+            // below because that variant already pins the correct large
+            // topology axes (24L / 1024h / 16h / 4096ffn +
+            // `feat_extract_norm=layer` + `do_stable_layer_norm=true`)
+            // and `vocab_size=32` matches LV60-self's English char CTC
+            // head. `has_ctc_head` is stored `false` for the XLSR-53
+            // base but LV60-self actually carries a CTC head — a future
+            // real-weight publish therefore requires either
+            // (a) a distinct `Wav2Vec2CtcVariant::Large960hLv60Self`
+            // arm added to the converter so `has_ctc_head` +
+            // `upstream_hf` faithfully name this row's upstream repo,
+            // or (b) a `restamp` pass to rewrite the `vokra.provenance.*`
+            // + `vokra.wav2vec2_ctc.has_ctc_head` chunks (mirror of the
+            // `restamp_provenance` low-memory rewrite path landed
+            // 2026-07-23, `crates/vokra-convert/src/lib.rs::restamp_file`).
+            // Slug-only registration is landed together with the §3.1
+            // row + `LicenseClass::Permissive` (already covered by the
+            // `wav2vec2` prefix walk in
+            // `crates/vokra-core/src/compliance/license_class.rs`) so
+            // the future publish path only needs the converter arm to
+            // close the loop.
+            | "wav2vec2-large-960h-lv60-self"
+            | "wav2vec2_large_960h_lv60_self"
+            | "facebook/wav2vec2-large-960h-lv60-self"
+            // Wave 4 variant-enum extension (2026-08-01):
+            // `facebook/wav2vec2-xlsr-53-espeak-cv-ft` (apache-2.0).
+            // Same XLSR-53 large backbone as the four sibling variants
+            // above; the discriminating axis is the CTC head, which
+            // over the eSpeak-NG IPA **phoneme** inventory
+            // (`vocab_size=392`, arXiv:2109.11680 — CommonVoice
+            // fine-tune). vocab_size (392) differs from every existing
+            // arm (32 char / 2341 kana+kanji / 3503 hanzi) by 12x+ and
+            // the head is `Wav2Vec2ForCTC` (not the ForPreTraining
+            // XLSR-53 base), so this cannot be routed slug-only through
+            // an existing arm without stamping a demonstrably wrong
+            // vocab_size and mis-representing has_ctc_head — a
+            // dedicated [`models::wav2vec2_ctc::Variant::LargeXlsr53EspeakCvFt`]
+            // arm carries the correct axes. The phoneme `vocab.json`
+            // itself will be embedded as `vokra.tokenizer.model` U8
+            // array (Whisper 手法, `include_bytes!` at compile time)
+            // in a follow-up wave once the upstream file is
+            // snapshotted; today the converter stamps only the axis
+            // (`vokra.wav2vec2_ctc.vocab_size = 392`) so a future
+            // `Wav2Vec2CtcWeights::from_gguf` reader can loudly reject
+            // a mis-sized head (FR-EX-08).
+            | "wav2vec2-xlsr-53-espeak-cv-ft"
+            | "wav2vec2_xlsr_53_espeak_cv_ft"
+            | "facebook/wav2vec2-xlsr-53-espeak-cv-ft" => Some(Self::Wav2Vec2Ctc),
             "moss-tts" | "moss_tts" | "moss-tts-delay" | "openmoss-team/moss-tts" => {
                 Some(Self::MossTts)
             }
@@ -2094,6 +2340,40 @@ impl ModelKind {
             | "moss_tts_local_transformer_v1_5"
             | "openmoss-team/moss-tts-local-transformer-v1.5"
             | "openmoss-team/moss-tts-local-transformer-v1_5" => Some(Self::MossTtsLocal),
+            // 2026-08-01 Wave 4 slug-only add: OpenMOSS Team
+            // **MOSS-VoiceGenerator** (`OpenMOSS-Team/MOSS-VoiceGenerator`,
+            // apache-2.0). A distinct HF release under the same
+            // `moss_tts_delay` internal `model_type` tag as
+            // `OpenMOSS-Team/MOSS-TTS`, so the Delay-variant axes
+            // (Qwen3-8B backbone, n_vq=32, 24 kHz) already cover it and
+            // no new [`MossTtsVariant`] arm is required — the slug is
+            // routed to the existing [`Self::MossTts`] dispatch. The
+            // §3.1 sign-off row headed
+            // `MOSS-VoiceGenerator (\`OpenMOSS-Team/MOSS-VoiceGenerator\`)`
+            // is the publish gate that keeps this decision auditable
+            // (`scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`
+            // maps the `moss-voice-generator` slug to that row).
+            //
+            // NOTE — provenance stamp caveat: the underlying converter
+            // arm writes `vokra.provenance.upstream_hf =
+            // OpenMOSS-Team/MOSS-TTS` and `vokra.model.name = moss-tts`
+            // from [`MossTtsVariant::Delay`]. A future publish of the
+            // MOSS-VoiceGenerator checkpoint therefore requires either
+            // (a) a distinct `MossTtsVariant::VoiceGenerator` arm added
+            // to the converter so the provenance faithfully names the
+            // upstream repo, or (b) a `restamp` pass to rewrite the
+            // provenance chunk. Slug-only registration is the parent
+            // decision recorded in this file's landing wave; the
+            // §3.1 row + `check-catalog-reality.sh` slug alias +
+            // `LicenseClass::Permissive` registration are landed together
+            // so that the future publish path only needs the converter
+            // arm to close the loop.
+            "moss-voice-generator"
+            | "moss_voice_generator"
+            | "moss-voicegenerator"
+            | "moss_voicegenerator"
+            | "openmoss-team/moss-voice-generator"
+            | "openmoss-team/moss-voicegenerator" => Some(Self::MossTts),
             "melotts-english"
             | "melotts_english"
             | "melo-tts-english"
@@ -2124,6 +2404,17 @@ impl ModelKind {
             | "indic_parler_tts"
             | "indic-parler"
             | "ai4bharat/indic-parler-tts" => Some(Self::IndicParlerTts),
+            // Wave 4 land 2026-08-01: English-only mini-v1 (predecessor of
+            // the multilingual v1.1 variant). Same tensor topology, only
+            // top-level vocab_size differs (32128 vs 90714 — verified
+            // 2026-08-01 from huggingface.co/parler-tts/parler-tts-mini-v1/
+            // raw/main/config.json). Distinct ModelKind because the
+            // upstream_hf / provenance / vocab_size axis all differ, matching
+            // the ParlerTtsMiniMultilingual + IndicParlerTts split pattern.
+            "parler-tts-mini-v1"
+            | "parler_tts_mini_v1"
+            | "parler-mini-v1"
+            | "parler-tts/parler-tts-mini-v1" => Some(Self::ParlerTtsMiniV1English),
             "vieneu-tts"
             | "vieneu-tts-v3-turbo"
             | "vieneu_v3_turbo"
@@ -2261,6 +2552,37 @@ impl ModelKind {
             | "sepformer_whamr16k"
             | "sepformer-whamr"
             | "speechbrain/sepformer-whamr16k" => Some(Self::SepformerWhamr16k),
+            "sepformer-libri2mix"
+            | "sepformer_libri2mix"
+            | "sepformer-libri-2mix"
+            | "speechbrain/sepformer-libri2mix" => Some(Self::SepformerLibri2Mix),
+            "sepformer-libri3mix"
+            | "sepformer_libri3mix"
+            | "sepformer-libri-3mix"
+            | "speechbrain/sepformer-libri3mix" => Some(Self::SepformerLibri3Mix),
+            // NOTE: `sepformer-whamr` (bare short alias) historically
+            // routes to `SepformerWhamr16k` above and is intentionally
+            // preserved for backwards compatibility. The 8 kHz sibling
+            // must be selected via one of the explicit -8khz suffix
+            // aliases or the full upstream HF slug
+            // `speechbrain/sepformer-whamr` (which is unambiguous
+            // upstream = the 8 kHz repo). This avoids silently
+            // flipping the semantics of `--model sepformer-whamr` for
+            // existing callers.
+            "sepformer-whamr-8khz"
+            | "sepformer_whamr_8khz"
+            | "sepformer-whamr-8k"
+            | "sepformer_whamr_8k"
+            | "sepformer-whamr8k"
+            | "sepformer_whamr8k"
+            | "speechbrain/sepformer-whamr" => Some(Self::SepformerWhamr8k),
+            "sepformer-dns4-16k-enhancement"
+            | "sepformer_dns4_16k_enhancement"
+            | "sepformer-dns4-enhancement"
+            | "sepformer_dns4_enhancement"
+            | "sepformer-dns4"
+            | "sepformer_dns4"
+            | "speechbrain/sepformer-dns4-16k-enhancement" => Some(Self::SepformerDns4Enh),
             "fsmn-vad"
             | "fsmn_vad"
             | "fsmnvad"
@@ -2470,6 +2792,7 @@ impl ModelKind {
             Self::HifiganVocoder => "hifigan-vocoder",
             Self::Speecht5Hifigan => "speecht5-hifigan",
             Self::IndicParlerTts => "indic-parler-tts",
+            Self::ParlerTtsMiniV1English => "parler-tts-mini-v1",
             Self::KyutaiTts => "kyutai-tts",
             Self::LangIdCommonLanguage => "lang-id-commonlanguage",
             Self::LangIdVoxlingua107 => "lang-id-voxlingua107",
@@ -2485,11 +2808,16 @@ impl ModelKind {
             Self::NemotronAsrStreaming => "nemotron-3.5-asr-streaming-0.6b",
             Self::ParlerTtsMiniMultilingual => "parler-tts",
             Self::Qwen3Asr => "qwen3-asr",
+            Self::Qwen3TtsBase17B => "qwen3-tts-1.7b-base",
             Self::Qwen3TtsCustomVoice17B => "qwen3-tts-1.7b-customvoice",
             Self::Qwen3TtsVoiceDesign17B => "qwen3-tts-1.7b-voicedesign",
             Self::SepFormer => "sepformer-wsj02mix",
             Self::SepformerWham16kEnh => "sepformer-wham16k-enhancement",
             Self::SepformerWhamr16k => "sepformer-whamr16k",
+            Self::SepformerLibri2Mix => "sepformer-libri2mix",
+            Self::SepformerLibri3Mix => "sepformer-libri3mix",
+            Self::SepformerWhamr8k => "sepformer-whamr-8khz",
+            Self::SepformerDns4Enh => "sepformer-dns4-16k-enhancement",
             Self::SmartTurn => "smart-turn",
             Self::Snac => "snac",
             Self::Wavtokenizer => "wavtokenizer",
@@ -2798,7 +3126,24 @@ pub fn convert_file_with_slug(
             let variant = match slug.to_lowercase().as_str() {
                 "wav2vec2-large-xlsr-53"
                 | "wav2vec2_large_xlsr_53"
-                | "facebook/wav2vec2-large-xlsr-53" => {
+                | "facebook/wav2vec2-large-xlsr-53"
+                // Wave 4 slug-only add (2026-08-01): route
+                // `wav2vec2-large-960h-lv60-self` through the closest
+                // existing large-topology variant. Both slugs share the
+                // 24 × d=1024 × 16h × ffn=4096 backbone with
+                // `feat_extract_norm=layer` + `do_stable_layer_norm=true`
+                // + `vocab_size=32`; only `has_ctc_head` (LV60-self =
+                // true vs XLSR-53-base = false) and the upstream_hf
+                // provenance stamp differ. Following the slug-only
+                // discipline (parent decision, no converter module
+                // edits), the two axis mismatches are documented in
+                // the from_arg() docstring above and are expected to
+                // be fixed by (a) a dedicated `Large960hLv60Self`
+                // variant arm or (b) a `restamp` pass when the row is
+                // published — not now.
+                | "wav2vec2-large-960h-lv60-self"
+                | "wav2vec2_large_960h_lv60_self"
+                | "facebook/wav2vec2-large-960h-lv60-self" => {
                     models::wav2vec2_ctc::Variant::LargeXlsr53Base
                 }
                 "wav2vec2-large-xlsr-53-japanese"
@@ -2810,6 +3155,20 @@ pub fn convert_file_with_slug(
                 | "wav2vec2_large_xlsr_53_chinese_zh_cn"
                 | "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn" => {
                     models::wav2vec2_ctc::Variant::LargeXlsr53ChineseZhCn
+                }
+                // Wave 4 variant-enum extension (2026-08-01): XLSR-53
+                // large backbone with an eSpeak-NG IPA phoneme CTC head
+                // (`vocab_size=392`, `Wav2Vec2ForCTC`,
+                // arXiv:2109.11680). Distinct arm because vocab_size
+                // and has_ctc_head both differ from LargeXlsr53Base
+                // (the closest topology sibling) — routing slug-only
+                // would stamp a wrong axis. `LicenseClass::Permissive`
+                // already covered by the `wav2vec2` prefix walk in
+                // `crates/vokra-core/src/compliance/license_class.rs`.
+                "wav2vec2-xlsr-53-espeak-cv-ft"
+                | "wav2vec2_xlsr_53_espeak_cv_ft"
+                | "facebook/wav2vec2-xlsr-53-espeak-cv-ft" => {
+                    models::wav2vec2_ctc::Variant::LargeXlsr53EspeakCvFt
                 }
                 // Canonical "wav2vec2" / -base-960h → Base960h default.
                 _ => models::wav2vec2_ctc::Variant::Base960h,
@@ -3983,6 +4342,37 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === Qwen3TtsBase17B (Wave 4 variant-enum extension, 2026-08-01) ===
+        ModelKind::Qwen3TtsBase17B => {
+            // Phase 3 extension (added 2026-08-01): dispatch through the
+            // shared `models::qwen3_tts::convert_variant` path with the
+            // 1.7B-Base variant selector. Talker axes are byte-identical
+            // to the 1.7B-CustomVoice / VoiceDesign siblings
+            // (hidden=2048 / ffn=6144 / text_hidden=2048 / n_layer=28,
+            // primary source
+            // `Qwen/Qwen3-TTS-12Hz-1.7B-Base/config.json.talker_config`,
+            // fetched 2026-08-01 — CLAUDE.md「ハルシネーション厳禁」);
+            // only the HF release id + `vokra.model.name` /
+            // `vokra.provenance.upstream_hf` stamps differ. Provenance
+            // = apache-2.0 end-to-end (Permissive — same posture as
+            // every other Qwen3-TTS release; LM + codec + tokenizer +
+            // speaker encoder all under a single apache-2.0 grant).
+            let (builder, report) = models::qwen3_tts::convert_variant(
+                bytes,
+                models::qwen3_tts::Qwen3TtsVariant::_1_7B_Base,
+            )?;
+            let mut notes = vec![format!(
+                "qwen3-tts-1.7b-base: {} float weights written verbatim, {} non-float skipped ({} BF16 passthrough)",
+                report.written, report.skipped_non_float, report.bf16_passthrough,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("qwen3-tts-1.7b-base warning: {n}")),
+            );
+            (builder, notes)
+        }
         // === Qwen3TtsCustomVoice17B (from wf_022575ce-077-2) ===
         ModelKind::Qwen3TtsCustomVoice17B => {
             // Phase 3 extension (added 2026-07-30): dispatch through the
@@ -4285,6 +4675,32 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::IndicParlerTts,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === ParlerTtsMiniV1English (Wave 4 land 2026-08-01) ===
+        // English-only mini-v1 (predecessor of the multilingual v1.1
+        // variant). Same converter as its siblings; ParlerVariant dispatch
+        // stamps the per-variant top-level vocab_size (32128 here vs the
+        // multilingual's 90714) + the distinct upstream_hf / model_name /
+        // variant_tag provenance chunks.
+        ModelKind::ParlerTtsMiniV1English => {
+            let report = models::parler::convert_parler_file(
+                input,
+                output,
+                models::parler::ParlerVariant::MiniV1English,
+                license,
+            )?;
+            let notes = vec![format!(
+                "parler-tts-mini-v1 (English): {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::ParlerTtsMiniV1English,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -4860,6 +5276,123 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::SepformerWhamr16k,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SepformerLibri2Mix (Wave 4 candidate, 2026-08-01) ===
+        // Shares the sepformer converter — LibriMix is a 2-speaker
+        // separation head like Wsj02mix; the two differ only in the
+        // training corpus (LibriMix = LibriSpeech-derived CC-BY-4.0
+        // vs WSJ0-2mix = proprietary WSJ0). Distinct variant ensures
+        // the correct vokra.model.name / vokra.provenance.upstream_hf
+        // / vokra.sepformer.variant stamps land on the artifact.
+        ModelKind::SepformerLibri2Mix => {
+            let report = models::sepformer::convert_sepformer_file(
+                input,
+                output,
+                license,
+                models::sepformer::SepformerVariant::Libri2Mix,
+            )?;
+            let notes = vec![format!(
+                "sepformer-libri2mix: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SepformerLibri2Mix,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SepformerLibri3Mix (Wave 4 candidate, 2026-08-01) ===
+        // Shares the sepformer converter — Libri3Mix is the 3-speaker
+        // cocktail-party sibling of Libri2Mix; same LibriSpeech-derived
+        // training corpus family and same SepFormer topology, only the
+        // masker output head branches into 3 parallel speaker streams
+        // instead of 2. Distinct variant ensures the correct
+        // vokra.model.name / vokra.provenance.upstream_hf /
+        // vokra.sepformer.variant / vokra.sepformer.n_out (=3) stamps
+        // land on the artifact (NOT silently inherited from the
+        // 2-speaker sibling = wrong CDN attribution + wrong binder
+        // output-stream axis).
+        ModelKind::SepformerLibri3Mix => {
+            let report = models::sepformer::convert_sepformer_file(
+                input,
+                output,
+                license,
+                models::sepformer::SepformerVariant::Libri3Mix,
+            )?;
+            let notes = vec![format!(
+                "sepformer-libri3mix: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped; vokra.sepformer.n_out=3 stamped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SepformerLibri3Mix,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SepformerWhamr8k (Wave 4 candidate, 2026-08-01) ===
+        // Shares the sepformer converter — WHAMR! 8 kHz is the base-
+        // sample-rate sibling of Whamr16k; same reverberant conditioning
+        // + masker head, only the sample rate differs. Distinct variant
+        // ensures the correct vokra.model.name /
+        // vokra.provenance.upstream_hf / vokra.sepformer.variant stamps
+        // land on the artifact (NOT silently inherited from the 16 kHz
+        // sibling = wrong CDN attribution).
+        ModelKind::SepformerWhamr8k => {
+            let report = models::sepformer::convert_sepformer_file(
+                input,
+                output,
+                license,
+                models::sepformer::SepformerVariant::Whamr8k,
+            )?;
+            let notes = vec![format!(
+                "sepformer-whamr (8 kHz): {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SepformerWhamr8k,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SepformerDns4Enh (Wave 4 candidate, 2026-08-01) ===
+        // Shares the sepformer converter — Microsoft DNS-4 is a
+        // single-speaker enhancement task like the WHAM! / WHAMR!
+        // enhancement siblings; the two differ only in the training
+        // corpus (Microsoft DNS-4 vs WSJ0-derived WHAM! / WHAMR!).
+        // Distinct variant ensures the correct vokra.model.name /
+        // vokra.provenance.upstream_hf / vokra.sepformer.variant
+        // stamps land on the artifact (NOT silently inherited from
+        // any WHAM! / WHAMR! sibling = wrong CDN attribution; all
+        // enhancement variants share n_out = 1 so provenance is the
+        // only discriminator at load time).
+        ModelKind::SepformerDns4Enh => {
+            let report = models::sepformer::convert_sepformer_file(
+                input,
+                output,
+                license,
+                models::sepformer::SepformerVariant::Dns4Enhancement,
+            )?;
+            let notes = vec![format!(
+                "sepformer-dns4-16k-enhancement: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SepformerDns4Enh,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -7657,7 +8190,12 @@ mod modelkind_alias_and_roundtrip_tests {
                 ModelKind::ChatterboxNano,
                 &["chatterbox-nano", "chatterbox_nano", "chatterbox-nano-v1"],
             ),
-            // Phase 3 — Qwen3-TTS
+            // Phase 3 — Qwen3-TTS (0.6B family; 1.7B siblings live in the
+            // Qwen3TtsCustomVoice17B / Qwen3TtsVoiceDesign17B arms in the
+            // subsequent aliases blocks). The 0.6B-CustomVoice slugs
+            // (2026-08-01 Wave 4 slug-only add) also route here — the
+            // fine-tune shares the 0.6B-Base topology per the parent
+            // decision recorded in `from_arg` above.
             (
                 ModelKind::Qwen3Tts,
                 &[
@@ -7668,6 +8206,17 @@ mod modelkind_alias_and_roundtrip_tests {
                     "qwen3-tts-12hz-0.6b-base",
                     "qwen3-tts-12hz-0_6b-base",
                     "qwen3-tts-12hz-0.6b",
+                    // 2026-08-01 Wave 4 slug-only add: 0.6B-CustomVoice
+                    // fine-tune (identical axes to 0.6B-Base — pin every
+                    // spelling so a dropped alias in `from_arg` fails loudly
+                    // rather than misrouting to `Unknown`).
+                    "qwen3-tts-0.6b-customvoice",
+                    "qwen3-tts-0_6b-customvoice",
+                    "qwen3-tts-0.6b-custom-voice",
+                    "qwen3-tts-12hz-0.6b-customvoice",
+                    "qwen3-tts-12hz-0_6b-customvoice",
+                    "qwen3-tts-12hz-0.6b-custom-voice",
+                    "qwen/qwen3-tts-12hz-0.6b-customvoice",
                 ],
             ),
             // Phase 4 — VoxCPM (0.5B + 2B — 2026-07-30 Option C hybrid)

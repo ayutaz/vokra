@@ -493,7 +493,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "qwen3-tts-0_6b"
         | "qwen3-tts-12hz-0.6b-base"
         | "qwen3-tts-12hz-0_6b-base"
-        | "qwen3-tts-12hz-0.6b" => LicenseClass::Permissive,
+        | "qwen3-tts-12hz-0.6b"
+        // 2026-08-01 Wave 4 slug-only add: 0.6B-CustomVoice fine-tune of
+        // 0.6B-Base — same apache-2.0 grant end-to-end (`qwen3-tts-` prefix
+        // family walk below would resolve these to `Permissive` too; the
+        // exact-match arm is faster + keeps the canonical spellings visible
+        // in one place, mirror of the sibling variant walks throughout this
+        // registry).
+        | "qwen3-tts-0.6b-customvoice"
+        | "qwen3-tts-0_6b-customvoice"
+        | "qwen3-tts-12hz-0.6b-customvoice"
+        | "qwen3-tts-12hz-0_6b-customvoice" => LicenseClass::Permissive,
         // SoTA plan Phase 4 (2026-07-24): OpenBMB VoxCPM-0.5B — end-to-end
         // diffusion-autoregressive TTS. Weight license = **apache-2.0**
         // **end-to-end** — code + weight all under a single apache-2.0
@@ -1040,6 +1050,28 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         _ if id.starts_with("moss-tts") || id.starts_with("openmoss-team/moss-tts") => {
             LicenseClass::Permissive
         }
+        // 2026-08-01 Wave 4 slug-only add: OpenMOSS Team
+        // **MOSS-VoiceGenerator** (`OpenMOSS-Team/MOSS-VoiceGenerator`,
+        // apache-2.0). Sibling HF release of the `moss_tts` LLM family
+        // under the same `moss_tts_delay` internal `model_type` tag, so
+        // topology is already covered by [`MossTtsVariant::Delay`] and
+        // no new converter arm is needed at this layer. Primary source
+        // = HF cardData `license: apache-2.0` (CC 直接照合 2026-08-01,
+        // `https://huggingface.co/api/models/OpenMOSS-Team/MOSS-VoiceGenerator`).
+        // Registered as explicit exact-match arms rather than routed
+        // through the `moss-tts` prefix walk because the ids do not
+        // share that prefix (`moss-voice-generator` starts with
+        // `moss-v`, not `moss-tts`), and this keeps a hypothetical
+        // future `moss-voice-*` sibling from silently inheriting the
+        // classification without an explicit review. Guarded by the
+        // dash / underscore variants only — anything else fails
+        // through to `Unknown` (fail-closed).
+        "moss-voice-generator"
+        | "moss_voice_generator"
+        | "moss-voicegenerator"
+        | "moss_voicegenerator"
+        | "openmoss-team/moss-voice-generator"
+        | "openmoss-team/moss-voicegenerator" => LicenseClass::Permissive,
         // 2026-08-01 Wave 3: MOSS-Audio-Tokenizer family — the codec
         // half of the MOSS-TTS pipeline (both Full + Nano apache-2.0
         // per HF cardData API verified 2026-08-01). Prefix walk

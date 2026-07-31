@@ -145,6 +145,22 @@ slugs_for() {
     # Tokenizer" / "MOSS-Audio-Tokenizer (Full)" 等) that would tokenize
     # differently.
     "moss audio tokenizer"*|"moss-audio-tokenizer"*) printf 'moss_audio_tokenizer\n' ;;
+    # 2026-08-01 Wave 4 slug-only add: OpenMOSS Team MOSS-VoiceGenerator
+    # (`OpenMOSS-Team/MOSS-VoiceGenerator`, apache-2.0). The catalog
+    # display name "MOSS-VoiceGenerator" tokenizes to "moss
+    # voicegenerator" → first-token "moss" which does NOT match any
+    # `crates/vokra-convert/src/models/moss*.rs` module (the auto slug
+    # walk would land on the ambiguous `moss` token). This explicit
+    # alias points every display-name variant back at the sibling
+    # `moss_tts` module — the same converter dispatch the
+    # `moss-voice-generator` CLI slug is routed through, per the
+    # slug-only landing decision recorded in §3.1 and
+    # `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`. Landed
+    # in the same wave as the §3.1 row so a hypothetical future §3
+    # catalog row for MOSS-VoiceGenerator would resolve
+    # `implemented("MOSS-VoiceGenerator")` = true without a follow-up
+    # to this file.
+    "moss voice generator"*|"moss-voice-generator"*|"moss voicegenerator"*|"moss-voicegenerator"*) printf 'moss_tts\n' ;;
     # 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec — factorized VQ
     # codec (apache-2.0). The catalog display name "NaturalSpeech 3
     # FACodec (Amphion)" tokenizes to "naturalspeech 3 facodec" ->
