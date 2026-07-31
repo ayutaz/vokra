@@ -63,7 +63,14 @@ declare -a EXPECTED_GAPS=(
   "RNNoise|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
   "GTCRN|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
   "AudioSeal (Meta)|watermark embedding is Deferred (2026-07-04 drop); config surface only"
-  "Vocos|vocoder head component; min-dtype anchor only, no kernel"
+  # Vocos previously listed here as anchor-only; converter implementation
+  # landed in the vocos wave (2026-08-01) at
+  # crates/vokra-convert/src/models/vocos.rs (BF16 pass-through skeleton,
+  # mel-24khz + encodec-24khz VocosVariant, runtime binder deferred to
+  # owner §3.1 sign-off — mel-24khz + encodec-24khz rows signed
+  # 2026-08-01 yousan). The stale entry was removed 2026-08-01 as part
+  # of this wave; the FQ-03 CI production run catches undeclared drift
+  # per-PR (same rule as ECAPA-TDNN / WeSpeaker precedent above).
 )
 
 if [[ "${1:-}" == "--self-test" ]]; then

@@ -81,6 +81,7 @@ OPTIONS:
                               melotts-chinese | melotts-korean | speecht5 | parler-tts |
                               indic-parler-tts | vieneu-tts | bark | bark-small |
                               hifigan-vocoder | speecht5-hifigan | bigvgan | focalcodec |
+                              snac | snac-24khz | snac-44khz |
                               tiger | tiger-speech | mp-senet | metricgan-plus |
                               sepformer | sepformer-wham16k | sepformer-whamr16k |
                               fsmn-vad | firered-vad | smart-turn | clap | ast |

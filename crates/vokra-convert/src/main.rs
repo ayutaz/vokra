@@ -2016,6 +2016,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::BarkSmall
         | ModelKind::HifiganVocoder
         | ModelKind::Speecht5Hifigan
+        | ModelKind::Vocos
         | ModelKind::BigVGan
         | ModelKind::Focalcodec
         | ModelKind::TigerSeparator
@@ -2045,7 +2046,13 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // config chunk is written by the model, not the converter, so this
         // verify path deliberately does not readback it (a follow-up if a
         // future variant lands a converter-written config).
-        | ModelKind::Fcpe => {
+        | ModelKind::Fcpe
+        // 2026-08-01 Wave 3: SNAC — Multi-Scale Neural Audio Codec
+        // (hubertsiuzdak/snac_{24khz,44khz}, MIT). Same verify shape as
+        // focalcodec / bigvgan (arch / name / category + upstream_hf +
+        // license triple) plus an arch-specific `vokra.snac.variant`
+        // chunk not read back by this uniform verify arm.
+        | ModelKind::Snac => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

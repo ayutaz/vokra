@@ -694,6 +694,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "eres2net"
         | "speech_eres2net_sv_zh-cn_16k-common" => LicenseClass::Permissive,
         "emotion2vec" | "emotion-2vec" | "emotion2vec-plus-large" => LicenseClass::Permissive,
+        // 2026-08-01 wave: Charactr AI Vocos family — Fourier-space
+        // vocoder (ConvNeXt V2 backbone + iSTFT head, arXiv:2306.00814).
+        // Weight license = **MIT** end-to-end (Charactr AI code + trained
+        // weights) per HF cardData API on both
+        // `charactr/vocos-mel-24khz` and `charactr/vocos-encodec-24khz`
+        // (verified 2026-08-01 — CLAUDE.md 「ハルシネーション厳禁」).
+        // GitHub `charactr-platform/vocos/LICENSE` is also standard
+        // MIT. Redundant with the `vocos` / `charactr/vocos-` prefix
+        // arm below, but the exact canonical spellings are listed
+        // here so an id lookup returns quickly without hitting the
+        // prefix arm.
+        "vocos"
+        | "vocos-mel-24khz"
+        | "vocos_mel_24khz"
+        | "vocos-encodec-24khz"
+        | "vocos_encodec_24khz" => LicenseClass::Permissive,
         // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): ESPnet-family
         // Japanese plain VITS (JSUT / JVS / COEIROINK deployments +
         // any downstream that consumes the shared `vits-ja` arch tag).
@@ -961,6 +977,15 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             LicenseClass::Permissive
         }
         _ if id.starts_with("focalcodec") || id.starts_with("lucadellalib/focalcodec") => {
+            LicenseClass::Permissive
+        }
+        // 2026-08-01 wave: Charactr AI Vocos family — MIT end-to-end
+        // per HF cardData API `license: mit` on both mel-24khz and
+        // encodec-24khz repos (verified 2026-08-01). Prefix walk
+        // covers any future Vocos variant Charactr AI ships (e.g. a
+        // future `charactr/vocos-mel-48khz`) so an untagged GGUF
+        // resolves permissive without needing a rebuild of this arm.
+        _ if id.starts_with("vocos") || id.starts_with("charactr/vocos-") => {
             LicenseClass::Permissive
         }
         _ if id.starts_with("tiger-") || id.starts_with("jusperlee/tiger-") => {

@@ -452,12 +452,36 @@ pub mod nemotron_asr;
 pub mod parler;
 pub mod qwen3_asr;
 pub mod sepformer;
+// SNAC — Multi-Scale Neural Audio Codec (Siuzdak et al. 2024,
+// hubertsiuzdak/snac_{24khz,44khz}, MIT). BF16 pass-through skeleton
+// mirror of focalcodec / bigvgan (variant-taking, sample-rate specialised).
+// 3 RVQ levels @ ~12/23/47 Hz for the 24 kHz variant (no attention);
+// 4 RVQ levels + 32-frame local attention for the 44.1 kHz music-quality
+// variant. Consumed by Orpheus-TTS + MOSS voice family + CSM-1B-adjacent
+// stacks (upstream ~452k monthly downloads on the 24 kHz release).
 pub mod smart_turn;
+pub mod snac;
 pub mod speechbrain_lang_id;
 pub mod speecht5;
 pub mod speecht5_hifigan;
 pub mod tiger;
 pub mod vieneu;
+// 2026-08-01 wave: Charactr AI Vocos vocoder (`charactr/vocos-mel-24khz`
+// = HF audio-vocoder category top by download, 2.85M dl; and
+// `charactr/vocos-encodec-24khz`, both MIT). Category: vocoder.
+// Fourier-space vocoder (ConvNeXt V2 backbone + iSTFT head,
+// arXiv:2306.00814) — distinct arch tag `vocos` from every HiFi-GAN
+// sibling because Vocos does NOT time-domain upsample + MRF; it
+// spectrum-space processes then inverse-STFTs. Every F32 / F16 /
+// BF16 tensor passes through verbatim following the
+// speecht5_hifigan / bigvgan / focalcodec BF16 pass-through
+// contract; real-weight parity is deferred to owner
+// (`docs/license-audit.md` §3.1 sign-off). Upstream ships torch
+// pickle `pytorch_model.bin` + `config.yaml` only — pre-flatten to
+// safetensors offline via
+// `tools/parity/vocos_prepare_checkpoint.py` (a thin wrapper over
+// `bin_to_safetensors.py`, mirror of speecht5_hifigan).
+pub mod vocos;
 pub mod wav2vec2_ctc;
 pub mod xvector;
 // ---------------------------------------------------------------------------

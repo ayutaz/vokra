@@ -107,6 +107,11 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "xy-tokenizer": ["xy_tokenizer (`fnlp/XY_Tokenizer_TTSD_V0`)"],
     "bicodec": ["bicodec (`SparkAudio/Spark-TTS-0.5B` — spark-tts-bicodec)"],
     "neucodec": ["neucodec (`neuphonic/neucodec`)"],
+    # 2026-08-01: distilled NeuCodec variant (~10x fewer params, ~7.5x fewer
+    # MACs, same NeuCodec arch — single Rust converter drives both via
+    # NeucodecVariant slug dispatch; requires its own §3.1 row because the
+    # publish target is a distinct HF repo (vokra/distill-neucodec)).
+    "distill-neucodec": ["distill-neucodec (`neuphonic/distill-neucodec`)"],
     "ecapa-tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],
@@ -146,6 +151,16 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "speecht5-hifigan": [
         "SpeechT5-HiFi-GAN (`microsoft/speecht5_hifigan`)"
     ],
+    # 2026-08-01 wave — Charactr AI Vocos vocoder (Fourier-space,
+    # HF audio-vocoder top by download 2.85M dl on mel-24khz).
+    # Encodec variant repo publish is deferred; sign-off row is
+    # signed today so a future publish does not need re-approval.
+    "vocos-mel-24khz": [
+        "Vocos mel 24kHz (`charactr/vocos-mel-24khz`)"
+    ],
+    # 2026-08-01 Wave 3 — SNAC codec variants (hubertsiuzdak/snac_{24khz,44khz}, MIT).
+    "snac-24khz": ["SNAC 24kHz (`hubertsiuzdak/snac_24khz`)"],
+    "snac-44khz": ["SNAC 44kHz (`hubertsiuzdak/snac_44khz`)"],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
@@ -217,7 +232,13 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "xy_tokenizer": ["xy_tokenizer (`fnlp/XY_Tokenizer_TTSD_V0`)"],
     "bicodec": ["bicodec (`SparkAudio/Spark-TTS-0.5B` — spark-tts-bicodec)"],
-    "neucodec": ["neucodec (`neuphonic/neucodec`)"],
+    # Single converter drives both the base and 2026-08-01 distill variant
+    # via NeucodecVariant slug dispatch — both §3.1 rows must exist so the
+    # check-converter-signoff.sh gate stays green after the distill row lands.
+    "neucodec": [
+        "neucodec (`neuphonic/neucodec`)",
+        "distill-neucodec (`neuphonic/distill-neucodec`)",
+    ],
     "ecapa_tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],
@@ -268,6 +289,15 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "speecht5_hifigan": [
         "SpeechT5-HiFi-GAN (`microsoft/speecht5_hifigan`)"
     ],
+    # 2026-08-01 wave — Vocos (`charactr/vocos-mel-24khz` +
+    # `charactr/vocos-encodec-24khz`, MIT). Single converter with a
+    # VocosVariant enum for the two frontend variants; both §3.1
+    # rows are enumerated so the check-converter-signoff.sh gate
+    # accepts a future encodec-24khz publish without re-mapping.
+    "vocos": [
+        "Vocos mel 24kHz (`charactr/vocos-mel-24khz`)",
+        "Vocos encodec 24kHz (`charactr/vocos-encodec-24khz`)",
+    ],
     "kyutai_stt": ["kyutai/stt-2.6b-en"],
     "kyutai_tts": ["Kyutai TTS 1.6B EN/FR (`kyutai/tts-1.6b-en_fr`)"],
     "melotts": [
@@ -302,6 +332,11 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "SepFormer WSJ0-2mix (`speechbrain/sepformer-wsj02mix`)",
         "SepFormer WHAM 16k enhancement (`speechbrain/sepformer-wham16k-enhancement`)",
         "SepFormer WHAM-R 16k (`speechbrain/sepformer-whamr16k`)",
+    ],
+    # 2026-08-01 Wave 3 — SNAC codec (single converter, two variant rows).
+    "snac": [
+        "SNAC 24kHz (`hubertsiuzdak/snac_24khz`)",
+        "SNAC 44kHz (`hubertsiuzdak/snac_44khz`)",
     ],
     "smart_turn": ["Smart-Turn v2 (`pipecat-ai/smart-turn-v2`)"],
     "speechbrain_lang_id": [

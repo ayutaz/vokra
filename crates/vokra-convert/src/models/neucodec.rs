@@ -1,18 +1,51 @@
-//! **Neucodec** (neuphonic/neucodec, apache-2.0): safetensors → GGUF
-//! conversion (SoTA follow-on, 2026-07-25).
+//! **Neucodec** (`neuphonic/neucodec` + `neuphonic/distill-neucodec`,
+//! apache-2.0): safetensors → GGUF conversion (SoTA follow-on,
+//! 2026-07-25; `distill-neucodec` variant added 2026-08-01).
 //!
-//! Input: the upstream `neuphonic/neucodec` release — a low-bitrate
-//! neural audio codec (**24 kHz, 0.8 kbps @ 50 Hz**, FSQ tokens, in the
-//! X-Codec 2 lineage). Output: a GGUF carrying every float tensor
-//! verbatim under its upstream safetensors name, plus the
-//! `vokra.provenance.*` / `vokra.model.*` metadata chunks the future
-//! native Neucodec loader will read.
+//! Input: an upstream `neuphonic/neucodec` release (2.35 GB
+//! safetensors, 24 kHz, 0.8 kbps @ 50 Hz FSQ codec, X-Codec 2 lineage)
+//! OR `neuphonic/distill-neucodec` (978 MB `pytorch_model.bin` — same
+//! NeuCodec architecture, distilled to ~10× fewer parameters and
+//! ~7.5× fewer inference MACs by swapping BigCodec's acoustic encoder
+//! with SQCodec (70M → 36M) and w2v-bert-2.0's semantic encoder with
+//! DistilHuBERT (600M → 21M); API + `fsq_codes` shape identical to
+//! base per the upstream README primary source, so a single Rust
+//! converter drives both). The distill release ships torch pickle
+//! only — pre-flatten to safetensors offline via
+//! `tools/parity/nemo_pt_to_safetensors.py` (the funcodec / wespeaker
+//! / emotion2vec pattern — the converter refuses to touch pickle
+//! because that would require embedding a Python interpreter and
+//! re-breaking the NFR-DS-02 zero-dep posture). Output: a GGUF
+//! carrying every float tensor verbatim under its upstream
+//! safetensors name, plus the `vokra.provenance.*` / `vokra.model.*`
+//! / `vokra.neucodec.variant` metadata chunks the future native
+//! Neucodec loader will read.
+//!
+//! # Variant identity
+//!
+//! Both upstream releases share the [`ARCH`] tag `neucodec` — the
+//! topology is identical byte-for-byte, only the encoder-side
+//! parameter counts differ. The [`NeucodecVariant`] discriminator
+//! tags the emitted GGUF under [`KEY_NEUCODEC_VARIANT`]
+//! (`"base"` / `"distill"`) so the runtime + model-card generator can
+//! pick the right upstream-anchored provenance without parsing the
+//! free-text `vokra.model.name`. Distinct arch tag from every sibling
+//! codec (Mimi / DAC / WavTokenizer / xcodec2 / speechtokenizer /
+//! funcodec / bicodec / focalcodec) — silently sharing the arch tag
+//! would mis-route the runtime dispatch.
 //!
 //! # HF / licence / category
 //!
-//! - Upstream HF: `neuphonic/neucodec` (recorded under
-//!   `vokra.provenance.upstream_hf`).
-//! - SPDX: `apache-2.0` (`LicenseClass::Permissive`).
+//! - Upstream HF variants (recorded under
+//!   `vokra.provenance.upstream_hf`):
+//!   - `neuphonic/neucodec` → [`NeucodecVariant::Base`] (2.35 GB
+//!     safetensors).
+//!   - `neuphonic/distill-neucodec` → [`NeucodecVariant::Distill`]
+//!     (978 MB `pytorch_model.bin` → safetensors offline bridge —
+//!     same API + `fsq_codes` shape, ~10× fewer parameters).
+//! - SPDX: `apache-2.0` for both variants ([`LicenseClass::Permissive`])
+//!   — HF cardData primary source verified 2026-07-28 (base) +
+//!   2026-08-01 (distill).
 //! - Model category: `codec` (recorded under `vokra.model.category`).
 //!
 //! # BF16 pass-through (mirror of `qwen3_tts` / `vibevoice` / `voxcpm2`)
@@ -42,24 +75,32 @@
 //!
 //! # No ONNX (permanent)
 //!
-//! Neucodec is distributed as safetensors + a Python pipeline; this
-//! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in a future `crates/vokra-models/src/neucodec/`
-//! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! Neucodec is distributed as safetensors (base) or torch pickle
+//! (distill) + a Python pipeline; this converter **never** touches
+//! ONNX (FR-LD-05); the pipeline is re-implemented natively in a
+//! future `crates/vokra-models/src/neucodec/` module (whisper.cpp 型
+//! self re-implementation, CLAUDE.md 設計判断 4).
 //!
 //! # Wiring status
 //!
-//! This is the TDD skeleton (BF16 / F16 / F32 pass-through +
-//! provenance / category stamps). CLI + `ModelKind` + `pub use`
-//! re-export in `lib.rs` land in a follow-up commit; the module-level
-//! `#[allow(dead_code)]` below is temporary and removed as soon as
-//! that wiring lands (or a caller starts using the API).
+//! [`convert_neucodec_file`] is the M0-era backward-compat entry
+//! that always writes [`NeucodecVariant::Base`] (thin wrapper over
+//! [`convert_neucodec_variant_file`] — byte-identical output).
+//! [`convert_neucodec_variant_file`] takes an explicit variant; the
+//! `vokra-cli convert` path picks it slug-driven via
+//! `convert_file_with_slug` (BigVGan / Focalcodec pattern). The
+//! module-level `#[allow(dead_code)]` below is temporary and removed
+//! once a caller starts using the newly-exposed `pub const`
+//! [`DEFAULT_LICENSE_SPDX`] / [`CATEGORY`] / [`KEY_NEUCODEC_VARIANT`]
+//! items.
 
 // Skeleton-only allowance: the public API (`convert_neucodec_file`,
-// `NeucodecReport`, `KEY_*` / `MODEL_CATEGORY` / `UPSTREAM_HF`) is
-// exercised by the in-module tests and will be wired to the CLI +
-// `ModelKind` + `pub use` re-export in `lib.rs` in the next commit —
-// this attribute is removed at that point.
+// `convert_neucodec_variant_file`, `NeucodecReport`, `NeucodecVariant`,
+// `KEY_*` / `MODEL_CATEGORY` / `UPSTREAM_HF` / `DEFAULT_LICENSE_SPDX`)
+// is exercised by the in-module tests + lib.rs `convert_file` /
+// `convert_file_with_slug` dispatch; this attribute is removed once
+// the runtime `NeucodecWeights::from_gguf` binding lands and starts
+// consuming the variant discriminator directly.
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -70,28 +111,125 @@ use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` for Neucodec GGUFs.
-pub(crate) const ARCH: &str = "neucodec";
+/// `vokra.model.arch` for Neucodec GGUFs. Shared across every
+/// [`NeucodecVariant`] — the base and distill releases have
+/// byte-identical arch topology, only the encoder-side parameter
+/// counts differ (upstream `neuphonic/distill-neucodec` README
+/// primary source: same NeuCodec API + `fsq_codes` shape).
+///
+/// Intentionally distinct from every sibling codec (`mimi`, `dac`,
+/// `wavtokenizer`, `xcodec2`, `funcodec`, `speechtokenizer`,
+/// `bicodec`, `xy_tokenizer`, `step_audio2_mini`, `focalcodec`) —
+/// NeuCodec is an FSQ codec in the X-Codec 2 lineage with the
+/// Neuphonic-specific encoder stack.
+pub const ARCH: &str = "neucodec";
 
-/// `vokra.model.name` value written for the canonical Neucodec GGUF.
+/// `vokra.model.name` value written for the canonical
+/// `neuphonic/neucodec` GGUF (backward-compat alias — new callers
+/// should use [`NeucodecVariant::name`]).
 pub(crate) const NAME: &str = "neucodec";
 
-/// Model-category tag written under `vokra.model.category`.
+/// `vokra.model.category` value written for every Neucodec GGUF.
 /// Distinguishes codec-only models (RVQ / FSQ audio codecs) from
 /// vocoder-LM (HiFTChain) or codec-LM (multi-codebook AR) siblings —
 /// consumers use it to pick a decode path without inspecting the arch.
-const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-const MODEL_CATEGORY: &str = "codec";
+pub const CATEGORY: &str = "codec";
 
-/// Upstream HF repository slug (`org/name`), recorded under
-/// `vokra.provenance.upstream_hf` so a downstream can trace the
-/// artifact back to its serving location without parsing the free-text
-/// `vokra.provenance.source`.
+/// Default upstream weight licence (SPDX). Verified 2026-07-28 (base)
+/// and 2026-08-01 (distill) via HF API cardData `license: apache-2.0`.
+pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
+
+// Raw string keys not covered by `crate::gguf::chunks` — kept as
+// converter-side constants (the cross-crate constant duplication rule
+// the sibling converters use applies).
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
-const UPSTREAM_HF: &str = "neuphonic/neucodec";
+
+/// `vokra.neucodec.variant`: `"base"` / `"distill"`. Consumers pick a
+/// specific NeuCodec release without parsing free-text
+/// `vokra.model.name` (mirrors [`super::bigvgan`] +
+/// [`super::focalcodec`] discriminators).
+pub const KEY_NEUCODEC_VARIANT: &str = "vokra.neucodec.variant";
+
+/// Upstream HF repository slug (`org/name`) for the canonical
+/// `NeucodecVariant::Base` release (backward-compat alias — new
+/// callers should use [`NeucodecVariant::upstream_hf`]).
+pub(crate) const UPSTREAM_HF: &str = "neuphonic/neucodec";
+
+/// Which Neucodec release the caller is converting. Selects the
+/// model name / upstream HF slug / variant tag written into the GGUF.
+///
+/// Both variants share [`ARCH`] `neucodec` — the topology is
+/// identical (same NeuCodec architecture + `fsq_codes` output shape
+/// per the upstream `neuphonic/distill-neucodec` README primary
+/// source), only the encoder-side parameter counts differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeucodecVariant {
+    /// `neuphonic/neucodec` (2026-07-28 canonical publish): the
+    /// 2.35 GB safetensors release, 24 kHz / 0.8 kbps @ 50 Hz FSQ
+    /// codec, X-Codec 2 lineage. `vokra.neucodec.variant = "base"`.
+    Base,
+    /// `neuphonic/distill-neucodec` (2026-08-01 add): the 978 MB
+    /// `pytorch_model.bin` distilled release — same NeuCodec arch,
+    /// ~10× fewer parameters (BigCodec acoustic encoder 70M → SQCodec
+    /// 36M; w2v-bert-2.0 semantic encoder 600M → DistilHuBERT 21M),
+    /// ~7.5× fewer inference MACs. API + `fsq_codes` output shape
+    /// identical to base per the upstream README primary source, so
+    /// the same converter + tensor-name contract drives it.
+    /// `vokra.neucodec.variant = "distill"`.
+    Distill,
+}
+
+impl NeucodecVariant {
+    /// The `vokra.model.name` string for this release.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Base => "neucodec",
+            Self::Distill => "distill-neucodec",
+        }
+    }
+
+    /// The `vokra.provenance.upstream_hf` slug (`org/name`) for this
+    /// release — the primary redistribution source the model-card
+    /// generator anchors on.
+    pub const fn upstream_hf(self) -> &'static str {
+        match self {
+            Self::Base => "neuphonic/neucodec",
+            Self::Distill => "neuphonic/distill-neucodec",
+        }
+    }
+
+    /// The `vokra.neucodec.variant` tag written under
+    /// [`KEY_NEUCODEC_VARIANT`].
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Base => "base",
+            Self::Distill => "distill",
+        }
+    }
+
+    /// One-line free-text description used for the
+    /// `vokra.provenance.source` stamp (`stamp_provenance`'s `source`
+    /// argument).
+    pub const fn source_description(self) -> &'static str {
+        match self {
+            Self::Base => "neuphonic/neucodec (24 kHz, 0.8 kbps @ 50 Hz FSQ codec, apache-2.0)",
+            Self::Distill => {
+                "neuphonic/distill-neucodec (distilled NeuCodec, ~10x fewer params, \
+                 ~7.5x fewer MACs vs base; same NeuCodec arch + `fsq_codes` shape, \
+                 apache-2.0)"
+            }
+        }
+    }
+}
 
 /// Outcome of a Neucodec conversion.
-#[derive(Debug, Default)]
+///
+/// Mirrors the sibling BF16-pass-through converters' counter shape
+/// ([`super::focalcodec::FocalcodecReport`],
+/// [`super::wespeaker::WespeakerReport`]) adapted to the
+/// file-oriented `convert_neucodec_variant_file` surface.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NeucodecReport {
     /// Total tensors observed in the input safetensors header.
     pub read: usize,
@@ -109,15 +247,29 @@ pub struct NeucodecReport {
     /// `qwen3_tts::Qwen3TtsReport::bf16_passthrough` /
     /// `vibevoice::VibeVoiceReport::bf16_passthrough`.
     pub bf16_passthrough: usize,
+    /// Which Neucodec variant was written (`None` only in the
+    /// pre-variant `Default::default()` slot; every path through
+    /// [`convert_neucodec_variant_file`] sets it — mirror of
+    /// [`super::focalcodec::FocalcodecReport::variant`]).
+    pub variant: Option<NeucodecVariant>,
 }
 
-/// File-based Neucodec converter (`vokra-cli convert --model neucodec`).
+/// File-based Neucodec converter (backward-compat wrapper — writes
+/// [`NeucodecVariant::Base`]).
 ///
 /// Reads `input` (upstream `neuphonic/neucodec` `model.safetensors`),
 /// writes a Vokra GGUF to `output`. `license` overrides the default
 /// `apache-2.0` provenance stamp (Whisper / kokoro-family override
 /// pattern — see `convert_file_licensed` in `lib.rs`); pass `None` to
 /// keep the built-in `apache-2.0` stamp.
+///
+/// This is a thin wrapper over [`convert_neucodec_variant_file`] with
+/// [`NeucodecVariant::Base`] — kept for backward compatibility with
+/// the 2026-07-28 lib.rs `convert_file` dispatch. New callers that
+/// need the 2026-08-01 distill variant should call
+/// [`convert_neucodec_variant_file`] directly with
+/// [`NeucodecVariant::Distill`] (or route the raw `--model` slug
+/// through `convert_file_with_slug`).
 ///
 /// # Errors
 ///
@@ -129,36 +281,81 @@ pub fn convert_neucodec_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<NeucodecReport, ConvertError> {
+    convert_neucodec_variant_file(input, output, license, NeucodecVariant::Base)
+}
+
+/// File-based Neucodec converter with explicit variant selection
+/// (`vokra-cli convert --model {neucodec|distill-neucodec}` via
+/// `convert_file_with_slug`).
+///
+/// Reads `input` (upstream safetensors — for the distill variant,
+/// bridged from `pytorch_model.bin` via
+/// `tools/parity/nemo_pt_to_safetensors.py` offline), writes a Vokra
+/// GGUF to `output` tagged as the supplied [`NeucodecVariant`].
+/// `license` overrides the default `apache-2.0` provenance stamp;
+/// pass `None` to keep the built-in stamp.
+///
+/// Every F32 / F16 / BF16 tensor passes through under its upstream
+/// name; the `vokra.model.*` (arch / name / category),
+/// `vokra.provenance.*` (weight_license / license / model_id / source
+/// / upstream_hf), and `vokra.neucodec.variant` chunks are stamped
+/// for the runtime compliance gate (FR-CP-03) and shape-checked
+/// config dispatch.
+///
+/// # Errors
+///
+/// [`ConvertError::Io`] for I/O failures reading `input` or writing
+/// `output`; [`ConvertError::Parse`] for malformed safetensors input;
+/// [`ConvertError::Gguf`] if the GGUF serialization fails.
+pub fn convert_neucodec_variant_file(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+    variant: NeucodecVariant,
+) -> Result<NeucodecReport, ConvertError> {
+    // NeuCodec base is 2.35 GB safetensors; distill is 978 MB pickle →
+    // ~1 GB safetensors after bridge. Both fit the sibling non-streaming
+    // BF16 pass-through posture (still 1-2 orders of magnitude smaller
+    // than the streaming-mandated Moshi 14 GiB tier that requires the
+    // `MappedTextBlocks` / `restamp_provenance` mmap path).
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    // Category / upstream-HF stamps — not covered by `stamp_provenance`
-    // (which handles the SPDX + class + model_id + source group only),
-    // so written directly. Consumers pick a decode path by category and
-    // trace the artifact back to its serving location by upstream_hf.
-    b.add_string(KEY_MODEL_CATEGORY, MODEL_CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    b.add_string(chunks::KEY_MODEL_NAME, variant.name());
+    // Category / upstream-HF / variant stamps — not covered by
+    // `stamp_provenance` (which handles the SPDX + class + model_id +
+    // source group only), so written directly. Consumers pick a decode
+    // path by category, trace the artifact back to its serving location
+    // by upstream_hf, and pick the shape-checked config bundle by
+    // variant tag (`"base"` / `"distill"`).
+    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    b.add_string(KEY_NEUCODEC_VARIANT, variant.tag());
 
     // Self-describing redistribution: the artifact carries its own
-    // licence. Default = apache-2.0 (upstream `neuphonic/neucodec`
-    // model card). `license` overrides for callers who obtained the
-    // weight under a different SPDX (see `convert_file_licensed`).
+    // licence. Default = apache-2.0 (both `neuphonic/neucodec` and
+    // `neuphonic/distill-neucodec` HF cardData primary source verified
+    // 2026-07-28 and 2026-08-01 respectively). `license` overrides for
+    // callers who obtained the weight under a different SPDX (see
+    // `convert_file_licensed`).
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => ("apache-2.0".to_owned(), LicenseClass::Permissive),
+        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
     };
     vokra_core::stamp_provenance(
         &mut b,
         class,
         &spdx,
-        Some(NAME),
-        Some("neuphonic/neucodec (24 kHz, 0.8 kbps @ 50 Hz FSQ codec, apache-2.0)"),
+        Some(variant.name()),
+        Some(variant.source_description()),
     );
+    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
 
-    let mut report = NeucodecReport::default();
+    let mut report = NeucodecReport {
+        variant: Some(variant),
+        ..NeucodecReport::default()
+    };
     // Float tensors pass through **verbatim** — no convert-time widening.
     // BF16 stays GGUF `BF16` (type 30), same posture as qwen3_tts /
     // vibevoice / voxcpm2; runtime widens BF16 → f32 exactly at load via
@@ -319,6 +516,13 @@ mod tests {
             report.bf16_passthrough, 1,
             "BF16 tensor must increment the observability counter"
         );
+        // Backward-compat wrapper must tag the report with the default
+        // (Base) variant — regression against a silent variant-drop.
+        assert_eq!(
+            report.variant,
+            Some(NeucodecVariant::Base),
+            "convert_neucodec_file wrapper must default to Base"
+        );
 
         let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
@@ -340,6 +544,14 @@ mod tests {
             file.tensor_bytes(info),
             bf16.as_slice(),
             "BF16 payload must be byte-identical to input (no silent widen)"
+        );
+        // The new variant discriminator chunk must land for Base too —
+        // a Base-side silent-drop would be invisible to any consumer
+        // that inspects `vokra.neucodec.variant` to pick a decode path.
+        assert_eq!(
+            file.get(KEY_NEUCODEC_VARIANT).and_then(|v| v.as_str()),
+            Some("base"),
+            "Base variant must stamp vokra.neucodec.variant = \"base\""
         );
 
         std::fs::remove_file(&input_path).ok();
@@ -387,9 +599,14 @@ mod tests {
             report.skipped_non_float, 0,
             "no tensor may reach the skipped arm"
         );
+        assert_eq!(
+            report.variant,
+            Some(NeucodecVariant::Base),
+            "convert_neucodec_file wrapper must default to Base"
+        );
 
         // Round-trip carries both tensors with their dtypes preserved
-        // AND the arch / provenance / category stamps land.
+        // AND the arch / provenance / category / variant stamps land.
         let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
 
@@ -405,7 +622,7 @@ mod tests {
         assert_eq!(f16_info.dtype, GgmlType::F16, "F16 stays F16");
         assert_eq!(file.tensor_bytes(f16_info), f16_bytes.as_slice());
 
-        // Provenance / category chunks landed (task-spec pins).
+        // Provenance / category / variant chunks landed (task-spec pins).
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
             Some(ARCH)
@@ -431,10 +648,142 @@ mod tests {
         );
         assert_eq!(
             file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(MODEL_CATEGORY)
+            Some(CATEGORY)
+        );
+        assert_eq!(
+            file.get(KEY_NEUCODEC_VARIANT).and_then(|v| v.as_str()),
+            Some("base"),
+            "Base variant must stamp vokra.neucodec.variant = \"base\""
         );
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn distill_variant_writes_correct_provenance_and_variant_tag() {
+        // The Distill variant path must stamp `vokra.model.name` /
+        // `vokra.neucodec.variant` / `vokra.provenance.upstream_hf` /
+        // `vokra.provenance.model_id` with the distill release's values
+        // — a silent-drop back to Base would misroute the runtime
+        // dispatch AND publish the artifact under the wrong upstream
+        // credit in its model card. Arch tag stays shared per the
+        // upstream README primary source (same NeuCodec topology).
+        let values: [f32; 4] = [1.0, -1.0, 0.5, -0.5];
+        let bf16: Vec<u8> = values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        let input_bytes = safetensors_one_bf16("codec.encoder.weight", &[2, 2], &bf16);
+        let input_path = write_temp("distill-in", &input_bytes);
+        let output_path = write_temp("distill-out", &[]);
+
+        let report = convert_neucodec_variant_file(
+            &input_path,
+            &output_path,
+            None,
+            NeucodecVariant::Distill,
+        )
+        .expect("convert_neucodec_variant_file must accept a distill BF16 checkpoint");
+        assert_eq!(report.read, 1);
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(
+            report.variant,
+            Some(NeucodecVariant::Distill),
+            "Distill variant must be tagged in the report — regression against silent Base drop"
+        );
+
+        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
+
+        // Arch tag is shared with the base variant (same NeuCodec
+        // topology, ~10x fewer params) — a distinct arch would
+        // mis-route the runtime dispatch away from the shared
+        // NeuCodec loader.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH),
+            "Distill must share arch tag `neucodec` with Base (same NeuCodec topology)"
+        );
+        // But name / upstream / variant tag must distinguish the two so
+        // consumers can pick the right shape-checked config bundle and
+        // the model-card generator credits the distill release.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("distill-neucodec"),
+            "Distill variant must stamp vokra.model.name = \"distill-neucodec\""
+        );
+        assert_eq!(
+            file.get(KEY_NEUCODEC_VARIANT).and_then(|v| v.as_str()),
+            Some("distill"),
+            "Distill variant must stamp vokra.neucodec.variant = \"distill\""
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some("neuphonic/distill-neucodec"),
+            "Distill variant must stamp upstream_hf = \"neuphonic/distill-neucodec\""
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(CATEGORY),
+            "Category stays `codec` (shared across variants)"
+        );
+        // Licence stamp — Distill is apache-2.0 too (HF cardData primary
+        // source verified 2026-08-01).
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("apache-2.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str())
+        );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn base_variant_via_wrapper_matches_variant_call() {
+        // `convert_neucodec_file` (backward-compat wrapper) must produce
+        // a byte-identical GGUF vs the explicit
+        // `convert_neucodec_variant_file(..., Base)` call. Regression
+        // against a silent divergence between the two entry points that
+        // would drift consumers who depend on either path.
+        let values: [f32; 2] = [1.0, -1.0];
+        let bf16: Vec<u8> = values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+
+        let in_a = safetensors_one_bf16("codec.a.weight", &[1, 2], &bf16);
+        // Identical input bytes for both calls; separate paths keep the
+        // parallel-`cargo test` name-collision guard in `write_temp`
+        // effective.
+        let in_b = safetensors_one_bf16("codec.a.weight", &[1, 2], &bf16);
+        let path_a_in = write_temp("wrapper-a-in", &in_a);
+        let path_b_in = write_temp("wrapper-b-in", &in_b);
+        let path_a_out = write_temp("wrapper-a-out", &[]);
+        let path_b_out = write_temp("wrapper-b-out", &[]);
+
+        convert_neucodec_file(&path_a_in, &path_a_out, None)
+            .expect("backward-compat wrapper must succeed");
+        convert_neucodec_variant_file(&path_b_in, &path_b_out, None, NeucodecVariant::Base)
+            .expect("explicit-Base call must succeed");
+
+        let bytes_a = std::fs::read(&path_a_out).expect("read wrapper output");
+        let bytes_b = std::fs::read(&path_b_out).expect("read explicit-Base output");
+        assert_eq!(
+            bytes_a, bytes_b,
+            "wrapper and explicit-Base entry points must be byte-identical"
+        );
+
+        for p in [&path_a_in, &path_b_in, &path_a_out, &path_b_out] {
+            std::fs::remove_file(p).ok();
+        }
     }
 }

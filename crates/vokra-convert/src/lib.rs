@@ -1486,6 +1486,42 @@ pub enum ModelKind {
     /// `tools/parity/fcpe_prepare_checkpoint.py` (the DFN3 / DAC / CSM
     /// bridge pattern — no pickle ever enters the runtime, FR-LD-05).
     Fcpe,
+    /// **Vocos** (`charactr/vocos-mel-24khz`, `charactr/vocos-encodec-24khz`,
+    /// MIT) safetensors checkpoint (2026-08-01 wave). Category = `vocoder`.
+    /// **Highest-download HF vocoder audio release** as of 2026-08-01
+    /// (2.85M mel-24khz downloads). Fourier-space vocoder
+    /// (Siuzdak 2023 arXiv:2306.00814) = ConvNeXt V2 backbone +
+    /// **iSTFT head** — a fundamentally different topology from every
+    /// HiFi-GAN family sibling (`bigvgan`, `hifigan_vocoder`,
+    /// `speecht5_hifigan`) which upsample time-domain waveforms
+    /// through transposed-conv + MRF blocks. Distinct arch tag `vocos`
+    /// silently mis-routing would misfire the runtime dispatch. Both
+    /// upstream releases ship torch pickle `pytorch_model.bin` +
+    /// `config.yaml` only (no `model.safetensors` mirror, verified
+    /// 2026-08-01 via HF cardData API); callers pre-flatten to
+    /// safetensors offline via
+    /// `tools/parity/vocos_prepare_checkpoint.py` (thin bridge over
+    /// `bin_to_safetensors.py` — the SpeechT5-HiFi-GAN pattern). BF16
+    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim under its upstream state-dict name; runtime
+    /// binding + real-weight parity are deferred to owner
+    /// (`docs/license-audit.md` §3.1 sign-off queue). Provenance =
+    /// **mit** for both variants (Permissive — verified 2026-08-01 via
+    /// HF cardData API `license: mit`). Two variants collapse into
+    /// this single ModelKind; [`convert_file_with_slug`] picks the
+    /// correct [`models::vocos::VocosVariant`] from the raw `--model`
+    /// slug (mirror of [`Self::Focalcodec`] / [`Self::BigVGan`]).
+    /// **CLAUDE.md 設計判断 §Vocos**: INT8-fragile (「INT8 崩壊」→
+    /// fp16 必須) — the converter never emits INT8 (K-quant is
+    /// Whisper-only per `--quantize` guard); BF16 is pass-through safe.
+    Vocos,
+    /// **SNAC** (`hubertsiuzdak/snac_{24khz,44khz}`, MIT) safetensors
+    /// checkpoint (2026-08-01 Wave 3). Category = `codec`. Multi-Scale
+    /// Neural Audio Codec (Siuzdak et al. 2024, arXiv:2410.14411).
+    /// Two variants share this single ModelKind; the slug picks the
+    /// frame rate + RVQ depth via `convert_file_with_slug` (mirror of
+    /// [`Self::Focalcodec`] / [`Self::BigVGan`] slug dispatch).
+    Snac,
 }
 
 impl ModelKind {
@@ -1759,7 +1795,14 @@ impl ModelKind {
             | "bi_codec"
             | "spark-tts-bicodec"
             | "sparkaudio/spark-tts-0.5b" => Some(Self::Bicodec),
-            "neucodec" | "neu-codec" | "neu_codec" | "neuphonic/neucodec" => Some(Self::Neucodec),
+            "neucodec"
+            | "neu-codec"
+            | "neu_codec"
+            | "neuphonic/neucodec"
+            | "distill-neucodec"
+            | "distill_neucodec"
+            | "distill-neu-codec"
+            | "neuphonic/distill-neucodec" => Some(Self::Neucodec),
             "ecapa-tdnn"
             | "ecapa_tdnn"
             | "spkrec-ecapa-voxceleb"
@@ -1951,6 +1994,18 @@ impl ModelKind {
             | "focalcodec-12_5hz"
             | "focalcodec_12_5hz"
             | "lucadellalib/focalcodec_12_5hz" => Some(Self::Focalcodec),
+            // SNAC — Multi-Scale Neural Audio Codec (Siuzdak et al. 2024,
+            // hubertsiuzdak/snac_{24khz,44khz}, MIT). Two variants share
+            // this single ModelKind; the slug picks the frame rate + RVQ
+            // depth via `convert_file_with_slug` (mirror of BigVGan /
+            // Focalcodec's slug dispatch).
+            "snac"
+            | "snac-24khz"
+            | "snac_24khz"
+            | "hubertsiuzdak/snac_24khz"
+            | "snac-44khz"
+            | "snac_44khz"
+            | "hubertsiuzdak/snac_44khz" => Some(Self::Snac),
             "tiger"
             | "tiger-dnr"
             | "tiger_dnr"
@@ -2071,6 +2126,22 @@ impl ModelKind {
             | "fast-context-pitch-estimator"
             | "fast_context_pitch_estimator"
             | "cnchtu/fcpe" => Some(Self::Fcpe),
+            // Charactr AI Vocos family (2026-08-01 wave). Accept the
+            // canonical short arch tag, the underscore variant, both
+            // per-variant slugs (mel-24khz canonical / encodec-24khz
+            // second-variant), and the raw HF org/name paths. Every
+            // spelling resolves to the same MIT ModelKind; the specific
+            // VocosVariant is picked from the raw slug in
+            // convert_file_with_slug (mirror of BigVGan / Focalcodec).
+            "vocos"
+            | "vocos-mel-24khz"
+            | "vocos_mel_24khz"
+            | "vocos-mel"
+            | "charactr/vocos-mel-24khz"
+            | "vocos-encodec-24khz"
+            | "vocos_encodec_24khz"
+            | "vocos-encodec"
+            | "charactr/vocos-encodec-24khz" => Some(Self::Vocos),
             _ => None,
         }
     }
@@ -2170,6 +2241,7 @@ impl ModelKind {
             Self::SepformerWham16kEnh => "sepformer-wham16k-enhancement",
             Self::SepformerWhamr16k => "sepformer-whamr16k",
             Self::SmartTurn => "smart-turn",
+            Self::Snac => "snac",
             Self::SpeechT5Tts => "speecht5-tts",
             Self::TigerSeparator => "tiger-dnr",
             Self::TigerSpeech => "tiger-speech",
@@ -2178,6 +2250,7 @@ impl ModelKind {
             Self::Wav2Vec2Ctc => "wav2vec2",
             Self::XVector => "xvector",
             Self::Fcpe => "fcpe",
+            Self::Vocos => "vocos-mel-24khz",
         }
     }
 }
@@ -2353,6 +2426,58 @@ pub fn convert_file_with_slug(
                 notes,
             })
         }
+        ModelKind::Neucodec => {
+            let variant = match slug.to_lowercase().as_str() {
+                "distill-neucodec"
+                | "distill_neucodec"
+                | "distill-neu-codec"
+                | "neuphonic/distill-neucodec" => models::neucodec::NeucodecVariant::Distill,
+                // Canonical "neucodec" / neuphonic/neucodec → Base default.
+                _ => models::neucodec::NeucodecVariant::Base,
+            };
+            let report =
+                models::neucodec::convert_neucodec_variant_file(input, output, license, variant)?;
+            let notes = vec![format!(
+                "neucodec ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Snac => {
+            let variant = match slug.to_lowercase().as_str() {
+                "snac-44khz" | "snac_44khz" | "hubertsiuzdak/snac_44khz" => {
+                    models::snac::SnacVariant::Hz44
+                }
+                // Canonical "snac" / -24khz → Hz24 (higher-download default).
+                _ => models::snac::SnacVariant::Hz24,
+            };
+            let report = models::snac::convert_snac_file(input, output, license, variant)?;
+            let notes = vec![format!(
+                "snac ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
         ModelKind::Qwen3Asr => {
             let variant = match slug.to_lowercase().as_str() {
                 "qwen3-asr-0.6b" | "qwen3_asr_0_6b" | "qwen/qwen3-asr-0.6b" => {
@@ -2438,6 +2563,38 @@ pub fn convert_file_with_slug(
                 models::focalcodec::convert_focalcodec_file(input, output, license, variant)?;
             let notes = vec![format!(
                 "focalcodec ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Vocos => {
+            // 2026-08-01 wave: Charactr AI Vocos vocoder. Slug-based
+            // variant dispatch mirror of the Focalcodec / BigVGan arms
+            // above — the canonical / "vocos" / "vocos-mel-*" aliases
+            // route to Mel24khz (default, HF-download top); explicit
+            // -encodec-24khz slugs pick the encodec variant.
+            let variant = match slug.to_lowercase().as_str() {
+                "vocos-encodec-24khz"
+                | "vocos_encodec_24khz"
+                | "vocos-encodec"
+                | "charactr/vocos-encodec-24khz" => models::vocos::VocosVariant::Encodec24khz,
+                // Everything else (canonical "vocos" / "vocos-mel-24khz"
+                // / "charactr/vocos-mel-24khz") → default Mel24khz.
+                _ => models::vocos::VocosVariant::Mel24khz,
+            };
+            let report = models::vocos::convert_vocos_file(input, output, variant, license)?;
+            let notes = vec![format!(
+                "vocos ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
                  non-float skipped",
                 variant.tag(),
                 report.written,
@@ -3894,6 +4051,46 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === Vocos (2026-08-01 wave, mel-24khz + encodec-24khz variants) ===
+        ModelKind::Vocos => {
+            // 2026-08-01 wave: Charactr AI Vocos vocoder
+            // (`charactr/vocos-mel-24khz` = HF top vocoder by download
+            // 2.85M dl; `charactr/vocos-encodec-24khz` = second
+            // variant, both MIT). Distinct arch tag `vocos` from every
+            // HiFi-GAN family sibling — Vocos is a Fourier-space
+            // vocoder (ConvNeXt V2 backbone + iSTFT head), not
+            // time-domain upsample + MRF. BF16 pass-through skeleton
+            // mirror of speecht5_hifigan / bigvgan / focalcodec;
+            // runtime binding is deferred to owner. Upstream ships
+            // torch pickle only — pre-flatten via
+            // tools/parity/vocos_prepare_checkpoint.py.
+            //
+            // This path is the enum-arm default (Mel24khz); the
+            // encodec-24khz variant is picked from the raw `--model`
+            // slug via `convert_file_with_slug` — this arm mirrors
+            // the BigVGan / Focalcodec posture (single ModelKind +
+            // slug dispatch, no ModelKind bloat for pure-metadata
+            // variants).
+            let report = models::vocos::convert_vocos_file(
+                input,
+                output,
+                models::vocos::VocosVariant::Mel24khz,
+                license,
+            )?;
+            let notes = vec![format!(
+                "vocos (mel_24khz): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (use --model vocos-encodec-24khz or convert_vocos_file with an \
+                 explicit VocosVariant for the encodec variant)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Vocos,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === Focalcodec (from wf_022575ce-077-4; 25Hz + 12.5Hz variants added 2026-07-31) ===
         ModelKind::Focalcodec => {
             // SoTA plan Phase D6 (2026-07-30): lucadellalib FocalCodec
@@ -3922,6 +4119,43 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Focalcodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Snac (2026-08-01 Wave 3) ===
+        ModelKind::Snac => {
+            // 2026-08-01 Wave 3: SNAC — Multi-Scale Neural Audio
+            // Codec (Siuzdak et al. 2024, MIT). Default dispatch
+            // path tags the GGUF as the Hz24 variant — the
+            // higher-download release (~452k dl/mo vs 44kHz ~1.3k
+            // dl/mo per HF API 2026-08-01) and the primary consumer
+            // of Orpheus-TTS + MOSS voice + CSM-1B-adjacent TTS
+            // stacks. Callers who want the 44 kHz music-quality
+            // variant (4 RVQ levels + 32-frame local attention)
+            // use `--model snac-44khz` (routed via
+            // `convert_file_with_slug`) or the standalone
+            // `convert_snac_file` entry with an explicit
+            // `SnacVariant`. This mirrors the Focalcodec /
+            // BigVGan default-canonical dispatch pattern (single
+            // ModelKind + slug dispatch, no ModelKind bloat for
+            // pure-metadata variants).
+            let report = models::snac::convert_snac_file(
+                input,
+                output,
+                license,
+                models::snac::SnacVariant::Hz24,
+            )?;
+            let notes = vec![format!(
+                "snac (24khz): {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (use --model snac-44khz or convert_snac_file with an \
+                 explicit SnacVariant for the music-quality variant)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Snac,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
