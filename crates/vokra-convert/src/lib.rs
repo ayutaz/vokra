@@ -1188,6 +1188,35 @@ pub enum ModelKind {
     /// (standalone vocoder, not full TTS). Provenance = **apache-2.0**
     /// (Permissive — verified 2026-07-30 via HF API cardData).
     HifiganVocoder,
+    /// Microsoft **SpeechT5 HiFi-GAN vocoder** (`microsoft/speecht5_hifigan`,
+    /// MIT) — 2026-07-31 wave. Category = `vocoder`. HiFi-GAN vocoder
+    /// companion to `microsoft/speecht5_tts` (Kong et al. 2020,
+    /// arXiv:2010.05646 lineage), trained on LibriTTS at 16 kHz with
+    /// 80-band mel input, upsample rates `[4, 4, 4, 4]` (total 256×),
+    /// upsample kernels `[8, 8, 8, 8]`, MRF kernels `[3, 7, 11]` with
+    /// dilations `[[1,3,5], [1,3,5], [1,3,5]]`, and
+    /// `normalize_before: true` with learned scalar-per-mel-bin `mean` /
+    /// `scale` tensors. Ships torch-pickle `pytorch_model.bin` +
+    /// `config.json` only (no safetensors mirror on the primary release,
+    /// verified 2026-07-31 via HF cardData API); callers pre-flatten to
+    /// safetensors offline via
+    /// `tools/parity/speecht5_hifigan_prepare_checkpoint.py` — a thin
+    /// wrapper over the shared `bin_to_safetensors.py` bridge. BF16
+    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim under its upstream HF-transformers
+    /// `SpeechT5HifiGan` name (`conv_pre.*`, `upsampler.{i}.*`,
+    /// `resblocks.{i}.convs1.{j}.*`, `resblocks.{i}.convs2.{j}.*`,
+    /// `conv_post.*`, `mean`, `scale`); runtime binding + real-weight
+    /// parity are deferred to owner (`docs/license-audit.md` §3.1
+    /// sign-off queue). **Distinct arch tag** from `hifigan_vocoder`
+    /// (SpeechBrain `tts-hifigan-libritts-22050Hz`, 22 050 Hz / no
+    /// `normalize_before` / different tensor prefix); silently sharing
+    /// a tag would mis-route runtime dispatch. Provenance = **mit**
+    /// (Permissive — verified 2026-07-31 via HF cardData API
+    /// `license: mit`). The sibling `microsoft/speecht5_vc`
+    /// (voice-conversion) is deliberately out of scope — voice-cloning
+    /// targets are `vokra-voiceclone-experimental` (CLAUDE.md 設計判断 8).
+    Speecht5Hifigan,
     /// NVIDIA **BigVGAN** vocoder family (SoTA plan Phase D2-D5,
     /// 2026-07-30). Category = `vocoder`. AMPBlock1 with Snake or
     /// SnakeBeta plus transposed-conv upsample vocoder
@@ -1210,22 +1239,27 @@ pub enum ModelKind {
     /// `Copyright (c) 2024 NVIDIA CORPORATION`, CLAUDE.md 2026-07-22
     /// 訂正).
     BigVGan,
-    /// **FocalCodec** (`lucadellalib/focalcodec_50hz`, apache-2.0)
-    /// safetensors checkpoint (SoTA plan Phase D6, 2026-07-30).
+    /// **FocalCodec** (`lucadellalib/focalcodec_{50hz,25hz,12_5hz}`,
+    /// apache-2.0) safetensors checkpoint (SoTA plan Phase D6,
+    /// 2026-07-30; 25Hz / 12.5Hz variants added 2026-07-31).
     /// Category = `codec`. Focal-modulation-based single-codebook
-    /// low-bitrate audio codec at 50 Hz (arXiv:2502.04465). **Unlike
-    /// the sibling BigVGAN / HiFi-GAN vocoders**, FocalCodec ships
-    /// `model.safetensors` + `config.json` directly (no torch-pickle
-    /// prepare step). BF16 pass-through skeleton — every F32 / F16 /
-    /// BF16 tensor passes through verbatim under its upstream
-    /// safetensors name; runtime binding + real-weight parity are
-    /// deferred to owner (`docs/license-audit.md` §3.1 sign-off
+    /// low-bitrate audio codec at 50 / 25 / 12.5 Hz (arXiv:2502.04465).
+    /// **Unlike the sibling BigVGAN / HiFi-GAN vocoders**, FocalCodec
+    /// ships `model.safetensors` + `config.json` directly (no
+    /// torch-pickle prepare step). BF16 pass-through skeleton — every
+    /// F32 / F16 / BF16 tensor passes through verbatim under its
+    /// upstream safetensors name; runtime binding + real-weight parity
+    /// are deferred to owner (`docs/license-audit.md` §3.1 sign-off
     /// queue). Distinct arch tag from every sibling codec
     /// (Mimi / DAC / WavTokenizer / neucodec / step_audio2_mini /
     /// X-Codec 2 / FunCodec / SpeechTokenizer / bicodec / XyTokenizer)
     /// because FocalCodec is neither RVQ nor FSQ nor SoundStream
-    /// family. Provenance = **apache-2.0** (Permissive — verified
-    /// 2026-07-30 via HF API cardData; base `microsoft/wavlm-large`
+    /// family. All three variants collapse into this single ModelKind;
+    /// [`convert_file_with_slug`] picks the correct
+    /// [`models::focalcodec::FocalcodecVariant`] from the raw `--model`
+    /// slug (mirror of [`Self::BigVGan`]). Provenance = **apache-2.0**
+    /// for every variant (Permissive — verified 2026-07-30 /
+    /// 2026-07-31 via HF API cardData; base `microsoft/wavlm-large`
     /// is MIT, both compatible under `Permissive`).
     Focalcodec,
     /// **JusperLee/TIGER-DnR** (Implementer E TIER 1, 2026-07-30).
@@ -1884,6 +1918,11 @@ impl ModelKind {
             | "hifigan"
             | "tts-hifigan-libritts-22050hz"
             | "speechbrain/tts-hifigan-libritts-22050hz" => Some(Self::HifiganVocoder),
+            "speecht5-hifigan"
+            | "speecht5_hifigan"
+            | "speecht5-vocoder"
+            | "speecht5_vocoder"
+            | "microsoft/speecht5_hifigan" => Some(Self::Speecht5Hifigan),
             "bigvgan"
             | "big-vgan"
             | "big_vgan"
@@ -1904,7 +1943,14 @@ impl ModelKind {
             | "focal_codec"
             | "focalcodec-50hz"
             | "focalcodec_50hz"
-            | "lucadellalib/focalcodec_50hz" => Some(Self::Focalcodec),
+            | "lucadellalib/focalcodec_50hz"
+            | "focalcodec-25hz"
+            | "focalcodec_25hz"
+            | "lucadellalib/focalcodec_25hz"
+            | "focalcodec-12-5hz"
+            | "focalcodec-12_5hz"
+            | "focalcodec_12_5hz"
+            | "lucadellalib/focalcodec_12_5hz" => Some(Self::Focalcodec),
             "tiger"
             | "tiger-dnr"
             | "tiger_dnr"
@@ -2101,6 +2147,7 @@ impl ModelKind {
             Self::Focalcodec => "focalcodec",
             Self::FsmnVad => "fsmn-vad",
             Self::HifiganVocoder => "hifigan-vocoder",
+            Self::Speecht5Hifigan => "speecht5-hifigan",
             Self::IndicParlerTts => "indic-parler-tts",
             Self::KyutaiTts => "kyutai-tts",
             Self::LangIdCommonLanguage => "lang-id-commonlanguage",
@@ -2358,6 +2405,44 @@ pub fn convert_file_with_slug(
                  passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
                  {} tensors read",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Focalcodec => {
+            // Slug-based variant dispatch mirror of the BigVGan arm
+            // above: the canonical / "focalcodec" / "focal-codec" alias
+            // routes to Hz50 (backward compat with the 2026-07-30
+            // publish); explicit -25hz / -12-5hz / -12_5hz slugs pick
+            // the corresponding 2026-07-31 additions.
+            let variant = match slug.to_lowercase().as_str() {
+                "focalcodec-25hz" | "focalcodec_25hz" | "lucadellalib/focalcodec_25hz" => {
+                    models::focalcodec::FocalcodecVariant::Hz25
+                }
+                "focalcodec-12-5hz"
+                | "focalcodec-12_5hz"
+                | "focalcodec_12_5hz"
+                | "lucadellalib/focalcodec_12_5hz" => models::focalcodec::FocalcodecVariant::Hz12_5,
+                // Everything else (canonical "focalcodec" /
+                // "focal-codec" / -50hz aliases /
+                // `lucadellalib/focalcodec_50hz`) → default Hz50
+                // (backward compat with the 2026-07-30 publish).
+                _ => models::focalcodec::FocalcodecVariant::Hz50,
+            };
+            let report =
+                models::focalcodec::convert_focalcodec_file(input, output, license, variant)?;
+            let notes = vec![format!(
+                "focalcodec ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
             )];
             Ok(ConvertSummary {
                 model,
@@ -3751,6 +3836,34 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === Speecht5Hifigan (2026-07-31 wave) ===
+        ModelKind::Speecht5Hifigan => {
+            // 2026-07-31 wave: Microsoft SpeechT5 HiFi-GAN vocoder
+            // (`microsoft/speecht5_hifigan`, MIT). BF16 pass-through
+            // skeleton mirror of hifigan_vocoder / wespeaker /
+            // ecapa_tdnn. Distinct arch tag from `hifigan_vocoder`
+            // (SpeechBrain sibling) — different sampling rate,
+            // normalize_before layout, and HF-transformers naming.
+            // Runtime binding + real-weight parity are deferred to
+            // owner (docs/license-audit.md §3.1 sign-off). Upstream
+            // ships pytorch_model.bin only — pre-flatten to
+            // safetensors via
+            // tools/parity/speecht5_hifigan_prepare_checkpoint.py.
+            let report =
+                models::speecht5_hifigan::convert_speecht5_hifigan_file(input, output, license)?;
+            let notes = vec![format!(
+                "speecht5-hifigan: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Speecht5Hifigan,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === BigVGan (from wf_022575ce-077-4) ===
         ModelKind::BigVGan => {
             // SoTA plan Phase D2-D5 (2026-07-30): NVIDIA BigVGAN vocoder
@@ -3781,17 +3894,30 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // === Focalcodec (from wf_022575ce-077-4) ===
+        // === Focalcodec (from wf_022575ce-077-4; 25Hz + 12.5Hz variants added 2026-07-31) ===
         ModelKind::Focalcodec => {
             // SoTA plan Phase D6 (2026-07-30): lucadellalib FocalCodec
             // 50Hz (apache-2.0). Only member of the vocoder+codec fleet
             // that ships model.safetensors directly (no torch-pickle
             // prepare step). BF16 pass-through skeleton mirror of
             // funcodec / wespeaker; runtime binding is deferred to owner.
-            let report = models::focalcodec::convert_focalcodec_file(input, output, license)?;
+            //
+            // This path is the enum-arm default (Hz50); the 25Hz /
+            // 12.5Hz variants (2026-07-31) are picked from the raw
+            // `--model` slug via `convert_file_with_slug` — this arm
+            // mirrors the BigVGan / TigerSeparator posture (single
+            // ModelKind + slug dispatch, no ModelKind bloat for
+            // pure-metadata variants).
+            let report = models::focalcodec::convert_focalcodec_file(
+                input,
+                output,
+                license,
+                models::focalcodec::FocalcodecVariant::Hz50,
+            )?;
             let notes = vec![format!(
-                "focalcodec: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
+                "focalcodec (50hz): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (use --model focalcodec-25hz / focalcodec-12-5hz or \
+                 convert_focalcodec_file with an explicit FocalcodecVariant for other variants)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

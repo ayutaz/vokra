@@ -455,6 +455,7 @@ pub mod sepformer;
 pub mod smart_turn;
 pub mod speechbrain_lang_id;
 pub mod speecht5;
+pub mod speecht5_hifigan;
 pub mod tiger;
 pub mod vieneu;
 pub mod wav2vec2_ctc;

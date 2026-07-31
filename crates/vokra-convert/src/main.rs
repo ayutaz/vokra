@@ -2015,6 +2015,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::Bark
         | ModelKind::BarkSmall
         | ModelKind::HifiganVocoder
+        | ModelKind::Speecht5Hifigan
         | ModelKind::BigVGan
         | ModelKind::Focalcodec
         | ModelKind::TigerSeparator

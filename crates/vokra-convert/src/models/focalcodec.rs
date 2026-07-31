@@ -1,8 +1,10 @@
-//! **FocalCodec** (`lucadellalib/focalcodec_50hz`, apache-2.0):
-//! safetensors → GGUF conversion (SoTA plan Phase D6, 2026-07-30).
+//! **FocalCodec** (`lucadellalib/focalcodec_{50hz,25hz,12_5hz}`,
+//! apache-2.0): safetensors → GGUF conversion (SoTA plan Phase D6,
+//! 2026-07-30; 25Hz / 12.5Hz variants added 2026-07-31).
 //!
-//! Input: the upstream `lucadellalib/focalcodec_50hz` release — a
-//! low-bitrate speech codec producing ~50 Hz single-codebook tokens
+//! Input: an upstream `lucadellalib/focalcodec_50hz` /
+//! `focalcodec_25hz` / `focalcodec_12_5hz` release — low-bitrate
+//! speech codecs producing ~50 / 25 / 12.5 Hz single-codebook tokens
 //! (arXiv:2502.04465). Unlike the sibling BigVGAN / HiFi-GAN vocoder
 //! releases (torch pickle `.pt` + `config.json`), FocalCodec ships
 //! `model.safetensors` + `config.json` **directly** so this converter
@@ -14,15 +16,23 @@
 //!
 //! # Provenance
 //!
-//! - **HF path**: `lucadellalib/focalcodec_50hz` (recorded under
-//!   `vokra.provenance.upstream_hf`).
-//! - **License (SPDX)**: `apache-2.0` — verified 2026-07-30 via HF
-//!   API cardData `license: apache-2.0`, CC-verified (CLAUDE.md
+//! - **HF paths** (three variants share this single converter):
+//!   - `lucadellalib/focalcodec_50hz`   (Hz50, canonical/default)
+//!   - `lucadellalib/focalcodec_25hz`   (Hz25, ~577 MB F32)
+//!   - `lucadellalib/focalcodec_12_5hz` (Hz12_5, ~581 MB F32)
+//! - **License (SPDX)**: `apache-2.0` for all three variants —
+//!   verified 2026-07-30 (50Hz) and 2026-07-31 (25Hz + 12.5Hz) via HF
+//!   cardData API `license: apache-2.0`, CC-verified (CLAUDE.md
 //!   「ハルシネーション厳禁」). Base model
 //!   `microsoft/wavlm-large` is MIT (both compatible under
 //!   `LicenseClass::Permissive`).
 //! - **Category**: `codec` — audio codec (waveform → discrete tokens →
 //!   waveform). Distinct from vocoder (mel → waveform only).
+//! - **Variant tag** (`vokra.focalcodec.variant`): `"50hz"` /
+//!   `"25hz"` / `"12_5hz"` so a consumer that needs to pick a specific
+//!   frame rate can inspect this without parsing free-text
+//!   `vokra.model.name` (mirrors `vokra.bigvgan.variant` +
+//!   `vokra.tiger.variant`).
 //!
 //! # FocalCodec vs sibling codecs
 //!
@@ -66,7 +76,12 @@ use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` for FocalCodec GGUFs.
+/// `vokra.model.arch` for FocalCodec GGUFs. Shared across every
+/// [`FocalcodecVariant`] — the topology is identical across `50hz` /
+/// `25hz` / `12_5hz` (WavLM-Large encoder → FocalEncoder compressor →
+/// BinarySphericalQuantizer 8192 → FocalDecoder → Vocos vocoder,
+/// upstream `config.json` verified 2026-07-31); only the effective
+/// token frame rate differs.
 ///
 /// Intentionally distinct from every sibling codec (`mimi`, `dac`,
 /// `wavtokenizer`, `neucodec`, `funcodec`, `xcodec2`,
@@ -76,18 +91,23 @@ use crate::safetensors::SafetensorsFile;
 pub const ARCH: &str = "focalcodec";
 
 /// `vokra.model.name` value written for the canonical
-/// `lucadellalib/focalcodec_50hz` GGUF.
+/// `lucadellalib/focalcodec_50hz` GGUF (backward-compat alias — new
+/// callers should use [`FocalcodecVariant::name`]).
+#[allow(dead_code)]
 pub const NAME: &str = "focalcodec-50hz";
 
 /// `vokra.model.category` value written for every FocalCodec GGUF.
 pub const CATEGORY: &str = "codec";
 
-/// `vokra.provenance.upstream_hf` value — the primary redistribution
-/// source used by the model-card generator.
+/// `vokra.provenance.upstream_hf` value for the canonical `50hz`
+/// variant (backward-compat alias — new callers should use
+/// [`FocalcodecVariant::upstream_hf`]).
+#[allow(dead_code)]
 pub const UPSTREAM_HF: &str = "lucadellalib/focalcodec_50hz";
 
-/// Default upstream weight licence (SPDX). Verified 2026-07-30 via
-/// HF API cardData `license: apache-2.0`.
+/// Default upstream weight licence (SPDX). Verified 2026-07-30 (50Hz)
+/// and 2026-07-31 (25Hz + 12.5Hz) via HF API cardData
+/// `license: apache-2.0`.
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
 // Raw string keys not covered by `crate::gguf::chunks` — kept as
@@ -95,13 +115,92 @@ pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 // the sibling converters use applies).
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+/// `vokra.focalcodec.variant`: `"50hz"` / `"25hz"` / `"12_5hz"`.
+/// Consumers pick a specific frame-rate head without parsing free-text
+/// `vokra.model.name` (mirrors [`super::bigvgan`] +
+/// [`super::tiger`] discriminators).
+pub const KEY_FOCALCODEC_VARIANT: &str = "vokra.focalcodec.variant";
+
+/// Which FocalCodec release the caller is converting. Selects the
+/// model name / upstream HF slug / variant tag written into the GGUF.
+///
+/// All three variants share [`ARCH`] `focalcodec` — the topology is
+/// identical, only the effective token frame rate differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocalcodecVariant {
+    /// `lucadellalib/focalcodec_50hz`: 50 Hz single-codebook tokens
+    /// (canonical default, ~569 MB F32).
+    /// `vokra.focalcodec.variant = "50hz"`.
+    Hz50,
+    /// `lucadellalib/focalcodec_25hz`: 25 Hz single-codebook tokens
+    /// (~577 MB F32, verified 2026-07-31).
+    /// `vokra.focalcodec.variant = "25hz"`.
+    Hz25,
+    /// `lucadellalib/focalcodec_12_5hz`: 12.5 Hz single-codebook
+    /// tokens (~581 MB F32, verified 2026-07-31).
+    /// `vokra.focalcodec.variant = "12_5hz"`.
+    Hz12_5,
+}
+
+impl FocalcodecVariant {
+    /// The `vokra.model.name` string for this release.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Hz50 => "focalcodec-50hz",
+            Self::Hz25 => "focalcodec-25hz",
+            Self::Hz12_5 => "focalcodec-12-5hz",
+        }
+    }
+
+    /// The `vokra.provenance.upstream_hf` slug (`org/name`) for this
+    /// release — the primary redistribution source the model-card
+    /// generator anchors on.
+    pub const fn upstream_hf(self) -> &'static str {
+        match self {
+            Self::Hz50 => "lucadellalib/focalcodec_50hz",
+            Self::Hz25 => "lucadellalib/focalcodec_25hz",
+            Self::Hz12_5 => "lucadellalib/focalcodec_12_5hz",
+        }
+    }
+
+    /// The `vokra.focalcodec.variant` tag written under
+    /// [`KEY_FOCALCODEC_VARIANT`].
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Hz50 => "50hz",
+            Self::Hz25 => "25hz",
+            Self::Hz12_5 => "12_5hz",
+        }
+    }
+
+    /// One-line free-text description used for the
+    /// `vokra.provenance.source` stamp (`stamp_provenance`'s `source`
+    /// argument).
+    pub const fn source_description(self) -> &'static str {
+        match self {
+            Self::Hz50 => {
+                "lucadellalib/focalcodec_50hz (FocalCodec 50 Hz single-codebook \
+                 audio codec, apache-2.0; base wavlm-large is MIT)"
+            }
+            Self::Hz25 => {
+                "lucadellalib/focalcodec_25hz (FocalCodec 25 Hz single-codebook \
+                 audio codec, apache-2.0; base wavlm-large is MIT)"
+            }
+            Self::Hz12_5 => {
+                "lucadellalib/focalcodec_12_5hz (FocalCodec 12.5 Hz single-codebook \
+                 audio codec, apache-2.0; base wavlm-large is MIT)"
+            }
+        }
+    }
+}
 
 /// Outcome of a FocalCodec conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
 /// ([`super::funcodec::FuncodecReport`],
-/// [`super::wespeaker::WespeakerReport`]) adapted to the
-/// file-oriented `convert_focalcodec_file` surface.
+/// [`super::wespeaker::WespeakerReport`],
+/// [`super::tiger::TigerReport`]) adapted to the file-oriented
+/// `convert_focalcodec_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FocalcodecReport {
     /// Total tensors surfaced by the safetensors reader (before any
@@ -118,23 +217,28 @@ pub struct FocalcodecReport {
     /// silent widen / downcast cannot slip in undetected without this
     /// counter also drifting.
     pub bf16_passthrough: usize,
+    /// Which FocalCodec variant was written.
+    pub variant: Option<FocalcodecVariant>,
 }
 
-/// Converts a `lucadellalib/focalcodec_50hz` safetensors checkpoint
-/// at `input` into a Vokra-native GGUF at `output`, returning a
-/// [`FocalcodecReport`].
+/// Converts a `lucadellalib/focalcodec_{50hz,25hz,12_5hz}`
+/// safetensors checkpoint at `input` into a Vokra-native GGUF at
+/// `output`, tagging the emitted GGUF as the supplied
+/// [`FocalcodecVariant`] (mirror of `convert_tiger_file` /
+/// `convert_bigvgan_file`).
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream
-/// safetensors name; the `vokra.model.*` (arch / name / category) and
+/// safetensors name; the `vokra.model.*` (arch / name / category),
 /// `vokra.provenance.*` (weight_license / license / model_id / source /
-/// upstream_hf) chunks are stamped for the runtime compliance gate
-/// (FR-CP-03).
+/// upstream_hf), and `vokra.focalcodec.variant` chunks are stamped for
+/// the runtime compliance gate (FR-CP-03) and shape-checked config
+/// dispatch.
 ///
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — the
-/// upstream HF release ships apache-2.0.
+/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — every
+/// upstream FocalCodec HF release ships apache-2.0.
 ///
 /// # Errors
 ///
@@ -144,22 +248,26 @@ pub fn convert_focalcodec_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
+    variant: FocalcodecVariant,
 ) -> Result<FocalcodecReport, ConvertError> {
-    // FocalCodec-50Hz is ~569 MB (142M params, F32) — still 1 order
-    // of magnitude smaller than the streaming-mandated Moshi 14 GiB
-    // tier, so the simple `std::fs::read` posture the sibling
-    // non-streaming BF16 pass-through converters use applies.
+    // FocalCodec-50Hz is ~569 MB (142M params, F32); the 25Hz and
+    // 12.5Hz variants are ~577 MB / ~581 MB (144M / 145M F32,
+    // HF-verified 2026-07-31). Still 1 order of magnitude smaller
+    // than the streaming-mandated Moshi 14 GiB tier, so the simple
+    // `std::fs::read` posture the sibling non-streaming BF16
+    // pass-through converters use applies.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
+    b.add_string(chunks::KEY_MODEL_NAME, variant.name());
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    b.add_string(KEY_FOCALCODEC_VARIANT, variant.tag());
 
-    // Default provenance stamp — Permissive apache-2.0 (upstream
-    // `lucadellalib/focalcodec_50hz` model card verified 2026-07-30 via
-    // HF API). The optional `license` argument overrides below.
+    // Default provenance stamp — Permissive apache-2.0 (every upstream
+    // FocalCodec model card verified via HF API 2026-07-30 / -31). The
+    // optional `license` argument overrides below.
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
         _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
@@ -168,15 +276,15 @@ pub fn convert_focalcodec_file(
         &mut b,
         class,
         &spdx,
-        Some(NAME),
-        Some(
-            "lucadellalib/focalcodec_50hz (FocalCodec 50 Hz single-codebook \
-             audio codec, apache-2.0; base wavlm-large is MIT)",
-        ),
+        Some(variant.name()),
+        Some(variant.source_description()),
     );
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
 
-    let mut report = FocalcodecReport::default();
+    let mut report = FocalcodecReport {
+        variant: Some(variant),
+        ..FocalcodecReport::default()
+    };
     // Float tensors pass through **verbatim** — no convert-time widening.
     // BF16 stays GGUF `BF16` (type 30) per the accepted ADR; the runtime
     // widens BF16 → f32 exactly at load via the single choke point
@@ -289,8 +397,9 @@ mod tests {
         let input_path = write_temp("f32-in", &input_bytes);
         let output_path = write_temp("f32-out", &[]);
 
-        let report = convert_focalcodec_file(&input_path, &output_path, None)
-            .expect("convert_focalcodec_file must accept F32 checkpoint");
+        let report =
+            convert_focalcodec_file(&input_path, &output_path, None, FocalcodecVariant::Hz50)
+                .expect("convert_focalcodec_file must accept F32 checkpoint");
         assert_eq!(report.read, 1);
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
@@ -298,6 +407,7 @@ mod tests {
             report.bf16_passthrough, 0,
             "F32 does not increment BF16 counter"
         );
+        assert_eq!(report.variant, Some(FocalcodecVariant::Hz50));
 
         let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
@@ -358,7 +468,9 @@ mod tests {
         let input_path = write_temp("bf16-in", &input_bytes);
         let output_path = write_temp("bf16-out", &[]);
 
-        let report = convert_focalcodec_file(&input_path, &output_path, None).expect("convert");
+        let report =
+            convert_focalcodec_file(&input_path, &output_path, None, FocalcodecVariant::Hz50)
+                .expect("convert");
         assert_eq!(report.read, 1);
         assert_eq!(report.written, 1);
         assert_eq!(report.bf16_passthrough, 1);
@@ -385,8 +497,13 @@ mod tests {
         let input_path = write_temp("license-in", &input_bytes);
         let output_path = write_temp("license-out", &[]);
 
-        convert_focalcodec_file(&input_path, &output_path, Some("mit"))
-            .expect("license override must succeed");
+        convert_focalcodec_file(
+            &input_path,
+            &output_path,
+            Some("mit"),
+            FocalcodecVariant::Hz50,
+        )
+        .expect("license override must succeed");
 
         let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
@@ -405,5 +522,125 @@ mod tests {
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+
+    /// The 25Hz variant reuses the same converter body but the name /
+    /// variant / upstream stamps differ. Silently sharing stamps would
+    /// misroute a downstream loader that dispatches on
+    /// `vokra.model.name` — this test guards the variant switch
+    /// (`super::tiger::tests::speech_variant_emits_distinct_stamps`
+    /// precedent).
+    #[test]
+    fn hz25_variant_emits_distinct_stamps() {
+        let f32_bytes: Vec<u8> = [7.0_f32, -8.25]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let input_bytes = safetensors_one_f32("codec.encoder.weight", &[1, 2], &f32_bytes);
+        let input_path = write_temp("hz25-in", &input_bytes);
+        let output_path = write_temp("hz25-out", &[]);
+
+        let report =
+            convert_focalcodec_file(&input_path, &output_path, None, FocalcodecVariant::Hz25)
+                .expect("convert 25Hz variant");
+        assert_eq!(report.variant, Some(FocalcodecVariant::Hz25));
+
+        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("focalcodec-25hz"),
+            "Hz25 must emit its own model.name, not fall back to Hz50"
+        );
+        assert_eq!(
+            file.get(KEY_FOCALCODEC_VARIANT).and_then(|v| v.as_str()),
+            Some("25hz")
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some("lucadellalib/focalcodec_25hz")
+        );
+        // Arch + category are shared with Hz50 (same downstream dispatch).
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(CATEGORY)
+        );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    /// The 12.5Hz variant likewise emits its own name / variant /
+    /// upstream stamps. The `12_5hz` tag uses an underscore (not a dot)
+    /// so it stays a valid identifier in GGUF metadata and downstream
+    /// slug tables (matches the upstream HF slug `focalcodec_12_5hz`).
+    /// The **repo** slug is `focalcodec-12-5hz` (dashes only — HF repo
+    /// naming convention, no dots), so the two spellings are
+    /// intentional and pinned by this test.
+    #[test]
+    fn hz12_5_variant_emits_distinct_stamps() {
+        let f32_bytes: Vec<u8> = [1.5_f32, -2.5]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let input_bytes = safetensors_one_f32("codec.decoder.weight", &[1, 2], &f32_bytes);
+        let input_path = write_temp("hz12_5-in", &input_bytes);
+        let output_path = write_temp("hz12_5-out", &[]);
+
+        let report =
+            convert_focalcodec_file(&input_path, &output_path, None, FocalcodecVariant::Hz12_5)
+                .expect("convert 12.5Hz variant");
+        assert_eq!(report.variant, Some(FocalcodecVariant::Hz12_5));
+
+        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("focalcodec-12-5hz"),
+            "Hz12_5 must emit `focalcodec-12-5hz` (dashes only, HF repo slug spelling)"
+        );
+        assert_eq!(
+            file.get(KEY_FOCALCODEC_VARIANT).and_then(|v| v.as_str()),
+            Some("12_5hz"),
+            "variant tag uses underscore to match upstream HF slug spelling"
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some("lucadellalib/focalcodec_12_5hz")
+        );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    /// Every enum variant maps to a distinct `(name, tag, upstream_hf)`
+    /// triple — a defensive pin against a copy-paste that would
+    /// silently re-use the Hz50 strings for a new variant.
+    #[test]
+    fn every_variant_has_distinct_stamps() {
+        let variants = [
+            FocalcodecVariant::Hz50,
+            FocalcodecVariant::Hz25,
+            FocalcodecVariant::Hz12_5,
+        ];
+        for i in 0..variants.len() {
+            for j in (i + 1)..variants.len() {
+                let a = variants[i];
+                let b = variants[j];
+                assert_ne!(a.name(), b.name(), "names must differ ({a:?} vs {b:?})");
+                assert_ne!(a.tag(), b.tag(), "tags must differ ({a:?} vs {b:?})");
+                assert_ne!(
+                    a.upstream_hf(),
+                    b.upstream_hf(),
+                    "upstream_hf must differ ({a:?} vs {b:?})"
+                );
+            }
+        }
     }
 }

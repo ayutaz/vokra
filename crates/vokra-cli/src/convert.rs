@@ -80,7 +80,7 @@ OPTIONS:
                               qwen3-asr | wav2vec2 | moss-tts | melotts-english |
                               melotts-chinese | melotts-korean | speecht5 | parler-tts |
                               indic-parler-tts | vieneu-tts | bark | bark-small |
-                              hifigan-vocoder | bigvgan | focalcodec |
+                              hifigan-vocoder | speecht5-hifigan | bigvgan | focalcodec |
                               tiger | tiger-speech | mp-senet | metricgan-plus |
                               sepformer | sepformer-wham16k | sepformer-whamr16k |
                               fsmn-vad | firered-vad | smart-turn | clap | ast |

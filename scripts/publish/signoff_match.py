@@ -116,6 +116,8 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "sbv2-v2-jp-extra-base (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`)"
     ],
     # 2026-07-31 wave — HF-audio gap audit follow-up publishes.
+    "focalcodec-25hz": ["FocalCodec 25Hz (`lucadellalib/focalcodec_25hz`)"],
+    "focalcodec-12-5hz": ["FocalCodec 12.5Hz (`lucadellalib/focalcodec_12_5hz`)"],
     "tiger-speech": ["TIGER-speech (`JusperLee/TIGER-speech`)"],
     "tiger-dnr": ["TIGER-DnR (`JusperLee/TIGER-DnR`)"],
     "sepformer-wham16k-enhancement": [
@@ -131,6 +133,18 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "bigvgan-v2-44khz-128band-512x": [
         "BigVGAN v2 44kHz 128-band 512x (`nvidia/bigvgan_v2_44khz_128band_512x`)"
+    ],
+    # 2026-07-31 land — remaining 2 BigVGAN variants (v2 24kHz + base v1
+    # 24kHz). §3.1 rows are already yousan-signed 2026-07-30; this map
+    # entry lifts them from UNKNOWN_REPO to APPROVED for their push.
+    "bigvgan-v2-24khz-100band-256x": [
+        "BigVGAN v2 24kHz 100-band 256x (`nvidia/bigvgan_v2_24khz_100band_256x`)"
+    ],
+    "bigvgan-base-24khz-100band": [
+        "BigVGAN base 24kHz 100-band (`nvidia/bigvgan_base_24khz_100band`)"
+    ],
+    "speecht5-hifigan": [
+        "SpeechT5-HiFi-GAN (`microsoft/speecht5_hifigan`)"
     ],
 }
 
@@ -243,9 +257,16 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "Deepfake audio detection V2 (`MelodyMachine/Deepfake-audio-detection-V2`)"
     ],
     "firered_vad": ["FireRedVAD (`FireRedTeam/FireRedVAD`)"],
-    "focalcodec": ["FocalCodec 50Hz (`lucadellalib/focalcodec_50hz`)"],
+    "focalcodec": [
+        "FocalCodec 50Hz (`lucadellalib/focalcodec_50hz`)",
+        "FocalCodec 25Hz (`lucadellalib/focalcodec_25hz`)",
+        "FocalCodec 12.5Hz (`lucadellalib/focalcodec_12_5hz`)",
+    ],
     "hifigan_vocoder": [
         "HiFi-GAN vocoder LibriTTS 22050Hz (`speechbrain/tts-hifigan-libritts-22050Hz`)"
+    ],
+    "speecht5_hifigan": [
+        "SpeechT5-HiFi-GAN (`microsoft/speecht5_hifigan`)"
     ],
     "kyutai_stt": ["kyutai/stt-2.6b-en"],
     "kyutai_tts": ["Kyutai TTS 1.6B EN/FR (`kyutai/tts-1.6b-en_fr`)"],
