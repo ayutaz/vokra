@@ -115,6 +115,23 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "sbv2-v2-jp-extra-base": [
         "sbv2-v2-jp-extra-base (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`)"
     ],
+    # 2026-07-31 wave — HF-audio gap audit follow-up publishes.
+    "tiger-speech": ["TIGER-speech (`JusperLee/TIGER-speech`)"],
+    "tiger-dnr": ["TIGER-DnR (`JusperLee/TIGER-DnR`)"],
+    "sepformer-wham16k-enhancement": [
+        "SepFormer WHAM 16k enhancement (`speechbrain/sepformer-wham16k-enhancement`)"
+    ],
+    "sepformer-whamr16k": ["SepFormer WHAM-R 16k (`speechbrain/sepformer-whamr16k`)"],
+    "whisper-tiny": ["Whisper tiny"],
+    "whisper-large-v2": ["Whisper large-v2"],
+    "whisper-medium.en": ["Whisper medium.en"],
+    "distil-whisper-medium.en": ["distil-whisper/distil-medium.en"],
+    "bigvgan-v2-22khz-80band-256x": [
+        "BigVGAN v2 22kHz 80-band 256x (`nvidia/bigvgan_v2_22khz_80band_256x`)"
+    ],
+    "bigvgan-v2-44khz-128band-512x": [
+        "BigVGAN v2 44kHz 128-band 512x (`nvidia/bigvgan_v2_44khz_128band_512x`)"
+    ],
 }
 
 # ---- converter → row(s) ----------------------------------------------------

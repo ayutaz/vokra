@@ -222,15 +222,35 @@ pub(crate) fn derive_name(
     n_audio_layer: u32,
     n_text_layer: u32,
     n_mels: u64,
+    n_vocab: u64,
 ) -> Result<&'static str, ConvertError> {
-    match (d_model, n_audio_layer, n_text_layer, n_mels) {
-        (512, 6, 6, 80) => Ok("whisper-base"),
-        (768, 12, 12, 80) => Ok("whisper-small"),
-        (1024, 24, 24, 80) => Ok("whisper-medium"),
-        (1280, 32, 32, 128) => Ok("whisper-large-v3"),
-        (1280, 32, 4, 128) => Ok("whisper-turbo"),
+    match (d_model, n_audio_layer, n_text_layer, n_mels, n_vocab) {
+        // whisper-tiny (multilingual): the smallest OpenAI Whisper size,
+        // 39M params, primary source `openai/whisper-tiny` config.json.
+        // Included in the Tier-2 IoT tier recommendation (CLAUDE.md
+        // §Tier2 for Raspberry Pi Zero 2 W). Note: `is_synthetic_shape`
+        // rejects `d_model < 512`, so tiny would otherwise fall to
+        // `"whisper-unknown"`; the explicit Ok arm here fires FIRST.
+        (384, 4, 4, 80, 51_865) => Ok("whisper-tiny"),
+        // whisper-tiny.en — English-only variant (vocab 51864).
+        (384, 4, 4, 80, 51_864) => Ok("whisper-tiny.en"),
+        (512, 6, 6, 80, 51_865) => Ok("whisper-base"),
+        (512, 6, 6, 80, 51_864) => Ok("whisper-base.en"),
+        (768, 12, 12, 80, 51_865) => Ok("whisper-small"),
+        (768, 12, 12, 80, 51_864) => Ok("whisper-small.en"),
+        (1024, 24, 24, 80, 51_865) => Ok("whisper-medium"),
+        // whisper-medium.en — English-only variant (vocab 51864).
+        // Same layer / d_model / n_mels as multilingual medium, only
+        // vocab differs — this is why derive_name takes n_vocab.
+        (1024, 24, 24, 80, 51_864) => Ok("whisper-medium.en"),
+        // whisper-large-v2 is the 2022-05 release: n_mels=80 (not 128
+        // like v3). Same encoder/decoder layer count as v3 (32/32) —
+        // distinguished by n_mels + n_vocab.
+        (1280, 32, 32, 80, 51_865) => Ok("whisper-large-v2"),
+        (1280, 32, 32, 128, 51_866) => Ok("whisper-large-v3"),
+        (1280, 32, 4, 128, 51_866) => Ok("whisper-turbo"),
         _ => Err(ConvertError::Parse(format!(
-            "unknown whisper size: (d_model={d_model}, n_audio_layer={n_audio_layer}, n_text_layer={n_text_layer}, n_mels={n_mels}); expected one of base/small/medium/large-v3/turbo"
+            "unknown whisper size: (d_model={d_model}, n_audio_layer={n_audio_layer}, n_text_layer={n_text_layer}, n_mels={n_mels}, n_vocab={n_vocab}); expected one of tiny(.en)/base(.en)/small(.en)/medium(.en)/large-v2/large-v3/turbo"
         ))),
     }
 }
@@ -378,13 +398,28 @@ pub(crate) fn frontend_spec(n_mels: u32) -> FrontendSpec {
 
 /// A checkpoint shape quintuple that is clearly a synthetic unit-test stub (a
 /// derivation returned `0` for a required axis, or `d_model < WHISPER_HEAD_DIM`
-/// so no real whisper size could match). Real whisper checkpoints always yield
-/// a non-zero quintuple with `d_model >= 512`, so this predicate is a tight
-/// filter — it does NOT relax FR-EX-08 for real checkpoints, only for the
-/// pre-existing synthetic tests in this module that construct minimal 2×2
-/// tensor stubs to exercise metadata layout.
-fn is_synthetic_shape(d_model: u64, n_audio_layer: u32, n_text_layer: u32, n_mels: u64) -> bool {
-    d_model == 0 || n_mels == 0 || n_audio_layer == 0 || n_text_layer == 0 || d_model < 512
+/// so no real whisper size could match, or `n_vocab` is below the real
+/// English-only floor of 51864). Real whisper checkpoints always yield
+/// a non-zero quintuple with `d_model >= 512` AND `n_vocab >= 51864`, so this
+/// predicate is a tight filter — it does NOT relax FR-EX-08 for real
+/// checkpoints, only for the pre-existing synthetic tests in this module that
+/// construct minimal 2×2 tensor stubs to exercise metadata layout. n_vocab
+/// was added 2026-07-31 after derive_name became n_vocab-aware (to
+/// distinguish .en variants); synthetic tests use n_vocab=8 so this floor
+/// keeps them on the whisper-unknown fallback.
+fn is_synthetic_shape(
+    d_model: u64,
+    n_audio_layer: u32,
+    n_text_layer: u32,
+    n_mels: u64,
+    n_vocab: u64,
+) -> bool {
+    d_model == 0
+        || n_mels == 0
+        || n_audio_layer == 0
+        || n_text_layer == 0
+        || d_model < 512
+        || n_vocab < 51_864
 }
 
 /// Reads dimension `axis` of tensor `name` from the checkpoint, or `0` when the
@@ -470,9 +505,15 @@ pub(crate) fn convert_with_policy(
     let n_mels_ck = tensor_dim(&st, "model.encoder.conv1.weight", 1);
     let n_audio_layer = count_layers(&st, "model.encoder.layers.");
     let n_text_layer = count_layers(&st, "model.decoder.layers.");
-    let name = match derive_name(d_model, n_audio_layer, n_text_layer, n_mels_ck) {
+    // n_vocab is needed to distinguish English-only .en variants
+    // (vocab 51864) from multilingual (51865/51866) at the same
+    // architectural shape — passed to derive_name below.
+    let n_vocab_ck = tensor_dim(&st, "model.decoder.embed_tokens.weight", 0);
+    let name = match derive_name(d_model, n_audio_layer, n_text_layer, n_mels_ck, n_vocab_ck) {
         Ok(n) => n,
-        Err(_) if is_synthetic_shape(d_model, n_audio_layer, n_text_layer, n_mels_ck) => {
+        Err(_)
+            if is_synthetic_shape(d_model, n_audio_layer, n_text_layer, n_mels_ck, n_vocab_ck) =>
+        {
             "whisper-unknown"
         }
         Err(e) => return Err(e),
@@ -1158,9 +1199,11 @@ mod tests {
         // `openai/whisper-{size}/config.json`.
         let rows: &[(&str, u64, u32, u32, u64, u64)] = &[
             // (label,         d_model, n_audio_layer, n_text_layer, n_mels, n_vocab)
+            ("whisper-tiny", 384, 4, 4, 80, 51865),
             ("whisper-base", 512, 6, 6, 80, 51865),
             ("whisper-small", 768, 12, 12, 80, 51865),
             ("whisper-medium", 1024, 24, 24, 80, 51865),
+            ("whisper-large-v2", 1280, 32, 32, 80, 51865),
             ("whisper-large-v3", 1280, 32, 32, 128, 51866),
             ("whisper-turbo", 1280, 32, 4, 128, 51866),
         ];
@@ -1168,7 +1211,7 @@ mod tests {
         for &(label, d_model, n_audio_layer, n_text_layer, n_mels, n_vocab) in rows {
             // (a) Direct derive_name check — the pure shape-to-label mapping.
             assert_eq!(
-                derive_name(d_model, n_audio_layer, n_text_layer, n_mels).unwrap(),
+                derive_name(d_model, n_audio_layer, n_text_layer, n_mels, n_vocab).unwrap(),
                 label,
                 "derive_name mismatch for {label}",
             );
@@ -1257,7 +1300,7 @@ mod tests {
         // Uses a d_model=1536 (never a real whisper size) with valid layer / mel
         // counts so `is_synthetic_shape` does NOT rescue it — this asserts that
         // `derive_name` itself refuses unknown real-shaped checkpoints.
-        let err = derive_name(1536, 24, 24, 80).unwrap_err();
+        let err = derive_name(1536, 24, 24, 80, 51_865).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("unknown whisper size"),
