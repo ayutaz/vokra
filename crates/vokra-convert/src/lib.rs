@@ -1565,6 +1565,127 @@ pub enum ModelKind {
     /// decoder + LoRA adapter. Distinct arch tag `granite_speech`
     /// from Voxtral / Canary / omni-asr-ctc.
     GraniteSpeech,
+    /// **MOSS-Audio-Tokenizer** (`OpenMOSS-Team/MOSS-Audio-Tokenizer`
+    /// and `-Nano` sibling, apache-2.0). The codec half of the MOSS-TTS
+    /// pipeline (waveform to discrete tokens fed into the sibling
+    /// [`Self::MossTts`] / [`Self::MossTtsV15`] / [`Self::MossTtsNano`]
+    /// / [`Self::MossTtsLocal`] LLM). Category = `codec`. Wave 3 codec
+    /// add, 2026-08-01. Two variants collapse into this single
+    /// ModelKind; [`convert_file_with_slug`] picks the correct
+    /// [`models::moss_audio_tokenizer::MossAudioTokenizerVariant`]
+    /// from the raw `--model` slug (mirror of [`Self::Snac`] and
+    /// [`Self::Focalcodec`] slug dispatch). Full variant is
+    /// `OpenMOSS-Team/MOSS-Audio-Tokenizer` (~1.77B F32 params, 6.6 GB
+    /// effective across 2 sharded safetensors, M1 iMac tight-fit per
+    /// memory `[[feedback-large-models-on-vast-ai]]`). Nano variant is
+    /// `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` (~22M F32 params, 88 MB
+    /// single shard). Both variants ship sharded safetensors plus a
+    /// `model.safetensors.index.json` weight-map; callers pre-merge to
+    /// a single safetensors via
+    /// `tools/parity/moss_audio_tokenizer_prepare_checkpoint.py` (the
+    /// [`Self::GraniteSpeech`] posture). BF16 pass-through skeleton
+    /// mirror of [`Self::Snac`] / [`Self::Neucodec`] /
+    /// [`Self::Focalcodec`]; real-weight parity and runtime binder are
+    /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+    /// Distinct arch tag `moss_audio_tokenizer` from every sibling
+    /// codec (silently sharing would mis-route runtime dispatch;
+    /// `MossAudioTokenizerModel` class is OpenMOSS-specific).
+    MossAudioTokenizer,
+    /// **Amphion NaturalSpeech 3 FACodec** (`amphion/naturalspeech3_facodec`,
+    /// apache-2.0). 2026-08-01 Wave 3 codec add. Category = `codec`.
+    /// **First factorized VQ (FVQ) codec** in the tree — distinct from
+    /// every sibling codec family (RVQ Mimi/DAC/SNAC / FSQ WavTokenizer/
+    /// X-Codec 2 / focal-modulation Focalcodec). Runs 3 quantizer heads
+    /// in **parallel** over disentangled subspaces: prosody (1
+    /// codebook) + content (2 codebooks) + detail (3 codebooks) = 6
+    /// total codebooks (paper §3.1 arXiv:2403.03100 Ju et al. 2024).
+    /// 16 kHz, hop_size 200 → 80 tok/s per subspace. Four variants
+    /// share this single ModelKind; the slug picks the encoder+decoder
+    /// pair via `convert_file_with_slug` (mirror of
+    /// [`Self::Snac`] / [`Self::MossAudioTokenizer`] slug dispatch):
+    /// `v1` (encoder+decoder), `v2` (encoder_v2+decoder_v2, canonical
+    /// default = highest-quality pair), `redecoder-v1` /
+    /// `redecoder-v2` (adds redecoder for zero-shot voice conversion).
+    /// Upstream ships 5 separate `torch.save()` pickle `.bin` files at
+    /// repo root (no `model.safetensors` mirror, no `config.json`);
+    /// callers pre-merge the variant subset to a single safetensors via
+    /// `tools/parity/naturalspeech3_facodec_prepare_checkpoint.py`
+    /// (uv-managed Python 3.12 multi-file bridge mirror of
+    /// `sepformer_prepare_checkpoint.py`). BF16 pass-through skeleton
+    /// (mirror of [`Self::Snac`] / [`Self::MossAudioTokenizer`]);
+    /// real-weight parity + runtime binder deferred to owner
+    /// (`docs/license-audit.md` §3.1 sign-off queue). **Voice-conversion
+    /// policy note**: the `redecoder-v{1,2}` variants specifically
+    /// enable zero-shot voice conversion (swap timbre while preserving
+    /// prosody + content codes) — CLAUDE.md 設計判断 8 (ELVIS Act /
+    /// NO FAKES Act) treats this as an owner routing decision (main
+    /// zoo vs `vokra-voiceclone-experimental`); the base `v1` / `v2`
+    /// variants are unambiguously codec-class and belong in the main
+    /// zoo. All four variants fit comfortably on M1 iMac 16 GB
+    /// (largest = redecoder-v2 ~601 MB peak resident, vast.ai not
+    /// required per memory [[feedback-large-models-on-vast-ai]]).
+    Facodec,
+    /// **YuE-upsampler** (`m-a-p/YuE-upsampler`, apache-2.0) — the
+    /// vocoder half of the YuE full-song music-generation system
+    /// (Yuan et al. 2025, arXiv:2503.08638). 2026-08-01 Wave 3
+    /// sibling-pair add. Category = `vocoder`. Distinct arch tag
+    /// `yue_upsampler` from sibling Charactr AI `vocos` (different
+    /// config axes: n_fft=3528, hop_length=882, 44.1 kHz output;
+    /// trained on YuE codec latents not mel or EnCodec inputs) —
+    /// silently sharing arch would mis-route the runtime dispatch.
+    /// VocosBackbone (input_channels=1024, dim=512, intermediate_dim=1536,
+    /// num_layers=8) + ISTFTHead (n_fft=3528, hop_length=882) yields
+    /// 44.1 kHz PCM at 50 Hz frame rate. Upstream ships torch pickle
+    /// `.pth` only (145 MB, no safetensors mirror) — callers pre-flatten
+    /// via `tools/parity/yue_bundle_prepare_checkpoint.py` (mirror of
+    /// `naturalspeech3_facodec_prepare_checkpoint.py` +
+    /// `bin_to_safetensors.py`). BF16 pass-through skeleton mirror of
+    /// vocos / snac / focalcodec / speecht5_hifigan; runtime binder +
+    /// real-weight parity deferred to owner sign-off (§3.1). Both
+    /// snapshots (`decoder_131000.pth` / `decoder_151000.pth`, byte-
+    /// identical to the corresponding files inside `xcodec_mini_infer`)
+    /// share this single ModelKind; the prep bridge picks one via
+    /// `--snapshot 131000|151000` (default 151000 = later training
+    /// step). Sibling [`Self::YueXcodecMini`] carries the codec half
+    /// of the bundle (SoundStream RVQ + HuBERT semantic encoder).
+    /// **CLAUDE.md 設計判断 §Vocos**: INT8-fragile (「INT8 崩壊」→ fp16
+    /// 必須) inherited from the Vocos-family topology — the converter
+    /// never emits INT8 (K-quant is Whisper-only per `--quantize`
+    /// guard); BF16 is pass-through safe.
+    YueUpsampler,
+    /// **YuE xcodec-mini bundle** (`m-a-p/xcodec_mini_infer`,
+    /// apache-2.0) — the codec half of the YuE full-song
+    /// music-generation system. 2026-08-01 Wave 3 sibling-pair add.
+    /// Category = `codec`. Distinct arch tag `yue_xcodec_mini` from
+    /// every sibling codec (`mimi` / `dac` / `snac` / `wavtokenizer` /
+    /// `neucodec` / `xcodec2` / `focalcodec` / `funcodec` /
+    /// `speechtokenizer` / `bicodec` / `xy_tokenizer` /
+    /// `step_audio2_mini` / `moss_audio_tokenizer` / `facodec`) — YuE
+    /// xcodec-mini is a **multi-part bundle** (SoundStream RVQ codec
+    /// at 16 kHz / 25 Hz + HuBERT-base semantic encoder + Vocos
+    /// decoder head all in one repo), the semantic-encoder fusion is
+    /// what distinguishes it from plain RVQ / FSQ codecs. Silently
+    /// sharing an arch with `mimi` / `dac` / `snac` would mis-route
+    /// to a codec-only decode path that has no semantic fusion input.
+    /// SoundStream generator (n_filters=32, D=256, ratios=[8,5,4,2] →
+    /// 640x downsample, sample_rate=16000, bins=1024,
+    /// target_bandwidths=[0.5,1,1.5,2,4,6] kbps) — this is an RVQ
+    /// codec, NOT FSQ. Upstream repo bundles three weight groups plus
+    /// source-tree copies of RepCodec (MIT) and Descript-Audio-Codec
+    /// (MIT) — the source trees are inference-tree artefacts, not
+    /// loaded; only the three weight groups (codec 1.36 GB / HuBERT
+    /// semantic encoder 377 MB / Vocos decoder head 145 MB byte-
+    /// identical to [`Self::YueUpsampler`]) are consumed. All three
+    /// upstream weight files are torch pickle (`.pth` / `.bin`) —
+    /// callers pre-flatten and role-prefix (`codec.*` / `semantic.*` /
+    /// `decoder.*` in the merged safetensors) via
+    /// `tools/parity/yue_bundle_prepare_checkpoint.py` so a future
+    /// `YueXcodecMini::from_gguf` can locate the three sub-modules.
+    /// BF16 pass-through skeleton mirror of vocos / snac / focalcodec;
+    /// runtime binder + real-weight parity deferred to owner sign-off
+    /// (§3.1). Sibling [`Self::YueUpsampler`] carries only the Vocos
+    /// vocoder head (145 MB standalone re-package).
+    YueXcodecMini,
 }
 
 impl ModelKind {
@@ -2070,6 +2191,44 @@ impl ModelKind {
             | "granite_speech_4_1_2b"
             | "granite-speech-4-1-2b"
             | "ibm-granite/granite-speech-4.1-2b" => Some(Self::GraniteSpeech),
+            // MOSS-Audio-Tokenizer — the codec half of the MOSS-TTS
+            // pipeline (2026-08-01 Wave 3, OpenMOSS-Team, apache-2.0).
+            // Two variants share this single ModelKind; the slug picks
+            // Full vs Nano via `convert_file_with_slug` (mirror of
+            // Snac / Focalcodec / BigVGan slug dispatch). Accept the
+            // canonical short arch tag, both per-variant slugs (Full
+            // canonical / Nano second-variant), the underscore
+            // variants, and the raw HF org/name paths.
+            "moss-audio-tokenizer"
+            | "moss_audio_tokenizer"
+            | "moss-audio-tokenizer-full"
+            | "moss_audio_tokenizer_full"
+            | "openmoss-team/moss-audio-tokenizer"
+            | "moss-audio-tokenizer-nano"
+            | "moss_audio_tokenizer_nano"
+            | "openmoss-team/moss-audio-tokenizer-nano" => Some(Self::MossAudioTokenizer),
+            // Amphion NaturalSpeech 3 FACodec — factorized VQ codec
+            // (2026-08-01 Wave 3, apache-2.0). Four variants share
+            // this single ModelKind; the slug picks the encoder+decoder
+            // pair (+ optional redecoder) via `convert_file_with_slug`
+            // (mirror of Snac / MossAudioTokenizer slug dispatch).
+            // Accept the canonical short arch tag, the family name
+            // spellings, and the raw HF repo id.
+            "facodec"
+            | "naturalspeech3-facodec"
+            | "ns3-facodec"
+            | "ns3_facodec"
+            | "amphion-facodec"
+            | "naturalspeech3_facodec"
+            | "amphion/naturalspeech3_facodec"
+            | "naturalspeech3-facodec-v1"
+            | "naturalspeech3-facodec-v2"
+            | "naturalspeech3-facodec-redecoder-v1"
+            | "naturalspeech3-facodec-redecoder-v2"
+            | "facodec-v1"
+            | "facodec-v2"
+            | "facodec-redecoder-v1"
+            | "facodec-redecoder-v2" => Some(Self::Facodec),
             "tiger"
             | "tiger-dnr"
             | "tiger_dnr"
@@ -2206,6 +2365,32 @@ impl ModelKind {
             | "vocos_encodec_24khz"
             | "vocos-encodec"
             | "charactr/vocos-encodec-24khz" => Some(Self::Vocos),
+            // 2026-08-01 Wave 3 sibling-pair add: YuE bundle
+            // (`m-a-p/YuE-upsampler` + `m-a-p/xcodec_mini_infer`,
+            // apache-2.0). Two distinct HF repos → two distinct
+            // ModelKind entries (INTENTIONALLY not collapsed into
+            // one ModelKind + variant slug dispatch: these are two
+            // independent HF org publishes with different scopes,
+            // not two frontends of a single release). Accept the
+            // canonical short arch tag, hyphen / underscore
+            // spellings, and the raw HF org/name paths for each.
+            "yue-upsampler"
+            | "yue_upsampler"
+            | "map-yue-upsampler"
+            | "m-a-p-yue-upsampler"
+            | "m-a-p/yue-upsampler" => Some(Self::YueUpsampler),
+            "yue-xcodec-mini"
+            | "yue_xcodec_mini"
+            | "yue-xcodec-mini-infer"
+            | "yue_xcodec_mini_infer"
+            | "xcodec-mini"
+            | "xcodec_mini"
+            | "xcodec-mini-infer"
+            | "xcodec_mini_infer"
+            | "map-xcodec-mini"
+            | "m-a-p-xcodec-mini"
+            | "yue-codec"
+            | "m-a-p/xcodec_mini_infer" => Some(Self::YueXcodecMini),
             _ => None,
         }
     }
@@ -2309,6 +2494,8 @@ impl ModelKind {
             Self::Snac => "snac",
             Self::Wavtokenizer => "wavtokenizer",
             Self::GraniteSpeech => "granite-speech-4.1-2b",
+            Self::MossAudioTokenizer => "moss-audio-tokenizer",
+            Self::Facodec => "naturalspeech3-facodec",
             Self::SpeechT5Tts => "speecht5-tts",
             Self::TigerSeparator => "tiger-dnr",
             Self::TigerSpeech => "tiger-speech",
@@ -2318,6 +2505,8 @@ impl ModelKind {
             Self::XVector => "xvector",
             Self::Fcpe => "fcpe",
             Self::Vocos => "vocos-mel-24khz",
+            Self::YueUpsampler => "yue-upsampler",
+            Self::YueXcodecMini => "yue-xcodec-mini",
         }
     }
 }
@@ -2545,6 +2734,42 @@ pub fn convert_file_with_slug(
                 notes,
             })
         }
+        ModelKind::MossAudioTokenizer => {
+            // MOSS-Audio-Tokenizer slug-based variant dispatch mirror
+            // of the Snac / Focalcodec / BigVGan arms above — the
+            // canonical / "moss-audio-tokenizer" / "-full" aliases
+            // route to Full (higher-fidelity default the MOSS-TTS
+            // consumer pairs with); explicit -nano slugs pick the
+            // distilled variant.
+            let variant = match slug.to_lowercase().as_str() {
+                "moss-audio-tokenizer-nano"
+                | "moss_audio_tokenizer_nano"
+                | "openmoss-team/moss-audio-tokenizer-nano" => {
+                    models::moss_audio_tokenizer::MossAudioTokenizerVariant::Nano
+                }
+                // Canonical "moss-audio-tokenizer" / -full →
+                // Full default.
+                _ => models::moss_audio_tokenizer::MossAudioTokenizerVariant::Full,
+            };
+            let report = models::moss_audio_tokenizer::convert_moss_audio_tokenizer_variant_file(
+                input, output, variant, license,
+            )?;
+            let notes = vec![format!(
+                "moss-audio-tokenizer ({}): {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
         ModelKind::Qwen3Asr => {
             let variant = match slug.to_lowercase().as_str() {
                 "qwen3-asr-0.6b" | "qwen3_asr_0_6b" | "qwen/qwen3-asr-0.6b" => {
@@ -2630,6 +2855,63 @@ pub fn convert_file_with_slug(
                 models::focalcodec::convert_focalcodec_file(input, output, license, variant)?;
             let notes = vec![format!(
                 "focalcodec ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Facodec => {
+            // 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec —
+            // factorized VQ (FVQ) codec (apache-2.0). Slug-based
+            // variant dispatch mirror of the Snac / MossAudioTokenizer
+            // arms above — the canonical / "facodec" /
+            // "naturalspeech3-facodec" / -v2 aliases route to V2
+            // (default = highest-quality codec-only pair, per prep-
+            // script default); explicit -v1 / -redecoder-v{1,2} slugs
+            // pick the corresponding variants.
+            //
+            // **Voice-conversion policy note**: the redecoder-v{1,2}
+            // variants enable zero-shot voice conversion (see
+            // `models::naturalspeech3_facodec` module docstring for
+            // the CLAUDE.md 設計判断 8 routing question — main zoo vs
+            // `vokra-voiceclone-experimental`). The dispatch here
+            // emits the artifact regardless; the publish target is
+            // an owner routing decision.
+            let variant = match slug.to_lowercase().as_str() {
+                "facodec-v1" | "naturalspeech3-facodec-v1" | "ns3-facodec-v1" => {
+                    models::naturalspeech3_facodec::FacodecVariant::V1
+                }
+                "facodec-redecoder-v1"
+                | "naturalspeech3-facodec-redecoder-v1"
+                | "ns3-facodec-redecoder-v1" => {
+                    models::naturalspeech3_facodec::FacodecVariant::RedecoderV1
+                }
+                "facodec-redecoder-v2"
+                | "naturalspeech3-facodec-redecoder-v2"
+                | "ns3-facodec-redecoder-v2" => {
+                    models::naturalspeech3_facodec::FacodecVariant::RedecoderV2
+                }
+                // Everything else (canonical "facodec" /
+                // "naturalspeech3-facodec" / -v2 / raw HF slug) →
+                // default V2 (highest-quality codec-only pair,
+                // matches prep-script default).
+                _ => models::naturalspeech3_facodec::FacodecVariant::V2,
+            };
+            let report =
+                models::naturalspeech3_facodec::convert_naturalspeech3_facodec_variant_file(
+                    input, output, variant, license,
+                )?;
+            let notes = vec![format!(
+                "facodec ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
                  non-float skipped",
                 variant.tag(),
                 report.written,
@@ -4290,6 +4572,156 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Snac,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MossAudioTokenizer (2026-08-01 Wave 3) ===
+        ModelKind::MossAudioTokenizer => {
+            // MOSS-Audio-Tokenizer — the codec half of the MOSS-TTS
+            // pipeline (OpenMOSS-Team, apache-2.0). Default dispatch
+            // path tags the GGUF as the Full variant — the canonical
+            // release the MOSS-TTS consumer pairs with. Callers who
+            // want the Nano distilled variant (~22M params vs Full
+            // ~1.77B) use `--model moss-audio-tokenizer-nano` (routed
+            // via `convert_file_with_slug`) or the standalone
+            // `convert_moss_audio_tokenizer_variant_file` entry with
+            // an explicit `MossAudioTokenizerVariant`. Mirrors the
+            // Snac / Focalcodec / BigVGan default-canonical dispatch
+            // pattern (single ModelKind + slug dispatch, no
+            // ModelKind bloat for pure-metadata variants).
+            let report = models::moss_audio_tokenizer::convert_moss_audio_tokenizer_variant_file(
+                input,
+                output,
+                models::moss_audio_tokenizer::MossAudioTokenizerVariant::Full,
+                license,
+            )?;
+            let notes = vec![format!(
+                "moss-audio-tokenizer (full): {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped (use --model moss-audio-tokenizer-nano or \
+                 convert_moss_audio_tokenizer_variant_file with an explicit \
+                 MossAudioTokenizerVariant for the distilled Nano variant)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MossAudioTokenizer,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === YueUpsampler (2026-08-01 Wave 3 sibling-pair) ===
+        ModelKind::YueUpsampler => {
+            // 2026-08-01 Wave 3 sibling-pair add: YuE bundle vocoder
+            // half (`m-a-p/YuE-upsampler`, apache-2.0). Vocos backbone
+            // + iSTFT head trained on YuE codec latents (44.1 kHz
+            // output, 3528-point iSTFT). Distinct arch tag
+            // `yue_upsampler` from sibling Charactr AI `vocos` because
+            // the axes differ. BF16 pass-through skeleton mirror of
+            // vocos / snac / focalcodec / speecht5_hifigan; runtime
+            // binder + real-weight parity deferred to owner sign-off
+            // (`docs/license-audit.md` §3.1 sign-off queue). Upstream
+            // ships torch pickle only — pre-flatten via
+            // `tools/parity/yue_bundle_prepare_checkpoint.py`.
+            let report = models::yue_bundle::convert_yue_bundle_variant_file(
+                input,
+                output,
+                models::yue_bundle::YueBundleVariant::Upsampler,
+                license,
+            )?;
+            let notes = vec![format!(
+                "yue-upsampler: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === YueXcodecMini (2026-08-01 Wave 3 sibling-pair) ===
+        ModelKind::YueXcodecMini => {
+            // 2026-08-01 Wave 3 sibling-pair add: YuE bundle codec
+            // half (`m-a-p/xcodec_mini_infer`, apache-2.0). Multi-part
+            // bundle = SoundStream RVQ codec (16 kHz / 25 Hz, 640x
+            // downsample, 6 target bandwidths up to 6 kbps) + HuBERT-
+            // base semantic encoder + Vocos decoder head (byte-
+            // identical to the sibling `YueUpsampler` variant). The
+            // semantic-encoder fusion is what distinguishes YuE
+            // xcodec-mini from plain RVQ / FSQ codecs → distinct
+            // arch tag `yue_xcodec_mini` from every sibling codec.
+            // Prep bridge role-prefixes tensors under `codec.*` /
+            // `semantic.*` / `decoder.*` in the merged safetensors so
+            // a future `YueXcodecMini::from_gguf` can locate the three
+            // sub-modules. BF16 pass-through skeleton mirror of
+            // vocos / snac / focalcodec; runtime binder + real-weight
+            // parity deferred to owner sign-off (§3.1).
+            let report = models::yue_bundle::convert_yue_bundle_variant_file(
+                input,
+                output,
+                models::yue_bundle::YueBundleVariant::XcodecMini,
+                license,
+            )?;
+            let notes = vec![format!(
+                "yue-xcodec-mini: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Facodec (2026-08-01 Wave 3) ===
+        ModelKind::Facodec => {
+            // Amphion NaturalSpeech 3 FACodec — factorized VQ (FVQ)
+            // codec (apache-2.0). Default dispatch path tags the GGUF
+            // as the V2 variant — the canonical highest-quality
+            // codec-only pair (encoder_v2 + decoder_v2). Callers who
+            // want a different variant (v1 base pair, or the
+            // redecoder-v{1,2} zero-shot voice-conversion variants)
+            // use `--model naturalspeech3-facodec-v1` /
+            // `-redecoder-v1` / `-redecoder-v2` (routed via
+            // `convert_file_with_slug`) or the standalone
+            // `convert_naturalspeech3_facodec_variant_file` entry
+            // with an explicit `FacodecVariant`. Mirrors the
+            // Snac / MossAudioTokenizer / Focalcodec / BigVGan
+            // default-canonical dispatch pattern (single ModelKind +
+            // slug dispatch, no ModelKind bloat for pure-metadata
+            // variants).
+            //
+            // **Voice-conversion policy note**: the redecoder-v{1,2}
+            // variants enable zero-shot voice conversion — see
+            // `models::naturalspeech3_facodec` module docstring for
+            // the CLAUDE.md 設計判断 8 routing question. The default
+            // V2 arm here is unambiguously codec-class (encoder +
+            // decoder, no redecoder) and belongs in the main zoo.
+            let report =
+                models::naturalspeech3_facodec::convert_naturalspeech3_facodec_variant_file(
+                    input,
+                    output,
+                    models::naturalspeech3_facodec::FacodecVariant::V2,
+                    license,
+                )?;
+            let notes = vec![format!(
+                "facodec (v2): {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (use --model naturalspeech3-facodec-v1 / \
+                 -redecoder-v1 / -redecoder-v2 or \
+                 convert_naturalspeech3_facodec_variant_file with an explicit \
+                 FacodecVariant for the other three variants)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Facodec,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),

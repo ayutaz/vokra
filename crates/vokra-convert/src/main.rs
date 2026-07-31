@@ -2148,6 +2148,30 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // license triple) plus an arch-specific `vokra.snac.variant`
         // chunk not read back by this uniform verify arm.
         | ModelKind::Snac
+        // 2026-08-01 Wave 3: OpenMOSS MOSS-Audio-Tokenizer
+        // (`OpenMOSS-Team/MOSS-Audio-Tokenizer` + `-Nano`, apache-2.0).
+        // The codec half of the MOSS-TTS pipeline. Same verify shape
+        // as snac / focalcodec / bigvgan (arch / name / category +
+        // upstream_hf + license triple) plus an arch-specific
+        // `vokra.moss_audio_tokenizer.variant` chunk not read back
+        // by this uniform verify arm.
+        | ModelKind::MossAudioTokenizer
+        // 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec —
+        // factorized VQ (FVQ) codec (`amphion/naturalspeech3_facodec`,
+        // apache-2.0). Same verify shape as snac /
+        // moss_audio_tokenizer / focalcodec (arch / name / category
+        // + upstream_hf + license triple) plus an arch-specific
+        // `vokra.facodec.variant` chunk + a `vokra.facodec.*` hparam
+        // chunk group not read back by this uniform verify arm.
+        | ModelKind::Facodec
+        // 2026-08-01 Wave 3 sibling-pair add: YuE bundle
+        // (`m-a-p/YuE-upsampler` = vocoder / `m-a-p/xcodec_mini_infer`
+        // = codec, both apache-2.0). Two distinct ModelKind entries
+        // share this uniform verify arm (arch / name / category +
+        // upstream_hf + license triple lookup) plus an arch-specific
+        // `vokra.yue_bundle.variant` chunk not read back here.
+        | ModelKind::YueUpsampler
+        | ModelKind::YueXcodecMini
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

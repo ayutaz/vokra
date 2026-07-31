@@ -173,6 +173,39 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "granite-speech-4.1-2b": [
         "granite-speech-4.1-2b (`ibm-granite/granite-speech-4.1-2b`)"
     ],
+    # 2026-08-01 Wave 3 — OpenMOSS MOSS-Audio-Tokenizer (Full + Nano,
+    # apache-2.0). The codec half of the MOSS-TTS pipeline (waveform →
+    # discrete tokens fed into the sibling MOSS-TTS LLM). Two repo
+    # publish targets, one Rust converter (MossAudioTokenizerVariant
+    # enum), two §3.1 rows.
+    "moss-audio-tokenizer": [
+        "MOSS-Audio-Tokenizer (Full) (`OpenMOSS-Team/MOSS-Audio-Tokenizer`)"
+    ],
+    "moss-audio-tokenizer-nano": [
+        "MOSS-Audio-Tokenizer (Nano) (`OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`)"
+    ],
+    # 2026-08-01 Wave 3 — Amphion NaturalSpeech 3 FACodec (apache-2.0
+    # factorized VQ codec). Single HF repo `amphion/naturalspeech3_facodec`
+    # bundles 5 `.bin` files; four publish variants (v1 / v2 /
+    # redecoder-v{1,2}) share one Rust converter (FacodecVariant enum).
+    # Only V2 (default = highest-quality codec-only pair) has an initial
+    # repo publish declaration; the other variants can add publish
+    # entries when owner routes them (base v1 → main zoo,
+    # redecoder-v{1,2} → owner decision main vs
+    # vokra-voiceclone-experimental per ELVIS Act policy).
+    "naturalspeech3-facodec-v2": [
+        "NaturalSpeech 3 FACodec (Amphion) (`amphion/naturalspeech3_facodec`)"
+    ],
+    # 2026-08-01 Wave 3 sibling-pair — YuE bundle
+    # (`m-a-p/YuE-upsampler` = vocoder / `m-a-p/xcodec_mini_infer` =
+    # codec, both apache-2.0). Two distinct HF publish targets, one
+    # Rust converter (YueBundleVariant enum), two §3.1 rows.
+    "yue-upsampler": [
+        "YuE-upsampler (`m-a-p/YuE-upsampler`)"
+    ],
+    "yue-xcodec-mini": [
+        "YuE xcodec-mini (`m-a-p/xcodec_mini_infer`)"
+    ],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
@@ -357,6 +390,36 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # 2026-08-01 Wave 3 — IBM Granite Speech audio LLM.
     "granite_speech": [
         "granite-speech-4.1-2b (`ibm-granite/granite-speech-4.1-2b`)"
+    ],
+    # 2026-08-01 Wave 3 — OpenMOSS MOSS-Audio-Tokenizer codec family
+    # (Full + Nano, apache-2.0). Single Rust converter drives both via
+    # MossAudioTokenizerVariant slug dispatch; both §3.1 rows must
+    # exist so the check-converter-signoff.sh gate stays green after
+    # the Nano publish lands.
+    "moss_audio_tokenizer": [
+        "MOSS-Audio-Tokenizer (Full) (`OpenMOSS-Team/MOSS-Audio-Tokenizer`)",
+        "MOSS-Audio-Tokenizer (Nano) (`OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`)",
+    ],
+    # 2026-08-01 Wave 3 — Amphion NaturalSpeech 3 FACodec codec family
+    # (v1 / v2 / redecoder-v{1,2}, apache-2.0). Single Rust converter
+    # drives all four variants via FacodecVariant slug dispatch; a
+    # single §3.1 row covers the entire family (the redecoder-v{1,2}
+    # zero-shot voice-conversion variants share the same signature and
+    # provenance — the license class is identical apache-2.0; the
+    # routing question is a separate ELVIS Act publication decision).
+    "naturalspeech3_facodec": [
+        "NaturalSpeech 3 FACodec (Amphion) (`amphion/naturalspeech3_facodec`)"
+    ],
+    # 2026-08-01 Wave 3 sibling-pair — YuE bundle (`m-a-p/YuE-upsampler`
+    # + `m-a-p/xcodec_mini_infer`, both apache-2.0). Single Rust
+    # converter (yue_bundle.rs) drives both variants via
+    # YueBundleVariant enum + two distinct ModelKind entries
+    # (YueUpsampler + YueXcodecMini); two §3.1 rows must exist so the
+    # check-converter-signoff.sh gate stays green after either publish
+    # lands.
+    "yue_bundle": [
+        "YuE-upsampler (`m-a-p/YuE-upsampler`)",
+        "YuE xcodec-mini (`m-a-p/xcodec_mini_infer`)",
     ],
     "smart_turn": ["Smart-Turn v2 (`pipecat-ai/smart-turn-v2`)"],
     "speechbrain_lang_id": [

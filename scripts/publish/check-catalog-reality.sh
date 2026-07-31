@@ -137,6 +137,35 @@ slugs_for() {
     "utmos"*) printf 'utmos\n' ;;
     "x codec 2"*|"xcodec"*) printf 'fsq_codec\nxcodec2\n' ;;
     "wavtokenizer"*) printf 'wavtokenizer\n' ;;
+    # 2026-08-01 Wave 3: MOSS-Audio-Tokenizer — the codec half of the
+    # MOSS-TTS pipeline (Full + Nano, OpenMOSS-Team, apache-2.0). The
+    # auto-derived `moss_audio_tokenizer` slug already resolves via the
+    # module file `crates/vokra-convert/src/models/moss_audio_tokenizer.rs`,
+    # but this explicit alias catches display-name variants ("MOSS Audio
+    # Tokenizer" / "MOSS-Audio-Tokenizer (Full)" 等) that would tokenize
+    # differently.
+    "moss audio tokenizer"*|"moss-audio-tokenizer"*) printf 'moss_audio_tokenizer\n' ;;
+    # 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec — factorized VQ
+    # codec (apache-2.0). The catalog display name "NaturalSpeech 3
+    # FACodec (Amphion)" tokenizes to "naturalspeech 3 facodec" ->
+    # first-token "naturalspeech", which does NOT match the module file
+    # `crates/vokra-convert/src/models/naturalspeech3_facodec.rs`. This
+    # explicit alias maps every display-name variant to the actual
+    # module slug so the double-sided catalog-vs-implementation gate
+    # sees the converter as implemented.
+    "naturalspeech 3 facodec"*|"naturalspeech3 facodec"*|"naturalspeech3-facodec"*|"facodec"*|"ns3 facodec"*|"ns3-facodec"*)
+      printf 'naturalspeech3_facodec\nfacodec\n' ;;
+    # 2026-08-01 Wave 3 sibling-pair: YuE bundle
+    # (`m-a-p/YuE-upsampler` = vocoder / `m-a-p/xcodec_mini_infer` =
+    # codec, both apache-2.0). The catalog display names ("YuE-upsampler" /
+    # "YuE xcodec-mini") tokenize to "yue upsampler" / "yue xcodec mini"
+    # → first-token "yue", which does NOT match the shared module file
+    # `crates/vokra-convert/src/models/yue_bundle.rs`. This explicit
+    # alias maps every display-name variant to the actual module slug
+    # `yue_bundle` so the double-sided catalog-vs-implementation gate
+    # sees the converter as implemented for both sibling rows.
+    "yue upsampler"*|"yue-upsampler"*|"yue xcodec mini"*|"yue-xcodec-mini"*|"yue xcodec-mini"*|"yue"*)
+      printf 'yue_bundle\n' ;;
   esac
 }
 

@@ -458,8 +458,35 @@ pub mod hifigan_vocoder;
 pub mod kyutai_tts;
 pub mod melotts;
 pub mod metricgan_plus;
+// 2026-08-01 Wave 3 codec add: OpenMOSS MOSS-Audio-Tokenizer
+// (`OpenMOSS-Team/MOSS-Audio-Tokenizer` + `-Nano`, apache-2.0). The
+// codec half of the MOSS-TTS pipeline (waveform → discrete tokens
+// fed into the sibling `moss_tts` LLM). BF16 pass-through skeleton
+// mirror of snac / neucodec / focalcodec (variant-taking = Full
+// ~1.77B params 6.6 GB / Nano ~22M params 88 MB). Both variants ship
+// as sharded safetensors + `model.safetensors.index.json` weight-map;
+// callers pre-flatten via `tools/parity/moss_audio_tokenizer_prepare_checkpoint.py`.
+// Real-weight parity + runtime binder deferred to owner sign-off (§3.1).
+pub mod moss_audio_tokenizer;
 pub mod moss_tts;
+// 2026-08-01 Wave 3 codec add: Amphion NaturalSpeech 3 FACodec
+// (`amphion/naturalspeech3_facodec`, apache-2.0). Factorized VQ (FVQ)
+// neural audio codec at 16 kHz, 3 parallel quantizer heads over
+// disentangled subspaces (prosody 1cb + content 2cb + detail 3cb, 6
+// codebooks total). Distinct arch tag `facodec` — first FVQ codec in
+// the tree, silently sharing with sibling RVQ (Mimi/DAC/SNAC) or FSQ
+// (WavTokenizer/X-Codec 2) codecs would misroute runtime dispatch.
+// BF16 pass-through skeleton mirror of snac / neucodec /
+// moss_audio_tokenizer. Upstream ships 5 separate `.bin` pickles;
+// callers pre-merge the variant subset via
+// `tools/parity/naturalspeech3_facodec_prepare_checkpoint.py` (the
+// sepformer multi-file bridge precedent). Real-weight parity + runtime
+// binder deferred to owner sign-off (§3.1). Redecoder variants enable
+// zero-shot voice conversion — owner routing decision whether they
+// belong in main zoo or `vokra-voiceclone-experimental` (ELVIS Act
+// policy, CLAUDE.md 設計判断 8).
 pub mod mp_senet;
+pub mod naturalspeech3_facodec;
 pub mod nemotron_asr;
 pub mod parler;
 pub mod qwen3_asr;
@@ -506,4 +533,29 @@ pub mod xvector;
 // to owner sign-off (§3.1). Runtime forward reuses the M4-16 landed
 // `wavtokenizer_vq` op (`crates/vokra-ops/src/fsq_codec.rs`).
 pub mod wavtokenizer;
+// 2026-08-01 Wave 3 sibling-pair (codec + vocoder) add: YuE bundle
+// (`m-a-p/YuE-upsampler` + `m-a-p/xcodec_mini_infer`, apache-2.0). The
+// codec / vocoder half of the YuE full-song music-generation system
+// (Yuan et al. 2025, arXiv:2503.08638). Two distinct HF repos share
+// one Rust converter module: `YueUpsampler` variant = Vocos backbone
+// + iSTFT head @ 44.1 kHz (145 MB); `YueXcodecMini` variant =
+// SoundStream RVQ codec + HuBERT-base semantic encoder + Vocos decoder
+// head @ 16 kHz / 25 Hz (~2.2 GB). Both upstream repos ship torch
+// pickle only (`.pth` / `.bin`) — callers pre-flatten via
+// `tools/parity/yue_bundle_prepare_checkpoint.py` (multi-file bridge
+// mirror of `naturalspeech3_facodec_prepare_checkpoint.py` +
+// `sepformer_prepare_checkpoint.py` + `bin_to_safetensors.py`). BF16
+// pass-through skeleton mirror of vocos / snac / focalcodec /
+// speecht5_hifigan; runtime binder + real-weight parity deferred to
+// owner sign-off (§3.1). Distinct arch tags `yue_upsampler` +
+// `yue_xcodec_mini` from every sibling — silently sharing with vocos
+// (different config axes / training corpus) or with any RVQ / FSQ
+// codec (semantic-encoder fusion is what distinguishes YuE) would
+// mis-route runtime dispatch. Attribution note: RepCodec (ByteDance
+// / Chutong Meng, MIT) + Descript-Audio-Codec (MIT) source trees
+// ship inside `xcodec_mini_infer` at `RepCodec/` /
+// `descriptaudiocodec/dac/` but are inference-tree artefacts, not
+// loaded weights — NOTICE keeps credit for design influence, this
+// converter ignores them.
+pub mod yue_bundle;
 // ---------------------------------------------------------------------------

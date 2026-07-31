@@ -707,6 +707,45 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "granite_speech"
         | "granite-speech-4_1-2b"
         | "ibm-granite/granite-speech-4.1-2b" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 3: OpenMOSS MOSS-Audio-Tokenizer family
+        // (`OpenMOSS-Team/MOSS-Audio-Tokenizer` + `-Nano`) — the codec
+        // half of the MOSS-TTS pipeline. Weight license = **apache-2.0**
+        // end-to-end on both variants (`cardData.license =
+        // "apache-2.0"` verified 2026-08-01 via authenticated HF API
+        // — no `LICENSE` file in the repos, declared via HF cardData
+        // tag only). Redundant with the sibling `moss-` prefix walker
+        // below (which handles `moss-tts` + this family via shared
+        // OpenMOSS-Team apache-2.0 licensing), but kept as an
+        // explicit exact-match arm so an id lookup returns quickly
+        // without hitting the prefix arm.
+        "moss-audio-tokenizer"
+        | "moss_audio_tokenizer"
+        | "moss-audio-tokenizer-full"
+        | "moss-audio-tokenizer-nano"
+        | "moss_audio_tokenizer_nano"
+        | "openmoss-team/moss-audio-tokenizer"
+        | "openmoss-team/moss-audio-tokenizer-nano" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec — factorized
+        // VQ (FVQ) codec (`amphion/naturalspeech3_facodec`). Weight
+        // license = **apache-2.0** end-to-end (HF cardData API + Amphion
+        // GitHub `open-mmlab/Amphion/LICENSE` both apache-2.0, verified
+        // 2026-08-01 — CLAUDE.md「ハルシネーション厳禁」). All four
+        // variants (v1 / v2 / redecoder-v{1,2}) share the same repo and
+        // the same license. Registered here so a converted GGUF with
+        // `vokra.provenance.model_id = "facodec"` / `naturalspeech3-facodec`
+        // / `naturalspeech3-facodec-v{1,2}` /
+        // `naturalspeech3-facodec-redecoder-v{1,2}` load-gates as
+        // commercial without a caller-side override.
+        "facodec"
+        | "naturalspeech3-facodec"
+        | "naturalspeech3_facodec"
+        | "ns3-facodec"
+        | "ns3_facodec"
+        | "amphion/naturalspeech3_facodec"
+        | "naturalspeech3-facodec-v1"
+        | "naturalspeech3-facodec-v2"
+        | "naturalspeech3-facodec-redecoder-v1"
+        | "naturalspeech3-facodec-redecoder-v2" => LicenseClass::Permissive,
         // 2026-08-01 wave: Charactr AI Vocos family — Fourier-space
         // vocoder (ConvNeXt V2 backbone + iSTFT head, arXiv:2306.00814).
         // Weight license = **MIT** end-to-end (Charactr AI code + trained
@@ -723,6 +762,29 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "vocos_mel_24khz"
         | "vocos-encodec-24khz"
         | "vocos_encodec_24khz" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 3 sibling-pair add: YuE bundle
+        // (`m-a-p/YuE-upsampler` + `m-a-p/xcodec_mini_infer`). Weight
+        // license = **apache-2.0** end-to-end on both variants (HF
+        // cardData API `license: apache-2.0` on both repos, verified
+        // 2026-08-01 — CLAUDE.md 「ハルシネーション厳禁」). Upstream
+        // YuE code at `github.com/multimodal-art-projection/YuE` also
+        // ships apache-2.0. Redundant with the `yue-` prefix walker
+        // below, but the exact canonical spellings are listed here so
+        // an id lookup returns quickly without hitting the prefix arm.
+        "yue-upsampler"
+        | "yue_upsampler"
+        | "map-yue-upsampler"
+        | "m-a-p/yue-upsampler"
+        | "yue-xcodec-mini"
+        | "yue_xcodec_mini"
+        | "yue-xcodec-mini-infer"
+        | "yue_xcodec_mini_infer"
+        | "xcodec-mini"
+        | "xcodec_mini"
+        | "xcodec-mini-infer"
+        | "xcodec_mini_infer"
+        | "yue-codec"
+        | "m-a-p/xcodec_mini_infer" => LicenseClass::Permissive,
         // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): ESPnet-family
         // Japanese plain VITS (JSUT / JVS / COEIROINK deployments +
         // any downstream that consumes the shared `vits-ja` arch tag).
@@ -978,6 +1040,18 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         _ if id.starts_with("moss-tts") || id.starts_with("openmoss-team/moss-tts") => {
             LicenseClass::Permissive
         }
+        // 2026-08-01 Wave 3: MOSS-Audio-Tokenizer family — the codec
+        // half of the MOSS-TTS pipeline (both Full + Nano apache-2.0
+        // per HF cardData API verified 2026-08-01). Prefix walk
+        // covers future variants OpenMOSS Team may ship (e.g. a
+        // hypothetical v2 or additional distillations) under the same
+        // apache-2.0 licensing. Guarded so unrelated ids like
+        // `moss-audio-tokenizerx-something` cannot slip through.
+        _ if id.starts_with("moss-audio-tokenizer")
+            || id.starts_with("openmoss-team/moss-audio-tokenizer") =>
+        {
+            LicenseClass::Permissive
+        }
         _ if id.starts_with("melotts-") || id.starts_with("myshell-ai/melotts-") => {
             LicenseClass::Permissive
         }
@@ -1005,6 +1079,24 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // future `charactr/vocos-mel-48khz`) so an untagged GGUF
         // resolves permissive without needing a rebuild of this arm.
         _ if id.starts_with("vocos") || id.starts_with("charactr/vocos-") => {
+            LicenseClass::Permissive
+        }
+        // 2026-08-01 Wave 3 sibling-pair add: YuE bundle family
+        // (`m-a-p/YuE-upsampler` + `m-a-p/xcodec_mini_infer`) —
+        // apache-2.0 end-to-end per HF cardData API on both repos
+        // (verified 2026-08-01). Prefix walk covers any future YuE
+        // variant m-a-p ships (e.g. a hypothetical yue-upsampler-v2
+        // or an xcodec_mini_v2 refresh) so an untagged GGUF resolves
+        // permissive without needing a rebuild of this arm. Guarded
+        // so unrelated ids (`yuejun-something` etc.) cannot slip
+        // through into the permissive bucket by accident.
+        _ if id.starts_with("yue-")
+            || id.starts_with("yue_")
+            || id.starts_with("xcodec-mini")
+            || id.starts_with("xcodec_mini")
+            || id.starts_with("m-a-p/yue-")
+            || id.starts_with("m-a-p/xcodec_mini") =>
+        {
             LicenseClass::Permissive
         }
         _ if id.starts_with("tiger-") || id.starts_with("jusperlee/tiger-") => {
