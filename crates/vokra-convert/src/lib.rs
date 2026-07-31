@@ -614,6 +614,38 @@ pub enum ModelKind {
     /// transcribed as compile-time constants; a future 7B variant
     /// would demand `--config`).
     VibeVoice,
+    /// Microsoft **VibeVoice-Realtime-0.5B** safetensors checkpoint
+    /// (2026-08-01). MIT end-to-end -- code + weight under a single
+    /// MIT grant (`huggingface.co/microsoft/VibeVoice-Realtime-0.5B`
+    /// model-card `license: mit`, fetched 2026-08-01 -- CLAUDE.md
+    /// 「ハルシネーション厳禁」). Streaming sibling of the 2026-07-24
+    /// Phase 4 [`Self::VibeVoice`] baseline: upstream `model_type` is
+    /// `vibevoice_streaming` (distinct from 1.5B's `vibevoice`), the
+    /// Qwen2 backbone is reshaped to 24-layer / 896-dim / 14-head /
+    /// 2-kv / FFN-4864 / `tie_word_embeddings=false` /
+    /// `max_positions=8192`, the semantic tokenizer is **absent**
+    /// (acoustic-tokenizer only), and a new top-level axis
+    /// `tts_backbone_num_hidden_layers=20` is added. Acoustic
+    /// tokenizer + diffusion-head axes (except `hidden_size=896`) are
+    /// byte-identical to 1.5B per primary source.
+    ///
+    /// Every hparam transcribed verbatim from
+    /// `huggingface.co/microsoft/VibeVoice-Realtime-0.5B/raw/main/
+    /// config.json` (fetched 2026-08-01 -- CLAUDE.md 「ハルシネー
+    /// ション厳禁」).
+    ///
+    /// Distinct `vokra.model.arch` tag (`vibevoice_streaming`) from
+    /// [`Self::VibeVoice`] -- silently sharing the arch tag would
+    /// misroute the runtime dispatch (the two variants ship
+    /// wrong-shape KV caches for each other). Convert with the CLI
+    /// alias `vibevoice-realtime` -- the converter takes no config
+    /// side-car (every hparam is fixed for the 0.5B release and
+    /// transcribed as compile-time constants).
+    ///
+    /// The upstream release is BF16 (`torch_dtype = "bfloat16"`);
+    /// today's BF16 pass-through emits GGUF type 30 verbatim and the
+    /// runtime widens on load via `decode_bf16` (exact, `bits << 16`).
+    VibeVoiceRealtime,
     /// Aratako **Irodori-TTS-500M-v3** safetensors checkpoint (SoTA plan
     /// Phase 5 JA-TTS-1, 2026-07-24). MIT end-to-end — code + weight
     /// under a single MIT LICENSE at `github.com/Aratako/Irodori-TTS/blob/main/LICENSE`
@@ -1522,6 +1554,11 @@ pub enum ModelKind {
     /// frame rate + RVQ depth via `convert_file_with_slug` (mirror of
     /// [`Self::Focalcodec`] / [`Self::BigVGan`] slug dispatch).
     Snac,
+    /// Novateur **WavTokenizer-large-speech-75token** (2026-08-01 Wave 3).
+    /// Single-codebook FSQ audio codec at 24 kHz with `hop_length = 320`
+    /// → 75 tokens/sec (Ji et al. 2024, arXiv:2408.16532). MIT.
+    /// Upstream ships `.ckpt` (Lightning); bridge required.
+    Wavtokenizer,
 }
 
 impl ModelKind {
@@ -1688,6 +1725,17 @@ impl ModelKind {
             | "vibevoice-1_5b"
             | "vibevoice-1.5b-base"
             | "vibevoice-1_5b-base" => Some(Self::VibeVoice),
+            // Microsoft VibeVoice-Realtime family (streaming variant,
+            // 2026-08-01 add). Every spelling routes to the 0.5B
+            // release today; a future streaming variant with distinct
+            // shape would be a new `ModelKind` when it lands.
+            "vibevoice-realtime"
+            | "vibevoice_realtime"
+            | "vibevoice-realtime-0.5b"
+            | "vibevoice-realtime-0_5b"
+            | "vibevoice-streaming"
+            | "vibevoice_streaming"
+            | "microsoft/vibevoice-realtime-0.5b" => Some(Self::VibeVoiceRealtime),
             // Aratako Irodori-TTS family (SoTA plan Phase 5 JA-TTS-1,
             // 2026-07-24). Accept the canonical arch spelling, the
             // underscore variant, and every currently-shipped HF
@@ -2006,6 +2054,11 @@ impl ModelKind {
             | "snac-44khz"
             | "snac_44khz"
             | "hubertsiuzdak/snac_44khz" => Some(Self::Snac),
+            // WavTokenizer-large-speech-75token — MIT single-codebook FSQ codec.
+            "wavtokenizer"
+            | "wavtokenizer-large-speech-75token"
+            | "wavtokenizer_large_speech_75token"
+            | "novateur/wavtokenizer-large-speech-75token" => Some(Self::Wavtokenizer),
             "tiger"
             | "tiger-dnr"
             | "tiger_dnr"
@@ -2179,6 +2232,7 @@ impl ModelKind {
             Self::Qwen3Tts => "qwen3-tts",
             Self::VoxCpm2 => "voxcpm",
             Self::VibeVoice => "vibevoice",
+            Self::VibeVoiceRealtime => "vibevoice-realtime",
             Self::Irodori => "irodori",
             Self::VitsJa => "vits-ja",
             Self::StyleTts2 => "styletts2",
@@ -2242,6 +2296,7 @@ impl ModelKind {
             Self::SepformerWhamr16k => "sepformer-whamr16k",
             Self::SmartTurn => "smart-turn",
             Self::Snac => "snac",
+            Self::Wavtokenizer => "wavtokenizer",
             Self::SpeechT5Tts => "speecht5-tts",
             Self::TigerSeparator => "tiger-dnr",
             Self::TigerSpeech => "tiger-speech",
@@ -3152,6 +3207,36 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("vibevoice warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::VibeVoiceRealtime => {
+            // Microsoft VibeVoice-Realtime-0.5B (2026-08-01): pass
+            // every F32/F16/BF16 tensor through verbatim and stamp
+            // the `vokra.vibevoice.*` chunk group (Qwen2 0.5B
+            // decoder LM + acoustic σ-VAE tokenizer + 4-layer AdaLN
+            // diffusion head with DDPM v-prediction +
+            // streaming-only `tts_backbone_num_hidden_layers=20`)
+            // from the transcribed constants in
+            // `models::vibevoice`. Distinct arch tag
+            // (`vibevoice_streaming`) from the 1.5B baseline so
+            // runtime dispatch never conflates the two variants.
+            // Semantic tokenizer keys are deliberately **not** written
+            // (streaming variant is acoustic-tokenizer only).
+            // Provenance = **MIT** end-to-end (Permissive --
+            // huggingface.co/microsoft/VibeVoice-Realtime-0.5B model
+            // card `license: mit`).
+            let (builder, report) = models::vibevoice::convert_realtime_05b(bytes)?;
+            let mut notes = vec![format!(
+                "vibevoice-realtime: {} float weights written verbatim, \
+                 {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("vibevoice-realtime warning: {n}")),
             );
             (builder, notes)
         }
@@ -4119,6 +4204,22 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Focalcodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Wavtokenizer (2026-08-01 Wave 3) ===
+        ModelKind::Wavtokenizer => {
+            let report = models::wavtokenizer::convert_wavtokenizer_file(input, output, license)?;
+            let notes = vec![format!(
+                "wavtokenizer-large-speech-75token: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -6898,6 +6999,7 @@ mod modelkind_alias_and_roundtrip_tests {
             Qwen3Tts,
             VoxCpm2,
             VibeVoice,
+            VibeVoiceRealtime,
             Irodori,
             VitsJa,
             // SBV2 v2 plan Task 11 (2026-07-26) + Task 8 (2026-07-27):
@@ -7129,6 +7231,19 @@ mod modelkind_alias_and_roundtrip_tests {
                     "vibevoice-1_5b",
                     "vibevoice-1.5b-base",
                     "vibevoice-1_5b-base",
+                ],
+            ),
+            // 2026-08-01 add — VibeVoice-Realtime (streaming sibling)
+            (
+                ModelKind::VibeVoiceRealtime,
+                &[
+                    "vibevoice-realtime",
+                    "vibevoice_realtime",
+                    "vibevoice-realtime-0.5b",
+                    "vibevoice-realtime-0_5b",
+                    "vibevoice-streaming",
+                    "vibevoice_streaming",
+                    "microsoft/vibevoice-realtime-0.5b",
                 ],
             ),
             // Phase 5 JA-TTS-1 — Irodori

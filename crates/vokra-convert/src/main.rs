@@ -1620,6 +1620,90 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  head.num_inference_steps={n_inf_steps}"
             );
         }
+        ModelKind::VibeVoiceRealtime => {
+            // 2026-08-01 add: VibeVoice-Realtime-0.5B (streaming sibling)
+            // verify surface -- mirror of VibeVoice above, but the
+            // semantic tokenizer axes are absent (streaming variant
+            // carries only the acoustic tokenizer) and the
+            // streaming-only `tts_backbone_num_hidden_layers` axis is
+            // surfaced. The diffusion-head hidden dim is also
+            // reported since it differs from the 1.5B value.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.vibevoice.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let dec_hidden = file
+                .get("vokra.vibevoice.decoder.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_layer = file
+                .get("vokra.vibevoice.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head = file
+                .get("vokra.vibevoice.decoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head_kv = file
+                .get("vokra.vibevoice.decoder.n_head_kv")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_vocab = file
+                .get("vokra.vibevoice.decoder.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let acoustic_vae = file
+                .get("vokra.vibevoice.acoustic_vae_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let acoustic_sr = file
+                .get("vokra.vibevoice.acoustic.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_hidden = file
+                .get("vokra.vibevoice.diffusion_head.hidden_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_layers = file
+                .get("vokra.vibevoice.diffusion_head.head_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let pred_type = file
+                .get("vokra.vibevoice.diffusion_head.prediction_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let beta_sched = file
+                .get("vokra.vibevoice.diffusion_head.ddpm_beta_schedule")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_inf_steps = file
+                .get("vokra.vibevoice.diffusion_head.ddpm_num_inference_steps")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let tts_backbone = file
+                .get("vokra.vibevoice.tts_backbone_num_hidden_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} \
+                 decoder.hidden={dec_hidden} decoder.n_layer={dec_n_layer} \
+                 decoder.n_head={dec_n_head} decoder.n_head_kv={dec_n_head_kv} \
+                 decoder.vocab={dec_vocab} acoustic.vae_dim={acoustic_vae} \
+                 acoustic.sr={acoustic_sr} head.hidden={head_hidden} \
+                 head.layers={head_layers} head.prediction_type={pred_type} \
+                 head.beta_schedule={beta_sched} \
+                 head.num_inference_steps={n_inf_steps} \
+                 tts_backbone_num_hidden_layers={tts_backbone}"
+            );
+        }
         ModelKind::Irodori => {
             // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Irodori-TTS-500M-v3
             // verify surface — arch / name plus the RF-DiT body axes +
@@ -2052,7 +2136,8 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // focalcodec / bigvgan (arch / name / category + upstream_hf +
         // license triple) plus an arch-specific `vokra.snac.variant`
         // chunk not read back by this uniform verify arm.
-        | ModelKind::Snac => {
+        | ModelKind::Snac
+        | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

@@ -161,6 +161,14 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # 2026-08-01 Wave 3 — SNAC codec variants (hubertsiuzdak/snac_{24khz,44khz}, MIT).
     "snac-24khz": ["SNAC 24kHz (`hubertsiuzdak/snac_24khz`)"],
     "snac-44khz": ["SNAC 44kHz (`hubertsiuzdak/snac_44khz`)"],
+    # 2026-08-01 Wave 3 — Microsoft VibeVoice-Realtime-0.5B streaming sibling.
+    "vibevoice-realtime-0.5b": [
+        "microsoft/VibeVoice-Realtime-0.5B"
+    ],
+    # 2026-08-01 Wave 3 — Novateur WavTokenizer-large-speech-75token (MIT).
+    "wavtokenizer-large-speech-75token": [
+        "WavTokenizer-Large-Speech-75token (`novateur/WavTokenizer-large-speech-75token`)"
+    ],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
@@ -337,6 +345,10 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "snac": [
         "SNAC 24kHz (`hubertsiuzdak/snac_24khz`)",
         "SNAC 44kHz (`hubertsiuzdak/snac_44khz`)",
+    ],
+    # 2026-08-01 Wave 3 — WavTokenizer FSQ codec (single-codebook 75 tok/s).
+    "wavtokenizer": [
+        "WavTokenizer-Large-Speech-75token (`novateur/WavTokenizer-large-speech-75token`)"
     ],
     "smart_turn": ["Smart-Turn v2 (`pipecat-ai/smart-turn-v2`)"],
     "speechbrain_lang_id": [

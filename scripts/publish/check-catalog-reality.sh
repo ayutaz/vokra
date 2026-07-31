@@ -52,7 +52,14 @@ audit="$repo_root/docs/license-audit.md"
 # name-in-catalog -> why it is advertised without an implementation.
 # Keep the reason specific enough that a reader can act on it.
 declare -a EXPECTED_GAPS=(
-  "WavTokenizer|op-only (wavtokenizer_vq in vokra-ops/src/fsq_codec.rs); no model binder or converter — model WP not started"
+  # WavTokenizer entry removed 2026-08-01: Wave 3 codec add landed the
+  # converter (`crates/vokra-convert/src/models/wavtokenizer.rs`) +
+  # `ModelKind::WavTokenizer`. The row is now considered implemented
+  # (`implemented("WavTokenizer")` matches the `wavtokenizer` slug in
+  # `crates/vokra-convert/src/models/`), and keeping the entry would trip
+  # the double-sided "stale ledger" check. Runtime forward already exists
+  # via the M4-16 `wavtokenizer_vq` op (`vokra-ops/src/fsq_codec.rs`);
+  # real-weight parity is a §3.1 sign-off follow-up.
   "openWakeWord|kws (FR-OP-51) is unimplemented; the catalog row precedes the op"
   # ECAPA-TDNN and WeSpeaker previously listed here as anchor-only; converter
   # implementations landed in the SoTA Phase 1-4 wave (commit 7ed0548) at

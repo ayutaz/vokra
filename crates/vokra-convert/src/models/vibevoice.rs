@@ -474,6 +474,363 @@ fn write_hparams(b: &mut GgufBuilder) {
     );
 }
 
+// === VibeVoice-Realtime-0.5B (streaming variant) ==========================
+//
+// Added 2026-08-01 for `microsoft/VibeVoice-Realtime-0.5B` publish.
+// Primary source: `huggingface.co/microsoft/VibeVoice-Realtime-0.5B/raw/
+// main/config.json` (fetched 2026-08-01 -- CLAUDE.md 「ハルシネーション
+// 厳禁」).
+//
+// Diverges from the 1.5B base in four axes:
+//   1. `model_type` = `vibevoice_streaming` (vs `vibevoice`).
+//   2. Qwen2 backbone reshaped -- hidden 896 (vs 1536), 24 layers
+//      (vs 28), 14 heads (vs 12), FFN 4864 (vs 8960),
+//      max_positions 8192 (vs 65536), `tie_word_embeddings=false`
+//      (vs true).
+//   3. Semantic tokenizer is **absent** -- the streaming variant is
+//      acoustic-tokenizer-only; the runtime dispatch must not read any
+//      `vokra.vibevoice.semantic.*` key for a Realtime GGUF.
+//   4. New top-level axis `tts_backbone_num_hidden_layers = 20`
+//      (streaming-specific -- carried under the new key
+//      `vokra.vibevoice.tts_backbone_num_hidden_layers`).
+//
+// Acoustic tokenizer axes + diffusion-head axes (except `hidden_size`) +
+// LM frame rate + acoustic sample rate are byte-identical to 1.5B per
+// primary source, so the existing 1.5B constants are reused directly.
+
+/// Which VibeVoice release this converter emits.
+///
+/// The two variants share Vokra's `vokra.vibevoice.*` metadata prefix
+/// but carry **distinct** `vokra.model.arch` tags -- silently sharing
+/// an arch tag would misroute the runtime dispatch (Base15B ships a
+/// semantic tokenizer, Realtime05B does not; Base15B binds a 1536-dim
+/// Qwen2 backbone, Realtime05B binds an 896-dim one; a runtime that
+/// expected the wrong config would allocate the wrong-shape KV cache
+/// on the first token).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VibeVoiceVariant {
+    /// `microsoft/VibeVoice-1.5B` -- the 2026-07-24 SoTA Phase 4
+    /// release. Qwen2 backbone: hidden 1536, 28 layers, 12 heads,
+    /// 2 kv heads, FFN 8960, `tie_word_embeddings=true`. Semantic
+    /// tokenizer present. `vokra.model.arch = "vibevoice"`.
+    Base15B,
+    /// `microsoft/VibeVoice-Realtime-0.5B` -- the 2026-08-01-added
+    /// streaming variant (upstream `model_type =
+    /// "vibevoice_streaming"`). Qwen2 backbone: hidden 896, 24
+    /// layers, 14 heads, 2 kv heads, FFN 4864,
+    /// `tie_word_embeddings=false`. Semantic tokenizer **absent**.
+    /// Adds `tts_backbone_num_hidden_layers = 20`.
+    /// `vokra.model.arch = "vibevoice_streaming"`.
+    Realtime05B,
+}
+
+#[allow(dead_code)]
+impl VibeVoiceVariant {
+    /// `vokra.model.arch` value for this variant.
+    pub const fn arch(self) -> &'static str {
+        match self {
+            Self::Base15B => ARCH,
+            Self::Realtime05B => ARCH_STREAMING,
+        }
+    }
+
+    /// `vokra.model.name` value.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Base15B => NAME,
+            Self::Realtime05B => NAME_REALTIME_05B,
+        }
+    }
+
+    /// Upstream HF path -- recorded in the provenance chunk group so a
+    /// downstream reader can locate the source release.
+    pub const fn upstream_hf(self) -> &'static str {
+        match self {
+            Self::Base15B => "microsoft/VibeVoice-1.5B",
+            Self::Realtime05B => "microsoft/VibeVoice-Realtime-0.5B",
+        }
+    }
+
+    /// Provenance `source` field text.
+    const fn source_description(self) -> &'static str {
+        match self {
+            Self::Base15B => "microsoft/VibeVoice-1.5B (MIT end-to-end)",
+            Self::Realtime05B => "microsoft/VibeVoice-Realtime-0.5B (MIT end-to-end, streaming)",
+        }
+    }
+}
+
+/// `vokra.model.arch` value for the Realtime streaming variant.
+/// Kept **distinct** from [`ARCH`] so runtime dispatch never conflates
+/// the two variants (see [`VibeVoiceVariant`] rustdoc for the topology
+/// divergences).
+pub(crate) const ARCH_STREAMING: &str = "vibevoice_streaming";
+
+/// `vokra.model.name` value for the canonical Realtime-0.5B GGUF.
+pub(crate) const NAME_REALTIME_05B: &str = "vibevoice-realtime-0.5b";
+
+/// Streaming-specific top-level key
+/// (`config.json.tts_backbone_num_hidden_layers`). Only written on the
+/// Realtime path; the 1.5B path does not carry this axis.
+const KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS: &str = "vokra.vibevoice.tts_backbone_num_hidden_layers";
+
+// --- Realtime-0.5B transcribed constants ---------------------------------
+// Primary source: `huggingface.co/microsoft/VibeVoice-Realtime-0.5B/raw/
+// main/config.json` (fetched 2026-08-01 -- CLAUDE.md 「ハルシネーション
+// 厳禁」).
+
+const RT_MODEL_FAMILY: &str = "vibevoice_streaming";
+
+// Qwen2 decoder LM -- every axis that differs from the 1.5B baseline
+// is declared explicitly here. Shared axes (`n_head_kv=2`,
+// `vocab_size=151_936`, `rope_theta=1_000_000`, `rms_norm_eps=1e-6`,
+// `attention_dropout=0.0`, `use_sliding_window=false`) reuse the 1.5B
+// constants above so a future upstream update lands atomically.
+const RT_DECODER_HIDDEN_DIM: u32 = 896;
+const RT_DECODER_N_LAYER: u32 = 24;
+const RT_DECODER_N_HEAD: u32 = 14;
+const RT_DECODER_FFN_DIM: u32 = 4864;
+const RT_DECODER_MAX_POSITIONS: u32 = 8_192;
+const RT_DECODER_MAX_WINDOW_LAYERS: u32 = 24;
+const RT_DECODER_TIE_WORD_EMBEDDINGS: bool = false;
+
+// Diffusion head -- only `hidden_size` differs (matches the Qwen2
+// hidden so `cond_proj` is a square linear). Every other
+// diffusion-head axis is byte-identical to the 1.5B baseline per
+// primary source and reuses the shared constants above.
+const RT_DIFFUSION_HEAD_HIDDEN_SIZE: u32 = 896;
+
+// Streaming-only top-level axis.
+const RT_TTS_BACKBONE_NUM_HIDDEN_LAYERS: u32 = 20;
+
+// Compile-time algebra pins for the Realtime-0.5B constants -- mirror
+// of the 1.5B pins in `transcribed_constants_match_primary_source`
+// below, promoted to const-eval so a shape drift fails at build time.
+const _: () = {
+    // GQA well-formedness.
+    assert!(RT_DECODER_N_HEAD % DECODER_N_HEAD_KV == 0);
+    // VAE handshake reuses the shared 1.5B pins (identical values per
+    // primary source).
+    assert!(DIFFUSION_HEAD_LATENT_SIZE == ACOUSTIC_VAE_DIM);
+    assert!(DIFFUSION_HEAD_SPEECH_VAE_DIM == ACOUSTIC_VAE_DIM);
+    // Hidden-size handshake: cond_proj is a square linear on Realtime.
+    assert!(RT_DIFFUSION_HEAD_HIDDEN_SIZE == RT_DECODER_HIDDEN_DIM);
+    // Streaming backbone must be a proper subset of the decoder
+    // layers (structural sanity: tts_backbone spans the first N
+    // decoder layers).
+    assert!(RT_TTS_BACKBONE_NUM_HIDDEN_LAYERS < RT_DECODER_N_LAYER);
+    // Sanity: distinct SKUs must not share the exact backbone shape
+    // (a drift where both variants become 896-dim / 24-layer would
+    // silently collapse the round-trip test `realtime_variant_arch_
+    // is_distinct_from_base` into a trivially-passing tautology).
+    assert!(RT_DECODER_HIDDEN_DIM != DECODER_HIDDEN_DIM);
+    assert!(RT_DECODER_N_LAYER != DECODER_N_LAYER);
+};
+
+/// Convert a `microsoft/VibeVoice-Realtime-0.5B` safetensors buffer
+/// into a populated GGUF builder.
+///
+/// Sibling of [`convert`] -- the two paths differ only in the arch
+/// tag, name, and the `write_hparams_realtime_05b` chunk-group writer.
+/// The tensor pass-through loop (F32/F16/BF16 verbatim) and the
+/// provenance stamp (MIT permissive, end-to-end) are otherwise
+/// byte-parallel.
+pub(crate) fn convert_realtime_05b(
+    bytes: Vec<u8>,
+) -> Result<(GgufBuilder, VibeVoiceReport), ConvertError> {
+    let variant = VibeVoiceVariant::Realtime05B;
+    let st = SafetensorsFile::parse(bytes)?;
+
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, variant.arch());
+    b.add_string(chunks::KEY_MODEL_NAME, variant.name());
+    write_hparams_realtime_05b(&mut b);
+    // Self-describing redistribution: MIT end-to-end
+    // (`huggingface.co/microsoft/VibeVoice-Realtime-0.5B` cardData
+    // `license: mit`, fetched 2026-08-01 -- CLAUDE.md 「ハルシネー
+    // ション厳禁」). MIT is a `Permissive` license class (same
+    // commercial verdict as apache-2.0, no runtime attribution
+    // obligation), just a different SPDX string. The
+    // `LicenseClass::from_id` prefix walk (`id.starts_with
+    // ("vibevoice-")`) also resolves this variant to `Permissive`.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "mit",
+        Some(variant.name()),
+        Some(variant.source_description()),
+    );
+
+    let mut report = VibeVoiceReport::default();
+    for t in st.tensors() {
+        match t.dtype {
+            // Same BF16 pass-through rule as the 1.5B path (mirror
+            // of qwen3-tts + moshi + voxtral + voxcpm2 + bigvgan):
+            // emit BF16 as GGUF type 30 verbatim; runtime widens on
+            // load via `decode_bf16` (exact, `bits << 16`).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
+                b.add_tensor(
+                    &t.name,
+                    t.dtype,
+                    t.shape.clone(),
+                    st.tensor_bytes(t).to_vec(),
+                )?;
+                report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
+            }
+            _ => {
+                report.skipped_non_float += 1;
+            }
+        }
+    }
+    if report.written == 0 {
+        report.notes.push(
+            "no float tensors passed through -- this GGUF is \
+             metadata-only and the runtime will refuse to bind any \
+             weights (FR-EX-08). The upstream \
+             VibeVoice-Realtime-0.5B release ships \
+             `model.safetensors` in BF16 (config.json \
+             `torch_dtype: bfloat16`); the BF16 pass-through path \
+             is wired (2026-07-25), so this state is only reachable \
+             when the release contains no F32 / F16 / BF16 float \
+             tensors at all."
+                .into(),
+        );
+    }
+    Ok((b, report))
+}
+
+/// Writes the `vokra.vibevoice.*` chunk group for the Realtime-0.5B
+/// variant. Reuses the shared acoustic tokenizer + diffusion-head
+/// constants that are byte-identical between the two variants (per
+/// primary source); overrides the decoder + `hidden_size` +
+/// `tie_word_embeddings` axes and adds the streaming-only
+/// `tts_backbone_num_hidden_layers` axis. Skips every
+/// `vokra.vibevoice.semantic.*` key -- the streaming variant is
+/// acoustic-tokenizer-only.
+fn write_hparams_realtime_05b(b: &mut GgufBuilder) {
+    // Top-level.
+    b.add_string(KEY_MODEL_FAMILY, RT_MODEL_FAMILY);
+    b.add_u32(KEY_ACOUSTIC_VAE_DIM, ACOUSTIC_VAE_DIM);
+    // Semantic tokenizer is absent in the streaming variant -- do
+    // NOT write KEY_SEMANTIC_VAE_DIM or any KEY_SEMANTIC_* key.
+    b.add_f32(KEY_LM_FRAME_RATE_HZ, LM_FRAME_RATE_HZ);
+    b.add_u32(
+        KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS,
+        RT_TTS_BACKBONE_NUM_HIDDEN_LAYERS,
+    );
+
+    // Qwen2 decoder LM (config.json.decoder_config.*).
+    b.add_u32(KEY_DECODER_HIDDEN_DIM, RT_DECODER_HIDDEN_DIM);
+    b.add_u32(KEY_DECODER_N_LAYER, RT_DECODER_N_LAYER);
+    b.add_u32(KEY_DECODER_N_HEAD, RT_DECODER_N_HEAD);
+    b.add_u32(KEY_DECODER_N_HEAD_KV, DECODER_N_HEAD_KV);
+    b.add_u32(KEY_DECODER_FFN_DIM, RT_DECODER_FFN_DIM);
+    b.add_u32(KEY_DECODER_VOCAB_SIZE, DECODER_VOCAB_SIZE);
+    b.add_u32(KEY_DECODER_MAX_POSITIONS, RT_DECODER_MAX_POSITIONS);
+    b.add_f32(KEY_DECODER_ROPE_BASE, DECODER_ROPE_BASE);
+    b.add_f32(KEY_DECODER_RMS_NORM_EPS, DECODER_RMS_NORM_EPS);
+    b.add_f32(KEY_DECODER_ATTENTION_DROPOUT, DECODER_ATTENTION_DROPOUT);
+    b.add_bool(
+        KEY_DECODER_TIE_WORD_EMBEDDINGS,
+        RT_DECODER_TIE_WORD_EMBEDDINGS,
+    );
+    b.add_bool(KEY_DECODER_USE_SLIDING_WINDOW, DECODER_USE_SLIDING_WINDOW);
+    b.add_u32(KEY_DECODER_MAX_WINDOW_LAYERS, RT_DECODER_MAX_WINDOW_LAYERS);
+
+    // Acoustic tokenizer -- byte-identical to 1.5B per primary
+    // source, so every axis reuses the shared constant.
+    b.add_u32(KEY_ACOUSTIC_CHANNELS, ACOUSTIC_CHANNELS);
+    b.add_bool(KEY_ACOUSTIC_CAUSAL, ACOUSTIC_CAUSAL);
+    b.add_u32(KEY_ACOUSTIC_VAE_DIM_INNER, ACOUSTIC_VAE_DIM);
+    b.add_f32(KEY_ACOUSTIC_FIX_STD, ACOUSTIC_FIX_STD);
+    b.add_string(KEY_ACOUSTIC_STD_DIST_TYPE, ACOUSTIC_STD_DIST_TYPE);
+    b.add_u32(KEY_ACOUSTIC_ENCODER_N_FILTERS, ACOUSTIC_ENCODER_N_FILTERS);
+    b.add_u32(KEY_ACOUSTIC_DECODER_N_FILTERS, ACOUSTIC_DECODER_N_FILTERS);
+    b.add_metadata(
+        KEY_ACOUSTIC_ENCODER_RATIOS,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: ACOUSTIC_ENCODER_RATIOS
+                .iter()
+                .map(|&r| GgufMetadataValue::U32(r))
+                .collect(),
+        }),
+    );
+    b.add_metadata(
+        KEY_ACOUSTIC_DECODER_RATIOS,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: ACOUSTIC_DECODER_RATIOS
+                .iter()
+                .map(|&r| GgufMetadataValue::U32(r))
+                .collect(),
+        }),
+    );
+    b.add_string(KEY_ACOUSTIC_ENCODER_DEPTHS, ACOUSTIC_ENCODER_DEPTHS);
+    b.add_f32(
+        KEY_ACOUSTIC_LAYER_SCALE_INIT_VALUE,
+        ACOUSTIC_LAYER_SCALE_INIT_VALUE,
+    );
+    b.add_f32(KEY_ACOUSTIC_WEIGHT_INIT_VALUE, ACOUSTIC_WEIGHT_INIT_VALUE);
+    b.add_string(KEY_ACOUSTIC_LAYERNORM, ACOUSTIC_LAYERNORM);
+    b.add_bool(
+        KEY_ACOUSTIC_LAYERNORM_ELEMENTWISE_AFFINE,
+        ACOUSTIC_LAYERNORM_ELEMENTWISE_AFFINE,
+    );
+    b.add_f32(KEY_ACOUSTIC_LAYERNORM_EPS, ACOUSTIC_LAYERNORM_EPS);
+    b.add_string(KEY_ACOUSTIC_MIXER_LAYER, ACOUSTIC_MIXER_LAYER);
+    b.add_string(KEY_ACOUSTIC_PAD_MODE, ACOUSTIC_PAD_MODE);
+    b.add_bool(KEY_ACOUSTIC_DISABLE_LAST_NORM, ACOUSTIC_DISABLE_LAST_NORM);
+    b.add_string(KEY_ACOUSTIC_CONV_NORM, ACOUSTIC_CONV_NORM);
+    b.add_bool(KEY_ACOUSTIC_CONV_BIAS, ACOUSTIC_CONV_BIAS);
+    b.add_f32(KEY_ACOUSTIC_CORPUS_NORMALIZE, ACOUSTIC_CORPUS_NORMALIZE);
+    b.add_u32(KEY_ACOUSTIC_SAMPLE_RATE_HZ, ACOUSTIC_SAMPLE_RATE_HZ);
+
+    // Diffusion head (config.json.diffusion_head_config.*). Only
+    // `hidden_size` differs; the rest reuse the shared 1.5B
+    // constants.
+    b.add_u32(
+        KEY_DIFFUSION_HEAD_HIDDEN_SIZE,
+        RT_DIFFUSION_HEAD_HIDDEN_SIZE,
+    );
+    b.add_u32(KEY_DIFFUSION_HEAD_LAYERS, DIFFUSION_HEAD_LAYERS);
+    b.add_f32(KEY_DIFFUSION_HEAD_FFN_RATIO, DIFFUSION_HEAD_FFN_RATIO);
+    b.add_f32(KEY_DIFFUSION_HEAD_RMS_NORM_EPS, DIFFUSION_HEAD_RMS_NORM_EPS);
+    b.add_u32(KEY_DIFFUSION_HEAD_LATENT_SIZE, DIFFUSION_HEAD_LATENT_SIZE);
+    b.add_u32(
+        KEY_DIFFUSION_HEAD_SPEECH_VAE_DIM,
+        DIFFUSION_HEAD_SPEECH_VAE_DIM,
+    );
+    b.add_string(
+        KEY_DIFFUSION_HEAD_PREDICTION_TYPE,
+        DIFFUSION_HEAD_PREDICTION_TYPE,
+    );
+    b.add_string(
+        KEY_DIFFUSION_HEAD_DIFFUSION_TYPE,
+        DIFFUSION_HEAD_DIFFUSION_TYPE,
+    );
+    b.add_u32(
+        KEY_DIFFUSION_HEAD_DDPM_NUM_STEPS,
+        DIFFUSION_HEAD_DDPM_NUM_STEPS,
+    );
+    b.add_u32(
+        KEY_DIFFUSION_HEAD_DDPM_NUM_INFERENCE_STEPS,
+        DIFFUSION_HEAD_DDPM_NUM_INFERENCE_STEPS,
+    );
+    b.add_string(
+        KEY_DIFFUSION_HEAD_DDPM_BETA_SCHEDULE,
+        DIFFUSION_HEAD_DDPM_BETA_SCHEDULE,
+    );
+    b.add_u32(
+        KEY_DIFFUSION_HEAD_DDPM_BATCH_MUL,
+        DIFFUSION_HEAD_DDPM_BATCH_MUL,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,5 +1442,231 @@ mod tests {
                 "{key} must live under the vokra.vibevoice.* prefix"
             );
         }
+    }
+
+    // === VibeVoice-Realtime-0.5B (streaming variant) tests ===================
+    // Added 2026-08-01 for the `microsoft/VibeVoice-Realtime-0.5B` publish.
+
+    #[test]
+    fn realtime_variant_arch_is_distinct_from_base() {
+        assert_eq!(VibeVoiceVariant::Base15B.arch(), "vibevoice");
+        assert_eq!(VibeVoiceVariant::Realtime05B.arch(), "vibevoice_streaming");
+        assert_ne!(
+            VibeVoiceVariant::Base15B.arch(),
+            VibeVoiceVariant::Realtime05B.arch(),
+            "distinct arch tags avoid runtime dispatch misroute"
+        );
+    }
+
+    #[test]
+    fn realtime_variant_name_and_upstream_match_primary_source() {
+        assert_eq!(
+            VibeVoiceVariant::Realtime05B.name(),
+            "vibevoice-realtime-0.5b"
+        );
+        assert_eq!(
+            VibeVoiceVariant::Realtime05B.upstream_hf(),
+            "microsoft/VibeVoice-Realtime-0.5B"
+        );
+        // Base variant handles must not drift under the same enum.
+        assert_eq!(VibeVoiceVariant::Base15B.name(), "vibevoice-1.5b");
+        assert_eq!(
+            VibeVoiceVariant::Base15B.upstream_hf(),
+            "microsoft/VibeVoice-1.5B"
+        );
+    }
+
+    /// Realtime-0.5B transcribed constants must equal the primary-source
+    /// values fetched from `huggingface.co/microsoft/VibeVoice-Realtime-
+    /// 0.5B/raw/main/config.json` (2026-08-01 -- CLAUDE.md 「ハルシネー
+    /// ション厳禁」). Mirror of `transcribed_constants_match_primary_
+    /// source` above for the 1.5B variant.
+    #[test]
+    fn realtime_transcribed_constants_match_primary_source() {
+        assert_eq!(RT_MODEL_FAMILY, "vibevoice_streaming");
+        // Qwen2 decoder LM overrides (config.json.decoder_config.*).
+        assert_eq!(RT_DECODER_HIDDEN_DIM, 896);
+        assert_eq!(RT_DECODER_N_LAYER, 24);
+        assert_eq!(RT_DECODER_N_HEAD, 14);
+        assert_eq!(RT_DECODER_FFN_DIM, 4864);
+        assert_eq!(RT_DECODER_MAX_POSITIONS, 8_192);
+        assert_eq!(RT_DECODER_MAX_WINDOW_LAYERS, 24);
+        // The tie_word_embeddings flag flips between the two variants --
+        // 1.5B ties (true), Realtime unties (false). Getting this wrong
+        // silently loses the LM head weights for a Realtime bind.
+        #[allow(clippy::assertions_on_constants)]
+        {
+            assert!(!RT_DECODER_TIE_WORD_EMBEDDINGS);
+        }
+        // Diffusion-head override (config.json.diffusion_head_config.
+        // hidden_size).
+        assert_eq!(RT_DIFFUSION_HEAD_HIDDEN_SIZE, 896);
+        // Streaming-only top-level axis.
+        assert_eq!(RT_TTS_BACKBONE_NUM_HIDDEN_LAYERS, 20);
+        // Shared with 1.5B -- this test does not re-pin them (their pins
+        // live in `transcribed_constants_match_primary_source`) but the
+        // handshake algebra depends on them, so re-assert the ones the
+        // algebra reads:
+        assert_eq!(DECODER_N_HEAD_KV, 2);
+        assert_eq!(DIFFUSION_HEAD_LATENT_SIZE, 64);
+        assert_eq!(ACOUSTIC_VAE_DIM, 64);
+    }
+
+    #[test]
+    fn realtime_round_trip_carries_arch_chunks_and_provenance() {
+        let (builder, report) =
+            convert_realtime_05b(minimal_safetensors_one_f32()).expect("convert");
+        assert_eq!(report.written, 1);
+        assert_eq!(report.skipped_non_float, 0);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some("vibevoice_streaming")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("vibevoice-realtime-0.5b")
+        );
+        assert_eq!(get_string(&file, KEY_MODEL_FAMILY), "vibevoice_streaming");
+
+        // Overriding U32 axes round-trip verbatim.
+        for (key, want) in [
+            (KEY_DECODER_HIDDEN_DIM, RT_DECODER_HIDDEN_DIM),
+            (KEY_DECODER_N_LAYER, RT_DECODER_N_LAYER),
+            (KEY_DECODER_N_HEAD, RT_DECODER_N_HEAD),
+            (KEY_DECODER_N_HEAD_KV, DECODER_N_HEAD_KV),
+            (KEY_DECODER_FFN_DIM, RT_DECODER_FFN_DIM),
+            (KEY_DECODER_VOCAB_SIZE, DECODER_VOCAB_SIZE),
+            (KEY_DECODER_MAX_POSITIONS, RT_DECODER_MAX_POSITIONS),
+            (KEY_DECODER_MAX_WINDOW_LAYERS, RT_DECODER_MAX_WINDOW_LAYERS),
+            (KEY_ACOUSTIC_VAE_DIM, ACOUSTIC_VAE_DIM),
+            (KEY_ACOUSTIC_VAE_DIM_INNER, ACOUSTIC_VAE_DIM),
+            (KEY_ACOUSTIC_SAMPLE_RATE_HZ, ACOUSTIC_SAMPLE_RATE_HZ),
+            (
+                KEY_DIFFUSION_HEAD_HIDDEN_SIZE,
+                RT_DIFFUSION_HEAD_HIDDEN_SIZE,
+            ),
+            (KEY_DIFFUSION_HEAD_LAYERS, DIFFUSION_HEAD_LAYERS),
+            (KEY_DIFFUSION_HEAD_LATENT_SIZE, DIFFUSION_HEAD_LATENT_SIZE),
+            (
+                KEY_DIFFUSION_HEAD_SPEECH_VAE_DIM,
+                DIFFUSION_HEAD_SPEECH_VAE_DIM,
+            ),
+            (
+                KEY_DIFFUSION_HEAD_DDPM_NUM_STEPS,
+                DIFFUSION_HEAD_DDPM_NUM_STEPS,
+            ),
+            (
+                KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS,
+                RT_TTS_BACKBONE_NUM_HIDDEN_LAYERS,
+            ),
+        ] {
+            assert_eq!(get_u32(&file, key), want, "{key}");
+        }
+
+        // tie_word_embeddings flip must survive.
+        assert_eq!(
+            get_bool(&file, KEY_DECODER_TIE_WORD_EMBEDDINGS),
+            RT_DECODER_TIE_WORD_EMBEDDINGS
+        );
+
+        // Provenance: MIT permissive (end-to-end).
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some("vibevoice-realtime-0.5b")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("mit")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str())
+        );
+    }
+
+    /// The streaming variant is acoustic-tokenizer-only -- no
+    /// `vokra.vibevoice.semantic.*` key may be emitted on a Realtime
+    /// GGUF, or the runtime will read the wrong-shape config.
+    #[test]
+    fn realtime_gguf_carries_no_semantic_tokenizer_keys() {
+        let (builder, _) = convert_realtime_05b(minimal_safetensors_one_f32()).expect("convert");
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        for key in [
+            KEY_SEMANTIC_CHANNELS,
+            KEY_SEMANTIC_CAUSAL,
+            KEY_SEMANTIC_VAE_DIM,
+            KEY_SEMANTIC_VAE_DIM_INNER,
+            KEY_SEMANTIC_FIX_STD,
+            KEY_SEMANTIC_STD_DIST_TYPE,
+            KEY_SEMANTIC_ENCODER_N_FILTERS,
+            KEY_SEMANTIC_ENCODER_RATIOS,
+            KEY_SEMANTIC_ENCODER_DEPTHS,
+            KEY_SEMANTIC_LAYERNORM,
+            KEY_SEMANTIC_LAYERNORM_EPS,
+            KEY_SEMANTIC_MIXER_LAYER,
+            KEY_SEMANTIC_CONV_BIAS,
+        ] {
+            assert!(
+                file.get(key).is_none(),
+                "{key}: streaming variant must NOT emit any semantic \
+                 tokenizer key"
+            );
+        }
+    }
+
+    /// BF16 (the upstream serving format) rides the pass-through arm
+    /// on the Realtime path too -- mirror of
+    /// `bf16_tensor_passes_through_verbatim` for the 1.5B path.
+    #[test]
+    fn realtime_bf16_tensor_passes_through_verbatim() {
+        let (builder, report) =
+            convert_realtime_05b(minimal_safetensors_one_bf16()).expect("convert");
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(report.skipped_non_float, 0);
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("model.embed_tokens.weight")
+            .expect("BF16 tensor must be present after pass-through");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening -- GGUF dtype must remain BF16"
+        );
+    }
+
+    /// Every Realtime-added `vokra.vibevoice.*` key must carry the
+    /// documented prefix (matches the sibling
+    /// `every_metadata_key_carries_a_documented_prefix` guard for
+    /// 1.5B). Only KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS is new; the rest
+    /// are shared with the 1.5B path which already pins them.
+    #[test]
+    fn realtime_added_key_carries_a_documented_prefix() {
+        assert!(
+            KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS.starts_with("vokra.vibevoice."),
+            "streaming-specific key must live under vokra.vibevoice.* prefix"
+        );
+    }
+
+    /// Zero-tensor Realtime input must surface the same loud note as
+    /// the 1.5B path (metadata-only GGUF; runtime refuses to bind
+    /// weights per FR-EX-08).
+    #[test]
+    fn realtime_zero_tensor_conversion_surfaces_a_loud_note() {
+        let (_, report) = convert_realtime_05b(minimal_safetensors_no_tensors()).expect("convert");
+        assert_eq!(report.written, 0);
+        assert!(
+            report.notes.iter().any(|n| n.contains("no float tensors")),
+            "zero-tensor Realtime conversion must emit a loud note: {:?}",
+            report.notes
+        );
     }
 }

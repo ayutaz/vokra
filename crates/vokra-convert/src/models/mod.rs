@@ -484,4 +484,14 @@ pub mod vieneu;
 pub mod vocos;
 pub mod wav2vec2_ctc;
 pub mod xvector;
+// Wave 3 codec add (2026-08-01): novateur/WavTokenizer-large-speech-75token
+// (MIT). Single-codebook FSQ audio codec at 24 kHz, 75 tokens/sec
+// (hop_length=320, arXiv:2408.16532). Upstream ships a torch pickle
+// Lightning `.ckpt` (1.75 GB) so callers pre-flatten to safetensors via
+// a dedicated `tools/parity/wavtokenizer_prepare_checkpoint.py` bridge
+// (the DFN3 / DAC / CSM / SpeechT5-HiFi-GAN precedent — no pickle in the
+// runtime, NFR-DS-02 zero-dep + FR-LD-05). Real-weight parity deferred
+// to owner sign-off (§3.1). Runtime forward reuses the M4-16 landed
+// `wavtokenizer_vq` op (`crates/vokra-ops/src/fsq_codec.rs`).
+pub mod wavtokenizer;
 // ---------------------------------------------------------------------------
