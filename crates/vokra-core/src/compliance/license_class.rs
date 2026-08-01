@@ -999,6 +999,34 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "ultravox-v0_5-llama-3_2-1b"
         | "fixie-ai/ultravox-v0_5-llama-3_2-1b"
         | "vokra/ultravox-v0-5-llama-3-2-1b" => LicenseClass::Permissive,
+        // --- Copyleft (share-alike, redistributable with LICENSE preserved) --
+        //
+        // 2026-08-02 Wave residual — JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k
+        // (Asteroid ConvTasNet single-speaker enhancement, cc-by-sa-4.0 per
+        // HF cardData primary source). **First entry on the
+        // `LicenseClass::Copyleft` arm.** The SA cascade propagates to
+        // derivatives — a GGUF built from a CC-BY-SA weight is itself
+        // CC-BY-SA, so downstream re-labelling as Apache-2.0 is a
+        // misrepresentation, not a mere attribution drop.
+        // `from_license_str("cc-by-sa-4.0")` already lands the same
+        // Copyleft class (share-alike arm is tested before plain cc-by
+        // per the ordering pin in `Self::from_license_str`), but this
+        // registry override anchors the family on Copyleft so a
+        // `vokra/conv-tasnet-libri1mix` publish gate can look up the class
+        // without re-parsing the SPDX id. Publish is **redistributable
+        // with the original licence preserved** (T3 tier) — no
+        // `--allow-noncommercial` required (Copyleft ≠ NonCommercial),
+        // but the SA cascade must carry forward on every derivative.
+        "conv-tasnet"
+        | "conv_tasnet"
+        | "convtasnet"
+        | "conv-tasnet-libri1mix"
+        | "conv_tasnet_libri1mix"
+        | "convtasnet-libri1mix"
+        | "conv-tasnet-libri1mix-enhsingle-16k"
+        | "conv_tasnet_libri1mix_enhsingle_16k"
+        | "joriscos/convtasnet_libri1mix_enhsingle_16k"
+        | "vokra/conv-tasnet-libri1mix" => LicenseClass::Copyleft,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike

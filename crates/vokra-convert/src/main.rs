@@ -2333,6 +2333,18 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // shape misroute across TTS families. Grouped here for the uniform
         // arch/name/category/upstream_hf/license triple verify shape.
         | ModelKind::XttsV2
+        // 2026-08-02 Wave residual: ConvTasNet Libri1Mix Enhancement
+        // (`JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, cc-by-sa-4.0).
+        // First Copyleft-tier separator entry — Asteroid recipe fine-tune,
+        // single-speaker enhancement head on Libri1Mix 16 kHz. Distinct
+        // arch tag `conv_tasnet` from sibling separator families (sepformer
+        // / demucs / tiger_separator / bs_roformer / mp_senet) — FR-EX-08
+        // forbids silent shape misroute across separator families. Category
+        // `enhancement` (single-output enhancement head — mirrors the
+        // SepFormer WHAM / WHAMR / DNS-4 sibling posture). Grouped here for
+        // the uniform arch/name/category/upstream_hf/license triple verify
+        // shape.
+        | ModelKind::ConvTasnetLibri1mix
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

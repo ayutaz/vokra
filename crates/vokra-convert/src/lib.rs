@@ -2235,6 +2235,49 @@ pub enum ModelKind {
     /// (GPT-2 AR decoder + DVAE token generation + HiFi-GAN vocoder) deferred
     /// to owner sign-off (`docs/license-audit.md` §3.1).
     XttsV2,
+    /// **ConvTasNet Libri1Mix Enhancement** (Asteroid,
+    /// `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, **cc-by-sa-4.0**)
+    /// safetensors checkpoint (2026-08-02 Wave residual). ConvTasNet
+    /// (Luo & Mesgarani 2019, arXiv:1809.07454) — fully convolutional
+    /// TasNet: encoder + stacked dilated TCN mask estimator + decoder.
+    /// This checkpoint is Asteroid's Libri1Mix `enhsingle` fine-tune
+    /// (single-speaker enhancement, 16 kHz — one clean speaker +
+    /// additive noise, one output stream).
+    ///
+    /// **Distinct arch tag `conv_tasnet`** — sibling separator families
+    /// (`sepformer` = dual-path Transformer masker, `demucs` = hybrid
+    /// U-Net + spectrogram + cross-domain attention, `tiger_separator`,
+    /// `bs_roformer`, `mp_senet`) address different topologies. Silently
+    /// sharing would mis-route runtime dispatch to a wrong-shape forward.
+    /// Category `enhancement` (single-output enhancement head — mirrors
+    /// the SepFormer WHAM / WHAMR / DNS-4 enhancement sibling posture).
+    /// Future multi-speaker ConvTasNet variants would carry
+    /// `category = "separation"` under a distinct `ModelKind` arm.
+    ///
+    /// **License posture — Copyleft (CC-BY-SA-4.0 SA cascade)**: first
+    /// entry on the [`vokra_core::LicenseClass::Copyleft`] arm. A GGUF
+    /// derived from a CC-BY-SA weight is itself CC-BY-SA; downstream
+    /// re-labelling as Apache-2.0 is a misrepresentation, not a mere
+    /// attribution drop. Publish is **redistributable with the original
+    /// licence preserved** (T3 tier — `publish-one.sh` gate must ship
+    /// the upstream LICENSE + NOTICE verbatim). No
+    /// `--allow-noncommercial` required (Copyleft ≠ NonCommercial), but
+    /// the SA cascade must carry forward on every derivative.
+    ///
+    /// **Upstream format**: single ~20 MB `pytorch_model.bin` (raw
+    /// `torch.save` of the ConvTasNet state dict). Owners run the
+    /// standard `bin_to_safetensors.py` prep step before pointing this
+    /// converter at the resulting `.safetensors` (same workflow as the
+    /// SepFormer `.ckpt` families). This converter deliberately never
+    /// reads `pytorch_model.bin` directly — pickle deserialization
+    /// inside the Rust runtime would violate the FR-LD-05 "no arbitrary
+    /// code execution at load" rule.
+    ///
+    /// Scale ~0.02 GB = local convert safe on M1 iMac. BF16 pass-through
+    /// skeleton mirror of `musicgen_small` / `sepformer` — real-weight
+    /// parity + a native `ConvTasNet::from_gguf` forward path are
+    /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+    ConvTasnetLibri1mix,
 }
 
 impl ModelKind {
@@ -3372,6 +3415,21 @@ impl ModelKind {
             | "coqui-xtts-v2"
             | "coqui/xtts-v2"
             | "coqui/XTTS-v2" => Some(Self::XttsV2),
+            // ConvTasNet Libri1Mix Enhancement (Asteroid, 2026-08-02 Wave
+            // residual, cc-by-sa-4.0). First Copyleft-tier separator arm.
+            // Aliases cover the kebab-case and underscore spellings + the
+            // full upstream HF slug (case-insensitive lookup handled by
+            // whatever normalisation the caller applies before dispatch —
+            // both lower-case and the upstream mixed-case form land the
+            // same variant).
+            "conv-tasnet-libri1mix"
+            | "conv_tasnet_libri1mix"
+            | "convtasnet-libri1mix"
+            | "convtasnet_libri1mix"
+            | "conv-tasnet-libri1mix-enhsingle-16k"
+            | "conv_tasnet_libri1mix_enhsingle_16k"
+            | "joriscos/convtasnet_libri1mix_enhsingle_16k"
+            | "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k" => Some(Self::ConvTasnetLibri1mix),
             _ => None,
         }
     }
@@ -3515,6 +3573,7 @@ impl ModelKind {
             Self::DemucsHtdemucs => "demucs-htdemucs",
             Self::UltravoxV05Llama321b => "ultravox-v0-5-llama-3-2-1b",
             Self::XttsV2 => "xtts-v2",
+            Self::ConvTasnetLibri1mix => "conv-tasnet-libri1mix",
         }
     }
 }
@@ -6209,6 +6268,39 @@ pub fn convert_file_licensed(
                  {} non-float skipped (coqui-public-model-license default, NonCommercial \
                  fail-closed — publish requires --allow-noncommercial per T4 precedent; \
                  runtime binder deferred to owner sign-off)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === ConvTasnetLibri1mix (2026-08-02 Wave residual, first Copyleft-tier separator) ===
+        ModelKind::ConvTasnetLibri1mix => {
+            // ConvTasNet Libri1Mix Enhancement (JorisCos/ConvTasNet_Libri1Mix_
+            // enhsingle_16k, cc-by-sa-4.0). Asteroid recipe fine-tune —
+            // single-speaker enhancement, 16 kHz, one output stream.
+            // Distinct arch tag `conv_tasnet` from sibling separator
+            // families (sepformer / demucs / tiger_separator / bs_roformer /
+            // mp_senet) — FR-EX-08 forbids silent shape misroute across
+            // separator families. First entry on the Copyleft weight-license
+            // arm (SA cascade — a derived GGUF is itself CC-BY-SA), T3 tier
+            // redistributable with original licence preserved. Owner runs
+            // `bin_to_safetensors.py` before pointing this converter at the
+            // resulting `.safetensors` (upstream ships raw pytorch_model.bin
+            // pickle which FR-LD-05 forbids the runtime from reading
+            // directly). Scale ~20 MB = local convert safe.
+            let report = models::conv_tasnet_libri1mix::convert_conv_tasnet_libri1mix_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "conv-tasnet-libri1mix: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-sa-4.0 default, Copyleft — SA cascade preserved on \
+                 derivatives, T3 tier redistributable with original licence; runtime binder \
+                 deferred to owner sign-off)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

@@ -720,4 +720,16 @@ pub mod ultravox_v0_5_llama_3_2_1b;
 // Distinct arch tag `xtts` from sibling piper-plus (VITS2) / Kokoro
 // (iSTFTNet) / CosyVoice2 (FSQ + HiFTNet) — FR-EX-08.
 pub mod xtts_v2;
+// 2026-08-02 Wave residual: JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k
+// (Asteroid ConvTasNet, cc-by-sa-4.0). First Copyleft-tier separator
+// entry — single-speaker enhancement head on Libri1Mix 16 kHz (one
+// clean speaker + additive noise, one output stream). Distinct arch
+// tag `conv_tasnet` from sibling separator families (sepformer /
+// demucs / tiger_separator / bs_roformer / mp_senet) — FR-EX-08
+// forbids silent shape misroute across separator families. Category
+// `enhancement` (mirrors SepFormer WHAM / WHAMR / DNS-4 sibling
+// posture). Weight license Copyleft (SA cascade — a derived GGUF is
+// itself CC-BY-SA), T3 tier redistributable with original licence
+// preserved. Scale ~20 MB = local convert safe on M1 iMac.
+pub mod conv_tasnet_libri1mix;
 // ---------------------------------------------------------------------------

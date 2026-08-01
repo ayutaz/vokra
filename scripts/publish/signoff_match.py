@@ -234,6 +234,21 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # safe on M1 iMac 16 GB. Coqui shut down Jan 2024 but upstream
     # `coqui/XTTS-v2` on HF remains primary source.
     "xtts-v2": ["XTTS-v2 (`coqui/XTTS-v2`)"],
+    # 2026-08-02 Wave residual: ConvTasNet Libri1Mix Enhancement (Asteroid,
+    # `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, cc-by-sa-4.0). First
+    # Copyleft-tier separator entry — single-speaker enhancement head on
+    # Libri1Mix 16 kHz (one clean speaker + additive noise, one output
+    # stream). Distinct arch tag `conv_tasnet` from sibling separator
+    # families (sepformer / demucs / tiger_separator / bs_roformer /
+    # mp_senet). T3 tier redistributable with original licence preserved
+    # (SA cascade — a derived GGUF is itself CC-BY-SA). No
+    # `--allow-noncommercial` required (Copyleft ≠ NonCommercial).
+    # Placeholder row — the row heading MUST match `docs/license-audit.md`
+    # §3.1 byte-for-byte once the audit doc is updated in a post-workflow
+    # batch. Scale ~20 MB = local convert safe on M1 iMac.
+    "conv-tasnet-libri1mix": [
+        "ConvTasNet Libri1Mix Enhancement (`JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`)"
+    ],
     # NOTE: bs-roformer is intentionally NOT registered here — §3.1
     # sign-off is ☑ Rejected (Wave 7 CC-fill) = double fail-closed
     # (Rejected in audit + UNKNOWN_REPO here). owner can add the entry
