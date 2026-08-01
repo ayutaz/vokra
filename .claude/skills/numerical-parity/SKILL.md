@@ -75,7 +75,7 @@ reference 実装との数値一致は Vokra の品質背骨（NFR-QL-01）。**C
 
 1. **reference をオフライン生成**。crate は `tests/parity`（test-only、`publish = false`、`vokra-parity`）。
    - 依存は `tests/parity/parity-requirements.txt` に pin（`numpy>=1.26,<3` が必須。`torch>=2.2` / `librosa>=0.10` / `scipy>=1.11` は optional）。**再生成時は版数を固定**。
-   - op 系: `python3 tests/parity/gen_parity_fixtures.py {all|stft|mel|dct}`。
+   - op 系: `uv run --project tools/parity python tests/parity/gen_parity_fixtures.py {all|stft|mel|dct}` (owner directive 2026-08-01「python は uv から実行」に準拠、Python 3.12 pin per pyproject.toml)。
    - モデル系: 各 suite の `gen_reference.py`（例: `tests/parity/silero_vad/`, `tests/parity/piper_plus/`, `tools/parity/dump_whisper_reference.py`）。
 2. **fixtures を `tests/parity/<suite>/` にコミット**（`.f32` raw / `.txt` / `manifest.txt` / `README.md`）。各 suite の README に **reference 実装・入力・許容誤差**を明記（NFR-QL-01）。
 3. **Rust parity テストを書く**。

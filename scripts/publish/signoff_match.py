@@ -130,6 +130,17 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # 2026-08-01 Wave 6 residual: ACE-Step 1.5 (MIT, flagship music-gen).
     # Multi-file bundle. Scale ~9.6 GB = vast.ai handoff.
     "ace-step-1.5": ["ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`)"],
+    # 2026-08-01 Wave 7 CC-fill: AudioLDM 2 (CVSSP, cc-by-nc-sa-4.0)
+    # T4 Research-only path with SA cascade explicit in model card +
+    # LICENSE + NOTICE. `publish-one.sh --allow-noncommercial` gate.
+    # `LicenseClass::NonCommercialShareAlike` fail-closed default at
+    # runtime (M2-13 gate refuses commercial-mode load); publish-side
+    # SA cascade is enforced by CC judgement + owner rollback path.
+    "audioldm2": ["AudioLDM 2 (`cvssp/audioldm2`)"],
+    # NOTE: bs-roformer is intentionally NOT registered here — §3.1
+    # sign-off is ☑ Rejected (Wave 7 CC-fill) = double fail-closed
+    # (Rejected in audit + UNKNOWN_REPO here). owner can add the entry
+    # after selecting a specific trainer checkpoint.
     # Wave 3 owner-signoff publish set (2026-07-28).
     "kyutai-stt-2.6b-en": ["kyutai/stt-2.6b-en"],
     "parakeet-tdt-0.6b-v3": ["nvidia/parakeet-tdt-0.6b-v3"],
