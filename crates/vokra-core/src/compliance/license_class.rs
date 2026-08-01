@@ -970,6 +970,23 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "ace-step-1.5"
         | "ace_step"
         | "ace-step-1_5" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual: Alibaba Qwen2.5-Omni-7B
+        // (`Qwen/Qwen2.5-Omni-7B`, apache-2.0 per HF primary source
+        // cardData). Thinker + Talker unified any-to-any omni
+        // multimodal LLM over a Qwen2.5-7B backbone. Distinct arch
+        // tag `qwen2-omni` from sibling `qwen2_audio` (audio-only
+        // Whisper + Qwen2-7B LM) — the two share a family lineage
+        // but the fused Thinker + Talker pair fixes a different
+        // tensor topology, so the arch tag must stay distinct
+        // (FR-EX-08 no silent shape misroute). `qwen2-omni` covers
+        // the arch stamp; `qwen2-5-omni-7b` covers the model-id
+        // stamp; `qwen2-5-omni` covers the family stamp.
+        "qwen2-omni"
+        | "qwen2-5-omni-7b"
+        | "qwen2-5-omni"
+        | "qwen2_5_omni_7b"
+        | "qwen/qwen2.5-omni-7b"
+        | "vokra/qwen2-5-omni-7b" => LicenseClass::Permissive,
         // 2026-08-01 Wave 7 residual — Meta HuBERT-Large-LS960
         // (`facebook/hubert-large-ls960-ft`, apache-2.0 per HF cardData
         // primary source). 317M self-supervised speech encoder + CTC

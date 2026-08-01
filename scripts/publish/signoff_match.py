@@ -161,6 +161,14 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # apache-2.0). Whisper audio encoder + Qwen2-7B LM = audio-LLM omni.
     # Scale ~16 GB (5-shard) = vast.ai handoff.
     "qwen2-audio-7b-instruct": ["Qwen2-Audio-7B-Instruct (`Qwen/Qwen2-Audio-7B-Instruct`)"],
+    # 2026-08-02 Wave residual: Qwen2.5-Omni-7B (Alibaba, apache-2.0).
+    # Thinker + Talker unified any-to-any omni multimodal LLM over
+    # Qwen2.5-7B backbone. Distinct arch tag `qwen2-omni` from sibling
+    # audio-only `qwen2_audio`. Scale 22.37 GB (5-shard) = vast.ai
+    # handoff. Placeholder row identifier — the row heading MUST match
+    # `docs/license-audit.md` §3.1 byte-for-byte when it lands in the
+    # post-workflow batch that adds the audit row.
+    "qwen2-5-omni-7b": ["Qwen2.5-Omni-7B (`Qwen/Qwen2.5-Omni-7B`)"],
     # 2026-08-01 Wave 6 residual: VibeVoice-ASR (Microsoft, MIT).
     # VibeVoice sibling with ASR head. Scale ~16.5 GB (8-shard) = vast.ai.
     "vibevoice-asr": ["VibeVoice-ASR (`microsoft/VibeVoice-ASR`)"],

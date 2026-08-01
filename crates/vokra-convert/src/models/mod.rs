@@ -570,6 +570,13 @@ pub mod musicgen_small;
 // encoder + Qwen2-7B LM = audio-LLM omni. Distinct arch tag
 // `qwen2_audio`. Scale ~16 GB (5-shard) = vast.ai handoff.
 pub mod qwen2_audio;
+// 2026-08-02 Wave residual: Alibaba Qwen2.5-Omni-7B
+// (`Qwen/Qwen2.5-Omni-7B`, apache-2.0). Thinker + Talker unified
+// audio-vision-text any-to-any omni multimodal LLM over Qwen2.5-7B
+// backbone. Distinct arch tag `qwen2-omni` from sibling audio-only
+// `qwen2_audio` (Whisper + Qwen2-7B LM) — FR-EX-08 forbids silent
+// shape misroute. Scale 22.37 GB (5-shard) = vast.ai handoff.
+pub mod qwen2_5_omni_7b;
 // 2026-08-01 Wave 6 residual: Microsoft VibeVoice-ASR
 // (`microsoft/VibeVoice-ASR`, MIT). VibeVoice sibling with ASR
 // head. Distinct arch tag `vibevoice_asr`. Scale ~16.5 GB = vast.ai.

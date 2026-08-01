@@ -2280,6 +2280,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // 2026-08-01 Wave 6 residual: Qwen2-Audio-7B-Instruct
         // (audio-LLM omni, apache-2.0, distinct arch `qwen2_audio`).
         | ModelKind::Qwen2Audio
+        // 2026-08-02 Wave residual: Qwen2.5-Omni-7B (Thinker + Talker
+        // unified any-to-any omni multimodal LLM over Qwen2.5-7B
+        // backbone, apache-2.0, distinct arch tag `qwen2-omni` from
+        // audio-only sibling `qwen2_audio`).
+        | ModelKind::Qwen25Omni7b
         // 2026-08-01 Wave 6 residual: VibeVoice-ASR (VibeVoice sibling
         // with ASR head, MIT, distinct arch `vibevoice_asr`).
         | ModelKind::VibeVoiceAsr

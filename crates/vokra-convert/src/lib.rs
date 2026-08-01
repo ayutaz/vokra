@@ -1989,6 +1989,22 @@ pub enum ModelKind {
     /// (arXiv:2407.10759). Distinct arch `qwen2_audio` + category
     /// `audio-llm`. Scale ~16 GB (5-shard) = vast.ai handoff.
     Qwen2Audio,
+    /// **Qwen2.5-Omni-7B** (`Qwen/Qwen2.5-Omni-7B`, **apache-2.0**)
+    /// safetensors (Wave residual, 2026-08-02). Alibaba 7B Thinker +
+    /// Talker unified any-to-any omni multimodal LLM (audio + vision
+    /// + text → audio + text) over a Qwen2.5-7B backbone. **Distinct
+    /// arch tag `qwen2-omni`** from sibling [`Self::Qwen2Audio`]
+    /// (audio-only Whisper + Qwen2-7B LM) — the fused Thinker + Talker
+    /// pair changes tensor topology + tokenizer + modality-injection
+    /// scheme, so FR-EX-08 forbids silent shape misroute across the two.
+    /// Category `audio-llm`. Scale **22.37 GB (5-shard)** = vast.ai
+    /// handoff per memory `[[feedback-large-models-on-vast-ai]]` (well
+    /// above the ≥8 GB strict cutoff — local convert would exhaust the
+    /// M1 iMac 16 GB budget). BF16 pass-through skeleton mirror of
+    /// sibling `qwen2_audio.rs`. Runtime binder (Thinker + Talker
+    /// forward + streaming speech head) deferred to owner sign-off
+    /// (`docs/license-audit.md` §3.1).
+    Qwen25Omni7b,
     /// **VibeVoice-ASR** (`microsoft/VibeVoice-ASR`, **MIT**) safetensors
     /// (Wave 6 residual, 2026-08-01). VibeVoice sibling with ASR head
     /// (VibeVoiceForASRTraining). Distinct arch `vibevoice_asr` (vs
@@ -3298,6 +3314,17 @@ impl ModelKind {
             | "qwen2_audio_7b_instruct"
             | "qwen/qwen2-audio-7b-instruct"
             | "Qwen/Qwen2-Audio-7B-Instruct" => Some(Self::Qwen2Audio),
+            // Qwen2.5-Omni-7B (Wave residual, 2026-08-02). Thinker +
+            // Talker unified any-to-any omni multimodal LLM over
+            // Qwen2.5-7B backbone. Kebab-case arch tag `qwen2-omni`
+            // (distinct from audio-only sibling `qwen2_audio`).
+            "qwen2-5-omni-7b"
+            | "qwen2_5_omni_7b"
+            | "qwen2.5-omni-7b"
+            | "qwen2-omni"
+            | "qwen2-5-omni"
+            | "qwen/qwen2.5-omni-7b"
+            | "Qwen/Qwen2.5-Omni-7B" => Some(Self::Qwen25Omni7b),
             // VibeVoice-ASR (Wave 6 residual, 2026-08-01).
             "vibevoice-asr"
             | "vibevoice_asr"
@@ -3600,6 +3627,7 @@ impl ModelKind {
             Self::AudioGenMedium => "audiogen-medium",
             Self::MusicGenSmall => "musicgen-small",
             Self::Qwen2Audio => "qwen2-audio-7b-instruct",
+            Self::Qwen25Omni7b => "qwen2-5-omni-7b",
             Self::VibeVoiceAsr => "vibevoice-asr",
             Self::AceStep => "ace-step-1.5",
             Self::HubertLargeLs960 => "hubert-large-ls960",
@@ -6009,6 +6037,25 @@ pub fn convert_file_licensed(
             let notes = vec![format!(
                 "qwen2-audio-7b-instruct: {} float weights written verbatim ({} BF16 passthrough), \
                  {} non-float skipped (apache-2.0 default)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Qwen25Omni7b (2026-08-02 Wave residual, Thinker + Talker unified omni) ===
+        ModelKind::Qwen25Omni7b => {
+            let report =
+                models::qwen2_5_omni_7b::convert_qwen2_5_omni_7b_file(input, output, license)?;
+            let notes = vec![format!(
+                "qwen2-5-omni-7b: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (apache-2.0 default, Permissive — distinct arch tag \
+                 `qwen2-omni` from sibling `qwen2_audio` audio-only; runtime binder deferred \
+                 to owner sign-off)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
