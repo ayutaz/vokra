@@ -1005,6 +1005,18 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "musicgen-small"
         | "musicgen-medium"
         | "musicgen-large"
+        // MusicGen-Melody sibling (2026-08-02 Wave 5, medium 1.5B LM +
+        // chromagram conditioning frontend, `facebook/musicgen-melody`
+        // cc-by-nc-4.0 per HF cardData primary source). Both the raw
+        // arch/name variants and the `vokra/` publish repo slug route
+        // here so the M2-13 runtime gate refuses commercial-mode loads
+        // fail-closed regardless of which id form the caller supplies
+        // (mirror of the `facebook/mms-1b-all` | `vokra/mms-1b-all`
+        // arm above).
+        | "musicgen-melody"
+        | "musicgen_melody"
+        | "facebook/musicgen-melody"
+        | "vokra/musicgen-melody"
         | "audiogen-medium"
         | "audiogen" => LicenseClass::NonCommercial,
         // 2026-08-02 Wave residual: Coqui XTTS-v2 (`coqui/XTTS-v2`,

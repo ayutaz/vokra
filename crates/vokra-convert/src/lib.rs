@@ -2052,6 +2052,35 @@ pub enum ModelKind {
     /// parity + runtime binder deferred to owner sign-off
     /// (`docs/license-audit.md` §3.1 sign-off queue).
     MusicGenLarge,
+    /// **MusicGen-Melody** (`facebook/musicgen-melody`, **cc-by-nc-4.0**)
+    /// safetensors checkpoint (Wave 5 sibling, 2026-08-02). Third
+    /// **music generation** target — the medium 1.5B autoregressive
+    /// transformer LM + **chroma conditioning** (12-bin chromagram of a
+    /// reference melody clip concatenated to the T5 text conditioning
+    /// stream, Copet et al. 2023 arXiv:2306.05284 §3.3). The LM
+    /// topology is byte-identical to sibling [`Self::MusicGenMedium`];
+    /// only the conditioning frontend + projection differ, so the
+    /// converter reuses the medium BF16 pass-through arm via the
+    /// shared [`models::musicgen_medium::convert_musicgen_family_file`]
+    /// helper (a wrapper `convert_musicgen_melody_file` flips only the
+    /// `vokra.model.name` + `vokra.provenance.{model_id,source,
+    /// upstream_hf}` stamps to the melody spellings). Category =
+    /// `music` (shared with sibling MusicGen family — first music-tree
+    /// family). Distinct arch tag `musicgen` (shared with siblings —
+    /// same topology, only chroma frontend differs). Reusing the
+    /// medium models/*.rs file rather than a new `musicgen_melody.rs`
+    /// = the sibling-in-place pattern anticipated by the medium
+    /// module docstring (option a/b decision — kept in one file for
+    /// this variant since the tensor manifest is byte-identical, only
+    /// four id chunks flip). **NonCommercial default** fail-closed —
+    /// override via `--license <spdx>` (same Whisper / kokoro / vits-ja
+    /// / xcodec2 pattern). Scale ~6 GB = **vast.ai handoff** per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (M1 iMac 16 GB unsafe
+    /// per the ≥8 GB cutoff calibrated on Voxtral-Small-24B 48 GB
+    /// swap-death). Real-weight parity + chroma-frontend runtime op
+    /// deferred to owner sign-off (`docs/license-audit.md` §3.1
+    /// sign-off queue).
+    MusicGenMelody,
     /// **AudioGen-Medium** (`facebook/audiogen-medium`, **cc-by-nc-4.0**)
     /// safetensors checkpoint (Wave 5 residual, 2026-08-01). MusicGen
     /// sibling with identical arch (shared `musicgen` arch tag), tuned on
@@ -3452,6 +3481,21 @@ impl ModelKind {
             | "musicgen_large"
             | "facebook-musicgen-large"
             | "facebook/musicgen-large" => Some(Self::MusicGenLarge),
+            // Meta AudioCraft MusicGen-Melody (Wave 5 sibling,
+            // 2026-08-02, `facebook/musicgen-melody`, cc-by-nc-4.0).
+            // Medium 1.5B LM + 12-bin chromagram conditioning frontend
+            // (byte-identical LM topology to sibling MusicGenMedium,
+            // only the conditioning frontend + projection differ).
+            // Reuses the medium converter arm via the sibling wrapper
+            // `convert_musicgen_melody_file` — no new
+            // `musicgen_melody.rs` module. Same bare `musicgen` arch
+            // tag stays owned by [`Self::MusicGenMedium`] (first-
+            // landed family default); this arm requires the explicit
+            // `-melody` suffix to disambiguate.
+            "musicgen-melody"
+            | "musicgen_melody"
+            | "facebook-musicgen-melody"
+            | "facebook/musicgen-melody" => Some(Self::MusicGenMelody),
             // AudioGen-Medium (Wave 5 residual, 2026-08-01,
             // `facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling
             // (identical `musicgen` arch tag, tuned on environmental
@@ -3807,6 +3851,7 @@ impl ModelKind {
             Self::YueXcodecMini => "yue-xcodec-mini",
             Self::MusicGenMedium => "musicgen-medium",
             Self::MusicGenLarge => "musicgen-large",
+            Self::MusicGenMelody => "musicgen-melody",
             Self::AudioGenMedium => "audiogen-medium",
             Self::MusicGenSmall => "musicgen-small",
             Self::Qwen2Audio => "qwen2-audio-7b-instruct",
@@ -6305,6 +6350,35 @@ pub fn convert_file_licensed(
                 "musicgen-large: {} float weights written verbatim ({} BF16 passthrough — \
                  runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
                  (cc-by-nc-4.0 default, NonCommercial fail-closed unless --license overrides)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MusicGenMelody (2026-08-02 Wave 5 sibling) ===
+        ModelKind::MusicGenMelody => {
+            // Meta AudioCraft MusicGen-Melody (`facebook/musicgen-melody`,
+            // cc-by-nc-4.0). Third music-generation target — medium 1.5B
+            // LM + 12-bin chromagram conditioning frontend concatenated
+            // to the T5 text conditioning stream (Copet et al. 2023,
+            // arXiv:2306.05284 §3.3). Reuses the medium BF16 pass-
+            // through pipeline via the sibling wrapper
+            // `convert_musicgen_melody_file` (which routes through the
+            // shared `convert_musicgen_family_file` helper) — no new
+            // `musicgen_melody.rs` module. Scale ~6 GB = vast.ai
+            // handoff per memory `[[feedback-large-models-on-vast-ai]]`.
+            let report =
+                models::musicgen_medium::convert_musicgen_melody_file(input, output, license)?;
+            let notes = vec![format!(
+                "musicgen-melody: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (cc-by-nc-4.0 default, NonCommercial fail-closed unless --license overrides; \
+                 reuses medium converter — chroma frontend runtime op deferred to owner sign-off)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {

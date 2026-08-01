@@ -2296,6 +2296,13 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // shape-lookup, not a per-model switch we would have to keep
         // in step with 40+ real converters.
         | ModelKind::MusicGenLarge
+        // 2026-08-02 Wave 5 sibling: Meta AudioCraft MusicGen-Melody
+        // (`facebook/musicgen-melody`, cc-by-nc-4.0). Medium 1.5B LM
+        // + 12-bin chromagram conditioning frontend. Reuses the medium
+        // BF16 pass-through converter arm (sibling wrapper — no new
+        // models/*.rs module). Grouped here for the uniform arch /
+        // name / category / upstream_hf / license triple verify shape.
+        | ModelKind::MusicGenMelody
         // 2026-08-01 Wave 5 residual: Meta AudioCraft AudioGen-Medium
         // (`facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling
         // — identical `musicgen` arch tag, tuned on environmental

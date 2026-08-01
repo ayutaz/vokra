@@ -147,6 +147,20 @@ pub const ARCH: &str = "musicgen";
 /// future family sibling will use.
 pub const NAME: &str = "musicgen-medium";
 
+/// `vokra.model.name` value written for the canonical MusicGen-Melody
+/// GGUF (Wave 5 sibling landed 2026-08-02, `facebook/musicgen-melody`,
+/// **cc-by-nc-4.0**). Melody = medium 1.5B autoregressive transformer
+/// LM + **chroma conditioning** (12-bin chromagram of a reference
+/// melody clip concatenated to the T5 text conditioning stream); the
+/// LM topology is byte-identical to MusicGen-Medium ([`NAME`]), only
+/// the conditioning frontend differs. Reusing the medium BF16 pass-
+/// through arm (single [`convert_musicgen_family_file`] helper + this
+/// sibling wrapper) rather than a dedicated `musicgen_melody.rs` file
+/// — the tensor-name manifest is identical to sibling medium, only
+/// `vokra.model.name` + `vokra.provenance.*` (`model_id`, `source`,
+/// `upstream_hf`) flip.
+pub const MELODY_NAME: &str = "musicgen-melody";
+
 /// `vokra.model.category` value — MusicGen is the first **music
 /// generation** target in the tree (per the 2026-07-30 scope expansion
 /// `[[project-scope-expansion-2026-07-30]]`), distinct from the
@@ -162,6 +176,13 @@ pub const CATEGORY: &str = "music";
 /// back to its serving location without parsing the free-text
 /// `vokra.provenance.source`.
 pub const UPSTREAM_HF: &str = "facebook/musicgen-medium";
+
+/// Upstream HF repository slug for the melody sibling
+/// (`facebook/musicgen-melody`), recorded under
+/// `vokra.provenance.upstream_hf`. See [`MELODY_NAME`] for the
+/// medium/melody topology relationship (byte-identical LM + chroma-
+/// conditioning frontend delta).
+pub const MELODY_UPSTREAM_HF: &str = "facebook/musicgen-melody";
 
 /// The default upstream weight license — `cc-by-nc-4.0`, per the HF
 /// model card `license: cc-by-nc-4.0` (Meta AudioCraft weight policy;
@@ -179,6 +200,12 @@ pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-4.0";
 /// `vokra.provenance.weight_license` chunk.
 const UPSTREAM_SOURCE: &str =
     "facebook/musicgen-medium (Meta AudioCraft 1.5B text-to-music LM, cc-by-nc-4.0)";
+
+/// Human-readable upstream source note for the melody sibling
+/// (`facebook/musicgen-melody`, Meta AudioCraft 1.5B text-to-music LM +
+/// chroma-melody conditioning, cc-by-nc-4.0). Stored in
+/// `vokra.provenance.source`.
+const MELODY_UPSTREAM_SOURCE: &str = "facebook/musicgen-melody (Meta AudioCraft 1.5B text-to-music LM + chroma conditioning, cc-by-nc-4.0)";
 
 // Raw string keys not covered by `crate::gguf::chunks` — kept as
 // converter-side constants (the cross-crate constant duplication rule
@@ -253,10 +280,79 @@ pub fn convert_musicgen_medium_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<MusicGenMediumReport, ConvertError> {
-    // NB: MusicGen-Medium bundle is ~11.4 GB. `std::fs::read` peaks at
-    // ~2x file size (input buffer + parsed safetensors view = additive
-    // in the worst case). The vast.ai runbook allocates a 32 GB+ box
-    // for this class of publish per
+    convert_musicgen_family_file(input, output, license, NAME, UPSTREAM_HF, UPSTREAM_SOURCE)
+}
+
+/// Converts a `facebook/musicgen-melody` safetensors checkpoint at
+/// `input` into a Vokra-native GGUF at `output`.
+///
+/// MusicGen-Melody is the medium 1.5B autoregressive transformer LM
+/// (byte-identical topology to [`convert_musicgen_medium_file`]) plus a
+/// **12-bin chromagram melody-conditioning frontend** concatenated to
+/// the T5 text conditioning stream — only the frontend + conditioning
+/// projection differs. The BF16 pass-through pipeline is therefore
+/// shared with the medium arm via the private
+/// [`convert_musicgen_family_file`] helper; only the
+/// `vokra.model.name` + `vokra.provenance.{model_id,source,upstream_hf}`
+/// chunks flip to the melody spellings ([`MELODY_NAME`] /
+/// [`MELODY_UPSTREAM_HF`] / [`MELODY_UPSTREAM_SOURCE`]).
+///
+/// **Scale ~6 GB → vast.ai handoff.** Do NOT attempt a local convert on
+/// the M1 iMac 16 GB machine (memory
+/// [[feedback-large-models-on-vast-ai]]: ≥8 GB safe cutoff; Voxtral-
+/// Small-24B 48 GB confirmed swap-death is the calibration point).
+/// Real-weight parity + the chroma frontend runtime op are deferred to
+/// owner sign-off (`docs/license-audit.md` §3.1 sign-off queue). The
+/// tensor-name manifest for the LM decoder + T5 encoder + EnCodec RVQ
+/// codec is identical to sibling [`NAME`], so a future
+/// `MusicGenMedium::from_gguf` walks the same names for both — the
+/// chroma frontend is a converter-side add-on tensor group.
+///
+/// `license` optionally overrides the stamped weight license — see
+/// [`convert_musicgen_medium_file`] for the override semantics + empty-
+/// string research-flag-downgrade guard. Defaults to
+/// [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-4.0"`, `NonCommercial`).
+///
+/// # Errors
+///
+/// Same failure modes as [`convert_musicgen_medium_file`].
+pub fn convert_musicgen_melody_file(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<MusicGenMediumReport, ConvertError> {
+    convert_musicgen_family_file(
+        input,
+        output,
+        license,
+        MELODY_NAME,
+        MELODY_UPSTREAM_HF,
+        MELODY_UPSTREAM_SOURCE,
+    )
+}
+
+/// Shared implementation for the MusicGen family (medium + melody, both
+/// cc-by-nc-4.0, same LM + T5 + EnCodec topology, only the model-id /
+/// upstream-hf / source stamps + optional chroma frontend differ).
+///
+/// Kept `pub(crate)` so future variants (a future `-stereo-medium`, for
+/// example) can piggyback without duplicating the BF16 pass-through
+/// dispatch. External callers should route through the variant-specific
+/// wrappers ([`convert_musicgen_medium_file`] /
+/// [`convert_musicgen_melody_file`]) so the correct built-in defaults
+/// stay in one place.
+pub(crate) fn convert_musicgen_family_file(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+    name: &str,
+    upstream_hf: &str,
+    upstream_source: &str,
+) -> Result<MusicGenMediumReport, ConvertError> {
+    // NB: MusicGen-Medium bundle is ~11.4 GB (melody ~6 GB).
+    // `std::fs::read` peaks at ~2x file size (input buffer + parsed
+    // safetensors view = additive in the worst case). The vast.ai
+    // runbook allocates a 32 GB+ box for this class of publish per
     // `docs/handoff/vast-ai-large-model-publish.md` §2, so simple
     // eager-read is acceptable — no streaming reader needed for a
     // one-shot offline convert. Moshi (14 GB) is the streaming-mandated
@@ -266,7 +362,7 @@ pub fn convert_musicgen_medium_file(
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
+    b.add_string(chunks::KEY_MODEL_NAME, name);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
 
     // Built-in stamp = cc-by-nc-4.0 NonCommercial. The `license` argument
@@ -283,8 +379,8 @@ pub fn convert_musicgen_medium_file(
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
         _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::NonCommercial),
     };
-    vokra_core::stamp_provenance(&mut b, class, &spdx, Some(NAME), Some(UPSTREAM_SOURCE));
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    vokra_core::stamp_provenance(&mut b, class, &spdx, Some(name), Some(upstream_source));
+    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, upstream_hf);
 
     let mut report = MusicGenMediumReport::default();
     // Float tensors pass through **verbatim** — no convert-time widening.
@@ -708,6 +804,99 @@ mod tests {
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
             Some(ARCH)
         );
+
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    /// The melody sibling wrapper stamps the melody-specific
+    /// `vokra.model.name` + `vokra.provenance.{model_id,source,
+    /// upstream_hf}` chunks (not the medium ones) while sharing the
+    /// medium arch / category / default cc-by-nc-4.0 NonCommercial
+    /// license stamp and BF16 pass-through pipeline. This is the whole
+    /// point of reusing the family helper — the delta must be limited
+    /// to the four id chunks.
+    #[test]
+    fn melody_wrapper_stamps_melody_ids_and_shares_default_license() {
+        // Non-zero BF16 payload so a subsequent byte-identity check
+        // still asserts the pass-through arm on the shared helper.
+        let values: [f32; 4] = [1.5, -0.75, 6.5, -12.0];
+        let bf16 = bf16_bytes(&values);
+        let input_bytes = safetensors_one(
+            "decoder.model.decoder.embed_tokens.weight",
+            "BF16",
+            &[2, 2],
+            &bf16,
+        );
+        let input = tmp_path("melody-in");
+        let output = tmp_path("melody-out");
+        std::fs::write(&input, &input_bytes).expect("write input");
+
+        let report = convert_musicgen_melody_file(&input, &output, None).expect("convert melody");
+        assert_eq!(report.read, 1);
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(report.skipped_non_float, 0);
+
+        let file = GgufFile::open(&output).expect("load output gguf");
+
+        // Shared: arch stays `musicgen` (same LM topology) and category
+        // stays `music` (music-tree taxonomy).
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH),
+            "melody must share the medium `musicgen` arch tag"
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(CATEGORY),
+            "melody must share the `music` category"
+        );
+
+        // Flipped: name / model_id / upstream_hf must be the melody
+        // spellings, NOT the medium ones — otherwise the runtime cannot
+        // distinguish the two artifacts and a downstream chroma-front-
+        // end binder would silently misroute to the medium checkpoint.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(MELODY_NAME)
+        );
+        assert_ne!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME),
+            "melody must NOT ship the medium `musicgen-medium` name"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some(MELODY_NAME)
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(MELODY_UPSTREAM_HF)
+        );
+
+        // License triple = cc-by-nc-4.0 / NonCommercial (shared default
+        // with medium — Meta AudioCraft weight policy is uniform across
+        // the family).
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(DEFAULT_LICENSE_SPDX)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::NonCommercial.as_str())
+        );
+
+        // BF16 pass-through arm must land byte-identical.
+        let info = file
+            .tensor_info("decoder.model.decoder.embed_tokens.weight")
+            .expect("BF16 tensor present in melody output");
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(file.tensor_bytes(info), bf16.as_slice());
 
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&output);

@@ -148,6 +148,20 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # MusicGen-Medium ~11.4 GB, both routed to vast.ai). The row heading
     # matches this entry byte-for-byte in `docs/license-audit.md` §3.1.
     "musicgen-large": ["MusicGen-Large (`facebook/musicgen-large`)"],
+    # 2026-08-02 Wave 5 sibling: Meta AudioCraft MusicGen-Melody
+    # (`facebook/musicgen-melody`, cc-by-nc-4.0). Medium 1.5B LM +
+    # 12-bin chromagram conditioning frontend — reuses the medium
+    # BF16 pass-through converter arm (sibling wrapper, no new
+    # models/*.rs module). T4 tier (Research-only, non-commercial) —
+    # same X-Codec 2 / MusicGen family T4 precedent workflow
+    # (`LicenseClass::NonCommercial` + `--allow-noncommercial` gate +
+    # `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE fetch).
+    # Scale ~6 GB → vast.ai handoff per memory
+    # `[[feedback-large-models-on-vast-ai]]`. The placeholder row
+    # heading MUST match `docs/license-audit.md` §3.1 byte-for-byte
+    # once the audit doc is updated in a post-workflow batch (do NOT
+    # modify license-audit.md here per the task rules).
+    "musicgen-melody": ["MusicGen-Melody (`facebook/musicgen-melody`)"],
     # 2026-08-01 Wave 5 residual: Meta AudioCraft AudioGen-Medium
     # (`facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling
     # (identical arch, tuned on environmental sounds / SFX). Same T4
