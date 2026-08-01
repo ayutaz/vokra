@@ -2076,6 +2076,26 @@ pub enum ModelKind {
     /// transformer with alternating time-axis / band-axis attention, mask
     /// estimator over STFT — distinct from every existing op).
     BsRoformer,
+    /// **openWakeWord** (`dscripka/openWakeWord`, **apache-2.0**)
+    /// safetensors → GGUF (Wave residual, 2026-08-02). Small
+    /// custom-KWS MLP/CNN family (~1–5 MB per wake-word) over the
+    /// shared Google speech_embedding melspec frontend. Audio-dialect
+    /// `kws` op entry (FR-OP `kws`). Distinct arch tag `openwakeword`
+    /// (not shared with any other model), category `kws`. HF API
+    /// rate-limited (401) but upstream GitHub `dscripka/openWakeWord`
+    /// primary source is Apache-2.0 (code + bundled checkpoints). BF16
+    /// pass-through skeleton mirror of the sibling
+    /// `musicgen_small.rs` / `hubert_large_ls960.rs` skeleton. Scale
+    /// ~0.01 GB (~10 wake-words × 1–5 MB each + speech_embedding
+    /// frontend) = local convert safe on M1 iMac 16 GB (well below
+    /// the vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). Convert with
+    /// [`models::openwakeword::convert_openwakeword_file`] — the
+    /// converter takes no side-car config today (single-input
+    /// [`convert_file`] path). Runtime port deferred (safetensors →
+    /// GGUF bridge only; the audio-dialect `kws` op consumes the
+    /// artifact in a future WP).
+    Openwakeword,
 }
 
 impl ModelKind {
@@ -3130,6 +3150,17 @@ impl ModelKind {
             | "melband-roformer"
             | "melband_roformer"
             | "chenmozhijin/bsroformer-gguf" => Some(Self::BsRoformer),
+            // 2026-08-02 Wave residual: openWakeWord (dscripka,
+            // apache-2.0). Small custom-KWS MLP/CNN family (~1–5 MB
+            // per wake-word) — audio-dialect `kws` op entry.
+            // Distinct arch tag `openwakeword`. Accept the arch tag
+            // and canonical HF release id.
+            "openwakeword"
+            | "open-wakeword"
+            | "open_wakeword"
+            | "dscripka-openwakeword"
+            | "dscripka/openwakeword"
+            | "dscripka/openWakeWord" => Some(Self::Openwakeword),
             _ => None,
         }
     }
@@ -3266,6 +3297,7 @@ impl ModelKind {
             Self::HubertLargeLs960 => "hubert-large-ls960",
             Self::AudioLdm2 => "audioldm2",
             Self::BsRoformer => "bs-roformer",
+            Self::Openwakeword => "openwakeword",
         }
     }
 }
@@ -5777,6 +5809,32 @@ pub fn convert_file_licensed(
                  publish gate refuses upload unless --license overrides to a known SPDX id; \
                  publish blocked pending owner ADR per docs/license-audit.md §3.1)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Openwakeword (2026-08-02 Wave residual, custom-KWS) ===
+        ModelKind::Openwakeword => {
+            // openWakeWord (dscripka, apache-2.0). Small custom-KWS
+            // MLP/CNN family over precomputed melspec — audio-dialect
+            // `kws` op entry (FR-OP `kws`). BF16 pass-through skeleton
+            // mirror of sibling musicgen_small / hubert_large_ls960.
+            // HF API rate-limited (401); upstream GitHub primary
+            // source verified apache-2.0. Default license `apache-2.0`
+            // + `LicenseClass::Permissive` (sibling Silero / CAM++ /
+            // piper-plus first-party Permissive posture). Scale
+            // ~0.01 GB = local convert safe.
+            let report = models::openwakeword::convert_openwakeword_file(input, output, license)?;
+            let notes = vec![format!(
+                "openwakeword: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (apache-2.0 default, Permissive — audio-dialect \
+                 `kws` op entry per FR-OP; distinct arch tag `openwakeword`, category `kws`)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model,

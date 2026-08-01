@@ -2283,6 +2283,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // because the runtime-side arch/name/category/upstream/license
         // triple lookup does not depend on the publish gate.
         | ModelKind::BsRoformer
+        // 2026-08-02 Wave residual: openWakeWord (dscripka,
+        // apache-2.0). Small custom-KWS MLP/CNN family over
+        // precomputed melspec — audio-dialect `kws` op entry
+        // (FR-OP `kws`). Distinct arch tag `openwakeword`,
+        // category `kws`. BF16 pass-through skeleton — verified
+        // via the uniform arch/name/category/upstream_hf/license
+        // triple lookup shape below.
+        | ModelKind::Openwakeword
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

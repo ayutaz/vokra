@@ -678,4 +678,10 @@ pub mod wavtokenizer;
 // loaded weights — NOTICE keeps credit for design influence, this
 // converter ignores them.
 pub mod yue_bundle;
+// 2026-08-02 Wave residual: dscripka/openWakeWord (custom-KWS MLP/CNN
+// over precomputed melspec, apache-2.0). Small wake-word family
+// (~1–5 MB each) — audio-dialect `kws` op entry (FR-OP `kws`).
+// Distinct arch tag `openwakeword`, category `kws`. Scale ~0.01 GB =
+// local convert safe on M1 iMac (well below vast.ai threshold).
+pub mod openwakeword;
 // ---------------------------------------------------------------------------

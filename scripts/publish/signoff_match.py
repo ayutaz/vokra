@@ -173,6 +173,15 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # runtime (M2-13 gate refuses commercial-mode load); publish-side
     # SA cascade is enforced by CC judgement + owner rollback path.
     "audioldm2": ["AudioLDM 2 (`cvssp/audioldm2`)"],
+    # 2026-08-02 Wave residual: openWakeWord (dscripka, apache-2.0).
+    # Audio-dialect `kws` op entry — small custom-KWS MLP/CNN family
+    # over precomputed melspec. HF API rate-limited (401) — upstream
+    # GitHub `dscripka/openWakeWord` primary source is Apache-2.0
+    # (code + bundled checkpoints). Placeholder row — the row heading
+    # MUST match `docs/license-audit.md` §3.1 byte-for-byte once the
+    # audit doc is updated in a post-workflow batch. Scale ~0.01 GB =
+    # local convert safe on M1 iMac.
+    "openwakeword": ["openWakeWord (`dscripka/openWakeWord`)"],
     # NOTE: bs-roformer is intentionally NOT registered here — §3.1
     # sign-off is ☑ Rejected (Wave 7 CC-fill) = double fail-closed
     # (Rejected in audit + UNKNOWN_REPO here). owner can add the entry
@@ -720,6 +729,13 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # forward, and that decision needs an owner ADR before a
     # `vokra/audioldm2` repo entry is added here.
     "audioldm2": ["AudioLDM 2 (`cvssp/audioldm2`)"],
+    # 2026-08-02 Wave residual: openWakeWord (dscripka, apache-2.0).
+    # Audio-dialect `kws` op entry — small custom-KWS MLP/CNN family
+    # (~1–5 MB per wake-word) over precomputed melspec. Placeholder
+    # row — the row heading MUST match `docs/license-audit.md` §3.1
+    # byte-for-byte once the audit doc is updated in a post-workflow
+    # batch.
+    "openwakeword": ["openWakeWord (`dscripka/openWakeWord`)"],
     # SoTA plan Phase 1-5 wave (2026-07-24 onward).
     "canary": ["nvidia/canary-1b-v2"],
     "canary_qwen": ["nvidia/canary-qwen-2.5b"],
