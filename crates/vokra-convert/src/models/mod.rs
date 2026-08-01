@@ -689,4 +689,10 @@ pub mod openwakeword;
 // (raw 16 kHz audio via Conv1D stack) + rotary + SwiGLU. Distinct arch
 // tag `moonshine`, category `asr`. Scale ~0.11 GB = local convert safe.
 pub mod moonshine_tiny;
+// 2026-08-02 Wave residual: UsefulSensors/moonshine-base (61.5M raw-audio
+// transformer enc-dec ASR, MIT). Sibling to `moonshine_tiny` — same
+// arch family (raw-audio Conv1D + rotary + SwiGLU), wider/deeper
+// backbone. Distinct arch tag `moonshine` (shared with sibling Tiny),
+// category `asr`. Scale ~0.25 GB = local convert safe.
+pub mod moonshine_base;
 // ---------------------------------------------------------------------------

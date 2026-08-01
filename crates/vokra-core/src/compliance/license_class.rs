@@ -423,6 +423,14 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // card canonical spelling). Sibling to the Whisper / piper-plus /
         // Silero first-party Permissive posture.
         "moonshine" | "moonshine-tiny" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors, MIT).
+        // 61.5M raw-audio transformer enc-dec ASR (arXiv:2410.15608).
+        // Sibling to Moonshine-Tiny — same arch family (raw-audio
+        // Conv1D + rotary + SwiGLU), wider/deeper backbone. Weight
+        // license = **MIT** per upstream `UsefulSensors/moonshine-base`
+        // model card (same posture as Tiny sibling). Sibling to the
+        // Whisper / piper-plus / Silero first-party Permissive posture.
+        "moonshine-base" => LicenseClass::Permissive,
         // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B —
         // TTS with the CosyVoice2 topology (Qwen2 LLM + chunk-aware CFM +
         // HiFTNet vocoder). Weight license = **apache-2.0** per the model-

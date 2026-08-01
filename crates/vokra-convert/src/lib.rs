@@ -2119,6 +2119,36 @@ pub enum ModelKind {
     /// audio Conv1D + rotary + SwiGLU encoder-decoder + greedy decode)
     /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
     MoonshineTiny,
+    /// **Moonshine-Base** (`UsefulSensors/moonshine-base`, **MIT**)
+    /// safetensors → GGUF (Wave residual, 2026-08-02). 61.5M-parameter
+    /// transformer encoder-decoder ASR (Jeffries et al. 2024,
+    /// arXiv:2410.15608). Sibling to [`Self::MoonshineTiny`] with the
+    /// same architecture family (raw-audio Conv1D front-end + rotary
+    /// position encoding + SwiGLU activations) but a wider/deeper
+    /// backbone (~2.3× parameter count vs the 27M Tiny variant per the
+    /// upstream release manifest). **Distinct from sibling
+    /// [`Self::Whisper`]** in two significant ways: (1) **no mel
+    /// front-end** — the model consumes raw 16 kHz audio directly via a
+    /// learned Conv1D stack (bypassing STFT + Mel filterbank), (2)
+    /// **rotary position encoding + SwiGLU** activations rather than
+    /// Whisper's sinusoidal + GELU. Shares arch tag `moonshine` with
+    /// sibling [`Self::MoonshineTiny`] (Tiny and Base share the same
+    /// architecture — only depth/width differ). Silently sharing with
+    /// [`Self::Whisper`] would misroute runtime dispatch at the audio-
+    /// input boundary (raw-audio Conv1D vs Mel encoder), which
+    /// FR-EX-08 (no silent op-shape misroute) forbids. Category `asr`
+    /// shared with the Whisper family. License **MIT** →
+    /// [`vokra_core::LicenseClass::Permissive`] default, sibling to the
+    /// Whisper / piper-plus / Silero / CAM++ / Moonshine-Tiny first-
+    /// party Permissive posture. Scale ~0.25 GB = local convert safe on
+    /// M1 iMac 16 GB (well below the vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
+    /// skeleton mirror of sibling `moonshine_tiny.rs` /
+    /// `musicgen_small.rs` / `hubert_large_ls960.rs` / `openwakeword.rs`.
+    /// Runtime binder (raw-audio Conv1D + rotary + SwiGLU encoder-
+    /// decoder + greedy decode) deferred to owner sign-off
+    /// (`docs/license-audit.md` §3.1).
+    MoonshineBase,
 }
 
 impl ModelKind {
@@ -3195,6 +3225,22 @@ impl ModelKind {
             | "usefulsensors-moonshine-tiny"
             | "usefulsensors/moonshine-tiny"
             | "UsefulSensors/moonshine-tiny" => Some(Self::MoonshineTiny),
+            // 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors,
+            // MIT). 61.5M raw-audio transformer enc-dec ASR (arXiv:
+            // 2410.15608). Sibling to Moonshine-Tiny — same arch family
+            // (raw-audio Conv1D + rotary + SwiGLU), wider/deeper
+            // backbone. Shared arch tag `moonshine` at the runtime side,
+            // distinct ModelKind at the converter side (the two
+            // checkpoints have different tensor shapes; the dispatch
+            // must not silently pick Tiny for a Base checkpoint or vice
+            // versa — FR-EX-08). Accept the family-name spelling with
+            // the `-base` suffix, hyphen / underscore variants, and the
+            // canonical HF org/name path.
+            "moonshine-base"
+            | "moonshine_base"
+            | "usefulsensors-moonshine-base"
+            | "usefulsensors/moonshine-base"
+            | "UsefulSensors/moonshine-base" => Some(Self::MoonshineBase),
             _ => None,
         }
     }
@@ -3333,6 +3379,7 @@ impl ModelKind {
             Self::BsRoformer => "bs-roformer",
             Self::Openwakeword => "openwakeword",
             Self::MoonshineTiny => "moonshine-tiny",
+            Self::MoonshineBase => "moonshine-base",
         }
     }
 }
@@ -5898,6 +5945,39 @@ pub fn convert_file_licensed(
                 "moonshine-tiny: {} float weights written verbatim ({} BF16 passthrough), \
                  {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
                  from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MoonshineBase (2026-08-02 Wave residual, raw-audio ASR) ===
+        ModelKind::MoonshineBase => {
+            // Moonshine-Base (UsefulSensors, MIT). 61.5M transformer
+            // enc-dec ASR with raw-audio Conv1D front-end (no mel) +
+            // rotary + SwiGLU (Jeffries et al. 2024, arXiv:2410.15608).
+            // Sibling to Moonshine-Tiny — same arch family, wider/deeper
+            // backbone (~2.3× parameter count per upstream release
+            // manifest). Shares arch tag `moonshine` with Tiny at the
+            // runtime side; distinct ModelKind at the converter side
+            // (different tensor shapes — a Base checkpoint fed to a
+            // Tiny loader would misroute at load, FR-EX-08). BF16 pass-
+            // through skeleton mirror of sibling moonshine_tiny /
+            // musicgen_small / hubert_large_ls960 / openwakeword.
+            // Default license `mit` + Permissive (Whisper / piper-plus /
+            // Silero / CAM++ / Moonshine-Tiny first-party posture).
+            // Scale ~0.25 GB = local convert safe on M1 iMac 16 GB.
+            let report =
+                models::moonshine_base::convert_moonshine_base_file(input, output, license)?;
+            let notes = vec![format!(
+                "moonshine-base: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
+                 from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU; sibling \
+                 Moonshine-Tiny same arch, wider/deeper backbone)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

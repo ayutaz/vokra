@@ -2298,6 +2298,12 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // mel + sinusoidal + GELU). Grouped here for the uniform
         // arch/name/category/upstream_hf/license triple verify shape.
         | ModelKind::MoonshineTiny
+        // 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors,
+        // MIT). 61.5M raw-audio transformer enc-dec ASR (arXiv:
+        // 2410.15608) — sibling to Moonshine-Tiny (same arch family,
+        // wider/deeper backbone). Grouped here for the uniform
+        // arch/name/category/upstream_hf/license triple verify shape.
+        | ModelKind::MoonshineBase
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
