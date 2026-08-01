@@ -493,6 +493,22 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "moss-audio-4b-instruct": [
         "MOSS-Audio-4B-Instruct (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`)"
     ],
+    # 2026-08-02 wave: OpenMOSS Team MOSS-Audio-8B-Instruct
+    # (`OpenMOSS-Team/MOSS-Audio-8B-Instruct`, apache-2.0). Larger
+    # 8B sibling of MOSS-Audio-4B-Instruct — same custom-code audio-LLM
+    # (`configuration_moss_audio.py`, `trust_remote_code=True`, 4
+    # shards ~9.05 GB BF16 — vast.ai required). Reuses the sibling
+    # MossTts converter (parent workflow REUSE HINT) via
+    # `MossTtsVariant::AudioInstruct8b`. **Placeholder row heading** —
+    # the §3.1 row is added in a separate post-workflow batch per
+    # parent workflow discipline (`docs/license-audit.md` untouched in
+    # this wave). The heading string here matches the sibling
+    # MOSS-Audio-4B-Instruct / MOSS-TTS row-heading style byte-for-byte
+    # so a future §3.1 land closes the loop without any further edit
+    # to this file.
+    "moss-audio-8b-instruct": [
+        "MOSS-Audio-8B-Instruct (`OpenMOSS-Team/MOSS-Audio-8B-Instruct`)"
+    ],
     # 2026-08-01 Wave 4 slug-only add: OpenMOSS Team MOSS-VoiceGenerator
     # (`OpenMOSS-Team/MOSS-VoiceGenerator`, apache-2.0). Distinct HF publish
     # target from the `moss_tts` family (`OpenMOSS-Team/MOSS-TTS[-v1.5|

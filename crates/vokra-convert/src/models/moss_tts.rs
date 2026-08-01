@@ -159,6 +159,14 @@ pub(crate) const UPSTREAM_HF_MOSS_TTS_LOCAL: &str = "OpenMOSS-Team/MOSS-TTS-Loca
 /// than one of the four `moss_tts_*` (Delay / Nano / Local) tts
 /// releases.
 pub(crate) const UPSTREAM_HF_MOSS_AUDIO_4B_INSTRUCT: &str = "OpenMOSS-Team/MOSS-Audio-4B-Instruct";
+/// MOSS-Audio-8B-Instruct HF release slug
+/// (`OpenMOSS-Team/MOSS-Audio-8B-Instruct`, apache-2.0). Larger
+/// sibling of the 4B audio-LLM release (**4 shards ~9.05 GB BF16** per
+/// parent workflow manifest 2026-08-02) with the same custom-code
+/// architecture (`configuration_moss_audio.py`,
+/// `trust_remote_code=True`). Requires vast.ai for a downloading
+/// conversion (memory `[[feedback-large-models-on-vast-ai]]`).
+pub(crate) const UPSTREAM_HF_MOSS_AUDIO_8B_INSTRUCT: &str = "OpenMOSS-Team/MOSS-Audio-8B-Instruct";
 
 /// Per-variant `vokra.model.name` stamps (canonical, lower-cased HF slug
 /// tail — mirrors the Qwen3-TTS / Chatterbox naming convention).
@@ -169,6 +177,9 @@ pub(crate) const NAME_MOSS_TTS_LOCAL: &str = "moss-tts-local-transformer-v1.5";
 /// `vokra.model.name` stamp for MOSS-Audio-4B-Instruct — the
 /// lower-cased HF slug tail, matching the sibling naming convention.
 pub(crate) const NAME_MOSS_AUDIO_4B_INSTRUCT: &str = "moss-audio-4b-instruct";
+/// `vokra.model.name` stamp for MOSS-Audio-8B-Instruct — the
+/// lower-cased HF slug tail, matching the sibling naming convention.
+pub(crate) const NAME_MOSS_AUDIO_8B_INSTRUCT: &str = "moss-audio-8b-instruct";
 
 // ─── vokra.moss_tts.* metadata keys ──────────────────────────────────
 
@@ -359,6 +370,29 @@ pub(crate) enum MossTtsVariant {
     /// tag lets a runtime dispatcher recognise this artifact and
     /// refuse to bind the placeholder axes until the follow-up lands.
     AudioInstruct4b,
+    /// `OpenMOSS-Team/MOSS-Audio-8B-Instruct` — the larger 8B
+    /// **audio-LLM** sibling of [`Self::AudioInstruct4b`], same
+    /// custom-code family (`configuration_moss_audio.py`,
+    /// `trust_remote_code=True`, 4 shards ~9.05 GB BF16 per parent
+    /// workflow manifest 2026-08-02). Reuses this converter per the
+    /// parent workflow's REUSE HINT rather than a fresh `models/*.rs`
+    /// module.
+    ///
+    /// **PLACEHOLDER HPARAMS** — inherits the [`Self::AudioInstruct4b`]
+    /// posture (route to sibling `Local` Qwen3-flavour axes as the
+    /// closest-family placeholder) because the parent-workflow task
+    /// discipline forbids downloading the ~9 GB safetensors + the
+    /// upstream `configuration_moss_audio.py` for primary-source
+    /// transcription. A follow-up wave must land the true axes
+    /// (config.json + `configuration_moss_audio.py` inspection) before
+    /// any downstream loader can trust the emitted hparams. The
+    /// **provenance** stamp (NAME + upstream_hf + license = apache-2.0
+    /// Permissive + category = `s2s`) is faithful — only the axis
+    /// hparams are placeholder. The distinct
+    /// `vokra.moss_tts.variant = "audio_8b"` tag lets a runtime
+    /// dispatcher recognise this artifact and refuse to bind the
+    /// placeholder axes until the follow-up lands.
+    AudioInstruct8b,
 }
 
 impl MossTtsVariant {
@@ -372,6 +406,7 @@ impl MossTtsVariant {
             // audio-LLM sibling from the four `moss_tts_*` tts releases
             // and refuse to bind placeholder axes.
             Self::AudioInstruct4b => "audio_4b",
+            Self::AudioInstruct8b => "audio_8b",
         }
     }
 
@@ -383,6 +418,7 @@ impl MossTtsVariant {
             Self::Nano => NAME_MOSS_TTS_NANO,
             Self::Local => NAME_MOSS_TTS_LOCAL,
             Self::AudioInstruct4b => NAME_MOSS_AUDIO_4B_INSTRUCT,
+            Self::AudioInstruct8b => NAME_MOSS_AUDIO_8B_INSTRUCT,
         }
     }
 
@@ -394,6 +430,7 @@ impl MossTtsVariant {
             Self::Nano => UPSTREAM_HF_MOSS_TTS_NANO,
             Self::Local => UPSTREAM_HF_MOSS_TTS_LOCAL,
             Self::AudioInstruct4b => UPSTREAM_HF_MOSS_AUDIO_4B_INSTRUCT,
+            Self::AudioInstruct8b => UPSTREAM_HF_MOSS_AUDIO_8B_INSTRUCT,
         }
     }
 
@@ -405,14 +442,18 @@ impl MossTtsVariant {
     pub(crate) const fn category(self) -> &'static str {
         match self {
             Self::Delay | Self::DelayV15 | Self::Nano | Self::Local => MODEL_CATEGORY,
-            Self::AudioInstruct4b => MODEL_CATEGORY_S2S,
+            Self::AudioInstruct4b | Self::AudioInstruct8b => MODEL_CATEGORY_S2S,
         }
     }
 
     /// Backbone family tag written under `vokra.moss_tts.llm.family`.
     pub(crate) const fn llm_family(self) -> &'static str {
         match self {
-            Self::Delay | Self::DelayV15 | Self::Local | Self::AudioInstruct4b => "qwen3",
+            Self::Delay
+            | Self::DelayV15
+            | Self::Local
+            | Self::AudioInstruct4b
+            | Self::AudioInstruct8b => "qwen3",
             Self::Nano => "gpt2",
         }
     }
@@ -427,84 +468,84 @@ impl MossTtsVariant {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_N_VQ,
             Self::Nano => NANO_N_VQ,
-            Self::Local | Self::AudioInstruct4b => LOCAL_N_VQ,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_N_VQ,
         }
     }
     pub(crate) const fn audio_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_AUDIO_VOCAB_SIZE,
             Self::Nano => NANO_AUDIO_VOCAB_SIZE,
-            Self::Local | Self::AudioInstruct4b => LOCAL_AUDIO_VOCAB_SIZE,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_AUDIO_VOCAB_SIZE,
         }
     }
     pub(crate) const fn sample_rate(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_SAMPLE_RATE,
             Self::Nano => NANO_SAMPLE_RATE,
-            Self::Local | Self::AudioInstruct4b => LOCAL_SAMPLE_RATE,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_SAMPLE_RATE,
         }
     }
     pub(crate) const fn llm_hidden_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HIDDEN,
             Self::Nano => NANO_LLM_HIDDEN,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_HIDDEN,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_HIDDEN,
         }
     }
     pub(crate) const fn llm_ffn_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_FFN,
             Self::Nano => NANO_LLM_FFN,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_FFN,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_FFN,
         }
     }
     pub(crate) const fn llm_n_layer(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_LAYER,
             Self::Nano => NANO_LLM_N_LAYER,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_N_LAYER,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_LAYER,
         }
     }
     pub(crate) const fn llm_n_head(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD,
             Self::Nano => NANO_LLM_N_HEAD,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_N_HEAD,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_HEAD,
         }
     }
     pub(crate) const fn llm_n_head_kv(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD_KV,
             Self::Nano => NANO_LLM_N_HEAD_KV,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_N_HEAD_KV,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_HEAD_KV,
         }
     }
     pub(crate) const fn llm_head_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HEAD_DIM,
             Self::Nano => NANO_LLM_HEAD_DIM,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_HEAD_DIM,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_HEAD_DIM,
         }
     }
     pub(crate) const fn llm_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_VOCAB,
             Self::Nano => NANO_LLM_VOCAB,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_VOCAB,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_VOCAB,
         }
     }
     pub(crate) const fn llm_rope_base(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_ROPE_BASE,
             Self::Nano => NANO_LLM_ROPE_BASE,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_ROPE_BASE,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_ROPE_BASE,
         }
     }
     pub(crate) const fn llm_rms_norm_eps(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_RMS_NORM_EPS,
             Self::Nano => NANO_LLM_RMS_NORM_EPS,
-            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_RMS_NORM_EPS,
+            Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_RMS_NORM_EPS,
         }
     }
 }
@@ -573,6 +614,9 @@ pub(crate) fn convert_variant(
         }
         MossTtsVariant::AudioInstruct4b => {
             "OpenMOSS-Team/MOSS-Audio-4B-Instruct (configuration_moss_audio.py custom-code audio-LLM, apache-2.0; placeholder axes = Local family)"
+        }
+        MossTtsVariant::AudioInstruct8b => {
+            "OpenMOSS-Team/MOSS-Audio-8B-Instruct (configuration_moss_audio.py custom-code audio-LLM, apache-2.0; placeholder axes = Local family)"
         }
     };
     vokra_core::stamp_provenance(
@@ -645,6 +689,7 @@ pub fn convert_moss_tts_file(
                 MossTtsVariant::Nano => "OpenMOSS-Team/MOSS-TTS-Nano-100M",
                 MossTtsVariant::Local => "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
                 MossTtsVariant::AudioInstruct4b => "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
+                MossTtsVariant::AudioInstruct8b => "OpenMOSS-Team/MOSS-Audio-8B-Instruct",
             }),
         );
     }
@@ -832,6 +877,7 @@ mod tests {
             MossTtsVariant::Nano.name(),
             MossTtsVariant::Local.name(),
             MossTtsVariant::AudioInstruct4b.name(),
+            MossTtsVariant::AudioInstruct8b.name(),
         ];
         for n in names.iter() {
             assert_eq!(n.to_ascii_lowercase(), *n, "NAME must be lower-case: {n}");
@@ -840,11 +886,11 @@ mod tests {
                 "NAME must start with moss-tts or moss-audio-: {n}"
             );
         }
-        // Distinctness: 5 variants, 5 unique names.
+        // Distinctness: 6 variants, 6 unique names.
         let mut seen: Vec<&str> = names.to_vec();
         seen.sort();
         seen.dedup();
-        assert_eq!(seen.len(), 5, "every variant must have a unique NAME");
+        assert_eq!(seen.len(), 6, "every variant must have a unique NAME");
     }
 
     #[test]
@@ -1122,6 +1168,7 @@ mod tests {
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
             MossTtsVariant::AudioInstruct4b,
+            MossTtsVariant::AudioInstruct8b,
         ] {
             let (builder, report) = convert_variant(input.clone(), variant).expect("BF16 convert");
             assert_eq!(report.read, 1);
@@ -1177,6 +1224,7 @@ mod tests {
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
             MossTtsVariant::AudioInstruct4b,
+            MossTtsVariant::AudioInstruct8b,
         ] {
             let (_, report) = convert_variant(input.clone(), variant).expect("mixed convert");
             assert_eq!(

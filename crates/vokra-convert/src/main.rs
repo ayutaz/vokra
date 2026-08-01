@@ -2164,6 +2164,15 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // invariant surface even though this sibling stamps category
         // = `s2s` (audio-LLM) rather than `tts`.
         | ModelKind::MossAudio4bInstruct
+        // 2026-08-02 wave: MOSS-Audio-8B-Instruct
+        // (`OpenMOSS-Team/MOSS-Audio-8B-Instruct`, apache-2.0). Reuses
+        // the sibling MossTts converter per the parent workflow's
+        // REUSE HINT via a new `MossTtsVariant::AudioInstruct8b`
+        // arm — same verify shape as the 4B sibling above (arch /
+        // name / upstream_hf + license triple is the invariant
+        // surface even though this sibling stamps category = `s2s`
+        // audio-LLM rather than `tts`).
+        | ModelKind::MossAudio8bInstruct
         | ModelKind::MeloTtsEnglish
         | ModelKind::MeloTtsChinese
         | ModelKind::MeloTtsKorean
