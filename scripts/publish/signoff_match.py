@@ -82,6 +82,34 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "silero-vad-v5": ["Silero VAD v5"] if False else [],  # Silero row is under §3, not §3.1 template
     "campplus-speaker-encoder": ["CAM++"],
     "dac-24khz": ["DAC 24khz (Descript)"],
+    # 2026-08-01 Wave 8: Descript DAC 44kHz + 16kHz variants of already-
+    # published dac-24khz. Same MIT license from descriptinc/descript-
+    # audio-codec GitHub, distinct sample-rate + RVQ codebook count.
+    "dac-44khz": ["Descript DAC (44kHz) (`descript/dac_44khz`)"],
+    "dac-16khz": ["Descript DAC (16kHz) (`descript/dac_16khz`)"],
+    # 2026-08-01 Wave 8: MeloTTS ES / JA variants of published EN/ZH/KO.
+    "melotts-spanish": ["MeloTTS Spanish (`myshell-ai/MeloTTS-Spanish`)"],
+    "melotts-japanese": ["MeloTTS Japanese (`myshell-ai/MeloTTS-Japanese`)"],
+    # 2026-08-01 Wave 8: MIT voice gender classifier (unique task).
+    "voice-gender-classifier": [
+        "voice-gender-classifier (`JaesungHuh/voice-gender-classifier`)"
+    ],
+    # 2026-08-01 Wave 8: SpeechBrain ECAPA-TDNN reference on VoxCeleb.
+    "speechbrain-spkrec-ecapa-voxceleb": [
+        "speechbrain/spkrec-ecapa-voxceleb"
+    ],
+    # 2026-08-01 Wave 8: pyannote/wespeaker (CC-BY-4.0 attribution).
+    "pyannote-wespeaker-voxceleb-resnet34-lm": [
+        "pyannote/wespeaker-voxceleb-resnet34-LM"
+    ],
+    # 2026-08-01 Wave 8: primeline German Whisper-large-v3-turbo fine-tune.
+    "whisper-large-v3-turbo-german": [
+        "primeline/whisper-large-v3-turbo-german"
+    ],
+    # 2026-08-01 Wave 8: jonatasgrosman Arabic XLSR-53 fine-tune.
+    "wav2vec2-large-xlsr-53-arabic": [
+        "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
+    ],
     "mimi": ["Mimi codec (Kyutai)"],
     "deepfilternet3": ["DeepFilterNet3"],
     "utmos22-strong": ["UTMOS22-strong (SaruLab)"],

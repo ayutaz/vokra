@@ -584,7 +584,19 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // governs the license of the redistributed artifact. So xcodec2
         // now lives on the NonCommercial arm below (with F5-TTS / EnCodec),
         // fail-closed against silent commercial use.
-        "dac" | "wavtokenizer" => LicenseClass::Permissive,
+        "dac" | "dac-24khz" | "dac-16khz" | "dac-44khz" | "wavtokenizer" => {
+            LicenseClass::Permissive
+        }
+        // 2026-08-01 Wave 8: SpeechBrain ECAPA-TDNN, voice-gender-classifier,
+        // primeline whisper-de fine-tune, jonatasgrosman xlsr-53-arabic.
+        // All apache-2.0 or MIT permissive (primary source verified via HF
+        // cardData API 2026-08-01).
+        "voice-gender-classifier"
+        | "speechbrain-spkrec-ecapa-voxceleb"
+        | "whisper-large-v3-turbo-german"
+        | "wav2vec2-large-xlsr-53-arabic" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 8: pyannote/wespeaker CC-BY-4.0 attribution.
+        "pyannote-wespeaker-voxceleb-resnet34-lm" => LicenseClass::AttributionRequired,
         // M5 gap follow-up (2026-07-30): marl/crepe — a monophonic F0
         // (fundamental-frequency) extractor. Weight license = **MIT**
         // (`marl/crepe/main/LICENSE.txt`, "MIT License / Copyright (c)

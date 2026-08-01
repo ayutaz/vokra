@@ -1213,6 +1213,14 @@ pub enum ModelKind {
     /// `n_symbols = 219`, `num_tones = 16`, `num_languages = 10`,
     /// `spk2id = {KR:0}`.
     MeloTtsKorean,
+    /// **MeloTTS-Spanish** (`myshell-ai/MeloTTS-Spanish`, MIT). Wave 8
+    /// residual 2026-08-01. Same VITS2 backbone as sibling language
+    /// variants; language-specific axes via `MeloVariant::Spanish`.
+    MeloTtsSpanish,
+    /// **MeloTTS-Japanese** (`myshell-ai/MeloTTS-Japanese`, MIT). Wave 8
+    /// residual 2026-08-01. Same VITS2 backbone as sibling language
+    /// variants; language-specific axes via `MeloVariant::Japanese`.
+    MeloTtsJapanese,
     /// **SpeechT5 TTS** (`microsoft/speecht5_tts`, MIT). Implementer C
     /// wave 2026-07-30. Microsoft's unified encoder-decoder pre-training
     /// TTS head (12-layer encoder / 6-layer decoder × 12 heads × 768
@@ -2059,7 +2067,10 @@ impl ModelKind {
             | "fun-cosyvoice3-0_5b-2512" => Some(Self::CosyVoice3),
             "voxtral" => Some(Self::Voxtral),
             "mimi" => Some(Self::Mimi),
-            "dac" => Some(Self::Dac),
+            "dac" | "dac-24khz" | "dac-16khz" | "dac-44khz" | "dac-44_1khz"
+            | "descript/dac_24khz" | "descript/dac_16khz" | "descript/dac_44khz" => {
+                Some(Self::Dac)
+            }
             "csm" => Some(Self::Csm),
             // Moshi + Moshika (RAG variant, 2026-07-30 WT7 addition) —
             // moshika-rag shares arch with moshiko-pytorch-bf16 per the RAG
@@ -2602,6 +2613,15 @@ impl ModelKind {
             | "melo-tts-korean"
             | "melo-korean"
             | "myshell-ai/melotts-korean" => Some(Self::MeloTtsKorean),
+            "melotts-spanish"
+            | "melotts_spanish"
+            | "melo-spanish"
+            | "myshell-ai/melotts-spanish" => Some(Self::MeloTtsSpanish),
+            "melotts-japanese"
+            | "melotts_japanese"
+            | "melo-japanese"
+            | "melo-ja"
+            | "myshell-ai/melotts-japanese" => Some(Self::MeloTtsJapanese),
             "speecht5-tts" | "speecht5_tts" | "speecht5" | "microsoft/speecht5_tts" => {
                 Some(Self::SpeechT5Tts)
             }
@@ -3126,6 +3146,8 @@ impl ModelKind {
             Self::MeloTtsChinese => "melotts-chinese",
             Self::MeloTtsEnglish => "melotts-english",
             Self::MeloTtsKorean => "melotts-korean",
+            Self::MeloTtsSpanish => "melotts-spanish",
+            Self::MeloTtsJapanese => "melotts-japanese",
             Self::MetricganPlus => "metricgan-plus",
             Self::MossTts => "moss-tts",
             Self::MossTtsLocal => "moss-tts-local",
@@ -4990,6 +5012,48 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::MeloTtsKorean,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MeloTtsSpanish (Wave 8 2026-08-01) ===
+        ModelKind::MeloTtsSpanish => {
+            let report = models::melotts::convert_melotts_file(
+                input,
+                output,
+                models::melotts::MeloVariant::Spanish,
+                license,
+            )?;
+            let notes = vec![format!(
+                "melotts-spanish: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MeloTtsSpanish,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MeloTtsJapanese (Wave 8 2026-08-01) ===
+        ModelKind::MeloTtsJapanese => {
+            let report = models::melotts::convert_melotts_file(
+                input,
+                output,
+                models::melotts::MeloVariant::Japanese,
+                license,
+            )?;
+            let notes = vec![format!(
+                "melotts-japanese: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MeloTtsJapanese,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),

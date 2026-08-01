@@ -126,6 +126,14 @@ pub enum MeloVariant {
     /// `myshell-ai/MeloTTS-Korean` (MIT). 219 symbols, 16 tones,
     /// 10 languages, 1 speaker (`KR`).
     Korean,
+    /// `myshell-ai/MeloTTS-Spanish` (MIT). Wave 8 add 2026-08-01.
+    /// 219 symbols, 16 tones, 10 languages, 1 speaker (`ES`).
+    /// Same axes as Korean; only `spk2id` label differs.
+    Spanish,
+    /// `myshell-ai/MeloTTS-Japanese` (MIT). Wave 8 add 2026-08-01.
+    /// 219 symbols, 16 tones, 10 languages, 1 speaker (`JP`).
+    /// Same axes as Korean/Spanish; only `spk2id` label differs.
+    Japanese,
 }
 
 impl MeloVariant {
@@ -136,6 +144,8 @@ impl MeloVariant {
             Self::English => "melotts-english",
             Self::Chinese => "melotts-chinese",
             Self::Korean => "melotts-korean",
+            Self::Spanish => "melotts-spanish",
+            Self::Japanese => "melotts-japanese",
         }
     }
 
@@ -146,6 +156,8 @@ impl MeloVariant {
             Self::English => "english",
             Self::Chinese => "chinese",
             Self::Korean => "korean",
+            Self::Spanish => "spanish",
+            Self::Japanese => "japanese",
         }
     }
 
@@ -156,6 +168,8 @@ impl MeloVariant {
             Self::English => "myshell-ai/MeloTTS-English",
             Self::Chinese => "myshell-ai/MeloTTS-Chinese",
             Self::Korean => "myshell-ai/MeloTTS-Korean",
+            Self::Spanish => "myshell-ai/MeloTTS-Spanish",
+            Self::Japanese => "myshell-ai/MeloTTS-Japanese",
         }
     }
 
@@ -166,6 +180,8 @@ impl MeloVariant {
             Self::English => 178,
             Self::Chinese => 112,
             Self::Korean => 219,
+            Self::Spanish => 219,
+            Self::Japanese => 219,
         }
     }
 
@@ -177,6 +193,8 @@ impl MeloVariant {
             Self::English => 0,
             Self::Chinese => 11,
             Self::Korean => 16,
+            Self::Spanish => 16,
+            Self::Japanese => 16,
         }
     }
 
@@ -188,6 +206,8 @@ impl MeloVariant {
             Self::English => 1,
             Self::Chinese => 1,
             Self::Korean => 10,
+            Self::Spanish => 10,
+            Self::Japanese => 10,
         }
     }
 
@@ -195,9 +215,11 @@ impl MeloVariant {
     /// from each `config.json`).
     pub const fn n_speakers_active(self) -> u32 {
         match self {
-            Self::English => 5, // EN-US, EN-BR, EN_INDIA, EN-AU, EN-Default
-            Self::Chinese => 1, // ZH
-            Self::Korean => 1,  // KR
+            Self::English => 5,  // EN-US, EN-BR, EN_INDIA, EN-AU, EN-Default
+            Self::Chinese => 1,  // ZH
+            Self::Korean => 1,   // KR
+            Self::Spanish => 1,  // ES
+            Self::Japanese => 1, // JP
         }
     }
 }
@@ -544,6 +566,8 @@ mod tests {
         for (v, expect_symbols, expect_tones, expect_langs, expect_active) in [
             (MeloVariant::Chinese, 112, 11, 1, 1),
             (MeloVariant::Korean, 219, 16, 10, 1),
+            (MeloVariant::Spanish, 219, 16, 10, 1),
+            (MeloVariant::Japanese, 219, 16, 10, 1),
         ] {
             let (input_bytes, _) = safetensors_and_expected_bf16();
             let input = scratch_path(&format!("{}-in", v.variant_tag()));

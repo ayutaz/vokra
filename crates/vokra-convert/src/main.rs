@@ -2104,6 +2104,8 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::MeloTtsEnglish
         | ModelKind::MeloTtsChinese
         | ModelKind::MeloTtsKorean
+        | ModelKind::MeloTtsSpanish
+        | ModelKind::MeloTtsJapanese
         | ModelKind::SpeechT5Tts
         | ModelKind::ParlerTtsMiniMultilingual
         | ModelKind::IndicParlerTts
