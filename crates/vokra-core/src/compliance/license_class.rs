@@ -951,6 +951,25 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "hubert_large_ls960"
         | "hubert-large-ls960-ft"
         | "facebook/hubert-large-ls960-ft" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual — Meta HT-Demucs (`facebook/demucs`, MIT
+        // per upstream `github.com/facebookresearch/demucs` LICENSE primary
+        // source; HF mirror returned 401 on the 2026-08-02 residual walk,
+        // so the SPDX id anchors on the upstream GitHub `LICENSE` file per
+        // memory `[[feedback-license-signoff-primary-source]]`). Hybrid
+        // transformer Demucs (Rouard et al. 2023, arXiv:2211.08553) =
+        // U-Net waveform branch + spectrogram branch + cross-domain self-
+        // attention, 4-source music separation (drums / bass / other /
+        // vocals). Distinct arch tag `demucs` from sibling SepFormer /
+        // TIGER separators (different internal domain + different output
+        // branching — FR-EX-08 forbids silent misroute across separator
+        // families). Category `separation` shared with the sibling
+        // separator families.
+        "demucs"
+        | "demucs-htdemucs"
+        | "demucs_htdemucs"
+        | "htdemucs"
+        | "ht-demucs"
+        | "facebook/demucs" => LicenseClass::Permissive,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike

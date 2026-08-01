@@ -166,6 +166,17 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # for-byte once the audit doc is updated in a post-workflow batch.
     # Scale ~1.26 GB = local convert safe on M1 iMac.
     "hubert-large-ls960": ["HuBERT-Large-LS960 (`facebook/hubert-large-ls960-ft`)"],
+    # 2026-08-02 Wave residual: HT-Demucs (Meta, MIT per upstream
+    # `github.com/facebookresearch/demucs` LICENSE — HF mirror 401 on
+    # 2026-08-02 residual walk). Hybrid transformer Demucs (Rouard et al.
+    # 2023, arXiv:2211.08553) = U-Net waveform branch + spectrogram
+    # branch + cross-domain self-attention, 4-source music separation
+    # (drums / bass / other / vocals — MUSDB18 stem taxonomy). Distinct
+    # arch tag `demucs` from sibling SepFormer / TIGER separators.
+    # Placeholder row — the row heading MUST match `docs/license-audit.md`
+    # §3.1 byte-for-byte once the audit doc is updated in a post-workflow
+    # batch. Scale ~0.50 GB = local convert safe on M1 iMac.
+    "demucs-htdemucs": ["HT-Demucs (`facebook/demucs`)"],
     # 2026-08-01 Wave 7 CC-fill: AudioLDM 2 (CVSSP, cc-by-nc-sa-4.0)
     # T4 Research-only path with SA cascade explicit in model card +
     # LICENSE + NOTICE. `publish-one.sh --allow-noncommercial` gate.
@@ -738,6 +749,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "ace_step": ["ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`)"],
     # 2026-08-01 Wave 7 residual converter (`hubert_large_ls960.rs`).
     "hubert_large_ls960": ["HuBERT-Large-LS960 (`facebook/hubert-large-ls960-ft`)"],
+    # 2026-08-02 Wave residual converter (`demucs_htdemucs.rs`) — Meta
+    # HT-Demucs hybrid transformer 4-source music separation, MIT.
+    "demucs_htdemucs": ["HT-Demucs (`facebook/demucs`)"],
     # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
     # (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Doubly-restrictive
     # NonCommercialShareAlike default (NC gate + SA cascade). The

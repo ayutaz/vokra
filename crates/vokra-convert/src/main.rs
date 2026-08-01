@@ -2305,6 +2305,16 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // wider/deeper backbone). Grouped here for the uniform
         // arch/name/category/upstream_hf/license triple verify shape.
         | ModelKind::MoonshineBase
+        // 2026-08-02 Wave residual: Demucs (HT-Demucs) (facebook/demucs,
+        // MIT). Hybrid transformer Demucs (Rouard et al. 2023, arXiv:
+        // 2211.08553) — U-Net waveform branch + spectrogram branch +
+        // cross-domain self-attention, 4-source music separation.
+        // Distinct arch tag `demucs` from sibling SepFormer / TIGER
+        // separators (different internal domain + different output
+        // branching — FR-EX-08 forbids silent misroute across separator
+        // families). Grouped here for the uniform arch/name/category/
+        // upstream_hf/license triple verify shape.
+        | ModelKind::DemucsHtdemucs
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

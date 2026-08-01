@@ -695,4 +695,12 @@ pub mod moonshine_tiny;
 // backbone. Distinct arch tag `moonshine` (shared with sibling Tiny),
 // category `asr`. Scale ~0.25 GB = local convert safe.
 pub mod moonshine_base;
+// 2026-08-02 Wave residual: facebook/demucs (HT-Demucs, MIT). Hybrid
+// transformer Demucs (Rouard et al. 2023, arXiv:2211.08553) — U-Net
+// waveform branch + spectrogram branch joined by cross-domain self-
+// attention, 4-source music separation (drums / bass / other / vocals).
+// Distinct from SepFormer (waveform-only dual-path Transformer) and
+// TIGER (time-frequency dual-branch) siblings; distinct arch tag
+// `demucs`, category `separation`. Scale ~0.50 GB = local convert safe.
+pub mod demucs_htdemucs;
 // ---------------------------------------------------------------------------

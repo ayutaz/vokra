@@ -2163,6 +2163,36 @@ pub enum ModelKind {
     /// decoder + greedy decode) deferred to owner sign-off
     /// (`docs/license-audit.md` §3.1).
     MoonshineBase,
+    /// **Demucs (HT-Demucs)** (`facebook/demucs`, **MIT**) safetensors →
+    /// GGUF (Wave residual, 2026-08-02). Meta's hybrid transformer Demucs
+    /// (Rouard et al. 2023, arXiv:2211.08553) = U-Net waveform branch +
+    /// spectrogram branch joined by cross-domain self-attention,
+    /// **4-source music separation** (drums / bass / other / vocals —
+    /// MUSDB18 stem taxonomy). **Distinct from siblings
+    /// [`Self::SepformerWsj02mix`] et al. and [`Self::TigerSeparator`]** —
+    /// SepFormer is waveform-only dual-path Transformer for speech
+    /// mixtures, TIGER is a time-frequency dual-branch dialog/effects/music
+    /// separator; HT-Demucs is a hybrid waveform+spectrogram U-Net +
+    /// transformer targeting music. Silently sharing arch tags across
+    /// these three would misroute runtime dispatch at the separator
+    /// masker head (different output branching, different internal
+    /// representation domain) — FR-EX-08 (no silent op-shape misroute)
+    /// requires the distinct `demucs` arch tag. Category `separation`
+    /// shared with the SepFormer / TIGER separator siblings. License
+    /// **MIT** → [`vokra_core::LicenseClass::Permissive`] default, sibling
+    /// to the Whisper / piper-plus / Silero / CAM++ / Moonshine first-
+    /// party Permissive posture (upstream GitHub `LICENSE` primary source
+    /// per memory `[[feedback-license-signoff-primary-source]]` — HF
+    /// mirror returned 401 on the 2026-08-02 residual walk). Scale
+    /// ~0.50 GB = local convert safe on M1 iMac 16 GB (well below the
+    /// vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
+    /// skeleton mirror of sibling `moonshine_base.rs` / `musicgen_small.rs`
+    /// / `hubert_large_ls960.rs` / `openwakeword.rs`. Runtime binder
+    /// (hybrid U-Net waveform branch + spectrogram branch + cross-domain
+    /// self-attention + `separate_masks` audio op emit) deferred to owner
+    /// sign-off (`docs/license-audit.md` §3.1).
+    DemucsHtdemucs,
 }
 
 impl ModelKind {
@@ -3253,6 +3283,22 @@ impl ModelKind {
             | "usefulsensors-moonshine-base"
             | "usefulsensors/moonshine-base"
             | "UsefulSensors/moonshine-base" => Some(Self::MoonshineBase),
+            // 2026-08-02 Wave residual: Demucs (HT-Demucs) (facebook/demucs,
+            // MIT). Hybrid transformer Demucs (Rouard et al. 2023, arXiv:
+            // 2211.08553) — U-Net waveform branch + spectrogram branch +
+            // cross-domain self-attention, 4-source music separation
+            // (drums / bass / other / vocals). Distinct arch tag `demucs`
+            // from sibling SepFormer / TIGER separator siblings (different
+            // internal domain + different output branching — FR-EX-08
+            // forbids silent misroute across separator families). Accept
+            // the canonical name spelling with hyphen / underscore
+            // variants + the HF org/name path.
+            "demucs-htdemucs"
+            | "demucs_htdemucs"
+            | "htdemucs"
+            | "ht-demucs"
+            | "facebook-demucs"
+            | "facebook/demucs" => Some(Self::DemucsHtdemucs),
             _ => None,
         }
     }
@@ -3393,6 +3439,7 @@ impl ModelKind {
             Self::Openwakeword => "openwakeword",
             Self::MoonshineTiny => "moonshine-tiny",
             Self::MoonshineBase => "moonshine-base",
+            Self::DemucsHtdemucs => "demucs-htdemucs",
         }
     }
 }
@@ -5991,6 +6038,37 @@ pub fn convert_file_licensed(
                  {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
                  from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU; sibling \
                  Moonshine-Tiny same arch, wider/deeper backbone)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === DemucsHtdemucs (2026-08-02 Wave residual, music source separation) ===
+        ModelKind::DemucsHtdemucs => {
+            // HT-Demucs (facebook/demucs, MIT). Hybrid transformer Demucs
+            // (Rouard et al. 2023, arXiv:2211.08553) — U-Net waveform
+            // branch + spectrogram branch + cross-domain self-attention,
+            // 4-source music separation. Distinct arch tag `demucs` from
+            // sibling SepFormer / TIGER separators (different internal
+            // domain + different output branching — FR-EX-08 forbids
+            // silent misroute across separator families). BF16 pass-
+            // through skeleton mirror of sibling moonshine_base /
+            // musicgen_small / hubert_large_ls960 / openwakeword. Default
+            // license `mit` + Permissive (Whisper / piper-plus / Silero /
+            // CAM++ / Moonshine first-party posture). Scale ~0.50 GB =
+            // local convert safe on M1 iMac 16 GB.
+            let report =
+                models::demucs_htdemucs::convert_demucs_htdemucs_file(input, output, license)?;
+            let notes = vec![format!(
+                "demucs-htdemucs: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive — distinct arch tag `demucs` \
+                 from sibling SepFormer / TIGER separators: hybrid U-Net waveform + \
+                 spectrogram branch + cross-domain self-attention, 4-source music separation)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
