@@ -131,6 +131,15 @@ pub(crate) const ARCH: &str = "moss_tts";
 /// downstream can pick a load path without inspecting the arch.
 pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 pub(crate) const MODEL_CATEGORY: &str = "tts";
+/// Category stamp for the MOSS-Audio-4B-Instruct sibling
+/// (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Distinct from
+/// the sibling `tts` variants because the "-Instruct" release is an
+/// audio-LLM (custom `configuration_moss_audio.py` module), matching
+/// the `s2s` category the sibling audio-LLM converters
+/// (`kimi_audio` / `baichuan_audio` / `step_audio2_mini`) already
+/// stamp. Selected per-variant via [`MossTtsVariant::category`] so the
+/// existing 4 `tts` variants keep their current stamp byte-for-byte.
+pub(crate) const MODEL_CATEGORY_S2S: &str = "s2s";
 
 /// Upstream HF repository slug written under `vokra.provenance.upstream_hf`
 /// — preserves upstream casing.
@@ -141,6 +150,15 @@ pub(crate) const UPSTREAM_HF_MOSS_TTS: &str = "OpenMOSS-Team/MOSS-TTS";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_V15: &str = "OpenMOSS-Team/MOSS-TTS-v1.5";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_NANO: &str = "OpenMOSS-Team/MOSS-TTS-Nano-100M";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_LOCAL: &str = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5";
+/// MOSS-Audio-4B-Instruct HF release slug
+/// (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Distinct
+/// upstream sibling that shares the moss_tts family arch tag (this
+/// converter is reused per the parent workflow's REUSE HINT), but is
+/// a 4B audio-LLM custom-code release
+/// (`configuration_moss_audio.py`, `trust_remote_code=True`) rather
+/// than one of the four `moss_tts_*` (Delay / Nano / Local) tts
+/// releases.
+pub(crate) const UPSTREAM_HF_MOSS_AUDIO_4B_INSTRUCT: &str = "OpenMOSS-Team/MOSS-Audio-4B-Instruct";
 
 /// Per-variant `vokra.model.name` stamps (canonical, lower-cased HF slug
 /// tail — mirrors the Qwen3-TTS / Chatterbox naming convention).
@@ -148,6 +166,9 @@ pub(crate) const NAME_MOSS_TTS: &str = "moss-tts";
 pub(crate) const NAME_MOSS_TTS_V15: &str = "moss-tts-v1.5";
 pub(crate) const NAME_MOSS_TTS_NANO: &str = "moss-tts-nano-100m";
 pub(crate) const NAME_MOSS_TTS_LOCAL: &str = "moss-tts-local-transformer-v1.5";
+/// `vokra.model.name` stamp for MOSS-Audio-4B-Instruct — the
+/// lower-cased HF slug tail, matching the sibling naming convention.
+pub(crate) const NAME_MOSS_AUDIO_4B_INSTRUCT: &str = "moss-audio-4b-instruct";
 
 // ─── vokra.moss_tts.* metadata keys ──────────────────────────────────
 
@@ -316,6 +337,28 @@ pub(crate) enum MossTtsVariant {
     /// `moss_tts_local` release (Qwen3-flavour 2.5B + GPT-2 local
     /// head).
     Local,
+    /// `OpenMOSS-Team/MOSS-Audio-4B-Instruct` — a distinct 4B
+    /// **audio-LLM** sibling (custom `configuration_moss_audio.py`
+    /// module, `trust_remote_code=True`), reusing this converter per
+    /// the parent workflow's REUSE HINT rather than a fresh
+    /// `models/*.rs` module.
+    ///
+    /// **PLACEHOLDER HPARAMS**: The 4B model is not one of the four
+    /// `moss_tts_{delay,nano,local}` releases whose axes are
+    /// primary-source-transcribed here. The selector methods route
+    /// AudioInstruct4b to the sibling `Local` (Qwen3-flavour 2.5B)
+    /// axes as the closest-family placeholder while the parent-workflow
+    /// task discipline forbids downloading the ~8 GB safetensors + the
+    /// upstream `configuration_moss_audio.py` for transcription. A
+    /// follow-up wave must land the true axes (config.json +
+    /// `configuration_moss_audio.py` inspection) before any downstream
+    /// loader can trust the emitted hparams. The **provenance** stamp
+    /// (NAME + upstream_hf + license = apache-2.0 Permissive +
+    /// category = `s2s`) is faithful — only the axis hparams are
+    /// placeholder. The distinct `vokra.moss_tts.variant = "audio_4b"`
+    /// tag lets a runtime dispatcher recognise this artifact and
+    /// refuse to bind the placeholder axes until the follow-up lands.
+    AudioInstruct4b,
 }
 
 impl MossTtsVariant {
@@ -325,6 +368,10 @@ impl MossTtsVariant {
             Self::Delay | Self::DelayV15 => "delay",
             Self::Nano => "nano",
             Self::Local => "local",
+            // Distinct tag so a runtime dispatcher can distinguish the
+            // audio-LLM sibling from the four `moss_tts_*` tts releases
+            // and refuse to bind placeholder axes.
+            Self::AudioInstruct4b => "audio_4b",
         }
     }
 
@@ -335,6 +382,7 @@ impl MossTtsVariant {
             Self::DelayV15 => NAME_MOSS_TTS_V15,
             Self::Nano => NAME_MOSS_TTS_NANO,
             Self::Local => NAME_MOSS_TTS_LOCAL,
+            Self::AudioInstruct4b => NAME_MOSS_AUDIO_4B_INSTRUCT,
         }
     }
 
@@ -345,13 +393,26 @@ impl MossTtsVariant {
             Self::DelayV15 => UPSTREAM_HF_MOSS_TTS_V15,
             Self::Nano => UPSTREAM_HF_MOSS_TTS_NANO,
             Self::Local => UPSTREAM_HF_MOSS_TTS_LOCAL,
+            Self::AudioInstruct4b => UPSTREAM_HF_MOSS_AUDIO_4B_INSTRUCT,
+        }
+    }
+
+    /// Model category stamp for this variant. `tts` for the four
+    /// `moss_tts_*` sibling releases; `s2s` for the audio-LLM
+    /// [`Self::AudioInstruct4b`] sibling (matching the category the
+    /// sibling audio-LLM converters `kimi_audio` / `baichuan_audio` /
+    /// `step_audio2_mini` already stamp).
+    pub(crate) const fn category(self) -> &'static str {
+        match self {
+            Self::Delay | Self::DelayV15 | Self::Nano | Self::Local => MODEL_CATEGORY,
+            Self::AudioInstruct4b => MODEL_CATEGORY_S2S,
         }
     }
 
     /// Backbone family tag written under `vokra.moss_tts.llm.family`.
     pub(crate) const fn llm_family(self) -> &'static str {
         match self {
-            Self::Delay | Self::DelayV15 | Self::Local => "qwen3",
+            Self::Delay | Self::DelayV15 | Self::Local | Self::AudioInstruct4b => "qwen3",
             Self::Nano => "gpt2",
         }
     }
@@ -366,84 +427,84 @@ impl MossTtsVariant {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_N_VQ,
             Self::Nano => NANO_N_VQ,
-            Self::Local => LOCAL_N_VQ,
+            Self::Local | Self::AudioInstruct4b => LOCAL_N_VQ,
         }
     }
     pub(crate) const fn audio_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_AUDIO_VOCAB_SIZE,
             Self::Nano => NANO_AUDIO_VOCAB_SIZE,
-            Self::Local => LOCAL_AUDIO_VOCAB_SIZE,
+            Self::Local | Self::AudioInstruct4b => LOCAL_AUDIO_VOCAB_SIZE,
         }
     }
     pub(crate) const fn sample_rate(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_SAMPLE_RATE,
             Self::Nano => NANO_SAMPLE_RATE,
-            Self::Local => LOCAL_SAMPLE_RATE,
+            Self::Local | Self::AudioInstruct4b => LOCAL_SAMPLE_RATE,
         }
     }
     pub(crate) const fn llm_hidden_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HIDDEN,
             Self::Nano => NANO_LLM_HIDDEN,
-            Self::Local => LOCAL_LLM_HIDDEN,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_HIDDEN,
         }
     }
     pub(crate) const fn llm_ffn_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_FFN,
             Self::Nano => NANO_LLM_FFN,
-            Self::Local => LOCAL_LLM_FFN,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_FFN,
         }
     }
     pub(crate) const fn llm_n_layer(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_LAYER,
             Self::Nano => NANO_LLM_N_LAYER,
-            Self::Local => LOCAL_LLM_N_LAYER,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_N_LAYER,
         }
     }
     pub(crate) const fn llm_n_head(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD,
             Self::Nano => NANO_LLM_N_HEAD,
-            Self::Local => LOCAL_LLM_N_HEAD,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_N_HEAD,
         }
     }
     pub(crate) const fn llm_n_head_kv(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD_KV,
             Self::Nano => NANO_LLM_N_HEAD_KV,
-            Self::Local => LOCAL_LLM_N_HEAD_KV,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_N_HEAD_KV,
         }
     }
     pub(crate) const fn llm_head_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HEAD_DIM,
             Self::Nano => NANO_LLM_HEAD_DIM,
-            Self::Local => LOCAL_LLM_HEAD_DIM,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_HEAD_DIM,
         }
     }
     pub(crate) const fn llm_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_VOCAB,
             Self::Nano => NANO_LLM_VOCAB,
-            Self::Local => LOCAL_LLM_VOCAB,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_VOCAB,
         }
     }
     pub(crate) const fn llm_rope_base(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_ROPE_BASE,
             Self::Nano => NANO_LLM_ROPE_BASE,
-            Self::Local => LOCAL_LLM_ROPE_BASE,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_ROPE_BASE,
         }
     }
     pub(crate) const fn llm_rms_norm_eps(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_RMS_NORM_EPS,
             Self::Nano => NANO_LLM_RMS_NORM_EPS,
-            Self::Local => LOCAL_LLM_RMS_NORM_EPS,
+            Self::Local | Self::AudioInstruct4b => LOCAL_LLM_RMS_NORM_EPS,
         }
     }
 }
@@ -488,7 +549,7 @@ pub(crate) fn convert_variant(
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, variant.name());
-    b.add_string(KEY_MODEL_CATEGORY, MODEL_CATEGORY);
+    b.add_string(KEY_MODEL_CATEGORY, variant.category());
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
     write_hparams(&mut b, variant);
     // Self-describing redistribution: the artifact carries its own
@@ -509,6 +570,9 @@ pub(crate) fn convert_variant(
         }
         MossTtsVariant::Local => {
             "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (moss_tts_local, Qwen3-2.5B backbone, apache-2.0)"
+        }
+        MossTtsVariant::AudioInstruct4b => {
+            "OpenMOSS-Team/MOSS-Audio-4B-Instruct (configuration_moss_audio.py custom-code audio-LLM, apache-2.0; placeholder axes = Local family)"
         }
     };
     vokra_core::stamp_provenance(
@@ -580,6 +644,7 @@ pub fn convert_moss_tts_file(
                 MossTtsVariant::DelayV15 => "OpenMOSS-Team/MOSS-TTS-v1.5",
                 MossTtsVariant::Nano => "OpenMOSS-Team/MOSS-TTS-Nano-100M",
                 MossTtsVariant::Local => "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+                MossTtsVariant::AudioInstruct4b => "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
             }),
         );
     }
@@ -755,25 +820,31 @@ mod tests {
     #[test]
     fn variant_name_stamps_are_distinct_and_lowercase() {
         // Each variant carries a unique NAME; a runtime that ships the
-        // GGUFs side-by-side must be able to tell them apart.
+        // GGUFs side-by-side must be able to tell them apart. The four
+        // sibling `moss_tts_*` variants start with `moss-tts`; the
+        // audio-LLM sibling [`MossTtsVariant::AudioInstruct4b`] starts
+        // with `moss-audio` (distinct HF release family — reuses this
+        // converter per the parent workflow's REUSE HINT but keeps
+        // its own upstream identity in the emitted GGUF).
         let names = [
             MossTtsVariant::Delay.name(),
             MossTtsVariant::DelayV15.name(),
             MossTtsVariant::Nano.name(),
             MossTtsVariant::Local.name(),
+            MossTtsVariant::AudioInstruct4b.name(),
         ];
         for n in names.iter() {
             assert_eq!(n.to_ascii_lowercase(), *n, "NAME must be lower-case: {n}");
             assert!(
-                n.starts_with("moss-tts"),
-                "NAME must start with moss-tts: {n}"
+                n.starts_with("moss-tts") || n.starts_with("moss-audio-"),
+                "NAME must start with moss-tts or moss-audio-: {n}"
             );
         }
-        // Distinctness: 4 variants, 4 unique names.
+        // Distinctness: 5 variants, 5 unique names.
         let mut seen: Vec<&str> = names.to_vec();
         seen.sort();
         seen.dedup();
-        assert_eq!(seen.len(), 4, "every variant must have a unique NAME");
+        assert_eq!(seen.len(), 5, "every variant must have a unique NAME");
     }
 
     #[test]
@@ -933,6 +1004,80 @@ mod tests {
     }
 
     #[test]
+    fn audio_instruct_4b_round_trip_stamps_audio_llm_provenance() {
+        // MOSS-Audio-4B-Instruct reuses this converter per the parent
+        // workflow's REUSE HINT (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`,
+        // apache-2.0, 3 shards ~8 GB BF16, custom_code=True via
+        // configuration_moss_audio.py — parent task manifest 2026-08-02).
+        // The provenance triple (NAME + upstream_hf + license = Permissive)
+        // + category = `s2s` + `vokra.moss_tts.variant = "audio_4b"` sub-arch
+        // tag are the invariants a runtime dispatcher relies on to route
+        // this artifact away from the four `moss_tts_*` tts variants and
+        // refuse to bind the placeholder axes until the follow-up wave
+        // lands the primary-source hparam transcription.
+        let file = round_trip(MossTtsVariant::AudioInstruct4b);
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME_MOSS_AUDIO_4B_INSTRUCT)
+        );
+        // Category diverges from the sibling tts variants — this
+        // release is an audio-LLM, matching kimi_audio / baichuan_audio /
+        // step_audio2_mini which all stamp `s2s`.
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(MODEL_CATEGORY_S2S)
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF_MOSS_AUDIO_4B_INSTRUCT)
+        );
+        // Distinct sub-arch tag lets a downstream dispatcher tell this
+        // sibling apart from the four tts variants.
+        assert_eq!(
+            file.get(KEY_MOSS_VARIANT).and_then(|v| v.as_str()),
+            Some("audio_4b")
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_LLM_FAMILY).and_then(|v| v.as_str()),
+            Some("qwen3")
+        );
+        // Provenance license: apache-2.0 Permissive.
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("apache-2.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str())
+        );
+        // Sibling tts variants keep their `tts` category unchanged.
+        for tts_variant in [
+            MossTtsVariant::Delay,
+            MossTtsVariant::DelayV15,
+            MossTtsVariant::Nano,
+            MossTtsVariant::Local,
+        ] {
+            let sibling = round_trip(tts_variant);
+            assert_eq!(
+                sibling.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+                Some(MODEL_CATEGORY),
+                "{tts_variant:?}: tts category must be preserved byte-for-byte"
+            );
+        }
+        // Tensor written verbatim.
+        let info = file.tensor_info("embed.weight").expect("F32 present");
+        assert_eq!(info.dtype, GgmlType::F32);
+        assert_eq!(info.dimensions, vec![2, 3]);
+    }
+
+    #[test]
     fn delay_v15_round_trip_stamps_v15_name_but_shares_delay_axes() {
         let file = round_trip(MossTtsVariant::DelayV15);
         // NAME is the v1.5 stamp.
@@ -959,7 +1104,9 @@ mod tests {
 
     #[test]
     fn bf16_pass_through_works_for_every_variant() {
-        // Real MOSS-TTS releases ship BF16 (Delay + v1.5 + Local).
+        // Real MOSS-TTS releases ship BF16 (Delay + v1.5 + Local +
+        // MOSS-Audio-4B-Instruct — 3 shards ~8 GB BF16 per parent
+        // task manifest 2026-08-02).
         // Every variant must land BF16 on the pass-through arm with
         // byte-identical payload.
         let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
@@ -974,6 +1121,7 @@ mod tests {
             MossTtsVariant::DelayV15,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
+            MossTtsVariant::AudioInstruct4b,
         ] {
             let (builder, report) = convert_variant(input.clone(), variant).expect("BF16 convert");
             assert_eq!(report.read, 1);
@@ -1028,6 +1176,7 @@ mod tests {
             MossTtsVariant::Delay,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
+            MossTtsVariant::AudioInstruct4b,
         ] {
             let (_, report) = convert_variant(input.clone(), variant).expect("mixed convert");
             assert_eq!(

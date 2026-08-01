@@ -477,6 +477,22 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "moss-audio-tokenizer-nano": [
         "MOSS-Audio-Tokenizer (Nano) (`OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`)"
     ],
+    # 2026-08-02 wave — OpenMOSS Team MOSS-Audio-4B-Instruct
+    # (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Distinct 4B
+    # audio-LLM sibling of the four `moss_tts_*` releases already covered
+    # under `moss_tts` in CONVERTER_TO_SIGNOFF_ROWS; reuses that same
+    # Rust converter via the new `MossTtsVariant::AudioInstruct4b` arm
+    # per the parent workflow's REUSE HINT. Custom-code release
+    # (`configuration_moss_audio.py`, `trust_remote_code=True`), 3
+    # shards ~8 GB BF16. **Placeholder row heading** — the §3.1 row is
+    # added in a separate post-workflow batch per parent workflow
+    # discipline (`docs/license-audit.md` untouched in this wave). The
+    # heading string here matches the sibling MOSS-TTS row-heading
+    # style byte-for-byte so a future §3.1 land closes the loop
+    # without any further edit to this file.
+    "moss-audio-4b-instruct": [
+        "MOSS-Audio-4B-Instruct (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`)"
+    ],
     # 2026-08-01 Wave 4 slug-only add: OpenMOSS Team MOSS-VoiceGenerator
     # (`OpenMOSS-Team/MOSS-VoiceGenerator`, apache-2.0). Distinct HF publish
     # target from the `moss_tts` family (`OpenMOSS-Team/MOSS-TTS[-v1.5|
@@ -980,6 +996,14 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "MOSS-TTS-v1.5 (`OpenMOSS-Team/MOSS-TTS-v1.5`)",
         "MOSS-TTS-Nano-100M (`OpenMOSS-Team/MOSS-TTS-Nano-100M`)",
         "MOSS-TTS-Local-Transformer-v1.5 (`OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`)",
+        # 2026-08-02 wave — MOSS-Audio-4B-Instruct
+        # (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`) reuses this converter
+        # per the parent workflow's REUSE HINT via the new
+        # `MossTtsVariant::AudioInstruct4b` arm. Placeholder row heading;
+        # `docs/license-audit.md` §3.1 row is landed in a separate
+        # post-workflow batch (this file is what the check-converter-signoff.sh
+        # gate reads, so the mapping is landed here in this wave).
+        "MOSS-Audio-4B-Instruct (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`)",
     ],
     "mp_senet": ["MP-SENet DNS (`JacobLinCool/MP-SENet-DNS`)"],
     "nemotron_asr": [

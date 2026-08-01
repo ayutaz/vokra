@@ -762,6 +762,26 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "moss_audio_tokenizer_nano"
         | "openmoss-team/moss-audio-tokenizer"
         | "openmoss-team/moss-audio-tokenizer-nano" => LicenseClass::Permissive,
+        // 2026-08-02 wave: OpenMOSS Team MOSS-Audio-4B-Instruct
+        // (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`) — the 4B audio-LLM
+        // sibling of the four `moss_tts_*` releases. Custom-code
+        // release (`configuration_moss_audio.py`,
+        // `trust_remote_code=True`) distinct from every existing
+        // `moss-tts` prefix arm below (`moss-audio-4b` does NOT start
+        // with `moss-tts`) and from the `moss-audio-tokenizer` codec
+        // family above. Weight license = **apache-2.0** end-to-end
+        // per parent workflow task manifest (2026-08-02). Registered
+        // as an explicit exact-match arm so an id lookup returns
+        // quickly and so a hypothetical sibling id like
+        // `moss-audio-something-else` cannot silently inherit the
+        // classification without explicit review — fail-closed
+        // default via the outer `Unknown` arm.
+        "moss-audio-4b-instruct"
+        | "moss_audio_4b_instruct"
+        | "moss-audio-4b"
+        | "moss_audio_4b"
+        | "openmoss-team/moss-audio-4b-instruct"
+        | "openmoss-team/moss-audio-4b" => LicenseClass::Permissive,
         // 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec — factorized
         // VQ (FVQ) codec (`amphion/naturalspeech3_facodec`). Weight
         // license = **apache-2.0** end-to-end (HF cardData API + Amphion
