@@ -210,6 +210,18 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # the audit doc is updated in a post-workflow batch. Scale ~0.25 GB
     # = local convert safe on M1 iMac (well below vast.ai ≥8 GB cutoff).
     "moonshine-base": ["Moonshine-Base (`UsefulSensors/moonshine-base`)"],
+    # 2026-08-02 Wave residual: Ultravox v0.5 (Llama-3.2-1B) (fixie-ai,
+    # MIT). Audio-text-to-text multimodal = Llama-3.2-1B decoder +
+    # Whisper encoder + projection adapter. Distinct arch tag `ultravox`
+    # from sibling Voxtral (Mistral decoder) / Qwen2-Audio (Qwen2 decoder)
+    # — the decoder backbone fixes tensor layout + tokenizer + rope base,
+    # so FR-EX-08 forbids silent shape misroute across the three.
+    # Placeholder row — the row heading MUST match `docs/license-audit.md`
+    # §3.1 byte-for-byte once the audit doc is updated in a post-workflow
+    # batch. Scale ~1.83 GB = local convert safe on M1 iMac.
+    "ultravox-v0-5-llama-3-2-1b": [
+        "Ultravox v0.5 (Llama-3.2-1B) (`fixie-ai/ultravox-v0_5-llama-3_2-1b`)"
+    ],
     # NOTE: bs-roformer is intentionally NOT registered here — §3.1
     # sign-off is ☑ Rejected (Wave 7 CC-fill) = double fail-closed
     # (Rejected in audit + UNKNOWN_REPO here). owner can add the entry
@@ -752,6 +764,12 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # 2026-08-02 Wave residual converter (`demucs_htdemucs.rs`) — Meta
     # HT-Demucs hybrid transformer 4-source music separation, MIT.
     "demucs_htdemucs": ["HT-Demucs (`facebook/demucs`)"],
+    # 2026-08-02 Wave residual converter (`ultravox_v0_5_llama_3_2_1b.rs`)
+    # — fixie-ai Ultravox v0.5 audio-text-to-text multimodal (Llama-3.2-1B
+    # + Whisper encoder + projection adapter), MIT.
+    "ultravox_v0_5_llama_3_2_1b": [
+        "Ultravox v0.5 (Llama-3.2-1B) (`fixie-ai/ultravox-v0_5-llama-3_2-1b`)"
+    ],
     # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
     # (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Doubly-restrictive
     # NonCommercialShareAlike default (NC gate + SA cascade). The

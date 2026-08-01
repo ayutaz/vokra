@@ -970,6 +970,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "htdemucs"
         | "ht-demucs"
         | "facebook/demucs" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual — Ultravox v0.5 (Llama-3.2-1B)
+        // (`fixie-ai/ultravox-v0_5-llama-3_2-1b`, MIT). Audio-text-to-text
+        // multimodal = Llama-3.2-1B decoder + Whisper encoder + projection
+        // adapter. Weight license = **MIT** per HF cardData (SoTA scope-
+        // expansion 2026-07-30 canary sweep). Sibling to the first-party
+        // Whisper / piper-plus / Silero / CAM++ / Moonshine Permissive
+        // posture. Distinct arch tag `ultravox` from sibling Voxtral
+        // (Mistral decoder) / Qwen2-Audio (Qwen2 decoder) — the decoder
+        // backbone fixes tensor layout + tokenizer + rope base, so FR-EX-08
+        // forbids silent shape misroute across the three families.
+        "ultravox"
+        | "ultravox-v0-5-llama-3-2-1b"
+        | "ultravox_v0_5_llama_3_2_1b"
+        | "ultravox-v0_5-llama-3_2-1b"
+        | "fixie-ai/ultravox-v0_5-llama-3_2-1b"
+        | "vokra/ultravox-v0-5-llama-3-2-1b" => LicenseClass::Permissive,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike

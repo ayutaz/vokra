@@ -703,4 +703,15 @@ pub mod moonshine_base;
 // TIGER (time-frequency dual-branch) siblings; distinct arch tag
 // `demucs`, category `separation`. Scale ~0.50 GB = local convert safe.
 pub mod demucs_htdemucs;
+// 2026-08-02 Wave residual: fixie-ai/ultravox-v0_5-llama-3_2-1b (MIT).
+// Ultravox v0.5 (Llama-3.2-1B) — audio-text-to-text multimodal model =
+// Llama-3.2-1B decoder + Whisper encoder + lightweight projection adapter.
+// Both underlying arches (Llama + Whisper) already supported by sibling
+// converters + runtime primitives; new wiring is the adapter projection +
+// multimodal prompt template (runtime-side, not converter-side). Distinct
+// arch tag `ultravox` from sibling Voxtral (Mistral decoder) / Qwen2-Audio
+// (Qwen2 decoder) — the decoder backbone fixes tensor layout + tokenizer +
+// rope base, so FR-EX-08 forbids silent shape misroute across the three.
+// Category `audio-llm`. Scale ~1.83 GB = local convert safe.
+pub mod ultravox_v0_5_llama_3_2_1b;
 // ---------------------------------------------------------------------------

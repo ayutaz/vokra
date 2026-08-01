@@ -2193,6 +2193,23 @@ pub enum ModelKind {
     /// self-attention + `separate_masks` audio op emit) deferred to owner
     /// sign-off (`docs/license-audit.md` §3.1).
     DemucsHtdemucs,
+    /// **Ultravox v0.5 (Llama-3.2-1B)** (`fixie-ai/ultravox-v0_5-llama-3_2-1b`,
+    /// **MIT**) safetensors checkpoint (Wave residual, 2026-08-02). Ultravox
+    /// v0.5 = audio-text-to-text multimodal model combining a Llama-3.2-1B
+    /// decoder with a Whisper encoder + lightweight projection adapter.
+    /// Both underlying arches (Llama + Whisper) already supported by sibling
+    /// converters + runtime primitives; new wiring is the adapter projection
+    /// + multimodal prompt template (runtime-side, not converter-side).
+    /// Distinct arch tag `ultravox` from sibling [`Self::Voxtral`] (Mistral
+    /// decoder) / [`Self::Qwen2Audio`] (Qwen2 decoder) — the decoder backbone
+    /// fixes tensor layout + tokenizer + rope base, so FR-EX-08 forbids
+    /// silent shape misroute across the three. Category `audio-llm`. Scale
+    /// ~1.83 GB = local convert safe on M1 iMac 16 GB (well below the
+    /// vast.ai ≥8 GB cutoff). BF16 pass-through skeleton mirror of sibling
+    /// `demucs_htdemucs.rs` / `moonshine_base.rs` / `musicgen_small.rs` /
+    /// `hubert_large_ls960.rs` / `openwakeword.rs`. Runtime binder deferred
+    /// to owner sign-off (`docs/license-audit.md` §3.1).
+    UltravoxV05Llama321b,
 }
 
 impl ModelKind {
@@ -3299,6 +3316,21 @@ impl ModelKind {
             | "ht-demucs"
             | "facebook-demucs"
             | "facebook/demucs" => Some(Self::DemucsHtdemucs),
+            // 2026-08-02 Wave residual: Ultravox v0.5 (Llama-3.2-1B)
+            // (`fixie-ai/ultravox-v0_5-llama-3_2-1b`, MIT). Audio-text-to-
+            // text multimodal = Llama-3.2-1B decoder + Whisper encoder +
+            // projection adapter. Distinct arch tag `ultravox` from sibling
+            // Voxtral / Qwen2-Audio (different decoder backbone fixes
+            // tensor layout + tokenizer + rope base — FR-EX-08 forbids
+            // silent shape misroute). Accept the arch tag (both underscore
+            // and hyphen), the family-name spellings, and the canonical HF
+            // release id.
+            "ultravox"
+            | "ultravox-v0-5-llama-3-2-1b"
+            | "ultravox_v0_5_llama_3_2_1b"
+            | "ultravox-v0_5-llama-3_2-1b"
+            | "fixie-ai-ultravox-v0_5-llama-3_2-1b"
+            | "fixie-ai/ultravox-v0_5-llama-3_2-1b" => Some(Self::UltravoxV05Llama321b),
             _ => None,
         }
     }
@@ -3440,6 +3472,7 @@ impl ModelKind {
             Self::MoonshineTiny => "moonshine-tiny",
             Self::MoonshineBase => "moonshine-base",
             Self::DemucsHtdemucs => "demucs-htdemucs",
+            Self::UltravoxV05Llama321b => "ultravox-v0-5-llama-3-2-1b",
         }
     }
 }
@@ -6069,6 +6102,43 @@ pub fn convert_file_licensed(
                  {} non-float skipped (mit default, Permissive — distinct arch tag `demucs` \
                  from sibling SepFormer / TIGER separators: hybrid U-Net waveform + \
                  spectrogram branch + cross-domain self-attention, 4-source music separation)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === UltravoxV05Llama321b (2026-08-02 Wave residual, audio-text-to-text multimodal) ===
+        ModelKind::UltravoxV05Llama321b => {
+            // Ultravox v0.5 (fixie-ai/ultravox-v0_5-llama-3_2-1b, MIT).
+            // Audio-text-to-text multimodal = Llama-3.2-1B decoder + Whisper
+            // encoder + lightweight projection adapter. Both underlying
+            // arches (Llama + Whisper) already supported by sibling
+            // converters + runtime primitives; new wiring is the adapter
+            // projection + multimodal prompt template (runtime-side, not
+            // converter-side). Distinct arch tag `ultravox` from sibling
+            // Voxtral (Mistral decoder) / Qwen2-Audio (Qwen2 decoder) — the
+            // decoder backbone fixes tensor layout + tokenizer + rope base,
+            // so FR-EX-08 forbids silent shape misroute across the three.
+            // BF16 pass-through skeleton mirror of sibling demucs_htdemucs /
+            // moonshine_base / musicgen_small / hubert_large_ls960 /
+            // openwakeword. Default license `mit` + Permissive (Whisper /
+            // piper-plus / Silero / CAM++ / Moonshine first-party posture).
+            // Scale ~1.83 GB = local convert safe on M1 iMac 16 GB.
+            let report =
+                models::ultravox_v0_5_llama_3_2_1b::convert_ultravox_v0_5_llama_3_2_1b_file(
+                    input, output, license,
+                )?;
+            let notes = vec![format!(
+                "ultravox-v0-5-llama-3-2-1b: {} float weights written verbatim \
+                 ({} BF16 passthrough), {} non-float skipped (mit default, Permissive — \
+                 distinct arch tag `ultravox` from sibling Voxtral / Qwen2-Audio: \
+                 Llama-3.2-1B decoder + Whisper encoder + projection adapter, \
+                 audio-text-to-text multimodal — runtime binder deferred to owner sign-off)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
