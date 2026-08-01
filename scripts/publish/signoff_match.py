@@ -182,6 +182,15 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # audit doc is updated in a post-workflow batch. Scale ~0.01 GB =
     # local convert safe on M1 iMac.
     "openwakeword": ["openWakeWord (`dscripka/openWakeWord`)"],
+    # 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors, MIT). 27M
+    # raw-audio transformer enc-dec ASR (arXiv:2410.15608). Distinct arch
+    # tag `moonshine` from sibling Whisper (raw-audio Conv1D front-end +
+    # rotary + SwiGLU vs mel + sinusoidal + GELU). Placeholder row — the
+    # row heading MUST match `docs/license-audit.md` §3.1 byte-for-byte
+    # once the audit doc is updated in a post-workflow batch. Scale
+    # ~0.11 GB = local convert safe on M1 iMac (well below vast.ai
+    # ≥8 GB cutoff).
+    "moonshine-tiny": ["Moonshine-Tiny (`UsefulSensors/moonshine-tiny`)"],
     # NOTE: bs-roformer is intentionally NOT registered here — §3.1
     # sign-off is ☑ Rejected (Wave 7 CC-fill) = double fail-closed
     # (Rejected in audit + UNKNOWN_REPO here). owner can add the entry

@@ -416,6 +416,13 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "pyannote-speaker-diarization-3_1" => LicenseClass::Permissive,
         "kokoro" | "kokoro-82m" | "cosyvoice" | "cosyvoice2" | "sesame-csm" | "csm-1b"
         | "voxtral" | "openwakeword" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors, MIT).
+        // 27M raw-audio transformer enc-dec ASR (arXiv:2410.15608). Weight
+        // license = **MIT** per upstream `UsefulSensors/moonshine-tiny`
+        // model card (Apache-2.0 code + MIT weight release — the model
+        // card canonical spelling). Sibling to the Whisper / piper-plus /
+        // Silero first-party Permissive posture.
+        "moonshine" | "moonshine-tiny" => LicenseClass::Permissive,
         // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B —
         // TTS with the CosyVoice2 topology (Qwen2 LLM + chunk-aware CFM +
         // HiFTNet vocoder). Weight license = **apache-2.0** per the model-

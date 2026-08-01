@@ -684,4 +684,9 @@ pub mod yue_bundle;
 // Distinct arch tag `openwakeword`, category `kws`. Scale ~0.01 GB =
 // local convert safe on M1 iMac (well below vast.ai threshold).
 pub mod openwakeword;
+// 2026-08-02 Wave residual: UsefulSensors/moonshine-tiny (27M raw-audio
+// transformer enc-dec ASR, MIT). Distinct from Whisper: no mel front-end
+// (raw 16 kHz audio via Conv1D stack) + rotary + SwiGLU. Distinct arch
+// tag `moonshine`, category `asr`. Scale ~0.11 GB = local convert safe.
+pub mod moonshine_tiny;
 // ---------------------------------------------------------------------------

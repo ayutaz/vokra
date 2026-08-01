@@ -2291,6 +2291,13 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // via the uniform arch/name/category/upstream_hf/license
         // triple lookup shape below.
         | ModelKind::Openwakeword
+        // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors,
+        // MIT). 27M raw-audio transformer enc-dec ASR (arXiv:
+        // 2410.15608) — distinct arch tag `moonshine` from sibling
+        // Whisper (raw-audio Conv1D front-end + rotary + SwiGLU vs
+        // mel + sinusoidal + GELU). Grouped here for the uniform
+        // arch/name/category/upstream_hf/license triple verify shape.
+        | ModelKind::MoonshineTiny
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

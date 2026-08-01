@@ -2096,6 +2096,29 @@ pub enum ModelKind {
     /// GGUF bridge only; the audio-dialect `kws` op consumes the
     /// artifact in a future WP).
     Openwakeword,
+    /// **Moonshine-Tiny** (`UsefulSensors/moonshine-tiny`, **MIT**)
+    /// safetensors → GGUF (Wave residual, 2026-08-02). 27M-parameter
+    /// transformer encoder-decoder ASR (Jeffries et al. 2024,
+    /// arXiv:2410.15608). **Distinct from sibling [`Self::Whisper`]** in
+    /// two significant ways: (1) **no mel front-end** — the model
+    /// consumes raw 16 kHz audio directly via a learned Conv1D stack
+    /// (bypassing STFT + Mel filterbank), (2) **rotary position encoding
+    /// + SwiGLU** activations rather than Whisper's sinusoidal + GELU.
+    /// Distinct arch tag `moonshine` — silently sharing with
+    /// [`Self::Whisper`] would misroute runtime dispatch at the audio-
+    /// input boundary (raw-audio Conv1D vs Mel encoder), which FR-EX-08
+    /// (no silent op-shape misroute) forbids. Category `asr` shared
+    /// with the Whisper family. License **MIT** →
+    /// [`vokra_core::LicenseClass::Permissive`] default, sibling to the
+    /// Whisper / piper-plus / Silero / CAM++ first-party Permissive
+    /// posture. Scale ~0.11 GB = local convert safe on M1 iMac 16 GB
+    /// (well below the vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
+    /// skeleton mirror of sibling `musicgen_small.rs` /
+    /// `hubert_large_ls960.rs` / `openwakeword.rs`. Runtime binder (raw-
+    /// audio Conv1D + rotary + SwiGLU encoder-decoder + greedy decode)
+    /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+    MoonshineTiny,
 }
 
 impl ModelKind {
@@ -3161,6 +3184,17 @@ impl ModelKind {
             | "dscripka-openwakeword"
             | "dscripka/openwakeword"
             | "dscripka/openWakeWord" => Some(Self::Openwakeword),
+            // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors,
+            // MIT). 27M raw-audio transformer enc-dec ASR (arXiv:
+            // 2410.15608). Distinct arch tag `moonshine`. Accept the
+            // arch tag, the family-name spelling, hyphen / underscore
+            // variants, and the canonical HF org/name path.
+            "moonshine"
+            | "moonshine-tiny"
+            | "moonshine_tiny"
+            | "usefulsensors-moonshine-tiny"
+            | "usefulsensors/moonshine-tiny"
+            | "UsefulSensors/moonshine-tiny" => Some(Self::MoonshineTiny),
             _ => None,
         }
     }
@@ -3298,6 +3332,7 @@ impl ModelKind {
             Self::AudioLdm2 => "audioldm2",
             Self::BsRoformer => "bs-roformer",
             Self::Openwakeword => "openwakeword",
+            Self::MoonshineTiny => "moonshine-tiny",
         }
     }
 }
@@ -5834,6 +5869,35 @@ pub fn convert_file_licensed(
                 "openwakeword: {} float weights written verbatim ({} BF16 passthrough), \
                  {} non-float skipped (apache-2.0 default, Permissive — audio-dialect \
                  `kws` op entry per FR-OP; distinct arch tag `openwakeword`, category `kws`)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MoonshineTiny (2026-08-02 Wave residual, raw-audio ASR) ===
+        ModelKind::MoonshineTiny => {
+            // Moonshine-Tiny (UsefulSensors, MIT). 27M transformer enc-
+            // dec ASR with raw-audio Conv1D front-end (no mel) + rotary
+            // + SwiGLU (Jeffries et al. 2024, arXiv:2410.15608). Distinct
+            // arch tag `moonshine` from sibling Whisper (different audio
+            // input path + different attention/MLP variants) — silently
+            // sharing would misroute runtime dispatch at the audio-input
+            // boundary (FR-EX-08). BF16 pass-through skeleton mirror of
+            // sibling musicgen_small / hubert_large_ls960 / openwakeword.
+            // Default license `mit` + Permissive (Whisper / piper-plus /
+            // Silero / CAM++ first-party posture). Scale ~0.11 GB =
+            // local convert safe on M1 iMac 16 GB.
+            let report =
+                models::moonshine_tiny::convert_moonshine_tiny_file(input, output, license)?;
+            let notes = vec![format!(
+                "moonshine-tiny: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
+                 from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
