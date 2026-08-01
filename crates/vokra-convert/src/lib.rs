@@ -2404,6 +2404,36 @@ pub enum ModelKind {
     /// parity + a native `ConvTasNet::from_gguf` forward path are
     /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
     ConvTasnetLibri1mix,
+    /// **Seamless-M4T-v2-Large** (`facebook/seamless-m4t-v2-large`,
+    /// **cc-by-nc-4.0**) safetensors (Wave residual, 2026-08-02). Meta
+    /// SeamlessM4T v2 flagship 2.3B parameter unified any-to-any speech-
+    /// and-text translation model — ASR + T2TT + S2TT + T2ST + S2ST
+    /// across ~100 source / ~35 target speech languages (Communication
+    /// et al. 2023, arXiv:2312.05187). Ships **2 safetensors shards +
+    /// `.pt` duplicates + `vocoder_v2.pt`** on HF; the converter walks
+    /// whatever bytes the caller hands in (typical publish path pre-
+    /// flattens shards + vocoder to a single safetensors offline —
+    /// mirror of the CSM / DAC / SpeechT5-HiFi-GAN prepare-checkpoint
+    /// pattern; NFR-DS-02 forbids pickle in the runtime, FR-LD-05
+    /// forbids arbitrary code execution at load, so `.pt` files must
+    /// be flattened outside this crate). Distinct arch tag **`unity-2`**
+    /// (Meta's fairseq2 dispatch name) covering the 4 subgraphs —
+    /// w2v-BERT 2.0 speech encoder + NLLB-derived text decoder + T2U
+    /// (text-to-unit) decoder + HiFi-GAN vocoder (`vocoder_v2.pt`).
+    /// FR-EX-08 forbids silent shape misroute across sibling M4T v1
+    /// / MMS / Whisper families (different arch topology + different
+    /// tokenizer + different vocab / unit head layout). Category
+    /// `s2s` (shared with sibling baichuan_audio / step_audio2_mini).
+    /// T4 tier `LicenseClass::NonCommercial` fail-closed default per
+    /// X-Codec 2 (2026-07-28) / MusicGen family (2026-08-01)
+    /// precedent — publish requires `publish-one.sh
+    /// --allow-noncommercial`. Scale **~9.00 GB** = vast.ai handoff
+    /// per memory `[[feedback-large-models-on-vast-ai]]` (>8 GB
+    /// strict cutoff on M1 iMac 16 GB). BF16 pass-through skeleton
+    /// mirror of `musicgen_small.rs` / `qwen2_audio.rs`. Runtime
+    /// binder (4-subgraph forward + T2U dispatch + vocoder chain)
+    /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+    SeamlessM4tV2Large,
 }
 
 impl ModelKind {
@@ -3626,6 +3656,24 @@ impl ModelKind {
             | "conv_tasnet_libri1mix_enhsingle_16k"
             | "joriscos/convtasnet_libri1mix_enhsingle_16k"
             | "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k" => Some(Self::ConvTasnetLibri1mix),
+            // Seamless-M4T-v2-Large (Wave residual, 2026-08-02,
+            // `facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
+            // any-to-any speech-and-text translation, unity-2 arch (4
+            // subgraphs: w2v-BERT enc + text dec + T2U + HiFi-GAN vocoder).
+            // Accept the arch tag (`unity-2` / `unity_2` / `unity2`), the
+            // model-id spellings (hyphen + underscore + compact variants),
+            // the full upstream HF slug, and the Meta-repo alias.
+            "seamless-m4t-v2-large"
+            | "seamless_m4t_v2_large"
+            | "seamlessm4t-v2-large"
+            | "seamlessm4t_v2_large"
+            | "seamless-m4t-v2"
+            | "seamless_m4t_v2"
+            | "unity-2"
+            | "unity_2"
+            | "unity2"
+            | "facebook-seamless-m4t-v2-large"
+            | "facebook/seamless-m4t-v2-large" => Some(Self::SeamlessM4tV2Large),
             _ => None,
         }
     }
@@ -3775,6 +3823,7 @@ impl ModelKind {
             Self::UltravoxV05Llama321b => "ultravox-v0-5-llama-3-2-1b",
             Self::XttsV2 => "xtts-v2",
             Self::ConvTasnetLibri1mix => "conv-tasnet-libri1mix",
+            Self::SeamlessM4tV2Large => "seamless-m4t-v2-large",
         }
     }
 }
@@ -6683,6 +6732,43 @@ pub fn convert_file_licensed(
                  {} non-float skipped (cc-by-sa-4.0 default, Copyleft — SA cascade preserved on \
                  derivatives, T3 tier redistributable with original licence; runtime binder \
                  deferred to owner sign-off)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === SeamlessM4tV2Large (2026-08-02 Wave residual, unity-2 4-subgraph any-to-any) ===
+        ModelKind::SeamlessM4tV2Large => {
+            // Meta SeamlessM4T v2 (facebook/seamless-m4t-v2-large,
+            // cc-by-nc-4.0). 2.3B unified any-to-any speech-and-text
+            // translation model — ASR + T2TT + S2TT + T2ST + S2ST across
+            // ~100 source / ~35 target speech languages. Ships 2 safetensors
+            // shards + `.pt` duplicates + `vocoder_v2.pt` (~9.00 GB total)
+            // — the converter walks whatever bytes the caller hands in
+            // (typical publish path pre-flattens shards + vocoder to a
+            // single safetensors offline; NFR-DS-02 forbids pickle in the
+            // runtime, FR-LD-05 forbids arbitrary code execution at load).
+            // Distinct arch tag `unity-2` (Meta's fairseq2 dispatch name)
+            // for the 4 subgraphs (w2v-BERT enc + text dec + T2U + HiFi-GAN
+            // vocoder) — FR-EX-08 forbids silent shape misroute across
+            // sibling M4T v1 / MMS / Whisper families. BF16 pass-through
+            // skeleton mirror of sibling musicgen_small / qwen2_audio.
+            // Default license cc-by-nc-4.0 + NonCommercial (X-Codec 2 /
+            // MusicGen T4 precedent). Scale ~9.00 GB = vast.ai handoff per
+            // memory `[[feedback-large-models-on-vast-ai]]`.
+            let report = models::seamless_m4t_v2_large::convert_seamless_m4t_v2_large_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "seamless-m4t-v2-large: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — \
+                 publish requires --allow-noncommercial per T4 precedent; runtime binder for \
+                 the 4-subgraph unity-2 arch deferred to owner sign-off)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

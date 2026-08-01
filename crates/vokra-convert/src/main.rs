@@ -2421,6 +2421,20 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // the uniform arch/name/category/upstream_hf/license triple verify
         // shape.
         | ModelKind::ConvTasnetLibri1mix
+        // 2026-08-02 Wave residual: Meta Seamless-M4T-v2-Large
+        // (`facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
+        // any-to-any speech-and-text translation model — ASR + T2TT +
+        // S2TT + T2ST + S2ST across ~100 source / ~35 target speech
+        // languages. Ships 2 safetensors shards + `.pt` duplicates +
+        // `vocoder_v2.pt`. Distinct arch tag `unity-2` (Meta's fairseq2
+        // dispatch name) covering the 4 subgraphs (w2v-BERT enc + text
+        // dec + T2U + HiFi-GAN vocoder) — FR-EX-08 forbids silent shape
+        // misroute across sibling M4T v1 / MMS / Whisper families.
+        // Category `s2s` (shared with baichuan_audio / step_audio2_mini).
+        // T4 tier NonCommercial default per X-Codec 2 / MusicGen family
+        // precedent. Grouped here for the uniform arch/name/category/
+        // upstream_hf/license triple verify shape.
+        | ModelKind::SeamlessM4tV2Large
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

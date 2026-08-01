@@ -1020,6 +1020,36 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // but the upstream repo remains the primary source. Publish
         // requires `publish-one.sh --allow-noncommercial`.
         "xtts" | "xtts-v2" | "xttsv2" => LicenseClass::NonCommercial,
+        // 2026-08-02 Wave residual: Meta Seamless-M4T-v2-Large
+        // (`facebook/seamless-m4t-v2-large`, **cc-by-nc-4.0** per HF
+        // cardData primary source — CLAUDE.md「ハルシネーション厳禁」).
+        // 2.3B unified any-to-any speech-and-text translation model
+        // (Communication et al. 2023, arXiv:2312.05187) — ASR + T2TT +
+        // S2TT + T2ST + S2ST across ~100 source / ~35 target speech
+        // languages. Distinct arch tag `unity-2` (Meta's fairseq2
+        // dispatch name) covering the 4 subgraphs (w2v-BERT enc + text
+        // dec + T2U + HiFi-GAN vocoder). Registered as **explicit exact-
+        // match arms** so the fail-closed publish path forces
+        // `publish-one.sh --allow-noncommercial` at publish time + the
+        // M2-13 runtime gate refusal in commercial mode. `seamless-m4t-
+        // v2-large` / `seamless_m4t_v2_large` cover the model-id
+        // spellings; `unity-2` / `unity_2` cover the arch tag stamped
+        // by the converter; `facebook/seamless-m4t-v2-large` covers the
+        // upstream HF slug; `vokra/seamless-m4t-v2-large` covers the
+        // publish repo slug per the ELVIS-Act / T4 tier gate. Same T4
+        // (Research-only) tier as X-Codec 2 (2026-07-28 precedent) /
+        // MusicGen family (2026-08-01) / CrisperWhisper + MMS-1B-All
+        // (2026-08-02 wave).
+        "seamless-m4t-v2-large"
+        | "seamless_m4t_v2_large"
+        | "seamlessm4t-v2-large"
+        | "seamlessm4t_v2_large"
+        | "seamless-m4t-v2"
+        | "seamless_m4t_v2"
+        | "unity-2"
+        | "unity_2"
+        | "facebook/seamless-m4t-v2-large"
+        | "vokra/seamless-m4t-v2-large" => LicenseClass::NonCommercial,
         // 2026-08-01 Wave 6 residual — permissive audio-LLM / VC-sibling /
         // multi-file bundle. All apache-2.0 / MIT clean.
         "qwen2-audio"

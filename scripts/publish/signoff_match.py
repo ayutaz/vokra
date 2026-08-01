@@ -266,6 +266,26 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "conv-tasnet-libri1mix": [
         "ConvTasNet Libri1Mix Enhancement (`JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`)"
     ],
+    # 2026-08-02 Wave residual: Meta Seamless-M4T-v2-Large
+    # (`facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
+    # any-to-any speech-and-text translation model (Communication et al.
+    # 2023, arXiv:2312.05187) — ASR + T2TT + S2TT + T2ST + S2ST across
+    # ~100 source / ~35 target speech languages. Ships 2 safetensors
+    # shards + `.pt` duplicates + `vocoder_v2.pt`. Distinct arch tag
+    # `unity-2` (Meta's fairseq2 dispatch name) covering the 4 subgraphs
+    # (w2v-BERT enc + text dec + T2U + HiFi-GAN vocoder). T4 tier
+    # (Research-only, non-commercial) — inherits the X-Codec-2 T4
+    # precedent (2026-07-28) + MusicGen family (2026-08-01) workflow
+    # (`LicenseClass::NonCommercial` + `publish-one.sh
+    # --allow-noncommercial` gate + fetch_license.sh canonical LICENSE
+    # fetch). Placeholder row identifier — the row heading MUST match
+    # `docs/license-audit.md` §3.1 byte-for-byte once the audit doc is
+    # updated in a post-workflow batch. Scale ~9.00 GB = vast.ai handoff
+    # per memory `[[feedback-large-models-on-vast-ai]]` (>8 GB strict
+    # cutoff on M1 iMac 16 GB).
+    "seamless-m4t-v2-large": [
+        "Seamless-M4T-v2-Large (`facebook/seamless-m4t-v2-large`)"
+    ],
     # NOTE: bs-roformer is intentionally NOT registered here — §3.1
     # sign-off is ☑ Rejected (Wave 7 CC-fill) = double fail-closed
     # (Rejected in audit + UNKNOWN_REPO here). owner can add the entry
@@ -1198,6 +1218,18 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # specific license) is the prerequisite to a first publish; only then does
     # a `REPO_TO_SIGNOFF_ROWS` entry land here.
     "bs_roformer": ["BS-Roformer (upstream 未確定)"],
+    # 2026-08-02 Wave residual converter (`seamless_m4t_v2_large.rs`) — Meta
+    # SeamlessM4T v2 flagship 2.3B any-to-any speech-and-text translation
+    # (`facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). Unity-2 arch (4
+    # subgraphs: w2v-BERT enc + text dec + T2U + HiFi-GAN vocoder).
+    # Category `s2s`. T4 tier NonCommercial default per X-Codec 2
+    # (2026-07-28) / MusicGen family (2026-08-01) precedent. Placeholder
+    # row — the row heading MUST match `docs/license-audit.md` §3.1
+    # byte-for-byte once the audit doc is updated in a post-workflow
+    # batch.
+    "seamless_m4t_v2_large": [
+        "Seamless-M4T-v2-Large (`facebook/seamless-m4t-v2-large`)"
+    ],
 }
 
 # Converters that intentionally have no §3.1 row.

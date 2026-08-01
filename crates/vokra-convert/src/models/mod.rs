@@ -739,4 +739,19 @@ pub mod xtts_v2;
 // itself CC-BY-SA), T3 tier redistributable with original licence
 // preserved. Scale ~20 MB = local convert safe on M1 iMac.
 pub mod conv_tasnet_libri1mix;
+// 2026-08-02 Wave residual: Meta Seamless-M4T-v2-Large
+// (`facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified any-to-
+// any speech-and-text translation model (ASR + T2TT + S2TT + T2ST +
+// S2ST across ~100 source / ~35 target speech languages). Ships 2
+// safetensors shards + `.pt` duplicates + `vocoder_v2.pt` — the
+// converter walks whatever bytes the caller hands in (typical publish
+// path pre-flattens shards + vocoder to a single safetensors offline).
+// Distinct arch tag `unity-2` (Meta's fairseq2 dispatch name) covering
+// the 4 subgraphs: w2v-BERT 2.0 speech encoder + NLLB-derived text
+// decoder + T2U (text-to-unit) decoder + HiFi-GAN vocoder. Category
+// `s2s` (shared with baichuan_audio / step_audio2_mini). T4 tier
+// NonCommercial default per X-Codec 2 (2026-07-28) / MusicGen family
+// (2026-08-01) precedent. Scale ~9.00 GB = vast.ai handoff per
+// memory `[[feedback-large-models-on-vast-ai]]` (>8 GB strict cutoff).
+pub mod seamless_m4t_v2_large;
 // ---------------------------------------------------------------------------
