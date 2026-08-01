@@ -1166,6 +1166,21 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // slip through into the permissive bucket by accident.
         _ if id.starts_with("granite-speech-") => LicenseClass::Permissive,
         _ if id.starts_with("wav2vec2") => LicenseClass::Permissive,
+        // 2026-08-02 wave: `facebook/data2vec-audio-base-960h` (apache-2.0).
+        // Baevski et al. 2022 (arXiv:2202.03555): wav2vec 2.0 base
+        // topology + data2vec pretraining objective + LibriSpeech 960h
+        // English char CTC head. Every future `data2vec-audio-*` sibling
+        // (base / large / bookish / whatever Meta releases next) stays
+        // permissive by prefix walk — Meta's data2vec fleet is uniformly
+        // apache-2.0 to date. Placed as its own arm rather than folded
+        // into the `wav2vec2` prefix so a future non-apache release
+        // cannot silently inherit the classification without explicit
+        // review (the `data2vec` bucket is architecturally distinct
+        // from wav2vec2 despite sharing the downstream inference
+        // topology — different pretraining objective).
+        _ if id.starts_with("data2vec-audio") || id.starts_with("data2vec_audio") => {
+            LicenseClass::Permissive
+        }
         _ if id.starts_with("moss-tts") || id.starts_with("openmoss-team/moss-tts") => {
             LicenseClass::Permissive
         }

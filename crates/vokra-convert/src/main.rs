@@ -2097,6 +2097,18 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::Qwen3TtsVoiceDesign17B
         | ModelKind::Qwen3Asr
         | ModelKind::Wav2Vec2Ctc
+        // 2026-08-02 wave: Facebook data2vec-audio-base-960h
+        // (`facebook/data2vec-audio-base-960h`, apache-2.0). Baevski et
+        // al. 2022 — wav2vec 2.0 base topology + data2vec pretraining
+        // objective + LibriSpeech 960h English char CTC head. Emits the
+        // same standard `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.*` triple as the sibling Wav2Vec2Ctc arm
+        // (in fact routes through the same `wav2vec2_ctc` converter
+        // module — tensor names identical, only `name` +
+        // `upstream_hf` differ so a stamped GGUF faithfully reports
+        // the data2vec-audio release). Grouped here for the uniform
+        // arch/name/category/upstream/license triple readback.
+        | ModelKind::Data2vecAudioBase
         | ModelKind::MossTts
         | ModelKind::MossTtsV15
         | ModelKind::MossTtsNano

@@ -419,6 +419,29 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "wav2vec2-xlsr-53-espeak-cv-ft": [
         "wav2vec2-xlsr-53-espeak-cv-ft (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`)"
     ],
+    # 2026-08-02 wave: Facebook data2vec-audio-base-960h
+    # (`facebook/data2vec-audio-base-960h`, apache-2.0). Baevski et al.
+    # 2022, arXiv:2202.03555 — wav2vec 2.0 base topology (12L × d=768 ×
+    # 12h × ffn=3072) + data2vec pretraining objective (contextualised
+    # latent representation prediction with an EMA teacher) +
+    # LibriSpeech 960h English char CTC head (`vocab_size=32`). The
+    # safetensors tensor names are **identical** to the sibling
+    # wav2vec2-base-960h — data2vec differs in the pretraining
+    # objective, not the downstream inference arch. Distinct HF
+    # publish target from every existing `wav2vec2_ctc` family row
+    # because it is a distinct upstream release (Meta / FAIR data2vec
+    # fleet, different pretraining objective + Baevski et al. 2022
+    # paper). Converter dispatches through the shared
+    # `models::wav2vec2_ctc` module via the dedicated
+    # `Wav2Vec2CtcVariant::Data2vecAudioBase960h` arm (added the same
+    # wave) so `vokra.model.name = data2vec-audio-base-960h` and
+    # `vokra.provenance.upstream_hf = facebook/data2vec-audio-base-960h`
+    # are stamped faithfully rather than masquerading as the wav2vec2
+    # sibling. Placeholder row heading — the §3.1 row is added in a
+    # separate post-workflow batch per parent workflow discipline.
+    "data2vec-audio-base": [
+        "data2vec-audio-base-960h (`facebook/data2vec-audio-base-960h`)"
+    ],
     # 2026-08-01 Wave 3 — Amphion NaturalSpeech 3 FACodec (apache-2.0
     # factorized VQ codec). Single HF repo `amphion/naturalspeech3_facodec`
     # bundles 5 `.bin` files; four publish variants (v1 / v2 /

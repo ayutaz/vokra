@@ -1135,6 +1135,30 @@ pub enum ModelKind {
     /// [`models::wav2vec2_ctc::Variant`]; the bare `wav2vec2` slug
     /// routes to `base-960h` (the smallest / most widely-used release).
     Wav2Vec2Ctc,
+    /// **data2vec-audio** (`facebook/data2vec-audio-base-960h`,
+    /// apache-2.0) — Baevski et al. 2022, arXiv:2202.03555. A sibling
+    /// release of the wav2vec 2.0 CTC family: data2vec-audio shares
+    /// the wav2vec 2.0 **base** downstream inference topology
+    /// (12 × d=768 × 12h × ffn=3072, `feat_extract_norm="group"`,
+    /// `do_stable_layer_norm=false`), the same 7-layer Conv1D
+    /// feature-extractor, and the LibriSpeech 960h English char CTC
+    /// head (`vocab_size=32`). The tensor names are **identical** to
+    /// `wav2vec2-base-960h`, so the [`Self::Wav2Vec2Ctc`] converter
+    /// covers it verbatim; the only divergence is the **pretraining
+    /// objective** (contextualised latent representation prediction
+    /// with an EMA teacher), which does not affect downstream
+    /// inference. A distinct `ModelKind` (rather than a slug-only
+    /// alias of `Wav2Vec2Ctc`) is used so `vokra.model.name` +
+    /// `vokra.provenance.upstream_hf` faithfully report the data2vec-
+    /// audio upstream release instead of masquerading as
+    /// `wav2vec2-base-960h`. Category `asr`, license Permissive
+    /// (apache-2.0 per HF `cardData.license` CC-verified 2026-08-02).
+    /// The `--model data2vec-audio-base` / `data2vec-audio-base-960h`
+    /// slugs pick this arm; convert dispatch routes it through
+    /// [`models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant`]
+    /// with the sibling `Variant::Data2vecAudioBase960h` (correct
+    /// provenance stamp on top of the shared topology axes).
+    Data2vecAudioBase,
     /// OpenMOSS Team **MOSS-TTS** base checkpoint (SoTA follow-on,
     /// added 2026-07-30) — `OpenMOSS-Team/MOSS-TTS`. Category `tts`.
     /// LM-based multilingual TTS: `model_type = "moss_tts_delay"`,
@@ -2557,6 +2581,25 @@ impl ModelKind {
             | "wav2vec2-xlsr-53-espeak-cv-ft"
             | "wav2vec2_xlsr_53_espeak_cv_ft"
             | "facebook/wav2vec2-xlsr-53-espeak-cv-ft" => Some(Self::Wav2Vec2Ctc),
+            // 2026-08-02 wave: `facebook/data2vec-audio-base-960h`
+            // (apache-2.0). Baevski et al. 2022 (arXiv:2202.03555):
+            // wav2vec 2.0 base topology + data2vec pretraining
+            // objective + LibriSpeech 960h English char CTC head. The
+            // safetensors tensor names are identical to
+            // `wav2vec2-base-960h` (data2vec differs in the pretraining
+            // objective, not the downstream inference arch), so the
+            // wav2vec2 CTC converter covers it verbatim — a distinct
+            // `ModelKind` is used only so
+            // `vokra.model.name` + `vokra.provenance.upstream_hf`
+            // faithfully report the data2vec-audio release. The bare
+            // `data2vec-audio-base` slug + the `-960h` variant + the
+            // fully-qualified `facebook/data2vec-audio-base-960h` HF
+            // repo id all route to the same arm.
+            "data2vec-audio-base"
+            | "data2vec_audio_base"
+            | "data2vec-audio-base-960h"
+            | "data2vec_audio_base_960h"
+            | "facebook/data2vec-audio-base-960h" => Some(Self::Data2vecAudioBase),
             "moss-tts" | "moss_tts" | "moss-tts-delay" | "openmoss-team/moss-tts" => {
                 Some(Self::MossTts)
             }
@@ -3207,6 +3250,7 @@ impl ModelKind {
             Self::VieNeuTts => "vieneu-tts",
             Self::VoxtralMiniRealtime => "voxtral-mini-4b-realtime-2602",
             Self::Wav2Vec2Ctc => "wav2vec2",
+            Self::Data2vecAudioBase => "data2vec-audio-base",
             Self::XVector => "xvector",
             Self::Fcpe => "fcpe",
             Self::Vocos => "vocos-mel-24khz",
@@ -3499,6 +3543,35 @@ pub fn convert_file_with_slug(
             let notes = vec![format!(
                 "qwen3-asr ({variant:?}): {} float weights written verbatim ({} BF16 passthrough), \
                  {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Data2vecAudioBase => {
+            // Same converter as `Wav2Vec2Ctc` (tensor names identical —
+            // data2vec-audio inherits the wav2vec 2.0 base downstream
+            // inference topology + Conv1D feature-extractor + English
+            // LibriSpeech 960h char CTC head); the dedicated
+            // `Variant::Data2vecAudioBase960h` only overrides `name` +
+            // `upstream_hf` so the stamped GGUF faithfully reports the
+            // data2vec-audio upstream release rather than masquerading
+            // as `wav2vec2-base-960h`.
+            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
+                input,
+                output,
+                models::wav2vec2_ctc::Variant::Data2vecAudioBase960h,
+                license,
+            )?;
+            let notes = vec![format!(
+                "data2vec-audio-base-960h: {} float weights written verbatim ({} BF16 \
+                 passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
+                 {} tensors read (via wav2vec2_ctc converter — tensor names identical)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             Ok(ConvertSummary {
@@ -4894,6 +4967,42 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Wav2Vec2Ctc,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Data2vecAudioBase (2026-08-02 wave, routes through
+        // wav2vec2_ctc — tensor names identical, only name +
+        // upstream_hf differ) ===
+        ModelKind::Data2vecAudioBase => {
+            // Baevski et al. 2022 (arXiv:2202.03555):
+            // `facebook/data2vec-audio-base-960h` (apache-2.0). Shares
+            // the wav2vec 2.0 base downstream inference topology +
+            // Conv1D feature-extractor + LibriSpeech 960h English char
+            // CTC head with `wav2vec2-base-960h` — data2vec differs in
+            // the pretraining objective (contextualised latent
+            // representation prediction with an EMA teacher), not the
+            // downstream inference arch. The dedicated
+            // `Variant::Data2vecAudioBase960h` overrides only `name` +
+            // `upstream_hf` so the stamped GGUF faithfully reports the
+            // data2vec-audio release instead of masquerading as the
+            // wav2vec2 sibling.
+            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
+                input,
+                output,
+                models::wav2vec2_ctc::Variant::Data2vecAudioBase960h,
+                license,
+            )?;
+            let notes = vec![format!(
+                "data2vec-audio-base-960h: {} float weights written verbatim ({} BF16 \
+                 passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
+                 {} tensors read (via wav2vec2_ctc converter — tensor names identical)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Data2vecAudioBase,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),

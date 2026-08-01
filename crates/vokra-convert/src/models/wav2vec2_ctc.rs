@@ -192,6 +192,25 @@ pub enum Variant {
     /// follow-up wave; today the converter only stamps the axis
     /// (`vokra.wav2vec2_ctc.vocab_size = 392`).
     LargeXlsr53EspeakCvFt,
+    /// `facebook/data2vec-audio-base-960h`. Baevski et al. 2022 —
+    /// `Data2VecAudioForCTC` (arXiv:2202.03555). Shares the wav2vec 2.0
+    /// **base** topology (12 layers × d=768 × 12h × ffn=3072,
+    /// `feat_extract_norm="group"`, `do_stable_layer_norm=false`) and
+    /// the same 7-layer Conv1D feature-extractor
+    /// (`conv_dim=[512×7]`, `conv_kernel=[10,3,3,3,3,2,2]`,
+    /// `conv_stride=[5,2,2,2,2,2,2]`), + English LibriSpeech 960h CTC
+    /// head (`vocab_size=32`). The safetensors tensor names are
+    /// identical to the sibling `Base960h` arm — data2vec differs in
+    /// the **pretraining objective** (contextualised latent
+    /// representation prediction with an EMA teacher) rather than the
+    /// downstream inference topology, so the wav2vec2 CTC converter
+    /// covers it verbatim. Only the `name` +
+    /// `vokra.provenance.upstream_hf` differ from `Base960h` so a
+    /// stamped GGUF faithfully reports the upstream release. Primary
+    /// source: `huggingface.co/facebook/data2vec-audio-base-960h/raw/
+    /// main/config.json` (`architectures = ["Data2VecAudioForCTC"]`,
+    /// `apache-2.0` per HF `cardData.license` CC-verified 2026-08-02).
+    Data2vecAudioBase960h,
 }
 
 /// Per-variant axes transcribed verbatim from the primary-source
@@ -332,6 +351,32 @@ impl Variant {
                 layer_norm_eps: 1e-5,
                 feat_extract_norm: "layer",
                 do_stable_layer_norm: true,
+                hidden_act: "gelu",
+                num_conv_pos_embeddings: 128,
+                num_conv_pos_embedding_groups: 16,
+                has_ctc_head: true,
+            },
+            // Primary source: huggingface.co/facebook/data2vec-audio-base-960h/raw/main/config.json
+            // (CC-verified 2026-08-02, CLAUDE.md「ハルシネーション厳禁」).
+            // data2vec-audio-base-960h shares the wav2vec 2.0 **base**
+            // topology (12L × d=768 × 12h × ffn=3072,
+            // `feat_extract_norm="group"`, `do_stable_layer_norm=false`)
+            // with a Wav2Vec2ForCTC-compatible LibriSpeech 960h English
+            // char CTC head (`vocab_size=32`). Only `name` +
+            // `upstream_hf` diverge from `Base960h` so a stamped GGUF
+            // faithfully reports the upstream release rather than
+            // masquerading as `wav2vec2-base-960h`.
+            Self::Data2vecAudioBase960h => VariantAxes {
+                name: "data2vec-audio-base-960h",
+                upstream_hf: "facebook/data2vec-audio-base-960h",
+                hidden_size: 768,
+                n_layer: 12,
+                n_head: 12,
+                intermediate_size: 3072,
+                vocab_size: 32,
+                layer_norm_eps: 1e-5,
+                feat_extract_norm: "group",
+                do_stable_layer_norm: false,
                 hidden_act: "gelu",
                 num_conv_pos_embeddings: 128,
                 num_conv_pos_embedding_groups: 16,
@@ -938,6 +983,96 @@ mod tests {
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(LicenseClass::Permissive.as_str())
+        );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn hparam_chunk_pins_data2vec_audio_base_960h_variant() {
+        // Regression fence: `Data2vecAudioBase960h` shares the wav2vec 2.0
+        // **base** topology with `Base960h` (12L × d=768 × 12h × ffn=3072,
+        // `feat_extract_norm=group`, `do_stable_layer_norm=false`,
+        // `vocab_size=32`, `has_ctc_head=true`), so only `name` +
+        // `upstream_hf` may diverge — the assertions below both prove the
+        // stamped axes match `huggingface.co/facebook/data2vec-audio-base-960h/
+        // raw/main/config.json` (CC-verified 2026-08-02) AND that the
+        // variant did not accidentally get routed to (or masquerade as)
+        // the sibling `Base960h` arm's `wav2vec2-base-960h` provenance.
+        let bytes = safetensors_one_bf16("dummy.weight", &[1, 2], &[0u8; 4]);
+        let input_path = write_temp("data2vec-in", &bytes);
+        let output_path = write_temp("data2vec-out", &[]);
+
+        let report = convert_wav2vec2_ctc_file_with_variant(
+            &input_path,
+            &output_path,
+            Variant::Data2vecAudioBase960h,
+            None,
+        )
+        .expect("data2vec-audio-base-960h conversion must succeed");
+        assert_eq!(report.read, 1);
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(report.skipped_non_float, 0);
+
+        let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
+
+        // Shared wav2vec 2.0 base topology axes.
+        assert_eq!(
+            file.get(KEY_HIDDEN_SIZE).and_then(|v| v.as_u64()),
+            Some(768)
+        );
+        assert_eq!(file.get(KEY_N_LAYER).and_then(|v| v.as_u64()), Some(12));
+        assert_eq!(file.get(KEY_N_HEAD).and_then(|v| v.as_u64()), Some(12));
+        assert_eq!(
+            file.get(KEY_INTERMEDIATE_SIZE).and_then(|v| v.as_u64()),
+            Some(3072)
+        );
+        assert_eq!(
+            file.get(KEY_FEAT_EXTRACT_NORM).and_then(|v| v.as_str()),
+            Some("group"),
+            "base topology uses feat_extract_norm=group"
+        );
+        assert_eq!(
+            file.get(KEY_DO_STABLE_LAYER_NORM).and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            file.get(KEY_HAS_CTC_HEAD).and_then(|v| v.as_bool()),
+            Some(true),
+            "data2vec-audio-base-960h is Data2VecAudioForCTC (has CTC head)"
+        );
+        assert_eq!(
+            file.get(KEY_VOCAB_SIZE).and_then(|v| v.as_u64()),
+            Some(32),
+            "LibriSpeech 960h English char CTC vocab_size=32"
+        );
+
+        // Discriminating axis: name + upstream_hf must faithfully report
+        // the data2vec-audio upstream release, NOT masquerade as
+        // wav2vec2-base-960h.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("data2vec-audio-base-960h"),
+            "GGUF must NOT report wav2vec2-base-960h (would lose data2vec provenance)"
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some("facebook/data2vec-audio-base-960h"),
+            "upstream_hf must point at the data2vec-audio release, not the wav2vec2 sibling"
+        );
+        // Arch tag stays `wav2vec2_ctc` (tensor names + topology are
+        // identical — data2vec differs in the pretraining objective, not
+        // the downstream inference arch).
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(MODEL_CATEGORY)
         );
 
         std::fs::remove_file(&input_path).ok();
