@@ -963,6 +963,28 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "crisperwhisper"
         | "crisper_whisper"
         | "vokra/crisperwhisper" => LicenseClass::NonCommercial,
+        // 2026-08-02 wave: Meta MMS-1B-All (`facebook/mms-1b-all`,
+        // **cc-by-nc-4.0** per HF cardData primary source verified
+        // 2026-08-02 — CLAUDE.md「ハルシネーション厳禁」). Pratap et al.
+        // 2023 (arXiv:2305.13516) — 1B wav2vec 2.0 backbone + 1000+
+        // per-language CTC adapters. Registered as **explicit exact-
+        // match arms** BEFORE the sibling `_ if id.starts_with("wav2vec2")
+        // => Permissive` prefix walk below because MMS is a distinct
+        // upstream release with a distinct weight-distribution licence
+        // (cc-by-nc-4.0), and the fail-closed publish path requires the
+        // `NonCommercial` classification to force `publish-one.sh
+        // --allow-noncommercial` at publish time + the M2-13 runtime
+        // gate refusal in commercial mode. The `mms-1b-all` /
+        // `mms_1b_all` / `mms-1b` / `mms_1b` covers the arch-tag +
+        // slug spellings the converter stamps; `facebook/mms-1b-all`
+        // covers the upstream HF slug; `vokra/mms-1b-all` covers the
+        // publish repo slug per the ELVIS-Act / T4 tier gate.
+        "mms-1b-all"
+        | "mms_1b_all"
+        | "mms-1b"
+        | "mms_1b"
+        | "facebook/mms-1b-all"
+        | "vokra/mms-1b-all" => LicenseClass::NonCommercial,
         // Meta AudioCraft MusicGen family (Wave 5 music-generation add,
         // 2026-08-01) — the trained weights ship **cc-by-nc-4.0** on HF
         // (`huggingface.co/facebook/musicgen-medium` model card
@@ -2250,6 +2272,52 @@ mod tests {
                 "xcodec2: {id} MUST be NonCommercial (HF card = cc-by-nc-4.0) \
                  — silently returning Permissive would authorise a commercial \
                  load of an NC weight."
+            );
+            let c = c.unwrap();
+            assert!(
+                c.requires_research_flag(),
+                "{id}: NC must require the research flag to load"
+            );
+            assert!(
+                !c.commercial_ok(),
+                "{id}: commercial_ok must be false for NC"
+            );
+            assert!(
+                !c.redistributable(),
+                "{id}: NonCommercial is not on the publish gate's allow-list"
+            );
+        }
+
+        // ---- 2026-08-02 wave: MMS-1B-All (NonCommercial) --------------
+        //
+        // Meta MMS-1B-All (`facebook/mms-1b-all`, cc-by-nc-4.0 per HF
+        // cardData primary source verified 2026-08-02 —
+        // CLAUDE.md「ハルシネーション厳禁」). Pratap et al. 2023
+        // (arXiv:2305.13516) — 1B wav2vec 2.0 backbone + 1000+
+        // per-language CTC adapters. Every id form MUST resolve to
+        // `NonCommercial` (T4 tier / Research-only publish path per the
+        // X-Codec-2 (2026-07-28) precedent). CRUCIALLY, this arm must
+        // beat the sibling `_ if id.starts_with("wav2vec2")` prefix walk
+        // (which would silently return `Permissive`) — the exact-match
+        // arm is placed BEFORE the prefix walk for that reason.
+        for id in [
+            "mms-1b-all",
+            "mms_1b_all",
+            "mms-1b",
+            "mms_1b",
+            "facebook/mms-1b-all",
+            "vokra/mms-1b-all",
+            // Case-insensitive.
+            "MMS-1B-ALL",
+            "Facebook/MMS-1B-All",
+        ] {
+            let c = registry_lookup(id);
+            assert_eq!(
+                c,
+                Some(LicenseClass::NonCommercial),
+                "mms-1b-all: {id} MUST be NonCommercial (HF card = \
+                 cc-by-nc-4.0) — silently returning Permissive would \
+                 authorise a commercial load of an NC weight."
             );
             let c = c.unwrap();
             assert!(

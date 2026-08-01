@@ -576,6 +576,28 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "data2vec-audio-base": [
         "data2vec-audio-base-960h (`facebook/data2vec-audio-base-960h`)"
     ],
+    # 2026-08-02 wave: Meta MMS-1B-All (`facebook/mms-1b-all`,
+    # **cc-by-nc-4.0**). Massively Multilingual Speech (Pratap et al.
+    # 2023, arXiv:2305.13516) — 1B wav2vec 2.0 backbone + 1000+
+    # per-language CTC adapters (~2000 sibling files in the repo). Base
+    # tensor path reuses the `wav2vec2_ctc` converter via a dedicated
+    # `Wav2Vec2CtcVariant::Mms1bAll` arm (parent workflow REUSE HINT)
+    # with **placeholder axes** (routes to `LargeXlsr53Base` sibling —
+    # parent workflow SIZE NOTE forbids downloading the 4.00 GB
+    # checkpoint / config.json for real primary-source transcription)
+    # and faithful `name = "mms-1b-all"` +
+    # `upstream_hf = "facebook/mms-1b-all"` stamps for the placeholder-
+    # axis refusal guardrail (M2-13 runtime gate). Distinct HF publish
+    # target from every existing `wav2vec2_ctc` family row because it is
+    # a distinct upstream release with a distinct weight-distribution
+    # licence (cc-by-nc-4.0 — T4 tier / Research-only publish path per
+    # the X-Codec-2 (2026-07-28) precedent). Publish requires
+    # `publish-one.sh --allow-noncommercial`. Placeholder row heading —
+    # the §3.1 row is added in a separate post-workflow batch per parent
+    # workflow discipline.
+    "mms-1b-all": [
+        "MMS-1B-All (`facebook/mms-1b-all`)"
+    ],
     # 2026-08-01 Wave 3 — Amphion NaturalSpeech 3 FACodec (apache-2.0
     # factorized VQ codec). Single HF repo `amphion/naturalspeech3_facodec`
     # bundles 5 `.bin` files; four publish variants (v1 / v2 /

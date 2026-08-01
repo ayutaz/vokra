@@ -2151,6 +2151,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // the data2vec-audio release). Grouped here for the uniform
         // arch/name/category/upstream/license triple readback.
         | ModelKind::Data2vecAudioBase
+        // 2026-08-02 wave: Meta MMS-1B-All (`facebook/mms-1b-all`,
+        // cc-by-nc-4.0). Massively Multilingual Speech (Pratap et al.
+        // 2023, arXiv:2305.13516). Base tensor path reuses the
+        // wav2vec2_ctc converter (parent workflow REUSE HINT) with
+        // placeholder axes (LargeXlsr53Base sibling) and faithful
+        // `name` + `upstream_hf` for the placeholder-axis refusal
+        // guardrail. Emits the same standard
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.*`
+        // triple as the sibling Wav2Vec2Ctc arm — grouped here for the
+        // uniform arch/name/category/upstream/license triple readback.
+        | ModelKind::Mms1bAll
         | ModelKind::MossTts
         | ModelKind::MossTtsV15
         | ModelKind::MossTtsNano

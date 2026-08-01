@@ -1186,6 +1186,35 @@ pub enum ModelKind {
     /// with the sibling `Variant::Data2vecAudioBase960h` (correct
     /// provenance stamp on top of the shared topology axes).
     Data2vecAudioBase,
+    /// Meta **MMS-1B-All** (`facebook/mms-1b-all`, cc-by-nc-4.0) —
+    /// Massively Multilingual Speech (Pratap et al. 2023,
+    /// arXiv:2305.13516). A 1B-parameter wav2vec 2.0 backbone
+    /// (`Wav2Vec2ForCTC` head family) bundled with 1000+ per-language
+    /// CTC adapters (~2000 sibling files in the repo); base tensor path
+    /// reuses the [`Self::Wav2Vec2Ctc`] converter (parent workflow
+    /// REUSE HINT) via a dedicated
+    /// [`models::wav2vec2_ctc::Variant::Mms1bAll`] arm.
+    ///
+    /// **Placeholder axes** — the parent workflow's SIZE NOTE (4.00 GB
+    /// checkpoint) forbids downloading `config.json` for
+    /// primary-source transcription, so the axes route to the closest-
+    /// family sibling (`LargeXlsr53Base`: 24 × d=1024 × 16h ×
+    /// ffn=4096, `feat_extract_norm="layer"`,
+    /// `do_stable_layer_norm=true`) as a placeholder while the
+    /// discriminating `name = "mms-1b-all"` +
+    /// `upstream_hf = "facebook/mms-1b-all"` stamps stay faithful for
+    /// provenance readback + placeholder-axis refusal at load time
+    /// (M2-13 runtime gate). A follow-up wave must transcribe the true
+    /// MMS-1B topology + land a per-language adapter loader before any
+    /// downstream loader can trust the emitted hparams.
+    ///
+    /// Weight-distribution licence = **cc-by-nc-4.0** (T4 tier /
+    /// Research-only publish path per the X-Codec-2 (2026-07-28)
+    /// precedent) — the M2-13 runtime gate refuses to load in
+    /// commercial mode (`requires_research_flag = true`); publish
+    /// requires `publish-one.sh --allow-noncommercial`. Category `asr`
+    /// (recorded under `vokra.model.category`).
+    Mms1bAll,
     /// OpenMOSS Team **MOSS-TTS** base checkpoint (SoTA follow-on,
     /// added 2026-07-30) — `OpenMOSS-Team/MOSS-TTS`. Category `tts`.
     /// LM-based multilingual TTS: `model_type = "moss_tts_delay"`,
@@ -2909,6 +2938,24 @@ impl ModelKind {
             | "data2vec-audio-base-960h"
             | "data2vec_audio_base_960h"
             | "facebook/data2vec-audio-base-960h" => Some(Self::Data2vecAudioBase),
+            // 2026-08-02 wave: Meta MMS-1B-All (`facebook/mms-1b-all`,
+            // **cc-by-nc-4.0**). Massively Multilingual Speech, Pratap
+            // et al. 2023 (arXiv:2305.13516) — 1B wav2vec 2.0 backbone
+            // + 1000+ per-language CTC adapters. Base tensor path
+            // reuses the [`Self::Wav2Vec2Ctc`] converter via a
+            // dedicated [`models::wav2vec2_ctc::Variant::Mms1bAll`]
+            // arm (parent workflow REUSE HINT); the placeholder-axis
+            // guardrail (distinct `name` + `upstream_hf`) lets a
+            // future `Wav2Vec2CtcWeights::from_gguf` reader detect
+            // this artifact and refuse to bind until the follow-up
+            // wave transcribes the true MMS-1B topology + lands the
+            // per-language adapter loader (~1000 sibling
+            // `adapter.*.safetensors` files).
+            "mms-1b-all"
+            | "mms_1b_all"
+            | "mms-1b"
+            | "mms_1b"
+            | "facebook/mms-1b-all" => Some(Self::Mms1bAll),
             "moss-tts" | "moss_tts" | "moss-tts-delay" | "openmoss-team/moss-tts" => {
                 Some(Self::MossTts)
             }
@@ -3704,6 +3751,7 @@ impl ModelKind {
             Self::VoxtralMiniRealtime => "voxtral-mini-4b-realtime-2602",
             Self::Wav2Vec2Ctc => "wav2vec2",
             Self::Data2vecAudioBase => "data2vec-audio-base",
+            Self::Mms1bAll => "mms-1b-all",
             Self::XVector => "xvector",
             Self::Fcpe => "fcpe",
             Self::Vocos => "vocos-mel-24khz",
@@ -4033,6 +4081,47 @@ pub fn convert_file_with_slug(
                 "data2vec-audio-base-960h: {} float weights written verbatim ({} BF16 \
                  passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
                  {} tensors read (via wav2vec2_ctc converter — tensor names identical)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Mms1bAll => {
+            // 2026-08-02 wave: Meta MMS-1B-All (`facebook/mms-1b-all`,
+            // **cc-by-nc-4.0**). Massively Multilingual Speech (Pratap
+            // et al. 2023, arXiv:2305.13516) — 1B wav2vec 2.0 backbone
+            // + 1000+ per-language CTC adapters. Base tensor path
+            // reuses the wav2vec2_ctc converter (parent workflow REUSE
+            // HINT) via a dedicated `Variant::Mms1bAll` arm with
+            // **placeholder axes** (routes to LargeXlsr53Base sibling)
+            // and faithful `name = "mms-1b-all"` +
+            // `upstream_hf = "facebook/mms-1b-all"` stamps for the
+            // placeholder-axis refusal guardrail (M2-13 runtime gate).
+            // A follow-up wave must transcribe the true MMS-1B
+            // topology + land the per-language adapter loader
+            // (~1000 sibling `adapter.*.safetensors`).
+            //
+            // Weight-distribution licence default = `cc-by-nc-4.0`
+            // (T4 tier / Research-only publish path). Callers pass
+            // `--license cc-by-nc-4.0` to override the arm's default
+            // (`apache-2.0`) at stamp time so the M2-13 gate rejects
+            // commercial loads.
+            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
+                input,
+                output,
+                models::wav2vec2_ctc::Variant::Mms1bAll,
+                license,
+            )?;
+            let notes = vec![format!(
+                "mms-1b-all: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read (via \
+                 wav2vec2_ctc converter — placeholder axes route to LargeXlsr53Base sibling, \
+                 per-language adapter loader is a follow-up wave)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             Ok(ConvertSummary {
@@ -5450,6 +5539,41 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Wav2Vec2Ctc,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Mms1bAll (2026-08-02 wave, routes through wav2vec2_ctc
+        // — parent workflow REUSE HINT) ===
+        ModelKind::Mms1bAll => {
+            // Meta MMS-1B-All (`facebook/mms-1b-all`, cc-by-nc-4.0).
+            // 1B wav2vec 2.0 backbone + 1000+ per-language CTC
+            // adapters (~2000 sibling files in the repo). Base tensor
+            // path reuses the wav2vec2_ctc converter via the dedicated
+            // `Variant::Mms1bAll` arm with **placeholder axes**
+            // (routes to LargeXlsr53Base sibling — parent workflow
+            // SIZE NOTE forbids downloading the 4.00 GB checkpoint /
+            // config.json for real primary-source transcription).
+            // Faithful `name = "mms-1b-all"` +
+            // `upstream_hf = "facebook/mms-1b-all"` stamps for the
+            // placeholder-axis refusal guardrail (M2-13 runtime gate).
+            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
+                input,
+                output,
+                models::wav2vec2_ctc::Variant::Mms1bAll,
+                license,
+            )?;
+            let notes = vec![format!(
+                "mms-1b-all: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read (via \
+                 wav2vec2_ctc converter — placeholder axes, per-language adapter loader is a \
+                 follow-up wave)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Mms1bAll,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),

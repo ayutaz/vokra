@@ -211,6 +211,43 @@ pub enum Variant {
     /// main/config.json` (`architectures = ["Data2VecAudioForCTC"]`,
     /// `apache-2.0` per HF `cardData.license` CC-verified 2026-08-02).
     Data2vecAudioBase960h,
+    /// `facebook/mms-1b-all`. Meta MMS (Massively Multilingual Speech,
+    /// Pratap et al. 2023, arXiv:2305.13516) — a 1B-parameter wav2vec 2.0
+    /// backbone (`Wav2Vec2ForCTC` head family) bundled with 1000+
+    /// per-language CTC adapters (~2000 sibling files in the repo).
+    ///
+    /// **PLACEHOLDER AXES** — the parent workflow's SIZE NOTE forbids
+    /// downloading the ~4.00 GB upstream `model.safetensors` +
+    /// `config.json`, so the axes below route to the closest-family
+    /// sibling arm ([`Self::LargeXlsr53Base`]: 24 × d=1024 × 16h ×
+    /// ffn=4096, `feat_extract_norm="layer"`,
+    /// `do_stable_layer_norm=true`). The MMS-1B backbone is a distinct
+    /// 1B-parameter release (its true topology and per-language adapter
+    /// dimensions must be transcribed from the primary-source
+    /// `huggingface.co/facebook/mms-1b-all/raw/main/config.json` in a
+    /// follow-up wave before any downstream loader can trust the
+    /// emitted hparams).
+    ///
+    /// The **provenance** stamp is faithful — only the axis hparams are
+    /// placeholder:
+    /// - `name = "mms-1b-all"` (distinct from every sibling arm)
+    /// - `upstream_hf = "facebook/mms-1b-all"`
+    /// - `has_ctc_head = true` (MMS ships per-language CTC adapters +
+    ///   an English default head via the `Wav2Vec2ForCTC` interface)
+    ///
+    /// The distinct `name` + `upstream_hf` stamp is the guardrail a
+    /// future `Wav2Vec2CtcWeights::from_gguf` reader will use to
+    /// recognise this artifact and refuse to bind the placeholder
+    /// axes until the follow-up wave lands the true topology + the
+    /// per-language adapter loader (~1000 sibling `adapter.*.safetensors`
+    /// files, tracked in the parent workflow's `notes` field).
+    ///
+    /// Weight-distribution licence = **cc-by-nc-4.0** (T4 tier /
+    /// Research-only publish path per the X-Codec-2 (2026-07-28)
+    /// precedent) — the runtime gate `M2-13` refuses to load in
+    /// commercial mode (`requires_research_flag = true`); publish
+    /// requires `publish-one.sh --allow-noncommercial`.
+    Mms1bAll,
 }
 
 /// Per-variant axes transcribed verbatim from the primary-source
@@ -366,6 +403,41 @@ impl Variant {
             // `upstream_hf` diverge from `Base960h` so a stamped GGUF
             // faithfully reports the upstream release rather than
             // masquerading as `wav2vec2-base-960h`.
+            // 2026-08-02 wave: `facebook/mms-1b-all` (cc-by-nc-4.0).
+            // Meta MMS 1B (Pratap et al. 2023, arXiv:2305.13516) —
+            // the parent workflow's SIZE NOTE (4.00 GB checkpoint)
+            // forbids downloading `config.json` for verification, so
+            // the axes below **route to the closest-family sibling**
+            // ([`Self::LargeXlsr53Base`]: 24L × d=1024 × 16h ×
+            // ffn=4096, `feat_extract_norm="layer"`,
+            // `do_stable_layer_norm=true`) as an explicit
+            // PLACEHOLDER. Only the discriminating axes — `name`,
+            // `upstream_hf`, `has_ctc_head=true` (MMS ships per-lang
+            // CTC adapters + English default head via
+            // `Wav2Vec2ForCTC`) — are faithful. A follow-up wave must
+            // transcribe the true MMS-1B topology + adapter dims and
+            // land a per-language adapter loader before any downstream
+            // loader can trust these placeholder hparams. The
+            // provenance stamp guardrail (distinct `name` +
+            // `upstream_hf`) lets a future
+            // `Wav2Vec2CtcWeights::from_gguf` reader detect this
+            // artifact and refuse to bind until the follow-up.
+            Self::Mms1bAll => VariantAxes {
+                name: "mms-1b-all",
+                upstream_hf: "facebook/mms-1b-all",
+                hidden_size: 1024,
+                n_layer: 24,
+                n_head: 16,
+                intermediate_size: 4096,
+                vocab_size: 32,
+                layer_norm_eps: 1e-5,
+                feat_extract_norm: "layer",
+                do_stable_layer_norm: true,
+                hidden_act: "gelu",
+                num_conv_pos_embeddings: 128,
+                num_conv_pos_embedding_groups: 16,
+                has_ctc_head: true,
+            },
             Self::Data2vecAudioBase960h => VariantAxes {
                 name: "data2vec-audio-base-960h",
                 upstream_hf: "facebook/data2vec-audio-base-960h",
@@ -1073,6 +1145,99 @@ mod tests {
         assert_eq!(
             file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
             Some(MODEL_CATEGORY)
+        );
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn hparam_chunk_pins_mms_1b_all_variant() {
+        // Regression fence: `Mms1bAll` routes through the shared
+        // wav2vec2_ctc converter (parent workflow REUSE HINT) but must
+        // stamp the discriminating `name` + `upstream_hf` faithfully so
+        // a future `Wav2Vec2CtcWeights::from_gguf` reader can detect
+        // the MMS-1B artifact and refuse to bind the placeholder axes
+        // until the follow-up wave lands the true topology + adapter
+        // loader. The axes themselves route to LargeXlsr53Base
+        // (placeholder — the parent workflow SIZE NOTE forbids
+        // downloading the 4.00 GB checkpoint / config.json for real
+        // primary-source transcription).
+        let bytes = safetensors_one_bf16("dummy.weight", &[1, 2], &[0u8; 4]);
+        let input_path = write_temp("mms-in", &bytes);
+        let output_path = write_temp("mms-out", &[]);
+
+        let report = convert_wav2vec2_ctc_file_with_variant(
+            &input_path,
+            &output_path,
+            Variant::Mms1bAll,
+            Some("cc-by-nc-4.0"),
+        )
+        .expect("mms-1b-all conversion must succeed");
+        assert_eq!(report.read, 1);
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(report.skipped_non_float, 0);
+
+        let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
+
+        // Discriminating axes: name + upstream_hf must faithfully
+        // report the MMS-1B release (guardrail for the placeholder-axis
+        // rebind refusal).
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some("mms-1b-all"),
+            "GGUF must report `mms-1b-all` (guardrail for placeholder-axis refusal)"
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some("facebook/mms-1b-all"),
+            "upstream_hf must point at the MMS release, not a sibling wav2vec2 arm"
+        );
+        // Shared wav2vec2 arch + category (tensor names remain the
+        // wav2vec2 family verbatim; MMS is a fine-tune, not a distinct
+        // downstream inference arch).
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(MODEL_CATEGORY)
+        );
+        // NonCommercial gate: MMS-1B-All ships cc-by-nc-4.0 (T4 tier
+        // per the X-Codec-2 (2026-07-28) precedent). The license
+        // override arrives as `cc-by-nc-4.0` — the stamp must survive
+        // and the weight_license class must resolve to `NonCommercial`
+        // (fail-closed for the M2-13 runtime gate).
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("cc-by-nc-4.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::NonCommercial.as_str()),
+            "weight_license class must be NonCommercial (T4 tier gate)"
+        );
+        // Placeholder axes assertion — routed to LargeXlsr53Base until
+        // the follow-up wave transcribes the true MMS-1B topology.
+        assert_eq!(
+            file.get(KEY_HIDDEN_SIZE).and_then(|v| v.as_u64()),
+            Some(1024),
+            "placeholder axis (LargeXlsr53Base sibling) — follow-up must transcribe MMS-1B config.json"
+        );
+        assert_eq!(
+            file.get(KEY_HAS_CTC_HEAD).and_then(|v| v.as_bool()),
+            Some(true),
+            "MMS-1B-All ships per-lang CTC adapters + English default head"
+        );
+        assert_eq!(
+            file.get(KEY_FEAT_EXTRACT_NORM).and_then(|v| v.as_str()),
+            Some("layer"),
+            "placeholder axis (large topology sibling)"
         );
 
         std::fs::remove_file(&input_path).ok();
