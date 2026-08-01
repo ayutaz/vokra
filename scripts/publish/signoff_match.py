@@ -222,6 +222,18 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "ultravox-v0-5-llama-3-2-1b": [
         "Ultravox v0.5 (Llama-3.2-1B) (`fixie-ai/ultravox-v0_5-llama-3_2-1b`)"
     ],
+    # 2026-08-02 Wave residual: Coqui XTTS-v2 (`coqui/XTTS-v2`,
+    # coqui-public-model-license). Multilingual zero-shot voice-cloning TTS
+    # = GPT-2 backbone + DVAE + HiFi-GAN vocoder head. T4 tier (Research-
+    # only, non-commercial) — inherits the X-Codec-2 T4 precedent workflow
+    # landed 2026-07-28 (`LicenseClass::NonCommercial` +
+    # `publish-one.sh --allow-noncommercial` gate + fetch_license.sh
+    # canonical LICENSE fetch). Placeholder row — the row heading MUST
+    # match `docs/license-audit.md` §3.1 byte-for-byte once the audit doc
+    # is updated in a post-workflow batch. Scale ~1.90 GB = local convert
+    # safe on M1 iMac 16 GB. Coqui shut down Jan 2024 but upstream
+    # `coqui/XTTS-v2` on HF remains primary source.
+    "xtts-v2": ["XTTS-v2 (`coqui/XTTS-v2`)"],
     # NOTE: bs-roformer is intentionally NOT registered here — §3.1
     # sign-off is ☑ Rejected (Wave 7 CC-fill) = double fail-closed
     # (Rejected in audit + UNKNOWN_REPO here). owner can add the entry
@@ -770,6 +782,10 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "ultravox_v0_5_llama_3_2_1b": [
         "Ultravox v0.5 (Llama-3.2-1B) (`fixie-ai/ultravox-v0_5-llama-3_2-1b`)"
     ],
+    # 2026-08-02 Wave residual converter (`xtts_v2.rs`) — Coqui XTTS-v2
+    # multilingual zero-shot voice-cloning TTS (GPT-2 + DVAE + HiFi-GAN),
+    # coqui-public-model-license (T4 Research-only).
+    "xtts_v2": ["XTTS-v2 (`coqui/XTTS-v2`)"],
     # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
     # (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Doubly-restrictive
     # NonCommercialShareAlike default (NC gate + SA cascade). The

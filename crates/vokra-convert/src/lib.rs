@@ -2210,6 +2210,31 @@ pub enum ModelKind {
     /// `hubert_large_ls960.rs` / `openwakeword.rs`. Runtime binder deferred
     /// to owner sign-off (`docs/license-audit.md` §3.1).
     UltravoxV05Llama321b,
+    /// **XTTS-v2** (`coqui/XTTS-v2`, **coqui-public-model-license**)
+    /// safetensors → GGUF (Wave residual, 2026-08-02). Coqui's XTTS v2 =
+    /// multilingual zero-shot voice-cloning TTS = GPT-2 backbone (~1.9 GB
+    /// checkpoint) autoregressively generating discrete Mel VQ tokens (from
+    /// a Discrete VAE / DVAE) conditioned on a speaker conditioning module
+    /// (Perceiver-style latent) + language embedding, then decoding via a
+    /// HiFi-GAN vocoder head. **Distinct from siblings** [`Self::PiperPlus`]
+    /// (VITS2 flow), [`Self::Kokoro`] (StyleTTS2-derived iSTFTNet),
+    /// [`Self::CosyVoice2`] (FSQ + Qwen2.5 AR + HiFTNet) — the GPT-2 +
+    /// DVAE + HiFi-GAN triple is a distinct topology, so FR-EX-08 (no
+    /// silent op-shape misroute) requires the distinct arch tag `xtts`.
+    /// License = **coqui-public-model-license** (Coqui's bespoke research-
+    /// only / non-commercial license, not SPDX-listed) →
+    /// [`vokra_core::LicenseClass::NonCommercial`] fail-closed default per
+    /// X-Codec-2 (2026-07-28) / MusicGen family (2026-08-01) T4 tier
+    /// precedent. Publish requires `publish-one.sh --allow-noncommercial`.
+    /// Note: Coqui shut down Jan 2024; upstream `coqui/XTTS-v2` on HF is
+    /// primary source. Category `tts`. Scale ~1.90 GB = local convert safe
+    /// on M1 iMac 16 GB (well below the vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through skeleton
+    /// mirror of sibling `ultravox_v0_5_llama_3_2_1b.rs` / `moonshine_base.rs`
+    /// / `musicgen_small.rs` / `hubert_large_ls960.rs`. Runtime binder
+    /// (GPT-2 AR decoder + DVAE token generation + HiFi-GAN vocoder) deferred
+    /// to owner sign-off (`docs/license-audit.md` §3.1).
+    XttsV2,
 }
 
 impl ModelKind {
@@ -3331,6 +3356,22 @@ impl ModelKind {
             | "ultravox-v0_5-llama-3_2-1b"
             | "fixie-ai-ultravox-v0_5-llama-3_2-1b"
             | "fixie-ai/ultravox-v0_5-llama-3_2-1b" => Some(Self::UltravoxV05Llama321b),
+            // 2026-08-02 Wave residual: XTTS-v2 (`coqui/XTTS-v2`,
+            // coqui-public-model-license). Multilingual zero-shot voice-
+            // cloning TTS = GPT-2 backbone + DVAE + HiFi-GAN. Distinct
+            // arch tag `xtts` — silently sharing with sibling piper-plus /
+            // Kokoro / CosyVoice2 would misroute runtime dispatch
+            // (different tokenizer + different decoder head + different
+            // vocoder), which FR-EX-08 forbids. Accept the arch tag,
+            // family-name spellings, hyphen / underscore variants, and
+            // the canonical HF org/name path.
+            "xtts"
+            | "xtts-v2"
+            | "xtts_v2"
+            | "xttsv2"
+            | "coqui-xtts-v2"
+            | "coqui/xtts-v2"
+            | "coqui/XTTS-v2" => Some(Self::XttsV2),
             _ => None,
         }
     }
@@ -3473,6 +3514,7 @@ impl ModelKind {
             Self::MoonshineBase => "moonshine-base",
             Self::DemucsHtdemucs => "demucs-htdemucs",
             Self::UltravoxV05Llama321b => "ultravox-v0-5-llama-3-2-1b",
+            Self::XttsV2 => "xtts-v2",
         }
     }
 }
@@ -6139,6 +6181,34 @@ pub fn convert_file_licensed(
                  distinct arch tag `ultravox` from sibling Voxtral / Qwen2-Audio: \
                  Llama-3.2-1B decoder + Whisper encoder + projection adapter, \
                  audio-text-to-text multimodal — runtime binder deferred to owner sign-off)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === XttsV2 (2026-08-02 Wave residual, multilingual zero-shot voice-cloning TTS) ===
+        ModelKind::XttsV2 => {
+            // XTTS-v2 (coqui/XTTS-v2, coqui-public-model-license = NonCommercial
+            // T4 tier). GPT-2 backbone + DVAE token decoder + HiFi-GAN vocoder
+            // head. Distinct arch tag `xtts` from sibling TTS families
+            // (piper-plus VITS2 / Kokoro iSTFTNet / CosyVoice2 FSQ+HiFTNet) —
+            // FR-EX-08 requires the distinct arch tag because the tokenizer +
+            // decoder head + vocoder triple would misroute silently otherwise.
+            // BF16 pass-through skeleton mirror of sibling ultravox_v0_5_llama_3_2_1b
+            // / musicgen_small / hubert_large_ls960. Default license
+            // `coqui-public-model-license` + NonCommercial (X-Codec-2 /
+            // MusicGen T4 precedent). Scale ~1.90 GB = local convert safe.
+            let report = models::xtts_v2::convert_xtts_v2_file(input, output, license)?;
+            let notes = vec![format!(
+                "xtts-v2: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (coqui-public-model-license default, NonCommercial \
+                 fail-closed — publish requires --allow-noncommercial per T4 precedent; \
+                 runtime binder deferred to owner sign-off)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

@@ -2325,6 +2325,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // Grouped here for the uniform arch/name/category/upstream_hf/
         // license triple verify shape.
         | ModelKind::UltravoxV05Llama321b
+        // 2026-08-02 Wave residual: Coqui XTTS-v2 (`coqui/XTTS-v2`,
+        // coqui-public-model-license). Multilingual zero-shot voice-cloning
+        // TTS = GPT-2 backbone + DVAE + HiFi-GAN vocoder head. Distinct
+        // arch tag `xtts` from sibling piper-plus (VITS2) / Kokoro
+        // (iSTFTNet) / CosyVoice2 (FSQ + HiFTNet) — FR-EX-08 forbids silent
+        // shape misroute across TTS families. Grouped here for the uniform
+        // arch/name/category/upstream_hf/license triple verify shape.
+        | ModelKind::XttsV2
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

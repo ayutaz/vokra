@@ -714,4 +714,10 @@ pub mod demucs_htdemucs;
 // rope base, so FR-EX-08 forbids silent shape misroute across the three.
 // Category `audio-llm`. Scale ~1.83 GB = local convert safe.
 pub mod ultravox_v0_5_llama_3_2_1b;
+// 2026-08-02 Wave residual: coqui/XTTS-v2 (multilingual zero-shot voice-
+// cloning TTS = GPT-2 backbone + DVAE + HiFi-GAN, coqui-public-model-license
+// = NonCommercial T4 tier). ~1.90 GB = local convert safe on M1 iMac.
+// Distinct arch tag `xtts` from sibling piper-plus (VITS2) / Kokoro
+// (iSTFTNet) / CosyVoice2 (FSQ + HiFTNet) — FR-EX-08.
+pub mod xtts_v2;
 // ---------------------------------------------------------------------------

@@ -929,6 +929,19 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "musicgen-large"
         | "audiogen-medium"
         | "audiogen" => LicenseClass::NonCommercial,
+        // 2026-08-02 Wave residual: Coqui XTTS-v2 (`coqui/XTTS-v2`,
+        // `coqui-public-model-license`). Coqui's bespoke research-only
+        // license — not SPDX-listed, so the string-based
+        // `from_license_str` classifier cannot recognise it (falls through
+        // to `Unknown` = fail-closed refuse). This registry override anchors
+        // the family on `LicenseClass::NonCommercial` so `vokra/xtts-v2`
+        // routes through the T4 (Research-only) publish path per X-Codec-2
+        // (2026-07-28) / MusicGen family (2026-08-01) precedent. `xtts`
+        // covers the bare arch tag; `xtts-v2` covers the model-id stamp;
+        // `xttsv2` covers the compact spelling. Coqui shut down Jan 2024
+        // but the upstream repo remains the primary source. Publish
+        // requires `publish-one.sh --allow-noncommercial`.
+        "xtts" | "xtts-v2" | "xttsv2" => LicenseClass::NonCommercial,
         // 2026-08-01 Wave 6 residual — permissive audio-LLM / VC-sibling /
         // multi-file bundle. All apache-2.0 / MIT clean.
         "qwen2-audio"
