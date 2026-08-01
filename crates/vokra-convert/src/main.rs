@@ -2231,6 +2231,16 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // 2026-08-01 Wave 6 residual: ACE-Step 1.5 (multi-file MIT
         // music-gen bundle, distinct arch `ace_step`, category `music`).
         | ModelKind::AceStep
+        // 2026-08-01 Wave 7 residual: HuBERT-Large-LS960
+        // (`facebook/hubert-large-ls960-ft`, apache-2.0). 317M BERT-
+        // style masked-feature-prediction self-supervised speech
+        // encoder + CTC head fine-tuned on LibriSpeech 960h. Distinct
+        // arch tag `hubert` from sibling wav2vec2 (different
+        // pretraining objective — HuBERT masks features and predicts
+        // k-means-clustered targets, wav2vec2 uses contrastive
+        // masked-convnet with Gumbel-softmax quantised negatives).
+        // Category `asr`. Grouped here for the uniform verify shape.
+        | ModelKind::HubertLargeLs960
         // 2026-08-01 Wave 5 music-generation add: AudioLDM 2
         // (`cvssp/audioldm2`, cc-by-nc-sa-4.0). Text-to-audio latent-
         // diffusion generator (Liu et al. 2024 arXiv:2308.05734).

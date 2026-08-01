@@ -578,6 +578,17 @@ pub mod vibevoice_asr;
 // MIT). Multi-component music-generation bundle. Distinct arch tag
 // `ace_step`, category `music`. Scale ~9.6 GB = vast.ai handoff.
 pub mod ace_step;
+// 2026-08-01 Wave 7 residual: Meta HuBERT-Large-LS960
+// (`facebook/hubert-large-ls960-ft`, apache-2.0). 317M self-supervised
+// speech encoder (BERT-style masked-feature prediction, distinct from
+// wav2vec 2.0's contrastive convnet + Gumbel objective) + CTC head
+// fine-tuned on LibriSpeech 960h. Distinct arch tag `hubert` — future
+// native forward is expected to share ops with `wav2vec2_ctc`
+// (Conv1D feature-extractor + Transformer encoder + CTC decode) but
+// the arch tag stays distinct so runtime dispatch cannot misroute a
+// HuBERT checkpoint into a wav2vec2 loader silently (FR-EX-08).
+// Scale ~1.26 GB = local convert safe on M1 iMac 16 GB.
+pub mod hubert_large_ls960;
 // 2026-08-01 Wave 3 codec add: Amphion NaturalSpeech 3 FACodec
 // (`amphion/naturalspeech3_facodec`, apache-2.0). Factorized VQ (FVQ)
 // neural audio codec at 16 kHz, 3 parallel quantizer heads over

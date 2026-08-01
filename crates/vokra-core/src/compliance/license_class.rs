@@ -924,6 +924,18 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "ace-step-1.5"
         | "ace_step"
         | "ace-step-1_5" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 7 residual — Meta HuBERT-Large-LS960
+        // (`facebook/hubert-large-ls960-ft`, apache-2.0 per HF cardData
+        // primary source). 317M self-supervised speech encoder + CTC
+        // head fine-tuned on LibriSpeech 960h. Distinct arch tag
+        // `hubert` from sibling wav2vec2 (different pretraining
+        // objective) — the two share ops but the arch tag stays
+        // distinct so runtime dispatch cannot misroute silently.
+        "hubert"
+        | "hubert-large-ls960"
+        | "hubert_large_ls960"
+        | "hubert-large-ls960-ft"
+        | "facebook/hubert-large-ls960-ft" => LicenseClass::Permissive,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike

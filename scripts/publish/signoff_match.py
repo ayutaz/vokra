@@ -158,6 +158,14 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # 2026-08-01 Wave 6 residual: ACE-Step 1.5 (MIT, flagship music-gen).
     # Multi-file bundle. Scale ~9.6 GB = vast.ai handoff.
     "ace-step-1.5": ["ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`)"],
+    # 2026-08-01 Wave 7 residual: HuBERT-Large-LS960 (Meta, apache-2.0).
+    # 317M self-supervised speech encoder + CTC head fine-tuned on
+    # LibriSpeech 960h. Distinct arch tag `hubert` from sibling
+    # wav2vec2 (different pretraining objective). Placeholder row —
+    # the row heading MUST match `docs/license-audit.md` §3.1 byte-
+    # for-byte once the audit doc is updated in a post-workflow batch.
+    # Scale ~1.26 GB = local convert safe on M1 iMac.
+    "hubert-large-ls960": ["HuBERT-Large-LS960 (`facebook/hubert-large-ls960-ft`)"],
     # 2026-08-01 Wave 7 CC-fill: AudioLDM 2 (CVSSP, cc-by-nc-sa-4.0)
     # T4 Research-only path with SA cascade explicit in model card +
     # LICENSE + NOTICE. `publish-one.sh --allow-noncommercial` gate.
@@ -670,6 +678,8 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "qwen2_audio": ["Qwen2-Audio-7B-Instruct (`Qwen/Qwen2-Audio-7B-Instruct`)"],
     "vibevoice_asr": ["VibeVoice-ASR (`microsoft/VibeVoice-ASR`)"],
     "ace_step": ["ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`)"],
+    # 2026-08-01 Wave 7 residual converter (`hubert_large_ls960.rs`).
+    "hubert_large_ls960": ["HuBERT-Large-LS960 (`facebook/hubert-large-ls960-ft`)"],
     # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
     # (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Doubly-restrictive
     # NonCommercialShareAlike default (NC gate + SA cascade). The

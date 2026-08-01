@@ -1935,6 +1935,22 @@ pub enum ModelKind {
     /// Distinct arch `ace_step`, category `music`. Scale ~9.6 GB =
     /// vast.ai handoff (multi-file merge via prep script).
     AceStep,
+    /// **HuBERT-Large-LS960** (`facebook/hubert-large-ls960-ft`,
+    /// **apache-2.0**) safetensors checkpoint (Wave 7 residual,
+    /// 2026-08-01). HuBERT-Large (Hsu et al. 2021, arXiv:2106.07447)
+    /// = 317M self-supervised speech encoder + CTC head fine-tuned on
+    /// LibriSpeech 960h. **Distinct from sibling
+    /// [`Self::Wav2Vec2Ctc`]**: HuBERT uses a BERT-style masked
+    /// feature-prediction objective over k-means-clustered features,
+    /// wav2vec 2.0 uses a contrastive masked convnet + Gumbel-softmax
+    /// quantised negatives. Distinct arch `hubert` — the two share
+    /// ops (7-layer Conv1D feature-extractor + Transformer encoder +
+    /// CTC decode) but the arch tag stays distinct so runtime
+    /// dispatch cannot silently misroute a HuBERT checkpoint into a
+    /// wav2vec2 loader (FR-EX-08). Category `asr`, license Permissive
+    /// (apache-2.0 per HF cardData). Scale ~1.26 GB = local convert
+    /// safe on M1 iMac 16 GB (well below the vast.ai 8 GB cutoff).
+    HubertLargeLs960,
     /// **AudioLDM 2** (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**)
     /// safetensors checkpoint (Wave 5 candidate, 2026-08-01).
     /// Text-to-audio latent-diffusion generator (Liu et al. 2024 ICML,
@@ -3014,6 +3030,18 @@ impl ModelKind {
             | "ace_step"
             | "ace_step_1_5"
             | "ACE-Step/Ace-Step1.5" => Some(Self::AceStep),
+            // HuBERT-Large-LS960 (Wave 7 residual, 2026-08-01,
+            // `facebook/hubert-large-ls960-ft`, apache-2.0). 317M
+            // BERT-style masked-feature-prediction speech encoder + CTC
+            // head fine-tuned on LibriSpeech 960h. Distinct arch tag
+            // `hubert` — silently sharing with wav2vec2 would misroute
+            // runtime dispatch (different pretraining objective / loader).
+            "hubert-large-ls960"
+            | "hubert_large_ls960"
+            | "hubert-large-ls960-ft"
+            | "hubert_large_ls960_ft"
+            | "facebook-hubert-large-ls960-ft"
+            | "facebook/hubert-large-ls960-ft" => Some(Self::HubertLargeLs960),
             // AudioLDM 2 (Wave 5 candidate, 2026-08-01,
             // `cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Accept the arch
             // tag (`audioldm2` / `audio-ldm-2` / `audio_ldm_2`), the
@@ -3191,6 +3219,7 @@ impl ModelKind {
             Self::Qwen2Audio => "qwen2-audio-7b-instruct",
             Self::VibeVoiceAsr => "vibevoice-asr",
             Self::AceStep => "ace-step-1.5",
+            Self::HubertLargeLs960 => "hubert-large-ls960",
             Self::AudioLdm2 => "audioldm2",
             Self::BsRoformer => "bs-roformer",
         }
@@ -5536,6 +5565,26 @@ pub fn convert_file_licensed(
                 "ace-step-1.5: {} float weights written verbatim ({} BF16 passthrough), \
                  {} non-float skipped (mit default — flagship MIT music-gen)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === HubertLargeLs960 (2026-08-01 Wave 7 residual) ===
+        ModelKind::HubertLargeLs960 => {
+            let report = models::hubert_large_ls960::convert_hubert_large_ls960_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "hubert-large-ls960: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (apache-2.0 default, Permissive — distinct arch tag `hubert` from sibling \
+                 wav2vec2 despite shared ops)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {
                 model,
