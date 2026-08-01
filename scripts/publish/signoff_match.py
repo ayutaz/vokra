@@ -215,6 +215,20 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # runtime (M2-13 gate refuses commercial-mode load); publish-side
     # SA cascade is enforced by CC judgement + owner rollback path.
     "audioldm2": ["AudioLDM 2 (`cvssp/audioldm2`)"],
+    # 2026-08-02 Wave 8 sibling: AudioLDM 2 Large (CVSSP,
+    # cc-by-nc-sa-4.0). Wider/deeper sibling of the base AudioLDM 2
+    # variant — same multi-encoder bundle topology (VAE + U-Net +
+    # HiFi-GAN + T5 + CLAP + GPT-2 audio-caption LM), only model dims
+    # differ. T4 Research-only path with SA cascade explicit in model
+    # card + LICENSE + NOTICE. `publish-one.sh --allow-noncommercial`
+    # gate. `LicenseClass::NonCommercialShareAlike` fail-closed default
+    # at runtime (M2-13 gate refuses commercial-mode load); publish-
+    # side SA cascade is enforced by CC judgement + owner rollback
+    # path. Placeholder row — the row heading MUST match
+    # `docs/license-audit.md` §3.1 byte-for-byte once the audit doc is
+    # updated in a post-workflow batch (mirror of sibling base
+    # `AudioLDM 2 (cvssp/audioldm2)` row form).
+    "audioldm2-large": ["AudioLDM 2 Large (`cvssp/audioldm2-large`)"],
     # 2026-08-02 Wave residual: openWakeWord (dscripka, apache-2.0).
     # Audio-dialect `kws` op entry — small custom-KWS MLP/CNN family
     # over precomputed melspec. HF API rate-limited (401) — upstream
@@ -922,7 +936,18 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # LICENSE, NOTICE, auxiliary GGUFs) to carry CC-BY-NC-SA-4.0
     # forward, and that decision needs an owner ADR before a
     # `vokra/audioldm2` repo entry is added here.
-    "audioldm2": ["AudioLDM 2 (`cvssp/audioldm2`)"],
+    "audioldm2": [
+        "AudioLDM 2 (`cvssp/audioldm2`)",
+        # 2026-08-02 Wave 8 sibling: AudioLDM 2 Large landed as an
+        # in-place variant on the same `audioldm2.rs` converter (shared
+        # `convert_audioldm2_family_file` helper, only four id chunks
+        # flip between siblings). `check-converter-signoff.sh` now
+        # expects BOTH rows to exist in §3.1 before the converter can
+        # emit either variant into a publish path (each sibling repo
+        # slug has its own `REPO_TO_SIGNOFF_ROWS` entry above; owner
+        # signs each row separately when the SA cascade ADR lands).
+        "AudioLDM 2 Large (`cvssp/audioldm2-large`)",
+    ],
     # 2026-08-02 Wave residual: openWakeWord (dscripka, apache-2.0).
     # Audio-dialect `kws` op entry — small custom-KWS MLP/CNN family
     # (~1–5 MB per wake-word) over precomputed melspec. Placeholder

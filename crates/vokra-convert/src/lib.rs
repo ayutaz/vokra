@@ -2191,6 +2191,48 @@ pub enum ModelKind {
     /// matching) deferred to owner sign-off (`docs/license-audit.md`
     /// §3.1 sign-off queue).
     AudioLdm2,
+    /// **AudioLDM 2 Large** (`cvssp/audioldm2-large`, **cc-by-nc-sa-4.0**)
+    /// safetensors checkpoint (Wave 8 sibling, 2026-08-02). Wider/deeper
+    /// sibling of the base AudioLDM 2 variant — the multi-encoder
+    /// bundle topology (VAE + latent-diffusion U-Net + HiFi-GAN vocoder
+    /// + T5-base + CLAP text encoder + GPT-2 audio-caption LM) is
+    /// unchanged from sibling [`Self::AudioLdm2`], only model dims +
+    /// optional variant-specific heads differ. Reuses the base BF16
+    /// pass-through arm via the shared
+    /// [`models::audioldm2::convert_audioldm2_family_file`] helper (a
+    /// wrapper `convert_audioldm2_large_file` flips only the
+    /// `vokra.model.name` + `vokra.provenance.{model_id,source,
+    /// upstream_hf}` chunks to the large spellings) — no new
+    /// `audioldm2_large.rs` module. This is the sibling-in-place
+    /// landing pattern the base module docstring anticipated
+    /// (musicgen_medium / musicgen_melody 2026-08-02 precedent).
+    ///
+    /// **Distinct arch tag `audioldm2`** (shared with sibling base —
+    /// same family topology, only dims differ). `category = "music"`
+    /// shared with the sibling AudioLDM 2 / MusicGen family.
+    ///
+    /// **Doubly-restrictive `NonCommercialShareAlike` default** — the
+    /// CVSSP primary source pins CC-BY-NC-SA-4.0 for every family
+    /// sibling (base + large + music + music-665k), so the large
+    /// variant inherits the same doubly-restrictive class (NC gate +
+    /// SA cascade). Override via [`convert_file_licensed`] `license`
+    /// only when the caller legitimately holds the weight under a
+    /// different SPDX id.
+    ///
+    /// **Publish blocked (sa-cascade-defer)** — no entry in
+    /// `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS` for
+    /// `vokra/audioldm2-large`, and no ☑ sign-off in
+    /// `docs/license-audit.md` §3.1 (owner ADR required to resolve
+    /// the SA cascade onto Vokra-added artifacts, same posture as
+    /// sibling base [`Self::AudioLdm2`]).
+    ///
+    /// Scale ~7 GB = **vast.ai handoff** per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (M1 iMac 16 GB unsafe
+    /// on the upper edge — the multi-encoder bundle roughly doubles
+    /// peak resident on the pass). Real-weight parity + runtime
+    /// binder deferred to owner sign-off (`docs/license-audit.md`
+    /// §3.1 sign-off queue).
+    AudioLdm2Large,
     /// **BS-Roformer / Mel-Band Roformer** (upstream `chenmozhijin/BSRoformer-
     /// GGUF` third-party mirror, **weight provenance unclear**) safetensors
     /// checkpoint (Wave 5 candidate, 2026-08-01). First **music source
@@ -3574,6 +3616,21 @@ impl ModelKind {
             | "audioldm_2"
             | "cvssp-audioldm2"
             | "cvssp/audioldm2" => Some(Self::AudioLdm2),
+            // AudioLDM 2 Large (Wave 8 sibling, 2026-08-02,
+            // `cvssp/audioldm2-large`, cc-by-nc-sa-4.0). Distinct
+            // ModelKind (mirrors musicgen_medium / musicgen_large
+            // split posture) so the runtime-side lookup surface
+            // stays one-model-per-ModelKind — future variants
+            // (`audioldm2-music` / `audioldm2-music-665k`) will
+            // land as distinct ModelKinds under the same shared
+            // `audioldm2` arch tag.
+            "audioldm2-large"
+            | "audio-ldm-2-large"
+            | "audio_ldm_2_large"
+            | "audioldm-2-large"
+            | "audioldm_2_large"
+            | "cvssp-audioldm2-large"
+            | "cvssp/audioldm2-large" => Some(Self::AudioLdm2Large),
             // BS-Roformer / Mel-Band Roformer (Wave 5 candidate,
             // 2026-08-01, `chenmozhijin/BSRoformer-GGUF`, weight
             // provenance unclear). Accept the arch tag (both
@@ -3860,6 +3917,7 @@ impl ModelKind {
             Self::AceStep => "ace-step-1.5",
             Self::HubertLargeLs960 => "hubert-large-ls960",
             Self::AudioLdm2 => "audioldm2",
+            Self::AudioLdm2Large => "audioldm2-large",
             Self::BsRoformer => "bs-roformer",
             Self::Openwakeword => "openwakeword",
             Self::MoonshineTiny => "moonshine-tiny",
@@ -6548,6 +6606,49 @@ pub fn convert_file_licensed(
                  (cc-by-nc-sa-4.0 default, NonCommercialShareAlike fail-closed — NC gate + SA \
                  cascade both in force unless --license overrides; publish blocked pending \
                  owner ADR per docs/license-audit.md §3.1)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === AudioLdm2Large (2026-08-02 Wave 8 sibling) ===
+        ModelKind::AudioLdm2Large => {
+            // AudioLDM 2 Large (`cvssp/audioldm2-large`, **cc-by-nc-sa-
+            // 4.0**). Wider/deeper sibling of the base AudioLDM 2
+            // variant — same multi-encoder bundle topology (VAE + U-Net
+            // + HiFi-GAN + T5 + CLAP + GPT-2 audio-caption LM), only
+            // model dims differ. Reuses the base BF16 pass-through arm
+            // via the shared `convert_audioldm2_family_file` helper —
+            // no new `audioldm2_large.rs` module (the sibling-in-place
+            // pattern the base module docstring anticipated; mirror of
+            // the musicgen_medium / musicgen_melody 2026-08-02 landing).
+            // The wrapper flips only the `vokra.model.name` +
+            // `vokra.provenance.{model_id,source,upstream_hf}` chunks
+            // to the LARGE_* spellings. `LicenseClass::
+            // NonCommercialShareAlike` default fail-closed (NC gate +
+            // SA cascade); override via `--license <spdx>` only when
+            // the caller legitimately holds the weight under a
+            // different SPDX id. Scale ~7 GB = **vast.ai handoff** per
+            // memory `[[feedback-large-models-on-vast-ai]]` (M1 iMac
+            // 16 GB unsafe on the upper edge — the multi-encoder
+            // bundle roughly doubles peak resident on the pass).
+            // **Publish blocked (sa-cascade-defer)**: no entry in
+            // `signoff_match.py::REPO_TO_SIGNOFF_ROWS` for the
+            // `vokra/audioldm2-large` slug, no ☑ sign-off in §3.1
+            // (owner ADR required to resolve the SA cascade onto
+            // Vokra-added artifacts, same posture as sibling base).
+            let report = models::audioldm2::convert_audioldm2_large_file(input, output, license)?;
+            let notes = vec![format!(
+                "audioldm2-large: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (cc-by-nc-sa-4.0 default, NonCommercialShareAlike fail-closed — NC gate + SA \
+                 cascade both in force unless --license overrides; reuses base converter — \
+                 publish blocked pending owner ADR per docs/license-audit.md §3.1)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {

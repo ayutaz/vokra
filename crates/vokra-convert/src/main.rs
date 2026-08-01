@@ -2350,6 +2350,20 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // because the runtime-side arch/name/category/upstream/license
         // triple lookup does not depend on the publish gate.
         | ModelKind::AudioLdm2
+        // 2026-08-02 Wave 8 sibling: AudioLDM 2 Large
+        // (`cvssp/audioldm2-large`, cc-by-nc-sa-4.0). Wider/deeper
+        // sibling of the base AudioLDM 2 variant — same multi-encoder
+        // bundle topology (VAE + U-Net + HiFi-GAN + T5 + CLAP + GPT-2
+        // audio-caption LM), only model dims differ. Reuses the base
+        // BF16 pass-through converter arm (sibling wrapper — no new
+        // models/*.rs module). Emits the same standard `vokra.model.
+        // {arch,name,category}` + `vokra.provenance.*` triple as
+        // sibling base, with `category = "music"` shared. **Publish
+        // blocked** by the doubly-restrictive NonCommercialShareAlike
+        // default (NC gate + SA cascade); the uniform verify shape
+        // still applies because the runtime-side lookup does not
+        // depend on the publish gate.
+        | ModelKind::AudioLdm2Large
         // 2026-08-01 Wave 5 music-separation add: BS-Roformer /
         // Mel-Band Roformer (`chenmozhijin/BSRoformer-GGUF`, **weight
         // provenance unclear**). First music-source-separation

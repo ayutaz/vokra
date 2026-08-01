@@ -1187,6 +1187,23 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "audioldm_2"
         | "cvssp-audioldm2"
         | "cvssp/audioldm2" => LicenseClass::NonCommercialShareAlike,
+        // AudioLDM 2 Large (Wave 8 sibling, 2026-08-02) — wider/deeper
+        // sibling of the base AudioLDM 2 variant, same CVSSP primary-
+        // source license (CC-BY-NC-SA-4.0). The `vokra/audioldm2-large`
+        // repo slug resolves here so a future publish gate lookup finds
+        // the same doubly-restrictive class (NC gate + SA cascade) as
+        // sibling base. **Publish blocked** at the
+        // `signoff_match.py::REPO_TO_SIGNOFF_ROWS` layer until an owner
+        // ADR resolves the SA cascade onto Vokra-added artifacts (same
+        // posture as sibling `cvssp/audioldm2` above).
+        "audioldm2-large"
+        | "audio-ldm-2-large"
+        | "audio_ldm_2_large"
+        | "audioldm-2-large"
+        | "audioldm_2_large"
+        | "cvssp-audioldm2-large"
+        | "cvssp/audioldm2-large"
+        | "vokra/audioldm2-large" => LicenseClass::NonCommercialShareAlike,
         // --- gated: unknown training rights (research flag, fail-closed) -----
         "rvc" | "rvc-v2" | "gpt-sovits" | "e2-tts" | "styletts2" | "styletts-2" => {
             LicenseClass::Unknown

@@ -231,6 +231,28 @@ pub const CATEGORY: &str = "music";
 /// `vokra.provenance.source`.
 pub const UPSTREAM_HF: &str = "cvssp/audioldm2";
 
+/// `vokra.model.name` value written for the AudioLDM 2 **Large**
+/// variant GGUF (`cvssp/audioldm2-large`, Wave 8 sibling landed
+/// 2026-08-02, **cc-by-nc-sa-4.0**). Large = wider/deeper VAE + U-Net
+/// + HiFi-GAN vocoder + T5 + CLAP + GPT-2 audio-caption LM (the same
+/// six-encoder bundle as sibling [`NAME`], only model dims + optional
+/// variant-specific heads differ). Reusing the base BF16 pass-
+/// through arm (single [`convert_audioldm2_family_file`] helper +
+/// this sibling wrapper) rather than a dedicated `audioldm2_large.rs`
+/// file — the tensor-name manifest is topology-identical to sibling
+/// base, only `vokra.model.name` + `vokra.provenance.*` (`model_id`,
+/// `source`, `upstream_hf`) flip. Mirror of the
+/// musicgen_medium / musicgen_melody in-place sibling landing pattern
+/// (2026-08-02 precedent).
+pub const LARGE_NAME: &str = "audioldm2-large";
+
+/// Upstream HF repository slug for the AudioLDM 2 Large sibling
+/// (`cvssp/audioldm2-large`), recorded under
+/// `vokra.provenance.upstream_hf`. See [`LARGE_NAME`] for the base /
+/// large topology relationship (identical multi-encoder bundle,
+/// only dims differ).
+pub const LARGE_UPSTREAM_HF: &str = "cvssp/audioldm2-large";
+
 /// The default upstream weight license — `cc-by-nc-sa-4.0` per the
 /// CVSSP GitHub README + paper Ethics §. The HF model card carries a
 /// `license: cc-by-nc-4.0` tag (looser NC-only), but the CVSSP-owned
@@ -248,6 +270,12 @@ pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-sa-4.0";
 /// `vokra.provenance.weight_license` chunk.
 const UPSTREAM_SOURCE: &str =
     "cvssp/audioldm2 (Liu et al. 2024 arXiv:2308.05734 text-to-audio LDM, cc-by-nc-sa-4.0)";
+
+/// Human-readable upstream source note for the AudioLDM 2 Large
+/// sibling (`cvssp/audioldm2-large`, Liu et al. 2024 arXiv:2308.05734
+/// text-to-audio LDM, wider/deeper multi-encoder bundle,
+/// cc-by-nc-sa-4.0). Stored in `vokra.provenance.source`.
+const LARGE_UPSTREAM_SOURCE: &str = "cvssp/audioldm2-large (Liu et al. 2024 arXiv:2308.05734 text-to-audio LDM, large variant, cc-by-nc-sa-4.0)";
 
 // Raw string keys not covered by `crate::gguf::chunks` — kept as
 // converter-side constants (the cross-crate constant duplication rule
@@ -323,21 +351,100 @@ pub fn convert_audioldm2_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<AudioLdm2Report, ConvertError> {
-    // NB: AudioLDM 2 bundle is ~8.5 GB. `std::fs::read` peaks at ~2x
-    // file size (input buffer + parsed safetensors view = additive in
-    // the worst case, ~17 GB peak). The vast.ai runbook allocates a
-    // 32 GB+ box for this class of publish per
-    // `docs/handoff/vast-ai-large-model-publish.md` §2, so simple
-    // eager-read is acceptable — no streaming reader needed for a
-    // one-shot offline convert. Moshi (14 GB) is the streaming-mandated
-    // tier and lives in its own module; AudioLDM 2 sits at the upper
-    // edge of the non-streaming tier.
+    convert_audioldm2_family_file(input, output, license, NAME, UPSTREAM_HF, UPSTREAM_SOURCE)
+}
+
+/// Converts a `cvssp/audioldm2-large` safetensors checkpoint at
+/// `input` into a Vokra-native GGUF at `output`.
+///
+/// AudioLDM 2 Large is the wider/deeper sibling of the base variant
+/// (`cvssp/audioldm2`) — the multi-encoder bundle topology (VAE +
+/// latent-diffusion U-Net + HiFi-GAN vocoder + T5-base + CLAP text
+/// encoder + GPT-2 audio-caption LM) is unchanged, only model dims +
+/// optional variant-specific heads differ. The BF16 pass-through
+/// pipeline is therefore shared with the base arm via the private
+/// [`convert_audioldm2_family_file`] helper; only the
+/// `vokra.model.name` + `vokra.provenance.{model_id,source,
+/// upstream_hf}` chunks flip to the large spellings
+/// ([`LARGE_NAME`] / [`LARGE_UPSTREAM_HF`] /
+/// [`LARGE_UPSTREAM_SOURCE`]).
+///
+/// **Scale ~7 GB → vast.ai handoff.** Do NOT attempt a local convert
+/// on the M1 iMac 16 GB machine (memory
+/// [[feedback-large-models-on-vast-ai]]: ≥8 GB safe cutoff; Voxtral-
+/// Small-24B 48 GB confirmed swap-death is the calibration point).
+/// The whole multi-encoder bundle roughly doubles peak resident on
+/// the pass (input buffer + parsed safetensors view = additive), so
+/// even a nominally 7 GB checkpoint peaks well above the 8 GB safe
+/// threshold. Real-weight parity + runtime binder deferred to owner
+/// sign-off (`docs/license-audit.md` §3.1 sign-off queue).
+///
+/// `license` optionally overrides the stamped weight license — see
+/// [`convert_audioldm2_file`] for the override semantics + empty-
+/// string research-flag-downgrade guard + SA-cascade-downgrade guard.
+/// Defaults to [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-sa-4.0"`,
+/// `NonCommercialShareAlike`) — every sibling in the AudioLDM 2
+/// family carries the same CVSSP primary-source license.
+///
+/// **Publish blocked (sa-cascade-defer)** — no entry in
+/// `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`, and no
+/// ☑ sign-off in `docs/license-audit.md` §3.1 (owner ADR required
+/// to resolve the SA cascade onto Vokra-added artifacts). The
+/// converter lands so a future publish is one owner decision away,
+/// but nothing today routes to `publish-one.sh`.
+///
+/// # Errors
+///
+/// Same failure modes as [`convert_audioldm2_file`].
+pub fn convert_audioldm2_large_file(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<AudioLdm2Report, ConvertError> {
+    convert_audioldm2_family_file(
+        input,
+        output,
+        license,
+        LARGE_NAME,
+        LARGE_UPSTREAM_HF,
+        LARGE_UPSTREAM_SOURCE,
+    )
+}
+
+/// Shared implementation for the AudioLDM 2 family (base + large,
+/// both cc-by-nc-sa-4.0, same six-encoder VAE + U-Net + HiFi-GAN +
+/// T5 + CLAP + GPT-2 topology, only the model-id / upstream-hf /
+/// source stamps + model dims differ).
+///
+/// Kept `pub(crate)` so future variants (`-music` / `-music-665k`,
+/// for example) can piggyback without duplicating the BF16 pass-
+/// through dispatch. External callers should route through the
+/// variant-specific wrappers ([`convert_audioldm2_file`] /
+/// [`convert_audioldm2_large_file`]) so the correct built-in defaults
+/// stay in one place.
+pub(crate) fn convert_audioldm2_family_file(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+    name: &str,
+    upstream_hf: &str,
+    upstream_source: &str,
+) -> Result<AudioLdm2Report, ConvertError> {
+    // NB: AudioLDM 2 bundle is ~8.5 GB (base) / ~7 GB (large).
+    // `std::fs::read` peaks at ~2x file size (input buffer + parsed
+    // safetensors view = additive in the worst case, ~14–17 GB peak).
+    // The vast.ai runbook allocates a 32 GB+ box for this class of
+    // publish per `docs/handoff/vast-ai-large-model-publish.md` §2,
+    // so simple eager-read is acceptable — no streaming reader needed
+    // for a one-shot offline convert. Moshi (14 GB) is the streaming-
+    // mandated tier and lives in its own module; AudioLDM 2 sits at
+    // the upper edge of the non-streaming tier.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
+    b.add_string(chunks::KEY_MODEL_NAME, name);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
 
     // Built-in stamp = cc-by-nc-sa-4.0 NonCommercialShareAlike. The
@@ -358,8 +465,8 @@ pub fn convert_audioldm2_file(
             LicenseClass::NonCommercialShareAlike,
         ),
     };
-    vokra_core::stamp_provenance(&mut b, class, &spdx, Some(NAME), Some(UPSTREAM_SOURCE));
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    vokra_core::stamp_provenance(&mut b, class, &spdx, Some(name), Some(upstream_source));
+    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, upstream_hf);
 
     let mut report = AudioLdm2Report::default();
     // Float tensors pass through **verbatim** — no convert-time widening.
@@ -815,5 +922,114 @@ mod tests {
             !LicenseClass::NonCommercialShareAlike.commercial_ok(),
             "NC-SA weight must NOT be marked commercial-safe by the classifier"
         );
+    }
+
+    /// Sibling wrapper `convert_audioldm2_large_file` must flip the
+    /// `vokra.model.name` + `vokra.provenance.{model_id,source,
+    /// upstream_hf}` chunks to the LARGE_* spellings while keeping the
+    /// arch tag (`audioldm2`), category (`music`), and doubly-
+    /// restrictive NC-SA default stamp identical to sibling base.
+    /// Mirrors the `musicgen_melody` sibling landing test pattern —
+    /// the shared `convert_audioldm2_family_file` helper flips only
+    /// four id chunks between siblings, and this test pins that
+    /// four-chunk delta so a silent regression on the shared helper
+    /// fires here first.
+    #[test]
+    fn large_sibling_flips_name_and_upstream_but_keeps_arch_category_and_license() {
+        // Non-zero BF16 bit patterns so the byte-identity assert also
+        // catches any silent widen / downcast on the sibling path.
+        let values: [f32; 4] = [3.5, -1.25, 0.5, -0.125];
+        let bf16 = bf16_bytes(&values);
+        assert_eq!(bf16.len(), 8, "4 elements × 2 bytes BF16 payload");
+
+        // Mirror realistic AudioLDM 2 large state-dict name — same
+        // U-Net topology as sibling base, only dims differ.
+        let input_bytes = safetensors_one(
+            "unet.mid_block.attentions.0.to_q.weight",
+            "BF16",
+            &[2, 2],
+            &bf16,
+        );
+        let input = tmp_path("large-in");
+        let output = tmp_path("large-out");
+        std::fs::write(&input, &input_bytes).expect("write input");
+
+        let report = convert_audioldm2_large_file(&input, &output, None).expect("convert large");
+        assert_eq!(report.read, 1);
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(report.skipped_non_float, 0);
+
+        let file = GgufFile::open(&output).expect("load large output gguf");
+
+        // BF16 payload byte-identical to input on the sibling path too
+        // (guards against a silent widen slipping into the shared helper).
+        let info = file
+            .tensor_info("unet.mid_block.attentions.0.to_q.weight")
+            .expect("BF16 tensor present in large output");
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(file.tensor_bytes(info), bf16.as_slice());
+
+        // Arch + category + license stamps stay identical to sibling
+        // base (the whole point of the shared helper — only four id
+        // chunks flip).
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH),
+            "arch tag `audioldm2` must be shared with sibling base (silently forking would misroute runtime dispatch)"
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(CATEGORY),
+            "category (music) must not flip between siblings"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(DEFAULT_LICENSE_SPDX),
+            "large sibling must default to the same cc-by-nc-sa-4.0 license as base"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::NonCommercialShareAlike.as_str()),
+            "large sibling must inherit the doubly-restrictive NC-SA default (NC gate + SA cascade)"
+        );
+
+        // Name + model_id + upstream_hf flip to the LARGE_* spellings —
+        // this is the four-chunk delta between siblings.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(LARGE_NAME),
+            "vokra.model.name must flip to `audioldm2-large` on the sibling path"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some(LARGE_NAME),
+            "vokra.provenance.model_id must match LARGE_NAME (stamp_provenance derives model_id from `name`)"
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(LARGE_UPSTREAM_HF),
+            "vokra.provenance.upstream_hf must flip to `cvssp/audioldm2-large`"
+        );
+        // Guard against a silent leak of the base-name into the large
+        // stamp (a copy-paste regression in the shared helper).
+        assert_ne!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME),
+            "large sibling must NOT stamp the base name (regression guard)"
+        );
+        assert_ne!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF),
+            "large sibling must NOT stamp the base upstream_hf (regression guard)"
+        );
+
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
     }
 }
