@@ -118,6 +118,15 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "voxtral-small-24b-2507": ["Voxtral-Small-24B-2507"],
     "csm-1b": ["Sesame CSM-1B"],
     "xcodec2": ["X-Codec 2 (Llasa)"],
+    # residual wave 4 (2026-08-02): nyrahealth/CrisperWhisper — Whisper-
+    # large-v3 verbatim-word-timestamps fine-tune, cc-by-nc-4.0. T4 tier
+    # (Research-only) per the X-Codec-2 (2026-07-28) precedent workflow
+    # (`LicenseClass::NonCommercial` + `--allow-noncommercial` gate +
+    # `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE fetch).
+    # The placeholder row heading MUST match `docs/license-audit.md`
+    # §3.1 byte-for-byte once the audit doc is updated in a post-workflow
+    # batch (do NOT modify license-audit.md here per the task rules).
+    "crisperwhisper": ["CrisperWhisper (`nyrahealth/CrisperWhisper`)"],
     "fun-cosyvoice3-0.5b-2512": ["FunAudioLLM/Fun-CosyVoice3-0.5B-2512"],
     # 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Medium
     # (`facebook/musicgen-medium`, cc-by-nc-4.0). T4 tier (Research-only, non-

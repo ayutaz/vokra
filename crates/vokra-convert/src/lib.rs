@@ -324,6 +324,33 @@ pub enum ModelKind {
     /// GEMM / GEMV / softmax / layer-norm / GELU / conv1d) — no new
     /// op is added.
     KotobaWhisper,
+    /// **nyrahealth/CrisperWhisper** safetensors checkpoint (residual
+    /// wave 4, 2026-08-02). A **Whisper-large-v3 fine-tune emphasising
+    /// verbatim word-level timestamps** — the architecture is
+    /// byte-identical to whisper-large-v3 (`d_model=1280`,
+    /// `n_audio_layer=32`, `n_text_layer=32`, `n_mels=128`,
+    /// `vocab_size=51866`), only the trained weights + license differ.
+    /// Primary source `huggingface.co/nyrahealth/CrisperWhisper` fetched
+    /// 2026-08-02 (CLAUDE.md「ハルシネーション厳禁」).
+    ///
+    /// Weight license = **cc-by-nc-4.0**
+    /// ([`vokra_core::LicenseClass::NonCommercial`]) → **T4 tier
+    /// (Research-only)** publish path per the X-Codec-2 (2026-07-28)
+    /// precedent. The M2-13 runtime gate refuses to load the resulting
+    /// GGUF in commercial mode (`requires_research_flag = true`) — an
+    /// operator who never touched the license flag cannot silently bring
+    /// up an NC weight in production. Publish requires
+    /// `publish-one.sh --allow-noncommercial`.
+    ///
+    /// **Reuse posture**: the converter reuses [`models::whisper`] via
+    /// the [`WhisperVariant::CrisperWhisper`] arm — every architectural
+    /// axis (tensor topology, `vokra.whisper.*` hparam chunk, front-end
+    /// spec, alignment-head table, detokenizer) is byte-identical to the
+    /// vanilla Whisper path; only the `vokra.model.arch` stamp
+    /// (`crisper-whisper`, distinct from `whisper`), license class,
+    /// license SPDX id (`cc-by-nc-4.0`), and provenance source citation
+    /// come from the variant. No new op or backend kernel is added.
+    Crisperwhisper,
     /// Meta **omniASR-CTC-1B** — the Omnilingual ASR family's 1B
     /// wav2vec 2.0 CTC checkpoint (SoTA plan Phase 2, 2026-07-24).
     /// Multilingual ASR across **1600+ languages** (`facebook/omniASR-CTC-1B`):
@@ -2384,6 +2411,16 @@ impl ModelKind {
             | "kotoba-whisper-bilingual"
             | "kotoba-whisper-bilingual-v1.0"
             | "kotoba-whisper-bilingual-v1_0" => Some(Self::KotobaWhisper),
+            // residual wave 4 (2026-08-02): CrisperWhisper —
+            // Whisper-large-v3 verbatim-word-timestamps fine-tune under
+            // cc-by-nc-4.0. Accept the canonical arch spelling, the
+            // underscore variant, and the release id (both cased
+            // versions — HF slugs are case-preserving).
+            "crisperwhisper"
+            | "crisper-whisper"
+            | "crisper_whisper"
+            | "nyrahealth/crisperwhisper"
+            | "nyrahealth/CrisperWhisper" => Some(Self::Crisperwhisper),
             // Resemble AI Chatterbox family — the multilingual variant is
             // the canonical Phase 3 landing. Accept the family, the two HF
             // variant tags, and the raw `t3_mtl23ls_v{2,3}` checkpoint
@@ -3461,6 +3498,7 @@ impl ModelKind {
             Self::OmniasrCtc => "omniasr-ctc",
             Self::DistilWhisper => "distil-whisper",
             Self::KotobaWhisper => "kotoba-whisper",
+            Self::Crisperwhisper => "crisperwhisper",
             Self::Chatterbox => "chatterbox",
             Self::ChatterboxTurbo => "chatterbox-turbo",
             Self::ChatterboxNano => "chatterbox-nano",
@@ -4500,6 +4538,28 @@ pub fn convert_file_licensed(
                     .map(|n| format!("kotoba-whisper warning: {n}")),
             );
             (builder, notes)
+        }
+        ModelKind::Crisperwhisper => {
+            // residual wave 4 (2026-08-02): reuse the vanilla Whisper
+            // converter via the `WhisperVariant::CrisperWhisper` arm
+            // (same-shape / different-license case). Every architectural
+            // axis (tensor topology, `vokra.whisper.*` hparam chunk,
+            // front-end spec, alignment-head table, detokenizer) is
+            // byte-identical to whisper-large-v3; only the arch stamp
+            // (`crisper-whisper`, distinct from `whisper`), license
+            // class (NonCommercial, cc-by-nc-4.0), and provenance
+            // source citation come from the variant. The M2-13 runtime
+            // gate refuses to load the resulting GGUF in commercial
+            // mode; publish requires `publish-one.sh
+            // --allow-noncommercial` per the X-Codec-2 T4 precedent
+            // (2026-07-28).
+            (
+                models::whisper::convert_variant(
+                    bytes,
+                    models::whisper::WhisperVariant::CrisperWhisper,
+                )?,
+                Vec::new(),
+            )
         }
         ModelKind::Chatterbox => {
             // SoTA plan Phase 3 (2026-07-24): pass every F32/F16 tensor
@@ -9379,6 +9439,7 @@ mod modelkind_alias_and_roundtrip_tests {
             OmniasrCtc,
             DistilWhisper,
             KotobaWhisper,
+            Crisperwhisper,
             Chatterbox,
             ChatterboxTurbo,
             ChatterboxNano,
@@ -9549,6 +9610,19 @@ mod modelkind_alias_and_roundtrip_tests {
                     "kotoba-whisper-bilingual",
                     "kotoba-whisper-bilingual-v1.0",
                     "kotoba-whisper-bilingual-v1_0",
+                ],
+            ),
+            // residual wave 4 (2026-08-02): CrisperWhisper —
+            // Whisper-large-v3 verbatim-word-timestamps fine-tune,
+            // cc-by-nc-4.0 (T4 Research-only publish path).
+            (
+                ModelKind::Crisperwhisper,
+                &[
+                    "crisperwhisper",
+                    "crisper-whisper",
+                    "crisper_whisper",
+                    "nyrahealth/crisperwhisper",
+                    "nyrahealth/CrisperWhisper",
                 ],
             ),
             // Phase 3 — chatterbox family (base / turbo / nano)

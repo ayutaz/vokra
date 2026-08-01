@@ -907,6 +907,24 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // the DAC / WavTokenizer arm above for the reason the earlier
         // Permissive listing was wrong for the weight-distribution repo.
         "f5-tts" | "encodec" | "x-codec-2" | "xcodec2" => LicenseClass::NonCommercial,
+        // residual wave 4 (2026-08-02): CrisperWhisper
+        // (`nyrahealth/CrisperWhisper`, cc-by-nc-4.0). Whisper-large-v3
+        // fine-tune emphasising verbatim word-level timestamps —
+        // architecturally byte-identical to whisper-large-v3, but the
+        // trained weights are gated by CC-BY-NC-4.0 (T4 tier /
+        // Research-only publish path per the X-Codec-2 (2026-07-28)
+        // precedent). `crisper-whisper` covers the arch tag stamped by
+        // the converter (distinct from vanilla `whisper`);
+        // `crisperwhisper` / `crisper_whisper` cover the model-id stamp
+        // spellings; `vokra/crisperwhisper` covers the publish repo slug
+        // per the ELVIS-Act / T4 tier gate. The M2-13 runtime gate
+        // refuses to load in commercial mode
+        // (`requires_research_flag = true`); publish requires
+        // `publish-one.sh --allow-noncommercial`.
+        "crisper-whisper"
+        | "crisperwhisper"
+        | "crisper_whisper"
+        | "vokra/crisperwhisper" => LicenseClass::NonCommercial,
         // Meta AudioCraft MusicGen family (Wave 5 music-generation add,
         // 2026-08-01) — the trained weights ship **cc-by-nc-4.0** on HF
         // (`huggingface.co/facebook/musicgen-medium` model card

@@ -1225,6 +1225,48 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  n_text_layer={n_text_layer} n_mels={n_mels} n_vocab={n_vocab}"
             );
         }
+        ModelKind::Crisperwhisper => {
+            // residual wave 4 (2026-08-02): CrisperWhisper —
+            // Whisper-large-v3 verbatim-word-timestamps fine-tune under
+            // cc-by-nc-4.0. Reuses the vanilla Whisper converter via
+            // the `WhisperVariant::CrisperWhisper` arm; every
+            // architectural axis is byte-identical to whisper-large-v3
+            // (32/32 layers, d_model=1280, n_mels=128, vocab=51866).
+            // Verify surface mirrors distil-whisper / kotoba-whisper —
+            // arch stamp + name + the four data-driven axes.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let d_model = file
+                .get("vokra.whisper.n_audio_state")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_audio_layer = file
+                .get("vokra.whisper.n_audio_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_text_layer = file
+                .get("vokra.whisper.n_text_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_mels = file
+                .get("vokra.whisper.n_mels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_vocab = file
+                .get("vokra.whisper.n_vocab")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} d_model={d_model} n_audio_layer={n_audio_layer} \
+                 n_text_layer={n_text_layer} n_mels={n_mels} n_vocab={n_vocab}"
+            );
+        }
         ModelKind::Chatterbox => {
             // SoTA plan Phase 3 (2026-07-24): Chatterbox verify surface —
             // arch/name plus the T3 axes that identify the multilingual vs
