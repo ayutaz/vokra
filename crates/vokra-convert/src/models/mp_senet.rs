@@ -304,6 +304,88 @@ mod tests {
         std::fs::remove_file(&output).ok();
     }
 
+    /// `ModelKind::MpSenetDns` dispatches through the same shared
+    /// converter as `ModelKind::MpSenet` and produces a byte-identical
+    /// GGUF artifact (the split lives in `ModelKind` +
+    /// `signoff_match`, not in the converter body — see
+    /// `crates/vokra-convert/src/lib.rs` MpSenetDns arm docstring).
+    /// Guards against a future refactor silently diverging the two
+    /// arms without updating both the summary tag and the sign-off row.
+    #[test]
+    fn mp_senet_dns_dispatch_matches_mp_senet_byte_for_byte() {
+        use crate::{ModelKind, convert_file_licensed};
+        let values: [f32; 4] = [1.0, -2.0, 0.5, -0.25];
+        let bf16: Vec<u8> = values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        let input_bytes = safetensors_one_bf16("mag.w", &[2, 2], &bf16);
+        let input = write_temp("dns-in", &input_bytes);
+        let base_out = write_temp("dns-base-out", &[]);
+        let dns_out = write_temp("dns-dns-out", &[]);
+
+        let base = convert_file_licensed(ModelKind::MpSenet, &input, &base_out, None)
+            .expect("mp-senet convert");
+        let dns = convert_file_licensed(ModelKind::MpSenetDns, &input, &dns_out, None)
+            .expect("mp-senet-dns convert");
+
+        assert_eq!(base.model, ModelKind::MpSenet);
+        assert_eq!(dns.model, ModelKind::MpSenetDns);
+        assert_eq!(base.tensor_count, dns.tensor_count);
+        assert_eq!(base.output_bytes, dns.output_bytes);
+
+        let base_bytes = std::fs::read(&base_out).expect("read base");
+        let dns_bytes = std::fs::read(&dns_out).expect("read dns");
+        assert_eq!(
+            base_bytes, dns_bytes,
+            "MpSenetDns artifact must be byte-identical to MpSenet — \
+             the two arms share `convert_mp_senet_file`; a divergence \
+             here means a silent split in one of the two callers."
+        );
+
+        // The shared converter always stamps the JacobLinCool DNS
+        // provenance slug — a distinct ModelKind must not paper over
+        // that (the split is per §3.1 row, not per artifact).
+        let file = GgufFile::parse(dns_bytes).expect("parse dns GGUF");
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF),
+            "upstream_hf slug must stay `JacobLinCool/MP-SENet-DNS`"
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&base_out).ok();
+        std::fs::remove_file(&dns_out).ok();
+    }
+
+    /// `ModelKind::from_arg` routes the DNS-specific aliases to the
+    /// distinct `MpSenetDns` arm and keeps the bare `mp-senet` slug on
+    /// the sibling `MpSenet` arm.
+    #[test]
+    fn mp_senet_dns_aliases_split_from_mp_senet() {
+        use crate::ModelKind;
+        assert_eq!(ModelKind::from_arg("mp-senet"), Some(ModelKind::MpSenet));
+        assert_eq!(ModelKind::from_arg("mp_senet"), Some(ModelKind::MpSenet));
+        assert_eq!(ModelKind::from_arg("mpsenet"), Some(ModelKind::MpSenet));
+        assert_eq!(
+            ModelKind::from_arg("mp-senet-dns"),
+            Some(ModelKind::MpSenetDns)
+        );
+        assert_eq!(
+            ModelKind::from_arg("mp_senet_dns"),
+            Some(ModelKind::MpSenetDns)
+        );
+        assert_eq!(
+            ModelKind::from_arg("mpsenet-dns"),
+            Some(ModelKind::MpSenetDns)
+        );
+        assert_eq!(
+            ModelKind::from_arg("jacoblincool/mp-senet-dns"),
+            Some(ModelKind::MpSenetDns)
+        );
+    }
+
     /// Override reaches the artifact — `apache-2.0` string lands
     /// (upstream is MIT so the class shift stays Permissive).
     #[test]

@@ -1435,6 +1435,20 @@ pub enum ModelKind {
     /// Provenance = **MIT** (Permissive — inherits the base
     /// `yxlu0057/MP-SENet` MIT LICENSE).
     MpSenet,
+    /// **JacobLinCool/MP-SENet-DNS** (Implementer E TIER 1, 2026-08-02).
+    /// Category = `denoise`. DNS-tuned re-release of the same MP-SENet
+    /// architecture as [`Self::MpSenet`] (magnitude + phase parallel
+    /// STFT enhancement network, arXiv:2305.13686 lineage). This is a
+    /// distinct [`ModelKind`] arm so §3.1 sign-off + publish-side
+    /// provenance stamp can be tracked per HF repo — the underlying
+    /// converter is [`models::mp_senet::convert_mp_senet_file`], shared
+    /// verbatim with the sibling arm (the safetensors surface + arch
+    /// tag are identical; only the `vokra.provenance.upstream_hf` slug
+    /// and the sign-off row diverge). Every F32 / F16 / BF16 tensor
+    /// passes through verbatim; the internal dual-branch forward is a
+    /// `loud-partial` follow-up. Provenance = **MIT** (Permissive —
+    /// inherits the base `yxlu0057/MP-SENet` MIT LICENSE).
+    MpSenetDns,
     /// **speechbrain/metricgan-plus-voicebank** (Implementer E TIER 1,
     /// 2026-07-30). Category = `enhancement`. MetricGAN+ =
     /// generator-only speech-enhancement GAN optimising perceptual
@@ -2892,12 +2906,10 @@ impl ModelKind {
             | "tiger_separator"
             | "jusperlee/tiger-dnr" => Some(Self::TigerSeparator),
             "tiger-speech" | "tiger_speech" | "jusperlee/tiger-speech" => Some(Self::TigerSpeech),
-            "mp-senet"
-            | "mp_senet"
-            | "mpsenet"
-            | "mp-senet-dns"
-            | "mp_senet_dns"
-            | "jacoblincool/mp-senet-dns" => Some(Self::MpSenet),
+            "mp-senet" | "mp_senet" | "mpsenet" => Some(Self::MpSenet),
+            "mp-senet-dns" | "mp_senet_dns" | "mpsenet-dns" | "jacoblincool/mp-senet-dns" => {
+                Some(Self::MpSenetDns)
+            }
             "metricgan-plus"
             | "metricgan_plus"
             | "metricganplus"
@@ -3336,6 +3348,7 @@ impl ModelKind {
             Self::MossTtsNano => "moss-tts-nano",
             Self::MossTtsV15 => "moss-tts-v1.5",
             Self::MpSenet => "mp-senet",
+            Self::MpSenetDns => "mp-senet-dns",
             Self::NemotronAsrStreaming => "nemotron-3.5-asr-streaming-0.6b",
             Self::ParlerTtsMiniMultilingual => "parler-tts",
             Self::Qwen3Asr => "qwen3-asr",
@@ -6227,6 +6240,29 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::MpSenet,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MpSenetDns (2026-08-02) — shared converter with MpSenet; a
+        // distinct ModelKind arm keeps the §3.1 sign-off / publish-side
+        // provenance stamp trackable per HF repo. The underlying
+        // `convert_mp_senet_file` already stamps
+        // `vokra.provenance.upstream_hf` = "JacobLinCool/MP-SENet-DNS"
+        // (see `models::mp_senet::UPSTREAM_HF`), so the artifact is
+        // byte-identical to the MpSenet arm — the split lives in
+        // [`ModelKind`] + `signoff_match`, not in the converter body.
+        ModelKind::MpSenetDns => {
+            let report = models::mp_senet::convert_mp_senet_file(input, output, license)?;
+            let notes = vec![format!(
+                "mp-senet-dns: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (shared converter with MpSenet)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MpSenetDns,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),

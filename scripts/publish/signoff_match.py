@@ -237,6 +237,15 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "focalcodec-12-5hz": ["FocalCodec 12.5Hz (`lucadellalib/focalcodec_12_5hz`)"],
     "tiger-speech": ["TIGER-speech (`JusperLee/TIGER-speech`)"],
     "tiger-dnr": ["TIGER-DnR (`JusperLee/TIGER-DnR`)"],
+    # 2026-08-02 wave — distinct `ModelKind::MpSenetDns` arm for the
+    # JacobLinCool DNS-tuned re-release of MP-SENet. Shares the
+    # `models::mp_senet::convert_mp_senet_file` converter with the
+    # sibling `mp-senet` slug (byte-identical GGUF surface — see
+    # `crates/vokra-convert/src/lib.rs` MpSenetDns dispatch arm). Row
+    # heading is a placeholder awaiting the post-workflow batch add to
+    # `docs/license-audit.md` §3.1; publish is gated by that sign-off
+    # per `publish-one.sh` (unknown-repo fails closed).
+    "mp-senet-dns": ["MP-SENet-DNS (`JacobLinCool/MP-SENet-DNS`)"],
     "sepformer-wham16k-enhancement": [
         "SepFormer WHAM 16k enhancement (`speechbrain/sepformer-wham16k-enhancement`)"
     ],

@@ -2133,6 +2133,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::TigerSeparator
         | ModelKind::TigerSpeech
         | ModelKind::MpSenet
+        | ModelKind::MpSenetDns
         | ModelKind::MetricganPlus
         | ModelKind::SepFormer
         | ModelKind::SepformerWham16kEnh
