@@ -26,6 +26,7 @@ canonical_url() {
     apache-2.0)  echo "https://www.apache.org/licenses/LICENSE-2.0.txt" ;;
     mit)         echo "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MIT.txt" ;;
     cc-by-4.0)   echo "https://creativecommons.org/licenses/by/4.0/legalcode.txt" ;;
+    cc-by-sa-3.0) echo "https://creativecommons.org/licenses/by-sa/3.0/legalcode.txt" ;;
     cc-by-sa-4.0) echo "https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt" ;;
     cc-by-nc-4.0) echo "https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt" ;;
     cc-by-nc-sa-4.0) echo "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.txt" ;;
