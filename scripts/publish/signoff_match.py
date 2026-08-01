@@ -91,6 +91,31 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "csm-1b": ["Sesame CSM-1B"],
     "xcodec2": ["X-Codec 2 (Llasa)"],
     "fun-cosyvoice3-0.5b-2512": ["FunAudioLLM/Fun-CosyVoice3-0.5B-2512"],
+    # 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Medium
+    # (`facebook/musicgen-medium`, cc-by-nc-4.0). T4 tier (Research-only, non-
+    # commercial) — inherits the X-Codec 2 T4 precedent workflow landed
+    # 2026-07-28 (`LicenseClass::NonCommercial` + `--allow-noncommercial` gate
+    # + `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE fetch). ~11.4
+    # GB bundle → vast.ai handoff per memory `[[feedback-large-models-on-vast-ai]]`;
+    # the publish path stops on `publish-one.sh --allow-noncommercial` per the
+    # T4 precedent. The row heading matches this entry byte-for-byte in
+    # `docs/license-audit.md` §3.1.
+    "musicgen-medium": ["MusicGen-Medium (`facebook/musicgen-medium`)"],
+    # 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Large
+    # (`facebook/musicgen-large`, cc-by-nc-4.0). T4 tier (Research-only,
+    # non-commercial) — same X-Codec 2 / MusicGen-Medium T4 precedent
+    # workflow (`LicenseClass::NonCommercial` + `--allow-noncommercial`
+    # gate + `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE
+    # fetch). ~19.5 GB bundle → vast.ai handoff per memory
+    # `[[feedback-large-models-on-vast-ai]]` (larger than sibling
+    # MusicGen-Medium ~11.4 GB, both routed to vast.ai). The row heading
+    # matches this entry byte-for-byte in `docs/license-audit.md` §3.1.
+    "musicgen-large": ["MusicGen-Large (`facebook/musicgen-large`)"],
+    # 2026-08-01 Wave 5 residual: Meta AudioCraft AudioGen-Medium
+    # (`facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling
+    # (identical arch, tuned on environmental sounds / SFX). Same T4
+    # precedent as sibling MusicGen family. Local convert safe (~3.7 GB).
+    "audiogen-medium": ["AudioGen-Medium (`facebook/audiogen-medium`)"],
     # Wave 3 owner-signoff publish set (2026-07-28).
     "kyutai-stt-2.6b-en": ["kyutai/stt-2.6b-en"],
     "parakeet-tdt-0.6b-v3": ["nvidia/parakeet-tdt-0.6b-v3"],
@@ -506,6 +531,29 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "qwen3-tts-12hz-1.7b-customvoice": [
         "Qwen3-TTS-12Hz-1.7B-CustomVoice (`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`)"
     ],
+    # 2026-08-01 Wave 5 pipeline orchestration add: pyannote/speaker-
+    # diarization-3.1 (Bredin, CNRS, MIT). The upstream repo ships
+    # **only** a ~2 KB config.yaml — no weights of its own — and
+    # delegates every forward-pass computation to two sibling MIT
+    # weight repos (pyannote/segmentation-3.0 VAD backbone +
+    # pyannote/wespeaker-voxceleb-resnet34-LM speaker encoder, both
+    # already Vokra-published). This §3.1 row covers the pipeline
+    # orchestration GGUF (weightless — carries the SpeakerDiarization
+    # + AgglomerativeClustering knobs the future runtime pipeline
+    # dispatch reads to wire the two sibling GGUFs together); the
+    # sibling weight repos have their own §3.1 rows (segmentation-3.0
+    # covered by the pre-existing `pyannote (speaker diarization)`
+    # row 268 as of 2026-07-30 yousan sign, MIT primary source
+    # verified via authenticated HF API `api/models/pyannote/
+    # speaker-diarization-3.1` = `license: mit, gated: auto`;
+    # `gated: auto` is access control only, no extra obligations).
+    # The Rust runtime pipeline dispatch is a separate WP — this
+    # entry covers the orchestration-metadata publish path (~0.1 MB,
+    # M1 iMac 16 GB local convert safe per memory
+    # `[[feedback-large-models-on-vast-ai]]`; vast.ai not required).
+    "pyannote-speaker-diarization-3.1": [
+        "pyannote-speaker-diarization-3.1 (`pyannote/speaker-diarization-3.1`)"
+    ],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
@@ -543,6 +591,44 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "utmos": ["UTMOS22-strong (SaruLab)"],
     # M4-16 codec family.
     "xcodec2": ["X-Codec 2 (Llasa)"],
+    # 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Medium
+    # (`facebook/musicgen-medium`, cc-by-nc-4.0). Single-variant standalone
+    # converter today (the `xcodec2` / `wavtokenizer` posture — no variant
+    # enum before a second variant lands). Future family variants (small /
+    # large / melody / stereo-*) will either extend this converter (variant
+    # enum) or land as sibling files; today's landing points at the medium
+    # row only. The row heading matches `docs/license-audit.md` §3.1
+    # byte-for-byte.
+    "musicgen_medium": ["MusicGen-Medium (`facebook/musicgen-medium`)"],
+    # 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Large
+    # (`facebook/musicgen-large`, cc-by-nc-4.0). Sibling file to
+    # `musicgen_medium.rs` (the chatterbox / chatterbox_turbo /
+    # chatterbox_nano split) — dedicated `musicgen_large.rs` rather than
+    # a shared `musicgen.rs` variant enum. Same T4 tier as sibling
+    # MusicGen-Medium. The row heading matches `docs/license-audit.md`
+    # §3.1 byte-for-byte.
+    "musicgen_large": ["MusicGen-Large (`facebook/musicgen-large`)"],
+    # 2026-08-01 Wave 5 residual: Meta AudioCraft AudioGen-Medium
+    # (`facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling for
+    # SFX / environmental sounds. Sibling file to `musicgen_medium.rs`.
+    "audiogen_medium": ["AudioGen-Medium (`facebook/audiogen-medium`)"],
+    # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
+    # (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Doubly-restrictive
+    # NonCommercialShareAlike default (NC gate + SA cascade). The
+    # converter surface must be discoverable by
+    # `check-converter-signoff.sh` so a future publish path can be
+    # gated on the (currently blank) §3.1 sign-off — the row heading
+    # here matches `docs/license-audit.md` §3.1 byte-for-byte.
+    #
+    # **IMPORTANT — publish blocked (sa-cascade-defer)**: there is NO
+    # matching entry in `REPO_TO_SIGNOFF_ROWS` above (an
+    # unlisted repo slug fails closed as `UNKNOWN_REPO` at
+    # `publish-one.sh` gate time). The SA cascade would obligate any
+    # Vokra-added artifact bundled with the weight (model card,
+    # LICENSE, NOTICE, auxiliary GGUFs) to carry CC-BY-NC-SA-4.0
+    # forward, and that decision needs an owner ADR before a
+    # `vokra/audioldm2` repo entry is added here.
+    "audioldm2": ["AudioLDM 2 (`cvssp/audioldm2`)"],
     # SoTA plan Phase 1-5 wave (2026-07-24 onward).
     "canary": ["nvidia/canary-1b-v2"],
     "canary_qwen": ["nvidia/canary-qwen-2.5b"],
@@ -620,6 +706,15 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "styletts2": ["StyleTTS 2 (yl4579)"],  # Rejected row, still needs coverage.
     "titanet": ["TitaNet (NVIDIA NeMo)"],
     "pyannote_segmentation": ["pyannote (speaker diarization)"],
+    # 2026-08-01 Wave 5: pyannote/speaker-diarization-3.1 pipeline
+    # orchestration converter (weightless — reads a config.yaml sanity
+    # buffer and emits primary-source-verified pipeline hparams under
+    # `vokra.pyannote_pipeline.*`). Distinct §3.1 row from the sibling
+    # `pyannote_segmentation` weight converter — the pipeline GGUF is
+    # a separate publish target from the VAD backbone weights.
+    "pyannote_speaker_diarization_3_1": [
+        "pyannote-speaker-diarization-3.1 (`pyannote/speaker-diarization-3.1`)"
+    ],
     "fcpe": ["FCPE (`CNChTu/FCPE`)"],
     # Bark (Suno) family — bark.rs is the single converter, two release SKUs.
     "bark": ["Bark (Suno)", "Bark (small) (`suno/bark-small`)"],
@@ -808,6 +903,26 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "wav2vec2-xlsr-53-espeak-cv-ft (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`)",
     ],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
+    # 2026-08-01 Wave 5 music-separation add: BS-Roformer / Mel-Band Roformer
+    # (`chenmozhijin/BSRoformer-GGUF` third-party mirror, **weight provenance
+    # unclear**). First music-source-separation converter (Lu et al. 2023
+    # arXiv:2310.01809). The converter surface must be discoverable by
+    # `check-converter-signoff.sh` so a future publish path can be gated on
+    # the (currently blank) §3.1 sign-off — the row heading here matches
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    #
+    # **IMPORTANT — publish blocked (unclear-provenance-defer)**: there is NO
+    # matching entry in `REPO_TO_SIGNOFF_ROWS` above (an unlisted repo slug
+    # fails closed as `UNKNOWN_REPO` at `publish-one.sh` gate time). The
+    # `LicenseClass::RedistributionForbidden` default is what actually blocks
+    # the publish path: a converter cannot know which SPDX id covers the
+    # caller's checkpoint (the Lucidrains reference is MIT but the paper
+    # released no reference weights; every checkpoint in the wild is a
+    # downstream retraining under mixed licenses — GPL-3.0 / CC-BY-NC-4.0 /
+    # unspecified). An owner ADR selecting a specific checkpoint (and thus a
+    # specific license) is the prerequisite to a first publish; only then does
+    # a `REPO_TO_SIGNOFF_ROWS` entry land here.
+    "bs_roformer": ["BS-Roformer (upstream 未確定)"],
 }
 
 # Converters that intentionally have no §3.1 row.

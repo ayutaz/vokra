@@ -826,6 +826,50 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // `docs/tickets/sota-coverage-plan-2026-07-22.md` §2.4.)
         "vits-ja" | "vits_ja" | "espnet-vits-ja" | "espnet-jsut-vits" | "espnet-jvs-vits"
         | "coeiroink-vits" => LicenseClass::RedistributionForbidden,
+        // BS-Roformer / Mel-Band Roformer (Wave 5 music-separation add,
+        // 2026-08-01) — the fail-closed default is
+        // `RedistributionForbidden` for a different failure mode than
+        // vits-ja above. Where vits-ja refuses because the training
+        // corpus (JSUT / JVS / COEIROINK) explicitly forbids trained-
+        // weight redistribution, BS-Roformer refuses because a converter
+        // cannot know which specific SPDX id applies to the caller's
+        // checkpoint: the architecture / reference code is MIT
+        // (`github.com/lucidrains/BS-RoFormer`, Phil Wang's clean-room
+        // implementation of Lu et al. 2023 arXiv:2310.01809), the paper
+        // released no reference weights, and every checkpoint in the
+        // wild is a downstream retraining under mixed licenses (GPL-3.0
+        // for some Ultimate-Vocal-Remover / MDX-Net-community
+        // derivatives, CC-BY-NC-4.0 for some MoisesDB / MusDB fine-
+        // tunes, no explicit license for the majority — hobbyist
+        // releases). The third-party mirror `chenmozhijin/BSRoformer-
+        // GGUF` aggregates converted GGUFs across trainers without a
+        // uniform license clause; the converter registers the family
+        // fail-closed and defers the per-checkpoint override to the
+        // caller supplying `--license <spdx>` at conversion time (the
+        // same escape hatch vits-ja / Whisper / kokoro use). Aliases
+        // cover the arch tag (underscore + hyphen), the family-name
+        // spellings (`bs-roformer` / `bsroformer` / `mel-band-roformer` /
+        // `melband-roformer`), and the third-party HF mirror slug — same
+        // spellings the converter `from_arg` walk in
+        // `crates/vokra-convert/src/lib.rs` accepts. The
+        // `mel-band-roformer` sibling shares the same arch tag because
+        // the band-split module vs mel-filter-bank module is a runtime
+        // hparam, not a distinct arch.
+        //
+        // Publish is blocked at
+        // `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS` (no
+        // entry for `bs-roformer`, unlisted slug fails closed as
+        // `UNKNOWN_REPO`) until an owner ADR selects a specific
+        // checkpoint + license — the license classifier here is the
+        // upstream half of that gate.
+        "bs-roformer"
+        | "bs_roformer"
+        | "bsroformer"
+        | "mel-band-roformer"
+        | "mel_band_roformer"
+        | "melband-roformer"
+        | "melband_roformer"
+        | "chenmozhijin/bsroformer-gguf" => LicenseClass::RedistributionForbidden,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         //
         // X-Codec 2 (`x-codec-2` / `xcodec2`, SoTA plan Phase 5 codec)
@@ -836,10 +880,48 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // the DAC / WavTokenizer arm above for the reason the earlier
         // Permissive listing was wrong for the weight-distribution repo.
         "f5-tts" | "encodec" | "x-codec-2" | "xcodec2" => LicenseClass::NonCommercial,
+        // Meta AudioCraft MusicGen family (Wave 5 music-generation add,
+        // 2026-08-01) — the trained weights ship **cc-by-nc-4.0** on HF
+        // (`huggingface.co/facebook/musicgen-medium` model card
+        // front-matter `license: cc-by-nc-4.0`), same posture X-Codec 2
+        // uses above. The code layer at
+        // `github.com/facebookresearch/audiocraft` is MIT, but this
+        // registry lookups the weight distribution class (M2-13 runtime
+        // gate anchors on `vokra.provenance.weight_license`, not on the
+        // code license). Every future MusicGen family variant (small /
+        // large / melody / stereo-*) inherits this arm — Meta's weight
+        // policy is uniform across the family. `musicgen` covers the
+        // bare arch tag; `musicgen-medium` covers the medium model-id
+        // stamp; `musicgen-large` covers the large model-id stamp
+        // (Wave 5 sibling landed 2026-08-01, 3.3B vs medium 1.5B, same
+        // cc-by-nc-4.0 weight license per HF cardData
+        // `huggingface.co/facebook/musicgen-large` primary source).
+        "musicgen" | "musicgen-medium" | "musicgen-large" | "audiogen-medium" | "audiogen" => {
+            LicenseClass::NonCommercial
+        }
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike
         }
+        // AudioLDM 2 (Wave 5 candidate, 2026-08-01) — CVSSP primary
+        // source (Liu et al. 2024 ICML arXiv:2308.05734 paper §Ethics +
+        // GitHub `haoheliu/AudioLDM2` README) pins CC-BY-NC-SA 4.0.
+        // The HF card `cvssp/audioldm2` carries the looser `-nc-4.0`
+        // tag, but the CVSSP-owned primary source is the ShareAlike
+        // form — we follow the more restrictive of the two conflicting
+        // declarations (same Fish-Speech pattern above; the SA cascade
+        // is the load-bearing part of the classification and dropping
+        // it silently would silently mark derivatives as re-licensable
+        // outside CC-BY-NC-SA). **Publish blocked** at the
+        // `signoff_match.py::REPO_TO_SIGNOFF_ROWS` layer until an
+        // owner ADR resolves the SA cascade onto Vokra-added artifacts.
+        "audioldm2"
+        | "audio-ldm-2"
+        | "audio_ldm_2"
+        | "audioldm-2"
+        | "audioldm_2"
+        | "cvssp-audioldm2"
+        | "cvssp/audioldm2" => LicenseClass::NonCommercialShareAlike,
         // --- gated: unknown training rights (research flag, fail-closed) -----
         "rvc" | "rvc-v2" | "gpt-sovits" | "e2-tts" | "styletts2" | "styletts-2" => {
             LicenseClass::Unknown

@@ -219,6 +219,18 @@ pub mod openvoice_v2;
 // `docs/handoff/pyannote-implementation-plan-2026-07-30.md`.
 pub(crate) mod piper_plus;
 pub mod pyannote_segmentation;
+// pyannote/speaker-diarization-3.1 (Bredin, CNRS, MIT — 2026-08-01 Wave 5
+// pipeline orchestration add, docs/license-audit.md §3.1 sign-off row).
+// SpeakerDiarization pipeline that composes the sibling MIT weight repos
+// pyannote/segmentation-3.0 (VAD backbone — pub mod pyannote_segmentation
+// above) + pyannote/wespeaker-voxceleb-resnet34-LM (speaker encoder —
+// pub mod wespeaker below) via AgglomerativeClustering. Category `diarize`.
+// Weightless GGUF — the converter reads a config.yaml sanity buffer and
+// emits primary-source-verified pipeline hparams under
+// `vokra.pyannote_pipeline.*`; no YAML parser enters the runtime tree
+// (NFR-DS-02 zero-dep). The Rust runtime pipeline dispatch is a
+// separate WP — this converter only stamps orchestration metadata.
+pub mod pyannote_speaker_diarization_3_1;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // (apache-2.0 end-to-end weight) safetensors → GGUF with the
 // `vokra.qwen3_tts.*` chunk group. Discrete multi-codebook LM
@@ -436,6 +448,45 @@ pub(crate) mod zonos;
 // `vokra-cli convert --model qwen3-asr` CLI dispatch is the follow-up.
 pub mod ast;
 pub mod audiobox_aesthetics;
+// 2026-08-01 Wave 5 music-separation add: BS-Roformer / Mel-Band Roformer
+// (Lu et al. 2023 arXiv:2310.01809 "Music Source Separation with Band-Split
+// RoPE Transformer", **weight provenance unclear**). Third-party mirror
+// `chenmozhijin/BSRoformer-GGUF` aggregates converted GGUFs from multiple
+// trainers under mixed licenses (GPL-3.0 / CC-BY-NC-4.0 / unspecified); the
+// clean-room MIT reference lives at `github.com/lucidrains/BS-RoFormer` but
+// ships no pretrained weights. `category = "separation"` (sibling of the
+// SepFormer speech-separation family — BS-Roformer is the music-vocals
+// analogue, mask an STFT spectrogram to isolate vocals / drums / bass /
+// other stems). BF16 pass-through skeleton mirror of vits_ja / musicgen_large.
+// **LicenseClass::RedistributionForbidden default** — a converter cannot know
+// which SPDX id covers the caller's checkpoint, so the fail-closed publish
+// gate applies until a caller supplies `--license <spdx>` at the outer
+// boundary (same escape hatch vits-ja / Whisper / kokoro use). **Publish
+// blocked (unclear-provenance-defer)** — no entry in
+// `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`, §3.1 sign-off
+// blank (owner ADR selecting a specific checkpoint + license required).
+// Real-weight parity + runtime binder (new op surface: band-split RoPE
+// transformer with time-axis + band-axis alternating attention, mask
+// estimator) deferred to owner sign-off.
+pub mod bs_roformer;
+// 2026-08-01 Wave 5 music-generation add: AudioLDM 2 (`cvssp/audioldm2`,
+// **cc-by-nc-sa-4.0**). Text-to-audio latent-diffusion generator
+// (Liu et al. 2024 ICML, arXiv:2308.05734) — VAE encoder/decoder + U-Net
+// latent diffusion + HiFi-GAN vocoder + GPT-2 audio-caption LM + T5-base
+// + CLAP text encoder, ~8.5 GB bundle. `category = "music"` (shared with
+// sibling musicgen family per 2026-07-30 scope expansion). BF16
+// pass-through skeleton mirror of musicgen_medium / xcodec2. Doubly-
+// restrictive `LicenseClass::NonCommercialShareAlike` default — NC gate
+// + SA cascade both fail-closed; **publish blocked** (no
+// REPO_TO_SIGNOFF_ROWS entry, no §3.1 sign-off ☑ — owner ADR required
+// to resolve the SA cascade onto Vokra-added artifacts). Real-weight
+// parity + runtime binder (new op surface: latent-diffusion sampler +
+// VAE + HiFi-GAN — distinct from `flow_sampler` which targets flow-
+// matching) deferred to owner sign-off (`docs/license-audit.md` §3.1
+// sign-off queue). Scale ~8.5 GB = vast.ai handoff per memory
+// [[feedback-large-models-on-vast-ai]] (M1 iMac 16 GB unsafe on the
+// upper edge — multi-encoder bundle doubles peak resident to ~17 GB).
+pub mod audioldm2;
 pub mod bark;
 pub mod bigvgan;
 pub mod clap;
@@ -469,6 +520,46 @@ pub mod metricgan_plus;
 // Real-weight parity + runtime binder deferred to owner sign-off (§3.1).
 pub mod moss_audio_tokenizer;
 pub mod moss_tts;
+// 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Medium
+// (`facebook/musicgen-medium`, **cc-by-nc-4.0**). First music-generation
+// target to land a converter (post-2026-07-30 scope expansion
+// `[[project-scope-expansion-2026-07-30]]`). 1.5B autoregressive transformer
+// LM over EnCodec RVQ tokens conditioned on frozen T5 text encoder
+// (Copet et al. 2023, arXiv:2306.05284). BF16 pass-through skeleton mirror
+// of xcodec2 / wavtokenizer — the same T4 (Research-only) tier as X-Codec 2
+// with `LicenseClass::NonCommercial` fail-closed default. First use of
+// `category = "music"` in the tree (distinct from the speech-tree tags
+// tts / asr / codec / vocoder / s2s / vad / speaker / f0 / separator /
+// bert). Real-weight parity + runtime binder deferred to owner sign-off
+// (`docs/license-audit.md` §3.1 sign-off queue). Scale ~11.4 GB = vast.ai
+// handoff per memory [[feedback-large-models-on-vast-ai]] (M1 iMac 16 GB
+// unsafe for this class of publish).
+pub mod musicgen_medium;
+// 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Large
+// (`facebook/musicgen-large`, **cc-by-nc-4.0**). 3.3B autoregressive
+// transformer LM over EnCodec RVQ tokens conditioned on frozen T5 text
+// encoder (top rung of the MusicGen family — `-small` 300M / `-medium`
+// 1.5B / **`-large` 3.3B**). Sibling file to musicgen_medium.rs (the
+// chatterbox / chatterbox_turbo / chatterbox_nano split) rather than a
+// shared musicgen.rs variant enum — zero-churn on the medium landing +
+// distinct upstream HF repo. Same T4 (Research-only) tier as X-Codec 2
+// and MusicGen-Medium with `LicenseClass::NonCommercial` fail-closed
+// default. Real-weight parity + runtime binder deferred to owner sign-off
+// (`docs/license-audit.md` §3.1 sign-off queue). Scale ~19.5 GB = vast.ai
+// handoff per memory [[feedback-large-models-on-vast-ai]] (M1 iMac 16 GB
+// unsafe for this class of publish — larger than the sibling MusicGen-
+// Medium ~11.4 GB, both routed to vast.ai per the runbook).
+pub mod musicgen_large;
+// 2026-08-01 Wave 5 audio-generation add: Meta AudioCraft AudioGen-Medium
+// (`facebook/audiogen-medium`, **cc-by-nc-4.0**). 1.5B autoregressive
+// transformer LM over EnCodec RVQ tokens conditioned on frozen T5 text
+// encoder — MusicGen sibling with identical topology, tuned on
+// environmental sounds / SFX (not music). Shares `musicgen` arch tag
+// and `music` category with MusicGen family. Same T4 (Research-only)
+// tier as X-Codec 2 / MusicGen-Medium / MusicGen-Large with
+// `LicenseClass::NonCommercial` fail-closed default. Scale ~3.7 GB =
+// local convert safe on M1 iMac 16 GB (below the vast.ai threshold).
+pub mod audiogen_medium;
 // 2026-08-01 Wave 3 codec add: Amphion NaturalSpeech 3 FACodec
 // (`amphion/naturalspeech3_facodec`, apache-2.0). Factorized VQ (FVQ)
 // neural audio codec at 16 kHz, 3 parallel quantizer heads over

@@ -2075,6 +2075,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // verify surface is identical (arch / name / category /
         // upstream / license lookup).
         | ModelKind::PyannoteSegmentation
+        // 2026-08-01 Wave 5 pipeline orchestration add:
+        // pyannote/speaker-diarization-3.1 emits the same
+        // `vokra.model.*` + `vokra.provenance.*` triple plus a
+        // `vokra.pyannote_pipeline.*` orchestration chunk group
+        // (sub-model references + clustering knobs). Weightless
+        // pipeline GGUF (zero tensors by upstream design — the
+        // pipeline composes sibling weight repos, does not embed
+        // their weights); grouped here since the verify surface
+        // stays a uniform arch/name/category/upstream/license
+        // triple lookup regardless of tensor count.
+        | ModelKind::PyannoteSpeakerDiarization31
         // TIER 1+2 audio-gap 41 new variants (2026-07-30 ultracode
         // `wf_022575ce-077`) all emit the same standard
         // `vokra.model.*` + `vokra.provenance.*` chunk triple
@@ -2178,6 +2189,63 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // `vokra.yue_bundle.variant` chunk not read back here.
         | ModelKind::YueUpsampler
         | ModelKind::YueXcodecMini
+        // 2026-08-01 Wave 5 music-generation add: Meta AudioCraft
+        // MusicGen-Medium (`facebook/musicgen-medium`, cc-by-nc-4.0).
+        // First music-generation converter — emits the same standard
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.*`
+        // triple as every sibling BF16 pass-through skeleton, with
+        // `category = "music"` (first music-tree entry, distinct from
+        // the speech-tree tags). Grouped here so the verify surface
+        // stays a shape-lookup, not a per-model switch we would have
+        // to keep in step with 40+ real converters.
+        | ModelKind::MusicGenMedium
+        // 2026-08-01 Wave 5 music-generation add: Meta AudioCraft
+        // MusicGen-Large (`facebook/musicgen-large`, cc-by-nc-4.0).
+        // Sibling to MusicGen-Medium (top rung of the family, 3.3B vs
+        // 1.5B). Emits the same standard `vokra.model.{arch,name,
+        // category}` + `vokra.provenance.*` triple as every sibling
+        // BF16 pass-through skeleton, with `category = "music"`
+        // (shared with sibling MusicGen-Medium — first music-tree
+        // family). Grouped here so the verify surface stays a
+        // shape-lookup, not a per-model switch we would have to keep
+        // in step with 40+ real converters.
+        | ModelKind::MusicGenLarge
+        // 2026-08-01 Wave 5 residual: Meta AudioCraft AudioGen-Medium
+        // (`facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling
+        // — identical `musicgen` arch tag, tuned on environmental
+        // sounds / SFX. `category = "music"` shared with MusicGen
+        // family. Grouped here for the uniform verify shape.
+        | ModelKind::AudioGenMedium
+        // 2026-08-01 Wave 5 music-generation add: AudioLDM 2
+        // (`cvssp/audioldm2`, cc-by-nc-sa-4.0). Text-to-audio latent-
+        // diffusion generator (Liu et al. 2024 arXiv:2308.05734).
+        // Emits the same standard `vokra.model.{arch,name,category}`
+        // + `vokra.provenance.*` triple as every sibling BF16 pass-
+        // through skeleton, with `category = "music"` (shared with
+        // sibling MusicGen family — music-tree taxonomy per
+        // 2026-07-30 scope expansion). **Publish blocked** by the
+        // doubly-restrictive NonCommercialShareAlike default (NC
+        // gate + SA cascade); the uniform verify shape still applies
+        // because the runtime-side arch/name/category/upstream/license
+        // triple lookup does not depend on the publish gate.
+        | ModelKind::AudioLdm2
+        // 2026-08-01 Wave 5 music-separation add: BS-Roformer /
+        // Mel-Band Roformer (`chenmozhijin/BSRoformer-GGUF`, **weight
+        // provenance unclear**). First music-source-separation
+        // converter (Lu et al. 2023 arXiv:2310.01809 dual-path
+        // frequency-band Transformer over STFT). Emits the same
+        // standard `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.*` triple as every sibling BF16 pass-
+        // through skeleton, with `category = "separation"` (shared
+        // with the SepFormer speech-separation family — BS-Roformer
+        // is the music-vocals analogue). **Publish blocked** by the
+        // fail-closed `LicenseClass::RedistributionForbidden` default
+        // (a converter cannot know which SPDX id covers the caller's
+        // checkpoint; owner ADR selecting a specific checkpoint +
+        // license required). The uniform verify shape still applies
+        // because the runtime-side arch/name/category/upstream/license
+        // triple lookup does not depend on the publish gate.
+        | ModelKind::BsRoformer
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

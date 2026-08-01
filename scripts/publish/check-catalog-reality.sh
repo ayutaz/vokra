@@ -182,6 +182,61 @@ slugs_for() {
     # sees the converter as implemented for both sibling rows.
     "yue upsampler"*|"yue-upsampler"*|"yue xcodec mini"*|"yue-xcodec-mini"*|"yue xcodec-mini"*|"yue"*)
       printf 'yue_bundle\n' ;;
+    # 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen family
+    # (`facebook/musicgen-{medium,large}`, cc-by-nc-4.0). First
+    # `category = "music"` entry in the tree. Two distinct HF repos + two
+    # distinct sibling files (`musicgen_medium.rs` + `musicgen_large.rs`,
+    # the chatterbox / chatterbox_turbo / chatterbox_nano split) rather
+    # than a shared `musicgen.rs` variant enum. Bash case patterns are
+    # evaluated top-to-bottom, first match wins — the specific size
+    # patterns (medium / large) catch first so their display names route
+    # to the correct sibling file. The generic `musicgen` catch-all
+    # (used when only the bare arch tag appears in a catalog display
+    # name) prints BOTH sibling slugs so `implemented()` returns true if
+    # any sibling file exists (either sibling standing in for the
+    # family is a valid answer to "is the MusicGen family
+    # implemented?"). Future family variants
+    # (`musicgen-small` / `musicgen-melody` / `musicgen-stereo-*`) will
+    # add their own specific pattern above the generic catch-all.
+    "musicgen medium"*|"musicgen-medium"*) printf 'musicgen_medium\n' ;;
+    "musicgen large"*|"musicgen-large"*) printf 'musicgen_large\n' ;;
+    "musicgen"*|"musicgen-"*) printf 'musicgen_medium\nmusicgen_large\n' ;;
+    # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
+    # (`cvssp/audioldm2`, cc-by-nc-sa-4.0). First non-AR audio-
+    # generation converter (sibling musicgen family is AR + RVQ;
+    # AudioLDM 2 is latent-diffusion + VAE, distinct topology / arch
+    # tag). Present in this alias table so a future `★ 公式 zoo`
+    # promotion can immediately resolve the display name to the
+    # `audioldm2` module slug — but note the row is currently
+    # unpublishable (NC + SA cascade requires an owner ADR before the
+    # §3.1 sign-off is filled and a `REPO_TO_SIGNOFF_ROWS` entry is
+    # added), so today's row does NOT carry the `★ 公式 zoo` marker
+    # and this scanner never runs `implemented("AudioLDM 2")` against
+    # it. Future family variants (`audioldm2-music` /
+    # `audioldm2-large` / `audioldm2-music-665k`) will add their own
+    # specific pattern above this catch-all if a shared enum split
+    # doesn't collapse them into the single `audioldm2` slug.
+    "audioldm 2"*|"audioldm-2"*|"audioldm2"*|"audio-ldm-2"*) printf 'audioldm2\n' ;;
+    # 2026-08-01 Wave 5 music-separation add: BS-Roformer /
+    # Mel-Band Roformer (`chenmozhijin/BSRoformer-GGUF` third-
+    # party mirror, **weight provenance unclear** — first music-
+    # source-separation converter, Lu et al. 2023
+    # arXiv:2310.01809). Present in this alias table so a future
+    # `★ 公式 zoo` promotion can immediately resolve the display
+    # name to the `bs_roformer` module slug — but note the row is
+    # currently unpublishable (weight provenance unclear ⇒
+    # `LicenseClass::RedistributionForbidden` fail-closed default
+    # + no `REPO_TO_SIGNOFF_ROWS` entry ⇒ `UNKNOWN_REPO` at
+    # publish gate time). Today's row does NOT carry the
+    # `★ 公式 zoo` marker and this scanner never runs
+    # `implemented("BS-Roformer …")` against it. Aliases cover
+    # the arch tag spellings and the family-name variants
+    # ("BS-Roformer" / "Mel-Band Roformer" / "MelBand Roformer" /
+    # "BSRoformer" — first tokens all resolve into different
+    # buckets so the family-name catch-all matters).
+    "bs roformer"*|"bs-roformer"*|"bs_roformer"*|"bsroformer"*|\
+"mel band roformer"*|"mel-band-roformer"*|"melband roformer"*|"melband-roformer"*)
+      printf 'bs_roformer\n' ;;
   esac
 }
 

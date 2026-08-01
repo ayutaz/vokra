@@ -1053,6 +1053,28 @@ pub enum ModelKind {
     /// safetensors only. Convert with
     /// [`convert_pyannote_segmentation_file`].
     PyannoteSegmentation,
+    /// **pyannote/speaker-diarization-3.1** pipeline orchestration
+    /// (Bredin, CNRS — 2026-08-01 Wave 5, `docs/license-audit.md`
+    /// §3.1 sign-off row). Category = `diarize`. **Weightless
+    /// pipeline** — composes the sibling MIT weight repos
+    /// `pyannote/segmentation-3.0` (VAD backbone) +
+    /// `pyannote/wespeaker-voxceleb-resnet34-LM` (speaker encoder)
+    /// via `AgglomerativeClustering` (centroid linkage, cosine
+    /// distance cut = 0.7045654963945799). The emitted GGUF carries
+    /// only the `vokra.pyannote_pipeline.*` orchestration hparams
+    /// (pipeline type / sub-model references / batch sizes /
+    /// clustering knobs) transcribed verbatim from the upstream
+    /// `config.yaml` (primary source verified 2026-08-01 —
+    /// CLAUDE.md「ハルシネーション厳禁」); no tensors, no YAML
+    /// parser in the runtime tree (NFR-DS-02). Provenance = MIT
+    /// (Permissive — HF cardData primary source verified 2026-07-30,
+    /// `gated: auto` = access control only, no additional
+    /// obligations; row 268 in §3.1 signed yousan). Runtime pipeline
+    /// dispatch (`crates/vokra-models/src/pyannote/pipeline.rs`) is
+    /// a separate WP — this variant only stamps orchestration
+    /// metadata. Convert with
+    /// [`convert_pyannote_speaker_diarization_3_1_file`].
+    PyannoteSpeakerDiarization31,
     // ---------------------------------------------------------------------------
     // TIER 1+2 audio-gap implementation (2026-07-30 ultracode `wf_022575ce-077`)
     // — 40 new ModelKind variants across 7 WT batches. Each is a BF16 pass-
@@ -1828,6 +1850,161 @@ pub enum ModelKind {
     /// (§3.1). Sibling [`Self::YueUpsampler`] carries only the Vocos
     /// vocoder head (145 MB standalone re-package).
     YueXcodecMini,
+    /// **MusicGen-Medium** (`facebook/musicgen-medium`, **cc-by-nc-4.0**)
+    /// safetensors checkpoint (Wave 5 candidate, 2026-08-01). First
+    /// **music generation** target to land a converter (post-2026-07-30
+    /// scope expansion `[[project-scope-expansion-2026-07-30]]`). 1.5B
+    /// autoregressive transformer LM over EnCodec RVQ tokens conditioned
+    /// on frozen T5 text encoder (Copet et al. 2023, arXiv:2306.05284
+    /// "Simple and Controllable Music Generation"). Category = `music`
+    /// (first music-tree entry, distinct from every speech-tree tag).
+    /// BF16 pass-through skeleton mirror of xcodec2 / wavtokenizer;
+    /// **NonCommercial default** — the M2-13 runtime gate refuses to
+    /// load in commercial mode unless overridden via
+    /// [`convert_file_licensed`] `license` (the Whisper / kokoro /
+    /// vits-ja / xcodec2 override pattern). Distinct arch tag `musicgen`
+    /// from every sibling — silently sharing with any speech-tree arch
+    /// would mis-route runtime dispatch. Scale ~11.4 GB = **vast.ai
+    /// handoff** per memory `[[feedback-large-models-on-vast-ai]]`
+    /// (M1 iMac 16 GB unsafe for this class of publish). Real-weight
+    /// parity + runtime binder deferred to owner sign-off
+    /// (`docs/license-audit.md` §3.1 sign-off queue).
+    MusicGenMedium,
+    /// **MusicGen-Large** (`facebook/musicgen-large`, **cc-by-nc-4.0**)
+    /// safetensors checkpoint (Wave 5 candidate, 2026-08-01). Second
+    /// **music generation** target — top rung of the MusicGen family
+    /// (300M `-small` / 1.5B `-medium` / **3.3B `-large`**). Post-2026-07-30
+    /// scope expansion `[[project-scope-expansion-2026-07-30]]`. 3.3B
+    /// autoregressive transformer LM over EnCodec RVQ tokens conditioned
+    /// on frozen T5 text encoder (Copet et al. 2023, arXiv:2306.05284
+    /// "Simple and Controllable Music Generation"). Category = `music`
+    /// (shared with sibling MusicGen-Medium — first music-tree family).
+    /// BF16 pass-through skeleton mirror of musicgen_medium / xcodec2 /
+    /// wavtokenizer; **NonCommercial default** — the M2-13 runtime gate
+    /// refuses to load in commercial mode unless overridden via
+    /// [`convert_file_licensed`] `license` (the Whisper / kokoro /
+    /// vits-ja / xcodec2 override pattern, same as sibling
+    /// [`Self::MusicGenMedium`]). Sibling-file split (dedicated
+    /// `musicgen_large.rs`) rather than a shared `musicgen.rs` variant
+    /// enum — zero-churn on the medium landing + distinct upstream HF
+    /// repo (`facebook/musicgen-large` vs `facebook/musicgen-medium`).
+    /// Distinct arch tag `musicgen` (shared with sibling
+    /// [`Self::MusicGenMedium`] — same family topology, only dims
+    /// differ). Scale ~19.5 GB = **vast.ai handoff** per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (M1 iMac 16 GB unsafe;
+    /// larger than sibling MusicGen-Medium ~11.4 GB). Real-weight
+    /// parity + runtime binder deferred to owner sign-off
+    /// (`docs/license-audit.md` §3.1 sign-off queue).
+    MusicGenLarge,
+    /// **AudioGen-Medium** (`facebook/audiogen-medium`, **cc-by-nc-4.0**)
+    /// safetensors checkpoint (Wave 5 residual, 2026-08-01). MusicGen
+    /// sibling with identical arch (shared `musicgen` arch tag), tuned on
+    /// environmental sounds / SFX rather than music. `category = "music"`
+    /// shared with MusicGen family. `LicenseClass::NonCommercial` fail-
+    /// closed default per X-Codec 2 / MusicGen T4 precedent. Scale
+    /// ~3.7 GB = local convert safe on M1 iMac 16 GB.
+    AudioGenMedium,
+    /// **AudioLDM 2** (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**)
+    /// safetensors checkpoint (Wave 5 candidate, 2026-08-01).
+    /// Text-to-audio latent-diffusion generator (Liu et al. 2024 ICML,
+    /// arXiv:2308.05734 "AudioLDM 2: Learning Holistic Audio Generation
+    /// with Self-supervised Pretraining"). Multi-encoder bundle: VAE
+    /// encoder/decoder + latent-diffusion U-Net + HiFi-GAN vocoder +
+    /// frozen T5-base + CLAP text encoder + GPT-2 audio-caption LM
+    /// (~8.5 GB total).
+    ///
+    /// **Distinct arch tag `audioldm2`** — silently sharing with sibling
+    /// [`Self::MusicGenMedium`] / [`Self::MusicGenLarge`] would misroute
+    /// runtime dispatch: MusicGen is an autoregressive transformer LM
+    /// over EnCodec RVQ tokens, AudioLDM 2 is a *latent-diffusion*
+    /// generator over a VAE latent (fundamentally different topology,
+    /// different sampler surface — LDM sampler + VAE decode vs AR token
+    /// decode + RVQ decode). `category = "music"` shared with the
+    /// MusicGen family (per 2026-07-30 scope expansion
+    /// `[[project-scope-expansion-2026-07-30]]`).
+    ///
+    /// **Doubly-restrictive `NonCommercialShareAlike` default** — the
+    /// CVSSP primary source pins CC-BY-NC-SA-4.0 (the HF card's
+    /// `-nc-4.0` tag is the looser form and would drop the SA cascade
+    /// if defaulted to — Fish-Speech precedent for the same license).
+    /// The M2-13 runtime gate refuses to load in commercial mode (NC
+    /// gate = fail-closed) AND any downstream republish must carry the
+    /// grant forward (SA cascade). Override via
+    /// [`convert_file_licensed`] `license` (the Whisper / kokoro /
+    /// vits-ja / xcodec2 / musicgen override pattern) only when the
+    /// caller legitimately holds the weight under a different SPDX id.
+    ///
+    /// **Publish blocked (sa-cascade-defer)** — no entry in
+    /// `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`, and no
+    /// ☑ sign-off in `docs/license-audit.md` §3.1 (owner ADR required
+    /// to resolve the SA cascade onto Vokra-added artifacts). The
+    /// converter + prep-script land today so a future publish is one
+    /// owner decision away, but nothing today routes to `publish-one.sh`.
+    ///
+    /// BF16 pass-through skeleton mirror of `musicgen_medium` /
+    /// `xcodec2` / `wavtokenizer`. Scale ~8.5 GB = **vast.ai handoff**
+    /// per memory `[[feedback-large-models-on-vast-ai]]` (M1 iMac 16 GB
+    /// unsafe on the upper edge — the multi-encoder bundle doubles peak
+    /// resident to ~17 GB on the pass). Real-weight parity + runtime
+    /// binder (new op surface = latent-diffusion sampler + VAE +
+    /// HiFi-GAN, distinct from `flow_sampler` which targets flow-
+    /// matching) deferred to owner sign-off (`docs/license-audit.md`
+    /// §3.1 sign-off queue).
+    AudioLdm2,
+    /// **BS-Roformer / Mel-Band Roformer** (upstream `chenmozhijin/BSRoformer-
+    /// GGUF` third-party mirror, **weight provenance unclear**) safetensors
+    /// checkpoint (Wave 5 candidate, 2026-08-01). First **music source
+    /// separation** target — Lu et al. 2023 arXiv:2310.01809 "Music Source
+    /// Separation with Band-Split RoPE Transformer": dual-path frequency-band
+    /// Transformer over an STFT spectrogram, alternating time-axis and
+    /// band-axis self-attention (each with RoPE position encoding) to mask
+    /// out a target stem (vocals is the most common publication target;
+    /// drums / bass / other are also possible).
+    ///
+    /// **Distinct arch tag `bs_roformer`** — sibling separator arch tags
+    /// (`sepformer` = dual-path time-domain, `tiger_separator` = time-frequency
+    /// interleaved gain, `mp_senet` = magnitude-phase parallel) address
+    /// different failure modes. Silently sharing would mis-route runtime
+    /// dispatch to a wrong-shape forward. `category = "separation"` shared
+    /// with the SepFormer speech-separation family — BS-Roformer is the
+    /// music-vocals analogue.
+    ///
+    /// **License posture — weight provenance unclear (fail-closed default)**:
+    /// weight redistribution default is
+    /// [`LicenseClass::RedistributionForbidden`]. The architecture / reference
+    /// code is MIT (`github.com/lucidrains/BS-RoFormer`, Phil Wang's
+    /// clean-room implementation), but the paper's authors released no
+    /// reference weights — every checkpoint in the wild is a downstream
+    /// retraining under mixed licenses (some GPL-3.0, some CC-BY-NC-4.0, most
+    /// unspecified). A converter cannot know which SPDX id covers the
+    /// caller's checkpoint. Sibling [`Self::VitsJa`] uses the same
+    /// fail-closed default (there for corpus-restriction reasons; here for
+    /// unclear-provenance reasons).
+    ///
+    /// **Publish blocked** at
+    /// `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS` — no entry
+    /// for `bs-roformer` (unlisted slug fails closed as `UNKNOWN_REPO` at
+    /// `publish-one.sh` gate time). An owner decision selecting a specific
+    /// checkpoint (and thus a specific license) is the prerequisite to a
+    /// first publish. A caller who knows the specific SPDX id for their
+    /// checkpoint overrides at the outer `convert_file --license <spdx>`
+    /// boundary (the same Whisper / kokoro / vits-ja / xcodec2 / musicgen
+    /// override pattern).
+    ///
+    /// **Scale**: 150 MB (Mel-Band variants) to ~4-5 GB (top-of-range
+    /// BS-Roformer). The 4.68 GB flagship class sits just under the M1 iMac
+    /// 16 GB comfortable-local-convert threshold; vast.ai handoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]` is recommended for the
+    /// top-of-range variants (a 16 GB box suffices).
+    ///
+    /// Convert with [`convert_bs_roformer_file`] (single-input pass-through,
+    /// no config side-car needed). BF16 pass-through skeleton mirror of
+    /// [`Self::VitsJa`] / [`Self::MusicGenLarge`]. Real-weight binder +
+    /// runtime Lu-et-al-2023 parity is a follow-up wave gated on §3.1
+    /// sign-off + owner routing decision (new op surface: band-split RoPE
+    /// transformer with alternating time-axis / band-axis attention, mask
+    /// estimator over STFT — distinct from every existing op).
+    BsRoformer,
 }
 
 impl ModelKind {
@@ -2203,6 +2380,19 @@ impl ModelKind {
             | "pyannote-segmentation-3_0"
             | "pyannote/segmentation-3.0"
             | "pyannote/segmentation" => Some(Self::PyannoteSegmentation),
+            // pyannote/speaker-diarization-3.1 pipeline (2026-08-01 Wave 5
+            // orchestration add). Accept the arch tag underscore / hyphen
+            // variants, the short family form (drops the "-3.1" suffix),
+            // and the canonical HF release id. Distinct from the
+            // segmentation-3.0 backbone above (this arm routes to a
+            // weightless pipeline GGUF, not to the PyanNet weights).
+            "pyannote-speaker-diarization"
+            | "pyannote_speaker_diarization"
+            | "pyannote-speaker-diarization-3.1"
+            | "pyannote_speaker_diarization_3_1"
+            | "pyannote-speaker-diarization-3_1"
+            | "pyannote/speaker-diarization-3.1"
+            | "pyannote/speaker-diarization" => Some(Self::PyannoteSpeakerDiarization31),
             // 2026-08-01 Wave 4 variant-enum extension: 1.7B-Base — the
             // un-fine-tuned 1.7B backbone that the CustomVoice / VoiceDesign
             // 1.7B siblings fine-tune from. Distinct `Qwen3TtsVariant::_1_7B_Base`
@@ -2713,6 +2903,92 @@ impl ModelKind {
             | "m-a-p-xcodec-mini"
             | "yue-codec"
             | "m-a-p/xcodec_mini_infer" => Some(Self::YueXcodecMini),
+            // Meta AudioCraft MusicGen-Medium (Wave 5 candidate,
+            // 2026-08-01, `facebook/musicgen-medium`, cc-by-nc-4.0). Accept
+            // the arch tag (`musicgen`), the arch+size spellings (hyphen
+            // + underscore variants), and the canonical HF release id.
+            // Every spelling routes to the same NonCommercial BF16
+            // pass-through converter today; future family variants
+            // (`musicgen-small` / `musicgen-large` / `musicgen-melody` /
+            // `musicgen-stereo-*`) will be distinct `ModelKind` values
+            // (sibling files per the chatterbox / chatterbox_turbo split,
+            // or a shared `musicgen.rs` variant enum per the snac / vocos
+            // split — decided when a second variant lands).
+            "musicgen"
+            | "musicgen-medium"
+            | "musicgen_medium"
+            | "facebook-musicgen-medium"
+            | "facebook/musicgen-medium" => Some(Self::MusicGenMedium),
+            // Meta AudioCraft MusicGen-Large (Wave 5 candidate,
+            // 2026-08-01, `facebook/musicgen-large`, cc-by-nc-4.0).
+            // Second MusicGen family member — top rung 3.3B. Bare
+            // arch tag `musicgen` stays owned by
+            // [`Self::MusicGenMedium`] (first-landed family default);
+            // callers who want the -large variant must be explicit
+            // via `-large` / `_large` / `facebook-musicgen-large` /
+            // `facebook/musicgen-large`. Same family + same arch tag
+            // as sibling MusicGen-Medium — silently sharing the bare
+            // arch tag `musicgen` would create a routing ambiguity
+            // between two distinct HF repos, so this arm requires an
+            // explicit `-large` suffix.
+            "musicgen-large"
+            | "musicgen_large"
+            | "facebook-musicgen-large"
+            | "facebook/musicgen-large" => Some(Self::MusicGenLarge),
+            // AudioGen-Medium (Wave 5 residual, 2026-08-01,
+            // `facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling
+            // (identical `musicgen` arch tag, tuned on environmental
+            // sounds / SFX). Slug alias set mirrors MusicGen-Medium.
+            "audiogen"
+            | "audiogen-medium"
+            | "audiogen_medium"
+            | "facebook-audiogen-medium"
+            | "facebook/audiogen-medium" => Some(Self::AudioGenMedium),
+            // AudioLDM 2 (Wave 5 candidate, 2026-08-01,
+            // `cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Accept the arch
+            // tag (`audioldm2` / `audio-ldm-2` / `audio_ldm_2`), the
+            // underscore variants, and the canonical HF release id.
+            // Every spelling routes to the same
+            // NonCommercialShareAlike BF16 pass-through converter
+            // today; future family variants (`audioldm2-music` /
+            // `audioldm2-large` / `audioldm2-music-665k`) will be
+            // distinct `ModelKind` values (sibling files per the
+            // musicgen_medium / musicgen_large split, or a shared
+            // `audioldm2.rs` variant enum per the snac / vocos split —
+            // decided when a second variant lands).
+            "audioldm2"
+            | "audio-ldm-2"
+            | "audio_ldm_2"
+            | "audioldm-2"
+            | "audioldm_2"
+            | "cvssp-audioldm2"
+            | "cvssp/audioldm2" => Some(Self::AudioLdm2),
+            // BS-Roformer / Mel-Band Roformer (Wave 5 candidate,
+            // 2026-08-01, `chenmozhijin/BSRoformer-GGUF`, weight
+            // provenance unclear). Accept the arch tag (both
+            // underscore and hyphen), the family-name spellings
+            // (`bs-roformer` / `bsroformer` / `mel-band-roformer` /
+            // `melband-roformer`), and the third-party HF mirror
+            // slug. Every spelling routes to the same
+            // `LicenseClass::RedistributionForbidden` fail-closed
+            // converter today (single-variant standalone; a future
+            // variant enum landing would extend from here). The
+            // shorthand `mel-band-roformer` alias covers the Mel-Band
+            // family sub-variant Lu et al. 2023 describes alongside
+            // BS-Roformer — same arch tag `bs_roformer` because the
+            // topology is identical (band-split module vs mel-filter-
+            // bank module is a runtime hparam, not a distinct arch);
+            // a downstream who needs to disambiguate can inspect
+            // `vokra.model.name` or a future `vokra.bs_roformer.
+            // variant` chunk.
+            "bs-roformer"
+            | "bs_roformer"
+            | "bsroformer"
+            | "mel-band-roformer"
+            | "mel_band_roformer"
+            | "melband-roformer"
+            | "melband_roformer"
+            | "chenmozhijin/bsroformer-gguf" => Some(Self::BsRoformer),
             _ => None,
         }
     }
@@ -2778,6 +3054,7 @@ impl ModelKind {
             Self::Rmvpe => "rmvpe",
             Self::Crepe => "crepe",
             Self::PyannoteSegmentation => "pyannote-segmentation",
+            Self::PyannoteSpeakerDiarization31 => "pyannote-speaker-diarization-3.1",
             Self::Ast => "ast",
             Self::AudioboxAesthetics => "audiobox-aesthetics",
             Self::Bark => "bark",
@@ -2835,6 +3112,11 @@ impl ModelKind {
             Self::Vocos => "vocos-mel-24khz",
             Self::YueUpsampler => "yue-upsampler",
             Self::YueXcodecMini => "yue-xcodec-mini",
+            Self::MusicGenMedium => "musicgen-medium",
+            Self::MusicGenLarge => "musicgen-large",
+            Self::AudioGenMedium => "audiogen-medium",
+            Self::AudioLdm2 => "audioldm2",
+            Self::BsRoformer => "bs-roformer",
         }
     }
 }
@@ -3351,6 +3633,34 @@ pub fn convert_file_licensed(
     if matches!(model, ModelKind::Moshi) {
         return convert_moshi_file(input, None, output);
     }
+    // pyannote/speaker-diarization-3.1 is a **weightless pipeline** — the
+    // upstream repo ships only a ~2 KB config.yaml (no .bin / .safetensors),
+    // the pipeline delegates every forward-pass computation to two sibling
+    // weight repos (pyannote/segmentation-3.0 + wespeaker-voxceleb-
+    // resnet34-LM). The converter reads the config.yaml as a raw sanity
+    // buffer (no YAML parser — NFR-DS-02 zero-dep) and emits orchestration
+    // metadata from primary-source Rust constants. Routes BEFORE the
+    // whole-file read below so the sibling per-model arms can stay
+    // safetensors-shaped.
+    if matches!(model, ModelKind::PyannoteSpeakerDiarization31) {
+        let report =
+            models::pyannote_speaker_diarization_3_1::convert_pyannote_speaker_diarization_3_1_file(
+                input, output, license,
+            )?;
+        let notes = vec![format!(
+            "pyannote-speaker-diarization-3.1: weightless pipeline GGUF written \
+             (input_recognized={}, sub-model refs pinned to pyannote/segmentation-3.0 \
+             + pyannote/wespeaker-voxceleb-resnet34-LM); {} tensors emitted by design",
+            report.input_recognized, report.written,
+        )];
+        return Ok(ConvertSummary {
+            model: ModelKind::PyannoteSpeakerDiarization31,
+            tensor_count: report.written,
+            metadata_count: 0,
+            output_bytes: std::fs::metadata(output)?.len(),
+            notes,
+        });
+    }
     let bytes = std::fs::read(input)?;
 
     let (mut builder, notes) = match model {
@@ -3466,6 +3776,15 @@ pub fn convert_file_licensed(
             // Handled by the streaming early-return above (bounded memory);
             // reaching this arm would mean the whole checkpoint was read.
             unreachable!("ModelKind::Moshi routes through convert_moshi_file")
+        }
+        ModelKind::PyannoteSpeakerDiarization31 => {
+            // Handled by the weightless-pipeline early-return above
+            // (config.yaml sanity buffer, no fs::read of a weight file);
+            // reaching this arm would mean the outer bypass was removed.
+            unreachable!(
+                "ModelKind::PyannoteSpeakerDiarization31 routes through \
+                 convert_pyannote_speaker_diarization_3_1_file"
+            )
         }
         ModelKind::Csm => {
             // Tokenizer-less path (M4-05-T03/T04): every float tensor
@@ -4948,6 +5267,175 @@ pub fn convert_file_licensed(
                 "wavtokenizer-large-speech-75token: {} float weights written verbatim ({} BF16 \
                  passthrough), {} non-float skipped",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MusicGenMedium (2026-08-01 Wave 5 music-generation add) ===
+        ModelKind::MusicGenMedium => {
+            // Meta AudioCraft MusicGen-Medium (`facebook/musicgen-medium`,
+            // cc-by-nc-4.0). First music-generation target to land a
+            // converter (post-2026-07-30 scope expansion). 1.5B
+            // autoregressive transformer LM over EnCodec RVQ tokens
+            // conditioned on frozen T5 text encoder (Copet et al. 2023,
+            // arXiv:2306.05284). BF16 pass-through skeleton mirror of
+            // xcodec2 / wavtokenizer with **NonCommercial default** — the
+            // M2-13 runtime gate refuses to load in commercial mode unless
+            // overridden via `--license <spdx>`. Scale ~11.4 GB =
+            // vast.ai handoff per memory
+            // `[[feedback-large-models-on-vast-ai]]` (M1 iMac 16 GB unsafe
+            // for this class of publish). runtime binder + real-weight
+            // parity deferred to owner sign-off (§3.1).
+            let report =
+                models::musicgen_medium::convert_musicgen_medium_file(input, output, license)?;
+            let notes = vec![format!(
+                "musicgen-medium: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (cc-by-nc-4.0 default, NonCommercial fail-closed unless --license overrides)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MusicGenLarge (2026-08-01 Wave 5 music-generation add) ===
+        ModelKind::MusicGenLarge => {
+            // Meta AudioCraft MusicGen-Large (`facebook/musicgen-large`,
+            // cc-by-nc-4.0). Second music-generation target — top rung
+            // of the MusicGen family (3.3B, vs 1.5B for sibling medium).
+            // BF16 pass-through skeleton mirror of musicgen_medium /
+            // xcodec2 / wavtokenizer with **NonCommercial default** —
+            // the M2-13 runtime gate refuses to load in commercial
+            // mode unless overridden via `--license <spdx>`. Scale
+            // ~19.5 GB = vast.ai handoff per memory
+            // `[[feedback-large-models-on-vast-ai]]` (M1 iMac 16 GB
+            // unsafe for this class of publish; larger than sibling
+            // MusicGen-Medium ~11.4 GB). runtime binder + real-weight
+            // parity deferred to owner sign-off (§3.1) — shared with
+            // sibling medium binder (identical topology, only dims
+            // differ).
+            let report =
+                models::musicgen_large::convert_musicgen_large_file(input, output, license)?;
+            let notes = vec![format!(
+                "musicgen-large: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (cc-by-nc-4.0 default, NonCommercial fail-closed unless --license overrides)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === AudioGenMedium (2026-08-01 Wave 5 residual) ===
+        ModelKind::AudioGenMedium => {
+            // Meta AudioCraft AudioGen-Medium (`facebook/audiogen-medium`,
+            // cc-by-nc-4.0). MusicGen sibling — identical topology
+            // (shared `musicgen` arch tag), tuned on environmental sounds
+            // / SFX (Kreuk et al. 2023, arXiv:2209.15352). Scale ~3.7 GB
+            // = local convert safe. NonCommercial default fail-closed.
+            let report =
+                models::audiogen_medium::convert_audiogen_medium_file(input, output, license)?;
+            let notes = vec![format!(
+                "audiogen-medium: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (cc-by-nc-4.0 default, NonCommercial fail-closed unless --license overrides)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === AudioLdm2 (2026-08-01 Wave 5 music-generation add) ===
+        ModelKind::AudioLdm2 => {
+            // AudioLDM 2 (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Text-
+            // to-audio latent-diffusion generator (Liu et al. 2024 ICML
+            // arXiv:2308.05734). Multi-encoder bundle: VAE + latent-
+            // diffusion U-Net + HiFi-GAN vocoder + T5-base + CLAP text
+            // encoder + GPT-2 audio-caption LM (~8.5 GB total). BF16
+            // pass-through skeleton mirror of musicgen_medium /
+            // musicgen_large / xcodec2 with **NonCommercialShareAlike
+            // default** — doubly restrictive: the M2-13 runtime gate
+            // refuses to load in commercial mode (NC gate) AND any
+            // downstream republish must carry the license forward (SA
+            // cascade). Override via `--license <spdx>` only when the
+            // caller legitimately holds the weight under a different
+            // SPDX id. Scale ~8.5 GB = vast.ai handoff per memory
+            // `[[feedback-large-models-on-vast-ai]]` (M1 iMac 16 GB
+            // unsafe on the upper edge — multi-encoder bundle doubles
+            // peak resident to ~17 GB). **Publish blocked (sa-cascade-
+            // defer)**: no entry in `signoff_match.py::REPO_TO_SIGNOFF_
+            // ROWS`, no ☑ sign-off in §3.1 — owner ADR required to
+            // resolve the SA cascade onto Vokra-added artifacts.
+            // runtime binder + real-weight parity deferred to owner
+            // sign-off (§3.1) — new op surface (latent-diffusion
+            // sampler + VAE + HiFi-GAN, distinct from `flow_sampler`
+            // which targets flow-matching).
+            let report = models::audioldm2::convert_audioldm2_file(input, output, license)?;
+            let notes = vec![format!(
+                "audioldm2: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (cc-by-nc-sa-4.0 default, NonCommercialShareAlike fail-closed — NC gate + SA \
+                 cascade both in force unless --license overrides; publish blocked pending \
+                 owner ADR per docs/license-audit.md §3.1)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === BsRoformer (2026-08-01 Wave 5 music-separation add) ===
+        ModelKind::BsRoformer => {
+            // BS-Roformer / Mel-Band Roformer (third-party mirror
+            // `chenmozhijin/BSRoformer-GGUF`, **weight provenance
+            // unclear**). First music-source-separation converter — Lu
+            // et al. 2023 arXiv:2310.01809 dual-path frequency-band
+            // Transformer over an STFT spectrogram. BF16 pass-through
+            // skeleton mirror of vits_ja / musicgen_large / xcodec2 —
+            // architecture code is MIT (`github.com/lucidrains/BS-
+            // RoFormer`) but the paper released no weights, so every
+            // checkpoint in the wild is a downstream retraining under
+            // mixed licenses. **LicenseClass::RedistributionForbidden
+            // fail-closed default** — a converter cannot know which
+            // SPDX id covers the caller's checkpoint. The M2-13 runtime
+            // gate does not block *loading* (unlike NonCommercial
+            // which requires the research flag) — the fail-closed
+            // publish gate at `LicenseClass::redistributable() = false`
+            // is what blocks upload. `--license <spdx>` overrides at
+            // the outer boundary (the vits-ja / Whisper / kokoro
+            // pattern). **Publish blocked** at
+            // `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`
+            // (unlisted slug fails closed as `UNKNOWN_REPO`; owner ADR
+            // selecting a specific checkpoint + license is the
+            // prerequisite to a first publish).
+            let report = models::bs_roformer::convert_bs_roformer_file(input, output, license)?;
+            let notes = vec![format!(
+                "bs-roformer: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (weight-provenance-unclear default, RedistributionForbidden fail-closed — \
+                 publish gate refuses upload unless --license overrides to a known SPDX id; \
+                 publish blocked pending owner ADR per docs/license-audit.md §3.1)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {
                 model,
@@ -6526,6 +7014,17 @@ pub use models::xcodec2::{XCodec2Report, convert_xcodec2_file};
 // `models::rmvpe` module is otherwise public so this re-export just
 // preserves the canonical short-name spelling).
 pub use models::rmvpe::{RmvpeReport, convert_rmvpe_file};
+// Wave 5 music-separation add (2026-08-01): BS-Roformer / Mel-Band Roformer
+// (**weight provenance unclear** — third-party mirror
+// `chenmozhijin/BSRoformer-GGUF`, `docs/license-audit.md` §3.1 sign-off
+// blank until owner ADR resolves which specific checkpoint + license the
+// publish would target). Standalone file-based entry point with an SPDX
+// override argument (mirror of the xcodec2 / vits_ja re-export pattern).
+// The runtime `ModelKind::BsRoformer` dispatch arm above shares the same
+// `models::bs_roformer::convert_bs_roformer_file` helper, so a caller who
+// prefers `--model bs-roformer` via `convert_file_licensed` and a caller
+// who calls `convert_bs_roformer_file` directly land the same bytes.
+pub use models::bs_roformer::{BsRoformerReport, convert_bs_roformer_file};
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
