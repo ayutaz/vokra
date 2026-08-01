@@ -842,6 +842,12 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "pyannote-speaker-diarization-3.1": [
         "pyannote-speaker-diarization-3.1 (`pyannote/speaker-diarization-3.1`)"
     ],
+    # Bark (Suno) publish targets — bark.rs converter handles both SKUs via
+    # BarkVariant::{Full,Small}. The §3.1 rows already exist from 2026-07-23
+    # (Bark row 264 = full, "Bark (small)" row 349 = small); this map opens
+    # the publish path so upload.sh resolves both slugs to APPROVED.
+    "bark": ["Bark (Suno)"],
+    "bark-small": ["Bark (small) (`suno/bark-small`)"],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
