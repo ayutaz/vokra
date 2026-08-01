@@ -560,6 +560,24 @@ pub mod musicgen_large;
 // `LicenseClass::NonCommercial` fail-closed default. Scale ~3.7 GB =
 // local convert safe on M1 iMac 16 GB (below the vast.ai threshold).
 pub mod audiogen_medium;
+// 2026-08-01 Wave 6 residual: Meta AudioCraft MusicGen-Small
+// (`facebook/musicgen-small`, cc-by-nc-4.0). 300M smallest of the
+// MusicGen family. Shares `musicgen` arch tag + `music` category.
+// Scale ~5.5 GB = vast.ai handoff per owner directive.
+pub mod musicgen_small;
+// 2026-08-01 Wave 6 residual: Alibaba Qwen2-Audio-7B-Instruct
+// (`Qwen/Qwen2-Audio-7B-Instruct`, apache-2.0). Whisper audio
+// encoder + Qwen2-7B LM = audio-LLM omni. Distinct arch tag
+// `qwen2_audio`. Scale ~16 GB (5-shard) = vast.ai handoff.
+pub mod qwen2_audio;
+// 2026-08-01 Wave 6 residual: Microsoft VibeVoice-ASR
+// (`microsoft/VibeVoice-ASR`, MIT). VibeVoice sibling with ASR
+// head. Distinct arch tag `vibevoice_asr`. Scale ~16.5 GB = vast.ai.
+pub mod vibevoice_asr;
+// 2026-08-01 Wave 6 residual: ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`,
+// MIT). Multi-component music-generation bundle. Distinct arch tag
+// `ace_step`, category `music`. Scale ~9.6 GB = vast.ai handoff.
+pub mod ace_step;
 // 2026-08-01 Wave 3 codec add: Amphion NaturalSpeech 3 FACodec
 // (`amphion/naturalspeech3_facodec`, apache-2.0). Factorized VQ (FVQ)
 // neural audio codec at 16 kHz, 3 parallel quantizer heads over

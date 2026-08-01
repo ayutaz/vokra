@@ -1904,6 +1904,29 @@ pub enum ModelKind {
     /// closed default per X-Codec 2 / MusicGen T4 precedent. Scale
     /// ~3.7 GB = local convert safe on M1 iMac 16 GB.
     AudioGenMedium,
+    /// **MusicGen-Small** (`facebook/musicgen-small`, **cc-by-nc-4.0**)
+    /// safetensors (Wave 6 residual, 2026-08-01). 300M smallest of the
+    /// MusicGen family. Shared `musicgen` arch + `music` category. T4
+    /// NonCommercial default. Scale ~5.5 GB = vast.ai handoff per owner
+    /// 「重いモデル vast.ai」directive.
+    MusicGenSmall,
+    /// **Qwen2-Audio-7B-Instruct** (`Qwen/Qwen2-Audio-7B-Instruct`,
+    /// **apache-2.0**) safetensors (Wave 6 residual, 2026-08-01). Alibaba
+    /// 7B audio-LLM = Whisper audio encoder + Qwen2-7B LM
+    /// (arXiv:2407.10759). Distinct arch `qwen2_audio` + category
+    /// `audio-llm`. Scale ~16 GB (5-shard) = vast.ai handoff.
+    Qwen2Audio,
+    /// **VibeVoice-ASR** (`microsoft/VibeVoice-ASR`, **MIT**) safetensors
+    /// (Wave 6 residual, 2026-08-01). VibeVoice sibling with ASR head
+    /// (VibeVoiceForASRTraining). Distinct arch `vibevoice_asr` (vs
+    /// sibling TTS `vibevoice`). Scale ~16.5 GB (8-shard) = vast.ai.
+    VibeVoiceAsr,
+    /// **ACE-Step 1.5** (`ACE-Step/Ace-Step1.5`, **MIT**) multi-file
+    /// bundle (Wave 6 residual, 2026-08-01). Flagship MIT music-gen =
+    /// diffusion + VAE + Qwen3-Embedding + acestep-5Hz-LM + turbo.
+    /// Distinct arch `ace_step`, category `music`. Scale ~9.6 GB =
+    /// vast.ai handoff (multi-file merge via prep script).
+    AceStep,
     /// **AudioLDM 2** (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**)
     /// safetensors checkpoint (Wave 5 candidate, 2026-08-01).
     /// Text-to-audio latent-diffusion generator (Liu et al. 2024 ICML,
@@ -2944,6 +2967,33 @@ impl ModelKind {
             | "audiogen_medium"
             | "facebook-audiogen-medium"
             | "facebook/audiogen-medium" => Some(Self::AudioGenMedium),
+            // MusicGen-Small (Wave 6 residual, 2026-08-01,
+            // `facebook/musicgen-small`, cc-by-nc-4.0). 300M smallest of
+            // MusicGen family. Shared `musicgen` arch + `music` category.
+            "musicgen-small"
+            | "musicgen_small"
+            | "facebook-musicgen-small"
+            | "facebook/musicgen-small" => Some(Self::MusicGenSmall),
+            // Qwen2-Audio-7B-Instruct (Wave 6 residual, 2026-08-01).
+            "qwen2-audio"
+            | "qwen2-audio-7b"
+            | "qwen2-audio-7b-instruct"
+            | "qwen2_audio"
+            | "qwen2_audio_7b_instruct"
+            | "qwen/qwen2-audio-7b-instruct"
+            | "Qwen/Qwen2-Audio-7B-Instruct" => Some(Self::Qwen2Audio),
+            // VibeVoice-ASR (Wave 6 residual, 2026-08-01).
+            "vibevoice-asr"
+            | "vibevoice_asr"
+            | "microsoft-vibevoice-asr"
+            | "microsoft/VibeVoice-ASR" => Some(Self::VibeVoiceAsr),
+            // ACE-Step 1.5 (Wave 6 residual, 2026-08-01).
+            "ace-step"
+            | "ace-step-1.5"
+            | "ace-step-1_5"
+            | "ace_step"
+            | "ace_step_1_5"
+            | "ACE-Step/Ace-Step1.5" => Some(Self::AceStep),
             // AudioLDM 2 (Wave 5 candidate, 2026-08-01,
             // `cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Accept the arch
             // tag (`audioldm2` / `audio-ldm-2` / `audio_ldm_2`), the
@@ -3115,6 +3165,10 @@ impl ModelKind {
             Self::MusicGenMedium => "musicgen-medium",
             Self::MusicGenLarge => "musicgen-large",
             Self::AudioGenMedium => "audiogen-medium",
+            Self::MusicGenSmall => "musicgen-small",
+            Self::Qwen2Audio => "qwen2-audio-7b-instruct",
+            Self::VibeVoiceAsr => "vibevoice-asr",
+            Self::AceStep => "ace-step-1.5",
             Self::AudioLdm2 => "audioldm2",
             Self::BsRoformer => "bs-roformer",
         }
@@ -5353,6 +5407,71 @@ pub fn convert_file_licensed(
                  runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
                  (cc-by-nc-4.0 default, NonCommercial fail-closed unless --license overrides)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MusicGenSmall (2026-08-01 Wave 6 residual) ===
+        ModelKind::MusicGenSmall => {
+            let report =
+                models::musicgen_small::convert_musicgen_small_file(input, output, license)?;
+            let notes = vec![format!(
+                "musicgen-small: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Qwen2Audio (2026-08-01 Wave 6 residual) ===
+        ModelKind::Qwen2Audio => {
+            let report = models::qwen2_audio::convert_qwen2_audio_file(input, output, license)?;
+            let notes = vec![format!(
+                "qwen2-audio-7b-instruct: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (apache-2.0 default)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === VibeVoiceAsr (2026-08-01 Wave 6 residual) ===
+        ModelKind::VibeVoiceAsr => {
+            let report = models::vibevoice_asr::convert_vibevoice_asr_file(input, output, license)?;
+            let notes = vec![format!(
+                "vibevoice-asr: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === AceStep (2026-08-01 Wave 6 residual) ===
+        ModelKind::AceStep => {
+            let report = models::ace_step::convert_ace_step_file(input, output, license)?;
+            let notes = vec![format!(
+                "ace-step-1.5: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default — flagship MIT music-gen)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model,

@@ -116,6 +116,20 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # (identical arch, tuned on environmental sounds / SFX). Same T4
     # precedent as sibling MusicGen family. Local convert safe (~3.7 GB).
     "audiogen-medium": ["AudioGen-Medium (`facebook/audiogen-medium`)"],
+    # 2026-08-01 Wave 6 residual: MusicGen-Small (facebook, cc-by-nc-4.0).
+    # 300M smallest of MusicGen family. Same T4 precedent as sibling
+    # MusicGen-Medium/Large. Scale ~5.5 GB = vast.ai handoff.
+    "musicgen-small": ["MusicGen-Small (`facebook/musicgen-small`)"],
+    # 2026-08-01 Wave 6 residual: Qwen2-Audio-7B-Instruct (Alibaba,
+    # apache-2.0). Whisper audio encoder + Qwen2-7B LM = audio-LLM omni.
+    # Scale ~16 GB (5-shard) = vast.ai handoff.
+    "qwen2-audio-7b-instruct": ["Qwen2-Audio-7B-Instruct (`Qwen/Qwen2-Audio-7B-Instruct`)"],
+    # 2026-08-01 Wave 6 residual: VibeVoice-ASR (Microsoft, MIT).
+    # VibeVoice sibling with ASR head. Scale ~16.5 GB (8-shard) = vast.ai.
+    "vibevoice-asr": ["VibeVoice-ASR (`microsoft/VibeVoice-ASR`)"],
+    # 2026-08-01 Wave 6 residual: ACE-Step 1.5 (MIT, flagship music-gen).
+    # Multi-file bundle. Scale ~9.6 GB = vast.ai handoff.
+    "ace-step-1.5": ["ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`)"],
     # Wave 3 owner-signoff publish set (2026-07-28).
     "kyutai-stt-2.6b-en": ["kyutai/stt-2.6b-en"],
     "parakeet-tdt-0.6b-v3": ["nvidia/parakeet-tdt-0.6b-v3"],
@@ -612,6 +626,11 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # (`facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling for
     # SFX / environmental sounds. Sibling file to `musicgen_medium.rs`.
     "audiogen_medium": ["AudioGen-Medium (`facebook/audiogen-medium`)"],
+    # 2026-08-01 Wave 6 residual converters.
+    "musicgen_small": ["MusicGen-Small (`facebook/musicgen-small`)"],
+    "qwen2_audio": ["Qwen2-Audio-7B-Instruct (`Qwen/Qwen2-Audio-7B-Instruct`)"],
+    "vibevoice_asr": ["VibeVoice-ASR (`microsoft/VibeVoice-ASR`)"],
+    "ace_step": ["ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`)"],
     # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
     # (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Doubly-restrictive
     # NonCommercialShareAlike default (NC gate + SA cascade). The

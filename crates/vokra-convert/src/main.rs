@@ -2216,6 +2216,19 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // sounds / SFX. `category = "music"` shared with MusicGen
         // family. Grouped here for the uniform verify shape.
         | ModelKind::AudioGenMedium
+        // 2026-08-01 Wave 6 residual: MusicGen-Small (sibling of
+        // MusicGen-Medium/Large + AudioGen-Medium — shared `musicgen`
+        // arch, `music` category. cc-by-nc-4.0 T4).
+        | ModelKind::MusicGenSmall
+        // 2026-08-01 Wave 6 residual: Qwen2-Audio-7B-Instruct
+        // (audio-LLM omni, apache-2.0, distinct arch `qwen2_audio`).
+        | ModelKind::Qwen2Audio
+        // 2026-08-01 Wave 6 residual: VibeVoice-ASR (VibeVoice sibling
+        // with ASR head, MIT, distinct arch `vibevoice_asr`).
+        | ModelKind::VibeVoiceAsr
+        // 2026-08-01 Wave 6 residual: ACE-Step 1.5 (multi-file MIT
+        // music-gen bundle, distinct arch `ace_step`, category `music`).
+        | ModelKind::AceStep
         // 2026-08-01 Wave 5 music-generation add: AudioLDM 2
         // (`cvssp/audioldm2`, cc-by-nc-sa-4.0). Text-to-audio latent-
         // diffusion generator (Liu et al. 2024 arXiv:2308.05734).

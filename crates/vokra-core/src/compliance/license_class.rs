@@ -896,9 +896,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // (Wave 5 sibling landed 2026-08-01, 3.3B vs medium 1.5B, same
         // cc-by-nc-4.0 weight license per HF cardData
         // `huggingface.co/facebook/musicgen-large` primary source).
-        "musicgen" | "musicgen-medium" | "musicgen-large" | "audiogen-medium" | "audiogen" => {
-            LicenseClass::NonCommercial
-        }
+        "musicgen"
+        | "musicgen-small"
+        | "musicgen-medium"
+        | "musicgen-large"
+        | "audiogen-medium"
+        | "audiogen" => LicenseClass::NonCommercial,
+        // 2026-08-01 Wave 6 residual — permissive audio-LLM / VC-sibling /
+        // multi-file bundle. All apache-2.0 / MIT clean.
+        "qwen2-audio"
+        | "qwen2-audio-7b"
+        | "qwen2-audio-7b-instruct"
+        | "vibevoice-asr"
+        | "ace-step"
+        | "ace-step-1.5"
+        | "ace_step"
+        | "ace-step-1_5" => LicenseClass::Permissive,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike
