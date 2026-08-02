@@ -164,7 +164,11 @@ def _extract_state_dict(raw: Any, sub_name: str) -> dict:
 
         # Speakers file may be a flat {speaker_name: embedding_tensor}
         # or {speaker_name: {"speaker_embedding": tensor, ...}} — handle both.
-        if sub_name == "speakers":
+        # Coqui's canonical layout is the nested form (verified 2026-08-02
+        # against speakers_xtts.pth: 58 speakers × {gpt_cond_latent,
+        # speaker_embedding}). Match the sub_name by prefix so filename
+        # variants like speakers_xtts.pth and speakers.pth both trigger.
+        if sub_name.startswith("speakers"):
             flat: dict = {}
             for k, v in raw.items():
                 import torch

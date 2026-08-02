@@ -82,7 +82,25 @@ pub fn convert_xtts_v2_file(
     // fail-closed on commercial-mode load. Anyone supplying a permissive
     // SPDX override should have primary-source justification captured in
     // `docs/license-audit.md` §3.1 before publish.
+    // CPML is not SPDX-registered so `from_license_str` returns `Unknown`; we
+    // must explicitly pin `NonCommercial` for any input that names the
+    // Coqui Public Model License (any case, w/ or w/o "-1.0.0" suffix).
+    // Wave 9 discovery: passing --license coqui-public-model-license lands
+    // `weight_license=unknown` in provenance, which upload.sh refuses
+    // ("weight licence class `unknown` is unrecognised"). The rule below
+    // reproduces the same fallback path (line 87) for the CPML alias set.
+    let is_cpml = |s: &str| -> bool {
+        let n = s.to_ascii_lowercase();
+        matches!(
+            n.as_str(),
+            "coqui-public-model-license"
+                | "coqui-public-model-license-1.0.0"
+                | "cpml"
+                | "cpml-1.0.0"
+        )
+    };
     let (spdx, class) = match license {
+        Some(s) if !s.is_empty() && is_cpml(s) => (s.to_owned(), LicenseClass::NonCommercial),
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
         _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::NonCommercial),
     };
