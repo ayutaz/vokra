@@ -646,6 +646,19 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "mms-1b-all": [
         "MMS-1B-All (`facebook/mms-1b-all`)"
     ],
+    # 2026-08-02 Wave 10 vast.ai retry — MMS-1B-All base-only publish
+    # variant. Same upstream `facebook/mms-1b-all` weights and same
+    # cc-by-nc-4.0 licence as sibling `mms-1b-all` above; the base-only
+    # variant skips the ~1000-adapter LoRA bank at publish time and
+    # therefore ships a smaller repo, but the §3.1 audit row is shared
+    # (aliasing to the same parent row is the established pattern used
+    # by `mp-senet-dns` vs sibling `mp-senet` and by SepFormer variant
+    # blocks — sibling slugs share the parent row when they share the
+    # upstream weight-distribution licence). Publish still requires
+    # `publish-one.sh --allow-noncommercial` (T4 tier).
+    "mms-1b-all-base": [
+        "MMS-1B-All (`facebook/mms-1b-all`)"
+    ],
     # 2026-08-01 Wave 3 — Amphion NaturalSpeech 3 FACodec (apache-2.0
     # factorized VQ codec). Single HF repo `amphion/naturalspeech3_facodec`
     # bundles 5 `.bin` files; four publish variants (v1 / v2 /
