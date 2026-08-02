@@ -341,6 +341,37 @@ process_one() {
     log "config: (none)"
   fi
 
+  # 3.5. Shard-merge prep (Wave 11 fix): vokra-cli's shard-index converters
+  # refuse .index.json directly ("parse error: safetensors buffer truncated").
+  # For known-sharded slugs, invoke the matching tools/parity/*_prepare_checkpoint.py
+  # to pre-merge shards into a single model.merged.safetensors, then override
+  # input_name so the vokra-cli convert step picks up the merged file.
+  local prep_script=""
+  case "$slug" in
+    musicgen-melody)         prep_script="musicgen_melody_prepare_checkpoint.py" ;;
+    moss-audio-4b-instruct)  prep_script="moss_audio_4b_instruct_prepare_checkpoint.py" ;;
+    moss-audio-8b-instruct)  prep_script="moss_audio_8b_instruct_prepare_checkpoint.py" ;;
+    audioldm2-large)         prep_script="audioldm2_large_prepare_checkpoint.py" ;;
+    qwen2-5-omni-7b)         prep_script="qwen2_5_omni_7b_prepare_checkpoint.py" ;;
+    seamless-m4t-v2-large)   prep_script="seamless_m4t_v2_large_prepare_checkpoint.py" ;;
+  esac
+  if [[ -n "$prep_script" ]] && [[ -f "$VOKRA_ROOT/tools/parity/$prep_script" ]]; then
+    step "prep: tools/parity/$prep_script (shard-merge)"
+    local merged="$snap/model.merged.safetensors"
+    if [[ ! -f "$merged" ]]; then
+      "${uv_cmd[@]}" "$VOKRA_ROOT/tools/parity/$prep_script" \
+        --input-dir "$snap" --output "$merged" \
+        || "${uv_cmd[@]}" "$VOKRA_ROOT/tools/parity/$prep_script" \
+          --local-dir "$snap" --output "$merged"
+    fi
+    if [[ -f "$merged" ]]; then
+      input_name="model.merged.safetensors"
+      log "prep: merged shards → $merged ($(du -h "$merged" | cut -f1))"
+    else
+      log "WARN: prep script did not produce $merged — falling back to $input_name"
+    fi
+  fi
+
   # 4. Convert to GGUF.
   step "vokra-cli convert --model $model_kind"
   local gguf="$staging/model.gguf"
