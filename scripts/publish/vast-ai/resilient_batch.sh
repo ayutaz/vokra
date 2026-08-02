@@ -90,8 +90,8 @@ EOF
 TARGETS=(
   "musicgen-melody|facebook/musicgen-melody|musicgen-melody|cc-by-nc-4.0|--allow-noncommercial|musicgen family"
   "mms-1b-all-base|facebook/mms-1b-all|mms-1b-all|cc-by-nc-4.0|--allow-noncommercial|BASE only, adapters skipped"
-  "moss-audio-4b-instruct|OpenMOSS-Team/MOSS-Audio-4B-Instruct|moss-audio|apache-2.0||"
-  "moss-audio-8b-instruct|OpenMOSS-Team/MOSS-Audio-8B-Instruct|moss-audio|apache-2.0||"
+  "moss-audio-4b-instruct|OpenMOSS-Team/MOSS-Audio-4B-Instruct|moss-audio-4b-instruct|apache-2.0||"
+  "moss-audio-8b-instruct|OpenMOSS-Team/MOSS-Audio-8B-Instruct|moss-audio-8b-instruct|apache-2.0||"
   "audioldm2-large|cvssp/audioldm2-large|audioldm2-large|cc-by-nc-sa-4.0|--allow-noncommercial|8-submodule composite"
   "qwen2-5-omni-7b|Qwen/Qwen2.5-Omni-7B|qwen2-5-omni|apache-2.0||sharded"
   "seamless-m4t-v2-large|facebook/seamless-m4t-v2-large|seamless-m4t-v2|cc-by-nc-4.0|--allow-noncommercial|prefer .safetensors, drop .pt duplicates"
