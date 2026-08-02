@@ -358,11 +358,23 @@ process_one() {
   if [[ -n "$prep_script" ]] && [[ -f "$VOKRA_ROOT/tools/parity/$prep_script" ]]; then
     step "prep: tools/parity/$prep_script (shard-merge)"
     local merged="$snap/model.merged.safetensors"
+    # Re-derive uv command here (uv_cmd inside fetch_one is out of scope).
+    local prep_uv_cwd="$VOKRA_ROOT/tools/parity"
+    local -a prep_uv_cmd
+    if [[ -f "$prep_uv_cwd/pyproject.toml" ]]; then
+      prep_uv_cmd=(uv run python)
+    else
+      prep_uv_cwd="$VOKRA_ROOT"
+      prep_uv_cmd=(uv run --with huggingface_hub --with safetensors --with torch --with numpy python)
+    fi
     if [[ ! -f "$merged" ]]; then
-      "${uv_cmd[@]}" "$VOKRA_ROOT/tools/parity/$prep_script" \
-        --input-dir "$snap" --output "$merged" \
-        || "${uv_cmd[@]}" "$VOKRA_ROOT/tools/parity/$prep_script" \
-          --local-dir "$snap" --output "$merged"
+      (
+        cd "$prep_uv_cwd"
+        "${prep_uv_cmd[@]}" "$VOKRA_ROOT/tools/parity/$prep_script" \
+          --input-dir "$snap" --output "$merged" \
+          || "${prep_uv_cmd[@]}" "$VOKRA_ROOT/tools/parity/$prep_script" \
+            --local-dir "$snap" --output "$merged"
+      )
     fi
     if [[ -f "$merged" ]]; then
       input_name="model.merged.safetensors"
