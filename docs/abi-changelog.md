@@ -228,6 +228,54 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-03 — 1.0.0-rc.1-dev (GGUF `MAX_TENSOR_DIMS` raised 4 → 8 for multimodal Conv3d weights — Rust surface only, advisory)
+
+Additive **Rust public API** + **GGUF wire semantics** entry: the loader
+constant `vokra_core::gguf::tensor::MAX_TENSOR_DIMS` is raised from `4`
+to `8`. Both the reader (`gguf::reader`) and both writer paths
+(`GgufBuilder::add_tensor` and `GgufStreamWriter::begin`) now accept
+tensors of rank ≤ 8; ranks 9+ are still rejected as
+`GgufError::TooManyDimensions`. The GGUF wire format itself is uncapped
+(`n_dims: u32` then `dims[n_dims]: u64`) — this constant is a Vokra-side
+sanity guard, and the bump reflects the largest rank any planned model
+weight uses (multimodal vision Conv3d = 5-D). The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef) is **untouched**
+(`MAX_TENSOR_DIMS` is a Rust-side `pub const`, not cbindgen-exported;
+`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: Qwen2.5-Omni's thinker subsumes the Qwen2.5-VL vision
+path, whose `visual.patch_embed.proj.weight` is an `nn.Conv3d`
+`[embed_dim=1280, in_channels=3, temporal_patch=2, spatial_patch=14,
+spatial_patch=14]` — a 5-D tensor the previous `MAX_TENSOR_DIMS = 4`
+cap rejected on the vast.ai converter path. Raising the cap unblocks
+*conversion + load* of any current-day multimodal weight; forward
+inference on the 5-D tensor still requires a downstream `Conv3d` op WP
+(none exists in vokra-ops today, so a rank-5 tensor loads as opaque
+bytes reachable via `GgufFile::tensor_data(name)` — honest per FR-EX-08).
+
+**Interop caveat**: GGUFs Vokra emits with rank > 4 will NOT round-trip
+through stock llama.cpp (its `GGML_MAX_DIMS = 4` gate rejects them).
+This is acceptable because Vokra's `vokra.*` metadata prefix already
+isolates its GGUFs from the llama.cpp namespace (CLAUDE.md §3).
+
+**Files touched**:
+- `crates/vokra-core/src/gguf/tensor.rs` — const bump + rustdoc.
+- `crates/vokra-core/src/gguf/writer.rs` — negative tests bumped from
+  `TooManyDimensions(5)` to `(9)`; two new positive round-trip tests
+  (`builder_accepts_5d_conv3d_shape`, `stream_writer_accepts_5d_conv3d_shape`)
+  exercise the 5-D `[2, 3, 2, 2, 2]` F32 shape end-to-end.
+- `crates/vokra-core/src/gguf/reader.rs` — negative test bumped
+  (n_dims = 5 → 9).
+- `crates/vokra-core/src/gguf/mod.rs` — `TooManyDimensions` variant
+  rustdoc updated.
+- `crates/vokra-models/src/f0/rmvpe.rs` — comments referring to
+  "impossible on the load path because cap = 4" updated; the RMVPE
+  rank-5 rejection arm is now a real code path (RMVPE has no 5D
+  weight, so a rogue converter would be loudly refused).
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-core` and
+`vokra-models`; root `Cargo.lock` unchanged.
+
 ### 2026-07-30 — 1.0.0-rc.1-dev (FSMN-VAD backend — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the FSMN-VAD (FunASR

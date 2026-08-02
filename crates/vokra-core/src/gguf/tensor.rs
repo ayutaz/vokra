@@ -26,9 +26,21 @@ use alloc::{string::String, vec::Vec};
 
 /// Maximum tensor rank accepted by the loader.
 ///
-/// The GGUF spec states tensors currently have at most 4 dimensions; a
-/// declaration exceeding this is rejected as malformed input (NFR-RL-07).
-pub const MAX_TENSOR_DIMS: usize = 4;
+/// The GGUF wire format itself is **uncapped** (spec: `n_dims: u32` then
+/// `dims[n_dims]: u64`) — this constant is a Vokra-side sanity guard,
+/// rejecting anything larger as malformed input (NFR-RL-07).
+///
+/// Raised from 4 to 8 on 2026-08-03 to admit multimodal vision Conv3d
+/// weights (Qwen2.5-VL / Qwen2.5-Omni thinker `visual.patch_embed.proj.weight`
+/// is 5-D `[embed_dim, in_channels, temporal_patch, spatial_patch,
+/// spatial_patch]`). 8 leaves headroom for any future speech tensor with
+/// per-head / per-codebook axes; the ggml upstream MAX_DIMS discussion
+/// converges on the same figure. GGUFs Vokra emits with rank > 4 will
+/// **not** round-trip through stock llama.cpp (its `GGML_MAX_DIMS = 4`
+/// gate rejects them) — this is acceptable because Vokra's `vokra.*`
+/// metadata prefix already isolates its GGUFs from the llama.cpp
+/// namespace (CLAUDE.md §3).
+pub const MAX_TENSOR_DIMS: usize = 8;
 
 /// K-quant super-block size in elements (`QK_K` in ggml `k_quants.h`).
 ///

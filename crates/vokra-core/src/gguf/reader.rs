@@ -943,7 +943,10 @@ mod tests {
 
     #[test]
     fn too_many_dimensions_is_rejected_by_reader() {
-        // GGUF caps tensor rank at MAX_TENSOR_DIMS (4); n_dims = 5 is malformed.
+        // Vokra caps tensor rank at MAX_TENSOR_DIMS (8, raised 2026-08-03 to
+        // admit Qwen2.5-Omni vision Conv3d 5-D weights); n_dims = 9 is
+        // malformed. The wire format itself is uncapped (u32 n_dims), so
+        // this rejection is a Vokra-side sanity guard (NFR-RL-07).
         let mut v = Vec::new();
         v.extend_from_slice(b"GGUF");
         v.extend_from_slice(&3u32.to_le_bytes());
@@ -951,15 +954,15 @@ mod tests {
         v.extend_from_slice(&0u64.to_le_bytes()); // kv_count = 0
         v.extend_from_slice(&1u64.to_le_bytes()); // name length
         v.extend_from_slice(b"t");
-        v.extend_from_slice(&5u32.to_le_bytes()); // n_dims = 5 (> 4)
-        for _ in 0..5 {
-            v.extend_from_slice(&1u64.to_le_bytes()); // five dims of 1
+        v.extend_from_slice(&9u32.to_le_bytes()); // n_dims = 9 (> 8 cap)
+        for _ in 0..9 {
+            v.extend_from_slice(&1u64.to_le_bytes()); // nine dims of 1
         }
         v.extend_from_slice(&0u32.to_le_bytes()); // dtype F32
         v.extend_from_slice(&0u64.to_le_bytes()); // offset
         assert!(matches!(
             GgufFile::parse(v),
-            Err(GgufError::TooManyDimensions(5))
+            Err(GgufError::TooManyDimensions(9))
         ));
     }
 

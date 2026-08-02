@@ -144,6 +144,9 @@ pub enum GgufError {
     /// present in the file.
     MissingTensor(String),
     /// A tensor declared more than [`tensor::MAX_TENSOR_DIMS`] dimensions.
+    /// (Cap raised 2026-08-03 from 4 to 8 for multimodal Conv3d weights;
+    /// the GGUF wire format itself is uncapped, this is a Vokra sanity
+    /// guard.)
     TooManyDimensions(usize),
     /// Two tensors shared the same name.
     DuplicateTensor(String),

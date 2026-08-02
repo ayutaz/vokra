@@ -591,9 +591,11 @@ fn validate_tensor_shape(name: &str, dims: &[usize]) -> Result<(), VokraError> {
     //         encoder / decoder blocks under unrecognized parent
     //         module names).
     // Ranks 5+ are rejected loudly. Note: GGUF caps tensor dimensions
-    // at `MAX_TENSOR_DIMS = 4`, so a rank-5 tensor cannot exist on the
-    // load path today — this arm is defensive against a hypothetical
-    // GGUF format bump or a bespoke reader that widens the cap.
+    // at `MAX_TENSOR_DIMS` (raised to 8 on 2026-08-03 for Qwen2.5-Omni
+    // vision Conv3d 5-D weights), so a rank-5+ tensor CAN now reach
+    // this arm from a rogue converter — the loud rejection here is the
+    // RMVPE-specific shape check (upstream RMVPE has no 5D weight),
+    // not a defensive stub.
     if name.ends_with(".weight") {
         if !(1..=4).contains(&dims.len()) {
             return Err(VokraError::ModelLoad(format!(
@@ -1662,11 +1664,12 @@ mod tests {
     /// certainly indicates a converter accidentally merging `[gamma,
     /// beta]` into one tensor.
     ///
-    /// (Rank ≥ 5 is impossible on the GGUF load path because
-    /// `vokra_core::gguf::tensor::MAX_TENSOR_DIMS = 4` caps the GGUF
-    /// header at 4 axes. The rank-5 branch of `validate_tensor_shape`
-    /// is defense-in-depth against a hypothetical GGUF cap bump and is
-    /// covered by the pure-function `validate_tensor_shape_matrix`
+    /// (Rank ≥ 5 CAN reach the GGUF load path since 2026-08-03 when
+    /// `vokra_core::gguf::tensor::MAX_TENSOR_DIMS` was raised from 4 to
+    /// 8 for Qwen2.5-Omni vision Conv3d 5-D weights. Upstream RMVPE
+    /// itself has no 5D weight, so the rank-5 branch of
+    /// `validate_tensor_shape` is now a *real* rejection surface — it
+    /// stays covered by the pure-function `validate_tensor_shape_matrix`
     /// test below.)
     #[test]
     fn from_gguf_rejects_bn_weight_wrong_rank() {
@@ -1776,9 +1779,10 @@ mod tests {
     /// Exercises: canonical rank happy path, `.conv{N}.` / `.bn{N}.`
     /// indexed-infix variants (fork naming), unrecognized-suffix fork
     /// tolerance, and the every-loud-error branch of the validator.
-    /// Note: the rank ≥ 5 arm is defensive against a hypothetical GGUF
-    /// `MAX_TENSOR_DIMS` bump — GGUF's writer today caps at 4, so a
-    /// rank-5 tensor cannot land on the load path via `from_gguf`.
+    /// Note: the rank ≥ 5 arm covers a real code path since the
+    /// 2026-08-03 GGUF `MAX_TENSOR_DIMS` bump (4 → 8) admits Conv3d
+    /// weights — a rogue converter emitting a rank-5 RMVPE tensor
+    /// would now reach `from_gguf`, and this arm loudly rejects it.
     #[test]
     fn validate_tensor_shape_matrix() {
         // Correct-rank happy path — every recognized name pattern
@@ -1847,8 +1851,9 @@ mod tests {
             validate_tensor_shape("unet.encoder.block0.bn.running_var", &[4, 1]),
             Err(VokraError::ModelLoad(_))
         ));
-        // Rank-5 weight (defense-in-depth arm — impossible via GGUF
-        // load path today because `MAX_TENSOR_DIMS = 4`).
+        // Rank-5 weight (real code path since 2026-08-03
+        // `MAX_TENSOR_DIMS` bump 4 → 8; RMVPE has no 5D weight so
+        // this arm loudly rejects).
         assert!(matches!(
             validate_tensor_shape("head.weight", &[2, 2, 2, 2, 2]),
             Err(VokraError::ModelLoad(_))

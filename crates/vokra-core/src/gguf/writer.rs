@@ -740,13 +740,55 @@ mod tests {
 
     #[test]
     fn too_many_dimensions_is_rejected() {
-        // The builder caps rank at MAX_TENSOR_DIMS (4); five dims is malformed
-        // and is rejected before the payload-length check runs.
+        // The builder caps rank at MAX_TENSOR_DIMS (8, raised 2026-08-03 to
+        // admit Qwen2.5-Omni vision Conv3d 5-D weights); nine dims is
+        // malformed and is rejected before the payload-length check runs.
         let mut b = GgufBuilder::new();
         let err = b
-            .add_tensor("t", GgmlType::F32, vec![1, 1, 1, 1, 1], vec![0u8; 4])
+            .add_tensor("t", GgmlType::F32, vec![1u64; 9], vec![0u8; 4])
             .unwrap_err();
-        assert!(matches!(err, GgufError::TooManyDimensions(5)));
+        assert!(matches!(err, GgufError::TooManyDimensions(9)));
+    }
+
+    #[test]
+    fn builder_accepts_5d_conv3d_shape() {
+        // Qwen2.5-Omni thinker `visual.patch_embed.proj.weight` is a Conv3d
+        // weight tensor of shape `[embed_dim, in_channels, temporal_patch,
+        // spatial_patch, spatial_patch]`. Round-trip through GgufBuilder →
+        // GgufFile::parse and verify shape + payload byte-identity.
+        //
+        // Uses tiny axes (2×3×2×2×2 = 48 F32 elements = 192 bytes) so the
+        // test is fast; the real Qwen weight is [1280, 3, 2, 14, 14] but
+        // shape logic is rank-invariant, not size-invariant.
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "qwen2.5-omni");
+        let dims: Vec<u64> = vec![2, 3, 2, 2, 2];
+        let elems: u64 = dims.iter().copied().product();
+        assert_eq!(elems, 48);
+        let payload: Vec<u8> = (0..(elems * 4) as u8).collect();
+        let first_byte = payload[0];
+        let last_byte = *payload.last().unwrap();
+        b.add_tensor(
+            "thinker.visual.patch_embed.proj.weight",
+            GgmlType::F32,
+            dims.clone(),
+            payload.clone(),
+        )
+        .expect("5-D tensor must be accepted after MAX_TENSOR_DIMS bump");
+
+        let bytes = b.to_bytes().expect("serialize");
+        let file = GgufFile::parse(bytes).expect("parse");
+        assert_eq!(file.tensors().len(), 1);
+        let info = &file.tensors()[0];
+        assert_eq!(info.name, "thinker.visual.patch_embed.proj.weight");
+        assert_eq!(info.dimensions, dims);
+        let read_back = file
+            .tensor_data("thinker.visual.patch_embed.proj.weight")
+            .expect("tensor bytes");
+        assert_eq!(read_back.len(), payload.len());
+        assert_eq!(read_back[0], first_byte);
+        assert_eq!(*read_back.last().unwrap(), last_byte);
+        assert_eq!(read_back, payload.as_slice());
     }
 
     // --- GgufStreamWriter -------------------------------------------------
@@ -910,9 +952,41 @@ mod tests {
         let overlong = vec![GgufTensorDecl {
             name: "t".into(),
             dtype: GgmlType::F32,
-            dimensions: vec![1, 1, 1, 1, 1],
+            dimensions: vec![1u64; 9],
         }];
         let err = GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &overlong).unwrap_err();
-        assert!(matches!(err, GgufError::TooManyDimensions(5)), "{err}");
+        assert!(matches!(err, GgufError::TooManyDimensions(9)), "{err}");
+    }
+
+    #[test]
+    fn stream_writer_accepts_5d_conv3d_shape() {
+        // Mirror of `builder_accepts_5d_conv3d_shape` on the streaming path
+        // (the site vast.ai big-model converters — Voxtral, Qwen2.5-Omni —
+        // actually hit). Guarantees the offset arithmetic in `begin()` does
+        // not assume rank ≤ 4 for the 5-D Conv3d weight after the
+        // MAX_TENSOR_DIMS bump. Byte-identity check across `tensor_data`
+        // proves the payload survived the streamed write.
+        let dims: Vec<u64> = vec![2, 3, 2, 2, 2];
+        let elems: u64 = dims.iter().copied().product();
+        let payload: Vec<u8> = (0..(elems * 4) as u8).collect();
+        let decls = vec![GgufTensorDecl {
+            name: "thinker.visual.patch_embed.proj.weight".into(),
+            dtype: GgmlType::F32,
+            dimensions: dims.clone(),
+        }];
+
+        let mut w = GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &decls)
+            .expect("5-D decl must be accepted after MAX_TENSOR_DIMS bump");
+        w.write_tensor("thinker.visual.patch_embed.proj.weight", &payload)
+            .expect("write payload");
+        let bytes = w.finish().expect("finish");
+
+        let file = GgufFile::parse(bytes).expect("parse");
+        assert_eq!(file.tensors().len(), 1);
+        assert_eq!(file.tensors()[0].dimensions, dims);
+        let read_back = file
+            .tensor_data("thinker.visual.patch_embed.proj.weight")
+            .expect("tensor bytes");
+        assert_eq!(read_back, payload.as_slice());
     }
 }
