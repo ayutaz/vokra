@@ -132,8 +132,8 @@ vocab.json
 special_tokens_map.json
 *.safetensors
 --
-adapter_*/*
-adapter_*.safetensors
+adapter.*.safetensors
+adapter*.safetensors
 *.bin
 *.msgpack
 EOP
