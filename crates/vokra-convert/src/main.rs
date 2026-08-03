@@ -2486,6 +2486,42 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  license={license} weight_license={class}"
             );
         }
+        // coverage-audit-2026-08-03 Wave A: NKF-AEC — like the BF16
+        // pass-through fleet above, but the upstream is GitHub-only so
+        // the provenance key is `vokra.provenance.upstream_url` (rather
+        // than `upstream_hf`). Kept as its own arm to surface the
+        // correct key in the CLI verify output without silently
+        // falling back to `<none>` for a key that will never exist.
+        ModelKind::NkfAec => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
     }
     Ok(())
 }

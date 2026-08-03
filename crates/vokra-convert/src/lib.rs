@@ -1008,6 +1008,27 @@ pub enum ModelKind {
     /// verbatim under its upstream safetensors name. Provenance =
     /// **apache-2.0** (Permissive).
     Neucodec,
+    /// **fjiang9/NKF-AEC** (Neural Kalman Filter AEC) safetensors
+    /// checkpoint (coverage-audit-2026-08-03 Wave A). Category =
+    /// `aec`. Yang et al. ICASSP 2023 arXiv:2207.11388 — a
+    /// low-complexity neural echo canceller (5.3 KB `.pt`). The
+    /// converter is a *neural* alternative sibling to the algorithmic
+    /// M4-03 `vokra_aec_*` (SpeexDSP / WebRTC AEC3 Rust port), not a
+    /// replacement — the audit places both AEC families side by side
+    /// so downstream users can choose. Upstream is GitHub-only (no HF
+    /// mirror) so provenance is stamped as
+    /// `vokra.provenance.upstream_url = github.com/fjiang9/NKF-AEC`.
+    /// The upstream release ships torch pickle `.pt`, so callers
+    /// pre-flatten it to safetensors offline via
+    /// `tools/parity/nkf_aec_prepare_checkpoint.py` (the DFN3 / DAC /
+    /// Kokoro pickle-bridge pattern). BF16 pass-through skeleton —
+    /// every F32 / F16 / BF16 tensor passes through verbatim under
+    /// its upstream state-dict key; the runtime binding
+    /// (native GEMV forward — the ticket's "5.3 KB ゆえ single-pass
+    /// GEMV で完結" note) is deferred to owner sign-off in
+    /// `docs/license-audit.md §3.1`. Provenance = **MIT**
+    /// (Permissive — `Copyright (c) 2022 Fei Jiang`).
+    NkfAec,
     /// SpeechBrain **spkrec-ecapa-voxceleb** (ECAPA-TDNN) speaker
     /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
     /// 2026-07-28). Category = `speaker`. TDNN-based speaker
@@ -2838,6 +2859,12 @@ impl ModelKind {
             | "distill_neucodec"
             | "distill-neu-codec"
             | "neuphonic/distill-neucodec" => Some(Self::Neucodec),
+            // coverage-audit-2026-08-03 Wave A: NKF-AEC family. Accept
+            // the arch tag (underscore == the `vokra.model.arch` string
+            // the converter stamps), the CLI-friendly hyphenated
+            // spelling, and the canonical GitHub `<user>/<repo>`
+            // release id (no HF mirror ships today).
+            "nkf-aec" | "nkf_aec" | "fjiang9/nkf-aec" | "fjiang9/NKF-AEC" => Some(Self::NkfAec),
             "ecapa-tdnn"
             | "ecapa_tdnn"
             | "spkrec-ecapa-voxceleb"
@@ -3833,6 +3860,7 @@ impl ModelKind {
             Self::XyTokenizer => "xy-tokenizer",
             Self::Bicodec => "bicodec",
             Self::Neucodec => "neucodec",
+            Self::NkfAec => "nkf-aec",
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
             Self::Speaker3d => "speaker-3d",
@@ -5414,6 +5442,31 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Neucodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::NkfAec => {
+            // coverage-audit-2026-08-03 Wave A: pass every F32 / F16 /
+            // BF16 tensor through verbatim (the flattened safetensors
+            // from `tools/parity/nkf_aec_prepare_checkpoint.py` — the
+            // upstream .pt is torch pickle) and stamp `vokra.model.*`
+            // (arch = "nkf_aec", name = "nkf-aec", category = "aec") +
+            // `vokra.provenance.upstream_url = github.com/fjiang9/NKF-AEC`
+            // (GitHub-only release, no HF mirror) + the standard
+            // `vokra.provenance.{weight_license,license,model_id,source}`
+            // chunk via `stamp_provenance`. Provenance = **MIT**
+            // (Permissive — `Copyright (c) 2022 Fei Jiang`).
+            let report = models::nkf_aec::convert_nkf_aec_file(input, output, license)?;
+            let notes = vec![format!(
+                "nkf-aec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::NkfAec,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -8491,6 +8544,11 @@ pub use models::speaker_3d::{Speaker3dReport, convert_speaker_3d_file};
 // future landing; consumers today use CAM++ (`speaker_encode`)
 // under Apache-2.0.
 pub use models::titanet::{TitaNetReport, convert_titanet_file};
+// coverage-audit-2026-08-03 Wave A: fjiang9/NKF-AEC (MIT). GitHub-only
+// release (no HF mirror) so provenance stamps `upstream_url` rather
+// than `upstream_hf`. File-based entry mirroring the speaker_3d /
+// ecapa_tdnn re-export pattern.
+pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)

@@ -177,6 +177,17 @@ pub mod meanvc;
 pub(crate) mod mimi;
 pub(crate) mod moshi;
 pub mod neucodec;
+// coverage-audit-2026-08-03 Wave A: fjiang9/NKF-AEC (MIT). Category:
+// aec. Neural Kalman Filter AEC (Yang et al. ICASSP 2023,
+// arXiv:2207.11388). Small 5.3 KB `.pt` — a *neural* echo canceller
+// alongside the existing algorithmic M4-03 `vokra_aec_*` (SpeexDSP /
+// WebRTC AEC3 Rust port); the two are siblings, not replacements.
+// Upstream is GitHub-only (no HF mirror) so provenance is stamped as
+// `vokra.provenance.upstream_url = github.com/fjiang9/NKF-AEC`.
+// F32 / F16 / BF16 pass through verbatim following the speaker_3d /
+// ecapa_tdnn / qwen3_tts / vibevoice pattern; real-weight parity is
+// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+pub mod nkf_aec;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3 — English
 // ASR (FastConformer encoder + TDT decoder). CC-BY 4.0 weight
 // (AttributionRequired). Every F32 / F16 tensor passes through
