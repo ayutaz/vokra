@@ -861,6 +861,15 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # the publish path so upload.sh resolves both slugs to APPROVED.
     "bark": ["Bark (Suno)"],
     "bark-small": ["Bark (small) (`suno/bark-small`)"],
+    # coverage-audit 2026-08-03 Wave A top-5: 5 Permissive rows landed together
+    # with converter wire-up (cc66fd3 nkf-aec + follow-up 4 model). Each entry
+    # closes the REPO_TO_SIGNOFF_ROWS loop so `upload.sh --repo <slug>`
+    # resolves from UNKNOWN_REPO to APPROVED against the pre-signed §3.1 row.
+    "nkf-aec": ["NKF-AEC (`fjiang9/NKF-AEC`)"],
+    "rnnoise-v0.2": ["RNNoise v0.2 (`xiph/rnnoise`)"],
+    "nsnet2": ["NSNet2 (`microsoft/DNS-Challenge NSNet2-baseline`)"],
+    "dnsmos-p808-p835": ["DNSMOS P.808 + P.835 (`microsoft/DNS-Challenge DNSMOS`)"],
+    "frcrn": ["FRCRN (`alibabasglab/FRCRN`)"],
 }
 
 # ---- converter → row(s) ----------------------------------------------------

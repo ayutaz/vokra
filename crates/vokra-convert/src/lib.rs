@@ -1029,6 +1029,78 @@ pub enum ModelKind {
     /// `docs/license-audit.md §3.1`. Provenance = **MIT**
     /// (Permissive — `Copyright (c) 2022 Fei Jiang`).
     NkfAec,
+    /// **Xiph RNNoise v0.2** weight blob (coverage-audit 2026-08-03
+    /// Wave A ticket). Category = `denoise`. Real-time noise
+    /// reduction — a compact GRU stack (`input_dense` 42→24 →
+    /// `vad_gru` / `noise_gru` / `denoise_gru` → `denoise_output`
+    /// 96→22, plus a `vad_output` 24→1 auxiliary head) over 22-band
+    /// Bark filterbank features (Valin 2018, arXiv:1709.08243).
+    /// **Distinct arch tag from [`Self::Denoise`]** (DeepFilterNet3):
+    /// DFN3 is complex-Conv + ERB deep-filtering + `vokra.denoise.*`,
+    /// RNNoise is tiny-GRU + Bark + `vokra.rnnoise.*` (`ARCH =
+    /// "rnnoise"`); silently sharing the arch tag would mis-route the
+    /// runtime dispatch (a DFN3 loader would try to interpret
+    /// RNNoise's `input_dense` as `enc_conv0`). Provenance =
+    /// **BSD-3-Clause** (Permissive — `github.com/xiph/rnnoise/blob/
+    /// main/COPYING`). Upstream ships as a ~90 KB C-array blob
+    /// (`weights_blob_9.bin` in the v0.2 GitHub Release tarball) —
+    /// `tools/parity/rnnoise_prepare_checkpoint.py` flattens it to
+    /// safetensors before entering this converter (mirror of the
+    /// DAC / DFN3 / CSM prepared-checkpoint contract; no C / Python
+    /// enters the runtime, NFR-DS-02). BF16 pass-through skeleton —
+    /// every F32 / F16 / BF16 tensor passes through verbatim; the
+    /// runtime binding + real-weight parity are deferred to owner
+    /// (docs/license-audit.md §3.1 sign-off queue). Convert with
+    /// `convert_file(ModelKind::Rnnoise, …)`.
+    Rnnoise,
+    /// Microsoft **NSNet2** noise-suppression baseline (Coverage-audit
+    /// 2026-08-03 Wave A ticket). Category = `enhancement`. Distinct
+    /// arch tag from `denoise` (DeepFilterNet3) — NSNet2 is a 2-layer
+    /// GRU + 3-Linear mask predictor over 257-bin STFT log-magnitude
+    /// (`nsnet2-20ms-baseline.onnx`, ~2 MB), whereas DFN3 uses an ERB
+    /// analysis / synthesis pair around a convolutional recurrent
+    /// network. The upstream is ONNX-only and lives on GitHub
+    /// (`github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline`,
+    /// not HuggingFace); `tools/parity/nsnet2_prepare_checkpoint.py`
+    /// bridges ONNX → safetensors so this converter never links ONNX
+    /// (FR-LD-05, NFR-DS-02). BF16 pass-through skeleton — every
+    /// F32 / F16 / BF16 tensor passes through verbatim under its
+    /// upstream initializer name. Provenance = **MIT** (Permissive).
+    Nsnet2,
+    /// Microsoft **DNSMOS P.808 + P.835** MOS predictor bundle (coverage-
+    /// audit Wave A ticket `dnsmos-p808-p835`, 2026-08-03): a **prepared**
+    /// safetensors (from `tools/parity/dnsmos_prepare_checkpoint.py` — the
+    /// upstream release is two ONNX checkpoints
+    /// `github.com/microsoft/DNS-Challenge/tree/master/DNSMOS/` =
+    /// `model_v8.onnx` (P.808) + `sig_bak_ovr.onnx` (P.835)) whose tensor
+    /// names carry the `p808.` / `p835.` prefix identifying the sub-model
+    /// each tensor belongs to. Both sub-models land in a single GGUF —
+    /// bundle option (a) in the ticket §Converter ("2 ONNX を単一 GGUF に
+    /// merge、bundle metadata で variant tag"). Every F32 tensor binds
+    /// verbatim under its prefixed name; the `vokra.dnsmos.*` chunk
+    /// group carries the bundle inventory and the two upstream
+    /// checkpoint filenames for auditability. MIT weight + code
+    /// (`microsoft/DNS-Challenge/LICENSE`, verified 2026-08-03). The
+    /// runtime binder lives in the `vokra-eval` crate
+    /// (`vokra_eval::dnsmos::{p808_score, p835_score}` — follow-up CC
+    /// ticket, not implemented by this converter).
+    Dnsmos,
+    /// **FRCRN** — Frequency Recurrent Convolutional Recurrent Network
+    /// (Zhao et al. ICASSP 2022, `arXiv:2206.07293`) safetensors
+    /// checkpoint (coverage-audit wave-a, 2026-08-03). Category =
+    /// `denoise`. Monaural speech-enhancement model with a Complex-
+    /// valued U-Net + frequency-recurrent LSTM, distributed from
+    /// `github.com/alibabasglab/FRCRN` and mirrored in the
+    /// ClearerVoice-Studio pipeline. BF16 pass-through skeleton —
+    /// every F32 / F16 / BF16 tensor passes through verbatim under
+    /// its upstream safetensors name. Provenance = **apache-2.0**
+    /// (Permissive). Distinct arch tag from
+    /// [`ModelKind::Denoise`] (DeepFilterNet3) because the topologies
+    /// are unrelated (Complex U-Net + freq-recurrent LSTM vs the DFN3
+    /// ERB / DF-net stack); silently aliasing would misroute the
+    /// runtime dispatch. Convert with [`convert_frcrn_file`] (or the
+    /// generic `convert_file` / `convert_file_licensed`).
+    Frcrn,
     /// SpeechBrain **spkrec-ecapa-voxceleb** (ECAPA-TDNN) speaker
     /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
     /// 2026-07-28). Category = `speaker`. TDNN-based speaker
@@ -2865,6 +2937,43 @@ impl ModelKind {
             // spelling, and the canonical GitHub `<user>/<repo>`
             // release id (no HF mirror ships today).
             "nkf-aec" | "nkf_aec" | "fjiang9/nkf-aec" | "fjiang9/NKF-AEC" => Some(Self::NkfAec),
+            // Coverage-audit 2026-08-03 Wave A: Xiph RNNoise v0.2.
+            // Accept the canonical short arch tag, the versioned publish
+            // slug (matches `huggingface.co/vokra/rnnoise-v0.2`), and the
+            // upstream `xiph/rnnoise` GitHub-flavour id. Every spelling
+            // resolves to the same `Rnnoise` variant today; a future
+            // v0.3 would either bump the publish slug in place (still
+            // this variant) or introduce a distinct `RnnoiseV03` when
+            // the tensor topology reshapes.
+            "rnnoise" | "rnnoise-v0.2" | "rnnoise-v0_2" | "xiph/rnnoise" => Some(Self::Rnnoise),
+            // Microsoft NSNet2 NR baseline (Coverage-audit 2026-08-03 Wave
+            // A). Accept the canonical arch tag, the release id
+            // (with-baseline suffix + the on-disk ONNX filename stem), and
+            // the "microsoft/nsnet2" org-prefixed alias the ticket lists.
+            "nsnet2"
+            | "nsnet2-baseline"
+            | "nsnet2-20ms"
+            | "nsnet2-20ms-baseline"
+            | "microsoft/nsnet2"
+            | "microsoft/nsnet2-baseline" => Some(Self::Nsnet2),
+            // Microsoft DNSMOS bundle (coverage-audit Wave A,
+            // 2026-08-03). Accept the short arch tag, the canonical
+            // bundle SKU (P.808 + P.835), the underscore variant, and
+            // the `microsoft/dnsmos` slug the CLI/orchestrator uses.
+            "dnsmos" | "dnsmos-p808-p835" | "dnsmos_p808_p835" | "microsoft/dnsmos" => {
+                Some(Self::Dnsmos)
+            }
+            // coverage-audit wave-a (2026-08-03): FRCRN speech
+            // enhancement. Accept the arch tag, the ClearerVoice-Studio
+            // release id (dnsmos-style path), the original GitHub
+            // repo slug, and the model-scope path used by the
+            // ClearerVoice-Studio download logic. Every spelling routes
+            // to the same Apache-2.0 Complex U-Net + freq-recurrent
+            // LSTM checkpoint.
+            "frcrn"
+            | "alibabasglab/frcrn"
+            | "clearervoice-studio/frcrn"
+            | "modelscope/clearervoice-studio-frcrn" => Some(Self::Frcrn),
             "ecapa-tdnn"
             | "ecapa_tdnn"
             | "spkrec-ecapa-voxceleb"
@@ -3861,6 +3970,18 @@ impl ModelKind {
             Self::Bicodec => "bicodec",
             Self::Neucodec => "neucodec",
             Self::NkfAec => "nkf-aec",
+            // Coverage-audit 2026-08-03 Wave A: canonical CLI slug is
+            // the versioned form (matches the `huggingface.co/vokra/
+            // rnnoise-v0.2` publish repo). The arch tag stamped in
+            // `vokra.model.arch` (`"rnnoise"` — see
+            // `models::rnnoise::ARCH`) is the version-neutral short
+            // form so a future v0.3 GGUF with the same topology stays
+            // classifier-compatible.
+            Self::Rnnoise => "rnnoise-v0.2",
+            Self::Nsnet2 => "nsnet2",
+            Self::Dnsmos => "dnsmos-p808-p835",
+            // coverage-audit wave-a (2026-08-03): FRCRN speech enhancement.
+            Self::Frcrn => "frcrn",
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
             Self::Speaker3d => "speaker-3d",
@@ -5467,6 +5588,99 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::NkfAec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // Coverage-audit 2026-08-03 Wave A: Xiph RNNoise v0.2. BF16
+        // pass-through skeleton (mirror of neucodec / emotion2vec) —
+        // real-weight parity deferred to owner. The upstream weight
+        // blob is Xiph's C-array `weights_blob_9.bin`; the operator
+        // flattens it to safetensors with
+        // `tools/parity/rnnoise_prepare_checkpoint.py` before pointing
+        // this converter at the safetensors output. Uses the
+        // file-based early-return pattern (mirror of the Phase 5
+        // fleet) since `convert_rnnoise_file` does its own I/O — the
+        // outer `bytes = std::fs::read(input)?` above is unused on this
+        // path.
+        ModelKind::Rnnoise => {
+            let report = models::rnnoise::convert_rnnoise_file(input, output, license)?;
+            let notes = vec![format!(
+                "rnnoise: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Rnnoise,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Nsnet2 => {
+            // Coverage-audit 2026-08-03 Wave A: MIT Permissive baseline —
+            // pass every F32 / F16 / BF16 tensor through verbatim and stamp
+            // the `vokra.model.*` + `vokra.provenance.*` chunks that identify
+            // the artifact as the NSNet2 20 ms enhancement baseline. The
+            // upstream ONNX → safetensors bridge lives in the offline
+            // sidecar `tools/parity/nsnet2_prepare_checkpoint.py` so this
+            // converter stays inside the zero-dep safetensors-only contract
+            // (FR-LD-05, NFR-DS-02).
+            let report = models::nsnet2::convert_nsnet2_file(input, output, license)?;
+            let notes = vec![format!(
+                "nsnet2: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Nsnet2,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Dnsmos => {
+            // Coverage-audit Wave A (2026-08-03): Microsoft DNSMOS P.808 +
+            // P.835 bundle. The file-based routine reads the prepared
+            // safetensors from `tools/parity/dnsmos_prepare_checkpoint.py`
+            // (which flattens the two upstream ONNX checkpoints with
+            // `p808.` / `p835.` name prefixes), passes every F32 tensor
+            // through verbatim under its prefixed name, and stamps the
+            // `vokra.dnsmos.*` bundle inventory.
+            let report = models::dnsmos::convert_dnsmos_file(input, output, license)?;
+            let notes = vec![format!(
+                "dnsmos: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} bundle variant(s) detected",
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+                report.bundle_variants,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Dnsmos,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Frcrn => {
+            // coverage-audit wave-a (2026-08-03): FRCRN speech enhancement
+            // (Apache-2.0 Permissive). File-based converter with the
+            // standing per-call license override — same posture as the
+            // wespeaker / emotion2vec / speaker_3d / ecapa_tdnn arms.
+            let report = models::frcrn::convert_frcrn_file(input, output, license)?;
+            let notes = vec![format!(
+                "frcrn: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Frcrn,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -8549,6 +8763,37 @@ pub use models::titanet::{TitaNetReport, convert_titanet_file};
 // than `upstream_hf`. File-based entry mirroring the speaker_3d /
 // ecapa_tdnn re-export pattern.
 pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
+// coverage-audit-2026-08-03 Wave A: Xiph RNNoise v0.2 (BSD-3-Clause).
+// GitHub-only release (no HF mirror) so provenance stamps
+// `upstream_url` rather than `upstream_hf`. File-based entry mirroring
+// the nkf_aec / speaker_3d / ecapa_tdnn re-export pattern.
+pub use models::rnnoise::{RnnoiseReport, convert_rnnoise_file};
+// coverage-audit-2026-08-03 Wave A: Microsoft NSNet2 (MIT Permissive) —
+// the DNS Challenge NR baseline. Standalone file-based entry point
+// re-exported so external callers (integration tests / a future
+// `vokra-cli` `--model nsnet2` invocation) can reach it without the
+// private `models::nsnet2` module. Also routed through `ModelKind::Nsnet2`
+// so `convert_file` / `convert_file_licensed` reach the same code path.
+pub use models::nsnet2::{Nsnet2Report, convert_nsnet2_file};
+// coverage-audit Wave A ticket `dnsmos-p808-p835` (2026-08-03): Microsoft
+// DNSMOS P.808 + P.835 MOS predictor bundle — the first
+// `category = "eval"` model in the converter tree. File-based entry
+// point that reads the prepared safetensors from
+// `tools/parity/dnsmos_prepare_checkpoint.py` (which flattens the two
+// upstream ONNX checkpoints with `p808.` / `p835.` name prefixes).
+// Wired through the `ModelKind::Dnsmos` dispatch arm in
+// `convert_file_licensed` — the re-export here mirrors the
+// `emotion2vec` / `speaker_3d` posture so external integration tests
+// can reach `convert_dnsmos_file` + `DnsmosReport` without pulling in
+// the private `models::dnsmos` module.
+pub use models::dnsmos::{DnsmosReport, convert_dnsmos_file};
+// coverage-audit wave-a (2026-08-03): FRCRN (alibabasglab/FRCRN,
+// apache-2.0 Permissive). Category `denoise` — second `denoise` model
+// in the converter tree after DeepFilterNet3, with a distinct arch tag
+// (`frcrn`) so silently aliasing DFN3's manifest is impossible. Both a
+// file-based entry point with an SPDX override argument AND the
+// `ModelKind::Frcrn` dispatch arm above land the same bytes.
+pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -10113,6 +10358,25 @@ mod modelkind_alias_and_roundtrip_tests {
             // VAD v5's FR-LD-06 1:1 subgraph). Every hparam axis is
             // stamped verbatim from the released FunASR checkpoint.
             FsmnVad,
+            // Coverage-audit 2026-08-03 Wave A: RNNoise v0.2 — the
+            // canonical `--model rnnoise-v0.2` spelling must round-trip
+            // through `as_arg → from_arg` so a dropped alias fails
+            // loudly here.
+            Rnnoise,
+            // Coverage-audit 2026-08-03 Wave A: NSNet2 — the canonical
+            // `--model nsnet2` spelling must round-trip through
+            // `as_arg → from_arg` so a dropped alias fails loudly here.
+            Nsnet2,
+            // Coverage-audit 2026-08-03 Wave A: DNSMOS bundle — the
+            // canonical `--model dnsmos-p808-p835` spelling must
+            // round-trip through `as_arg → from_arg` so a dropped alias
+            // fails loudly here.
+            Dnsmos,
+            // Coverage-audit 2026-08-03 Wave A: FRCRN speech-enhancement
+            // — the canonical `--model frcrn` spelling must round-trip
+            // through `as_arg → from_arg` so a dropped alias fails
+            // loudly here.
+            Frcrn,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -10463,6 +10727,40 @@ mod modelkind_alias_and_roundtrip_tests {
                     "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
                 ],
             ),
+            // Coverage-audit 2026-08-03 Wave A — Xiph RNNoise v0.2.
+            // Every alias must dispatch to the same variant so a caller
+            // using the GitHub-flavour `xiph/rnnoise` id or the
+            // versioned publish slug lands on the same converter.
+            (
+                ModelKind::Rnnoise,
+                &["rnnoise", "rnnoise-v0.2", "rnnoise-v0_2", "xiph/rnnoise"],
+            ),
+            // Coverage-audit 2026-08-03 Wave A — Microsoft NSNet2 NR
+            // baseline. Every alias resolves to the same `--allow-noncommercial`-
+            // free MIT skeleton path.
+            (
+                ModelKind::Nsnet2,
+                &[
+                    "nsnet2",
+                    "nsnet2-baseline",
+                    "nsnet2-20ms",
+                    "nsnet2-20ms-baseline",
+                    "microsoft/nsnet2",
+                    "microsoft/nsnet2-baseline",
+                ],
+            ),
+            // coverage-audit wave-a (2026-08-03) — FRCRN speech
+            // enhancement. Every alias resolves to the same Apache-2.0
+            // Complex U-Net + freq-recurrent LSTM checkpoint.
+            (
+                ModelKind::Frcrn,
+                &[
+                    "frcrn",
+                    "alibabasglab/frcrn",
+                    "clearervoice-studio/frcrn",
+                    "modelscope/clearervoice-studio-frcrn",
+                ],
+            ),
         ];
         for (kind, aliases) in cases {
             for a in aliases.iter() {
@@ -10517,6 +10815,29 @@ mod modelkind_alias_and_roundtrip_tests {
         assert_eq!(ModelKind::from_arg("utmos"), Some(ModelKind::Utmos));
         assert_eq!(ModelKind::Denoise.as_arg(), "denoise");
         assert_eq!(ModelKind::Utmos.as_arg(), "utmos");
+    }
+
+    /// DNSMOS bundle CLI aliases (coverage-audit Wave A, 2026-08-03).
+    /// Pins the four accepted spellings — arch tag, canonical SKU, its
+    /// underscore variant, and the `microsoft/dnsmos` slug — plus the
+    /// `as_arg()` canonical form (`dnsmos-p808-p835`) so a future
+    /// rename would fail loudly here rather than silently break the
+    /// orchestrator's dispatch.
+    #[test]
+    fn dnsmos_aliases_resolve_and_canonical_arg_is_stable() {
+        for s in [
+            "dnsmos",
+            "dnsmos-p808-p835",
+            "dnsmos_p808_p835",
+            "microsoft/dnsmos",
+        ] {
+            assert_eq!(
+                ModelKind::from_arg(s),
+                Some(ModelKind::Dnsmos),
+                "alias {s:?} must resolve to ModelKind::Dnsmos"
+            );
+        }
+        assert_eq!(ModelKind::Dnsmos.as_arg(), "dnsmos-p808-p835");
     }
 
     /// **Task B-1 owner-blocked policy pin** (2026-07-29): the four

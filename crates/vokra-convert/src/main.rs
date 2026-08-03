@@ -2456,6 +2456,12 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // precedent. Grouped here for the uniform arch/name/category/
         // upstream_hf/license triple verify shape.
         | ModelKind::SeamlessM4tV2Large
+        // coverage-audit wave-a (2026-08-03): FRCRN speech-enhancement
+        // skeleton — same generic `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.{upstream_hf,license,weight_license}` chunk
+        // set as the sibling BF16 pass-through models, so it verifies
+        // through the same shared-arm surface.
+        | ModelKind::Frcrn
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
@@ -2520,6 +2526,128 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
             println!(
                 "; arch={arch} name={name} category={category} upstream_url={upstream} \
                  license={license} weight_license={class}"
+            );
+        }
+        // Coverage-audit 2026-08-03 Wave A: RNNoise v0.2 shares the
+        // BF16 pass-through skeleton shape with the Phase 5 fleet
+        // above, but stamps `vokra.provenance.upstream_url` (GitHub
+        // Release) instead of `vokra.provenance.upstream_hf` — RNNoise
+        // does not ship from Hugging Face. Separate verify arm so the
+        // URL slot is surfaced instead of a `<none>` fallback that
+        // would misleadingly suggest the artifact carries no upstream
+        // record.
+        ModelKind::Rnnoise => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream_url = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream_url} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // Coverage-audit 2026-08-03 Wave A: Microsoft NSNet2 — same
+        // `vokra.model.{arch,name,category}` chunks as the Phase 5 fleet,
+        // but the upstream is on GitHub (not HuggingFace), so the
+        // provenance URL rides `vokra.provenance.upstream_url` instead of
+        // `upstream_hf`. Reading the wrong key would silently print
+        // "<none>" and hide the URL — dedicated arm keeps the verify
+        // output honest.
+        ModelKind::Nsnet2 => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // Coverage-audit Wave A (2026-08-03): DNSMOS bundle — prints the
+        // bundle inventory plus the two upstream checkpoint filenames so
+        // an operator can distinguish a full (P.808 + P.835) bundle from
+        // a single-variant partial. Reads `vokra.provenance.upstream_url`
+        // rather than the BF16-fleet arm's `upstream_hf` because DNSMOS
+        // is GitHub-native (no HF mirror).
+        ModelKind::Dnsmos => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let bundle = file
+                .get("vokra.dnsmos.bundle")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.values
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            let sr = file
+                .get("vokra.dnsmos.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} bundle=[{bundle}] sample_rate={sr}"
             );
         }
     }

@@ -188,6 +188,55 @@ pub mod neucodec;
 // ecapa_tdnn / qwen3_tts / vibevoice pattern; real-weight parity is
 // deferred to owner sign-off (`docs/license-audit.md` §3.1).
 pub mod nkf_aec;
+// coverage-audit-2026-08-03 Wave A ticket: Xiph RNNoise v0.2
+// (BSD-3-Clause, ~90 KB `weights_blob_9.bin` from
+// `github.com/xiph/rnnoise/releases/tag/v0.2`). Real-time noise reduction
+// — a compact GRU stack over 22-band Bark filterbank features
+// (Valin 2018, arXiv:1709.08243). Distinct arch tag from DeepFilterNet3
+// (Vokra's existing `Denoise` ModelKind and `vokra.denoise.*` chunk
+// group): DFN3 is complex-Conv + ERB deep-filtering, RNNoise is tiny-GRU
+// + Bark, and silently sharing would mis-route the runtime dispatch.
+// BF16 pass-through skeleton mirroring `neucodec` / `emotion2vec`;
+// real-weight parity is deferred to owner once the future
+// `vokra-models/src/rnnoise/` native forward and Xiph reference-C parity
+// land. The upstream C-array blob is flattened to safetensors by
+// `tools/parity/rnnoise_prepare_checkpoint.py` before entering the
+// converter (same "prep to safetensors" contract as DAC / DFN3 / CSM —
+// no C / Python enters the runtime, NFR-DS-02).
+pub mod rnnoise;
+// coverage-audit-2026-08-03 Wave A ticket: Microsoft **NSNet2** (MIT
+// Permissive) — the DNS Challenge NR baseline (2-layer GRU + 3-Linear mask
+// predictor over 257-bin STFT log-magnitude, 20 ms frame @ 16 kHz). Distinct
+// arch tag from `denoise` (DeepFilterNet3) because the two topologies share
+// only the `enhancement` category, not their internal layout. Upstream is
+// ONNX-only; `tools/parity/nsnet2_prepare_checkpoint.py` bridges ONNX →
+// safetensors so this converter's zero-dep posture (no ONNX / protobuf in the
+// runtime, FR-LD-05, NFR-DS-02) is preserved. F32 / F16 / BF16 pass through
+// verbatim following the `emotion2vec` / `ecapa_tdnn` contract.
+pub mod nsnet2;
+// coverage-audit Wave A ticket `dnsmos-p808-p835` (2026-08-03): Microsoft
+// DNSMOS P.808 + P.835 MOS predictors (MIT weight, category `eval`) —
+// bundled as a single GGUF from the prepared safetensors that
+// `tools/parity/dnsmos_prepare_checkpoint.py` flattens from the two
+// upstream ONNX checkpoints (`model_v8.onnx` + `sig_bak_ovr.onnx`).
+// The first `eval`-category converter in the tree — the runtime binder
+// lives in the `vokra-eval` crate (`vokra_eval::dnsmos::{p808_score,
+// p835_score}`, follow-up CC ticket).
+pub mod dnsmos;
+// coverage-audit wave-a (2026-08-03): alibabasglab/FRCRN (Apache-2.0
+// Permissive) safetensors → GGUF. Frequency Recurrent Convolutional
+// Recurrent Network (Zhao et al. ICASSP 2022, arXiv:2206.07293) — a
+// Complex-valued U-Net + frequency-recurrent LSTM speech-enhancement
+// model, distributed both from the original repo
+// (`github.com/alibabasglab/FRCRN`) and via ClearerVoice-Studio
+// (`github.com/modelscope/ClearerVoice-Studio`). Every F32 / F16 /
+// BF16 tensor passes through verbatim following the wespeaker /
+// emotion2vec pattern; real-weight parity is deferred to owner
+// (`docs/license-audit.md` §3.1 sign-off). Distinct arch tag from
+// `denoise` (which DeepFilterNet3 owns) — silently sharing would
+// misroute the runtime dispatch (a DFN3 ERB / DF-net loader would try
+// to interpret a Complex U-Net checkpoint).
+pub mod frcrn;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3 — English
 // ASR (FastConformer encoder + TDT decoder). CC-BY 4.0 weight
 // (AttributionRequired). Every F32 / F16 tensor passes through
