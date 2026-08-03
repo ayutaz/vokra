@@ -2462,6 +2462,25 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // set as the sibling BF16 pass-through models, so it verifies
         // through the same shared-arm surface.
         | ModelKind::Frcrn
+        // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
+        // All share the BF16 pass-through skeleton contract with FRCRN /
+        // Wavtokenizer / the SoTA Phase 5 fleet: the converter stamps
+        // vokra.model.{arch,name,category} + vokra.provenance.{upstream_hf,
+        // license,weight_license}, so verify() surfaces the same 5-slot line.
+        | ModelKind::Hibiki
+        | ModelKind::SberGigaamV3
+        | ModelKind::SberGigaamMultilingual
+        | ModelKind::ReazonspeechNemoV2
+        | ModelKind::MagpiettsV2602
+        | ModelKind::ParakeetUnified
+        | ModelKind::Canary1bFlash
+        | ModelKind::OwsmV4Medium1b
+        | ModelKind::ParakeetTdt11b
+        | ModelKind::FireredAsrAedL
+        | ModelKind::SortformerDiar4spkV1
+        | ModelKind::SenseVoiceSmall
+        | ModelKind::WhisperMedusaV1
+        | ModelKind::NemotronSpeechStreamingV2603
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

@@ -237,6 +237,28 @@ pub mod dnsmos;
 // misroute the runtime dispatch (a DFN3 ERB / DF-net loader would try
 // to interpret a Complex U-Net checkpoint).
 pub mod frcrn;
+// coverage-audit 2026-08-03 Wave B fast-track (13 model): all local-safe
+// (<8 GB), primarily Permissive / CC-BY-4.0 attribution. Each converter is
+// a BF16 pass-through skeleton in its own arch tag — silently sharing an
+// arch tag with a sibling family (Moshi / Whisper / Conformer / NeMo) would
+// mis-route the runtime dispatch, so every Wave B model declares its own
+// vokra.model.arch even when the topology is close to an existing family.
+// Real-weight parity is deferred to owner (docs/license-audit.md §3.1
+// sign-off + real checkpoint fetch).
+pub mod canary_1b_flash;
+pub mod firered_asr_aed_l;
+pub mod hibiki;
+pub mod magpietts_v2602;
+pub mod nemotron_speech_streaming_v2603;
+pub mod owsm_v4_medium_1b;
+pub mod parakeet_tdt_1_1b;
+pub mod parakeet_unified;
+pub mod reazonspeech_nemo_v2;
+pub mod sber_gigaam_multilingual;
+pub mod sber_gigaam_v3;
+pub mod sensevoicesmall;
+pub mod sortformer_diar_4spk_v1;
+pub mod whisper_medusa_v1;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3 — English
 // ASR (FastConformer encoder + TDT decoder). CC-BY 4.0 weight
 // (AttributionRequired). Every F32 / F16 tensor passes through

@@ -870,6 +870,29 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "nsnet2": ["NSNet2 (`microsoft/DNS-Challenge NSNet2-baseline`)"],
     "dnsmos-p808-p835": ["DNSMOS P.808 + P.835 (`microsoft/DNS-Challenge DNSMOS`)"],
     "frcrn": ["FRCRN (`alibabasglab/FRCRN`)"],
+    # coverage-audit 2026-08-03 Wave B fast-track 13 rows (sign-off dated
+    # 2026-08-04). SenseVoiceSmall stays UNKNOWN_REPO on the publish side
+    # until owner completes the FunASR MODEL_LICENSE audit (§3.1 row exists
+    # but Approval column is blank — fail-closed).
+    "hibiki-2b": ["Hibiki-2B (`kyutai/hibiki-2b-pytorch-bf16`)"],
+    "sber-gigaam-v3": ["Sber GigaAM v3 (`ai-sage/GigaAM-v3`)"],
+    "sber-gigaam-multilingual": ["Sber GigaAM multilingual (`ai-sage/GigaAM-Multilingual`)"],
+    "reazonspeech-nemo-v2": ["ReazonSpeech NeMo v2 (`reazon-research/reazonspeech-nemo-v2`)"],
+    "magpietts-v2602": ["MagpieTTS v2602 (`nvidia/magpietts-v2602`)"],
+    "parakeet-unified-en-0.6b": [
+        "NVIDIA Parakeet-unified-EN-0.6B (`nvidia/parakeet-unified-en-0.6b`)"
+    ],
+    "canary-1b-flash": ["NVIDIA Canary-1B-Flash (`nvidia/canary-1b-flash`)"],
+    "owsm-v4-medium-1b": ["ESPnet OWSM v4 Medium 1B (`espnet/owsm_v4_medium_1B`)"],
+    "parakeet-tdt-1.1b": ["NVIDIA Parakeet-TDT-1.1B (`nvidia/parakeet-tdt-1.1b`)"],
+    "firered-asr-aed-l": ["FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"],
+    "sortformer-diar-4spk-v1": [
+        "NVIDIA Sortformer diar 4spk v1 (`nvidia/diar_sortformer_4spk-v1`)"
+    ],
+    "whisper-medusa-v1": ["aiola whisper-medusa-v1 (`aiola/whisper-medusa-v1`)"],
+    "nemotron-speech-streaming-v2603": [
+        "NVIDIA Nemotron-Speech-Streaming v2603 (`nvidia/nemotron-speech-streaming-v2603`)"
+    ],
 }
 
 # ---- converter → row(s) ----------------------------------------------------

@@ -1101,6 +1101,62 @@ pub enum ModelKind {
     /// runtime dispatch. Convert with [`convert_frcrn_file`] (or the
     /// generic `convert_file` / `convert_file_licensed`).
     Frcrn,
+    // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
+    /// Kyutai **Hibiki-2B** (CC-BY-4.0 attribution) — Fr↔En simultaneous
+    /// S2S translation, Moshi-family arch. Distinct arch tag `hibiki`
+    /// from sibling Moshi (7B chat) — hparam mismatch would mis-route
+    /// a Moshi loader onto a Hibiki checkpoint. Convert with
+    /// `convert_hibiki_file`.
+    Hibiki,
+    /// Sber **GigaAM v3** (MIT, ~500 MB–1.2 GB) — Russian SoTA ASR,
+    /// Conformer + CTC/RNN-T seam. Convert with `convert_sber_gigaam_v3_file`.
+    SberGigaamV3,
+    /// Sber **GigaAM multilingual** (MIT, ~600 MB–1.2 GB) — 70+ language
+    /// ASR, char-wise CTC. Convert with `convert_sber_gigaam_multilingual_file`.
+    SberGigaamMultilingual,
+    /// Reazon **reazonspeech-nemo-v2** (Apache-2.0, ~1.2 GB) — Japanese
+    /// long-form ASR, NeMo Conformer + Longformer local attention.
+    /// Convert with `convert_reazonspeech_nemo_v2_file`.
+    ReazonspeechNemoV2,
+    /// NVIDIA **MagpieTTS v2602** (Apache-2.0, ~700 MB) — 9-language
+    /// multilingual TTS (en/es/de/fr/vi/it/zh/hi/ja), NeMo primitive.
+    /// Convert with `convert_magpietts_v2602_file`.
+    MagpiettsV2602,
+    /// NVIDIA **Parakeet-unified-EN-0.6B** (Apache-2.0, ~1.2 GB) —
+    /// offline+streaming EN ASR, punc/capitalization inline. Convert
+    /// with `convert_parakeet_unified_file`.
+    ParakeetUnified,
+    /// NVIDIA **Canary-1B-Flash** (CC-BY-4.0, ~1.8 GB) — ASR + AST 4
+    /// lang, 1000+ RTFx. Convert with `convert_canary_1b_flash_file`.
+    Canary1bFlash,
+    /// ESPnet **OWSM v4 Medium 1B** (CC-BY-4.0, ~2 GB) — open-Whisper
+    /// alternative, Conformer + CTC/attention decode, 320k hr training.
+    /// Convert with `convert_owsm_v4_medium_1b_file`.
+    OwsmV4Medium1b,
+    /// NVIDIA **Parakeet-TDT-1.1B** (CC-BY-4.0, ~2.2 GB) — English ASR,
+    /// hparam-extension of sibling parakeet-tdt-0.6b-v3. Convert with
+    /// `convert_parakeet_tdt_1_1b_file`.
+    ParakeetTdt11b,
+    /// FireRedTeam **FireRedASR-AED-L** (Apache-2.0, ~2.2 GB) — Chinese
+    /// SoTA ASR, AED (Whisper-like encoder-decoder). Convert with
+    /// `convert_firered_asr_aed_l_file`.
+    FireredAsrAedL,
+    /// NVIDIA **Sortformer diar 4spk v1** (CC-BY-4.0, ~1 GB) — e2e
+    /// speaker diarization with arrival-order sort loss. Convert with
+    /// `convert_sortformer_diar_4spk_v1_file`.
+    SortformerDiar4spkV1,
+    /// FunAudioLLM **SenseVoiceSmall** (FunASR MODEL_LICENSE, ~470 MB)
+    /// — Chinese SoTA ASR + LID + SER + AED multitask. License audit
+    /// deferred to owner. Convert with `convert_sensevoicesmall_file`.
+    SenseVoiceSmall,
+    /// aiola **whisper-medusa-v1** (Apache-2.0, ~500 MB–2 GB) — Whisper
+    /// + Medusa speculative decoding head, 20-80% latency reduction.
+    /// Convert with `convert_whisper_medusa_v1_file`.
+    WhisperMedusaV1,
+    /// NVIDIA **Nemotron-Speech-Streaming v2603** (Apache-2.0, ~1.2–2
+    /// GB) — cache-aware FastConformer streaming ASR (40+ lang).
+    /// Convert with `convert_nemotron_speech_streaming_v2603_file`.
+    NemotronSpeechStreamingV2603,
     /// SpeechBrain **spkrec-ecapa-voxceleb** (ECAPA-TDNN) speaker
     /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
     /// 2026-07-28). Category = `speaker`. TDNN-based speaker
@@ -2974,6 +3030,80 @@ impl ModelKind {
             | "alibabasglab/frcrn"
             | "clearervoice-studio/frcrn"
             | "modelscope/clearervoice-studio-frcrn" => Some(Self::Frcrn),
+            // coverage-audit 2026-08-03 Wave B fast-track (13 model)
+            "hibiki" | "hibiki-2b" | "hibiki_2b" | "kyutai/hibiki-2b-pytorch-bf16" => {
+                Some(Self::Hibiki)
+            }
+            "sber-gigaam-v3"
+            | "sber_gigaam_v3"
+            | "gigaam-v3"
+            | "gigaam_v3"
+            | "ai-sage/gigaam-v3"
+            | "ai-sage/GigaAM-v3"
+            | "salute-developers/gigaam-v3" => Some(Self::SberGigaamV3),
+            "sber-gigaam-multilingual"
+            | "sber_gigaam_multilingual"
+            | "gigaam"
+            | "gigaam-multilingual"
+            | "gigaam_multilingual"
+            | "ai-sage/gigaam-multilingual"
+            | "ai-sage/GigaAM-Multilingual"
+            | "salute-developers/gigaam-multilingual"
+            | "salute-developers/GigaAM-Multilingual" => Some(Self::SberGigaamMultilingual),
+            "reazonspeech-nemo-v2"
+            | "reazonspeech_nemo_v2"
+            | "reazon-research/reazonspeech-nemo-v2" => Some(Self::ReazonspeechNemoV2),
+            "magpietts-v2602" | "magpietts_v2602" | "nvidia/magpietts-v2602" => {
+                Some(Self::MagpiettsV2602)
+            }
+            "parakeet-unified-en-0.6b"
+            | "parakeet_unified_en_0_6b"
+            | "parakeet-unified"
+            | "nvidia/parakeet-unified-en-0.6b" => Some(Self::ParakeetUnified),
+            "canary-1b-flash"
+            | "canary_1b_flash"
+            | "canary-flash"
+            | "canary_flash"
+            | "canary-1b-flash-en"
+            | "nvidia/canary-1b-flash" => Some(Self::Canary1bFlash),
+            "owsm-v4-medium-1b"
+            | "owsm_v4_medium_1b"
+            | "owsm-v4-medium"
+            | "espnet/owsm_v4_medium_1b" => Some(Self::OwsmV4Medium1b),
+            "parakeet-tdt-1.1b"
+            | "parakeet-tdt-1.1B"
+            | "parakeet-tdt-1_1b"
+            | "parakeet-tdt-1_1B"
+            | "parakeet_tdt_1_1b"
+            | "nvidia/parakeet-tdt-1.1b" => Some(Self::ParakeetTdt11b),
+            "firered-asr-aed-l"
+            | "firered_asr_aed_l"
+            | "fireredasr-aed-l"
+            | "fireredasr_aed_l"
+            | "firered-asr-aed"
+            | "firered_asr_aed"
+            | "fireredteam/firered-asr-aed-l"
+            | "fireredteam/firered_asr_aed_l"
+            | "fireredteam/fireredasr-aed-l"
+            | "FireRedTeam/FireRedASR-AED-L" => Some(Self::FireredAsrAedL),
+            "sortformer-diar-4spk-v1"
+            | "sortformer_diar_4spk_v1"
+            | "nvidia/diar_sortformer_4spk-v1" => Some(Self::SortformerDiar4spkV1),
+            "sensevoicesmall" | "sensevoice-small" | "funaudiollm/sensevoicesmall" => {
+                Some(Self::SenseVoiceSmall)
+            }
+            "whisper-medusa-v1" | "whisper_medusa_v1" | "aiola/whisper-medusa-v1" => {
+                Some(Self::WhisperMedusaV1)
+            }
+            "nemotron-speech-streaming-v2603"
+            | "nemotron-speech-streaming"
+            | "nemotron_speech_streaming_v2603"
+            | "nemotron_speech_streaming"
+            | "nvidia/nemotron-speech-streaming-v2603"
+            | "nvidia/nemotron_speech_streaming_v2603"
+            | "nvidia/nemo/nemotron_speech_streaming_v2603" => {
+                Some(Self::NemotronSpeechStreamingV2603)
+            }
             "ecapa-tdnn"
             | "ecapa_tdnn"
             | "spkrec-ecapa-voxceleb"
@@ -3982,6 +4112,21 @@ impl ModelKind {
             Self::Dnsmos => "dnsmos-p808-p835",
             // coverage-audit wave-a (2026-08-03): FRCRN speech enhancement.
             Self::Frcrn => "frcrn",
+            // coverage-audit 2026-08-03 Wave B fast-track (13 variants).
+            Self::Hibiki => "hibiki-2b",
+            Self::SberGigaamV3 => "sber-gigaam-v3",
+            Self::SberGigaamMultilingual => "sber-gigaam-multilingual",
+            Self::ReazonspeechNemoV2 => "reazonspeech-nemo-v2",
+            Self::MagpiettsV2602 => "magpietts-v2602",
+            Self::ParakeetUnified => "parakeet-unified-en-0.6b",
+            Self::Canary1bFlash => "canary-1b-flash",
+            Self::OwsmV4Medium1b => "owsm-v4-medium-1b",
+            Self::ParakeetTdt11b => "parakeet-tdt-1.1b",
+            Self::FireredAsrAedL => "firered-asr-aed-l",
+            Self::SortformerDiar4spkV1 => "sortformer-diar-4spk-v1",
+            Self::SenseVoiceSmall => "sensevoicesmall",
+            Self::WhisperMedusaV1 => "whisper-medusa-v1",
+            Self::NemotronSpeechStreamingV2603 => "nemotron-speech-streaming-v2603",
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
             Self::Speaker3d => "speaker-3d",
@@ -5681,6 +5826,238 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Frcrn,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
+        // All are file-based BF16 pass-through skeletons; each module owns
+        // its own convert_{snake}_file(input, output, license) and returns a
+        // {Pascal}Report with (written, bf16_passthrough, skipped_non_float).
+        ModelKind::Hibiki => {
+            let report = models::hibiki::convert_hibiki_file(input, output, license)?;
+            let notes = vec![format!(
+                "hibiki: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Hibiki,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::SberGigaamV3 => {
+            let report =
+                models::sber_gigaam_v3::convert_sber_gigaam_v3_file(input, output, license)?;
+            let notes = vec![format!(
+                "sber-gigaam-v3: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SberGigaamV3,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::SberGigaamMultilingual => {
+            let report = models::sber_gigaam_multilingual::convert_sber_gigaam_multilingual_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "sber-gigaam-multilingual: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SberGigaamMultilingual,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::ReazonspeechNemoV2 => {
+            let report = models::reazonspeech_nemo_v2::convert_reazonspeech_nemo_v2_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "reazonspeech-nemo-v2: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::ReazonspeechNemoV2,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::MagpiettsV2602 => {
+            let report =
+                models::magpietts_v2602::convert_magpietts_v2602_file(input, output, license)?;
+            let notes = vec![format!(
+                "magpietts-v2602: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MagpiettsV2602,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::ParakeetUnified => {
+            let report =
+                models::parakeet_unified::convert_parakeet_unified_file(input, output, license)?;
+            let notes = vec![format!(
+                "parakeet-unified-en-0.6b: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::ParakeetUnified,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Canary1bFlash => {
+            let report =
+                models::canary_1b_flash::convert_canary_1b_flash_file(input, output, license)?;
+            let notes = vec![format!(
+                "canary-1b-flash: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Canary1bFlash,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::OwsmV4Medium1b => {
+            let report =
+                models::owsm_v4_medium_1b::convert_owsm_v4_medium_1b_file(input, output, license)?;
+            let notes = vec![format!(
+                "owsm-v4-medium-1b: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::OwsmV4Medium1b,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::ParakeetTdt11b => {
+            let report =
+                models::parakeet_tdt_1_1b::convert_parakeet_tdt_1_1b_file(input, output, license)?;
+            let notes = vec![format!(
+                "parakeet-tdt-1.1b: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::ParakeetTdt11b,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::FireredAsrAedL => {
+            let report =
+                models::firered_asr_aed_l::convert_firered_asr_aed_l_file(input, output, license)?;
+            let notes = vec![format!(
+                "firered-asr-aed-l: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::FireredAsrAedL,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::SortformerDiar4spkV1 => {
+            let report = models::sortformer_diar_4spk_v1::convert_sortformer_diar_4spk_v1_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "sortformer-diar-4spk-v1: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SortformerDiar4spkV1,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::SenseVoiceSmall => {
+            let report =
+                models::sensevoicesmall::convert_sensevoicesmall_file(input, output, license)?;
+            let notes = vec![format!(
+                "sensevoicesmall: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::SenseVoiceSmall,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::WhisperMedusaV1 => {
+            let report =
+                models::whisper_medusa_v1::convert_whisper_medusa_v1_file(input, output, license)?;
+            let notes = vec![format!(
+                "whisper-medusa-v1: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::WhisperMedusaV1,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::NemotronSpeechStreamingV2603 => {
+            let report =
+                models::nemotron_speech_streaming_v2603::convert_nemotron_speech_streaming_v2603_file(
+                    input, output, license,
+                )?;
+            let notes = vec![format!(
+                "nemotron-speech-streaming-v2603: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::NemotronSpeechStreamingV2603,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -8794,6 +9171,29 @@ pub use models::dnsmos::{DnsmosReport, convert_dnsmos_file};
 // file-based entry point with an SPDX override argument AND the
 // `ModelKind::Frcrn` dispatch arm above land the same bytes.
 pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
+// ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
+pub use models::canary_1b_flash::{Canary1bFlashReport, convert_canary_1b_flash_file};
+pub use models::firered_asr_aed_l::{FireredAsrAedLReport, convert_firered_asr_aed_l_file};
+pub use models::hibiki::{HibikiReport, convert_hibiki_file};
+pub use models::magpietts_v2602::{MagpiettsV2602Report, convert_magpietts_v2602_file};
+pub use models::nemotron_speech_streaming_v2603::{
+    NemotronSpeechStreamingV2603Report, convert_nemotron_speech_streaming_v2603_file,
+};
+pub use models::owsm_v4_medium_1b::{OwsmV4Medium1bReport, convert_owsm_v4_medium_1b_file};
+pub use models::parakeet_tdt_1_1b::{ParakeetTdt11bReport, convert_parakeet_tdt_1_1b_file};
+pub use models::parakeet_unified::{ParakeetUnifiedReport, convert_parakeet_unified_file};
+pub use models::reazonspeech_nemo_v2::{
+    ReazonspeechNemoV2Report, convert_reazonspeech_nemo_v2_file,
+};
+pub use models::sber_gigaam_multilingual::{
+    SberGigaamMultilingualReport, convert_sber_gigaam_multilingual_file,
+};
+pub use models::sber_gigaam_v3::{SberGigaamV3Report, convert_sber_gigaam_v3_file};
+pub use models::sensevoicesmall::{SenseVoiceSmallReport, convert_sensevoicesmall_file};
+pub use models::sortformer_diar_4spk_v1::{
+    SortformerDiar4spkV1Report, convert_sortformer_diar_4spk_v1_file,
+};
+pub use models::whisper_medusa_v1::{WhisperMedusaV1Report, convert_whisper_medusa_v1_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -10377,6 +10777,21 @@ mod modelkind_alias_and_roundtrip_tests {
             // through `as_arg → from_arg` so a dropped alias fails
             // loudly here.
             Frcrn,
+            // Coverage-audit 2026-08-03 Wave B fast-track (13 variants).
+            Hibiki,
+            SberGigaamV3,
+            SberGigaamMultilingual,
+            ReazonspeechNemoV2,
+            MagpiettsV2602,
+            ParakeetUnified,
+            Canary1bFlash,
+            OwsmV4Medium1b,
+            ParakeetTdt11b,
+            FireredAsrAedL,
+            SortformerDiar4spkV1,
+            SenseVoiceSmall,
+            WhisperMedusaV1,
+            NemotronSpeechStreamingV2603,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -10759,6 +11174,124 @@ mod modelkind_alias_and_roundtrip_tests {
                     "alibabasglab/frcrn",
                     "clearervoice-studio/frcrn",
                     "modelscope/clearervoice-studio-frcrn",
+                ],
+            ),
+            // ---- coverage-audit 2026-08-03 Wave B fast-track (13 model) ----
+            (
+                ModelKind::Hibiki,
+                &[
+                    "hibiki",
+                    "hibiki-2b",
+                    "hibiki_2b",
+                    "kyutai/hibiki-2b-pytorch-bf16",
+                ],
+            ),
+            (
+                ModelKind::SberGigaamV3,
+                &[
+                    "sber-gigaam-v3",
+                    "sber_gigaam_v3",
+                    "gigaam-v3",
+                    "salute-developers/gigaam-v3",
+                ],
+            ),
+            (
+                ModelKind::SberGigaamMultilingual,
+                &[
+                    "sber-gigaam-multilingual",
+                    "sber_gigaam_multilingual",
+                    "gigaam-multilingual",
+                    "salute-developers/gigaam-multilingual",
+                ],
+            ),
+            (
+                ModelKind::ReazonspeechNemoV2,
+                &[
+                    "reazonspeech-nemo-v2",
+                    "reazonspeech_nemo_v2",
+                    "reazon-research/reazonspeech-nemo-v2",
+                ],
+            ),
+            (
+                ModelKind::MagpiettsV2602,
+                &[
+                    "magpietts-v2602",
+                    "magpietts_v2602",
+                    "nvidia/magpietts-v2602",
+                ],
+            ),
+            (
+                ModelKind::ParakeetUnified,
+                &[
+                    "parakeet-unified-en-0.6b",
+                    "parakeet_unified_en_0_6b",
+                    "parakeet-unified",
+                    "nvidia/parakeet-unified-en-0.6b",
+                ],
+            ),
+            (
+                ModelKind::Canary1bFlash,
+                &[
+                    "canary-1b-flash",
+                    "canary_1b_flash",
+                    "nvidia/canary-1b-flash",
+                ],
+            ),
+            (
+                ModelKind::OwsmV4Medium1b,
+                &[
+                    "owsm-v4-medium-1b",
+                    "owsm_v4_medium_1b",
+                    "owsm-v4-medium",
+                    "espnet/owsm_v4_medium_1b",
+                ],
+            ),
+            (
+                ModelKind::ParakeetTdt11b,
+                &[
+                    "parakeet-tdt-1.1b",
+                    "parakeet_tdt_1_1b",
+                    "nvidia/parakeet-tdt-1.1b",
+                ],
+            ),
+            (
+                ModelKind::FireredAsrAedL,
+                &[
+                    "firered-asr-aed-l",
+                    "firered_asr_aed_l",
+                    "fireredteam/fireredasr-aed-l",
+                ],
+            ),
+            (
+                ModelKind::SortformerDiar4spkV1,
+                &[
+                    "sortformer-diar-4spk-v1",
+                    "sortformer_diar_4spk_v1",
+                    "nvidia/diar_sortformer_4spk-v1",
+                ],
+            ),
+            (
+                ModelKind::SenseVoiceSmall,
+                &[
+                    "sensevoicesmall",
+                    "sensevoice-small",
+                    "funaudiollm/sensevoicesmall",
+                ],
+            ),
+            (
+                ModelKind::WhisperMedusaV1,
+                &[
+                    "whisper-medusa-v1",
+                    "whisper_medusa_v1",
+                    "aiola/whisper-medusa-v1",
+                ],
+            ),
+            (
+                ModelKind::NemotronSpeechStreamingV2603,
+                &[
+                    "nemotron-speech-streaming-v2603",
+                    "nemotron_speech_streaming_v2603",
+                    "nvidia/nemotron-speech-streaming-v2603",
                 ],
             ),
         ];
