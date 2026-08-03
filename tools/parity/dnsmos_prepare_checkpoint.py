@@ -164,10 +164,27 @@ def _extract_initializers(onnx_path: Path, prefix: str):
             f"is empty or references external weights (not supported)"
         )
 
+    # Integer dtypes that are always graph-topology / shape / index
+    # constants in a floating-point network (never trainable weights).
+    # DNSMOS is entirely F32 (documented in the module docstring), so
+    # any INT32/INT64 initializer must be a TF-export reshape target
+    # or similar graph metadata — safe to drop with a warning. Kept
+    # narrow (32/64-bit integers only) so that a hypothetical future
+    # INT8-quantized DNSMOS variant would still loud-fail (FR-EX-08).
+    INTEGER_GRAPH_TOPOLOGY_DTYPES = {6, 7}  # INT32, INT64
     out = {}
     seen_names = set()
     for t in initializers:
         if t.data_type not in ONNX_DTYPE_TO_ST:
+            if t.data_type in INTEGER_GRAPH_TOPOLOGY_DTYPES:
+                shape_desc = list(t.dims) if t.dims else "scalar"
+                _log(
+                    f"  SKIP integer initializer {t.name!r} in "
+                    f"{onnx_path.name} (dtype={t.data_type}, "
+                    f"shape={shape_desc}, TF-export graph-topology "
+                    f"constant — not a weight)"
+                )
+                continue
             raise SystemExit(
                 f"{LOG_PREFIX} initializer {t.name!r} in {onnx_path.name} has "
                 f"dtype {t.data_type} which is not F32 / F16 / BF16 — refusing "
@@ -176,9 +193,24 @@ def _extract_initializers(onnx_path: Path, prefix: str):
         dtype_str = ONNX_DTYPE_TO_ST[t.data_type]
         shape = list(t.dims)
         if not shape:
+            # TF-export truediv / constant scalar (empty shape) — safe to
+            # drop as it is an inlined graph constant, not a weight. Only
+            # skip if it's a plain F32/F16/BF16 scalar (single element);
+            # other empty-shape cases remain hard-fail (FR-EX-08).
+            # Observed in DNSMOS P.835 (`sig_bak_ovr.onnx`) as
+            # ``mos_estimator_logpow/truediv/y:0`` — a TF-graph constant
+            # inlined by the ONNX exporter that carries no trainable
+            # weight but persists in the initializer list.
+            if dtype_str in ("F32", "F16", "BF16"):
+                _log(
+                    f"  SKIP scalar constant {t.name!r} in {onnx_path.name} "
+                    f"(empty shape, dtype={dtype_str}, TF-export inlined)"
+                )
+                continue
             raise SystemExit(
                 f"{LOG_PREFIX} initializer {t.name!r} in {onnx_path.name} has "
-                f"an empty shape — refusing to emit a scalar weight (FR-EX-08)"
+                f"an empty shape with dtype {dtype_str} — refusing to emit a "
+                f"scalar weight (FR-EX-08)"
             )
         data = _initializer_bytes(t)
         # Sanity: byte count must match the shape × elem-size.

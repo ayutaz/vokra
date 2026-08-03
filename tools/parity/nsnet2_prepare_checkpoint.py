@@ -85,6 +85,23 @@ LOG_PREFIX = "nsnet2_prepare_checkpoint:"
 ONNX_DTYPE_F32 = 1
 ONNX_DTYPE_F16 = 10
 ONNX_DTYPE_BF16 = 16
+# ONNX integer graph-metadata dtypes. NSNet2's upstream ONNX bakes two INT64
+# scalar constants (e.g. Reshape target dimensions, Slice axes, GRU seq-length
+# anchors) into the ``graph.initializer`` list. They are **not** model weights
+# — the compiled Rust forward folds the same integers into the topology and
+# never reads them at runtime. The prep script's float-only writer skips them
+# with a loud SKIP warning (mirror of `dnsmos_prepare_checkpoint.py`'s TF-export
+# scalar-constant skip). Larger INT64 tensors (would be per-token index look-ups
+# or quantized codebooks) still hard-fail per FR-EX-08 defensive posture.
+ONNX_DTYPE_INT8 = 3
+ONNX_DTYPE_INT16 = 5
+ONNX_DTYPE_INT32 = 6
+ONNX_DTYPE_INT64 = 7
+ONNX_INTEGER_DTYPES = {ONNX_DTYPE_INT8, ONNX_DTYPE_INT16, ONNX_DTYPE_INT32, ONNX_DTYPE_INT64}
+# Max element count for a graph-metadata integer initializer we will silently
+# drop. NSNet2 today ships 2 x INT64[1] (single scalar each). Cap chosen small
+# to keep any real weight-like integer tensor loud-failing.
+INT_METADATA_MAX_ELEMENTS = 8
 
 SAFETENSORS_DTYPE = {
     ONNX_DTYPE_F32: ("F32", 4),
@@ -197,6 +214,35 @@ def main() -> int:
     dropped: list[str] = []
     for init in initializers:
         dtype = int(init.data_type)
+        # NSNet2 ONNX bakes short INT64 scalars (Reshape / Slice / GRU seq_length
+        # anchors) into ``graph.initializer``; these are graph metadata, not
+        # weights, and the compiled Rust forward folds them into the topology.
+        # Skip them with a loud SKIP note (FR-EX-08 loud-partial), keeping the
+        # hard-fail for large / non-graph-metadata integer tensors that would
+        # indicate an actual quantized codebook.
+        if dtype in ONNX_INTEGER_DTYPES:
+            shape_meta = _initializer_shape(init)
+            n_elem = 1
+            for d in shape_meta:
+                n_elem *= max(d, 0)
+            if n_elem <= INT_METADATA_MAX_ELEMENTS:
+                onnx_name = onnx.TensorProto.DataType.Name(dtype)
+                # Inline SKIP log is the audit trail; do **not** re-append to
+                # ``dropped`` (which is dedicated to unnamed initializers) to
+                # avoid the misleading "unnamed initializer:" print at the tail.
+                print(
+                    f"{LOG_PREFIX}   SKIP integer graph-metadata initializer "
+                    f"{init.name!r} (dtype={onnx_name}, shape={shape_meta}, "
+                    f"n_elem={n_elem}) — not a weight, folded into compiled forward"
+                )
+                continue
+            raise SystemExit(
+                f"{LOG_PREFIX} initializer {init.name!r} is integer "
+                f"(dtype={onnx.TensorProto.DataType.Name(dtype)}, shape={shape_meta}, "
+                f"n_elem={n_elem}) but exceeds the {INT_METADATA_MAX_ELEMENTS}-element "
+                f"graph-metadata cap; refusing to silently drop what may be a real "
+                f"quantized weight (FR-EX-08 loud-fail)"
+            )
         if dtype not in SAFETENSORS_DTYPE:
             raise SystemExit(
                 f"{LOG_PREFIX} initializer {init.name!r} has unsupported dtype "
