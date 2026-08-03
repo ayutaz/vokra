@@ -581,7 +581,7 @@ jobs:
       - name: Install cargo-audit
         # Same install path as ci.yml `license` job — keeps the toolchain
         # identical so a regression in one leg reproduces in the other.
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-audit
       - name: cargo audit (root workspace, zero-dep tripwire)
