@@ -1297,6 +1297,39 @@ wheels = [
 ]
 
 [[package]]
+name = "modelscope"
+version = "1.39.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "filelock" },
+    { name = "modelscope-hub" },
+    { name = "packaging" },
+    { name = "requests" },
+    { name = "setuptools" },
+    { name = "tqdm" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/56/9ecae749768f93d42e85be8d00d2b02cd85eedc58e965f721fc51a7035b4/modelscope-1.39.0.tar.gz", hash = "sha256:d2e223bd42cc8054d1388b7584c52fdfa7f304888ae5c0efe6406d621499d259", size = 4548145, upload-time = "2026-07-28T08:35:47.933Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/25/b4ea67e6f9e9a3453b5df7bf3d6fab297a7f9a92b1701165f1950b8f9164/modelscope-1.39.0-py3-none-any.whl", hash = "sha256:a363298e4620db83b3ec0057a23a73c4ee1fa122ca11b375e72ef94874123efa", size = 6038508, upload-time = "2026-07-28T08:35:45.054Z" },
+]
+
+[[package]]
+name = "modelscope-hub"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "filelock" },
+    { name = "requests" },
+    { name = "tqdm" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/76/9d/3fabfd2b147d94e1980d670fecd3c183999db04a71b80a546bcf37cc6f89/modelscope_hub-0.2.0.tar.gz", hash = "sha256:00288d3e08ad7fadfdd7539f4dffa9d75f9006c43c73abd33ea51767317f001c", size = 163316, upload-time = "2026-08-01T15:00:08.694Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/be/3b0e14c296a622c920287fc6d2c1b5a8668c8e0d98662f7b2bd8f3fcc779/modelscope_hub-0.2.0-py3-none-any.whl", hash = "sha256:84668c80c1d36d1fb1ea1ce17b707d77e044b92255288618c3b7de5b13834418", size = 156023, upload-time = "2026-08-01T15:00:07.335Z" },
+]
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2890,6 +2923,7 @@ dependencies = [
     { name = "gguf" },
     { name = "h5py" },
     { name = "huggingface-hub" },
+    { name = "modelscope" },
     { name = "numpy" },
     { name = "omegaconf" },
     { name = "onnx" },
@@ -2909,6 +2943,7 @@ requires-dist = [
     { name = "gguf", specifier = ">=0.19.0" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "huggingface-hub", specifier = ">=1.24.0" },
+    { name = "modelscope", specifier = ">=1.39.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "omegaconf", specifier = ">=2.3.1" },
     { name = "onnx", specifier = ">=1.22.0" },
