@@ -2931,6 +2931,7 @@ dependencies = [
     { name = "safetensors" },
     { name = "sentencepiece" },
     { name = "torch" },
+    { name = "torchaudio" },
 ]
 
 [package.optional-dependencies]
@@ -2952,6 +2953,7 @@ requires-dist = [
     { name = "sentencepiece", specifier = ">=0.2.2" },
     { name = "tensorflow", marker = "extra == 'crepe'", specifier = ">=2.20.0" },
     { name = "torch", specifier = ">=2.0" },
+    { name = "torchaudio", specifier = ">=2.11.0" },
 ]
 provides-extras = ["crepe"]
 
