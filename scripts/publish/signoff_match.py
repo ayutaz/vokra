@@ -916,6 +916,9 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "htdemucs-4s-6s": [
         "HT-Demucs Multi (`facebook/htdemucs` + `facebook/htdemucs_6s`)"
     ],
+    "htdemucs-multi": [
+        "HT-Demucs Multi (`facebook/htdemucs` + `facebook/htdemucs_6s`)"
+    ],
     "openwakeword-op": ["openWakeWord op-wiring (`dscripka/openWakeWord`)"],
     "mossformer2-ss-16k": [
         "MossFormer2-SS-16K (`alibabasglab/MossFormer2_SS_16K`)"
