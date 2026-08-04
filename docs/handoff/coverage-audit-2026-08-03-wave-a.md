@@ -1,5 +1,7 @@
 # Coverage-audit 2026-08-03 Wave A + B handoff
 
+> **UPDATE 2026-08-04 #2**: Wave B fast-track 追加 5/13 publish (parakeet-tdt-1.1b 4.28GB / reazonspeech-nemo-v2 2.48GB / firered-asr-aed-l 4.4GB / sortformer-diar-4spk-v1 494MB **T4=CC-BY-NC-4.0 sign-off 修正済** / whisper-medusa-v1 6.25GB = HTTP 200)。**HF vokra org 173 → 178 models (+5 新規)**。**Wave B 累計 10/13 = 76.9% published**。残 3 = magpietts-v2602 / nemotron-speech-streaming-v2603 / parakeet-unified-en-0.6b (**全て NGC-only、HF mirror 不在**) + SenseVoiceSmall (FunASR MODEL_LICENSE owner audit pending) = owner critical path。教訓: `.pth.tar` は実 Zip format (torch.save の zip 内容が拡張子だけ tar に書換え)、torch.load 直接可能。sortformer は HF card 上 CC-BY-NC-4.0 明示、initial sign-off の CC-BY-4.0 は誤記で publish gate が正しく検出 → --allow-noncommercial + T4 化で publish 完了 (X-Codec-2 precedent 踏襲)。中間ファイル (checkpoint + intermediate safetensors) は publish 直後に削除 (disk 一時 100% 到達に対処、依頼者要請)。
+
 > **UPDATE 2026-08-04**: Wave A residual 3/4 publish (dnsmos/rnnoise/nsnet2 = HTTP 200) + Wave B fast-track 5/13 publish (hibiki-2b / sber-gigaam-v3 / sber-gigaam-multilingual / canary-1b-flash / owsm-v4-medium-1b = HTTP 200)。**HF vokra org 165 → 173 models (+8 新規、frcrn は ModelScope classifier block ゆえ owner 手動)**。Wave B 残 8 model は upstream fetch/prep 経路確立済で owner or 次 session sequential 実行可 (§2 参照)。
 
 
