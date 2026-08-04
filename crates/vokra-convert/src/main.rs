@@ -2541,6 +2541,19 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // upstream/license triple readback and the artifact is
         // HF-hosted (upstream_hf stamped, not upstream_url).
         | ModelKind::NeuTtsAir
+        // SoTA plan candidate wave (2026-08-04): SpeechBrain
+        // SGMSE-VoiceBank (apache-2.0, score-based diffusion speech
+        // enhancement — first real-weight consumer of the M3-05
+        // flow_sampler + ODE solver op family). Emits the same
+        // standard `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.upstream_hf` +
+        // `vokra.provenance.{weight_license,license,model_id,source}`
+        // triple as the sibling BF16 pass-through skeletons
+        // (metricgan_plus / mp_senet / sepformer / neutts_air); grouped
+        // here since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback and the artifact is
+        // HF-hosted (upstream_hf stamped, not upstream_url).
+        | ModelKind::Sgmse
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

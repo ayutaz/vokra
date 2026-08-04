@@ -740,6 +740,23 @@ pub mod nemotron_asr;
 pub mod parler;
 pub mod qwen3_asr;
 pub mod sepformer;
+// SGMSE-VoiceBank — Score-based Generative Model for Speech
+// Enhancement (Welker et al. 2022 / Richter et al. 2023), SpeechBrain
+// package `speechbrain/sgmse-voicebank` (apache-2.0). Single-ckpt
+// (`score_model_ema.ckpt` ~263 MB torch pickle) + `hyperparams.yaml`
+// pair; NCSN++ v2 score network + OUVE SDE reverse sampler (predictor:
+// reverse_diffusion, corrector: ald, N=30 per upstream hparams). BF16
+// pass-through skeleton mirror of metricgan_plus / mp_senet / sepformer
+// (single-file safetensors after `tools/parity/
+// sgmse_prepare_checkpoint.py` bridges the .ckpt → .safetensors). First
+// real-weight consumer of the M3-05 `flow_sampler` + ODE solver op
+// family — existing enhancement rows (MetricGAN+ / MP-SENet / DFN3 /
+// FacebookDenoiser) are all masking / time-domain UNet, none exercise
+// the flow sampler path. Runtime binder + real-weight parity are
+// deferred to owner sign-off (`docs/license-audit.md` §3.1) — loud-
+// partial landing per RMVPE / Charsiu / MOSS-Audio-Tokenizer / MioCodec
+// precedent.
+pub mod sgmse;
 // SNAC — Multi-Scale Neural Audio Codec (Siuzdak et al. 2024,
 // hubertsiuzdak/snac_{24khz,44khz}, MIT). BF16 pass-through skeleton
 // mirror of focalcodec / bigvgan (variant-taking, sample-rate specialised).

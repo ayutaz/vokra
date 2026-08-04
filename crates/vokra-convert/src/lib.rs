@@ -2009,6 +2009,36 @@ pub enum ModelKind {
     /// the fine-tuned weight license, identical posture to the
     /// sibling `wham16k-enhancement` / `whamr16k` rows).
     SepformerDns4Enh,
+    /// **speechbrain/sgmse-voicebank** (SoTA plan candidate wave,
+    /// 2026-08-04). Category = `enhancement`. SGMSE = Score-based
+    /// Generative Model for Speech Enhancement (Welker et al. 2022 /
+    /// Richter et al. 2023, arXiv:2212.11851 / arXiv:2208.05830) —
+    /// NCSN++ v2 score network + OUVE SDE reverse sampler (predictor:
+    /// reverse_diffusion, corrector: annealed Langevin dynamics, N=30
+    /// per upstream `hyperparams.yaml`), fine-tuned on the VoiceBank-
+    /// DEMAND corpus (Valentini-Botinhao 2016). Distinct from every
+    /// sibling enhancement / denoise ModelKind (`Denoise` =
+    /// DeepFilterNet3 masking, `MpSenet` / `MpSenetDns` = magnitude+
+    /// phase U-Net, `MetricganPlus` = generator-only PESQ-tuned GAN,
+    /// `SepFormer` family = dual-path Transformer masker+decoder,
+    /// `FacebookDenoiser` = time-domain UNet) — SGMSE's diffusion
+    /// posture warrants its own arch tag `sgmse` (silently sharing
+    /// would mis-route runtime dispatch, FR-EX-08). **First real
+    /// weight** in the Vokra catalog to exercise the M3-05
+    /// `flow_sampler` + ODE solver op family (the sibling enhancement
+    /// rows above are all masking or time-domain UNet). Single
+    /// upstream `.ckpt` (`score_model_ema.ckpt` ~263 MB torch pickle) +
+    /// `hyperparams.yaml`; bridged to safetensors by
+    /// `tools/parity/sgmse_prepare_checkpoint.py` (`.ckpt` payload is
+    /// a flat state_dict of the internal NCSN++ v2 network — SpeechBrain's
+    /// `Pretrainer` adds the `score_model.` prefix at load time; the
+    /// converter preserves the flat layout so a future `Sgmse::from_gguf`
+    /// can walk the same names). Every F32 / F16 / BF16 tensor passes
+    /// through verbatim; the internal NCSN++ v2 + OUVE SDE reverse
+    /// sampler forward is a `loud-partial` follow-up. Provenance =
+    /// **apache-2.0** (Permissive — HF cardData API primary source
+    /// verified 2026-08-04). Convert with `convert_sgmse_file`.
+    Sgmse,
     /// FunASR **fsmn-vad** VAD checkpoint (TIER 1 F wave, 2026-07-30).
     /// Category = `vad`. FSMN = Feedforward Sequential Memory Network
     /// (Zhang et al. 2015 arXiv:1512.08301), the classic FunASR
@@ -3987,6 +4017,21 @@ impl ModelKind {
             | "sepformer-dns4"
             | "sepformer_dns4"
             | "speechbrain/sepformer-dns4-16k-enhancement" => Some(Self::SepformerDns4Enh),
+            // SoTA plan candidate wave (2026-08-04): SpeechBrain
+            // SGMSE-VoiceBank (apache-2.0, score-based diffusion speech
+            // enhancement, first real-weight consumer of the M3-05
+            // flow_sampler + ODE solver op family). Accept the canonical
+            // CLI slug + arch tag `sgmse` (short), the VoiceBank-tuned
+            // spelling `sgmse-voicebank` (matches
+            // `huggingface.co/vokra/sgmse-voicebank` publish target),
+            // underscore variants (mirroring the module filename), and
+            // the upstream `<org>/<name>` HF slug.
+            "sgmse"
+            | "sgmse-voicebank"
+            | "sgmse_voicebank"
+            | "sgmse-voice-bank"
+            | "sgmse_voice_bank"
+            | "speechbrain/sgmse-voicebank" => Some(Self::Sgmse),
             "fsmn-vad"
             | "fsmn_vad"
             | "fsmnvad"
@@ -4593,6 +4638,15 @@ impl ModelKind {
             Self::SepformerLibri3Mix => "sepformer-libri3mix",
             Self::SepformerWhamr8k => "sepformer-whamr-8khz",
             Self::SepformerDns4Enh => "sepformer-dns4-16k-enhancement",
+            // SoTA plan candidate wave (2026-08-04): canonical CLI slug
+            // matches the publish repo tail token
+            // (`huggingface.co/vokra/sgmse-voicebank`) — HF repo naming
+            // = dashes only, lowercase. The bare `sgmse` alias resolves
+            // via `from_arg` for the short spelling, but the display
+            // form keeps the corpus qualifier so the CLI id, the
+            // publish repo id, and the on-disk model name (`vokra.
+            // model.name = "sgmse-voicebank"`) are the same string.
+            Self::Sgmse => "sgmse-voicebank",
             Self::SmartTurn => "smart-turn",
             Self::Snac => "snac",
             Self::Wavtokenizer => "wavtokenizer",
@@ -8781,6 +8835,39 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::SepformerDns4Enh,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Sgmse (SoTA plan candidate wave, 2026-08-04) ===
+        // SpeechBrain SGMSE-VoiceBank — score-based diffusion speech
+        // enhancement (NCSN++ v2 + OUVE SDE reverse sampler, N=30
+        // steps per upstream hyperparams.yaml). First real weight in
+        // the Vokra catalog to exercise the M3-05 flow_sampler + ODE
+        // solver op family — every existing enhancement row
+        // (MetricGAN+ / MP-SENet / DeepFilterNet3 / FacebookDenoiser)
+        // is masking or time-domain UNet, none exercises the flow
+        // sampler path. BF16 pass-through skeleton (F32 / F16 / BF16
+        // verbatim); the internal NCSN++ v2 + reverse sampler forward
+        // is a `loud-partial` follow-up (RMVPE / Charsiu / MOSS-Audio-
+        // Tokenizer / MioCodec landing precedent). apache-2.0 default
+        // (Permissive — HF cardData API primary source verified
+        // 2026-08-04). Upstream `.ckpt` payload is a flat state_dict
+        // of the internal NCSN++ v2 network (SpeechBrain's Pretrainer
+        // adds the `score_model.` prefix at load time); the offline
+        // `.ckpt` → `.safetensors` bridge lives in
+        // `tools/parity/sgmse_prepare_checkpoint.py`.
+        ModelKind::Sgmse => {
+            let report = models::sgmse::convert_sgmse_file(input, output, license)?;
+            let notes = vec![format!(
+                "sgmse-voicebank: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Sgmse,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),

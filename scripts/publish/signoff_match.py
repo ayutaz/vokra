@@ -366,6 +366,16 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # the human name + upstream HF slug for check-converter-signoff
     # substring matching.
     "neutts-air": ["NeuTTS Air (`neuphonic/neutts-air`)"],
+    # SoTA plan candidate wave (2026-08-04): SpeechBrain SGMSE-VoiceBank
+    # (apache-2.0) — first real weight in the Vokra catalog to exercise
+    # the M3-05 flow_sampler + ODE solver op family. Score-based
+    # diffusion speech enhancement (NCSN++ v2 + OUVE SDE reverse
+    # sampler, N=30 steps per upstream hparams). Publish repo tail
+    # token matches Self::Sgmse.as_arg() output "sgmse-voicebank"
+    # (`huggingface.co/vokra/sgmse-voicebank`); §3.1 row heading
+    # anchors on the human name + upstream HF slug for
+    # check-converter-signoff substring matching.
+    "sgmse-voicebank": ["SGMSE-VoiceBank (`speechbrain/sgmse-voicebank`)"],
     "ecapa-tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],
@@ -1141,6 +1151,19 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # anchored on the human name + upstream HF slug (matches the row
     # heading verbatim for check-converter-signoff.sh substring lookup).
     "neutts_air": ["NeuTTS Air (`neuphonic/neutts-air`)"],
+    # SoTA plan candidate wave (2026-08-04): SpeechBrain SGMSE-VoiceBank
+    # (apache-2.0). Converter stem `sgmse` =
+    # `crates/vokra-convert/src/models/sgmse.rs`; single §3.1 row
+    # anchored on the human name + upstream HF slug (matches the row
+    # heading verbatim for check-converter-signoff.sh substring lookup).
+    # First real-weight consumer of M3-05 flow_sampler + ODE solver op
+    # family — the existing enhancement rows (MetricGAN+ / MP-SENet /
+    # DeepFilterNet3 / FacebookDenoiser / SepFormer-enhancement) are
+    # all masking / time-domain UNet, none exercises the flow sampler
+    # path. Runtime binder (NCSN++ v2 forward + OUVE SDE reverse
+    # sampler) is a loud-partial follow-up per RMVPE / Charsiu /
+    # MOSS-Audio-Tokenizer / MioCodec precedent.
+    "sgmse": ["SGMSE-VoiceBank (`speechbrain/sgmse-voicebank`)"],
     "ecapa_tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],

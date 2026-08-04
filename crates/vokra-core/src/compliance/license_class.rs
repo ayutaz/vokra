@@ -754,6 +754,25 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "neu-tts-air"
         | "neu_tts_air"
         | "neuphonic/neutts-air" => LicenseClass::Permissive,
+        // SoTA plan candidate wave (2026-08-04): SpeechBrain
+        // SGMSE-VoiceBank — apache-2.0 (Permissive) end-to-end weight
+        // per HF cardData primary source 2026-08-04
+        // (`api/models/speechbrain/sgmse-voicebank` → `license:
+        // apache-2.0`, `pipeline_tag: audio-to-audio`). The arch tag
+        // (== `vokra.model.arch` = "sgmse"), the VoiceBank-tuned
+        // model name / publish-repo id (`vokra/sgmse-voicebank`), the
+        // underscore variants (`sgmse_voicebank` mirrors the module
+        // filename), and the upstream HF slug are all registered so
+        // an untagged GGUF resolves permissive on the fallback path
+        // regardless of which spelling it carries. SpeechBrain family
+        // stays permissive (same posture as sibling `sepformer` /
+        // `mp-senet` / `metricgan-plus` rows).
+        "sgmse"
+        | "sgmse-voicebank"
+        | "sgmse_voicebank"
+        | "sgmse-voice-bank"
+        | "sgmse_voice_bank"
+        | "speechbrain/sgmse-voicebank" => LicenseClass::Permissive,
         "ecapa-tdnn" | "ecapa_tdnn" | "spkrec-ecapa-voxceleb" => LicenseClass::Permissive,
         "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
             LicenseClass::Permissive
