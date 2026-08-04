@@ -1200,6 +1200,82 @@ pub enum ModelKind {
     /// `convert_jasco_400m_chords_drums_file` — publish requires
     /// `--allow-noncommercial` per MusicGen family T4 precedent.
     Jasco400mChordsDrums,
+    // ---- coverage-audit-2026-08-03 Wave A permissive continuation ----
+    // (2026-08-04): 7 BF16 pass-through skeletons all in the T1
+    // (Permissive) tier — MIT / BSD-2-Clause / Apache-2.0 defaults
+    // land as `LicenseClass::Permissive` and sign-off ☑ Commercial by
+    // yousan at land time. Two flavors: HF-hosted (Utmosv2 /
+    // HtdemucsMulti / OpenwakewordOp / Mossformer2Ss16k /
+    // AudiosealRealWeight) and GitHub-only (TorchaudioSquim / TenVad).
+    /// **UTMOSv2** (`sarulab-speech/UTMOSv2`, MIT,
+    /// coverage-audit-2026-08-03 Wave A permissive continuation) —
+    /// reference-free MOS-TTS quality estimator, direct successor of
+    /// UTMOS22-strong (Baba et al. arXiv:2409.09305, VoiceMOS Challenge
+    /// 2024 SoTA). wav2vec2-large SSL + listener/domain conditioning +
+    /// improved Regressor head. Category = `eval`, distinct arch tag
+    /// from `Utmos` (UTMOS22-strong = wav2vec2-base). Convert with
+    /// `convert_utmosv2_file`.
+    Utmosv2,
+    /// **torchaudio Squim** (`pytorch/audio`, BSD-2-Clause,
+    /// coverage-audit-2026-08-03 Wave A permissive continuation) —
+    /// PyTorch torchaudio SQUIM reference-free speech quality
+    /// estimator, single-pass STOI + PESQ + SI-SDR (`Objective`) + MOS
+    /// (`Subjective`) prediction (Kumar et al. arXiv:2304.01448).
+    /// Category = `eval`, GitHub-only upstream (torch.hub distributed,
+    /// no HF mirror) — stamps `vokra.provenance.upstream_url`.
+    /// Convert with `convert_torchaudio_squim_file`.
+    TorchaudioSquim,
+    /// **HT-Demucs Multi** (`facebook/htdemucs` +
+    /// `facebook/htdemucs_6s`, MIT, coverage-audit-2026-08-03 Wave A
+    /// permissive continuation) — Meta AudioCraft Hybrid Transformer
+    /// Demucs music source separation covering both 4-source
+    /// (`htdemucs_ft`) and 6-source (`htdemucs_6s`) variants under a
+    /// single ModelKind (source count rides in tensor shapes verbatim).
+    /// Category = `source-separation`, distinct arch tag from
+    /// `DemucsHtdemucs` (base 4-stem `facebook/demucs`). Convert with
+    /// `convert_htdemucs_multi_file`.
+    HtdemucsMulti,
+    /// **openWakeWord op-wiring** (`dscripka/openWakeWord`,
+    /// Apache-2.0 code / CC-BY-NC-SA-4.0 official weights,
+    /// coverage-audit-2026-08-03 Wave A permissive continuation) —
+    /// runtime-op-wiring anchor for the first-class `kws` op family
+    /// (Porcupine-compatible). Distinct arch tag from the sibling
+    /// base `Openwakeword` ModelKind — the `_op` variant is where
+    /// user-provided weights route (Vokra does NOT redistribute the
+    /// upstream official CC-BY-NC-SA-4.0 weights). Category =
+    /// `vad-kws`. Convert with `convert_openwakeword_op_file`.
+    OpenwakewordOp,
+    /// **MossFormer2-SS-16K** (`alibabasglab/MossFormer2_SS_16K`,
+    /// Apache-2.0, coverage-audit-2026-08-03 Wave A permissive
+    /// continuation) — Alibaba SGLab cocktail-party / multi-speaker
+    /// speech separator at 16 kHz (Zhao et al. 2024 Interspeech,
+    /// ClearerVoice-Studio project). FSMN + gated-attention topology,
+    /// distinct arch tag from Tsinghua MOSS project (`MossTts` /
+    /// `MossAudioTokenizer` — unrelated naming collision) and from
+    /// `FsmnVad` (shared FSMN block, different task head). Category
+    /// = `source-separation`. Convert with
+    /// `convert_mossformer2_ss_16k_file`.
+    Mossformer2Ss16k,
+    /// **TEN-VAD** (`TEN-framework/ten-vad`, Apache-2.0 main +
+    /// BSD-3-Clause LPCNet-derived front-end,
+    /// coverage-audit-2026-08-03 Wave A permissive continuation) —
+    /// compact ~306 KB LSTM/GRU VAD alternative to Silero VAD v5
+    /// (upstream claim: ~5.5x lighter). Category = `vad-kws`,
+    /// GitHub-only upstream (no HF mirror) — stamps
+    /// `vokra.provenance.upstream_url`. NOTICE attribution required
+    /// for the bundled LPCNet BSD-3-Clause front-end. Convert with
+    /// `convert_ten_vad_file`.
+    TenVad,
+    /// **AudioSeal real weight** (`facebook/audioseal`, MIT,
+    /// coverage-audit-2026-08-03 Wave A permissive continuation) —
+    /// Meta paired Generator + Detector 16-bit-message audio
+    /// watermark for EU AI Act Article 50 compliance
+    /// (2026-08-02 applies, San Roman et al. arXiv:2401.17264).
+    /// Replaces the M5-05 config-only scaffold with a real weight-
+    /// loading path; runtime binder remains gated on M5-05 T04 ADR
+    /// ratification. Category = `watermark`. Convert with
+    /// `convert_audioseal_real_weight_file`.
+    AudiosealRealWeight,
     /// NVIDIA **Nemotron-Speech-Streaming v2603** (Apache-2.0, ~1.2–2
     /// GB) — cache-aware FastConformer streaming ASR (40+ lang).
     /// Convert with `convert_nemotron_speech_streaming_v2603_file`.
@@ -3177,7 +3253,53 @@ impl ModelKind {
             "jasco-400m-chords-drums"
             | "jasco_400m_chords_drums"
             | "jasco-400m"
-            | "facebook/jasco-400m-chords-drums" => Some(Self::Jasco400mChordsDrums),
+            | "jasco-chords-drums-400m"
+            | "facebook/jasco-400m-chords-drums"
+            | "facebook/jasco-chords-drums-400M" => Some(Self::Jasco400mChordsDrums),
+            // ---- coverage-audit-2026-08-03 Wave A permissive continuation ----
+            // (2026-08-04): 7 BF16 pass-through skeletons in the T1
+            // (Permissive) tier. Aliases follow the canonical + common
+            // spelling + upstream org path convention.
+            "utmosv2"
+            | "utmos-v2"
+            | "utmos_v2"
+            | "sarulab-speech/UTMOSv2"
+            | "sarulab-speech/utmosv2" => Some(Self::Utmosv2),
+            "torchaudio-squim"
+            | "torchaudio_squim"
+            | "squim"
+            | "pytorch/audio" => Some(Self::TorchaudioSquim),
+            // Note: bare `"htdemucs"` is claimed by the existing
+            // `DemucsHtdemucs` variant (base 4-stem `facebook/demucs`);
+            // the HtdemucsMulti (4-source-ft + 6-source-multi variants)
+            // uses the more explicit `-ft` / `-6s` / `-4s-6s` / `-multi`
+            // spellings to avoid overlap.
+            "htdemucs-4s-6s"
+            | "htdemucs-4s"
+            | "htdemucs-6s"
+            | "htdemucs-ft"
+            | "htdemucs_4s_6s"
+            | "htdemucs-multi"
+            | "htdemucs_multi"
+            | "facebook/htdemucs_ft"
+            | "facebook/htdemucs_6s" => Some(Self::HtdemucsMulti),
+            "openwakeword-op"
+            | "openwakeword_op"
+            | "owwakeword"
+            | "dscripka/openWakeWord-op" => Some(Self::OpenwakewordOp),
+            "mossformer2-ss-16k"
+            | "mossformer2"
+            | "mossformer2_ss_16k"
+            | "alibabasglab/MossFormer2_SS_16K" => Some(Self::Mossformer2Ss16k),
+            "ten-vad"
+            | "ten_vad"
+            | "TEN-framework/ten-vad"
+            | "ten-framework/ten-vad" => Some(Self::TenVad),
+            "audioseal-real-weight"
+            | "audioseal_real_weight"
+            | "audioseal"
+            | "audio-seal"
+            | "facebook/audioseal" => Some(Self::AudiosealRealWeight),
             "nemotron-speech-streaming-v2603"
             | "nemotron-speech-streaming"
             | "nemotron_speech_streaming_v2603"
@@ -4214,6 +4336,14 @@ impl ModelKind {
             Self::ChatTts => "chattts",
             Self::StableAudioOpenSmall => "stable-audio-open-small",
             Self::Jasco400mChordsDrums => "jasco-400m-chords-drums",
+            // coverage-audit-2026-08-03 Wave A permissive continuation (2026-08-04).
+            Self::Utmosv2 => "utmosv2",
+            Self::TorchaudioSquim => "torchaudio-squim",
+            Self::HtdemucsMulti => "htdemucs-4s-6s",
+            Self::OpenwakewordOp => "openwakeword-op",
+            Self::Mossformer2Ss16k => "mossformer2-ss-16k",
+            Self::TenVad => "ten-vad",
+            Self::AudiosealRealWeight => "audioseal-real-weight",
             Self::NemotronSpeechStreamingV2603 => "nemotron-speech-streaming-v2603",
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
@@ -6218,6 +6348,130 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Jasco400mChordsDrums,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === coverage-audit-2026-08-03 Wave A permissive continuation ===
+        // (2026-08-04): 7 BF16 pass-through skeletons all in the T1
+        // (Permissive) tier — MIT / BSD-2-Clause / Apache-2.0 defaults
+        // land as `LicenseClass::Permissive` and sign-off ☑ Commercial
+        // by yousan at land time.
+        ModelKind::Utmosv2 => {
+            let report = models::utmosv2::convert_utmosv2_file(input, output, license)?;
+            let notes = vec![format!(
+                "utmosv2: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (mit default, Permissive)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Utmosv2,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::TorchaudioSquim => {
+            let report =
+                models::torchaudio_squim::convert_torchaudio_squim_file(input, output, license)?;
+            let notes = vec![format!(
+                "torchaudio-squim: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (bsd-2-clause default, Permissive; GitHub-only upstream, \
+                 vokra.provenance.upstream_url stamped)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::TorchaudioSquim,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::HtdemucsMulti => {
+            let report =
+                models::htdemucs_multi::convert_htdemucs_multi_file(input, output, license)?;
+            let notes = vec![format!(
+                "htdemucs-multi: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (mit default, Permissive; source count 4-vs-6 rides in tensor \
+                 shapes verbatim)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::HtdemucsMulti,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::OpenwakewordOp => {
+            let report =
+                models::openwakeword_op::convert_openwakeword_op_file(input, output, license)?;
+            let notes = vec![format!(
+                "openwakeword-op: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (apache-2.0 code default, Permissive; official upstream \
+                 weights are CC-BY-NC-SA-4.0 — override via --license cc-by-nc-sa-4.0 to flip to \
+                 NonCommercialShareAlike when distributing official weights)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::OpenwakewordOp,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Mossformer2Ss16k => {
+            let report = models::mossformer2_ss_16k::convert_mossformer2_ss_16k_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "mossformer2-ss-16k: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (apache-2.0 default, Permissive)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Mossformer2Ss16k,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::TenVad => {
+            let report = models::ten_vad::convert_ten_vad_file(input, output, license)?;
+            let notes = vec![format!(
+                "ten-vad: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (apache-2.0 default, Permissive; GitHub-only upstream, \
+                 vokra.provenance.upstream_url stamped; NOTICE attribution required for bundled \
+                 LPCNet BSD-3-Clause front-end)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::TenVad,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::AudiosealRealWeight => {
+            let report = models::audioseal_real_weight::convert_audioseal_real_weight_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "audioseal-real-weight: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive; runtime binder gated on M5-05 \
+                 T04 ADR ratification)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::AudiosealRealWeight,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -9386,6 +9640,17 @@ pub use models::nisqa_v2_weight::{NisqaV2WeightReport, convert_nisqa_v2_weight_f
 pub use models::stable_audio_open_small::{
     StableAudioOpenSmallReport, convert_stable_audio_open_small_file,
 };
+// coverage-audit-2026-08-03 Wave A permissive continuation (2026-08-04).
+// 7 BF16 pass-through skeletons all T1 Permissive tier.
+pub use models::audioseal_real_weight::{
+    AudiosealRealWeightReport, convert_audioseal_real_weight_file,
+};
+pub use models::htdemucs_multi::{HtdemucsMultiReport, convert_htdemucs_multi_file};
+pub use models::mossformer2_ss_16k::{Mossformer2Ss16kReport, convert_mossformer2_ss_16k_file};
+pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_file};
+pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
+pub use models::torchaudio_squim::{TorchaudioSquimReport, convert_torchaudio_squim_file};
+pub use models::utmosv2::{Utmosv2Report, convert_utmosv2_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -10990,6 +11255,14 @@ mod modelkind_alias_and_roundtrip_tests {
             ChatTts,
             StableAudioOpenSmall,
             Jasco400mChordsDrums,
+            // coverage-audit-2026-08-03 Wave A permissive continuation (2026-08-04).
+            Utmosv2,
+            TorchaudioSquim,
+            HtdemucsMulti,
+            OpenwakewordOp,
+            Mossformer2Ss16k,
+            TenVad,
+            AudiosealRealWeight,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -11533,6 +11806,77 @@ mod modelkind_alias_and_roundtrip_tests {
                     "jasco_400m_chords_drums",
                     "jasco-400m",
                     "facebook/jasco-400m-chords-drums",
+                ],
+            ),
+            // coverage-audit-2026-08-03 Wave A permissive continuation (2026-08-04).
+            (
+                ModelKind::Utmosv2,
+                &[
+                    "utmosv2",
+                    "utmos-v2",
+                    "utmos_v2",
+                    "sarulab-speech/UTMOSv2",
+                    "sarulab-speech/utmosv2",
+                ],
+            ),
+            (
+                ModelKind::TorchaudioSquim,
+                &[
+                    "torchaudio-squim",
+                    "torchaudio_squim",
+                    "squim",
+                    "pytorch/audio",
+                ],
+            ),
+            (
+                ModelKind::HtdemucsMulti,
+                &[
+                    "htdemucs-4s-6s",
+                    "htdemucs-4s",
+                    "htdemucs-6s",
+                    "htdemucs-ft",
+                    "htdemucs_4s_6s",
+                    "htdemucs-multi",
+                    "htdemucs_multi",
+                    "facebook/htdemucs_ft",
+                    "facebook/htdemucs_6s",
+                ],
+            ),
+            (
+                ModelKind::OpenwakewordOp,
+                &[
+                    "openwakeword-op",
+                    "openwakeword_op",
+                    "owwakeword",
+                    "dscripka/openWakeWord-op",
+                ],
+            ),
+            (
+                ModelKind::Mossformer2Ss16k,
+                &[
+                    "mossformer2-ss-16k",
+                    "mossformer2",
+                    "mossformer2_ss_16k",
+                    "alibabasglab/MossFormer2_SS_16K",
+                ],
+            ),
+            (
+                ModelKind::TenVad,
+                &[
+                    "ten-vad",
+                    "ten_vad",
+                    "TEN-framework/ten-vad",
+                    "ten-framework/ten-vad",
+                ],
+            ),
+            (
+                ModelKind::AudiosealRealWeight,
+                &[
+                    "audioseal-real-weight",
+                    "audioseal_real_weight",
+                    "audioseal",
+                    "audio-seal",
+                    "facebook/audioseal",
                 ],
             ),
         ];

@@ -905,8 +905,23 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "Stability AI Stable Audio Open Small (`stabilityai/stable-audio-open-small`)"
     ],
     "jasco-400m-chords-drums": [
-        "Meta JASCO 400M Chords+Drums (`facebook/jasco-400m-chords-drums`)"
+        "Meta JASCO 400M Chords+Drums (`facebook/jasco-chords-drums-400M`)"
     ],
+    # coverage-audit-2026-08-03 Wave A permissive continuation
+    # (2026-08-04): 7 T1 (Permissive) rows all ☑ Commercial 2026-08-04
+    # yousan. publish-one.sh maps `--repo <slug>` to APPROVED against
+    # the pre-signed §3.1 row.
+    "utmosv2": ["UTMOSv2 (`sarulab-speech/UTMOSv2`)"],
+    "torchaudio-squim": ["torchaudio Squim (`pytorch/audio`)"],
+    "htdemucs-4s-6s": [
+        "HT-Demucs Multi (`facebook/htdemucs` + `facebook/htdemucs_6s`)"
+    ],
+    "openwakeword-op": ["openWakeWord op-wiring (`dscripka/openWakeWord`)"],
+    "mossformer2-ss-16k": [
+        "MossFormer2-SS-16K (`alibabasglab/MossFormer2_SS_16K`)"
+    ],
+    "ten-vad": ["TEN-VAD (`TEN-framework/ten-vad`)"],
+    "audioseal-real-weight": ["AudioSeal real weight (`facebook/audioseal`)"],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
@@ -1344,8 +1359,23 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "Stability AI Stable Audio Open Small (`stabilityai/stable-audio-open-small`)"
     ],
     "jasco_400m_chords_drums": [
-        "Meta JASCO 400M Chords+Drums (`facebook/jasco-400m-chords-drums`)"
+        "Meta JASCO 400M Chords+Drums (`facebook/jasco-chords-drums-400M`)"
     ],
+    # coverage-audit-2026-08-03 Wave A permissive continuation
+    # (2026-08-04): 7 BF16 pass-through skeleton converters, all T1
+    # (Permissive) tier. Row headings match `docs/license-audit.md`
+    # §3.1 byte-for-byte.
+    "utmosv2": ["UTMOSv2 (`sarulab-speech/UTMOSv2`)"],
+    "torchaudio_squim": ["torchaudio Squim (`pytorch/audio`)"],
+    "htdemucs_multi": [
+        "HT-Demucs Multi (`facebook/htdemucs` + `facebook/htdemucs_6s`)"
+    ],
+    "openwakeword_op": ["openWakeWord op-wiring (`dscripka/openWakeWord`)"],
+    "mossformer2_ss_16k": [
+        "MossFormer2-SS-16K (`alibabasglab/MossFormer2_SS_16K`)"
+    ],
+    "ten_vad": ["TEN-VAD (`TEN-framework/ten-vad`)"],
+    "audioseal_real_weight": ["AudioSeal real weight (`facebook/audioseal`)"],
 }
 
 # Converters that intentionally have no §3.1 row.

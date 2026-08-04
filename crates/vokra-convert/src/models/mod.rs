@@ -857,3 +857,21 @@ pub mod jasco_400m_chords_drums;
 pub mod nisqa_v2_weight;
 pub mod stable_audio_open_small;
 // ---------------------------------------------------------------------------
+// coverage-audit-2026-08-03 Wave A permissive continuation (2026-08-04):
+// 7 BF16 pass-through skeletons on the same shared verify surface as the
+// Wave A permissive top-5 (nkf_aec / rnnoise / nsnet2 / dnsmos / frcrn) and
+// the Wave D T4 batch. All T1 (Permissive) — MIT / BSD-2-Clause / Apache-2.0
+// defaults land as `LicenseClass::Permissive`, sign-off ☑ Commercial by
+// yousan at land time (Wave A permissive posture). Two flavors: HF-hosted
+// (utmosv2 / htdemucs_multi / openwakeword_op / mossformer2_ss_16k /
+// audioseal_real_weight) stamp `vokra.provenance.upstream_hf`; GitHub-only
+// (torchaudio_squim / ten_vad) stamp `vokra.provenance.upstream_url` per
+// the NKF-AEC / RNNoise / NSNet2 / facebook_denoiser precedent.
+pub mod audioseal_real_weight;
+pub mod htdemucs_multi;
+pub mod mossformer2_ss_16k;
+pub mod openwakeword_op;
+pub mod ten_vad;
+pub mod torchaudio_squim;
+pub mod utmosv2;
+// ---------------------------------------------------------------------------

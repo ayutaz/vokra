@@ -1,4 +1,4 @@
-//! **JASCO 400M Chords+Drums** (`facebook/jasco-400m-chords-drums`,
+//! **JASCO 400M Chords+Drums** (`facebook/jasco-chords-drums-400M`,
 //! **cc-by-nc-4.0**): safetensors → GGUF conversion
 //! (coverage-audit-2026-08-03 Wave D T4).
 //!
@@ -7,7 +7,7 @@
 //! Conditioning for Temporally Controlled Text-to-Music Generation",
 //! arXiv:2406.10970) — 400M parameter variant conditioned jointly on
 //! text + chord progression + drum tracks, distributed on HuggingFace
-//! at `huggingface.co/facebook/jasco-400m-chords-drums`. Weight
+//! at `huggingface.co/facebook/jasco-chords-drums-400M`. Weight
 //! license is **CC-BY-NC-4.0** (research-only, T4 tier — MusicGen
 //! family / X-Codec-2 precedent), so publish requires
 //! `--allow-noncommercial` and the runtime M2-13 gate refuses
@@ -54,7 +54,7 @@ use crate::safetensors::SafetensorsFile;
 pub const ARCH: &str = "jasco_400m_chords_drums";
 
 /// `vokra.model.name` value written for the canonical
-/// `facebook/jasco-400m-chords-drums` release.
+/// `facebook/jasco-chords-drums-400M` release.
 pub const NAME: &str = "jasco_400m_chords_drums";
 
 /// `vokra.model.category` value written for every JASCO 400M GGUF.
@@ -64,8 +64,8 @@ pub const CATEGORY: &str = "music";
 
 /// Upstream HF repository slug (`org/name`), recorded under
 /// `vokra.provenance.upstream_hf`. Verified against
-/// `huggingface.co/facebook/jasco-400m-chords-drums`.
-pub const UPSTREAM_HF: &str = "facebook/jasco-400m-chords-drums";
+/// `huggingface.co/facebook/jasco-chords-drums-400M`.
+pub const UPSTREAM_HF: &str = "facebook/jasco-chords-drums-400M";
 
 /// Default upstream weight licence (SPDX). Verified against the
 /// upstream HF card — CC-BY-NC-4.0 (research-only, non-commercial,
@@ -128,7 +128,7 @@ pub fn convert_jasco_400m_chords_drums_file(
         effective_spdx,
         Some(NAME),
         Some(
-            "facebook/jasco-400m-chords-drums (Meta AudioCraft joint audio-symbolic \
+            "facebook/jasco-chords-drums-400M (Meta AudioCraft joint audio-symbolic \
              conditioning music generator, Tal et al. 2024 arXiv:2406.10970, \
              CC-BY-NC-4.0 — owner §3.1 sign-off required, publish requires \
              --allow-noncommercial per MusicGen family T4 precedent)",

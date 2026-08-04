@@ -2492,6 +2492,20 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::ChatTts
         | ModelKind::StableAudioOpenSmall
         | ModelKind::Jasco400mChordsDrums
+        // ---- coverage-audit-2026-08-03 Wave A permissive continuation ----
+        // (2026-08-04): 5 HF-hosted BF16 pass-through skeletons on the same
+        // shared verify surface. UTMOSv2 / HT-Demucs Multi / openWakeWord op /
+        // MossFormer2-SS-16K / AudioSeal real weight all stamp
+        // `vokra.provenance.upstream_hf`. The 2 GitHub-only siblings
+        // (torchaudio_squim + ten_vad) live in the dedicated arm below
+        // (grouped with facebook_denoiser + nisqa_v2_weight) because they
+        // stamp `vokra.provenance.upstream_url` — reading the wrong key
+        // would surface `<none>` and hide the URL.
+        | ModelKind::Utmosv2
+        | ModelKind::HtdemucsMulti
+        | ModelKind::OpenwakewordOp
+        | ModelKind::Mossformer2Ss16k
+        | ModelKind::AudiosealRealWeight
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
@@ -2641,7 +2655,15 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // NKF-AEC / RNNoise / NSNet2 / DNSMOS precedent — dedicated arms
         // keep the URL slot visible instead of falling through to a
         // `<none>` in an upstream_hf-only readback.
-        ModelKind::FacebookDenoiser | ModelKind::NisqaV2Weight => {
+        ModelKind::FacebookDenoiser
+        | ModelKind::NisqaV2Weight
+        // coverage-audit-2026-08-03 Wave A permissive continuation
+        // (2026-08-04): 2 GitHub-only entries in the permissive
+        // continuation (torchaudio_squim + ten_vad) that stamp
+        // `vokra.provenance.upstream_url` per the NKF-AEC / RNNoise /
+        // NSNet2 / facebook_denoiser precedent.
+        | ModelKind::TorchaudioSquim
+        | ModelKind::TenVad => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())
