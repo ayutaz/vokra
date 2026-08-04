@@ -209,6 +209,42 @@ impl DuplexSessionConfig {
     }
 }
 
+/// A keyword-spotting / wake-word engine (implemented natively in
+/// `vokra-models`, e.g. openWakeWord = 2026-08-05).
+///
+/// KWS is inherently streaming: the model consumes a rolling embedding
+/// window (~775 ms at 16 kHz for openWakeWord) and emits one
+/// probability per wake-word every ~80 ms hop, so the trait exposes a
+/// single **stateful** `push_pcm16k` that carries the internal window
+/// buffer + per-wake-word rolling probabilities across calls. Callers
+/// only push 16 kHz mono PCM and receive `(wakeword_name, probability)`
+/// pairs for the wake-words whose latest score is fresh this push.
+///
+/// The trait deliberately hides the two-stage internal architecture
+/// (mel front-end → shared embedding extractor → per-wake-word
+/// classifier MLP) — a change to that architecture is a
+/// [`vokra_models::kws`] implementation detail, not an engine-contract
+/// break.
+pub trait KwsEngine: Send + Sync {
+    /// Names of the wake-words this engine can recognise, in the order
+    /// [`push_pcm16k`](Self::push_pcm16k) reports them. Names are the
+    /// upstream openWakeWord model names (e.g. `"alexa"`, `"hey_jarvis"`,
+    /// `"hey_mycroft"`) transcribed verbatim into the GGUF's
+    /// `vokra.openwakeword.wakeword_names` array chunk.
+    fn wakeword_names(&self) -> &[String];
+
+    /// Pushes 16 kHz mono `f32` PCM and returns the wake-word
+    /// probabilities that completed on this push. Each entry is
+    /// `(wakeword_name, probability ∈ [0, 1])`.
+    ///
+    /// The engine buffers samples internally; `push_pcm16k` may return
+    /// an empty vector when the rolling embedding window has not yet
+    /// filled, and multiple entries when several 80 ms hops complete on
+    /// one push. Callers threshold the returned probabilities
+    /// downstream (typically at `0.5`).
+    fn push_pcm16k(&mut self, samples: &[f32]) -> Result<Vec<(String, f32)>>;
+}
+
 /// A text-to-speech engine (implemented natively in `vokra-models`, e.g.
 /// piper-plus MB-iSTFT-VITS2 = M0-07).
 pub trait TtsEngine: Send + Sync {

@@ -178,6 +178,19 @@ pub mod kaldi_fbank;
 pub mod length_conditioning;
 pub mod mel;
 pub mod mfcc;
+// ---- SoTA plan KWS binder (openwakeword classifier MLP, 2026-08-05) -----
+// Per-wake-word `Linear → ReLU → Linear → Sigmoid` classifier over a shared
+// 96-d speech embedding. First consumer is `vokra-models::kws::openwakeword`
+// (dscripka/openWakeWord, Apache-2.0 code). The embedding extractor itself
+// (frozen Google `speech_embedding` TFLite) is a **loud-partial** follow-up
+// gated on the owner-provisioned bundle (RMVPE precedent — see
+// `crate::denoise` / `vokra_models::f0::rmvpe`). Runtime function, NOT an
+// `OpKind` variant (same posture as `flow_sampler` / RVQ / FSQ — ADR M3-06
+// §D-b): the per-wake-word bundle shape does not fit the `OpValue`
+// dispatch surface. Localised re-export block for clean parallel-wave
+// rebases.
+pub mod openwakeword;
+// -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq codec decode (RVQ family, FR-OP-30) -----------------
 // New module + re-export block. Wave 3 (M3-07) will touch the same file, so
 // this block is kept localised for a clean rebase target. Mimi is CC-BY 4.0
@@ -349,6 +362,9 @@ pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
 pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+// ---- SoTA plan KWS binder openwakeword re-exports (2026-08-05) ----------
+pub use openwakeword::{OpenwakewordClassifierWeights, openwakeword_classifier_forward};
+// -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq re-exports ------------------------------------------
 pub use mimi_rvq::{
     CodebookTable, MimiDecoder, MimiRvqAttrs, codebook_lookup, mimi_paged_dims, mimi_rvq_decode,

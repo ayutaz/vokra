@@ -272,6 +272,11 @@ pub mod qwen3_tts;
 // NOT REFERENCED (AGPL-3.0) sources.
 pub mod sbv2;
 pub mod silero_vad;
+// KWS (keyword-spotting / wake-word) family (SoTA plan KWS binder, 2026-08-05).
+// First member: openWakeWord (dscripka/openWakeWord, Apache-2.0 code).
+// Runtime binder for the `openwakeword_op` converter arch (2026-08-04).
+// See `crates/vokra-models/src/kws/mod.rs` for the family charter.
+pub mod kws;
 // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR **FSMN-VAD**
 // (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT). Feed-forward
 // Sequential Memory Network for voice activity detection. Distinct
