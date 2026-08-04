@@ -197,6 +197,21 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # for-byte once the audit doc is updated in a post-workflow batch.
     # Scale ~1.26 GB = local convert safe on M1 iMac.
     "hubert-large-ls960": ["HuBERT-Large-LS960 (`facebook/hubert-large-ls960-ft`)"],
+    # 2026-08-04 hf-audio-gap SSL residual: w2v-BERT 2.0 (Meta, MIT).
+    # ~580M-parameter self-supervised speech encoder = Conformer body
+    # + dual (wav2vec2-style contrastive + BERT-style MLM) SSL branches
+    # (Chung et al. 2021 arXiv:2108.06209). Distinct arch tag
+    # `w2v-bert-2` from sibling SSL encoders (hubert / wav2vec2_ctc /
+    # data2vec-audio) — Conformer vs vanilla Transformer body +
+    # combined SSL objectives = silently sharing would mis-route
+    # runtime dispatch (FR-EX-08). Row heading matches
+    # `docs/license-audit.md` §3.1 byte-for-byte (☑ Commercial
+    # 2026-08-04 yousan sign-off landed same day). Scale ~2.16 GB
+    # single-file safetensors = **vast.ai handoff** per memory
+    # `[[feedback-large-models-on-vast-ai]]` (exceeds 2 GB CC workflow
+    # local-convert owner threshold). The actual publish happens on
+    # vast.ai per `docs/handoff/vast-ai-large-model-publish.md`.
+    "w2v-bert-2-0": ["w2v-BERT 2.0 (`facebook/w2v-bert-2.0`)"],
     # 2026-08-02 Wave residual: HT-Demucs (Meta, MIT per upstream
     # `github.com/facebookresearch/demucs` LICENSE — HF mirror 401 on
     # 2026-08-02 residual walk). Hybrid transformer Demucs (Rouard et al.
@@ -1000,6 +1015,10 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "ace_step": ["ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`)"],
     # 2026-08-01 Wave 7 residual converter (`hubert_large_ls960.rs`).
     "hubert_large_ls960": ["HuBERT-Large-LS960 (`facebook/hubert-large-ls960-ft`)"],
+    # 2026-08-04 hf-audio-gap SSL residual converter (`w2v_bert_2.rs`)
+    # — Meta w2v-BERT 2.0 ~580M SSL speech encoder (Conformer body +
+    # dual contrastive + MLM branches), MIT.
+    "w2v_bert_2": ["w2v-BERT 2.0 (`facebook/w2v-bert-2.0`)"],
     # 2026-08-02 Wave residual converter (`demucs_htdemucs.rs`) — Meta
     # HT-Demucs hybrid transformer 4-source music separation, MIT.
     "demucs_htdemucs": ["HT-Demucs (`facebook/demucs`)"],

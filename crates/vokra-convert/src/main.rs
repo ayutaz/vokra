@@ -2337,6 +2337,21 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // masked-convnet with Gumbel-softmax quantised negatives).
         // Category `asr`. Grouped here for the uniform verify shape.
         | ModelKind::HubertLargeLs960
+        // 2026-08-04 hf-audio-gap SSL residual: w2v-BERT 2.0
+        // (`facebook/w2v-bert-2.0`, MIT). ~580M-parameter self-
+        // supervised speech encoder = Conformer body + dual
+        // (wav2vec2-style contrastive + BERT-style MLM) SSL branches
+        // (Chung et al. 2021 arXiv:2108.06209). Standalone binder
+        // vs INTERNAL subgraph inside `vieneu` / `seamless_m4t_v2_
+        // large` composites. Distinct arch tag `w2v-bert-2` from
+        // sibling SSL encoders (hubert / wav2vec2_ctc / data2vec-
+        // audio) — Conformer vs vanilla Transformer body + combined
+        // SSL objectives = silently sharing would mis-route runtime
+        // dispatch (FR-EX-08). Category `asr`. Grouped here for the
+        // uniform verify shape (BF16 pass-through skeleton mirror of
+        // hubert_large_ls960 / moonshine_base / musicgen_small /
+        // openwakeword).
+        | ModelKind::W2vBert2
         // 2026-08-01 Wave 5 music-generation add: AudioLDM 2
         // (`cvssp/audioldm2`, cc-by-nc-sa-4.0). Text-to-audio latent-
         // diffusion generator (Liu et al. 2024 arXiv:2308.05734).

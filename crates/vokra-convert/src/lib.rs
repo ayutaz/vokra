@@ -2441,6 +2441,77 @@ pub enum ModelKind {
     /// (apache-2.0 per HF cardData). Scale ~1.26 GB = local convert
     /// safe on M1 iMac 16 GB (well below the vast.ai 8 GB cutoff).
     HubertLargeLs960,
+    /// **w2v-BERT 2.0** (`facebook/w2v-bert-2.0`, **MIT**) safetensors
+    /// → GGUF (hf-audio-gap SSL residual, 2026-08-04). Chung et al.
+    /// 2021 arXiv:2108.06209 "w2v-BERT: Combining Contrastive Learning
+    /// and Masked Language Modeling for Self-Supervised Speech Pre-
+    /// Training" = ~580M-parameter self-supervised speech encoder =
+    /// Conformer encoder body + dual (wav2vec2-style contrastive +
+    /// BERT-style MLM) SSL branches over the shared representation.
+    /// Released standalone by Meta alongside Seamless-M4T v2
+    /// (Barrault et al. 2023 arXiv:2312.05187) as the "speech encoder
+    /// half" of the Seamless stack.
+    ///
+    /// **Standalone vs internal-subgraph identity**: prior to this
+    /// converter, w2v-BERT 2.0 tensors were present in the Vokra
+    /// converter tree only as an INTERNAL subgraph inside two
+    /// composite models — (a) [`Self::VieNeuTts`] uses w2v-BERT as its
+    /// speaker encoder, (b) [`Self::SeamlessM4tV2Large`] uses w2v-BERT
+    /// as its speech encoder. Neither exposes w2v-BERT for standalone
+    /// use; a downstream who wants SSL feature extraction for a new
+    /// per-language ASR / speaker / VAD head (143+ languages
+    /// pretrained per the HF release manifest) requires a standalone
+    /// binder that packs the encoder alone, without composite
+    /// scaffolding. This variant lands precisely that standalone path.
+    ///
+    /// **Distinct arch tag `w2v-bert-2`** from siblings
+    /// [`Self::HubertLargeLs960`] / [`Self::Wav2Vec2Ctc`] /
+    /// [`Self::Data2vecAudioBase`] — the three SSL siblings share the
+    /// general feature-extractor + Transformer-body + SSL-head shape
+    /// but differ in pretraining objective and encoder topology
+    /// (HuBERT = BERT-style masked-feature prediction over a vanilla
+    /// Transformer body, wav2vec 2.0 = contrastive convnet with
+    /// Gumbel-softmax quantised negatives over a vanilla Transformer
+    /// body, data2vec-audio = contextualised latent representation
+    /// prediction with an EMA teacher over a wav2vec2 body, w2v-BERT
+    /// = combined contrastive + MLM branches over a **Conformer**
+    /// encoder body). Silently sharing an arch tag would mis-route
+    /// runtime dispatch at the encoder body (Conformer vs vanilla
+    /// Transformer has different attention + convolution interleave +
+    /// layer-norm placement), which FR-EX-08 (no silent op-shape
+    /// misroute) forbids. Category `asr` shared with the SSL sibling
+    /// family + Whisper. License **MIT** (HF cardData primary source
+    /// `https://huggingface.co/api/models/facebook/w2v-bert-2.0` =
+    /// `{"license":"mit","cardData":{"license":"mit"}}`, CC-verified
+    /// 2026-08-04) → [`vokra_core::LicenseClass::Permissive`] default,
+    /// sibling to Whisper / piper-plus / Silero / CAM++ / Moonshine /
+    /// HuBERT / wav2vec2 first-party Permissive posture.
+    ///
+    /// **Scale ~2.16 GB single-file safetensors** (HF
+    /// `/api/models/facebook/w2v-bert-2.0/tree/main` primary source
+    /// `model.safetensors.size = 2_322_063_736`, CC-verified
+    /// 2026-08-04) = **vast.ai handoff required** per memory
+    /// `[[feedback-large-models-on-vast-ai]]` and
+    /// `docs/handoff/vast-ai-large-model-publish.md` — **exceeds the
+    /// 2 GB local-convert CC-workflow owner threshold**. Converter +
+    /// §3.1 audit row + `signoff_match.py` entries land today so the
+    /// future vast.ai owner publish is one command away
+    /// (`bash scripts/publish/publish-one.sh w2v-bert-2-0 --push`),
+    /// but the actual convert + upload happens on vast.ai (not
+    /// M1 iMac).
+    ///
+    /// BF16 pass-through skeleton mirror of sibling
+    /// `hubert_large_ls960` / `moonshine_base` / `musicgen_small` /
+    /// `openwakeword` — no convert-time widening, runtime widens
+    /// BF16 → f32 losslessly at load. Upstream ships F32 (per HF
+    /// `safetensors.parameters.F32 = 580_493_120`); the BF16 arm is
+    /// exercised only when a downstream re-quantises before
+    /// conversion. Runtime binder (Conformer encoder forward + SSL
+    /// feature extraction) is deferred to a follow-up (`docs/license-
+    /// audit.md` §3.1 sign-off + owner ADR) — the future native
+    /// forward will reuse the shared `vokra_ops::conformer` primitive
+    /// (SoTA plan Phase 2 landed op, no per-model op duplication).
+    W2vBert2,
     /// **AudioLDM 2** (`cvssp/audioldm2`, **cc-by-nc-sa-4.0**)
     /// safetensors checkpoint (Wave 5 candidate, 2026-08-01).
     /// Text-to-audio latent-diffusion generator (Liu et al. 2024 ICML,
@@ -4109,6 +4180,28 @@ impl ModelKind {
             | "hubert_large_ls960_ft"
             | "facebook-hubert-large-ls960-ft"
             | "facebook/hubert-large-ls960-ft" => Some(Self::HubertLargeLs960),
+            // w2v-BERT 2.0 (hf-audio-gap SSL residual, 2026-08-04,
+            // `facebook/w2v-bert-2.0`, MIT). ~580M-parameter SSL speech
+            // encoder = Conformer body + dual contrastive + MLM branches.
+            // Distinct arch tag `w2v-bert-2` from siblings hubert /
+            // wav2vec2_ctc / data2vec-audio (Conformer vs vanilla
+            // Transformer body + combined SSL objectives) — silently
+            // sharing would mis-route runtime dispatch (FR-EX-08).
+            // Accept the arch tag (hyphen / underscore / dot variants),
+            // the family-name spellings, and the canonical HF release id.
+            "w2v-bert-2"
+            | "w2v_bert_2"
+            | "w2v-bert-2-0"
+            | "w2v_bert_2_0"
+            | "w2v-bert-2.0"
+            | "w2vbert2"
+            | "w2vbert-2"
+            | "w2v-bert"
+            | "wav2vec2-bert"
+            | "wav2vec2_bert"
+            | "facebook-w2v-bert-2-0"
+            | "facebook-w2v-bert-2.0"
+            | "facebook/w2v-bert-2.0" => Some(Self::W2vBert2),
             // AudioLDM 2 (Wave 5 candidate, 2026-08-01,
             // `cvssp/audioldm2`, **cc-by-nc-sa-4.0**). Accept the arch
             // tag (`audioldm2` / `audio-ldm-2` / `audio_ldm_2`), the
@@ -4478,6 +4571,7 @@ impl ModelKind {
             Self::VibeVoiceAsr => "vibevoice-asr",
             Self::AceStep => "ace-step-1.5",
             Self::HubertLargeLs960 => "hubert-large-ls960",
+            Self::W2vBert2 => "w2v-bert-2-0",
             Self::AudioLdm2 => "audioldm2",
             Self::AudioLdm2Large => "audioldm2-large",
             Self::BsRoformer => "bs-roformer",
@@ -7717,6 +7811,44 @@ pub fn convert_file_licensed(
                  runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
                  (apache-2.0 default, Permissive — distinct arch tag `hubert` from sibling \
                  wav2vec2 despite shared ops)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === W2vBert2 (2026-08-04 hf-audio-gap SSL residual) ===
+        ModelKind::W2vBert2 => {
+            // w2v-BERT 2.0 (`facebook/w2v-bert-2.0`, MIT). ~580M-
+            // parameter self-supervised speech encoder = Conformer body
+            // + dual (wav2vec2-style contrastive + BERT-style MLM) SSL
+            // branches (Chung et al. 2021 arXiv:2108.06209). Standalone
+            // ModelKind = the encoder alone, distinct from composite
+            // consumers `vieneu` / `seamless_m4t_v2_large` where it
+            // rides as an INTERNAL subgraph. BF16 pass-through skeleton
+            // mirror of sibling `hubert_large_ls960` / `moonshine_base`
+            // / `musicgen_small` / `openwakeword`. Distinct arch tag
+            // `w2v-bert-2` from siblings hubert / wav2vec2_ctc /
+            // data2vec-audio (Conformer vs vanilla Transformer body +
+            // combined SSL objectives) — FR-EX-08 (no silent op-shape
+            // misroute) requires the distinct arch tag. Scale ~2.16 GB
+            // = **vast.ai handoff** per memory `[[feedback-large-
+            // models-on-vast-ai]]` (exceeds the 2 GB CC workflow
+            // local-convert owner threshold); the converter + §3.1
+            // audit row + signoff_match.py entries land today, actual
+            // publish runs on vast.ai per `docs/handoff/vast-ai-large-
+            // model-publish.md`.
+            let report = models::w2v_bert_2::convert_w2v_bert_2_file(input, output, license)?;
+            let notes = vec![format!(
+                "w2v-bert-2.0: {} float weights written verbatim ({} BF16 passthrough — \
+                 runtime widens to f32 exactly at load), {} non-float skipped, {} tensors read \
+                 (mit default, Permissive — distinct arch tag `w2v-bert-2` from sibling \
+                 hubert / wav2vec2_ctc / data2vec-audio despite shared SSL family; ~2.16 GB \
+                 single-file safetensors = vast.ai handoff per feedback-large-models-on-vast-ai)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {

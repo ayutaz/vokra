@@ -687,6 +687,23 @@ pub mod ace_step;
 // HuBERT checkpoint into a wav2vec2 loader silently (FR-EX-08).
 // Scale ~1.26 GB = local convert safe on M1 iMac 16 GB.
 pub mod hubert_large_ls960;
+// 2026-08-04 hf-audio-gap SSL residual: Meta w2v-BERT 2.0
+// (`facebook/w2v-bert-2.0`, MIT). ~580M-parameter self-supervised
+// speech encoder = Conformer body + dual (wav2vec2-style contrastive +
+// BERT-style MLM) SSL branches (Chung et al. 2021 arXiv:2108.06209).
+// Previously present in the Vokra converter tree only as an INTERNAL
+// subgraph inside `vieneu` + `seamless_m4t_v2_large` composites;
+// standalone use (SSL feature extraction across 143+ languages)
+// requires its own `ModelKind::W2vBert2` binder. Distinct arch tag
+// `w2v-bert-2` from siblings `hubert` / `wav2vec2_ctc` / `data2vec-
+// audio` — the three SSL siblings share the encoder+SSL-head shape
+// but differ in pretraining objective + encoder topology (Conformer
+// vs vanilla Transformer), so silently sharing an arch tag would
+// mis-route runtime dispatch (FR-EX-08). Scale ~2.16 GB single-file
+// safetensors = **vast.ai handoff** per memory
+// `[[feedback-large-models-on-vast-ai]]` (exceeds the 2 GB CC
+// workflow local-convert threshold).
+pub mod w2v_bert_2;
 // 2026-08-01 Wave 3 codec add: Amphion NaturalSpeech 3 FACodec
 // (`amphion/naturalspeech3_facodec`, apache-2.0). Factorized VQ (FVQ)
 // neural audio codec at 16 kHz, 3 parallel quantizer heads over
