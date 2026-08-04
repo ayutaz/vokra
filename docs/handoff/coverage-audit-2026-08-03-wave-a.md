@@ -1,4 +1,8 @@
-# Coverage-audit 2026-08-03 Wave A handoff
+# Coverage-audit 2026-08-03 Wave A + B handoff
+
+> **UPDATE 2026-08-04**: Wave A residual 3/4 publish (dnsmos/rnnoise/nsnet2 = HTTP 200) + Wave B fast-track 5/13 publish (hibiki-2b / sber-gigaam-v3 / sber-gigaam-multilingual / canary-1b-flash / owsm-v4-medium-1b = HTTP 200)。**HF vokra org 165 → 173 models (+8 新規、frcrn は ModelScope classifier block ゆえ owner 手動)**。Wave B 残 8 model は upstream fetch/prep 経路確立済で owner or 次 session sequential 実行可 (§2 参照)。
+
+
 
 > 依頼者「ultracodeで計画を立てて全てを対応を進めてください」に基づき launch した coverage-audit 2026-08-03 Wave A top-5 の実装 + publish 進捗。CC 側の converter code 全 landed、publish は 1/5 completed = **nkf-aec** のみ、他 4 model は upstream fetch friction で **owner critical path**。
 
