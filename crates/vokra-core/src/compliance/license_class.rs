@@ -721,6 +721,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         }
         "bicodec" | "bi-codec" | "bi_codec" | "spark-tts-bicodec" => LicenseClass::Permissive,
         "neucodec" | "neu-codec" | "neu_codec" => LicenseClass::Permissive,
+        // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement
+        // wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 — MIT
+        // (Permissive) end-to-end weight per HF cardData primary source
+        // 2026-08-04 (`api/models/Aratako/MioCodec-25Hz-44.1kHz-v2` →
+        // `license: mit`). The arch tag (underscore == `vokra.model.arch`),
+        // the CLI slug (hyphen), and the versioned publish repo slug
+        // (`miocodec-25hz-44khz-v2` — matches
+        // `huggingface.co/vokra/miocodec-25hz-44khz-v2`) are all
+        // registered so an untagged GGUF resolves permissive on the
+        // fallback path regardless of which spelling it carries.
+        "miocodec"
+        | "mio-codec"
+        | "mio_codec"
+        | "miocodec-25hz-44khz-v2"
+        | "miocodec_25hz_44khz_v2"
+        | "aratako/miocodec-25hz-44.1khz-v2" => LicenseClass::Permissive,
         "ecapa-tdnn" | "ecapa_tdnn" | "spkrec-ecapa-voxceleb" => LicenseClass::Permissive,
         "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
             LicenseClass::Permissive

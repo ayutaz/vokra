@@ -1276,6 +1276,31 @@ pub enum ModelKind {
     /// ratification. Category = `watermark`. Convert with
     /// `convert_audioseal_real_weight_file`.
     AudiosealRealWeight,
+    /// **Aratako/MioCodec-25Hz-44.1kHz-v2** (MIT,
+    /// hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement
+    /// wave, 2026-08-04). Category = `codec`. Single-safetensors
+    /// JA-focused 25 Hz / 44.1 kHz multilingual speech codec (~132M
+    /// F32 params, ~528 MB, `pipeline: audio-to-audio`, 11-language
+    /// coverage `en / ja / nl / fr / de / it / pl / pt / es / ko / zh`,
+    /// arXiv:2507.21138). Fine-tuned from `Aratako/MioCodec-25Hz-24kHz`
+    /// on `sarulab-speech/mls_sidon` + `mythicinfinity/Libriheavy-HQ`
+    /// + `nvidia/hifitts-2`. **Simplest of the batch** — mirrors the
+    /// bicodec / neucodec / focalcodec / xcodec2 BF16 pass-through
+    /// skeleton (single-file `model.safetensors` + `config.yaml`,
+    /// no torch-pickle prepare step, no ONNX mirror). Every F32 / F16
+    /// / BF16 tensor passes through verbatim under its upstream
+    /// safetensors name; the runtime binding + real-weight parity are
+    /// deferred to owner (`docs/license-audit.md` §3.1 sign-off).
+    /// Distinct arch tag `miocodec` from every sibling codec (Mimi /
+    /// DAC / WavTokenizer / xcodec2 / neucodec / bicodec / funcodec /
+    /// speechtokenizer / focalcodec / xy_tokenizer / snac /
+    /// step_audio2_mini) — silently sharing would mis-route the
+    /// runtime dispatch (Aratako's own codec design, not RVQ / FSQ /
+    /// SoundStream / focal-modulation family). Provenance = **MIT**
+    /// (Permissive — verified 2026-08-04 via HF cardData API primary
+    /// source). Convert with `convert_miocodec_file`. Complements the
+    /// existing Kokoro / piper-plus JA vocoder stack.
+    MioCodec,
     /// NVIDIA **Nemotron-Speech-Streaming v2603** (Apache-2.0, ~1.2–2
     /// GB) — cache-aware FastConformer streaming ASR (40+ lang).
     /// Convert with `convert_nemotron_speech_streaming_v2603_file`.
@@ -3300,6 +3325,22 @@ impl ModelKind {
             | "audioseal"
             | "audio-seal"
             | "facebook/audioseal" => Some(Self::AudiosealRealWeight),
+            // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
+            // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
+            // Accept the canonical arch tag, the underscore variant, the
+            // versioned publish repo slug (matches `huggingface.co/vokra/
+            // miocodec-25hz-44khz-v2`), the upstream HF slug (case-
+            // insensitive here — from_arg is case-preserving so the
+            // lowercase form is what a shell caller types), and the
+            // hyphenated variant with the upstream `44.1khz` dot preserved.
+            "miocodec"
+            | "mio-codec"
+            | "mio_codec"
+            | "miocodec-25hz-44khz-v2"
+            | "miocodec_25hz_44khz_v2"
+            | "miocodec-25hz-44-1khz-v2"
+            | "aratako/miocodec-25hz-44.1khz-v2"
+            | "aratako/miocodec-25hz-44_1khz-v2" => Some(Self::MioCodec),
             "nemotron-speech-streaming-v2603"
             | "nemotron-speech-streaming"
             | "nemotron_speech_streaming_v2603"
@@ -4344,6 +4385,15 @@ impl ModelKind {
             Self::Mossformer2Ss16k => "mossformer2-ss-16k",
             Self::TenVad => "ten-vad",
             Self::AudiosealRealWeight => "audioseal-real-weight",
+            // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
+            // canonical CLI slug matches the publish repo tail token
+            // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
+            // naming = dashes only, lowercase, dots stripped from `44.1`
+            // → `44khz`). The arch tag stamped in `vokra.model.arch`
+            // (`"miocodec"` — see `models::miocodec::ARCH`) is the
+            // version-neutral short form so a hypothetical future v3
+            // GGUF with the same topology stays classifier-compatible.
+            Self::MioCodec => "miocodec-25hz-44khz-v2",
             Self::NemotronSpeechStreamingV2603 => "nemotron-speech-streaming-v2603",
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
@@ -6472,6 +6522,33 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::AudiosealRealWeight,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::MioCodec => {
+            // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
+            // complement wave (2026-08-04): pass every F32 / F16 / BF16
+            // tensor through verbatim under its upstream safetensors name
+            // and stamp `vokra.model.*` (arch = "miocodec",
+            // name = "miocodec-25hz-44khz-v2", category = "codec") +
+            // `vokra.provenance.upstream_hf =
+            // Aratako/MioCodec-25Hz-44.1kHz-v2` + the standard
+            // `vokra.provenance.{weight_license,license,model_id,source}`
+            // chunk via `stamp_provenance`. Provenance = **MIT**
+            // (Permissive — HF cardData API primary source verified
+            // 2026-08-04).
+            let report = models::miocodec::convert_miocodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "miocodec: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (mit default, Permissive; runtime binder + real-weight parity deferred \
+                 to owner sign-off)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MioCodec,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -9645,7 +9722,16 @@ pub use models::stable_audio_open_small::{
 pub use models::audioseal_real_weight::{
     AudiosealRealWeightReport, convert_audioseal_real_weight_file,
 };
+// hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave
+// (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 (MIT). Standalone file-
+// based entry point (mirror of the neucodec / bicodec / focalcodec re-
+// export pattern); the runtime `ModelKind::MioCodec` dispatch arm above
+// shares the same `models::miocodec::convert_miocodec_file` helper, so
+// a caller who prefers `--model miocodec` via `convert_file_licensed`
+// and a caller who calls `convert_miocodec_file` directly land the
+// same bytes.
 pub use models::htdemucs_multi::{HtdemucsMultiReport, convert_htdemucs_multi_file};
+pub use models::miocodec::{MioCodecReport, convert_miocodec_file};
 pub use models::mossformer2_ss_16k::{Mossformer2Ss16kReport, convert_mossformer2_ss_16k_file};
 pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_file};
 pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
@@ -11877,6 +11963,20 @@ mod modelkind_alias_and_roundtrip_tests {
                     "audioseal",
                     "audio-seal",
                     "facebook/audioseal",
+                ],
+            ),
+            // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04).
+            (
+                ModelKind::MioCodec,
+                &[
+                    "miocodec",
+                    "mio-codec",
+                    "mio_codec",
+                    "miocodec-25hz-44khz-v2",
+                    "miocodec_25hz_44khz_v2",
+                    "miocodec-25hz-44-1khz-v2",
+                    "aratako/miocodec-25hz-44.1khz-v2",
+                    "aratako/miocodec-25hz-44_1khz-v2",
                 ],
             ),
         ];

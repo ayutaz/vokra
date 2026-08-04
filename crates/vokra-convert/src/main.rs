@@ -2506,6 +2506,16 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::OpenwakewordOp
         | ModelKind::Mossformer2Ss16k
         | ModelKind::AudiosealRealWeight
+        // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
+        // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2
+        // (MIT). Emits the same standard `vokra.model.{arch,name,
+        // category}` + `vokra.provenance.upstream_hf` + `vokra.provenance
+        // .{weight_license,license,model_id,source}` triple as the sibling
+        // bicodec / neucodec / focalcodec / xcodec2 codec arms; grouped
+        // here since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback and the artifact is HF-hosted
+        // (upstream_hf stamped, not upstream_url).
+        | ModelKind::MioCodec
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

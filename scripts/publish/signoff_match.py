@@ -339,6 +339,10 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # NeucodecVariant slug dispatch; requires its own §3.1 row because the
     # publish target is a distinct HF repo (vokra/distill-neucodec)).
     "distill-neucodec": ["distill-neucodec (`neuphonic/distill-neucodec`)"],
+    # hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave
+    # (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 (MIT). Publish repo tail
+    # token matches Self::MioCodec.as_arg() output "miocodec-25hz-44khz-v2".
+    "miocodec-25hz-44khz-v2": ["Aratako/MioCodec-25Hz-44.1kHz-v2"],
     "ecapa-tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],
@@ -1099,6 +1103,11 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "neucodec (`neuphonic/neucodec`)",
         "distill-neucodec (`neuphonic/distill-neucodec`)",
     ],
+    # hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave
+    # (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 (MIT). Converter stem
+    # `miocodec` = `crates/vokra-convert/src/models/miocodec.rs`; single §3.1
+    # row anchored on the upstream HF slug (matches the row heading verbatim).
+    "miocodec": ["Aratako/MioCodec-25Hz-44.1kHz-v2"],
     "ecapa_tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],

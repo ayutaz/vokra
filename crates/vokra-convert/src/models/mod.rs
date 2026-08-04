@@ -175,6 +175,15 @@ pub(crate) mod kokoro;
 pub(crate) mod kyutai_stt;
 pub mod meanvc;
 pub(crate) mod mimi;
+// hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave
+// (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 (MIT). Category: codec.
+// Single-safetensors JA-focused 25 Hz / 44.1 kHz multilingual speech
+// codec (~132M F32 params, ~528 MB, `pipeline: audio-to-audio`) —
+// simplest of the batch, mirror of bicodec / neucodec / focalcodec BF16
+// pass-through skeleton. Complements the existing Kokoro / piper-plus JA
+// vocoder stack. Real-weight parity is deferred to owner sign-off
+// (`docs/license-audit.md` §3.1).
+pub mod miocodec;
 pub(crate) mod moshi;
 pub mod neucodec;
 // coverage-audit-2026-08-03 Wave A: fjiang9/NKF-AEC (MIT). Category:
