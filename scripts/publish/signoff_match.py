@@ -507,6 +507,9 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "wavtokenizer-large-speech-75token": [
         "WavTokenizer-Large-Speech-75token (`novateur/WavTokenizer-large-speech-75token`)"
     ],
+    "wavtokenizer-large": [
+        "WavTokenizer-Large-Speech-75token (`novateur/WavTokenizer-large-speech-75token`)"
+    ],
     # 2026-08-01 Wave 3 — IBM Granite Speech 4.1 2B (apache-2.0 audio LLM).
     "granite-speech-4.1-2b": [
         "granite-speech-4.1-2b (`ibm-granite/granite-speech-4.1-2b`)"
