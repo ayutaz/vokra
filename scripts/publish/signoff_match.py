@@ -929,6 +929,8 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "ten-vad": ["TEN-VAD (`TEN-framework/ten-vad`)"],
     "audioseal-real-weight": ["AudioSeal real weight (`facebook/audioseal`)"],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
+    "titanet-l": ["TitaNet (NVIDIA NeMo)"],
+    "titanet-large": ["TitaNet (NVIDIA NeMo)"],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
