@@ -837,3 +837,23 @@ pub mod conv_tasnet_libri1mix;
 // memory `[[feedback-large-models-on-vast-ai]]` (>8 GB strict cutoff).
 pub mod seamless_m4t_v2_large;
 // ---------------------------------------------------------------------------
+// coverage-audit-2026-08-03 Wave D (T4 non-commercial batch, 2026-08-04):
+// 5 BF16 pass-through skeletons on the same shared verify surface as the
+// Wave B fast-track fleet. All T4 tier (Research-only) per X-Codec-2
+// (2026-07-28) / Sortformer diar 4spk / MusicGen family precedent —
+// publish requires `--allow-noncommercial`, runtime M2-13 gate refuses
+// commercial-mode load. Two flavors: HF-hosted (chattts /
+// stable_audio_open_small / jasco_400m_chords_drums) stamp
+// `vokra.provenance.upstream_hf`; GitHub-only (facebook_denoiser /
+// nisqa_v2_weight) stamp `vokra.provenance.upstream_url` per the NKF-AEC
+// / RNNoise / NSNet2 precedent. stable_audio_open_small hard-maps the
+// non-SPDX Stability AI Community License string to
+// `LicenseClass::NonCommercial` per the CPML precedent in `xtts_v2.rs`
+// so `upload.sh` does not refuse with "weight licence class `unknown` is
+// unrecognised".
+pub mod chattts;
+pub mod facebook_denoiser;
+pub mod jasco_400m_chords_drums;
+pub mod nisqa_v2_weight;
+pub mod stable_audio_open_small;
+// ---------------------------------------------------------------------------

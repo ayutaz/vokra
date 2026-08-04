@@ -2481,6 +2481,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::SenseVoiceSmall
         | ModelKind::WhisperMedusaV1
         | ModelKind::NemotronSpeechStreamingV2603
+        // ---- coverage-audit-2026-08-03 Wave D T4 (non-commercial batch,
+        // 2026-08-04): 3 HF-hosted BF16 pass-through skeletons on the same
+        // shared verify surface. ChatTTS / Stable Audio Open Small / JASCO
+        // 400M Chords+Drums all stamp `vokra.provenance.upstream_hf` (the
+        // HF-hosted flavor). The 2 GitHub-only siblings (facebook_denoiser
+        // + nisqa_v2_weight) live in dedicated arms below because they
+        // stamp `vokra.provenance.upstream_url` — reading the wrong key
+        // would surface `<none>` and hide the URL.
+        | ModelKind::ChatTts
+        | ModelKind::StableAudioOpenSmall
+        | ModelKind::Jasco400mChordsDrums
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
@@ -2593,6 +2604,44 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // "<none>" and hide the URL — dedicated arm keeps the verify
         // output honest.
         ModelKind::Nsnet2 => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // coverage-audit-2026-08-03 Wave D T4 (non-commercial batch,
+        // 2026-08-04): Facebook Denoiser + NISQA v2 weight are the two
+        // GitHub-only entries in this wave (the other three ChatTTS /
+        // Stable Audio Open Small / JASCO ride the shared upstream_hf
+        // arm above). Both stamp `vokra.provenance.upstream_url` per the
+        // NKF-AEC / RNNoise / NSNet2 / DNSMOS precedent — dedicated arms
+        // keep the URL slot visible instead of falling through to a
+        // `<none>` in an upstream_hf-only readback.
+        ModelKind::FacebookDenoiser | ModelKind::NisqaV2Weight => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

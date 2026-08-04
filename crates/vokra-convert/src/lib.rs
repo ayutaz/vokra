@@ -1153,6 +1153,53 @@ pub enum ModelKind {
     /// + Medusa speculative decoding head, 20-80% latency reduction.
     /// Convert with `convert_whisper_medusa_v1_file`.
     WhisperMedusaV1,
+    /// Meta **facebook-denoiser** (`facebookresearch/denoiser`,
+    /// **cc-by-nc-4.0**, coverage-audit-2026-08-03 Wave D T4) —
+    /// real-time speech-enhancement waveform U-Net + LSTM (Defossez
+    /// et al. 2020 arXiv:2006.12847). GitHub-only upstream (no HF
+    /// mirror), category = `enhancement`. Distinct arch tag from
+    /// sibling denoise / rnnoise / nsnet2 / frcrn. Convert with
+    /// `convert_facebook_denoiser_file` — publish requires
+    /// `--allow-noncommercial`.
+    FacebookDenoiser,
+    /// **NISQA v2 weight** (`gabrielmittag/NISQA`, **cc-by-nc-sa-4.0**,
+    /// coverage-audit-2026-08-03 Wave D T4) — non-intrusive speech
+    /// quality assessment CNN + self-attention (Mittag et al. 2021
+    /// arXiv:2104.09494). GitHub-only upstream (no HF mirror),
+    /// category = `eval` (sibling of DNSMOS / UTMOS22-strong).
+    /// Convert with `convert_nisqa_v2_weight_file` — publish requires
+    /// `--allow-noncommercial` AND downstream artefacts inherit the
+    /// SA cascade obligation.
+    NisqaV2Weight,
+    /// **2Noise ChatTTS** (`2Noise/ChatTTS`, **cc-by-nc-4.0**,
+    /// coverage-audit-2026-08-03 Wave D T4) — GPT-style autoregressive
+    /// decoder over discrete speech tokens, conversational TTS
+    /// ZH/EN. Category = `tts`, distinct arch tag from piper-plus /
+    /// Kokoro / CosyVoice2 / Chatterbox / xtts. Convert with
+    /// `convert_chattts_file` — publish requires `--allow-noncommercial`.
+    ChatTts,
+    /// **Stability AI Stable Audio Open Small**
+    /// (`stabilityai/stable-audio-open-small`, **Stability AI Community
+    /// License**, coverage-audit-2026-08-03 Wave D T4) — compact
+    /// latent-diffusion text-to-audio generator = DiT + audio VAE +
+    /// T5 text conditioner. Category = `music`, distinct arch tag
+    /// from musicgen / audioldm2 / jasco / ace_step / bs_roformer.
+    /// Convert with `convert_stable_audio_open_small_file` — the raw
+    /// SPDX string is NOT SPDX-registered so the converter hard-maps
+    /// to [`LicenseClass::NonCommercial`] per the CPML precedent in
+    /// `xtts_v2.rs`. Publish requires `--allow-noncommercial`.
+    StableAudioOpenSmall,
+    /// **Meta JASCO 400M Chords+Drums**
+    /// (`facebook/jasco-400m-chords-drums`, **cc-by-nc-4.0**,
+    /// coverage-audit-2026-08-03 Wave D T4) — 400M parameter joint
+    /// audio-symbolic conditioning music generator conditioned on
+    /// text + chord progression + drum tracks (Tal et al. 2024
+    /// arXiv:2406.10970). Category = `music`, distinct arch tag from
+    /// sibling musicgen / audioldm2 / stable_audio_open_small /
+    /// ace_step / bs_roformer. Convert with
+    /// `convert_jasco_400m_chords_drums_file` — publish requires
+    /// `--allow-noncommercial` per MusicGen family T4 precedent.
+    Jasco400mChordsDrums,
     /// NVIDIA **Nemotron-Speech-Streaming v2603** (Apache-2.0, ~1.2–2
     /// GB) — cache-aware FastConformer streaming ASR (40+ lang).
     /// Convert with `convert_nemotron_speech_streaming_v2603_file`.
@@ -3095,6 +3142,42 @@ impl ModelKind {
             "whisper-medusa-v1" | "whisper_medusa_v1" | "aiola/whisper-medusa-v1" => {
                 Some(Self::WhisperMedusaV1)
             }
+            // coverage-audit-2026-08-03 Wave D T4: facebook-denoiser
+            // (GitHub-only, cc-by-nc-4.0). Distinct arch tag from
+            // sibling denoise / rnnoise / nsnet2 / frcrn (each is a
+            // distinct speech-enhancement topology).
+            "facebook-denoiser"
+            | "facebook_denoiser"
+            | "denoiser"
+            | "demucs-denoiser"
+            | "facebookresearch/denoiser" => Some(Self::FacebookDenoiser),
+            // coverage-audit-2026-08-03 Wave D T4: NISQA v2 weight
+            // (GitHub-only, cc-by-nc-sa-4.0). Category = `eval`,
+            // sibling of DNSMOS / UTMOS22-strong.
+            "nisqa-v2"
+            | "nisqa-v2-weight"
+            | "nisqa_v2_weight"
+            | "nisqa"
+            | "gabrielmittag/nisqa"
+            | "gabrielmittag/NISQA" => Some(Self::NisqaV2Weight),
+            // coverage-audit-2026-08-03 Wave D T4: 2Noise ChatTTS
+            // (HF, cc-by-nc-4.0). Distinct arch tag from sibling
+            // TTS families (piper-plus / Kokoro / CosyVoice2 /
+            // Chatterbox / xtts).
+            "chattts" | "chat-tts" | "2noise/chattts" | "2Noise/ChatTTS" => Some(Self::ChatTts),
+            // coverage-audit-2026-08-03 Wave D T4: Stable Audio Open
+            // Small (HF, Stability AI Community License = SPDX
+            // 未登録 hard-mapped to NonCommercial via CPML precedent).
+            "stable-audio-open-small"
+            | "stable_audio_open_small"
+            | "sao-small"
+            | "stabilityai/stable-audio-open-small" => Some(Self::StableAudioOpenSmall),
+            // coverage-audit-2026-08-03 Wave D T4: Meta JASCO 400M
+            // Chords+Drums (HF, cc-by-nc-4.0).
+            "jasco-400m-chords-drums"
+            | "jasco_400m_chords_drums"
+            | "jasco-400m"
+            | "facebook/jasco-400m-chords-drums" => Some(Self::Jasco400mChordsDrums),
             "nemotron-speech-streaming-v2603"
             | "nemotron-speech-streaming"
             | "nemotron_speech_streaming_v2603"
@@ -4126,6 +4209,11 @@ impl ModelKind {
             Self::SortformerDiar4spkV1 => "sortformer-diar-4spk-v1",
             Self::SenseVoiceSmall => "sensevoicesmall",
             Self::WhisperMedusaV1 => "whisper-medusa-v1",
+            Self::FacebookDenoiser => "facebook-denoiser",
+            Self::NisqaV2Weight => "nisqa-v2-weight",
+            Self::ChatTts => "chattts",
+            Self::StableAudioOpenSmall => "stable-audio-open-small",
+            Self::Jasco400mChordsDrums => "jasco-400m-chords-drums",
             Self::NemotronSpeechStreamingV2603 => "nemotron-speech-streaming-v2603",
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
@@ -6040,6 +6128,96 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::WhisperMedusaV1,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === coverage-audit-2026-08-03 Wave D T4 (non-commercial batch) ===
+        ModelKind::FacebookDenoiser => {
+            let report =
+                models::facebook_denoiser::convert_facebook_denoiser_file(input, output, license)?;
+            let notes = vec![format!(
+                "facebook-denoiser: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — publish \
+                 requires --allow-noncommercial per T4 precedent; runtime binder deferred to \
+                 owner sign-off)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::FacebookDenoiser,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::NisqaV2Weight => {
+            let report =
+                models::nisqa_v2_weight::convert_nisqa_v2_weight_file(input, output, license)?;
+            let notes = vec![format!(
+                "nisqa-v2-weight: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (cc-by-nc-sa-4.0 default, NonCommercialShareAlike \
+                 fail-closed — publish requires --allow-noncommercial + SA cascade obligation)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::NisqaV2Weight,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::ChatTts => {
+            let report = models::chattts::convert_chattts_file(input, output, license)?;
+            let notes = vec![format!(
+                "chattts: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — publish requires \
+                 --allow-noncommercial)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::ChatTts,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::StableAudioOpenSmall => {
+            let report = models::stable_audio_open_small::convert_stable_audio_open_small_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "stable-audio-open-small: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped (stability-ai-community-license default, \
+                 hard-mapped to NonCommercial per CPML precedent — publish requires \
+                 --allow-noncommercial)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::StableAudioOpenSmall,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Jasco400mChordsDrums => {
+            let report = models::jasco_400m_chords_drums::convert_jasco_400m_chords_drums_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "jasco-400m-chords-drums: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped (cc-by-nc-4.0 default, NonCommercial \
+                 fail-closed — publish requires --allow-noncommercial per MusicGen family T4 \
+                 precedent)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Jasco400mChordsDrums,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -9194,6 +9372,20 @@ pub use models::sortformer_diar_4spk_v1::{
     SortformerDiar4spkV1Report, convert_sortformer_diar_4spk_v1_file,
 };
 pub use models::whisper_medusa_v1::{WhisperMedusaV1Report, convert_whisper_medusa_v1_file};
+// coverage-audit-2026-08-03 Wave D T4 (non-commercial batch, 2026-08-04).
+// 5 BF16 pass-through skeletons — all NonCommercial default (T4), publish
+// requires `--allow-noncommercial`. stable_audio_open_small hard-maps the
+// non-SPDX "stability-ai-community-license" to NonCommercial per the CPML
+// precedent in `xtts_v2.rs`.
+pub use models::chattts::{ChatTtsReport, convert_chattts_file};
+pub use models::facebook_denoiser::{FacebookDenoiserReport, convert_facebook_denoiser_file};
+pub use models::jasco_400m_chords_drums::{
+    Jasco400mChordsDrumsReport, convert_jasco_400m_chords_drums_file,
+};
+pub use models::nisqa_v2_weight::{NisqaV2WeightReport, convert_nisqa_v2_weight_file};
+pub use models::stable_audio_open_small::{
+    StableAudioOpenSmallReport, convert_stable_audio_open_small_file,
+};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -10792,6 +10984,12 @@ mod modelkind_alias_and_roundtrip_tests {
             SenseVoiceSmall,
             WhisperMedusaV1,
             NemotronSpeechStreamingV2603,
+            // coverage-audit-2026-08-03 Wave D T4 (non-commercial batch, 2026-08-04).
+            FacebookDenoiser,
+            NisqaV2Weight,
+            ChatTts,
+            StableAudioOpenSmall,
+            Jasco400mChordsDrums,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -11292,6 +11490,49 @@ mod modelkind_alias_and_roundtrip_tests {
                     "nemotron-speech-streaming-v2603",
                     "nemotron_speech_streaming_v2603",
                     "nvidia/nemotron-speech-streaming-v2603",
+                ],
+            ),
+            // coverage-audit-2026-08-03 Wave D T4 (non-commercial batch, 2026-08-04).
+            (
+                ModelKind::FacebookDenoiser,
+                &[
+                    "facebook-denoiser",
+                    "facebook_denoiser",
+                    "denoiser",
+                    "demucs-denoiser",
+                    "facebookresearch/denoiser",
+                ],
+            ),
+            (
+                ModelKind::NisqaV2Weight,
+                &[
+                    "nisqa-v2",
+                    "nisqa-v2-weight",
+                    "nisqa_v2_weight",
+                    "nisqa",
+                    "gabrielmittag/nisqa",
+                ],
+            ),
+            (
+                ModelKind::ChatTts,
+                &["chattts", "chat-tts", "2noise/chattts"],
+            ),
+            (
+                ModelKind::StableAudioOpenSmall,
+                &[
+                    "stable-audio-open-small",
+                    "stable_audio_open_small",
+                    "sao-small",
+                    "stabilityai/stable-audio-open-small",
+                ],
+            ),
+            (
+                ModelKind::Jasco400mChordsDrums,
+                &[
+                    "jasco-400m-chords-drums",
+                    "jasco_400m_chords_drums",
+                    "jasco-400m",
+                    "facebook/jasco-400m-chords-drums",
                 ],
             ),
         ];

@@ -893,6 +893,20 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "nemotron-speech-streaming-v2603": [
         "NVIDIA Nemotron-Speech-Streaming v2603 (`nvidia/nemotron-speech-streaming-v2603`)"
     ],
+    # coverage-audit-2026-08-03 Wave D T4 (non-commercial batch, 2026-08-04):
+    # 5 rows all ☑ Research-only (T4 tier). publish-one.sh must be invoked
+    # with --allow-noncommercial per X-Codec-2 (2026-07-28) / MusicGen family
+    # T4 precedent. Row headings match `docs/license-audit.md` §3.1
+    # byte-for-byte.
+    "facebook-denoiser": ["facebook-denoiser (`facebookresearch/denoiser`)"],
+    "nisqa-v2-weight": ["NISQA v2 weight (`gabrielmittag/NISQA`)"],
+    "chattts": ["2Noise ChatTTS (`2Noise/ChatTTS`)"],
+    "stable-audio-open-small": [
+        "Stability AI Stable Audio Open Small (`stabilityai/stable-audio-open-small`)"
+    ],
+    "jasco-400m-chords-drums": [
+        "Meta JASCO 400M Chords+Drums (`facebook/jasco-400m-chords-drums`)"
+    ],
 }
 
 # ---- converter → row(s) ----------------------------------------------------
@@ -1319,6 +1333,18 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # batch.
     "seamless_m4t_v2_large": [
         "Seamless-M4T-v2-Large (`facebook/seamless-m4t-v2-large`)"
+    ],
+    # coverage-audit-2026-08-03 Wave D T4 (non-commercial batch, 2026-08-04):
+    # 5 BF16 pass-through skeleton converters. Row headings match
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "facebook_denoiser": ["facebook-denoiser (`facebookresearch/denoiser`)"],
+    "nisqa_v2_weight": ["NISQA v2 weight (`gabrielmittag/NISQA`)"],
+    "chattts": ["2Noise ChatTTS (`2Noise/ChatTTS`)"],
+    "stable_audio_open_small": [
+        "Stability AI Stable Audio Open Small (`stabilityai/stable-audio-open-small`)"
+    ],
+    "jasco_400m_chords_drums": [
+        "Meta JASCO 400M Chords+Drums (`facebook/jasco-400m-chords-drums`)"
     ],
 }
 
