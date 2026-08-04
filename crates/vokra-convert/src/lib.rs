@@ -1301,6 +1301,38 @@ pub enum ModelKind {
     /// source). Convert with `convert_miocodec_file`. Complements the
     /// existing Kokoro / piper-plus JA vocoder stack.
     MioCodec,
+    /// Neuphonic **NeuTTS Air** (`neuphonic/neutts-air`, apache-2.0,
+    /// SoTA plan candidate wave 2026-08-04). Category = `tts`.
+    /// Qwen2-family 0.5B LLM backbone (hidden_size=896, 24 layers,
+    /// 14 attention heads, 2 KV heads, RoPE θ=1e6, vocab extended
+    /// from 151,936 → 217,652 to carry the NeuCodec audio-token
+    /// space per upstream `config.json` primary source 2026-08-04)
+    /// fine-tuned to emit NeuCodec audio tokens after text tokens
+    /// for **on-device instant voice cloning**. Single-file BF16
+    /// safetensors (~1.40 GB / 747.9 M BF16 params, HF API primary-
+    /// source verified 2026-08-04). Sibling codec = the already-
+    /// published [`Self::Neucodec`] (`neuphonic/neucodec`, base
+    /// variant). The upstream repo also ships a foreign
+    /// `neutss-air-BF16.gguf` (~1.40 GB) that this converter
+    /// deliberately does NOT process — FR-LD-05 forbids Vokra
+    /// runtime from loading foreign GGUFs, so only the safetensors
+    /// path is walked. Distinct arch tag `neutts-air` from every
+    /// sibling TTS module (`kokoro` / `piper-plus` / `cosyvoice2` /
+    /// `cosyvoice3` / `csm` / `moshi` / `voxcpm2` / `dia` / `zonos` /
+    /// `chatterbox` / `bark` / `styletts2` / `vibevoice` /
+    /// `qwen3-tts` / `sbv2` / `chattts` / `irodori` / `melotts` /
+    /// `vits-ja` / `vieneu` / `parler`) — silently sharing would
+    /// mis-route the runtime dispatch (FR-EX-08). BF16 pass-through
+    /// skeleton mirror of miocodec / neucodec / bicodec /
+    /// focalcodec / xcodec2 — every F32 / F16 / BF16 tensor passes
+    /// through verbatim under its upstream safetensors name; the
+    /// runtime binding + real-weight parity are deferred to owner
+    /// sign-off (`docs/license-audit.md` §3.1) — the RMVPE /
+    /// Charsiu / MOSS-Audio-Tokenizer / MioCodec loud-partial
+    /// precedent. Provenance = **apache-2.0** (Permissive —
+    /// verified 2026-08-04 via HF cardData API primary source).
+    /// Convert with `convert_neutts_air_file`.
+    NeuTtsAir,
     /// NVIDIA **Nemotron-Speech-Streaming v2603** (Apache-2.0, ~1.2–2
     /// GB) — cache-aware FastConformer streaming ASR (40+ lang).
     /// Convert with `convert_nemotron_speech_streaming_v2603_file`.
@@ -3412,6 +3444,17 @@ impl ModelKind {
             | "miocodec-25hz-44-1khz-v2"
             | "aratako/miocodec-25hz-44.1khz-v2"
             | "aratako/miocodec-25hz-44_1khz-v2" => Some(Self::MioCodec),
+            // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+            // (apache-2.0). Accept the canonical arch tag / CLI slug (both
+            // hyphenated — matches `huggingface.co/vokra/neutts-air`), the
+            // underscore variant (== `models::neutts_air` module filename),
+            // and the upstream `<org>/<name>` HF slug so a shell caller can
+            // paste any spelling the model is discussed under.
+            "neutts-air"
+            | "neutts_air"
+            | "neu-tts-air"
+            | "neu_tts_air"
+            | "neuphonic/neutts-air" => Some(Self::NeuTtsAir),
             "nemotron-speech-streaming-v2603"
             | "nemotron-speech-streaming"
             | "nemotron_speech_streaming_v2603"
@@ -4487,6 +4530,14 @@ impl ModelKind {
             // version-neutral short form so a hypothetical future v3
             // GGUF with the same topology stays classifier-compatible.
             Self::MioCodec => "miocodec-25hz-44khz-v2",
+            // SoTA plan candidate wave (2026-08-04): canonical CLI slug
+            // matches the publish repo tail token
+            // (`huggingface.co/vokra/neutts-air` — HF repo naming =
+            // dashes only, lowercase) AND the arch tag stamped into
+            // `vokra.model.arch` (`"neutts-air"` — see
+            // `models::neutts_air::ARCH`), so the CLI id, the publish
+            // repo id, and the on-disk arch tag are the same string.
+            Self::NeuTtsAir => "neutts-air",
             Self::NemotronSpeechStreamingV2603 => "nemotron-speech-streaming-v2603",
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
@@ -6643,6 +6694,38 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::MioCodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::NeuTtsAir => {
+            // SoTA plan candidate wave (2026-08-04): pass every
+            // F32 / F16 / BF16 tensor through verbatim under its
+            // upstream safetensors name and stamp `vokra.model.*`
+            // (arch = "neutts-air", name = "neutts-air",
+            // category = "tts") + `vokra.provenance.upstream_hf =
+            // neuphonic/neutts-air` + the standard
+            // `vokra.provenance.{weight_license,license,model_id,source}`
+            // chunk via `stamp_provenance`. Provenance = **apache-2.0**
+            // (Permissive — HF cardData API primary source verified
+            // 2026-08-04). Upstream ships BF16 end-to-end
+            // (747.9 M BF16 params); the F32 / F16 arms are defensive
+            // for future re-quantized derivatives. The upstream
+            // foreign-GGUF sibling `neutss-air-BF16.gguf` is NOT
+            // processed here — FR-LD-05 forbids Vokra runtime from
+            // loading foreign GGUFs, and this converter's contract is
+            // safetensors-in / Vokra-GGUF-out only.
+            let report = models::neutts_air::convert_neutts_air_file(input, output, license)?;
+            let notes = vec![format!(
+                "neutts-air: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (apache-2.0 default, Permissive; runtime binder + \
+                 real-weight parity deferred to owner sign-off)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::NeuTtsAir,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -9864,7 +9947,17 @@ pub use models::audioseal_real_weight::{
 // same bytes.
 pub use models::htdemucs_multi::{HtdemucsMultiReport, convert_htdemucs_multi_file};
 pub use models::miocodec::{MioCodecReport, convert_miocodec_file};
+// SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+// (apache-2.0) — Qwen2 0.5B LLM backbone emitting NeuCodec audio
+// tokens. Standalone file-based entry point (mirror of the miocodec
+// / neucodec / bicodec / focalcodec re-export pattern); the runtime
+// `ModelKind::NeuTtsAir` dispatch arm above shares the same
+// `models::neutts_air::convert_neutts_air_file` helper, so a caller
+// who prefers `--model neutts-air` via `convert_file_licensed` and
+// a caller who calls `convert_neutts_air_file` directly land the
+// same bytes.
 pub use models::mossformer2_ss_16k::{Mossformer2Ss16kReport, convert_mossformer2_ss_16k_file};
+pub use models::neutts_air::{NeuTtsAirReport, convert_neutts_air_file};
 pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_file};
 pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
 pub use models::torchaudio_squim::{TorchaudioSquimReport, convert_torchaudio_squim_file};
@@ -12109,6 +12202,17 @@ mod modelkind_alias_and_roundtrip_tests {
                     "miocodec-25hz-44-1khz-v2",
                     "aratako/miocodec-25hz-44.1khz-v2",
                     "aratako/miocodec-25hz-44_1khz-v2",
+                ],
+            ),
+            // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air.
+            (
+                ModelKind::NeuTtsAir,
+                &[
+                    "neutts-air",
+                    "neutts_air",
+                    "neu-tts-air",
+                    "neu_tts_air",
+                    "neuphonic/neutts-air",
                 ],
             ),
         ];

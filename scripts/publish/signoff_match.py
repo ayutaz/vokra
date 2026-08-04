@@ -358,6 +358,14 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 (MIT). Publish repo tail
     # token matches Self::MioCodec.as_arg() output "miocodec-25hz-44khz-v2".
     "miocodec-25hz-44khz-v2": ["Aratako/MioCodec-25Hz-44.1kHz-v2"],
+    # SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+    # (apache-2.0) — Qwen2 0.5B LLM backbone emitting NeuCodec audio
+    # tokens for on-device instant voice cloning. Publish repo tail
+    # token matches Self::NeuTtsAir.as_arg() output "neutts-air"
+    # (`huggingface.co/vokra/neutts-air`); §3.1 row heading anchors on
+    # the human name + upstream HF slug for check-converter-signoff
+    # substring matching.
+    "neutts-air": ["NeuTTS Air (`neuphonic/neutts-air`)"],
     "ecapa-tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],
@@ -1127,6 +1135,12 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # `miocodec` = `crates/vokra-convert/src/models/miocodec.rs`; single §3.1
     # row anchored on the upstream HF slug (matches the row heading verbatim).
     "miocodec": ["Aratako/MioCodec-25Hz-44.1kHz-v2"],
+    # SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+    # (apache-2.0). Converter stem `neutts_air` =
+    # `crates/vokra-convert/src/models/neutts_air.rs`; single §3.1 row
+    # anchored on the human name + upstream HF slug (matches the row
+    # heading verbatim for check-converter-signoff.sh substring lookup).
+    "neutts_air": ["NeuTTS Air (`neuphonic/neutts-air`)"],
     "ecapa_tdnn": [
         "ecapa_tdnn (upstream 未確定 — `speechbrain/spkrec-ecapa-voxceleb` 候補、owner 一次照合)"
     ],

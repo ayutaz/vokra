@@ -186,6 +186,20 @@ pub(crate) mod mimi;
 pub mod miocodec;
 pub(crate) mod moshi;
 pub mod neucodec;
+// SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+// (apache-2.0) — Qwen2 0.5B LLM backbone emitting NeuCodec audio
+// tokens for instant on-device voice cloning. Single-file BF16
+// safetensors (~1.40 GB), sibling to the already-published
+// `neucodec` codec (`neuphonic/neucodec`). Category = `tts`
+// (distinct arch tag `neutts-air`, silently sharing with any
+// sibling TTS module would mis-route the runtime dispatch —
+// FR-EX-08). Upstream also ships a foreign `neutss-air-BF16.gguf`
+// sibling that this converter deliberately does NOT process
+// (FR-LD-05: Vokra runtime never loads foreign GGUFs). BF16
+// pass-through skeleton mirror of miocodec / neucodec / bicodec /
+// focalcodec / xcodec2; real-weight parity is deferred to owner
+// sign-off (`docs/license-audit.md` §3.1).
+pub mod neutts_air;
 // coverage-audit-2026-08-03 Wave A: fjiang9/NKF-AEC (MIT). Category:
 // aec. Neural Kalman Filter AEC (Yang et al. ICASSP 2023,
 // arXiv:2207.11388). Small 5.3 KB `.pt` — a *neural* echo canceller

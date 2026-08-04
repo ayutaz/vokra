@@ -737,6 +737,23 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "miocodec-25hz-44khz-v2"
         | "miocodec_25hz_44khz_v2"
         | "aratako/miocodec-25hz-44.1khz-v2" => LicenseClass::Permissive,
+        // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air —
+        // apache-2.0 (Permissive) end-to-end weight per HF cardData
+        // primary source 2026-08-04 (`api/models/neuphonic/neutts-air`
+        // → `license: apache-2.0`). The arch tag (== `vokra.model.arch`
+        // = "neutts-air"), the CLI slug / publish-repo id (same string
+        // for this SKU — `vokra/neutts-air`), the underscore variant
+        // (== `models::neutts_air` module filename), and the upstream
+        // HF slug are all registered so an untagged GGUF resolves
+        // permissive on the fallback path regardless of which spelling
+        // it carries. Sibling to `neucodec` (same Neuphonic publisher,
+        // same apache-2.0 tag) — kept as its own arm so a rename or
+        // classification change on either side stays independent.
+        "neutts-air"
+        | "neutts_air"
+        | "neu-tts-air"
+        | "neu_tts_air"
+        | "neuphonic/neutts-air" => LicenseClass::Permissive,
         "ecapa-tdnn" | "ecapa_tdnn" | "spkrec-ecapa-voxceleb" => LicenseClass::Permissive,
         "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
             LicenseClass::Permissive

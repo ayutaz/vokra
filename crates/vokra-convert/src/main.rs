@@ -2531,6 +2531,16 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // upstream/license triple readback and the artifact is HF-hosted
         // (upstream_hf stamped, not upstream_url).
         | ModelKind::MioCodec
+        // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+        // (apache-2.0). Emits the same standard `vokra.model.{arch,
+        // name,category}` + `vokra.provenance.upstream_hf` +
+        // `vokra.provenance.{weight_license,license,model_id,source}`
+        // triple as the sibling BF16 pass-through skeletons (miocodec
+        // / neucodec / bicodec / focalcodec / xcodec2); grouped here
+        // since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback and the artifact is
+        // HF-hosted (upstream_hf stamped, not upstream_url).
+        | ModelKind::NeuTtsAir
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
