@@ -60,16 +60,28 @@ declare -a EXPECTED_GAPS=(
   # the double-sided "stale ledger" check. Runtime forward already exists
   # via the M4-16 `wavtokenizer_vq` op (`vokra-ops/src/fsq_codec.rs`);
   # real-weight parity is a §3.1 sign-off follow-up.
-  "openWakeWord|kws (FR-OP-51) is unimplemented; the catalog row precedes the op"
+  # openWakeWord entry removed 2026-08-06: KWS runtime binder landed in PR #24
+  # (commit `68da236`) with new `KwsEngine` trait + `vokra-models/src/kws/openwakeword/`
+  # + `vokra-ops/src/openwakeword.rs` real MLP classifier + loud-partial embedding
+  # (IMPL-PLAN #12 Wave A.2). Weight non-distribution is codified elsewhere; only
+  # the runtime-op status transitioned to "implemented" and the ledger entry
+  # would now double-flag.
   # ECAPA-TDNN and WeSpeaker previously listed here as anchor-only; converter
   # implementations landed in the SoTA Phase 1-4 wave (commit 7ed0548) at
   # crates/vokra-convert/src/models/{ecapa_tdnn.rs,wespeaker.rs}. The stale
   # entries were removed 2026-07-31 as part of the FQ-03 CI promotion — the
   # production run now runs per-PR, so future stale/undeclared drift is caught
   # at PR time rather than at owner publish time.
-  "RNNoise|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
+  # RNNoise entry removed 2026-08-06: BF16 pass-through converter landed in
+  # PR #24 (Wave A batch) at crates/vokra-convert/src/models/rnnoise.rs +
+  # ModelKind::Rnnoise, published to vokra/rnnoise-v0.2. Runtime binder is a
+  # separate follow-up (see PR #24 §Refuted target rnnoise-v0.2 → next wave).
   "GTCRN|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
-  "AudioSeal (Meta)|watermark embedding is Deferred (2026-07-04 drop); config surface only"
+  # AudioSeal (Meta) entry removed 2026-08-06: audioseal-real-weight converter
+  # + publish landed in PR #24 (Wave A) at crates/vokra-convert/src/models/audioseal_real_weight.rs
+  # + vokra/audioseal-real-weight (MIT, 178MB). Runtime watermark embedding
+  # remains deferred (2026-07-04 drop, M5-05 T04 ADR pending owner) — that's
+  # tracked in docs/handoff/m5-13.md, not the catalog ledger.
   # Vocos previously listed here as anchor-only; converter implementation
   # landed in the vocos wave (2026-08-01) at
   # crates/vokra-convert/src/models/vocos.rs (BF16 pass-through skeleton,

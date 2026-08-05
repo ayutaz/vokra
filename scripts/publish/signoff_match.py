@@ -1450,6 +1450,58 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "ten_vad": ["TEN-VAD (`TEN-framework/ten-vad`)"],
     "audioseal_real_weight": ["AudioSeal real weight (`facebook/audioseal`)"],
+    # -----------------------------------------------------------------------
+    # 2026-08-06 batch: 23-converter signoff backfill (PR #24 coverage-audit
+    # 2026-08-03 + M5 gap wave 1 + KWS + Denoise/MOS/AEC binder wave).
+    # Each row title is byte-for-byte from docs/license-audit.md §3.1.
+    # -----------------------------------------------------------------------
+    # Wave A denoise/AEC/MOS runtime binders (PR #24 §Denoise/MOS/AEC wave).
+    "dnsmos": ["DNSMOS P.808 + P.835 (`microsoft/DNS-Challenge DNSMOS`)"],
+    "nsnet2": ["NSNet2 (`microsoft/DNS-Challenge NSNet2-baseline`)"],
+    "nkf_aec": ["NKF-AEC (`fjiang9/NKF-AEC`)"],
+    "rnnoise": ["RNNoise v0.2 (`xiph/rnnoise`)"],
+    "frcrn": ["FRCRN (`alibabasglab/FRCRN`)"],
+    "conv_tasnet_libri1mix": [
+        "ConvTasNet Libri1Mix Enhancement (`JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`)"
+    ],
+    # Wave B fast-track ASR (PR #24 §Coverage-audit Wave B).
+    "canary_1b_flash": ["NVIDIA Canary-1B-Flash (`nvidia/canary-1b-flash`)"],
+    "firered_asr_aed_l": [
+        "FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"
+    ],
+    "hibiki": ["Hibiki-2B (`kyutai/hibiki-2b-pytorch-bf16`)"],
+    "magpietts_v2602": ["MagpieTTS v2602 (`nvidia/magpietts-v2602`)"],
+    "moonshine_base": ["Moonshine-Base (`UsefulSensors/moonshine-base`)"],
+    "moonshine_tiny": ["Moonshine-Tiny (`UsefulSensors/moonshine-tiny`)"],
+    "nemotron_speech_streaming_v2603": [
+        "NVIDIA Nemotron-Speech-Streaming v2603 (`nvidia/nemotron-speech-streaming-v2603`)"
+    ],
+    "owsm_v4_medium_1b": [
+        "ESPnet OWSM v4 Medium 1B (`espnet/owsm_v4_medium_1B`)"
+    ],
+    "parakeet_tdt_1_1b": [
+        "NVIDIA Parakeet-TDT-1.1B (`nvidia/parakeet-tdt-1.1b`)"
+    ],
+    "parakeet_unified": [
+        "NVIDIA Parakeet-unified-EN-0.6B (`nvidia/parakeet-unified-en-0.6b`)"
+    ],
+    "qwen2_5_omni_7b": ["Qwen2.5-Omni-7B (`Qwen/Qwen2.5-Omni-7B`)"],
+    "reazonspeech_nemo_v2": [
+        "ReazonSpeech NeMo v2 (`reazon-research/reazonspeech-nemo-v2`)"
+    ],
+    "sber_gigaam_multilingual": [
+        "Sber GigaAM multilingual (`ai-sage/GigaAM-Multilingual`)"
+    ],
+    "sber_gigaam_v3": ["Sber GigaAM v3 (`ai-sage/GigaAM-v3`)"],
+    "sensevoicesmall": [
+        "FunAudioLLM SenseVoiceSmall (`FunAudioLLM/SenseVoiceSmall`)"
+    ],
+    "sortformer_diar_4spk_v1": [
+        "NVIDIA Sortformer diar 4spk v1 (`nvidia/diar_sortformer_4spk-v1`)"
+    ],
+    "whisper_medusa_v1": [
+        "aiola whisper-medusa-v1 (`aiola/whisper-medusa-v1`)"
+    ],
 }
 
 # Converters that intentionally have no §3.1 row.
