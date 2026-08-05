@@ -246,6 +246,18 @@ pub mod omniasr_ctc;
 pub(crate) mod mapped_weights;
 pub mod mimi;
 pub mod moshi;
+// Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551, MIT — 2026-08-05
+// runtime binder). Third denoise family member (alongside DFN3 =
+// `vokra_ops::denoise` and RNNoise v0.2 = `rnnoise_v02`); a deliberately-
+// weaker industry-baseline reference for quantization-CI cross-checks
+// (CLAUDE.md audio dialect §"Speech Enhancement / AGC / AEC"). REAL forward:
+// STFT (n_fft=512, hop=160, win=320, causal / non-center) → log-power
+// feature → fc_in + 2×GRU + fc_1/fc_2/mask + sigmoid → gated STFT → streaming
+// iSTFT. Reuses the tested `vokra_ops::rnnoise_gru_forward` primitive with
+// an ONNX `[Z;R;H]` → rnnoise `[R;Z;H]` load-time permutation. Env-gated
+// real-weight parity harness: `crates/vokra-models/tests/parity_nsnet2.rs`
+// (VOKRA_NSNET2_REAL_GGUF + VOKRA_NSNET2_REAL_WAV).
+pub mod nsnet2;
 pub mod piper_plus;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // TTS (apache-2.0 end-to-end — LM + codec + tokenizer + speaker

@@ -223,6 +223,14 @@ pub mod prosody;
 pub mod qwen3_tts_codec;
 // -------------------------------------------------------------------------
 pub mod resample;
+// ---- SoTA plan denoise Wave A rnnoise primitives (2026-08-05) -----------
+// Xiph RNNoise v0.2 primitives (Vorbis window, Bark filterbank, 3-gate GRU
+// forward, feature packer, DCT-II) plus the loud-partial pitch_analysis
+// stub. Consumed by `vokra_models::rnnoise_v02`. Runtime function set,
+// NOT `OpKind` variants (same posture as `openwakeword_classifier_forward`
+// / `denoise` / `fsmn_vad_forward` — ADR M3-06 §D-b).
+pub mod rnnoise;
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 rnnt_decode (ASR primitive, FR-OP-42) ------------
 // RNN-T / TDT decoding: greedy + beam + TDT (duration head). Consumed by
 // parakeet-rnnt-1.1b and parakeet-tdt v2/v3/1.1b (CC-BY-4.0). Ported /
@@ -377,6 +385,15 @@ pub use prosody::{ApplyProsody, ProsodyControl};
 pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
 // -------------------------------------------------------------------------
 pub use resample::resample;
+// ---- SoTA plan denoise Wave A rnnoise re-exports (2026-08-05) -----------
+pub use rnnoise::{
+    Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS,
+    N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank,
+    dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains,
+    pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window,
+    zero_pitch_features as rnnoise_zero_pitch_features,
+};
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 rnnt_decode re-exports ---------------------------
 pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 // -------------------------------------------------------------------------

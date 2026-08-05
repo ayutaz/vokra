@@ -277,6 +277,53 @@ pub trait VadStreamHandle {
     fn reset(&mut self);
 }
 
+/// A speech-enhancement / denoise engine (implemented natively in
+/// `vokra-models`, e.g. Xiph RNNoise v0.2 = 2026-08-05, follow-up
+/// DeepFilterNet3 wrapper for the algorithmic
+/// `vokra_ops::denoise::denoise` fn).
+///
+/// Denoise is inherently streaming: the engine consumes one mono PCM
+/// stream and emits an enhanced PCM stream on the same clock. Each
+/// engine hands out a stateful [`DenoiseStreamHandle`] that carries
+/// every recurrent state (per-block GRU hidden vectors, STFT tail,
+/// pitch analysis buffer, prev-frame Bark energies) hidden inside it
+/// (FR-LD-06).
+///
+/// This trait absorbs both the neural RNNoise session (real GRU
+/// weights) and a future thin wrapper around the existing
+/// [`vokra_ops::denoise`] fn (DeepFilterNet3) so the dispatch layer
+/// sees one shape.
+pub trait DenoiseEngine: Send + Sync {
+    /// Opens a fresh streaming handle with zero-initialised recurrent
+    /// state, bound to `sample_rate` Hz.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`](crate::VokraError) when
+    /// `sample_rate` does not match the model's trained rate — the
+    /// engine never silently resamples (FR-EX-08).
+    fn open_stream(&self, sample_rate: u32) -> Result<Box<dyn DenoiseStreamHandle + Send>>;
+}
+
+/// A stateful denoise stream: push mono PCM, get enhanced PCM back.
+///
+/// The handle hides every recurrent state (FR-LD-06); callers only push
+/// samples and read the cleaned output. [`reset`](Self::reset) returns
+/// it to the initial state so a fresh utterance reproduces the first
+/// run bit-for-bit.
+pub trait DenoiseStreamHandle {
+    /// Pushes mono `f32` PCM at the stream's bound sample rate and
+    /// returns whatever enhanced samples the internal STFT + iSTFT
+    /// pipeline can commit on this push. The returned slice length
+    /// depends on the hop / overlap-add tail geometry; a starving call
+    /// may return an empty vec.
+    fn push_pcm(&mut self, pcm: &[f32]) -> Result<Vec<f32>>;
+
+    /// Clears every recurrent state, returning the handle to its
+    /// initial state.
+    fn reset(&mut self);
+}
+
 /// Inputs to [`TtsEngine::synthesize`].
 ///
 /// Carries the text plus an optional language hint, a determinism knob used by

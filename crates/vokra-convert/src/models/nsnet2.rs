@@ -117,6 +117,51 @@ const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 /// lands.
 const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
 
+// ---- `vokra.nsnet2.*` hparam chunk group ---------------------------------
+//
+// Mirror of `fsmn_vad::KEY_*` posture: every runtime hparam the future
+// `vokra-models::nsnet2::Nsnet2V1::from_gguf` needs is stamped here so a
+// downstream reader is fully self-describing (no external config side-car
+// needed). Values are FunASR-style `u32` chunks; a `0`-sentinel on any of
+// them makes the runtime binder refuse to load (FR-EX-08 — no silent
+// default).
+
+/// GGUF metadata key: STFT bin count (u32; upstream = 257 = `n_fft/2 + 1`).
+pub const KEY_N_BINS: &str = "vokra.nsnet2.n_bins";
+/// GGUF metadata key: GRU / fc_in hidden width (u32; upstream = 400).
+pub const KEY_HIDDEN_DIM: &str = "vokra.nsnet2.hidden_dim";
+/// GGUF metadata key: `fc_1` output width (u32; upstream = 600).
+pub const KEY_FC1_DIM: &str = "vokra.nsnet2.fc1_dim";
+/// GGUF metadata key: `fc_2` output width (u32; upstream = 600).
+pub const KEY_FC2_DIM: &str = "vokra.nsnet2.fc2_dim";
+/// GGUF metadata key: STFT FFT length (u32; upstream = 512).
+pub const KEY_N_FFT: &str = "vokra.nsnet2.n_fft";
+/// GGUF metadata key: STFT hop (u32 samples; upstream = 160 = 10 ms @ 16 kHz).
+pub const KEY_HOP: &str = "vokra.nsnet2.hop";
+/// GGUF metadata key: STFT window length (u32 samples; upstream = 320 = 20 ms
+/// @ 16 kHz). A window shorter than `n_fft` is centred and zero-padded to
+/// `n_fft` by the analysis op.
+pub const KEY_WIN_LENGTH: &str = "vokra.nsnet2.win_length";
+/// GGUF metadata key: PCM sample rate (u32 Hz; upstream = 16 000).
+pub const KEY_SAMPLE_RATE: &str = "vokra.nsnet2.sample_rate";
+
+/// Upstream STFT bin count (`n_fft/2 + 1` for `n_fft = 512`).
+pub const DEFAULT_N_BINS: u32 = 257;
+/// Upstream GRU / fc_in hidden width.
+pub const DEFAULT_HIDDEN_DIM: u32 = 400;
+/// Upstream `fc_1` output width.
+pub const DEFAULT_FC1_DIM: u32 = 600;
+/// Upstream `fc_2` output width.
+pub const DEFAULT_FC2_DIM: u32 = 600;
+/// Upstream FFT length (samples).
+pub const DEFAULT_N_FFT: u32 = 512;
+/// Upstream STFT hop (samples).
+pub const DEFAULT_HOP: u32 = 160;
+/// Upstream STFT window length (samples).
+pub const DEFAULT_WIN_LENGTH: u32 = 320;
+/// Upstream PCM sample rate (Hz).
+pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
+
 /// Outcome of an NSNet2 conversion.
 ///
 /// All counters are additive and default to zero — a zero-tensor checkpoint
@@ -195,6 +240,22 @@ pub fn convert_nsnet2_file(
         Some("Microsoft DNS-Challenge NSNet2-baseline (MIT end-to-end)"),
     );
     b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+
+    // NSNet2 has one canonical topology — the 20 ms baseline
+    // (`nsnet2-20ms-baseline.onnx`) — and every hparam is fixed at that
+    // release. Stamping them here (mirror of `fsmn_vad::stamp_hparams`
+    // posture) makes the artifact self-describing so the future
+    // `vokra-models::nsnet2::Nsnet2V1::from_gguf` binder can validate
+    // against these values loudly (FR-EX-08 — a checkpoint that came from a
+    // different topology cannot silently misload).
+    b.add_u32(KEY_N_BINS, DEFAULT_N_BINS);
+    b.add_u32(KEY_HIDDEN_DIM, DEFAULT_HIDDEN_DIM);
+    b.add_u32(KEY_FC1_DIM, DEFAULT_FC1_DIM);
+    b.add_u32(KEY_FC2_DIM, DEFAULT_FC2_DIM);
+    b.add_u32(KEY_N_FFT, DEFAULT_N_FFT);
+    b.add_u32(KEY_HOP, DEFAULT_HOP);
+    b.add_u32(KEY_WIN_LENGTH, DEFAULT_WIN_LENGTH);
+    b.add_u32(KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
 
     let mut report = Nsnet2Report::default();
     // Float tensors pass through **verbatim** — no convert-time widening.
@@ -365,6 +426,25 @@ mod tests {
             Some(UPSTREAM_URL),
             "upstream_url chunk pins the GitHub tree the release ships from"
         );
+        // Every `vokra.nsnet2.*` hparam must be stamped verbatim so a
+        // downstream `Nsnet2V1::from_gguf` binder validates the topology.
+        for (k, want) in [
+            (KEY_N_BINS, DEFAULT_N_BINS),
+            (KEY_HIDDEN_DIM, DEFAULT_HIDDEN_DIM),
+            (KEY_FC1_DIM, DEFAULT_FC1_DIM),
+            (KEY_FC2_DIM, DEFAULT_FC2_DIM),
+            (KEY_N_FFT, DEFAULT_N_FFT),
+            (KEY_HOP, DEFAULT_HOP),
+            (KEY_WIN_LENGTH, DEFAULT_WIN_LENGTH),
+            (KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE),
+        ] {
+            let got = file.get(k).and_then(|v| v.as_u64());
+            assert_eq!(
+                got,
+                Some(u64::from(want)),
+                "hparam `{k}` must be stamped as {want}"
+            );
+        }
         // Schema stamp is written unconditionally by the GGUF writer.
         assert!(
             file.get(chunks::KEY_SCHEMA_VERSION).is_some(),
