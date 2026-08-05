@@ -58,6 +58,7 @@
 //     `Charsiu::new(CharsiuConfig, CharsiuWeights)`; the real-GGUF
 //     binder (`from_gguf`) is a follow-up wave gated on the upstream
 //     tensor-name manifest (T29-equivalent). License = MIT (permissive).
+pub mod aec;
 pub mod align;
 pub mod canary;
 // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —

@@ -263,6 +263,60 @@ pub trait VadEngine: Send + Sync {
     fn open_stream(&self) -> Box<dyn VadStreamHandle + Send>;
 }
 
+/// An **acoustic echo cancellation** engine (neural side of the audio
+/// dialect §"Speech Enhancement / AGC / AEC" — implemented natively in
+/// `vokra-models`, e.g. NKF-AEC = 2026-08-05).
+///
+/// AEC is inherently paired-streaming: each engine hands out a stateful
+/// [`AecStreamHandle`] that carries every recurrent state (per-bin
+/// Kalman filter taps, GRU hidden vectors, iSTFT overlap-add tail,
+/// pending PCM residues) hidden inside it (FR-LD-06). The engine
+/// consumes sample-aligned mic + far-end PCM and emits echo-cancelled
+/// PCM.
+///
+/// Orthogonal to the algorithmic `vokra_ops::aec` path (M4-03 SpeexDSP
+/// / WebRTC AEC3 Rust port surfaced through the `vokra_aec_*` C ABI) —
+/// both live side-by-side; a duplex engine (Moshi / CSM) can choose
+/// either through this trait.
+pub trait AecEngine: Send + Sync {
+    /// Opens a fresh streaming handle bound to `sample_rate` Hz with
+    /// zero-initialised recurrent state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`](crate::VokraError) when
+    /// `sample_rate` does not match the model's trained rate — the
+    /// engine never silently resamples (FR-EX-08).
+    fn open_stream(&self, sample_rate: u32) -> Result<Box<dyn AecStreamHandle + Send>>;
+}
+
+/// A stateful AEC stream: push paired mic + far-end PCM, get
+/// echo-cancelled PCM back.
+///
+/// The handle hides every recurrent state (FR-LD-06); callers only push
+/// sample-aligned mic + far-end samples and read the cleaned output.
+/// [`reset`](Self::reset) returns it to the initial state so a fresh
+/// utterance reproduces the first run bit-for-bit.
+pub trait AecStreamHandle {
+    /// Pushes sample-aligned mic + far-end mono `f32` PCM at the
+    /// stream's bound sample rate and returns whatever cleaned samples
+    /// the internal STFT + Kalman + iSTFT pipeline can commit on this
+    /// push. The returned slice length depends on the hop / overlap-add
+    /// tail geometry; a starving call may return an empty vec.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`](crate::VokraError) when
+    /// `mic.len() != farend.len()` — the two streams are strictly
+    /// sample-aligned in AEC (silent trim / repeat is a correctness bug,
+    /// not a convenience — FR-EX-08).
+    fn push_paired(&mut self, mic: &[f32], farend: &[f32]) -> Result<Vec<f32>>;
+
+    /// Clears every recurrent state, returning the handle to its
+    /// initial state.
+    fn reset(&mut self);
+}
+
 /// A stateful VAD stream: push PCM, get per-frame speech probabilities.
 ///
 /// The handle hides all recurrent state (FR-LD-06); callers only push samples
