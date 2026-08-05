@@ -228,9 +228,16 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           . /tmp/vokra-py-sbv2/bin/activate
+          # SBV2 v2 base ships weights only (no config.json). The prep script
+          # provides `--clean-room-defaults` as the author-designed escape
+          # hatch for this exact case: it fills the `vokra.sbv2.*` side-car
+          # from cited VITS/HiFi-GAN/StyleTTS 2 MIT reference defaults
+          # instead of erroring. Without this flag CI aborts with
+          # "no config.json found under ... — Pass --clean-room-defaults".
           python3 tools/parity/sbv2_prepare_checkpoint.py \
             --hf-repo "$SBV2_HF_REPO" \
-            --output-dir "$RUNNER_TEMP/sbv2-checkpoint"
+            --output-dir "$RUNNER_TEMP/sbv2-checkpoint" \
+            --clean-room-defaults
 
       - name: Download DeBERTa v2 (JA) + v3 (EN) checkpoints
         # Plain HF transformers-style repos (flat safetensors, no .pth to

@@ -413,10 +413,23 @@ jobs:
         run: |
           set -euo pipefail
           GGUF="${RUNNER_TEMP}/voxtral-${{ matrix.variant }}.gguf"
+          # Voxtral upstream (mistralai/*) always ships config.json alongside
+          # the sharded checkpoint (in snapshot_download's allow_patterns
+          # above). --config must be passed so vokra-cli routes through
+          # `convert_voxtral_file_streaming` (index.json-aware sharded
+          # reader) instead of the shape-only `convert_file` path — the
+          # latter reads the input as raw bytes and errors "voxtral shard
+          # 0: safetensors buffer truncated" when the input is index.json.
+          CONFIG_JSON="${CKPT_DIR}/config.json"
+          if [ ! -f "${CONFIG_JSON}" ]; then
+            echo "::error::Missing config.json under ${CKPT_DIR} — snapshot_download must include it (see allow_patterns above)"
+            exit 1
+          fi
           set +e
           ./target/release/vokra-cli convert \
             --model ${{ matrix.cli_model }} \
             --input "${VOXTRAL_SAFETENSORS}" \
+            --config "${CONFIG_JSON}" \
             --output "${GGUF}" \
             2>&1 | tee "${RUNNER_TEMP}/convert-log.txt"
           CONVERT_EXIT=${PIPESTATUS[0]}
