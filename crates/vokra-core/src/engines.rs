@@ -531,3 +531,46 @@ impl SynthesisRequest {
         self
     }
 }
+
+/// A reference-free neural **MOS (Mean Opinion Score) scorer** — the
+/// engine-facing surface for MOS predictors like DNSMOS P.808 / P.835
+/// (`vokra_models::dnsmos_p808_p835`, 2026-08-05) and the future UTMOS
+/// runtime binder.
+///
+/// Unlike the metrics-side [`AudioMosMetric`](vokra_eval::metrics::AudioMosMetric)
+/// (which lives in `vokra-eval` and is a single-scalar per-clip abstraction
+/// with a stable string `name()`), this trait sits in `vokra-core` alongside
+/// the other engine seams so a runtime session (or a C ABI handle) can drive
+/// a MOS scorer without pulling `vokra-eval` in. It reports **all four**
+/// DNSMOS-style dimensions (P.808 overall + P.835 sig/bak/ovrl) in one call
+/// so a caller that binds a bundle GGUF (both variants in one artefact)
+/// does not pay the mel front-end cost twice.
+pub trait MosScorerEngine: Send + Sync {
+    /// The MOS variants this engine can score, in canonical order.
+    /// DNSMOS returns some subset of `["p808", "p835"]`; a partial bundle
+    /// (only P.808 or only P.835 flattened into the GGUF) advertises only
+    /// the truthful subset here so a caller can gate their pipeline
+    /// without walking metadata (FR-EX-08).
+    fn variants(&self) -> &[&'static str];
+
+    /// Scores a 16 kHz mono `f32` PCM clip. Every field of [`MosScore`] is
+    /// `None` unless the engine's variants set includes it — a partial
+    /// bundle that only carries P.808 weights returns `p808 = Some(...)`
+    /// and `sig = bak = ovrl = None`, never a fabricated `0.0`.
+    fn score(&self, pcm16k: &[f32]) -> Result<MosScore>;
+}
+
+/// A [`MosScorerEngine`] result. Fields are `None` for variants the
+/// engine does not advertise; every advertised variant yields
+/// `Some(mos ∈ [1.0, 5.0])`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MosScore {
+    /// ITU-T P.808 overall quality MOS (single scalar).
+    pub p808: Option<f32>,
+    /// ITU-T P.835 signal-quality MOS.
+    pub sig: Option<f32>,
+    /// ITU-T P.835 background-noise MOS.
+    pub bak: Option<f32>,
+    /// ITU-T P.835 overall MOS.
+    pub ovrl: Option<f32>,
+}

@@ -149,6 +149,15 @@ pub mod csm;
 // huggingface.co/nari-labs/Dia-1.6B/config.json (CLAUDE.md ハルシネー
 // ション厳禁); real-checkpoint binding is a follow-up wave (T29-equivalent).
 pub mod dia;
+// DNSMOS P.808 / P.835 (Microsoft DNS-Challenge MOS predictors, MIT). The
+// converter (`vokra-convert::models::dnsmos`) landed 2026-08-03; this is the
+// runtime binder shell (2026-08-05, loud-partial per RMVPE precedent — the
+// CNN backbone op sequence is not primary-source-transcribable from the
+// upstream `dnsmos_local.py` alone, only from the trained ONNX graph, so
+// the forward returns `VokraError::UnsupportedOp` until the sidecar is
+// extended with `vokra.dnsmos.{p808,p835}.topology` metadata and this
+// module wires the CNN forward).
+pub mod dnsmos_p808_p835;
 // SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
 // distil-large-v3.5 — a distilled Whisper checkpoint that keeps the
 // large-v3 encoder (32-layer / d_model=1280 / n_mels=128) intact and
