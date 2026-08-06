@@ -1,11 +1,16 @@
 # `jaywalnut310/vits` vendor (SBV2 v2 Task 4)
 
-**Status: VENDORED (8 `.py` files at pinned commit
+**Status: VENDORED (9 `.py` files at pinned commit
 `2e561ba58618d021b5b8323d3765880f7e0ecfdb`, 2021-06-14).** This directory
 now ships this `README.md`, the `LICENSE` (unmodified upstream MIT text),
-and the 8 vendored Python modules listed under "What ships here" below.
+and the 9 vendored Python modules listed under "What ships here" below.
 Task 30 landed the scaffold (LICENSE + README + zero source); Task 4
-landed the actual VITS core source.
+landed the actual VITS core source; Blocker 2c (2026-08-06) added
+`sdp.py` — the `StochasticDurationPredictor` class extracted verbatim
+from upstream `models.py` — when Rust's native `SbV2SDP` was rewritten
+from a scalar-affine placeholder into the real DDS-net + rational-
+quadratic-spline ConvFlow shape and needed a permissive reference for
+parity diffing.
 
 ## What this is
 
@@ -57,14 +62,18 @@ training-side is vendored — no `train.py`, no `data_utils.py`, no
 `preprocess.py`, no `mel_processing.py`, no `utils.py`. Also **not**
 vendored: upstream `models.py` as a whole, because it (1) imports
 `monotonic_align` at file scope (its `SynthesizerTrn.forward` uses it),
-and (2) contains training-side classes (`StochasticDurationPredictor`
-already lives in native Rust as `SbV2SDP`, `PosteriorEncoder` /
+and (2) contains training-side classes (`PosteriorEncoder` /
 `DiscriminatorP` / `DiscriminatorS` / `MultiPeriodDiscriminator` /
 `SynthesizerTrn` are all training-side or covered by native Rust). The
-three inference-only classes we DO need from `models.py`
-(`TextEncoder`, `ResidualCouplingBlock`, `Generator`) are each
-extracted verbatim into their own target file below (`text_encoder.py`,
-`flow.py`, `decoder.py`).
+four inference-only classes we DO need from `models.py`
+(`TextEncoder`, `ResidualCouplingBlock`, `Generator`,
+`StochasticDurationPredictor`) are each extracted verbatim into their
+own target file below (`text_encoder.py`, `flow.py`, `decoder.py`,
+`sdp.py`). `StochasticDurationPredictor` was originally left out on the
+basis that the Rust `SbV2SDP` was clean-room and needed no parity
+target; Blocker 2c rewrote the Rust side into the paper's real DDS-net
++ RQS ConvFlow shape, so a permissive reference is now needed and
+`sdp.py` was added.
 
 ### Target files (README's original contract — one class per file)
 
@@ -74,6 +83,7 @@ extracted verbatim into their own target file below (`text_encoder.py`,
 | `coupling.py`         | `ResidualCouplingLayer`, `WN` (re-export from sibling `modules.py`) | `modules.py` `ResidualCouplingLayer` + `WN` (already in vendored `modules.py`) | affine-coupling step inside `flow.py` below                             |
 | `flow.py`             | `ResidualCouplingBlock` (extracted)      | `models.py` lines 179-209                   | `crates/vokra-models/src/sbv2/flow.rs` (`z_latent`)                     |
 | `decoder.py`          | `Generator` (extracted, HiFi-GAN vocoder) | `models.py` lines 244-296                   | `crates/vokra-models/src/sbv2/decoder.rs` (`waveform`) — the Rust side already reuses `vokra-ops::hifigan` at ~100% per design doc §7's "既存資産の流用度" table; this Python reference exists purely to dump tensors for diffing, not because Rust needs new logic |
+| `sdp.py`              | `StochasticDurationPredictor` (extracted) | `models.py` lines 17-93                     | `crates/vokra-models/src/sbv2/duration.rs` (`SbV2SDP::sample`) — added by Blocker 2c (2026-08-06) when the Rust `SbV2SDP` was rewritten from a scalar-affine placeholder into the paper's DDS-net + rational-quadratic-spline ConvFlow shape (286-tensor real safetensors layout) and needed a permissive reference for parity diffing |
 
 ### Transitive dependencies (verbatim upstream, needed to make the above import + run)
 
