@@ -138,134 +138,6 @@
       0.0,
       0.0,
       0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
       0.0
     ],
     "speed": 1.0,
@@ -276,17 +148,22 @@
   "phonemize_fixture": {
     "phoneme_ids": {
       "path": "reference_dump/phoneme_ids.bin",
-      "count": "T_text",
+      "count": 8,
       "dtype": "uint16"
     },
     "tones": {
       "path": "reference_dump/tones.bin",
-      "count": "T_text",
+      "count": 8,
       "dtype": "uint8"
     },
     "word_boundaries": {
       "path": "reference_dump/word_boundaries.bin",
-      "count": "T_text",
+      "count": 8,
+      "dtype": "uint8"
+    },
+    "language_id": {
+      "path": "reference_dump/language_id.bin",
+      "count": 1,
       "dtype": "uint8"
     }
   },
@@ -295,7 +172,7 @@
       "name": "phoneme_embed",
       "path": "reference_dump/phoneme_embed.bin",
       "shape": [
-        "T_text",
+        8,
         192
       ],
       "dtype": "float32"
@@ -304,7 +181,7 @@
       "name": "text_hidden",
       "path": "reference_dump/text_hidden.bin",
       "shape": [
-        "T_text",
+        8,
         192
       ],
       "dtype": "float32"
@@ -313,7 +190,7 @@
       "name": "bert_hidden_ja",
       "path": "reference_dump/bert_hidden_ja.bin",
       "shape": [
-        "T_bert",
+        5,
         1024
       ],
       "dtype": "float32"
@@ -322,7 +199,7 @@
       "name": "bert_hidden_en",
       "path": "reference_dump/bert_hidden_en.bin",
       "shape": [
-        "T_bert",
+        5,
         1024
       ],
       "dtype": "float32"
@@ -331,7 +208,7 @@
       "name": "bert_bridge_out",
       "path": "reference_dump/bert_bridge_out.bin",
       "shape": [
-        "T_text",
+        8,
         192
       ],
       "dtype": "float32"
@@ -358,7 +235,7 @@
       "name": "sdp_sample",
       "path": "reference_dump/sdp_sample.bin",
       "shape": [
-        "T_text"
+        8
       ],
       "dtype": "float32"
     },
@@ -366,7 +243,7 @@
       "name": "mel_hidden",
       "path": "reference_dump/mel_hidden.bin",
       "shape": [
-        "T_mel",
+        26,
         192
       ],
       "dtype": "float32"
@@ -375,7 +252,7 @@
       "name": "z_latent",
       "path": "reference_dump/z_latent.bin",
       "shape": [
-        "T_mel",
+        26,
         192
       ],
       "dtype": "float32"
@@ -385,7 +262,7 @@
       "path": "reference_dump/waveform.bin",
       "shape": [
         1,
-        "samples"
+        13312
       ],
       "dtype": "float32"
     }
