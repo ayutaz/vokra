@@ -438,7 +438,14 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
             "dtype": spec["dtype"],
         }
 
-    style_vec = [0.0] * args.style_dim
+    # Match `run_pipeline_body`'s effective_style_dim logic: honor
+    # explicit --style-dim override, else use config-derived
+    # D_STYLE_DEFAULT (populated by `_resolve_arch_constants` which is
+    # called before this manifest builder in run_pipeline_body's flow).
+    effective_style_dim = (
+        D_STYLE_DEFAULT if args.style_dim == DEFAULT_STYLE_DIM else args.style_dim
+    )
+    style_vec = [0.0] * effective_style_dim
 
     return {
         "generator_version": GENERATOR_VERSION,
@@ -1772,12 +1779,24 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     print(f"{LOG_PREFIX} speaker_embed {tuple(speaker_embed.shape)}")
 
     # ---- Step 9: style projection ----
-    style_vec = torch.zeros(1, args.style_dim, dtype=torch.float32)
+    # The `--style-dim` argparse default is a hard-coded 256, but the real
+    # checkpoint's `vokra-sbv2-config.json` reports `d_style` (128 for the
+    # SBV2 v2 base). If the user did NOT override `--style-dim` from the
+    # CLI, the config-resolved `D_STYLE_DEFAULT` (populated in
+    # `_resolve_arch_constants` from the config side-car) is the truth —
+    # use it. Overrides via `--style-dim <N>` are honored verbatim.
+    effective_style_dim = (
+        D_STYLE_DEFAULT if args.style_dim == DEFAULT_STYLE_DIM else args.style_dim
+    )
+    style_vec = torch.zeros(1, effective_style_dim, dtype=torch.float32)
     style_injector = StyleVectorInjector(
-        state_dict, torch, d_model=D_MODEL, d_style=args.style_dim,
+        state_dict, torch, d_model=D_MODEL, d_style=effective_style_dim,
     )
     style_projected = style_injector.forward(style_vec, torch)
-    print(f"{LOG_PREFIX} style_projected {tuple(style_projected.shape)}")
+    print(
+        f"{LOG_PREFIX} style_projected {tuple(style_projected.shape)} "
+        f"(d_style={effective_style_dim} from config)"
+    )
 
     # Combined speaker/style conditioning [1, D_SPEAKER, 1] for flow + SDP.
     # (Style is projected to D_MODEL, additively broadcast into speaker
