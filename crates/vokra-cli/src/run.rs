@@ -139,6 +139,20 @@ OPTIONS:
     --bert-en <path>            sbv2 only, REQUIRED: the EN-path DeBERTa v3
                                 BERT GGUF (`vokra-cli convert --model
                                 deberta-v3`). See --bert-ja.
+    --speaker-embedding <path>  sbv2 only, OPTIONAL: raw little-endian f32
+                                external zero-shot speaker embedding
+                                (Blocker 3). Length must equal the loaded
+                                model's projection d_in (real ckpt: 512);
+                                a wrong length is a loud error (FR-EX-08),
+                                never a silent zero-pad/truncate. When
+                                absent, the model's projection (if any)
+                                is fed the deterministic all-zero
+                                `[d_speaker]` default; on a legacy model
+                                with no projection loaded, `speaker_id 0`
+                                is used instead. Rejected loudly on every
+                                non-sbv2 arch (FR-EX-08 — other archs
+                                have their own speaker paths, e.g.
+                                kokoro `--voice` / `--style`).
     -h, --help                  print this help
 ";
 
@@ -210,6 +224,12 @@ struct RunArgs {
     /// SBV2 only (Task 38), REQUIRED for that arch: path to the EN-path
     /// DeBERTa v3 BERT GGUF. See `bert_ja`.
     bert_en: Option<String>,
+    /// SBV2 only (Blocker 3), OPTIONAL: path to a raw little-endian f32
+    /// external zero-shot speaker embedding, forwarded to
+    /// `SynthesisRequest::speaker_embedding` (its `Option<Vec<f32>>` shape).
+    /// Rejected loudly on every non-sbv2 arch (FR-EX-08 — other archs
+    /// have their own speaker paths, e.g. Kokoro's `--voice`/`--style`).
+    speaker_embedding: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -240,6 +260,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut length_scale: f32 = 1.0;
     let mut bert_ja: Option<String> = None;
     let mut bert_en: Option<String> = None;
+    let mut speaker_embedding: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -391,6 +412,13 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 bert_en = Some(v.clone());
                 i += 2;
             }
+            "--speaker-embedding" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or("--speaker-embedding requires a path")?;
+                speaker_embedding = Some(v.clone());
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -419,6 +447,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         length_scale,
         bert_ja,
         bert_en,
+        speaker_embedding,
     })
 }
 
@@ -531,6 +560,21 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         return Err(
             "run: --bert-ja / --bert-en are only supported for the sbv2 arch — they load the \
              DeBERTa v2 (JA) / v3 (EN) BERT side-car GGUFs SbV2Model::from_gguf requires"
+                .to_owned(),
+        );
+    }
+    // `--speaker-embedding` is Blocker 3's SBV2-only external zero-shot
+    // speaker path. Rejected off every other arch rather than silently
+    // ignored — other archs have their own speaker paths
+    // (Kokoro `--voice`/`--style`, CAM++ single-input embedding, ...),
+    // and silently dropping caller-supplied data on the floor here would
+    // produce plausible-looking-but-wrong-speaker audio (FR-EX-08).
+    if a.speaker_embedding.is_some() && task != ModelTask::Sbv2 {
+        return Err(
+            "run: --speaker-embedding is only supported for the sbv2 arch — it is Blocker 3's \
+             external zero-shot speaker input (SBV2's `enc_p.encoder.spk_emb_linear` projects \
+             the caller-supplied 512-d vector into the text-encoder hidden width). Other \
+             archs use their own speaker paths (e.g. kokoro --voice / --style)"
                 .to_owned(),
         );
     }
@@ -1117,6 +1161,28 @@ fn run_sbv2(session: &Session, a: &RunArgs) -> Result<(), String> {
     let mut request = SynthesisRequest::new(text);
     if let Some(lang) = a.language.as_deref() {
         request = request.with_language(lang);
+    }
+    // Blocker 3: forward the raw little-endian f32 external speaker
+    // embedding into `SynthesisRequest::speaker_embedding`. The file
+    // length must be a whole multiple of 4 (one f32 per element); any
+    // remainder is a caller error, not silently truncated. The
+    // element-count-vs-projection-d_in check happens downstream in
+    // `SbV2Model::synthesize` step 5 (loud FR-EX-08 error naming both
+    // sides), where the model's own projection knows its `d_in`.
+    if let Some(path) = a.speaker_embedding.as_deref() {
+        let bytes = std::fs::read(path).map_err(|e| format!("--speaker-embedding {path}: {e}"))?;
+        if bytes.len() % 4 != 0 {
+            return Err(format!(
+                "--speaker-embedding {path}: file length {} is not a multiple of 4 (one f32 \
+                 per element) — corrupt file or wrong endianness?",
+                bytes.len()
+            ));
+        }
+        let embedding: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        request = request.with_speaker_embedding(embedding);
     }
     // Fully-qualified: `SbV2Model` also has an inherent `synthesize(&self,
     // req: &SbV2SynthRequest)` (a different request type) — plain
