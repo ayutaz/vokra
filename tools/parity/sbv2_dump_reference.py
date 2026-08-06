@@ -1189,15 +1189,53 @@ class SDPReference:
         # SDP is a flow module — its `forward` inverts the flow to sample
         # durations from a Gaussian prior. Build it as a proper nn.Module
         # so state_dict loading works uniformly.
+        #
+        # Blocker 7 (2026-08-06): the real SBV2 v2 base ckpt uses `sdp.*`
+        # prefix (not `dp.*` — the old paper-default was VITS1's `dp` and
+        # `sdp` sibling; SBV2 v2 keeps only the stochastic `sdp` and
+        # renames it). The topology also adds a speaker-conditioning
+        # `cond: Conv1d(D_SPEAKER, filter_channels, 1)` layer that
+        # conditions the SDP on `g` (speaker vector). Recover both from
+        # the real tensor shapes rather than assume paper defaults.
+        sdp_prefix = "sdp."
+        sdp_state = {
+            k[len(sdp_prefix):]: v.to(dtype=torch.float32)
+            for k, v in state_dict.items()
+            if k.startswith(sdp_prefix) and not k.startswith("sdp.post_")
+        }
+        if not sdp_state:
+            # Fallback: try `dp.*` prefix for VITS1-style checkpoints.
+            dp_prefix = "dp."
+            sdp_state = {
+                k[len(dp_prefix):]: v.to(dtype=torch.float32)
+                for k, v in state_dict.items()
+                if k.startswith(dp_prefix)
+            }
+        if not sdp_state:
+            sys.exit(
+                f"{LOG_PREFIX} no `sdp.*` or `dp.*` tensors found in "
+                "checkpoint — SDP cannot be initialized."
+            )
+
+        # Recover d_speaker from `cond.weight` shape if the layer exists;
+        # else use the paper's non-conditioned SDP topology.
+        cond_weight = sdp_state.get("cond.weight")
+        d_speaker = int(cond_weight.shape[1]) if cond_weight is not None else 0
+
         class _Sdp(_nn.Module):
             def __init__(self, in_channels: int, filter_channels: int,
-                         kernel_size: int, n_layers: int, n_flows: int):
+                         kernel_size: int, n_layers: int, n_flows: int,
+                         d_speaker_cond: int):
                 super().__init__()
                 self.pre = _nn.Conv1d(in_channels, filter_channels, 1)
                 self.convs = _vits_modules.DDSConv(
                     filter_channels, kernel_size, n_layers=n_layers, p_dropout=0.0
                 )
                 self.proj = _nn.Conv1d(filter_channels, filter_channels, 1)
+                # SBV2 v2 addition: speaker conditioning (present when
+                # `sdp.cond.*` exists in the checkpoint).
+                if d_speaker_cond > 0:
+                    self.cond = _nn.Conv1d(d_speaker_cond, filter_channels, 1)
                 self.flows = _nn.ModuleList()
                 self.flows.append(_vits_modules.ElementwiseAffine(2))
                 for _ in range(n_flows):
@@ -1212,36 +1250,26 @@ class SDPReference:
             kernel_size=SDP_KERNEL_SIZE,
             n_layers=SDP_DDS_N_LAYERS,
             n_flows=SDP_N_FLOWS,
+            d_speaker_cond=d_speaker,
         ).eval()
 
-        # Load `dp.*` weights strictly. Unknown post-* / posterior-* keys
-        # (training-side) are IGNORED via strict=False, but ANY known key
-        # missing (would break inference) triggers a loud error.
-        dp_prefix = "dp."
-        dp_state = {
-            k[len(dp_prefix):]: v.to(dtype=torch.float32)
-            for k, v in state_dict.items()
-            if k.startswith(dp_prefix)
-        }
-        if not dp_state:
-            sys.exit(
-                f"{LOG_PREFIX} no `dp.*` tensors found in checkpoint — SDP "
-                "cannot be initialized. Some SBV2 SKUs may use `sdp.*` or "
-                "drop SDP entirely; extend this loader if needed."
-            )
-        missing_keys, _unexpected = self._m.load_state_dict(
-            dp_state, strict=False
+        # Load strictly on the reduced key set (post-*/posterior training-
+        # side already excluded above). ANY known key missing triggers a
+        # loud FR-EX-08 error.
+        missing_keys, unexpected_keys = self._m.load_state_dict(
+            sdp_state, strict=False
         )
         if missing_keys:
             sys.exit(
-                f"{LOG_PREFIX} SDP is missing {len(missing_keys)} tensor(s) "
-                f"after loading from `dp.*`: "
+                f"{LOG_PREFIX} SDP is missing {len(missing_keys)} tensor(s): "
                 f"{missing_keys[:8]}{'...' if len(missing_keys) > 8 else ''}. "
-                "This means the checkpoint's SDP topology diverges from the "
-                "paper-standard composition (arXiv:2106.06103 §2.3) this class "
-                "builds — inspect the checkpoint and rewrite the composition "
-                "in `SDPReference.__init__` (or vendor upstream `models.py` "
-                "SDP directly per scout report Option A)."
+                "Real ckpt topology diverges from the built model."
+            )
+        if unexpected_keys:
+            print(
+                f"{LOG_PREFIX} SDP: {len(unexpected_keys)} unexpected keys "
+                f"ignored (training-side or unknown): "
+                f"{unexpected_keys[:5]}{'...' if len(unexpected_keys) > 5 else ''}"
             )
 
     def sample(self, x, x_mask, g, noise_scale_w: float, torch):
