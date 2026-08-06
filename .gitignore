@@ -157,6 +157,13 @@ tests/fixtures/sbv2/*.gguf
 tests/fixtures/sbv2/*.safetensors
 tests/fixtures/sbv2/reference_dump/
 
+# Spurious duplicates: sbv2_dump_reference.py が uv-managed で CWD=tools/parity
+# の状態で走ると `tests/fixtures/sbv2/...` を tools/parity 起点の相対パスに
+# 書いてしまうことがある (canonical は repo-root/tests/fixtures/sbv2/、
+# tools/parity 直下の tests/ ツリーは副産物)。fixtures と reference_dump
+# 双方が同 pattern で発生し得るのでディレクトリ丸ごと無視する。
+tools/parity/tests/
+
 # Secrets — never commit (HF token etc.)
 .env
 .env.*
