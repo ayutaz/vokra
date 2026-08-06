@@ -949,11 +949,7 @@ pub fn convert_sbv2_file(
                 // tensor keeps its upstream name verbatim. The `sdp.post_*`
                 // arm is already filtered above (guaranteed non-`sdp.post_*`
                 // here).
-                let write_name = if let Some(tail) = t.name.strip_prefix("sdp.") {
-                    Some(rewrite_sdp_tensor_name(tail))
-                } else {
-                    None
-                };
+                let write_name = t.name.strip_prefix("sdp.").map(rewrite_sdp_tensor_name);
                 let effective_name = write_name.as_deref().unwrap_or(&t.name);
                 b.add_tensor(effective_name, t.dtype, t.shape.clone(), data)?;
                 report.written += 1;

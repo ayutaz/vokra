@@ -706,6 +706,14 @@ impl SbV2Model {
         // == 8), matching the flow layer's `speaker_proj`'s row width.
         let d_model = self.text_encoder.d_model();
         let phoneme_count = phon.phoneme_ids.len();
+        // `speaker_e_flow` = the vector we pass to the flow's per-layer
+        // `speaker_proj: [half_d_z, d_speaker]` (external ckpt path) or to
+        // the SDP's `gin`-wide conditioning slot (legacy synthetic path).
+        // For the external-projection path, the SDP consumes the
+        // *projected* d_model-wide vector (its `gin` equals d_hidden ==
+        // d_model post-Blocker-2c), so we keep the projected copy — the
+        // raw d_speaker vector is only used for the flow's `speaker_proj`,
+        // handled via `g_stopgap` composition in step 8 below.
         let speaker_e_flow: Vec<f32> = match (
             req.speaker_embedding.as_deref(),
             self.speaker_projection.as_ref(),
@@ -728,11 +736,9 @@ impl SbV2Model {
                         hidden[i * d_model + d] += s;
                     }
                 }
-                // Flow's `speaker_proj: [half_d_z, d_speaker]` maps the
-                // *raw* external `[d_speaker]`, not the projected
-                // `[d_model]` — see `flow::SbV2AffineCouplingLayer`'s
-                // doc.
-                ext.to_vec()
+                // Return the projected d_model-wide copy for SDP's `gin`
+                // slot (post-Blocker-2c SDP consumes d_hidden = d_model).
+                projected
             }
             (None, Some(proj)) => {
                 // Deterministic zero-shot default (matches
@@ -753,7 +759,7 @@ impl SbV2Model {
                         hidden[i * d_model + d] += s;
                     }
                 }
-                zeros
+                projected
             }
             (Some(_), None) => {
                 // Silent discard would produce
