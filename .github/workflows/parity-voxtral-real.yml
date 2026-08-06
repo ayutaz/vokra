@@ -220,7 +220,17 @@ jobs:
           # pins this shape so a future large-runner enablement is a
           # one-line flip on the `enabled` field, not a workflow rewrite.
           matrix='{"include":['
-          matrix+='{"variant":"mini-3b-2507","enabled":true,"hf_repo":"mistralai/Voxtral-Mini-3B-2507","hf_rev":"","cli_model":"voxtral","license":"apache-2.0","env_gguf":"VOKRA_VOXTRAL_GGUF"},'
+          # mini-3b-2507 was originally `enabled:true` on the assumption
+          # (docs L28-32) that 8.7 GB BF16 fits ubuntu-latest (7 GB RAM)
+          # via the MappedLazy port. Empirical measurement 2026-08-05
+          # (PR #24 CI run 31021205977, job 92358110460) proved this
+          # false: the convert step is killed by SIGTERM (exit 143)
+          # ~40 seconds in — OOM before conversion completes. Flipped
+          # to `enabled:false` mirroring the small-24b posture until a
+          # large-runner class (self-hosted or vast.ai) is provisioned.
+          # Owner flip: change to `enabled:true` when the runner class
+          # can serve >=12 GB RAM. Fabricated pass 禁止 (FR-EX-08).
+          matrix+='{"variant":"mini-3b-2507","enabled":false,"hf_repo":"mistralai/Voxtral-Mini-3B-2507","hf_rev":"","cli_model":"voxtral","license":"apache-2.0","env_gguf":"VOKRA_VOXTRAL_GGUF"},'
           matrix+='{"variant":"small-24b-2507","enabled":false,"hf_repo":"mistralai/Voxtral-Small-24B-2507","hf_rev":"","cli_model":"voxtral","license":"apache-2.0","env_gguf":"VOKRA_VOXTRAL_GGUF"}'
           matrix+=']}'
           echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
@@ -253,10 +263,19 @@ jobs:
             echo ""
             echo "**Status**: deferred (\`if: false\` posture — matrix.enabled=false)."
             echo ""
-            echo "Reason: \`${{ matrix.hf_repo }}\` is ~48 GB BF16 (11 shards)."
-            echo "The ubuntu-latest runner cannot serve this (disk + RAM)."
-            echo "vast.ai is the standing runbook: see"
-            echo "\`docs/handoff/vast-ai-large-model-publish.md\` §2."
+            if [ "${{ matrix.variant }}" = "mini-3b-2507" ]; then
+              echo "Reason: \`${{ matrix.hf_repo }}\` is ~8.7 GB BF16."
+              echo "Empirical measurement 2026-08-05 (PR #24 CI run 31021205977)"
+              echo "showed ubuntu-latest 7 GB RAM cannot serve BF16→F32 widening"
+              echo "even via MappedLazy — the convert step is OOM-killed by"
+              echo "SIGTERM (exit 143) ~40s in. Owner flip: change to"
+              echo "\`enabled:true\` when a >=12 GB RAM runner is provisioned."
+            else
+              echo "Reason: \`${{ matrix.hf_repo }}\` is ~48 GB BF16 (11 shards)."
+              echo "The ubuntu-latest runner cannot serve this (disk + RAM)."
+              echo "vast.ai is the standing runbook: see"
+              echo "\`docs/handoff/vast-ai-large-model-publish.md\` §2."
+            fi
             echo ""
             echo "This is NOT a fabricated pass — the job body was skipped by"
             echo "design (FR-EX-08). When a large-runner class is provisioned,"
