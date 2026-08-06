@@ -36,7 +36,7 @@ pub mod text_encoder;
 
 pub use decoder::SbV2Decoder;
 pub use duration::{SbV2SDP, length_regulate};
-pub use flow::SbV2Flow;
+pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
 pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 pub use parity::{ATOL_DEFAULT, PER_TENSOR_ATOL, tolerance_for};
 pub use speaker::SpeakerEmbedding;
@@ -632,9 +632,25 @@ impl SbV2Model {
         // 8. Flow inverse (scaffold: mel_hidden feeds the flow directly —
         // see SbV2SynthRequest::noise_scale's doc for the real
         // reparameterization this stands in for).
-        let z = self
-            .flow
-            .inverse(&mel_hidden, mel_seq_len, &req.style_vec, speaker_e);
+        //
+        // Blocker 2b (2026-08-06): `SbV2Flow::inverse` now takes a single
+        // opaque `g: &[f32]` (`[gin_channels]`-wide) per upstream
+        // `TransformerCouplingBlock.forward(x, x_mask, g=g,
+        // reverse=True)`. Blocker 3 (external speaker vector projection)
+        // will define the canonical `g` composition rule — until then, we
+        // supply a **stopgap** g formed by concatenating `speaker_e ‖
+        // style_vec` (the two per-utterance conditioning signals the
+        // pre-Blocker-2b `inverse` signature already carried). For every
+        // caller path that today builds `SbV2Model` via
+        // [`synthetic_for_test`](Self::synthetic_for_test) the flow has an
+        // empty layer stack, so `g` is never read and this stopgap has no
+        // observable effect. A `from_gguf`-loaded model with the base
+        // checkpoint's real 4-TCL flow will exercise the stopgap until
+        // Blocker 3 lands the real composition.
+        let mut g_stopgap = Vec::with_capacity(speaker_e.len() + req.style_vec.len());
+        g_stopgap.extend_from_slice(speaker_e);
+        g_stopgap.extend_from_slice(&req.style_vec);
+        let z = self.flow.inverse(&mel_hidden, mel_seq_len, &g_stopgap);
 
         // 9. HiFi-GAN decoder — transpose SbV2Flow::inverse's time-major
         // [mel_seq_len, d_z] into SbV2Decoder::generate's channel-major
@@ -924,11 +940,30 @@ impl SbV2Model {
     ///   no per-layer tone field at all; tone conditioning is the
     ///   SDP-level `tone_embed`/`tone_bias` above, shared across every
     ///   layer.
-    /// - Per flow layer `<i>` in `0..n_flow_layers`:
-    ///   `sbv2.flow.layer.<i>.scale_weight` / `.shift_weight` /
-    ///   `.style_proj` / `.speaker_proj` — matches
-    ///   [`SbV2AffineCouplingLayer`](flow::SbV2AffineCouplingLayer)'s four
-    ///   fields 1:1.
+    /// - Per flow layer `<i>` in `0..n_flow_layers` (Blocker 2b, 2026-08-06):
+    ///   the VITS2 [`SbV2TransformerCouplingLayer`](flow::SbV2TransformerCouplingLayer)
+    ///   is loaded from the following per-block tensors, plus a
+    ///   [`FlowLayer::Flip`](flow::FlowLayer::Flip) inserted after each
+    ///   coupling (matching upstream `p0p4k/vits2_pytorch/models.
+    ///   TransformerCouplingBlock`'s flat `[TCL, Flip, TCL, Flip, ...]`
+    ///   layout at `n_flows = n_flow_layers`):
+    ///
+    ///   - `sbv2.flow.layer.<i>.pre.{weight,bias}` — 1×1 Conv1d
+    ///     `[d_hidden, half_d_z]` + `[d_hidden]` bias.
+    ///   - `sbv2.flow.layer.<i>.spk_emb.{weight,bias}` — per-block g
+    ///     projection, `[d_hidden, gin_channels]` + `[d_hidden]` bias
+    ///     (matches upstream `TransformerCouplingLayer.spk_emb_linear`).
+    ///   - Per encoder-stack layer `<j>` in `0..n_flow_encoder_layers`,
+    ///     the six-family per-layer tensor set (identical to the text
+    ///     encoder's own per-layer scheme documented above):
+    ///     `sbv2.flow.layer.<i>.enc.<j>.attn.{conv_q,conv_k,conv_v,conv_o}.{weight,bias}`,
+    ///     `sbv2.flow.layer.<i>.enc.<j>.attn.rel_pos_{k,v}`,
+    ///     `sbv2.flow.layer.<i>.enc.<j>.ffn.conv_{1,2}.{weight,bias}`,
+    ///     `sbv2.flow.layer.<i>.enc.<j>.norm{1,2}.{gamma,beta}`.
+    ///   - `sbv2.flow.layer.<i>.post.{weight,bias}` — 1×1 Conv1d
+    ///     `[post_out_dim, d_hidden]` + `[post_out_dim]` bias, where
+    ///     `post_out_dim = half_d_z` if `mean_only` is true (SBV2 v2
+    ///     base) else `2 * half_d_z`.
     /// - `sbv2.decoder.conv_pre.{weight,bias}`,
     ///   `sbv2.decoder.conv_post.{weight,bias}`.
     /// - Per upsample stage `<i>` in `0..upsample_rates.len()`:
@@ -1084,6 +1119,41 @@ impl SbV2Model {
         let window_size = require_u32("vokra.sbv2.window_size")? as usize;
         let kernel_ffn = require_u32("vokra.sbv2.kernel_ffn")? as usize;
         let n_flow_layers = require_u32("vokra.sbv2.n_flow_layers")? as usize;
+        // Blocker 2b (2026-08-06) — VITS2 flow's own hparams. Independent
+        // from the text encoder's own values because the flow's internal
+        // `SbV2TransformerCouplingLayer.encoder_stack` uses a different
+        // per-block layer count and FFN kernel width than the text
+        // encoder's transformer stack (real SBV2 v2 base:
+        // `n_flow_encoder_layers = 6`, `kernel_ffn_flow = 5` vs. the text
+        // encoder's `kernel_ffn = 3`). See flow.rs's module doc.
+        //
+        // Optional to preserve backward compatibility with GGUFs converted
+        // before Blocker 2b landed (which have `n_flow_layers = 0` and no
+        // flow tensors — the loader still parses the empty flow stack).
+        // For any `n_flow_layers > 0`, all four flow hparams are read
+        // from the same `vokra.sbv2.flow.*` chunk group the converter
+        // stamps alongside the flow tensor stack.
+        let (n_flow_encoder_layers, kernel_ffn_flow, gin_channels, mean_only_flow) =
+            if n_flow_layers > 0 {
+                (
+                    require_u32("vokra.sbv2.flow.n_encoder_layers")? as usize,
+                    require_u32("vokra.sbv2.flow.kernel_ffn")? as usize,
+                    require_u32("vokra.sbv2.flow.gin_channels")? as usize,
+                    main.get("vokra.sbv2.flow.mean_only")
+                        .and_then(|v| v.as_bool())
+                        .ok_or_else(|| {
+                            VokraError::ModelLoad(
+                                "SbV2Model::from_gguf: missing GGUF metadata key: \
+                             vokra.sbv2.flow.mean_only (bool)"
+                                    .to_string(),
+                            )
+                        })?,
+                )
+            } else {
+                // Empty flow — none of these are read; supply zeros / false
+                // so no ambient hparam variation leaks into the code path.
+                (0, 0, 0, false)
+            };
         let n_sdp_layers = require_u32("vokra.sbv2.n_sdp_layers")? as usize;
         let sample_rate = require_u32("vokra.sbv2.sample_rate")?;
 
@@ -1283,21 +1353,99 @@ impl SbV2Model {
             n_tones,
         );
 
-        // ---- normalizing flow ----
-        let mut flow_layers = Vec::with_capacity(n_flow_layers);
+        // ---- VITS2 normalizing flow (Blocker 2b, 2026-08-06) ----
+        //
+        // Upstream `p0p4k/vits2_pytorch/models.TransformerCouplingBlock`
+        // stores the flow as a flat `nn.ModuleList` of length `2 *
+        // n_flow_layers`, alternating `TransformerCouplingLayer` (even
+        // indices) and `Flip` (odd indices). We rebuild that layout here
+        // by pushing one `FlowLayer::Coupling(...)` followed by one
+        // `FlowLayer::Flip` per `n_flow_layers` — see the `SbV2Flow`
+        // struct doc for the invariant.
+        //
+        // `d_hidden` is the coupling's inner transformer stack width
+        // (upstream `hidden_channels`, = `d_model` on the SBV2 v2 base).
+        // Bound to `d_model` here — the runtime uses the same value; a
+        // future SKU shipping `d_hidden != d_model` would need a distinct
+        // `vokra.sbv2.flow.d_hidden` key.
+        let d_hidden_flow = d_model;
+        let d_head_flow = if n_heads > 0 { d_model / n_heads } else { 0 };
+        let mut flow_stack: Vec<FlowLayer> = Vec::with_capacity(n_flow_layers * 2);
         for i in 0..n_flow_layers {
             let p = format!("sbv2.flow.layer.{i}");
-            flow_layers.push(flow::SbV2AffineCouplingLayer::new(
-                load_tensor_f32(&format!("{p}.scale_weight"))?,
-                load_tensor_f32(&format!("{p}.shift_weight"))?,
-                load_tensor_f32(&format!("{p}.style_proj"))?,
-                load_tensor_f32(&format!("{p}.speaker_proj"))?,
+            let pre_weight = load_tensor_f32(&format!("{p}.pre.weight"))?;
+            let pre_bias = load_tensor_f32(&format!("{p}.pre.bias"))?;
+            let spk_emb_weight = load_tensor_f32(&format!("{p}.spk_emb.weight"))?;
+            let spk_emb_bias = load_tensor_f32(&format!("{p}.spk_emb.bias"))?;
+            let post_weight = load_tensor_f32(&format!("{p}.post.weight"))?;
+            let post_bias = load_tensor_f32(&format!("{p}.post.bias"))?;
+
+            // Build the flow-encoder stack for this coupling — same block
+            // type as the text encoder's own stack, but distinct hparams
+            // (see `flow.rs`'s doc: `n_flow_encoder_layers`, `kernel_ffn_flow`).
+            let mut encoder_stack = Vec::with_capacity(n_flow_encoder_layers);
+            for j in 0..n_flow_encoder_layers {
+                let ep = format!("{p}.enc.{j}");
+                let attn = text_encoder::RelPositionMHA::new(
+                    load_tensor_f32(&format!("{ep}.attn.conv_q.weight"))?,
+                    load_tensor_f32(&format!("{ep}.attn.conv_q.bias"))?,
+                    load_tensor_f32(&format!("{ep}.attn.conv_k.weight"))?,
+                    load_tensor_f32(&format!("{ep}.attn.conv_k.bias"))?,
+                    load_tensor_f32(&format!("{ep}.attn.conv_v.weight"))?,
+                    load_tensor_f32(&format!("{ep}.attn.conv_v.bias"))?,
+                    load_tensor_f32(&format!("{ep}.attn.conv_o.weight"))?,
+                    load_tensor_f32(&format!("{ep}.attn.conv_o.bias"))?,
+                    load_tensor_f32(&format!("{ep}.attn.rel_pos_k"))?,
+                    load_tensor_f32(&format!("{ep}.attn.rel_pos_v"))?,
+                    n_heads,
+                    d_head_flow,
+                    window_size,
+                );
+                let norm1 = text_encoder::LayerNorm::new(
+                    load_tensor_f32(&format!("{ep}.norm1.gamma"))?,
+                    load_tensor_f32(&format!("{ep}.norm1.beta"))?,
+                    d_hidden_flow,
+                );
+                let ffn = text_encoder::PositionWiseFFN::new(
+                    load_tensor_f32(&format!("{ep}.ffn.conv_1.weight"))?,
+                    load_tensor_f32(&format!("{ep}.ffn.conv_1.bias"))?,
+                    load_tensor_f32(&format!("{ep}.ffn.conv_2.weight"))?,
+                    load_tensor_f32(&format!("{ep}.ffn.conv_2.bias"))?,
+                    d_hidden_flow,
+                    d_ff,
+                    kernel_ffn_flow,
+                );
+                let norm2 = text_encoder::LayerNorm::new(
+                    load_tensor_f32(&format!("{ep}.norm2.gamma"))?,
+                    load_tensor_f32(&format!("{ep}.norm2.beta"))?,
+                    d_hidden_flow,
+                );
+                encoder_stack.push(text_encoder::SbV2TransformerBlock::new(
+                    attn,
+                    norm1,
+                    ffn,
+                    norm2,
+                    d_hidden_flow,
+                ));
+            }
+
+            let tcl = flow::SbV2TransformerCouplingLayer::from_weights(
+                pre_weight,
+                pre_bias,
+                spk_emb_weight,
+                spk_emb_bias,
+                encoder_stack,
+                post_weight,
+                post_bias,
                 half_d_z,
-                d_style,
-                d_speaker,
-            ));
+                d_hidden_flow,
+                gin_channels,
+                mean_only_flow,
+            );
+            flow_stack.push(FlowLayer::Coupling(tcl));
+            flow_stack.push(FlowLayer::Flip);
         }
-        let flow = SbV2Flow::from_layers(flow_layers, d_z);
+        let flow = SbV2Flow::from_layers(flow_stack, d_z);
 
         // ---- HiFi-GAN decoder ----
         let initial_channel = require_u32("vokra.sbv2.decoder.initial_channel")? as usize;

@@ -317,7 +317,14 @@ impl SbV2TransformerBlock {
 
     /// Applies this block in place to `hidden` (`[seq_len, d_model]`
     /// row-major).
-    fn forward(&self, hidden: &mut [f32], seq_len: usize) {
+    ///
+    /// `pub(super)` so [`super::flow::SbV2TransformerCouplingLayer`]
+    /// (Blocker 2b, VITS2 TransformerCouplingBlock) can drive the same
+    /// primitive from inside the flow module without duplicating the
+    /// residual/LayerNorm plumbing — matches upstream `p0p4k/vits2_pytorch`
+    /// where `TransformerCouplingLayer` reuses `FFT` (this block's
+    /// equivalent) verbatim.
+    pub(super) fn forward(&self, hidden: &mut [f32], seq_len: usize) {
         debug_assert_eq!(
             hidden.len(),
             seq_len * self.d_model,
