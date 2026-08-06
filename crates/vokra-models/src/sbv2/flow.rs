@@ -554,6 +554,7 @@ mod tests {
     /// with `SbV2TextEncoder`'s own empty-stack precedent, which every
     /// other SBV2 module documents as a legitimate, exercised no-op
     /// configuration.
+    #[allow(clippy::too_many_arguments)] // one arg per weight tensor, mirrors the struct's fields
     fn make_tcl(
         half_d_z: usize,
         d_hidden: usize,
@@ -883,7 +884,7 @@ mod tests {
         let out = flow.inverse(&z, mel_seq_len, &g);
 
         // Expected from the hand trace above.
-        let expected = vec![-9.0_f32, -98.0];
+        let expected = [-9.0_f32, -98.0];
         for (i, (a, b)) in out.iter().zip(expected.iter()).enumerate() {
             assert!(
                 (a - b).abs() < 1e-4,

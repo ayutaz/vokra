@@ -1369,7 +1369,7 @@ impl SbV2Model {
         // future SKU shipping `d_hidden != d_model` would need a distinct
         // `vokra.sbv2.flow.d_hidden` key.
         let d_hidden_flow = d_model;
-        let d_head_flow = if n_heads > 0 { d_model / n_heads } else { 0 };
+        let d_head_flow = d_model.checked_div(n_heads).unwrap_or(0);
         let mut flow_stack: Vec<FlowLayer> = Vec::with_capacity(n_flow_layers * 2);
         for i in 0..n_flow_layers {
             let p = format!("sbv2.flow.layer.{i}");
