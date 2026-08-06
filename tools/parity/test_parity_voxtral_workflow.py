@@ -7,8 +7,12 @@ family (kokoro / whisper / csm / moshi / voxtral). Voxtral ships in two BF16
 variants at `mistralai/Voxtral-{Mini-3B,Small-24B}-2507` (both Apache-2.0):
 
   * `mini-3b-2507`  — 8.7 GB, already published as vokra/voxtral-mini-3b-2507
-                      on 2026-07-23. Runs on ubuntu-latest via the MappedLazy
-                      port that landed the same day.
+                      on 2026-07-23. Initially expected to run on ubuntu-latest
+                      via the MappedLazy port that landed the same day, but
+                      empirical measurement 2026-08-05 (PR #24 CI run
+                      31021205977 / job 92358110460) proved 8.7 GB BF16 OOMs
+                      the 7 GB RAM runner (SIGTERM exit 143 at ~40 s of
+                      conversion). Now `enabled: false` — mirror of small-24b.
   * `small-24b-2507` — 48 GB (11 shards). REQUIRES vast.ai (see
                       docs/handoff/vast-ai-large-model-publish.md §2).
                       Deferred with `if: false` posture: the matrix carries
@@ -26,8 +30,10 @@ What is checked:
     inputs), schedule (cron '15 5 * * 1'), pull_request (paths filter).
   * Cron slot: Monday 05:15 UTC is free tree-wide (does not collide with
     any other workflow at the same minute+hour+day-of-week).
-  * Matrix: mini-3b-2507 entry has `enabled: true`; small-24b-2507 entry
-    has `enabled: false` (the `if: false` posture the FQ-07 gap spec pins).
+  * Matrix: both mini-3b-2507 and small-24b-2507 entries have
+    `enabled: false` (the `if: false` posture the FQ-07 gap spec pins for
+    small-24b; mini-3b joined that posture after the 2026-08-05 empirical
+    OOM measurement — see class docstring above).
   * Gate variables: `VOKRA_VOXTRAL_ENABLE` for conversion,
     `VOKRA_VOXTRAL_HARNESS_READY` for the dumper leg.
   * Env vars: `VOKRA_VOXTRAL_GGUF`, `VOKRA_VOXTRAL_REF_DIR`,
@@ -180,14 +186,14 @@ class CronSlotIsFreeTreewide(unittest.TestCase):
 
 
 class MatrixShape(unittest.TestCase):
-    """Pin the mini-3b (enabled) + small-24b (deferred) matrix layout."""
+    """Pin the mini-3b (deferred, OOM) + small-24b (deferred, vast.ai) matrix layout."""
 
     @classmethod
     def setUpClass(cls):
         cls.text = WORKFLOW.read_text(encoding="utf-8")
         # Extract the matrix JSON that the setup step writes.
         # Format (single-line to satisfy GITHUB_OUTPUT rules):
-        #   matrix+='{"variant":"mini-3b-2507","enabled":true,...}'
+        #   matrix+='{"variant":"mini-3b-2507","enabled":false,...}'
         # We collect every include entry and parse each.
         entries = re.findall(
             r'matrix\+=\'({[^\']+})[,\']', cls.text
@@ -216,14 +222,28 @@ class MatrixShape(unittest.TestCase):
             f"unexpected variant set: {variants}",
         )
 
-    def test_mini_3b_entry_is_enabled(self):
+    def test_mini_3b_entry_is_deferred_with_annotation(self):
+        # Empirical measurement 2026-08-05 (PR #24 CI run 31021205977 /
+        # job 92358110460) proved mini-3b-2507 (8.7 GB BF16) OOMs on
+        # ubuntu-latest (7 GB RAM), even with the MappedLazy streaming
+        # port. The workflow header's earlier "fits ubuntu-latest with
+        # MappedLazy" hypothesis was disproved by that run's SIGTERM
+        # (exit 143) at ~40 s of conversion, so mini-3b now mirrors the
+        # `enabled: false` posture small-24b-2507 already carried — a
+        # fabricated-pass-preventing skip with a variant-specific
+        # STEP_SUMMARY annotation naming the empirical evidence. The
+        # entry itself stays in the matrix (identity fields still
+        # asserted below) so this oracle can pin the deferral shape;
+        # only the runnability flag flips.
         mini = [e for e in self.include if e.get("variant") == "mini-3b-2507"]
         self.assertEqual(len(mini), 1, "mini-3b-2507 entry missing or duplicated")
         entry = mini[0]
         self.assertEqual(
             entry.get("enabled"),
-            True,
-            "mini-3b-2507 must be enabled (runs on ubuntu-latest)",
+            False,
+            "mini-3b-2507 must be `enabled: false` (~8.7 GB BF16 OOMs "
+            "ubuntu-latest 7 GB RAM — see empirical measurement in "
+            "workflow header, PR #24 CI run 31021205977)",
         )
         self.assertEqual(entry.get("hf_repo"), "mistralai/Voxtral-Mini-3B-2507")
         self.assertEqual(entry.get("cli_model"), "voxtral")
