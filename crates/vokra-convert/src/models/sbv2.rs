@@ -262,6 +262,18 @@ const KEY_N_VOCAB: &str = "vokra.sbv2.n_vocab";
 const KEY_N_TONES: &str = "vokra.sbv2.n_tones";
 const KEY_D_FF: &str = "vokra.sbv2.d_ff";
 const KEY_N_TEXT_LAYERS: &str = "vokra.sbv2.n_text_layers";
+// Post-M6 (2026-08-06) relative-position transformer hparams — the SBV2
+// v2 real base checkpoint has a 6-layer relative-position transformer
+// stack under `enc_p.encoder.*` (see the module doc's "M6 refactor"
+// section) and the Rust loader (`SbV2Model::from_gguf`) requires all
+// three to construct `RelPositionMHA` / `PositionWiseFFN`. Every
+// architecture-parameterizing hparam is stamped as its own key rather
+// than being pinned to a design-doc constant, so future SBV2 SKUs
+// (varying `n_heads` / `window` / `kernel_ffn`) round-trip through the
+// converter without a code change on the runtime side.
+const KEY_N_HEADS: &str = "vokra.sbv2.n_heads";
+const KEY_WINDOW_SIZE: &str = "vokra.sbv2.window_size";
+const KEY_KERNEL_FFN: &str = "vokra.sbv2.kernel_ffn";
 const KEY_N_FLOW_LAYERS: &str = "vokra.sbv2.n_flow_layers";
 const KEY_N_SDP_LAYERS: &str = "vokra.sbv2.n_sdp_layers";
 const KEY_SAMPLE_RATE: &str = "vokra.sbv2.sample_rate";
@@ -303,6 +315,24 @@ const KEY_DECODER_LEAKY_RELU_SLOPE: &str = "vokra.sbv2.decoder.leaky_relu_slope"
 /// codebase uses — `vits_ja::VITS_JA_LEAKY_RELU_SLOPE`, piper-plus's
 /// `LRELU_SLOPE`).
 const DEFAULT_LEAKY_RELU_SLOPE: f32 = 0.1;
+
+/// Post-M6 (2026-08-06) relative-position transformer defaults for the
+/// text encoder. Values pin the SBV2 v2 base checkpoint
+/// (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`) as verified from the
+/// real `enc_p.encoder.attn_layers.0.*` tensor shapes:
+///
+/// - `emb_rel_k`/`emb_rel_v` shape `[1, 9, 96]` → `n_heads = 2`
+///   (`d_model=192 / d_head=96`), `window_size = 4` (`2*4+1=9`).
+/// - `ffn_layers.0.conv_1.weight` shape `[768, 192, 3]` → `kernel_ffn = 3`.
+///
+/// Used by [`SbV2Config`] as the default when a JSON side-car omits
+/// `n_heads` / `window_size` / `kernel_ffn`, matching the base value all
+/// existing SBV2 v2 SKUs use; a config that varies the architecture (a
+/// hypothetical `n_heads = 4` future SKU) overrides these by supplying
+/// its own values in the side-car.
+const DEFAULT_N_HEADS: u32 = 2;
+const DEFAULT_WINDOW_SIZE: u32 = 4;
+const DEFAULT_KERNEL_FFN: u32 = 3;
 
 /// `JsonValue` → `f64` accepting both int and float literals (a side-car
 /// may write `0.1` as a float or a whole-number slope like `1` as an int).
@@ -352,6 +382,26 @@ pub(crate) struct SbV2Config {
     pub(crate) n_tones: u32,
     pub(crate) d_ff: u32,
     pub(crate) n_text_layers: u32,
+    /// Post-M6 relative-position transformer hparam: attention head
+    /// count for the SBV2 text encoder's `enc_p.encoder.*` stack.
+    /// Optional in the JSON side-car — defaults to [`DEFAULT_N_HEADS`]
+    /// (`2`, the SBV2 v2 base value), mirroring the Rust loader's
+    /// hard-fail on missing `vokra.sbv2.n_heads` metadata (a config
+    /// side-car missing `n_heads` still stamps the default, so a real
+    /// checkpoint whose config side-car omits this key still round-trips
+    /// through the loader without change).
+    pub(crate) n_heads: u32,
+    /// Post-M6 relative-position transformer hparam: half-window (`w`)
+    /// for the relative-position bias table (`emb_rel_k/v` have shape
+    /// `[1, 2*w+1, d_head]`). Optional in the JSON side-car — defaults
+    /// to [`DEFAULT_WINDOW_SIZE`] (`4`, matching the SBV2 v2 base value
+    /// verified from `enc_p.encoder.attn_layers.0.emb_rel_k` shape
+    /// `[1, 9, 96]`).
+    pub(crate) window_size: u32,
+    /// Post-M6 relative-position transformer hparam: FFN Conv1d kernel
+    /// width (SBV2 v2 uses same-padded kernel=3). Optional in the JSON
+    /// side-car — defaults to [`DEFAULT_KERNEL_FFN`] (`3`).
+    pub(crate) kernel_ffn: u32,
     pub(crate) n_flow_layers: u32,
     pub(crate) n_sdp_layers: u32,
     pub(crate) sample_rate: u32,
@@ -425,6 +475,28 @@ impl SbV2Config {
             n_tones: req_u32("n_tones")?,
             d_ff: req_u32("d_ff")?,
             n_text_layers: req_u32("n_text_layers")?,
+            // Post-M6 relative-position transformer hparams — optional
+            // in the JSON side-car so a config authored before the M6
+            // refactor (pre-`n_heads` / `window_size` / `kernel_ffn`
+            // schema) still round-trips through the converter for the
+            // SBV2 v2 base value (the defaults). A hypothetical future
+            // SBV2 SKU with `n_heads = 4` etc. must supply the override
+            // explicitly in its side-car.
+            n_heads: root
+                .get("n_heads")
+                .and_then(JsonValue::as_u64)
+                .map(|u| u as u32)
+                .unwrap_or(DEFAULT_N_HEADS),
+            window_size: root
+                .get("window_size")
+                .and_then(JsonValue::as_u64)
+                .map(|u| u as u32)
+                .unwrap_or(DEFAULT_WINDOW_SIZE),
+            kernel_ffn: root
+                .get("kernel_ffn")
+                .and_then(JsonValue::as_u64)
+                .map(|u| u as u32)
+                .unwrap_or(DEFAULT_KERNEL_FFN),
             n_flow_layers: req_u32("n_flow_layers")?,
             n_sdp_layers: req_u32("n_sdp_layers")?,
             sample_rate: req_u32("sample_rate")?,
@@ -481,6 +553,22 @@ impl SbV2Config {
                  legitimate empty-stack configuration)"
                     .to_owned(),
             ));
+        }
+        // Post-M6 relative-position transformer hparam consistency (mirrors
+        // the identical loud-fail path `SbV2Model::from_gguf` runs at
+        // GGUF-load time — every check here matches one on that side).
+        if cfg.n_heads == 0 || cfg.window_size == 0 || cfg.kernel_ffn == 0 {
+            return Err(ConvertError::Parse(format!(
+                "sbv2 config: n_heads ({}) / window_size ({}) / kernel_ffn ({}) must all be > 0",
+                cfg.n_heads, cfg.window_size, cfg.kernel_ffn,
+            )));
+        }
+        if cfg.d_model % cfg.n_heads != 0 {
+            return Err(ConvertError::Parse(format!(
+                "sbv2 config: d_model ({}) must be divisible by n_heads ({}) — VITS \
+                 MultiHeadAttention requires d_head = d_model / n_heads to be an exact integer",
+                cfg.d_model, cfg.n_heads,
+            )));
         }
         if cfg.decoder_upsample_kernel_sizes.len() != cfg.decoder_upsample_rates.len() {
             return Err(ConvertError::Parse(format!(
@@ -807,6 +895,15 @@ fn write_hparams(b: &mut GgufBuilder, cfg: &SbV2Config) {
     b.add_u32(KEY_N_TONES, cfg.n_tones);
     b.add_u32(KEY_D_FF, cfg.d_ff);
     b.add_u32(KEY_N_TEXT_LAYERS, cfg.n_text_layers);
+    // Post-M6 relative-position transformer hparams (see this fn's
+    // caller's config-side-car doc, and the `KEY_*` const-block comment
+    // above for the primary-source rationale). Stamped every time the
+    // hparam chunk group is written — the loader's cross-check in
+    // `SbV2Model::from_gguf` requires all three, so all or none is
+    // consistent with every other hparam in this file.
+    b.add_u32(KEY_N_HEADS, cfg.n_heads);
+    b.add_u32(KEY_WINDOW_SIZE, cfg.window_size);
+    b.add_u32(KEY_KERNEL_FFN, cfg.kernel_ffn);
     b.add_u32(KEY_N_FLOW_LAYERS, cfg.n_flow_layers);
     b.add_u32(KEY_N_SDP_LAYERS, cfg.n_sdp_layers);
     b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
@@ -887,6 +984,76 @@ enum TensorClass {
     Skip { reason: &'static str },
 }
 
+/// Post-M6 (2026-08-06) `enc_p.encoder.*` → `sbv2.text_encoder.layer.<i>.*`
+/// rename helper. Returns `Some(new_name)` for every per-layer attn /
+/// ffn / norm tensor and `None` for anything under `enc_p.encoder.*`
+/// that doesn't match the per-layer pattern (e.g. `spk_emb_linear` —
+/// Blocker 3 external speaker-vector projection, which stays pass-
+/// through until the Rust API gains a `512-d input path`).
+///
+/// `rest` is the substring **after** stripping `enc_p.encoder.`; e.g.
+/// upstream `enc_p.encoder.attn_layers.0.conv_q.weight` → `rest =
+/// "attn_layers.0.conv_q.weight"` → returned rename
+/// `"sbv2.text_encoder.layer.0.attn.conv_q.weight"`.
+///
+/// The four upstream sub-namespaces this handles map to the four SBV2
+/// per-layer sub-modules the M6 refactor gave `SbV2TransformerBlock`:
+///
+/// - `attn_layers.<i>.conv_{q,k,v,o}.{weight,bias}` → `layer.<i>.attn.conv_{q,k,v,o}.{weight,bias}`
+/// - `attn_layers.<i>.emb_rel_{k,v}` → `layer.<i>.attn.rel_pos_{k,v}`
+/// - `ffn_layers.<i>.conv_{1,2}.{weight,bias}` → `layer.<i>.ffn.conv_{1,2}.{weight,bias}`
+/// - `norm_layers_1.<i>.{gamma,beta}` → `layer.<i>.norm1.{gamma,beta}`
+/// - `norm_layers_2.<i>.{gamma,beta}` → `layer.<i>.norm2.{gamma,beta}`
+fn classify_encoder_layer_tensor(rest: &str) -> Option<String> {
+    // attn_layers
+    if let Some(after) = rest.strip_prefix("attn_layers.") {
+        let (idx_str, tail) = after.split_once('.')?;
+        let i: usize = idx_str.parse().ok()?;
+        let mapped_tail = match tail {
+            "conv_q.weight" => "attn.conv_q.weight",
+            "conv_q.bias" => "attn.conv_q.bias",
+            "conv_k.weight" => "attn.conv_k.weight",
+            "conv_k.bias" => "attn.conv_k.bias",
+            "conv_v.weight" => "attn.conv_v.weight",
+            "conv_v.bias" => "attn.conv_v.bias",
+            "conv_o.weight" => "attn.conv_o.weight",
+            "conv_o.bias" => "attn.conv_o.bias",
+            "emb_rel_k" => "attn.rel_pos_k",
+            "emb_rel_v" => "attn.rel_pos_v",
+            _ => return None,
+        };
+        return Some(format!("sbv2.text_encoder.layer.{i}.{mapped_tail}"));
+    }
+    // ffn_layers
+    if let Some(after) = rest.strip_prefix("ffn_layers.") {
+        let (idx_str, tail) = after.split_once('.')?;
+        let i: usize = idx_str.parse().ok()?;
+        let mapped_tail = match tail {
+            "conv_1.weight" => "ffn.conv_1.weight",
+            "conv_1.bias" => "ffn.conv_1.bias",
+            "conv_2.weight" => "ffn.conv_2.weight",
+            "conv_2.bias" => "ffn.conv_2.bias",
+            _ => return None,
+        };
+        return Some(format!("sbv2.text_encoder.layer.{i}.{mapped_tail}"));
+    }
+    // norm_layers_1 / norm_layers_2
+    for (upstream_prefix, dst_prefix) in [("norm_layers_1.", "norm1"), ("norm_layers_2.", "norm2")]
+    {
+        if let Some(after) = rest.strip_prefix(upstream_prefix) {
+            let (idx_str, tail) = after.split_once('.')?;
+            let i: usize = idx_str.parse().ok()?;
+            let mapped_tail = match tail {
+                "gamma" => format!("{dst_prefix}.gamma"),
+                "beta" => format!("{dst_prefix}.beta"),
+                _ => return None,
+            };
+            return Some(format!("sbv2.text_encoder.layer.{i}.{mapped_tail}"));
+        }
+    }
+    None
+}
+
 /// Classifies one upstream tensor into a [`TensorClass`].
 ///
 /// `n_resblock_branches`, when `Some`, unlocks the flat `dec.resblocks.i`
@@ -954,6 +1121,27 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
             return TensorClass::Rename("sbv2.decoder.conv_post.weight".into());
         }
         _ => {}
+    }
+
+    // --------------------------------------------------------------
+    // 2b) enc_p.encoder.{attn_layers|ffn_layers|norm_layers_1|norm_layers_2}.<i>.*
+    //     (Post-M6 relative-position transformer stack — the M6 refactor
+    //     wired the Rust runtime to consume these under the SBV2 layer
+    //     path convention `sbv2.text_encoder.layer.<i>.{attn|ffn|norm1|
+    //     norm2}.*`. See the module doc's "M6 refactor" section for the
+    //     primary-source rationale and the tensor-shape trail.)
+    // --------------------------------------------------------------
+    if let Some(rest) = name.strip_prefix("enc_p.encoder.") {
+        if let Some(remapped) = classify_encoder_layer_tensor(rest) {
+            return TensorClass::Rename(remapped);
+        }
+        // `enc_p.encoder.spk_emb_linear.{weight,bias}` and any other
+        // `enc_p.encoder.*` that is not part of the per-layer attn/ffn/
+        // norm stack (Blocker 3 — external speaker vector projection)
+        // stays on the pass-through path below rather than being renamed
+        // here, keeping the "fall through to pass-through with a
+        // per-family reason" convention this file's classification
+        // relies on.
     }
 
     // --------------------------------------------------------------
@@ -1067,8 +1255,15 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
     } else if name.starts_with("enc_p.encoder.spk_emb_linear") {
         "external speaker-vector projection — Blocker 3 (Rust API needs 512-d input path)"
     } else if name.starts_with("enc_p.encoder.") {
-        "SBV2 relative-position transformer stack — Rust text_encoder simplified, awaiting \
-         architecture wave"
+        // Post-M6 (2026-08-06) — the per-layer attn / ffn / norm tensors
+        // are now renamed via `classify_encoder_layer_tensor` above and
+        // never reach this pass-through arm. What lands here is anything
+        // else under `enc_p.encoder.*` (currently: nothing on the real
+        // base checkpoint; a future SKU might add auxiliary tensors here
+        // and this reason keeps them preserved for a follow-up wave
+        // rather than silently dropped).
+        "SBV2 encoder auxiliary tensor — no matching per-layer rename in \
+         classify_encoder_layer_tensor (preserved verbatim for a follow-up wave)"
     } else if name.starts_with("enc_p.proj.") {
         "VITS output projection to (mu, log_sigma) — no Rust text_encoder field yet"
     } else if name.starts_with("sdp.") {
@@ -1791,13 +1986,18 @@ mod tests {
 
     #[test]
     fn classify_blocker_families_are_pass_through_with_reason() {
+        // Post-M6 (2026-08-06): `enc_p.encoder.attn_layers.*`,
+        // `.ffn_layers.*`, `.norm_layers_{1,2}.*` are now Rename-mapped
+        // by `classify_encoder_layer_tensor` (see the "enc_p.encoder"
+        // rename tests below), so they are no longer members of the
+        // "PassThrough (Blocker 2 wave)" family. `spk_emb_linear` is
+        // still Blocker 3 (external speaker-vector projection — no Rust
+        // API path yet) and stays PassThrough.
         for name in [
             "flow.flows.0.enc.attn_layers.0.conv_q.weight",
             "flow.flows.3.post.bias",
-            "enc_p.encoder.attn_layers.0.conv_q.weight",
             "enc_p.encoder.spk_emb_linear.weight", // Blocker 3
-            "enc_p.encoder.ffn_layers.0.conv_1.bias",
-            "enc_p.encoder.norm_layers_1.0.gamma",
+            "enc_p.encoder.spk_emb_linear.bias",
             "enc_p.proj.weight",
             "dec.cond.weight",
             "dec.cond.bias",
@@ -1810,6 +2010,114 @@ mod tests {
                 "{name} must be PassThrough"
             );
         }
+    }
+
+    // Post-M6 (2026-08-06) encoder-layer rename tests. Each entry pins
+    // one upstream `enc_p.encoder.*` tensor to its target GGUF name
+    // under `sbv2.text_encoder.layer.<i>.*` — a stale converter that
+    // drops the M6 rename table would silently leave upstream names on
+    // disk and the Rust loader would then fail with "tensor not found".
+    #[test]
+    fn classify_encoder_attn_layers_rename_to_layer_attn_conv_paths() {
+        for (i, tail_in, tail_out) in [
+            (0usize, "conv_q.weight", "attn.conv_q.weight"),
+            (0, "conv_q.bias", "attn.conv_q.bias"),
+            (0, "conv_k.weight", "attn.conv_k.weight"),
+            (0, "conv_k.bias", "attn.conv_k.bias"),
+            (0, "conv_v.weight", "attn.conv_v.weight"),
+            (0, "conv_v.bias", "attn.conv_v.bias"),
+            (0, "conv_o.weight", "attn.conv_o.weight"),
+            (0, "conv_o.bias", "attn.conv_o.bias"),
+            (5, "conv_q.weight", "attn.conv_q.weight"),
+        ] {
+            let input = format!("enc_p.encoder.attn_layers.{i}.{tail_in}");
+            let expected = format!("sbv2.text_encoder.layer.{i}.{tail_out}");
+            assert_eq!(
+                classify_tensor(&input, Some(3)),
+                TensorClass::Rename(expected.clone()),
+                "attn_layers.{i}.{tail_in} must rename to {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_encoder_attn_layers_emb_rel_renames_to_rel_pos() {
+        // Real SBV2 v2 base has `emb_rel_k`/`emb_rel_v` shape `[1, 9, 96]`
+        // — the M6 refactor renames these to `rel_pos_k`/`rel_pos_v` so
+        // the Rust `RelPositionMHA::new` field names read naturally
+        // (`rel_pos_*` matches the mathematical convention while the
+        // upstream `emb_rel_*` is a compact abbreviation).
+        for (i, tail_in, tail_out) in [
+            (0usize, "emb_rel_k", "attn.rel_pos_k"),
+            (0, "emb_rel_v", "attn.rel_pos_v"),
+            (5, "emb_rel_k", "attn.rel_pos_k"),
+        ] {
+            let input = format!("enc_p.encoder.attn_layers.{i}.{tail_in}");
+            let expected = format!("sbv2.text_encoder.layer.{i}.{tail_out}");
+            assert_eq!(
+                classify_tensor(&input, Some(3)),
+                TensorClass::Rename(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn classify_encoder_ffn_and_norm_layers_rename() {
+        for (input, expected) in [
+            (
+                "enc_p.encoder.ffn_layers.0.conv_1.weight",
+                "sbv2.text_encoder.layer.0.ffn.conv_1.weight",
+            ),
+            (
+                "enc_p.encoder.ffn_layers.0.conv_1.bias",
+                "sbv2.text_encoder.layer.0.ffn.conv_1.bias",
+            ),
+            (
+                "enc_p.encoder.ffn_layers.0.conv_2.weight",
+                "sbv2.text_encoder.layer.0.ffn.conv_2.weight",
+            ),
+            (
+                "enc_p.encoder.ffn_layers.0.conv_2.bias",
+                "sbv2.text_encoder.layer.0.ffn.conv_2.bias",
+            ),
+            (
+                "enc_p.encoder.norm_layers_1.0.gamma",
+                "sbv2.text_encoder.layer.0.norm1.gamma",
+            ),
+            (
+                "enc_p.encoder.norm_layers_1.0.beta",
+                "sbv2.text_encoder.layer.0.norm1.beta",
+            ),
+            (
+                "enc_p.encoder.norm_layers_2.5.gamma",
+                "sbv2.text_encoder.layer.5.norm2.gamma",
+            ),
+            (
+                "enc_p.encoder.norm_layers_2.5.beta",
+                "sbv2.text_encoder.layer.5.norm2.beta",
+            ),
+        ] {
+            assert_eq!(
+                classify_tensor(input, Some(3)),
+                TensorClass::Rename(expected.into()),
+                "{input} must rename to {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_encoder_spk_emb_linear_still_pass_through() {
+        // Explicit regression pin: the new `enc_p.encoder.*` branch must
+        // NOT swallow spk_emb_linear (that's Blocker 3, no Rust API path
+        // yet — must stay PassThrough).
+        assert!(matches!(
+            classify_tensor("enc_p.encoder.spk_emb_linear.weight", Some(3)),
+            TensorClass::PassThrough { .. }
+        ));
+        assert!(matches!(
+            classify_tensor("enc_p.encoder.spk_emb_linear.bias", Some(3)),
+            TensorClass::PassThrough { .. }
+        ));
     }
 
     #[test]
@@ -2100,9 +2408,14 @@ mod tests {
 
     #[test]
     fn flow_and_encoder_families_pass_through_verbatim_when_no_rename_applies() {
-        // Preservation invariant: flow.* + enc_p.encoder.* + sdp.* +
-        // dec.cond.* stay under their upstream names so a future Rust
-        // wave can consume them without reconverting the checkpoint.
+        // Preservation invariant: flow.* + `enc_p.encoder.spk_emb_linear.*`
+        // (Blocker 3) + sdp.* + dec.cond.* stay under their upstream
+        // names so a future Rust wave can consume them without
+        // reconverting the checkpoint. Post-M6 (2026-08-06) the per-layer
+        // `enc_p.encoder.attn_layers.*` / `.ffn_layers.*` / `.norm_layers_*`
+        // tensors are Rename-mapped (see `classify_encoder_attn_layers_*`
+        // tests), so this test picks `spk_emb_linear` as the still-
+        // PassThrough example under `enc_p.encoder.*`.
         let entries: Vec<(&str, &str, &[u64], Vec<u8>)> = vec![
             (
                 "flow.flows.0.enc.attn_layers.0.conv_q.weight",
@@ -2111,10 +2424,10 @@ mod tests {
                 f32_bytes(&[0.01_f32; 192 * 192]),
             ),
             (
-                "enc_p.encoder.attn_layers.0.conv_q.weight",
+                "enc_p.encoder.spk_emb_linear.weight",
                 "F32",
-                &[192, 192, 1],
-                f32_bytes(&[0.02_f32; 192 * 192]),
+                &[192, 512],
+                f32_bytes(&[0.02_f32; 192 * 512]),
             ),
             (
                 "sdp.flows.1.pre.weight",
@@ -2144,7 +2457,7 @@ mod tests {
         let file = GgufFile::parse(out_bytes).expect("parse");
         for name in [
             "flow.flows.0.enc.attn_layers.0.conv_q.weight",
-            "enc_p.encoder.attn_layers.0.conv_q.weight",
+            "enc_p.encoder.spk_emb_linear.weight",
             "sdp.flows.1.pre.weight",
             "dec.cond.weight",
         ] {

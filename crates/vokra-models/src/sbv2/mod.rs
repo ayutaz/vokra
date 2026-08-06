@@ -1069,9 +1069,55 @@ impl SbV2Model {
         let n_tones = require_u32("vokra.sbv2.n_tones")? as usize;
         let d_ff = require_u32("vokra.sbv2.d_ff")? as usize;
         let n_text_layers = require_u32("vokra.sbv2.n_text_layers")? as usize;
+        // Relative-position transformer block hparams for the SBV2 text
+        // encoder — the M6 refactor lifted these from the design-doc §7
+        // pins (`n_heads = 2`, `window = 4`, `kernel_ffn = 3`) to real
+        // metadata keys because the VITS `MultiHeadAttention` /
+        // `PositionWiseFFN` are architecturally parameterized by all
+        // three. The converter (`vokra-convert::models::sbv2`) stamps
+        // these under the same `vokra.sbv2.*` chunk group as every
+        // other hparam — see `write_hparams`. Loud-fail if absent so a
+        // stale GGUF (still emitting the pre-M6 12-tensor simple
+        // prenorm layer set) never quietly wires up the wrong
+        // architecture.
+        let n_heads = require_u32("vokra.sbv2.n_heads")? as usize;
+        let window_size = require_u32("vokra.sbv2.window_size")? as usize;
+        let kernel_ffn = require_u32("vokra.sbv2.kernel_ffn")? as usize;
         let n_flow_layers = require_u32("vokra.sbv2.n_flow_layers")? as usize;
         let n_sdp_layers = require_u32("vokra.sbv2.n_sdp_layers")? as usize;
         let sample_rate = require_u32("vokra.sbv2.sample_rate")?;
+
+        // Cross-check the relative-position transformer hparams against
+        // `d_model` before any tensor load — `n_heads` must divide
+        // `d_model` so `d_head = d_model / n_heads` is exact, and
+        // `n_heads` / `window_size` / `kernel_ffn` must all be positive.
+        // A malformed metadata combination fails loudly here rather than
+        // panicking inside `RelPositionMHA::new`'s debug-asserts (which
+        // would only fire in debug builds — this loader promises the
+        // FR-EX-08 "loud on load" property in release too).
+        if n_heads == 0 {
+            return Err(VokraError::ModelLoad(
+                "SbV2Model::from_gguf: vokra.sbv2.n_heads must be positive".to_string(),
+            ));
+        }
+        if window_size == 0 {
+            return Err(VokraError::ModelLoad(
+                "SbV2Model::from_gguf: vokra.sbv2.window_size must be positive".to_string(),
+            ));
+        }
+        if kernel_ffn == 0 {
+            return Err(VokraError::ModelLoad(
+                "SbV2Model::from_gguf: vokra.sbv2.kernel_ffn must be positive".to_string(),
+            ));
+        }
+        if d_model % n_heads != 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.d_model ({d_model}) must be divisible by \
+                 vokra.sbv2.n_heads ({n_heads}) — VITS `MultiHeadAttention` requires d_head = \
+                 d_model / n_heads to be an exact integer"
+            )));
+        }
+        let d_head = d_model / n_heads;
 
         if d_z == 0 || d_z % 2 != 0 {
             return Err(VokraError::ModelLoad(format!(
@@ -1111,21 +1157,52 @@ impl SbV2Model {
         let mut transformer_layers = Vec::with_capacity(n_text_layers);
         for i in 0..n_text_layers {
             let p = format!("sbv2.text_encoder.layer.{i}");
-            transformer_layers.push(text_encoder::SbV2TransformerBlock::new(
-                load_tensor_f32(&format!("{p}.attn.q.weight"))?,
-                load_tensor_f32(&format!("{p}.attn.k.weight"))?,
-                load_tensor_f32(&format!("{p}.attn.v.weight"))?,
-                load_tensor_f32(&format!("{p}.attn.o.weight"))?,
-                load_tensor_f32(&format!("{p}.ln1.gamma"))?,
-                load_tensor_f32(&format!("{p}.ln1.beta"))?,
-                load_tensor_f32(&format!("{p}.ffn.w1.weight"))?,
-                load_tensor_f32(&format!("{p}.ffn.w1.bias"))?,
-                load_tensor_f32(&format!("{p}.ffn.w2.weight"))?,
-                load_tensor_f32(&format!("{p}.ffn.w2.bias"))?,
-                load_tensor_f32(&format!("{p}.ln2.gamma"))?,
-                load_tensor_f32(&format!("{p}.ln2.beta"))?,
+            // Attention Q/K/V/O — 1×1 Conv1d (kernel=1) with bias, matches
+            // upstream VITS `MultiHeadAttention.conv_{q,k,v,o}` naming.
+            let attn = text_encoder::RelPositionMHA::new(
+                load_tensor_f32(&format!("{p}.attn.conv_q.weight"))?,
+                load_tensor_f32(&format!("{p}.attn.conv_q.bias"))?,
+                load_tensor_f32(&format!("{p}.attn.conv_k.weight"))?,
+                load_tensor_f32(&format!("{p}.attn.conv_k.bias"))?,
+                load_tensor_f32(&format!("{p}.attn.conv_v.weight"))?,
+                load_tensor_f32(&format!("{p}.attn.conv_v.bias"))?,
+                load_tensor_f32(&format!("{p}.attn.conv_o.weight"))?,
+                load_tensor_f32(&format!("{p}.attn.conv_o.bias"))?,
+                // Relative-position embeddings: `heads_share=True` (the
+                // upstream default and what real SBV2 v2 uses), so a
+                // single `[2*window+1, d_head]` table is broadcast
+                // across every head. Upstream on-disk shape is `[1,
+                // 2*window+1, d_head]`; the leading singleton is dropped
+                // when this tensor lands in the flat GGUF buffer.
+                load_tensor_f32(&format!("{p}.attn.rel_pos_k"))?,
+                load_tensor_f32(&format!("{p}.attn.rel_pos_v"))?,
+                n_heads,
+                d_head,
+                window_size,
+            );
+            // Post-attn / post-FFN residual LayerNorms (channel-last,
+            // matches upstream `modules.LayerNorm`).
+            let norm1 = text_encoder::LayerNorm::new(
+                load_tensor_f32(&format!("{p}.norm1.gamma"))?,
+                load_tensor_f32(&format!("{p}.norm1.beta"))?,
+                d_model,
+            );
+            let ffn = text_encoder::PositionWiseFFN::new(
+                load_tensor_f32(&format!("{p}.ffn.conv_1.weight"))?,
+                load_tensor_f32(&format!("{p}.ffn.conv_1.bias"))?,
+                load_tensor_f32(&format!("{p}.ffn.conv_2.weight"))?,
+                load_tensor_f32(&format!("{p}.ffn.conv_2.bias"))?,
                 d_model,
                 d_ff,
+                kernel_ffn,
+            );
+            let norm2 = text_encoder::LayerNorm::new(
+                load_tensor_f32(&format!("{p}.norm2.gamma"))?,
+                load_tensor_f32(&format!("{p}.norm2.beta"))?,
+                d_model,
+            );
+            transformer_layers.push(text_encoder::SbV2TransformerBlock::new(
+                attn, norm1, ffn, norm2, d_model,
             ));
         }
         let text_encoder = SbV2TextEncoder::from_weights(

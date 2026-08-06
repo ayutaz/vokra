@@ -92,19 +92,25 @@ fn text_encoder_forward_language_id_switches_embedding_row() {
 
     // With phoneme_embed / tone_embed / transformer stack all zero, the
     // output equals `language_embed[language_id]` broadcast to every
-    // position, so every element of `out_ja` must be exactly 0.10 (row 0
-    // fill), of `out_en` 0.20, and of `out_zh` 0.30.
+    // position and then multiplied by `sqrt(d_model)` — which matches
+    // upstream VITS's `TextEncoder.forward`'s `x = self.emb(x) *
+    // math.sqrt(self.hidden_channels)` (the M6 refactor added this scale
+    // to match the real relative-position transformer encoder's forward
+    // pass; see `SbV2TextEncoder::forward`'s doc). For `d_model = 4`,
+    // `sqrt(4) = 2` exactly, so row-0 (fill 0.10) → 0.20, row-1 (0.20)
+    // → 0.40, row-2 (0.30) → 0.60.
+    let scale = (d_model as f32).sqrt();
     assert!(
-        out_ja.iter().all(|&v| (v - 0.10).abs() < 1e-6),
-        "with zero phoneme/tone weights, out_ja must be all 0.10 (language_embed row 0 fill)"
+        out_ja.iter().all(|&v| (v - 0.10 * scale).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_ja must be all 0.10 * sqrt(d_model) (row 0 fill)"
     );
     assert!(
-        out_en.iter().all(|&v| (v - 0.20).abs() < 1e-6),
-        "with zero phoneme/tone weights, out_en must be all 0.20 (language_embed row 1 fill)"
+        out_en.iter().all(|&v| (v - 0.20 * scale).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_en must be all 0.20 * sqrt(d_model) (row 1 fill)"
     );
     assert!(
-        out_zh.iter().all(|&v| (v - 0.30).abs() < 1e-6),
-        "with zero phoneme/tone weights, out_zh must be all 0.30 (language_embed row 2 fill)"
+        out_zh.iter().all(|&v| (v - 0.30 * scale).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_zh must be all 0.30 * sqrt(d_model) (row 2 fill)"
     );
 }
 
