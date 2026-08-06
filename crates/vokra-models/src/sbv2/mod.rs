@@ -1641,12 +1641,49 @@ impl SbV2Model {
         };
 
         // ---- style ----
-        let style_injector = StyleVectorInjector::from_projections(
-            load_tensor_f32("sbv2.style_injector.proj_scale")?,
-            load_tensor_f32("sbv2.style_injector.proj_bias")?,
-            d_style,
-            d_model,
-        );
+        //
+        // Blocker 6 (2026-08-06): the SBV2 v2 base checkpoint
+        // (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`) ships **no**
+        // `style_injector.*` tensors. The style-vector projection is
+        // learned during per-speaker fine-tuning; base ckpt inference is
+        // an identity injector (equivalent to `style_vec=0`). Post-
+        // Blocker-6 the loader falls back to all-zero `proj_scale` +
+        // `proj_bias` when both tensors are absent — [`inject`](style::
+        // StyleVectorInjector::inject) then computes `h = h * (1 + 0) +
+        // 0 = h`, a byte-identity no-op. A converter that emits **only
+        // one** of the two projections (impossible on real upstream, but
+        // possible on a hand-authored fixture) still errors loudly (that
+        // would be a converter bug, not an absent-fixture default).
+        let style_injector = match (
+            main.get("sbv2.style_injector.proj_scale"),
+            main.get("sbv2.style_injector.proj_bias"),
+        ) {
+            (Some(_), Some(_)) => StyleVectorInjector::from_projections(
+                load_tensor_f32("sbv2.style_injector.proj_scale")?,
+                load_tensor_f32("sbv2.style_injector.proj_bias")?,
+                d_style,
+                d_model,
+            ),
+            (None, None) => {
+                // Zero-weight identity fallback — equivalent to per-
+                // utterance `style_vec = 0` regardless of caller's input.
+                StyleVectorInjector::from_projections(
+                    vec![0.0_f32; d_model * d_style],
+                    vec![0.0_f32; d_model * d_style],
+                    d_style,
+                    d_model,
+                )
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(VokraError::ModelLoad(
+                    "SbV2Model::from_gguf: exactly one of sbv2.style_injector.\
+                     {proj_scale, proj_bias} is present — a converter must \
+                     emit both or neither (FR-EX-08: partial style projection \
+                     is undefined)"
+                        .to_string(),
+                ));
+            }
+        };
 
         // ---- stochastic duration predictor (Blocker 2c: real DDS-net +
         // rational-quadratic-spline ConvFlow shape, mirroring the 144
@@ -1937,7 +1974,27 @@ impl SbV2Model {
         }
 
         let conv_post_weight = load_tensor_f32("sbv2.decoder.conv_post.weight")?;
-        let conv_post_bias = load_tensor_f32("sbv2.decoder.conv_post.bias")?;
+        // Blocker 6 (2026-08-06): `dec.conv_post.bias` is absent in the
+        // real SBV2 v2 base checkpoint (upstream ships `dec.conv_post.
+        // weight [1, 16, 7]` only — the bias slot is fused into the
+        // preceding tanh nonlinearity or trained to zero-equivalent).
+        // The Rust HiFi-GAN decoder expects a `conv_post_bias` slot in
+        // its `HifiGanWeights` struct; the safe fallback is an all-zero
+        // `[out_channels=1]` bias buffer, which computes `out = conv(x)
+        // + 0 = conv(x)` = the identity behavior real inference expects.
+        // A synthetic fixture that supplies the bias still overrides
+        // this fallback.
+        let conv_post_bias = if main.get("sbv2.decoder.conv_post.bias").is_some() {
+            load_tensor_f32("sbv2.decoder.conv_post.bias")?
+        } else {
+            // `conv_post_weight` shape is `[out_channels, in_channels,
+            // kernel]` — out_channels lives at index 0 of the tensor's
+            // metadata shape. We assume `out_channels = 1` (HiFi-GAN
+            // convention: single-channel waveform output); a mismatch
+            // would surface downstream in `SbV2Decoder::generate`'s
+            // dimension checks.
+            vec![0.0_f32; 1]
+        };
 
         let weights = HifiGanWeights {
             conv_pre_weight,
