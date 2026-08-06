@@ -1417,6 +1417,17 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
         "enc_p.bert_proj.bias" => {
             return TensorClass::Rename("sbv2.bert_bridge.conv.bias".into());
         }
+        // Blocker 3: external speaker projection (`spk_emb_linear [192, 512]`)
+        // → renamed to the Rust loader's expected name so
+        // `SbV2Model::from_gguf` can construct an ExternalSpeakerProjection
+        // from it. The base checkpoint carries no `emb_g` table; this is
+        // the entire speaker-conditioning input path.
+        "enc_p.encoder.spk_emb_linear.weight" => {
+            return TensorClass::Rename("sbv2.text_encoder.spk_emb_linear.weight".into());
+        }
+        "enc_p.encoder.spk_emb_linear.bias" => {
+            return TensorClass::Rename("sbv2.text_encoder.spk_emb_linear.bias".into());
+        }
         "dec.conv_pre.weight" => {
             return TensorClass::Rename("sbv2.decoder.conv_pre.weight".into());
         }
@@ -2395,19 +2406,17 @@ mod tests {
 
     #[test]
     fn classify_blocker_families_are_pass_through_with_reason() {
-        // Post-Blocker-2b (2026-08-06): the VITS2 flow's per-block
-        // `flow.flows.<even>.*` tensors are now Rename-mapped by
-        // `classify_flow_block_tensor`; only `spk_emb_linear` (Blocker
-        // 3 — external speaker-vector projection, no Rust API path
-        // yet), `enc_p.proj.*`, and `dec.cond.*` still lack a rename
-        // target and pass through with a per-family reason.
-        for name in [
-            "enc_p.encoder.spk_emb_linear.weight", // Blocker 3
-            "enc_p.encoder.spk_emb_linear.bias",
-            "enc_p.proj.weight",
-            "dec.cond.weight",
-            "dec.cond.bias",
-        ] {
+        // Post-Blocker-2b/3 (2026-08-06): the VITS2 flow's per-block
+        // `flow.flows.<even>.*` tensors are now Rename-mapped, and
+        // `spk_emb_linear` (Blocker 3) is renamed to
+        // `sbv2.text_encoder.spk_emb_linear.*` for the
+        // `ExternalSpeakerProjection` loader path — see
+        // `classify_encoder_spk_emb_linear_now_renamed_blocker3`. What
+        // still passes through with a per-family reason: `enc_p.proj.*`
+        // (VITS output projection to (mu, log_sigma), no Rust text_encoder
+        // field yet) and `dec.cond.*` (decoder speaker conditioning, no
+        // Rust HifiGanAttrs field yet).
+        for name in ["enc_p.proj.weight", "dec.cond.weight", "dec.cond.bias"] {
             assert!(
                 matches!(
                     classify_tensor(name, Some(3)),
@@ -2632,18 +2641,18 @@ mod tests {
     }
 
     #[test]
-    fn classify_encoder_spk_emb_linear_still_pass_through() {
-        // Explicit regression pin: the new `enc_p.encoder.*` branch must
-        // NOT swallow spk_emb_linear (that's Blocker 3, no Rust API path
-        // yet — must stay PassThrough).
-        assert!(matches!(
+    fn classify_encoder_spk_emb_linear_now_renamed_blocker3() {
+        // Post-Blocker-3 (2026-08-06): the external speaker projection is
+        // consumed by `ExternalSpeakerProjection`, so `spk_emb_linear` must
+        // now rename to the Rust loader's expected name (not pass-through).
+        assert_eq!(
             classify_tensor("enc_p.encoder.spk_emb_linear.weight", Some(3)),
-            TensorClass::PassThrough { .. }
-        ));
-        assert!(matches!(
+            TensorClass::Rename("sbv2.text_encoder.spk_emb_linear.weight".into())
+        );
+        assert_eq!(
             classify_tensor("enc_p.encoder.spk_emb_linear.bias", Some(3)),
-            TensorClass::PassThrough { .. }
-        ));
+            TensorClass::Rename("sbv2.text_encoder.spk_emb_linear.bias".into())
+        );
     }
 
     #[test]
@@ -2817,9 +2826,17 @@ mod tests {
         assert_eq!(report.read, 4);
         assert_eq!(report.written, 1, "only enc_p.emb.weight survives");
         assert_eq!(report.renamed, 1);
+        // Post-Blocker-2c (2026-08-06): sdp.post_* has its own dedicated
+        // counter (sdp_post_skipped), distinct from the general
+        // skipped_training counter (enc_q + dp only). Both are dropped
+        // with an FR-EX-08 stderr line either way.
         assert_eq!(
-            report.skipped_training, 3,
-            "enc_q.* + dp.* + sdp.post_* all dropped"
+            report.skipped_training, 2,
+            "enc_q.* + dp.* dropped via skipped_training"
+        );
+        assert_eq!(
+            report.sdp_post_skipped, 1,
+            "sdp.post_* dropped via dedicated Blocker-2c counter"
         );
         assert_eq!(report.skipped_non_float, 0);
 
@@ -2934,28 +2951,30 @@ mod tests {
 
     #[test]
     fn flow_and_encoder_families_pass_through_verbatim_when_no_rename_applies() {
-        // Preservation invariant: `enc_p.encoder.spk_emb_linear.*`
-        // (Blocker 3 — external speaker-vector projection, no Rust API
-        // path yet) + `sdp.*` (production SDP path, Rust simplified) +
-        // `dec.cond.*` (decoder speaker conditioning) stay under their
-        // upstream names so a future Rust wave can consume them without
-        // reconverting the checkpoint. Post-Blocker-2b (2026-08-06) the
-        // `flow.flows.<even>.*` per-block tensors are Rename-mapped
-        // (see `classify_flow_pre_and_post_rename_by_block_index_halving`
-        // and siblings), so they no longer belong in this
-        // pass-through-invariant set.
+        // Preservation invariant: `enc_p.proj.*` (VITS output projection
+        // to (mu, log_sigma), no Rust text_encoder field yet) + `dec.cond.*`
+        // (decoder speaker conditioning, no Rust HifiGanAttrs field yet)
+        // stay under their upstream names so a future Rust wave can consume
+        // them without reconverting the checkpoint. Post-Blocker-2b (2026-
+        // 08-06) the `flow.flows.<even>.*` per-block tensors are Rename-
+        // mapped (see `classify_flow_pre_and_post_rename_by_block_index_
+        // halving` and siblings), and post-Blocker-3 (2026-08-06)
+        // `enc_p.encoder.spk_emb_linear.*` is Rename-mapped to
+        // `sbv2.text_encoder.spk_emb_linear.*`, so both no longer belong
+        // in this pass-through-invariant set. Note `sdp.*` is now
+        // sdp-rewritten (Blocker 2c) rather than pass-through.
         let entries: Vec<(&str, &str, &[u64], Vec<u8>)> = vec![
             (
-                "enc_p.encoder.spk_emb_linear.weight",
+                "enc_p.proj.weight",
                 "F32",
-                &[192, 512],
-                f32_bytes(&[0.02_f32; 192 * 512]),
+                &[384, 192, 1],
+                f32_bytes(&[0.02_f32; 384 * 192]),
             ),
             (
-                "sdp.flows.1.pre.weight",
+                "enc_p.proj.bias",
                 "F32",
-                &[192, 1, 1],
-                f32_bytes(&[0.03_f32; 192]),
+                &[384],
+                f32_bytes(&[0.03_f32; 384]),
             ),
             (
                 "dec.cond.weight",
@@ -2977,11 +2996,7 @@ mod tests {
 
         let out_bytes = std::fs::read(&output).expect("read");
         let file = GgufFile::parse(out_bytes).expect("parse");
-        for name in [
-            "enc_p.encoder.spk_emb_linear.weight",
-            "sdp.flows.1.pre.weight",
-            "dec.cond.weight",
-        ] {
+        for name in ["enc_p.proj.weight", "enc_p.proj.bias", "dec.cond.weight"] {
             assert!(
                 file.tensor_info(name).is_some(),
                 "{name}: must land under upstream name"
@@ -3245,10 +3260,11 @@ mod tests {
 
     #[test]
     fn write_counters_partition_read_counter_exactly() {
-        // Invariant: `written + skipped_non_float + skipped_training ==
-        // read`, and `renamed + weight_norm_reconstructed +
-        // passed_through_verbatim == written`. Mix all four buckets in
-        // one fixture to lock the partition.
+        // Invariant: `written + skipped_non_float + skipped_training +
+        // sdp_post_skipped + weight_norm_v_consumed == read`, and
+        // `renamed + weight_norm_reconstructed + passed_through_verbatim +
+        // sdp_rewritten == written`. Mix all buckets in one fixture to
+        // lock the partition.
         let entries: Vec<(&str, &str, &[u64], Vec<u8>)> = vec![
             // Rename
             ("enc_p.emb.weight", "F32", &[6, 4], f32_bytes(&[0.01; 24])),
@@ -3259,12 +3275,13 @@ mod tests {
                 &[4, 4],
                 f32_bytes(&[0.5_f32; 16]),
             ),
-            // PassThrough (production SDP)
+            // PassThrough (real pass-through: enc_p.proj.* has no Rust
+            // text_encoder field yet, still verbatim)
             (
-                "sdp.pre.weight",
+                "enc_p.proj.weight",
                 "F32",
-                &[4, 4, 1],
-                f32_bytes(&[0.03_f32; 16]),
+                &[8, 4, 1],
+                f32_bytes(&[0.03_f32; 32]),
             ),
             // WeightNorm pair (bias renamed, weight reconstructed)
             (
@@ -3288,19 +3305,30 @@ mod tests {
 
         let r = convert_sbv2_file(&input, &output, None, None).expect("convert");
         assert_eq!(r.read, 6);
+        // Input-side partition — every read tensor lands in exactly one
+        // input bucket (Blocker 2c added sdp_post_skipped as a distinct
+        // input bucket, separate from skipped_training).
         assert_eq!(
-            r.written + r.skipped_non_float + r.skipped_training + r.weight_norm_v_consumed,
+            r.written
+                + r.skipped_non_float
+                + r.skipped_training
+                + r.sdp_post_skipped
+                + r.weight_norm_v_consumed,
             r.read,
             "input-side partition: written + skipped_non_float + skipped_training + \
-             weight_norm_v_consumed == read"
+             sdp_post_skipped + weight_norm_v_consumed == read"
         );
+        // Output-side partition — every written tensor lands in exactly
+        // one output bucket (Blocker 2c added sdp_rewritten as a distinct
+        // output bucket, separate from renamed/verbatim).
         assert_eq!(
-            r.renamed + r.weight_norm_reconstructed + r.passed_through_verbatim,
+            r.renamed + r.weight_norm_reconstructed + r.passed_through_verbatim + r.sdp_rewritten,
             r.written,
-            "output-side partition: renamed + wnorm_reconstructed + verbatim == written"
+            "output-side partition: renamed + wnorm_reconstructed + verbatim + \
+             sdp_rewritten == written"
         );
         // Concrete values: enc_p.emb.weight=Rename,
-        // enc_q.pre.weight=Skip, sdp.pre.weight=PassThrough,
+        // enc_q.pre.weight=Skip, enc_p.proj.weight=PassThrough,
         // (dec.ups.0.weight_g + dec.ups.0.weight_v)=WeightNorm — the
         // weight_g reconstructs (+1 written, +1 wnorm), the weight_v is
         // consumed (+1 weight_norm_v_consumed), and dec.ups.0.bias=Rename.
@@ -3309,6 +3337,8 @@ mod tests {
         assert_eq!(r.weight_norm_v_consumed, 1, "one weight_v folded");
         assert_eq!(r.passed_through_verbatim, 1);
         assert_eq!(r.skipped_training, 1);
+        assert_eq!(r.sdp_post_skipped, 0);
+        assert_eq!(r.sdp_rewritten, 0);
         assert_eq!(r.written, 4);
     }
 
