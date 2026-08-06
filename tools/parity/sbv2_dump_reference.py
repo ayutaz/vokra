@@ -1024,26 +1024,52 @@ class BertBridge:
 
 
 def run_speaker_embedding(state_dict: dict, speaker_id: int, torch):
-    """Step 8. `emb_g.weight`: [n_speakers, D_SPEAKER]. Returns
-    [1, D_SPEAKER] (float32)."""
-    # SBV2 base (single-speaker fine-tune root) may not ship `emb_g` at
-    # all — try both a `[n_speakers, D_SPEAKER]` table AND a single-
-    # speaker `[1, D_SPEAKER]` bias-only tensor (design doc §7 pins the
-    # multi-speaker table as the canonical form, but honesty about the
-    # base case matters — see `sbv2_prepare_checkpoint.py`'s own
-    # `n_speakers` clean-room fallback rationale).
-    table = _load_tensor(
-        state_dict,
-        ["emb_g.weight", "emb_g", "sbv2.speaker.table"],
-        "speaker.table",
-        torch,
-    )
-    if speaker_id < 0 or speaker_id >= table.shape[0]:
+    """Step 8. Speaker embedding lookup — returns [1, D_SPEAKER] (float32).
+
+    Two code paths:
+      (a) fine-tuned SKU: `emb_g.weight [n_speakers, D_SPEAKER]` table
+          lookup by `--speaker-id` (design doc §7 canonical form).
+      (b) base ckpt (Blocker 3, 2026-08-06): base SBV2 v2 ships an
+          `enc_p.encoder.spk_emb_linear.weight [D_MODEL, D_SPEAKER]`
+          projection but NO `emb_g` table — the runtime expects an
+          external caller-supplied embedding. For the dumper's
+          deterministic clean-room reference, we substitute an all-zero
+          `[1, D_SPEAKER]` vector (matches the Rust Blocker-3 zero-shot
+          default for `SbV2SynthRequest::speaker_embedding = None +
+          ExternalSpeakerProjection = Some`, so both sides agree). The
+          D_SPEAKER dim is recovered from `spk_emb_linear.weight`'s
+          trailing shape.
+    """
+    # Path (a): emb_g table lookup.
+    table_candidates = ["emb_g.weight", "emb_g", "sbv2.speaker.table"]
+    for name in table_candidates:
+        if name in state_dict:
+            table = state_dict[name]
+            if speaker_id < 0 or speaker_id >= table.shape[0]:
+                sys.exit(
+                    f"{LOG_PREFIX} --speaker-id {speaker_id} out of range "
+                    f"[0, {table.shape[0]}) for this checkpoint's emb_g table."
+                )
+            return table[speaker_id : speaker_id + 1].to(dtype=torch.float32)
+
+    # Path (b): base ckpt zero-shot default (Blocker 3).
+    # Recover D_SPEAKER from `enc_p.encoder.spk_emb_linear.weight`'s
+    # trailing dim = [D_MODEL, D_SPEAKER].
+    spk_linear = state_dict.get("enc_p.encoder.spk_emb_linear.weight")
+    if spk_linear is None:
         sys.exit(
-            f"{LOG_PREFIX} --speaker-id {speaker_id} out of range "
-            f"[0, {table.shape[0]}) for this checkpoint's emb_g table."
+            f"{LOG_PREFIX} missing tensor for speaker.table: neither "
+            f"{table_candidates!r} nor `enc_p.encoder.spk_emb_linear.weight` "
+            "present in the checkpoint. If your checkpoint uses a different "
+            "name, add it to the candidate list here (do not fabricate)."
         )
-    return table[speaker_id : speaker_id + 1].to(dtype=torch.float32)
+    d_speaker = spk_linear.shape[1]
+    print(
+        f"{LOG_PREFIX} speaker: base ckpt (no emb_g table) — using all-zero "
+        f"[1, {d_speaker}] default (Blocker 3 zero-shot, matches Rust "
+        f"SbV2SynthRequest::speaker_embedding = None)"
+    )
+    return torch.zeros((1, d_speaker), dtype=torch.float32)
 
 
 class StyleVectorInjector:
@@ -1055,30 +1081,51 @@ class StyleVectorInjector:
     vanilla jaywalnut310/vits. No SBV2/BV2 AGPL source was consulted.
     """
 
-    def __init__(self, state_dict: dict, torch):
+    def __init__(self, state_dict: dict, torch, d_model: int, d_style: int):
         # Candidate names: SBV2 SKUs may spell this `emb_g_style.weight`
-        # (most common) or `style_proj.weight` (some forks). Loud FR-EX-08
-        # error if neither present.
-        self.weight = _load_tensor(
-            state_dict,
-            [
-                "emb_g_style.weight",
-                "style_proj.weight",
-                "sbv2.style_injector.proj_scale",
-            ],
-            "style_injector.weight",
-            torch,
-        )  # [D_MODEL, D_STYLE]
-        self.bias = _load_tensor(
-            state_dict,
-            [
-                "emb_g_style.bias",
-                "style_proj.bias",
-                "sbv2.style_injector.proj_bias",
-            ],
-            "style_injector.bias",
-            torch,
-        )  # [D_MODEL]
+        # (most common) or `style_proj.weight` (some forks).
+        #
+        # Blocker 6 (2026-08-06): SBV2 v2 base ckpt ships **no** style
+        # projection tensors (style is trained per-speaker during fine-
+        # tune). Base inference is an identity injector equivalent to
+        # `style_vec = 0`. Falls back to all-zero weights so
+        # `forward(style_vec) = style_vec @ 0 + 0 = zeros[D_MODEL]`.
+        # Matches Rust Blocker-6 `StyleVectorInjector` zero-weight
+        # identity fallback (crates/vokra-models/src/sbv2/mod.rs).
+        weight_candidates = [
+            "emb_g_style.weight",
+            "style_proj.weight",
+            "sbv2.style_injector.proj_scale",
+        ]
+        bias_candidates = [
+            "emb_g_style.bias",
+            "style_proj.bias",
+            "sbv2.style_injector.proj_bias",
+        ]
+        has_weight = any(k in state_dict for k in weight_candidates)
+        has_bias = any(k in state_dict for k in bias_candidates)
+        if has_weight and has_bias:
+            self.weight = _load_tensor(
+                state_dict, weight_candidates, "style_injector.weight", torch,
+            )
+            self.bias = _load_tensor(
+                state_dict, bias_candidates, "style_injector.bias", torch,
+            )
+        elif not has_weight and not has_bias:
+            print(
+                f"{LOG_PREFIX} style: base ckpt (no style projection tensors) "
+                f"— using all-zero [{d_model}, {d_style}] weight + [{d_model}] "
+                "bias identity fallback (Blocker 6, matches Rust "
+                "StyleVectorInjector zero-weight default)"
+            )
+            self.weight = torch.zeros((d_model, d_style), dtype=torch.float32)
+            self.bias = torch.zeros((d_model,), dtype=torch.float32)
+        else:
+            sys.exit(
+                f"{LOG_PREFIX} style: only one of weight/bias present in "
+                "checkpoint — a converter must emit both or neither "
+                "(FR-EX-08: partial style projection is undefined)"
+            )
 
     def forward(self, style_vec, torch):
         """`style_vec`: [1, D_STYLE]. Returns [1, D_MODEL]."""
@@ -1487,7 +1534,9 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
 
     # ---- Step 9: style projection ----
     style_vec = torch.zeros(1, args.style_dim, dtype=torch.float32)
-    style_injector = StyleVectorInjector(state_dict, torch)
+    style_injector = StyleVectorInjector(
+        state_dict, torch, d_model=D_MODEL, d_style=args.style_dim,
+    )
     style_projected = style_injector.forward(style_vec, torch)
     print(f"{LOG_PREFIX} style_projected {tuple(style_projected.shape)}")
 
