@@ -35,7 +35,7 @@ pub mod text_encoder;
 // rationale, mirroring Task 11's identical DeBERTa converter placement).
 
 pub use decoder::SbV2Decoder;
-pub use duration::{SbV2SDP, length_regulate};
+pub use duration::{ConvFlow, DDSConv, ElementwiseAffine, SbV2SDP, SdpLayerNorm, length_regulate};
 pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
 pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 pub use parity::{ATOL_DEFAULT, PER_TENSOR_ATOL, tolerance_for};
@@ -289,13 +289,13 @@ impl SbV2Model {
             D_MODEL,
         );
 
-        let sdp = SbV2SDP::from_weights(
-            Vec::new(), // empty flow stack — see this fn's doc
-            vec![0.0; N_TONES * D_MODEL],
-            vec![0.0; D_MODEL],
-            D_MODEL,
-            N_TONES,
-        );
+        // Empty-flows SDP (post-Blocker-2c primitive stack): zero-weight
+        // `pre`/`proj`/`cond`/`convs`, identity `ElementwiseAffine`, and
+        // `flows = vec![]` — combined with `noise_scale_w == 0.0` (as every
+        // caller of this factory passes), every predicted duration is
+        // exactly `1`. `gin == D_MODEL` on the synthetic path (matches
+        // `d_speaker`; see `SbV2SDP::empty`'s doc).
+        let sdp = SbV2SDP::empty(D_MODEL, D_MODEL);
 
         let flow = SbV2Flow::from_layers(Vec::new(), D_MODEL); // empty coupling stack: z = mel_hidden unchanged
 
@@ -345,22 +345,23 @@ impl SbV2Model {
     ///    `decoder.rs`'s module doc and `tests/sbv2_decoder.rs`'s
     ///    `jp_extra_attrs`), replacing `synthetic_for_test`'s toy 2-stage
     ///    `[2, 2]` ladder (4x).
-    /// 2. **SDP flow stack** — one [`duration::SbV2CouplingLayer`] (rather
-    ///    than `synthetic_for_test`'s empty stack) whose `proj_weight` is
-    ///    all-zero (so it ignores `cond` — i.e. ignores the
-    ///    `hidden`/tone conditioning entirely) and whose `proj_bias =
-    ///    [0.0, -FIXED_DURATION.ln()]`. Every request this factory is built
-    ///    for uses `noise_scale_w == 0.0`, which makes
-    ///    `SbV2SDP::sample`'s `x = rng.next_gaussian() * noise_scale_w`
-    ///    exactly `0.0` at every phoneme position regardless of
-    ///    `seed`/RNG state (`SbV2SDP::sample`'s own doc) — so
-    ///    `SbV2CouplingLayer::inverse(0.0, cond)` collapses to `(0.0 - (0.0
-    ///    - FIXED_DURATION.ln())) * (-0.0_f32).exp() == FIXED_DURATION.ln()`
-    ///    regardless of `cond`, and `sample`'s `duration =
-    ///    x.exp().ceil().max(1.0)` then returns exactly `FIXED_DURATION` at
-    ///    every position. A closed-form, weight-only way to reach
-    ///    e2e-scale mel lengths without touching `SbV2Model::synthesize` or
-    ///    `SbV2SDP` itself.
+    /// 2. **SDP** — an empty-flows SDP whose slot-0
+    ///    [`duration::ElementwiseAffine`] has `m = [-ln(FIXED_DURATION),
+    ///    0]` and `logs = [0, 0]`, replacing `synthetic_for_test`'s pure
+    ///    zero-weight identity. Every request this factory is built for
+    ///    uses `noise_scale_w == 0.0`, which makes `SbV2SDP::sample`'s
+    ///    Gaussian latent draw exactly `0.0` at every phoneme position
+    ///    regardless of `seed`/RNG state (`SbV2SDP::sample`'s doc), and
+    ///    with the flow stack empty the final `flip` and the `EA.reverse`
+    ///    reduce to `(0 - (-ln FD)) * exp(0) = ln FD` on channel 0 (and
+    ///    `0` on channel 1). `sample`'s `duration =
+    ///    logw.exp().ceil().max(1.0)` then returns exactly `FIXED_DURATION`
+    ///    at every position, independent of `hidden`, `g`, or RNG — a
+    ///    closed-form, weight-only way to reach e2e-scale mel lengths
+    ///    without touching `SbV2Model::synthesize` or `SbV2SDP` itself.
+    ///    (Pre-Blocker-2c this same trick lived on a scalar-affine
+    ///    `SbV2CouplingLayer`, now removed; the EA form is architecturally
+    ///    equivalent — see `duration.rs`'s post-Blocker-2c module doc.)
     ///
     ///    `FIXED_DURATION = 40.0`: JA's "こんにちは" (5 phonemes, all
     ///    present in [`SbV2Phonemizer::synthetic_for_test`]'s char map —
@@ -451,20 +452,33 @@ impl SbV2Model {
             D_MODEL,
         );
 
-        // One coupling layer that ignores `cond` entirely (all-zero
-        // proj_weight) and forces `inverse(0.0, _) == FIXED_DURATION.ln()`
-        // — see this fn's doc point 2 for the full derivation.
-        let sdp_layer = duration::SbV2CouplingLayer::new(
-            vec![0.0; 2 * D_MODEL],
-            vec![0.0, -FIXED_DURATION.ln()],
-            D_MODEL,
+        // Post-Blocker-2c empty-flows SDP whose `ElementwiseAffine` at slot
+        // 0 has `m = [-ln(FIXED_DURATION), 0]` and `logs = [0, 0]`. With
+        // `noise_scale_w == 0.0` (as every caller of this factory passes),
+        // the latent `z = [0, 0]` after the final `flip2` (a no-op with an
+        // empty flow stack) becomes `z[0] = (0 - (-ln FD)) * exp(0) = ln
+        // FD` and `z[1] = 0` after EA reverse, so every duration is
+        // `exp(ln FD).ceil().max(1) = FIXED_DURATION` regardless of
+        // `hidden`, `g`, or RNG state (`SbV2SDP::sample`'s doc). This
+        // replaces the pre-Blocker-2c scalar-affine `SbV2CouplingLayer`
+        // trick with the equivalent EA-based one that fits the real
+        // primitive stack.
+        let ea = duration::ElementwiseAffine::from_weights(
+            vec![-FIXED_DURATION.ln(), 0.0],
+            vec![0.0, 0.0],
         );
-        let sdp = SbV2SDP::from_weights(
-            vec![sdp_layer],
-            vec![0.0; N_TONES * D_MODEL],
-            vec![0.0; D_MODEL],
+        let sdp = duration::SbV2SDP::from_weights(
             D_MODEL,
-            N_TONES,
+            D_MODEL,
+            vec![0.0; D_MODEL * D_MODEL],
+            vec![0.0; D_MODEL],
+            duration::DDSConv::zero(D_MODEL, duration::DP_CONV_LAYERS, duration::DP_KERNEL),
+            vec![0.0; D_MODEL * D_MODEL],
+            vec![0.0; D_MODEL],
+            vec![0.0; D_MODEL * D_MODEL],
+            vec![0.0; D_MODEL],
+            ea,
+            Vec::new(),
         );
 
         let flow = SbV2Flow::from_layers(Vec::new(), D_MODEL); // empty coupling stack: z = mel_hidden unchanged
@@ -590,20 +604,27 @@ impl SbV2Model {
             *h += b;
         }
 
-        // 5. Speaker + style
+        // 5. Speaker + style — the speaker embedding is looked up here but
+        // NOT broadcast-added into `hidden`: post-Blocker-2c the SDP takes
+        // the raw `g` directly and projects it internally via `sdp.cond`;
+        // the acoustic flow (`SbV2Flow::inverse`) likewise receives
+        // `speaker_e` as a separate argument via each coupling layer's
+        // `speaker_proj`. The pre-Blocker-2c pre-SDP hidden broadcast was
+        // architecturally wrong (double-conditioning through both hidden
+        // and `sdp.cond`) — removing it matches real VITS SDP's flow, and
+        // does not alter the synthetic `synthetic_for_test` path (its
+        // speaker table is all-zero-ish so the broadcast never contributed
+        // meaningfully there either). See `SbV2SDP::sample`'s doc for the
+        // new `g`-driven conditioning path.
         let speaker_e = self.speaker_embed.lookup(req.speaker_id)?;
         let d_model = self.text_encoder.d_model();
         debug_assert_eq!(
             speaker_e.len(),
-            d_model,
-            "SbV2Model::synthesize: SpeakerEmbedding's d_speaker must equal SbV2TextEncoder's \
-             d_model for the broadcast add below — see SbV2Model's struct doc"
+            self.sdp.gin(),
+            "SbV2Model::synthesize: SpeakerEmbedding's d_speaker must equal SbV2SDP's `gin` \
+             (both driven by `vokra.sbv2.d_speaker` in from_gguf; SBV2 v2 base = 512, synthetic \
+             factories = D_MODEL)"
         );
-        for i in 0..phon.phoneme_ids.len() {
-            for (d, &s) in speaker_e.iter().enumerate() {
-                hidden[i * d_model + d] += s;
-            }
-        }
         self.style_injector
             .inject(&mut hidden, phon.phoneme_ids.len(), &req.style_vec);
 
@@ -611,8 +632,8 @@ impl SbV2Model {
         let mut rng = GaussianSplitMix64::new(req.seed);
         let mut durations = self.sdp.sample(
             &hidden,
-            &phon.tones,
             phon.phoneme_ids.len(),
+            speaker_e,
             &mut rng,
             req.noise_scale_w,
         );
@@ -964,6 +985,28 @@ impl SbV2Model {
     ///     `[post_out_dim, d_hidden]` + `[post_out_dim]` bias, where
     ///     `post_out_dim = half_d_z` if `mean_only` is true (SBV2 v2
     ///     base) else `2 * half_d_z`.
+    ///
+    /// **SDP (Blocker 2c, 2026-08-06):**
+    /// - `sbv2.sdp.{pre,proj,cond}.{weight,bias}` — the SDP body's three
+    ///   1×1 convs (`pre`/`proj` shape `[d_hidden, d_hidden, 1]`, `cond`
+    ///   shape `[d_hidden, d_speaker, 1]` — speaker conditioning).
+    /// - `sbv2.sdp.convs.{convs_sep,convs_1x1,norms_1,norms_2}.<i>.<w>`
+    ///   for `i` in `0..3` — the module-level [`DDSConv`](duration::DDSConv)
+    ///   stack shared across the body (upstream field names preserved
+    ///   verbatim in the tail; see the sbv2 converter's `sdp.*` rewriter
+    ///   arm for the full sub-key list).
+    /// - `sbv2.sdp.ea.m` / `.logs` — the slot-0
+    ///   [`ElementwiseAffine`](duration::ElementwiseAffine)'s `[2]` params
+    ///   each (upstream `sdp.flows.0.m|logs`, remapped to `.ea.*`).
+    /// - Per SDP `ConvFlow` `<i>` in `0..n_sdp_layers` (real SBV2 v2 base =
+    ///   4, densified from upstream sparse indices `{1,3,5,7}`):
+    ///   `sbv2.sdp.flow.<i>.pre.{weight,bias}`,
+    ///   `sbv2.sdp.flow.<i>.convs.{convs_sep,convs_1x1,norms_1,norms_2}.<j>.<w>`
+    ///   for `j` in `0..3`, and `sbv2.sdp.flow.<i>.proj.{weight,bias}`
+    ///   (`proj` shape `[num_bins*3-1=29, d_hidden, 1]`). See
+    ///   [`ConvFlow::from_weights`](duration::ConvFlow::from_weights) for
+    ///   the full shape contract.
+    ///
     /// - `sbv2.decoder.conv_pre.{weight,bias}`,
     ///   `sbv2.decoder.conv_post.{weight,bias}`.
     /// - Per upsample stage `<i>` in `0..upsample_rates.len()`:
@@ -1335,23 +1378,87 @@ impl SbV2Model {
             d_model,
         );
 
-        // ---- stochastic duration predictor ----
-        let mut sdp_layers = Vec::with_capacity(n_sdp_layers);
-        for i in 0..n_sdp_layers {
-            let p = format!("sbv2.sdp.flow_layer.{i}");
-            sdp_layers.push(duration::SbV2CouplingLayer::new(
-                load_tensor_f32(&format!("{p}.proj_weight"))?,
-                load_tensor_f32(&format!("{p}.proj_bias"))?,
+        // ---- stochastic duration predictor (Blocker 2c: real DDS-net +
+        // rational-quadratic-spline ConvFlow shape, mirroring the 144
+        // production tensors under `sdp.*` — the sibling 142 `sdp.post_*`
+        // training-side inverse-flow tensors the converter skipped are
+        // never read here). See `SbV2SDP::from_weights`'s doc for every
+        // field's shape, and `duration.rs`'s module doc for the tensor
+        // layout convention. `n_sdp_layers` is now the ConvFlow count —
+        // real SBV2 v2 base = 4, empty-SDP synthetic path = 0. The tensor
+        // path scheme `sbv2.sdp.flow.<i>.*` is a dense re-index of
+        // upstream's sparse `sdp.flows.{1,3,5,7}` (the sparse indices
+        // arise from the interleaved `Flip` layers, which carry no
+        // parameters and are recreated at inference time). The
+        // `ElementwiseAffine` at upstream `sdp.flows.0` maps to
+        // `sbv2.sdp.ea.{m,logs}`. See the sbv2 converter's `sdp.*`
+        // rewriter arm for the exact index remapping.)
+        let sdp = {
+            let load_dds = |prefix: &str, channels: usize| -> Result<duration::DDSConv> {
+                let mut convs_sep_w = Vec::with_capacity(duration::DP_CONV_LAYERS);
+                let mut convs_sep_b = Vec::with_capacity(duration::DP_CONV_LAYERS);
+                let mut convs_1x1_w = Vec::with_capacity(duration::DP_CONV_LAYERS);
+                let mut convs_1x1_b = Vec::with_capacity(duration::DP_CONV_LAYERS);
+                let mut norms_1 = Vec::with_capacity(duration::DP_CONV_LAYERS);
+                let mut norms_2 = Vec::with_capacity(duration::DP_CONV_LAYERS);
+                for i in 0..duration::DP_CONV_LAYERS {
+                    convs_sep_w.push(load_tensor_f32(&format!("{prefix}.convs_sep.{i}.weight"))?);
+                    convs_sep_b.push(load_tensor_f32(&format!("{prefix}.convs_sep.{i}.bias"))?);
+                    convs_1x1_w.push(load_tensor_f32(&format!("{prefix}.convs_1x1.{i}.weight"))?);
+                    convs_1x1_b.push(load_tensor_f32(&format!("{prefix}.convs_1x1.{i}.bias"))?);
+                    norms_1.push(duration::SdpLayerNorm {
+                        gamma: load_tensor_f32(&format!("{prefix}.norms_1.{i}.gamma"))?,
+                        beta: load_tensor_f32(&format!("{prefix}.norms_1.{i}.beta"))?,
+                    });
+                    norms_2.push(duration::SdpLayerNorm {
+                        gamma: load_tensor_f32(&format!("{prefix}.norms_2.{i}.gamma"))?,
+                        beta: load_tensor_f32(&format!("{prefix}.norms_2.{i}.beta"))?,
+                    });
+                }
+                Ok(duration::DDSConv::from_weights(
+                    channels,
+                    duration::DP_CONV_LAYERS,
+                    duration::DP_KERNEL,
+                    convs_sep_w,
+                    convs_sep_b,
+                    convs_1x1_w,
+                    convs_1x1_b,
+                    norms_1,
+                    norms_2,
+                ))
+            };
+            let body_convs = load_dds("sbv2.sdp.convs", d_model)?;
+            let ea = duration::ElementwiseAffine::from_weights(
+                load_tensor_f32("sbv2.sdp.ea.m")?,
+                load_tensor_f32("sbv2.sdp.ea.logs")?,
+            );
+            let mut flows = Vec::with_capacity(n_sdp_layers);
+            for i in 0..n_sdp_layers {
+                let p = format!("sbv2.sdp.flow.{i}");
+                let convs = load_dds(&format!("{p}.convs"), d_model)?;
+                flows.push(duration::ConvFlow::from_weights(
+                    load_tensor_f32(&format!("{p}.pre.weight"))?,
+                    load_tensor_f32(&format!("{p}.pre.bias"))?,
+                    convs,
+                    load_tensor_f32(&format!("{p}.proj.weight"))?,
+                    load_tensor_f32(&format!("{p}.proj.bias"))?,
+                    d_model,
+                ));
+            }
+            duration::SbV2SDP::from_weights(
                 d_model,
-            ));
-        }
-        let sdp = SbV2SDP::from_weights(
-            sdp_layers,
-            load_tensor_f32("sbv2.sdp.tone_embed")?,
-            load_tensor_f32("sbv2.sdp.tone_bias")?,
-            d_model,
-            n_tones,
-        );
+                d_speaker, // gin = d_speaker in real SBV2 v2 (both = 512)
+                load_tensor_f32("sbv2.sdp.pre.weight")?,
+                load_tensor_f32("sbv2.sdp.pre.bias")?,
+                body_convs,
+                load_tensor_f32("sbv2.sdp.cond.weight")?,
+                load_tensor_f32("sbv2.sdp.cond.bias")?,
+                load_tensor_f32("sbv2.sdp.proj.weight")?,
+                load_tensor_f32("sbv2.sdp.proj.bias")?,
+                ea,
+                flows,
+            )
+        };
 
         // ---- VITS2 normalizing flow (Blocker 2b, 2026-08-06) ----
         //
