@@ -330,9 +330,21 @@ CLEAN_ROOM_SCALAR_FALLBACKS: dict[str, tuple[object, str]] = {
         "at convert time — this default is a pre-convert placeholder only.",
     ),
     "n_tones": (
-        6,
-        "JP-Extra tone alphabet size: 6 (Japanese pitch-accent tones 0..4 + "
-        "silence). CANONICALLY shape-derivable from a tone-embedding shape at "
+        12,
+        # Observed 2026-08-06 on `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`:
+        # `enc_p.tone_emb.weight` shape is `[12, 192]`, not the `[6, 192]`
+        # a "0..4 pitch + silence" tone alphabet would imply. The extra
+        # rows accommodate multi-language tone codes (JP pitch accent 0..4 +
+        # silence + CN Mandarin 4 lexical tones + neutral + EN dummy = 12
+        # total, matching Bert-VITS2's own JP-Extra convention). CANONICALLY
+        # shape-derivable from `enc_p.tone_emb.weight.shape[0]` at convert
+        # time — this default matches the observed real base checkpoint,
+        # but multi-speaker fine-tunes may still ship different values.
+        "JP-Extra multi-language tone alphabet size: 12 (JP pitch-accent "
+        "0..4 + silence + CN Mandarin 0..4 + EN dummy). Observed on the "
+        "real litagin/Style-Bert-VITS2-2.0-base-JP-Extra base checkpoint "
+        "(`enc_p.tone_emb.weight` shape `[12, 192]`, 2026-08-06). "
+        "CANONICALLY shape-derivable from a tone-embedding shape at "
         "convert time.",
     ),
     "n_flow_layers": (
