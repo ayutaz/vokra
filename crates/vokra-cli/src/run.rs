@@ -2015,7 +2015,7 @@ mod tests {
     /// from the `TtsEngine` adapter's silent any-non-`en`-is-JA default (see
     /// `run_sbv2`'s doc).
     #[test]
-    fn sbv2_language_rejects_anything_but_ja_or_en() {
+    fn sbv2_language_rejects_anything_but_ja_en_or_zh() {
         let model = sbv2_metadata_only_gguf("lang");
         let err = main(&args(&[
             "--model",
@@ -2032,7 +2032,7 @@ mod tests {
         .unwrap_err();
         let _ = std::fs::remove_file(&model);
         assert!(
-            err.contains("--language must be `ja` or `en`, got `fr`"),
+            err.contains("--language must be `ja`, `en`, or `zh`, got `fr`"),
             "got: {err}"
         );
     }
