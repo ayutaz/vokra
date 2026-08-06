@@ -135,18 +135,20 @@
 //! (1264 tensors, all F32), the classification breakdown is (verified
 //! end-to-end on 2026-08-06 against the real checkpoint):
 //!
-//! - Rename emits: 58 (`enc_p.emb` / `enc_p.tone_emb` /
-//!   `enc_p.language_emb` = 3, `enc_p.bert_proj.{weight,bias}` = 2,
-//!   `dec.conv_pre.{weight,bias}` = 2, `dec.conv_post.weight` = 1,
-//!   `dec.ups.{0..4}.bias` = 5, `dec.resblocks.{0..14}.convs1.{0..2}.bias`
-//!   = 45)
+//! - Rename emits: 514 = 58 (pre-Blocker-2b) + 456 (Blocker 2b flow
+//!   family: `flow.flows.{0,2,4,6}.*` = 4 blocks × 114 tensors/block,
+//!   see [`classify_flow_block_tensor`] for the per-family breakdown)
 //! - WeightNorm reconstructions: 50 (`dec.ups.{0..4}` = 5 +
 //!   `dec.resblocks.{0..14}.convs1.{0..2}` = 45)
-//! - Verbatim pass-through: 849 (`flow.*` = 456 +
-//!   `enc_p.encoder.*` = 110 + `sdp.*` production (not `post_`) = 144 +
+//! - Verbatim pass-through: 393 = 849 (pre-Blocker-2b) − 456 (flow
+//!   tensors, now renamed) = `enc_p.encoder.spk_emb_linear.*` = 2 +
+//!   `sdp.*` production (not `post_`) = 144 +
 //!   `dec.resblocks.*.convs2.*` = 135 + `enc_p.proj.*` = 2 +
-//!   `dec.cond.*` = 2)
-//! - **Total written to output GGUF: 957** = 58 + 50 + 849
+//!   `dec.cond.*` = 2 + `flow.flows.{1,3,5,7}.*` = 0 (Flip has no
+//!   tensors) + auxiliary residual
+//! - **Total written to output GGUF: 957** = 514 + 50 + 393
+//!   (unchanged from pre-Blocker-2b — the same 957 tensors land in the
+//!   output, just under new target names for the flow family)
 //! - Skipped training-side: 257 (`enc_q.*` = 103 + `dp.*` = 12 +
 //!   `sdp.post_*` = 142)
 //! - `weight_v` consumed as pair sibling (read but not written): 50
@@ -334,6 +336,38 @@ const DEFAULT_N_HEADS: u32 = 2;
 const DEFAULT_WINDOW_SIZE: u32 = 4;
 const DEFAULT_KERNEL_FFN: u32 = 3;
 
+// Blocker 2b (2026-08-06) — flow's inner transformer / coupling
+// hparams. Values pin the SBV2 v2 base checkpoint's real per-block flow
+// tensor shapes verified via `/tmp/sbv2-fixtures/sbv2-prep/G_0.safetensors`:
+//
+// - `flow.flows.0.enc.attn_layers.0..5.*` = 6 layers per coupling.
+// - `flow.flows.0.enc.ffn_layers.0.conv_1.weight` shape `[768, 192, 5]`
+//   → `kernel_ffn_flow = 5` (distinct from text encoder's `3`).
+// - `flow.flows.0.enc.spk_emb_linear.weight` shape `[192, 512]`
+//   → `gin_channels = 512`.
+// - `flow.flows.0.post.weight` shape `[96, 192, 1]` → `post_out_dim =
+//   half_d_z` (mean_only=True; the same shape under mean_only=False
+//   would be `[192, 192, 1]`).
+//
+// Used by [`SbV2Config`] as the default when a JSON side-car omits
+// these keys, matching the base value every existing SBV2 v2 SKU uses;
+// a config that varies the flow architecture overrides these by
+// supplying its own values in the side-car.
+const DEFAULT_FLOW_N_ENCODER_LAYERS: u32 = 6;
+const DEFAULT_FLOW_KERNEL_FFN: u32 = 5;
+const DEFAULT_FLOW_GIN_CHANNELS: u32 = 512;
+const DEFAULT_FLOW_MEAN_ONLY: bool = true;
+
+// Blocker 2b (2026-08-06) — flow hparam metadata keys. All read by
+// `SbV2Model::from_gguf` from the `vokra.sbv2.flow.*` chunk group,
+// only when `vokra.sbv2.n_flow_layers > 0` (an empty flow stack skips
+// them entirely to stay backward-compatible with pre-Blocker-2b
+// GGUFs).
+const KEY_FLOW_N_ENCODER_LAYERS: &str = "vokra.sbv2.flow.n_encoder_layers";
+const KEY_FLOW_KERNEL_FFN: &str = "vokra.sbv2.flow.kernel_ffn";
+const KEY_FLOW_GIN_CHANNELS: &str = "vokra.sbv2.flow.gin_channels";
+const KEY_FLOW_MEAN_ONLY: &str = "vokra.sbv2.flow.mean_only";
+
 /// `JsonValue` → `f64` accepting both int and float literals (a side-car
 /// may write `0.1` as a float or a whole-number slope like `1` as an int).
 /// Mirror of `models::utmos::json_f64`.
@@ -403,6 +437,26 @@ pub(crate) struct SbV2Config {
     /// side-car — defaults to [`DEFAULT_KERNEL_FFN`] (`3`).
     pub(crate) kernel_ffn: u32,
     pub(crate) n_flow_layers: u32,
+    /// Blocker 2b (2026-08-06): flow inner transformer stack depth
+    /// (6 on the SBV2 v2 base — see [`DEFAULT_FLOW_N_ENCODER_LAYERS`]).
+    /// Optional in the JSON side-car; the runtime hard-fails on missing
+    /// `vokra.sbv2.flow.n_encoder_layers` when `n_flow_layers > 0`, so
+    /// the converter always emits this key alongside `n_flow_layers`.
+    pub(crate) flow_n_encoder_layers: u32,
+    /// Blocker 2b (2026-08-06): flow FFN Conv1d kernel width (`5` on
+    /// the SBV2 v2 base, distinct from the text encoder's `kernel_ffn
+    /// = 3`). Optional in the JSON side-car — defaults to
+    /// [`DEFAULT_FLOW_KERNEL_FFN`].
+    pub(crate) flow_kernel_ffn: u32,
+    /// Blocker 2b (2026-08-06): flow per-block `spk_emb_linear` input
+    /// width — upstream `TransformerCouplingLayer.spk_emb_linear`'s
+    /// `gin_channels` argument (`512` on the SBV2 v2 base). Optional in
+    /// the JSON side-car — defaults to [`DEFAULT_FLOW_GIN_CHANNELS`].
+    pub(crate) flow_gin_channels: u32,
+    /// Blocker 2b (2026-08-06): flow coupling's `mean_only` flag
+    /// (`true` on the SBV2 v2 base). Optional in the JSON side-car —
+    /// defaults to [`DEFAULT_FLOW_MEAN_ONLY`].
+    pub(crate) flow_mean_only: bool,
     pub(crate) n_sdp_layers: u32,
     pub(crate) sample_rate: u32,
     pub(crate) decoder_initial_channel: u32,
@@ -498,6 +552,34 @@ impl SbV2Config {
                 .map(|u| u as u32)
                 .unwrap_or(DEFAULT_KERNEL_FFN),
             n_flow_layers: req_u32("n_flow_layers")?,
+            // Blocker 2b (2026-08-06) — flow's own hparams. Optional in
+            // the JSON side-car so a pre-Blocker-2b config still round-
+            // trips (the defaults pin the SBV2 v2 base checkpoint's
+            // values, which every existing SKU uses). A hypothetical
+            // future SKU with different flow hparams overrides these by
+            // supplying its own values in the side-car.
+            flow_n_encoder_layers: root
+                .get("flow_n_encoder_layers")
+                .and_then(JsonValue::as_u64)
+                .map(|u| u as u32)
+                .unwrap_or(DEFAULT_FLOW_N_ENCODER_LAYERS),
+            flow_kernel_ffn: root
+                .get("flow_kernel_ffn")
+                .and_then(JsonValue::as_u64)
+                .map(|u| u as u32)
+                .unwrap_or(DEFAULT_FLOW_KERNEL_FFN),
+            flow_gin_channels: root
+                .get("flow_gin_channels")
+                .and_then(JsonValue::as_u64)
+                .map(|u| u as u32)
+                .unwrap_or(DEFAULT_FLOW_GIN_CHANNELS),
+            flow_mean_only: root
+                .get("flow_mean_only")
+                .and_then(|v| match v {
+                    JsonValue::Bool(b) => Some(*b),
+                    _ => None,
+                })
+                .unwrap_or(DEFAULT_FLOW_MEAN_ONLY),
             n_sdp_layers: req_u32("n_sdp_layers")?,
             sample_rate: req_u32("sample_rate")?,
             decoder_initial_channel: req_u32("decoder_initial_channel")?,
@@ -905,6 +987,18 @@ fn write_hparams(b: &mut GgufBuilder, cfg: &SbV2Config) {
     b.add_u32(KEY_WINDOW_SIZE, cfg.window_size);
     b.add_u32(KEY_KERNEL_FFN, cfg.kernel_ffn);
     b.add_u32(KEY_N_FLOW_LAYERS, cfg.n_flow_layers);
+    // Blocker 2b (2026-08-06) — flow's own hparams. Stamped
+    // unconditionally alongside `n_flow_layers` so the runtime cross-
+    // check in `SbV2Model::from_gguf` (which requires all four when
+    // `n_flow_layers > 0`) never sees a partial stamp. For a config
+    // with `n_flow_layers = 0` the runtime skips these keys entirely,
+    // so stamping the defaults costs nothing and keeps the metadata
+    // shape uniform across configs — matches the "all or none" rule
+    // the text encoder's own hparam group already follows.
+    b.add_u32(KEY_FLOW_N_ENCODER_LAYERS, cfg.flow_n_encoder_layers);
+    b.add_u32(KEY_FLOW_KERNEL_FFN, cfg.flow_kernel_ffn);
+    b.add_u32(KEY_FLOW_GIN_CHANNELS, cfg.flow_gin_channels);
+    b.add_bool(KEY_FLOW_MEAN_ONLY, cfg.flow_mean_only);
     b.add_u32(KEY_N_SDP_LAYERS, cfg.n_sdp_layers);
     b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
     // Fixed-architecture: [`N_LANGUAGES`] = 3 (JA/EN/ZH); see its own doc
@@ -1004,6 +1098,128 @@ enum TensorClass {
 /// - `ffn_layers.<i>.conv_{1,2}.{weight,bias}` → `layer.<i>.ffn.conv_{1,2}.{weight,bias}`
 /// - `norm_layers_1.<i>.{gamma,beta}` → `layer.<i>.norm1.{gamma,beta}`
 /// - `norm_layers_2.<i>.{gamma,beta}` → `layer.<i>.norm2.{gamma,beta}`
+/// Blocker 2b (2026-08-06) — `flow.flows.<2i>.*` (upstream
+/// `TransformerCouplingLayer` blocks; upstream indices 0/2/4/6 are the
+/// parameterized couplings, 1/3/5/7 are parameter-free `Flip` modules
+/// with no tensors) → `sbv2.flow.layer.<i>.*` (target indices 0/1/2/3).
+/// Returns `Some(target_name)` for every per-block tensor and `None` for
+/// odd upstream indices (Flip has no tensors, so its slot never emits an
+/// upstream `flow.flows.<odd>.*` name — if one shows up it falls through
+/// to the pass-through arm with the "flow VITS2" reason for post-mortem
+/// visibility rather than being silently dropped).
+///
+/// The seven per-block upstream sub-namespaces this handles map to the
+/// per-block target names `SbV2Model::from_gguf` reads:
+///
+/// - `pre.{weight,bias}` → `layer.<i>.pre.{weight,bias}`
+/// - `post.{weight,bias}` → `layer.<i>.post.{weight,bias}`
+/// - `enc.spk_emb_linear.{weight,bias}` → `layer.<i>.spk_emb.{weight,bias}`
+/// - `enc.attn_layers.<j>.conv_{q,k,v,o}.{weight,bias}` → `layer.<i>.enc.<j>.attn.conv_{q,k,v,o}.{weight,bias}`
+/// - `enc.attn_layers.<j>.emb_rel_{k,v}` → `layer.<i>.enc.<j>.attn.rel_pos_{k,v}`
+/// - `enc.ffn_layers.<j>.conv_{1,2}.{weight,bias}` → `layer.<i>.enc.<j>.ffn.conv_{1,2}.{weight,bias}`
+/// - `enc.norm_layers_{1,2}.<j>.{gamma,beta}` → `layer.<i>.enc.<j>.norm{1,2}.{gamma,beta}`
+///
+/// The upstream index divide-by-2 (`0/2/4/6 → 0/1/2/3`) mirrors upstream
+/// `TransformerCouplingBlock.__init__` at `n_flows = 4`, which stores 8
+/// entries in `nn.ModuleList` alternating coupling and Flip; the target
+/// side counts couplings only, and `SbV2Model::from_gguf` interleaves
+/// `FlowLayer::Flip` after each loaded coupling.
+fn classify_flow_block_tensor(rest: &str) -> Option<String> {
+    // rest = e.g. "0.pre.weight" or "2.enc.attn_layers.3.conv_q.weight".
+    let (idx_str, tail) = rest.split_once('.')?;
+    let upstream_i: usize = idx_str.parse().ok()?;
+    // Only even upstream indices are TransformerCouplingLayer blocks;
+    // odd indices are parameter-free `Flip` slots with no tensors.
+    if upstream_i % 2 != 0 {
+        return None;
+    }
+    let target_i = upstream_i / 2;
+
+    // pre / post — 1×1 Conv1d each.
+    if let Some(sub) = tail.strip_prefix("pre.") {
+        let mapped = match sub {
+            "weight" => "pre.weight",
+            "bias" => "pre.bias",
+            _ => return None,
+        };
+        return Some(format!("sbv2.flow.layer.{target_i}.{mapped}"));
+    }
+    if let Some(sub) = tail.strip_prefix("post.") {
+        let mapped = match sub {
+            "weight" => "post.weight",
+            "bias" => "post.bias",
+            _ => return None,
+        };
+        return Some(format!("sbv2.flow.layer.{target_i}.{mapped}"));
+    }
+
+    // enc.spk_emb_linear.{weight,bias} → layer.<i>.spk_emb.{weight,bias}
+    // (target name shortened to `spk_emb` — matches the loader's field
+    // naming; upstream's fuller `spk_emb_linear` says the same thing).
+    if let Some(sub) = tail.strip_prefix("enc.spk_emb_linear.") {
+        let mapped = match sub {
+            "weight" => "spk_emb.weight",
+            "bias" => "spk_emb.bias",
+            _ => return None,
+        };
+        return Some(format!("sbv2.flow.layer.{target_i}.{mapped}"));
+    }
+
+    // enc.attn_layers.<j>.* — reuse the text encoder's attn tail mapping
+    // literally (same sub-modules, same target-tail naming), just under
+    // the flow's `layer.<i>.enc.<j>` path instead of `layer.<j>` directly.
+    if let Some(after) = tail.strip_prefix("enc.attn_layers.") {
+        let (j_str, sub) = after.split_once('.')?;
+        let j: usize = j_str.parse().ok()?;
+        let mapped_tail = match sub {
+            "conv_q.weight" => "attn.conv_q.weight",
+            "conv_q.bias" => "attn.conv_q.bias",
+            "conv_k.weight" => "attn.conv_k.weight",
+            "conv_k.bias" => "attn.conv_k.bias",
+            "conv_v.weight" => "attn.conv_v.weight",
+            "conv_v.bias" => "attn.conv_v.bias",
+            "conv_o.weight" => "attn.conv_o.weight",
+            "conv_o.bias" => "attn.conv_o.bias",
+            "emb_rel_k" => "attn.rel_pos_k",
+            "emb_rel_v" => "attn.rel_pos_v",
+            _ => return None,
+        };
+        return Some(format!("sbv2.flow.layer.{target_i}.enc.{j}.{mapped_tail}"));
+    }
+
+    // enc.ffn_layers.<j>.conv_{1,2}.{weight,bias}
+    if let Some(after) = tail.strip_prefix("enc.ffn_layers.") {
+        let (j_str, sub) = after.split_once('.')?;
+        let j: usize = j_str.parse().ok()?;
+        let mapped_tail = match sub {
+            "conv_1.weight" => "ffn.conv_1.weight",
+            "conv_1.bias" => "ffn.conv_1.bias",
+            "conv_2.weight" => "ffn.conv_2.weight",
+            "conv_2.bias" => "ffn.conv_2.bias",
+            _ => return None,
+        };
+        return Some(format!("sbv2.flow.layer.{target_i}.enc.{j}.{mapped_tail}"));
+    }
+
+    // enc.norm_layers_{1,2}.<j>.{gamma,beta}
+    for (upstream_prefix, dst_prefix) in [
+        ("enc.norm_layers_1.", "norm1"),
+        ("enc.norm_layers_2.", "norm2"),
+    ] {
+        if let Some(after) = tail.strip_prefix(upstream_prefix) {
+            let (j_str, sub) = after.split_once('.')?;
+            let j: usize = j_str.parse().ok()?;
+            let mapped_tail = match sub {
+                "gamma" => format!("{dst_prefix}.gamma"),
+                "beta" => format!("{dst_prefix}.beta"),
+                _ => return None,
+            };
+            return Some(format!("sbv2.flow.layer.{target_i}.enc.{j}.{mapped_tail}"));
+        }
+    }
+    None
+}
+
 fn classify_encoder_layer_tensor(rest: &str) -> Option<String> {
     // attn_layers
     if let Some(after) = rest.strip_prefix("attn_layers.") {
@@ -1145,6 +1361,26 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
     }
 
     // --------------------------------------------------------------
+    // 2c) flow.flows.<2i>.* → sbv2.flow.layer.<i>.* (Blocker 2b,
+    //     2026-08-06). Upstream `TransformerCouplingBlock` stores 8
+    //     entries alternating `TransformerCouplingLayer` (even indices
+    //     0/2/4/6) and parameter-free `Flip` (odd indices 1/3/5/7). We
+    //     rename only the parameterized-coupling tensors — `Flip` has no
+    //     tensors — and `SbV2Model::from_gguf` reconstructs the
+    //     alternating `[TCL, Flip, ...]` layout at load time.
+    // --------------------------------------------------------------
+    if let Some(rest) = name.strip_prefix("flow.flows.") {
+        if let Some(remapped) = classify_flow_block_tensor(rest) {
+            return TensorClass::Rename(remapped);
+        }
+        // A `flow.flows.<odd>.*` (an unexpected Flip-slot tensor — none
+        // exist on the base checkpoint) or any other `flow.flows.*` that
+        // doesn't match the seven per-block sub-namespaces falls through
+        // to the pass-through arm below with the "flow VITS2" reason so
+        // no data is silently dropped and a future audit surfaces it.
+    }
+
+    // --------------------------------------------------------------
     // 3) dec.ups.{i}.{weight_g | weight_v | bias | weight}
     // --------------------------------------------------------------
     if let Some(rest) = name.strip_prefix("dec.ups.") {
@@ -1251,7 +1487,15 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
     // 5) Verbatim pass-through with per-family reason (default)
     // --------------------------------------------------------------
     let reason: &'static str = if name.starts_with("flow.") {
-        "flow VITS2 TransformerCouplingBlock — Blocker 2 wave"
+        // Post-Blocker-2b (2026-08-06) — the per-block `flow.flows.<2i>.*`
+        // tensors are now renamed via `classify_flow_block_tensor` above
+        // and never reach this pass-through arm. What lands here is any
+        // `flow.*` that doesn't match the `flow.flows.<even>.` pattern
+        // (currently: nothing on the real base checkpoint; a future SKU
+        // might add auxiliary tensors here and this reason keeps them
+        // preserved for a follow-up wave rather than silently dropped).
+        "SBV2 flow auxiliary tensor — no matching per-block rename in \
+         classify_flow_block_tensor (preserved verbatim for a follow-up wave)"
     } else if name.starts_with("enc_p.encoder.spk_emb_linear") {
         "external speaker-vector projection — Blocker 3 (Rust API needs 512-d input path)"
     } else if name.starts_with("enc_p.encoder.") {
@@ -1570,6 +1814,21 @@ mod tests {
         assert_eq!(get_u32(KEY_D_FF), 768);
         assert_eq!(get_u32(KEY_N_TEXT_LAYERS), 6);
         assert_eq!(get_u32(KEY_N_FLOW_LAYERS), 4);
+        // Blocker 2b (2026-08-06) — flow's own hparams. Stamped every
+        // time the hparam chunk group is written (see `write_hparams`),
+        // with defaults matching the SBV2 v2 base checkpoint's real
+        // per-block flow tensor shapes.
+        assert_eq!(get_u32(KEY_FLOW_N_ENCODER_LAYERS), 6);
+        assert_eq!(get_u32(KEY_FLOW_KERNEL_FFN), 5);
+        assert_eq!(get_u32(KEY_FLOW_GIN_CHANNELS), 512);
+        let mean_only = match file.get(KEY_FLOW_MEAN_ONLY) {
+            Some(GgufMetadataValue::Bool(b)) => *b,
+            other => panic!("flow.mean_only: unexpected {other:?}"),
+        };
+        assert!(
+            mean_only,
+            "flow.mean_only default must be true (SBV2 v2 base)"
+        );
         assert_eq!(get_u32(KEY_N_SDP_LAYERS), 4);
         assert_eq!(get_u32(KEY_SAMPLE_RATE), 44_100);
         assert_eq!(get_u32(KEY_DECODER_INITIAL_CHANNEL), 512);
@@ -1986,16 +2245,13 @@ mod tests {
 
     #[test]
     fn classify_blocker_families_are_pass_through_with_reason() {
-        // Post-M6 (2026-08-06): `enc_p.encoder.attn_layers.*`,
-        // `.ffn_layers.*`, `.norm_layers_{1,2}.*` are now Rename-mapped
-        // by `classify_encoder_layer_tensor` (see the "enc_p.encoder"
-        // rename tests below), so they are no longer members of the
-        // "PassThrough (Blocker 2 wave)" family. `spk_emb_linear` is
-        // still Blocker 3 (external speaker-vector projection — no Rust
-        // API path yet) and stays PassThrough.
+        // Post-Blocker-2b (2026-08-06): the VITS2 flow's per-block
+        // `flow.flows.<even>.*` tensors are now Rename-mapped by
+        // `classify_flow_block_tensor`; only `spk_emb_linear` (Blocker
+        // 3 — external speaker-vector projection, no Rust API path
+        // yet), `enc_p.proj.*`, and `dec.cond.*` still lack a rename
+        // target and pass through with a per-family reason.
         for name in [
-            "flow.flows.0.enc.attn_layers.0.conv_q.weight",
-            "flow.flows.3.post.bias",
             "enc_p.encoder.spk_emb_linear.weight", // Blocker 3
             "enc_p.encoder.spk_emb_linear.bias",
             "enc_p.proj.weight",
@@ -2008,6 +2264,126 @@ mod tests {
                     TensorClass::PassThrough { .. }
                 ),
                 "{name} must be PassThrough"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Blocker 2b (2026-08-06): flow block per-family rename tests
+    // -----------------------------------------------------------------
+    //
+    // Each entry pins one upstream `flow.flows.<2i>.*` tensor to its
+    // target GGUF name under `sbv2.flow.layer.<i>.*`. A stale converter
+    // that drops the Blocker 2b rename table would silently leave
+    // upstream names on disk and the Rust loader would then fail with
+    // "tensor not found". The 4 real upstream indices (0, 2, 4, 6) map
+    // to target indices (0, 1, 2, 3) via divide-by-2 — see
+    // `classify_flow_block_tensor`'s doc for the upstream layout.
+
+    #[test]
+    fn classify_flow_pre_and_post_rename_by_block_index_halving() {
+        for (upstream_i, target_i) in [(0usize, 0usize), (2, 1), (4, 2), (6, 3)] {
+            for (tail, mapped) in [
+                ("pre.weight", "pre.weight"),
+                ("pre.bias", "pre.bias"),
+                ("post.weight", "post.weight"),
+                ("post.bias", "post.bias"),
+            ] {
+                let input = format!("flow.flows.{upstream_i}.{tail}");
+                let expected = format!("sbv2.flow.layer.{target_i}.{mapped}");
+                assert_eq!(
+                    classify_tensor(&input, Some(3)),
+                    TensorClass::Rename(expected.clone()),
+                    "{input} must rename to {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classify_flow_spk_emb_linear_renames_to_spk_emb() {
+        for upstream_i in [0usize, 2, 4, 6] {
+            let target_i = upstream_i / 2;
+            for (tail, mapped) in [
+                ("enc.spk_emb_linear.weight", "spk_emb.weight"),
+                ("enc.spk_emb_linear.bias", "spk_emb.bias"),
+            ] {
+                let input = format!("flow.flows.{upstream_i}.{tail}");
+                let expected = format!("sbv2.flow.layer.{target_i}.{mapped}");
+                assert_eq!(
+                    classify_tensor(&input, Some(3)),
+                    TensorClass::Rename(expected),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classify_flow_encoder_attn_ffn_norm_all_rename() {
+        // Per-block encoder-layer sub-namespace rename. Uses
+        // upstream_i = 0 (target_i = 0) and encoder-layer j = 0, 3 —
+        // enough to pin the numeric substitution without exhausting
+        // every combination.
+        let upstream_i = 0usize;
+        for j in [0usize, 3, 5] {
+            for (tail_in, tail_out) in [
+                ("conv_q.weight", "attn.conv_q.weight"),
+                ("conv_q.bias", "attn.conv_q.bias"),
+                ("conv_k.weight", "attn.conv_k.weight"),
+                ("conv_v.weight", "attn.conv_v.weight"),
+                ("conv_o.weight", "attn.conv_o.weight"),
+                ("emb_rel_k", "attn.rel_pos_k"),
+                ("emb_rel_v", "attn.rel_pos_v"),
+            ] {
+                let input = format!("flow.flows.{upstream_i}.enc.attn_layers.{j}.{tail_in}");
+                let expected = format!("sbv2.flow.layer.0.enc.{j}.{tail_out}");
+                assert_eq!(
+                    classify_tensor(&input, Some(3)),
+                    TensorClass::Rename(expected.clone()),
+                    "{input} must rename to {expected}"
+                );
+            }
+            for (tail_in, tail_out) in [
+                ("conv_1.weight", "ffn.conv_1.weight"),
+                ("conv_2.bias", "ffn.conv_2.bias"),
+            ] {
+                let input = format!("flow.flows.{upstream_i}.enc.ffn_layers.{j}.{tail_in}");
+                let expected = format!("sbv2.flow.layer.0.enc.{j}.{tail_out}");
+                assert_eq!(
+                    classify_tensor(&input, Some(3)),
+                    TensorClass::Rename(expected)
+                );
+            }
+            for (norm_i, dst_prefix) in [(1usize, "norm1"), (2, "norm2")] {
+                for (tail_in, tail_out) in [("gamma", "gamma"), ("beta", "beta")] {
+                    let input =
+                        format!("flow.flows.{upstream_i}.enc.norm_layers_{norm_i}.{j}.{tail_in}");
+                    let expected = format!("sbv2.flow.layer.0.enc.{j}.{dst_prefix}.{tail_out}");
+                    assert_eq!(
+                        classify_tensor(&input, Some(3)),
+                        TensorClass::Rename(expected)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn classify_flow_odd_upstream_index_falls_through_to_pass_through() {
+        // Upstream odd indices are `Flip` slots — no tensors on the
+        // real base checkpoint, but if a hand-authored fixture emits
+        // one it must NOT be renamed (that would silently misroute a
+        // real coupling's tensor if the index accidentally lined up).
+        // Instead, fall through to the pass-through arm with the
+        // "flow VITS2" reason for post-mortem visibility.
+        for upstream_i in [1usize, 3, 5, 7] {
+            let input = format!("flow.flows.{upstream_i}.pre.weight");
+            assert!(
+                matches!(
+                    classify_tensor(&input, Some(3)),
+                    TensorClass::PassThrough { .. }
+                ),
+                "{input} (odd upstream index = Flip slot) must fall through to PassThrough"
             );
         }
     }
@@ -2408,21 +2784,17 @@ mod tests {
 
     #[test]
     fn flow_and_encoder_families_pass_through_verbatim_when_no_rename_applies() {
-        // Preservation invariant: flow.* + `enc_p.encoder.spk_emb_linear.*`
-        // (Blocker 3) + sdp.* + dec.cond.* stay under their upstream
-        // names so a future Rust wave can consume them without
-        // reconverting the checkpoint. Post-M6 (2026-08-06) the per-layer
-        // `enc_p.encoder.attn_layers.*` / `.ffn_layers.*` / `.norm_layers_*`
-        // tensors are Rename-mapped (see `classify_encoder_attn_layers_*`
-        // tests), so this test picks `spk_emb_linear` as the still-
-        // PassThrough example under `enc_p.encoder.*`.
+        // Preservation invariant: `enc_p.encoder.spk_emb_linear.*`
+        // (Blocker 3 — external speaker-vector projection, no Rust API
+        // path yet) + `sdp.*` (production SDP path, Rust simplified) +
+        // `dec.cond.*` (decoder speaker conditioning) stay under their
+        // upstream names so a future Rust wave can consume them without
+        // reconverting the checkpoint. Post-Blocker-2b (2026-08-06) the
+        // `flow.flows.<even>.*` per-block tensors are Rename-mapped
+        // (see `classify_flow_pre_and_post_rename_by_block_index_halving`
+        // and siblings), so they no longer belong in this
+        // pass-through-invariant set.
         let entries: Vec<(&str, &str, &[u64], Vec<u8>)> = vec![
-            (
-                "flow.flows.0.enc.attn_layers.0.conv_q.weight",
-                "F32",
-                &[192, 192, 1],
-                f32_bytes(&[0.01_f32; 192 * 192]),
-            ),
             (
                 "enc_p.encoder.spk_emb_linear.weight",
                 "F32",
@@ -2448,15 +2820,14 @@ mod tests {
         std::fs::write(&input, &blob).expect("write input");
 
         let report = convert_sbv2_file(&input, &output, None, None).expect("convert");
-        assert_eq!(report.read, 4);
-        assert_eq!(report.written, 4);
-        assert_eq!(report.passed_through_verbatim, 4);
+        assert_eq!(report.read, 3);
+        assert_eq!(report.written, 3);
+        assert_eq!(report.passed_through_verbatim, 3);
         assert_eq!(report.renamed, 0);
 
         let out_bytes = std::fs::read(&output).expect("read");
         let file = GgufFile::parse(out_bytes).expect("parse");
         for name in [
-            "flow.flows.0.enc.attn_layers.0.conv_q.weight",
             "enc_p.encoder.spk_emb_linear.weight",
             "sdp.flows.1.pre.weight",
             "dec.cond.weight",
@@ -2464,6 +2835,108 @@ mod tests {
             assert!(
                 file.tensor_info(name).is_some(),
                 "{name}: must land under upstream name"
+            );
+        }
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 2b (2026-08-06): end-to-end rename check — a fixture
+    /// containing one representative per-block flow tensor for each of
+    /// the 7 per-family branches must land under its target GGUF name
+    /// (not the upstream name).
+    #[test]
+    fn flow_family_tensors_land_under_renamed_targets_end_to_end() {
+        let entries: Vec<(&str, &str, &[u64], Vec<u8>)> = vec![
+            (
+                "flow.flows.0.pre.weight",
+                "F32",
+                &[192, 96, 1],
+                f32_bytes(&[0.01_f32; 192 * 96]),
+            ),
+            (
+                "flow.flows.2.post.bias",
+                "F32",
+                &[96],
+                f32_bytes(&[0.02_f32; 96]),
+            ),
+            (
+                "flow.flows.4.enc.spk_emb_linear.weight",
+                "F32",
+                &[192, 512],
+                f32_bytes(&[0.03_f32; 192 * 512]),
+            ),
+            (
+                "flow.flows.6.enc.attn_layers.0.conv_q.weight",
+                "F32",
+                &[192, 192, 1],
+                f32_bytes(&[0.04_f32; 192 * 192]),
+            ),
+            (
+                "flow.flows.0.enc.attn_layers.5.emb_rel_k",
+                "F32",
+                &[9, 96],
+                f32_bytes(&[0.05_f32; 9 * 96]),
+            ),
+            (
+                "flow.flows.2.enc.ffn_layers.3.conv_1.weight",
+                "F32",
+                &[768, 192, 5],
+                f32_bytes(&[0.06_f32; 768 * 192 * 5]),
+            ),
+            (
+                "flow.flows.4.enc.norm_layers_2.5.gamma",
+                "F32",
+                &[192, 1],
+                f32_bytes(&[0.07_f32; 192]),
+            ),
+        ];
+        let blob = safetensors_multi(&entries);
+        let input = temp_path("flow-rename-in", "safetensors");
+        let output = temp_path("flow-rename-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input");
+
+        let report = convert_sbv2_file(&input, &output, None, None).expect("convert");
+        assert_eq!(report.read, 7);
+        assert_eq!(report.written, 7);
+        assert_eq!(
+            report.renamed, 7,
+            "every one of the 7 per-family entries must go through the Rename branch"
+        );
+        assert_eq!(report.passed_through_verbatim, 0);
+
+        let out_bytes = std::fs::read(&output).expect("read");
+        let file = GgufFile::parse(out_bytes).expect("parse");
+        // Every entry must land under its target name (block index
+        // divided by 2: 0/2/4/6 → 0/1/2/3).
+        for target in [
+            "sbv2.flow.layer.0.pre.weight",
+            "sbv2.flow.layer.1.post.bias",
+            "sbv2.flow.layer.2.spk_emb.weight",
+            "sbv2.flow.layer.3.enc.0.attn.conv_q.weight",
+            "sbv2.flow.layer.0.enc.5.attn.rel_pos_k",
+            "sbv2.flow.layer.1.enc.3.ffn.conv_1.weight",
+            "sbv2.flow.layer.2.enc.5.norm2.gamma",
+        ] {
+            assert!(
+                file.tensor_info(target).is_some(),
+                "{target}: must land under its target GGUF name post-Blocker-2b"
+            );
+        }
+        // And none of the upstream names must survive.
+        for upstream in [
+            "flow.flows.0.pre.weight",
+            "flow.flows.2.post.bias",
+            "flow.flows.4.enc.spk_emb_linear.weight",
+            "flow.flows.6.enc.attn_layers.0.conv_q.weight",
+            "flow.flows.0.enc.attn_layers.5.emb_rel_k",
+            "flow.flows.2.enc.ffn_layers.3.conv_1.weight",
+            "flow.flows.4.enc.norm_layers_2.5.gamma",
+        ] {
+            assert!(
+                file.tensor_info(upstream).is_none(),
+                "{upstream}: upstream name must NOT survive after Blocker 2b rename"
             );
         }
 
