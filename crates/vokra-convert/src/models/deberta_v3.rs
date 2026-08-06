@@ -37,13 +37,15 @@ use std::path::Path;
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::json::{self, JsonValue};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
 use super::deberta_v2::{
-    CATEGORY, ConvertReport, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, MapAction,
-    classify_skip, count_layers, infer_vocab_and_d_model, map_deberta_name, write_hparams,
+    CATEGORY, ConvertReport, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, KEY_TOKENIZER_PREFIX,
+    KIND_SENTENCEPIECE_UNIGRAM, MapAction, add_f32_array, add_string_array, classify_skip,
+    count_layers, infer_vocab_and_d_model, map_deberta_name, write_hparams,
 };
 
 /// `vokra.model.arch` for DeBERTa v3 GGUFs.
@@ -62,19 +64,49 @@ pub(crate) const DEFAULT_LICENSE: &str = "mit";
 /// GGUF at `output`. `license` overrides the upstream `mit` stamp (mirror
 /// of the `convert_file --license <spdx>` boundary in `lib.rs`).
 ///
+/// `tokenizer_bytes` optionally stamps the `vokra.bert.tokenizer.*` chunk
+/// group [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] reads. The
+/// bytes are treated as a JSON side-car produced by
+/// `tools/parity/extract_spm_metadata.py` from an upstream `spm.model`
+/// — the intermediate JSON keeps a SentencePiece protobuf parser out of
+/// the runtime (NFR-DS-02 zero-dep: `vokra-convert` reuses
+/// `vokra_core::json`, no `prost` / `protobuf` crate is added). Shape:
+/// `{ "pieces": [str, ...], "scores": [f32, ...], "unk_id": u32,
+/// "bos_id": u32, "eos_id": u32, "pad_id": u32 }`. Also stamps
+/// `vokra.bert.tokenizer.kind = "sentencepiece-unigram"`. When
+/// `tokenizer_bytes` is [`None`] no `vokra.bert.tokenizer.*` metadata
+/// is written (SBV2 v2 loader-side `from_gguf` will then loud-fail —
+/// that's FR-EX-08 by design).
+///
 /// # Errors
 ///
 /// Same three arms as
 /// [`convert_deberta_v2_file`](crate::models::deberta_v2::convert_deberta_v2_file):
 /// [`ConvertError::Io`], [`ConvertError::Parse`] (I/O, malformed
-/// safetensors, or no token-embedding-shaped tensor found —
-/// `vocab_size` has no default in `DebertaV3Encoder::from_gguf`, so this
-/// converter refuses to invent one), [`ConvertError::Gguf`].
+/// safetensors, empty `tokenizer_bytes`, JSON parse or schema failure,
+/// pieces/scores length disagreement, or no token-embedding-shaped
+/// tensor found — `vocab_size` has no default in
+/// `DebertaV3Encoder::from_gguf`, so this converter refuses to invent
+/// one), [`ConvertError::Gguf`].
 pub fn convert_deberta_v3_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
+    tokenizer_bytes: Option<&[u8]>,
 ) -> Result<ConvertReport, ConvertError> {
+    // Front-load the tokenizer refuse — an empty JSON side-car would
+    // parse to a top-level parse error anyway, but this gives a clearer
+    // error message and never touches the safetensors input on failure.
+    if let Some(t) = tokenizer_bytes
+        && t.is_empty()
+    {
+        return Err(ConvertError::Parse(
+            "deberta-v3 --tokenizer: file is empty — refusing to emit a zero-length \
+             vokra.bert.tokenizer.* chunk group (SbertTokenizer::from_gguf would fail to load)"
+                .to_owned(),
+        ));
+    }
+
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -96,6 +128,11 @@ pub fn convert_deberta_v3_file(
         d_model,
         vocab_size,
     );
+
+    // Tokenizer side-car — Blocker 5 (2026-08-06). See `write_tokenizer_spm_json`.
+    if let Some(bytes) = tokenizer_bytes {
+        write_tokenizer_spm_json(&mut b, bytes)?;
+    }
 
     let mut report = ConvertReport::default();
     // Task 30 (2026-08-06): upstream HF names → `bert.*` names that
@@ -190,10 +227,145 @@ pub fn convert_deberta_v3_file(
     Ok(report)
 }
 
+/// Parses a `tools/parity/extract_spm_metadata.py`-produced JSON side-car
+/// and stamps the `vokra.bert.tokenizer.*` chunk group
+/// [`SbertTokenizer::from_gguf`] reads. The Python-side extraction runs
+/// upstream `sentencepiece.SentencePieceProcessor` (Apache-2.0 —
+/// permissive) against the `spm.model` protobuf and dumps the four fields
+/// this converter needs into a flat JSON object; keeping the protobuf
+/// parser out of Rust is a deliberate NFR-DS-02 boundary (no `prost`
+/// dependency, no `protobuf` crate — the runtime touches no protobuf, in
+/// keeping with FR-LD-05).
+///
+/// Expected JSON shape (see the Python doc for the authoritative
+/// spec):
+///
+/// ```json
+/// {
+///   "pieces":  [str, str, ...],  // id = array index
+///   "scores":  [f32, f32, ...],  // same length as pieces
+///   "unk_id":  int,              // e.g. 3
+///   "bos_id":  int,              // e.g. 1
+///   "eos_id":  int,              // e.g. 2
+///   "pad_id":  int               // optional; when absent, PAD is not
+///                                // reachable via a single id but the
+///                                // reader still functions (SBV2 side
+///                                // does not query pad_id today).
+/// }
+/// ```
+///
+/// # Errors
+///
+/// [`ConvertError::Parse`] when the JSON does not parse, the top-level
+/// value is not an object, a required key is missing or the wrong type,
+/// or `pieces.len() != scores.len()`.
+pub(crate) fn write_tokenizer_spm_json(
+    b: &mut GgufBuilder,
+    bytes: &[u8],
+) -> Result<(), ConvertError> {
+    let root = json::parse(bytes).map_err(|e| {
+        ConvertError::Parse(format!(
+            "deberta-v3 --tokenizer: JSON parse failure: {e}. See \
+             tools/parity/extract_spm_metadata.py --help for the expected schema."
+        ))
+    })?;
+
+    let pieces_val = root.get("pieces").ok_or_else(|| {
+        ConvertError::Parse("deberta-v3 --tokenizer: missing top-level `pieces` array".to_owned())
+    })?;
+    let pieces_arr = pieces_val.as_array().ok_or_else(|| {
+        ConvertError::Parse("deberta-v3 --tokenizer: `pieces` must be an array".to_owned())
+    })?;
+    let pieces: Vec<String> = pieces_arr
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.as_str().map(str::to_owned).ok_or_else(|| {
+                ConvertError::Parse(format!(
+                    "deberta-v3 --tokenizer: `pieces[{i}]` is not a string"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let scores_val = root.get("scores").ok_or_else(|| {
+        ConvertError::Parse("deberta-v3 --tokenizer: missing top-level `scores` array".to_owned())
+    })?;
+    let scores_arr = scores_val.as_array().ok_or_else(|| {
+        ConvertError::Parse("deberta-v3 --tokenizer: `scores` must be an array".to_owned())
+    })?;
+    let scores: Vec<f32> = scores_arr
+        .iter()
+        .enumerate()
+        .map(|(i, v)| match v {
+            JsonValue::Float(f) => Ok(*f as f32),
+            JsonValue::Int(n) => Ok(*n as f32),
+            _ => Err(ConvertError::Parse(format!(
+                "deberta-v3 --tokenizer: `scores[{i}]` is not a number"
+            ))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if pieces.len() != scores.len() {
+        return Err(ConvertError::Parse(format!(
+            "deberta-v3 --tokenizer: `pieces` length ({}) disagrees with `scores` length ({})",
+            pieces.len(),
+            scores.len()
+        )));
+    }
+    if pieces.is_empty() {
+        return Err(ConvertError::Parse(
+            "deberta-v3 --tokenizer: `pieces` is empty".to_owned(),
+        ));
+    }
+
+    let read_id = |key: &str| -> Result<u32, ConvertError> {
+        root.get(key)
+            .and_then(JsonValue::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                ConvertError::Parse(format!(
+                    "deberta-v3 --tokenizer: missing or non-u32 `{key}`"
+                ))
+            })
+    };
+    let unk_id = read_id("unk_id")?;
+    let bos_id = read_id("bos_id")?;
+    let eos_id = read_id("eos_id")?;
+    // pad_id is optional — SPM `<pad>` may not exist in every checkpoint;
+    // if omitted we stamp nothing (the reader does not query pad_id today).
+    let pad_id: Option<u32> = root
+        .get("pad_id")
+        .and_then(JsonValue::as_u64)
+        .and_then(|v| u32::try_from(v).ok());
+
+    let vocab_size = u32::try_from(pieces.len()).map_err(|_| {
+        ConvertError::Parse(format!(
+            "deberta-v3 --tokenizer: `pieces.len()` ({}) exceeds u32::MAX",
+            pieces.len()
+        ))
+    })?;
+
+    b.add_string(
+        &format!("{KEY_TOKENIZER_PREFIX}.kind"),
+        KIND_SENTENCEPIECE_UNIGRAM,
+    );
+    add_string_array(b, &format!("{KEY_TOKENIZER_PREFIX}.pieces"), &pieces);
+    add_f32_array(b, &format!("{KEY_TOKENIZER_PREFIX}.scores"), &scores);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.unk_id"), unk_id);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.bos_id"), bos_id);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.eos_id"), eos_id);
+    if let Some(p) = pad_id {
+        b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.pad_id"), p);
+    }
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.vocab_size"), vocab_size);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vokra_core::gguf::GgufFile;
+    use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 
     fn f32_bytes(vals: &[f32]) -> Vec<u8> {
         vals.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -243,7 +415,7 @@ mod tests {
         let (input, output) = temp_pair("defaults");
         std::fs::write(&input, &blob).expect("write input safetensors");
 
-        let report = convert_deberta_v3_file(&input, &output, None).expect("convert");
+        let report = convert_deberta_v3_file(&input, &output, None, None).expect("convert");
         assert_eq!(report.read, 1);
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
@@ -288,5 +460,214 @@ mod tests {
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — tokenizer_bytes = None emits no
+    /// `vokra.bert.tokenizer.*` metadata (loader-side FR-EX-08).
+    #[test]
+    fn no_tokenizer_bytes_emits_no_tokenizer_chunk_v3() {
+        let blob = v3_fixture();
+        let (input, output) = temp_pair("no-tokenizer");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v3_file(&input, &output, None, None).expect("convert");
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+        for suffix in [
+            "kind",
+            "pieces",
+            "scores",
+            "unk_id",
+            "bos_id",
+            "eos_id",
+            "pad_id",
+            "vocab_size",
+        ] {
+            let key = format!("{KEY_TOKENIZER_PREFIX}.{suffix}");
+            assert!(
+                file.get(&key).is_none(),
+                "no --tokenizer supplied: `{key}` must NOT be present"
+            );
+        }
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — tokenizer_bytes = Some(spm.json) stamps
+    /// the full `vokra.bert.tokenizer.*` chunk group. The JSON is a
+    /// hand-crafted minimal `tools/parity/extract_spm_metadata.py`-style
+    /// dump; specials mirror the real DeBERTa v3 spm.model header
+    /// (`[PAD]=0, [CLS]=1, [SEP]=2, [UNK]=3`).
+    #[test]
+    fn converter_stamps_spm_model_tokenizer_metadata() {
+        // `\u{2581}` is `▁` (SentencePiece word-start) — must not appear
+        // as a literal in a raw byte-string; a UTF-8 String is what the
+        // JSON parser walks anyway.
+        // Score `-3.125` is picked over `-3.14` deliberately: clippy's
+        // `approx_constant` lint refuses `-3.14_f32` (mistakes it for PI)
+        // — `-3.125` is representable exactly in f32 and equally
+        // arbitrary. `-7.5` follows the same "exact-in-f32" choice.
+        let spm_json = format!(
+            r#"{{
+            "pieces":  ["[PAD]", "[CLS]", "[SEP]", "[UNK]", "{s}the", "{s}cat"],
+            "scores":  [0.0, 0.0, 0.0, 0.0, -3.125, -7.5],
+            "unk_id":  3,
+            "bos_id":  1,
+            "eos_id":  2,
+            "pad_id":  0
+        }}"#,
+            s = "\u{2581}",
+        );
+        let spm_json = spm_json.as_bytes();
+        let blob = v3_fixture();
+        let (input, output) = temp_pair("tok-spm-json");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v3_file(&input, &output, None, Some(spm_json)).expect("convert");
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.kind"))
+                .and_then(|v| v.as_str()),
+            Some(KIND_SENTENCEPIECE_UNIGRAM),
+            "v3 discriminator must be `sentencepiece-unigram`, not `bert-charsplit`"
+        );
+        let pieces = file
+            .get(&format!("{KEY_TOKENIZER_PREFIX}.pieces"))
+            .and_then(|v| v.as_array())
+            .expect("pieces array present");
+        assert_eq!(pieces.values.len(), 6);
+        assert_eq!(pieces.values[0].as_str(), Some("[PAD]"));
+        assert_eq!(pieces.values[4].as_str(), Some("▁the"));
+        assert_eq!(pieces.values[5].as_str(), Some("▁cat"));
+
+        let scores = file
+            .get(&format!("{KEY_TOKENIZER_PREFIX}.scores"))
+            .and_then(|v| v.as_array())
+            .expect("scores array present");
+        assert_eq!(scores.values.len(), 6);
+        // The trained pieces carry non-zero log-probabilities from the
+        // upstream Unigram model — v3 is decidedly NOT a bert-charsplit.
+        if let Some(GgufMetadataValue::F32(f)) = scores.values.get(4) {
+            assert_eq!(*f, -3.125_f32, "-3.125 preserved bit-exact through F32");
+        } else {
+            panic!("scores[4] should be F32");
+        }
+
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.unk_id"))
+                .and_then(|v| v.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.bos_id"))
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.eos_id"))
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.pad_id"))
+                .and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.vocab_size"))
+                .and_then(|v| v.as_u64()),
+            Some(6)
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — pad_id is optional (SentencePiece may
+    /// not carry a PAD control piece). The other three specials are
+    /// required.
+    #[test]
+    fn spm_json_pad_id_is_optional() {
+        let spm_json = br#"{
+            "pieces": ["[UNK]", "[CLS]", "[SEP]"],
+            "scores": [0.0, 0.0, 0.0],
+            "unk_id": 0,
+            "bos_id": 1,
+            "eos_id": 2
+        }"#;
+        let blob = v3_fixture();
+        let (input, output) = temp_pair("tok-no-pad");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        convert_deberta_v3_file(&input, &output, None, Some(spm_json)).expect("convert");
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+        assert!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.pad_id"))
+                .is_none(),
+            "pad_id missing in JSON → not stamped in GGUF"
+        );
+        // The three required specials still made it in.
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.unk_id"))
+                .and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — malformed JSON (top-level not an
+    /// object, missing required key, wrong type) is a loud parse error
+    /// (FR-EX-08).
+    #[test]
+    fn spm_json_missing_pieces_is_loud_error() {
+        let bad = br#"{"scores": [0.0], "unk_id": 0, "bos_id": 1, "eos_id": 2}"#;
+        let blob = v3_fixture();
+        let (input, output) = temp_pair("tok-bad-no-pieces");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        let err = convert_deberta_v3_file(&input, &output, None, Some(bad))
+            .expect_err("missing pieces must fail");
+        assert!(matches!(err, ConvertError::Parse(_)));
+        std::fs::remove_file(&input).ok();
+    }
+
+    #[test]
+    fn spm_json_length_mismatch_is_loud_error() {
+        let bad = br#"{"pieces":["a","b"], "scores":[0.0], "unk_id":0, "bos_id":1, "eos_id":2}"#;
+        let blob = v3_fixture();
+        let (input, output) = temp_pair("tok-bad-len");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        let err = convert_deberta_v3_file(&input, &output, None, Some(bad))
+            .expect_err("pieces/scores length disagreement must fail");
+        assert!(matches!(err, ConvertError::Parse(_)));
+        std::fs::remove_file(&input).ok();
+    }
+
+    #[test]
+    fn spm_json_empty_bytes_is_loud_error() {
+        let blob = v3_fixture();
+        let (input, output) = temp_pair("tok-empty");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        let err = convert_deberta_v3_file(&input, &output, None, Some(&[]))
+            .expect_err("empty tokenizer must be refused");
+        assert!(matches!(err, ConvertError::Parse(_)));
+        std::fs::remove_file(&input).ok();
+    }
+
+    #[test]
+    fn spm_json_invalid_json_is_loud_error() {
+        let bad = br#"{not valid json"#;
+        let blob = v3_fixture();
+        let (input, output) = temp_pair("tok-bad-json");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        let err = convert_deberta_v3_file(&input, &output, None, Some(bad))
+            .expect_err("invalid JSON must fail");
+        assert!(matches!(err, ConvertError::Parse(_)));
+        std::fs::remove_file(&input).ok();
     }
 }

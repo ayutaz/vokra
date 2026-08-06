@@ -41,7 +41,7 @@ fn fixtures_dir() -> PathBuf {
 fn deberta_v2_convert_smoke() {
     let input = fixtures_dir().join("deberta-v2-large-japanese-char-wwm.safetensors");
     let output = std::env::temp_dir().join("vokra-deberta-v2-smoke.gguf");
-    let report = convert_deberta_v2_file(&input, &output, None)
+    let report = convert_deberta_v2_file(&input, &output, None, None)
         .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
     assert!(report.written > 0);
     assert_eq!(report.read, report.written + report.skipped_non_float);
@@ -52,7 +52,7 @@ fn deberta_v2_convert_smoke() {
 fn deberta_v3_convert_smoke() {
     let input = fixtures_dir().join("deberta-v3-large.safetensors");
     let output = std::env::temp_dir().join("vokra-deberta-v3-smoke.gguf");
-    let report = convert_deberta_v3_file(&input, &output, None)
+    let report = convert_deberta_v3_file(&input, &output, None, None)
         .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
     assert!(report.written > 0);
     assert_eq!(report.read, report.written + report.skipped_non_float);
