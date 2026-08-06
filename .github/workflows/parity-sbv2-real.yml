@@ -202,10 +202,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Provision parity venv (huggingface_hub + torch + transformers)
+      - name: Provision parity venv (huggingface_hub + torch + transformers + spm/protobuf)
         # Versions mirror parity-whisper-real.yml's own already-vetted pins
         # (torch CPU-only — no NVIDIA GPU on this runner; the transformers
         # range keeps the DeBERTa v2/v3 AutoModel path importable).
+        #
+        # `sentencepiece` + `protobuf` は DeBERTa v3 の spm tokenizer が
+        # `AutoTokenizer.from_pretrained` 経由で読める前提条件 (transformers
+        # 側の PROTOBUF_IMPORT_ERROR で fail する)。dumper (sbv2_dump_reference.py)
+        # は tokenize+forward の real reference を出すために両モデルの
+        # AutoTokenizer を呼ぶので、v3 (spm) 側で protobuf 必須になる。
+        # sibling parity-moshi-real.yml も sentencepiece を同 pattern で
+        # 入れている。
         shell: bash
         run: |
           set -euo pipefail
@@ -216,8 +224,10 @@ jobs:
           python -m pip install \
             "huggingface_hub>=0.24,<1" \
             "torch==2.4.*" \
-            "transformers>=4.44,<4.60"
-          python -m pip list | grep -Ei '^(huggingface[-_]hub|torch|transformers)\b'
+            "transformers>=4.44,<4.60" \
+            "sentencepiece>=0.2,<1" \
+            "protobuf>=4,<7"
+          python -m pip list | grep -Ei '^(huggingface[-_]hub|torch|transformers|sentencepiece|protobuf)\b'
 
       - name: Download SBV2 v2 checkpoint + build vokra.sbv2.* config side-car
         # tools/parity/sbv2_prepare_checkpoint.py (Task 29): snapshot_download
