@@ -127,15 +127,31 @@ for why that tensor is still compared as float with an atol that has an
 explicit +/-1 discrete-step allowance, rather than as an exact integer
 match).
 
-Task 7 (SBV2 v2 plan) adds three **side files** alongside the 11-tensor
+Task 7 (SBV2 v2 plan) adds four **side files** alongside the 11-tensor
 list — ``phoneme_ids.bin`` (``uint16``), ``tones.bin`` (``uint8``),
-``word_boundaries.bin`` (``uint8``), all of length ``T_text`` — under the
-manifest's own ``phonemize_fixture`` block (not inside ``tensors[]``, so
-the design-doc §10 "11 dumped tensors" contract stays intact). They are
-the G2P *inputs* to the reference forward pass, replayed on the Rust side
-by ``SbV2Phonemizer::from_fixture`` +
+``word_boundaries.bin`` (``uint8``), all of length ``T_text``, plus
+``language_id.bin`` (``uint8`` scalar, count 1) — under the manifest's own
+``phonemize_fixture`` block (not inside ``tensors[]``, so the design-doc
+§10 "11 dumped tensors" contract stays intact). They are the G2P *inputs*
+to the reference forward pass, replayed on the Rust side by
+``SbV2Phonemizer::from_fixture`` +
 ``SbV2Model::from_gguf_with_phonemizer`` — see this file's manifest
 schema below.
+
+**Real-checkpoint tensor-layout finding (M6, 2026-08-06)**:
+``enc_p.word_boundary_emb.weight`` does NOT exist in the SBV2 v2 base
+checkpoint (``litagin/Style-Bert-VITS2-2.0-base-JP-Extra``); the tensor
+that exists at that slot is ``enc_p.language_emb.weight`` with shape
+``[3, 192]`` (three per-utterance language rows: JA / EN / ZH). The
+dumper now performs a per-utterance ``language_embed[language_id]``
+broadcast-add into every position (matching
+``crates/vokra-models/src/sbv2/text_encoder.rs`` ``SbV2TextEncoder::forward``
+post-``b1e8f16``) instead of the pre-checkpoint estimate's per-position
+``word_boundary_emb[word_boundaries[t]]`` lookup. ``word_boundaries.bin``
+is still dumped (Rust-side ``PhonemizeResult`` retains the field as a
+G2P output for fixture stability, even though the text encoder no longer
+consumes it), and ``language_id.bin`` is added as the new fixture-side
+input the reference forward pass consumes.
 
 # Manifest schema (this file writes; ``parity_sbv2_real.rs``'s module doc is
 # the authoritative contract this mirrors)
@@ -161,7 +177,9 @@ schema below.
         "tones":           {"path": "reference_dump/tones.bin",
                             "count": T_text, "dtype": "uint8"},
         "word_boundaries": {"path": "reference_dump/word_boundaries.bin",
-                            "count": T_text, "dtype": "uint8"}
+                            "count": T_text, "dtype": "uint8"},
+        "language_id":     {"path": "reference_dump/language_id.bin",
+                            "count": 1, "dtype": "uint8"}     # M6 addition
       },
       "tensors": [
         {"name": "phoneme_embed", "path": "reference_dump/phoneme_embed.bin",
@@ -170,18 +188,22 @@ schema below.
       ]
     }
 
-``phonemize_fixture`` (Task 7) is the fixture bypass that lets the Rust
-side rebuild an ``SbV2Phonemizer`` (via ``SbV2Phonemizer::from_fixture`` +
-``SbV2Model::from_gguf_with_phonemizer``) that reproduces the exact G2P
-output the reference dumper's forward pass consumed, without needing a
-real 8-language piper-plus G2P available in-workspace (NFR-DS-02: the
-excluded ``integrations/vokra-piper-g2p`` cannot be a
-``crates/vokra-models`` dependency). The three side files are always
-1-D (their length is ``T_text``, matching every f32 tensor whose leading
-axis is ``T_text``) and use narrower dtypes than f32 —
-``phoneme_ids`` is ``uint16`` (matches the Rust ``PhonemizeResult::phoneme_ids``'s
-``Vec<u16>``), ``tones`` and ``word_boundaries`` are ``uint8``. The
-consuming Rust reader dispatches on ``dtype``.
+``phonemize_fixture`` (Task 7, extended M6) is the fixture bypass that
+lets the Rust side rebuild an ``SbV2Phonemizer`` (via
+``SbV2Phonemizer::from_fixture`` + ``SbV2Model::from_gguf_with_phonemizer``)
+that reproduces the exact G2P output the reference dumper's forward pass
+consumed, without needing a real 8-language piper-plus G2P available
+in-workspace (NFR-DS-02: the excluded ``integrations/vokra-piper-g2p``
+cannot be a ``crates/vokra-models`` dependency). The four side files:
+the three per-position ones (``phoneme_ids`` / ``tones`` /
+``word_boundaries``) are always 1-D of length ``T_text`` (matching every
+f32 tensor whose leading axis is ``T_text``) and use narrower dtypes than
+f32 — ``phoneme_ids`` is ``uint16`` (matches the Rust
+``PhonemizeResult::phoneme_ids``'s ``Vec<u16>``), ``tones`` and
+``word_boundaries`` are ``uint8``; the fourth (``language_id``, M6 addition)
+is a ``uint8`` scalar (``count == 1``, matching the per-utterance
+``u8`` ``SbV2TextEncoder::forward`` accepts). The consuming Rust reader
+dispatches on ``dtype``.
 
 ``checkpoint.*`` are **bare filenames** (siblings of the manifest inside
 ``tests/fixtures/sbv2/``, matching Task 34's planned ``Files:`` list) —
@@ -291,7 +313,15 @@ LEAKY_RELU_SLOPE: float = 0.1
 # Runtime-resolved scalars (populated by `_resolve_arch_constants`):
 N_PHONEME_VOCAB: "int | None" = None
 N_TONE_VOCAB: int = 6  # SBV2 JP-Extra tone alphabet: 0..4 pitch levels + silence
-N_WORD_BOUNDARY_VOCAB: int = 2  # `crates/vokra-models/src/sbv2/text_encoder.rs` `wb_embed` is [2, d_model]
+# `crates/vokra-models/src/sbv2/text_encoder.rs` `language_embed` is
+# `[N_LANGUAGES, d_model]`, rows = JA/EN/ZH (real checkpoint
+# `enc_p.language_emb.weight [3, 192]`). Post-b1e8f16 refactor: the earlier
+# `N_WORD_BOUNDARY_VOCAB = 2` (assumed `enc_p.word_boundary_emb.weight`)
+# did not survive the M6 real-checkpoint scout — that tensor does not exist
+# in the SBV2 v2 base; `enc_p.language_emb.weight [3, d_model]` does. See
+# this file's module docstring "Real-checkpoint tensor-layout finding"
+# section for the full trail.
+N_LANGUAGES: int = 3
 D_STYLE_DEFAULT: int = DEFAULT_STYLE_DIM
 SAMPLE_RATE: int = 44100  # SBV2 v2 JP-Extra target (litagin/Style-Bert-VITS2-2.0-base-JP-Extra HF README, public metadata)
 # SDP flow depth — arXiv:2106.06103 §2.3 + jaywalnut310/vits SDP __init__ default (n_layers_dp=3, n_flows=4).
@@ -346,11 +376,18 @@ TENSOR_DTYPE = "float32"
 #
 # The `parity_sbv2_real.rs` Rust reader (Task 28) dispatches on `dtype`
 # and reads with the corresponding element size — u16 LE via
-# `u16::from_le_bytes` for `phoneme_ids`, plain `u8` for the two others.
+# `u16::from_le_bytes` for `phoneme_ids`, plain `u8` for the three others.
+#
+# M6 addition (2026-08-06): `language_id` is the fourth side file — a
+# per-utterance u8 scalar (`count == 1`, not `T_text`) matching the
+# `language_id: u8` argument `SbV2TextEncoder::forward` accepts
+# post-`b1e8f16`. Rows: `JA = 0`, `EN = 1`, `ZH = 2`
+# (`crates/vokra-models/src/sbv2/g2p.rs` `Language::language_id`).
 PHONEMIZE_FIXTURE_SCHEMA: "list[dict]" = [
     {"name": "phoneme_ids", "dtype": "uint16", "count_template": "T_text"},
     {"name": "tones", "dtype": "uint8", "count_template": "T_text"},
     {"name": "word_boundaries", "dtype": "uint8", "count_template": "T_text"},
+    {"name": "language_id", "dtype": "uint8", "count_template": 1},  # M6: static count 1
 ]
 
 
@@ -364,11 +401,14 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
     path once vendoring lands. When ``None`` (schema-preview mode), every
     tensor falls back to its symbolic [`TENSOR_SCHEMA`] placeholder shape.
 
-    ``phonemize_counts``, when given, maps a subset of the 3 Task-7
-    fixture-side-file names (``phoneme_ids``/``tones``/``word_boundaries``)
-    to their real element count (`T_text`, only available once a real G2P
-    has run on ``args.text``). When ``None``, each falls back to
-    [`PHONEMIZE_FIXTURE_SCHEMA`]'s symbolic ``"T_text"`` placeholder.
+    ``phonemize_counts``, when given, maps a subset of the 4 Task-7
+    fixture-side-file names (``phoneme_ids``/``tones``/``word_boundaries``
+    + M6 addition ``language_id``) to their real element count — `T_text`
+    for the per-position three, `1` for the per-utterance ``language_id``
+    scalar (only available once a real G2P has run on ``args.text`` for
+    the former, always `1` for the latter). When ``None``, each falls back
+    to [`PHONEMIZE_FIXTURE_SCHEMA`]'s symbolic ``"T_text"`` (or the
+    literal integer `1` for ``language_id``) placeholder.
 
     Everything else in the manifest (``checkpoint.*``, ``request.*``) is
     fully resolvable from ``args`` alone, real forward pass or not.
@@ -529,8 +569,15 @@ class MinimalG2P:
 
     # Owner-populated rows go here. Each value MUST be a dict with the
     # three keys below, each a list of length T_text. `phoneme_ids` values
-    # must be in `[0, N_PHONEME_VOCAB)`, `tones` in `[0, N_TONE_VOCAB)`,
-    # `word_boundaries` in `[0, N_WORD_BOUNDARY_VOCAB)`.
+    # must be in `[0, N_PHONEME_VOCAB)`, `tones` in `[0, N_TONE_VOCAB)`.
+    # `word_boundaries` is retained as a G2P output (Rust
+    # `PhonemizeResult::word_boundaries` still carries it post-M6 for
+    # fixture stability) even though the text encoder no longer consumes
+    # it — post-M6 real-checkpoint scout, `enc_p.word_boundary_emb.weight`
+    # does not exist and the per-utterance `language_embed` broadcast-add
+    # replaced the per-position word-boundary lookup. Values should be in
+    # `{0, 1}` (word-boundary flag) for schema stability with the pre-M6
+    # fixture format.
     _JA_TABLE: "dict[str, dict[str, list[int]]]" = {}
     _EN_TABLE: "dict[str, dict[str, list[int]]]" = {}
 
@@ -673,9 +720,10 @@ def build_text_encoder(state_dict: dict, torch):
     and load its weights from the state_dict (upstream naming:
     `enc_p.emb.*`, `enc_p.encoder.*`, `enc_p.proj.*`).
 
-    The SBV2 additions (tone_emb + word_boundary_emb) live outside this
-    class — see `run_text_encoder` for the additive sum before the
-    transformer stack.
+    The SBV2 additions (tone_emb + language_emb, post-M6 real-checkpoint
+    correction from the design doc's original tone+word_boundary_emb
+    estimate) live outside this class — see `run_text_encoder` for the
+    additive sum before the transformer stack.
 
     Rationale for filter_channels=768, n_heads=2, n_layers=6,
     kernel_size=3, p_dropout=0.1: VITS/SBV2 base convention across
@@ -741,11 +789,14 @@ def build_text_encoder(state_dict: dict, torch):
 
 
 def build_sbv2_extras(state_dict: dict, torch):
-    """Step 4b. SBV2's tone + word-boundary embedding tables (additive
+    """Step 4b. SBV2's tone + language embedding tables (additive
     contributions to the phoneme embedding, applied BEFORE the
     transformer stack). These do NOT live in vanilla VITS — they are
     SBV2 additions per design doc §7 "既存 piper-plus VITS text encoder
-    拡張 — tone + word_boundary embed 追加".
+    拡張 — tone + language embed 追加" (post-M6 correction; the design
+    doc's original "tone + word_boundary" phrasing pre-dates the M6
+    real-checkpoint scout — see this file's module docstring
+    "Real-checkpoint tensor-layout finding" section for the trail).
 
     Both use `torch.nn.Embedding` (a `[V, D]` weight lookup — no
     architectural novelty), so no clean-room scratch is needed for the
@@ -754,7 +805,7 @@ def build_sbv2_extras(state_dict: dict, torch):
     from torch import nn as _nn
 
     tone_emb = _nn.Embedding(N_TONE_VOCAB, D_MODEL)
-    wb_emb = _nn.Embedding(N_WORD_BOUNDARY_VOCAB, D_MODEL)
+    lang_emb = _nn.Embedding(N_LANGUAGES, D_MODEL)
     with torch.no_grad():
         # Candidate naming: upstream may spell this `enc_p.tone_emb.weight`,
         # `enc_p.emb_tone.weight`, or drop it entirely (base ships without
@@ -767,32 +818,50 @@ def build_sbv2_extras(state_dict: dict, torch):
                 torch,
             )
         )
-        # word_boundary_emb is SBV2 v2-specific. `parity_sbv2_real.rs`'s
-        # `SbV2TextEncoder::wb_embed` is `[2, D_MODEL]`.
-        wb_emb.weight.copy_(
+        # `enc_p.language_emb.weight` is SBV2 v2-specific and observed
+        # `[N_LANGUAGES=3, D_MODEL=192]` on the real base checkpoint
+        # (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`). Matches
+        # `crates/vokra-models/src/sbv2/text_encoder.rs`
+        # `SbV2TextEncoder::language_embed` (`[N_LANGUAGES, D_MODEL]`,
+        # post-`b1e8f16`). Row ordering: `JA = 0`, `EN = 1`, `ZH = 2`
+        # (`crates/vokra-models/src/sbv2/g2p.rs` `Language::language_id`);
+        # pending real-checkpoint config verification per Rust
+        # `SbV2TextEncoder::forward`'s `language_id` doc note.
+        lang_emb.weight.copy_(
             _load_tensor(
                 state_dict,
                 [
-                    "enc_p.word_boundary_emb.weight",
-                    "enc_p.wb_emb.weight",
-                    "enc_p.emb_wb.weight",
+                    "enc_p.language_emb.weight",
+                    "enc_p.lang_emb.weight",
+                    "enc_p.emb_language.weight",
                 ],
-                "wb_embed",
+                "language_embed",
                 torch,
             )
         )
-    return tone_emb, wb_emb
+    return tone_emb, lang_emb
 
 
-def run_text_encoder(encoder, tone_emb, wb_emb, phoneme_ids, tones,
-                     word_boundaries, torch):
+def run_text_encoder(encoder, tone_emb, lang_emb, phoneme_ids, tones,
+                     language_id, torch):
     """Step 4c. Runs the SBV2 text encoder forward, returning
     (phoneme_embed [T_text, D_MODEL], text_hidden [T_text, D_MODEL],
     x_mask [1, 1, T_text]).
 
-    SBV2's extension of vanilla VITS (per design doc §7):
+    SBV2's extension of vanilla VITS (per design doc §7, post-M6
+    real-checkpoint correction):
 
-        x = (emb_phoneme + emb_tone + emb_word_boundary) * sqrt(d_model)
+        x = (emb_phoneme[t] + emb_tone[t] + emb_language[lang]) * sqrt(d_model)
+
+    where `emb_language[lang]` is a single per-utterance row (`[D_MODEL]`)
+    broadcast-added identically to every position `t`, NOT a per-position
+    lookup — corresponds to `SbV2TextEncoder::forward`'s per-utterance
+    `language_id: u8` argument on the Rust side (post-`b1e8f16`;
+    `crates/vokra-models/src/sbv2/text_encoder.rs`).
+
+    `language_id` is a plain `int` (0/1/2 for JA/EN/ZH, matching
+    `Language::language_id`), not a list — caller resolves it from
+    `--language` once per invocation.
 
     The dumper writes phoneme_embed as [T_text, 192] and text_hidden as
     [T_text, 192], matching design doc §10. Internally VITS shapes are
@@ -803,15 +872,23 @@ def run_text_encoder(encoder, tone_emb, wb_emb, phoneme_ids, tones,
 
     ids = torch.tensor([phoneme_ids], dtype=torch.long)  # [1, T]
     ton = torch.tensor([tones], dtype=torch.long)        # [1, T]
-    wbs = torch.tensor([word_boundaries], dtype=torch.long)  # [1, T]
+    # `language_id` is a per-utterance scalar (NOT a per-position vector) —
+    # `SbV2TextEncoder::forward` on the Rust side takes `language_id: u8`.
+    # Wrap in shape `[1]` for the embedding lookup, get `[1, D_MODEL]`, then
+    # broadcast-add into every position of `[1, T, D_MODEL]` via numpy /
+    # torch broadcasting (trailing-dim alignment expands `[1, D_MODEL]` →
+    # `[1, 1, D_MODEL]` → `[1, T, D_MODEL]`). Doing the broadcast this way
+    # matches the Rust `let lang_row = &self.language_embed[lang_start..]`
+    # hoisted-slice pattern exactly (see `text_encoder.rs::forward` L214-235).
+    lang_id_tensor = torch.tensor([language_id], dtype=torch.long)  # [1] scalar
     x_lengths = torch.tensor([len(phoneme_ids)], dtype=torch.long)
 
     # Additive SBV2 embed sum BEFORE sqrt scaling. Corresponds to
-    # `SbV2TextEncoder::forward`'s phoneme+tone+wb sum on the Rust side.
-    x_phon = encoder.emb(ids)          # [1, T, D]
-    x_tone = tone_emb(ton)             # [1, T, D]
-    x_wb = wb_emb(wbs)                 # [1, T, D]
-    phoneme_embed = x_phon + x_tone + x_wb        # [1, T, D]
+    # `SbV2TextEncoder::forward`'s phoneme+tone+language sum on the Rust side.
+    x_phon = encoder.emb(ids)                        # [1, T, D]
+    x_tone = tone_emb(ton)                           # [1, T, D]
+    lang_row = lang_emb(lang_id_tensor).unsqueeze(1)  # [1, 1, D] (broadcast target)
+    phoneme_embed = x_phon + x_tone + lang_row       # [1, T, D] via broadcast over T
     x = phoneme_embed * _math.sqrt(D_MODEL)
 
     # Rest of vendored VitsTextEncoder.forward (inlined so we can capture
@@ -1296,10 +1373,12 @@ def write_u8_bin(path, values) -> None:
 def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     """Design doc §7 forward-pass pipeline, all 15 steps. Called from
     `run_dump()` after every dependency tier has passed. On success,
-    writes 11 tensor `.bin` files + 3 fixture side files + a fully-
-    resolved `reference_dump.manifest.json` to `args.output_dir`. On
-    any failure, raises loudly — NEVER silently returns 0 or writes a
-    partial fixture (FR-EX-08).
+    writes 11 tensor `.bin` files + 4 fixture side files
+    (phoneme_ids/tones/word_boundaries all `[T_text]`, plus language_id
+    scalar `[1]` — M6 addition) + a fully-resolved
+    `reference_dump.manifest.json` to `args.output_dir`. On any failure,
+    raises loudly — NEVER silently returns 0 or writes a partial fixture
+    (FR-EX-08).
     """
     # ---- Step 0: torch reproducibility ----
     prepare_torch(args, torch)
@@ -1318,16 +1397,25 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     t_text = len(phon["phoneme_ids"])
     print(f"{LOG_PREFIX} G2P: T_text = {t_text}")
 
-    # ---- Step 4: SBV2 text encoder (VITS TextEncoder + tone/wb) ----
+    # ---- Step 4: SBV2 text encoder (VITS TextEncoder + tone/language) ----
     encoder = build_text_encoder(state_dict, torch)
-    tone_emb, wb_emb = build_sbv2_extras(state_dict, torch)
+    tone_emb, lang_emb = build_sbv2_extras(state_dict, torch)
+    # Resolve per-utterance `language_id: u8` from `--language`. Matches
+    # `crates/vokra-models/src/sbv2/g2p.rs` `Language::language_id` ordering
+    # (`JA = 0`, `EN = 1`, `ZH = 2`) 1:1. `--language` is validated by
+    # argparse against `sorted(DEFAULT_TEXT_BY_LANGUAGE)` = {"ja", "en"};
+    # ZH is not exposed via CLI (Vokra ZH G2P is out of scope for M6, see
+    # Rust `Language::ZH` docstring) but the mapping table below carries a
+    # `zh` entry so a future CLI extension does not silently misroute.
+    _LANGUAGE_ID_BY_CLI: "dict[str, int]" = {"ja": 0, "en": 1, "zh": 2}
+    language_id = _LANGUAGE_ID_BY_CLI[args.language.lower()]
     phoneme_embed, text_hidden, x_mask_text = run_text_encoder(
-        encoder, tone_emb, wb_emb,
-        phon["phoneme_ids"], phon["tones"], phon["word_boundaries"],
+        encoder, tone_emb, lang_emb,
+        phon["phoneme_ids"], phon["tones"], language_id,
         torch,
     )
     print(f"{LOG_PREFIX} text encoder: phoneme_embed {tuple(phoneme_embed.shape)}, "
-          f"text_hidden {tuple(text_hidden.shape)}")
+          f"text_hidden {tuple(text_hidden.shape)}, language_id={language_id}")
 
     # ---- Steps 5+6: both BERT paths, always dumped ----
     bert_ja = run_bert(tok_ja, model_ja, args.text, torch)  # [T_bert_ja, H_ja]
@@ -1409,10 +1497,17 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     write_f32_bin(dump_dir / "z_latent.bin",        z_latent,        torch)
     write_f32_bin(dump_dir / "waveform.bin",        waveform.unsqueeze(0), torch)
 
-    # Task 7 side files (G2P inputs, replayed by Rust `from_fixture`):
+    # Task 7 side files (G2P inputs, replayed by Rust `from_fixture`).
+    # `word_boundaries.bin` is retained even though the M6 refactor removed
+    # its consumer from the text encoder — Rust `PhonemizeResult` still
+    # carries the field for fixture stability, and dropping the file would
+    # break any parity fixture pinned pre-M6.
     write_u16_bin(dump_dir / "phoneme_ids.bin",     phon["phoneme_ids"])
     write_u8_bin(dump_dir / "tones.bin",            phon["tones"])
     write_u8_bin(dump_dir / "word_boundaries.bin",  phon["word_boundaries"])
+    # M6 addition: per-utterance `language_id` (u8 scalar, count 1).
+    # Matches `SbV2TextEncoder::forward`'s `language_id: u8` argument.
+    write_u8_bin(dump_dir / "language_id.bin",      [language_id])
 
     # ---- Step 15: fully-resolved manifest ----
     manifest = build_manifest(
@@ -1434,6 +1529,7 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
             "phoneme_ids":     t_text,
             "tones":           t_text,
             "word_boundaries": t_text,
+            "language_id":     1,   # M6 addition: per-utterance u8 scalar
         },
     )
     manifest_path = args.output_dir / "reference_dump.manifest.json"
@@ -1441,7 +1537,7 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
         json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=False)
 
     print(
-        f"{LOG_PREFIX} OK: wrote 11 tensor .bin + 3 fixture .bin + manifest "
+        f"{LOG_PREFIX} OK: wrote 11 tensor .bin + 4 fixture .bin + manifest "
         f"to {args.output_dir}"
     )
     return 0
@@ -1520,9 +1616,10 @@ def run_dump(args: argparse.Namespace) -> int:
     # vendor.vits import / this dumper's own architectural body). Hand
     # off to the pipeline body, which drives all 15 steps documented in
     # `run_pipeline_body`'s docstring. On success, writes 11 tensor
-    # .bin + 3 fixture .bin + reference_dump.manifest.json to
-    # `args.output_dir`. On failure, raises loudly — NEVER silently
-    # returns 0 or writes a partial fixture (FR-EX-08).
+    # .bin + 4 fixture .bin (phoneme_ids/tones/word_boundaries + M6
+    # language_id) + reference_dump.manifest.json to `args.output_dir`.
+    # On failure, raises loudly — NEVER silently returns 0 or writes a
+    # partial fixture (FR-EX-08).
     # ------------------------------------------------------------------
     return run_pipeline_body(args, torch, transformers)
 
