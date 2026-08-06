@@ -57,9 +57,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45   # 338 MB LibriSpeech + N × HF repo_info; comfortable margin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -145,7 +145,7 @@ jobs:
 
       - name: Upload verdicts artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pins-verdicts
           path: /tmp/pins-verdicts.jsonl
