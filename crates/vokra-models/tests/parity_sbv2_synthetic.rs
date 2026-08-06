@@ -37,6 +37,7 @@ fn ja_request(seed: u64) -> SbV2SynthRequest {
         text: "あいう".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,

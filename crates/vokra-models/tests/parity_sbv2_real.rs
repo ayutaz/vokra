@@ -473,6 +473,18 @@ fn request_from_manifest(manifest: &JsonValue, ctx: &str) -> SbV2SynthRequest {
         text: json_str(request, "text", ctx).to_string(),
         language,
         speaker_id: json_u32(request, "speaker_id", ctx),
+        // Blocker 3: the Python reference dumper for the real ckpt
+        // currently exercises the deterministic zero-shot default —
+        // `None` here forwards that intent to
+        // `SbV2Model::synthesize`'s step 5, which then uses the
+        // all-zero `[d_speaker]` external default (matching
+        // `SynthesisRequest::speaker_embedding`'s "None = zero" doc).
+        // Extending the manifest schema to carry an explicit reference
+        // 512-d embedding is a follow-up: the ckpt loader itself is
+        // what must land first (`sbv2.text_encoder.spk_emb_linear.*`
+        // Rename + `SbV2Model::from_gguf` binding), and that is scope
+        // for the Blocker 3 converter-side wave.
+        speaker_embedding: None,
         style_vec: json_f32_array(request, "style_vec", ctx),
         speed: json_f32(request, "speed", ctx),
         noise_scale: json_f32(request, "noise_scale", ctx),

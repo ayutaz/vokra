@@ -39,7 +39,7 @@ pub use duration::{ConvFlow, DDSConv, ElementwiseAffine, SbV2SDP, SdpLayerNorm, 
 pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
 pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 pub use parity::{ATOL_DEFAULT, PER_TENSOR_ATOL, tolerance_for};
-pub use speaker::SpeakerEmbedding;
+pub use speaker::{ExternalSpeakerProjection, SpeakerEmbedding};
 pub use style::StyleVectorInjector;
 pub use text_encoder::{BertBridge, N_LANGUAGES, SbV2TextEncoder};
 
@@ -95,7 +95,43 @@ pub struct SbV2SynthRequest {
     /// Which phonemizer / BERT path the request routes through.
     pub language: Language,
     /// Discrete speaker id, looked up in [`SpeakerEmbedding`]'s table.
+    ///
+    /// This is the **synthetic / legacy** speaker-selection path
+    /// [`SbV2Model::synthetic_for_test`]-shaped models use — used only
+    /// when both this request's [`speaker_embedding`](Self::speaker_embedding)
+    /// is `None` **and** the model has no
+    /// [`ExternalSpeakerProjection`] loaded
+    /// (via [`SbV2Model::with_external_speaker_projection`]). For the
+    /// real SBV2 v2 base ckpt (which has no per-speaker table), pass a
+    /// caller-supplied external embedding via
+    /// [`speaker_embedding`](Self::speaker_embedding) instead — that is
+    /// the sole speaker-conditioning path the base ckpt supports (scout
+    /// report §1: `emb_g` does not exist on that ckpt).
     pub speaker_id: u32,
+    /// External zero-shot speaker embedding (Blocker 3) — a
+    /// caller-supplied `[d_speaker]` (real ckpt: `d_speaker = 512`)
+    /// continuous embedding, projected through the model's
+    /// [`ExternalSpeakerProjection`] to a `[d_model]` broadcast-add
+    /// contribution (see [`SbV2Model::synthesize`]'s step 5 for the
+    /// full dispatch table).
+    ///
+    /// - `None`: the deterministic zero-shot default — mirrors the
+    ///   cross-engine [`vokra_core::SynthesisRequest::speaker_embedding`]'s
+    ///   documented "None uses the zero vector" contract; the projection
+    ///   layer still contributes its bias to the resulting zero-input
+    ///   output, so synthesis is deterministic but not silent.
+    /// - `Some(vec)`: `vec.len()` **must** equal the projection's `d_in`
+    ///   — a wrong-length vector is a loud
+    ///   [`vokra_core::VokraError::InvalidArgument`], never silently
+    ///   zero-padded or truncated (FR-EX-08).
+    /// - `Some(_)` on a model with **no** projection loaded (a synthetic
+    ///   `SbV2Model::synthetic_for_test` that was never handed a projection
+    ///   via [`SbV2Model::with_external_speaker_projection`]) is also a
+    ///   loud [`vokra_core::VokraError::InvalidArgument`]: silently
+    ///   discarding caller-supplied speaker data would produce
+    ///   plausible-looking-but-wrong-speaker audio, exactly the class of
+    ///   silent failure FR-EX-08 forbids.
+    pub speaker_embedding: Option<Vec<f32>>,
     /// Per-utterance AdaIN style conditioning (see
     /// [`StyleVectorInjector::inject`]). Length must equal the loaded
     /// voice's style width — an all-zero vector of the right length is the
@@ -151,6 +187,18 @@ pub struct SbV2Model {
     bert: SbV2BertContainer,
     bert_bridge: BertBridge,
     speaker_embed: SpeakerEmbedding,
+    /// Real-ckpt zero-shot speaker projection (Blocker 3). `Some` when a
+    /// caller has bound the real SBV2 v2 base ckpt's
+    /// `enc_p.encoder.spk_emb_linear.{weight,bias}` (either via
+    /// [`SbV2Model::with_external_speaker_projection`] on a
+    /// hand-assembled model, or via the future real-ckpt path in
+    /// [`SbV2Model::from_gguf`] once the converter renames those two
+    /// tensors — see the loader's own doc). `None` on
+    /// [`SbV2Model::synthetic_for_test`]-shaped models (which route
+    /// speaker through the legacy [`SpeakerEmbedding`] lookup instead).
+    /// See [`SbV2Model::synthesize`]'s step 5 for the exact dispatch
+    /// table.
+    speaker_projection: Option<ExternalSpeakerProjection>,
     style_injector: StyleVectorInjector,
     sdp: SbV2SDP,
     flow: SbV2Flow,
@@ -178,11 +226,42 @@ impl SbV2Model {
             bert,
             bert_bridge,
             speaker_embed,
+            // Blocker 3: `new` binds the legacy [`SpeakerEmbedding`] path
+            // only. A caller that has an [`ExternalSpeakerProjection`]
+            // for the real ckpt attaches it via
+            // [`with_external_speaker_projection`](Self::with_external_speaker_projection)
+            // rather than growing this constructor to 10 arguments.
+            speaker_projection: None,
             style_injector,
             sdp,
             flow,
             decoder,
         }
+    }
+
+    /// Attaches an [`ExternalSpeakerProjection`] to this model — Blocker
+    /// 3's real-ckpt speaker-conditioning path.
+    ///
+    /// A synthetic model built via [`new`](Self::new),
+    /// [`synthetic_for_test`](Self::synthetic_for_test) or
+    /// [`synthetic_for_test_e2e`](Self::synthetic_for_test_e2e) has
+    /// `speaker_projection = None`, so
+    /// [`synthesize`](Self::synthesize) routes speaker conditioning
+    /// through the legacy [`SpeakerEmbedding::lookup`] path (backward
+    /// compat with every pre-Blocker-3 synthetic test — see
+    /// [`synthesize`](Self::synthesize)'s step 5 dispatch table). This
+    /// setter attaches the projection so subsequent `synthesize` calls
+    /// route through the real-ckpt path instead. Returns `self` (moved)
+    /// so callers can chain it after a constructor.
+    ///
+    /// Builder-style setter (not a growth of [`new`](Self::new)'s
+    /// argument list) so real-ckpt use sites can opt in without
+    /// disturbing every synthetic test's existing 9-argument
+    /// construction.
+    #[must_use]
+    pub fn with_external_speaker_projection(mut self, proj: ExternalSpeakerProjection) -> Self {
+        self.speaker_projection = Some(proj);
+        self
     }
 
     /// Test-only constructor: assembles a full pipeline out of tiny,
@@ -604,36 +683,132 @@ impl SbV2Model {
             *h += b;
         }
 
-        // 5. Speaker + style — the speaker embedding is looked up here but
-        // NOT broadcast-added into `hidden`: post-Blocker-2c the SDP takes
-        // the raw `g` directly and projects it internally via `sdp.cond`;
-        // the acoustic flow (`SbV2Flow::inverse`) likewise receives
-        // `speaker_e` as a separate argument via each coupling layer's
-        // `speaker_proj`. The pre-Blocker-2c pre-SDP hidden broadcast was
-        // architecturally wrong (double-conditioning through both hidden
-        // and `sdp.cond`) — removing it matches real VITS SDP's flow, and
-        // does not alter the synthetic `synthetic_for_test` path (its
-        // speaker table is all-zero-ish so the broadcast never contributed
-        // meaningfully there either). See `SbV2SDP::sample`'s doc for the
-        // new `g`-driven conditioning path.
-        let speaker_e = self.speaker_embed.lookup(req.speaker_id)?;
+        // 5. Speaker + style (Blocker 3: dispatch on request+model).
+        //
+        // The base ckpt has no per-speaker embedding table (scout report
+        // §1); real-ckpt models therefore carry an
+        // [`ExternalSpeakerProjection`] and consume a caller-supplied
+        // external `[d_speaker]` vector via
+        // [`SbV2SynthRequest::speaker_embedding`]. Synthetic models
+        // (which have no projection) fall back to the legacy
+        // [`SpeakerEmbedding::lookup`] path.
+        //
+        // | request.speaker_embedding | model.speaker_projection | path                                                                                      |
+        // |---------------------------|--------------------------|--------------------------------------------------------------------------------------------|
+        // | `Some(vec)`               | `Some(proj)`             | project `vec -> [d_model]`, broadcast-add; pass `vec` to `flow.inverse`                   |
+        // | `None`                    | `Some(proj)`             | project all-zero `[d_speaker] -> [d_model]` (bias only), broadcast-add; pass zeros to flow |
+        // | `Some(_)`                 | `None`                   | loud [`VokraError::InvalidArgument`] (silent discard of caller data violates FR-EX-08)     |
+        // | `None`                    | `None`                   | legacy: `speaker_embed.lookup(speaker_id)`, broadcast-add, pass to flow                    |
+        //
+        // The returned `speaker_e_flow: Vec<f32>` is the vector to pass
+        // to [`SbV2Flow::inverse`]. It is `[d_speaker]`-sized in every
+        // branch (real ckpt: 512; synthetic legacy: d_speaker == d_model
+        // == 8), matching the flow layer's `speaker_proj`'s row width.
         let d_model = self.text_encoder.d_model();
-        debug_assert_eq!(
-            speaker_e.len(),
-            self.sdp.gin(),
-            "SbV2Model::synthesize: SpeakerEmbedding's d_speaker must equal SbV2SDP's `gin` \
-             (both driven by `vokra.sbv2.d_speaker` in from_gguf; SBV2 v2 base = 512, synthetic \
-             factories = D_MODEL)"
-        );
+        let phoneme_count = phon.phoneme_ids.len();
+        let speaker_e_flow: Vec<f32> = match (
+            req.speaker_embedding.as_deref(),
+            self.speaker_projection.as_ref(),
+        ) {
+            (Some(ext), Some(proj)) => {
+                // Real-ckpt path: caller-supplied external embedding.
+                // `proj.forward` loudly rejects wrong-length input
+                // (FR-EX-08). The projected `[d_model]` result
+                // broadcast-adds into every phoneme row of `hidden`.
+                let projected = proj.forward(ext)?;
+                debug_assert_eq!(
+                    projected.len(),
+                    d_model,
+                    "SbV2Model::synthesize: ExternalSpeakerProjection's d_out must equal \
+                         SbV2TextEncoder's d_model for the broadcast add below — see \
+                         SbV2Model's struct doc"
+                );
+                for i in 0..phoneme_count {
+                    for (d, &s) in projected.iter().enumerate() {
+                        hidden[i * d_model + d] += s;
+                    }
+                }
+                // Flow's `speaker_proj: [half_d_z, d_speaker]` maps the
+                // *raw* external `[d_speaker]`, not the projected
+                // `[d_model]` — see `flow::SbV2AffineCouplingLayer`'s
+                // doc.
+                ext.to_vec()
+            }
+            (None, Some(proj)) => {
+                // Deterministic zero-shot default (matches
+                // `SynthesisRequest::speaker_embedding`'s "None uses
+                // the zero vector" contract). The projection still
+                // contributes its bias to the resulting output.
+                let zeros = vec![0.0_f32; proj.d_in()];
+                let projected = proj.forward(&zeros)?;
+                debug_assert_eq!(
+                    projected.len(),
+                    d_model,
+                    "SbV2Model::synthesize: ExternalSpeakerProjection's d_out must equal \
+                         SbV2TextEncoder's d_model for the broadcast add below — see \
+                         SbV2Model's struct doc"
+                );
+                for i in 0..phoneme_count {
+                    for (d, &s) in projected.iter().enumerate() {
+                        hidden[i * d_model + d] += s;
+                    }
+                }
+                zeros
+            }
+            (Some(_), None) => {
+                // Silent discard would produce
+                // plausible-looking-but-wrong-speaker audio — exactly
+                // the class of failure FR-EX-08 forbids. Same
+                // loud-error posture as the pre-Blocker-3
+                // `TtsEngine::synthesize` adapter used to have for
+                // this case, moved down into the pipeline so both
+                // entry points (inherent `synthesize` and
+                // `TtsEngine::synthesize`) surface the identical
+                // error.
+                return Err(VokraError::InvalidArgument(
+                    "SbV2Model::synthesize: caller-supplied speaker_embedding was provided \
+                         but this model carries no ExternalSpeakerProjection — attach one via \
+                         SbV2Model::with_external_speaker_projection, or pass \
+                         speaker_embedding = None and use speaker_id for the legacy \
+                         SpeakerEmbedding::lookup path (FR-EX-08: silent discard of \
+                         caller-supplied speaker data is forbidden)"
+                        .to_string(),
+                ));
+            }
+            (None, None) => {
+                // Legacy synthetic-only path — every pre-Blocker-3
+                // synthetic test hits this branch. Preserves the
+                // exact byte-level output of
+                // `parity_sbv2_synthetic::synthetic_shape_invariants_hold`
+                // (which uses `synthetic_for_test`, whose
+                // `speaker_embed` is a real
+                // [`SpeakerEmbedding::from_table`] with
+                // `d_speaker == d_model`).
+                let speaker_e = self.speaker_embed.lookup(req.speaker_id)?;
+                debug_assert_eq!(
+                    speaker_e.len(),
+                    d_model,
+                    "SbV2Model::synthesize: SpeakerEmbedding's d_speaker must equal \
+                         SbV2TextEncoder's d_model on the legacy lookup path — see \
+                         SbV2Model's struct doc"
+                );
+                for i in 0..phoneme_count {
+                    for (d, &s) in speaker_e.iter().enumerate() {
+                        hidden[i * d_model + d] += s;
+                    }
+                }
+                speaker_e.to_vec()
+            }
+        };
         self.style_injector
-            .inject(&mut hidden, phon.phoneme_ids.len(), &req.style_vec);
+            .inject(&mut hidden, phoneme_count, &req.style_vec);
 
         // 6. SDP -> durations
         let mut rng = GaussianSplitMix64::new(req.seed);
         let mut durations = self.sdp.sample(
             &hidden,
             phon.phoneme_ids.len(),
-            speaker_e,
+            &speaker_e_flow,
             &mut rng,
             req.noise_scale_w,
         );
@@ -650,26 +825,18 @@ impl SbV2Model {
              duration is >= 1 by construction once phoneme_ids is non-empty)"
         );
 
-        // 8. Flow inverse (scaffold: mel_hidden feeds the flow directly —
-        // see SbV2SynthRequest::noise_scale's doc for the real
-        // reparameterization this stands in for).
-        //
-        // Blocker 2b (2026-08-06): `SbV2Flow::inverse` now takes a single
-        // opaque `g: &[f32]` (`[gin_channels]`-wide) per upstream
-        // `TransformerCouplingBlock.forward(x, x_mask, g=g,
-        // reverse=True)`. Blocker 3 (external speaker vector projection)
-        // will define the canonical `g` composition rule — until then, we
-        // supply a **stopgap** g formed by concatenating `speaker_e ‖
-        // style_vec` (the two per-utterance conditioning signals the
-        // pre-Blocker-2b `inverse` signature already carried). For every
-        // caller path that today builds `SbV2Model` via
-        // [`synthetic_for_test`](Self::synthetic_for_test) the flow has an
-        // empty layer stack, so `g` is never read and this stopgap has no
-        // observable effect. A `from_gguf`-loaded model with the base
-        // checkpoint's real 4-TCL flow will exercise the stopgap until
-        // Blocker 3 lands the real composition.
-        let mut g_stopgap = Vec::with_capacity(speaker_e.len() + req.style_vec.len());
-        g_stopgap.extend_from_slice(speaker_e);
+        // 8. Flow inverse — Blocker 2b's `SbV2Flow::inverse(z, mel_seq_len,
+        // g)` takes a single opaque `g: &[f32]` (`[gin_channels]`-wide) per
+        // upstream `TransformerCouplingBlock.forward(x, x_mask, g=g,
+        // reverse=True)`. Blocker 3's `speaker_e_flow` provides the raw
+        // `[d_speaker]` speaker vector (external ckpt path) or the legacy
+        // `SpeakerEmbedding::lookup` result (synthetic path). We compose
+        // `g = speaker_e_flow ‖ style_vec` as the stopgap conditioning
+        // signal — for synthetic tests (empty flow stack) g is never read;
+        // for real ckpt loads the concat-composition matches the
+        // pre-Blocker-3 signature the flow layers were trained against.
+        let mut g_stopgap = Vec::with_capacity(speaker_e_flow.len() + req.style_vec.len());
+        g_stopgap.extend_from_slice(&speaker_e_flow);
         g_stopgap.extend_from_slice(&req.style_vec);
         let z = self.flow.inverse(&mel_hidden, mel_seq_len, &g_stopgap);
 
@@ -709,28 +876,32 @@ impl TtsEngine for SbV2Model {
     /// [`SynthesisRequest`] carries neither a style-vector nor a
     /// discrete-speaker-id field.
     ///
+    /// # Speaker conditioning (Blocker 3)
+    ///
+    /// `request.speaker_embedding` is forwarded verbatim to
+    /// [`SbV2SynthRequest::speaker_embedding`]. The inherent
+    /// [`SbV2Model::synthesize`] step 5 dispatches on
+    /// `(request.speaker_embedding, self.speaker_projection)` — see that
+    /// method's dispatch-table doc. In particular, a `Some(_)` embedding
+    /// on a model with no [`ExternalSpeakerProjection`] loaded
+    /// (e.g. a legacy `SbV2Model::synthetic_for_test`) surfaces as a
+    /// [`VokraError::InvalidArgument`] from the inherent method — the
+    /// same loud-error posture the pre-Blocker-3 adapter used to enforce
+    /// itself, moved down into the pipeline so both entry points
+    /// (inherent `synthesize` and this trait method) surface identical
+    /// errors.
+    ///
     /// # Errors
     ///
-    /// Returns [`VokraError::InvalidArgument`] if `request.speaker_embedding`
-    /// or `request.prosody_features` is `Some(..)`: SBV2 selects speakers
-    /// through [`SpeakerEmbedding`]'s discrete id lookup, not a
-    /// caller-supplied continuous embedding, and derives pitch-accent tones
-    /// from its own G2P, not a caller-supplied per-phoneme accent triple —
-    /// honoring either would mean silently discarding caller-supplied data,
-    /// so this adapter errors loudly instead (this codebase's established
-    /// FR-EX-08 convention for a request field a specific engine cannot
-    /// honor — e.g. the Whisper `no_repeat_ngram_size` gate in
-    /// `integrations/vokra-server`). Also propagates any error the inherent
-    /// [`synthesize`](SbV2Model::synthesize) call returns.
+    /// Returns [`VokraError::InvalidArgument`] if
+    /// `request.prosody_features` is `Some(..)`: SBV2 derives
+    /// pitch-accent tones from its own G2P, not a caller-supplied
+    /// per-phoneme accent triple — honoring it would mean silently
+    /// discarding caller-supplied data. Also propagates any error the
+    /// inherent [`synthesize`](SbV2Model::synthesize) call returns
+    /// (including Blocker 3's speaker-conditioning errors — see the
+    /// section above).
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
-        if request.speaker_embedding.is_some() {
-            return Err(VokraError::InvalidArgument(
-                "SbV2Model (TtsEngine): caller-supplied speaker_embedding is not supported — \
-                 SBV2 selects speakers via a discrete id (SbV2SynthRequest::speaker_id); call \
-                 SbV2Model::synthesize directly for speaker-id control"
-                    .to_string(),
-            ));
-        }
         if request.prosody_features.is_some() {
             return Err(VokraError::InvalidArgument(
                 "SbV2Model (TtsEngine): caller-supplied prosody_features is not supported — \
@@ -764,6 +935,7 @@ impl TtsEngine for SbV2Model {
             text: request.text.clone(),
             language,
             speaker_id: 0,
+            speaker_embedding: request.speaker_embedding.clone(),
             style_vec: vec![0.0; self.style_injector.d_style()],
             speed: 1.0,
             noise_scale,
@@ -1364,11 +1536,103 @@ impl SbV2Model {
         );
 
         // ---- speaker ----
-        let speaker_embed = SpeakerEmbedding::from_table(
-            load_tensor_f32("sbv2.speaker.table")?,
-            n_speakers,
-            d_speaker,
-        );
+        //
+        // Two co-existing paths (see the `speaker` module doc for the
+        // full dispatch table):
+        //
+        // 1. Legacy synthetic path — a converter that emits
+        //    `sbv2.speaker.table` (row-major `[n_speakers, d_speaker]`)
+        //    binds the [`SpeakerEmbedding::lookup`] path.
+        // 2. Real-ckpt path (Blocker 3) — a converter that emits
+        //    `sbv2.text_encoder.spk_emb_linear.{weight,bias}`
+        //    (`[d_model, d_speaker]` + `[d_model]`, the real SBV2 v2
+        //    base ckpt's `enc_p.encoder.spk_emb_linear`) binds an
+        //    [`ExternalSpeakerProjection`] onto the loaded model.
+        //
+        // Both are optional; loud-fail if neither is present so a
+        // malformed converter output fails at load time rather than
+        // silently producing a model whose `synthesize` step 5 also
+        // loud-fails on every call (FR-EX-08 caught earlier is better
+        // caught later). If **both** are present, load both — the
+        // pipeline's dispatch table then picks between them per-request
+        // based on `SbV2SynthRequest::speaker_embedding`, without this
+        // loader having to guess which one the caller wants.
+        let table_tensor = main.tensor_f32("sbv2.speaker.table").ok();
+        let spk_emb_linear_weight = main
+            .tensor_f32("sbv2.text_encoder.spk_emb_linear.weight")
+            .ok();
+        let spk_emb_linear_bias = main
+            .tensor_f32("sbv2.text_encoder.spk_emb_linear.bias")
+            .ok();
+        // The `spk_emb_linear.{weight,bias}` pair is all-or-nothing —
+        // one present without the other is a converter bug, not a
+        // partial legacy fallback.
+        let projection = match (spk_emb_linear_weight, spk_emb_linear_bias) {
+            (Some(w), Some(b)) => {
+                if w.len() != d_model * d_speaker {
+                    return Err(VokraError::ModelLoad(format!(
+                        "SbV2Model::from_gguf: sbv2.text_encoder.spk_emb_linear.weight has \
+                         {} elements, expected d_model * d_speaker = {} * {} = {}",
+                        w.len(),
+                        d_model,
+                        d_speaker,
+                        d_model * d_speaker,
+                    )));
+                }
+                if b.len() != d_model {
+                    return Err(VokraError::ModelLoad(format!(
+                        "SbV2Model::from_gguf: sbv2.text_encoder.spk_emb_linear.bias has {} \
+                         elements, expected d_model = {}",
+                        b.len(),
+                        d_model,
+                    )));
+                }
+                Some(ExternalSpeakerProjection::from_weights(
+                    w, b, d_speaker, d_model,
+                ))
+            }
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(VokraError::ModelLoad(
+                    "SbV2Model::from_gguf: sbv2.text_encoder.spk_emb_linear.weight is present \
+                     but its .bias is missing — a converter must emit both or neither"
+                        .to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(VokraError::ModelLoad(
+                    "SbV2Model::from_gguf: sbv2.text_encoder.spk_emb_linear.bias is present \
+                     but its .weight is missing — a converter must emit both or neither"
+                        .to_string(),
+                ));
+            }
+        };
+        // Bind the legacy `SpeakerEmbedding` if the tensor is present;
+        // otherwise install a `[1, d_speaker]` all-zero placeholder that
+        // is never reached (the `synthesize` step-5 dispatch routes
+        // through `projection` when `Some`, never the placeholder). The
+        // placeholder is required only because `SbV2Model`'s
+        // `speaker_embed` field is not `Option` — see the field's own
+        // doc for why (backward compat with `synthetic_for_test`'s
+        // 9-argument construction).
+        let speaker_embed = match (table_tensor, &projection) {
+            (Some(t), _) => SpeakerEmbedding::from_table(t, n_speakers, d_speaker),
+            (None, Some(_)) => {
+                // Never reached at request time — kept as a shape-valid
+                // placeholder so this field's type invariant holds.
+                SpeakerEmbedding::from_table(vec![0.0_f32; d_speaker], 1, d_speaker)
+            }
+            (None, None) => {
+                return Err(VokraError::ModelLoad(
+                    "SbV2Model::from_gguf: neither sbv2.speaker.table (legacy lookup path) \
+                     nor sbv2.text_encoder.spk_emb_linear.{weight,bias} (real-ckpt \
+                     projection path) is present — a converter must emit one of the two \
+                     speaker-conditioning shapes (FR-EX-08: no silent all-zero speaker \
+                     fallback)"
+                        .to_string(),
+                ));
+            }
+        };
 
         // ---- style ----
         let style_injector = StyleVectorInjector::from_projections(
@@ -1689,7 +1953,7 @@ impl SbV2Model {
         // `from_piper_g2p`, or a Task 7 parity `PhonemizeFixture` via
         // `from_fixture`).
 
-        Ok(Self::new(
+        let mut model = Self::new(
             phonemizer,
             text_encoder,
             bert,
@@ -1699,7 +1963,15 @@ impl SbV2Model {
             sdp,
             flow,
             decoder,
-        ))
+        );
+        // Blocker 3: attach the real-ckpt speaker projection if the
+        // loader found the `sbv2.text_encoder.spk_emb_linear.*` pair;
+        // otherwise the model stays on the legacy `SpeakerEmbedding`
+        // lookup path (see the `speaker` module doc's dispatch table).
+        if let Some(proj) = projection {
+            model = model.with_external_speaker_projection(proj);
+        }
+        Ok(model)
     }
 
     /// Task 7 sibling of [`from_gguf`](Self::from_gguf) that lets the caller

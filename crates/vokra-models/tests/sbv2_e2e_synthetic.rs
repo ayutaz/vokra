@@ -33,6 +33,7 @@ fn e2e_request(text: &str, language: Language) -> SbV2SynthRequest {
         text: text.to_string(),
         language,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test_e2e's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
@@ -119,6 +120,7 @@ fn synthetic_for_test_e2e_does_not_perturb_original_factory() {
         text: "あいう".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4],
         speed: 1.0,
         noise_scale: 0.0,

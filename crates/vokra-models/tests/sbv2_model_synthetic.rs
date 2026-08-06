@@ -22,6 +22,7 @@ fn synthesize_ja_returns_non_empty_pcm() {
         text: "あいう".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
@@ -42,6 +43,7 @@ fn synthesize_en_returns_non_empty_pcm() {
         text: "test".to_string(),
         language: Language::EN,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
@@ -77,6 +79,7 @@ fn tts_engine_adapter_matches_direct_synthesize() {
         text: "test".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
