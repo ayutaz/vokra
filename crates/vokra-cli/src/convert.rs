@@ -11,14 +11,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, SileroVariant, VoxtralConfig, convert_chatterbox_file,
-    convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
-    convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_file,
-    convert_file_quantized, convert_file_with_policy, convert_file_with_slug, convert_irodori_file,
-    convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file, convert_silero_file,
-    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant, VoxtralConfig,
+    convert_chatterbox_file, convert_chatterbox_nano_file, convert_chatterbox_turbo_file,
+    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_crepe_file, convert_dac_file,
+    convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
+    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
+    convert_vits_ja_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
+    convert_voxtral_file_streaming, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -1015,6 +1016,61 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                         .to_owned());
                 }
             }
+        }
+        ModelKind::SbV2 => {
+            // SBV2 v2 plan (2026-07-26 / 2026-08-06): the generic
+            // `convert_file_with_slug` fallthrough arm in
+            // `crates/vokra-convert/src/lib.rs` hard-codes
+            // `config_side_car = None`, silently discarding the CLI
+            // `--config` flag and producing a GGUF without the
+            // `vokra.sbv2.*` hparam chunk that `SbV2Model::from_gguf`
+            // requires. Threading `--config` through here matches the
+            // Kokoro / CosyVoice2 / CosyVoice3 / Voxtral pattern above:
+            // when supplied, the emitted GGUF is `from_gguf`-loadable;
+            // without it we still call `convert_sbv2_file` with `None`
+            // so the tensor-only backward-compatible path (the same one
+            // `convert_file_with_slug` used to hit) still works.
+            //
+            // Quantization / policy preset are whisper-only (mirror of
+            // the surrounding arms).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let report: SbV2ConvertReport = convert_sbv2_file(
+                &p.input,
+                &p.output,
+                p.config.as_deref(),
+                p.license.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+            let mut notes = vec![format!(
+                "sbv2: {} float weights written verbatim ({} read, {} non-float skipped), \
+                 vokra.sbv2.* hparam chunk written: {}",
+                report.written, report.read, report.skipped_non_float, report.hparams_written,
+            )];
+            if !report.hparams_written {
+                notes.push(
+                    "no --config side-car: vokra.sbv2.* metadata was not written -- pass \
+                     --config <vokra-sbv2-config.json> (produced by \
+                     tools/parity/sbv2_prepare_checkpoint.py) for a hparam-complete GGUF"
+                        .to_owned(),
+                );
+            }
+            let output_bytes = std::fs::metadata(&p.output).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "converted sbv2: {} tensors, {} metadata keys, {} bytes -> {}",
+                report.written,
+                0,
+                output_bytes,
+                p.output.display()
+            );
+            for note in &notes {
+                println!("  note: {note}");
+            }
+            return Ok(ExitCode::SUCCESS);
         }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
