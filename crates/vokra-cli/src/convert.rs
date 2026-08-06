@@ -11,15 +11,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant, VoxtralConfig,
+    ConvertSummary, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant, VoxtralConfig,
     convert_chatterbox_file, convert_chatterbox_nano_file, convert_chatterbox_turbo_file,
     convert_cosyvoice2_file, convert_cosyvoice3_file, convert_crepe_file, convert_dac_file,
-    convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
-    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_streaming, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    convert_deberta_v2_file, convert_deberta_v3_file, convert_file, convert_file_quantized,
+    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
+    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -44,8 +44,10 @@ USAGE:
                       [--config <config.json>] [--adapter-config <adapter.json>] \
                       [--tokenizer <tekken-vocab.bin>] --output <out.gguf>
     vokra-cli convert --model sbv2 --input <voice.safetensors> --output <out.gguf>
-    vokra-cli convert --model deberta-v2 --input <bert_ja.safetensors> --output <out.gguf>
-    vokra-cli convert --model deberta-v3 --input <bert_en.safetensors> --output <out.gguf>
+    vokra-cli convert --model deberta-v2 --input <bert_ja.safetensors> [--tokenizer <vocab.txt>] \
+                      --output <out.gguf>
+    vokra-cli convert --model deberta-v3 --input <bert_en.safetensors> [--tokenizer <spm.json>] \
+                      --output <out.gguf>
     vokra-cli convert --model kimi-audio --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model step-audio2-mini --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model baichuan-audio --input <model.safetensors> --output <out.gguf>
@@ -348,13 +350,28 @@ OPTIONS:
                               and routes ASR through the audio-conditioned
                               path (see docs/tickets/m3/M3-10*.md). Omit for
                               the honest LM-continuation path.
-    --tokenizer <path>        Voxtral only: raw tokenizer bytes embedded
+    --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3.
+                              (voxtral) raw tokenizer bytes embedded
                               verbatim into `vokra.tokenizer.model` (the
                               tekken compact-vocab blob). REQUIRED for a
                               usable ASR GGUF — without it the runtime can
                               neither detokenize nor build the trained
                               transcription prompt (both are explicit
                               errors, never silent).
+                              (deberta-v2) upstream vocab.txt (one piece
+                              per line, char-level BertJapaneseTokenizer).
+                              Stamps `vokra.bert.tokenizer.kind =
+                              bert-charsplit` + `pieces` / `scores` (=0.0)
+                              / `unk_id=3 / bos_id=1 / eos_id=2 / pad_id=0`
+                              so `SbertTokenizer::from_gguf` succeeds.
+                              (deberta-v3) `spm.model` JSON side-car from
+                              tools/parity/extract_spm_metadata.py (keeps
+                              the SentencePiece protobuf parser out of
+                              Rust — zero-dep NFR-DS-02). Stamps `kind =
+                              sentencepiece-unigram` + the same
+                              tokenizer chunk group. Omit either flag to
+                              emit no tokenizer metadata (loader-side
+                              FR-EX-08 fires on next load).
     --output <path>           GGUF file to write
     --quantize <kind>         K-quantize weight matrices: q4_k | q5_k | q6_k
                               (whisper and voxtral). For whisper it is an alias
@@ -573,25 +590,34 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     let p = parse_args(args)?;
     let model = p.model; // ModelKind is Copy; reused after the move into convert_*.
 
-    // `--adapter-config` / `--tokenizer` are Voxtral-only side-cars. Passing
-    // one on another model would previously be dropped without a word;
-    // reject instead (FR-EX-08 — never silently ignore a user flag).
-    if !matches!(model, ModelKind::Voxtral) {
-        if p.adapter_config.is_some() {
-            return Err(
-                "--adapter-config is only supported for --model voxtral (it writes the \
-                 `vokra.voxtral.adapter.*` metadata chunk)"
-                    .to_owned(),
-            );
-        }
-        if p.tokenizer.is_some() {
-            return Err(
-                "--tokenizer is only supported for --model voxtral. Other archs embed their \
-                 tokenizer through their own path (whisper: the converter bakes the vocab; \
-                 csm / moshi: the standalone `vokra-convert` binary's --config side-car)"
-                    .to_owned(),
-            );
-        }
+    // `--adapter-config` is Voxtral-only. Passing it on another model would
+    // previously be dropped without a word; reject instead (FR-EX-08 —
+    // never silently ignore a user flag).
+    if !matches!(model, ModelKind::Voxtral) && p.adapter_config.is_some() {
+        return Err(
+            "--adapter-config is only supported for --model voxtral (it writes the \
+             `vokra.voxtral.adapter.*` metadata chunk)"
+                .to_owned(),
+        );
+    }
+    // `--tokenizer` used to be Voxtral-only; Blocker 5 (2026-08-06) opens
+    // it up to the DeBERTa v2 / v3 converters as well (they emit a
+    // `vokra.bert.tokenizer.*` chunk group so `SbertTokenizer::from_gguf`
+    // can round-trip real fixtures — otherwise loader-side FR-EX-08 fails
+    // on every real SBV2 v2 fixture). Every other model still rejects the
+    // flag rather than silently ignoring it.
+    if !matches!(
+        model,
+        ModelKind::Voxtral | ModelKind::DebertaV2 | ModelKind::DebertaV3
+    ) && p.tokenizer.is_some()
+    {
+        return Err(
+            "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3. \
+             Other archs embed their tokenizer through their own path (whisper: the converter \
+             bakes the vocab; csm / moshi: the standalone `vokra-convert` binary's --config \
+             side-car)"
+                .to_owned(),
+        );
     }
     // `--silero-variant` is Silero-VAD-only. Silently dropping it on other
     // models would misrepresent provenance (the flag would appear honored
@@ -996,6 +1022,50 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_styletts2_file(&p.input, &p.output)
         }
+        ModelKind::DebertaV2 => {
+            // Blocker 5 (2026-08-06): dedicated dispatch so `--tokenizer
+            // <vocab.txt>` reaches `convert_deberta_v2_file`'s
+            // tokenizer-side path. Absent the CLI-side arm, DebertaV2
+            // would fall through to `convert_file_with_slug` (generic
+            // dispatch) which has no per-model side-car parameter.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let tokenizer_bytes: Option<Vec<u8>> = read_tokenizer_bytes(p.tokenizer.as_ref())?;
+            let report = convert_deberta_v2_file(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer_bytes.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+            let notes = deberta_notes("deberta-v2", &report, tokenizer_bytes.is_some());
+            return finalize_deberta_summary(model, report, &p.output, &notes);
+        }
+        ModelKind::DebertaV3 => {
+            // Blocker 5 (2026-08-06): mirror of the DebertaV2 arm.
+            // `--tokenizer <spm.json>` (produced by
+            // `tools/parity/extract_spm_metadata.py`) is opt-in.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let tokenizer_bytes: Option<Vec<u8>> = read_tokenizer_bytes(p.tokenizer.as_ref())?;
+            let report = convert_deberta_v3_file(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer_bytes.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+            let notes = deberta_notes("deberta-v3", &report, tokenizer_bytes.is_some());
+            return finalize_deberta_summary(model, report, &p.output, &notes);
+        }
         ModelKind::Crepe => {
             // M5 gap follow-up (2026-07-30): CREPE needs the prepare-script
             // config side-car (the capacity discriminator is written by the
@@ -1162,6 +1232,76 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Reads a `--tokenizer` side-car into an owned byte buffer, mirroring
+/// the Voxtral I/O boundary at [`main`]'s Voxtral arm (`std::fs::read`
+/// + friendly path context). Blocker 5 (2026-08-06).
+fn read_tokenizer_bytes(path: Option<&PathBuf>) -> Result<Option<Vec<u8>>, String> {
+    match path {
+        Some(p) => std::fs::read(p)
+            .map(Some)
+            .map_err(|e| format!("--tokenizer {}: {e}", p.display())),
+        None => Ok(None),
+    }
+}
+
+/// Per-conversion note vector for either DeBERTa arm — Blocker 5
+/// (2026-08-06). The `tokenizer_present` flag is threaded so the
+/// operator can see at a glance whether the emitted GGUF actually
+/// carries a `vokra.bert.tokenizer.*` chunk group (SBV2 v2 loader-side
+/// FR-EX-08 will otherwise fire on next load).
+fn deberta_notes(
+    tag: &str,
+    report: &vokra_convert::ConvertReport,
+    tokenizer_present: bool,
+) -> Vec<String> {
+    let mut notes = vec![format!(
+        "{tag}: {} float weights written verbatim, {} non-float skipped",
+        report.written, report.skipped_non_float,
+    )];
+    notes.push(if tokenizer_present {
+        format!(
+            "{tag}: vokra.bert.tokenizer.* chunk group emitted (SbertTokenizer::from_gguf ready)"
+        )
+    } else {
+        format!(
+            "{tag}: no --tokenizer supplied; the emitted GGUF carries no \
+             vokra.bert.tokenizer.* metadata (SbertTokenizer::from_gguf will fail — supply \
+             `--tokenizer <vocab.txt|spm.json>`)"
+        )
+    });
+    notes
+}
+
+/// Emits the success footer for a DeBERTa arm and returns a
+/// `Result<ExitCode, String>`. Kept out of `main`'s hot path so the
+/// DeBERTa arms remain a few readable lines.
+fn finalize_deberta_summary(
+    model: ModelKind,
+    report: vokra_convert::ConvertReport,
+    output: &std::path::Path,
+    notes: &[String],
+) -> Result<ExitCode, String> {
+    let output_bytes = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+    let summary = ConvertSummary {
+        model,
+        tensor_count: report.written,
+        metadata_count: 0, // Populated inside the converter's builder.
+        output_bytes,
+        notes: notes.to_vec(),
+    };
+    println!(
+        "converted {model}: {} tensors, {} metadata keys, {} bytes -> {}",
+        summary.tensor_count,
+        summary.metadata_count,
+        summary.output_bytes,
+        output.display()
+    );
+    for note in &summary.notes {
+        println!("  note: {note}");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]
