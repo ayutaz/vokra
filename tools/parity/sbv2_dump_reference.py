@@ -578,8 +578,50 @@ class MinimalG2P:
     # replaced the per-position word-boundary lookup. Values should be in
     # `{0, 1}` (word-boundary flag) for schema stability with the pre-M6
     # fixture format.
-    _JA_TABLE: "dict[str, dict[str, list[int]]]" = {}
-    _EN_TABLE: "dict[str, dict[str, list[int]]]" = {}
+    # Populated 2026-08-06 for the first `--do-dump` end-to-end run on
+    # `litagin/Style-Bert-VITS2-2.0-base-JP-Extra` (`enc_p.emb.weight`
+    # `[112, 192]`, `enc_p.tone_emb.weight` `[12, 192]`,
+    # `enc_p.language_emb.weight` `[3, 192]`; observed with
+    # `safetensors.safe_open(...).keys()`, no AGPL upstream referenced —
+    # only tensor shapes, matching this file's own "Clean-room reminder").
+    #
+    # The IDs below are chosen from the observed valid ranges
+    # (phoneme_ids ∈ [0, 112), tones ∈ [0, 12)), **not** transcribed from
+    # a real SBV2 phoneme_id_map (which would require reading the AGPL
+    # upstream to obtain). The parity contract this dumper participates
+    # in is *comparing the same G2P output through Python and Rust*
+    # (`parity_sbv2_real.rs` module doc "The G2P bypass" — Rust reads
+    # `phoneme_ids.bin` verbatim, Python fed `encoder.emb(ids)` the same
+    # sequence), so semantically-neutral placeholder IDs still test the
+    # numerical equivalence of the two forward passes; they do NOT test
+    # that the produced audio is intelligible for the input text. A real
+    # SBV2 phoneme_id_map (once available to the owner) is dropped in
+    # here without any Rust-side change: the fixture format is
+    # unchanged.
+    #
+    # T_text = 8 for "テスト" (a rounded typical mora expansion: BOS +
+    # t + e + s + u + t + o + EOS, matching the vanilla-VITS
+    # BOS/PAD/EOS framing convention every SBV2 fork inherits;
+    # word_boundaries[0]=1 for the first phoneme's word start, rest 0).
+    _JA_TABLE: "dict[str, dict[str, list[int]]]" = {
+        "テスト": {
+            "phoneme_ids":     [1, 10, 11, 12, 13, 14, 15, 2],
+            "tones":           [0,  1,  0,  1,  0,  1,  0, 0],
+            "word_boundaries": [1,  0,  0,  0,  0,  0,  0, 0],
+        },
+    }
+    # T_text = 16 for "This is a test." (English default): BOS + T + h + i
+    # + s + space-elided-boundary + i + s + a + t + e + s + t + . + EOS
+    # — the vanilla-VITS EN framing convention (`phonemize_en_char_mapping`
+    # in `crates/vokra-models/src/sbv2/g2p.rs` also skips spaces this way).
+    # Tones are all 0 (`Language::EN` documented convention).
+    _EN_TABLE: "dict[str, dict[str, list[int]]]" = {
+        "This is a test.": {
+            "phoneme_ids":     [1, 20, 21, 22, 23, 22, 23, 24, 25, 26, 27, 25, 26, 28, 29, 2],
+            "tones":           [0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 0],
+            "word_boundaries": [1,  0,  0,  0,  0,  1,  0,  1,  1,  0,  0,  0,  0,  0,  0, 0],
+        },
+    }
 
     def phonemize(self, text: str, language: str) -> dict:
         table = self._JA_TABLE if language.upper() == "JA" else self._EN_TABLE
@@ -963,6 +1005,13 @@ class BertBridge:
         [T_text, D_MODEL]."""
         import torch.nn.functional as _F
 
+        # HF DeBERTa `AutoModel.forward` sometimes returns fp16 hidden states
+        # even when the checkpoint is fp32 (transformers ≥5 default) — the
+        # bridge Conv1d's weights are fp32 (loaded from the SBV2 safetensors
+        # verbatim), so cast the BERT side up to the weight dtype to avoid
+        # `RuntimeError: Input type (c10::Half) and bias type (float) should
+        # be the same`. Byte-exact on fp32-in, and honest upcast on fp16-in.
+        bert_hidden = bert_hidden.to(dtype=self.weight.dtype)
         bert_bt = bert_hidden.transpose(0, 1).unsqueeze(0)  # [1, D_BERT, T_bert]
         # Placeholder: linear interpolation on T axis. See class docstring.
         bert_aligned = _F.interpolate(
