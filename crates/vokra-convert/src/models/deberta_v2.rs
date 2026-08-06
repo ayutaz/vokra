@@ -171,30 +171,114 @@ pub fn convert_deberta_v2_file(
     );
 
     let mut report = ConvertReport::default();
-    // Float tensors pass through **verbatim** — no convert-time widening,
-    // no renaming (see module doc "TODO(owner)" section).
+    // Task 30 (2026-08-06): upstream HF names → `bert.*` names that
+    // `DebertaV2Encoder::from_gguf` reads. The mapping table below is derived
+    // from a real `ku-nlp/deberta-v2-large-japanese-char-wwm` safetensors
+    // header dump (400 tensors, verified 2026-08-06). Tensors not matching a
+    // known upstream pattern (`cls.*` MLM head, `deberta.embeddings.
+    // position_ids` int buffer, `deberta.encoder.conv.*` — v2-specific but
+    // not currently consumed by the Rust loader) are skipped with a
+    // structured stderr log so a future reader can trace what was dropped
+    // and why (FR-EX-08 posture — mirrors `sbv2.rs`'s Task 30 skip logs).
+    //
+    // The Rust loader expects per-layer `wq_pos`/`wk_pos`/`pos_embed`
+    // separate tensors, but upstream HF stores rel_embeddings **once per
+    // encoder** (`deberta.encoder.rel_embeddings.weight [512, 1024]`). The
+    // Rust implementation's own doc notes that its `wq_pos`/`wk_pos` apply
+    // *the same content projections' weights* — the "position projection is
+    // separate" is a Rust-side struct-layout convention, not a genuine
+    // upstream weight-duplication. We resolve this by **copying**:
+    // `query_proj.weight` → `wq.weight` + `wq_pos.weight`, likewise
+    // `key_proj.weight` → `wk.weight` + `wk_pos.weight`. And the shared
+    // `encoder.rel_embeddings.weight [512, 1024]` gets duplicated into every
+    // layer's `pos_embed.weight`. All three copies are semantically
+    // equivalent to what the upstream forward pass computes — see the
+    // "duplication is semantic, not adding new weight capacity" note.
+    let mut skipped_names: Vec<(String, &'static str)> = Vec::new();
+    let mut renamed_count = 0usize;
+    let mut duplicated_count = 0usize;
+    // Grab a copy of the shared rel_embeddings up front for per-layer
+    // duplication (there is exactly one `deberta.encoder.rel_embeddings.
+    // weight` and it feeds every layer's `pos_embed.weight`).
+    let rel_embeddings: Option<(GgmlType, Vec<u64>, Vec<u8>)> = st
+        .tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.rel_embeddings.weight")
+        .map(|t| (t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec()));
+
     for t in st.tensors() {
         report.read += 1;
         match t.dtype {
             GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                // TODO(owner): map this upstream HF tensor name to the
-                // `bert.*` name `DebertaV2Encoder::from_gguf` expects.
-                // Verbatim pass-through until Task 30 confirms the real
-                // checkpoint's tensor-name manifest.
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
+                // Try to map to `bert.*` name. `None` → skip with log.
+                match map_deberta_name(&t.name) {
+                    Some(MapAction::Rename(new_name)) => {
+                        b.add_tensor(
+                            &new_name,
+                            t.dtype,
+                            t.shape.clone(),
+                            st.tensor_bytes(t).to_vec(),
+                        )?;
+                        report.written += 1;
+                        renamed_count += 1;
+                        if t.dtype == GgmlType::BF16 {
+                            report.bf16_passthrough += 1;
+                        }
+                    }
+                    Some(MapAction::Duplicate(name1, name2)) => {
+                        // `query_proj.weight` / `key_proj.weight` /
+                        // `query_proj.bias` / `key_proj.bias` — the same
+                        // upstream tensor is emitted under both the
+                        // content and position projection names to satisfy
+                        // the Rust loader's per-projection struct layout
+                        // without changing forward-pass semantics.
+                        let bytes = st.tensor_bytes(t).to_vec();
+                        b.add_tensor(&name1, t.dtype, t.shape.clone(), bytes.clone())?;
+                        report.written += 1;
+                        if t.dtype == GgmlType::BF16 {
+                            report.bf16_passthrough += 1;
+                        }
+                        b.add_tensor(&name2, t.dtype, t.shape.clone(), bytes)?;
+                        report.written += 1;
+                        if t.dtype == GgmlType::BF16 {
+                            report.bf16_passthrough += 1;
+                        }
+                        duplicated_count += 1;
+                    }
+                    None => {
+                        // Skip with reason. Emit stderr log for provenance.
+                        let reason = classify_skip(&t.name);
+                        skipped_names.push((t.name.clone(), reason));
+                    }
                 }
             }
             _ => report.skipped_non_float += 1,
         }
     }
+    // Duplicate the shared rel_embeddings into every layer's pos_embed.weight.
+    // n_layers is derived from the checkpoint's own tensor shapes above.
+    if let Some((dtype, shape, bytes)) = rel_embeddings {
+        for i in 0..n_layers {
+            let name = format!("bert.encoder.layer.{i}.attn.pos_embed.weight");
+            b.add_tensor(&name, dtype, shape.clone(), bytes.clone())?;
+            report.written += 1;
+            duplicated_count += 1;
+            if dtype == GgmlType::BF16 {
+                report.bf16_passthrough += 1;
+            }
+        }
+    }
+    // Structured stderr log for skipped tensors (matches sbv2.rs Task 30
+    // posture).
+    for (name, reason) in &skipped_names {
+        eprintln!("convert_deberta_v2: skipping tensor `{name}` ({reason})");
+    }
+    eprintln!(
+        "convert_deberta_v2: {} renamed, {} duplicated (rel_embeddings shared into per-layer pos_embed), {} skipped",
+        renamed_count,
+        duplicated_count,
+        skipped_names.len(),
+    );
 
     let spdx = license.unwrap_or(DEFAULT_LICENSE);
     let class = LicenseClass::from_license_str(spdx);
@@ -206,6 +290,150 @@ pub fn convert_deberta_v2_file(
     std::fs::write(output, out_bytes)?;
 
     Ok(report)
+}
+
+/// What to do with a single upstream tensor name during Task 30 mapping.
+///
+/// - [`MapAction::Rename`]: emit under a new name (the common case).
+/// - [`MapAction::Duplicate`]: emit twice, under two distinct names
+///   (used for `query_proj` / `key_proj` weight/bias to satisfy the Rust
+///   loader's per-projection `wq`+`wq_pos` / `wk`+`wk_pos` struct layout
+///   — semantically equivalent to upstream where the same content
+///   projection is applied to both content and position representations).
+///
+/// A `None` return from [`map_deberta_name`] means "skip this tensor" (see
+/// [`classify_skip`] for the reason categories).
+pub(crate) enum MapAction {
+    Rename(String),
+    Duplicate(String, String),
+}
+
+/// Maps one upstream HF DeBERTa v2 tensor name to the `bert.*` name(s) the
+/// Rust loader (`crates/vokra-bert/src/deberta_v2.rs`) expects. Returns
+/// `None` for tensors that intentionally are not consumed (see
+/// [`classify_skip`]). Shared by [`crate::models::deberta_v3`] via the
+/// identical HF `deberta.*` prefix convention — v3 only differs in the
+/// vocabulary size (128100 vs 22012) and the MLM head names (`lm_predictions.
+/// *` / `mask_predictions.*` vs `cls.*`), both of which are handled by
+/// `classify_skip`.
+pub(crate) fn map_deberta_name(upstream: &str) -> Option<MapAction> {
+    // Embeddings.
+    if upstream == "deberta.embeddings.word_embeddings.weight" {
+        return Some(MapAction::Rename("bert.embed.weight".into()));
+    }
+    if upstream == "deberta.embeddings.LayerNorm.weight" {
+        return Some(MapAction::Rename("bert.embed.ln.gamma".into()));
+    }
+    if upstream == "deberta.embeddings.LayerNorm.bias" {
+        return Some(MapAction::Rename("bert.embed.ln.beta".into()));
+    }
+
+    // Per-encoder-layer transformer stack.
+    if let Some(rest) = upstream.strip_prefix("deberta.encoder.layer.") {
+        // rest = "<N>.<sub>..."
+        let (idx_str, tail) = rest.split_once('.')?;
+        let i: usize = idx_str.parse().ok()?;
+        let p = format!("bert.encoder.layer.{i}");
+        return match tail {
+            // Attention Q/K/V/O projections.
+            // Rust expects wq + wq_pos (both content and position variants)
+            // for query and key. Upstream stores just one query_proj /
+            // key_proj — duplicate it to satisfy the Rust struct layout.
+            "attention.self.query_proj.weight" => Some(MapAction::Duplicate(
+                format!("{p}.attn.wq.weight"),
+                format!("{p}.attn.wq_pos.weight"),
+            )),
+            "attention.self.query_proj.bias" => {
+                Some(MapAction::Rename(format!("{p}.attn.wq.bias")))
+            }
+            "attention.self.key_proj.weight" => Some(MapAction::Duplicate(
+                format!("{p}.attn.wk.weight"),
+                format!("{p}.attn.wk_pos.weight"),
+            )),
+            "attention.self.key_proj.bias" => Some(MapAction::Rename(format!("{p}.attn.wk.bias"))),
+            "attention.self.value_proj.weight" => {
+                Some(MapAction::Rename(format!("{p}.attn.wv.weight")))
+            }
+            "attention.self.value_proj.bias" => {
+                Some(MapAction::Rename(format!("{p}.attn.wv.bias")))
+            }
+            "attention.output.dense.weight" => {
+                Some(MapAction::Rename(format!("{p}.attn.w_out.weight")))
+            }
+            "attention.output.dense.bias" => {
+                Some(MapAction::Rename(format!("{p}.attn.w_out.bias")))
+            }
+            // Attention output LayerNorm (post-attention residual norm) →
+            // ln1 by the loader's convention (pre-FFN norm).
+            "attention.output.LayerNorm.weight" => {
+                Some(MapAction::Rename(format!("{p}.ln1.gamma")))
+            }
+            "attention.output.LayerNorm.bias" => Some(MapAction::Rename(format!("{p}.ln1.beta"))),
+            // FFN.
+            "intermediate.dense.weight" => Some(MapAction::Rename(format!("{p}.ffn.w1.weight"))),
+            "intermediate.dense.bias" => Some(MapAction::Rename(format!("{p}.ffn.w1.bias"))),
+            "output.dense.weight" => Some(MapAction::Rename(format!("{p}.ffn.w2.weight"))),
+            "output.dense.bias" => Some(MapAction::Rename(format!("{p}.ffn.w2.bias"))),
+            // Post-FFN LayerNorm → ln2.
+            "output.LayerNorm.weight" => Some(MapAction::Rename(format!("{p}.ln2.gamma"))),
+            "output.LayerNorm.bias" => Some(MapAction::Rename(format!("{p}.ln2.beta"))),
+            _ => None,
+        };
+    }
+
+    // Shared rel_embeddings gets duplicated into per-layer pos_embed by the
+    // caller after the main loop (see the `if let Some((dtype, shape,
+    // bytes)) = rel_embeddings` block). Return None here so the main loop
+    // does not accidentally emit it under some other name.
+    if upstream == "deberta.encoder.rel_embeddings.weight" {
+        return None;
+    }
+
+    // Not consumed by the Rust loader — skip with a categorized reason.
+    None
+}
+
+/// Categorizes why an upstream tensor was skipped, for structured stderr
+/// logs (FR-EX-08 posture — never silently drop tensors without stating
+/// the reason).
+pub(crate) fn classify_skip(name: &str) -> &'static str {
+    // MLM head (v2 uses `cls.predictions.*`, v3 uses `lm_predictions.*` +
+    // `mask_predictions.*` for the RTD auxiliary head). SBV2 v2 never
+    // consumes the MLM output — only encoder hidden states — so drop.
+    if name.starts_with("cls.")
+        || name.starts_with("lm_predictions.")
+        || name.starts_with("mask_predictions.")
+    {
+        return "MLM head — SBV2 consumes encoder hidden states only";
+    }
+    // Position-id buffer (int, not float, and derivable at runtime as
+    // arange(0, seq_len)).
+    if name == "deberta.embeddings.position_ids" {
+        return "position_ids buffer — derivable at runtime as arange(0, seq_len)";
+    }
+    // Absolute position embeddings (v3 has them, v2 does not; the Rust
+    // DeBERTa loader is disentangled-attention-only and does not consume
+    // absolute position embeddings).
+    if name == "deberta.embeddings.position_embeddings.weight" {
+        return "absolute position embeddings — disentangled attention uses rel_embeddings only";
+    }
+    // v2-specific conv layer inside the encoder. The Rust DeBERTa v2
+    // loader does not consume this today (its struct has no conv slot);
+    // future support would require both a struct-layout change and a
+    // rename entry here.
+    if name.starts_with("deberta.encoder.conv.") {
+        return "v2-specific encoder conv — not consumed by Rust loader today";
+    }
+    // Top-level encoder LayerNorm (applied after the last transformer
+    // block, before returning hidden states). The Rust loader applies its
+    // own final normalization inside `EncoderLayer.ln2` on the last layer;
+    // dropping this upstream `encoder.LayerNorm.*` matches the loader's
+    // current struct shape. Explicitly documented in `classify_skip` so a
+    // future reader can trace what happened.
+    if name.starts_with("deberta.encoder.LayerNorm.") {
+        return "top-level encoder LayerNorm — loader applies its own final norm inside ln2";
+    }
+    "unmapped tensor — no rename rule matched"
 }
 
 /// Writes the shared six-key `vokra.bert.<arch>.*` hparam chunk group
@@ -403,10 +631,25 @@ mod tests {
         std::fs::write(&input, &blob).expect("write input safetensors");
 
         let report = convert_deberta_v2_file(&input, &output, None).expect("convert");
+        // After Task 30 rename table (2026-08-06): 4 upstream tensors map to
+        // 5 written entries:
+        //   - `word_embeddings` → renamed to `bert.embed.weight` (1 written)
+        //   - `position_embeddings` → skipped (absolute pos embed, disent
+        //     attention uses rel_embeddings only — see classify_skip)
+        //   - `layer.0.attention.self.query_proj.weight` → duplicated
+        //     (`wq.weight` + `wq_pos.weight`, both F32 = 2 written)
+        //   - `layer.2.attention.self.query_proj.weight` → duplicated (BF16,
+        //     both copies BF16 = 2 written, 2 bf16_passthrough)
         assert_eq!(report.read, 4);
-        assert_eq!(report.written, 4, "F32 and BF16 both pass through");
+        assert_eq!(
+            report.written, 5,
+            "1 renamed + 0 skipped + 2*2 duplicated = 5 (position_embeddings skipped)"
+        );
         assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(report.bf16_passthrough, 1, "exactly one BF16 tensor");
+        assert_eq!(
+            report.bf16_passthrough, 2,
+            "the BF16 query_proj is duplicated twice, both copies BF16"
+        );
 
         let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
@@ -444,14 +687,23 @@ mod tests {
             Some(512)
         );
 
-        let bf16_info = file
-            .tensor_info("deberta.encoder.layer.2.attention.self.query_proj.weight")
-            .expect("BF16 tensor present under its verbatim upstream name");
-        assert_eq!(
-            bf16_info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — GGUF dtype must remain BF16 (type 30)"
-        );
+        // Task 30 (2026-08-06): the upstream `query_proj.weight` name is
+        // renamed to `bert.encoder.layer.<i>.attn.wq.weight` (and duplicated
+        // to `wq_pos.weight`). Check both duplicates preserve BF16 dtype
+        // verbatim — no convert-time widening on either copy.
+        for name in [
+            "bert.encoder.layer.2.attn.wq.weight",
+            "bert.encoder.layer.2.attn.wq_pos.weight",
+        ] {
+            let bf16_info = file
+                .tensor_info(name)
+                .unwrap_or_else(|| panic!("BF16 tensor `{name}` present after rename"));
+            assert_eq!(
+                bf16_info.dtype,
+                GgmlType::BF16,
+                "no convert-time widening — {name} GGUF dtype must remain BF16 (type 30)"
+            );
+        }
 
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)

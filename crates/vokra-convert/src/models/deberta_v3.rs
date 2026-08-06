@@ -42,8 +42,8 @@ use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
 use super::deberta_v2::{
-    CATEGORY, ConvertReport, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, count_layers,
-    infer_vocab_and_d_model, write_hparams,
+    CATEGORY, ConvertReport, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, MapAction,
+    classify_skip, count_layers, infer_vocab_and_d_model, map_deberta_name, write_hparams,
 };
 
 /// `vokra.model.arch` for DeBERTa v3 GGUFs.
@@ -98,32 +98,85 @@ pub fn convert_deberta_v3_file(
     );
 
     let mut report = ConvertReport::default();
-    // Float tensors pass through **verbatim** — no convert-time widening,
-    // no renaming (see module doc "TODO(owner)" section).
+    // Task 30 (2026-08-06): upstream HF names → `bert.*` names that
+    // `DebertaV3Encoder::from_gguf` reads. The `map_deberta_name` helper is
+    // shared with v2 (same `deberta.embeddings.*` / `deberta.encoder.layer.
+    // <N>.*` naming convention), the only inference-relevant delta being v3's
+    // "gradient-disentangled embedding sharing" (§3.1 arXiv:2111.09543) —
+    // v3 reads `rel_embeddings` **once per encoder** and clones it into
+    // every layer's `AttnWeights.pos_embed` at load time. We honor this by
+    // emitting the shared table once under `bert.encoder.pos_embed.weight`
+    // (not duplicated per layer, unlike v2's own convention).
+    let mut skipped_names: Vec<(String, &'static str)> = Vec::new();
+    let mut renamed_count = 0usize;
+    let mut duplicated_count = 0usize;
+
+    // Emit the shared rel_embeddings under v3's expected name if present.
+    for t in st.tensors() {
+        if t.name == "deberta.encoder.rel_embeddings.weight" {
+            b.add_tensor(
+                "bert.encoder.pos_embed.weight",
+                t.dtype,
+                t.shape.clone(),
+                st.tensor_bytes(t).to_vec(),
+            )?;
+            report.written += 1;
+            renamed_count += 1;
+            if t.dtype == GgmlType::BF16 {
+                report.bf16_passthrough += 1;
+            }
+            break;
+        }
+    }
+
     for t in st.tensors() {
         report.read += 1;
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                // TODO(owner): map this upstream HF tensor name to the
-                // `bert.*` name `DebertaV3Encoder::from_gguf` expects
-                // (including resolving the shared `pos_embed` table to
-                // `bert.encoder.pos_embed.weight`). Verbatim pass-through
-                // until Task 30 confirms the real checkpoint's tensor-name
-                // manifest.
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => match map_deberta_name(&t.name) {
+                Some(MapAction::Rename(new_name)) => {
+                    b.add_tensor(
+                        &new_name,
+                        t.dtype,
+                        t.shape.clone(),
+                        st.tensor_bytes(t).to_vec(),
+                    )?;
+                    report.written += 1;
+                    renamed_count += 1;
+                    if t.dtype == GgmlType::BF16 {
+                        report.bf16_passthrough += 1;
+                    }
                 }
-            }
+                Some(MapAction::Duplicate(name1, name2)) => {
+                    let bytes = st.tensor_bytes(t).to_vec();
+                    b.add_tensor(&name1, t.dtype, t.shape.clone(), bytes.clone())?;
+                    report.written += 1;
+                    if t.dtype == GgmlType::BF16 {
+                        report.bf16_passthrough += 1;
+                    }
+                    b.add_tensor(&name2, t.dtype, t.shape.clone(), bytes)?;
+                    report.written += 1;
+                    if t.dtype == GgmlType::BF16 {
+                        report.bf16_passthrough += 1;
+                    }
+                    duplicated_count += 1;
+                }
+                None => {
+                    let reason = classify_skip(&t.name);
+                    skipped_names.push((t.name.clone(), reason));
+                }
+            },
             _ => report.skipped_non_float += 1,
         }
     }
+    for (name, reason) in &skipped_names {
+        eprintln!("convert_deberta_v3: skipping tensor `{name}` ({reason})");
+    }
+    eprintln!(
+        "convert_deberta_v3: {} renamed (incl. 1 encoder-level rel_embeddings → pos_embed), {} duplicated (Q/K content ↔ position projection), {} skipped",
+        renamed_count,
+        duplicated_count,
+        skipped_names.len(),
+    );
 
     let spdx = license.unwrap_or(DEFAULT_LICENSE);
     let class = LicenseClass::from_license_str(spdx);
