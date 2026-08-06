@@ -1046,10 +1046,30 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 p.license.as_deref(),
             )
             .map_err(|e| e.to_string())?;
+            // SBV2 v2 Task 30 (2026-08-06): every upstream tensor is
+            // classified before emission — we cannot honestly claim
+            // "written verbatim" anymore. Report the full partition
+            // (`renamed` / `weight_norm_reconstructed` /
+            // `passed_through_verbatim` / `skipped_training` /
+            // `weight_norm_v_consumed`) so an owner can spot-check the
+            // conversion at a glance. See
+            // `vokra_convert::models::sbv2` module doc "Wave audit
+            // trail" section for the base-checkpoint reference numbers.
             let mut notes = vec![format!(
-                "sbv2: {} float weights written verbatim ({} read, {} non-float skipped), \
-                 vokra.sbv2.* hparam chunk written: {}",
-                report.written, report.read, report.skipped_non_float, report.hparams_written,
+                "sbv2: {read} tensors read → {written} written ({renamed} renamed + \
+                 {wnorm} weight_norm reconstructed + {verbatim} verbatim), \
+                 {skipped_training} training-side dropped, {consumed_v} weight_v folded, \
+                 {skipped_nf} non-float skipped; vokra.sbv2.* hparam chunk written: \
+                 {hparams}",
+                read = report.read,
+                written = report.written,
+                renamed = report.renamed,
+                wnorm = report.weight_norm_reconstructed,
+                verbatim = report.passed_through_verbatim,
+                skipped_training = report.skipped_training,
+                consumed_v = report.weight_norm_v_consumed,
+                skipped_nf = report.skipped_non_float,
+                hparams = report.hparams_written,
             )];
             if !report.hparams_written {
                 notes.push(
