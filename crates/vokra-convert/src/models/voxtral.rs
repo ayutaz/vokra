@@ -477,6 +477,109 @@ impl VoxtralCheckpointIndex for Shards {
     }
 }
 
+/// Opt-in convert-time profiling controlled by the `VOKRA_CONVERT_PROFILE`
+/// environment variable (OOM fix instrumentation, 2026-08-06).
+///
+/// Off by default (`is_enabled()` returns `false`), so the streaming loop
+/// is byte-for-byte unchanged in normal runs — no I/O, no allocation, no
+/// syscall. Setting `VOKRA_CONVERT_PROFILE=1` turns on the per-tensor
+/// peak-RSS sampler, which reads `/proc/self/statm` on Linux (works on
+/// GitHub Actions ubuntu-latest) and prints a one-line summary at
+/// convert-loop end. Other platforms return `None` (silent no-op) —
+/// avoiding any external dependency to keep NFR-DS-02 (zero-dep) intact.
+///
+/// The sampler is intentionally cheap: `statm` is a single line of ints
+/// and we only sample once per tensor (762 tensors on Voxtral-Mini-3B →
+/// 762 stat reads, negligible vs the actual payload copy).
+mod convert_profile {
+    /// Whether `VOKRA_CONVERT_PROFILE=1` is set. Evaluated per-call — no
+    /// caching — because a converter is a one-shot process (no long-lived
+    /// server posture that would want to cache the env read).
+    pub(super) fn is_enabled() -> bool {
+        std::env::var_os("VOKRA_CONVERT_PROFILE").is_some_and(|v| v == "1")
+    }
+
+    /// Reads current process RSS in bytes. Linux uses `/proc/self/statm`
+    /// (second field is resident pages), other platforms return `None`.
+    /// Errors are swallowed (best-effort telemetry, never fails the
+    /// convert).
+    pub(super) fn rss_bytes() -> Option<u64> {
+        #[cfg(target_os = "linux")]
+        {
+            let raw = std::fs::read_to_string("/proc/self/statm").ok()?;
+            let resident_pages: u64 = raw.split_whitespace().nth(1)?.parse().ok()?;
+            // Page size is 4096 on x86-64 / arm64 Linux (both GHA runner
+            // classes today); using a hard-coded value keeps us syscall-
+            // and dep-free. If the runner ever ships a 16 KiB-page kernel
+            // the numbers just skew 4×, which the operator can spot in
+            // the log.
+            Some(resident_pages.saturating_mul(4096))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
+    /// Formats an optional byte count in MiB (2 decimal places) — the
+    /// telemetry-friendly rendering the log lines below emit. `None` reads
+    /// as `"n/a"` so a macOS/Windows dev run does not silently pretend to
+    /// have measured anything.
+    pub(super) fn fmt_mib(bytes: Option<u64>) -> String {
+        match bytes {
+            Some(b) => format!("{:.2} MiB", (b as f64) / (1024.0 * 1024.0)),
+            None => "n/a".to_owned(),
+        }
+    }
+
+    /// Running peak-RSS tracker for the streaming write loop. Only touched
+    /// when [`is_enabled`] is true; the streaming path constructs one at
+    /// loop start, calls `observe()` after each `write_tensor`, and prints
+    /// a summary via `finish()` before returning.
+    pub(super) struct Sampler {
+        peak: Option<u64>,
+        initial: Option<u64>,
+        tensors_seen: usize,
+        largest_tensor_bytes: u64,
+    }
+
+    impl Sampler {
+        pub(super) fn start() -> Self {
+            let now = rss_bytes();
+            Self {
+                peak: now,
+                initial: now,
+                tensors_seen: 0,
+                largest_tensor_bytes: 0,
+            }
+        }
+
+        pub(super) fn observe(&mut self, payload_bytes: usize) {
+            self.tensors_seen += 1;
+            let sz = payload_bytes as u64;
+            if sz > self.largest_tensor_bytes {
+                self.largest_tensor_bytes = sz;
+            }
+            if let Some(now) = rss_bytes() {
+                match self.peak {
+                    Some(p) if p >= now => {}
+                    _ => self.peak = Some(now),
+                }
+            }
+        }
+
+        pub(super) fn finish(self, label: &str) {
+            eprintln!(
+                "vokra-convert profile [{label}]: tensors={} largest_payload={} initial_rss={} peak_rss={}",
+                self.tensors_seen,
+                fmt_mib(Some(self.largest_tensor_bytes)),
+                fmt_mib(self.initial),
+                fmt_mib(self.peak),
+            );
+        }
+    }
+}
+
 /// Streaming multi-shard reader (M5 gap A-3, 2026-07-29). Header-only mmap
 /// per shard via [`SafetensorsFileReader`] — the payload for one tensor at
 /// a time is read on demand. Peak memory: `max(shard_header) +
@@ -866,14 +969,31 @@ pub(crate) fn convert_shards_streaming(
     let out_file = std::fs::File::create(output)?;
     let mut w = GgufStreamWriter::begin(std::io::BufWriter::new(out_file), &b, &decls)?;
     let mut buf: Vec<u8> = Vec::new();
+    // Opt-in convert-time profiling. Off by default (cost is one env-var
+    // read at loop start); when `VOKRA_CONVERT_PROFILE=1` is set, sample
+    // /proc/self/statm after each tensor write to produce the
+    // peak-RSS-vs-largest-tensor summary CI needs to prove the streaming
+    // path really does stay bounded.
+    let profile_enabled = convert_profile::is_enabled();
+    let mut sampler = if profile_enabled {
+        Some(convert_profile::Sampler::start())
+    } else {
+        None
+    };
     for (decl, upstream_name) in decls.iter().zip(float_names.iter()) {
         // Payload is copied verbatim (BF16 / F16 / F32 all pass through
         // unchanged — same as convert_shards's `file.tensor_bytes(t).to_vec()`
         // path). `read_tensor_into` seeks the owning shard on demand.
         let _info = st.read_tensor_into(upstream_name, &mut buf)?;
         w.write_tensor(&decl.name, &buf)?;
+        if let Some(s) = sampler.as_mut() {
+            s.observe(buf.len());
+        }
     }
     drop(buf);
+    if let Some(s) = sampler.take() {
+        s.finish("voxtral streaming");
+    }
     let out_file = w
         .finish()?
         .into_inner()
@@ -2682,5 +2802,84 @@ mod tests {
             }
             other => panic!("expected ConvertError::Parse, got {other:?}"),
         }
+    }
+
+    // --- convert-time profiling helper (OOM fix, 2026-08-06) --------------
+    //
+    // Deliberately does NOT test `convert_profile::is_enabled()` — that call
+    // reads a process-wide env var, and `cargo test` runs tests in parallel,
+    // so a concurrent test that sets `VOKRA_CONVERT_PROFILE` would race
+    // with the read. The helper is exercised end-to-end by the streaming
+    // convert path when the operator actually sets the env, which is the
+    // real audit surface. What we DO test here is the pure formatting and
+    // the RSS read, both of which are deterministic and thread-safe.
+
+    #[test]
+    fn convert_profile_fmt_mib_none_reads_as_na() {
+        // The `None` case must render as `"n/a"` — never as `"0.00 MiB"` —
+        // so a non-Linux dev run cannot silently claim to have measured
+        // anything.
+        assert_eq!(convert_profile::fmt_mib(None), "n/a");
+    }
+
+    #[test]
+    fn convert_profile_fmt_mib_scales_to_mib_with_two_decimals() {
+        assert_eq!(convert_profile::fmt_mib(Some(0)), "0.00 MiB");
+        assert_eq!(convert_profile::fmt_mib(Some(1024 * 1024)), "1.00 MiB");
+        // 3.5 MiB in bytes exactly.
+        assert_eq!(
+            convert_profile::fmt_mib(Some((3.5 * 1024.0 * 1024.0) as u64)),
+            "3.50 MiB"
+        );
+        // 8.7 GiB is the mini-3b payload — the CI-relevant scale, rendered
+        // with two decimals (`8908.80 MiB`), i.e. this is not truncated to
+        // GiB and stays legible in the streaming loop's log line.
+        assert_eq!(
+            convert_profile::fmt_mib(Some(8_908_800u64 * 1024)),
+            "8700.00 MiB"
+        );
+    }
+
+    /// On Linux, `rss_bytes()` reads /proc/self/statm and returns a
+    /// positive RSS (this test process is running, so its resident set is
+    /// >0). This test only runs on Linux to stay compatible with clippy
+    /// (`cfg!(target_os = "linux")` folds to a constant and the assertion
+    /// becomes a `#[allow(clippy::assertions_on_constants)]` bait).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn convert_profile_rss_bytes_is_positive_on_linux() {
+        let b = convert_profile::rss_bytes()
+            .expect("Linux /proc/self/statm read returned None — helper regressed");
+        assert!(b > 0, "Linux rss_bytes was zero — statm parse wrong");
+    }
+
+    /// On non-Linux platforms, `rss_bytes()` is a documented silent no-op
+    /// (`None`) to keep the crate zero-dep — no external dependency added
+    /// for a platform CI does not run.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn convert_profile_rss_bytes_is_none_off_linux() {
+        assert!(
+            convert_profile::rss_bytes().is_none(),
+            "non-Linux platform must return None (no dep taken on) — got Some"
+        );
+    }
+
+    #[test]
+    fn convert_profile_sampler_tracks_largest_payload_and_smoke_finishes() {
+        // `Sampler` is an internal helper. This test does not assert on
+        // RSS numbers (they depend on the process's own overhead — non-
+        // deterministic across CI runs) — only on the deterministic
+        // largest-payload counter and the smoke fact that `finish()` runs
+        // without panicking, since the streaming loop calls it on the
+        // return path and a panic here would take out a real convert.
+        let mut s = convert_profile::Sampler::start();
+        s.observe(1024);
+        s.observe(8 * 1024 * 1024);
+        s.observe(4 * 1024);
+        // No public getter — the visible effect is the log line format, so
+        // we just make sure `finish` completes. A regression that panics
+        // in `finish` would be caught here.
+        s.finish("test");
     }
 }

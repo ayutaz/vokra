@@ -17,8 +17,8 @@ use vokra_convert::{
     convert_file_quantized, convert_file_with_policy, convert_file_with_slug, convert_irodori_file,
     convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file, convert_silero_file,
     convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -729,8 +729,34 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 // chunk, honest LM-continuation posture (no adapter
                 // metadata). The tokenizer-only case still needs the
                 // cfg-carrying entry point to reach `tokenizer_bytes`.
+                //
+                // Route selection (OOM fix, 2026-08-06): when `--quantize`
+                // is absent, dispatch to `convert_voxtral_file_streaming`
+                // (header-only mmap per shard + one-tensor-at-a-time
+                // payload streaming, peak memory bounded by the largest
+                // single tensor). This is what the `parity-voxtral-real`
+                // workflow (`.github/workflows/parity-voxtral-real.yml`
+                // L437-441) already documents as the expected dispatch —
+                // the previous code path called `convert_voxtral_file_quantized`
+                // (in-memory) even for `quant=None`, which OOM'd on a
+                // 7 GB runner processing the 8.7 GB Voxtral-Mini-3B
+                // release (CI run 31021205977, ~40 s SIGTERM). The
+                // streaming path produces a byte-identical GGUF over the
+                // same checkpoint + config (pinned by
+                // `streaming_shards_matches_in_memory_bytes_*` tests in
+                // `models::voxtral`) — the only observable difference is
+                // peak RSS. `--quantize` still needs the in-memory path
+                // (K-quant needs `SafetensorsFile::tensor_f32` widen +
+                // whole-payload access; a chunked-widen equivalent is
+                // deferred until an owner actually quantizes on a
+                // memory-constrained host, and today owners quantize on
+                // vast.ai which fits the in-memory path).
                 (Some(_), None, _) | (None, None, Some(_)) => {
-                    convert_voxtral_file_quantized(&p.input, &base_cfg, &p.output, p.quant)
+                    if p.quant.is_none() {
+                        convert_voxtral_file_streaming(&p.input, &base_cfg, &p.output)
+                    } else {
+                        convert_voxtral_file_quantized(&p.input, &base_cfg, &p.output, p.quant)
+                    }
                 }
                 // Nothing → shape-only conversion (pre-Wave-8 behaviour;
                 // `--quantize` was rejected above).
