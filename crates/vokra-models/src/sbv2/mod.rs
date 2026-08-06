@@ -723,6 +723,11 @@ impl SbV2Model {
                 // `proj.forward` loudly rejects wrong-length input
                 // (FR-EX-08). The projected `[d_model]` result
                 // broadcast-adds into every phoneme row of `hidden`.
+                // We RETURN the raw `[d_speaker]` vector for downstream
+                // SDP / flow consumption — SDP's own `.cond` layer does
+                // Conv1d(d_speaker, d_hidden, 1) internally, and the
+                // flow's per-layer `speaker_proj` is `[half_d_z, d_speaker]`.
+                // Neither wants the pre-projected d_model version.
                 let projected = proj.forward(ext)?;
                 debug_assert_eq!(
                     projected.len(),
@@ -736,9 +741,7 @@ impl SbV2Model {
                         hidden[i * d_model + d] += s;
                     }
                 }
-                // Return the projected d_model-wide copy for SDP's `gin`
-                // slot (post-Blocker-2c SDP consumes d_hidden = d_model).
-                projected
+                ext.to_vec()
             }
             (None, Some(proj)) => {
                 // Deterministic zero-shot default (matches
@@ -759,7 +762,7 @@ impl SbV2Model {
                         hidden[i * d_model + d] += s;
                     }
                 }
-                projected
+                zeros
             }
             (Some(_), None) => {
                 // Silent discard would produce
@@ -810,11 +813,42 @@ impl SbV2Model {
             .inject(&mut hidden, phoneme_count, &req.style_vec);
 
         // 6. SDP -> durations
+        //
+        // Blocker 9 (2026-08-06): `SbV2SDP` is constructed in two shapes:
+        // (a) real ckpt path where `sdp.cond: Conv1d(d_speaker, d_hidden,
+        //     1)` gives `sdp.gin() == d_speaker` (e.g. 512), and
+        // (b) synthetic path (paper defaults, no `cond` layer) where
+        //     `sdp.gin() == d_hidden == d_model` (e.g. 6/192).
+        // The dispatch above always returns `speaker_e_flow` sized as
+        // `d_speaker` (or, on the legacy `(None, None)` path, whatever
+        // the lookup table's row width is). Reconcile to what SDP
+        // expects: (a) use full raw vector, (b) slice to `sdp.gin()`.
+        // Truncation is safe: synthetic zero-init speakers are all-zero
+        // anyway; on the real ckpt we always take the full vector.
+        let sdp_gin = self.sdp.gin();
+        let sdp_g_owned: Vec<f32> = if speaker_e_flow.len() == sdp_gin {
+            Vec::new() // reuse via slice below
+        } else if speaker_e_flow.len() >= sdp_gin {
+            // Truncate — synthetic case where d_speaker >= d_hidden.
+            speaker_e_flow[..sdp_gin].to_vec()
+        } else {
+            // Pad with zeros — extremely unusual; keeps loud-fail
+            // debug_assert in `SbV2SDP::sample` intact only if len
+            // matches, so this path exists purely for symmetry.
+            let mut v = vec![0.0_f32; sdp_gin];
+            v[..speaker_e_flow.len()].copy_from_slice(&speaker_e_flow);
+            v
+        };
+        let sdp_g: &[f32] = if sdp_g_owned.is_empty() {
+            &speaker_e_flow
+        } else {
+            &sdp_g_owned
+        };
         let mut rng = GaussianSplitMix64::new(req.seed);
         let mut durations = self.sdp.sample(
             &hidden,
             phon.phoneme_ids.len(),
-            &speaker_e_flow,
+            sdp_g,
             &mut rng,
             req.noise_scale_w,
         );
@@ -831,20 +865,41 @@ impl SbV2Model {
              duration is >= 1 by construction once phoneme_ids is non-empty)"
         );
 
-        // 8. Flow inverse — Blocker 2b's `SbV2Flow::inverse(z, mel_seq_len,
-        // g)` takes a single opaque `g: &[f32]` (`[gin_channels]`-wide) per
-        // upstream `TransformerCouplingBlock.forward(x, x_mask, g=g,
-        // reverse=True)`. Blocker 3's `speaker_e_flow` provides the raw
-        // `[d_speaker]` speaker vector (external ckpt path) or the legacy
-        // `SpeakerEmbedding::lookup` result (synthetic path). We compose
-        // `g = speaker_e_flow ‖ style_vec` as the stopgap conditioning
-        // signal — for synthetic tests (empty flow stack) g is never read;
-        // for real ckpt loads the concat-composition matches the
-        // pre-Blocker-3 signature the flow layers were trained against.
-        let mut g_stopgap = Vec::with_capacity(speaker_e_flow.len() + req.style_vec.len());
-        g_stopgap.extend_from_slice(&speaker_e_flow);
-        g_stopgap.extend_from_slice(&req.style_vec);
-        let z = self.flow.inverse(&mel_hidden, mel_seq_len, &g_stopgap);
+        // 8. Flow inverse.
+        //
+        // Blocker 9 (2026-08-06): The flow's per-block `spk_emb_linear:
+        // Linear(gin_channels, hidden)` is trained against the raw
+        // `[d_speaker]` vector alone (`d_speaker = 512` real, or the
+        // corresponding synthetic `d_model` value on synthetic paths).
+        // Style is NOT concatenated into `g` — it is applied earlier
+        // via `style_injector.inject` at step 5b, before the flow
+        // sees `mel_hidden`.
+        //
+        // The pre-Blocker-9 `g_stopgap = speaker_e_flow ‖ style_vec`
+        // concat guessed at a composition that the real ckpt's
+        // Sbv2FlowEncoder (see `tools/parity/vendor/vits/sbv2_flow.py`)
+        // does not use; its `spk_emb_linear` weight has shape
+        // `[hidden=192, gin=512]`, so the input must be exactly 512-d.
+        //
+        // Slice or pad to `flow.gin_channels()` when caller vector
+        // length differs (synthetic paths where `speaker_e_flow` len
+        // may not match `flow.gin_channels()`).
+        let flow_gin = self.flow.gin_channels();
+        let flow_g_owned: Vec<f32> = if speaker_e_flow.len() == flow_gin {
+            Vec::new()
+        } else if speaker_e_flow.len() >= flow_gin {
+            speaker_e_flow[..flow_gin].to_vec()
+        } else {
+            let mut v = vec![0.0_f32; flow_gin];
+            v[..speaker_e_flow.len()].copy_from_slice(&speaker_e_flow);
+            v
+        };
+        let flow_g: &[f32] = if flow_g_owned.is_empty() {
+            &speaker_e_flow
+        } else {
+            &flow_g_owned
+        };
+        let z = self.flow.inverse(&mel_hidden, mel_seq_len, flow_g);
 
         // 9. HiFi-GAN decoder — transpose SbV2Flow::inverse's time-major
         // [mel_seq_len, d_z] into SbV2Decoder::generate's channel-major

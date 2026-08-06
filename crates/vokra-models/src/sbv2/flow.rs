@@ -195,6 +195,14 @@ pub struct SbV2TransformerCouplingLayer {
 }
 
 impl SbV2TransformerCouplingLayer {
+    /// The `gin_channels` (per-utterance conditioning vector width) this
+    /// layer's `spk_emb_linear` was trained against. Exposed so
+    /// [`SbV2Flow::gin_channels`] can surface the flow-wide `g` shape
+    /// contract without re-inspecting layer internals.
+    pub fn gin_channels(&self) -> usize {
+        self.gin_channels
+    }
+
     /// Builds a coupling layer from pre-trained weights.
     ///
     /// # `mean_only`
@@ -403,6 +411,24 @@ impl SbV2Flow {
             "d_z must be even (VITS2 affine coupling splits into two equal halves)"
         );
         Self { layers, d_z }
+    }
+
+    /// The `gin_channels` value the flow's coupling layers were trained
+    /// against. Returns `0` if the layer stack contains no parameterized
+    /// coupling layer (e.g. empty stack or `Flip`-only) — the caller must
+    /// treat `0` as "flow does not consume `g`" and skip conditioning.
+    ///
+    /// All parameterized coupling layers in a well-formed flow share the
+    /// same `gin_channels` (they are all trained under the same
+    /// per-utterance conditioning contract); this accessor returns the
+    /// value from the first `Coupling` layer encountered.
+    pub fn gin_channels(&self) -> usize {
+        for layer in &self.layers {
+            if let FlowLayer::Coupling(c) = layer {
+                return c.gin_channels();
+            }
+        }
+        0
     }
 
     /// Inverse VITS2 normalizing flow: transforms a Gaussian-prior latent
