@@ -716,7 +716,9 @@ pub struct ConvertReport {
     /// Total tensor entries observed on the safetensors input side.
     pub read: usize,
     /// Float tensors written to the output GGUF (renamed + weight_norm-
-    /// reconstructed + pass-through-verbatim).
+    /// reconstructed + pass-through-verbatim + SDP-rewritten). Includes the
+    /// SDP tensors that got rewritten (see [`Self::sdp_rewritten`]) since
+    /// they still made it into the emitted GGUF, just under different names.
     pub written: usize,
     /// Non-float tensors skipped (defensive counter — the safetensors
     /// reader accepts only `F32` / `F16` / `BF16` at parse time today, so
@@ -754,6 +756,23 @@ pub struct ConvertReport {
     /// f32 losslessly via the single choke point
     /// `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`.
     pub bf16_passthrough: usize,
+    /// Of the tensors in [`Self::written`], how many were rewritten from
+    /// their upstream `sdp.<x>` name to the `sbv2.sdp.<remap-of-x>` name
+    /// `SbV2Model::from_gguf` reads. Real SBV2 v2 base has 144 such
+    /// tensors (see the module doc's tensor-count summary and
+    /// [`convert_sbv2_file`]'s arm-by-arm doc); other upstream tensors
+    /// (`enc_p.*` / `dec.*` / `flow.*` / ...) pass through under their
+    /// original upstream names for now (a separate Blocker 2 sub-item
+    /// tracks those rewriters).
+    pub sdp_rewritten: usize,
+    /// Number of training-side `sdp.post_*` tensors intentionally
+    /// **not** emitted into the GGUF (the ~142-tensor training scaffolding
+    /// that the inference-time SDP forward pass never reads — see
+    /// [`convert_sbv2_file`]'s arm 1 doc). Distinct from
+    /// [`Self::skipped_non_float`] so a caller can tell "unsupported
+    /// dtype" apart from "intentionally-not-loaded training-side" at a
+    /// glance.
+    pub sdp_post_skipped: usize,
     /// Whether `config_side_car` was supplied to [`convert_sbv2_file`] and
     /// the `vokra.sbv2.*` hparam chunk (22 required + 1 optional keys) was
     /// written. `false` means tensors still passed through but
@@ -761,6 +780,52 @@ pub struct ConvertReport {
     /// `vokra.sbv2.*` key — see this module's doc "Hparams" section for
     /// why that is preferred over inventing placeholder values.
     pub hparams_written: bool,
+}
+
+/// Rewrites the tail of an `sdp.<tail>` upstream tensor name into its
+/// `sbv2.sdp.*` runtime equivalent — mirror of the schema
+/// `SbV2Model::from_gguf` reads (see `crates/vokra-models/src/sbv2/mod.rs`
+/// `sbv2.sdp.*` tensor-path section). Deterministic and total; every
+/// `sdp.*` production tensor lands on exactly one arm below:
+///
+/// - `flows.0.m|logs` → `ea.m|logs` (`ElementwiseAffine` at flow slot 0)
+/// - `flows.<odd>.<w>` → `flow.<(odd-1)/2>.<w>` for `odd ∈ {1,3,5,7}`
+///   (dense re-index of upstream's sparse `flows` list — see
+///   [`convert_sbv2_file`]'s arm 2 doc for the full derivation)
+/// - anything else (`pre.<w>`, `proj.<w>`, `cond.<w>`, `convs.<x>`, ...) →
+///   verbatim under `sbv2.sdp.<tail>`
+///
+/// Never called with a `tail` that itself starts with `post_` — the
+/// caller filters those out first (`convert_sbv2_file`'s arm 1).
+fn rewrite_sdp_tensor_name(tail: &str) -> String {
+    // Handle the two flow-index arms.
+    if let Some(rest) = tail.strip_prefix("flows.") {
+        // Split `rest` at the first `.` to isolate the index.
+        if let Some((idx_str, tail_after_idx)) = rest.split_once('.') {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                if idx == 0 && (tail_after_idx == "m" || tail_after_idx == "logs") {
+                    return format!("sbv2.sdp.ea.{tail_after_idx}");
+                }
+                if idx % 2 == 0 {
+                    // Even index (2/4/6/8) is a `Flip` slot — upstream
+                    // stores no learnable parameters there, so no tensor
+                    // ever has this prefix in practice. Preserve
+                    // verbatim under `sbv2.sdp.flows.<idx>.<tail>` so an
+                    // out-of-spec safetensors is loud-detected downstream
+                    // (as an unrecognised tensor in `from_gguf`) rather
+                    // than silently coalesced into `flow.<mapped>.*`.
+                    return format!("sbv2.sdp.flows.{idx}.{tail_after_idx}");
+                }
+                // Odd index (1/3/5/7) is a `ConvFlow`. Densify: 1→0, 3→1,
+                // 5→2, 7→3.
+                let dense = (idx - 1) / 2;
+                return format!("sbv2.sdp.flow.{dense}.{tail_after_idx}");
+            }
+        }
+    }
+    // Every other `sdp.<tail>` (pre/proj/cond/convs) is a verbatim rewrite
+    // — same tail, just under `sbv2.sdp.`.
+    format!("sbv2.sdp.{tail}")
 }
 
 /// Converts an SBV2 v2 safetensors checkpoint at `input` into a Vokra GGUF
@@ -823,7 +888,8 @@ pub fn convert_sbv2_file(
         }
     }
 
-    // Main tensor loop — Task 30 rename table.
+    // Main tensor loop — Task 30 rename table (Blocker 2b) + SDP rewriter
+    // (Blocker 2c: `sdp.post_*` skip and `sdp.<x>` → `sbv2.sdp.<remap>`).
     for t in st.tensors() {
         report.read += 1;
 
@@ -840,6 +906,19 @@ pub fn convert_sbv2_file(
         // we visit the paired weight_g. Do not emit it a second time.
         if consumed_weight_v.contains(&t.name) {
             report.weight_norm_v_consumed += 1;
+            continue;
+        }
+
+        // Blocker 2c: `sdp.post_*` (142 training-side inverse-flow tensors).
+        // `models.py::StochasticDurationPredictor.forward(reverse=True)`
+        // (upstream) walks only `self.flows` (production), not
+        // `self.post_flows`, so these are pure training scaffolding.
+        // Counter tracked separately from `skipped_training` so the caller
+        // can tell "SDP inverse-flow skipped by design" from other
+        // training-side drops. Emit a stderr line to satisfy FR-EX-08 too.
+        if let Some(rest) = t.name.strip_prefix("sdp.post_") {
+            let _ = rest;
+            report.sdp_post_skipped += 1;
             continue;
         }
 
@@ -865,9 +944,24 @@ pub fn convert_sbv2_file(
             TensorClass::PassThrough { .. } => {
                 let data = st.tensor_bytes(t).to_vec();
                 let is_bf16 = t.dtype == GgmlType::BF16;
-                b.add_tensor(&t.name, t.dtype, t.shape.clone(), data)?;
+                // Blocker 2c: `sdp.<x>` (production) → `sbv2.sdp.<remap>`
+                // via `rewrite_sdp_tensor_name`. Every other pass-through
+                // tensor keeps its upstream name verbatim. The `sdp.post_*`
+                // arm is already filtered above (guaranteed non-`sdp.post_*`
+                // here).
+                let write_name = if let Some(tail) = t.name.strip_prefix("sdp.") {
+                    Some(rewrite_sdp_tensor_name(tail))
+                } else {
+                    None
+                };
+                let effective_name = write_name.as_deref().unwrap_or(&t.name);
+                b.add_tensor(effective_name, t.dtype, t.shape.clone(), data)?;
                 report.written += 1;
-                report.passed_through_verbatim += 1;
+                if write_name.is_some() {
+                    report.sdp_rewritten += 1;
+                } else {
+                    report.passed_through_verbatim += 1;
+                }
                 if is_bf16 {
                     report.bf16_passthrough += 1;
                 }
@@ -2124,6 +2218,66 @@ mod tests {
         );
     }
 
+    // ---- Blocker 2c: sdp.* rewriter + sdp.post_* skip ---------------------
+
+    #[test]
+    fn sdp_tensor_name_rewriter_maps_every_arm() {
+        // Body components → verbatim tail under `sbv2.sdp.`.
+        assert_eq!(rewrite_sdp_tensor_name("pre.weight"), "sbv2.sdp.pre.weight");
+        assert_eq!(rewrite_sdp_tensor_name("pre.bias"), "sbv2.sdp.pre.bias");
+        assert_eq!(
+            rewrite_sdp_tensor_name("proj.weight"),
+            "sbv2.sdp.proj.weight"
+        );
+        assert_eq!(
+            rewrite_sdp_tensor_name("cond.weight"),
+            "sbv2.sdp.cond.weight"
+        );
+        assert_eq!(rewrite_sdp_tensor_name("cond.bias"), "sbv2.sdp.cond.bias");
+        assert_eq!(
+            rewrite_sdp_tensor_name("convs.convs_sep.0.weight"),
+            "sbv2.sdp.convs.convs_sep.0.weight"
+        );
+        assert_eq!(
+            rewrite_sdp_tensor_name("convs.norms_2.2.beta"),
+            "sbv2.sdp.convs.norms_2.2.beta"
+        );
+
+        // Flow slot 0 = ElementwiseAffine.
+        assert_eq!(rewrite_sdp_tensor_name("flows.0.m"), "sbv2.sdp.ea.m");
+        assert_eq!(rewrite_sdp_tensor_name("flows.0.logs"), "sbv2.sdp.ea.logs");
+
+        // Flow slots 1/3/5/7 = ConvFlow — densified to 0/1/2/3.
+        assert_eq!(
+            rewrite_sdp_tensor_name("flows.1.pre.weight"),
+            "sbv2.sdp.flow.0.pre.weight"
+        );
+        assert_eq!(
+            rewrite_sdp_tensor_name("flows.3.convs.convs_1x1.0.weight"),
+            "sbv2.sdp.flow.1.convs.convs_1x1.0.weight"
+        );
+        assert_eq!(
+            rewrite_sdp_tensor_name("flows.5.proj.bias"),
+            "sbv2.sdp.flow.2.proj.bias"
+        );
+        assert_eq!(
+            rewrite_sdp_tensor_name("flows.7.pre.bias"),
+            "sbv2.sdp.flow.3.pre.bias"
+        );
+
+        // Even indices (Flip slots; no learnable params upstream, but if
+        // one appeared it must land somewhere loud, not silently coalesced
+        // into `flow.<x>.*`).
+        assert_eq!(
+            rewrite_sdp_tensor_name("flows.2.something"),
+            "sbv2.sdp.flows.2.something"
+        );
+        assert_eq!(
+            rewrite_sdp_tensor_name("flows.4.other"),
+            "sbv2.sdp.flows.4.other"
+        );
+    }
+
     #[test]
     fn classify_dec_ups_weight_norm_pair_and_bias() {
         assert_eq!(
@@ -3160,6 +3314,60 @@ mod tests {
         assert_eq!(r.passed_through_verbatim, 1);
         assert_eq!(r.skipped_training, 1);
         assert_eq!(r.written, 4);
+    }
+
+    #[test]
+    fn sdp_convert_rewrites_production_and_skips_post() {
+        let blob = safetensors_multi(&[
+            // 3 production-side SDP tensors — each on a different arm of
+            // the rewriter (body, EA flow slot 0, ConvFlow flow slot 1).
+            ("sdp.pre.weight", "F32", &[4, 4, 1], f32_bytes(&[0.1; 16])),
+            ("sdp.flows.0.m", "F32", &[2, 1], f32_bytes(&[0.2; 2])),
+            (
+                "sdp.flows.1.proj.weight",
+                "F32",
+                &[29, 4, 1],
+                f32_bytes(&[0.3; 116]),
+            ),
+            // 2 training-side tensors — both must be skipped.
+            (
+                "sdp.post_pre.weight",
+                "F32",
+                &[4, 1, 1],
+                f32_bytes(&[0.4; 4]),
+            ),
+            ("sdp.post_flows.0.m", "F32", &[2, 1], f32_bytes(&[0.5; 2])),
+        ]);
+        let input = temp_path("sdp-rewrite-in", "safetensors");
+        let output = temp_path("sdp-rewrite-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input");
+
+        let report = convert_sbv2_file(&input, &output, None, None).expect("convert");
+        assert_eq!(report.read, 5, "5 input tensors observed");
+        assert_eq!(report.written, 3, "3 production tensors written");
+        assert_eq!(
+            report.sdp_rewritten, 3,
+            "3 production tensors got rewritten names"
+        );
+        assert_eq!(report.sdp_post_skipped, 2, "2 sdp.post_ tensors skipped");
+        assert_eq!(report.skipped_non_float, 0);
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        // Production tensors present under their remapped names, absent
+        // under their upstream names.
+        assert!(file.tensor_info("sbv2.sdp.pre.weight").is_some());
+        assert!(file.tensor_info("sdp.pre.weight").is_none());
+        assert!(file.tensor_info("sbv2.sdp.ea.m").is_some());
+        assert!(file.tensor_info("sdp.flows.0.m").is_none());
+        assert!(file.tensor_info("sbv2.sdp.flow.0.proj.weight").is_some());
+        assert!(file.tensor_info("sdp.flows.1.proj.weight").is_none());
+
+        // Training-side tensors absent altogether.
+        assert!(file.tensor_info("sdp.post_pre.weight").is_none());
+        assert!(file.tensor_info("sbv2.sdp.post_pre.weight").is_none());
+        assert!(file.tensor_info("sdp.post_flows.0.m").is_none());
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
