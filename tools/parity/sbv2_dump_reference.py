@@ -1323,20 +1323,30 @@ def length_regulate(text_features, durations, torch):
 
 
 def build_flow(state_dict: dict, torch):
-    """Step 12a. Instantiate vendored
-    `vendor.vits.flow.ResidualCouplingBlock` and load `flow.*` weights.
-    """
-    from vendor.vits.flow import ResidualCouplingBlock
+    """Step 12a. Instantiate the vendored
+    `vendor.vits.sbv2_flow.Sbv2TransformerCouplingBlock` (Blocker 8,
+    2026-08-06) and load `flow.*` weights.
 
-    flow = ResidualCouplingBlock(
-        channels=D_MODEL,
-        hidden_channels=D_MODEL,
-        kernel_size=5,
-        dilation_rate=1,
-        n_layers=4,
-        n_flows=4,
-        gin_channels=D_SPEAKER,
-    ).eval()
+    Blocker 8 rationale (see `tools/parity/vendor/vits/sbv2_flow.py`
+    header + `tools/parity/vendor/vits/README.md` target-files table):
+    the sibling `vendor.vits.flow.ResidualCouplingBlock` uses a WN-based
+    coupling (jaywalnut310/vits `enc.in_layers.*` / `enc.res_skip_layers.*`),
+    which does NOT load the SBV2 v2 base checkpoint's `flow.*` state_dict
+    (108 missing tensors under `strict=False`: SBV2 carries transformer-
+    encoder weights `enc.attn_layers.*` / `enc.norm_layers_1.*` /
+    `enc.ffn_layers.*` / `enc.spk_emb_linear.*` per coupling). The
+    clean-room `Sbv2TransformerCouplingBlock` in `sbv2_flow.py` composes
+    the SBV2 v2 layout from MIT primitives already vendored under
+    `vendor/vits/`.
+
+    Every architectural parameter passed to the constructor below is
+    RECOVERED FROM THE REAL TENSOR SHAPES in `state_dict` — no
+    invention, no "reasonable default" (FR-EX-08 / NFR-QL-04). A
+    checkpoint whose `flow.*` sub-tree does not decompose cleanly
+    against this build path fails loudly with a message naming exactly
+    which tensor was expected + what the ckpt actually carries.
+    """
+    from vendor.vits.sbv2_flow import Sbv2TransformerCouplingBlock
 
     flow_prefix = "flow."
     flow_state = {
@@ -1349,18 +1359,163 @@ def build_flow(state_dict: dict, torch):
             f"{LOG_PREFIX} no `flow.*` tensors found in checkpoint — "
             "normalizing flow cannot be initialized."
         )
+
+    # Recover every hparam from real tensor shapes (Blocker 8).
+    #
+    # ---- pre.weight [hidden_channels, half_channels, 1] ----
+    if "flows.0.pre.weight" not in flow_state:
+        sys.exit(
+            f"{LOG_PREFIX} flow: missing `flow.flows.0.pre.weight` — checkpoint "
+            "does not look like a VITS/SBV2 normalizing flow. Inspect "
+            "state_dict keys."
+        )
+    pre_w = flow_state["flows.0.pre.weight"]
+    if pre_w.dim() != 3 or pre_w.shape[2] != 1:
+        sys.exit(
+            f"{LOG_PREFIX} flow: `flows.0.pre.weight` shape {tuple(pre_w.shape)} "
+            "unexpected (expected [hidden_channels, half_channels, 1] Conv1d "
+            "kernel=1)."
+        )
+    hidden_channels = int(pre_w.shape[0])
+    half_channels = int(pre_w.shape[1])
+    channels = 2 * half_channels
+
+    # ---- enc.spk_emb_linear.weight [hidden_channels, gin_channels] ----
+    if "flows.0.enc.spk_emb_linear.weight" not in flow_state:
+        sys.exit(
+            f"{LOG_PREFIX} flow: missing `flow.flows.0.enc.spk_emb_linear.weight` — "
+            "SBV2 v2 base ckpt is expected to carry per-coupling speaker "
+            "conditioning (Blocker 8). If this is a non-SBV2 VITS1 checkpoint, "
+            "swap back to `vendor.vits.flow.ResidualCouplingBlock` and adjust."
+        )
+    spk_w = flow_state["flows.0.enc.spk_emb_linear.weight"]
+    if spk_w.dim() != 2 or spk_w.shape[0] != hidden_channels:
+        sys.exit(
+            f"{LOG_PREFIX} flow: `flows.0.enc.spk_emb_linear.weight` shape "
+            f"{tuple(spk_w.shape)} disagrees with hidden_channels={hidden_channels} "
+            "(expected [hidden_channels, gin_channels] Linear)."
+        )
+    gin_channels = int(spk_w.shape[1])
+
+    # ---- n_layers: count attn_layers.<i>.conv_q.weight ----
+    n_layers = 0
+    while f"flows.0.enc.attn_layers.{n_layers}.conv_q.weight" in flow_state:
+        n_layers += 1
+    if n_layers == 0:
+        sys.exit(
+            f"{LOG_PREFIX} flow: no `flows.0.enc.attn_layers.<i>.conv_q.weight` — "
+            "SBV2 v2 base ckpt is expected to carry >= 1 transformer layer."
+        )
+
+    # ---- n_heads / k_channels / window_size:
+    # emb_rel_k [n_heads_rel, 2*window_size + 1, k_channels], heads_share=True → n_heads_rel=1
+    emb_rel_k = flow_state["flows.0.enc.attn_layers.0.emb_rel_k"]
+    if emb_rel_k.dim() != 3:
+        sys.exit(
+            f"{LOG_PREFIX} flow: `flows.0.enc.attn_layers.0.emb_rel_k` shape "
+            f"{tuple(emb_rel_k.shape)} unexpected (expected 3D [n_heads_rel, "
+            "2*window_size+1, k_channels])."
+        )
+    k_channels = int(emb_rel_k.shape[2])
+    if hidden_channels % k_channels != 0:
+        sys.exit(
+            f"{LOG_PREFIX} flow: hidden_channels={hidden_channels} not divisible "
+            f"by k_channels={k_channels} (from emb_rel_k trailing dim)."
+        )
+    n_heads = hidden_channels // k_channels
+    window_size_span = int(emb_rel_k.shape[1])
+    if window_size_span % 2 != 1:
+        sys.exit(
+            f"{LOG_PREFIX} flow: emb_rel_k middle dim {window_size_span} even; "
+            "expected odd (2*window_size + 1)."
+        )
+    window_size = (window_size_span - 1) // 2
+
+    # ---- filter_channels / kernel_size: ffn_layers.0.conv_1.weight [filter, hidden, kernel]
+    ffn_c1 = flow_state["flows.0.enc.ffn_layers.0.conv_1.weight"]
+    if ffn_c1.dim() != 3 or ffn_c1.shape[1] != hidden_channels:
+        sys.exit(
+            f"{LOG_PREFIX} flow: `flows.0.enc.ffn_layers.0.conv_1.weight` shape "
+            f"{tuple(ffn_c1.shape)} disagrees with hidden_channels="
+            f"{hidden_channels} (expected [filter_channels, hidden_channels, "
+            "kernel_size])."
+        )
+    filter_channels = int(ffn_c1.shape[0])
+    kernel_size = int(ffn_c1.shape[2])
+
+    # ---- n_flows: count non-Flip coupling layers (flows.<i>.pre.weight) ----
+    n_flows_seen = 0
+    while f"flows.{2 * n_flows_seen}.pre.weight" in flow_state:
+        n_flows_seen += 1
+    if n_flows_seen == 0:
+        sys.exit(
+            f"{LOG_PREFIX} flow: no coupling layers found (expected "
+            "flows.0/2/4/6.pre.weight for interleaved [coupling, Flip] stack)."
+        )
+
+    # ---- mean_only: post.weight output dim ----
+    post_w = flow_state["flows.0.post.weight"]
+    if post_w.dim() != 3 or post_w.shape[1] != hidden_channels or post_w.shape[2] != 1:
+        sys.exit(
+            f"{LOG_PREFIX} flow: `flows.0.post.weight` shape {tuple(post_w.shape)} "
+            f"disagrees with hidden_channels={hidden_channels} (expected "
+            "[out, hidden_channels, 1])."
+        )
+    out_channels = int(post_w.shape[0])
+    if out_channels == half_channels:
+        mean_only = True
+    elif out_channels == 2 * half_channels:
+        mean_only = False
+    else:
+        sys.exit(
+            f"{LOG_PREFIX} flow: `flows.0.post.weight` out={out_channels} matches "
+            f"neither half_channels={half_channels} (mean_only=True) nor "
+            f"2*half_channels={2 * half_channels} (mean_only=False)."
+        )
+
+    print(
+        f"{LOG_PREFIX} flow (Blocker 8): "
+        f"channels={channels}, hidden={hidden_channels}, gin={gin_channels}, "
+        f"n_layers={n_layers}, n_heads={n_heads}, k_channels={k_channels}, "
+        f"window_size={window_size}, filter={filter_channels}, "
+        f"kernel_size={kernel_size}, n_flows={n_flows_seen}, mean_only={mean_only}"
+    )
+
+    flow = Sbv2TransformerCouplingBlock(
+        channels=channels,
+        hidden_channels=hidden_channels,
+        kernel_size=kernel_size,
+        n_heads=n_heads,
+        n_layers=n_layers,
+        filter_channels=filter_channels,
+        p_dropout=0.0,
+        window_size=window_size,
+        n_flows=n_flows_seen,
+        gin_channels=gin_channels,
+        mean_only=mean_only,
+    ).eval()
+
     with torch.no_grad():
-        missing_keys, _unexpected = flow.load_state_dict(
+        missing_keys, unexpected_keys = flow.load_state_dict(
             flow_state, strict=False
         )
+    # Loud FR-EX-08 on ANY discrepancy — this is a real fixture load, no
+    # silent tolerance for architectural drift.
     if missing_keys:
         sys.exit(
-            f"{LOG_PREFIX} flow is missing {len(missing_keys)} tensor(s) "
-            f"after loading from `flow.*`: "
+            f"{LOG_PREFIX} flow is missing {len(missing_keys)} tensor(s) after "
+            f"loading `flow.*` into Sbv2TransformerCouplingBlock: "
             f"{missing_keys[:8]}{'...' if len(missing_keys) > 8 else ''}. "
-            "Rewriting the composition here would be architecture-guessing "
-            "(FR-EX-08); vendor upstream `models.py` `ResidualCouplingBlock` "
-            "topology diverges — inspect the checkpoint."
+            "Inspect the checkpoint — an SBV2 v2 base ckpt should load 0 "
+            "missing / 0 unexpected keys against this build path."
+        )
+    if unexpected_keys:
+        sys.exit(
+            f"{LOG_PREFIX} flow has {len(unexpected_keys)} unexpected tensor(s) "
+            f"after loading `flow.*`: "
+            f"{unexpected_keys[:8]}{'...' if len(unexpected_keys) > 8 else ''}. "
+            "Inspect the checkpoint — an SBV2 v2 base ckpt should load 0 "
+            "missing / 0 unexpected keys against this build path."
         )
     return flow
 
@@ -1383,19 +1538,26 @@ def build_generator(state_dict: dict, torch):
     """Step 13a. Instantiate vendored `vendor.vits.decoder.Generator`
     and load `dec.*` weights. Removes weight_norm for inference
     stability (matches upstream `Generator.remove_weight_norm()`).
+
+    Blocker 8 (2026-08-06): `upsample_kernel_sizes` is RECOVERED FROM
+    THE REAL TENSOR SHAPES in `state_dict` (`dec.ups.<i>.weight_v.shape[-1]`)
+    rather than trusted from the Task-3 config side-car. Root cause:
+    the config's `decoder_upsample_kernel_sizes` is derived by
+    `sbv2_prepare_checkpoint.py` via the HiFi-GAN default `kernel = 2 *
+    stride` rule (`[16, 16, 4, 4, 4]` for `strides = [8, 8, 2, 2, 2]`),
+    but the real SBV2 v2 base checkpoint carries `[16, 16, 8, 2, 2]` —
+    a divergence from the paper default. Trusting the config here
+    yields a `size mismatch for ups.2.weight_v: copying a param with
+    shape torch.Size([128, 64, 8]) from checkpoint, the shape in
+    current model is torch.Size([128, 64, 4])` on `load_state_dict`
+    (verified 2026-08-06 against `/tmp/sbv2-fixtures/sbv2-prep/G_0.safetensors`).
+
+    `upsample_initial_channel`, `upsample_rates`, `resblock_*` etc.
+    remain config-derived — those are decoder-topology globals a config
+    side-car legitimately owns; only the per-stage transpose-conv
+    kernel widths turned out to be checkpoint-specific.
     """
     from vendor.vits.decoder import Generator
-
-    gen = Generator(
-        initial_channel=D_MODEL,
-        resblock=RESBLOCK_TYPE,
-        resblock_kernel_sizes=list(RESBLOCK_KERNEL_SIZES),
-        resblock_dilation_sizes=_expand_dilations(),
-        upsample_rates=list(UPSAMPLE_RATES),
-        upsample_initial_channel=UPSAMPLE_INITIAL_CHANNEL,
-        upsample_kernel_sizes=list(UPSAMPLE_KERNEL_SIZES),
-        gin_channels=D_SPEAKER,
-    ).eval()
 
     dec_prefix = "dec."
     dec_state = {
@@ -1408,6 +1570,55 @@ def build_generator(state_dict: dict, torch):
             f"{LOG_PREFIX} no `dec.*` tensors found in checkpoint — "
             "HiFi-GAN generator cannot be initialized."
         )
+
+    # Recover `upsample_kernel_sizes` from real tensor shapes (Blocker 8):
+    # ups.<i>.weight_v [in_channels, out_channels, kernel_size]
+    n_ups_stages = len(UPSAMPLE_RATES)
+    recovered_kernels: "list[int]" = []
+    for i in range(n_ups_stages):
+        key = f"ups.{i}.weight_v"
+        if key not in dec_state:
+            # Some SBV2 SKUs pre-remove weight_norm and ship plain `ups.<i>.weight`.
+            key = f"ups.{i}.weight"
+            if key not in dec_state:
+                sys.exit(
+                    f"{LOG_PREFIX} decoder: missing `dec.ups.{i}.weight_v` (or "
+                    "`dec.ups.{i}.weight`) — checkpoint does not have the "
+                    f"expected {n_ups_stages} upsample stages."
+                )
+        w = dec_state[key]
+        if w.dim() != 3:
+            sys.exit(
+                f"{LOG_PREFIX} decoder: `dec.ups.{i}.weight_v` shape "
+                f"{tuple(w.shape)} unexpected (expected 3D "
+                "[in_channels, out_channels, kernel_size])."
+            )
+        recovered_kernels.append(int(w.shape[-1]))
+
+    config_kernels = list(UPSAMPLE_KERNEL_SIZES)
+    if recovered_kernels != config_kernels:
+        # Loud but non-fatal: keep the checkpoint's ground truth, and
+        # print the diff so a future fix to `sbv2_prepare_checkpoint.py`
+        # can be traced.
+        print(
+            f"{LOG_PREFIX} decoder: `decoder_upsample_kernel_sizes` from config "
+            f"side-car {config_kernels} disagrees with real checkpoint tensor "
+            f"shapes {recovered_kernels}. Using checkpoint values (Blocker 8, "
+            "FR-EX-08 no invention). Fix `sbv2_prepare_checkpoint.py`'s "
+            "config resolver to remove this drift."
+        )
+
+    gen = Generator(
+        initial_channel=D_MODEL,
+        resblock=RESBLOCK_TYPE,
+        resblock_kernel_sizes=list(RESBLOCK_KERNEL_SIZES),
+        resblock_dilation_sizes=_expand_dilations(),
+        upsample_rates=list(UPSAMPLE_RATES),
+        upsample_initial_channel=UPSAMPLE_INITIAL_CHANNEL,
+        upsample_kernel_sizes=recovered_kernels,
+        gin_channels=D_SPEAKER,
+    ).eval()
+
     with torch.no_grad():
         missing_keys, _unexpected = gen.load_state_dict(dec_state, strict=False)
     if missing_keys:
