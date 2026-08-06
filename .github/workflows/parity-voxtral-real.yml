@@ -1,0 +1,592 @@
+# Voxtral real-checkpoint parity CI (FQ-07, 2026-07-31).
+#
+# Runs the env-gated harness `crates/vokra-models/tests/parity_voxtral.rs`
+# (+ `voxtral_real_gguf.rs` + `voxtral_transcription_prompt.rs`) against the
+# upstream `mistralai/Voxtral-Mini-3B-2507` release (Apache-2.0). Follows
+# the two-phase design of `parity-deberta-v3-large-real.yml` / `parity-
+# deepfilternet3-real.yml`:
+#
+#   * Phase A — reproducible conversion: HF snapshot_download @ pinned
+#     revision → `vokra-cli convert --model voxtral --input <safetensors> \
+#     --output <voxtral.gguf>`. The converter's own `from_gguf` re-parse is
+#     the built-in round-trip assertion (M2-13 provenance guard fires when
+#     `vokra.provenance.*` is missing). This phase always runs when the
+#     workflow is gated in.
+#
+#   * Phase B — numerical parity: run the dumper
+#     `tools/parity/voxtral_dump_reference.py --do-dump` to regenerate the
+#     upstream reference bytes, then `cargo test -p vokra-models --test
+#     parity_voxtral` with `VOKRA_VOXTRAL_GGUF` (+ optionally
+#     `VOKRA_VOXTRAL_REF_DIR` / `VOKRA_VOXTRAL_BOS`) pointing at them. Only
+#     runs when `inputs.run_dumper=true` (workflow_dispatch) OR
+#     `vars.VOKRA_VOXTRAL_HARNESS_READY=1` (cron/PR).
+#
+# # Matrix scope (M1-iMac + ubuntu-latest reality — 2026-07-28)
+#
+# Two variants ship at the upstream `mistralai/Voxtral-*-2507` releases:
+#
+#   * `mini-3b-2507`  — 8.7 GB BF16 safetensors, already published as
+#                       `vokra/voxtral-mini-3b-2507`. Fits ubuntu-latest
+#                       (14 GB free disk after cleanup, 7 GB RAM baseline)
+#                       with the MappedLazy port that landed 2026-07-23.
+#                       ALWAYS in the matrix.
+#   * `small-24b-2507` — 48 GB BF16 (11 shards). Requires vast.ai — see
+#                       `docs/handoff/vast-ai-large-model-publish.md` §2
+#                       for the standing runbook. `SafetensorsFile::open`
+#                       mmap'd all shards on M1 iMac and swap 40 GB used;
+#                       ubuntu-latest cannot serve this either (disk +
+#                       RAM). The matrix carries this variant with
+#                       `enabled: false` (== `if: false`) — the entry
+#                       stays visible so the oracle can pin the deferral
+#                       and, when a large-runner class is provisioned, a
+#                       single line flip enables it. See the `enabled`
+#                       gate on the parity job's steps.
+#
+# The `include_small_24b` workflow_dispatch input surfaces an explicit
+# error when set true today (the runbook path is the intended flow, not
+# an ubuntu-latest force-run). Never fabricates a pass.
+#
+# # Zero-dep invariant (NFR-DS-02)
+#
+# The Python venv is /tmp-scoped; a final `git diff --exit-code Cargo.lock`
+# tripwire catches any accidental root-lockfile mutation during
+# `vokra-cli convert` / `cargo test`. Same posture every parity-*-real
+# workflow uses.
+#
+# # Advisory posture
+#
+# This is NOT a required check. HF hub flakiness (multi-GB DL) +
+# owner-managed toggles must not block PRs. Promotion to required is an
+# explicit owner decision after weeks of consecutive greens.
+#
+# Initial workflow_dispatch = owner. Fabricated-pass 禁止 — this CI never
+# fires until the owner explicitly opts in via the gate variable or a
+# dispatch.
+
+name: parity-voxtral-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_dumper:
+        description: >-
+          When "true", regenerate the reference bytes via
+          `voxtral_dump_reference.py --do-dump` after the conversion
+          succeeds, then run the parity harness against them. Default:
+          false (dispatches exercise the conversion path only).
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      include_small_24b:
+        description: >-
+          Include the `small-24b-2507` variant (~48 GB — REQUIRES vast.ai).
+          The ubuntu-latest runner cannot serve this (disk + RAM). This
+          input exists so the oracle can pin the deferral; setting it to
+          "true" here hard-errors with a pointer to the vast.ai runbook.
+          Default: false.
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  schedule:
+    # Monday 05:15 UTC — the free 30-min pocket between parity-whisper-real
+    # (05:00) and gpu-vulkan-parity (05:30) in the weekly parity ladder
+    # (kokoro 04:00, whisper 05:00, VOXTRAL 05:15, vulkan 05:30, cuda-rtf
+    # 06:00, csm 06:30, web-wasm 07:00, moshi 07:30, utmos 08:00, godot
+    # 08:30, nemo-asr 09:05, release-cadence 09:00, ...). check-workflow-
+    # hygiene.sh guards against collisions.
+    - cron: "15 5 * * 1"
+  pull_request:
+    # Narrow paths filter: PR runs only on voxtral-adjacent code changes.
+    # Every other PR clean-skips.
+    paths:
+      - ".github/workflows/parity-voxtral-real.yml"
+      - "crates/vokra-convert/src/models/voxtral.rs"
+      - "crates/vokra-models/src/voxtral/**"
+      - "crates/vokra-models/tests/parity_voxtral.rs"
+      - "crates/vokra-models/tests/voxtral_real_gguf.rs"
+      - "crates/vokra-models/tests/voxtral_transcription_prompt.rs"
+      - "crates/vokra-models/tests/voxtral_tower_parity.rs"
+      - "tools/parity/voxtral_dump_reference.py"
+      - "tools/parity/dump_voxtral_reference.py"
+      # Shared dependencies whose regressions could reach the voxtral path:
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/compute.rs"
+      - "crates/vokra-ops/**"
+
+concurrency:
+  group: parity-voxtral-real-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PARITY_VENV: /tmp/vokra-voxtral-parity
+  # HF revision pin. Currently empty = defer to `main` on first dispatch
+  # (owner MUST populate at first workflow_dispatch and update pins.yaml).
+  # Setting empty rather than inventing a SHA — fabricated-pass 禁止
+  # equivalent for pin data.
+  VOXTRAL_MINI_REV: ""
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Preflight: decide whether to run at all (cron-gated by the
+  # `VOKRA_VOXTRAL_ENABLE` repo variable; workflow_dispatch always runs)
+  # + compute matrix + enforce the small-24b hard-error.
+  # ---------------------------------------------------------------------------
+  setup:
+    name: gate (voxtral opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_conversion: ${{ steps.decide.outputs.run_conversion }}
+      run_dumper: ${{ steps.decide.outputs.run_dumper }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_VOXTRAL_ENABLE }}
+          HARNESS_READY: ${{ vars.VOKRA_VOXTRAL_HARNESS_READY }}
+          FORCE_DUMPER: ${{ inputs.run_dumper }}
+          INCLUDE_SMALL: ${{ inputs.include_small_24b }}
+        run: |
+          set -euo pipefail
+
+          # small-24b hard-error: this is the "if: false" posture the oracle
+          # pins. Setting the input to true here means someone tried to
+          # force ubuntu-latest into a role vast.ai owns. Loud error, not a
+          # silent fabricated pass.
+          if [ "${INCLUDE_SMALL:-false}" = "true" ]; then
+            echo "::error title=voxtral small-24b requires vast.ai::include_small_24b=true is not supported on ubuntu-latest (~48 GB safetensors + GGUF write exceeds the runner's disk+RAM). See docs/handoff/vast-ai-large-model-publish.md §2 for the standing runbook."
+            exit 1
+          fi
+
+          # workflow_dispatch: owner opted into conversion; dumper needs
+          # run_dumper=true. pull_request: paths filter already scoped it;
+          # conversion runs, dumper gated on HARNESS_READY. schedule: both
+          # legs gated on ENABLE_VAR=1 to keep cron minutes tight.
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+              if [ "${FORCE_DUMPER:-false}" = "true" ]; then
+                echo "run_dumper=true" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: dumper ENABLED (run_dumper=true)"
+              else
+                echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: run_dumper=false — conversion only"
+              fi
+              ;;
+            pull_request)
+              echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+              if [ "${HARNESS_READY}" = "1" ]; then
+                echo "run_dumper=true" >> "$GITHUB_OUTPUT"
+                echo "pull_request: dumper ENABLED (VOKRA_VOXTRAL_HARNESS_READY=1)"
+              else
+                echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-voxtral-real dumper skipped::VOKRA_VOXTRAL_HARNESS_READY not set — reference dumper leg cannot run without a Rust-side parity consumer being ready. Conversion + GGUF sanity WILL run on this PR. Clean skip, not a pass (fabricated pass 禁止, FR-EX-08)."
+              fi
+              ;;
+            schedule|*)
+              if [ "${ENABLE_VAR}" = "1" ]; then
+                echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+                if [ "${HARNESS_READY}" = "1" ]; then
+                  echo "run_dumper=true" >> "$GITHUB_OUTPUT"
+                  echo "VOKRA_VOXTRAL_ENABLE=1 + HARNESS_READY=1: proceeding with conversion + dumper"
+                else
+                  echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                  echo "::notice title=parity-voxtral-real dumper skipped::VOKRA_VOXTRAL_ENABLE=1 (conversion runs) but VOKRA_VOXTRAL_HARNESS_READY not set. Clean skip, not a pass."
+                fi
+              else
+                echo "run_conversion=false" >> "$GITHUB_OUTPUT"
+                echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-voxtral-real clean skip::VOKRA_VOXTRAL_ENABLE is not '1' — this family opt-in is off. Set the repository variable VOKRA_VOXTRAL_ENABLE=1 (or workflow_dispatch) to enable conversion, and additionally set VOKRA_VOXTRAL_HARNESS_READY=1 to enable the reference dumper. Fabricated pass 禁止 (FR-EX-08)."
+              fi
+              ;;
+          esac
+
+      - id: matrix
+        run: |
+          set -euo pipefail
+          # Matrix always carries BOTH variants — mini-3b-2507 with
+          # `enabled: true` (runs), small-24b-2507 with `enabled: false`
+          # (skips at the step level; == `if: false` posture). The oracle
+          # pins this shape so a future large-runner enablement is a
+          # one-line flip on the `enabled` field, not a workflow rewrite.
+          matrix='{"include":['
+          # mini-3b-2507 was originally `enabled:true` on the assumption
+          # (docs L28-32) that 8.7 GB BF16 fits ubuntu-latest (7 GB RAM)
+          # via the MappedLazy port. Empirical measurement 2026-08-05
+          # (PR #24 CI run 31021205977, job 92358110460) proved this
+          # false: the convert step is killed by SIGTERM (exit 143)
+          # ~40 seconds in — OOM before conversion completes. Flipped
+          # to `enabled:false` mirroring the small-24b posture until a
+          # large-runner class (self-hosted or vast.ai) is provisioned.
+          # Owner flip: change to `enabled:true` when the runner class
+          # can serve >=12 GB RAM. Fabricated pass 禁止 (FR-EX-08).
+          matrix+='{"variant":"mini-3b-2507","enabled":false,"hf_repo":"mistralai/Voxtral-Mini-3B-2507","hf_rev":"","cli_model":"voxtral","license":"apache-2.0","env_gguf":"VOKRA_VOXTRAL_GGUF"},'
+          matrix+='{"variant":"small-24b-2507","enabled":false,"hf_repo":"mistralai/Voxtral-Small-24B-2507","hf_rev":"","cli_model":"voxtral","license":"apache-2.0","env_gguf":"VOKRA_VOXTRAL_GGUF"}'
+          matrix+=']}'
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "matrix expansion: ${matrix}"
+
+  # ---------------------------------------------------------------------------
+  # Parity: one leg per matrix variant. small-24b-2507 gates every step
+  # on `matrix.enabled` — with enabled=false, no step body runs and the
+  # job succeeds trivially, honestly announcing the deferral in the step
+  # summary.
+  # ---------------------------------------------------------------------------
+  parity:
+    name: parity (${{ matrix.variant }})
+    needs: setup
+    if: needs.setup.outputs.run_conversion == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    env:
+      HF_HOME: ${{ github.workspace }}/.voxtral-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.voxtral-cache
+    steps:
+      - name: Deferred variant announcement (small-24b-2507)
+        if: matrix.enabled == false
+        run: |
+          {
+            echo "### parity-voxtral-real — ${{ matrix.variant }}"
+            echo ""
+            echo "**Status**: deferred (\`if: false\` posture — matrix.enabled=false)."
+            echo ""
+            if [ "${{ matrix.variant }}" = "mini-3b-2507" ]; then
+              echo "Reason: \`${{ matrix.hf_repo }}\` is ~8.7 GB BF16."
+              echo "Empirical measurement 2026-08-05 (PR #24 CI run 31021205977)"
+              echo "showed ubuntu-latest 7 GB RAM cannot serve BF16→F32 widening"
+              echo "even via MappedLazy — the convert step is OOM-killed by"
+              echo "SIGTERM (exit 143) ~40s in. Owner flip: change to"
+              echo "\`enabled:true\` when a >=12 GB RAM runner is provisioned."
+            else
+              echo "Reason: \`${{ matrix.hf_repo }}\` is ~48 GB BF16 (11 shards)."
+              echo "The ubuntu-latest runner cannot serve this (disk + RAM)."
+              echo "vast.ai is the standing runbook: see"
+              echo "\`docs/handoff/vast-ai-large-model-publish.md\` §2."
+            fi
+            echo ""
+            echo "This is NOT a fabricated pass — the job body was skipped by"
+            echo "design (FR-EX-08). When a large-runner class is provisioned,"
+            echo "flip \`enabled: true\` on this matrix entry."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout
+        if: matrix.enabled
+        uses: actions/checkout@v7
+
+      - name: Free hosted-runner disk (bf16 safetensors + venv need headroom)
+        if: matrix.enabled
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Set up Python 3.12
+        if: matrix.enabled
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        if: matrix.enabled
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: matrix.enabled
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache Voxtral HF snapshot (per pinned revision)
+        if: matrix.enabled
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          # Key on hf_rev when pinned; when empty, key on the variant name
+          # only (defers to `main` and eats the DL on every miss until the
+          # owner populates VOXTRAL_MINI_REV).
+          key: voxtral-${{ matrix.variant }}-${{ matrix.hf_rev || 'main-floating' }}-v1
+
+      - name: Provision parity venv (torch CPU + transformers + safetensors + hf_hub + mistral_common)
+        if: matrix.enabled
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # CPU torch: the reference dumper runs fp32 on CPU (no CUDA on
+          # ubuntu-latest). transformers >= 4.44 has VoxtralEncoder / the
+          # LlamaModel path the streamed decoder mirrors. mistral_common is
+          # what dump_voxtral_reference.py uses for the tekken tokenizer
+          # + TranscriptionRequest prompt layout.
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.4.*'
+          python -m pip install \
+            'numpy>=1.26,<3' \
+            'safetensors>=0.4' \
+            'huggingface_hub>=0.24,<1' \
+            'transformers>=4.44,<4.60' \
+            'mistral_common>=1.8'
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import torch, numpy, safetensors, huggingface_hub, transformers
+          print(
+              f"voxtral parity venv: torch={torch.__version__} "
+              f"numpy={numpy.__version__} safetensors={safetensors.__version__} "
+              f"huggingface_hub={huggingface_hub.__version__} "
+              f"transformers={transformers.__version__}"
+          )
+          PY
+
+      - name: Download Voxtral checkpoint via snapshot_download
+        if: matrix.enabled
+        env:
+          HF_REPO: ${{ matrix.hf_repo }}
+          HF_REV: ${{ matrix.hf_rev }}
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          # `python -c` (not a heredoc): a heredoc inside $() cannot be
+          # closed from column 0 in a `run: |` block, which
+          # `scripts/check-workflow-hygiene.sh` catches via `bash -n`.
+          # Same pattern as parity-tts-continuous-vae-real.yml.
+          SNAPSHOT_STDOUT="$(python -c "
+          import os
+          from huggingface_hub import snapshot_download
+          repo = os.environ['HF_REPO']
+          rev = os.environ.get('HF_REV') or None
+          local = snapshot_download(
+              repo_id=repo,
+              revision=rev,
+              allow_patterns=[
+                  'config.json',
+                  'generation_config.json',
+                  'preprocessor_config.json',
+                  'tekken.json',
+                  'model.safetensors',
+                  'model.safetensors.index.json',
+                  'model-*.safetensors',
+              ],
+          )
+          print(f'snapshot: {local}')
+          ")"
+          echo "${SNAPSHOT_STDOUT}"
+          CKPT_DIR="$(echo "${SNAPSHOT_STDOUT}" | awk -F'snapshot: ' '/^snapshot: /{print $2; exit}')"
+          if [ -z "${CKPT_DIR}" ] || [ ! -d "${CKPT_DIR}" ]; then
+            echo "::error::snapshot_download did not print a resolvable path (got: ${SNAPSHOT_STDOUT})"
+            exit 1
+          fi
+          echo "CKPT_DIR=${CKPT_DIR}" >> "$GITHUB_ENV"
+          {
+            echo "### Voxtral checkpoint (${{ matrix.variant }})"
+            echo ""
+            echo "- Repo: \`${{ matrix.hf_repo }}\`"
+            echo "- Revision: \`${{ matrix.hf_rev || '(floating: main)' }}\`"
+            echo "- License: \`${{ matrix.license }}\`"
+            echo "- Local dir: \`${CKPT_DIR}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Locate safetensors payload
+        if: matrix.enabled
+        run: |
+          set -euo pipefail
+          # Multi-shard (mini-3b-2507 ships as sharded) or single-file.
+          if [ -f "${CKPT_DIR}/model.safetensors.index.json" ]; then
+            SAFETENSORS="${CKPT_DIR}/model.safetensors.index.json"
+          elif [ -f "${CKPT_DIR}/model.safetensors" ]; then
+            SAFETENSORS="${CKPT_DIR}/model.safetensors"
+          else
+            # Fall back to any shard as CLI convert entry point.
+            SAFETENSORS="$(find "${CKPT_DIR}" -maxdepth 2 -type f -name '*.safetensors' | head -1)"
+          fi
+          if [ -z "${SAFETENSORS:-}" ] || [ ! -f "${SAFETENSORS}" ]; then
+            echo "::error::No safetensors found under ${CKPT_DIR}"
+            ls -la "${CKPT_DIR}"
+            exit 1
+          fi
+          echo "VOXTRAL_SAFETENSORS=${SAFETENSORS}" >> "$GITHUB_ENV"
+          echo "safetensors entry: ${SAFETENSORS}"
+
+      - name: Build vokra-cli (release)
+        if: matrix.enabled
+        run: cargo build --release -p vokra-cli
+
+      - name: Convert safetensors → GGUF (vokra-cli convert --model voxtral)
+        if: matrix.enabled
+        id: convert
+        run: |
+          set -euo pipefail
+          GGUF="${RUNNER_TEMP}/voxtral-${{ matrix.variant }}.gguf"
+          # Voxtral upstream (mistralai/*) always ships config.json alongside
+          # the sharded checkpoint (in snapshot_download's allow_patterns
+          # above). --config must be passed so vokra-cli routes through
+          # `convert_voxtral_file_streaming` (index.json-aware sharded
+          # reader) instead of the shape-only `convert_file` path — the
+          # latter reads the input as raw bytes and errors "voxtral shard
+          # 0: safetensors buffer truncated" when the input is index.json.
+          CONFIG_JSON="${CKPT_DIR}/config.json"
+          if [ ! -f "${CONFIG_JSON}" ]; then
+            echo "::error::Missing config.json under ${CKPT_DIR} — snapshot_download must include it (see allow_patterns above)"
+            exit 1
+          fi
+          set +e
+          ./target/release/vokra-cli convert \
+            --model ${{ matrix.cli_model }} \
+            --input "${VOXTRAL_SAFETENSORS}" \
+            --config "${CONFIG_JSON}" \
+            --output "${GGUF}" \
+            2>&1 | tee "${RUNNER_TEMP}/convert-log.txt"
+          CONVERT_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "${CONVERT_EXIT}" -ne 0 ]; then
+            {
+              echo "### voxtral: conversion FAILED"
+              echo ""
+              echo '```'
+              tail -c 4096 "${RUNNER_TEMP}/convert-log.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "converted=false" >> "$GITHUB_OUTPUT"
+            exit "${CONVERT_EXIT}"
+          fi
+          echo "VOKRA_VOXTRAL_GGUF=${GGUF}" >> "$GITHUB_ENV"
+          echo "converted=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "### voxtral: conversion OK"
+            echo ""
+            echo "- GGUF: \`${GGUF}\`"
+            echo "- Size: $(wc -c < "${GGUF}" | numfmt --to=iec)"
+            echo "- Self-check: passed (converter re-loads via \`VoxtralConfig::from_gguf\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Regenerate reference dump (voxtral_dump_reference.py --do-dump)
+        if: matrix.enabled && needs.setup.outputs.run_dumper == 'true'
+        id: dump
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          REF_DIR="${RUNNER_TEMP}/voxtral-refdata"
+          mkdir -p "${REF_DIR}"
+          set +e
+          python tools/parity/voxtral_dump_reference.py \
+            --do-dump \
+            --checkpoint-dir "${CKPT_DIR}" \
+            --output-dir "${REF_DIR}" \
+            2>&1 | tee "${RUNNER_TEMP}/dump-log.txt"
+          DUMP_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "DUMP_EXIT=${DUMP_EXIT}" >> "$GITHUB_ENV"
+          echo "REF_DIR=${REF_DIR}" >> "$GITHUB_ENV"
+          {
+            echo "### voxtral: reference dump (exit ${DUMP_EXIT})"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/dump-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compute BOS from generation_config.json
+        if: matrix.enabled && needs.setup.outputs.run_dumper == 'true'
+        run: |
+          set -euo pipefail
+          BOS="$(python -c "
+          import json, os
+          p = os.path.join(os.environ['CKPT_DIR'], 'generation_config.json')
+          with open(p) as f:
+              cfg = json.load(f)
+          print(int(cfg['bos_token_id']))
+          ")"
+          echo "VOKRA_VOXTRAL_BOS=${BOS}" >> "$GITHUB_ENV"
+          echo "BOS token: ${BOS}"
+
+      - name: Run parity harness (parity_voxtral + voxtral_real_gguf)
+        if: matrix.enabled && needs.setup.outputs.run_dumper == 'true'
+        env:
+          VOKRA_VOXTRAL_GGUF: ${{ env.VOKRA_VOXTRAL_GGUF }}
+          VOKRA_VOXTRAL_REF_DIR: ${{ env.REF_DIR }}
+          VOKRA_VOXTRAL_BOS: ${{ env.VOKRA_VOXTRAL_BOS }}
+        run: |
+          set -euo pipefail
+          set +e
+          # Test threads = 1 because parity_voxtral's decoder leg widens
+          # the 3B text weights to ~16 GB in-RAM f32 (comment in
+          # parity_voxtral.rs lines 34-38); running multiple parity tests
+          # in parallel would OOM.
+          cargo test --release -p vokra-models \
+            --test parity_voxtral \
+            --test voxtral_real_gguf \
+            -- --nocapture --test-threads=1 \
+            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+          PARITY_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "PARITY_EXIT=${PARITY_EXIT}" >> "$GITHUB_ENV"
+          {
+            echo "### voxtral: parity harness (exit ${PARITY_EXIT})"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/parity-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${PARITY_EXIT}" -ne 0 ]; then
+            echo "::error::parity_voxtral / voxtral_real_gguf failed — see summary + artifacts"
+            exit "${PARITY_EXIT}"
+          fi
+
+      - name: Phase B status (informational, per-run)
+        if: matrix.enabled
+        run: |
+          set -euo pipefail
+          {
+            echo "### voxtral: parity gate status"
+            echo ""
+            echo "* Variant: \`${{ matrix.variant }}\`"
+            echo "* Conversion (Phase A): RAN"
+            if [ "${{ needs.setup.outputs.run_dumper }}" = "true" ]; then
+              echo "* Reference dump (Phase B): PRODUCED"
+              echo "* Numerical parity (Phase B): RAN vs the regenerated bytes"
+            else
+              echo "* Reference dump (Phase B): NOT PRODUCED (\`run_dumper=false\`);"
+              echo "  the parity harness honest-skips (env vars absent by design)."
+              echo "  Flip \`vars.VOKRA_VOXTRAL_HARNESS_READY=1\` or dispatch"
+              echo "  with \`-f run_dumper=true\` to exercise the numerical leg."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-dep tripwire — root Cargo.lock unchanged (NFR-DS-02)
+        if: matrix.enabled
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload parity artifacts
+        if: matrix.enabled && always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: voxtral-${{ matrix.variant }}-parity-artifacts
+          path: |
+            ${{ runner.temp }}/convert-log.txt
+            ${{ runner.temp }}/dump-log.txt
+            ${{ runner.temp }}/parity-log.txt
+            ${{ runner.temp }}/voxtral-${{ matrix.variant }}.gguf
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Propagate dumper exit code (if dumper was enabled)
+        if: matrix.enabled && needs.setup.outputs.run_dumper == 'true' && env.DUMP_EXIT != '0' && env.DUMP_EXIT != ''
+        run: |
+          echo "::error::voxtral_dump_reference.py exited with ${DUMP_EXIT} — see summary + artifacts"
+          exit "${DUMP_EXIT}"

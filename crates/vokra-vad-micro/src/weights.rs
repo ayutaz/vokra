@@ -33,6 +33,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{borrow::ToOwned, format, vec, vec::Vec};
 
+use vokra_core::gguf::silero::SileroVariant;
 use vokra_core::gguf::{GgmlType, GgufFile};
 use vokra_core::{Result, VokraError};
 
@@ -92,24 +93,48 @@ pub struct RateWeights {
 /// LSTM hidden width (Silero v5).
 pub(crate) const HIDDEN: usize = 128;
 
-/// Weights for whichever sample rate(s) the GGUF carries.
+/// Weights for whichever sample rate(s) the GGUF carries, tagged with the
+/// upstream Silero release the artifact came from.
 ///
 /// The no_std construction entry point (T19): build a
 /// [`vokra_core::gguf::GgufFile`] from a flash-mapped `&[u8]`
 /// (`GgufFile::from_external` / `parse`), then [`SileroWeights::from_gguf`].
+///
+/// The [`variant`](Self::variant) tag comes from the GGUF's
+/// [`vokra_core::gguf::chunks::KEY_SILERO_VERSION`] metadata key, defaulting
+/// to [`SileroVariant::V5`] when the key is absent (backward compatibility
+/// with pre-tagging GGUFs, including the committed fixture). Both variants
+/// share the same forward today — v5 and v6.2.1 have architecturally
+/// identical topology per upstream `snakers4/silero-vad` (verified against
+/// `tinygrad_model.py` and `utils_vad.py` at both tags on 2026-07-30); the
+/// tag guards *provenance* (the license-audit sign-off row, the parity
+/// fixture, and the run-time attribution) and provides the seam for a
+/// future variant that *does* diverge in shape.
 pub struct SileroWeights {
+    pub(crate) variant: SileroVariant,
     pub(crate) r8k: Option<RateWeights>,
     pub(crate) r16k: Option<RateWeights>,
 }
 
 impl SileroWeights {
-    /// Binds Silero VAD v5 weights from a parsed GGUF (FR-LD-01).
+    /// Binds Silero VAD weights (v5 or v6.2.1) from a parsed GGUF (FR-LD-01).
     ///
     /// Accepts the corrected both-rate naming (`sr8k.` / `sr16k.` prefixes) and
     /// falls back to the legacy single-rate bare naming. Missing tensors, wrong
     /// shapes or non-`F32` dtypes are reported as [`VokraError::ModelLoad`]
     /// (FR-EX-08: an explicit error, never a silent partial bind).
+    ///
+    /// The upstream release tag comes from the GGUF's
+    /// [`vokra_core::gguf::chunks::KEY_SILERO_VERSION`] key
+    /// ([`SileroVariant::from_gguf`]): absent → v5 (backward compatibility
+    /// with pre-tagging GGUFs); a **present** key with an unknown value is a
+    /// fail-closed error, so a hypothetical `"v7"` artifact cannot silently
+    /// bind as v5.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        // Fail-closed: a present-but-unknown release tag is a hard error, not
+        // a silent V5 fallback that could misread weights of a diverged
+        // topology (FR-EX-08). Absent key defaults to V5 for backward compat.
+        let variant = SileroVariant::from_gguf(gguf)?;
         let mut r8k = None;
         let mut r16k = None;
 
@@ -153,7 +178,14 @@ impl SileroWeights {
                 "GGUF carries no Silero VAD weights (no stft.forward_basis_buffer)".into(),
             ));
         }
-        Ok(Self { r8k, r16k })
+        Ok(Self { variant, r8k, r16k })
+    }
+
+    /// The upstream release the weights come from — set from the GGUF's
+    /// [`vokra_core::gguf::chunks::KEY_SILERO_VERSION`] key at load time,
+    /// with backward-compat fallback to [`SileroVariant::V5`] when absent.
+    pub fn variant(&self) -> SileroVariant {
+        self.variant
     }
 
     /// Returns the weight set for `rate`, or `None` if the GGUF lacks it.
@@ -494,5 +526,62 @@ mod tests {
         // A truncated/garbage image is an explicit error, never a silent bind.
         let bad = GgufFile::from_external(Box::new(StaticImage(vec![0u8; 8])));
         assert!(bad.is_err(), "malformed GGUF must error (FR-EX-08)");
+    }
+
+    // ---- silero-variant-metadata (v5 default + v6.2.1 opt-in + fail-closed) ----
+
+    /// Backward-compat contract: a GGUF without the release-tag key still
+    /// loads and is tagged as [`SileroVariant::V5`]. Every artifact converted
+    /// before the tag existed (including the committed fixture) is v5, so
+    /// removing this fallback would break existing users.
+    #[test]
+    fn from_gguf_defaults_to_v5_when_release_tag_absent() {
+        let mut b = GgufBuilder::new();
+        add_all_8k(&mut b, "");
+        let w = SileroWeights::from_gguf(&to_gguf(&b)).unwrap();
+        assert_eq!(w.variant(), SileroVariant::V5);
+    }
+
+    /// The v6.2.1 tag is round-tripped: a GGUF stamped with `"v6.2.1"`
+    /// binds successfully and reports [`SileroVariant::V6_2_1`]. Both
+    /// variants share the same forward today (identical topology per
+    /// upstream `snakers4/silero-vad` `tinygrad_model.py`), so the same
+    /// v5-shaped tensor set is legal — the tag drives *provenance*, not
+    /// per-tensor shape validation.
+    #[test]
+    fn from_gguf_reads_v6_2_1_release_tag() {
+        use vokra_core::gguf::chunks;
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_SILERO_VERSION, "v6.2.1");
+        add_all_8k(&mut b, "");
+        let w = SileroWeights::from_gguf(&to_gguf(&b)).unwrap();
+        assert_eq!(w.variant(), SileroVariant::V6_2_1);
+        // The forward still runs — a present tag never gates loading of a
+        // valid tensor set (both variants have the same topology today).
+        assert!(w.forward_chunk(SampleRate::Hz8000, &[0.0; 256]).is_ok());
+    }
+
+    /// FR-EX-08: an unknown release-tag string is a fail-closed
+    /// [`VokraError::ModelLoad`], NOT a silent V5 fallback. A tag we do not
+    /// recognize may imply a topology change this build cannot honor, and
+    /// falling back to V5 would misread the weights.
+    #[test]
+    fn from_gguf_rejects_unknown_release_tag() {
+        use vokra_core::gguf::chunks;
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_SILERO_VERSION, "v7-experimental");
+        // Also add valid v5-shape tensors, so the failure is *entirely*
+        // attributable to the tag (not a shape mismatch).
+        add_all_8k(&mut b, "");
+        // `SileroWeights` intentionally does not derive `Debug` (owned weight
+        // vectors would swamp any panic message), so we match on the error
+        // arm directly instead of `unwrap_err`.
+        match SileroWeights::from_gguf(&to_gguf(&b)) {
+            Ok(_) => panic!("expected ModelLoad error, got Ok"),
+            Err(VokraError::ModelLoad(m)) => {
+                assert!(m.contains("v7-experimental"), "message: {m}");
+            }
+            Err(other) => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 }

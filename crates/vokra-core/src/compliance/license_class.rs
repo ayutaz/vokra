@@ -316,7 +316,7 @@ impl LicenseClass {
             return Self::AttributionRequired;
         }
         // Permissive families.
-        const PERMISSIVE_TOKENS: [&str; 8] = [
+        const PERMISSIVE_TOKENS: [&str; 9] = [
             "mit",
             "apache",
             "bsd",
@@ -325,6 +325,12 @@ impl LicenseClass {
             "unlicense",
             "mpl",
             "zlib",
+            // OpenMDW-1.1 (Open Model Derivatives Work 1.1, openmdw.ai/license/1-1/):
+            // permissive MIT-analog for ML weights — commercial+redistribution
+            // allowed, no share-alike / non-commercial / field-of-use
+            // restrictions. NVIDIA Nemotron family uses this (2026-07-30 CC
+            // primary source照合、`docs/license-audit.md` §3.1 row 更新済).
+            "openmdw",
         ];
         if PERMISSIVE_TOKENS.iter().any(|t| norm.contains(t)) {
             return Self::Permissive;
@@ -393,8 +399,38 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "piper-plus" | "piper-plus-mb-istft-vits2" => LicenseClass::Permissive,
         "silero-vad" | "silero-vad-v5" => LicenseClass::Permissive,
         "campplus" | "cam++" => LicenseClass::Permissive,
+        // pyannote speaker diarization / VAD segmentation (2026-07-30 license
+        // half unblock): weight license = **MIT** per HF `pyannote/segmentation-
+        // 3.0` + `pyannote/speaker-diarization-3.1` cardData `license: mit`
+        // (authenticated HF API primary source, `gated: auto` は access control
+        // のみで追加条項なし、`docs/license-audit.md` §3.1 row 263 で 2026-07-30
+        // yousan sign)。The `diarize` op (FR-OP-82) itself is still M5-residual
+        // (op 実装 + trigger converter + real-checkpoint parity は残 wave の
+        // scope)、but the license side is unblocked.
+        "pyannote"
+        | "pyannote-segmentation"
+        | "pyannote-segmentation-3.0"
+        | "pyannote-segmentation-3_0"
+        | "pyannote-speaker-diarization"
+        | "pyannote-speaker-diarization-3.1"
+        | "pyannote-speaker-diarization-3_1" => LicenseClass::Permissive,
         "kokoro" | "kokoro-82m" | "cosyvoice" | "cosyvoice2" | "sesame-csm" | "csm-1b"
         | "voxtral" | "openwakeword" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors, MIT).
+        // 27M raw-audio transformer enc-dec ASR (arXiv:2410.15608). Weight
+        // license = **MIT** per upstream `UsefulSensors/moonshine-tiny`
+        // model card (Apache-2.0 code + MIT weight release — the model
+        // card canonical spelling). Sibling to the Whisper / piper-plus /
+        // Silero first-party Permissive posture.
+        "moonshine" | "moonshine-tiny" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors, MIT).
+        // 61.5M raw-audio transformer enc-dec ASR (arXiv:2410.15608).
+        // Sibling to Moonshine-Tiny — same arch family (raw-audio
+        // Conv1D + rotary + SwiGLU), wider/deeper backbone. Weight
+        // license = **MIT** per upstream `UsefulSensors/moonshine-base`
+        // model card (same posture as Tiny sibling). Sibling to the
+        // Whisper / piper-plus / Silero first-party Permissive posture.
+        "moonshine-base" => LicenseClass::Permissive,
         // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B —
         // TTS with the CosyVoice2 topology (Qwen2 LLM + chunk-aware CFM +
         // HiFTNet vocoder). Weight license = **apache-2.0** per the model-
@@ -472,7 +508,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "qwen3-tts-0_6b"
         | "qwen3-tts-12hz-0.6b-base"
         | "qwen3-tts-12hz-0_6b-base"
-        | "qwen3-tts-12hz-0.6b" => LicenseClass::Permissive,
+        | "qwen3-tts-12hz-0.6b"
+        // 2026-08-01 Wave 4 slug-only add: 0.6B-CustomVoice fine-tune of
+        // 0.6B-Base — same apache-2.0 grant end-to-end (`qwen3-tts-` prefix
+        // family walk below would resolve these to `Permissive` too; the
+        // exact-match arm is faster + keeps the canonical spellings visible
+        // in one place, mirror of the sibling variant walks throughout this
+        // registry).
+        | "qwen3-tts-0.6b-customvoice"
+        | "qwen3-tts-0_6b-customvoice"
+        | "qwen3-tts-12hz-0.6b-customvoice"
+        | "qwen3-tts-12hz-0_6b-customvoice" => LicenseClass::Permissive,
         // SoTA plan Phase 4 (2026-07-24): OpenBMB VoxCPM-0.5B — end-to-end
         // diffusion-autoregressive TTS. Weight license = **apache-2.0**
         // **end-to-end** — code + weight all under a single apache-2.0
@@ -485,7 +531,16 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // listed here so an id lookup returns quickly without hitting
         // the `voxcpm-` prefix arm below.
         "voxcpm" | "voxcpm2" | "voxcpm-0.5b" | "voxcpm-0_5b" | "voxcpm-0.5b-base"
-        | "voxcpm-0_5b-base" => LicenseClass::Permissive,
+        | "voxcpm-0_5b-base"
+        // 2026-07-30 Option C hybrid rename: `voxcpm2-*` names carry the
+        // arch-family prefix so the parity harness dispatches on a single
+        // string. Both variants ship apache-2.0 end-to-end so the class
+        // is unchanged — the only novelty is the canonical `voxcpm2-2b`
+        // name for `openbmb/VoxCPM2` (2B scale-up). The legacy
+        // `voxcpm-0.5b` string above stays live for backward compat with
+        // any pre-rename GGUF on disk.
+        | "voxcpm2-0.5b" | "voxcpm2-0_5b" | "voxcpm2-2b" | "voxcpm2-2_0b"
+        | "voxcpm2-2b-base" => LicenseClass::Permissive,
         // SoTA plan Phase 4 (2026-07-24): Microsoft VibeVoice-1.5B —
         // long-form multi-speaker end-to-end diffusion-autoregressive
         // TTS. Weight license = **MIT** **end-to-end** — code + weight
@@ -544,7 +599,31 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // governs the license of the redistributed artifact. So xcodec2
         // now lives on the NonCommercial arm below (with F5-TTS / EnCodec),
         // fail-closed against silent commercial use.
-        "dac" | "wavtokenizer" => LicenseClass::Permissive,
+        "dac" | "dac-24khz" | "dac-16khz" | "dac-44khz" | "wavtokenizer" => {
+            LicenseClass::Permissive
+        }
+        // 2026-08-01 Wave 8: SpeechBrain ECAPA-TDNN, voice-gender-classifier,
+        // primeline whisper-de fine-tune, jonatasgrosman xlsr-53-arabic.
+        // All apache-2.0 or MIT permissive (primary source verified via HF
+        // cardData API 2026-08-01).
+        "voice-gender-classifier"
+        | "speechbrain-spkrec-ecapa-voxceleb"
+        | "whisper-large-v3-turbo-german"
+        | "wav2vec2-large-xlsr-53-arabic" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 8: pyannote/wespeaker CC-BY-4.0 attribution.
+        "pyannote-wespeaker-voxceleb-resnet34-lm" => LicenseClass::AttributionRequired,
+        // M5 gap follow-up (2026-07-30): marl/crepe — a monophonic F0
+        // (fundamental-frequency) extractor. Weight license = **MIT**
+        // (`marl/crepe/main/LICENSE.txt`, "MIT License / Copyright (c)
+        // 2018 Jong Wook Kim et al.", CC-verified 2026-07-30 —
+        // CLAUDE.md「ハルシネーション厳禁」). Every capacity size
+        // (tiny/small/medium/large/full) shares the same MIT LICENSE.
+        // Registered here so a converted GGUF with
+        // `vokra.provenance.model_id = "crepe"` load-gates as commercial
+        // without a caller-side override.
+        "crepe" | "crepe-tiny" | "crepe-small" | "crepe-medium" | "crepe-large" | "crepe-full" => {
+            LicenseClass::Permissive
+        }
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
         // code + weight (docs/license-audit.md, model card).
         "dia" | "dia-1.6b" | "dia-1_6b" => LicenseClass::Permissive,
@@ -642,6 +721,58 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         }
         "bicodec" | "bi-codec" | "bi_codec" | "spark-tts-bicodec" => LicenseClass::Permissive,
         "neucodec" | "neu-codec" | "neu_codec" => LicenseClass::Permissive,
+        // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement
+        // wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 — MIT
+        // (Permissive) end-to-end weight per HF cardData primary source
+        // 2026-08-04 (`api/models/Aratako/MioCodec-25Hz-44.1kHz-v2` →
+        // `license: mit`). The arch tag (underscore == `vokra.model.arch`),
+        // the CLI slug (hyphen), and the versioned publish repo slug
+        // (`miocodec-25hz-44khz-v2` — matches
+        // `huggingface.co/vokra/miocodec-25hz-44khz-v2`) are all
+        // registered so an untagged GGUF resolves permissive on the
+        // fallback path regardless of which spelling it carries.
+        "miocodec"
+        | "mio-codec"
+        | "mio_codec"
+        | "miocodec-25hz-44khz-v2"
+        | "miocodec_25hz_44khz_v2"
+        | "aratako/miocodec-25hz-44.1khz-v2" => LicenseClass::Permissive,
+        // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air —
+        // apache-2.0 (Permissive) end-to-end weight per HF cardData
+        // primary source 2026-08-04 (`api/models/neuphonic/neutts-air`
+        // → `license: apache-2.0`). The arch tag (== `vokra.model.arch`
+        // = "neutts-air"), the CLI slug / publish-repo id (same string
+        // for this SKU — `vokra/neutts-air`), the underscore variant
+        // (== `models::neutts_air` module filename), and the upstream
+        // HF slug are all registered so an untagged GGUF resolves
+        // permissive on the fallback path regardless of which spelling
+        // it carries. Sibling to `neucodec` (same Neuphonic publisher,
+        // same apache-2.0 tag) — kept as its own arm so a rename or
+        // classification change on either side stays independent.
+        "neutts-air"
+        | "neutts_air"
+        | "neu-tts-air"
+        | "neu_tts_air"
+        | "neuphonic/neutts-air" => LicenseClass::Permissive,
+        // SoTA plan candidate wave (2026-08-04): SpeechBrain
+        // SGMSE-VoiceBank — apache-2.0 (Permissive) end-to-end weight
+        // per HF cardData primary source 2026-08-04
+        // (`api/models/speechbrain/sgmse-voicebank` → `license:
+        // apache-2.0`, `pipeline_tag: audio-to-audio`). The arch tag
+        // (== `vokra.model.arch` = "sgmse"), the VoiceBank-tuned
+        // model name / publish-repo id (`vokra/sgmse-voicebank`), the
+        // underscore variants (`sgmse_voicebank` mirrors the module
+        // filename), and the upstream HF slug are all registered so
+        // an untagged GGUF resolves permissive on the fallback path
+        // regardless of which spelling it carries. SpeechBrain family
+        // stays permissive (same posture as sibling `sepformer` /
+        // `mp-senet` / `metricgan-plus` rows).
+        "sgmse"
+        | "sgmse-voicebank"
+        | "sgmse_voicebank"
+        | "sgmse-voice-bank"
+        | "sgmse_voice_bank"
+        | "speechbrain/sgmse-voicebank" => LicenseClass::Permissive,
         "ecapa-tdnn" | "ecapa_tdnn" | "spkrec-ecapa-voxceleb" => LicenseClass::Permissive,
         "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
             LicenseClass::Permissive
@@ -652,6 +783,135 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "eres2net"
         | "speech_eres2net_sv_zh-cn_16k-common" => LicenseClass::Permissive,
         "emotion2vec" | "emotion-2vec" | "emotion2vec-plus-large" => LicenseClass::Permissive,
+        // 2026-08-01 wave: IBM Granite Speech 4.1-2B — audio-LLM ASR
+        // (Conformer CTC encoder + Granite-4.0-1b-base LLM decoder +
+        // BLIP-2 q-former projector + optional LoRA adapter). Weight
+        // license = apache-2.0 end-to-end (HF model page + docs page
+        // linking apache.org/licenses/LICENSE-2.0, CC-verified
+        // 2026-08-01). Redundant with the `granite-speech-` family walk
+        // below, but kept as an explicit exact-match arm so an id
+        // lookup returns quickly without hitting the prefix arm.
+        "granite-speech"
+        | "granite-speech-4.1-2b"
+        | "granite_speech"
+        | "granite-speech-4_1-2b"
+        | "ibm-granite/granite-speech-4.1-2b" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 3: OpenMOSS MOSS-Audio-Tokenizer family
+        // (`OpenMOSS-Team/MOSS-Audio-Tokenizer` + `-Nano`) — the codec
+        // half of the MOSS-TTS pipeline. Weight license = **apache-2.0**
+        // end-to-end on both variants (`cardData.license =
+        // "apache-2.0"` verified 2026-08-01 via authenticated HF API
+        // — no `LICENSE` file in the repos, declared via HF cardData
+        // tag only). Redundant with the sibling `moss-` prefix walker
+        // below (which handles `moss-tts` + this family via shared
+        // OpenMOSS-Team apache-2.0 licensing), but kept as an
+        // explicit exact-match arm so an id lookup returns quickly
+        // without hitting the prefix arm.
+        "moss-audio-tokenizer"
+        | "moss_audio_tokenizer"
+        | "moss-audio-tokenizer-full"
+        | "moss-audio-tokenizer-nano"
+        | "moss_audio_tokenizer_nano"
+        | "openmoss-team/moss-audio-tokenizer"
+        | "openmoss-team/moss-audio-tokenizer-nano" => LicenseClass::Permissive,
+        // 2026-08-02 wave: OpenMOSS Team MOSS-Audio-4B-Instruct
+        // (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`) — the 4B audio-LLM
+        // sibling of the four `moss_tts_*` releases. Custom-code
+        // release (`configuration_moss_audio.py`,
+        // `trust_remote_code=True`) distinct from every existing
+        // `moss-tts` prefix arm below (`moss-audio-4b` does NOT start
+        // with `moss-tts`) and from the `moss-audio-tokenizer` codec
+        // family above. Weight license = **apache-2.0** end-to-end
+        // per parent workflow task manifest (2026-08-02). Registered
+        // as an explicit exact-match arm so an id lookup returns
+        // quickly and so a hypothetical sibling id like
+        // `moss-audio-something-else` cannot silently inherit the
+        // classification without explicit review — fail-closed
+        // default via the outer `Unknown` arm.
+        "moss-audio-4b-instruct"
+        | "moss_audio_4b_instruct"
+        | "moss-audio-4b"
+        | "moss_audio_4b"
+        | "openmoss-team/moss-audio-4b-instruct"
+        | "openmoss-team/moss-audio-4b" => LicenseClass::Permissive,
+        // 2026-08-02 wave: OpenMOSS Team MOSS-Audio-8B-Instruct
+        // (`OpenMOSS-Team/MOSS-Audio-8B-Instruct`) — the 8B audio-LLM
+        // sibling of `MOSS-Audio-4B-Instruct` sharing the same
+        // custom-code release (`configuration_moss_audio.py`,
+        // `trust_remote_code=True`, 4 shards ~9.05 GB BF16 — vast.ai
+        // required). Weight license = **apache-2.0** end-to-end per
+        // parent workflow task manifest (2026-08-02). Registered as
+        // an explicit exact-match arm so an id lookup returns
+        // quickly and so a hypothetical sibling id like
+        // `moss-audio-something-else` cannot silently inherit the
+        // classification without explicit review — fail-closed
+        // default via the outer `Unknown` arm.
+        "moss-audio-8b-instruct"
+        | "moss_audio_8b_instruct"
+        | "moss-audio-8b"
+        | "moss_audio_8b"
+        | "openmoss-team/moss-audio-8b-instruct"
+        | "openmoss-team/moss-audio-8b" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec — factorized
+        // VQ (FVQ) codec (`amphion/naturalspeech3_facodec`). Weight
+        // license = **apache-2.0** end-to-end (HF cardData API + Amphion
+        // GitHub `open-mmlab/Amphion/LICENSE` both apache-2.0, verified
+        // 2026-08-01 — CLAUDE.md「ハルシネーション厳禁」). All four
+        // variants (v1 / v2 / redecoder-v{1,2}) share the same repo and
+        // the same license. Registered here so a converted GGUF with
+        // `vokra.provenance.model_id = "facodec"` / `naturalspeech3-facodec`
+        // / `naturalspeech3-facodec-v{1,2}` /
+        // `naturalspeech3-facodec-redecoder-v{1,2}` load-gates as
+        // commercial without a caller-side override.
+        "facodec"
+        | "naturalspeech3-facodec"
+        | "naturalspeech3_facodec"
+        | "ns3-facodec"
+        | "ns3_facodec"
+        | "amphion/naturalspeech3_facodec"
+        | "naturalspeech3-facodec-v1"
+        | "naturalspeech3-facodec-v2"
+        | "naturalspeech3-facodec-redecoder-v1"
+        | "naturalspeech3-facodec-redecoder-v2" => LicenseClass::Permissive,
+        // 2026-08-01 wave: Charactr AI Vocos family — Fourier-space
+        // vocoder (ConvNeXt V2 backbone + iSTFT head, arXiv:2306.00814).
+        // Weight license = **MIT** end-to-end (Charactr AI code + trained
+        // weights) per HF cardData API on both
+        // `charactr/vocos-mel-24khz` and `charactr/vocos-encodec-24khz`
+        // (verified 2026-08-01 — CLAUDE.md 「ハルシネーション厳禁」).
+        // GitHub `charactr-platform/vocos/LICENSE` is also standard
+        // MIT. Redundant with the `vocos` / `charactr/vocos-` prefix
+        // arm below, but the exact canonical spellings are listed
+        // here so an id lookup returns quickly without hitting the
+        // prefix arm.
+        "vocos"
+        | "vocos-mel-24khz"
+        | "vocos_mel_24khz"
+        | "vocos-encodec-24khz"
+        | "vocos_encodec_24khz" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 3 sibling-pair add: YuE bundle
+        // (`m-a-p/YuE-upsampler` + `m-a-p/xcodec_mini_infer`). Weight
+        // license = **apache-2.0** end-to-end on both variants (HF
+        // cardData API `license: apache-2.0` on both repos, verified
+        // 2026-08-01 — CLAUDE.md 「ハルシネーション厳禁」). Upstream
+        // YuE code at `github.com/multimodal-art-projection/YuE` also
+        // ships apache-2.0. Redundant with the `yue-` prefix walker
+        // below, but the exact canonical spellings are listed here so
+        // an id lookup returns quickly without hitting the prefix arm.
+        "yue-upsampler"
+        | "yue_upsampler"
+        | "map-yue-upsampler"
+        | "m-a-p/yue-upsampler"
+        | "yue-xcodec-mini"
+        | "yue_xcodec_mini"
+        | "yue-xcodec-mini-infer"
+        | "yue_xcodec_mini_infer"
+        | "xcodec-mini"
+        | "xcodec_mini"
+        | "xcodec-mini-infer"
+        | "xcodec_mini_infer"
+        | "yue-codec"
+        | "m-a-p/xcodec_mini_infer" => LicenseClass::Permissive,
         // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): ESPnet-family
         // Japanese plain VITS (JSUT / JVS / COEIROINK deployments +
         // any downstream that consumes the shared `vits-ja` arch tag).
@@ -683,6 +943,50 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // `docs/tickets/sota-coverage-plan-2026-07-22.md` §2.4.)
         "vits-ja" | "vits_ja" | "espnet-vits-ja" | "espnet-jsut-vits" | "espnet-jvs-vits"
         | "coeiroink-vits" => LicenseClass::RedistributionForbidden,
+        // BS-Roformer / Mel-Band Roformer (Wave 5 music-separation add,
+        // 2026-08-01) — the fail-closed default is
+        // `RedistributionForbidden` for a different failure mode than
+        // vits-ja above. Where vits-ja refuses because the training
+        // corpus (JSUT / JVS / COEIROINK) explicitly forbids trained-
+        // weight redistribution, BS-Roformer refuses because a converter
+        // cannot know which specific SPDX id applies to the caller's
+        // checkpoint: the architecture / reference code is MIT
+        // (`github.com/lucidrains/BS-RoFormer`, Phil Wang's clean-room
+        // implementation of Lu et al. 2023 arXiv:2310.01809), the paper
+        // released no reference weights, and every checkpoint in the
+        // wild is a downstream retraining under mixed licenses (GPL-3.0
+        // for some Ultimate-Vocal-Remover / MDX-Net-community
+        // derivatives, CC-BY-NC-4.0 for some MoisesDB / MusDB fine-
+        // tunes, no explicit license for the majority — hobbyist
+        // releases). The third-party mirror `chenmozhijin/BSRoformer-
+        // GGUF` aggregates converted GGUFs across trainers without a
+        // uniform license clause; the converter registers the family
+        // fail-closed and defers the per-checkpoint override to the
+        // caller supplying `--license <spdx>` at conversion time (the
+        // same escape hatch vits-ja / Whisper / kokoro use). Aliases
+        // cover the arch tag (underscore + hyphen), the family-name
+        // spellings (`bs-roformer` / `bsroformer` / `mel-band-roformer` /
+        // `melband-roformer`), and the third-party HF mirror slug — same
+        // spellings the converter `from_arg` walk in
+        // `crates/vokra-convert/src/lib.rs` accepts. The
+        // `mel-band-roformer` sibling shares the same arch tag because
+        // the band-split module vs mel-filter-bank module is a runtime
+        // hparam, not a distinct arch.
+        //
+        // Publish is blocked at
+        // `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS` (no
+        // entry for `bs-roformer`, unlisted slug fails closed as
+        // `UNKNOWN_REPO`) until an owner ADR selects a specific
+        // checkpoint + license — the license classifier here is the
+        // upstream half of that gate.
+        "bs-roformer"
+        | "bs_roformer"
+        | "bsroformer"
+        | "mel-band-roformer"
+        | "mel_band_roformer"
+        | "melband-roformer"
+        | "melband_roformer"
+        | "chenmozhijin/bsroformer-gguf" => LicenseClass::RedistributionForbidden,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         //
         // X-Codec 2 (`x-codec-2` / `xcodec2`, SoTA plan Phase 5 codec)
@@ -693,10 +997,265 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // the DAC / WavTokenizer arm above for the reason the earlier
         // Permissive listing was wrong for the weight-distribution repo.
         "f5-tts" | "encodec" | "x-codec-2" | "xcodec2" => LicenseClass::NonCommercial,
+        // residual wave 4 (2026-08-02): CrisperWhisper
+        // (`nyrahealth/CrisperWhisper`, cc-by-nc-4.0). Whisper-large-v3
+        // fine-tune emphasising verbatim word-level timestamps —
+        // architecturally byte-identical to whisper-large-v3, but the
+        // trained weights are gated by CC-BY-NC-4.0 (T4 tier /
+        // Research-only publish path per the X-Codec-2 (2026-07-28)
+        // precedent). `crisper-whisper` covers the arch tag stamped by
+        // the converter (distinct from vanilla `whisper`);
+        // `crisperwhisper` / `crisper_whisper` cover the model-id stamp
+        // spellings; `vokra/crisperwhisper` covers the publish repo slug
+        // per the ELVIS-Act / T4 tier gate. The M2-13 runtime gate
+        // refuses to load in commercial mode
+        // (`requires_research_flag = true`); publish requires
+        // `publish-one.sh --allow-noncommercial`.
+        "crisper-whisper"
+        | "crisperwhisper"
+        | "crisper_whisper"
+        | "vokra/crisperwhisper" => LicenseClass::NonCommercial,
+        // 2026-08-02 wave: Meta MMS-1B-All (`facebook/mms-1b-all`,
+        // **cc-by-nc-4.0** per HF cardData primary source verified
+        // 2026-08-02 — CLAUDE.md「ハルシネーション厳禁」). Pratap et al.
+        // 2023 (arXiv:2305.13516) — 1B wav2vec 2.0 backbone + 1000+
+        // per-language CTC adapters. Registered as **explicit exact-
+        // match arms** BEFORE the sibling `_ if id.starts_with("wav2vec2")
+        // => Permissive` prefix walk below because MMS is a distinct
+        // upstream release with a distinct weight-distribution licence
+        // (cc-by-nc-4.0), and the fail-closed publish path requires the
+        // `NonCommercial` classification to force `publish-one.sh
+        // --allow-noncommercial` at publish time + the M2-13 runtime
+        // gate refusal in commercial mode. The `mms-1b-all` /
+        // `mms_1b_all` / `mms-1b` / `mms_1b` covers the arch-tag +
+        // slug spellings the converter stamps; `facebook/mms-1b-all`
+        // covers the upstream HF slug; `vokra/mms-1b-all` covers the
+        // publish repo slug per the ELVIS-Act / T4 tier gate.
+        "mms-1b-all"
+        | "mms_1b_all"
+        | "mms-1b"
+        | "mms_1b"
+        | "facebook/mms-1b-all"
+        | "vokra/mms-1b-all" => LicenseClass::NonCommercial,
+        // Meta AudioCraft MusicGen family (Wave 5 music-generation add,
+        // 2026-08-01) — the trained weights ship **cc-by-nc-4.0** on HF
+        // (`huggingface.co/facebook/musicgen-medium` model card
+        // front-matter `license: cc-by-nc-4.0`), same posture X-Codec 2
+        // uses above. The code layer at
+        // `github.com/facebookresearch/audiocraft` is MIT, but this
+        // registry lookups the weight distribution class (M2-13 runtime
+        // gate anchors on `vokra.provenance.weight_license`, not on the
+        // code license). Every future MusicGen family variant (small /
+        // large / melody / stereo-*) inherits this arm — Meta's weight
+        // policy is uniform across the family. `musicgen` covers the
+        // bare arch tag; `musicgen-medium` covers the medium model-id
+        // stamp; `musicgen-large` covers the large model-id stamp
+        // (Wave 5 sibling landed 2026-08-01, 3.3B vs medium 1.5B, same
+        // cc-by-nc-4.0 weight license per HF cardData
+        // `huggingface.co/facebook/musicgen-large` primary source).
+        "musicgen"
+        | "musicgen-small"
+        | "musicgen-medium"
+        | "musicgen-large"
+        // MusicGen-Melody sibling (2026-08-02 Wave 5, medium 1.5B LM +
+        // chromagram conditioning frontend, `facebook/musicgen-melody`
+        // cc-by-nc-4.0 per HF cardData primary source). Both the raw
+        // arch/name variants and the `vokra/` publish repo slug route
+        // here so the M2-13 runtime gate refuses commercial-mode loads
+        // fail-closed regardless of which id form the caller supplies
+        // (mirror of the `facebook/mms-1b-all` | `vokra/mms-1b-all`
+        // arm above).
+        | "musicgen-melody"
+        | "musicgen_melody"
+        | "facebook/musicgen-melody"
+        | "vokra/musicgen-melody"
+        | "audiogen-medium"
+        | "audiogen" => LicenseClass::NonCommercial,
+        // 2026-08-02 Wave residual: Coqui XTTS-v2 (`coqui/XTTS-v2`,
+        // `coqui-public-model-license`). Coqui's bespoke research-only
+        // license — not SPDX-listed, so the string-based
+        // `from_license_str` classifier cannot recognise it (falls through
+        // to `Unknown` = fail-closed refuse). This registry override anchors
+        // the family on `LicenseClass::NonCommercial` so `vokra/xtts-v2`
+        // routes through the T4 (Research-only) publish path per X-Codec-2
+        // (2026-07-28) / MusicGen family (2026-08-01) precedent. `xtts`
+        // covers the bare arch tag; `xtts-v2` covers the model-id stamp;
+        // `xttsv2` covers the compact spelling. Coqui shut down Jan 2024
+        // but the upstream repo remains the primary source. Publish
+        // requires `publish-one.sh --allow-noncommercial`.
+        "xtts" | "xtts-v2" | "xttsv2" => LicenseClass::NonCommercial,
+        // 2026-08-02 Wave residual: Meta Seamless-M4T-v2-Large
+        // (`facebook/seamless-m4t-v2-large`, **cc-by-nc-4.0** per HF
+        // cardData primary source — CLAUDE.md「ハルシネーション厳禁」).
+        // 2.3B unified any-to-any speech-and-text translation model
+        // (Communication et al. 2023, arXiv:2312.05187) — ASR + T2TT +
+        // S2TT + T2ST + S2ST across ~100 source / ~35 target speech
+        // languages. Distinct arch tag `unity-2` (Meta's fairseq2
+        // dispatch name) covering the 4 subgraphs (w2v-BERT enc + text
+        // dec + T2U + HiFi-GAN vocoder). Registered as **explicit exact-
+        // match arms** so the fail-closed publish path forces
+        // `publish-one.sh --allow-noncommercial` at publish time + the
+        // M2-13 runtime gate refusal in commercial mode. `seamless-m4t-
+        // v2-large` / `seamless_m4t_v2_large` cover the model-id
+        // spellings; `unity-2` / `unity_2` cover the arch tag stamped
+        // by the converter; `facebook/seamless-m4t-v2-large` covers the
+        // upstream HF slug; `vokra/seamless-m4t-v2-large` covers the
+        // publish repo slug per the ELVIS-Act / T4 tier gate. Same T4
+        // (Research-only) tier as X-Codec 2 (2026-07-28 precedent) /
+        // MusicGen family (2026-08-01) / CrisperWhisper + MMS-1B-All
+        // (2026-08-02 wave).
+        "seamless-m4t-v2-large"
+        | "seamless_m4t_v2_large"
+        | "seamlessm4t-v2-large"
+        | "seamlessm4t_v2_large"
+        | "seamless-m4t-v2"
+        | "seamless_m4t_v2"
+        | "unity-2"
+        | "unity_2"
+        | "facebook/seamless-m4t-v2-large"
+        | "vokra/seamless-m4t-v2-large" => LicenseClass::NonCommercial,
+        // 2026-08-01 Wave 6 residual — permissive audio-LLM / VC-sibling /
+        // multi-file bundle. All apache-2.0 / MIT clean.
+        "qwen2-audio"
+        | "qwen2-audio-7b"
+        | "qwen2-audio-7b-instruct"
+        | "vibevoice-asr"
+        | "ace-step"
+        | "ace-step-1.5"
+        | "ace_step"
+        | "ace-step-1_5" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual: Alibaba Qwen2.5-Omni-7B
+        // (`Qwen/Qwen2.5-Omni-7B`, apache-2.0 per HF primary source
+        // cardData). Thinker + Talker unified any-to-any omni
+        // multimodal LLM over a Qwen2.5-7B backbone. Distinct arch
+        // tag `qwen2-omni` from sibling `qwen2_audio` (audio-only
+        // Whisper + Qwen2-7B LM) — the two share a family lineage
+        // but the fused Thinker + Talker pair fixes a different
+        // tensor topology, so the arch tag must stay distinct
+        // (FR-EX-08 no silent shape misroute). `qwen2-omni` covers
+        // the arch stamp; `qwen2-5-omni-7b` covers the model-id
+        // stamp; `qwen2-5-omni` covers the family stamp.
+        "qwen2-omni"
+        | "qwen2-5-omni-7b"
+        | "qwen2-5-omni"
+        | "qwen2_5_omni_7b"
+        | "qwen/qwen2.5-omni-7b"
+        | "vokra/qwen2-5-omni-7b" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 7 residual — Meta HuBERT-Large-LS960
+        // (`facebook/hubert-large-ls960-ft`, apache-2.0 per HF cardData
+        // primary source). 317M self-supervised speech encoder + CTC
+        // head fine-tuned on LibriSpeech 960h. Distinct arch tag
+        // `hubert` from sibling wav2vec2 (different pretraining
+        // objective) — the two share ops but the arch tag stays
+        // distinct so runtime dispatch cannot misroute silently.
+        "hubert"
+        | "hubert-large-ls960"
+        | "hubert_large_ls960"
+        | "hubert-large-ls960-ft"
+        | "facebook/hubert-large-ls960-ft" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual — Meta HT-Demucs (`facebook/demucs`, MIT
+        // per upstream `github.com/facebookresearch/demucs` LICENSE primary
+        // source; HF mirror returned 401 on the 2026-08-02 residual walk,
+        // so the SPDX id anchors on the upstream GitHub `LICENSE` file per
+        // memory `[[feedback-license-signoff-primary-source]]`). Hybrid
+        // transformer Demucs (Rouard et al. 2023, arXiv:2211.08553) =
+        // U-Net waveform branch + spectrogram branch + cross-domain self-
+        // attention, 4-source music separation (drums / bass / other /
+        // vocals). Distinct arch tag `demucs` from sibling SepFormer /
+        // TIGER separators (different internal domain + different output
+        // branching — FR-EX-08 forbids silent misroute across separator
+        // families). Category `separation` shared with the sibling
+        // separator families.
+        "demucs"
+        | "demucs-htdemucs"
+        | "demucs_htdemucs"
+        | "htdemucs"
+        | "ht-demucs"
+        | "facebook/demucs" => LicenseClass::Permissive,
+        // 2026-08-02 Wave residual — Ultravox v0.5 (Llama-3.2-1B)
+        // (`fixie-ai/ultravox-v0_5-llama-3_2-1b`, MIT). Audio-text-to-text
+        // multimodal = Llama-3.2-1B decoder + Whisper encoder + projection
+        // adapter. Weight license = **MIT** per HF cardData (SoTA scope-
+        // expansion 2026-07-30 canary sweep). Sibling to the first-party
+        // Whisper / piper-plus / Silero / CAM++ / Moonshine Permissive
+        // posture. Distinct arch tag `ultravox` from sibling Voxtral
+        // (Mistral decoder) / Qwen2-Audio (Qwen2 decoder) — the decoder
+        // backbone fixes tensor layout + tokenizer + rope base, so FR-EX-08
+        // forbids silent shape misroute across the three families.
+        "ultravox"
+        | "ultravox-v0-5-llama-3-2-1b"
+        | "ultravox_v0_5_llama_3_2_1b"
+        | "ultravox-v0_5-llama-3_2-1b"
+        | "fixie-ai/ultravox-v0_5-llama-3_2-1b"
+        | "vokra/ultravox-v0-5-llama-3-2-1b" => LicenseClass::Permissive,
+        // --- Copyleft (share-alike, redistributable with LICENSE preserved) --
+        //
+        // 2026-08-02 Wave residual — JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k
+        // (Asteroid ConvTasNet single-speaker enhancement, cc-by-sa-4.0 per
+        // HF cardData primary source). **First entry on the
+        // `LicenseClass::Copyleft` arm.** The SA cascade propagates to
+        // derivatives — a GGUF built from a CC-BY-SA weight is itself
+        // CC-BY-SA, so downstream re-labelling as Apache-2.0 is a
+        // misrepresentation, not a mere attribution drop.
+        // `from_license_str("cc-by-sa-4.0")` already lands the same
+        // Copyleft class (share-alike arm is tested before plain cc-by
+        // per the ordering pin in `Self::from_license_str`), but this
+        // registry override anchors the family on Copyleft so a
+        // `vokra/conv-tasnet-libri1mix` publish gate can look up the class
+        // without re-parsing the SPDX id. Publish is **redistributable
+        // with the original licence preserved** (T3 tier) — no
+        // `--allow-noncommercial` required (Copyleft ≠ NonCommercial),
+        // but the SA cascade must carry forward on every derivative.
+        "conv-tasnet"
+        | "conv_tasnet"
+        | "convtasnet"
+        | "conv-tasnet-libri1mix"
+        | "conv_tasnet_libri1mix"
+        | "convtasnet-libri1mix"
+        | "conv-tasnet-libri1mix-enhsingle-16k"
+        | "conv_tasnet_libri1mix_enhsingle_16k"
+        | "joriscos/convtasnet_libri1mix_enhsingle_16k"
+        | "vokra/conv-tasnet-libri1mix" => LicenseClass::Copyleft,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike
         }
+        // AudioLDM 2 (Wave 5 candidate, 2026-08-01) — CVSSP primary
+        // source (Liu et al. 2024 ICML arXiv:2308.05734 paper §Ethics +
+        // GitHub `haoheliu/AudioLDM2` README) pins CC-BY-NC-SA 4.0.
+        // The HF card `cvssp/audioldm2` carries the looser `-nc-4.0`
+        // tag, but the CVSSP-owned primary source is the ShareAlike
+        // form — we follow the more restrictive of the two conflicting
+        // declarations (same Fish-Speech pattern above; the SA cascade
+        // is the load-bearing part of the classification and dropping
+        // it silently would silently mark derivatives as re-licensable
+        // outside CC-BY-NC-SA). **Publish blocked** at the
+        // `signoff_match.py::REPO_TO_SIGNOFF_ROWS` layer until an
+        // owner ADR resolves the SA cascade onto Vokra-added artifacts.
+        "audioldm2"
+        | "audio-ldm-2"
+        | "audio_ldm_2"
+        | "audioldm-2"
+        | "audioldm_2"
+        | "cvssp-audioldm2"
+        | "cvssp/audioldm2" => LicenseClass::NonCommercialShareAlike,
+        // AudioLDM 2 Large (Wave 8 sibling, 2026-08-02) — wider/deeper
+        // sibling of the base AudioLDM 2 variant, same CVSSP primary-
+        // source license (CC-BY-NC-SA-4.0). The `vokra/audioldm2-large`
+        // repo slug resolves here so a future publish gate lookup finds
+        // the same doubly-restrictive class (NC gate + SA cascade) as
+        // sibling base. **Publish blocked** at the
+        // `signoff_match.py::REPO_TO_SIGNOFF_ROWS` layer until an owner
+        // ADR resolves the SA cascade onto Vokra-added artifacts (same
+        // posture as sibling `cvssp/audioldm2` above).
+        "audioldm2-large"
+        | "audio-ldm-2-large"
+        | "audio_ldm_2_large"
+        | "audioldm-2-large"
+        | "audioldm_2_large"
+        | "cvssp-audioldm2-large"
+        | "cvssp/audioldm2-large"
+        | "vokra/audioldm2-large" => LicenseClass::NonCommercialShareAlike,
         // --- gated: unknown training rights (research flag, fail-closed) -----
         "rvc" | "rvc-v2" | "gpt-sovits" | "e2-tts" | "styletts2" | "styletts-2" => {
             LicenseClass::Unknown
@@ -811,14 +1370,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // family would need its own explicit prefix.
             || id.starts_with("qwen3-tts-")
             // OpenBMB VoxCPM first-party family (apache-2.0 end-to-end —
-            // SoTA plan Phase 4, 2026-07-24): specific HF variant ids
-            // like `voxcpm-0.5b` / a future `voxcpm-0.5b-customvoice` /
-            // `voxcpm-1.5b` still resolve permissive. Guarded on the
-            // dash so unrelated ids (`voxcpmsomething`) cannot slip
-            // through. The `voxcpm2` (arch-tag) alias covers only the
-            // arch-tag spelling — a future underscore variant family
-            // would need its own explicit prefix.
+            // SoTA plan Phase 4, 2026-07-24; 2B variant land 2026-07-30):
+            // specific HF variant ids like `voxcpm-0.5b` / a future
+            // `voxcpm-0.5b-customvoice` / `voxcpm-1.5b` still resolve
+            // permissive. Guarded on the dash so unrelated ids
+            // (`voxcpmsomething`) cannot slip through. The `voxcpm2`
+            // (arch-tag) alias covers only the arch-tag spelling; the
+            // `voxcpm2-` prefix covers the 2026-07-30 rename family
+            // (`voxcpm2-2b`, `voxcpm2-0.5b`) plus any future 2B-lineage
+            // variant that keeps the arch-family name.
             || id.starts_with("voxcpm-")
+            || id.starts_with("voxcpm2-")
             // Microsoft VibeVoice first-party family (MIT end-to-end —
             // SoTA plan Phase 4, 2026-07-24): specific HF variant ids
             // like `vibevoice-1.5b` / a future `vibevoice-7b` /
@@ -877,6 +1439,175 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // accident. NVIDIA's whole Canary family ships under CC-BY 4.0
         // (per the 1B-v2 model card).
         _ if id.starts_with("canary-") => LicenseClass::AttributionRequired,
+        // pyannote first-party family (MIT weight — 2026-07-30 license half
+        // unblock、`docs/license-audit.md` §3.1 row 263): specific HF variant
+        // ids like `pyannote-segmentation-3.0` / `pyannote-speaker-
+        // diarization-3.1` or future `pyannote-segmentation-4.0` still
+        // resolve permissive. Guarded on the dash so unrelated ids
+        // (`pyannote-something-not-shipped-by-pyannote`) cannot slip
+        // through. Exact-name aliases (`pyannote` / `pyannote-segmentation`
+        // 等) are pinned in the fast-path arm above; this prefix walk covers
+        // future variants of the same family under the same MIT LICENSE at
+        // `github.com/pyannote/pyannote-audio/LICENSE`.
+        _ if id.starts_with("pyannote-") => LicenseClass::Permissive,
+        // 2026-07-30 TIER 1+2 audio-gap family walks (ultracode
+        // `wf_022575ce-077` land): each family under apache-2.0 or MIT per
+        // its HF cardData primary source verified 2026-07-30. See
+        // `docs/handoff/tier1-tier2-audio-impl-2026-07-30.md` for the
+        // per-family primary source URL list.
+        _ if id.starts_with("qwen3-asr-") => LicenseClass::Permissive,
+        // 2026-08-01 wave: IBM Granite Speech family (apache-2.0 end-to-
+        // end): future variants like `granite-speech-4.1-8b` /
+        // `granite-speech-3.3-8b` still resolve permissive. Guarded on
+        // the dash so unrelated ids (`granite-speechx-something`) cannot
+        // slip through into the permissive bucket by accident.
+        _ if id.starts_with("granite-speech-") => LicenseClass::Permissive,
+        _ if id.starts_with("wav2vec2") => LicenseClass::Permissive,
+        // 2026-08-02 wave: `facebook/data2vec-audio-base-960h` (apache-2.0).
+        // Baevski et al. 2022 (arXiv:2202.03555): wav2vec 2.0 base
+        // topology + data2vec pretraining objective + LibriSpeech 960h
+        // English char CTC head. Every future `data2vec-audio-*` sibling
+        // (base / large / bookish / whatever Meta releases next) stays
+        // permissive by prefix walk — Meta's data2vec fleet is uniformly
+        // apache-2.0 to date. Placed as its own arm rather than folded
+        // into the `wav2vec2` prefix so a future non-apache release
+        // cannot silently inherit the classification without explicit
+        // review (the `data2vec` bucket is architecturally distinct
+        // from wav2vec2 despite sharing the downstream inference
+        // topology — different pretraining objective).
+        _ if id.starts_with("data2vec-audio") || id.starts_with("data2vec_audio") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("moss-tts") || id.starts_with("openmoss-team/moss-tts") => {
+            LicenseClass::Permissive
+        }
+        // 2026-08-01 Wave 4 slug-only add: OpenMOSS Team
+        // **MOSS-VoiceGenerator** (`OpenMOSS-Team/MOSS-VoiceGenerator`,
+        // apache-2.0). Sibling HF release of the `moss_tts` LLM family
+        // under the same `moss_tts_delay` internal `model_type` tag, so
+        // topology is already covered by [`MossTtsVariant::Delay`] and
+        // no new converter arm is needed at this layer. Primary source
+        // = HF cardData `license: apache-2.0` (CC 直接照合 2026-08-01,
+        // `https://huggingface.co/api/models/OpenMOSS-Team/MOSS-VoiceGenerator`).
+        // Registered as explicit exact-match arms rather than routed
+        // through the `moss-tts` prefix walk because the ids do not
+        // share that prefix (`moss-voice-generator` starts with
+        // `moss-v`, not `moss-tts`), and this keeps a hypothetical
+        // future `moss-voice-*` sibling from silently inheriting the
+        // classification without an explicit review. Guarded by the
+        // dash / underscore variants only — anything else fails
+        // through to `Unknown` (fail-closed).
+        "moss-voice-generator"
+        | "moss_voice_generator"
+        | "moss-voicegenerator"
+        | "moss_voicegenerator"
+        | "openmoss-team/moss-voice-generator"
+        | "openmoss-team/moss-voicegenerator" => LicenseClass::Permissive,
+        // 2026-08-01 Wave 3: MOSS-Audio-Tokenizer family — the codec
+        // half of the MOSS-TTS pipeline (both Full + Nano apache-2.0
+        // per HF cardData API verified 2026-08-01). Prefix walk
+        // covers future variants OpenMOSS Team may ship (e.g. a
+        // hypothetical v2 or additional distillations) under the same
+        // apache-2.0 licensing. Guarded so unrelated ids like
+        // `moss-audio-tokenizerx-something` cannot slip through.
+        _ if id.starts_with("moss-audio-tokenizer")
+            || id.starts_with("openmoss-team/moss-audio-tokenizer") =>
+        {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("melotts-") || id.starts_with("myshell-ai/melotts-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("speecht5-") || id == "speecht5" => LicenseClass::Permissive,
+        _ if id.starts_with("parler-tts") || id.starts_with("indic-parler") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("vieneu-") || id.starts_with("pnnbao-ump/vieneu-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("bark") || id.starts_with("suno/bark") => LicenseClass::Permissive,
+        _ if id.starts_with("hifigan-vocoder") || id.starts_with("speechbrain/tts-hifigan-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("bigvgan") || id.starts_with("nvidia/bigvgan") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("focalcodec") || id.starts_with("lucadellalib/focalcodec") => {
+            LicenseClass::Permissive
+        }
+        // 2026-08-01 wave: Charactr AI Vocos family — MIT end-to-end
+        // per HF cardData API `license: mit` on both mel-24khz and
+        // encodec-24khz repos (verified 2026-08-01). Prefix walk
+        // covers any future Vocos variant Charactr AI ships (e.g. a
+        // future `charactr/vocos-mel-48khz`) so an untagged GGUF
+        // resolves permissive without needing a rebuild of this arm.
+        _ if id.starts_with("vocos") || id.starts_with("charactr/vocos-") => {
+            LicenseClass::Permissive
+        }
+        // 2026-08-01 Wave 3 sibling-pair add: YuE bundle family
+        // (`m-a-p/YuE-upsampler` + `m-a-p/xcodec_mini_infer`) —
+        // apache-2.0 end-to-end per HF cardData API on both repos
+        // (verified 2026-08-01). Prefix walk covers any future YuE
+        // variant m-a-p ships (e.g. a hypothetical yue-upsampler-v2
+        // or an xcodec_mini_v2 refresh) so an untagged GGUF resolves
+        // permissive without needing a rebuild of this arm. Guarded
+        // so unrelated ids (`yuejun-something` etc.) cannot slip
+        // through into the permissive bucket by accident.
+        _ if id.starts_with("yue-")
+            || id.starts_with("yue_")
+            || id.starts_with("xcodec-mini")
+            || id.starts_with("xcodec_mini")
+            || id.starts_with("m-a-p/yue-")
+            || id.starts_with("m-a-p/xcodec_mini") =>
+        {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("tiger-") || id.starts_with("jusperlee/tiger-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("mp-senet") || id.starts_with("jacoblincool/mp-senet-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("metricgan-") || id.starts_with("speechbrain/metricgan-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("sepformer-") || id.starts_with("speechbrain/sepformer-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("fsmn-vad") || id.starts_with("funasr/fsmn-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("firered-vad") || id.starts_with("fireredteam/firered") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("smart-turn") || id.starts_with("pipecat-ai/smart-turn") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("clap") || id.starts_with("laion/clap-") => LicenseClass::Permissive,
+        _ if id.starts_with("ast") || id.starts_with("mit/ast-") => LicenseClass::Permissive,
+        _ if id.starts_with("lang-id-") || id.starts_with("speechbrain/lang-id-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("xvector") || id.starts_with("speechbrain/spkrec-xvect-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("deepfake-detection") || id.starts_with("melodymachine/deepfake-") => {
+            LicenseClass::Permissive
+        }
+        _ if id.starts_with("kyutai-tts") => LicenseClass::AttributionRequired,
+        _ if id.starts_with("audiobox-aesthetics") => LicenseClass::AttributionRequired,
+        // Defer markers (vast.ai / gated / license-精査-要): fail-closed by
+        // returning None here; owner ADR unblocks per model.
+        _ if id.starts_with("voxtral-mini-realtime") => LicenseClass::Permissive,
+        _ if id.starts_with("cohere-transcribe") => LicenseClass::Permissive,
+        // nvidia/nemotron-3.5-asr-streaming-* family — OpenMDW-1.1
+        // (Open Model Derivatives Work 1.1、openmdw.ai/license/1-1/、
+        // 2026-07-30 CC 直接照合)。permissive MIT-analog for ML weights =
+        // commercial + redistribution 可、no share-alike / no NC / no
+        // field-of-use restriction、attribution = notice 保持のみ
+        // (Apache-2.0 同 tier)。owner ADR 完了 = 暫定から確定 Permissive
+        // へ (`docs/license-audit.md` §3.1 row 更新済)。
+        _ if id.starts_with("nemotron-asr") => LicenseClass::Permissive,
         _ => return None,
     };
     Some(class)
@@ -1334,6 +2065,29 @@ mod tests {
         // Guard: a random id starting with "omniasr-ctcxyz" (no dash) is
         // NOT under the family prefix walk.
         assert_eq!(registry_lookup("omniasr-ctcxyz-something"), None);
+        // 2026-07-30 license half unblock: pyannote family (MIT) — canonical
+        // + variant spellings + case-insensitive + family prefix walk.
+        // `docs/license-audit.md` §3.1 row 263 で 2026-07-30 yousan sign。
+        for id in [
+            "pyannote",
+            "pyannote-segmentation",
+            "pyannote-segmentation-3.0",
+            "pyannote-segmentation-3_0",
+            "pyannote-speaker-diarization",
+            "pyannote-speaker-diarization-3.1",
+            // Case-insensitive (via lower-casing before lookup).
+            "PyAnnote-Segmentation-3.0",
+            "PYANNOTE",
+            // Family prefix — a hypothetical future `pyannote-segmentation-
+            // 4.0` / `pyannote-vad-v2` still resolves permissive by the walk.
+            "pyannote-segmentation-4.0",
+            "pyannote-vad-v2",
+        ] {
+            assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
+        }
+        // Guard: a random id starting with "pyannotex" (no dash) is NOT under
+        // the family prefix walk.
+        assert_eq!(registry_lookup("pyannotex-something"), None);
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
         // First-party **variant** ids (not canonical) still resolve permissive by
@@ -1523,6 +2277,16 @@ mod tests {
             "VoxCPM-0.5B",
             // Family prefix — a hypothetical future variant.
             "voxcpm-1.5b",
+            // 2026-07-30 Option C hybrid rename: `voxcpm2-*` names.
+            "voxcpm2-0.5b",
+            "voxcpm2-0_5b",
+            "voxcpm2-2b",
+            "voxcpm2-2_0b",
+            "voxcpm2-2b-base",
+            // Case-insensitive on the arch-family form too.
+            "VoxCPM2",
+            // Prefix arm (future 2B-lineage variants).
+            "voxcpm2-2b-customvoice",
         ] {
             assert_eq!(
                 registry_lookup(id),
@@ -1619,6 +2383,52 @@ mod tests {
                 "xcodec2: {id} MUST be NonCommercial (HF card = cc-by-nc-4.0) \
                  — silently returning Permissive would authorise a commercial \
                  load of an NC weight."
+            );
+            let c = c.unwrap();
+            assert!(
+                c.requires_research_flag(),
+                "{id}: NC must require the research flag to load"
+            );
+            assert!(
+                !c.commercial_ok(),
+                "{id}: commercial_ok must be false for NC"
+            );
+            assert!(
+                !c.redistributable(),
+                "{id}: NonCommercial is not on the publish gate's allow-list"
+            );
+        }
+
+        // ---- 2026-08-02 wave: MMS-1B-All (NonCommercial) --------------
+        //
+        // Meta MMS-1B-All (`facebook/mms-1b-all`, cc-by-nc-4.0 per HF
+        // cardData primary source verified 2026-08-02 —
+        // CLAUDE.md「ハルシネーション厳禁」). Pratap et al. 2023
+        // (arXiv:2305.13516) — 1B wav2vec 2.0 backbone + 1000+
+        // per-language CTC adapters. Every id form MUST resolve to
+        // `NonCommercial` (T4 tier / Research-only publish path per the
+        // X-Codec-2 (2026-07-28) precedent). CRUCIALLY, this arm must
+        // beat the sibling `_ if id.starts_with("wav2vec2")` prefix walk
+        // (which would silently return `Permissive`) — the exact-match
+        // arm is placed BEFORE the prefix walk for that reason.
+        for id in [
+            "mms-1b-all",
+            "mms_1b_all",
+            "mms-1b",
+            "mms_1b",
+            "facebook/mms-1b-all",
+            "vokra/mms-1b-all",
+            // Case-insensitive.
+            "MMS-1B-ALL",
+            "Facebook/MMS-1B-All",
+        ] {
+            let c = registry_lookup(id);
+            assert_eq!(
+                c,
+                Some(LicenseClass::NonCommercial),
+                "mms-1b-all: {id} MUST be NonCommercial (HF card = \
+                 cc-by-nc-4.0) — silently returning Permissive would \
+                 authorise a commercial load of an NC weight."
             );
             let c = c.unwrap();
             assert!(

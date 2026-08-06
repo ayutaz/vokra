@@ -259,6 +259,45 @@ integrations/vokra-piper-g2p/THIRD_PARTY_LICENSES/ when the Japanese G2P
 path is included in a binary release artifact.
 
 --------------------------------------------------------------------------
+11. NVIDIA TitaNet-Large (speaker verification) — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+The `ModelKind::TitaNet` converter (crates/vokra-convert/src/models/titanet.rs,
+2026-07-30) writes GGUFs from the upstream NVIDIA TitaNet-Large speaker-
+verification checkpoint. Model weights are distributed by NVIDIA under
+the Creative Commons Attribution 4.0 International license (CC-BY 4.0).
+Commercial use is permitted; attribution is required.
+
+  TitaNet-Large (speaker verification)
+  Copyright (c) NVIDIA CORPORATION
+  Licensed under CC-BY 4.0
+  Source: https://huggingface.co/nvidia/speakerverification_en_titanet_large
+
+The converter additionally stamps a runtime-side FR-MD-09 attribution
+string (`vokra.provenance.attribution` -> Session::attribution /
+`vokra_model_attribution` / the vokra-cli banner) so downstream
+applications can meet the CC-BY 4.0 display obligation without having
+to know NVIDIA's terms independently.
+
+Runtime port (native forward pass for `TITANET_SPEAKER_ENCODE_OP`,
+FR-OP-80 variant) is **out-of-scope** for the converter landing: the
+op-kind identifier is reserved in crates/vokra-core/src/m5_residual_ops.rs
+as M5-residual, and CAM++ (Apache-2.0, no attribution overhead) already
+covers the fbank-80 -> 192-d speaker-embedding functional surface via
+`vokra-models::speaker_encode`. NVIDIA credit through this NOTICE +
+the FR-MD-09 attribution chunk applies whenever a TitaNet GGUF is
+redistributed as a Vokra artifact; a downstream that never redistributes
+the TitaNet weights does not incur the obligation.
+
+CC-BY 4.0 attribution is separate from the EU AI Act §50 AI-generated-
+audio disclosure obligation (TitaNet is a speaker-verification model,
+not an audio generator, so §50 does not apply here).
+
+The CC-BY 4.0 license text is to be reproduced in
+crates/vokra-convert/THIRD_PARTY_LICENSES/titanet-CC-BY-4.0.txt when
+the TitaNet checkpoint is added to the official model zoo (owner
+sign-off, docs/license-audit.md §3.1 = 2026-07-30 yousan).
+
+--------------------------------------------------------------------------
 9. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new

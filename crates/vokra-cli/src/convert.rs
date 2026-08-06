@@ -11,11 +11,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
-    convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_dac_file, convert_file, convert_file_licensed, convert_file_quantized,
-    convert_file_with_policy, convert_irodori_file, convert_kokoro_file, convert_piper_plus_file,
-    convert_qwen3_tts_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    ModelKind, PolicyPreset, SileroVariant, VoxtralConfig, convert_chatterbox_file,
+    convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
+    convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_file,
+    convert_file_quantized, convert_file_with_policy, convert_file_with_slug, convert_irodori_file,
+    convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
     convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
     parse_voxtral_hf_config,
 };
@@ -25,7 +26,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -55,13 +56,18 @@ USAGE:
     vokra-cli convert --model ecapa-tdnn --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model wespeaker --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model speaker-3d --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model titanet-large --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model emotion2vec --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model fsmn-vad --input <model.safetensors> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
-                              parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
+                              parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
                               distil-whisper | kotoba-whisper |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
                               qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
@@ -69,7 +75,24 @@ OPTIONS:
                               kimi-audio | step-audio2-mini | baichuan-audio |
                               speechtokenizer | funcodec | xy-tokenizer |
                               bicodec | neucodec | ecapa-tdnn | wespeaker |
-                              speaker-3d | emotion2vec
+                              speaker-3d | titanet-large | emotion2vec |
+                              rmvpe | crepe | styletts2 | pyannote-segmentation |
+                              qwen3-asr | wav2vec2 | moss-tts | melotts-english |
+                              melotts-chinese | melotts-korean | speecht5 | parler-tts |
+                              indic-parler-tts | vieneu-tts | bark | bark-small |
+                              hifigan-vocoder | speecht5-hifigan | bigvgan | focalcodec |
+                              snac | snac-24khz | snac-44khz |
+                              tiger | tiger-speech | mp-senet | metricgan-plus |
+                              sepformer | sepformer-wham16k | sepformer-whamr16k |
+                              fsmn-vad | firered-vad | smart-turn | clap | ast |
+                              lang-id-voxlingua107 | lang-id-commonlanguage |
+                              xvector | deepfake-detection | kyutai-tts |
+                              audiobox-aesthetics | voxtral-mini-realtime |
+                              cohere-transcribe | nemotron-asr-streaming
+                              (crepe: marl/crepe — a prepared safetensors from
+                              tools/parity/keras_h5_to_safetensors.py, needs
+                              --config <config.json> with the capacity /
+                              hop / fmin / fmax fields)
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -351,12 +374,27 @@ OPTIONS:
                               exclusive with --quantize / --policy-preset —
                               use `vokra-convert restamp` to change the
                               license on a quantized GGUF after the fact.
+    --silero-variant <tag>    Silero VAD release-tag selector (silero-vad only):
+                              v5 | v6.2.1. Stamps `vokra.silero.version` and
+                              shifts model.name / provenance.source to the
+                              variant's canonical spelling. Omit to keep the
+                              pre-tagging output (byte-identical to the
+                              committed parity fixture; the loader classifies
+                              the absent key as v5 for backward compatibility).
+                              Unknown tags are a fail-closed error (FR-EX-08).
     -h, --help                print this help
 ";
 
 /// Parsed `convert` arguments.
 struct Parsed {
     model: ModelKind,
+    /// Raw `--model` slug string as the user typed it (2026-07-30 Task 3
+    /// add). Retained so per-variant dispatch (BigVGan / Qwen3Asr /
+    /// Wav2Vec2Ctc の 4/2/4 variants) can pick the right Variant enum
+    /// value from the user's slug. `ModelKind` alone loses the slug
+    /// (many aliases collapse to one variant), so the raw string is
+    /// preserved for downstream variant selection.
+    raw_model_slug: String,
     input: PathBuf,
     config: Option<PathBuf>,
     /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
@@ -382,6 +420,13 @@ struct Parsed {
     /// their own tailored routes and ignore this flag (loudly, if it is
     /// passed alongside them).
     license: Option<String>,
+    /// Silero VAD release-tag selector (`--model silero-vad` only). When
+    /// present the CLI routes through [`convert_silero_file`] and stamps
+    /// `vokra.silero.version`. When absent the default `convert_file`
+    /// path runs and the emitted GGUF stays byte-identical to the
+    /// pre-tagging fixture (the loader classifies the absent-key artifact
+    /// as v5 for backward compatibility).
+    silero_variant: Option<SileroVariant>,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -396,6 +441,7 @@ fn parse_quant(s: &str) -> Option<GgmlType> {
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
+    let mut raw_model_slug: String = String::new();
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
@@ -404,19 +450,21 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
     let mut license: Option<String> = None;
+    let mut silero_variant: Option<SileroVariant> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--model" => {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
+                raw_model_slug = v.clone();
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
                          campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
+                         parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
                          qwen3-tts | voxcpm | vibevoice | irodori | vits-ja | \
@@ -424,7 +472,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          kimi-audio | step-audio2-mini | baichuan-audio | \
                          speechtokenizer | funcodec | xy-tokenizer | \
                          bicodec | neucodec | ecapa-tdnn | wespeaker | \
-                         speaker-3d | emotion2vec)"
+                         speaker-3d | titanet-large | emotion2vec | \
+                         rmvpe | crepe | styletts2)"
                     )
                 })?);
                 i += 2;
@@ -479,6 +528,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 license = Some(v.clone());
                 i += 2;
             }
+            "--silero-variant" => {
+                // Silero VAD release-tag selector (--model silero-vad only).
+                // Absent = default (byte-identical to the pre-tagging fixture,
+                // absent `vokra.silero.version` key → loader resolves as V5).
+                // Present = stamp the tag explicitly for a self-describing
+                // artifact (fail-closed unknown values, FR-EX-08).
+                let v = args
+                    .get(i + 1)
+                    .ok_or("--silero-variant requires a value (v5 | v6.2.1)")?;
+                silero_variant = Some(SileroVariant::from_tag(v).map_err(|e| e.to_string())?);
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -489,6 +550,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 
     Ok(Parsed {
         model: model.ok_or("--model is required")?,
+        raw_model_slug,
         input: input.ok_or("--input is required")?,
         config,
         adapter_config,
@@ -497,6 +559,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         quant,
         policy,
         license,
+        silero_variant,
     })
 }
 
@@ -529,8 +592,47 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             );
         }
     }
+    // `--silero-variant` is Silero-VAD-only. Silently dropping it on other
+    // models would misrepresent provenance (the flag would appear honored
+    // in the CLI diagnostics but write nothing) — FR-EX-08 fail-closed.
+    if !matches!(model, ModelKind::SileroVad) && p.silero_variant.is_some() {
+        return Err(
+            "--silero-variant is only supported for --model silero-vad (it stamps the \
+             `vokra.silero.version` metadata key)"
+                .to_owned(),
+        );
+    }
 
     let result = match model {
+        ModelKind::SileroVad => {
+            // Silero VAD accepts an optional `--silero-variant` selector
+            // that stamps `vokra.silero.version` and shifts the model
+            // name / provenance source to the variant's canonical
+            // spelling. Absent → fall through to the historic
+            // `convert_file` path, which does NOT stamp the tag so its
+            // output stays byte-identical to the committed fixture
+            // `tests/parity/silero_vad/silero-vad-v5.gguf` (SPEC
+            // "Conversion") — the loader treats the absent key as v5
+            // for backward compatibility.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for --model silero-vad (the ONNX carries \
+                     both rates directly; use --silero-variant v5|v6.2.1 for the release \
+                     tag)"
+                        .to_owned(),
+                );
+            }
+            match p.silero_variant {
+                Some(variant) => convert_silero_file(&p.input, &p.output, variant),
+                None => convert_file(model, &p.input, &p.output),
+            }
+        }
         ModelKind::PiperPlus => {
             if p.quant.is_some() {
                 return Err("--quantize is only supported for whisper-base".to_owned());
@@ -834,6 +936,60 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_vits_ja_file(&p.input, &p.output)
         }
+        ModelKind::StyleTts2 => {
+            // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold.
+            // The upstream release ships PyTorch `.pth` checkpoints; a
+            // caller who legitimately holds a StyleTTS 2 checkpoint
+            // pre-flattens it to safetensors offline
+            // (`tools/parity/pytorch_to_safetensors.py`) the same way
+            // CSM / DAC / VoxCPM / Kokoro do. No --config side-car
+            // today: every architectural axis is fixed for the
+            // LJSpeech / LibriTTS release (24 kHz, hidden_dim=512,
+            // style_dim=128, iSTFTNet decoder) and byte-parallel to
+            // the transcribed constants in
+            // `crates/vokra-convert/src/models/styletts2.rs`; a future
+            // `--config` axis for downstream re-trainings is a
+            // follow-up.
+            //
+            // **⚠️  Weight redistribution default is `Unknown`**: the
+            // yl4579 pretrained models ship under a voice-consent /
+            // disclosure usage agreement — NOT a standard SPDX
+            // permissive license — so the M2-13 runtime gate refuses
+            // to load in commercial mode. `docs/license-audit.md`
+            // §3.1 StyleTTS 2 sign-off is `☑ Rejected 2026-07-23
+            // yousan`. A user who trained on a permissive corpus
+            // overrides via `vokra-convert --license <spdx>` (the
+            // standalone binary) or the shared `convert_file_licensed`
+            // path.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_styletts2_file(&p.input, &p.output)
+        }
+        ModelKind::Crepe => {
+            // M5 gap follow-up (2026-07-30): CREPE needs the prepare-script
+            // config side-car (the capacity discriminator is written by the
+            // .h5 → safetensors converter from the source filename;
+            // fmin/fmax are informational Hz bounds). Quantization is
+            // whisper-only. Mirror of the DAC arm above.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_crepe_file(&p.input, config, &p.output),
+                None => {
+                    return Err("--model crepe requires --config <config.json> (from \
+                                tools/parity/keras_h5_to_safetensors.py)"
+                        .to_owned());
+                }
+            }
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -871,10 +1027,19 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 } else {
                     convert_file_quantized(model, &p.input, &p.output, q)
                 }
-            } else if p.license.is_some() {
-                convert_file_licensed(model, &p.input, &p.output, p.license.as_deref())
             } else {
-                convert_file(model, &p.input, &p.output)
+                // 2026-07-30 Task 3: route through `convert_file_with_slug` so
+                // BigVGan / Qwen3Asr / Wav2Vec2Ctc pick the right Variant from
+                // the raw `--model` slug the user typed. For other models this
+                // delegates verbatim to `convert_file_licensed` (which handles
+                // the `p.license.is_some()` override internally).
+                convert_file_with_slug(
+                    model,
+                    &p.raw_model_slug,
+                    &p.input,
+                    &p.output,
+                    p.license.as_deref(),
+                )
             }
         }
     };
@@ -1161,6 +1326,7 @@ mod tests {
             ("parakeet-tdt", ModelKind::Parakeet),
             ("parakeet-ctc", ModelKind::ParakeetCtc),
             ("canary", ModelKind::Canary),
+            ("canary-qwen", ModelKind::CanaryQwen),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
@@ -1172,6 +1338,7 @@ mod tests {
             ("vibevoice", ModelKind::VibeVoice),
             ("irodori", ModelKind::Irodori),
             ("vits-ja", ModelKind::VitsJa),
+            ("styletts2", ModelKind::StyleTts2),
             ("sbv2", ModelKind::SbV2),
             ("deberta-v2", ModelKind::DebertaV2),
             ("deberta-v3", ModelKind::DebertaV3),
@@ -1191,7 +1358,22 @@ mod tests {
             ("ecapa-tdnn", ModelKind::EcapaTdnn),
             ("wespeaker", ModelKind::Wespeaker),
             ("speaker-3d", ModelKind::Speaker3d),
+            ("titanet-large", ModelKind::TitaNet),
             ("emotion2vec", ModelKind::Emotion2vec),
+            // F0 pitch-extractor tier (2026-07-30): RMVPE — the first
+            // `category = "f0"` binder in the converter tree.
+            ("rmvpe", ModelKind::Rmvpe),
+            // M5 gap follow-up (2026-07-30): CREPE (Kim et al. 2018) —
+            // monophonic F0 extractor, MIT weight (sibling of RMVPE).
+            ("crepe", ModelKind::Crepe),
+            // 2026-07-30 license half unblock: pyannote/segmentation-3.0
+            // (Bredin, CNRS, MIT) — PyanNet VAD / speaker-segmentation
+            // backbone, first `category = "vad"` binder in the converter
+            // tree via SincNet → BiLSTM x2 → Linear x2 → powerset
+            // multiclass (7 classes for 3 speakers × 2 overlap).
+            // `docs/license-audit.md` §3.1 row 263, DIARIZE_OP anchor
+            // blocker text updated same wave.
+            ("pyannote-segmentation", ModelKind::PyannoteSegmentation),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
@@ -1525,5 +1707,104 @@ mod tests {
             ])))
             .contains("--adapter-config requires a value")
         );
+    }
+
+    #[test]
+    fn parses_silero_variant_v6_2_1() {
+        let p = parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+            "--silero-variant",
+            "v6.2.1",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::SileroVad);
+        assert_eq!(p.silero_variant, Some(SileroVariant::V6_2_1));
+    }
+
+    #[test]
+    fn parses_silero_variant_v5_explicit() {
+        let p = parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+            "--silero-variant",
+            "v5",
+        ]))
+        .expect("valid");
+        assert_eq!(p.silero_variant, Some(SileroVariant::V5));
+    }
+
+    #[test]
+    fn silero_variant_defaults_to_absent() {
+        // Backward compat: omitting the flag preserves the historic
+        // convert_file path (byte-identical to the pre-tagging fixture).
+        let p = parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.silero_variant, None);
+    }
+
+    /// FR-EX-08: unknown tags are surfaced at parse time, never a silent V5
+    /// fallback. Both canonical spellings should be surfaced in the diagnostic
+    /// so the caller sees what the build accepts.
+    #[test]
+    fn silero_variant_rejects_unknown_tag() {
+        let e = err_of(parse_args(&args(&[
+            "--model",
+            "silero-vad",
+            "--input",
+            "silero_vad.onnx",
+            "--output",
+            "out.gguf",
+            "--silero-variant",
+            "v7",
+        ])));
+        assert!(e.contains("v7"), "message: {e}");
+        assert!(e.contains("v5") && e.contains("v6.2.1"), "message: {e}");
+    }
+
+    #[test]
+    fn silero_variant_help_documents_flag() {
+        // USAGE section pins the flag name + accepted values so `--help`
+        // documents what a caller can pass.
+        assert!(USAGE.contains("--silero-variant"), "USAGE lists the flag");
+        assert!(
+            USAGE.contains("v5 | v6.2.1"),
+            "USAGE lists the accepted values"
+        );
+    }
+
+    /// Passing `--silero-variant` on the wrong model must be a loud error,
+    /// not a silent drop (mirrors the `--adapter-config` / `--tokenizer`
+    /// Voxtral-only gating pattern — FR-EX-08).
+    #[test]
+    fn silero_variant_on_non_silero_model_is_a_loud_error() {
+        let e = main(&args(&[
+            "--model",
+            "whisper-base",
+            "--input",
+            "/nonexistent/ckpt.pt",
+            "--output",
+            "/nonexistent/out.gguf",
+            "--silero-variant",
+            "v6.2.1",
+        ]))
+        .unwrap_err();
+        assert!(e.contains("--silero-variant is only supported"), "{e}");
+        assert!(e.contains("silero-vad"), "{e}");
     }
 }

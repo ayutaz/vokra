@@ -1,0 +1,235 @@
+# Vokra gitleaks configuration (FQ-08 P0, 2026-07-31).
+#
+# Extends the built-in gitleaks default ruleset (~150 provider-specific
+# regexes — AWS, GCP, GitHub PAT, Hugging Face `hf_*`, OpenAI `sk-*`,
+# Anthropic `sk-ant-*`, Slack `xox[abpsr]-*`, Stripe `sk_live_*`, generic
+# private-key blocks, generic api-key heuristic, ...) with Vokra-specific
+# allowlists for known-safe patterns.
+#
+# Allowlist discipline (do not soften without reading this):
+#
+#   (1) Path allowlists — for files whose *entire* content is provenance,
+#       pin, lock, binary, or fixture data. Never allowlist a source file
+#       that carries live application code.
+#
+#   (2) Line-regex allowlists (regexTarget = "line") — for a hex string
+#       that co-occurs with a provenance keyword (`sha256:`, `hf_revision:`,
+#       `upstream_sha256`, ...). Never allowlist a bare hex regex without
+#       an anchoring keyword — that would defeat gitleaks' generic-api-key
+#       heuristic (which is our main net for "developer pasted a token
+#       into a docstring").
+#
+#   (3) stopwords — a case-insensitive substring on the surrounding line
+#       that marks the finding as illustrative (`EXAMPLE`, `PLACEHOLDER`).
+#       Only use for words that *never* legitimately co-occur with a real
+#       secret in Vokra source.
+#
+# When a legitimate finding leaks into a PR, the correct fix is almost
+# always in this file (add the allowlist), not in the developer's commit.
+# When a NEW leak shape is found in production, the correct fix is to
+# open a follow-up ticket to move it into `.env` or GitHub Actions
+# secrets and rotate the leaked credential — never allowlist a real
+# secret to make the scanner green.
+
+title = "vokra gitleaks config"
+
+[extend]
+# Inherit gitleaks' shipped ruleset. Owner tracks upstream ruleset changes
+# via the Docker image tag drift (see secret-scan.yml docstring on why we
+# use :latest during the advisory window).
+useDefault = true
+
+# =============================================================================
+# Global allowlist — applied on top of every rule in the default set.
+# =============================================================================
+[allowlist]
+description = "Vokra project-wide allowlist (provenance pins, lockfiles, fixtures, binaries)"
+# Apply regex allowlist against the whole matched *line*, not just the
+# secret substring. Required for the "keyword + hex" provenance patterns
+# below (`sha256: <64-hex>` — the hex alone is indistinguishable from a
+# credential, the keyword makes it safe).
+regexTarget = "line"
+
+# -----------------------------------------------------------------------------
+# Path allowlists (gitleaks path field is a REGEX, not a glob).
+# -----------------------------------------------------------------------------
+paths = [
+  # Provenance / pin catalogs (.github/pins.yaml is the CI pinned-external
+  # SoT and contains sha256/hf_revision hex by design; dependabot.yml
+  # occasionally holds long tokens in issue references).
+  '''^\.github/pins\.yaml$''',
+  '''^\.github/dependabot\.yml$''',
+
+  # SHA-256 sidecar files (`sha256sum` output shipped alongside binary
+  # fixtures per tests/fixtures/audio/README.md convention).
+  '''^tests/fixtures/.*\.sha256$''',
+  '''^crates/.+/tests/fixtures/.*\.sha256$''',
+  '''\.sha256$''',
+
+  # Vokra model-zoo PROVENANCE stamps and license/notice files (upstream
+  # sha refs, git URLs @ 40-hex, PGP-adjacent hex).
+  '''(^|/)PROVENANCE(\..+)?$''',
+  '''(^|/)NOTICE(\..+)?$''',
+
+  # Precompiled binary artefacts (SPIR-V blobs, GGUF fixtures, safetensors,
+  # PyTorch checkpoints, ONNX, wasm). gitleaks does not do binary-content
+  # sniffing well and a false-positive rate on random-looking bytes here
+  # would be unmanageable.
+  '''\.spv$''',
+  '''\.gguf$''',
+  '''\.gguf\.[^/]+$''',
+  '''\.safetensors$''',
+  '''\.wasm$''',
+  '''\.bin$''',
+  '''\.onnx$''',
+  '''\.pt$''',
+  '''\.pth$''',
+  '''\.ckpt$''',
+  '''\.npz$''',
+
+  # Cargo / uv / npm / pnpm lockfiles. All four formats embed sha256
+  # digests as design (registry integrity), never credentials.
+  '''(^|/)Cargo\.lock$''',
+  '''(^|/)uv\.lock$''',
+  '''(^|/)package-lock\.json$''',
+  '''(^|/)pnpm-lock\.yaml$''',
+  '''(^|/)yarn\.lock$''',
+  '''(^|/)poetry\.lock$''',
+
+  # Local dev-only environment files. `.env` at repo root is gitignored
+  # (.gitignore ships `.env` + `.env.*`). Two guards keep this safe:
+  #   (a) the "Reject tracked .env files" step in secret-scan.yml
+  #       (runs BEFORE gitleaks) fails the job if `.env` is ever tracked
+  #       in git, so allowlisting the path here cannot mask a stray
+  #       commit of `.env`.
+  #   (b) in CI, the runner does a clean checkout and `.env` will not
+  #       exist at all; this allowlist only matters for local
+  #       `docker run ... --no-git` smoke-testing of the config.
+  '''^\.env(\..*)?$''',
+  '''(^|/)\.env(\..*)?$''',
+
+  # Benchmark baseline capture artefacts. These are RTF measurements and
+  # metric snapshots, not credentials, and occasionally contain
+  # runner-fingerprint hex strings that look tokeny.
+  '''^docs/bench-baselines/''',
+
+  # Vokra internal doc catalogs that only live in the gitignored copy on
+  # the maintainer's disk (per CLAUDE.md M0-status: docs/_research/,
+  # docs/tickets/, docs/adr/ are all gitignored on public checkouts).
+  # Listed here so a maintainer running gitleaks locally against their
+  # unclean tree does not get flooded with false positives from research
+  # notes that reference upstream commit shas.
+  '''^docs/_research/''',
+  '''^docs/tickets/''',
+  '''^docs/adr/''',
+  '''^docs/handoff/''',
+  '''^docs/superpowers/''',
+
+  # Ephemeral scout workspaces used by the ultracode subagent workflow.
+  # These are throwaway git worktrees; they may contain half-written
+  # findings that quote pretend tokens.
+  '''^\.claude/''',
+  '''(^|/)\.claude/''',
+
+  # Build / cache / vendored directories. All are .gitignored in the repo,
+  # but `gitleaks detect --no-git` walks the working tree without
+  # consulting .gitignore, so we must explicitly skip them or a local
+  # smoke run will spend ten minutes scanning cargo build artefacts and
+  # python venv site-packages.
+  '''(^|/)target/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)venv/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)__pycache__/''',
+  '''(^|/)\.mypy_cache/''',
+  '''(^|/)\.pytest_cache/''',
+  '''(^|/)\.ruff_cache/''',
+  '''(^|/)\.tox/''',
+  '''(^|/)build/''',
+  '''(^|/)dist/''',
+  '''(^|/)\.next/''',
+  '''(^|/)\.cache/''',
+]
+
+# -----------------------------------------------------------------------------
+# Line-regex allowlists — provenance/pin shapes that appear inline in
+# source code and docs (Rust module doc comments, ADR .md files, workflow
+# YAML env: blocks, etc.). Each pattern MUST anchor on a keyword so the
+# hex is only allowlisted in the right context.
+# -----------------------------------------------------------------------------
+regexes = [
+  # `sha256: <64-hex>` and `sha256 = "<64-hex>"` — provenance stamp
+  # convention used across docs/*.md, crates/vokra-convert/src/models/**,
+  # scripts/publish/**, and .github/pins.yaml.
+  '''(?i)\bsha-?256\s*[:=]\s*['"]?[a-f0-9]{64}['"]?''',
+
+  # `hf_revision: <40-hex>` — Hugging Face commit-sha pin (pins.yaml +
+  # every parity-*-real.yml workflow env: block).
+  '''(?i)\bhf[_-]revision\s*[:=]\s*['"]?[a-f0-9]{40}['"]?''',
+
+  # `upstream_sha256`, `upstream_commit`, `upstream_git_sha` — Vokra
+  # provenance metadata stamps written by vokra-convert into GGUF headers
+  # and mirrored in the corresponding Rust `//!` module docstrings.
+  '''(?i)\bupstream[_-](?:sha256|commit|git[_-]sha)\s*[:=]\s*['"]?[a-f0-9]{40,64}['"]?''',
+
+  # `upstream_hf = "org/model"` — HF slug pin. Never a secret, but the
+  # slash + underscore heuristic occasionally fires on org/repo strings
+  # if they contain random-looking suffixes (e.g. `Kokoro-82M-f3ff35`).
+  '''(?i)\bupstream[_-]hf\s*[:=]\s*['"][^'"]{3,200}['"]''',
+
+  # `commit: <40-hex>` — git commit shas in provenance blocks and PROVENANCE
+  # sidecars. `commit` is a strong enough anchor to be safe.
+  '''(?i)\bcommit\s*[:=]\s*['"]?[a-f0-9]{40}['"]?''',
+
+  # `git+https://...@<40-hex>` — pip/cargo `git+URL` revision pin syntax
+  # that appears in requirements-like blocks and uv.lock excerpts quoted
+  # in docs.
+  '''\bgit\+https?://[^\s'"]+@[a-f0-9]{40}\b''',
+
+  # Full-length git tree/blob URLs that end in `/<40-hex>` — appears in
+  # ADRs and handoff docs when citing upstream state.
+  '''\bhttps?://github\.com/[^\s'"]+/(?:tree|blob|commit)/[a-f0-9]{40}''',
+
+  # `pinned_value: "<hex or slug>"` — .github/pins.yaml schema. Belt-and-
+  # suspenders with the path allowlist above so quoted excerpts of
+  # pins.yaml in ADRs also stay clean.
+  '''(?i)\bpinned_value\s*[:=]\s*['"][^'"]+['"]''',
+
+  # GGUF metadata setter calls: `.add_string(KEY_*, "…")` or
+  # `.add_string(chunks::KEY_*, "…")`. The second argument is a model
+  # architecture id or variant string ("piper-plus-mb-istft-vits2",
+  # "wav2vec2_regression.v999", ...) whose Vokra naming convention
+  # occasionally trips gitleaks' generic-api-key entropy heuristic.
+  # The `KEY_*` reference anchors this pattern to code that only ever
+  # writes into a GGUF chunk — never an API credential.
+  '''\.add_string\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*::)?KEY_[A-Z_][A-Z0-9_]*\s*,''',
+
+  # Torch `state_dict()` tensor paths (dotted key ending in a well-known
+  # parameter suffix: `weight`, `bias`, `gamma`, `beta`, `running_mean`,
+  # `running_var`, or LSTM `weight_ih_l{N}` / `bias_hh_l{N}`). These
+  # appear inside dumper/converter docstrings (tools/parity/*.py, Rust
+  # `//!` module docs) enumerating the upstream tensor manifest, and
+  # gitleaks' entropy heuristic occasionally fires on longer paths.
+  # The `.weight` / `.bias` / … suffix anchors the pattern.
+  '''\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+){2,}\.(?:weight|bias|gamma|beta|running_mean|running_var|weight_ih_l\d+|weight_hh_l\d+|bias_ih_l\d+|bias_hh_l\d+)\b''',
+]
+
+# -----------------------------------------------------------------------------
+# Stopwords — case-insensitive substrings that mark a matched line as
+# illustrative rather than real. Keep this list SHORT and non-generic;
+# every word here weakens the scanner globally.
+# -----------------------------------------------------------------------------
+stopwords = [
+  "EXAMPLE",
+  "PLACEHOLDER",
+  "REPLACE_ME",
+  "REPLACEME",
+  "your-token-here",
+  "your_token_here",
+  "xxxxxxxxxxxx",
+  "0000000000000000",
+  "1111111111111111",
+  "deadbeefdeadbeef",
+  "fixture",
+  "provenance-stamp",
+]

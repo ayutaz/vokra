@@ -50,12 +50,28 @@
 //     pure host-side algorithm — Viterbi over the standard CTC extended
 //     sequence — with no external weights. Emits `Vec<AlignedToken>` for
 //     word / sub-word / character granularity uniformly.
-//   * `align::charsiu` — Wav2Vec2-based neural forced aligner (skeleton).
-//     Per-model skeleton under `align::*`; real inference is a follow-up
-//     WP — the wav2vec2 weights are external and are not shipped with the
-//     skeleton.
+//   * `align::charsiu` — Wav2Vec2-based neural forced aligner (real
+//     forward, 2026-07-30). Runs the raw-waveform stem
+//     (`vokra_ops::waveform_frontend`) → feature projection → n_layer
+//     pre-norm Transformer encoder → CTC head → log-softmax →
+//     `ctc_segmentation` end-to-end. Real weights bind via
+//     `Charsiu::new(CharsiuConfig, CharsiuWeights)`; the real-GGUF
+//     binder (`from_gguf`) is a follow-up wave gated on the upstream
+//     tensor-name manifest (T29-equivalent). License = MIT (permissive).
+pub mod aec;
 pub mod align;
 pub mod canary;
+// SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
+// FastConformer encoder (reuse `canary::CanaryEncoderConfig` — Canary-1B-v2
+// 32-layer × 1024 dim × 8 head × 128 mel bins, `vokra_ops::conformer` via
+// `Stacking { factor: 8 }`) + Qwen LLM decoder (reuse `voxtral::TextDecoderConfig`
+// — Qwen family GQA 16 Q ÷ 8 KV, `head_dim = 128`, `rope_base = 1_000_000`,
+// RMSNorm ε = 1e-6, SwiGLU). Weight license = CC-BY 4.0 (attribution required
+// via `canary-` prefix walk). Distinct arch tag `"canary-qwen"` from base
+// `"canary"` because the LM head-swap changes the decoder topology from
+// Transformer AED to Qwen LLM soft-prompt prefix (like Voxtral). No new op —
+// both halves reuse existing Vokra primitives.
+pub mod canary_qwen;
 // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual TTS
 // (MIT). T3 = Llama_520M backbone (hidden=1024 / n_layer=30 / MHA n_head=16
 // n_head_kv=16 / head_dim=64 / SwiGLU ffn=4096 / RoPE θ=500000 llama3-scaled)
@@ -134,6 +150,15 @@ pub mod csm;
 // huggingface.co/nari-labs/Dia-1.6B/config.json (CLAUDE.md ハルシネー
 // ション厳禁); real-checkpoint binding is a follow-up wave (T29-equivalent).
 pub mod dia;
+// DNSMOS P.808 / P.835 (Microsoft DNS-Challenge MOS predictors, MIT). The
+// converter (`vokra-convert::models::dnsmos`) landed 2026-08-03; this is the
+// runtime binder shell (2026-08-05, loud-partial per RMVPE precedent — the
+// CNN backbone op sequence is not primary-source-transcribable from the
+// upstream `dnsmos_local.py` alone, only from the trained ONNX graph, so
+// the forward returns `VokraError::UnsupportedOp` until the sidecar is
+// extended with `vokra.dnsmos.{p808,p835}.topology` metadata and this
+// module wires the CNN forward).
+pub mod dnsmos_p808_p835;
 // SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
 // distil-large-v3.5 — a distilled Whisper checkpoint that keeps the
 // large-v3 encoder (32-layer / d_model=1280 / n_mels=128) intact and
@@ -231,6 +256,18 @@ pub mod omniasr_ctc;
 pub(crate) mod mapped_weights;
 pub mod mimi;
 pub mod moshi;
+// Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551, MIT — 2026-08-05
+// runtime binder). Third denoise family member (alongside DFN3 =
+// `vokra_ops::denoise` and RNNoise v0.2 = `rnnoise_v02`); a deliberately-
+// weaker industry-baseline reference for quantization-CI cross-checks
+// (CLAUDE.md audio dialect §"Speech Enhancement / AGC / AEC"). REAL forward:
+// STFT (n_fft=512, hop=160, win=320, causal / non-center) → log-power
+// feature → fc_in + 2×GRU + fc_1/fc_2/mask + sigmoid → gated STFT → streaming
+// iSTFT. Reuses the tested `vokra_ops::rnnoise_gru_forward` primitive with
+// an ONNX `[Z;R;H]` → rnnoise `[R;Z;H]` load-time permutation. Env-gated
+// real-weight parity harness: `crates/vokra-models/tests/parity_nsnet2.rs`
+// (VOKRA_NSNET2_REAL_GGUF + VOKRA_NSNET2_REAL_WAV).
+pub mod nsnet2;
 pub mod piper_plus;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // TTS (apache-2.0 end-to-end — LM + codec + tokenizer + speaker
@@ -257,7 +294,35 @@ pub mod qwen3_tts;
 // NOT REFERENCED (AGPL-3.0) sources.
 pub mod sbv2;
 pub mod silero_vad;
+// KWS (keyword-spotting / wake-word) family (SoTA plan KWS binder, 2026-08-05).
+// First member: openWakeWord (dscripka/openWakeWord, Apache-2.0 code).
+// Runtime binder for the `openwakeword_op` converter arch (2026-08-04).
+// See `crates/vokra-models/src/kws/mod.rs` for the family charter.
+pub mod kws;
+// SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR **FSMN-VAD**
+// (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT). Feed-forward
+// Sequential Memory Network for voice activity detection. Distinct
+// posture from Silero VAD v5 (which is 1:1-preserved per FR-LD-06):
+// FSMN's stateless feed-forward + memory blocks lower cleanly to a
+// stack of graph-level ops (numeric core in `vokra-ops::fsmn_vad`).
+// Real-weight parity deferred to owner (`docs/license-audit.md` §3.1
+// sign-off recorded 2026-07-30 yousan); the model wrapper ships
+// structural tests + a features-in streaming API today, PCM entry
+// point returns loud `UnsupportedOp` until the fbank + LFR + CMVN
+// pipeline is wired.
+pub mod fsmn_vad;
 pub mod speaker;
+// StyleTTS 2 (Li et al. 2023, arXiv:2306.07691). Config-only scaffold —
+// the upstream `yl4579/StyleTTS2` release ships weights under a
+// **voice-consent / disclosure usage agreement** (README §Pre-trained
+// Model), NOT a standard SPDX permissive license, so the runtime is
+// deliberately fail-closed: `StyleTts2Tts::from_gguf` and
+// `StyleTts2Tts::synthesize` return `VokraError::NotImplemented` naming
+// the licensing blocker. Architecture axes are re-implemented from the
+// primary sources (upstream `models.py` + `Modules/*.py` + the paper
+// §3) and are safe to depend on for downstream research callers who
+// hold their own weight under a distinct SPDX id.
+pub mod styletts2;
 pub(crate) mod tls_scratch;
 // SoTA plan Phase 4 (2026-07-24): OpenBMB **VoxCPM-0.5B** end-to-end
 // diffusion-autoregressive TTS (apache-2.0 end-to-end — code + weight
@@ -393,6 +458,15 @@ pub mod zonos;
 // follow-up WP. Kept in its own block so `rustfmt`'s alphabetical sort inside
 // consecutive `pub mod` blocks does not hijack the doc-preceded siblings above.
 pub mod f0;
+// pyannote/segmentation-3.0 (Bredin, CNRS, MIT — 2026-07-30 Wave 2
+// runtime scaffold with loud-partial forward). PyanNet VAD /
+// speaker-segmentation backbone (SincNet → BiLSTM x2 → Linear x2 →
+// powerset multiclass classifier). Config + weight-load are real; the
+// inner forward returns `VokraError::UnsupportedOp` until Wave 3
+// lands the SincNet primitive per
+// `docs/handoff/pyannote-implementation-plan-2026-07-30.md`. Same
+// posture as sibling RMVPE (`crate::f0::rmvpe`).
+pub mod pyannote;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 

@@ -157,3 +157,32 @@ dows = "dows"
 # tools/branding/gen_brand.py に頻出。v1.48.0 が "minimum" を提案してくるが、
 # 英語・ラテン語とも実在する顔料名 (https://en.wikipedia.org/wiki/Minium_(pigment))。
 minium = "minium"
+# "bord" = borderline の慣用短縮 (scripts/publish/check-model-size.sh の
+# t_bord threshold identifier)。THRESH_BORDERLINE (16 GiB) と対応する
+# python 側変数名。v1.48.0 が "board" / "bored" / "border" を提案してくるが、
+# LOCAL_BORDERLINE verdict の内部変数名として意図的な略称。
+bord = "bord"
+# "certifi" = Python 標準の CA bundle パッケージ (https://pypi.org/project/certifi/)。
+# vast.ai provision script (tools/vast-ai/provision.sh) で
+# huggingface_hub の malicious mirror shim 対策として certifi.where() を呼ぶ
+# 箇所に大量に出現。v1.48.0 は "certify" / "certifies" / "certified" を
+# 提案してくるが、Python package 名として正しい綴り。
+certifi = "certifi"
+# "SER" = Signal-to-Error Ratio (音声処理の SNR 相当メトリクス)。denoise
+# / AEC 関連の parity harness で SI-SDR / SI-SNR / SER として頻出。
+# v1.48.0 は "SET" を提案してくるが、音響評価指標の正式略称。
+SER = "SER"
+# "PASE" = Problem-Agnostic Speech Encoder (Pascual et al. 2019、SincNet ベース
+# の unsupervised representation)。音声モデル横断の research context で言及。
+# v1.48.0 は "PASS" / "PACE" / "PARSE" / "PHASE" を提案してくるが、実在モデル名。
+PASE = "PASE"
+# "convnet" = convolutional network の慣用略。DNSMOS / DFN3 / nsnet2 / bicodec
+# 等の CNN-backbone 音声モデル docstring で頻出。v1.48.0 は "convent" (修道院)
+# を提案してくるが、明らかに不適切な代替 — ML/DL 分野の一般用語。
+convnet = "convnet"
+# "architec" = "architecture" の行末ハイフネーション (MOSS-Audio-8B 系
+# converter docstring の line-wrap "architec-\n     ture" パターン)。
+# v1.48.0 は "architect" を提案してくるが、英語 hyphenation としては正しく、
+# 意味は "architecture"。docstring re-wrap で消せる場合は消す方が良いが、
+# false-positive 対策として whitelist に追加。
+architec = "architec"

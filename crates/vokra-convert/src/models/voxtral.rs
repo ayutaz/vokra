@@ -72,11 +72,12 @@
 use vokra_core::compliance::LicenseClass;
 use vokra_core::gguf::tensor::QK_K;
 use vokra_core::gguf::{
-    FrontendSpec, GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+    FrontendSpec, GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufStreamWriter,
+    GgufTensorDecl, GgufValueType, chunks,
 };
 
 use crate::ConvertError;
-use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
+use crate::safetensors::{SafeTensorInfo, SafetensorsFile, SafetensorsFileReader};
 
 /// `vokra.model.arch` value written for Voxtral GGUFs.
 pub(crate) const ARCH: &str = "voxtral";
@@ -86,6 +87,11 @@ pub(crate) const ARCH: &str = "voxtral";
 /// is `voxtral-unknown` (foundation-only path).
 pub(crate) const NAME_MINI: &str = "voxtral-mini-3b";
 pub(crate) const NAME_SMALL: &str = "voxtral-small-24b";
+/// `Voxtral-Mini-4B-Realtime-2602` (Mistral, 2026-02) — shares Mini-3B's
+/// text-hidden width (`3072`) but ships **26** decoder layers instead of
+/// 30. HF `mistralai/Voxtral-Mini-4B-Realtime-2602` `config.json` shipped
+/// 2026-02, verified 2026-07-31.
+pub(crate) const NAME_REALTIME: &str = "voxtral-mini-4b-realtime-2602";
 
 // --- vokra.voxtral.* metadata keys (M3-10-T04 chunk design) -----------------
 
@@ -381,6 +387,37 @@ pub(crate) struct Shards {
     files: Vec<SafetensorsFile>,
 }
 
+/// Descriptor lookup shared by the in-memory [`Shards`] and the windowed
+/// [`ShardsReader`] paths, so shape derivation is written once and cannot
+/// diverge between the two. Mirrors the trait Moshi uses
+/// ([`super::moshi::MoshiCheckpointIndex`]).
+trait VoxtralCheckpointIndex {
+    /// Iterates every `(shard_idx, tensor_info)` pair across shards.
+    fn iter_tensors(&self) -> Box<dyn Iterator<Item = (usize, &SafeTensorInfo)> + '_>;
+
+    /// Shape axis lookup by exact tensor name; `0` when absent (runtime
+    /// rejects `0`-dims at load — never silently substituted).
+    fn tensor_dim(&self, name: &str, axis: usize) -> u64 {
+        self.iter_tensors()
+            .find(|(_, t)| t.name == name)
+            .and_then(|(_, t)| t.shape.get(axis).copied())
+            .unwrap_or(0)
+    }
+
+    /// Counts consecutive `{prefix}{i}.`-numbered layers starting at 0.
+    fn count_layers(&self, prefix: &str) -> u32 {
+        let mut n = 0u32;
+        loop {
+            let probe = format!("{prefix}{n}.");
+            if self.iter_tensors().any(|(_, t)| t.name.starts_with(&probe)) {
+                n += 1;
+            } else {
+                return n;
+            }
+        }
+    }
+}
+
 impl Shards {
     fn parse(buffers: Vec<Vec<u8>>) -> Result<Self, ConvertError> {
         if buffers.is_empty() {
@@ -420,23 +457,116 @@ impl Shards {
     /// Shape axis lookup by exact tensor name; `0` when absent (the runtime
     /// rejects `0`-dims at load — never silently substituted).
     fn tensor_dim(&self, name: &str, axis: usize) -> u64 {
-        self.iter()
-            .find(|(_, t)| t.name == name)
-            .and_then(|(_, t)| t.shape.get(axis).copied())
-            .unwrap_or(0)
+        VoxtralCheckpointIndex::tensor_dim(self, name, axis)
     }
 
     /// Counts consecutive `{prefix}{i}.`-numbered layers starting at 0.
     fn count_layers(&self, prefix: &str) -> u32 {
-        let mut n = 0u32;
-        loop {
-            let probe = format!("{prefix}{n}.");
-            if self.iter().any(|(_, t)| t.name.starts_with(&probe)) {
-                n += 1;
-            } else {
-                return n;
+        VoxtralCheckpointIndex::count_layers(self, prefix)
+    }
+}
+
+impl VoxtralCheckpointIndex for Shards {
+    fn iter_tensors(&self) -> Box<dyn Iterator<Item = (usize, &SafeTensorInfo)> + '_> {
+        Box::new(
+            self.files
+                .iter()
+                .enumerate()
+                .flat_map(|(i, f)| f.tensors().iter().map(move |t| (i, t))),
+        )
+    }
+}
+
+/// Streaming multi-shard reader (M5 gap A-3, 2026-07-29). Header-only mmap
+/// per shard via [`SafetensorsFileReader`] — the payload for one tensor at
+/// a time is read on demand. Peak memory: `max(shard_header) +
+/// max(tensor_payload)`, so an 8.7 GB Voxtral-Small-24B shard set
+/// converts in a footprint that is bounded by the single largest tensor,
+/// not the sum of every shard.
+///
+/// Same duplicate-name gate as the in-memory [`Shards`] reader.
+pub(crate) struct ShardsReader {
+    readers: Vec<SafetensorsFileReader>,
+    /// Owner index per unique tensor name, populated at open time so the
+    /// streaming write loop can seek back to the right shard for each payload
+    /// without re-walking every reader.
+    owner: std::collections::HashMap<String, usize>,
+}
+
+impl ShardsReader {
+    pub(crate) fn open(paths: &[std::path::PathBuf]) -> Result<Self, ConvertError> {
+        if paths.is_empty() {
+            return Err(ConvertError::Parse(
+                "voxtral: no safetensors shard paths supplied".to_owned(),
+            ));
+        }
+        let mut readers = Vec::with_capacity(paths.len());
+        for (i, p) in paths.iter().enumerate() {
+            let reader = SafetensorsFileReader::open(p).map_err(|e| {
+                ConvertError::Parse(format!("voxtral shard {i} ({}): {e}", p.display()))
+            })?;
+            readers.push(reader);
+        }
+        let mut owner = std::collections::HashMap::new();
+        for (idx, r) in readers.iter().enumerate() {
+            for t in r.tensors() {
+                if owner.insert(t.name.clone(), idx).is_some() {
+                    return Err(ConvertError::Parse(format!(
+                        "voxtral: tensor `{}` appears in more than one shard (second copy in \
+                         shard {idx}) — refusing the ambiguous checkpoint",
+                        t.name
+                    )));
+                }
             }
         }
+        Ok(Self { readers, owner })
+    }
+
+    /// Shape axis lookup — same fallback semantics as [`Shards::tensor_dim`].
+    fn tensor_dim(&self, name: &str, axis: usize) -> u64 {
+        VoxtralCheckpointIndex::tensor_dim(self, name, axis)
+    }
+
+    /// Consecutive-layer counter — same semantics as [`Shards::count_layers`].
+    fn count_layers(&self, prefix: &str) -> u32 {
+        VoxtralCheckpointIndex::count_layers(self, prefix)
+    }
+
+    /// Reads `name`'s payload into `buf` (which is resized to the payload
+    /// length). Returns the tensor's descriptor for the caller to consult
+    /// dtype / shape without another lookup.
+    fn read_tensor_into(
+        &mut self,
+        name: &str,
+        buf: &mut Vec<u8>,
+    ) -> Result<SafeTensorInfo, ConvertError> {
+        let idx = *self.owner.get(name).ok_or_else(|| {
+            ConvertError::Parse(format!("voxtral: tensor `{name}` not found in any shard"))
+        })?;
+        let info = self.readers[idx]
+            .tensor_info(name)
+            .cloned()
+            .ok_or_else(|| {
+                ConvertError::Parse(format!(
+                    "voxtral: tensor `{name}` disappeared from shard {idx} between index build \
+                     and read (concurrent modification?)"
+                ))
+            })?;
+        self.readers[idx]
+            .read_tensor_into(name, buf)
+            .map_err(|e| ConvertError::Parse(format!("voxtral: reading `{name}`: {e}")))?;
+        Ok(info)
+    }
+}
+
+impl VoxtralCheckpointIndex for ShardsReader {
+    fn iter_tensors(&self) -> Box<dyn Iterator<Item = (usize, &SafeTensorInfo)> + '_> {
+        Box::new(
+            self.readers
+                .iter()
+                .enumerate()
+                .flat_map(|(i, r)| r.tensors().iter().map(move |t| (i, t))),
+        )
     }
 }
 
@@ -616,6 +746,162 @@ pub(crate) fn convert_shards(
     ))
 }
 
+/// Streaming convert (M5 gap A-3, 2026-07-29). Windowed shard reader +
+/// [`GgufStreamWriter`], so a checkpoint the size of Voxtral-Small-24B
+/// (48 GB BF16, 11 shards) converts on the M1 iMac (16 GB RAM) without
+/// mmap'ing every shard at once — peak memory is bounded by
+/// `max(shard_header) + max(tensor_payload)`.
+///
+/// Output bytes are **identical** to the in-memory [`convert_shards`] path
+/// over the same checkpoint (same metadata builder, same tensor declaration
+/// order, [`GgufStreamWriter`]'s byte-identity contract) — pinned by test.
+///
+/// No quantization support: the K-quant applicability check inside
+/// [`convert_shards`] widens BF16 → f32 first (`SafetensorsFile::tensor_f32`),
+/// which requires the whole payload in memory. A streaming quantized path
+/// would need a chunked BF16-widen-then-quantize helper — deferred until a
+/// real need shows up (owner quantizes big models on vast.ai, which has
+/// enough RAM for the in-memory path).
+///
+/// Reader / writer / tokenizer follow the same three-scan structure as
+/// [`super::moshi::convert_streaming`]: (1) header parse, (2) shape derive,
+/// (3) declaration order, then a single payload-copy loop.
+pub(crate) fn convert_shards_streaming(
+    paths: &[std::path::PathBuf],
+    output: &std::path::Path,
+    config: Option<&VoxtralConfig>,
+) -> Result<(usize, usize, u64, ConvertReport), ConvertError> {
+    let mut st = ShardsReader::open(paths)?;
+
+    let d_audio = st.tensor_dim("audio_tower.conv1.weight", 0);
+    let n_mels_ck = st.tensor_dim("audio_tower.conv1.weight", 1);
+    let n_audio_layer = st.count_layers("audio_tower.layers.");
+    let n_audio_ffn = st.tensor_dim("audio_tower.layers.0.fc1.weight", 0);
+
+    let shape = derive_decoder_shape(&st)?;
+    let name = derive_name(&shape, config)?;
+
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "Apache-2.0",
+        Some("voxtral"),
+        Some("mistralai/Voxtral-Mini-3B (Apache-2.0)"),
+    );
+    b.add_string(chunks::KEY_MODEL_NAME, &name);
+    write_frontend_spec(&mut b, n_mels_ck as u32);
+    write_hparams(
+        &mut b,
+        &st,
+        config,
+        &shape,
+        d_audio,
+        n_audio_layer,
+        n_audio_ffn,
+    )?;
+
+    let tokenizer_embedded = if let Some(cfg) = config {
+        if let Some(bytes) = cfg.tokenizer_bytes.as_ref() {
+            embed_tokenizer(&mut b, bytes);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // First scan (shape/dtype only, no payload read) to declare every float
+    // tensor in checkpoint order and to count skipped-non-float up-front,
+    // matching moshi::convert_streaming's declare-then-write structure so
+    // GgufStreamWriter's tensor decl order matches convert_shards's builder
+    // order exactly.
+    let mut decls: Vec<GgufTensorDecl> = Vec::new();
+    let mut float_names: Vec<String> = Vec::new();
+    let mut bf16_passthrough = 0usize;
+    let mut skipped_non_float = 0usize;
+    let mut total = 0usize;
+    for (_shard_idx, t) in st.iter_tensors() {
+        total += 1;
+        if !is_float_dtype(t.dtype) {
+            skipped_non_float += 1;
+            continue;
+        }
+        let out_name = gguf_tensor_name(&t.name);
+        decls.push(GgufTensorDecl {
+            name: out_name.clone(),
+            dtype: t.dtype,
+            dimensions: t.shape.clone(),
+        });
+        // Track the upstream tensor name (not the GGUF-normalized name) so
+        // read_tensor_into can look it up in the shard reader. The GGUF
+        // decl carries the normalized name; the two are kept in
+        // lock-step by parallel-index below.
+        float_names.push(t.name.clone());
+        if t.dtype == GgmlType::BF16 {
+            bf16_passthrough += 1;
+        }
+    }
+    let written = decls.len();
+
+    // Same FR-EX-08 hard gates as convert_shards — a weightless "success"
+    // GGUF must be refused even on the streaming path.
+    if written == 0 {
+        return Err(ConvertError::Parse(format!(
+            "voxtral (streaming): no weight tensors were written ({total} input tensors, \
+             {skipped_non_float} skipped as non-float) — refusing to emit a weightless GGUF \
+             (FR-EX-08)"
+        )));
+    }
+    if skipped_non_float > written {
+        return Err(ConvertError::Parse(format!(
+            "voxtral (streaming): {skipped_non_float} of {total} tensors were skipped as \
+             non-float (only {written} written) — a majority-skipped conversion is a \
+             wrong-dtype / corrupt checkpoint, not a success (FR-EX-08)"
+        )));
+    }
+
+    let out_file = std::fs::File::create(output)?;
+    let mut w = GgufStreamWriter::begin(std::io::BufWriter::new(out_file), &b, &decls)?;
+    let mut buf: Vec<u8> = Vec::new();
+    for (decl, upstream_name) in decls.iter().zip(float_names.iter()) {
+        // Payload is copied verbatim (BF16 / F16 / F32 all pass through
+        // unchanged — same as convert_shards's `file.tensor_bytes(t).to_vec()`
+        // path). `read_tensor_into` seeks the owning shard on demand.
+        let _info = st.read_tensor_into(upstream_name, &mut buf)?;
+        w.write_tensor(&decl.name, &buf)?;
+    }
+    drop(buf);
+    let out_file = w
+        .finish()?
+        .into_inner()
+        .map_err(|e| ConvertError::Io(e.into_error()))?;
+    out_file.sync_all().map_err(ConvertError::Io)?;
+    let output_bytes = out_file.metadata().map_err(ConvertError::Io)?.len();
+
+    // `b.tensor_count()` is always 0 on this path — the streaming writer
+    // records tensors through GgufStreamWriter::begin's `decls` argument, not
+    // through the builder's own add_tensor. Return the true count from
+    // decls.len() so callers (`convert_voxtral_file_streaming`'s summary)
+    // report the same tensor count the in-memory path would.
+    Ok((
+        decls.len(),
+        b.metadata_count(),
+        output_bytes,
+        ConvertReport {
+            written,
+            bf16_passthrough,
+            skipped_non_float,
+            quantized: 0,
+            quant_inapplicable: 0,
+            tokenizer_embedded,
+            name,
+        },
+    ))
+}
+
 /// Derives the Voxtral checkpoint size label from the text-decoder shape
 /// (`hidden_dim`, `n_layer`) plus an optional config hint. A checkpoint with
 /// decoder layers that matches no known release (and carries no override) is
@@ -661,10 +947,15 @@ fn derive_name(
     match (shape.d_model, shape.n_layer) {
         (3072, 30) => Ok(NAME_MINI.to_owned()),
         (5120, 40) => Ok(NAME_SMALL.to_owned()),
+        // Voxtral-Mini-4B-Realtime-2602: same 3072 hidden as Mini-3B but 26
+        // decoder layers (Mistral tightened the LM for realtime, verified
+        // 2026-07-31 against `mistralai/Voxtral-Mini-4B-Realtime-2602/
+        // config.json`: `hidden_size=3072, num_hidden_layers=26`).
+        (3072, 26) => Ok(NAME_REALTIME.to_owned()),
         (d, n) => Err(ConvertError::Parse(format!(
             "unknown voxtral size: (d_text={d}, n_text_layer={n}); expected voxtral-mini-3b \
-             (3072, 30) or voxtral-small-24b (5120, 40) — pass VoxtralConfig::name_override to \
-             label a new release explicitly"
+             (3072, 30), voxtral-small-24b (5120, 40), or voxtral-mini-4b-realtime-2602 \
+             (3072, 26) — pass VoxtralConfig::name_override to label a new release explicitly"
         ))),
     }
 }
@@ -701,7 +992,7 @@ struct DecoderShape {
 ///
 /// `k_proj` / `v_proj` output rows disagreeing is a corrupt checkpoint —
 /// surfaced instead of silently picking one (FR-EX-08).
-fn derive_decoder_shape(st: &Shards) -> Result<DecoderShape, ConvertError> {
+fn derive_decoder_shape(st: &dyn VoxtralCheckpointIndex) -> Result<DecoderShape, ConvertError> {
     for prefix in ["language_model.model.", "language_model.", "model."] {
         let n = st.count_layers(&format!("{prefix}layers."));
         if n == 0 {
@@ -880,7 +1171,7 @@ fn resolve_head_split(
 
 fn write_hparams(
     b: &mut GgufBuilder,
-    st: &Shards,
+    st: &dyn VoxtralCheckpointIndex,
     config: Option<&VoxtralConfig>,
     shape: &DecoderShape,
     d_audio: u64,
@@ -1556,6 +1847,8 @@ mod tests {
         // to a silent `voxtral-unknown`).
         assert_eq!(derive_name(&shape(3072, 30), None).unwrap(), NAME_MINI);
         assert_eq!(derive_name(&shape(5120, 40), None).unwrap(), NAME_SMALL);
+        // Voxtral-Mini-4B-Realtime-2602: 3072 hidden, 26 layers.
+        assert_eq!(derive_name(&shape(3072, 26), None).unwrap(), NAME_REALTIME);
         // Unknown shape → explicit error (never a silent fall back, FR-EX-08).
         assert!(derive_name(&shape(1234, 5), None).is_err());
         // The old (wrong) 28-layer mini row must no longer match.
@@ -1903,6 +2196,30 @@ mod tests {
 
     // ----- BF16 / sharded / hard-gate fixes (2026-07-16 P1) ------------------
 
+    /// Per-test scratch directory under `std::env::temp_dir()` with a
+    /// counter-based unique name. Not cleaned up on Drop (matches this
+    /// crate's zero-dep posture — no `tempfile` dep so no automatic cleanup
+    /// hook; the tests do not accumulate enough bytes to matter, and Rust
+    /// test isolation gives every case a fresh directory anyway).
+    ///
+    /// The counter comes from a process-wide `AtomicU64` seeded with the
+    /// PID + nanoseconds-since-epoch so parallel `cargo test` runs on the
+    /// same box never collide.
+    fn scratch_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("vokra-voxtral-test-{seed:x}-{n:x}"));
+        std::fs::create_dir_all(&dir).expect("mkdir scratch");
+        dir
+    }
+
     /// Builds a synthetic safetensors buffer from `(name, dtype, shape)`
     /// entries with a deterministic non-zero byte pattern (so passthrough
     /// legs can compare payload bytes, not just counts).
@@ -2204,5 +2521,166 @@ mod tests {
             parse_hf_config(b"{not json"),
             Err(ConvertError::Parse(_))
         ));
+    }
+
+    // --- streaming path (M5 gap A-3, 2026-07-29) --------------------------
+
+    /// Byte-identity contract: the streaming path
+    /// ([`convert_shards_streaming`]) must produce a GGUF byte-for-byte equal
+    /// to the in-memory [`convert_shards`] path over the same checkpoint.
+    /// Anything less silently forks the two on-disk layouts and a downstream
+    /// consumer that switched paths would see a "different" GGUF for the
+    /// same input.
+    #[test]
+    fn streaming_shards_matches_in_memory_bytes_single_shard() {
+        // Single-shard input — the common Voxtral-Mini path (one
+        // `model.safetensors`).
+        let bytes = build_safetensors(&gqa_bf16_entries());
+        let cfg = gqa_cfg();
+
+        // In-memory reference.
+        let (b_ref, r_ref) = convert(bytes.clone(), Some(&cfg)).unwrap();
+        let want = b_ref.to_bytes().unwrap();
+
+        // Streaming: write the shard to a real temp file, then open it via
+        // the windowed reader.
+        let dir = scratch_dir();
+        let shard_path = dir.join("model.safetensors");
+        std::fs::write(&shard_path, &bytes).unwrap();
+        let out_path = dir.join("out.gguf");
+
+        let (tc, mc, out_bytes_reported, r_stream) =
+            convert_shards_streaming(&[shard_path], &out_path, Some(&cfg)).unwrap();
+
+        let got = std::fs::read(&out_path).unwrap();
+        assert_eq!(got.len() as u64, out_bytes_reported);
+        assert_eq!(
+            got, want,
+            "streaming shard write differs from in-memory bytes (single-shard case) — the two \
+             paths must produce identical GGUFs"
+        );
+
+        // Report parity: written / bf16_passthrough / skipped are the
+        // observable counters both callers depend on.
+        assert_eq!(r_stream.written, r_ref.written);
+        assert_eq!(r_stream.bf16_passthrough, r_ref.bf16_passthrough);
+        assert_eq!(r_stream.skipped_non_float, r_ref.skipped_non_float);
+        assert_eq!(r_stream.name, r_ref.name);
+        assert_eq!(r_stream.tokenizer_embedded, r_ref.tokenizer_embedded);
+
+        // Streaming does not do K-quant (see convert_shards_streaming
+        // docstring); the counters must reflect that honestly.
+        assert_eq!(r_stream.quantized, 0);
+        assert_eq!(r_stream.quant_inapplicable, 0);
+
+        assert_eq!(tc, b_ref.tensor_count());
+        assert_eq!(mc, b_ref.metadata_count());
+    }
+
+    /// Same byte-identity contract across a two-shard checkpoint (the
+    /// upstream `model-0000X-of-0000Y.safetensors` case). Splits
+    /// `gqa_bf16_entries` in half — first shard gets audio_tower + first
+    /// half of the decoder tensors, second shard gets the remainder — and
+    /// verifies both the in-memory and streaming paths land the same bytes.
+    #[test]
+    fn streaming_shards_matches_in_memory_bytes_two_shards() {
+        let entries = gqa_bf16_entries();
+        let mid = entries.len() / 2;
+        assert!(
+            mid > 0 && mid < entries.len(),
+            "test fixture too small to split"
+        );
+        let shard_a_bytes = build_safetensors(&entries[..mid]);
+        let shard_b_bytes = build_safetensors(&entries[mid..]);
+        let cfg = gqa_cfg();
+
+        // In-memory reference — convert_shards accepts the shard buffers
+        // directly.
+        let (b_ref, _r_ref) = convert_shards(
+            vec![shard_a_bytes.clone(), shard_b_bytes.clone()],
+            Some(&cfg),
+            None,
+        )
+        .unwrap();
+        let want = b_ref.to_bytes().unwrap();
+
+        // Streaming: two on-disk shard files.
+        let dir = scratch_dir();
+        let shard_a_path = dir.join("model-00001-of-00002.safetensors");
+        let shard_b_path = dir.join("model-00002-of-00002.safetensors");
+        std::fs::write(&shard_a_path, &shard_a_bytes).unwrap();
+        std::fs::write(&shard_b_path, &shard_b_bytes).unwrap();
+        let out_path = dir.join("out.gguf");
+
+        let (_tc, _mc, _sz, _r_stream) =
+            convert_shards_streaming(&[shard_a_path, shard_b_path], &out_path, Some(&cfg)).unwrap();
+
+        let got = std::fs::read(&out_path).unwrap();
+        assert_eq!(
+            got, want,
+            "streaming shard write differs from in-memory bytes (two-shard case) — shard \
+             ordering / duplicate-name gate / declaration order regressions land here"
+        );
+    }
+
+    /// The FR-EX-08 hard gate on the in-memory path
+    /// (`convert_shards` refuses a weightless GGUF) must be mirrored on the
+    /// streaming path — a streaming caller must not be able to sneak a
+    /// weightless success through the alternate entry point.
+    ///
+    /// An empty-header safetensors buffer (0 tensor entries) is the only
+    /// portable way to reach the "0 float weights written" gate on the
+    /// streaming reader — an I64-only fixture is refused at
+    /// `SafetensorsFileReader::open` first (I64 dtype is not accepted by
+    /// the reader's dtype whitelist), which is a different failure mode
+    /// and not what this gate protects against.
+    #[test]
+    fn streaming_shards_rejects_weightless_checkpoint() {
+        let bytes = build_safetensors(&[]);
+        let dir = scratch_dir();
+        let shard_path = dir.join("model.safetensors");
+        std::fs::write(&shard_path, &bytes).unwrap();
+        let out_path = dir.join("out.gguf");
+
+        let err = convert_shards_streaming(&[shard_path], &out_path, Some(&gqa_cfg())).unwrap_err();
+        match err {
+            ConvertError::Parse(msg) => {
+                assert!(
+                    msg.contains("weightless") || msg.contains("no weight tensors"),
+                    "unexpected parse error text: {msg}"
+                );
+            }
+            other => panic!("expected ConvertError::Parse, got {other:?}"),
+        }
+    }
+
+    /// The streaming reader's duplicate-name gate at open time must match
+    /// the in-memory reader's (both refuse a checkpoint where the same
+    /// tensor name appears in more than one shard).
+    #[test]
+    fn streaming_shards_rejects_duplicate_tensor_name_across_shards() {
+        let entries = gqa_bf16_entries();
+        // Shard A: full entries. Shard B: just the first entry (duplicate).
+        let shard_a_bytes = build_safetensors(&entries);
+        let shard_b_bytes = build_safetensors(&entries[..1]);
+        let dir = scratch_dir();
+        let shard_a_path = dir.join("model-00001-of-00002.safetensors");
+        let shard_b_path = dir.join("model-00002-of-00002.safetensors");
+        std::fs::write(&shard_a_path, &shard_a_bytes).unwrap();
+        std::fs::write(&shard_b_path, &shard_b_bytes).unwrap();
+        let out_path = dir.join("out.gguf");
+
+        let err =
+            convert_shards_streaming(&[shard_a_path, shard_b_path], &out_path, Some(&gqa_cfg()))
+                .unwrap_err();
+        match err {
+            ConvertError::Parse(msg) => {
+                assert!(
+                    msg.contains("appears in more than one shard"),
+                    "unexpected parse error text: {msg}"
+                );
+            }
+            other => panic!("expected ConvertError::Parse, got {other:?}"),
+        }
     }
 }

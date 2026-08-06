@@ -611,6 +611,15 @@ mod tests {
     /// The M2-13 compliance registry must resolve every canonical
     /// kotoba-whisper id to Permissive (Apache-2.0). Cross-crate test
     /// to keep this module's registry-side contract honest.
+    ///
+    /// Scout A-5 follow-up (2026-07-29): `kotoba-whisper-v2.2` is the
+    /// slug the parity-CI workflow (`parity-whisper-extras-real.yml`)
+    /// pins today via `env.KOTOBA_WHISPER_REPO`. It resolves Permissive
+    /// transitively via the `kotoba-whisper-` prefix walk in
+    /// `vokra_core::compliance::license_class`, but pinning it here
+    /// makes the workflow-pinned literal a machine-checked invariant so
+    /// a future prefix-walk removal surfaces red on any `cargo test`
+    /// rather than only during a paid HF-download workflow run.
     #[test]
     fn registry_lookup_maps_kotoba_whisper_to_permissive_apache_2_0() {
         use vokra_core::compliance::{LicenseClass, registry_lookup};
@@ -620,6 +629,9 @@ mod tests {
             "kotoba-whisper-v1.1",
             "kotoba-whisper-v2.0",
             "kotoba-whisper-v2.1",
+            // v2.2 = workflow-pinned literal (see rustdoc above).
+            // Prefix walk covers it today; the pin binds the contract.
+            "kotoba-whisper-v2.2",
             "kotoba-whisper-bilingual",
             "kotoba-whisper-bilingual-v1.0",
         ] {

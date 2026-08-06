@@ -209,6 +209,42 @@ impl DuplexSessionConfig {
     }
 }
 
+/// A keyword-spotting / wake-word engine (implemented natively in
+/// `vokra-models`, e.g. openWakeWord = 2026-08-05).
+///
+/// KWS is inherently streaming: the model consumes a rolling embedding
+/// window (~775 ms at 16 kHz for openWakeWord) and emits one
+/// probability per wake-word every ~80 ms hop, so the trait exposes a
+/// single **stateful** `push_pcm16k` that carries the internal window
+/// buffer + per-wake-word rolling probabilities across calls. Callers
+/// only push 16 kHz mono PCM and receive `(wakeword_name, probability)`
+/// pairs for the wake-words whose latest score is fresh this push.
+///
+/// The trait deliberately hides the two-stage internal architecture
+/// (mel front-end → shared embedding extractor → per-wake-word
+/// classifier MLP) — a change to that architecture is a
+/// [`vokra_models::kws`] implementation detail, not an engine-contract
+/// break.
+pub trait KwsEngine: Send + Sync {
+    /// Names of the wake-words this engine can recognise, in the order
+    /// [`push_pcm16k`](Self::push_pcm16k) reports them. Names are the
+    /// upstream openWakeWord model names (e.g. `"alexa"`, `"hey_jarvis"`,
+    /// `"hey_mycroft"`) transcribed verbatim into the GGUF's
+    /// `vokra.openwakeword.wakeword_names` array chunk.
+    fn wakeword_names(&self) -> &[String];
+
+    /// Pushes 16 kHz mono `f32` PCM and returns the wake-word
+    /// probabilities that completed on this push. Each entry is
+    /// `(wakeword_name, probability ∈ [0, 1])`.
+    ///
+    /// The engine buffers samples internally; `push_pcm16k` may return
+    /// an empty vector when the rolling embedding window has not yet
+    /// filled, and multiple entries when several 80 ms hops complete on
+    /// one push. Callers threshold the returned probabilities
+    /// downstream (typically at `0.5`).
+    fn push_pcm16k(&mut self, samples: &[f32]) -> Result<Vec<(String, f32)>>;
+}
+
 /// A text-to-speech engine (implemented natively in `vokra-models`, e.g.
 /// piper-plus MB-iSTFT-VITS2 = M0-07).
 pub trait TtsEngine: Send + Sync {
@@ -227,6 +263,60 @@ pub trait VadEngine: Send + Sync {
     fn open_stream(&self) -> Box<dyn VadStreamHandle + Send>;
 }
 
+/// An **acoustic echo cancellation** engine (neural side of the audio
+/// dialect §"Speech Enhancement / AGC / AEC" — implemented natively in
+/// `vokra-models`, e.g. NKF-AEC = 2026-08-05).
+///
+/// AEC is inherently paired-streaming: each engine hands out a stateful
+/// [`AecStreamHandle`] that carries every recurrent state (per-bin
+/// Kalman filter taps, GRU hidden vectors, iSTFT overlap-add tail,
+/// pending PCM residues) hidden inside it (FR-LD-06). The engine
+/// consumes sample-aligned mic + far-end PCM and emits echo-cancelled
+/// PCM.
+///
+/// Orthogonal to the algorithmic `vokra_ops::aec` path (M4-03 SpeexDSP
+/// / WebRTC AEC3 Rust port surfaced through the `vokra_aec_*` C ABI) —
+/// both live side-by-side; a duplex engine (Moshi / CSM) can choose
+/// either through this trait.
+pub trait AecEngine: Send + Sync {
+    /// Opens a fresh streaming handle bound to `sample_rate` Hz with
+    /// zero-initialised recurrent state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`](crate::VokraError) when
+    /// `sample_rate` does not match the model's trained rate — the
+    /// engine never silently resamples (FR-EX-08).
+    fn open_stream(&self, sample_rate: u32) -> Result<Box<dyn AecStreamHandle + Send>>;
+}
+
+/// A stateful AEC stream: push paired mic + far-end PCM, get
+/// echo-cancelled PCM back.
+///
+/// The handle hides every recurrent state (FR-LD-06); callers only push
+/// sample-aligned mic + far-end samples and read the cleaned output.
+/// [`reset`](Self::reset) returns it to the initial state so a fresh
+/// utterance reproduces the first run bit-for-bit.
+pub trait AecStreamHandle {
+    /// Pushes sample-aligned mic + far-end mono `f32` PCM at the
+    /// stream's bound sample rate and returns whatever cleaned samples
+    /// the internal STFT + Kalman + iSTFT pipeline can commit on this
+    /// push. The returned slice length depends on the hop / overlap-add
+    /// tail geometry; a starving call may return an empty vec.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`](crate::VokraError) when
+    /// `mic.len() != farend.len()` — the two streams are strictly
+    /// sample-aligned in AEC (silent trim / repeat is a correctness bug,
+    /// not a convenience — FR-EX-08).
+    fn push_paired(&mut self, mic: &[f32], farend: &[f32]) -> Result<Vec<f32>>;
+
+    /// Clears every recurrent state, returning the handle to its
+    /// initial state.
+    fn reset(&mut self);
+}
+
 /// A stateful VAD stream: push PCM, get per-frame speech probabilities.
 ///
 /// The handle hides all recurrent state (FR-LD-06); callers only push samples
@@ -238,6 +328,53 @@ pub trait VadStreamHandle {
     fn push_pcm(&mut self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>>;
 
     /// Clears the recurrent state, returning the handle to its initial state.
+    fn reset(&mut self);
+}
+
+/// A speech-enhancement / denoise engine (implemented natively in
+/// `vokra-models`, e.g. Xiph RNNoise v0.2 = 2026-08-05, follow-up
+/// DeepFilterNet3 wrapper for the algorithmic
+/// `vokra_ops::denoise::denoise` fn).
+///
+/// Denoise is inherently streaming: the engine consumes one mono PCM
+/// stream and emits an enhanced PCM stream on the same clock. Each
+/// engine hands out a stateful [`DenoiseStreamHandle`] that carries
+/// every recurrent state (per-block GRU hidden vectors, STFT tail,
+/// pitch analysis buffer, prev-frame Bark energies) hidden inside it
+/// (FR-LD-06).
+///
+/// This trait absorbs both the neural RNNoise session (real GRU
+/// weights) and a future thin wrapper around the existing
+/// [`vokra_ops::denoise`] fn (DeepFilterNet3) so the dispatch layer
+/// sees one shape.
+pub trait DenoiseEngine: Send + Sync {
+    /// Opens a fresh streaming handle with zero-initialised recurrent
+    /// state, bound to `sample_rate` Hz.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`](crate::VokraError) when
+    /// `sample_rate` does not match the model's trained rate — the
+    /// engine never silently resamples (FR-EX-08).
+    fn open_stream(&self, sample_rate: u32) -> Result<Box<dyn DenoiseStreamHandle + Send>>;
+}
+
+/// A stateful denoise stream: push mono PCM, get enhanced PCM back.
+///
+/// The handle hides every recurrent state (FR-LD-06); callers only push
+/// samples and read the cleaned output. [`reset`](Self::reset) returns
+/// it to the initial state so a fresh utterance reproduces the first
+/// run bit-for-bit.
+pub trait DenoiseStreamHandle {
+    /// Pushes mono `f32` PCM at the stream's bound sample rate and
+    /// returns whatever enhanced samples the internal STFT + iSTFT
+    /// pipeline can commit on this push. The returned slice length
+    /// depends on the hop / overlap-add tail geometry; a starving call
+    /// may return an empty vec.
+    fn push_pcm(&mut self, pcm: &[f32]) -> Result<Vec<f32>>;
+
+    /// Clears every recurrent state, returning the handle to its
+    /// initial state.
     fn reset(&mut self);
 }
 
@@ -447,4 +584,47 @@ impl SynthesisRequest {
         self.prosody_features = Some(features.into());
         self
     }
+}
+
+/// A reference-free neural **MOS (Mean Opinion Score) scorer** — the
+/// engine-facing surface for MOS predictors like DNSMOS P.808 / P.835
+/// (`vokra_models::dnsmos_p808_p835`, 2026-08-05) and the future UTMOS
+/// runtime binder.
+///
+/// Unlike the metrics-side [`AudioMosMetric`](vokra_eval::metrics::AudioMosMetric)
+/// (which lives in `vokra-eval` and is a single-scalar per-clip abstraction
+/// with a stable string `name()`), this trait sits in `vokra-core` alongside
+/// the other engine seams so a runtime session (or a C ABI handle) can drive
+/// a MOS scorer without pulling `vokra-eval` in. It reports **all four**
+/// DNSMOS-style dimensions (P.808 overall + P.835 sig/bak/ovrl) in one call
+/// so a caller that binds a bundle GGUF (both variants in one artefact)
+/// does not pay the mel front-end cost twice.
+pub trait MosScorerEngine: Send + Sync {
+    /// The MOS variants this engine can score, in canonical order.
+    /// DNSMOS returns some subset of `["p808", "p835"]`; a partial bundle
+    /// (only P.808 or only P.835 flattened into the GGUF) advertises only
+    /// the truthful subset here so a caller can gate their pipeline
+    /// without walking metadata (FR-EX-08).
+    fn variants(&self) -> &[&'static str];
+
+    /// Scores a 16 kHz mono `f32` PCM clip. Every field of [`MosScore`] is
+    /// `None` unless the engine's variants set includes it — a partial
+    /// bundle that only carries P.808 weights returns `p808 = Some(...)`
+    /// and `sig = bak = ovrl = None`, never a fabricated `0.0`.
+    fn score(&self, pcm16k: &[f32]) -> Result<MosScore>;
+}
+
+/// A [`MosScorerEngine`] result. Fields are `None` for variants the
+/// engine does not advertise; every advertised variant yields
+/// `Some(mos ∈ [1.0, 5.0])`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MosScore {
+    /// ITU-T P.808 overall quality MOS (single scalar).
+    pub p808: Option<f32>,
+    /// ITU-T P.835 signal-quality MOS.
+    pub sig: Option<f32>,
+    /// ITU-T P.835 background-noise MOS.
+    pub bak: Option<f32>,
+    /// ITU-T P.835 overall MOS.
+    pub ovrl: Option<f32>,
 }

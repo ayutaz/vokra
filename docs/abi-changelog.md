@@ -228,6 +228,305 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-03 — 1.0.0-rc.1-dev (GGUF `MAX_TENSOR_DIMS` raised 4 → 8 for multimodal Conv3d weights — Rust surface only, advisory)
+
+Additive **Rust public API** + **GGUF wire semantics** entry: the loader
+constant `vokra_core::gguf::tensor::MAX_TENSOR_DIMS` is raised from `4`
+to `8`. Both the reader (`gguf::reader`) and both writer paths
+(`GgufBuilder::add_tensor` and `GgufStreamWriter::begin`) now accept
+tensors of rank ≤ 8; ranks 9+ are still rejected as
+`GgufError::TooManyDimensions`. The GGUF wire format itself is uncapped
+(`n_dims: u32` then `dims[n_dims]: u64`) — this constant is a Vokra-side
+sanity guard, and the bump reflects the largest rank any planned model
+weight uses (multimodal vision Conv3d = 5-D). The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef) is **untouched**
+(`MAX_TENSOR_DIMS` is a Rust-side `pub const`, not cbindgen-exported;
+`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: Qwen2.5-Omni's thinker subsumes the Qwen2.5-VL vision
+path, whose `visual.patch_embed.proj.weight` is an `nn.Conv3d`
+`[embed_dim=1280, in_channels=3, temporal_patch=2, spatial_patch=14,
+spatial_patch=14]` — a 5-D tensor the previous `MAX_TENSOR_DIMS = 4`
+cap rejected on the vast.ai converter path. Raising the cap unblocks
+*conversion + load* of any current-day multimodal weight; forward
+inference on the 5-D tensor still requires a downstream `Conv3d` op WP
+(none exists in vokra-ops today, so a rank-5 tensor loads as opaque
+bytes reachable via `GgufFile::tensor_data(name)` — honest per FR-EX-08).
+
+**Interop caveat**: GGUFs Vokra emits with rank > 4 will NOT round-trip
+through stock llama.cpp (its `GGML_MAX_DIMS = 4` gate rejects them).
+This is acceptable because Vokra's `vokra.*` metadata prefix already
+isolates its GGUFs from the llama.cpp namespace (CLAUDE.md §3).
+
+**Files touched**:
+- `crates/vokra-core/src/gguf/tensor.rs` — const bump + rustdoc.
+- `crates/vokra-core/src/gguf/writer.rs` — negative tests bumped from
+  `TooManyDimensions(5)` to `(9)`; two new positive round-trip tests
+  (`builder_accepts_5d_conv3d_shape`, `stream_writer_accepts_5d_conv3d_shape`)
+  exercise the 5-D `[2, 3, 2, 2, 2]` F32 shape end-to-end.
+- `crates/vokra-core/src/gguf/reader.rs` — negative test bumped
+  (n_dims = 5 → 9).
+- `crates/vokra-core/src/gguf/mod.rs` — `TooManyDimensions` variant
+  rustdoc updated.
+- `crates/vokra-models/src/f0/rmvpe.rs` — comments referring to
+  "impossible on the load path because cap = 4" updated; the RMVPE
+  rank-5 rejection arm is now a real code path (RMVPE has no 5D
+  weight, so a rogue converter would be loudly refused).
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-core` and
+`vokra-models`; root `Cargo.lock` unchanged.
+
+### 2026-07-30 — 1.0.0-rc.1-dev (FSMN-VAD backend — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the FSMN-VAD (FunASR
+`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT) first-class
+audio-dialect op posture. The C ABI (`include/vokra.h`) is **untouched**
+(33 fn + 11 typedef baseline unchanged; `scripts/gen-c-abi.sh --check` =
+no diff). Follows the X-Codec-2 / SBV2 precedent for new `ModelKind`
+variants: **advisory Rust-surface entry**, `scripts/check-abi-changelog.sh`
+does not gate on it (no C symbol changed).
+
+- **vokra-ops::fsmn_vad (new module)**: `FsmnEncoderConfig` (fields
+  `n_blocks` / `input_dim` / `proj_dim` / `hidden_dim` / `lorder` /
+  `rorder` / `n_class` + `upstream_default()` + `validate()` +
+  `memory_kernel()`), `FsmnBlockWeights`, `FsmnVadWeights`,
+  `FsmnStreamState` (`zeros()` / `reset()` / `is_zero()` / `matches()`),
+  `fsmn_vad_forward()`, `softmax_last_axis()`. Distinct from the Silero
+  VAD subgraph posture (FR-LD-06) — FSMN's stateless FFN + memory blocks
+  lower to graph-level ops.
+- **vokra-models::fsmn_vad (new module)**: `FsmnVadConfig`,
+  `FsmnVadV1` (`from_gguf` / `open` / `config` / `forward_features`),
+  `FsmnVadStream` (`push_features`), plus `pub const`s
+  (`ARCH="fsmn-vad"`, `DEFAULT_NAME`, `CATEGORY="vad"`, `UPSTREAM_HF`,
+  `KEY_*` for every `vokra.fsmn_vad.*` metadata chunk, `TENSOR_*` names,
+  `tensor_ffn1_weight(i)` / etc formatters). `VadEngine` trait impl for
+  `FsmnVadV1` matches the Silero `VadEngine` surface — a caller sees no
+  FSMN-vs-Silero asymmetry at the trait boundary. `VadStreamHandle::push_pcm`
+  returns loud `VokraError::UnsupportedOp` (FR-EX-08 — the Kaldi fbank +
+  LFR + CMVN front-end pipeline lands with the real-weight parity harness
+  once the checkpoint is fetched; silently zero-padding would be a fake
+  data path).
+- **vokra-convert::ModelKind**: `FsmnVad` variant added (public enum),
+  plus 5 aliases routed to it (`fsmn-vad` / `fsmn_vad` / `fsmnvad` /
+  `fsmn-vad-zh-cn-16k-common` /
+  `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`). New module
+  `crates/vokra-convert/src/models/fsmn_vad.rs`
+  (`convert_fsmn_vad_file(input, output, license) -> Result<FsmnVadReport, _>`
+  with SPDX override per the `convert_file_licensed` standing pattern).
+  BF16 / F16 / F32 pass-through mirror of emotion2vec / wespeaker; full
+  `vokra.fsmn_vad.*` hparam chunk group stamped unconditionally with the
+  released FunASR checkpoint's fixed axes.
+- **vokra-cli**: `convert --model fsmn-vad --input <safetensors> --output
+  <out.gguf>` — the upstream release is `.pt`, so callers pre-flatten with
+  `tools/parity/nemo_pt_to_safetensors.py` (emotion2vec / funcodec /
+  wespeaker precedent).
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+`docs/license-audit.md` §3.1 sign-off row landed 2026-07-30 yousan
+(☑ Commercial — MIT, FunASR upstream repo LICENSE primary source).
+
+### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: hybrid CTC/attention decode + LSTM LM shallow fusion — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 gap JA-ASR-3 primitive
+(hybrid CTC/attention decoder + LSTM LM shallow fusion). The C ABI
+(`include/vokra.h`) is **untouched** (33 fn + 11 typedef baseline
+unchanged; `scripts/gen-c-abi.sh --check` = no diff). Follows the
+X-Codec-2 / VoxCPM2-2B / SBV2 v2 precedent: **advisory Rust-surface
+entry**, `scripts/check-abi-changelog.sh` does not gate on it (no C
+symbol changed).
+
+- **vokra-ops::hybrid_ctc_attention** (new mod):
+  `hybrid_ctc_attention_decode` (fn) / `HybridCtcAttentionAttrs` /
+  `HybridHypothesis` / `LstmLmCell` / `LstmLmState` / `AttnNextStepFn`
+  (type alias) / `LmScoreFn` (type alias).
+
+Runtime function (NOT an OpKind variant, same posture as `ctc_decode` /
+`beam_search` — FR-OP-40 / FR-EX-10). Combines the attention beam
+(caller-supplied next-step callback), the CTC prefix score (Watanabe-Hori
+DP over the encoder log-prob matrix), and an optional LSTM LM shallow
+fusion into a joint rank:
+`(1-α) · attn_lp + α · ctc_prefix_lp + lm_weight · lm_lp`. The
+`LstmLmCell` helper exposes a single-layer LSTM (matching PyTorch
+`LSTMCell` gate layout `[i;f;g;o]`) so callers can wire a stateful
+shallow-fusion closure without reimplementing the gate arithmetic.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
+### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: E-Branchformer encoder — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 gap JA-ASR-4 primitive
+(E-Branchformer encoder). The C ABI (`include/vokra.h`) is **untouched**
+(33 fn + 11 typedef baseline unchanged; `scripts/gen-c-abi.sh --check` = no
+diff). Follows the X-Codec-2 / VoxCPM2-2B / SBV2 v2 precedent: **advisory
+Rust-surface entry**, `scripts/check-abi-changelog.sh` does not gate on it
+(no C symbol changed).
+
+- **vokra-ops::ebranchformer** (new mod): `EBranchformerEncoder` /
+  `EBranchformerConfig` / `EBranchformerWeights` / `EBranchformerStemWeights` /
+  `EBranchformerLayerWeights` / `CgMlpWeights` / `MergeWeights` plus
+  `pub fn new(cfg, weights) -> Result<Self>` +
+  `pub fn forward(&self, mel, mel_frames) -> Result<(Vec<f32>, usize)>` +
+  accessors (`config`, `head_dim`, `cgmlp_half_dim`).
+
+Parallel two-branch encoder — attention branch + cgMLP branch merged via
+a DepthwiseConv + Linear "Merge" module (Kim et al. 2023,
+[arXiv:2210.00077](https://arxiv.org/abs/2210.00077)). Primary consumer =
+ESPnet OWSM family (`espnet/owsm-ctc-v3.1-1B`, CC-BY-4.0). Reuses the
+Conformer primitive's `FeedForwardWeights` / `MhaWeights` /
+`ConvSubsampleKind` / `PositionEncoding` layouts.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
+### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: Zipformer encoder — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 gap JA-ASR-5 primitive
+(Zipformer encoder). The C ABI (`include/vokra.h`) is **untouched** (33 fn
++ 11 typedef baseline unchanged; `scripts/gen-c-abi.sh --check` = no diff).
+Follows the X-Codec-2 / VoxCPM2-2B / SBV2 v2 precedent: **advisory
+Rust-surface entry**, `scripts/check-abi-changelog.sh` does not gate on it
+(no C symbol changed).
+
+- **vokra-ops::zipformer** (new mod): `ZipformerEncoder` /
+  `ZipformerConfig` / `ZipformerStackDesc` / `ZipformerWeights` /
+  `ZipformerStemWeights` / `ZipformerStackWeights` /
+  `ZipformerLayerWeights` / `SharedMhaQkWeights` plus
+  `pub fn new(cfg, weights) -> Result<Self>` +
+  `pub fn forward(&self, mel, mel_frames) -> Result<(Vec<f32>, usize)>` +
+  accessors (`config`, `head_dim`).
+
+Multi-resolution encoder with attention weight sharing (single `Q` / `K`
+per stack, per-layer `V` + output projection + FF + Conv + LN). Direct
+port of `k2-fsa/icefall/egs/librispeech/ASR/zipformer/zipformer.py`
+(Apache-2.0). Primary consumer = the reazonspeech-k2 CTC family
+(`reazon-research/reazonspeech-k2-v2`, Apache-2.0). Reuses the Conformer
+primitive's `FeedForwardWeights` / `ConformerConvWeights` /
+`ConvSubsampleKind` / `PositionEncoding` layouts so a caller can share
+stem wiring across ASR encoders.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
+### 2026-07-30 — 1.0.0-rc.1-dev (TitaNet-L converter + §3.1 sign-off — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the NVIDIA TitaNet-Large converter
+landing (mirror of the wespeaker / ecapa_tdnn / speaker_3d skeleton
+pattern). The C ABI (`include/vokra.h`) is **untouched** (33 fn + 11
+typedef baseline unchanged; `scripts/gen-c-abi.sh --check` = no diff).
+Follows the X-Codec-2 precedent: **advisory Rust-surface entry**,
+`scripts/check-abi-changelog.sh` does not gate on it (no C symbol
+changed).
+
+- **vokra-convert::ModelKind**: `TitaNet` variant added (public enum),
+  plus 5 aliases routed to it (`titanet-large` / `titanet_large` /
+  `titanet` / `speakerverification_en_titanet_large` /
+  `nvidia/speakerverification_en_titanet_large`). New module
+  `crates/vokra-convert/src/models/titanet.rs`
+  (`convert_titanet_file(input, output, license: Option<&str>) ->
+  Result<TitaNetReport, ConvertError>` + `TitaNetReport` struct + arch /
+  category / attribution constants). Category = `speaker` (mirror of
+  the sibling `wespeaker` / `ecapa_tdnn` / `speaker_3d` GGUF layout).
+  Default provenance stamp = **cc-by-4.0** (`LicenseClass::AttributionRequired`
+  — the converter additionally writes the FR-MD-09
+  `vokra.provenance.attribution` chunk with the NVIDIA credit text;
+  runtime `vokra_core::resolve_attribution` / `vokra_model_attribution`
+  already surface it, no new C ABI needed).
+- **vokra-cli**: `convert --model titanet-large --input <safetensors>
+  --output <gguf> [--license <spdx>]` — the license override at the
+  outer `convert_file --license` boundary flips the class back to
+  Permissive and drops the attribution chunk (silent inheritance of
+  NVIDIA credit into a permissive retrain would misattribute — pinned
+  by `license_override_to_permissive_drops_attribution_chunk` test).
+- **vokra-core::m5_residual_ops**: `TITANET_SPEAKER_ENCODE_OP` blocker
+  text refreshed from "NVIDIA NC unconfirmed" to "already covers
+  speaker embedding" (semantic-only edit; the const value +
+  `M5ResidualAnchor` catalogue entry are unchanged, `MinDtypeRegistry`
+  reservation still holds — `new_anchors_are_reserved_but_unregistered`
+  passes unchanged).
+
+Owner sign-off = ☑ Commercial 2026-07-30 yousan
+(`docs/license-audit.md` §3.1 row 262; primary source = HF
+`nvidia/speakerverification_en_titanet_large` cardData YAML frontmatter
+`license: cc-by-4.0` + card body citation, 2026-07-30 fetch). NOTICE
+§11 records the code-level NVIDIA credit.
+
+Runtime port is **out-of-scope** for the converter landing — the
+`TITANET_SPEAKER_ENCODE_OP` op is M5-residual (CAM++ already covers the
+speaker-embedding surface under Apache-2.0 with no attribution
+overhead); a future M5 landing would be a backward-compatible additive
+per the M4-20 T14 mechanism-anchor discipline.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
+### 2026-07-30 — 1.0.0-rc.1-dev (M5-16 / FR-OP-83: FCPE real Conformer forward + converter — Rust surface only, advisory)
+
+Additive **Rust public API** entry promoting `vokra-models::f0::fcpe` from the
+2026-07-25 SoTA Wave-F skeleton (`Fcpe::{from_gguf, extract}` on a metadata-
+only surface) to a real Conformer-based F0 forward: mel[T, n_mels] → Linear
+stem → `vokra_ops::conformer::ConformerEncoder` (SoTA Phase 2 landed
+primitive — no new op) → LayerNorm → Linear head → softmax → cent-grid
+soft-argmax → Hz + V/UV. Follows the X-Codec-2 / SBV2 precedent: **advisory
+Rust-surface entry**, `scripts/check-abi-changelog.sh` does not gate on it
+(no C symbol changed).
+
+- **vokra-models::f0::fcpe** — `FcpeConfig` + `FcpeWeights` types added
+  (`pub struct` with public fields; the fields are the Conformer + head
+  shape descriptors so a downstream that wants to introspect a bound FCPE
+  can walk them without another Rust round-trip). `FCPE::from_gguf` now
+  binds the canonical tensor set when present (loud on partial /
+  mis-shaped sets — FR-EX-08 posture); metadata-only GGUFs continue to
+  return the frame-count-contract skeleton (backward-compat with the
+  Wave-F consumers). New associated fn `FCPE::has_real_weights() -> bool`
+  and `FCPE::config() -> &FcpeConfig` expose the state to callers /
+  tests.
+- **vokra-convert::ModelKind** — `Fcpe` variant added (public enum) plus
+  5 aliases (`fcpe`, `torchfcpe`, `fast-context-pitch-estimator`,
+  `fast_context_pitch_estimator`, `cnchtu/fcpe`). New module
+  `crates/vokra-convert/src/models/fcpe.rs` (`convert_fcpe_file` +
+  internal `models::fcpe::convert(bytes)` helper shared with
+  `convert_file_licensed`) — F32 / F16 / BF16 pass-through, `vokra.model.
+  arch = "fcpe"` + `vokra.model.category = "f0"` + `vokra.provenance.
+  upstream_hf = "CNChTu/FCPE"` + `mit` Permissive stamp.
+- **GGUF metadata schema** — new `vokra.f0.fcpe.*` config chunk group
+  (13 keys: `hop` u32 / `fmin` f32 / `fmax` f32 / `sample_rate` u32 /
+  `n_mels` u32 / `n_fft` u32 / `n_pitch_bins` u32 /
+  `confidence_threshold` f32 / `d_model` u32 / `n_heads` u32 /
+  `ffn_dim` u32 / `n_layers` u32 / `kernel_size` u32) read by
+  `FcpeConfig::from_gguf` with per-key defaults from the FCPE_v001
+  primary source. Additive — every key defaults if absent, so a
+  metadata-only GGUF still loads.
+- **License** — `docs/license-audit.md` §3.1 sign-off row added
+  (`CNChTu/FCPE`, MIT Permissive, 2026-07-30 yousan =
+  ☑ Commercial; primary source `github.com/CNChTu/FCPE/LICENSE`).
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. `scripts/gen-c-abi.sh --check` =
+no diff.
+
+### 2026-07-30 — 1.0.0-rc.1-dev (M5 gap CC wave 2 — VoxCPM2-2B config + scaffolds — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 owner-checklist CC-side wave 2
+(A-4/A-5/A-6/B-1/B-2 ultracode workflow, PR #24 commit `b13a3c0`). The C ABI
+(`include/vokra.h`) is **untouched** (33 fn + 11 typedef baseline unchanged;
+`scripts/gen-c-abi.sh --check` = no diff). Follows the X-Codec-2 precedent:
+**advisory Rust-surface entry**, `scripts/check-abi-changelog.sh` does not
+gate on it (no C symbol changed).
+
+- **vokra-ops::vae_continuous**: `voxcpm2_2b()` associated fn added on
+  `ContinuousVaeConfig` (sibling of the existing `voxcpm_0_5b()` factory).
+  Returns the primary-source-anchored 2B config for `openbmb/VoxCPM2`
+  (Apache-2.0). Owner Q1 topology ADR is still Proposed — this only lands
+  the config primitives and the accompanying `voxcpm2_2b_config_matches_primary_source`
+  / `voxcpm2_2b_config_validates` pin tests; the 2B tensor-name mapping in
+  `vokra-convert::models` is deferred until the ADR is Accepted.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none. Commit:
+`b13a3c0` (2026-07-30).
+
 ### 2026-07-28 — 1.0.0-rc.1-dev (X-Codec-2 converter + LicenseClass flip — Rust surface only, advisory)
 
 Additive **Rust public API** change plus one observable behaviour change on
@@ -1058,6 +1357,22 @@ Notes:
 | WP    | Chunk prefix    | Keys                                                                                                                                                                                                                                                                                                          | Kind                              | Status        | Rationale                                                                                                                                                                                                                                                                                       | Introducing wave / commit |
 | ----- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
 | M5-15 | `vokra.utmos.*` | **v1 additions** (required iff `arch.variant == "wav2vec2_regression.v1"`, forbidden for `…v0`): `vokra.utmos.conv.{group_norm_layers[],group_norm_groups[],group_norm_eps}`, `vokra.utmos.pos_conv.{kernel,groups}`, `vokra.utmos.cond.{domain_dim,domain_id,judge_dim,judge_id}`, `vokra.utmos.blstm.hidden`, `vokra.utmos.head.activation` (`"relu"` / `"none"`) | `u32` + `u32-array` + `f32` + `string` | **persisted** | The M4-18 UTMOS un-defer (依頼者承認 2026-07-18). The real UTMOS22-strong stack needs eight structures the v0 skeleton could not express, so `ARCH_VARIANT_V1 = "wav2vec2_regression.v1"` was added — **additively**, exactly as ADR `M4-18-utmos-arch.md`:41 pre-authorized: a v0 GGUF still loads and still produces the same score. `v0_forward_is_untouched_by_the_v1_addition` pins that on two axes: the GGUF and in-memory paths agree **bit-for-bit**, and the value itself is held to a golden literal (`V0_GOLDEN_SCORE`, ±1e-6 — a tolerance because the f32 forward moves by one ULP between this host's own scalar and NEON kernel paths, so bit-exactness across ISAs is measurably false; derivation in the constant's rustdoc). The M4-18 row above was moved `documented` → **persisted** to match, since `vokra-convert --model utmos` (M5-15 T14) now emits those keys as well — with the `…v0` variant *string* still test-only, as that row records. A v0-labelled GGUF carrying any v1 key is a loud `ModelLoad` error rather than a half-honoured stack (FR-EX-08). | M5-15 wave 1               |
+| M5-gap | `vokra.f0.crepe.*` | `vokra.f0.crepe.capacity` (`string`, one of `"tiny"`/`"small"`/`"medium"`/`"large"`/`"full"` — the upstream size knob, `crepe/core.py::build_and_load_model`), `vokra.f0.crepe.hop` (`u32`, default 160 = 10 ms @ 16 kHz), `vokra.f0.crepe.fmin` (`f32`, informational search-grid floor, default 50.0), `vokra.f0.crepe.fmax` (`f32`, informational search-grid ceiling, default 1100.0). Weight tensors travel under the upstream Keras layer names permuted to Vokra layout: `conv{1..6}.{weight,bias,bn.gamma,bn.beta,bn.moving_mean,bn.moving_variance}` (F32) + `classifier.{weight,bias}` (F32). Weight-tensor absence keeps the runtime in the honest UNIMPLEMENTED skeleton path (metadata-only GGUFs written by the earlier skeleton still load — the frame-count contract is preserved). | `string` + `u32` + `f32` + `f32` tensors | persisted | CREPE (Kim et al. 2018) F0 (fundamental-frequency) extractor — written by `crates/vokra-convert/src/models/crepe.rs` (`convert_crepe_file`), read by `CREPE::from_gguf` (`crates/vokra-models/src/f0/crepe.rs`). Weight license = **MIT** (`marl/crepe/main/LICENSE.txt`, "Copyright (c) 2018 Jong Wook Kim et al.", CC-verified 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」). The offline `tools/parity/keras_h5_to_safetensors.py` bridges the upstream Keras `.h5` release into the safetensors + config side-car this converter consumes (the DAC / Kokoro / UTMOS split — zero-dep, no TensorFlow / Keras / torch in the runtime, NFR-DS-02 / FR-LD-05). Real-weight parity is env-gated (`VOKRA_CREPE_GGUF` + `VOKRA_CREPE_REFERENCE_WAV` + `VOKRA_CREPE_REFERENCE_JSON`, `crates/vokra-models/tests/parity_crepe.rs`, atol_hz = 3.0). | 2026-07-30 (M5 gap follow-up) |
+
+### 2026-07-30 — VoxCPM2 2B variant support (Option C hybrid)
+
+| Crate / area                    | Symbol                                                | Kind    | Signature                                                                                                                                                                                                          | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                | Breaking? | PR   |
+| ------------------------------- | ----------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---- |
+| `gguf:vokra.model.name`         | `"voxcpm2-0.5b"` / `"voxcpm2-2b"`                     | Added   | `string`                                                                                                                                                                                                            | Rename `voxcpm-0.5b` → `voxcpm2-0.5b`; new `voxcpm2-2b` for `openbmb/VoxCPM2`. Both variants share `vokra.model.arch = "voxcpm2"`; the parity harness dispatches on `vokra.model.name` (`crates/vokra-models/tests/parity_tts_continuous_vae.rs`). The legacy `voxcpm-0.5b` string stays registered in `vokra_core::compliance::license_class` for backward compat with any pre-rename GGUF on disk. Spec: `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`. | no        | —    |
+| `gguf:vokra.voxcpm2.*`          | `vokra.voxcpm2.lm.kv_channels`                        | Added   | `u32` (0.5B: 64 derived, 2B: 128 explicit)                                                                                                                                                                          | LM per-head channel width. 2B primary source `openbmb/VoxCPM2/config.json.lm_config.kv_channels` is explicit; the 0.5B derived value was previously implicit and is now stamped so the runtime can cross-check without recomputing.                                                                                                                                                                                                                     | no        | —    |
+| `gguf:vokra.voxcpm2.*`          | `vokra.voxcpm2.encoder.kv_channels`                   | Added   | `u32`                                                                                                                                                                                                              | Same rationale as LM. Encoder + DiT share the pattern.                                                                                                                                                                                                                                                                                                                                                                                                | no        | —    |
+| `gguf:vokra.voxcpm2.*`          | `vokra.voxcpm2.dit.kv_channels`                       | Added   | `u32`                                                                                                                                                                                                              | Same.                                                                                                                                                                                                                                                                                                                                                                                                                                                 | no        | —    |
+| `gguf:vokra.voxcpm2.*`          | `vokra.voxcpm2.dit.mean_mode`                         | Added   | `bool` (both variants: false)                                                                                                                                                                                       | 2B `config.json.dit_config.mean_mode` is explicit `false`; 0.5B non-explicit training-side default is `false`. Field is scaffold-only until the runtime forward branch consumes it (T29-equivalent follow-up); recording it now avoids a silent drift when a future variant flips it to `true`.                                                                                                                                                             | no        | —    |
+| `gguf:vokra.voxcpm2.*`          | `vokra.voxcpm2.residual_lm.no_rope`                   | Added   | `bool` (0.5B: false, 2B: true)                                                                                                                                                                                     | 2B skips RoPE on the residual acoustic LM Q/K path. Runtime forward branch that consumes this axis lands in a follow-up wave (T29-equivalent); the flag exists so a converter that emits it and a runtime that ignores it are catchable at parity time.                                                                                                                                                                                                | no        | —    |
+| `gguf:vokra.vae_continuous.*`   | `vokra.vae_continuous.sr_bin_boundaries`              | Added   | `u32-array` (only present when non-empty — 0.5B: absent, 2B: `[20_000, 30_000, 40_000]`)                                                                                                                            | Bandwidth-adaptive decoder-head boundaries. Absent on the 0.5B GGUF (single-head decoder) — a downstream consumer reading `Option<Vec<u32>>` sees `None`. Matched to `ContinuousVaeConfig::voxcpm2_2b().sr_bin_boundaries` element-wise by the parity harness.                                                                                                                                                                                              | no        | —    |
+| `vokra-convert`                 | `models::voxcpm2::VoxCpm2Variant` (enum, crate-priv) | Added   | `enum VoxCpm2Variant { HalfB, TwoB }`                                                                                                                                                                              | Selected by `models::voxcpm2::detect_variant(&SafetensorsFile)` from `base_lm.embed_tokens.weight`'s hidden dim (1024 → HalfB, 2048 → TwoB). Any other value is a loud `ConvertError::Parse` — no silent default (FR-EX-08). Not a C ABI symbol; recorded here so the GGUF metadata delta above has a symmetrical Rust-surface entry.                                                                                                                    | no        | —    |
+| `vokra-convert`                 | `models::voxcpm2::VoxCpm2Report::variant`             | Added   | `pub(crate) variant: Option<VoxCpm2Variant>`                                                                                                                                                                       | Report field so the CLI trailer surfaces the detected variant. `None` reserved for pre-detection shape (currently unused — every successful `convert` sets it, every failure returns early).                                                                                                                                                                                                                                                          | no        | —    |
+| `vokra-core:license_class`      | `voxcpm2-0.5b` / `voxcpm2-2b` / `voxcpm2-` prefix     | Added   | `LicenseClass::Permissive` (apache-2.0 end-to-end)                                                                                                                                                                | The registry accepts every canonical + underscore + `-base` spelling of both variants, plus the `voxcpm2-` prefix guard for future 2B-lineage variants. The pre-existing `voxcpm-` prefix + `voxcpm-0.5b` explicit entries stay live for backward compat with legacy GGUFs.                                                                                                                                                                              | no        | —    |
 
 Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS is license fail-closed until the owner's M4-18 T03 verification (no keys are invented ahead of it).
 

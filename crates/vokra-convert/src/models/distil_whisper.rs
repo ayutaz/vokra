@@ -114,12 +114,19 @@ pub(crate) fn derive_name(
         // shape-identical v3 or a hypothetical future v4 lands under
         // the same axes.
         (1280, 32, 2, 128, 51_866) => Ok("distil-large-v3.5"),
+        // distil-medium.en — English-only distilled Whisper medium.
+        // (d_model=1024, n_audio_layer=24, n_text_layer=2, n_mels=80,
+        // n_vocab=51864 — English-only vocab is 51864, one less than
+        // the multilingual 51865/51866). Primary source:
+        // `distil-whisper/distil-medium.en` config.json 2026-07-31.
+        (1024, 24, 2, 80, 51_864) => Ok("distil-medium.en"),
         _ => Err(ConvertError::Parse(format!(
             "unknown distil-whisper size: (d_model={d_model}, n_audio_layer={n_audio_layer}, \
              n_text_layer={n_text_layer}, n_mels={n_mels}, n_vocab={n_vocab}); expected the \
-             distil-large-v3.5 quintuple (1280, 32, 2, 128, 51866). If this really is a \
-             distil-whisper checkpoint but a size the converter has not seen, extend \
-             `derive_name` — do not fall back silently."
+             distil-large-v3.5 quintuple (1280, 32, 2, 128, 51866) or distil-medium.en \
+             (1024, 24, 2, 80, 51864). If this really is a distil-whisper checkpoint \
+             but a size the converter has not seen, extend `derive_name` — do not fall \
+             back silently."
         ))),
     }
 }
@@ -404,6 +411,16 @@ mod tests {
         assert_eq!(
             derive_name(1280, 32, 2, 128, 51_866).expect("known"),
             "distil-large-v3.5",
+        );
+    }
+
+    #[test]
+    fn derive_name_covers_distil_medium_en() {
+        // distil-medium.en (English-only, primary source
+        // `distil-whisper/distil-medium.en` config.json 2026-07-31).
+        assert_eq!(
+            derive_name(1024, 24, 2, 80, 51_864).expect("known"),
+            "distil-medium.en",
         );
     }
 

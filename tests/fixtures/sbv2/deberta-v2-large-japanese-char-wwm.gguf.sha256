@@ -1,1 +1,11 @@
-69cb2d1835c35487fb1c8ac445799a8a0026dc6a6d2e271a0ac96759cbf6ca4f  deberta-v2-large-japanese-char-wwm.gguf
+# placeholder — see tests/fixtures/sbv2/README.md "Placeholder format".
+# This file is intentionally comment-only and contains the word `placeholder`,
+# which closes `parity-sbv2-real.yml`'s sidecar-hash gate cleanly (FR-EX-08
+# skip, not a fabricated pass). Replace this entire body with a real
+# `sha256sum` line ("<hash>  deberta-v2-large-japanese-char-wwm.gguf") only
+# after `tools/parity/sbv2_dump_reference.py --do-dump` (Task 30's §7
+# forward pipeline body) is implemented AND an owner completes the fixture
+# recipe end to end (README "Owner recipe" step 4 = "Hash and commit"). The
+# current gate is INTENTIONALLY closed because that body has not landed yet
+# (README "Known limitations §1" — `tools/parity/vendor/vits/` still ships
+# only LICENSE + README scaffold).

@@ -53,23 +53,128 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${self_test:-0}" == "1" ]]; then
-  # Verify the two refusals that matter, without touching the network.
+  # Verifies every refusal that matters, without touching the network.
+  #
+  # This replaces the pre-2026-08 self-test which referenced a `SIGNOFF_OVERRIDE`
+  # env var that no code path actually read (dead reference — passing an
+  # unknown env var to a nonexistent artifact test told us nothing about the
+  # sign-off gate). The new cases below drive `signoff_match.py` with a
+  # synthetic §3.1 fixture and assert the four terminal states this script
+  # cares about: APPROVED (allow through), PENDING (blank row -> exit 3),
+  # NO_ROW (repo declared but audit out of sync -> exit 4), UNKNOWN_REPO
+  # (repo not in explicit map -> exit 5). The fail-closed inversion of the
+  # old NO_ROW-passes-silently branch is exercised by the NO_ROW / UNKNOWN
+  # cases below — a REGRESSION to the old behaviour would flip either to
+  # success and be caught here.
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   fail=0
 
-  # (a) A missing sign-off must block, even for a permissive weight.
-  if out="$(SIGNOFF_OVERRIDE=blank "$0" /nonexistent.gguf --repo vokra/x 2>&1)"; then
-    echo "self-test FAIL: a nonexistent artifact was accepted" >&2; fail=1
-  fi
-  # (b) --push must never be the default.
-  if grep -q 'push=1' <<<"$(sed -n 's/^push=\([0-9]\).*/push=\1/p' "$0" | head -1)"; then
+  # (a) --push must never be the default. Regex-anchored so a comment
+  #     containing "push=1" cannot mask a real change.
+  if grep -qE '^push=1' "$0"; then
     echo "self-test FAIL: push defaults to on" >&2; fail=1
   fi
-  # (c) The card tool's own gate must be reachable from here.
+
+  # (b) The card tool's own gate must be reachable from here.
   if ! python3 "$card_tool" --self-test >/dev/null 2>&1; then
     echo "self-test FAIL: make_model_card self-test does not pass" >&2; fail=1
   fi
-  [[ $fail -eq 0 ]] && echo "upload self-test: OK (3 cases)" && exit 0
+
+  # (c) signoff_match must pass its own self-test.
+  if ! python3 "$repo_root/scripts/publish/signoff_match.py" --self-test >/dev/null 2>&1; then
+    echo "self-test FAIL: signoff_match self-test does not pass" >&2; fail=1
+  fi
+
+  # (d) End-to-end: drive the actual sign-off Python block against a
+  #     synthetic audit + repo map and assert each terminal state.
+  #     Kept inline (not shelling to upload.sh recursively) so the state
+  #     transitions we care about are the SAME ones the production path
+  #     runs; a recursive call would additionally trip the artifact-exists
+  #     check, which is not what this case is testing.
+  #
+  #     Uses `python3 signoff_match.py --check-repo` — same CLI the
+  #     production run below invokes — with SIGNOFF_MATCH_FIXTURES
+  #     pointing at a hermetic table.
+  cat >"$tmp/audit.md" <<'EOF'
+### Owner sign-off template
+
+| Model | Weight License | CC-verified date | Owner sign-off (YYYY-MM-DD) | Approval | Notes |
+|---|---|---|---|---|---|
+| **APPROVED-Model** | MIT | 2026-01-01 | 2026-01-02 yousan | ☑ Commercial / ☐ Research-only / ☐ Rejected | approved fixture |
+| **PENDING-Model** | MIT | 2026-01-01 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | blank fixture |
+| **REJECTED-Model** | Unknown | 2026-01-01 | 2026-01-02 yousan | ☐ Commercial / ☐ Research-only / ☑ Rejected | rejected fixture |
+EOF
+  # Isolated Python driver — imports signoff_match, swaps in a scoped
+  # repo map, checks each state. This is intentionally the SAME logic
+  # the production path uses (approval_for_repo returns the same states)
+  # so a regression in either side surfaces here.
+  py_out="$(python3 - "$tmp/audit.md" "$repo_root/scripts/publish" <<'PY'
+import sys
+audit, matcher_dir = sys.argv[1], sys.argv[2]
+sys.path.insert(0, matcher_dir)
+import signoff_match
+
+# Isolated map — do not depend on the real REPO_TO_SIGNOFF_ROWS
+# evolving. The fixture is the whole test.
+signoff_match.REPO_TO_SIGNOFF_ROWS = {
+    "approved-repo": ["APPROVED-Model"],
+    "pending-repo":  ["PENDING-Model"],
+    "rejected-repo": ["REJECTED-Model"],
+    "noroom-repo":   ["MissingFromAudit-Model"],
+}
+from pathlib import Path
+cases = [
+    ("approved-repo", "APPROVED"),
+    ("pending-repo",  "PENDING"),
+    # A ticked ☑ Rejected row means the audit HAS answered — the answer
+    # is "no". APPROVED here means "audit has a real decision"; the
+    # "do not publish" policy is enforced elsewhere (upload.sh outer
+    # gate for card+license). Keeps the sign-off state honest about
+    # what §3.1 says.
+    ("rejected-repo", "APPROVED"),
+    ("noroom-repo",   "NO_ROW"),
+    ("unregistered",  "UNKNOWN_REPO"),
+]
+fails = []
+for slug, want in cases:
+    got, detail = signoff_match.approval_for_repo(slug, Path(audit))
+    if got != want:
+        fails.append(f"approval_for_repo('{slug}') want {want} got {got} — {detail}")
+if fails:
+    for f in fails:
+        print("  " + f)
+    sys.exit(1)
+print(f"  {len(cases)} state transitions verified against hermetic §3.1 fixture")
+PY
+)"
+  py_rc=$?
+  if [[ $py_rc -ne 0 ]]; then
+    echo "self-test FAIL: signoff state transitions did not match expectations" >&2
+    printf '%s\n' "$py_out" >&2
+    fail=1
+  fi
+
+  # (e) Regression against the prefix-leakage bug: a repo whose slug
+  #     accidentally starts with a real row's first 8 chars must NOT
+  #     silently inherit that row. Under the explicit map this is
+  #     UNKNOWN_REPO, so the assertion also documents the invariant.
+  if ! python3 - "$tmp/audit.md" "$repo_root/scripts/publish" <<'PY' >/dev/null 2>&1
+import sys
+audit, matcher_dir = sys.argv[1], sys.argv[2]
+sys.path.insert(0, matcher_dir)
+import signoff_match
+from pathlib import Path
+
+signoff_match.REPO_TO_SIGNOFF_ROWS = {"approved-repo": ["APPROVED-Model"]}
+state, _ = signoff_match.approval_for_repo("approvedxxx", Path(audit))
+sys.exit(0 if state == "UNKNOWN_REPO" else 1)
+PY
+  then
+    echo "self-test FAIL: prefix-leakage regression (approvedxxx should be UNKNOWN_REPO)" >&2
+    fail=1
+  fi
+
+  [[ $fail -eq 0 ]] && echo "upload self-test: OK (5 groups)" && exit 0
   exit 1
 fi
 
@@ -88,44 +193,60 @@ python3 "$card_tool" "${card_args[@]}"
 
 # The card generator has already refused anything unpublishable, so reaching
 # here means the licence permits redistribution. What it cannot know is
-# whether a human has actually approved this model — that lives in §3.1.
+# whether a human has actually approved this specific model — that lives in
+# §3.1. Delegated to scripts/publish/signoff_match.py, which owns the
+# explicit repo -> row alias map. The old inline substring heuristic was
+# retired because an 8-char prefix silently over-approved siblings (a
+# new `whisper-*` slug inherited the family's approvals).
+#
+# States and exit codes:
+#   APPROVED      -> proceed.
+#   PENDING       -> exit 3 (blank row; owner action needed in §3.1).
+#   NO_ROW        -> exit 4 (repo declared in map but the audit is out of
+#                    sync; land the row before publishing). fail-closed
+#                    inversion of the old branch that let NO_ROW pass with
+#                    only a warning.
+#   UNKNOWN_REPO  -> exit 5 (repo not declared in REPO_TO_SIGNOFF_ROWS at
+#                    all; add the explicit mapping in signoff_match.py).
 echo "== 2/4  owner sign-off (docs/license-audit.md §3.1) =="
-signoff_state="$(python3 - "$audit" "$model_name" <<'PY'
-import sys, re
-audit, model = sys.argv[1], sys.argv[2]
-rows = []
-for line in open(audit, encoding="utf-8"):
-    if not line.startswith("| **"):
-        continue
-    f = line.split("|")
-    if len(f) < 6 or "Commercial" not in f[5] or "Rejected" not in f[5]:
-        continue
-    name = f[1].replace("**", "").strip()
-    approver, decision = f[4].strip(), f[5]
-    named = bool(approver.strip("_").strip())
-    ticked = any(m in decision for m in ("☑", "☒", "[x]", "[X]"))
-    rows.append((name, named and ticked))
-# Match loosely: the §3.1 rows are release-specific, the repo name is not.
-key = model.lower().replace("-", "").replace("_", "")
-hits = [ok for n, ok in rows if key[:8] and key[:8] in n.lower().replace("-", "").replace(" ", "")]
-if not hits:
-    print("NO_ROW")           # never held -> nothing to approve
-elif all(hits):
-    print("APPROVED")
-else:
-    print("PENDING")
-PY
-)"
+signoff_out="$(python3 "$repo_root/scripts/publish/signoff_match.py" \
+    --check-repo "$model_name" --audit "$audit" 2>&1)"
+signoff_rc=$?
+signoff_state="$(printf '%s\n' "$signoff_out" | head -1)"
+signoff_detail="$(printf '%s\n' "$signoff_out" | tail -n +2)"
 case "$signoff_state" in
-  APPROVED) echo "  sign-off: approved" ;;
-  NO_ROW)   echo "  sign-off: no §3.1 row for '$model_name' (never placed on hold)" ;;
+  APPROVED)
+    echo "  sign-off: approved"
+    ;;
   PENDING)
     echo "upload: REFUSED — the §3.1 sign-off row for '$model_name' is blank." >&2
     echo "  A blank row means the decision has not been made, which is not the" >&2
     echo "  same as a 'yes'. Fill in the approver and tick a box in" >&2
     echo "  docs/license-audit.md §3.1, then re-run." >&2
-    exit 3 ;;
-  *) echo "upload: could not read the sign-off state ($signoff_state)" >&2; exit 3 ;;
+    printf '  %s\n' "$signoff_detail" >&2
+    exit 3
+    ;;
+  NO_ROW)
+    echo "upload: REFUSED — no §3.1 row exists yet for '$model_name'." >&2
+    echo "  This used to pass silently (the old 'never placed on hold -> allow')." >&2
+    echo "  It is now fail-closed: publishing without an approvable row would" >&2
+    echo "  convert a missing decision into a public fact." >&2
+    echo "  Land a row in docs/license-audit.md §3.1, sign it off, then re-run." >&2
+    printf '  %s\n' "$signoff_detail" >&2
+    exit 4
+    ;;
+  UNKNOWN_REPO)
+    echo "upload: REFUSED — repo '$model_name' is not declared in" >&2
+    echo "  scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS." >&2
+    echo "  Add the slug -> §3.1 row mapping there before publishing." >&2
+    printf '  %s\n' "$signoff_detail" >&2
+    exit 5
+    ;;
+  *)
+    echo "upload: signoff_match.py returned an unexpected state ($signoff_state, rc=$signoff_rc)" >&2
+    printf '%s\n' "$signoff_out" >&2
+    exit 3
+    ;;
 esac
 
 echo "== 3/4  accompanying files =="

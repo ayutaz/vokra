@@ -775,6 +775,42 @@ mod tests {
         assert_eq!(ARCH, "moshi");
     }
 
+    /// TIER 2 alias family (2026-07-30): `kyutai/moshika-rag-pytorch-bf16`
+    /// is a RAG-augmented fine-tune of Moshika (the female-speaker variant
+    /// of base Moshi 7B) — same tensor topology (`dim=4096 / num_layers=32
+    /// / num_heads=32 / n_q=16 / dep_q=8`) and same tokenizers per its
+    /// published `config.json` + HF `base_model:
+    /// kyutai/moshika-pytorch-bf16` metadata (primary-source verified
+    /// 2026-07-30 via HF API). This test pins every alias so a rename or
+    /// accidental drop of one arm is caught at unit-test time (the
+    /// slower `parse_args` / CLI parse test in vokra-cli exercises the
+    /// same path once wired through).
+    #[test]
+    fn moshika_rag_aliases_route_to_moshi() {
+        let spellings = [
+            "moshi",
+            "moshiko",
+            "moshika",
+            "moshika-rag",
+            "moshika-rag-pytorch-bf16",
+            "moshiko-pytorch-bf16",
+            "moshika-pytorch-bf16",
+            "kyutai/moshika-rag-pytorch-bf16",
+            "kyutai/moshika-pytorch-bf16",
+            "kyutai/moshiko-pytorch-bf16",
+        ];
+        for s in spellings {
+            let kind = crate::ModelKind::from_arg(s)
+                .unwrap_or_else(|| panic!("--model {s} must parse to a ModelKind — alias dropped"));
+            assert_eq!(
+                kind,
+                crate::ModelKind::Moshi,
+                "--model {s} must route to ModelKind::Moshi (base + moshika + moshika-rag \
+                 share arch per the RAG fine-tune's HF `base_model` metadata)"
+            );
+        }
+    }
+
     #[test]
     fn streaming_and_in_memory_paths_are_byte_identical() {
         // The whole point of the streaming path is bounded memory with NO

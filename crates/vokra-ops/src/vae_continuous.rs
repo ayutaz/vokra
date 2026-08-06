@@ -139,6 +139,30 @@ pub struct ContinuousVaeConfig {
     /// Whether the decoder blocks are augmented with a per-frame noise
     /// projection. VoxCPM-0.5B: `false`.
     pub use_noise_block: bool,
+    /// Bandwidth-adaptive VAE decoder head boundaries (Hz), for variants
+    /// that carry a **per-bandwidth-bin** decoder head. `None` for
+    /// VoxCPM-0.5B (single head, no bandwidth adaptation). `Some(vec)`
+    /// for VoxCPM2-2B — `vec = [20000, 30000, 40000]` per primary
+    /// source (`huggingface.co/openbmb/VoxCPM2/raw/main/config.json`,
+    /// fetched 2026-07-28); the boundaries partition the `[0,
+    /// out_sample_rate_hz]` band into `vec.len() + 1` bins, and the
+    /// runtime selects the head that just contains the caller's
+    /// requested output bandwidth (VoxCPM2-2B: 4 bins covering
+    /// `(0, 20 kHz] / (20, 30 kHz] / (30, 40 kHz] / (40+ kHz]`).
+    ///
+    /// Invariants (enforced by [`Self::validate_for_forward`]):
+    /// - each entry `> 0`;
+    /// - strictly increasing;
+    /// - every entry `< out_sample_rate_hz` (heads above the decoder
+    ///   output rate would be un-reachable at inference time).
+    ///
+    /// The runtime forward path that consumes this field lands in a
+    /// follow-up wave (T29-equivalent), guarded by the shared VAE seam
+    /// scaffold; today the field surfaces the boundaries so the
+    /// converter can emit `vokra.vae_continuous.sr_bin_boundaries` and
+    /// the runtime dispatch table can be primed variant-aware without
+    /// touching the converter contract.
+    pub sr_bin_boundaries: Option<Vec<u32>>,
 }
 
 impl ContinuousVaeConfig {
@@ -165,6 +189,48 @@ impl ContinuousVaeConfig {
             decoder_rates: vec![8, 6, 5, 2, 2, 2],
             depthwise: true,
             use_noise_block: false,
+            // 0.5B has no bandwidth-adaptive head — single decoder head,
+            // full-band output.
+            sr_bin_boundaries: None,
+        }
+    }
+
+    /// Canonical **VoxCPM2-2B** `AudioVAE V2` config (SoTA plan Phase 4
+    /// scale-up variant).
+    ///
+    /// Primary source: `huggingface.co/openbmb/VoxCPM2/raw/main/config.json`
+    /// (fetched 2026-07-28 — CLAUDE.md「ハルシネーション厳禁」).
+    ///
+    /// **Delta vs [`Self::voxcpm_0_5b`]** — the VAE topology is byte-parallel to
+    /// the 0.5B release **except** for the bandwidth-adaptive decoder head
+    /// (`sr_bin_boundaries = [20_000, 30_000, 40_000]`, 4 bins covering
+    /// `(0, 20k] / (20k, 30k] / (30k, 40k] / (40k+ kHz]`). Every other axis
+    /// — sample rates, encoder / decoder dims + rates, latent dim,
+    /// depthwise / noise-block flags — matches 0.5B verbatim, which is
+    /// what keeps the `feat_dim == vae.latent_dim` handshake unchanged
+    /// (both remain `64`).
+    ///
+    /// Scaffold caveat: the runtime forward path that consumes
+    /// [`Self::sr_bin_boundaries`] to select a per-bin decoder head lands in
+    /// a follow-up wave (T29-equivalent). Today this factory returns the
+    /// primary-source-pinned config so downstream callers can validate
+    /// their 2B VAE handshake explicitly via
+    /// [`crate::vae_continuous::ContinuousVaeConfig::validate_for_forward`].
+    #[must_use]
+    pub fn voxcpm2_2b() -> Self {
+        Self {
+            sample_rate_hz: 16_000,
+            out_sample_rate_hz: 48_000,
+            encoder_dim: 128,
+            encoder_rates: vec![2, 5, 8, 8],
+            latent_dim: 64,
+            decoder_dim: 2048,
+            decoder_rates: vec![8, 6, 5, 2, 2, 2],
+            depthwise: true,
+            use_noise_block: false,
+            // 2B carries a bandwidth-adaptive decoder head, primary source:
+            // `openbmb/VoxCPM2/config.json` (fetched 2026-07-28).
+            sr_bin_boundaries: Some(vec![20_000, 30_000, 40_000]),
         }
     }
 
@@ -184,6 +250,9 @@ impl ContinuousVaeConfig {
             decoder_rates: vec![2, 2, 2],
             depthwise: false,
             use_noise_block: false,
+            // The tiny fixture pins the "no bandwidth-adaptive head" arm so
+            // the 0.5B code paths stay wired without a boundary vec.
+            sr_bin_boundaries: None,
         }
     }
 
@@ -279,6 +348,42 @@ impl ContinuousVaeConfig {
                 "vae_continuous config: decoder_rates product overflows u32".to_owned(),
             )
         })?;
+        // Bandwidth-adaptive head boundary invariants (2B and future
+        // multi-head variants only — 0.5B / tiny fixtures pass through the
+        // `None` arm unchanged, FR-EX-08).
+        if let Some(boundaries) = &self.sr_bin_boundaries {
+            if boundaries.is_empty() {
+                return Err(VokraError::InvalidArgument(
+                    "vae_continuous config: sr_bin_boundaries must be None or a non-empty vec \
+                     (an empty Some vec is ambiguous — use None to disable adaptive heads)"
+                        .to_owned(),
+                ));
+            }
+            let mut prev: Option<u32> = None;
+            for (i, &b) in boundaries.iter().enumerate() {
+                if b == 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "vae_continuous config: sr_bin_boundaries[{i}] must be > 0"
+                    )));
+                }
+                if b >= self.out_sample_rate_hz {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "vae_continuous config: sr_bin_boundaries[{i}]={b} must be < \
+                         out_sample_rate_hz={} (heads above the decoder rate are unreachable)",
+                        self.out_sample_rate_hz,
+                    )));
+                }
+                if let Some(p) = prev {
+                    if b <= p {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "vae_continuous config: sr_bin_boundaries must be strictly \
+                             increasing (got [.., {p}, {b}, ..] at index {i})"
+                        )));
+                    }
+                }
+                prev = Some(b);
+            }
+        }
         Ok(())
     }
 }
@@ -661,6 +766,47 @@ mod tests {
         assert_eq!(c.decoder_rates, vec![8, 6, 5, 2, 2, 2]);
         assert!(c.depthwise);
         assert!(!c.use_noise_block);
+        assert!(
+            c.sr_bin_boundaries.is_none(),
+            "0.5B has no bandwidth-adaptive head — must be None"
+        );
+    }
+
+    /// VoxCPM2-2B `AudioVAE V2` primary-source pin
+    /// (`huggingface.co/openbmb/VoxCPM2/raw/main/config.json`,
+    /// fetched 2026-07-28). Every axis matches 0.5B **except**
+    /// `sr_bin_boundaries` which flips from `None` to
+    /// `Some([20_000, 30_000, 40_000])`. Silently drifting any of these
+    /// values would misroute the runtime decoder head selection.
+    #[test]
+    fn voxcpm2_2b_config_matches_primary_source() {
+        let c = ContinuousVaeConfig::voxcpm2_2b();
+        // Every non-adaptive axis matches 0.5B verbatim.
+        assert_eq!(c.sample_rate_hz, 16_000);
+        assert_eq!(c.out_sample_rate_hz, 48_000);
+        assert_eq!(c.encoder_dim, 128);
+        assert_eq!(c.encoder_rates, vec![2, 5, 8, 8]);
+        assert_eq!(
+            c.latent_dim, 64,
+            "feat_dim/latent_dim handshake must remain 64 (0.5B ↔ 2B compat)"
+        );
+        assert_eq!(c.decoder_dim, 2048);
+        assert_eq!(c.decoder_rates, vec![8, 6, 5, 2, 2, 2]);
+        assert!(c.depthwise);
+        assert!(!c.use_noise_block);
+        // The bandwidth-adaptive head is the only VAE-side 2B delta.
+        assert_eq!(
+            c.sr_bin_boundaries,
+            Some(vec![20_000, 30_000, 40_000]),
+            "2B must pin the primary-source bandwidth-adaptive head boundaries"
+        );
+    }
+
+    #[test]
+    fn voxcpm2_2b_config_validates() {
+        let c = ContinuousVaeConfig::voxcpm2_2b();
+        c.validate_for_forward()
+            .expect("voxcpm2-2b config must validate");
     }
 
     #[test]
@@ -703,6 +849,55 @@ mod tests {
         let mut c = ContinuousVaeConfig::tiny_for_tests();
         c.latent_dim = 0;
         assert!(c.validate_for_forward().is_err());
+    }
+
+    #[test]
+    fn sr_bin_boundaries_empty_some_rejected() {
+        // An empty `Some(vec)` is ambiguous — the caller should use `None`
+        // to disable adaptive heads. FR-EX-08: fail loudly.
+        let mut c = ContinuousVaeConfig::voxcpm2_2b();
+        c.sr_bin_boundaries = Some(Vec::new());
+        assert!(c.validate_for_forward().is_err());
+    }
+
+    #[test]
+    fn sr_bin_boundaries_zero_entry_rejected() {
+        let mut c = ContinuousVaeConfig::voxcpm2_2b();
+        c.sr_bin_boundaries = Some(vec![0, 20_000, 30_000]);
+        assert!(c.validate_for_forward().is_err());
+    }
+
+    #[test]
+    fn sr_bin_boundaries_not_strictly_increasing_rejected() {
+        // Equal entries are not strictly increasing.
+        let mut c = ContinuousVaeConfig::voxcpm2_2b();
+        c.sr_bin_boundaries = Some(vec![20_000, 20_000, 30_000]);
+        assert!(c.validate_for_forward().is_err());
+        // Decreasing entries.
+        let mut c = ContinuousVaeConfig::voxcpm2_2b();
+        c.sr_bin_boundaries = Some(vec![30_000, 20_000]);
+        assert!(c.validate_for_forward().is_err());
+    }
+
+    #[test]
+    fn sr_bin_boundaries_above_out_rate_rejected() {
+        // Boundaries at or above `out_sample_rate_hz` are unreachable —
+        // the runtime cannot select a head above the decoder output rate.
+        let mut c = ContinuousVaeConfig::voxcpm2_2b();
+        c.sr_bin_boundaries = Some(vec![20_000, 30_000, 48_000]);
+        assert!(c.validate_for_forward().is_err());
+        let mut c = ContinuousVaeConfig::voxcpm2_2b();
+        c.sr_bin_boundaries = Some(vec![20_000, 30_000, 60_000]);
+        assert!(c.validate_for_forward().is_err());
+    }
+
+    #[test]
+    fn sr_bin_boundaries_at_edge_below_out_rate_accepted() {
+        // Just below the decoder output rate is still a valid head anchor.
+        let mut c = ContinuousVaeConfig::voxcpm2_2b();
+        c.sr_bin_boundaries = Some(vec![20_000, 30_000, 47_999]);
+        c.validate_for_forward()
+            .expect("boundary strictly below out_sample_rate_hz must accept");
     }
 
     #[test]

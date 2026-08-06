@@ -1122,3 +1122,324 @@ fn skip_reason_contains_grep_prefix_and_fr_ex_08_anchors() {
          got: {msg}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-module architectural invariants (Scout A-5 follow-up, 2026-07-29).
+//
+// The rustdocs on both `distil_whisper` and `kotoba_whisper` claim they share
+// the **exact same architectural shape** — the Whisper large-v3 encoder with
+// a shrunk 2-layer decoder. That claim is the whole basis of the "very cheap
+// follow-on" contract (both delegate to `crate::whisper::WhisperModel` with a
+// shrunk `n_text_layer`; every op / kernel is shared verbatim).
+//
+// Today the claim lives only in the module rustdocs and is transitively
+// enforced by the two env-gated per-model tests reading tensor axes from real
+// GGUFs. On the CI baseline (env vars unset), a drift where one factory
+// updated its `d_model` / `n_audio_layer` / etc. but the other did not would
+// slip past every existing test. These tests turn that documented invariant
+// into a machine-checked cross-module contract, executed on every `cargo
+// test` — no fixture required.
+// ---------------------------------------------------------------------------
+
+/// Both modules' primary-source configs share the exact architectural
+/// quintuple `(d_model=1280, n_audio_layer=32, n_text_layer=2, n_mels=128,
+/// n_vocab=51_866)`. This is the shape of "Whisper large-v3 encoder + shrunk
+/// 2-layer decoder" — the "very cheap follow-on" foundation. A regression
+/// that shifted either factory (e.g. a hypothetical rebase that updated
+/// `n_vocab` on the distil side but not the kotoba side) would silently
+/// break the shared-runtime delegation contract; this test catches it.
+#[test]
+fn family_shares_architectural_quintuple() {
+    let d = vokra_models::distil_whisper::DistilWhisperConfig::distil_large_v3_5();
+    let k = vokra_models::kotoba_whisper::KotobaWhisperConfig::kotoba_whisper_v2_0();
+    // Encoder shape — must be identical (both keep the large-v3 encoder
+    // intact).
+    assert_eq!(
+        (
+            d.d_model,
+            d.n_audio_layer,
+            d.n_audio_head,
+            d.n_audio_ctx,
+            d.n_mels
+        ),
+        (
+            k.d_model,
+            k.n_audio_layer,
+            k.n_audio_head,
+            k.n_audio_ctx,
+            k.n_mels
+        ),
+        "distil-whisper vs kotoba-whisper encoder shape mismatch: \
+         (d_model, n_audio_layer, n_audio_head, n_audio_ctx, n_mels) \
+         diverged. Both modules claim the same Whisper large-v3 encoder \
+         topology in their rustdocs — that claim is the basis of the \
+         shared `WhisperModel` delegation. If a genuine divergence is \
+         being introduced, this pin must be updated deliberately.",
+    );
+    // Decoder shape — must be identical (both shrink to 2 layers).
+    assert_eq!(
+        (d.n_text_layer, d.n_text_head, d.n_text_ctx),
+        (k.n_text_layer, k.n_text_head, k.n_text_ctx),
+        "distil-whisper vs kotoba-whisper decoder shape mismatch: \
+         (n_text_layer, n_text_head, n_text_ctx) diverged. The 2-layer \
+         decoder is the distil axis shared across the whisper-extras \
+         family — a divergence here would mean the two GGUFs need \
+         different decoder loops, breaking the shared runtime.",
+    );
+    // Vocab + FFN — must be identical (both inherit the large-v3
+    // multilingual tokenizer and FFN width).
+    assert_eq!(
+        (d.n_vocab, d.ffn_dim),
+        (k.n_vocab, k.ffn_dim),
+        "distil-whisper vs kotoba-whisper (n_vocab, ffn_dim) mismatch: \
+         both modules must inherit large-v3's multilingual vocab \
+         (51_866 for <|yue|>) and FFN width (5120).",
+    );
+    // Pin the specific quintuple documented in both module rustdocs so a
+    // rebase that shifted BOTH factories in lockstep is still caught (the
+    // above cross-module equality checks would silently pass on a
+    // synchronized drift; this pin binds the shape to the primary-source
+    // upstream config.json values fetched 2026-07-24 / 2026-07-25).
+    let quintuple = (
+        d.d_model,
+        d.n_audio_layer,
+        d.n_text_layer,
+        d.n_mels,
+        d.n_vocab,
+    );
+    assert_eq!(
+        quintuple,
+        (1280, 32, 2, 128, 51_866),
+        "distil-large-v3.5 quintuple must match the upstream \
+         config.json (fetched 2026-07-24): (d_model=1280, \
+         n_audio_layer=32, n_text_layer=2, n_mels=128, n_vocab=51866). \
+         Any change here must be paired with an update to the module \
+         rustdocs and the converter's `derive_name` table.",
+    );
+}
+
+/// The Whisper family invariant `head_dim = d_model / n_head = 64` must hold
+/// on both encoder and decoder for both modules. The rustdocs claim this as
+/// "the Whisper invariant across every family size" (base / small / medium /
+/// large-v3 / turbo / distil-large-v3.5 / kotoba-whisper). If either side
+/// shifted (e.g. accidentally set `n_audio_head = 16` while keeping `d_model
+/// = 1280`, yielding `head_dim = 80`), the pre-baked attention kernels
+/// hard-coded to `head_dim = 64` (see e.g. FA v2 driver) would silently
+/// produce garbage. This test binds the invariant to the primary-source
+/// factories.
+#[test]
+fn family_head_dim_is_the_whisper_invariant_64() {
+    let d = vokra_models::distil_whisper::DistilWhisperConfig::distil_large_v3_5();
+    let k = vokra_models::kotoba_whisper::KotobaWhisperConfig::kotoba_whisper_v2_0();
+    // Encoder head dim.
+    assert_eq!(
+        d.head_dim(),
+        64,
+        "distil-large-v3.5 head_dim = {} != 64 (Whisper family invariant)",
+        d.head_dim(),
+    );
+    assert_eq!(
+        k.head_dim(),
+        64,
+        "kotoba-whisper-v2.0 head_dim = {} != 64 (Whisper family invariant)",
+        k.head_dim(),
+    );
+    // Decoder head split — Whisper convention is `n_text_head == n_audio_head`
+    // for both distil and kotoba (unlike turbo which shrinks n_text_head).
+    // A future distil/kotoba variant that shifted the ratio would be a new
+    // family and must extend this test with an explicit pin.
+    assert_eq!(
+        d.n_text_head, d.n_audio_head,
+        "distil-large-v3.5: n_text_head ({}) must equal n_audio_head ({}) \
+         (the family keeps the encoder head count on the decoder side)",
+        d.n_text_head, d.n_audio_head,
+    );
+    assert_eq!(
+        k.n_text_head, k.n_audio_head,
+        "kotoba-whisper: n_text_head ({}) must equal n_audio_head ({}) \
+         (the family keeps the encoder head count on the decoder side)",
+        k.n_text_head, k.n_audio_head,
+    );
+}
+
+/// Both modules' primary-source configs share the exact same tokenizer
+/// boundary constants: `eot = 50_257` (`<|endoftext|>`), `sot = 50_258`
+/// (`<|startoftranscript|>`), and `sample_rate = 16_000` (Whisper feature
+/// extractor). The rustdocs claim these come from the large-v3 multilingual
+/// tokenizer, invariant across the whisper-extras family. A converter that
+/// silently updated `eot` on one side would break decode stop conditions;
+/// this test pins the invariant.
+#[test]
+fn family_shares_tokenizer_and_sample_rate_constants() {
+    let d = vokra_models::distil_whisper::DistilWhisperConfig::distil_large_v3_5();
+    let k = vokra_models::kotoba_whisper::KotobaWhisperConfig::kotoba_whisper_v2_0();
+    assert_eq!(
+        d.eot, 50_257,
+        "distil-large-v3.5 eot = {}, expected 50_257 (Whisper multilingual \
+         <|endoftext|>)",
+        d.eot,
+    );
+    assert_eq!(
+        k.eot, 50_257,
+        "kotoba-whisper-v2.0 eot = {}, expected 50_257 (Whisper multilingual \
+         <|endoftext|>)",
+        k.eot,
+    );
+    assert_eq!(
+        d.sot, 50_258,
+        "distil-large-v3.5 sot = {}, expected 50_258 (Whisper multilingual \
+         <|startoftranscript|>)",
+        d.sot,
+    );
+    assert_eq!(
+        k.sot, 50_258,
+        "kotoba-whisper-v2.0 sot = {}, expected 50_258 (Whisper multilingual \
+         <|startoftranscript|>)",
+        k.sot,
+    );
+    // Sample rate is the Whisper feature-extractor convention, not derived
+    // from config.json — both modules inherit it from the openai/whisper
+    // preprocessor. A future kotoba-whisper variant that shifted this
+    // (e.g. some 24 kHz Japanese-specific pre-processing) would break the
+    // shared runtime; this pin catches it.
+    assert_eq!(
+        d.sample_rate, 16_000,
+        "distil-large-v3.5 sample_rate = {} Hz, expected 16_000 Hz \
+         (Whisper convention)",
+        d.sample_rate,
+    );
+    assert_eq!(
+        k.sample_rate, 16_000,
+        "kotoba-whisper-v2.0 sample_rate = {} Hz, expected 16_000 Hz \
+         (Whisper convention)",
+        k.sample_rate,
+    );
+    // Cross-module equality: both must agree on these constants, not just
+    // each match some absolute expectation.
+    assert_eq!(
+        (d.eot, d.sot, d.sample_rate),
+        (k.eot, k.sot, k.sample_rate),
+        "distil / kotoba tokenizer + sample-rate constants must be pairwise \
+         equal; got distil=({}, {}, {}) vs kotoba=({}, {}, {})",
+        d.eot,
+        d.sot,
+        d.sample_rate,
+        k.eot,
+        k.sot,
+        k.sample_rate,
+    );
+}
+
+/// The distil invariant `n_text_layer < n_audio_layer` must hold on BOTH
+/// primary-source config factories. The individual module unit tests each
+/// verify this for their own factory, but there is no cross-module test
+/// today: a rebase that broke the invariant on one side (e.g. set
+/// `n_text_layer = 32` on kotoba to match encoder depth) would slip past the
+/// other module's tests silently. This test binds both sides in one place.
+#[test]
+fn family_distil_invariant_holds_on_both_primary_source_factories() {
+    let d = vokra_models::distil_whisper::DistilWhisperConfig::distil_large_v3_5();
+    let k = vokra_models::kotoba_whisper::KotobaWhisperConfig::kotoba_whisper_v2_0();
+    assert!(
+        d.n_text_layer < d.n_audio_layer,
+        "distil-large-v3.5 distil invariant broken: n_text_layer={} \
+         must be < n_audio_layer={}. A distil checkpoint shrinks the \
+         decoder; equal or larger decoder depth is not distil (it is \
+         vanilla Whisper).",
+        d.n_text_layer,
+        d.n_audio_layer,
+    );
+    assert!(
+        k.n_text_layer < k.n_audio_layer,
+        "kotoba-whisper-v2.0 distil invariant broken: n_text_layer={} \
+         must be < n_audio_layer={}. Kotoba-whisper is Japanese-distilled \
+         from large-v3 with a shrunk decoder; equal or larger decoder \
+         depth is not kotoba-whisper.",
+        k.n_text_layer,
+        k.n_audio_layer,
+    );
+    // Both primary-source factories must produce well-formed configs
+    // (validate_for_forward returns Ok). If a future rebase introduced a
+    // primary-source factory whose invariants fail, both env-gated tests
+    // would panic — this test surfaces the bug on any `cargo test` without
+    // needing a fixture.
+    d.validate_for_forward()
+        .expect("distil-large-v3.5 primary-source config must validate");
+    k.validate_for_forward()
+        .expect("kotoba-whisper-v2.0 primary-source config must validate");
+}
+
+/// The `parity-whisper-extras-real.yml` workflow pins
+/// `kotoba-tech/kotoba-whisper-v2.2` (see `KOTOBA_WHISPER_REPO` in the
+/// YAML `env:` block). The runtime compliance registry lists `-v1.0` /
+/// `-v1.1` / `-v2.0` / `-v2.1` / `-bilingual-v1.0` explicitly and covers
+/// `-v2.2` transitively via the `kotoba-whisper-` prefix walk. This test
+/// pins the exact workflow-pinned literal so that a future prefix-walk
+/// removal or a rebase that dropped the walk would surface a red test
+/// **before** the CI job produces a GGUF that the license registry cannot
+/// classify. Without this pin, a `kotoba-whisper-v2.2` resolution failure
+/// would only surface as a runtime `M2-13` refusal after minutes of HF
+/// download and conversion — an expensive round trip for a preventable
+/// static drift.
+#[test]
+fn workflow_pinned_kotoba_v2_2_resolves_permissive() {
+    use vokra_core::compliance::{LicenseClass, registry_lookup};
+    for id in [
+        // The precise slug the workflow pins (see
+        // parity-whisper-extras-real.yml env.KOTOBA_WHISPER_REPO —
+        // resolved to the model id after stripping the `kotoba-tech/`
+        // owner prefix).
+        "kotoba-whisper-v2.2",
+        // Underscore alias — the runtime module's rustdoc lists the
+        // dot/underscore pair explicitly for every other member; v2.2 is
+        // added here for parity with the walk's dash-based prefix rule.
+        "kotoba-whisper-v2_2",
+        // Also pin a hypothetical future release so the prefix-walk
+        // contract stays visible: any `kotoba-whisper-vN.M` (N,M >= 0)
+        // must resolve Permissive. A future member with a different
+        // license would need its own registry arm carved out.
+        "kotoba-whisper-v3.0",
+    ] {
+        assert_eq!(
+            registry_lookup(id),
+            Some(LicenseClass::Permissive),
+            "compliance registry must resolve `{id}` to Permissive \
+             (Apache-2.0). The workflow YAML pins kotoba-whisper-v2.2 \
+             specifically; if this test regresses, the M2-13 gate would \
+             reject a converted GGUF from a workflow run that already \
+             paid the HF download cost.",
+        );
+    }
+}
+
+/// Mirror of the kotoba pin above: the workflow pins
+/// `distil-whisper/distil-large-v3.5` and the runtime module's rustdoc
+/// lists both `distil-whisper` and `distil-large-*` variants as Permissive
+/// (MIT). Binds the exact workflow-pinned literal so a prefix-walk
+/// regression on the distil side is caught statically, symmetric with the
+/// kotoba-side pin.
+#[test]
+fn workflow_pinned_distil_large_v3_5_resolves_permissive() {
+    use vokra_core::compliance::{LicenseClass, registry_lookup};
+    for id in [
+        // The precise slug the workflow pins (after stripping the
+        // `distil-whisper/` owner prefix — see
+        // parity-whisper-extras-real.yml env.DISTIL_WHISPER_REPO).
+        "distil-large-v3.5",
+        // Underscore alias — mirror of the kotoba-side pin so the dot /
+        // underscore variance both flow through registry_lookup.
+        "distil-large-v3_5",
+        // A hypothetical future distil member — any future
+        // `distil-large-*` release must stay Permissive via the walk.
+        "distil-large-v4.0",
+    ] {
+        assert_eq!(
+            registry_lookup(id),
+            Some(LicenseClass::Permissive),
+            "compliance registry must resolve `{id}` to Permissive (MIT). \
+             The workflow YAML pins distil-large-v3.5 specifically; a \
+             prefix-walk regression here would let a converted GGUF from \
+             a workflow-paid HF download fail the M2-13 gate.",
+        );
+    }
+}

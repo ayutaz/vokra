@@ -26,16 +26,25 @@
 //!   sequence (blank between every pair of real tokens) so the algorithm
 //!   covers word / sub-word / character tokens uniformly. No external
 //!   weights.
-//! - [`charsiu`] — Wav2Vec2-based neural forced aligner (skeleton). A
-//!   small subgraph loaded from a Vokra GGUF (`vokra.align.*` metadata +
-//!   tensor weights); reports one [`AlignedToken`] per input phoneme.
+//! - [`charsiu`] — Wav2Vec2-based neural forced aligner (real forward,
+//!   2026-07-30). A small subgraph loaded from a Vokra GGUF
+//!   (`vokra.charsiu.*` metadata + tensor weights); reports one
+//!   [`AlignedToken`] per input phoneme.
 //!
-//! # Current status (skeleton for Charsiu)
+//! # Current status (Charsiu)
 //!
-//! Charsiu is a landed skeleton — real wav2vec2 + CTC forced-alignment
-//! inference is a follow-up WP; the skeleton only guarantees the load-error
-//! and API-surface contracts so downstream consumers can wire the surface
-//! without waiting on weights.
+//! Charsiu now runs a **real** wav2vec 2.0 CTC forward end-to-end:
+//! raw-waveform 7-layer strided Conv1D stem
+//! ([`vokra_ops::waveform_frontend`]) → feature projection (LayerNorm +
+//! Linear) → n_layer pre-norm Transformer encoder blocks (MHA + GELU FFN)
+//! → final LayerNorm → CTC head → log-softmax → [`ctc_segmentation`] for
+//! the Viterbi walk. Real weights arrive via [`charsiu::Charsiu::new`]
+//! from a caller-supplied [`charsiu::CharsiuWeights`]
+//! (scaffold via [`charsiu::CharsiuWeights::synthesized`] for shape /
+//! wiring tests). Real-GGUF binding (`from_gguf`) still returns
+//! [`LoadError::Gguf`] naming the follow-up wave that fetches the
+//! upstream tensor-name manifest (same posture as omniASR-CTC /
+//! CosyVoice2 / Voxtral).
 //!
 //! # Output
 //!

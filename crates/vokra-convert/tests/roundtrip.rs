@@ -84,7 +84,14 @@ fn synthetic_whisper_base_safetensors() -> Vec<u8> {
             "model.decoder.embed_positions.weight".to_string(),
             vec![448, 1],
         ),
-        ("model.decoder.embed_tokens.weight".to_string(), vec![8, 1]),
+        // Real whisper-base n_vocab = 51865 (multilingual). derive_name
+        // became n_vocab-aware on 2026-07-31 to distinguish .en variants;
+        // the synthetic stub must match a real vocab to land on the
+        // whisper-base label (not the whisper-unknown synthetic fallback).
+        (
+            "model.decoder.embed_tokens.weight".to_string(),
+            vec![51_865, 1],
+        ),
         (
             "model.encoder.layers.0.fc1.weight".to_string(),
             vec![2048, 1],

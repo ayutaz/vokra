@@ -20,6 +20,18 @@ pub(crate) mod campplus;
 // body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
 // (attention-decoder search) primitives — no per-model op duplication.
 pub(crate) mod canary;
+// SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
+// multimodal ASR + Qwen LLM head-swap on top of Canary FastConformer
+// encoder. CC-BY 4.0 weight (AttributionRequired via `canary-` prefix
+// walk). Every F32 / F16 / BF16 tensor passes through verbatim; every
+// encoder hparam reuses the primary-source Canary-1B-v2 defaults; every
+// decoder hparam carries canonical Qwen-family constants (GQA 16 Q /
+// 8 KV, head_dim=128, rope=1_000_000, rms_norm_eps=1e-6) with
+// `0`-placeholder dims (n_layer / hidden_dim / ffn_dim / vocab_size /
+// n_ctx) pending `.nemo` extraction — runtime validator rejects `0`
+// loudly (FR-EX-08). Reuses the shared `canary` encoder + Voxtral
+// text-decoder session primitives — no per-model op duplication.
+pub(crate) mod canary_qwen;
 // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual TTS
 // (MIT weight, Permissive) safetensors → GGUF with the `vokra.chatterbox.*`
 // chunk group. Every F32 / F16 tensor passes through verbatim; every hparam
@@ -60,6 +72,15 @@ pub(crate) mod chatterbox_turbo;
 // no new op or backend kernel is added.
 pub(crate) mod chatterbox_nano;
 pub(crate) mod cosyvoice2;
+// M5 gap follow-up (2026-07-30): marl/crepe (Kim et al. 2018) — a
+// monophonic F0 (fundamental-frequency) extractor. The upstream release
+// ships a Keras / TensorFlow `.h5`, so `tools/parity/keras_h5_to_safetensors.py`
+// bridges the checkpoint into safetensors + a JSON config side-car this
+// converter consumes (the DAC / Kokoro / UTMOS split — zero-dep, no
+// TensorFlow / Keras / torch in the runtime, NFR-DS-02 / FR-LD-05).
+// License = MIT (`marl/crepe/main/LICENSE.txt`, "Copyright (c) 2018 Jong
+// Wook Kim et al.", fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
+pub(crate) mod crepe;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B (apache-2.0
 // permissive) — same architecture as CosyVoice2 (Qwen2 LLM backbone +
 // chunk-aware CFM + HiFTNet vocoder). The tensor walk / shape derivation /
@@ -92,7 +113,27 @@ pub mod deberta_v3;
 pub(crate) mod dia;
 pub mod ecapa_tdnn;
 pub mod emotion2vec;
+// M5-16 (FR-OP-83): FCPE — Fast Context-based Pitch Estimator (CNChTu/FCPE,
+// MIT permissive). safetensors → GGUF pass-through (F32 / F16 / BF16
+// verbatim, `vokra.fcpe.*` / `vokra.provenance.*` stamps). Reuses the
+// shared `vokra_ops::conformer::ConformerEncoder` primitive on the runtime
+// side (SoTA Phase 2 landed op — no per-model op duplication); the upstream
+// release is a torch-pickle `.pt`, so callers pre-flatten it to safetensors
+// via `tools/parity/fcpe_prepare_checkpoint.py` (the DFN3 / DAC / CSM
+// bridge pattern — no pickle ever enters the runtime, FR-LD-05).
+pub(crate) mod fcpe;
 pub mod freevc;
+// SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR **FSMN-VAD**
+// (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, mit) safetensors → GGUF
+// with the `vokra.fsmn_vad.*` chunk group. Feed-forward Sequential Memory
+// Network for voice activity detection — first-class audio-dialect op
+// posture (distinct from Silero VAD v5's FR-LD-06 1:1 subgraph). Every
+// F32 / F16 / BF16 tensor passes through verbatim under the upstream
+// state-dict name; every hparam axis is stamped unconditionally (the
+// released FunASR checkpoint has fixed axes — see the module docstring).
+// Real-weight parity deferred to owner sign-off (§3.1 row landed
+// 2026-07-30 yousan).
+pub mod fsmn_vad;
 // SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
 // distil-large-v3.5 (MIT weight, Permissive) — a distilled Whisper checkpoint
 // that keeps the large-v3 encoder intact (32 layers / d_model=1280 /
@@ -134,8 +175,113 @@ pub(crate) mod kokoro;
 pub(crate) mod kyutai_stt;
 pub mod meanvc;
 pub(crate) mod mimi;
+// hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave
+// (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 (MIT). Category: codec.
+// Single-safetensors JA-focused 25 Hz / 44.1 kHz multilingual speech
+// codec (~132M F32 params, ~528 MB, `pipeline: audio-to-audio`) —
+// simplest of the batch, mirror of bicodec / neucodec / focalcodec BF16
+// pass-through skeleton. Complements the existing Kokoro / piper-plus JA
+// vocoder stack. Real-weight parity is deferred to owner sign-off
+// (`docs/license-audit.md` §3.1).
+pub mod miocodec;
 pub(crate) mod moshi;
 pub mod neucodec;
+// SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+// (apache-2.0) — Qwen2 0.5B LLM backbone emitting NeuCodec audio
+// tokens for instant on-device voice cloning. Single-file BF16
+// safetensors (~1.40 GB), sibling to the already-published
+// `neucodec` codec (`neuphonic/neucodec`). Category = `tts`
+// (distinct arch tag `neutts-air`, silently sharing with any
+// sibling TTS module would mis-route the runtime dispatch —
+// FR-EX-08). Upstream also ships a foreign `neutss-air-BF16.gguf`
+// sibling that this converter deliberately does NOT process
+// (FR-LD-05: Vokra runtime never loads foreign GGUFs). BF16
+// pass-through skeleton mirror of miocodec / neucodec / bicodec /
+// focalcodec / xcodec2; real-weight parity is deferred to owner
+// sign-off (`docs/license-audit.md` §3.1).
+pub mod neutts_air;
+// coverage-audit-2026-08-03 Wave A: fjiang9/NKF-AEC (MIT). Category:
+// aec. Neural Kalman Filter AEC (Yang et al. ICASSP 2023,
+// arXiv:2207.11388). Small 5.3 KB `.pt` — a *neural* echo canceller
+// alongside the existing algorithmic M4-03 `vokra_aec_*` (SpeexDSP /
+// WebRTC AEC3 Rust port); the two are siblings, not replacements.
+// Upstream is GitHub-only (no HF mirror) so provenance is stamped as
+// `vokra.provenance.upstream_url = github.com/fjiang9/NKF-AEC`.
+// F32 / F16 / BF16 pass through verbatim following the speaker_3d /
+// ecapa_tdnn / qwen3_tts / vibevoice pattern; real-weight parity is
+// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+pub mod nkf_aec;
+// coverage-audit-2026-08-03 Wave A ticket: Xiph RNNoise v0.2
+// (BSD-3-Clause, ~90 KB `weights_blob_9.bin` from
+// `github.com/xiph/rnnoise/releases/tag/v0.2`). Real-time noise reduction
+// — a compact GRU stack over 22-band Bark filterbank features
+// (Valin 2018, arXiv:1709.08243). Distinct arch tag from DeepFilterNet3
+// (Vokra's existing `Denoise` ModelKind and `vokra.denoise.*` chunk
+// group): DFN3 is complex-Conv + ERB deep-filtering, RNNoise is tiny-GRU
+// + Bark, and silently sharing would mis-route the runtime dispatch.
+// BF16 pass-through skeleton mirroring `neucodec` / `emotion2vec`;
+// real-weight parity is deferred to owner once the future
+// `vokra-models/src/rnnoise/` native forward and Xiph reference-C parity
+// land. The upstream C-array blob is flattened to safetensors by
+// `tools/parity/rnnoise_prepare_checkpoint.py` before entering the
+// converter (same "prep to safetensors" contract as DAC / DFN3 / CSM —
+// no C / Python enters the runtime, NFR-DS-02).
+pub mod rnnoise;
+// coverage-audit-2026-08-03 Wave A ticket: Microsoft **NSNet2** (MIT
+// Permissive) — the DNS Challenge NR baseline (2-layer GRU + 3-Linear mask
+// predictor over 257-bin STFT log-magnitude, 20 ms frame @ 16 kHz). Distinct
+// arch tag from `denoise` (DeepFilterNet3) because the two topologies share
+// only the `enhancement` category, not their internal layout. Upstream is
+// ONNX-only; `tools/parity/nsnet2_prepare_checkpoint.py` bridges ONNX →
+// safetensors so this converter's zero-dep posture (no ONNX / protobuf in the
+// runtime, FR-LD-05, NFR-DS-02) is preserved. F32 / F16 / BF16 pass through
+// verbatim following the `emotion2vec` / `ecapa_tdnn` contract.
+pub mod nsnet2;
+// coverage-audit Wave A ticket `dnsmos-p808-p835` (2026-08-03): Microsoft
+// DNSMOS P.808 + P.835 MOS predictors (MIT weight, category `eval`) —
+// bundled as a single GGUF from the prepared safetensors that
+// `tools/parity/dnsmos_prepare_checkpoint.py` flattens from the two
+// upstream ONNX checkpoints (`model_v8.onnx` + `sig_bak_ovr.onnx`).
+// The first `eval`-category converter in the tree — the runtime binder
+// lives in the `vokra-eval` crate (`vokra_eval::dnsmos::{p808_score,
+// p835_score}`, follow-up CC ticket).
+pub mod dnsmos;
+// coverage-audit wave-a (2026-08-03): alibabasglab/FRCRN (Apache-2.0
+// Permissive) safetensors → GGUF. Frequency Recurrent Convolutional
+// Recurrent Network (Zhao et al. ICASSP 2022, arXiv:2206.07293) — a
+// Complex-valued U-Net + frequency-recurrent LSTM speech-enhancement
+// model, distributed both from the original repo
+// (`github.com/alibabasglab/FRCRN`) and via ClearerVoice-Studio
+// (`github.com/modelscope/ClearerVoice-Studio`). Every F32 / F16 /
+// BF16 tensor passes through verbatim following the wespeaker /
+// emotion2vec pattern; real-weight parity is deferred to owner
+// (`docs/license-audit.md` §3.1 sign-off). Distinct arch tag from
+// `denoise` (which DeepFilterNet3 owns) — silently sharing would
+// misroute the runtime dispatch (a DFN3 ERB / DF-net loader would try
+// to interpret a Complex U-Net checkpoint).
+pub mod frcrn;
+// coverage-audit 2026-08-03 Wave B fast-track (13 model): all local-safe
+// (<8 GB), primarily Permissive / CC-BY-4.0 attribution. Each converter is
+// a BF16 pass-through skeleton in its own arch tag — silently sharing an
+// arch tag with a sibling family (Moshi / Whisper / Conformer / NeMo) would
+// mis-route the runtime dispatch, so every Wave B model declares its own
+// vokra.model.arch even when the topology is close to an existing family.
+// Real-weight parity is deferred to owner (docs/license-audit.md §3.1
+// sign-off + real checkpoint fetch).
+pub mod canary_1b_flash;
+pub mod firered_asr_aed_l;
+pub mod hibiki;
+pub mod magpietts_v2602;
+pub mod nemotron_speech_streaming_v2603;
+pub mod owsm_v4_medium_1b;
+pub mod parakeet_tdt_1_1b;
+pub mod parakeet_unified;
+pub mod reazonspeech_nemo_v2;
+pub mod sber_gigaam_multilingual;
+pub mod sber_gigaam_v3;
+pub mod sensevoicesmall;
+pub mod sortformer_diar_4spk_v1;
+pub mod whisper_medusa_v1;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3 — English
 // ASR (FastConformer encoder + TDT decoder). CC-BY 4.0 weight
 // (AttributionRequired). Every F32 / F16 tensor passes through
@@ -166,7 +312,30 @@ pub(crate) mod parakeet_ctc;
 // deliberate "may need new op" follow-up).
 pub(crate) mod omniasr_ctc;
 pub mod openvoice_v2;
+// pyannote/segmentation-3.0 (Bredin, CNRS, MIT — 2026-07-30 §3.1 row 263
+// yousan sign-off, DIARIZE_OP blocker text "trigger + license double" →
+// "trigger only" this wave). PyanNet voice-activity-detection /
+// speaker-segmentation backbone (SincNet → BiLSTM x2 → Linear x2 →
+// powerset multiclass classifier). Category = `vad`. BF16 pass-through
+// skeleton + `vokra.pyannote.*` hparam chunk group so the future runtime
+// binder (`crates/vokra-models/src/pyannote/`) can bring the graph up
+// without a side-car config lookup. Runtime forward is Wave 2 loud-partial
+// (SincNet primitive is Vokra-new op, Wave 3 scope) —
+// `docs/handoff/pyannote-implementation-plan-2026-07-30.md`.
 pub(crate) mod piper_plus;
+pub mod pyannote_segmentation;
+// pyannote/speaker-diarization-3.1 (Bredin, CNRS, MIT — 2026-08-01 Wave 5
+// pipeline orchestration add, docs/license-audit.md §3.1 sign-off row).
+// SpeakerDiarization pipeline that composes the sibling MIT weight repos
+// pyannote/segmentation-3.0 (VAD backbone — pub mod pyannote_segmentation
+// above) + pyannote/wespeaker-voxceleb-resnet34-LM (speaker encoder —
+// pub mod wespeaker below) via AgglomerativeClustering. Category `diarize`.
+// Weightless GGUF — the converter reads a config.yaml sanity buffer and
+// emits primary-source-verified pipeline hparams under
+// `vokra.pyannote_pipeline.*`; no YAML parser enters the runtime tree
+// (NFR-DS-02 zero-dep). The Rust runtime pipeline dispatch is a
+// separate WP — this converter only stamps orchestration metadata.
+pub mod pyannote_speaker_diarization_3_1;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // (apache-2.0 end-to-end weight) safetensors → GGUF with the
 // `vokra.qwen3_tts.*` chunk group. Discrete multi-codebook LM
@@ -194,10 +363,51 @@ pub(crate) mod qwen3_tts;
 // `vokra-models <-> vokra-convert` dependency cycle the design doc's
 // original task split would have created -- see `sbv2`'s module doc (same
 // rationale as Task 11's `deberta_v2` / `deberta_v3`).
+// F0 pitch-extractor tier (2026-07-30): **RMVPE** (`yxlllc/RMVPE` fork of
+// `Dream-High/RMVPE`, MIT weight + code — Permissive). Safetensors →
+// GGUF with the `vokra.rmvpe.*` hparam chunk group; every F32 / F16 /
+// BF16 tensor passes through verbatim under upstream state_dict names.
+// Distinct arch tag (`rmvpe`) — the first `category = "f0"` binder in
+// the converter tree. Consumed by a native `vokra-models::f0::rmvpe`
+// runtime (U-Net + GRU CNN over a 128-mel spectrogram at 16 kHz →
+// 360-class pitch head → argmax → Hz via a log-cents grid). Sibling
+// pattern of `emotion2vec` (BF16 pass-through, dedicated arch tag,
+// converter-side hparam stamping).
+pub mod rmvpe;
 pub(crate) mod sbv2;
+// StyleTTS 2 (yl4579, Li et al. 2023 arXiv:2306.07691) — config-only
+// scaffold. **Weight license = voice-consent / disclosure usage
+// agreement (NOT standard SPDX permissive)** so provenance stamps
+// [`LicenseClass::Unknown`] (fail-closed under M2-13); the runtime
+// `StyleTts2Tts::from_gguf` is deliberately unwired
+// (`docs/license-audit.md` §3.1 StyleTTS 2 sign-off = ☑ Rejected
+// 2026-07-23 yousan). A user who trained their own StyleTTS 2 on a
+// permissive corpus overrides at the `--license <spdx>` boundary — the
+// same escape hatch vits-ja / kokoro / whisper use. Architecture MIT
+// (upstream repo LICENSE) and always independently implementable
+// (whisper.cpp 型, CLAUDE.md 設計判断 4).
 pub(crate) mod silero;
 pub mod speaker_3d;
 pub mod speechtokenizer;
+pub(crate) mod styletts2;
+// SoTA follow-on (2026-07-30): NVIDIA TitaNet-Large speaker verification
+// (`nvidia/speakerverification_en_titanet_large`, CC-BY-4.0 = AttributionRequired
+// — HF cardData primary source verified 2026-07-30). Category = `speaker`.
+// Depth-wise-separable Conv1D speaker-embedding extractor, 16 kHz mono →
+// 192-d embedding, ~23 M params. Every F32 / F16 / BF16 tensor passes
+// through verbatim (mirror of wespeaker / ecapa_tdnn / speaker_3d
+// skeleton pattern) plus the FR-MD-09 attribution chunk (stamp_attribution)
+// for the CC-BY-4.0 display obligation — the sibling mimi / moshi /
+// parakeet / canary / kyutai_stt CC-BY-4.0 posture. The `.nemo` tarball
+// distribution is bridged offline through `tools/parity/nemo_pt_to_safetensors.py`;
+// this converter accepts safetensors only (int-tensor strip like
+// BatchNorm `num_batches_tracked` is done at the bridge script — the
+// safetensors reader admits only F32 / F16 / BF16 so any surviving int
+// would fail parse before reaching us). Runtime port is out-of-scope
+// (M5-residual `titanet_speaker_encode`, FR-OP-80 variant); consumers
+// needing a speaker embedding today should use CAM++ (`vokra-models::speaker_encode`)
+// under Apache-2.0 with no attribution overhead.
+pub mod titanet;
 // SoTA plan Phase 3 (2026-07-25): StepFun **Step-Audio-2-mini**
 // (apache-2.0 end-to-end weight) safetensors → GGUF skeleton. 8B S2S
 // with a dual codebook (semantic 1024 + acoustic 4096) and a
@@ -322,3 +532,403 @@ pub mod xy_tokenizer;
 // Every float tensor passes through verbatim; every hparam (including the
 // 7 typed prefix conditioners) is transcribed from the upstream config.json.
 pub(crate) mod zonos;
+
+// ---------------------------------------------------------------------------
+// TIER 1+2 audio-gap implementation wave (2026-07-30 ultracode workflow
+// `wf_022575ce-077`, 7 parallel worktree implementers). Each module is a
+// self-contained BF16 pass-through converter mirror of the wespeaker /
+// rmvpe / neucodec pattern. **CLI wiring (ModelKind / from_arg / dispatch
+// arm / as_arg / license class registry) is DEFERRED to a follow-up wave**
+// because integrating 7 worktrees' changes to the 5 shared files
+// (crates/vokra-cli/src/convert.rs, crates/vokra-convert/src/lib.rs,
+// crates/vokra-convert/src/main.rs, crates/vokra-convert/src/models/mod.rs,
+// crates/vokra-core/src/compliance/license_class.rs) hit fundamental
+// 25-commit drift between the WT common base (`d05ab7d`) and the current
+// branch tip (pyannote Wave 3+4). See `docs/handoff/tier1-tier2-audio-
+// impl-2026-07-30.md` for the deferred-wiring detail + per-model
+// primary-source URLs + license sign-off list.
+//
+// Under this partial land the modules exist as library-callable code
+// (`crate::models::qwen3_asr::convert_qwen3_asr_file` etc.); the
+// `vokra-cli convert --model qwen3-asr` CLI dispatch is the follow-up.
+pub mod ast;
+pub mod audiobox_aesthetics;
+// 2026-08-01 Wave 5 music-separation add: BS-Roformer / Mel-Band Roformer
+// (Lu et al. 2023 arXiv:2310.01809 "Music Source Separation with Band-Split
+// RoPE Transformer", **weight provenance unclear**). Third-party mirror
+// `chenmozhijin/BSRoformer-GGUF` aggregates converted GGUFs from multiple
+// trainers under mixed licenses (GPL-3.0 / CC-BY-NC-4.0 / unspecified); the
+// clean-room MIT reference lives at `github.com/lucidrains/BS-RoFormer` but
+// ships no pretrained weights. `category = "separation"` (sibling of the
+// SepFormer speech-separation family — BS-Roformer is the music-vocals
+// analogue, mask an STFT spectrogram to isolate vocals / drums / bass /
+// other stems). BF16 pass-through skeleton mirror of vits_ja / musicgen_large.
+// **LicenseClass::RedistributionForbidden default** — a converter cannot know
+// which SPDX id covers the caller's checkpoint, so the fail-closed publish
+// gate applies until a caller supplies `--license <spdx>` at the outer
+// boundary (same escape hatch vits-ja / Whisper / kokoro use). **Publish
+// blocked (unclear-provenance-defer)** — no entry in
+// `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`, §3.1 sign-off
+// blank (owner ADR selecting a specific checkpoint + license required).
+// Real-weight parity + runtime binder (new op surface: band-split RoPE
+// transformer with time-axis + band-axis alternating attention, mask
+// estimator) deferred to owner sign-off.
+pub mod bs_roformer;
+// 2026-08-01 Wave 5 music-generation add: AudioLDM 2 (`cvssp/audioldm2`,
+// **cc-by-nc-sa-4.0**). Text-to-audio latent-diffusion generator
+// (Liu et al. 2024 ICML, arXiv:2308.05734) — VAE encoder/decoder + U-Net
+// latent diffusion + HiFi-GAN vocoder + GPT-2 audio-caption LM + T5-base
+// + CLAP text encoder, ~8.5 GB bundle. `category = "music"` (shared with
+// sibling musicgen family per 2026-07-30 scope expansion). BF16
+// pass-through skeleton mirror of musicgen_medium / xcodec2. Doubly-
+// restrictive `LicenseClass::NonCommercialShareAlike` default — NC gate
+// + SA cascade both fail-closed; **publish blocked** (no
+// REPO_TO_SIGNOFF_ROWS entry, no §3.1 sign-off ☑ — owner ADR required
+// to resolve the SA cascade onto Vokra-added artifacts). Real-weight
+// parity + runtime binder (new op surface: latent-diffusion sampler +
+// VAE + HiFi-GAN — distinct from `flow_sampler` which targets flow-
+// matching) deferred to owner sign-off (`docs/license-audit.md` §3.1
+// sign-off queue). Scale ~8.5 GB = vast.ai handoff per memory
+// [[feedback-large-models-on-vast-ai]] (M1 iMac 16 GB unsafe on the
+// upper edge — multi-encoder bundle doubles peak resident to ~17 GB).
+pub mod audioldm2;
+pub mod bark;
+pub mod bigvgan;
+pub mod clap;
+pub mod deepfake_detection;
+pub mod firered_vad;
+pub mod focalcodec;
+// 2026-08-01 wave: IBM Granite Speech 4.1-2B (`ibm-granite/granite-speech-4.1-2b`,
+// apache-2.0). Category = `asr` (audio-LLM ASR). Conformer CTC encoder
+// (16L × d_model 1024 × 8 heads × 128 head_dim × conv_kernel 15) +
+// Granite-4.0-1b-base LLM decoder (40L × hidden 2048 × GQA 16Q ÷ 4KV ×
+// ffn 4096 × RoPE θ 10000 × RMSNorm ε 1e-5 × vocab 100 353, distinctive
+// Granite scalars attention_multiplier 0.0078125 / embedding_multiplier
+// 12.0 / logits_scaling 8.0 / residual_multiplier 0.22) + BLIP-2 q-former
+// projector (2L × hidden 1024 × 16 heads × downsample_rate 5) + optional
+// LoRA adapter. BF16 pass-through skeleton mirror of speecht5_hifigan /
+// canary_qwen; real-weight parity + runtime binding deferred to owner
+// (`docs/license-audit.md` §3.1 sign-off).
+pub mod granite_speech;
+pub mod hifigan_vocoder;
+pub mod kyutai_tts;
+pub mod melotts;
+pub mod metricgan_plus;
+// 2026-08-01 Wave 3 codec add: OpenMOSS MOSS-Audio-Tokenizer
+// (`OpenMOSS-Team/MOSS-Audio-Tokenizer` + `-Nano`, apache-2.0). The
+// codec half of the MOSS-TTS pipeline (waveform → discrete tokens
+// fed into the sibling `moss_tts` LLM). BF16 pass-through skeleton
+// mirror of snac / neucodec / focalcodec (variant-taking = Full
+// ~1.77B params 6.6 GB / Nano ~22M params 88 MB). Both variants ship
+// as sharded safetensors + `model.safetensors.index.json` weight-map;
+// callers pre-flatten via `tools/parity/moss_audio_tokenizer_prepare_checkpoint.py`.
+// Real-weight parity + runtime binder deferred to owner sign-off (§3.1).
+pub mod moss_audio_tokenizer;
+pub mod moss_tts;
+// 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Medium
+// (`facebook/musicgen-medium`, **cc-by-nc-4.0**). First music-generation
+// target to land a converter (post-2026-07-30 scope expansion
+// `[[project-scope-expansion-2026-07-30]]`). 1.5B autoregressive transformer
+// LM over EnCodec RVQ tokens conditioned on frozen T5 text encoder
+// (Copet et al. 2023, arXiv:2306.05284). BF16 pass-through skeleton mirror
+// of xcodec2 / wavtokenizer — the same T4 (Research-only) tier as X-Codec 2
+// with `LicenseClass::NonCommercial` fail-closed default. First use of
+// `category = "music"` in the tree (distinct from the speech-tree tags
+// tts / asr / codec / vocoder / s2s / vad / speaker / f0 / separator /
+// bert). Real-weight parity + runtime binder deferred to owner sign-off
+// (`docs/license-audit.md` §3.1 sign-off queue). Scale ~11.4 GB = vast.ai
+// handoff per memory [[feedback-large-models-on-vast-ai]] (M1 iMac 16 GB
+// unsafe for this class of publish).
+pub mod musicgen_medium;
+// 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen-Large
+// (`facebook/musicgen-large`, **cc-by-nc-4.0**). 3.3B autoregressive
+// transformer LM over EnCodec RVQ tokens conditioned on frozen T5 text
+// encoder (top rung of the MusicGen family — `-small` 300M / `-medium`
+// 1.5B / **`-large` 3.3B**). Sibling file to musicgen_medium.rs (the
+// chatterbox / chatterbox_turbo / chatterbox_nano split) rather than a
+// shared musicgen.rs variant enum — zero-churn on the medium landing +
+// distinct upstream HF repo. Same T4 (Research-only) tier as X-Codec 2
+// and MusicGen-Medium with `LicenseClass::NonCommercial` fail-closed
+// default. Real-weight parity + runtime binder deferred to owner sign-off
+// (`docs/license-audit.md` §3.1 sign-off queue). Scale ~19.5 GB = vast.ai
+// handoff per memory [[feedback-large-models-on-vast-ai]] (M1 iMac 16 GB
+// unsafe for this class of publish — larger than the sibling MusicGen-
+// Medium ~11.4 GB, both routed to vast.ai per the runbook).
+pub mod musicgen_large;
+// 2026-08-01 Wave 5 audio-generation add: Meta AudioCraft AudioGen-Medium
+// (`facebook/audiogen-medium`, **cc-by-nc-4.0**). 1.5B autoregressive
+// transformer LM over EnCodec RVQ tokens conditioned on frozen T5 text
+// encoder — MusicGen sibling with identical topology, tuned on
+// environmental sounds / SFX (not music). Shares `musicgen` arch tag
+// and `music` category with MusicGen family. Same T4 (Research-only)
+// tier as X-Codec 2 / MusicGen-Medium / MusicGen-Large with
+// `LicenseClass::NonCommercial` fail-closed default. Scale ~3.7 GB =
+// local convert safe on M1 iMac 16 GB (below the vast.ai threshold).
+pub mod audiogen_medium;
+// 2026-08-01 Wave 6 residual: Meta AudioCraft MusicGen-Small
+// (`facebook/musicgen-small`, cc-by-nc-4.0). 300M smallest of the
+// MusicGen family. Shares `musicgen` arch tag + `music` category.
+// Scale ~5.5 GB = vast.ai handoff per owner directive.
+pub mod musicgen_small;
+// 2026-08-01 Wave 6 residual: Alibaba Qwen2-Audio-7B-Instruct
+// (`Qwen/Qwen2-Audio-7B-Instruct`, apache-2.0). Whisper audio
+// encoder + Qwen2-7B LM = audio-LLM omni. Distinct arch tag
+// `qwen2_audio`. Scale ~16 GB (5-shard) = vast.ai handoff.
+pub mod qwen2_audio;
+// 2026-08-02 Wave residual: Alibaba Qwen2.5-Omni-7B
+// (`Qwen/Qwen2.5-Omni-7B`, apache-2.0). Thinker + Talker unified
+// audio-vision-text any-to-any omni multimodal LLM over Qwen2.5-7B
+// backbone. Distinct arch tag `qwen2-omni` from sibling audio-only
+// `qwen2_audio` (Whisper + Qwen2-7B LM) — FR-EX-08 forbids silent
+// shape misroute. Scale 22.37 GB (5-shard) = vast.ai handoff.
+pub mod qwen2_5_omni_7b;
+// 2026-08-01 Wave 6 residual: Microsoft VibeVoice-ASR
+// (`microsoft/VibeVoice-ASR`, MIT). VibeVoice sibling with ASR
+// head. Distinct arch tag `vibevoice_asr`. Scale ~16.5 GB = vast.ai.
+pub mod vibevoice_asr;
+// 2026-08-01 Wave 6 residual: ACE-Step 1.5 (`ACE-Step/Ace-Step1.5`,
+// MIT). Multi-component music-generation bundle. Distinct arch tag
+// `ace_step`, category `music`. Scale ~9.6 GB = vast.ai handoff.
+pub mod ace_step;
+// 2026-08-01 Wave 7 residual: Meta HuBERT-Large-LS960
+// (`facebook/hubert-large-ls960-ft`, apache-2.0). 317M self-supervised
+// speech encoder (BERT-style masked-feature prediction, distinct from
+// wav2vec 2.0's contrastive convnet + Gumbel objective) + CTC head
+// fine-tuned on LibriSpeech 960h. Distinct arch tag `hubert` — future
+// native forward is expected to share ops with `wav2vec2_ctc`
+// (Conv1D feature-extractor + Transformer encoder + CTC decode) but
+// the arch tag stays distinct so runtime dispatch cannot misroute a
+// HuBERT checkpoint into a wav2vec2 loader silently (FR-EX-08).
+// Scale ~1.26 GB = local convert safe on M1 iMac 16 GB.
+pub mod hubert_large_ls960;
+// 2026-08-04 hf-audio-gap SSL residual: Meta w2v-BERT 2.0
+// (`facebook/w2v-bert-2.0`, MIT). ~580M-parameter self-supervised
+// speech encoder = Conformer body + dual (wav2vec2-style contrastive +
+// BERT-style MLM) SSL branches (Chung et al. 2021 arXiv:2108.06209).
+// Previously present in the Vokra converter tree only as an INTERNAL
+// subgraph inside `vieneu` + `seamless_m4t_v2_large` composites;
+// standalone use (SSL feature extraction across 143+ languages)
+// requires its own `ModelKind::W2vBert2` binder. Distinct arch tag
+// `w2v-bert-2` from siblings `hubert` / `wav2vec2_ctc` / `data2vec-
+// audio` — the three SSL siblings share the encoder+SSL-head shape
+// but differ in pretraining objective + encoder topology (Conformer
+// vs vanilla Transformer), so silently sharing an arch tag would
+// mis-route runtime dispatch (FR-EX-08). Scale ~2.16 GB single-file
+// safetensors = **vast.ai handoff** per memory
+// `[[feedback-large-models-on-vast-ai]]` (exceeds the 2 GB CC
+// workflow local-convert threshold).
+pub mod w2v_bert_2;
+// 2026-08-01 Wave 3 codec add: Amphion NaturalSpeech 3 FACodec
+// (`amphion/naturalspeech3_facodec`, apache-2.0). Factorized VQ (FVQ)
+// neural audio codec at 16 kHz, 3 parallel quantizer heads over
+// disentangled subspaces (prosody 1cb + content 2cb + detail 3cb, 6
+// codebooks total). Distinct arch tag `facodec` — first FVQ codec in
+// the tree, silently sharing with sibling RVQ (Mimi/DAC/SNAC) or FSQ
+// (WavTokenizer/X-Codec 2) codecs would misroute runtime dispatch.
+// BF16 pass-through skeleton mirror of snac / neucodec /
+// moss_audio_tokenizer. Upstream ships 5 separate `.bin` pickles;
+// callers pre-merge the variant subset via
+// `tools/parity/naturalspeech3_facodec_prepare_checkpoint.py` (the
+// sepformer multi-file bridge precedent). Real-weight parity + runtime
+// binder deferred to owner sign-off (§3.1). Redecoder variants enable
+// zero-shot voice conversion — owner routing decision whether they
+// belong in main zoo or `vokra-voiceclone-experimental` (ELVIS Act
+// policy, CLAUDE.md 設計判断 8).
+pub mod mp_senet;
+pub mod naturalspeech3_facodec;
+pub mod nemotron_asr;
+pub mod parler;
+pub mod qwen3_asr;
+pub mod sepformer;
+// SGMSE-VoiceBank — Score-based Generative Model for Speech
+// Enhancement (Welker et al. 2022 / Richter et al. 2023), SpeechBrain
+// package `speechbrain/sgmse-voicebank` (apache-2.0). Single-ckpt
+// (`score_model_ema.ckpt` ~263 MB torch pickle) + `hyperparams.yaml`
+// pair; NCSN++ v2 score network + OUVE SDE reverse sampler (predictor:
+// reverse_diffusion, corrector: ald, N=30 per upstream hparams). BF16
+// pass-through skeleton mirror of metricgan_plus / mp_senet / sepformer
+// (single-file safetensors after `tools/parity/
+// sgmse_prepare_checkpoint.py` bridges the .ckpt → .safetensors). First
+// real-weight consumer of the M3-05 `flow_sampler` + ODE solver op
+// family — existing enhancement rows (MetricGAN+ / MP-SENet / DFN3 /
+// FacebookDenoiser) are all masking / time-domain UNet, none exercise
+// the flow sampler path. Runtime binder + real-weight parity are
+// deferred to owner sign-off (`docs/license-audit.md` §3.1) — loud-
+// partial landing per RMVPE / Charsiu / MOSS-Audio-Tokenizer / MioCodec
+// precedent.
+pub mod sgmse;
+// SNAC — Multi-Scale Neural Audio Codec (Siuzdak et al. 2024,
+// hubertsiuzdak/snac_{24khz,44khz}, MIT). BF16 pass-through skeleton
+// mirror of focalcodec / bigvgan (variant-taking, sample-rate specialised).
+// 3 RVQ levels @ ~12/23/47 Hz for the 24 kHz variant (no attention);
+// 4 RVQ levels + 32-frame local attention for the 44.1 kHz music-quality
+// variant. Consumed by Orpheus-TTS + MOSS voice family + CSM-1B-adjacent
+// stacks (upstream ~452k monthly downloads on the 24 kHz release).
+pub mod smart_turn;
+pub mod snac;
+pub mod speechbrain_lang_id;
+pub mod speecht5;
+pub mod speecht5_hifigan;
+pub mod tiger;
+pub mod vieneu;
+// 2026-08-01 wave: Charactr AI Vocos vocoder (`charactr/vocos-mel-24khz`
+// = HF audio-vocoder category top by download, 2.85M dl; and
+// `charactr/vocos-encodec-24khz`, both MIT). Category: vocoder.
+// Fourier-space vocoder (ConvNeXt V2 backbone + iSTFT head,
+// arXiv:2306.00814) — distinct arch tag `vocos` from every HiFi-GAN
+// sibling because Vocos does NOT time-domain upsample + MRF; it
+// spectrum-space processes then inverse-STFTs. Every F32 / F16 /
+// BF16 tensor passes through verbatim following the
+// speecht5_hifigan / bigvgan / focalcodec BF16 pass-through
+// contract; real-weight parity is deferred to owner
+// (`docs/license-audit.md` §3.1 sign-off). Upstream ships torch
+// pickle `pytorch_model.bin` + `config.yaml` only — pre-flatten to
+// safetensors offline via
+// `tools/parity/vocos_prepare_checkpoint.py` (a thin wrapper over
+// `bin_to_safetensors.py`, mirror of speecht5_hifigan).
+pub mod vocos;
+pub mod wav2vec2_ctc;
+pub mod xvector;
+// Wave 3 codec add (2026-08-01): novateur/WavTokenizer-large-speech-75token
+// (MIT). Single-codebook FSQ audio codec at 24 kHz, 75 tokens/sec
+// (hop_length=320, arXiv:2408.16532). Upstream ships a torch pickle
+// Lightning `.ckpt` (1.75 GB) so callers pre-flatten to safetensors via
+// a dedicated `tools/parity/wavtokenizer_prepare_checkpoint.py` bridge
+// (the DFN3 / DAC / CSM / SpeechT5-HiFi-GAN precedent — no pickle in the
+// runtime, NFR-DS-02 zero-dep + FR-LD-05). Real-weight parity deferred
+// to owner sign-off (§3.1). Runtime forward reuses the M4-16 landed
+// `wavtokenizer_vq` op (`crates/vokra-ops/src/fsq_codec.rs`).
+pub mod wavtokenizer;
+// 2026-08-01 Wave 3 sibling-pair (codec + vocoder) add: YuE bundle
+// (`m-a-p/YuE-upsampler` + `m-a-p/xcodec_mini_infer`, apache-2.0). The
+// codec / vocoder half of the YuE full-song music-generation system
+// (Yuan et al. 2025, arXiv:2503.08638). Two distinct HF repos share
+// one Rust converter module: `YueUpsampler` variant = Vocos backbone
+// + iSTFT head @ 44.1 kHz (145 MB); `YueXcodecMini` variant =
+// SoundStream RVQ codec + HuBERT-base semantic encoder + Vocos decoder
+// head @ 16 kHz / 25 Hz (~2.2 GB). Both upstream repos ship torch
+// pickle only (`.pth` / `.bin`) — callers pre-flatten via
+// `tools/parity/yue_bundle_prepare_checkpoint.py` (multi-file bridge
+// mirror of `naturalspeech3_facodec_prepare_checkpoint.py` +
+// `sepformer_prepare_checkpoint.py` + `bin_to_safetensors.py`). BF16
+// pass-through skeleton mirror of vocos / snac / focalcodec /
+// speecht5_hifigan; runtime binder + real-weight parity deferred to
+// owner sign-off (§3.1). Distinct arch tags `yue_upsampler` +
+// `yue_xcodec_mini` from every sibling — silently sharing with vocos
+// (different config axes / training corpus) or with any RVQ / FSQ
+// codec (semantic-encoder fusion is what distinguishes YuE) would
+// mis-route runtime dispatch. Attribution note: RepCodec (ByteDance
+// / Chutong Meng, MIT) + Descript-Audio-Codec (MIT) source trees
+// ship inside `xcodec_mini_infer` at `RepCodec/` /
+// `descriptaudiocodec/dac/` but are inference-tree artefacts, not
+// loaded weights — NOTICE keeps credit for design influence, this
+// converter ignores them.
+pub mod yue_bundle;
+// 2026-08-02 Wave residual: dscripka/openWakeWord (custom-KWS MLP/CNN
+// over precomputed melspec, apache-2.0). Small wake-word family
+// (~1–5 MB each) — audio-dialect `kws` op entry (FR-OP `kws`).
+// Distinct arch tag `openwakeword`, category `kws`. Scale ~0.01 GB =
+// local convert safe on M1 iMac (well below vast.ai threshold).
+pub mod openwakeword;
+// 2026-08-02 Wave residual: UsefulSensors/moonshine-tiny (27M raw-audio
+// transformer enc-dec ASR, MIT). Distinct from Whisper: no mel front-end
+// (raw 16 kHz audio via Conv1D stack) + rotary + SwiGLU. Distinct arch
+// tag `moonshine`, category `asr`. Scale ~0.11 GB = local convert safe.
+pub mod moonshine_tiny;
+// 2026-08-02 Wave residual: UsefulSensors/moonshine-base (61.5M raw-audio
+// transformer enc-dec ASR, MIT). Sibling to `moonshine_tiny` — same
+// arch family (raw-audio Conv1D + rotary + SwiGLU), wider/deeper
+// backbone. Distinct arch tag `moonshine` (shared with sibling Tiny),
+// category `asr`. Scale ~0.25 GB = local convert safe.
+pub mod moonshine_base;
+// 2026-08-02 Wave residual: facebook/demucs (HT-Demucs, MIT). Hybrid
+// transformer Demucs (Rouard et al. 2023, arXiv:2211.08553) — U-Net
+// waveform branch + spectrogram branch joined by cross-domain self-
+// attention, 4-source music separation (drums / bass / other / vocals).
+// Distinct from SepFormer (waveform-only dual-path Transformer) and
+// TIGER (time-frequency dual-branch) siblings; distinct arch tag
+// `demucs`, category `separation`. Scale ~0.50 GB = local convert safe.
+pub mod demucs_htdemucs;
+// 2026-08-02 Wave residual: fixie-ai/ultravox-v0_5-llama-3_2-1b (MIT).
+// Ultravox v0.5 (Llama-3.2-1B) — audio-text-to-text multimodal model =
+// Llama-3.2-1B decoder + Whisper encoder + lightweight projection adapter.
+// Both underlying arches (Llama + Whisper) already supported by sibling
+// converters + runtime primitives; new wiring is the adapter projection +
+// multimodal prompt template (runtime-side, not converter-side). Distinct
+// arch tag `ultravox` from sibling Voxtral (Mistral decoder) / Qwen2-Audio
+// (Qwen2 decoder) — the decoder backbone fixes tensor layout + tokenizer +
+// rope base, so FR-EX-08 forbids silent shape misroute across the three.
+// Category `audio-llm`. Scale ~1.83 GB = local convert safe.
+pub mod ultravox_v0_5_llama_3_2_1b;
+// 2026-08-02 Wave residual: coqui/XTTS-v2 (multilingual zero-shot voice-
+// cloning TTS = GPT-2 backbone + DVAE + HiFi-GAN, coqui-public-model-license
+// = NonCommercial T4 tier). ~1.90 GB = local convert safe on M1 iMac.
+// Distinct arch tag `xtts` from sibling piper-plus (VITS2) / Kokoro
+// (iSTFTNet) / CosyVoice2 (FSQ + HiFTNet) — FR-EX-08.
+pub mod xtts_v2;
+// 2026-08-02 Wave residual: JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k
+// (Asteroid ConvTasNet, cc-by-sa-4.0). First Copyleft-tier separator
+// entry — single-speaker enhancement head on Libri1Mix 16 kHz (one
+// clean speaker + additive noise, one output stream). Distinct arch
+// tag `conv_tasnet` from sibling separator families (sepformer /
+// demucs / tiger_separator / bs_roformer / mp_senet) — FR-EX-08
+// forbids silent shape misroute across separator families. Category
+// `enhancement` (mirrors SepFormer WHAM / WHAMR / DNS-4 sibling
+// posture). Weight license Copyleft (SA cascade — a derived GGUF is
+// itself CC-BY-SA), T3 tier redistributable with original licence
+// preserved. Scale ~20 MB = local convert safe on M1 iMac.
+pub mod conv_tasnet_libri1mix;
+// 2026-08-02 Wave residual: Meta Seamless-M4T-v2-Large
+// (`facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified any-to-
+// any speech-and-text translation model (ASR + T2TT + S2TT + T2ST +
+// S2ST across ~100 source / ~35 target speech languages). Ships 2
+// safetensors shards + `.pt` duplicates + `vocoder_v2.pt` — the
+// converter walks whatever bytes the caller hands in (typical publish
+// path pre-flattens shards + vocoder to a single safetensors offline).
+// Distinct arch tag `unity-2` (Meta's fairseq2 dispatch name) covering
+// the 4 subgraphs: w2v-BERT 2.0 speech encoder + NLLB-derived text
+// decoder + T2U (text-to-unit) decoder + HiFi-GAN vocoder. Category
+// `s2s` (shared with baichuan_audio / step_audio2_mini). T4 tier
+// NonCommercial default per X-Codec 2 (2026-07-28) / MusicGen family
+// (2026-08-01) precedent. Scale ~9.00 GB = vast.ai handoff per
+// memory `[[feedback-large-models-on-vast-ai]]` (>8 GB strict cutoff).
+pub mod seamless_m4t_v2_large;
+// ---------------------------------------------------------------------------
+// coverage-audit-2026-08-03 Wave D (T4 non-commercial batch, 2026-08-04):
+// 5 BF16 pass-through skeletons on the same shared verify surface as the
+// Wave B fast-track fleet. All T4 tier (Research-only) per X-Codec-2
+// (2026-07-28) / Sortformer diar 4spk / MusicGen family precedent —
+// publish requires `--allow-noncommercial`, runtime M2-13 gate refuses
+// commercial-mode load. Two flavors: HF-hosted (chattts /
+// stable_audio_open_small / jasco_400m_chords_drums) stamp
+// `vokra.provenance.upstream_hf`; GitHub-only (facebook_denoiser /
+// nisqa_v2_weight) stamp `vokra.provenance.upstream_url` per the NKF-AEC
+// / RNNoise / NSNet2 precedent. stable_audio_open_small hard-maps the
+// non-SPDX Stability AI Community License string to
+// `LicenseClass::NonCommercial` per the CPML precedent in `xtts_v2.rs`
+// so `upload.sh` does not refuse with "weight licence class `unknown` is
+// unrecognised".
+pub mod chattts;
+pub mod facebook_denoiser;
+pub mod jasco_400m_chords_drums;
+pub mod nisqa_v2_weight;
+pub mod stable_audio_open_small;
+// ---------------------------------------------------------------------------
+// coverage-audit-2026-08-03 Wave A permissive continuation (2026-08-04):
+// 7 BF16 pass-through skeletons on the same shared verify surface as the
+// Wave A permissive top-5 (nkf_aec / rnnoise / nsnet2 / dnsmos / frcrn) and
+// the Wave D T4 batch. All T1 (Permissive) — MIT / BSD-2-Clause / Apache-2.0
+// defaults land as `LicenseClass::Permissive`, sign-off ☑ Commercial by
+// yousan at land time (Wave A permissive posture). Two flavors: HF-hosted
+// (utmosv2 / htdemucs_multi / openwakeword_op / mossformer2_ss_16k /
+// audioseal_real_weight) stamp `vokra.provenance.upstream_hf`; GitHub-only
+// (torchaudio_squim / ten_vad) stamp `vokra.provenance.upstream_url` per
+// the NKF-AEC / RNNoise / NSNet2 / facebook_denoiser precedent.
+pub mod audioseal_real_weight;
+pub mod htdemucs_multi;
+pub mod mossformer2_ss_16k;
+pub mod openwakeword_op;
+pub mod ten_vad;
+pub mod torchaudio_squim;
+pub mod utmosv2;
+// ---------------------------------------------------------------------------

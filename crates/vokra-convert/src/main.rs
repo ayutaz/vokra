@@ -28,7 +28,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -112,7 +112,20 @@ OPTIONS:
                        `RedistributionForbidden`**: JSUT / JVS /
                        COEIROINK corpus terms forbid trained-weight
                        redistribution; override with --license <spdx>
-                       if you trained on a permissive corpus).
+                       if you trained on a permissive corpus), or
+                       styletts2 (yl4579 StyleTTS 2 — Li et al. 2023
+                       arXiv:2306.07691 — config-only scaffold. LJSpeech
+                       / LibriTTS release axes are transcribed verbatim;
+                       every F32 / F16 / BF16 tensor passes through
+                       verbatim under its upstream safetensors name.
+                       **⚠️  Weight redistribution default is `Unknown`
+                       (fail-closed)**: the yl4579 pretrained models
+                       ride a voice-consent / disclosure usage agreement
+                       — NOT a standard SPDX permissive license. The
+                       runtime `StyleTts2Tts::from_gguf` returns
+                       NotImplemented naming the licence blocker;
+                       override with --license <spdx> if you trained on
+                       a permissive corpus).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -383,8 +396,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
                          dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
-                         distil-whisper | kotoba-whisper | vits-ja)"
+                         parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
+                         distil-whisper | kotoba-whisper | vits-ja | styletts2 | fsmn-vad)"
                     )
                 })?);
                 i += 2;
@@ -1020,6 +1033,73 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  dec_max_seq={dec_max_seq} vocab={vocab} sample_rate={sr}"
             );
         }
+        ModelKind::CanaryQwen => {
+            // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
+            // FastConformer encoder (reused Canary-1B-v2 axes) + Qwen LLM
+            // decoder (canonical Qwen-family axes with `0`-placeholder
+            // dims pending .nemo extraction). Verify the loaded GGUF
+            // carries the key hparam chunk group and the arch tag is
+            // distinct from base Canary.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let enc_layers = file
+                .get("vokra.canary_qwen.arch.encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let enc_d_model = file
+                .get("vokra.canary_qwen.arch.encoder.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let enc_n_head = file
+                .get("vokra.canary_qwen.arch.encoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let in_dim = file
+                .get("vokra.canary_qwen.arch.encoder.in_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_layers = file
+                .get("vokra.canary_qwen.arch.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_hidden_dim = file
+                .get("vokra.canary_qwen.arch.decoder.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head_q = file
+                .get("vokra.canary_qwen.arch.decoder.n_head_q")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head_kv = file
+                .get("vokra.canary_qwen.arch.decoder.n_head_kv")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_head_dim = file
+                .get("vokra.canary_qwen.arch.decoder.head_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.canary_qwen.arch.decoder.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cross_attn_hidden_dim = file
+                .get("vokra.canary_qwen.arch.cross_attn.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.canary_qwen.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} encoder_layers={enc_layers} enc_d_model={enc_d_model} \
+                 enc_n_head={enc_n_head} in_dim={in_dim} decoder_layers={dec_layers} \
+                 dec_hidden_dim={dec_hidden_dim} dec_gqa={dec_n_head_q}q/{dec_n_head_kv}kv \
+                 dec_head_dim={dec_head_dim} vocab={vocab} \
+                 cross_attn_hidden_dim={cross_attn_hidden_dim} sample_rate={sr}"
+            );
+        }
         ModelKind::OmniasrCtc => {
             // SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — 1600+
             // language wav2vec 2.0 CTC ASR (encoder + single-Linear CTC head
@@ -1112,6 +1192,48 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
             // shape as Whisper's: n_audio_layer / n_text_layer are
             // the interesting pair (the JA-ASR-2 data-driven decoder
             // axis).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let d_model = file
+                .get("vokra.whisper.n_audio_state")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_audio_layer = file
+                .get("vokra.whisper.n_audio_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_text_layer = file
+                .get("vokra.whisper.n_text_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_mels = file
+                .get("vokra.whisper.n_mels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_vocab = file
+                .get("vokra.whisper.n_vocab")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} d_model={d_model} n_audio_layer={n_audio_layer} \
+                 n_text_layer={n_text_layer} n_mels={n_mels} n_vocab={n_vocab}"
+            );
+        }
+        ModelKind::Crisperwhisper => {
+            // residual wave 4 (2026-08-02): CrisperWhisper —
+            // Whisper-large-v3 verbatim-word-timestamps fine-tune under
+            // cc-by-nc-4.0. Reuses the vanilla Whisper converter via
+            // the `WhisperVariant::CrisperWhisper` arm; every
+            // architectural axis is byte-identical to whisper-large-v3
+            // (32/32 layers, d_model=1280, n_mels=128, vocab=51866).
+            // Verify surface mirrors distil-whisper / kotoba-whisper —
+            // arch stamp + name + the four data-driven axes.
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())
@@ -1540,6 +1662,90 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  head.num_inference_steps={n_inf_steps}"
             );
         }
+        ModelKind::VibeVoiceRealtime => {
+            // 2026-08-01 add: VibeVoice-Realtime-0.5B (streaming sibling)
+            // verify surface -- mirror of VibeVoice above, but the
+            // semantic tokenizer axes are absent (streaming variant
+            // carries only the acoustic tokenizer) and the
+            // streaming-only `tts_backbone_num_hidden_layers` axis is
+            // surfaced. The diffusion-head hidden dim is also
+            // reported since it differs from the 1.5B value.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.vibevoice.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let dec_hidden = file
+                .get("vokra.vibevoice.decoder.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_layer = file
+                .get("vokra.vibevoice.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head = file
+                .get("vokra.vibevoice.decoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head_kv = file
+                .get("vokra.vibevoice.decoder.n_head_kv")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_vocab = file
+                .get("vokra.vibevoice.decoder.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let acoustic_vae = file
+                .get("vokra.vibevoice.acoustic_vae_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let acoustic_sr = file
+                .get("vokra.vibevoice.acoustic.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_hidden = file
+                .get("vokra.vibevoice.diffusion_head.hidden_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_layers = file
+                .get("vokra.vibevoice.diffusion_head.head_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let pred_type = file
+                .get("vokra.vibevoice.diffusion_head.prediction_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let beta_sched = file
+                .get("vokra.vibevoice.diffusion_head.ddpm_beta_schedule")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_inf_steps = file
+                .get("vokra.vibevoice.diffusion_head.ddpm_num_inference_steps")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let tts_backbone = file
+                .get("vokra.vibevoice.tts_backbone_num_hidden_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} \
+                 decoder.hidden={dec_hidden} decoder.n_layer={dec_n_layer} \
+                 decoder.n_head={dec_n_head} decoder.n_head_kv={dec_n_head_kv} \
+                 decoder.vocab={dec_vocab} acoustic.vae_dim={acoustic_vae} \
+                 acoustic.sr={acoustic_sr} head.hidden={head_hidden} \
+                 head.layers={head_layers} head.prediction_type={pred_type} \
+                 head.beta_schedule={beta_sched} \
+                 head.num_inference_steps={n_inf_steps} \
+                 tts_backbone_num_hidden_layers={tts_backbone}"
+            );
+        }
         ModelKind::Irodori => {
             // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Irodori-TTS-500M-v3
             // verify surface — arch / name plus the RF-DiT body axes +
@@ -1686,6 +1892,63 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  text.n_layer={text_layer} text.n_head={text_head} \
                  flow.n_flow={flow_flows} sdp.n_flow={sdp_flows} \
                  decoder.initial_channel={dec_init} decoder.kernel_size={dec_kernel}"
+            );
+        }
+        ModelKind::StyleTts2 => {
+            // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold
+            // verify surface. Print arch / name plus the transcribed
+            // LJSpeech / LibriTTS axes (24 kHz, hidden_dim=512,
+            // style_dim=128, iSTFTNet decoder).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.styletts2.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.styletts2.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let style_dim = file
+                .get("vokra.styletts2.style_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden = file
+                .get("vokra.styletts2.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_mels = file
+                .get("vokra.styletts2.n_mels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_layer = file
+                .get("vokra.styletts2.text_encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let diffusion_steps = file
+                .get("vokra.styletts2.diffusion.steps")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let uses_diffusion = file
+                .get("vokra.styletts2.diffusion.uses_style_diffusion")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let dec_dim_in = file
+                .get("vokra.styletts2.decoder.dim_in")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} sample_rate={sr} \
+                 style_dim={style_dim} hidden_dim={hidden} n_mels={n_mels} \
+                 text_encoder.n_layer={text_layer} \
+                 diffusion.steps={diffusion_steps} uses_style_diffusion={uses_diffusion} \
+                 decoder.dim_in={dec_dim_in}"
             );
         }
         ModelKind::DebertaV2 => {
@@ -1839,7 +2102,459 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::EcapaTdnn
         | ModelKind::Wespeaker
         | ModelKind::Speaker3d
-        | ModelKind::Emotion2vec => {
+        | ModelKind::TitaNet
+        | ModelKind::Emotion2vec
+        | ModelKind::Rmvpe
+        // M5 gap follow-up (2026-07-30): CREPE emits the same
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.*`
+        // triple as the Phase 5 fleet + RMVPE sibling; grouped here so
+        // the verify surface stays a shape-lookup.
+        | ModelKind::Crepe
+        // 2026-07-30 license half unblock: pyannote/segmentation-3.0
+        // (VAD backbone) emits the same `vokra.model.*` +
+        // `vokra.provenance.*` triple + additional `vokra.pyannote.*`
+        // hparam chunk group; grouped with the Phase 5 fleet since the
+        // verify surface is identical (arch / name / category /
+        // upstream / license lookup).
+        | ModelKind::PyannoteSegmentation
+        // 2026-08-01 Wave 5 pipeline orchestration add:
+        // pyannote/speaker-diarization-3.1 emits the same
+        // `vokra.model.*` + `vokra.provenance.*` triple plus a
+        // `vokra.pyannote_pipeline.*` orchestration chunk group
+        // (sub-model references + clustering knobs). Weightless
+        // pipeline GGUF (zero tensors by upstream design — the
+        // pipeline composes sibling weight repos, does not embed
+        // their weights); grouped here since the verify surface
+        // stays a uniform arch/name/category/upstream/license
+        // triple lookup regardless of tensor count.
+        | ModelKind::PyannoteSpeakerDiarization31
+        // TIER 1+2 audio-gap 41 new variants (2026-07-30 ultracode
+        // `wf_022575ce-077`) all emit the same standard
+        // `vokra.model.*` + `vokra.provenance.*` chunk triple
+        // (plus arch-specific hparam chunks); grouped here since
+        // the verify surface is a uniform arch/name/category/
+        // upstream/license lookup.
+        | ModelKind::Qwen3TtsBase17B
+        | ModelKind::Qwen3TtsCustomVoice17B
+        | ModelKind::Qwen3TtsVoiceDesign17B
+        | ModelKind::Qwen3Asr
+        | ModelKind::Wav2Vec2Ctc
+        // 2026-08-02 wave: Facebook data2vec-audio-base-960h
+        // (`facebook/data2vec-audio-base-960h`, apache-2.0). Baevski et
+        // al. 2022 — wav2vec 2.0 base topology + data2vec pretraining
+        // objective + LibriSpeech 960h English char CTC head. Emits the
+        // same standard `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.*` triple as the sibling Wav2Vec2Ctc arm
+        // (in fact routes through the same `wav2vec2_ctc` converter
+        // module — tensor names identical, only `name` +
+        // `upstream_hf` differ so a stamped GGUF faithfully reports
+        // the data2vec-audio release). Grouped here for the uniform
+        // arch/name/category/upstream/license triple readback.
+        | ModelKind::Data2vecAudioBase
+        // 2026-08-02 wave: Meta MMS-1B-All (`facebook/mms-1b-all`,
+        // cc-by-nc-4.0). Massively Multilingual Speech (Pratap et al.
+        // 2023, arXiv:2305.13516). Base tensor path reuses the
+        // wav2vec2_ctc converter (parent workflow REUSE HINT) with
+        // placeholder axes (LargeXlsr53Base sibling) and faithful
+        // `name` + `upstream_hf` for the placeholder-axis refusal
+        // guardrail. Emits the same standard
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.*`
+        // triple as the sibling Wav2Vec2Ctc arm — grouped here for the
+        // uniform arch/name/category/upstream/license triple readback.
+        | ModelKind::Mms1bAll
+        | ModelKind::MossTts
+        | ModelKind::MossTtsV15
+        | ModelKind::MossTtsNano
+        | ModelKind::MossTtsLocal
+        // 2026-08-02 wave: MOSS-Audio-4B-Instruct
+        // (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Reuses
+        // the sibling MossTts converter per the parent workflow's
+        // REUSE HINT via a new `MossTtsVariant::AudioInstruct4b`
+        // arm. Same verify shape as the 4 sibling tts variants — the
+        // triple lookup (arch / name / upstream_hf + license) is the
+        // invariant surface even though this sibling stamps category
+        // = `s2s` (audio-LLM) rather than `tts`.
+        | ModelKind::MossAudio4bInstruct
+        // 2026-08-02 wave: MOSS-Audio-8B-Instruct
+        // (`OpenMOSS-Team/MOSS-Audio-8B-Instruct`, apache-2.0). Reuses
+        // the sibling MossTts converter per the parent workflow's
+        // REUSE HINT via a new `MossTtsVariant::AudioInstruct8b`
+        // arm — same verify shape as the 4B sibling above (arch /
+        // name / upstream_hf + license triple is the invariant
+        // surface even though this sibling stamps category = `s2s`
+        // audio-LLM rather than `tts`).
+        | ModelKind::MossAudio8bInstruct
+        | ModelKind::MeloTtsEnglish
+        | ModelKind::MeloTtsChinese
+        | ModelKind::MeloTtsKorean
+        | ModelKind::MeloTtsSpanish
+        | ModelKind::MeloTtsJapanese
+        | ModelKind::SpeechT5Tts
+        | ModelKind::ParlerTtsMiniMultilingual
+        | ModelKind::IndicParlerTts
+        | ModelKind::ParlerTtsMiniV1English
+        | ModelKind::VieNeuTts
+        | ModelKind::Bark
+        | ModelKind::BarkSmall
+        | ModelKind::HifiganVocoder
+        | ModelKind::Speecht5Hifigan
+        | ModelKind::Vocos
+        | ModelKind::BigVGan
+        | ModelKind::Focalcodec
+        | ModelKind::TigerSeparator
+        | ModelKind::TigerSpeech
+        | ModelKind::MpSenet
+        | ModelKind::MpSenetDns
+        | ModelKind::MetricganPlus
+        | ModelKind::SepFormer
+        | ModelKind::SepformerWham16kEnh
+        | ModelKind::SepformerWhamr16k
+        | ModelKind::SepformerLibri2Mix
+        | ModelKind::SepformerLibri3Mix
+        | ModelKind::SepformerWhamr8k
+        | ModelKind::SepformerDns4Enh
+        | ModelKind::FsmnVad
+        | ModelKind::FireredVad
+        | ModelKind::SmartTurn
+        | ModelKind::Clap
+        | ModelKind::Ast
+        | ModelKind::LangIdVoxlingua107
+        | ModelKind::LangIdCommonLanguage
+        | ModelKind::XVector
+        | ModelKind::DeepfakeDetection
+        | ModelKind::KyutaiTts
+        | ModelKind::AudioboxAesthetics
+        | ModelKind::VoxtralMiniRealtime
+        | ModelKind::CohereTranscribe
+        | ModelKind::NemotronAsrStreaming
+        // 2026-08-01 wave: IBM Granite Speech 4.1-2B — Conformer CTC
+        // encoder + Granite-4.0-1b-base LLM decoder + BLIP-2 q-former
+        // projector (audio-LLM ASR, apache-2.0). Emits the same
+        // arch / name / category / upstream_hf / license triple as the
+        // Phase 5 fleet plus a `vokra.granite_speech.*` hparam chunk
+        // group (which this verify path deliberately does not readback
+        // — the triple lookup is the invariant surface). Grouped here
+        // so the verify surface stays a shape-lookup, not a per-model
+        // switch we would have to keep in step with 40+ real
+        // converters.
+        | ModelKind::GraniteSpeech
+        // M5-16 / FR-OP-83: FCPE — pass-through BF16 skeleton verify shares
+        // the same shape as the Phase 5 fleet (arch/name/category +
+        // upstream_hf + license triple). The FCPE-specific `vokra.f0.fcpe.*`
+        // config chunk is written by the model, not the converter, so this
+        // verify path deliberately does not readback it (a follow-up if a
+        // future variant lands a converter-written config).
+        | ModelKind::Fcpe
+        // 2026-08-01 Wave 3: SNAC — Multi-Scale Neural Audio Codec
+        // (hubertsiuzdak/snac_{24khz,44khz}, MIT). Same verify shape as
+        // focalcodec / bigvgan (arch / name / category + upstream_hf +
+        // license triple) plus an arch-specific `vokra.snac.variant`
+        // chunk not read back by this uniform verify arm.
+        | ModelKind::Snac
+        // 2026-08-01 Wave 3: OpenMOSS MOSS-Audio-Tokenizer
+        // (`OpenMOSS-Team/MOSS-Audio-Tokenizer` + `-Nano`, apache-2.0).
+        // The codec half of the MOSS-TTS pipeline. Same verify shape
+        // as snac / focalcodec / bigvgan (arch / name / category +
+        // upstream_hf + license triple) plus an arch-specific
+        // `vokra.moss_audio_tokenizer.variant` chunk not read back
+        // by this uniform verify arm.
+        | ModelKind::MossAudioTokenizer
+        // 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec —
+        // factorized VQ (FVQ) codec (`amphion/naturalspeech3_facodec`,
+        // apache-2.0). Same verify shape as snac /
+        // moss_audio_tokenizer / focalcodec (arch / name / category
+        // + upstream_hf + license triple) plus an arch-specific
+        // `vokra.facodec.variant` chunk + a `vokra.facodec.*` hparam
+        // chunk group not read back by this uniform verify arm.
+        | ModelKind::Facodec
+        // 2026-08-01 Wave 3 sibling-pair add: YuE bundle
+        // (`m-a-p/YuE-upsampler` = vocoder / `m-a-p/xcodec_mini_infer`
+        // = codec, both apache-2.0). Two distinct ModelKind entries
+        // share this uniform verify arm (arch / name / category +
+        // upstream_hf + license triple lookup) plus an arch-specific
+        // `vokra.yue_bundle.variant` chunk not read back here.
+        | ModelKind::YueUpsampler
+        | ModelKind::YueXcodecMini
+        // 2026-08-01 Wave 5 music-generation add: Meta AudioCraft
+        // MusicGen-Medium (`facebook/musicgen-medium`, cc-by-nc-4.0).
+        // First music-generation converter — emits the same standard
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.*`
+        // triple as every sibling BF16 pass-through skeleton, with
+        // `category = "music"` (first music-tree entry, distinct from
+        // the speech-tree tags). Grouped here so the verify surface
+        // stays a shape-lookup, not a per-model switch we would have
+        // to keep in step with 40+ real converters.
+        | ModelKind::MusicGenMedium
+        // 2026-08-01 Wave 5 music-generation add: Meta AudioCraft
+        // MusicGen-Large (`facebook/musicgen-large`, cc-by-nc-4.0).
+        // Sibling to MusicGen-Medium (top rung of the family, 3.3B vs
+        // 1.5B). Emits the same standard `vokra.model.{arch,name,
+        // category}` + `vokra.provenance.*` triple as every sibling
+        // BF16 pass-through skeleton, with `category = "music"`
+        // (shared with sibling MusicGen-Medium — first music-tree
+        // family). Grouped here so the verify surface stays a
+        // shape-lookup, not a per-model switch we would have to keep
+        // in step with 40+ real converters.
+        | ModelKind::MusicGenLarge
+        // 2026-08-02 Wave 5 sibling: Meta AudioCraft MusicGen-Melody
+        // (`facebook/musicgen-melody`, cc-by-nc-4.0). Medium 1.5B LM
+        // + 12-bin chromagram conditioning frontend. Reuses the medium
+        // BF16 pass-through converter arm (sibling wrapper — no new
+        // models/*.rs module). Grouped here for the uniform arch /
+        // name / category / upstream_hf / license triple verify shape.
+        | ModelKind::MusicGenMelody
+        // 2026-08-01 Wave 5 residual: Meta AudioCraft AudioGen-Medium
+        // (`facebook/audiogen-medium`, cc-by-nc-4.0). MusicGen sibling
+        // — identical `musicgen` arch tag, tuned on environmental
+        // sounds / SFX. `category = "music"` shared with MusicGen
+        // family. Grouped here for the uniform verify shape.
+        | ModelKind::AudioGenMedium
+        // 2026-08-01 Wave 6 residual: MusicGen-Small (sibling of
+        // MusicGen-Medium/Large + AudioGen-Medium — shared `musicgen`
+        // arch, `music` category. cc-by-nc-4.0 T4).
+        | ModelKind::MusicGenSmall
+        // 2026-08-01 Wave 6 residual: Qwen2-Audio-7B-Instruct
+        // (audio-LLM omni, apache-2.0, distinct arch `qwen2_audio`).
+        | ModelKind::Qwen2Audio
+        // 2026-08-02 Wave residual: Qwen2.5-Omni-7B (Thinker + Talker
+        // unified any-to-any omni multimodal LLM over Qwen2.5-7B
+        // backbone, apache-2.0, distinct arch tag `qwen2-omni` from
+        // audio-only sibling `qwen2_audio`).
+        | ModelKind::Qwen25Omni7b
+        // 2026-08-01 Wave 6 residual: VibeVoice-ASR (VibeVoice sibling
+        // with ASR head, MIT, distinct arch `vibevoice_asr`).
+        | ModelKind::VibeVoiceAsr
+        // 2026-08-01 Wave 6 residual: ACE-Step 1.5 (multi-file MIT
+        // music-gen bundle, distinct arch `ace_step`, category `music`).
+        | ModelKind::AceStep
+        // 2026-08-01 Wave 7 residual: HuBERT-Large-LS960
+        // (`facebook/hubert-large-ls960-ft`, apache-2.0). 317M BERT-
+        // style masked-feature-prediction self-supervised speech
+        // encoder + CTC head fine-tuned on LibriSpeech 960h. Distinct
+        // arch tag `hubert` from sibling wav2vec2 (different
+        // pretraining objective — HuBERT masks features and predicts
+        // k-means-clustered targets, wav2vec2 uses contrastive
+        // masked-convnet with Gumbel-softmax quantised negatives).
+        // Category `asr`. Grouped here for the uniform verify shape.
+        | ModelKind::HubertLargeLs960
+        // 2026-08-04 hf-audio-gap SSL residual: w2v-BERT 2.0
+        // (`facebook/w2v-bert-2.0`, MIT). ~580M-parameter self-
+        // supervised speech encoder = Conformer body + dual
+        // (wav2vec2-style contrastive + BERT-style MLM) SSL branches
+        // (Chung et al. 2021 arXiv:2108.06209). Standalone binder
+        // vs INTERNAL subgraph inside `vieneu` / `seamless_m4t_v2_
+        // large` composites. Distinct arch tag `w2v-bert-2` from
+        // sibling SSL encoders (hubert / wav2vec2_ctc / data2vec-
+        // audio) — Conformer vs vanilla Transformer body + combined
+        // SSL objectives = silently sharing would mis-route runtime
+        // dispatch (FR-EX-08). Category `asr`. Grouped here for the
+        // uniform verify shape (BF16 pass-through skeleton mirror of
+        // hubert_large_ls960 / moonshine_base / musicgen_small /
+        // openwakeword).
+        | ModelKind::W2vBert2
+        // 2026-08-01 Wave 5 music-generation add: AudioLDM 2
+        // (`cvssp/audioldm2`, cc-by-nc-sa-4.0). Text-to-audio latent-
+        // diffusion generator (Liu et al. 2024 arXiv:2308.05734).
+        // Emits the same standard `vokra.model.{arch,name,category}`
+        // + `vokra.provenance.*` triple as every sibling BF16 pass-
+        // through skeleton, with `category = "music"` (shared with
+        // sibling MusicGen family — music-tree taxonomy per
+        // 2026-07-30 scope expansion). **Publish blocked** by the
+        // doubly-restrictive NonCommercialShareAlike default (NC
+        // gate + SA cascade); the uniform verify shape still applies
+        // because the runtime-side arch/name/category/upstream/license
+        // triple lookup does not depend on the publish gate.
+        | ModelKind::AudioLdm2
+        // 2026-08-02 Wave 8 sibling: AudioLDM 2 Large
+        // (`cvssp/audioldm2-large`, cc-by-nc-sa-4.0). Wider/deeper
+        // sibling of the base AudioLDM 2 variant — same multi-encoder
+        // bundle topology (VAE + U-Net + HiFi-GAN + T5 + CLAP + GPT-2
+        // audio-caption LM), only model dims differ. Reuses the base
+        // BF16 pass-through converter arm (sibling wrapper — no new
+        // models/*.rs module). Emits the same standard `vokra.model.
+        // {arch,name,category}` + `vokra.provenance.*` triple as
+        // sibling base, with `category = "music"` shared. **Publish
+        // blocked** by the doubly-restrictive NonCommercialShareAlike
+        // default (NC gate + SA cascade); the uniform verify shape
+        // still applies because the runtime-side lookup does not
+        // depend on the publish gate.
+        | ModelKind::AudioLdm2Large
+        // 2026-08-01 Wave 5 music-separation add: BS-Roformer /
+        // Mel-Band Roformer (`chenmozhijin/BSRoformer-GGUF`, **weight
+        // provenance unclear**). First music-source-separation
+        // converter (Lu et al. 2023 arXiv:2310.01809 dual-path
+        // frequency-band Transformer over STFT). Emits the same
+        // standard `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.*` triple as every sibling BF16 pass-
+        // through skeleton, with `category = "separation"` (shared
+        // with the SepFormer speech-separation family — BS-Roformer
+        // is the music-vocals analogue). **Publish blocked** by the
+        // fail-closed `LicenseClass::RedistributionForbidden` default
+        // (a converter cannot know which SPDX id covers the caller's
+        // checkpoint; owner ADR selecting a specific checkpoint +
+        // license required). The uniform verify shape still applies
+        // because the runtime-side arch/name/category/upstream/license
+        // triple lookup does not depend on the publish gate.
+        | ModelKind::BsRoformer
+        // 2026-08-02 Wave residual: openWakeWord (dscripka,
+        // apache-2.0). Small custom-KWS MLP/CNN family over
+        // precomputed melspec — audio-dialect `kws` op entry
+        // (FR-OP `kws`). Distinct arch tag `openwakeword`,
+        // category `kws`. BF16 pass-through skeleton — verified
+        // via the uniform arch/name/category/upstream_hf/license
+        // triple lookup shape below.
+        | ModelKind::Openwakeword
+        // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors,
+        // MIT). 27M raw-audio transformer enc-dec ASR (arXiv:
+        // 2410.15608) — distinct arch tag `moonshine` from sibling
+        // Whisper (raw-audio Conv1D front-end + rotary + SwiGLU vs
+        // mel + sinusoidal + GELU). Grouped here for the uniform
+        // arch/name/category/upstream_hf/license triple verify shape.
+        | ModelKind::MoonshineTiny
+        // 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors,
+        // MIT). 61.5M raw-audio transformer enc-dec ASR (arXiv:
+        // 2410.15608) — sibling to Moonshine-Tiny (same arch family,
+        // wider/deeper backbone). Grouped here for the uniform
+        // arch/name/category/upstream_hf/license triple verify shape.
+        | ModelKind::MoonshineBase
+        // 2026-08-02 Wave residual: Demucs (HT-Demucs) (facebook/demucs,
+        // MIT). Hybrid transformer Demucs (Rouard et al. 2023, arXiv:
+        // 2211.08553) — U-Net waveform branch + spectrogram branch +
+        // cross-domain self-attention, 4-source music separation.
+        // Distinct arch tag `demucs` from sibling SepFormer / TIGER
+        // separators (different internal domain + different output
+        // branching — FR-EX-08 forbids silent misroute across separator
+        // families). Grouped here for the uniform arch/name/category/
+        // upstream_hf/license triple verify shape.
+        | ModelKind::DemucsHtdemucs
+        // 2026-08-02 Wave residual: Ultravox v0.5 (Llama-3.2-1B)
+        // (`fixie-ai/ultravox-v0_5-llama-3_2-1b`, MIT). Audio-text-to-
+        // text multimodal = Llama-3.2-1B decoder + Whisper encoder +
+        // projection adapter. Distinct arch tag `ultravox` from sibling
+        // Voxtral (Mistral decoder) / Qwen2-Audio (Qwen2 decoder) — the
+        // decoder backbone fixes tensor layout + tokenizer + rope base,
+        // so FR-EX-08 forbids silent shape misroute across the three.
+        // Grouped here for the uniform arch/name/category/upstream_hf/
+        // license triple verify shape.
+        | ModelKind::UltravoxV05Llama321b
+        // 2026-08-02 Wave residual: Coqui XTTS-v2 (`coqui/XTTS-v2`,
+        // coqui-public-model-license). Multilingual zero-shot voice-cloning
+        // TTS = GPT-2 backbone + DVAE + HiFi-GAN vocoder head. Distinct
+        // arch tag `xtts` from sibling piper-plus (VITS2) / Kokoro
+        // (iSTFTNet) / CosyVoice2 (FSQ + HiFTNet) — FR-EX-08 forbids silent
+        // shape misroute across TTS families. Grouped here for the uniform
+        // arch/name/category/upstream_hf/license triple verify shape.
+        | ModelKind::XttsV2
+        // 2026-08-02 Wave residual: ConvTasNet Libri1Mix Enhancement
+        // (`JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, cc-by-sa-4.0).
+        // First Copyleft-tier separator entry — Asteroid recipe fine-tune,
+        // single-speaker enhancement head on Libri1Mix 16 kHz. Distinct
+        // arch tag `conv_tasnet` from sibling separator families (sepformer
+        // / demucs / tiger_separator / bs_roformer / mp_senet) — FR-EX-08
+        // forbids silent shape misroute across separator families. Category
+        // `enhancement` (single-output enhancement head — mirrors the
+        // SepFormer WHAM / WHAMR / DNS-4 sibling posture). Grouped here for
+        // the uniform arch/name/category/upstream_hf/license triple verify
+        // shape.
+        | ModelKind::ConvTasnetLibri1mix
+        // 2026-08-02 Wave residual: Meta Seamless-M4T-v2-Large
+        // (`facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
+        // any-to-any speech-and-text translation model — ASR + T2TT +
+        // S2TT + T2ST + S2ST across ~100 source / ~35 target speech
+        // languages. Ships 2 safetensors shards + `.pt` duplicates +
+        // `vocoder_v2.pt`. Distinct arch tag `unity-2` (Meta's fairseq2
+        // dispatch name) covering the 4 subgraphs (w2v-BERT enc + text
+        // dec + T2U + HiFi-GAN vocoder) — FR-EX-08 forbids silent shape
+        // misroute across sibling M4T v1 / MMS / Whisper families.
+        // Category `s2s` (shared with baichuan_audio / step_audio2_mini).
+        // T4 tier NonCommercial default per X-Codec 2 / MusicGen family
+        // precedent. Grouped here for the uniform arch/name/category/
+        // upstream_hf/license triple verify shape.
+        | ModelKind::SeamlessM4tV2Large
+        // coverage-audit wave-a (2026-08-03): FRCRN speech-enhancement
+        // skeleton — same generic `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.{upstream_hf,license,weight_license}` chunk
+        // set as the sibling BF16 pass-through models, so it verifies
+        // through the same shared-arm surface.
+        | ModelKind::Frcrn
+        // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
+        // All share the BF16 pass-through skeleton contract with FRCRN /
+        // Wavtokenizer / the SoTA Phase 5 fleet: the converter stamps
+        // vokra.model.{arch,name,category} + vokra.provenance.{upstream_hf,
+        // license,weight_license}, so verify() surfaces the same 5-slot line.
+        | ModelKind::Hibiki
+        | ModelKind::SberGigaamV3
+        | ModelKind::SberGigaamMultilingual
+        | ModelKind::ReazonspeechNemoV2
+        | ModelKind::MagpiettsV2602
+        | ModelKind::ParakeetUnified
+        | ModelKind::Canary1bFlash
+        | ModelKind::OwsmV4Medium1b
+        | ModelKind::ParakeetTdt11b
+        | ModelKind::FireredAsrAedL
+        | ModelKind::SortformerDiar4spkV1
+        | ModelKind::SenseVoiceSmall
+        | ModelKind::WhisperMedusaV1
+        | ModelKind::NemotronSpeechStreamingV2603
+        // ---- coverage-audit-2026-08-03 Wave D T4 (non-commercial batch,
+        // 2026-08-04): 3 HF-hosted BF16 pass-through skeletons on the same
+        // shared verify surface. ChatTTS / Stable Audio Open Small / JASCO
+        // 400M Chords+Drums all stamp `vokra.provenance.upstream_hf` (the
+        // HF-hosted flavor). The 2 GitHub-only siblings (facebook_denoiser
+        // + nisqa_v2_weight) live in dedicated arms below because they
+        // stamp `vokra.provenance.upstream_url` — reading the wrong key
+        // would surface `<none>` and hide the URL.
+        | ModelKind::ChatTts
+        | ModelKind::StableAudioOpenSmall
+        | ModelKind::Jasco400mChordsDrums
+        // ---- coverage-audit-2026-08-03 Wave A permissive continuation ----
+        // (2026-08-04): 5 HF-hosted BF16 pass-through skeletons on the same
+        // shared verify surface. UTMOSv2 / HT-Demucs Multi / openWakeWord op /
+        // MossFormer2-SS-16K / AudioSeal real weight all stamp
+        // `vokra.provenance.upstream_hf`. The 2 GitHub-only siblings
+        // (torchaudio_squim + ten_vad) live in the dedicated arm below
+        // (grouped with facebook_denoiser + nisqa_v2_weight) because they
+        // stamp `vokra.provenance.upstream_url` — reading the wrong key
+        // would surface `<none>` and hide the URL.
+        | ModelKind::Utmosv2
+        | ModelKind::HtdemucsMulti
+        | ModelKind::OpenwakewordOp
+        | ModelKind::Mossformer2Ss16k
+        | ModelKind::AudiosealRealWeight
+        // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
+        // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2
+        // (MIT). Emits the same standard `vokra.model.{arch,name,
+        // category}` + `vokra.provenance.upstream_hf` + `vokra.provenance
+        // .{weight_license,license,model_id,source}` triple as the sibling
+        // bicodec / neucodec / focalcodec / xcodec2 codec arms; grouped
+        // here since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback and the artifact is HF-hosted
+        // (upstream_hf stamped, not upstream_url).
+        | ModelKind::MioCodec
+        // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
+        // (apache-2.0). Emits the same standard `vokra.model.{arch,
+        // name,category}` + `vokra.provenance.upstream_hf` +
+        // `vokra.provenance.{weight_license,license,model_id,source}`
+        // triple as the sibling BF16 pass-through skeletons (miocodec
+        // / neucodec / bicodec / focalcodec / xcodec2); grouped here
+        // since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback and the artifact is
+        // HF-hosted (upstream_hf stamped, not upstream_url).
+        | ModelKind::NeuTtsAir
+        // SoTA plan candidate wave (2026-08-04): SpeechBrain
+        // SGMSE-VoiceBank (apache-2.0, score-based diffusion speech
+        // enhancement — first real-weight consumer of the M3-05
+        // flow_sampler + ODE solver op family). Emits the same
+        // standard `vokra.model.{arch,name,category}` +
+        // `vokra.provenance.upstream_hf` +
+        // `vokra.provenance.{weight_license,license,model_id,source}`
+        // triple as the sibling BF16 pass-through skeletons
+        // (metricgan_plus / mp_senet / sepformer / neutts_air); grouped
+        // here since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback and the artifact is
+        // HF-hosted (upstream_hf stamped, not upstream_url).
+        | ModelKind::Sgmse
+        | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())
@@ -1867,6 +2582,210 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
             println!(
                 "; arch={arch} name={name} category={category} upstream_hf={upstream} \
                  license={license} weight_license={class}"
+            );
+        }
+        // coverage-audit-2026-08-03 Wave A: NKF-AEC — like the BF16
+        // pass-through fleet above, but the upstream is GitHub-only so
+        // the provenance key is `vokra.provenance.upstream_url` (rather
+        // than `upstream_hf`). Kept as its own arm to surface the
+        // correct key in the CLI verify output without silently
+        // falling back to `<none>` for a key that will never exist.
+        ModelKind::NkfAec => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // Coverage-audit 2026-08-03 Wave A: RNNoise v0.2 shares the
+        // BF16 pass-through skeleton shape with the Phase 5 fleet
+        // above, but stamps `vokra.provenance.upstream_url` (GitHub
+        // Release) instead of `vokra.provenance.upstream_hf` — RNNoise
+        // does not ship from Hugging Face. Separate verify arm so the
+        // URL slot is surfaced instead of a `<none>` fallback that
+        // would misleadingly suggest the artifact carries no upstream
+        // record.
+        ModelKind::Rnnoise => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream_url = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream_url} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // Coverage-audit 2026-08-03 Wave A: Microsoft NSNet2 — same
+        // `vokra.model.{arch,name,category}` chunks as the Phase 5 fleet,
+        // but the upstream is on GitHub (not HuggingFace), so the
+        // provenance URL rides `vokra.provenance.upstream_url` instead of
+        // `upstream_hf`. Reading the wrong key would silently print
+        // "<none>" and hide the URL — dedicated arm keeps the verify
+        // output honest.
+        ModelKind::Nsnet2 => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // coverage-audit-2026-08-03 Wave D T4 (non-commercial batch,
+        // 2026-08-04): Facebook Denoiser + NISQA v2 weight are the two
+        // GitHub-only entries in this wave (the other three ChatTTS /
+        // Stable Audio Open Small / JASCO ride the shared upstream_hf
+        // arm above). Both stamp `vokra.provenance.upstream_url` per the
+        // NKF-AEC / RNNoise / NSNet2 / DNSMOS precedent — dedicated arms
+        // keep the URL slot visible instead of falling through to a
+        // `<none>` in an upstream_hf-only readback.
+        ModelKind::FacebookDenoiser
+        | ModelKind::NisqaV2Weight
+        // coverage-audit-2026-08-03 Wave A permissive continuation
+        // (2026-08-04): 2 GitHub-only entries in the permissive
+        // continuation (torchaudio_squim + ten_vad) that stamp
+        // `vokra.provenance.upstream_url` per the NKF-AEC / RNNoise /
+        // NSNet2 / facebook_denoiser precedent.
+        | ModelKind::TorchaudioSquim
+        | ModelKind::TenVad => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // Coverage-audit Wave A (2026-08-03): DNSMOS bundle — prints the
+        // bundle inventory plus the two upstream checkpoint filenames so
+        // an operator can distinguish a full (P.808 + P.835) bundle from
+        // a single-variant partial. Reads `vokra.provenance.upstream_url`
+        // rather than the BF16-fleet arm's `upstream_hf` because DNSMOS
+        // is GitHub-native (no HF mirror).
+        ModelKind::Dnsmos => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let bundle = file
+                .get("vokra.dnsmos.bundle")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.values
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            let sr = file
+                .get("vokra.dnsmos.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} bundle=[{bundle}] sample_rate={sr}"
             );
         }
     }
@@ -2089,10 +3008,14 @@ mod tests {
             ("parakeet-tdt", ModelKind::Parakeet),
             ("parakeet-ctc", ModelKind::ParakeetCtc),
             ("canary", ModelKind::Canary),
+            ("canary-qwen", ModelKind::CanaryQwen),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
             ("vits-ja", ModelKind::VitsJa),
+            ("styletts2", ModelKind::StyleTts2),
+            // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD.
+            ("fsmn-vad", ModelKind::FsmnVad),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

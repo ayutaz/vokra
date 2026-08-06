@@ -5,9 +5,20 @@ description = "Offline sidecar tools for real-checkpoint prep, dump-reference, a
 requires-python = ">=3.12"
 dependencies = [
     "gguf>=0.19.0",
+    "h5py>=3.16.0",
     "huggingface-hub>=1.24.0",
+    "modelscope>=1.39.0",
     "numpy>=1.26",
+    "omegaconf>=2.3.1",
+    "onnx>=1.22.0",
+    "pyannote-audio>=4.0.7",
     "safetensors>=0.8.0",
     "sentencepiece>=0.2.2",
     "torch>=2.0",
+    "torchaudio>=2.11.0",
+]
+
+[project.optional-dependencies]
+crepe = [
+    "tensorflow>=2.20.0",
 ]

@@ -744,6 +744,10 @@ impl VibeVoiceConfig {
             decoder_rates: self.acoustic.decoder_ratios.clone(),
             depthwise: self.acoustic.mixer_layer == "depthwise_conv",
             use_noise_block: false,
+            // VibeVoice's mirror-symmetric acoustic VAE ships a single
+            // decoder head (24 → 24 kHz); no bandwidth adaptation. The
+            // bandwidth-adaptive head is a VoxCPM2-2B-only axis so far.
+            sr_bin_boundaries: None,
         }
     }
 

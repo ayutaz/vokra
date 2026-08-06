@@ -208,8 +208,84 @@ fn write_quant_chunk(b: &mut GgufBuilder, policy: &QuantPolicy) {
     b.add_bool("vokra.quant.hifigan_int8_opt_in", false);
 }
 
-/// `vokra.model.arch` value written for Whisper GGUFs.
+/// `vokra.model.arch` value written for vanilla Whisper GGUFs.
 pub(crate) const ARCH: &str = "whisper";
+
+/// `vokra.model.arch` value written for CrisperWhisper GGUFs. Distinct
+/// from vanilla Whisper's `"whisper"` so a downstream that ships both
+/// side-by-side can tell them apart in telemetry / logs / model cards;
+/// the hparam **schema** is the same (`vokra.whisper.*` keys) — the
+/// architecture is byte-identical to whisper-large-v3
+/// (`d_model=1280`, 32/32 layers, `n_mels=128`, `vocab_size=51866`)
+/// per `nyrahealth/CrisperWhisper` primary source (fetched 2026-08-02
+/// — CLAUDE.md「ハルシネーション厳禁」). CrisperWhisper is a
+/// verbatim-word-timestamps fine-tune under **cc-by-nc-4.0**
+/// ([`LicenseClass::NonCommercial`]) — the T4 tier (Research-only)
+/// publish path per X-Codec-2 (2026-07-28) precedent applies.
+pub(crate) const ARCH_CRISPERWHISPER: &str = "crisper-whisper";
+
+/// Which release-family provenance a Whisper GGUF carries. Every
+/// released Whisper family shares the vanilla Whisper tensor topology
+/// (identical `vokra.whisper.*` schema, identical detokenizer, identical
+/// alignment-head table shape) — only the `vokra.model.arch` stamp,
+/// license class, license SPDX id, and provenance source citation
+/// differ. New family entries extend this enum rather than growing a
+/// sibling `models/*.rs` file (per the SoTA-plan reuse convention for
+/// distil-whisper / kotoba-whisper — but for the same-shape /
+/// different-license case, the variant enum is cheaper than a whole
+/// sibling module because there is no divergent chunk group to write).
+///
+/// `OpenAiMit` is the historical default carried by [`convert`] and
+/// [`convert_with_policy`]; `CrisperWhisper` swaps only the four
+/// provenance-shaped fields listed above and is exposed via
+/// [`convert_variant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WhisperVariant {
+    /// Vanilla `openai/whisper` (MIT). Default variant.
+    OpenAiMit,
+    /// `nyrahealth/CrisperWhisper` — Whisper-large-v3 fine-tune
+    /// emphasising verbatim word-level timestamps. cc-by-nc-4.0
+    /// ([`LicenseClass::NonCommercial`]) — T4 Research-only publish
+    /// path (`--allow-noncommercial` gate).
+    CrisperWhisper,
+}
+
+impl WhisperVariant {
+    /// The `vokra.model.arch` string stamped for this variant.
+    pub(crate) const fn arch(self) -> &'static str {
+        match self {
+            Self::OpenAiMit => ARCH,
+            Self::CrisperWhisper => ARCH_CRISPERWHISPER,
+        }
+    }
+
+    /// The provenance class stamped for this variant's weight license.
+    pub(crate) const fn license_class(self) -> LicenseClass {
+        match self {
+            Self::OpenAiMit => LicenseClass::Permissive,
+            Self::CrisperWhisper => LicenseClass::NonCommercial,
+        }
+    }
+
+    /// The SPDX id (or SPDX-ish string, for non-SPDX-listed licenses)
+    /// stamped for this variant's weight license.
+    pub(crate) const fn license_spdx(self) -> &'static str {
+        match self {
+            Self::OpenAiMit => "MIT",
+            Self::CrisperWhisper => "cc-by-nc-4.0",
+        }
+    }
+
+    /// The primary-source citation stamped for this variant.
+    pub(crate) const fn source_citation(self) -> &'static str {
+        match self {
+            Self::OpenAiMit => "openai/whisper (MIT) — OpenAI official release",
+            Self::CrisperWhisper => {
+                "nyrahealth/CrisperWhisper (cc-by-nc-4.0) — Whisper-large-v3 verbatim-word-timestamps fine-tune"
+            }
+        }
+    }
+}
 
 /// Derives the `vokra.model.name` value from the checkpoint's shape quintuple
 /// `(d_model, n_audio_layer, n_text_layer, n_mels)`. Returns one of
@@ -222,15 +298,35 @@ pub(crate) fn derive_name(
     n_audio_layer: u32,
     n_text_layer: u32,
     n_mels: u64,
+    n_vocab: u64,
 ) -> Result<&'static str, ConvertError> {
-    match (d_model, n_audio_layer, n_text_layer, n_mels) {
-        (512, 6, 6, 80) => Ok("whisper-base"),
-        (768, 12, 12, 80) => Ok("whisper-small"),
-        (1024, 24, 24, 80) => Ok("whisper-medium"),
-        (1280, 32, 32, 128) => Ok("whisper-large-v3"),
-        (1280, 32, 4, 128) => Ok("whisper-turbo"),
+    match (d_model, n_audio_layer, n_text_layer, n_mels, n_vocab) {
+        // whisper-tiny (multilingual): the smallest OpenAI Whisper size,
+        // 39M params, primary source `openai/whisper-tiny` config.json.
+        // Included in the Tier-2 IoT tier recommendation (CLAUDE.md
+        // §Tier2 for Raspberry Pi Zero 2 W). Note: `is_synthetic_shape`
+        // rejects `d_model < 512`, so tiny would otherwise fall to
+        // `"whisper-unknown"`; the explicit Ok arm here fires FIRST.
+        (384, 4, 4, 80, 51_865) => Ok("whisper-tiny"),
+        // whisper-tiny.en — English-only variant (vocab 51864).
+        (384, 4, 4, 80, 51_864) => Ok("whisper-tiny.en"),
+        (512, 6, 6, 80, 51_865) => Ok("whisper-base"),
+        (512, 6, 6, 80, 51_864) => Ok("whisper-base.en"),
+        (768, 12, 12, 80, 51_865) => Ok("whisper-small"),
+        (768, 12, 12, 80, 51_864) => Ok("whisper-small.en"),
+        (1024, 24, 24, 80, 51_865) => Ok("whisper-medium"),
+        // whisper-medium.en — English-only variant (vocab 51864).
+        // Same layer / d_model / n_mels as multilingual medium, only
+        // vocab differs — this is why derive_name takes n_vocab.
+        (1024, 24, 24, 80, 51_864) => Ok("whisper-medium.en"),
+        // whisper-large-v2 is the 2022-05 release: n_mels=80 (not 128
+        // like v3). Same encoder/decoder layer count as v3 (32/32) —
+        // distinguished by n_mels + n_vocab.
+        (1280, 32, 32, 80, 51_865) => Ok("whisper-large-v2"),
+        (1280, 32, 32, 128, 51_866) => Ok("whisper-large-v3"),
+        (1280, 32, 4, 128, 51_866) => Ok("whisper-turbo"),
         _ => Err(ConvertError::Parse(format!(
-            "unknown whisper size: (d_model={d_model}, n_audio_layer={n_audio_layer}, n_text_layer={n_text_layer}, n_mels={n_mels}); expected one of base/small/medium/large-v3/turbo"
+            "unknown whisper size: (d_model={d_model}, n_audio_layer={n_audio_layer}, n_text_layer={n_text_layer}, n_mels={n_mels}, n_vocab={n_vocab}); expected one of tiny(.en)/base(.en)/small(.en)/medium(.en)/large-v2/large-v3/turbo"
         ))),
     }
 }
@@ -378,13 +474,28 @@ pub(crate) fn frontend_spec(n_mels: u32) -> FrontendSpec {
 
 /// A checkpoint shape quintuple that is clearly a synthetic unit-test stub (a
 /// derivation returned `0` for a required axis, or `d_model < WHISPER_HEAD_DIM`
-/// so no real whisper size could match). Real whisper checkpoints always yield
-/// a non-zero quintuple with `d_model >= 512`, so this predicate is a tight
-/// filter — it does NOT relax FR-EX-08 for real checkpoints, only for the
-/// pre-existing synthetic tests in this module that construct minimal 2×2
-/// tensor stubs to exercise metadata layout.
-fn is_synthetic_shape(d_model: u64, n_audio_layer: u32, n_text_layer: u32, n_mels: u64) -> bool {
-    d_model == 0 || n_mels == 0 || n_audio_layer == 0 || n_text_layer == 0 || d_model < 512
+/// so no real whisper size could match, or `n_vocab` is below the real
+/// English-only floor of 51864). Real whisper checkpoints always yield
+/// a non-zero quintuple with `d_model >= 512` AND `n_vocab >= 51864`, so this
+/// predicate is a tight filter — it does NOT relax FR-EX-08 for real
+/// checkpoints, only for the pre-existing synthetic tests in this module that
+/// construct minimal 2×2 tensor stubs to exercise metadata layout. n_vocab
+/// was added 2026-07-31 after derive_name became n_vocab-aware (to
+/// distinguish .en variants); synthetic tests use n_vocab=8 so this floor
+/// keeps them on the whisper-unknown fallback.
+fn is_synthetic_shape(
+    d_model: u64,
+    n_audio_layer: u32,
+    n_text_layer: u32,
+    n_mels: u64,
+    n_vocab: u64,
+) -> bool {
+    d_model == 0
+        || n_mels == 0
+        || n_audio_layer == 0
+        || n_text_layer == 0
+        || d_model < 512
+        || n_vocab < 51_864
 }
 
 /// Reads dimension `axis` of tensor `name` from the checkpoint, or `0` when the
@@ -437,6 +548,28 @@ pub(crate) fn convert(
     convert_with_policy(bytes, policy)
 }
 
+/// Converts a Whisper-family safetensors buffer with a provenance
+/// [`WhisperVariant`] override.
+///
+/// Every architectural axis (tensor topology, `vokra.whisper.*` hparam
+/// chunk, front-end spec, alignment-head table, detokenizer) is
+/// byte-identical to the vanilla Whisper path — only the arch stamp,
+/// license class, license SPDX id, and provenance source citation come
+/// from `variant`. `WhisperVariant::OpenAiMit` returns the same GGUF
+/// as [`convert(bytes, None)`] byte-for-byte; `WhisperVariant::CrisperWhisper`
+/// stamps the `crisper-whisper` arch + `cc-by-nc-4.0` /
+/// [`LicenseClass::NonCommercial`] provenance so the M2-13 runtime gate
+/// refuses to load the resulting GGUF in commercial mode
+/// (`requires_research_flag = true`) and the publish path requires
+/// `publish-one.sh --allow-noncommercial` per the X-Codec-2 (2026-07-28)
+/// precedent.
+pub(crate) fn convert_variant(
+    bytes: Vec<u8>,
+    variant: WhisperVariant,
+) -> Result<GgufBuilder, ConvertError> {
+    convert_with_policy_and_variant(bytes, None, variant)
+}
+
 /// Converts a Whisper safetensors buffer, applying `policy` per-tensor.
 ///
 /// When `policy` is `Some`, each tensor is emitted with the weight dtype from
@@ -450,6 +583,22 @@ pub(crate) fn convert(
 pub(crate) fn convert_with_policy(
     bytes: Vec<u8>,
     policy: Option<QuantPolicy>,
+) -> Result<GgufBuilder, ConvertError> {
+    convert_with_policy_and_variant(bytes, policy, WhisperVariant::OpenAiMit)
+}
+
+/// Variant-aware implementation of [`convert_with_policy`]. The three
+/// public entry points ([`convert`], [`convert_with_policy`],
+/// [`convert_variant`]) all delegate here so the tensor-topology path
+/// stays in one place (FR-EX-08 — a divergent code path is a divergent
+/// bug surface). Only the `vokra.model.arch` stamp and the
+/// [`vokra_core::stamp_provenance`] call read the variant; every other
+/// step (shape derivation, hparam chunk, front-end spec, alignment-head
+/// table, detokenizer, tensor pass-through) is variant-agnostic.
+pub(crate) fn convert_with_policy_and_variant(
+    bytes: Vec<u8>,
+    policy: Option<QuantPolicy>,
+    variant: WhisperVariant,
 ) -> Result<GgufBuilder, ConvertError> {
     // An optional alignment-heads passthrough carried in the checkpoint's
     // safetensors `__metadata__`, read from the raw header before `bytes` is
@@ -470,26 +619,37 @@ pub(crate) fn convert_with_policy(
     let n_mels_ck = tensor_dim(&st, "model.encoder.conv1.weight", 1);
     let n_audio_layer = count_layers(&st, "model.encoder.layers.");
     let n_text_layer = count_layers(&st, "model.decoder.layers.");
-    let name = match derive_name(d_model, n_audio_layer, n_text_layer, n_mels_ck) {
+    // n_vocab is needed to distinguish English-only .en variants
+    // (vocab 51864) from multilingual (51865/51866) at the same
+    // architectural shape — passed to derive_name below.
+    let n_vocab_ck = tensor_dim(&st, "model.decoder.embed_tokens.weight", 0);
+    let name = match derive_name(d_model, n_audio_layer, n_text_layer, n_mels_ck, n_vocab_ck) {
         Ok(n) => n,
-        Err(_) if is_synthetic_shape(d_model, n_audio_layer, n_text_layer, n_mels_ck) => {
+        Err(_)
+            if is_synthetic_shape(d_model, n_audio_layer, n_text_layer, n_mels_ck, n_vocab_ck) =>
+        {
             "whisper-unknown"
         }
         Err(e) => return Err(e),
     };
 
     let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    let arch = variant.arch();
+    b.add_string(chunks::KEY_MODEL_ARCH, arch);
     // Self-describing redistribution (publishing to a public model hub): the
     // artifact must carry its own licence, not rely on a consumer running
     // Vokra's registry resolver. Values transcribed from
     // docs/license-audit.md §3, which holds the primary-source citations.
+    // For CrisperWhisper (cc-by-nc-4.0), the M2-13 runtime gate refuses
+    // to load the GGUF in commercial mode; the publish path requires
+    // `publish-one.sh --allow-noncommercial` per the X-Codec-2 T4
+    // precedent (2026-07-28).
     vokra_core::stamp_provenance(
         &mut b,
-        LicenseClass::Permissive,
-        "MIT",
-        Some(ARCH),
-        Some("openai/whisper (MIT) — OpenAI official release"),
+        variant.license_class(),
+        variant.license_spdx(),
+        Some(arch),
+        Some(variant.source_citation()),
     );
     b.add_string(chunks::KEY_MODEL_NAME, name);
     // The front-end spec's n_mels MUST come from the checkpoint (80 base / 128
@@ -1158,9 +1318,11 @@ mod tests {
         // `openai/whisper-{size}/config.json`.
         let rows: &[(&str, u64, u32, u32, u64, u64)] = &[
             // (label,         d_model, n_audio_layer, n_text_layer, n_mels, n_vocab)
+            ("whisper-tiny", 384, 4, 4, 80, 51865),
             ("whisper-base", 512, 6, 6, 80, 51865),
             ("whisper-small", 768, 12, 12, 80, 51865),
             ("whisper-medium", 1024, 24, 24, 80, 51865),
+            ("whisper-large-v2", 1280, 32, 32, 80, 51865),
             ("whisper-large-v3", 1280, 32, 32, 128, 51866),
             ("whisper-turbo", 1280, 32, 4, 128, 51866),
         ];
@@ -1168,7 +1330,7 @@ mod tests {
         for &(label, d_model, n_audio_layer, n_text_layer, n_mels, n_vocab) in rows {
             // (a) Direct derive_name check — the pure shape-to-label mapping.
             assert_eq!(
-                derive_name(d_model, n_audio_layer, n_text_layer, n_mels).unwrap(),
+                derive_name(d_model, n_audio_layer, n_text_layer, n_mels, n_vocab).unwrap(),
                 label,
                 "derive_name mismatch for {label}",
             );
@@ -1257,7 +1419,7 @@ mod tests {
         // Uses a d_model=1536 (never a real whisper size) with valid layer / mel
         // counts so `is_synthetic_shape` does NOT rescue it — this asserts that
         // `derive_name` itself refuses unknown real-shaped checkpoints.
-        let err = derive_name(1536, 24, 24, 80).unwrap_err();
+        let err = derive_name(1536, 24, 24, 80, 51_865).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("unknown whisper size"),
@@ -1947,5 +2109,116 @@ mod tests {
         .unwrap();
         assert!(file.get("vokra.quant.default_scheme").is_none());
         assert!(file.get("vokra.quant.rule_count").is_none());
+    }
+
+    /// residual wave 4 (2026-08-02): pins the `WhisperVariant::CrisperWhisper`
+    /// arm. Two invariants must both hold on the same GGUF:
+    ///
+    /// 1. **provenance divergence** — the arch stamp is `crisper-whisper`
+    ///    (distinct from vanilla `whisper`); the license class is
+    ///    `NonCommercial` (distinct from vanilla `Permissive`); the SPDX id
+    ///    is `cc-by-nc-4.0` (distinct from vanilla `MIT`). A regression that
+    ///    silently reused the vanilla stamps would let a CC-BY-NC weight
+    ///    smuggle itself through the M2-13 runtime gate in commercial mode.
+    ///
+    /// 2. **architectural equivalence** — every other emitted chunk
+    ///    (`vokra.whisper.*` hparam group, front-end spec, detokenizer,
+    ///    tensor payload) is byte-identical to what
+    ///    `convert(bytes, None)` writes. The two GGUFs differ only in
+    ///    provenance-shaped fields; the tensor-topology path is shared
+    ///    (FR-EX-08 — a divergent code path is a divergent bug surface).
+    #[test]
+    fn crisperwhisper_variant_swaps_provenance_only() {
+        use vokra_core::gguf::chunks;
+
+        let vanilla_bytes = convert(synthetic_whisper(), None)
+            .expect("vanilla convert")
+            .to_bytes()
+            .expect("vanilla serialize");
+        let crisper_bytes = convert_variant(synthetic_whisper(), WhisperVariant::CrisperWhisper)
+            .expect("crisperwhisper convert")
+            .to_bytes()
+            .expect("crisperwhisper serialize");
+
+        let vanilla = GgufFile::parse(vanilla_bytes).expect("vanilla parse");
+        let crisper = GgufFile::parse(crisper_bytes).expect("crisper parse");
+
+        // Invariant 1a — arch stamp divergence.
+        assert_eq!(
+            vanilla.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH),
+        );
+        assert_eq!(
+            crisper.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH_CRISPERWHISPER),
+        );
+        assert_ne!(ARCH, ARCH_CRISPERWHISPER, "arch tags must differ");
+
+        // Invariant 1b — license divergence: vanilla = Permissive/MIT,
+        // crisper = NonCommercial/cc-by-nc-4.0. The M2-13 runtime gate
+        // reads these two chunks; silently reusing the vanilla stamps
+        // would let a CC-BY-NC weight load in commercial mode.
+        assert_eq!(
+            vanilla
+                .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str()),
+        );
+        assert_eq!(
+            crisper
+                .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::NonCommercial.as_str()),
+            "crisperwhisper must stamp NonCommercial for the M2-13 gate",
+        );
+        assert_eq!(
+            vanilla
+                .get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("MIT"),
+        );
+        assert_eq!(
+            crisper
+                .get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("cc-by-nc-4.0"),
+        );
+        // requires_research_flag must fire — the whole point of the T4
+        // publish path (`publish-one.sh --allow-noncommercial`).
+        assert!(
+            LicenseClass::NonCommercial.requires_research_flag(),
+            "CrisperWhisper's NC class MUST require the research flag",
+        );
+
+        // Invariant 2 — architectural equivalence. The tensor topology
+        // (name / dtype / bytes) is byte-identical between the two
+        // GGUFs; only the provenance chunks differ. Walk every vanilla
+        // tensor and assert the CrisperWhisper GGUF carries the same
+        // tensor with the same payload.
+        assert_eq!(vanilla.tensors().len(), crisper.tensors().len());
+        for t in vanilla.tensors() {
+            let crisper_info = crisper
+                .tensor_info(&t.name)
+                .expect("crisperwhisper must carry every vanilla tensor");
+            assert_eq!(crisper_info.dtype, t.dtype);
+            assert_eq!(crisper_info.dimensions, t.dimensions);
+            assert_eq!(crisper.tensor_bytes(crisper_info), vanilla.tensor_bytes(t));
+        }
+        // The shared `vokra.whisper.*` hparam schema also lands
+        // identically (arch differs, but every hparam is shape-driven).
+        for key in [
+            KEY_N_MELS,
+            KEY_N_AUDIO_STATE,
+            KEY_N_AUDIO_LAYER,
+            KEY_N_TEXT_LAYER,
+            KEY_N_VOCAB,
+            KEY_EOT,
+        ] {
+            assert_eq!(
+                vanilla.get(key).and_then(|v| v.as_u64()),
+                crisper.get(key).and_then(|v| v.as_u64()),
+                "hparam key `{key}` must be identical across variants (shape-driven)",
+            );
+        }
     }
 }

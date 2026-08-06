@@ -65,4 +65,5 @@ pub use encoder::{EncoderOut, encode};
 pub use lstm::LstmState;
 pub use pseudo_stft::{Magnitude, pseudo_stft, stft_conv};
 pub use vad::{SampleRate, run_frame};
+pub use vokra_core::gguf::silero::SileroVariant;
 pub use weights::{RateWeights, SileroWeights};

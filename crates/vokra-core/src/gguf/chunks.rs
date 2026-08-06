@@ -143,6 +143,30 @@ pub const KEY_PROVENANCE_SOURCE: &str = "vokra.provenance.source";
 /// without a displayable string.
 pub const KEY_PROVENANCE_ATTRIBUTION: &str = "vokra.provenance.attribution";
 
+// `vokra.silero.*` — Silero VAD subgraph metadata (M0-05 / vokra-vad-micro).
+//
+// The Silero VAD subgraph is architecturally stable across v5 and v6.2.1
+// (identical topology per upstream `snakers4/silero-vad` `tinygrad_model.py`
+// and `utils_vad.py` at both tags — same `[bins, frames]` conv shapes, same
+// `LSTMCell(128, 128)`, same context prepending, same state layout `[2,1,128]`).
+// What differs is the **trained weights** and the release provenance. This key
+// carries the release tag so consumers (parity fixtures, license attribution,
+// forward-branch validation, future architecture divergence) can distinguish
+// artifacts. Absent means "produced before variant tagging existed" and is
+// treated as [`crate::gguf::silero::SileroVariant::V5`] for backward
+// compatibility — the pre-2026-07-29 fixture GGUF and every converter run
+// before this key existed omit it.
+
+/// `vokra.silero.version` — Silero VAD release tag (`STRING`, e.g. `"v5"` or
+/// `"v6.2.1"`).
+///
+/// Written by [`crate::gguf::silero::stamp_variant`], read back by
+/// [`crate::gguf::silero::SileroVariant::from_gguf`]. Unknown values are a
+/// fail-closed [`crate::VokraError::ModelLoad`] (FR-EX-08) — never a silent
+/// V5 fallback, because a tag we do not recognize may imply a topology change
+/// this build cannot honor.
+pub const KEY_SILERO_VERSION: &str = "vokra.silero.version";
+
 /// `vokra.schema.version` — Vokra GGUF **schema** generation (`UINT32`).
 ///
 /// Hand-bumped ([`SCHEMA_VERSION`]) whenever a converter starts emitting a

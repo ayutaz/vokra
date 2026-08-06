@@ -125,6 +125,27 @@ SLUG_ALLOWLIST=(
     'audio_codec-encodec-zh-en'
     'funcodec-encodec-zh-en'
     'funcodec-encodec-zh_en'
+    # ---- Vocos vocoder (charactr/vocos-encodec-24khz, MIT) — Fourier-space
+    # vocoder that CONSUMES EnCodec-format 128-d latents but does NOT ship
+    # EnCodec weights. VocosVariant::Encodec24khz identifies the input
+    # signature only. See:
+    #   - crates/vokra-convert/src/models/vocos.rs
+    #   - docs/license-audit.md §3.1 (Vocos row, MIT, published to
+    #     vokra/vocos-encodec-24khz)
+    #   - PR #24 (Wave A2 publish: vocos-mel + vocos-encodec)
+    'Encodec24khz'                       # VocosVariant enum variant
+    'vocos-encodec'                      # slug family (covers vocos-encodec-24khz)
+    'vocos_encodec'                      # snake-case alias in lib.rs
+    'charactr/vocos-encodec-24khz'       # HF org/repo slug
+    'EncodecFeatures'                    # Vocos docstring reference to input format
+    'VocosVariant'                       # error-message reference to variant selection
+    # ---- Bark (suno/bark, CC-BY-NC-4.0 t4-gated) — uses facebook/encodec_24khz
+    # as a downstream audio codec dependency. `CODEC_UPSTREAM_HF` const only
+    # records provenance; M2-13 runtime gate handles the non-commercial
+    # semantics via the Bark row in docs/license-audit.md §3.1. Bark itself
+    # is NOT redistributed as commercial via the model zoo — the license
+    # class is NonCommercial.
+    'facebook/encodec_24khz'
 )
 
 if [ -d "$ROOT/crates/vokra-convert/src" ]; then

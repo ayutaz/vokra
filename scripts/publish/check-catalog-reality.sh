@@ -52,14 +52,44 @@ audit="$repo_root/docs/license-audit.md"
 # name-in-catalog -> why it is advertised without an implementation.
 # Keep the reason specific enough that a reader can act on it.
 declare -a EXPECTED_GAPS=(
-  "WavTokenizer|op-only (wavtokenizer_vq in vokra-ops/src/fsq_codec.rs); no model binder or converter — model WP not started"
-  "openWakeWord|kws (FR-OP-51) is unimplemented; the catalog row precedes the op"
-  "ECAPA-TDNN (SpeechBrain)|speaker_encode variant; anchor-only in m5_residual_ops.rs (CAM++ covers the task)"
-  "WeSpeaker|speaker_encode variant; anchor-only in m5_residual_ops.rs (CAM++ covers the task)"
-  "RNNoise|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
+  # WavTokenizer entry removed 2026-08-01: Wave 3 codec add landed the
+  # converter (`crates/vokra-convert/src/models/wavtokenizer.rs`) +
+  # `ModelKind::WavTokenizer`. The row is now considered implemented
+  # (`implemented("WavTokenizer")` matches the `wavtokenizer` slug in
+  # `crates/vokra-convert/src/models/`), and keeping the entry would trip
+  # the double-sided "stale ledger" check. Runtime forward already exists
+  # via the M4-16 `wavtokenizer_vq` op (`vokra-ops/src/fsq_codec.rs`);
+  # real-weight parity is a §3.1 sign-off follow-up.
+  # openWakeWord entry removed 2026-08-06: KWS runtime binder landed in PR #24
+  # (commit `68da236`) with new `KwsEngine` trait + `vokra-models/src/kws/openwakeword/`
+  # + `vokra-ops/src/openwakeword.rs` real MLP classifier + loud-partial embedding
+  # (IMPL-PLAN #12 Wave A.2). Weight non-distribution is codified elsewhere; only
+  # the runtime-op status transitioned to "implemented" and the ledger entry
+  # would now double-flag.
+  # ECAPA-TDNN and WeSpeaker previously listed here as anchor-only; converter
+  # implementations landed in the SoTA Phase 1-4 wave (commit 7ed0548) at
+  # crates/vokra-convert/src/models/{ecapa_tdnn.rs,wespeaker.rs}. The stale
+  # entries were removed 2026-07-31 as part of the FQ-03 CI promotion — the
+  # production run now runs per-PR, so future stale/undeclared drift is caught
+  # at PR time rather than at owner publish time.
+  # RNNoise entry removed 2026-08-06: BF16 pass-through converter landed in
+  # PR #24 (Wave A batch) at crates/vokra-convert/src/models/rnnoise.rs +
+  # ModelKind::Rnnoise, published to vokra/rnnoise-v0.2. Runtime binder is a
+  # separate follow-up (see PR #24 §Refuted target rnnoise-v0.2 → next wave).
   "GTCRN|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
-  "AudioSeal (Meta)|watermark embedding is Deferred (2026-07-04 drop); config surface only"
-  "Vocos|vocoder head component; min-dtype anchor only, no kernel"
+  # AudioSeal (Meta) entry removed 2026-08-06: audioseal-real-weight converter
+  # + publish landed in PR #24 (Wave A) at crates/vokra-convert/src/models/audioseal_real_weight.rs
+  # + vokra/audioseal-real-weight (MIT, 178MB). Runtime watermark embedding
+  # remains deferred (2026-07-04 drop, M5-05 T04 ADR pending owner) — that's
+  # tracked in docs/handoff/m5-13.md, not the catalog ledger.
+  # Vocos previously listed here as anchor-only; converter implementation
+  # landed in the vocos wave (2026-08-01) at
+  # crates/vokra-convert/src/models/vocos.rs (BF16 pass-through skeleton,
+  # mel-24khz + encodec-24khz VocosVariant, runtime binder deferred to
+  # owner §3.1 sign-off — mel-24khz + encodec-24khz rows signed
+  # 2026-08-01 yousan). The stale entry was removed 2026-08-01 as part
+  # of this wave; the FQ-03 CI production run catches undeclared drift
+  # per-PR (same rule as ECAPA-TDNN / WeSpeaker precedent above).
 )
 
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -119,6 +149,106 @@ slugs_for() {
     "utmos"*) printf 'utmos\n' ;;
     "x codec 2"*|"xcodec"*) printf 'fsq_codec\nxcodec2\n' ;;
     "wavtokenizer"*) printf 'wavtokenizer\n' ;;
+    # 2026-08-01 Wave 3: MOSS-Audio-Tokenizer — the codec half of the
+    # MOSS-TTS pipeline (Full + Nano, OpenMOSS-Team, apache-2.0). The
+    # auto-derived `moss_audio_tokenizer` slug already resolves via the
+    # module file `crates/vokra-convert/src/models/moss_audio_tokenizer.rs`,
+    # but this explicit alias catches display-name variants ("MOSS Audio
+    # Tokenizer" / "MOSS-Audio-Tokenizer (Full)" 等) that would tokenize
+    # differently.
+    "moss audio tokenizer"*|"moss-audio-tokenizer"*) printf 'moss_audio_tokenizer\n' ;;
+    # 2026-08-01 Wave 4 slug-only add: OpenMOSS Team MOSS-VoiceGenerator
+    # (`OpenMOSS-Team/MOSS-VoiceGenerator`, apache-2.0). The catalog
+    # display name "MOSS-VoiceGenerator" tokenizes to "moss
+    # voicegenerator" → first-token "moss" which does NOT match any
+    # `crates/vokra-convert/src/models/moss*.rs` module (the auto slug
+    # walk would land on the ambiguous `moss` token). This explicit
+    # alias points every display-name variant back at the sibling
+    # `moss_tts` module — the same converter dispatch the
+    # `moss-voice-generator` CLI slug is routed through, per the
+    # slug-only landing decision recorded in §3.1 and
+    # `scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`. Landed
+    # in the same wave as the §3.1 row so a hypothetical future §3
+    # catalog row for MOSS-VoiceGenerator would resolve
+    # `implemented("MOSS-VoiceGenerator")` = true without a follow-up
+    # to this file.
+    "moss voice generator"*|"moss-voice-generator"*|"moss voicegenerator"*|"moss-voicegenerator"*) printf 'moss_tts\n' ;;
+    # 2026-08-01 Wave 3: Amphion NaturalSpeech 3 FACodec — factorized VQ
+    # codec (apache-2.0). The catalog display name "NaturalSpeech 3
+    # FACodec (Amphion)" tokenizes to "naturalspeech 3 facodec" ->
+    # first-token "naturalspeech", which does NOT match the module file
+    # `crates/vokra-convert/src/models/naturalspeech3_facodec.rs`. This
+    # explicit alias maps every display-name variant to the actual
+    # module slug so the double-sided catalog-vs-implementation gate
+    # sees the converter as implemented.
+    "naturalspeech 3 facodec"*|"naturalspeech3 facodec"*|"naturalspeech3-facodec"*|"facodec"*|"ns3 facodec"*|"ns3-facodec"*)
+      printf 'naturalspeech3_facodec\nfacodec\n' ;;
+    # 2026-08-01 Wave 3 sibling-pair: YuE bundle
+    # (`m-a-p/YuE-upsampler` = vocoder / `m-a-p/xcodec_mini_infer` =
+    # codec, both apache-2.0). The catalog display names ("YuE-upsampler" /
+    # "YuE xcodec-mini") tokenize to "yue upsampler" / "yue xcodec mini"
+    # → first-token "yue", which does NOT match the shared module file
+    # `crates/vokra-convert/src/models/yue_bundle.rs`. This explicit
+    # alias maps every display-name variant to the actual module slug
+    # `yue_bundle` so the double-sided catalog-vs-implementation gate
+    # sees the converter as implemented for both sibling rows.
+    "yue upsampler"*|"yue-upsampler"*|"yue xcodec mini"*|"yue-xcodec-mini"*|"yue xcodec-mini"*|"yue"*)
+      printf 'yue_bundle\n' ;;
+    # 2026-08-01 Wave 5 music-generation add: Meta AudioCraft MusicGen family
+    # (`facebook/musicgen-{medium,large}`, cc-by-nc-4.0). First
+    # `category = "music"` entry in the tree. Two distinct HF repos + two
+    # distinct sibling files (`musicgen_medium.rs` + `musicgen_large.rs`,
+    # the chatterbox / chatterbox_turbo / chatterbox_nano split) rather
+    # than a shared `musicgen.rs` variant enum. Bash case patterns are
+    # evaluated top-to-bottom, first match wins — the specific size
+    # patterns (medium / large) catch first so their display names route
+    # to the correct sibling file. The generic `musicgen` catch-all
+    # (used when only the bare arch tag appears in a catalog display
+    # name) prints BOTH sibling slugs so `implemented()` returns true if
+    # any sibling file exists (either sibling standing in for the
+    # family is a valid answer to "is the MusicGen family
+    # implemented?"). Future family variants
+    # (`musicgen-small` / `musicgen-melody` / `musicgen-stereo-*`) will
+    # add their own specific pattern above the generic catch-all.
+    "musicgen medium"*|"musicgen-medium"*) printf 'musicgen_medium\n' ;;
+    "musicgen large"*|"musicgen-large"*) printf 'musicgen_large\n' ;;
+    "musicgen"*|"musicgen-"*) printf 'musicgen_medium\nmusicgen_large\n' ;;
+    # 2026-08-01 Wave 5 music-generation add: AudioLDM 2
+    # (`cvssp/audioldm2`, cc-by-nc-sa-4.0). First non-AR audio-
+    # generation converter (sibling musicgen family is AR + RVQ;
+    # AudioLDM 2 is latent-diffusion + VAE, distinct topology / arch
+    # tag). Present in this alias table so a future `★ 公式 zoo`
+    # promotion can immediately resolve the display name to the
+    # `audioldm2` module slug — but note the row is currently
+    # unpublishable (NC + SA cascade requires an owner ADR before the
+    # §3.1 sign-off is filled and a `REPO_TO_SIGNOFF_ROWS` entry is
+    # added), so today's row does NOT carry the `★ 公式 zoo` marker
+    # and this scanner never runs `implemented("AudioLDM 2")` against
+    # it. Future family variants (`audioldm2-music` /
+    # `audioldm2-large` / `audioldm2-music-665k`) will add their own
+    # specific pattern above this catch-all if a shared enum split
+    # doesn't collapse them into the single `audioldm2` slug.
+    "audioldm 2"*|"audioldm-2"*|"audioldm2"*|"audio-ldm-2"*) printf 'audioldm2\n' ;;
+    # 2026-08-01 Wave 5 music-separation add: BS-Roformer /
+    # Mel-Band Roformer (`chenmozhijin/BSRoformer-GGUF` third-
+    # party mirror, **weight provenance unclear** — first music-
+    # source-separation converter, Lu et al. 2023
+    # arXiv:2310.01809). Present in this alias table so a future
+    # `★ 公式 zoo` promotion can immediately resolve the display
+    # name to the `bs_roformer` module slug — but note the row is
+    # currently unpublishable (weight provenance unclear ⇒
+    # `LicenseClass::RedistributionForbidden` fail-closed default
+    # + no `REPO_TO_SIGNOFF_ROWS` entry ⇒ `UNKNOWN_REPO` at
+    # publish gate time). Today's row does NOT carry the
+    # `★ 公式 zoo` marker and this scanner never runs
+    # `implemented("BS-Roformer …")` against it. Aliases cover
+    # the arch tag spellings and the family-name variants
+    # ("BS-Roformer" / "Mel-Band Roformer" / "MelBand Roformer" /
+    # "BSRoformer" — first tokens all resolve into different
+    # buckets so the family-name catch-all matters).
+    "bs roformer"*|"bs-roformer"*|"bs_roformer"*|"bsroformer"*|\
+"mel band roformer"*|"mel-band-roformer"*|"melband roformer"*|"melband-roformer"*)
+      printf 'bs_roformer\n' ;;
   esac
 }
 

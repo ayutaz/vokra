@@ -134,6 +134,37 @@ state carried; the official-context references feed ORT `[1,576]` / `[1,288]`
 exactly as the upstream wrapper does). No intermediate was fabricated; nothing
 had to be deferred to e2e for these stages.
 
+## Variant tag (`vokra.silero.version`, added 2026-07-30)
+
+`SileroWeights` carries a [`SileroVariant`](../../vokra-vad-micro/src/lib.rs)
+tag (V5 / V6_2_1) read from the GGUF's `vokra.silero.version` metadata key
+([`vokra_core::gguf::silero`](../../vokra-core/src/gguf/silero.rs)). The
+loader contract is:
+
+- **absent key** → V5 (backward compat with pre-tagging GGUFs, including
+  the committed fixture);
+- **`"v5"`** or **`"v6.2.1"`** → the matching variant;
+- **any other value** → fail-closed [`VokraError::ModelLoad`] (FR-EX-08 —
+  a tag we do not recognize may imply a topology change this build cannot
+  honor, and silent V5 fallback would misread the weights).
+
+**Primary source for architectural equivalence (verified 2026-07-30)**:
+upstream `snakers4/silero-vad` v6.2.1 retains v5's topology exactly.
+`tinygrad_model.py @ v6.2.1` declares
+`Conv1d(1, 258, k=256, stride=128)` + a four-`Conv1d` encoder
+(129→128→64→64→128, kernels 3, strides 1/2/2/1, pad 1) +
+`LSTMCell(128, 128)` + `Conv1d(128, 1, 1)` head — bit-identical to this
+SPEC's weight map. `utils_vad.py @ v6.2.1` has identical inference geometry
+(`num_samples = 512 if sr == 16000 else 256`, `context_size = 64 if sr ==
+16000 else 32`, state shape `[2, 1, 128]`). `silero_vad.onnx` file size
+(2 327 524 bytes) is identical across tags `v5.1.2` / `v6.0` / `v6.2.1` while
+git blob shas differ — retrained weights, same topology. What v6.2.1
+changes is therefore the trained weights (and hence the probability
+stream), not tensor names / shapes. Both variants share the same forward
+today; the variant enum is the seam for a future release that *does*
+diverge in shape (per-variant loader shape checks + branched forward, no
+silent fallback).
+
 ## Conversion (both-rate, fixed 2026-07-16)
 
 Historical gap: the original M0 `vokra-convert` Silero path stripped the

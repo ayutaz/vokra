@@ -76,6 +76,15 @@ pub mod attrs;
 // SnakeBeta lives here.
 pub mod bigvgan_generator;
 // ---------------------------------------------------------------------------
+// ---- pyannote Wave 4 agglomerative hierarchical clustering (runtime
+// function, NOT an OpKind variant — same posture as `ctc_decode` /
+// `flow_sampler`). Aggregates segment-level speaker embeddings into
+// speaker clusters (pyannote MIT, `docs/license-audit.md` §3.1 row 263).
+// The full `diarize` op remains M5-residual (HF-gated weight license +
+// trigger model blocker); this primitive is the *clustering step alone*
+// and lands independently.
+pub mod clustering;
+// ---------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 Conformer / FastConformer ASR encoder ------------
 // One implementation covers both — FastConformer differs only in the
 // subsampling stem (`ConvSubsampleKind::Stacking { factor }`). Consumed by
@@ -136,6 +145,15 @@ pub mod fsq_codec;
 pub mod flow_sampler;
 // -----------------------------------------------------------------------
 pub mod frontend;
+// ---- SoTA plan Phase 5 VAD-2 fsmn_vad primitive ---------------------------
+// FSMN-VAD (funasr/fsmn-vad, MIT) — Feed-forward Sequential Memory Network
+// for voice activity detection. First-class audio-dialect op (distinct
+// posture from Silero VAD v5, which is a 1:1-preserved subgraph per
+// FR-LD-06). FSMN's stateless feed-forward + memory blocks lower cleanly to
+// graph-level ops. Upstream: iic/speech_fsmn_vad_zh-cn-16k-common-pytorch
+// (docs/license-audit.md §3.1 row landed 2026-07-30).
+pub mod fsmn_vad;
+// ---------------------------------------------------------------------------
 pub mod fused_logmel;
 // ---- M3-07 hifigan_generator (vocoder chain, FR-OP-10) ------------------
 // New module + re-export block. INT8 is an opt-in path (per-channel
@@ -160,6 +178,19 @@ pub mod kaldi_fbank;
 pub mod length_conditioning;
 pub mod mel;
 pub mod mfcc;
+// ---- SoTA plan KWS binder (openwakeword classifier MLP, 2026-08-05) -----
+// Per-wake-word `Linear → ReLU → Linear → Sigmoid` classifier over a shared
+// 96-d speech embedding. First consumer is `vokra-models::kws::openwakeword`
+// (dscripka/openWakeWord, Apache-2.0 code). The embedding extractor itself
+// (frozen Google `speech_embedding` TFLite) is a **loud-partial** follow-up
+// gated on the owner-provisioned bundle (RMVPE precedent — see
+// `crate::denoise` / `vokra_models::f0::rmvpe`). Runtime function, NOT an
+// `OpKind` variant (same posture as `flow_sampler` / RVQ / FSQ — ADR M3-06
+// §D-b): the per-wake-word bundle shape does not fit the `OpValue`
+// dispatch surface. Localised re-export block for clean parallel-wave
+// rebases.
+pub mod openwakeword;
+// -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq codec decode (RVQ family, FR-OP-30) -----------------
 // New module + re-export block. Wave 3 (M3-07) will touch the same file, so
 // this block is kept localised for a clean rebase target. Mimi is CC-BY 4.0
@@ -192,6 +223,14 @@ pub mod prosody;
 pub mod qwen3_tts_codec;
 // -------------------------------------------------------------------------
 pub mod resample;
+// ---- SoTA plan denoise Wave A rnnoise primitives (2026-08-05) -----------
+// Xiph RNNoise v0.2 primitives (Vorbis window, Bark filterbank, 3-gate GRU
+// forward, feature packer, DCT-II) plus the loud-partial pitch_analysis
+// stub. Consumed by `vokra_models::rnnoise_v02`. Runtime function set,
+// NOT `OpKind` variants (same posture as `openwakeword_classifier_forward`
+// / `denoise` / `fsmn_vad_forward` — ADR M3-06 §D-b).
+pub mod rnnoise;
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 rnnt_decode (ASR primitive, FR-OP-42) ------------
 // RNN-T / TDT decoding: greedy + beam + TDT (duration head). Consumed by
 // parakeet-rnnt-1.1b and parakeet-tdt v2/v3/1.1b (CC-BY-4.0). Ported /
@@ -233,6 +272,29 @@ pub mod waveform_frontend;
 pub mod vae_continuous;
 // -------------------------------------------------------------------------
 pub mod window;
+// ---- SoTA plan Phase JA JA-ASR-5 Zipformer encoder (multi-resolution) --
+// Zipformer = down/up-sample pyramid + attention weight sharing (single QK
+// per stack, per-layer V + output projection). k2-fsa/icefall reference
+// (Apache-2.0), consumed by the reazonspeech-k2 CTC family. Localised
+// re-export block for clean parallel-wave rebases.
+pub mod zipformer;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase JA JA-ASR-4 E-Branchformer encoder ----------------
+// E-Branchformer = parallel MHA branch + gated cgMLP branch merged via a
+// DepthwiseConv + Linear "Merge" module (Kim et al. 2023). ESPnet OWSM
+// family reference (CC-BY-4.0). Reuses the Conformer primitive's FF /
+// MHA / stem layouts. Localised re-export block for clean parallel-wave
+// rebases.
+pub mod ebranchformer;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase JA JA-ASR-3 hybrid CTC/attention decoder ----------
+// ESPnet-style hybrid rescoring: attention beam extends the prefix, CTC
+// gives a prefix score per candidate, LSTM LM optionally shallow-fuses.
+// Runtime function (NOT an OpKind variant, same posture as ctc_decode /
+// beam_search — FR-OP-40 / FR-EX-10). Localised re-export block for clean
+// parallel-wave rebases.
+pub mod hybrid_ctc_attention;
+// -------------------------------------------------------------------------
 
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
@@ -242,6 +304,9 @@ pub use bigvgan_generator::{
     AmpBlock1, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights, SnakeBeta,
     SnakeKind,
 };
+// -------------------------------------------------------------------------
+// ---- pyannote Wave 4 clustering re-exports ------------------------------
+pub use clustering::{AgglomerativeClustering, DistanceMetric, LinkageMethod};
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 ctc_decode re-exports ----------------------------
 pub use ctc_decode::{CtcBeamAttrs, CtcHypothesis, ctc_decode_beam, ctc_decode_greedy};
@@ -285,6 +350,12 @@ pub use fsq_codec::{
 };
 // ---------------------------------------------------------------------------
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
+// ---- SoTA plan Phase 5 VAD-2 fsmn_vad re-exports --------------------------
+pub use fsmn_vad::{
+    FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward,
+    softmax_last_axis,
+};
+// ---------------------------------------------------------------------------
 pub use fused_logmel::fused_log_mel_scalar;
 // ---- M3-07 hifigan_generator re-exports ---------------------------------
 pub use hifigan::{
@@ -299,6 +370,9 @@ pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
 pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+// ---- SoTA plan KWS binder openwakeword re-exports (2026-08-05) ----------
+pub use openwakeword::{OpenwakewordClassifierWeights, openwakeword_classifier_forward};
+// -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq re-exports ------------------------------------------
 pub use mimi_rvq::{
     CodebookTable, MimiDecoder, MimiRvqAttrs, codebook_lookup, mimi_paged_dims, mimi_rvq_decode,
@@ -311,6 +385,15 @@ pub use prosody::{ApplyProsody, ProsodyControl};
 pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
 // -------------------------------------------------------------------------
 pub use resample::resample;
+// ---- SoTA plan denoise Wave A rnnoise re-exports (2026-08-05) -----------
+pub use rnnoise::{
+    Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS,
+    N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank,
+    dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains,
+    pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window,
+    zero_pitch_features as rnnoise_zero_pitch_features,
+};
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 rnnt_decode re-exports ---------------------------
 pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 // -------------------------------------------------------------------------

@@ -228,9 +228,16 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           . /tmp/vokra-py-sbv2/bin/activate
+          # SBV2 v2 base ships weights only (no config.json). The prep script
+          # provides `--clean-room-defaults` as the author-designed escape
+          # hatch for this exact case: it fills the `vokra.sbv2.*` side-car
+          # from cited VITS/HiFi-GAN/StyleTTS 2 MIT reference defaults
+          # instead of erroring. Without this flag CI aborts with
+          # "no config.json found under ... — Pass --clean-room-defaults".
           python3 tools/parity/sbv2_prepare_checkpoint.py \
             --hf-repo "$SBV2_HF_REPO" \
-            --output-dir "$RUNNER_TEMP/sbv2-checkpoint"
+            --output-dir "$RUNNER_TEMP/sbv2-checkpoint" \
+            --clean-room-defaults
 
       - name: Download DeBERTa v2 (JA) + v3 (EN) checkpoints
         # Plain HF transformers-style repos (flat safetensors, no .pth to
@@ -249,15 +256,74 @@ jobs:
               repo_id=os.environ["BERT_JA_HF_REPO"],
               repo_type="model",
               local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v2-ja"),
+              # ku-nlp/deberta-v2-large-japanese-char-wwm ships safetensors.
               allow_patterns=["*.safetensors", "*.json"],
           )
           snapshot_download(
               repo_id=os.environ["BERT_EN_HF_REPO"],
               repo_type="model",
               local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v3-en"),
-              allow_patterns=["*.safetensors", "*.json"],
+              # microsoft/deberta-v3-large ships `pytorch_model.bin` only —
+              # no safetensors. Pull the .bin here; a follow-up step below
+              # converts it to safetensors via safetensors.torch.save_file
+              # (widely-standard bin→safetensors bridge, mirrors what
+              # tools/parity/*_prepare_checkpoint.py does across the repo).
+              # Empirical measurement 2026-08-05 (PR #24 CI run 31021206483)
+              # showed the safetensors-only allow_patterns pulled 0 weight
+              # files and the downstream `find *.safetensors` failed with
+              # `test -n ""` (exit 1). Adding .bin fixes the root cause.
+              allow_patterns=["*.safetensors", "*.bin", "*.json"],
           )
           print("DeBERTa v2/v3 snapshot_download OK")
+          PYEOF
+
+      - name: Convert DeBERTa v3 pytorch_model.bin -> safetensors
+        # microsoft/deberta-v3-large only ships pytorch_model.bin (upstream
+        # convention pre-safetensors era, never migrated). vokra-cli
+        # `--model deberta-v3` expects a safetensors input — bridge the gap
+        # here with the standard safetensors.torch conversion (already in
+        # the venv above). Skip cleanly when .safetensors is already present
+        # (future-proof: if microsoft ever adds native safetensors, this
+        # step is a no-op).
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          python3 - <<'PYEOF'
+          import glob
+          import os
+          import sys
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "deberta-v3-en"
+
+          # Fast path — already safetensors (owner-provided or upstream
+          # migrated). Skip conversion silently.
+          if any(root.rglob("*.safetensors")):
+              print("[deberta-v3 bin→st] .safetensors already present, no conversion needed.")
+              sys.exit(0)
+
+          bins = sorted(root.rglob("pytorch_model.bin"))
+          if not bins:
+              print(f"::error::No pytorch_model.bin or *.safetensors found under {root}", file=sys.stderr)
+              sys.exit(1)
+
+          # Deferred imports: torch + safetensors already installed in the
+          # venv above (`transformers>=4.44` pulls torch as a transitive).
+          import torch
+          from safetensors.torch import save_file
+
+          for bin_path in bins:
+              out = bin_path.with_suffix(".safetensors").with_name("model.safetensors")
+              print(f"[deberta-v3 bin→st] {bin_path} -> {out}")
+              state = torch.load(str(bin_path), map_location="cpu", weights_only=True)
+              # `state` is dict[str, Tensor]. Save file expects contiguous
+              # tensors — clone().contiguous() covers the shared-memory
+              # case (some HF checkpoints tie embed_tokens ↔ lm_head).
+              cleaned = {k: v.detach().clone().contiguous() for k, v in state.items()}
+              save_file(cleaned, str(out))
+              print(f"[deberta-v3 bin→st] wrote {out} ({len(cleaned)} tensors)")
           PYEOF
 
       - name: Build vokra-cli (release)

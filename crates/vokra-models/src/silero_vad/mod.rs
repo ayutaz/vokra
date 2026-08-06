@@ -68,6 +68,13 @@ use vokra_vad_micro::SileroWeights;
 /// existing consumers (`vokra-cli`, `vokra-capi`, the `vad_demo` example).
 pub use vokra_vad_micro::SampleRate;
 
+/// The upstream Silero VAD release tag carried by a loaded GGUF (v5 vs
+/// v6.2.1). Re-exported from the no_std forward core so consumers can key
+/// telemetry, license attribution, and parity-fixture selection on the
+/// artifact's provenance without depending on `vokra-core::gguf::silero`
+/// directly.
+pub use vokra_vad_micro::SileroVariant;
+
 /// Silero VAD v5 — a 1:1-preserved subgraph model (M0-05).
 ///
 /// Load with [`from_gguf`](Self::from_gguf) / [`open`](Self::open), then obtain
@@ -106,6 +113,17 @@ impl SileroVadV5 {
     /// Returns whether the loaded GGUF carries weights for `rate`.
     pub fn supports(&self, rate: SampleRate) -> bool {
         self.weights.rate(rate).is_some()
+    }
+
+    /// The upstream Silero VAD release tag the loaded GGUF was stamped
+    /// with. Defaults to [`SileroVariant::V5`] when the GGUF omits the
+    /// `vokra.silero.version` metadata key (backward compatibility with
+    /// pre-tagging artifacts, including the committed parity fixture).
+    /// Both variants share the same forward today — v5 and v6.2.1 have
+    /// architecturally identical topology per upstream — so this is a
+    /// provenance signal, not a shape divergence knob.
+    pub fn variant(&self) -> SileroVariant {
+        self.weights.variant()
     }
 
     /// Runs a single fixed-size frame from a **fresh zero state** and returns its
@@ -165,6 +183,16 @@ mod tests {
         let m = SileroVadV5::open(test_gguf_path()).expect("load fixture gguf");
         assert!(m.supports(SampleRate::Hz8000));
         assert!(m.supports(SampleRate::Hz16000));
+    }
+
+    /// The committed fixture predates the `vokra.silero.version` tag, so it
+    /// must load and default to [`SileroVariant::V5`] — the backward-compat
+    /// contract at the model-wrapper level (mirrors the binder-level test in
+    /// `vokra_vad_micro::weights::tests::from_gguf_defaults_to_v5_when_release_tag_absent`).
+    #[test]
+    fn fixture_gguf_reports_v5_variant() {
+        let m = SileroVadV5::open(test_gguf_path()).unwrap();
+        assert_eq!(m.variant(), SileroVariant::V5);
     }
 
     #[test]
