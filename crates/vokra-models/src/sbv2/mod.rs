@@ -41,7 +41,7 @@ pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 pub use parity::{ATOL_DEFAULT, PER_TENSOR_ATOL, tolerance_for};
 pub use speaker::SpeakerEmbedding;
 pub use style::StyleVectorInjector;
-pub use text_encoder::{BertBridge, SbV2TextEncoder};
+pub use text_encoder::{BertBridge, N_LANGUAGES, SbV2TextEncoder};
 
 // ---------------------------------------------------------------------------
 // Task 23: SbV2Model — full pipeline integration
@@ -228,7 +228,12 @@ impl SbV2Model {
             (0..N_TONES * D_MODEL)
                 .map(|i| ((i as f32) * 0.01).cos() * 0.02)
                 .collect(),
-            vec![0.0; 2 * D_MODEL],
+            // language_embed [N_LANGUAGES=3, D_MODEL]: all-zero identity
+            // (`synthetic_for_test`'s existing convention for the removed
+            // `wb_embed` — the additive contribution is the additive
+            // identity, so downstream tests' exact-length /
+            // byte-identical-PCM assertions carry over unchanged).
+            vec![0.0; N_LANGUAGES * D_MODEL],
             Vec::new(), // empty transformer stack — SbV2TextEncoder's own exercised no-op precedent
             D_MODEL,
             N_VOCAB,
@@ -393,7 +398,9 @@ impl SbV2Model {
             (0..N_TONES * D_MODEL)
                 .map(|i| ((i as f32) * 0.01).cos() * 0.02)
                 .collect(),
-            vec![0.0; 2 * D_MODEL],
+            // language_embed [N_LANGUAGES=3, D_MODEL]: all-zero identity —
+            // same rationale as `synthetic_for_test` above.
+            vec![0.0; N_LANGUAGES * D_MODEL],
             Vec::new(), // empty transformer stack — SbV2TextEncoder's own exercised no-op precedent
             D_MODEL,
             N_VOCAB,
@@ -519,15 +526,34 @@ impl SbV2Model {
             ));
         }
 
-        // 2. Text encoder
+        // 2. Text encoder — `language_id` is derived from `req.language`
+        // via [`Language::language_id`], which pins the row of
+        // `SbV2TextEncoder::language_embed` that gets broadcast-added to
+        // every position. See `SbV2TextEncoder::forward`'s `language_id`
+        // doc for the tentative JA=0/EN=1/ZH=2 row-ordering convention.
         let text_hidden =
             self.text_encoder
-                .forward(&phon.phoneme_ids, &phon.tones, &phon.word_boundaries);
+                .forward(&phon.phoneme_ids, &phon.tones, req.language.language_id());
 
-        // 3. BERT (per-language)
+        // 3. BERT (per-language). ZH has no in-crate BERT encoder yet
+        // (BERT bridge is JA/EN only in the M6 land — see the ZH scope
+        // note on `Language`); reaching ZH here would be a bug (the
+        // phonemizer's `phonemize_zh` already returned NotImplemented and
+        // step 1 propagated it), but if a caller has bypassed the
+        // phonemizer via `PhonemizeFixture` for ZH the tokenizer step
+        // becomes reachable and must fail loudly rather than silently
+        // routing to JA/EN — FR-EX-08.
         let bert_ids = match req.language {
             Language::JA => self.bert.ja_tokenizer.encode(&phon.bert_input_text),
             Language::EN => self.bert.en_tokenizer.encode(&phon.bert_input_text),
+            Language::ZH => {
+                return Err(VokraError::NotImplemented(
+                    "SbV2Model::synthesize: language ZH has no BERT tokenizer wired in this \
+                     crate (SbV2BertContainer holds only ja/en). The text encoder's \
+                     language_embed row 2 is reachable, but the BERT bridge path is not — \
+                     Vokra ZH BERT + G2P are out of scope for the M6 SBV2 v2 land (FR-EX-08).",
+                ));
+            }
         };
         if bert_ids.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -538,6 +564,14 @@ impl SbV2Model {
         let bert_hidden = match req.language {
             Language::JA => self.bert.ja.forward(&bert_ids),
             Language::EN => self.bert.en.forward(&bert_ids),
+            // Unreachable: the tokenizer arm above already returned for ZH.
+            // Kept as a loud panic (not silent fall-through) so a future
+            // ZH BERT wiring can't accidentally leave this arm speaking
+            // for JA — FR-EX-08.
+            Language::ZH => unreachable!(
+                "SbV2Model::synthesize: ZH tokenizer arm above must have returned \
+                 NotImplemented before reaching here"
+            ),
         };
 
         // 4. BERT bridge
@@ -669,8 +703,16 @@ impl TtsEngine for SbV2Model {
             ));
         }
 
+        // Case-insensitive prefix match: `"en"*` -> EN, `"zh"*` -> ZH,
+        // everything else (including `None`) -> JA (SBV2 v2's base config
+        // is Japanese-first, per its JP-Extra heritage — see
+        // `decoder.rs`'s module doc). ZH selection routes to the
+        // language_embed row 2 code path but currently returns
+        // NotImplemented at either the phonemizer or the BERT tokenizer
+        // step below — see `Language`'s ZH scope note.
         let language = match request.language.as_deref() {
             Some(lang) if lang.to_ascii_lowercase().starts_with("en") => Language::EN,
+            Some(lang) if lang.to_ascii_lowercase().starts_with("zh") => Language::ZH,
             _ => Language::JA,
         };
         let (noise_scale, noise_scale_w) = if request.deterministic {
@@ -844,9 +886,14 @@ impl SbV2Model {
     ///
     /// # Tensor names (`sbv2.*`, all read from `main`)
     ///
-    /// - `sbv2.text_encoder.phoneme_embed` / `.tone_embed` / `.wb_embed` —
-    ///   the three embedding tables ([`SbV2TextEncoder::from_weights`]'s
-    ///   first three parameters).
+    /// - `sbv2.text_encoder.phoneme_embed` / `.tone_embed` /
+    ///   `.language_embed` — the three embedding tables
+    ///   ([`SbV2TextEncoder::from_weights`]'s first three parameters).
+    ///   `.language_embed` replaces the M6-pre-scout `.wb_embed`; see
+    ///   [`SbV2TextEncoder`]'s "`language_embed` design correction"
+    ///   section for the primary-source verification (real base
+    ///   checkpoint has `enc_p.language_emb.weight [3, 192]`, no
+    ///   `enc_p.word_boundary_emb.weight`).
     /// - Per text-encoder layer `<i>` in `0..n_text_layers`:
     ///   `sbv2.text_encoder.layer.<i>.attn.{q,k,v,o}.weight` (bias-free,
     ///   matching
@@ -1038,7 +1085,29 @@ impl SbV2Model {
         // ---- text encoder ----
         let phoneme_embed = load_tensor_f32("sbv2.text_encoder.phoneme_embed")?;
         let tone_embed = load_tensor_f32("sbv2.text_encoder.tone_embed")?;
-        let wb_embed = load_tensor_f32("sbv2.text_encoder.wb_embed")?;
+        // M6 refactor (2026-08-06): the real base checkpoint has
+        // `enc_p.language_emb.weight [3, 192]` (JA/EN/ZH), never a
+        // `word_boundary_emb`. The converter now emits this under
+        // `sbv2.text_encoder.language_embed`; the runtime cross-checks
+        // its length is exactly N_LANGUAGES * d_model so a stale
+        // converter output (still emitting the old 2-row `wb_embed`
+        // shape) surfaces as a clean, loud `VokraError::ModelLoad`
+        // rather than a debug-only `debug_assert!` panic inside
+        // `SbV2TextEncoder::from_weights`. See `SbV2TextEncoder`'s own
+        // "`language_embed` design correction" section for the full
+        // rationale.
+        let language_embed = load_tensor_f32("sbv2.text_encoder.language_embed")?;
+        let expected_language_embed_len = N_LANGUAGES * d_model;
+        if language_embed.len() != expected_language_embed_len {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: sbv2.text_encoder.language_embed length {} does not \
+                 match N_LANGUAGES * d_model = {N_LANGUAGES} * {d_model} = \
+                 {expected_language_embed_len} (a stale converter that still emits the pre-M6 \
+                 wb_embed [2, d_model] shape would land here) — reconvert the checkpoint with \
+                 the current vokra-convert::models::sbv2",
+                language_embed.len(),
+            )));
+        }
         let mut transformer_layers = Vec::with_capacity(n_text_layers);
         for i in 0..n_text_layers {
             let p = format!("sbv2.text_encoder.layer.{i}");
@@ -1062,7 +1131,7 @@ impl SbV2Model {
         let text_encoder = SbV2TextEncoder::from_weights(
             phoneme_embed,
             tone_embed,
-            wb_embed,
+            language_embed,
             transformer_layers,
             d_model,
             n_vocab,

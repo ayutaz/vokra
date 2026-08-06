@@ -1,6 +1,11 @@
-//! `SbV2TextEncoder` + `BertBridge` tests (Task 17).
+//! `SbV2TextEncoder` + `BertBridge` tests (Task 17; M6 refactor 2026-08-06
+//! replaced `word_boundaries: &[bool]` with `language_id: u8` — see
+//! `SbV2TextEncoder`'s `language_embed` design-correction doc for the
+//! primary-source reason. The tests below cover the new signature end to
+//! end: shape invariant, determinism, and a per-language distinctness
+//! check that pins the row-ordering convention).
 
-use vokra_models::sbv2::{BertBridge, SbV2TextEncoder};
+use vokra_models::sbv2::{BertBridge, N_LANGUAGES, SbV2TextEncoder};
 
 /// `SbV2TextEncoder::forward` returns a flat `[seq_len * d_model]` buffer
 /// (empty `transformer_layers` — the tested no-op stack configuration).
@@ -10,7 +15,7 @@ fn text_encoder_forward_shape() {
     let enc = SbV2TextEncoder::from_weights(
         vec![0.1; n_vocab * d_model],
         vec![0.2; n_tones * d_model],
-        vec![0.3; 2 * d_model],
+        vec![0.3; N_LANGUAGES * d_model],
         Vec::new(),
         d_model,
         n_vocab,
@@ -18,9 +23,8 @@ fn text_encoder_forward_shape() {
     );
     let phoneme_ids: [u16; 5] = [0, 1, 2, 3, 4];
     let tones: [u8; 5] = [0, 1, 2, 0, 1];
-    let word_boundaries = [true, false, true, false, false];
 
-    let out = enc.forward(&phoneme_ids, &tones, &word_boundaries);
+    let out = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 0);
 
     assert_eq!(out.len(), phoneme_ids.len() * d_model);
 }
@@ -33,7 +37,7 @@ fn text_encoder_forward_deterministic() {
     let enc = SbV2TextEncoder::from_weights(
         vec![0.05; n_vocab * d_model],
         vec![-0.1; n_tones * d_model],
-        vec![0.02; 2 * d_model],
+        vec![0.02; N_LANGUAGES * d_model],
         Vec::new(),
         d_model,
         n_vocab,
@@ -41,12 +45,67 @@ fn text_encoder_forward_deterministic() {
     );
     let phoneme_ids: [u16; 5] = [7, 0, 4, 4, 2];
     let tones: [u8; 5] = [2, 0, 1, 1, 0];
-    let word_boundaries = [true, false, false, true, false];
 
-    let out1 = enc.forward(&phoneme_ids, &tones, &word_boundaries);
-    let out2 = enc.forward(&phoneme_ids, &tones, &word_boundaries);
+    let out1 = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 1);
+    let out2 = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 1);
 
     assert_eq!(out1, out2, "identical inputs must produce identical output");
+}
+
+/// M6 refactor: different `language_id` values with otherwise-identical
+/// inputs must select different rows of `language_embed`, changing the
+/// broadcast additive contribution to every position. Uses a
+/// `language_embed` whose rows have distinct constant fills so the
+/// per-position delta between two language ids equals exactly `row_a -
+/// row_b` on every element (a check that any per-position broadcast add
+/// must satisfy).
+#[test]
+fn text_encoder_forward_language_id_switches_embedding_row() {
+    let (n_vocab, n_tones, d_model) = (8, 3, 4);
+    // Row 0 = 0.10s, row 1 = 0.20s, row 2 = 0.30s — three distinct
+    // per-row constants so a swap between any two language ids produces
+    // an easily-predictable per-element delta.
+    let mut language_embed = Vec::with_capacity(N_LANGUAGES * d_model);
+    for row in 0..N_LANGUAGES {
+        let fill = 0.1 * (row + 1) as f32;
+        language_embed.extend(std::iter::repeat_n(fill, d_model));
+    }
+    let enc = SbV2TextEncoder::from_weights(
+        vec![0.0; n_vocab * d_model],
+        vec![0.0; n_tones * d_model],
+        language_embed,
+        Vec::new(),
+        d_model,
+        n_vocab,
+        n_tones,
+    );
+    let phoneme_ids: [u16; 3] = [0, 1, 2];
+    let tones: [u8; 3] = [0, 0, 0];
+
+    let out_ja = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 0);
+    let out_en = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 1);
+    let out_zh = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 2);
+
+    assert_ne!(out_ja, out_en, "language_id 0 vs 1 must differ");
+    assert_ne!(out_en, out_zh, "language_id 1 vs 2 must differ");
+    assert_ne!(out_ja, out_zh, "language_id 0 vs 2 must differ");
+
+    // With phoneme_embed / tone_embed / transformer stack all zero, the
+    // output equals `language_embed[language_id]` broadcast to every
+    // position, so every element of `out_ja` must be exactly 0.10 (row 0
+    // fill), of `out_en` 0.20, and of `out_zh` 0.30.
+    assert!(
+        out_ja.iter().all(|&v| (v - 0.10).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_ja must be all 0.10 (language_embed row 0 fill)"
+    );
+    assert!(
+        out_en.iter().all(|&v| (v - 0.20).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_en must be all 0.20 (language_embed row 1 fill)"
+    );
+    assert!(
+        out_zh.iter().all(|&v| (v - 0.30).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_zh must be all 0.30 (language_embed row 2 fill)"
+    );
 }
 
 /// `BertBridge::forward` returns a flat `[text_seq_len * d_target]`

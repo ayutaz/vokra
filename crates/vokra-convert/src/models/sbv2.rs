@@ -75,6 +75,22 @@
 //! `wespeaker.rs` already carry for their own not-yet-consumed outputs. No
 //! rename table is guessed here in its place.
 //!
+//! # M6 refactor (2026-08-06): `language_embed` replaces `wb_embed`
+//!
+//! The Task 30 rename table, when it lands, must map the real upstream
+//! tensor `enc_p.language_emb.weight` (shape `[3, 192]` — verified on
+//! `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`) to the loader's
+//! `sbv2.text_encoder.language_embed`. The pre-M6 design-doc §7 assumed
+//! `enc_p.word_boundary_emb.weight [2, 192]` at this slot; no such tensor
+//! exists on the real checkpoint. The runtime side of this refactor
+//! (`crates/vokra-models/src/sbv2/text_encoder.rs`
+//! `SbV2TextEncoder::language_embed`) is already updated; the loader
+//! now reads `sbv2.text_encoder.language_embed` (not `.wb_embed`) and
+//! cross-checks its length against `N_LANGUAGES = 3` times `d_model`.
+//! This converter's hparam block additionally stamps
+//! `vokra.sbv2.n_languages = 3` (see [`write_hparams`]) as a
+//! forward-looking metadata anchor for that cross-check.
+//!
 //! # Hparams — config-side-car-driven, never invented
 //!
 //! `SbV2Model::from_gguf` requires 22 `vokra.sbv2.*` metadata keys (13
@@ -152,7 +168,8 @@ pub(crate) const DEFAULT_LICENSE: &str = "agpl-3.0";
 // family converters use applies. Every key name below is copied verbatim
 // from that method's own doc (the schema's source of truth, ~23 keys).
 
-// Top-level dims (13).
+// Top-level dims (13 upstream-driven + 1 fixed-architecture = 14 total,
+// see `KEY_N_LANGUAGES` below).
 const KEY_D_MODEL: &str = "vokra.sbv2.d_model";
 const KEY_D_BERT: &str = "vokra.sbv2.d_bert";
 const KEY_D_SPEAKER: &str = "vokra.sbv2.d_speaker";
@@ -166,6 +183,21 @@ const KEY_N_TEXT_LAYERS: &str = "vokra.sbv2.n_text_layers";
 const KEY_N_FLOW_LAYERS: &str = "vokra.sbv2.n_flow_layers";
 const KEY_N_SDP_LAYERS: &str = "vokra.sbv2.n_sdp_layers";
 const KEY_SAMPLE_RATE: &str = "vokra.sbv2.sample_rate";
+
+// M6 refactor (2026-08-06): the SBV2 v2 base checkpoint's real
+// `enc_p.language_emb.weight` table is `[3, 192]` (JA/EN/ZH). This value
+// is a fixed architectural constant, not a config-authored one — it
+// mirrors `crates/vokra-models/src/sbv2/text_encoder.rs`'s
+// `N_LANGUAGES = 3`. See the module doc's "M6 refactor" section for the
+// primary-source verification behind it and why the metadata is stamped
+// forward-looking (the loader's own `language_embed` length check already
+// gates on the same value even without this metadata being present).
+const KEY_N_LANGUAGES: &str = "vokra.sbv2.n_languages";
+/// The fixed value stamped under [`KEY_N_LANGUAGES`] — a hard-coded
+/// architectural anchor rather than a config-side-car field, so
+/// [`SbV2Config`] does not carry it and [`SbV2Config::parse`] does not
+/// read it. Mirrors `vokra_models::sbv2::N_LANGUAGES`.
+const N_LANGUAGES: u32 = 3;
 
 // Decoder scalars (3).
 const KEY_DECODER_INITIAL_CHANNEL: &str = "vokra.sbv2.decoder.initial_channel";
@@ -514,6 +546,10 @@ pub fn convert_sbv2_file(
 /// Writes the 22 required + 1 optional `vokra.sbv2.*` keys from a parsed
 /// [`SbV2Config`] — one `add_*` call per field, in the same order as
 /// `SbV2Model::from_gguf`'s own read sequence.
+///
+/// Additionally stamps [`KEY_N_LANGUAGES`] = [`N_LANGUAGES`] — a fixed
+/// architectural constant not carried on [`SbV2Config`] (see that const's
+/// own doc and the module doc's "M6 refactor" section).
 fn write_hparams(b: &mut GgufBuilder, cfg: &SbV2Config) {
     b.add_u32(KEY_D_MODEL, cfg.d_model);
     b.add_u32(KEY_D_BERT, cfg.d_bert);
@@ -528,6 +564,9 @@ fn write_hparams(b: &mut GgufBuilder, cfg: &SbV2Config) {
     b.add_u32(KEY_N_FLOW_LAYERS, cfg.n_flow_layers);
     b.add_u32(KEY_N_SDP_LAYERS, cfg.n_sdp_layers);
     b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+    // Fixed-architecture: [`N_LANGUAGES`] = 3 (JA/EN/ZH); see its own doc
+    // and the module doc's "M6 refactor" section.
+    b.add_u32(KEY_N_LANGUAGES, N_LANGUAGES);
 
     b.add_u32(KEY_DECODER_INITIAL_CHANNEL, cfg.decoder_initial_channel);
     b.add_u32(KEY_DECODER_CONV_PRE_KERNEL, cfg.decoder_conv_pre_kernel);
@@ -677,6 +716,12 @@ mod tests {
         assert!(file.get(KEY_D_MODEL).is_none());
         assert!(file.get(KEY_D_Z).is_none());
         assert!(file.get(KEY_DECODER_UPSAMPLE_RATES).is_none());
+        // The fixed-architecture `n_languages` stamp is also absent when
+        // the hparam-writing path is not triggered — it belongs to the
+        // same chunk group as everything else the loader reads, so all or
+        // none applies. See the module doc's "Hparams" section for the
+        // preference for missing-key-loud-fail over placeholder pollution.
+        assert!(file.get(KEY_N_LANGUAGES).is_none());
 
         // arch / name / provenance still stamped.
         assert_eq!(
@@ -741,6 +786,12 @@ mod tests {
         assert_eq!(get_u32(KEY_DECODER_INITIAL_CHANNEL), 512);
         assert_eq!(get_u32(KEY_DECODER_CONV_PRE_KERNEL), 7);
         assert_eq!(get_u32(KEY_DECODER_CONV_POST_KERNEL), 7);
+        // M6 refactor (2026-08-06): `n_languages` is a fixed
+        // architectural constant (JA/EN/ZH = 3), not a config field, and
+        // is always stamped as long as the config side-car triggers the
+        // hparam-writing path. See the module doc's "M6 refactor" section
+        // for the primary-source verification.
+        assert_eq!(get_u32(KEY_N_LANGUAGES), u64::from(N_LANGUAGES));
 
         let get_u32_array = |key: &str| -> Vec<u32> {
             file.get(key)

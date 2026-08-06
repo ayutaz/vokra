@@ -57,6 +57,11 @@
 //!                         "count": "T_text", "dtype": "uint16"},
 //!     "tones":           {"path": "reference_dump/tones.bin",
 //!                         "count": "T_text", "dtype": "uint8"},
+//!     // M6 refactor (2026-08-06): `word_boundaries` is retained (the G2P
+//!     // stage still emits it — see `g2p.rs`'s M6 note), but is no longer
+//!     // consumed by `SbV2TextEncoder::forward`. The reader below leaves
+//!     // this field in the manifest for schema stability but does not read
+//!     // the side file if it is present-but-unused.
 //!     "word_boundaries": {"path": "reference_dump/word_boundaries.bin",
 //!                         "count": "T_text", "dtype": "uint8"}
 //!   },
@@ -448,12 +453,21 @@ fn phonemize_fixture_from_manifest(
 /// Builds the [`SbV2SynthRequest`] the Python dumper's reference forward
 /// pass used, from the manifest's `request` object (see the module doc's
 /// schema).
+///
+/// M6 refactor (2026-08-06): `"ZH"` is now accepted for
+/// `request.language` because [`Language`] gained a `ZH` variant to match
+/// the real SBV2 v2 checkpoint's `enc_p.language_emb.weight [3, d_model]`
+/// row 2. Note that under the fixture-only bypass this test uses, ZH is
+/// reachable in the text encoder but will loud-fail at the BERT
+/// tokenizer step (see `SbV2Model::synthesize`'s ZH note); a real ZH
+/// parity run requires the pending ZH BERT + G2P plumbing.
 fn request_from_manifest(manifest: &JsonValue, ctx: &str) -> SbV2SynthRequest {
     let request = json_get(manifest, "request", ctx);
     let language = match json_str(request, "language", ctx) {
         "JA" => Language::JA,
         "EN" => Language::EN,
-        other => panic!("{ctx}: request.language must be \"JA\" or \"EN\", got {other:?}"),
+        "ZH" => Language::ZH,
+        other => panic!("{ctx}: request.language must be \"JA\", \"EN\", or \"ZH\", got {other:?}"),
     };
     SbV2SynthRequest {
         text: json_str(request, "text", ctx).to_string(),

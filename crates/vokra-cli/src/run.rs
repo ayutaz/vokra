@@ -1087,13 +1087,21 @@ fn run_sbv2(session: &Session, a: &RunArgs) -> Result<(), String> {
         "run (sbv2): --bert-en <bert_en.gguf> is required — the DeBERTa v3 (EN) BERT GGUF \
          from `vokra-cli convert --model deberta-v3`",
     )?;
-    // Reject anything but ja/en up front (see this fn's doc — the
+    // Reject anything but ja/en/zh up front (see this fn's doc — the
     // TtsEngine adapter's own default would otherwise silently swallow a
-    // typo like `--language jp`).
+    // typo like `--language jp`). ZH is accepted at this validation step
+    // because the SBV2 v2 base checkpoint has 3 language embedding rows
+    // (M6 refactor 2026-08-06 — see `SbV2TextEncoder`'s
+    // `language_embed` doc), but note that `synthesize` still
+    // loud-refuses ZH at the BERT tokenizer step until ZH BERT + G2P are
+    // wired (FR-EX-08 — see `SbV2Model::synthesize`'s ZH arm).
     if let Some(lang) = a.language.as_deref() {
-        if !lang.eq_ignore_ascii_case("ja") && !lang.eq_ignore_ascii_case("en") {
+        if !lang.eq_ignore_ascii_case("ja")
+            && !lang.eq_ignore_ascii_case("en")
+            && !lang.eq_ignore_ascii_case("zh")
+        {
             return Err(format!(
-                "run (sbv2): --language must be `ja` or `en`, got `{lang}`"
+                "run (sbv2): --language must be `ja`, `en`, or `zh`, got `{lang}`"
             ));
         }
     }

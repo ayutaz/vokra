@@ -20,6 +20,22 @@
 //! unknown text / wrong language / a text that WOULD match the synthetic
 //! char mapping but isn't in the fixture — proving the fixture path never
 //! falls through).
+//!
+//! # M6 refactor note (2026-08-06)
+//!
+//! `word_boundaries` on [`PhonemizeResult`] is retained even though
+//! [`SbV2TextEncoder::forward`](vokra_models::sbv2::SbV2TextEncoder::forward)
+//! no longer consumes it (the SBV2 v2 real checkpoint has a
+//! `language_embed [3, d_model]` table instead of the design-doc-guessed
+//! `wb_embed [2, d_model]` table — see `SbV2TextEncoder`'s design
+//! correction). The G2P layer still emits per-phoneme word-boundary flags
+//! because they are honest linguistic output of the G2P stage (a future
+//! BERT-tokenize helper or a downstream consumer may still want them),
+//! and dropping them would silently change the
+//! [`PhonemizeFixture`]-driven parity fixture format (`word_boundaries.bin`
+//! is already documented in `tests/parity_sbv2_real.rs`'s manifest
+//! schema). The tests below therefore still exercise the word-boundary
+//! output shape.
 
 use vokra_core::VokraError;
 use vokra_models::sbv2::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
@@ -39,6 +55,44 @@ fn en_phonemize_zero_tones() {
     let p = SbV2Phonemizer::synthetic_for_test();
     let r = p.phonemize("hello world", Language::EN).expect("phonemize");
     assert!(r.tones.iter().all(|&t| t == 0), "EN tones must be all zero");
+}
+
+/// M6 refactor (2026-08-06): `Language::ZH` selects the SBV2 v2 real
+/// checkpoint's `enc_p.language_emb.weight` row 2, but no in-crate ZH G2P
+/// is wired — [`SbV2Phonemizer::phonemize`] must therefore return a loud
+/// [`VokraError::NotImplemented`] on the char-mapping / real-piper paths,
+/// never a silent JA fallback (FR-EX-08). The fixture path is unaffected
+/// (a caller with pre-computed ZH phoneme ids can still hit
+/// `language_id = 2` code paths via [`PhonemizeFixture`]).
+#[test]
+fn zh_phonemize_fails_loudly_without_fixture() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    match p.phonemize("你好", Language::ZH) {
+        Ok(res) => panic!(
+            "ZH without a fixture must fail loudly (FR-EX-08), not silently fall back to \
+             JA/EN char mapping; got {res:?}"
+        ),
+        Err(VokraError::NotImplemented(msg)) => {
+            assert!(
+                msg.contains("ZH"),
+                "error must name the offending language, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::NotImplemented, got {other:?}"),
+    }
+}
+
+/// M6 refactor: `Language::language_id` pins the tentative row-ordering
+/// convention (`JA = 0, EN = 1, ZH = 2`) that
+/// [`SbV2TextEncoder::forward`](vokra_models::sbv2::SbV2TextEncoder::forward)
+/// consumes. Pinning it here (a plain enum-value equality check) catches
+/// an accidental permutation that would otherwise only manifest as a
+/// parity mismatch on a real checkpoint.
+#[test]
+fn language_id_row_ordering_is_stable() {
+    assert_eq!(Language::JA.language_id(), 0);
+    assert_eq!(Language::EN.language_id(), 1);
+    assert_eq!(Language::ZH.language_id(), 2);
 }
 
 /// Regression: EN word-boundary flags must align to each word start,
