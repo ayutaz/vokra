@@ -1285,27 +1285,70 @@ class SDPReference:
         combined conditioning. Returns durations `[T_text]` (float32,
         semantic values are discrete counts; see design doc §10 note on
         why the .bin file is still f32).
+
+        Faithful mirror of upstream
+        ``StochasticDurationPredictor.forward(reverse=True)`` in
+        ``tools/parity/vendor/vits/sdp.py`` (jaywalnut310/vits MIT):
+
+            x = self.pre(x)
+            if g is not None:
+              x = x + self.cond(g)             # speaker/style conditioning
+            x = self.convs(x, x_mask)          # DDS with x_mask (no g)
+            x = self.proj(x) * x_mask
+            ...
+            flows = list(reversed(self.flows))
+            flows = flows[:-2] + [flows[-1]]   # drop the useless vflow
+            for flow in flows:
+                z = flow(z, x_mask, g=x, reverse=True)
+            logw = z[:, 0, :]
+
+        Two prior Task-30 shortcuts that this now un-cuts:
+
+        1. The old Python body skipped ``+ self.cond(g)`` entirely — the
+           `sdp.cond.*` weights were LOADED (see ``__init__``) but never
+           applied. Upstream unconditionally applies them when ``g`` is
+           provided, and the real SBV2 v2 base ckpt does carry ``sdp.cond.*``
+           tensors. Post-fix we now match upstream: apply ``.cond(g)`` iff
+           the ``cond`` submodule was constructed from a non-empty
+           ``d_speaker_cond``. Otherwise the branch is skipped like upstream
+           does when ``gin_channels == 0``.
+        2. The old Python walked ALL 9 items of ``reversed(self.flows)``,
+           including the "useless vflow" at forward index 1 that upstream
+           explicitly drops via ``flows[:-2] + [flows[-1]]``. Applying it
+           at inference produces log-durations diverging from upstream by
+           the full accumulated log-abs-det of an un-trained ConvFlow — a
+           silent parity break the fixture happened to mask when the ckpt's
+           un-trained weights ran near identity. Post-fix we drop the same
+           layer upstream drops.
         """
         import torch.nn.functional as _F
 
-        # Conditioning branch (paper §2.3 pre + DDS + proj + g add).
-        h = self._m.pre(x) * x_mask
-        h = self._m.convs(h, x_mask)
-        h = self._m.proj(h) * x_mask
-        # `g` is not learnable-projected here (upstream SDP has its own
-        # `cond` layer for this — see task-30 owner note; without a real
-        # checkpoint we conservatively add g broadcasted, and rely on
-        # the ConvFlow layers to consume it via their internal `.pre`+
-        # `.convs` chain if a checkpoint carries `sdp.cond.*`).
-        # (Loading `sdp.cond.*` is a follow-up documented in the class
-        # docstring's JP-tone-conditioning note.)
+        # Conditioning branch — upstream `StochasticDurationPredictor.forward`
+        # lines 96-101 verbatim (no `* x_mask` on `pre`, add `cond(g)` before
+        # `convs`, only `proj * x_mask` after `proj`).
+        x = self._m.pre(x)
+        if g is not None and hasattr(self._m, "cond"):
+            x = x + self._m.cond(g)
+        x = self._m.convs(x, x_mask)
+        x = self._m.proj(x) * x_mask
 
         # Inference: sample from Gaussian prior, invert the flow.
         b = x.shape[0]
         t = x.shape[2]
         z = torch.randn(b, 2, t, dtype=x.dtype, device=x.device) * noise_scale_w
-        for flow in reversed(self._m.flows):
-            z = flow(z, x_mask, g=h, reverse=True)
+        # Upstream: `flows = list(reversed(self.flows))[:-2] + [flows[-1]]`.
+        # `self._m.flows` is `[EA, CF, Flip, CF, Flip, CF, Flip, CF, Flip]`
+        # (9 items for n_flows=4). Reversed then `[:-2] + [-1]` drops the
+        # second-to-last item of the reversed list — which corresponds to
+        # the FIRST ConvFlow in forward order (upstream `sdp.flows.1`) —
+        # and keeps the trailing `EA`. This mirrors Rust
+        # `SbV2SDP::sample`'s `self.flows[1..].iter().rev()` slice (Rust
+        # stores only the 4 ConvFlows post-conversion, so the "skip first"
+        # translates directly there).
+        flows = list(reversed(self._m.flows))
+        flows = flows[:-2] + [flows[-1]]
+        for flow in flows:
+            z = flow(z, x_mask, g=x, reverse=True)
         logw = z[:, 0, :]                    # [B, T_text]
         w = torch.exp(logw) * x_mask.squeeze(1)  # [B, T_text]
         # Round-up-to-integer durations (upstream convention), still f32

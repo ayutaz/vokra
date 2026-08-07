@@ -866,12 +866,66 @@ pub fn convert_sbv2_file(
     // `n_branches` available during tensor classification. (The hparam
     // chunk is still written at the very end of the tensor loop, so the
     // final metadata layout is unchanged from before Task 30.)
-    let cfg = if let Some(config_path) = config_side_car {
+    let mut cfg = if let Some(config_path) = config_side_car {
         let config_bytes = std::fs::read(config_path)?;
         Some(SbV2Config::parse(&config_bytes)?)
     } else {
         None
     };
+
+    // Blocker 2c follow-up (2026-08-08): shape-recover `n_sdp_layers` from
+    // the actual `sdp.flows.<odd>.pre.weight` tensor set instead of trusting
+    // the config side-car. Upstream `StochasticDurationPredictor.__init__(...,
+    // n_flows=4)` stores 4 ConvFlows at `sdp.flows.{1, 3, 5, 7}`. The prep
+    // script (`tools/parity/sbv2_prepare_checkpoint.py`) shipped a fallback
+    // `n_sdp_layers = 3` — meant for the DDS-net inner depth (`n_layers_dp`)
+    // but wired to the ConvFlow-count metadata slot, off by one — so before
+    // this shape-recovery landed, the real base ckpt's fourth ConvFlow
+    // (`sdp.flows.7.*`) was never loaded, and Rust `SbV2SDP::sample`'s
+    // reverse walk had one fewer layer than upstream, producing runaway
+    // durations (max=16066, sum=47914 on a 8-phoneme "テスト" test — see
+    // that fn's flow-order comment for the full trace). Follows the same
+    // shape-recovery pattern the workflow already uses for `d_speaker` /
+    // `n_speakers` / `decoder_upsample_kernel_sizes` (see
+    // `.github/workflows/parity-sbv2-real.yml`'s "shape-recover" step).
+    if let Some(cfg_mut) = cfg.as_mut() {
+        // Count `sdp.flows.<odd>.pre.weight` entries — the definitive
+        // per-ConvFlow marker (every ConvFlow has exactly one `pre.weight`
+        // tensor; even indices are `Flip` layers with no parameters, so
+        // they never appear; the odd-index sparse indexing collapses to a
+        // dense count via `n_flows = odd_index_count`).
+        let mut sdp_flow_count = 0_u32;
+        for t in st.tensors() {
+            let name = t.name.as_str();
+            let Some(rest) = name.strip_prefix("sdp.flows.") else {
+                continue;
+            };
+            let Some((idx_str, tail)) = rest.split_once('.') else {
+                continue;
+            };
+            if tail != "pre.weight" {
+                continue;
+            }
+            let Ok(idx) = idx_str.parse::<usize>() else {
+                continue;
+            };
+            if idx % 2 == 1 {
+                sdp_flow_count += 1;
+            }
+        }
+        if sdp_flow_count > 0 && sdp_flow_count != cfg_mut.n_sdp_layers {
+            eprintln!(
+                "convert_sbv2: shape-recovering vokra.sbv2.n_sdp_layers: config \
+                 declared {} but the input safetensors carries {sdp_flow_count} \
+                 `sdp.flows.<odd>.pre.weight` tensors — overriding to {sdp_flow_count} \
+                 so all ConvFlows are loaded (upstream `StochasticDurationPredictor` \
+                 `n_flows`, see docstring).",
+                cfg_mut.n_sdp_layers,
+            );
+            cfg_mut.n_sdp_layers = sdp_flow_count;
+        }
+    }
+
     let n_resblock_branches = cfg.as_ref().map(|c| c.decoder_resblock_kernel_sizes.len());
 
     // Pre-scan: tensors that will be consumed as a weight_v sibling of a

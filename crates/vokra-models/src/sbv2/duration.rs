@@ -737,9 +737,17 @@ fn softmax(x: &[f32; RQS_NUM_BINS]) -> [f32; RQS_NUM_BINS] {
 ///    `proj` 1×1 conv, yielding the SDP body `[d_hidden, T]` channel-major.
 /// 2. Sampling a 2-channel Gaussian latent `z ~ N(0, 1) * noise_scale_w`
 ///    (deterministic all-zero when `noise_scale_w == 0.0`).
-/// 3. Walking the reverse flow: for each stored ConvFlow (in
-///    reverse-inference order), `flip(z); z = flow.reverse(z, cond=body)`;
-///    then a final `flip(z)`; then the ElementwiseAffine reverse.
+/// 3. Walking the reverse flow — mirror of upstream
+///    `StochasticDurationPredictor.forward(reverse=True)`'s
+///    `flows = list(reversed(self.flows)); flows = flows[:-2] +
+///    [flows[-1]]` slice: iterate `self.flows[1..]` in reverse (dropping
+///    the "useless vflow" at `self.flows[0]` = upstream `sdp.flows.1`),
+///    calling `flip(z); z = flow.reverse(z, cond=body)` for each; then a
+///    final `flip(z)`; then the ElementwiseAffine reverse. Skipping the
+///    first ConvFlow matches upstream — the layer receives no gradients
+///    during training and applying it at inference produces divergent
+///    log-durations. See [`sample`](Self::sample)'s in-body comment for
+///    the full trace.
 /// 4. Returning `duration[p] = exp(z[0, p]).ceil().max(1)` as `i32`
 ///    (VITS-family log-duration convention — mirrors
 ///    `piper_plus::duration::DurationPredictor`'s caller-side
@@ -767,10 +775,15 @@ pub struct SbV2SDP {
     proj_b: Vec<f32>, // `[d_hidden]`
     // Flow stack:
     ea: ElementwiseAffine,
-    /// ConvFlows in **reverse-inference order** (last-in-forward → first).
-    /// Real SBV2 v2 stores them at `sdp.flows.{1,3,5,7}` and inference
-    /// walks 7 → 5 → 3 → 1 — see `sdp.flows.7`'s upstream `reversed(...)`
-    /// call in `models.py::StochasticDurationPredictor.forward` else-branch.
+    /// ConvFlows stored in **forward-index order** — i.e. `flows[0]` maps
+    /// to upstream `sdp.flows.1` (the "useless vflow" skipped at inference),
+    /// `flows[1]` to `sdp.flows.3`, `flows[2]` to `sdp.flows.5`, `flows[3]`
+    /// to `sdp.flows.7`. See [`sample`](Self::sample) for the reverse-order
+    /// walk that mirrors upstream's `list(reversed(...))[:-2] + [flows[-1]]`
+    /// slice. The `Vec` is loader-order to keep the converter's dense re-
+    /// index `sbv2.sdp.flow.{0..n}` load path a straight `for i in 0..n`
+    /// with no additional `rev()` at load time — reversing at `sample` time
+    /// keeps the load path a simple `push`.
     flows: Vec<ConvFlow>,
 }
 
@@ -976,15 +989,45 @@ impl SbV2SDP {
             }
         }
 
-        // 3. Reverse flow: for each stored ConvFlow (in the caller-supplied
-        // reverse-inference order), flip then reverse; then final flip;
-        // then EA reverse. Matches `piper_plus::duration::DurationPredictor::logw`
-        // and upstream `models.py::SDP.forward(reverse=True)`.
-        for flow in &self.flows {
+        // 3. Reverse flow — matches upstream
+        // `models.py::StochasticDurationPredictor.forward(reverse=True)`:
+        //
+        //     flows = list(reversed(self.flows))
+        //     flows = flows[:-2] + [flows[-1]]  # remove a useless vflow
+        //     for flow in flows:
+        //         z = flow(z, x_mask, g=x, reverse=reverse)
+        //
+        // Upstream `self.flows` is `[EA, CF, Flip, CF, Flip, CF, Flip, CF, Flip]`
+        // (9 items — 1 ElementwiseAffine + 4 (ConvFlow, Flip) pairs). Reversed
+        // then `[:-2] + [-1]` drops the SECOND-TO-LAST item of the reversed
+        // list, which is the FIRST ConvFlow in forward order (upstream
+        // `sdp.flows.1`). At inference the "useless vflow" is skipped because
+        // it never received gradients (upstream only trains through the flow
+        // path when computing NLL in the non-reverse branch, and index-1 is
+        // the layer that ends up shielded by the interleaved Flips).
+        //
+        // Layout: the converter densifies upstream `sdp.flows.{1, 3, 5, 7}`
+        // into `sbv2.sdp.flow.{0, 1, 2, 3}`, and the loader pushes them in
+        // that order, so `self.flows[0]` == upstream `sdp.flows.1` == the
+        // useless vflow that must be skipped, and `self.flows[3]` == upstream
+        // `sdp.flows.7` == the first ConvFlow applied at inference. We walk
+        // `flows[1..]` in reverse (giving `flows[3], flows[2], flows[1]`),
+        // each preceded by a Flip, then one final Flip, then EA reverse.
+        // Sequence for n_flows=4: `Flip, flows[3], Flip, flows[2], Flip,
+        // flows[1], Flip, EA` = 4 Flips + 3 ConvFlows + 1 EA = 8 items,
+        // matching upstream's combined list length exactly.
+        //
+        // n_flows == 0 (empty SDP for `SbV2SDP::empty`) skips the whole
+        // Flip/ConvFlow chain and jumps straight to EA — matches upstream
+        // when `n_flows=0` reduces the 9-item list to `[EA]` and the
+        // `[:-2] + [-1]` slice degenerates to `[EA]`.
+        if let Some((_useless_vflow, rest)) = self.flows.split_first() {
+            for flow in rest.iter().rev() {
+                flip2(&mut z, text_seq_len);
+                z = flow.reverse(&z, text_seq_len, &body);
+            }
             flip2(&mut z, text_seq_len);
-            z = flow.reverse(&z, text_seq_len, &body);
         }
-        flip2(&mut z, text_seq_len);
         let z = self.ea.reverse(&z, text_seq_len);
 
         // 4. logw = z[0, :]; duration = ceil(exp(logw)).max(1).
