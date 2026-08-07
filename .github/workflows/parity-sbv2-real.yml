@@ -203,9 +203,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Provision parity venv (huggingface_hub + torch + transformers + spm/protobuf)
-        # Versions mirror parity-whisper-real.yml's own already-vetted pins
-        # (torch CPU-only — no NVIDIA GPU on this runner; the transformers
-        # range keeps the DeBERTa v2/v3 AutoModel path importable).
+        # torch>=2.6 は transformers 4.57+ が `torch.load(weights_only=True)`
+        # を呼ぶ際にハードチェックする ("Due to a serious vulnerability issue
+        # in torch.load, even with weights_only=True, we now require users
+        # to upgrade torch to at least v2.6")。CI で transformers 4.57.6 が
+        # 引かれるため torch は 2.6+ でないと dumper が checkpoint load で
+        # fail する。CPU-only なので extra-index-url は不要。
         #
         # `sentencepiece` + `protobuf` は DeBERTa v3 の spm tokenizer が
         # `AutoTokenizer.from_pretrained` 経由で読める前提条件 (transformers
@@ -223,7 +226,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install \
             "huggingface_hub>=0.24,<1" \
-            "torch==2.4.*" \
+            "torch>=2.6,<3" \
             "transformers>=4.44,<4.60" \
             "sentencepiece>=0.2,<1" \
             "protobuf>=4,<7"
