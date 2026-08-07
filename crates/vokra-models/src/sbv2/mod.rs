@@ -667,113 +667,107 @@ impl SbV2Model {
             ),
         };
 
-        // 4. BERT bridge
+        // 4. BERT bridge — build `hidden_for_flow` (matches Python
+        // reference `bert_bridge_out = projected + text_hidden`, used
+        // downstream by `length_regulate` at step 7). Keep `text_hidden`
+        // pristine so step 6 feeds SDP the raw encoder output — matching
+        // `tools/parity/sbv2_dump_reference.py::run_pipeline_body`'s step
+        // 10 which calls `sdp.sample(text_hidden_transposed.unsqueeze(0),
+        // ...)` unmodified. Bug 4 fix (2026-08-08 handoff:
+        // docs/handoff/sbv2-sdp-debug-2026-08-08.md): the pre-fix code
+        // accumulated bridge + speaker + style into a shared `hidden`
+        // buffer that then fed SDP, which is architecturally wrong for
+        // three reasons all matching the Python reference:
+        // (a) Python feeds RAW text_hidden to SDP (not text_hidden +
+        //     bridge). SDP has its own `.cond(g)` for speaker
+        //     conditioning (see SbV2SDP::body — pre → +cond(g) → DDS →
+        //     proj), so it does not need speaker broadcast-added at the
+        //     call site.
+        // (b) Python's length_regulate input is `bert_bridge_out`
+        //     (text_hidden + bridge only — NO speaker, NO style). Speaker
+        //     enters the flow via per-block `spk_emb_linear` internally.
+        // (c) Python's dumper explicitly notes "style is dumped for the
+        //     manifest slot but not otherwise mixed here" — style_projected
+        //     is NOT broadcast-added into text_hidden.
+        // The pre-fix Rust code produced `hidden` values in ±33 (bridge
+        // ~±4.5 + spk_emb_linear bias ~±30) that saturated the SDP's
+        // RQS spline softmax, producing runaway durations
+        // (sum=24229/max=12036 on 8-phoneme "テスト"). Feeding SDP raw
+        // text_hidden (±0.9 magnitude, bit-identical to Python
+        // reference) restores sane durations (sum≤30/max≤10 range).
         let bridged =
             self.bert_bridge
                 .forward(&bert_hidden, phon.phoneme_ids.len(), bert_ids.len());
-        let mut hidden = text_hidden;
         debug_assert_eq!(
-            hidden.len(),
+            text_hidden.len(),
             bridged.len(),
             "SbV2Model::synthesize: text_encoder hidden width must equal bert_bridge's \
              projected width (BertBridge's d_target must equal SbV2TextEncoder's d_model — \
              see SbV2Model's struct doc)"
         );
-        for (h, &b) in hidden.iter_mut().zip(bridged.iter()) {
+        let mut hidden_for_flow = text_hidden.clone();
+        for (h, &b) in hidden_for_flow.iter_mut().zip(bridged.iter()) {
             *h += b;
         }
 
-        // 5. Speaker + style (Blocker 3: dispatch on request+model).
+        // 5. Speaker + style — derive `speaker_e_flow` (the raw
+        // `[d_speaker]` conditioning vector consumed by SDP's `.cond(g)`
+        // at step 6 and by the flow's per-block `spk_emb_linear` at step
+        // 8), but do NOT broadcast-add speaker/style projections into
+        // `text_hidden` or `hidden_for_flow`. See step 4's Bug 4 fix
+        // comment for the primary-source reasoning; the dispatch table
+        // below is unchanged except for the omitted broadcast-add loops.
         //
-        // The base ckpt has no per-speaker embedding table (scout report
-        // §1); real-ckpt models therefore carry an
-        // [`ExternalSpeakerProjection`] and consume a caller-supplied
-        // external `[d_speaker]` vector via
-        // [`SbV2SynthRequest::speaker_embedding`]. Synthetic models
-        // (which have no projection) fall back to the legacy
-        // [`SpeakerEmbedding::lookup`] path.
+        // The ExternalSpeakerProjection is still called on each real-ckpt
+        // path arm so its shape validation (loud FR-EX-08 error on
+        // wrong-length caller input, exercised by
+        // `sbv2_speaker_external::synthesize_with_wrong_length_embedding_is_invalid_argument`)
+        // still fires — the returned `[d_model]` projected vector is
+        // then intentionally DISCARDED (its former use was the broadcast
+        // add that this fix removes).
         //
-        // | request.speaker_embedding | model.speaker_projection | path                                                                                      |
-        // |---------------------------|--------------------------|--------------------------------------------------------------------------------------------|
-        // | `Some(vec)`               | `Some(proj)`             | project `vec -> [d_model]`, broadcast-add; pass `vec` to `flow.inverse`                   |
-        // | `None`                    | `Some(proj)`             | project all-zero `[d_speaker] -> [d_model]` (bias only), broadcast-add; pass zeros to flow |
-        // | `Some(_)`                 | `None`                   | loud [`VokraError::InvalidArgument`] (silent discard of caller data violates FR-EX-08)     |
-        // | `None`                    | `None`                   | legacy: `speaker_embed.lookup(speaker_id)`, broadcast-add, pass to flow                    |
-        //
-        // The returned `speaker_e_flow: Vec<f32>` is the vector to pass
-        // to [`SbV2Flow::inverse`]. It is `[d_speaker]`-sized in every
-        // branch (real ckpt: 512; synthetic legacy: d_speaker == d_model
-        // == 8), matching the flow layer's `speaker_proj`'s row width.
+        // | request.speaker_embedding | model.speaker_projection | path                                                            |
+        // |---------------------------|--------------------------|-----------------------------------------------------------------|
+        // | `Some(vec)`               | `Some(proj)`             | validate via `proj.forward(vec)`; pass `vec` to SDP.g and flow |
+        // | `None`                    | `Some(proj)`             | validate via `proj.forward(zeros)`; pass zeros to SDP.g and flow |
+        // | `Some(_)`                 | `None`                   | loud `VokraError::InvalidArgument` (FR-EX-08)                  |
+        // | `None`                    | `None`                   | legacy: `speaker_embed.lookup(speaker_id)`, pass to SDP.g and flow |
         let d_model = self.text_encoder.d_model();
         let phoneme_count = phon.phoneme_ids.len();
-        // `speaker_e_flow` = the vector we pass to the flow's per-layer
-        // `speaker_proj: [half_d_z, d_speaker]` (external ckpt path) or to
-        // the SDP's `gin`-wide conditioning slot (legacy synthetic path).
-        // For the external-projection path, the SDP consumes the
-        // *projected* d_model-wide vector (its `gin` equals d_hidden ==
-        // d_model post-Blocker-2c), so we keep the projected copy — the
-        // raw d_speaker vector is only used for the flow's `speaker_proj`,
-        // handled via `g_stopgap` composition in step 8 below.
         let speaker_e_flow: Vec<f32> = match (
             req.speaker_embedding.as_deref(),
             self.speaker_projection.as_ref(),
         ) {
             (Some(ext), Some(proj)) => {
                 // Real-ckpt path: caller-supplied external embedding.
-                // `proj.forward` loudly rejects wrong-length input
-                // (FR-EX-08). The projected `[d_model]` result
-                // broadcast-adds into every phoneme row of `hidden`.
-                // We RETURN the raw `[d_speaker]` vector for downstream
-                // SDP / flow consumption — SDP's own `.cond` layer does
-                // Conv1d(d_speaker, d_hidden, 1) internally, and the
-                // flow's per-layer `speaker_proj` is `[half_d_z, d_speaker]`.
-                // Neither wants the pre-projected d_model version.
+                // `proj.forward` still loudly rejects wrong-length input
+                // (FR-EX-08). The projected `[d_model]` result is
+                // discarded — see step 5's Bug 4 fix comment.
                 let projected = proj.forward(ext)?;
                 debug_assert_eq!(
                     projected.len(),
                     d_model,
                     "SbV2Model::synthesize: ExternalSpeakerProjection's d_out must equal \
-                         SbV2TextEncoder's d_model for the broadcast add below — see \
-                         SbV2Model's struct doc"
+                         SbV2TextEncoder's d_model — see SbV2Model's struct doc"
                 );
-                for i in 0..phoneme_count {
-                    for (d, &s) in projected.iter().enumerate() {
-                        hidden[i * d_model + d] += s;
-                    }
-                }
+                let _ = projected; // discard; see Bug 4 fix comment
                 ext.to_vec()
             }
             (None, Some(proj)) => {
-                // Deterministic zero-shot default (matches
-                // `SynthesisRequest::speaker_embedding`'s "None uses
-                // the zero vector" contract). The projection still
-                // contributes its bias to the resulting output.
+                // Deterministic zero-shot default. Projected result
+                // discarded — see Bug 4 fix.
                 let zeros = vec![0.0_f32; proj.d_in()];
                 let projected = proj.forward(&zeros)?;
                 debug_assert_eq!(
                     projected.len(),
                     d_model,
                     "SbV2Model::synthesize: ExternalSpeakerProjection's d_out must equal \
-                         SbV2TextEncoder's d_model for the broadcast add below — see \
-                         SbV2Model's struct doc"
+                         SbV2TextEncoder's d_model — see SbV2Model's struct doc"
                 );
-                for i in 0..phoneme_count {
-                    for (d, &s) in projected.iter().enumerate() {
-                        hidden[i * d_model + d] += s;
-                    }
-                }
+                let _ = projected; // discard; see Bug 4 fix comment
                 zeros
             }
             (Some(_), None) => {
-                // Silent discard would produce
-                // plausible-looking-but-wrong-speaker audio — exactly
-                // the class of failure FR-EX-08 forbids. Same
-                // loud-error posture as the pre-Blocker-3
-                // `TtsEngine::synthesize` adapter used to have for
-                // this case, moved down into the pipeline so both
-                // entry points (inherent `synthesize` and
-                // `TtsEngine::synthesize`) surface the identical
-                // error.
                 return Err(VokraError::InvalidArgument(
                     "SbV2Model::synthesize: caller-supplied speaker_embedding was provided \
                          but this model carries no ExternalSpeakerProjection — attach one via \
@@ -785,14 +779,9 @@ impl SbV2Model {
                 ));
             }
             (None, None) => {
-                // Legacy synthetic-only path — every pre-Blocker-3
-                // synthetic test hits this branch. Preserves the
-                // exact byte-level output of
-                // `parity_sbv2_synthetic::synthetic_shape_invariants_hold`
-                // (which uses `synthetic_for_test`, whose
-                // `speaker_embed` is a real
-                // [`SpeakerEmbedding::from_table`] with
-                // `d_speaker == d_model`).
+                // Legacy synthetic-only path: keep the lookup call so
+                // `req.speaker_id` out-of-range still surfaces the
+                // documented `SpeakerEmbedding::lookup` error.
                 let speaker_e = self.speaker_embed.lookup(req.speaker_id)?;
                 debug_assert_eq!(
                     speaker_e.len(),
@@ -801,16 +790,23 @@ impl SbV2Model {
                          SbV2TextEncoder's d_model on the legacy lookup path — see \
                          SbV2Model's struct doc"
                 );
-                for i in 0..phoneme_count {
-                    for (d, &s) in speaker_e.iter().enumerate() {
-                        hidden[i * d_model + d] += s;
-                    }
-                }
                 speaker_e.to_vec()
             }
         };
+        // Style injector: Python reference explicitly does NOT mix style
+        // into text_hidden ("style is dumped for the manifest slot but
+        // not otherwise mixed here" — sbv2_dump_reference.py step 9). We
+        // still call `inject` on `hidden_for_flow` because on synthetic
+        // paths `inject` is a no-op (all-zero weights) and on real-ckpt
+        // paths (once wired) the style might legitimately mix into the
+        // flow input via `emb_g_style`. Base ckpt has no style tensors
+        // so `inject` is bias-only there. This matches the pre-fix
+        // behavior for the flow-input path; the SDP-input path was the
+        // one that had to change. TODO(sbv2-follow-up): validate this
+        // matches upstream once fine-tune ckpts with real
+        // `emb_g_style.*` tensors are available.
         self.style_injector
-            .inject(&mut hidden, phoneme_count, &req.style_vec);
+            .inject(&mut hidden_for_flow, phoneme_count, &req.style_vec);
 
         // 6. SDP -> durations
         //
@@ -845,8 +841,18 @@ impl SbV2Model {
             &sdp_g_owned
         };
         let mut rng = GaussianSplitMix64::new(req.seed);
+        // Bug 4 fix (2026-08-08): feed SDP the RAW text_hidden (encoder
+        // output), NOT the accumulated bridge+speaker+style buffer.
+        // Matches Python `sbv2_dump_reference.py::run_pipeline_body`
+        // step 10 which calls `sdp.sample(text_hidden_transposed, ...)`.
+        // Empirical proof of correctness at time of fix: an env-var
+        // override that replaced `hidden` with the reference dump's
+        // `text_hidden.bin` (magnitude ±0.9) produced sane durations
+        // (sum=28/max=10) matching Python reference (sum=26/max=8),
+        // while the pre-fix `hidden` (magnitude ±33 from broadcast
+        // adds) produced runaway durations (sum=24229/max=12036).
         let mut durations = self.sdp.sample(
-            &hidden,
+            &text_hidden,
             phon.phoneme_ids.len(),
             sdp_g,
             &mut rng,
@@ -911,8 +917,13 @@ impl SbV2Model {
             capped_any,
         );
 
-        // 7. Length regulate
-        let mel_hidden = length_regulate(&hidden, &durations, d_model);
+        // 7. Length regulate — uses `hidden_for_flow` (= text_hidden +
+        // bridge, matching Python `bert_bridge_out`). Bug 4 fix
+        // (2026-08-08): pre-fix code fed the accumulated `hidden` which
+        // included speaker/style broadcast-adds; Python reference does
+        // not add speaker/style here (they enter via flow's per-block
+        // spk_emb_linear and decoder's `dec.cond` respectively).
+        let mel_hidden = length_regulate(&hidden_for_flow, &durations, d_model);
         let mel_seq_len = durations.iter().sum::<i32>() as usize;
         eprintln!(
             "[sbv2-synth-trace] mel_seq_len={} d_model={} mel_hidden.len()={}",
