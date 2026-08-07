@@ -856,9 +856,30 @@ impl SbV2Model {
             *d = ((*d as f32) / req.speed).max(1.0) as i32;
         }
 
+        // TEMP DEBUG (2026-08-08): trace SDP output to catch runaway
+        // durations that inflate mel_seq_len (46 GiB alloc in CI run
+        // 31197123061). Remove once root-cause is fixed.
+        eprintln!(
+            "[sbv2-synth-trace] SDP durations n={} min={} max={} sum={} \
+             (phoneme_ids.len={}, noise_scale_w={}, speed={})",
+            durations.len(),
+            durations.iter().copied().min().unwrap_or(0),
+            durations.iter().copied().max().unwrap_or(0),
+            durations.iter().copied().sum::<i32>(),
+            phon.phoneme_ids.len(),
+            req.noise_scale_w,
+            req.speed,
+        );
+
         // 7. Length regulate
         let mel_hidden = length_regulate(&hidden, &durations, d_model);
         let mel_seq_len = durations.iter().sum::<i32>() as usize;
+        eprintln!(
+            "[sbv2-synth-trace] mel_seq_len={} d_model={} mel_hidden.len()={}",
+            mel_seq_len,
+            d_model,
+            mel_hidden.len(),
+        );
         debug_assert!(
             mel_seq_len > 0,
             "SbV2Model::synthesize: mel_seq_len must be positive (every SbV2SDP::sample \
