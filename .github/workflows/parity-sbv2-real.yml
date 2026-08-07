@@ -417,6 +417,26 @@ jobs:
           info = header.get("emb_g.weight")
           if info and "shape" in info and len(info["shape"]) == 2:
               shape_updates["n_speakers"] = int(info["shape"][0])
+          # decoder_upsample_kernel_sizes <- dec.ups.{i}.weight_v.shape[-1]
+          # Real SBV2 v2 base uses [16,16,8,2,2] (dumper Blocker 8 log
+          # confirms this on 2026-08-07 CI); the config side-car's
+          # --clean-room-defaults emits [16,16,4,4,4] (HiFi-GAN 2*stride
+          # rule). The Rust HiFi-GAN loader cross-checks each stage's
+          # weight.len() == in_ch * out_ch * kernel, so a mismatched
+          # kernel value hard-fails with "upsample_weights[2].weight.len()
+          # 65536 != in_ch*out_ch*kernel 32768" (run 31198620751).
+          recovered_kernels = []
+          for i in range(5):  # 5-stage HiFi-GAN 44.1 kHz ladder
+              key_v = f"dec.ups.{i}.weight_v"
+              key_plain = f"dec.ups.{i}.weight"
+              info = header.get(key_v) or header.get(key_plain)
+              if info and "shape" in info and len(info["shape"]) == 3:
+                  recovered_kernels.append(int(info["shape"][-1]))
+              else:
+                  recovered_kernels = None  # abort — incomplete recovery
+                  break
+          if recovered_kernels is not None:
+              shape_updates["decoder_upsample_kernel_sizes"] = recovered_kernels
           for k, v in shape_updates.items():
               old = cfg.get(k)
               if old != v:
