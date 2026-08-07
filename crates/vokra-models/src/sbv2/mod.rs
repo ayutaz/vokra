@@ -1364,6 +1364,15 @@ impl SbV2Model {
                 .collect::<Result<Vec<_>>>()
         };
         let load_tensor_f32 = |name: &str| -> Result<Vec<f32>> {
+            // TEMP DEBUG (2026-08-08, run 31169002166 "memory allocation of
+            // 46638721600 bytes failed"): log every tensor before the alloc
+            // so CI can pinpoint which name blows up. Removed once the
+            // root cause is fixed.
+            if let Some(info) = main.tensor_info(name) {
+                let dims = info.dimensions.clone();
+                let elems: u64 = dims.iter().copied().fold(1u64, u64::saturating_mul);
+                eprintln!("[sbv2-load-trace] {name}: shape={dims:?} elems={elems}");
+            }
             main.tensor_f32(name).map_err(|e| {
                 VokraError::ModelLoad(format!("SbV2Model::from_gguf: tensor {name}: {e}"))
             })
