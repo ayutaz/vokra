@@ -856,12 +856,51 @@ impl SbV2Model {
             *d = ((*d as f32) / req.speed).max(1.0) as i32;
         }
 
+        // OOM stopgap (2026-08-08, follow-up to run 31197123061 46.6 GiB
+        // alloc = flow attention [mel_seq_len × mel_seq_len × f32]):
+        // clamp each phoneme's duration to a per-phoneme sanity ceiling
+        // so a broken SDP forward cannot blow the runtime up. The real
+        // SBV2 v2 SDP is a DDS-net + ConvFlow StochasticDurationPredictor
+        // whose Rust port (`SbV2SDP`) is currently a scalar-affine
+        // simplification (see this module's own module doc; §Blocker 7 /
+        // Blocker 12 tracks the rewrite). On synthetic paths the two
+        // agree because both are trained together; on real weights the
+        // simplification returns garbage — CI observed max=26539 for a
+        // 4-phoneme "テスト" input (sum=107980 → 46 GiB flow attention
+        // matrix → SIGABRT). Cap here is only a safety fuse; a parity
+        // assertion still fires on the numeric delta downstream — this
+        // stopgap turns an unbounded panic into a bounded parity red so
+        // CI can actually report the SDP-simplification gap instead of
+        // OOM-ing before the assertion runs.
+        //
+        // Ceiling 500 = ~5.8s at 86 Hz frame rate per phoneme (way above
+        // real speech's ~10-30-frame span), so it never truncates a real
+        // duration a working SDP would produce — only the runaway values
+        // from the simplification.
+        const PER_PHONEME_DURATION_CEILING: i32 = 500;
+        let capped_any = durations.iter().any(|&d| d > PER_PHONEME_DURATION_CEILING);
+        if capped_any {
+            let original_sum: i32 = durations.iter().copied().sum();
+            let original_max: i32 = durations.iter().copied().max().unwrap_or(0);
+            for d in &mut durations {
+                *d = (*d).min(PER_PHONEME_DURATION_CEILING);
+            }
+            eprintln!(
+                "[sbv2-synth-warn] SbV2SDP produced runaway durations \
+                 (max={original_max}, sum={original_sum}) — clamped to \
+                 per-phoneme ceiling {PER_PHONEME_DURATION_CEILING}. Real SBV2 SDP is a \
+                 DDS-net + ConvFlow SDP whose Rust port is a scalar-affine \
+                 simplification (see sbv2/mod.rs module doc Blocker 7). \
+                 Downstream parity WILL fail — this cap only prevents OOM."
+            );
+        }
+
         // TEMP DEBUG (2026-08-08): trace SDP output to catch runaway
         // durations that inflate mel_seq_len (46 GiB alloc in CI run
         // 31197123061). Remove once root-cause is fixed.
         eprintln!(
             "[sbv2-synth-trace] SDP durations n={} min={} max={} sum={} \
-             (phoneme_ids.len={}, noise_scale_w={}, speed={})",
+             (phoneme_ids.len={}, noise_scale_w={}, speed={}) capped={}",
             durations.len(),
             durations.iter().copied().min().unwrap_or(0),
             durations.iter().copied().max().unwrap_or(0),
@@ -869,6 +908,7 @@ impl SbV2Model {
             phon.phoneme_ids.len(),
             req.noise_scale_w,
             req.speed,
+            capped_any,
         );
 
         // 7. Length regulate
