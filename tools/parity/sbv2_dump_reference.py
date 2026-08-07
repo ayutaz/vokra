@@ -1615,6 +1615,37 @@ def build_generator(state_dict: dict, torch):
             "config resolver to remove this drift."
         )
 
+    # Recover `gin_channels` from `dec.cond.weight` shape (same Blocker 8
+    # pattern as `upsample_kernel_sizes`, extended 2026-08-07): the real
+    # SBV2 v2 base checkpoint has `dec.cond.weight` shape
+    # `[out_channels, gin_channels, kernel_size] = [512, 512, 1]`
+    # (raw d_speaker widened to 512 for the multi-speaker path), while the
+    # vanilla VITS default `D_SPEAKER = 256` gives a `[512, 256, 1]`
+    # Conv1d — a size mismatch on `load_state_dict`. Trust the checkpoint
+    # over the config default (FR-EX-08 no invention). If `cond.weight`
+    # is absent (single-speaker VITS SKU with no cond conv), fall back to
+    # 0 which upstream Generator treats as "no gin".
+    cond_key = "cond.weight"
+    if cond_key in dec_state:
+        cond_w = dec_state[cond_key]
+        if cond_w.dim() != 3:
+            sys.exit(
+                f"{LOG_PREFIX} decoder: `dec.cond.weight` shape "
+                f"{tuple(cond_w.shape)} unexpected (expected 3D "
+                "[out_channels, gin_channels, kernel_size])."
+            )
+        recovered_gin = int(cond_w.shape[1])
+    else:
+        recovered_gin = 0
+
+    if recovered_gin != D_SPEAKER:
+        print(
+            f"{LOG_PREFIX} decoder: `gin_channels` from `dec.cond.weight` "
+            f"shape ({recovered_gin}) disagrees with config default "
+            f"D_SPEAKER={D_SPEAKER}. Using checkpoint value (Blocker 8 "
+            "pattern extended, FR-EX-08 no invention)."
+        )
+
     gen = Generator(
         initial_channel=D_MODEL,
         resblock=RESBLOCK_TYPE,
@@ -1623,7 +1654,7 @@ def build_generator(state_dict: dict, torch):
         upsample_rates=list(UPSAMPLE_RATES),
         upsample_initial_channel=UPSAMPLE_INITIAL_CHANNEL,
         upsample_kernel_sizes=recovered_kernels,
-        gin_channels=D_SPEAKER,
+        gin_channels=recovered_gin,
     ).eval()
 
     with torch.no_grad():
