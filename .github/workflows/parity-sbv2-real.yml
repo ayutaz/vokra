@@ -347,15 +347,29 @@ jobs:
         # ModelKind::as_arg() spellings (tests/fixtures/sbv2/README.md "3.
         # Convert to GGUF"). Multi-shard checkpoints are reported by
         # sbv2_prepare_checkpoint.py but not merged (its own documented
-        # limitation) — `sort | head -n1` below picks the first shard found,
-        # matching the common single-shard case; a genuinely sharded release
-        # needs an owner override, out of scope here.
+        # limitation).
+        #
+        # SBV2 v2 base checkpoints ship 3 safetensors siblings:
+        #   G_0.safetensors  — Generator (~1264 tensors, has enc_p.*)
+        #   D_0.safetensors  — Discriminator (~111 tensors, training-only)
+        #   WD_0.safetensors — Warmup Discriminator (~15 tensors)
+        # `find | sort` alphabetically picks D_0 (D < G < WD), i.e. the
+        # Discriminator, which lacks `enc_p.emb.weight` and every other
+        # inference-required tensor. The Rust loader then fails with
+        # "tensor sbv2.text_encoder.phoneme_embed not found in GGUF".
+        # Explicitly pin the Generator file so this doesn't recur.
         shell: bash
         run: |
           set -euo pipefail
 
-          sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name '*.safetensors' | sort | head -n1)"
+          sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name 'G_*.safetensors' | sort | head -n1)"
+          if [ -z "$sbv2_st" ]; then
+            # Fallback for SKUs that ship a single unqualified safetensors.
+            sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name '*.safetensors' \
+              -not -name 'D_*' -not -name 'WD_*' -not -name 'DUR_*' | sort | head -n1)"
+          fi
           test -n "$sbv2_st"
+          echo "[sbv2] picked Generator checkpoint: $sbv2_st"
           ./target/release/vokra-cli convert \
             --model sbv2 \
             --input "$sbv2_st" \
