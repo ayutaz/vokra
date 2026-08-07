@@ -269,8 +269,14 @@ jobs:
               repo_id=os.environ["BERT_JA_HF_REPO"],
               repo_type="model",
               local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v2-ja"),
-              # ku-nlp/deberta-v2-large-japanese-char-wwm ships safetensors.
-              allow_patterns=["*.safetensors", "*.json"],
+              # ku-nlp/deberta-v2-large-japanese-char-wwm ships safetensors +
+              # vocab.txt (JA char-level BertJapaneseTokenizer). vocab.txt is
+              # the tokenizer side-car `vokra-cli convert --model deberta-v2
+              # --tokenizer <vocab.txt>` needs to stamp `vokra.bert.tokenizer.*`
+              # metadata (SbertTokenizer::from_gguf hard-fails without it —
+              # see run 31167865478 "missing GGUF metadata key:
+              # vokra.bert.tokenizer.pieces").
+              allow_patterns=["*.safetensors", "*.json", "vocab.txt"],
           )
           snapshot_download(
               repo_id=os.environ["BERT_EN_HF_REPO"],
@@ -281,11 +287,16 @@ jobs:
               # converts it to safetensors via safetensors.torch.save_file
               # (widely-standard bin→safetensors bridge, mirrors what
               # tools/parity/*_prepare_checkpoint.py does across the repo).
+              # `*.model` = SentencePiece `spm.model` for the v3 tokenizer;
+              # a follow-up step extracts it to a JSON side-car via
+              # tools/parity/extract_spm_metadata.py so `vokra-cli convert
+              # --model deberta-v3 --tokenizer <spm.json>` can stamp the
+              # `vokra.bert.tokenizer.*` metadata the Rust loader requires.
               # Empirical measurement 2026-08-05 (PR #24 CI run 31021206483)
               # showed the safetensors-only allow_patterns pulled 0 weight
               # files and the downstream `find *.safetensors` failed with
               # `test -n ""` (exit 1). Adding .bin fixes the root cause.
-              allow_patterns=["*.safetensors", "*.bin", "*.json"],
+              allow_patterns=["*.safetensors", "*.bin", "*.json", "*.model"],
           )
           print("DeBERTa v2/v3 snapshot_download OK")
           PYEOF
@@ -361,6 +372,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Activate the parity venv so `python tools/parity/extract_spm_metadata.py`
+          # below can import `sentencepiece` + `google.protobuf`.
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
 
           sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name 'G_*.safetensors' | sort | head -n1)"
           if [ -z "$sbv2_st" ]; then
@@ -378,16 +393,35 @@ jobs:
 
           bert_ja_st="$(find "$RUNNER_TEMP/deberta-v2-ja" -name '*.safetensors' | sort | head -n1)"
           test -n "$bert_ja_st"
+          # v2 tokenizer = char-level BertJapaneseTokenizer, vocab.txt
+          # required for `vokra.bert.tokenizer.*` metadata stamping (see
+          # deberta-v2.rs KEY_TOKENIZER_PREFIX + KIND_BERT_JAPANESE_CHAR).
+          bert_ja_vocab="$RUNNER_TEMP/deberta-v2-ja/vocab.txt"
+          test -f "$bert_ja_vocab"
           ./target/release/vokra-cli convert \
             --model deberta-v2 \
             --input "$bert_ja_st" \
+            --tokenizer "$bert_ja_vocab" \
             --output "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf"
+
+          # v3 tokenizer = SentencePiece Unigram, spm.model. Convert to
+          # JSON side-car first (extract_spm_metadata.py) so vokra-cli
+          # doesn't need a protobuf runtime dep. Then pass the JSON via
+          # `--tokenizer`. The venv already has protobuf + sentencepiece
+          # (see "Provision parity venv" step); reuse the same venv here.
+          bert_en_spm="$RUNNER_TEMP/deberta-v3-en/spm.model"
+          test -f "$bert_en_spm"
+          bert_en_tok_json="$RUNNER_TEMP/deberta-v3-en/tokenizer_spm.json"
+          python tools/parity/extract_spm_metadata.py \
+            --input "$bert_en_spm" \
+            --output "$bert_en_tok_json"
 
           bert_en_st="$(find "$RUNNER_TEMP/deberta-v3-en" -name '*.safetensors' | sort | head -n1)"
           test -n "$bert_en_st"
           ./target/release/vokra-cli convert \
             --model deberta-v3 \
             --input "$bert_en_st" \
+            --tokenizer "$bert_en_tok_json" \
             --output "$FIXTURE_DIR/deberta-v3-large.gguf"
 
           ls -lh "$FIXTURE_DIR"/*.gguf
