@@ -753,7 +753,14 @@ impl SbV2Model {
         // | `Some(_)`                 | `None`                   | loud `VokraError::InvalidArgument` (FR-EX-08)                  |
         // | `None`                    | `None`                   | legacy: `speaker_embed.lookup(speaker_id)`, pass to SDP.g and flow |
         let d_model = self.text_encoder.d_model();
-        let phoneme_count = phon.phoneme_ids.len();
+        // Post-STYLE-INJECTOR-fix (2026-08-09): the only pre-fix reader
+        // of `phoneme_count` in this synthesize body was the dropped
+        // `style_injector.inject(&mut hidden_for_flow, phoneme_count,
+        // &req.style_vec)` call. Prefixed with `_` so a future
+        // reintroduction of a phoneme-count-sized loop notices the
+        // rename; kept in scope so `cargo clippy -D warnings` stays
+        // green.
+        let _phoneme_count = phon.phoneme_ids.len();
         let speaker_e_flow: Vec<f32> = match (
             req.speaker_embedding.as_deref(),
             self.speaker_projection.as_ref(),
@@ -813,20 +820,36 @@ impl SbV2Model {
                 speaker_e.to_vec()
             }
         };
-        // Style injector: Python reference explicitly does NOT mix style
-        // into text_hidden ("style is dumped for the manifest slot but
-        // not otherwise mixed here" — sbv2_dump_reference.py step 9). We
-        // still call `inject` on `hidden_for_flow` because on synthetic
-        // paths `inject` is a no-op (all-zero weights) and on real-ckpt
-        // paths (once wired) the style might legitimately mix into the
-        // flow input via `emb_g_style`. Base ckpt has no style tensors
-        // so `inject` is bias-only there. This matches the pre-fix
-        // behavior for the flow-input path; the SDP-input path was the
-        // one that had to change. TODO(sbv2-follow-up): validate this
-        // matches upstream once fine-tune ckpts with real
-        // `emb_g_style.*` tensors are available.
-        self.style_injector
-            .inject(&mut hidden_for_flow, phoneme_count, &req.style_vec);
+        // STYLE-INJECTOR fix (2026-08-09): the Python reference
+        // (`sbv2_dump_reference.py` step 9) explicitly does NOT mix
+        // style into `text_hidden` on the base-checkpoint path — "style
+        // is dumped for the manifest slot but not otherwise mixed
+        // here". The pre-fix code called `self.style_injector.inject(
+        // &mut hidden_for_flow, ..)` unconditionally, a latent parity
+        // risk that base-ckpt tests missed because base ckpt ships
+        // all-zero style projections (identity injector).
+        //
+        // A future fine-tune SKU with real `emb_g_style.{weight,bias}`
+        // tensors would silently diverge from Python without any test
+        // catching it. Dropping the call matches the Python reference
+        // for the base-ckpt path AND for any future fine-tune (Python
+        // dumps but does not mix into the text branch either). If a
+        // future variant DOES need style mixed into the text branch,
+        // that is an owner-supplied ADR + real fine-tune ckpt
+        // introspection under a licensing-cleared upstream — not a
+        // silent Rust-side interpretation.
+        //
+        // `self.style_injector` remains held on `SbV2Model` so
+        // introspective test harnesses and future consumers keep the
+        // handle; it just no longer runs on this pipeline step.
+        //
+        // `req.style_vec` is still shape-validated by
+        // `SbV2Model::synthesize`'s callers and manifest-dumped by
+        // parity harnesses — dropping the injection call does not
+        // weaken the caller-supplied-data contract. `self.style_injector`
+        // is retained on the model so an introspective test harness or
+        // a future consumer can still call `.d_style()` / `.inject(..)`
+        // directly; only the pipeline's automatic call is dropped.
 
         // 6. SDP -> durations
         //
