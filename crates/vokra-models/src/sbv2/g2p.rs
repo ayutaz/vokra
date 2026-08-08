@@ -414,8 +414,22 @@ impl SbV2Phonemizer {
             // (`PhonemeTable::frame`), no word segmentation of its own.
             // Conservatively mark only the first emitted phoneme as a word
             // start.
-            // TODO(Task 17-19): tighten word-boundary detection when text
-            // encoder lands.
+            //
+            // COSMETIC-BUNDLE (2026-08-09): the pre-fix `TODO(Task 17-19):
+            // tighten word-boundary detection when text encoder lands` is
+            // now moot — the SBV2 v2 real-checkpoint text encoder consumes
+            // a `language_embed` [3, d_model] table (JA/EN/ZH one-hot),
+            // not the design-doc-guessed `wb_embed [2, d_model]` table
+            // (see `sbv2::text_encoder::N_LANGUAGES`'s "Formerly the SBV2
+            // v2 design doc §7 assumed a `word_boundary_emb` table" note
+            // for the M6 primary-source verification). `word_boundaries`
+            // is retained on the `PhonemizeResult` API only because it is
+            // honest linguistic output of the G2P stage and the
+            // parity-fixture format (`word_boundaries.bin` in
+            // `tests/parity_sbv2_real.rs`'s manifest schema) already
+            // documents it; no consumer inside this crate reads it, so
+            // the conservative first-only marking here is the correct
+            // steady-state behaviour, not a placeholder.
             wb.push(i == 0);
         }
         Ok(PhonemizeResult {
@@ -475,8 +489,13 @@ impl SbV2Phonemizer {
                 .copied()
                 .unwrap_or(self.sbv2_default_phoneme_id);
             ids.push(id);
-            // TODO(Task 17-19): tighten word-boundary detection when text
-            // encoder lands (see `phonemize_ja_via_piper`).
+            // COSMETIC-BUNDLE (2026-08-09): the pre-fix
+            // `TODO(Task 17-19): tighten word-boundary detection` is moot
+            // for the same M6 reason documented on `phonemize_ja_via_piper`
+            // — the SBV2 v2 text encoder consumes `language_embed`, not
+            // `wb_embed`. `word_boundaries` is API-retained solely for the
+            // parity-fixture format (`word_boundaries.bin`); no in-crate
+            // consumer reads it here.
             wb.push(i == 0);
         }
         let tones = vec![0u8; ids.len()];

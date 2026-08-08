@@ -2306,7 +2306,15 @@ impl SbV2Model {
         // future SKU shipping `d_hidden != d_model` would need a distinct
         // `vokra.sbv2.flow.d_hidden` key.
         let d_hidden_flow = d_model;
-        let d_head_flow = d_model.checked_div(n_heads).unwrap_or(0);
+        // COSMETIC-BUNDLE (2026-08-09): the pre-fix `.checked_div(...).unwrap_or(0)`
+        // silently returned `0` when `n_heads == 0` (letting a wrong-shape
+        // downstream `RelPositionMHA::new` fire only under `debug_assert!` —
+        // release builds silently produced garbage). `derive_flow_head_dim`'s
+        // `.expect(...)` is the loud-fail replacement; the `n_heads == 0`
+        // guard at the top of this fn (`vokra.sbv2.n_heads must be positive`)
+        // means the panic is unreachable on any successful load — this is
+        // defence in depth (FR-EX-08).
+        let d_head_flow = derive_flow_head_dim(d_model, n_heads);
         let mut flow_stack: Vec<FlowLayer> = Vec::with_capacity(n_flow_layers * 2);
         for i in 0..n_flow_layers {
             let p = format!("sbv2.flow.layer.{i}");
@@ -2999,4 +3007,61 @@ fn transpose_time_major_to_channel_major(buf: &[f32], rows: usize) -> Vec<f32> {
         }
     }
     out
+}
+
+/// Derive the per-head channel width for the SBV2 flow encoder stack from
+/// the model-wide `d_model` and `n_heads` metadata (COSMETIC-BUNDLE audit,
+/// 2026-08-09).
+///
+/// The upstream `n_heads == 0` guard inside
+/// [`SbV2Model::from_gguf`]'s early metadata validation loop (`if n_heads
+/// == 0 { return Err(...) }`) ensures this division is safe on every
+/// reachable call site. This helper's `.expect()` converts a hypothetical
+/// future guard regression from **silent-wrong** — the pre-fix
+/// `d_model.checked_div(n_heads).unwrap_or(0)` returned `0` on
+/// `n_heads == 0`, letting a wrong-shape [`text_encoder::RelPositionMHA`]
+/// downstream mis-parse tensors in release builds — into a **loud panic**
+/// naming the exact site (FR-EX-08 defence in depth).
+///
+/// The sibling text-encoder d_head derivation at
+/// [`SbV2Model::from_gguf`]'s line ~1934 uses direct `d_model / n_heads`
+/// (idiomatic Rust panic on divide-by-zero); this helper's `.expect()`
+/// carries a richer message for the flow chain's specific failure mode.
+fn derive_flow_head_dim(d_model: usize, n_heads: usize) -> usize {
+    d_model.checked_div(n_heads).expect(
+        "derive_flow_head_dim: n_heads must be positive (enforced by \
+         SbV2Model::from_gguf's `vokra.sbv2.n_heads must be positive` guard)",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_flow_head_dim;
+
+    /// COSMETIC-BUNDLE (d_head divide-by-zero, 2026-08-09): the pre-fix
+    /// `.unwrap_or(0)` at the `d_head_flow` site silently returned `0` on
+    /// `n_heads == 0`, letting a wrong-shape downstream
+    /// `RelPositionMHA::new` fire only under `debug_assert!` (i.e. release
+    /// builds silently produced garbage). This helper's `.expect()` is the
+    /// loud-fail replacement — this test pins the panic behaviour so a
+    /// future refactor that reintroduces a silent fallback trips
+    /// `#[should_panic]`.
+    #[test]
+    #[should_panic(expected = "n_heads must be positive")]
+    fn derive_flow_head_dim_panics_on_zero_n_heads() {
+        let _ = derive_flow_head_dim(192, 0);
+    }
+
+    /// Positive-path sanity: with the SBV2 v2 base's typical
+    /// (`d_model = 192`, `n_heads = 2`) the helper returns `96`
+    /// exactly — matches the sibling text-encoder d_head derivation
+    /// (`d_head = d_model / n_heads` at line ~1934), preventing a
+    /// future refactor from accidentally shifting the flow chain's
+    /// head-width off the text-encoder's.
+    #[test]
+    fn derive_flow_head_dim_matches_direct_division() {
+        assert_eq!(derive_flow_head_dim(192, 2), 96);
+        assert_eq!(derive_flow_head_dim(768, 12), 64);
+        assert_eq!(derive_flow_head_dim(4, 1), 4);
+    }
 }

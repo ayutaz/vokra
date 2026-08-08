@@ -662,7 +662,15 @@ impl PositionWiseFFN {
     /// # Panics
     ///
     /// Panics (via `debug_assert!`) if any weight/bias length disagrees
-    /// with the documented shape, or if `kernel == 0`.
+    /// with the documented shape, if `kernel == 0`, or if `kernel` is
+    /// even. The `conv1d_same_padded` helper this FFN routes through uses
+    /// symmetric `pad_l = pad_r = (kernel - 1) / 2` padding, which is
+    /// only bit-exact vs upstream `attentions.FFN._same_padding` (upstream
+    /// splits into `pad_l = (K-1)/2` and `pad_r = K/2`) when `kernel` is
+    /// odd. SBV2 uses `kernel = 3` everywhere so this holds in every
+    /// exercised path today; the assert is a tripwire against a future
+    /// SKU that ships an even `kernel_ffn` in metadata and would
+    /// otherwise silently shift the receptive field by one position.
     pub fn new(
         conv1_weight: Vec<f32>,
         conv1_bias: Vec<f32>,
@@ -673,6 +681,12 @@ impl PositionWiseFFN {
         kernel: usize,
     ) -> Self {
         debug_assert!(kernel > 0, "kernel must be positive");
+        debug_assert!(
+            kernel % 2 == 1,
+            "kernel must be odd (conv1d_same_padded uses symmetric pad_l = pad_r = (kernel-1)/2; \
+             the asymmetric-pad code path required for even kernels is not implemented — see \
+             ffn_new_rejects_even_kernel)"
+        );
         debug_assert_eq!(
             conv1_weight.len(),
             d_ff * d_model * kernel,
@@ -1156,6 +1170,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// COSMETIC-BUNDLE (kernel-width shape check, 2026-08-09):
+    /// [`PositionWiseFFN::new`]'s `conv1d_same_padded` helper uses the
+    /// symmetric `pad_l = pad_r = (kernel - 1) / 2` padding, which is
+    /// only bit-exact vs upstream `attentions.FFN._same_padding` when
+    /// `kernel` is **odd** (upstream splits into `pad_l = (K-1)/2` and
+    /// `pad_r = K/2`; the two are equal iff `K` is odd). SBV2 uses
+    /// `kernel = 3` everywhere so this contract holds today, but a
+    /// future SKU wiring an even `kernel_ffn` would silently shift the
+    /// receptive field by one position (the truly asymmetric-pad code
+    /// path is not implemented). Tripped as a `debug_assert!` at
+    /// construction so a mis-metadata GGUF fails at load rather than
+    /// silently producing wrong audio downstream.
+    #[test]
+    #[should_panic(expected = "kernel must be odd")]
+    fn ffn_new_rejects_even_kernel() {
+        let d_model = 4;
+        let d_ff = 6;
+        let kernel = 2; // even -> asymmetric-pad territory, unsupported
+        let _ = PositionWiseFFN::new(
+            vec![0.0; d_ff * d_model * kernel],
+            vec![0.0; d_ff],
+            vec![0.0; d_model * d_ff * kernel],
+            vec![0.0; d_model],
+            d_model,
+            d_ff,
+            kernel,
+        );
     }
 
     /// POSFFN-XMASK regression pin: `PositionWiseFFN::forward` documents a
