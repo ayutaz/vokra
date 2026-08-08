@@ -899,24 +899,44 @@ impl SbV2Model {
         // OOM stopgap (2026-08-08, follow-up to run 31197123061 46.6 GiB
         // alloc = flow attention [mel_seq_len × mel_seq_len × f32]):
         // clamp each phoneme's duration to a per-phoneme sanity ceiling
-        // so a broken SDP forward cannot blow the runtime up. The real
-        // SBV2 v2 SDP is a DDS-net + ConvFlow StochasticDurationPredictor
-        // whose Rust port (`SbV2SDP`) is currently a scalar-affine
-        // simplification (see this module's own module doc; §Blocker 7 /
-        // Blocker 12 tracks the rewrite). On synthetic paths the two
-        // agree because both are trained together; on real weights the
-        // simplification returns garbage — CI observed max=26539 for a
-        // 4-phoneme "テスト" input (sum=107980 → 46 GiB flow attention
-        // matrix → SIGABRT). Cap here is only a safety fuse; a parity
-        // assertion still fires on the numeric delta downstream — this
-        // stopgap turns an unbounded panic into a bounded parity red so
-        // CI can actually report the SDP-simplification gap instead of
-        // OOM-ing before the assertion runs.
+        // so an upstream-scale-inflated text_hidden cannot blow the
+        // runtime up.
+        //
+        // # True root cause (audit 2026-08-08, Bug 4 in SBV2-BUG4 spec)
+        //
+        // The SDP's flow-inverse math is correct — `SbV2SDP` was rewritten
+        // post-Blocker-2c to a real DDS + ConvFlow StochasticDurationPredictor
+        // (the earlier "scalar-affine simplification" is gone; the module
+        // doc still tracks the pre-Blocker-2c history but that comment does
+        // NOT describe the current implementation). What CI observed with
+        // max=26539 durations was the SDP being fed a text_hidden ~35× too
+        // large in magnitude by the text_encoder (Wave-2 SBV2-BUG4 gap):
+        // the SDP correctly amplifies its input through `exp().ceil()` and
+        // a 35× input becomes an exponentially large duration.
+        //
+        // The `VOKRA_SBV2_SDP_HIDDEN_OVERRIDE` experiment (see
+        // `docs/handoff/sbv2-sdp-debug-2026-08-08.md` §Bug 4) proved that
+        // feeding the SDP the Python reference `text_hidden.bin` bytes
+        // produces sum=28 vs the Python reference sum=26 — the SDP itself
+        // is not the bug. The 3 candidate root causes tracked upstream are
+        // (a) missing `x*x_mask` scaling in PositionWiseFFN, (b) missing
+        // `enc_p.encoder.spk_emb_linear` per-block gating, (c) wrong
+        // Conv1d weight layout in `conv1d_same_padded`.
+        //
+        // # Why the cap stays until Wave 2 lands SBV2-BUG4
+        //
+        // Cap here is only a safety fuse; a parity assertion still fires
+        // on the numeric delta downstream — this stopgap turns an
+        // unbounded panic into a bounded parity red so CI can actually
+        // report the text_encoder scale gap instead of OOM-ing before the
+        // assertion runs. Once SBV2-BUG4 lands, both the cap and the
+        // warning below become dead code and should be deleted (Phase 2
+        // of the OOM-STOPGAP-CLEANUP audit gap).
         //
         // Ceiling 500 = ~5.8s at 86 Hz frame rate per phoneme (way above
         // real speech's ~10-30-frame span), so it never truncates a real
-        // duration a working SDP would produce — only the runaway values
-        // from the simplification.
+        // duration a working forward pass would produce — only the
+        // runaway values from a scale-inflated text_hidden.
         const PER_PHONEME_DURATION_CEILING: i32 = 500;
         let capped_any = durations.iter().any(|&d| d > PER_PHONEME_DURATION_CEILING);
         if capped_any {
@@ -928,10 +948,11 @@ impl SbV2Model {
             eprintln!(
                 "[sbv2-synth-warn] SbV2SDP produced runaway durations \
                  (max={original_max}, sum={original_sum}) — clamped to \
-                 per-phoneme ceiling {PER_PHONEME_DURATION_CEILING}. Real SBV2 SDP is a \
-                 DDS-net + ConvFlow SDP whose Rust port is a scalar-affine \
-                 simplification (see sbv2/mod.rs module doc Blocker 7). \
-                 Downstream parity WILL fail — this cap only prevents OOM."
+                 per-phoneme ceiling {PER_PHONEME_DURATION_CEILING}. True cause is \
+                 upstream text_encoder emitting hidden values ~35× too large \
+                 (SBV2-BUG4 in the Wave-2 spec, docs/handoff/sbv2-sdp-debug-2026-08-08.md); \
+                 the SDP forward itself is correct. Downstream parity WILL fail — \
+                 this cap only prevents OOM."
             );
         }
 
