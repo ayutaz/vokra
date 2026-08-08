@@ -175,8 +175,8 @@ use std::path::{Path, PathBuf};
 use vokra_core::gguf::GgufFile;
 use vokra_core::json::{self, JsonValue};
 use vokra_models::sbv2::{
-    Language, PhonemizeFixture, PhonemizeResult, SbV2Model, SbV2Phonemizer, SbV2SynthRequest,
-    tolerance_for,
+    Language, PhonemizeFixture, PhonemizeResult, RngMode, SbV2Model, SbV2Phonemizer,
+    SbV2SynthRequest, tolerance_for,
 };
 
 /// Repo-root-relative real-fixture directory for SBV2 parity
@@ -490,6 +490,12 @@ fn request_from_manifest(manifest: &JsonValue, ctx: &str) -> SbV2SynthRequest {
         noise_scale: json_f32(request, "noise_scale", ctx),
         noise_scale_w: json_f32(request, "noise_scale_w", ctx),
         seed: json_u64(request, "seed", ctx),
+        // Real-parity test: the Python reference dumper must use
+        // PhiloxRNGEngine.h (via `tools/parity/torch_philox_dump.py`'s
+        // shared port) so its noise buffer byte-matches Vokra's
+        // `TorchRandnStream`. Default = torch parity, which is exactly
+        // that path.
+        rng_mode: RngMode::default(),
     }
 }
 

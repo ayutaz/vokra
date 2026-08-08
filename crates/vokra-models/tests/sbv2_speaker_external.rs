@@ -19,7 +19,9 @@
 //! external-input surface and the loud-error cases FR-EX-08 requires.
 
 use vokra_core::{SynthesisRequest, TtsEngine, VokraError};
-use vokra_models::sbv2::{ExternalSpeakerProjection, Language, SbV2Model, SbV2SynthRequest};
+use vokra_models::sbv2::{
+    ExternalSpeakerProjection, Language, RngMode, SbV2Model, SbV2SynthRequest,
+};
 
 /// Deterministic synthetic external speaker projection sized to
 /// `synthetic_for_test`'s tiny dims — d_model=8 (see that fn's doc),
@@ -50,6 +52,10 @@ fn base_request(text: &str, language: Language) -> SbV2SynthRequest {
         noise_scale: 0.0,
         noise_scale_w: 0.0,
         seed: 42,
+        // Synthetic path: keep the pre-Step-10 splitmix64 RNG so the
+        // adapter-round-trip byte-equality test below stays valid (both
+        // sides use whichever RNG is picked here).
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
     }
 }
 
@@ -224,6 +230,10 @@ fn tts_engine_synthesize_honors_request_speaker_embedding() {
         noise_scale: 0.0,
         noise_scale_w: 0.0,
         seed: 0, // matches the adapter's default
+        // Must match the adapter's default (RngMode::default() == torch
+        // parity) exactly, otherwise the byte-equality assertion below
+        // would diverge purely on RNG choice.
+        rng_mode: RngMode::default(),
     };
     let direct = model_b
         .synthesize(&direct_req)

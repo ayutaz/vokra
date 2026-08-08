@@ -24,9 +24,12 @@ pub mod duration;
 pub mod flow;
 pub mod g2p;
 pub mod parity;
+pub mod rng_mode;
 pub mod speaker;
 pub mod style;
 pub mod text_encoder;
+
+pub use rng_mode::RngMode;
 // Task 25 (SBV2 v2 plan) places the safetensors -> GGUF converter in
 // `crates/vokra-convert/src/models/sbv2.rs` instead of a `mod converter`
 // here -- avoids a `vokra-models <-> vokra-convert` normal-dependency
@@ -61,7 +64,7 @@ use vokra_bert::deberta_v2::DebertaV2Encoder;
 use vokra_bert::deberta_v3::DebertaV3Encoder;
 use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_core::gguf::GgufFile;
-use vokra_core::rng::GaussianSplitMix64;
+use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
 use vokra_ops::attrs::HifiGanAttrs;
 use vokra_ops::hifigan::{
@@ -156,9 +159,17 @@ pub struct SbV2SynthRequest {
     /// [`SbV2SDP::sample`] — `0.0` is fully deterministic (every predicted
     /// duration is `1` regardless of `seed`).
     pub noise_scale_w: f32,
-    /// Seed for the duration predictor's Gaussian draws
-    /// ([`GaussianSplitMix64`]). Irrelevant when `noise_scale_w == 0.0`.
+    /// Seed for the duration predictor's Gaussian draws (see
+    /// [`rng_mode`](Self::rng_mode) for which RNG the seed feeds).
+    /// Irrelevant when `noise_scale_w == 0.0`.
     pub seed: u64,
+    /// Which RNG family the SDP's Gaussian noise draws come from. Default is
+    /// [`RngMode::PhiloxRngEnginePyTorchParity`], which byte-matches
+    /// `torch.manual_seed(seed); torch.randn(...)` under the PhiloxRNGEngine.h
+    /// path (see [`RngMode`]'s module doc for the rationale). Pre-Step-10
+    /// synthetic tests preserve their byte-frozen assertions by explicitly
+    /// setting `RngMode::GaussianSplitMix64Legacy` on their requests.
+    pub rng_mode: RngMode,
 }
 
 /// SBV2 (Style-Bert-VITS2 v2) native TTS model: the full inference pipeline
@@ -840,7 +851,6 @@ impl SbV2Model {
         } else {
             &sdp_g_owned
         };
-        let mut rng = GaussianSplitMix64::new(req.seed);
         // Bug 4 fix (2026-08-08): feed SDP the RAW text_hidden (encoder
         // output), NOT the accumulated bridge+speaker+style buffer.
         // Matches Python `sbv2_dump_reference.py::run_pipeline_body`
@@ -851,13 +861,37 @@ impl SbV2Model {
         // (sum=28/max=10) matching Python reference (sum=26/max=8),
         // while the pre-fix `hidden` (magnitude ±33 from broadcast
         // adds) produced runaway durations (sum=24229/max=12036).
-        let mut durations = self.sdp.sample(
-            &text_hidden,
-            phon.phoneme_ids.len(),
-            sdp_g,
-            &mut rng,
-            req.noise_scale_w,
-        );
+        //
+        // Step 10 (torch.randn parity, 2026-08-08): dispatch the SDP
+        // noise draws through `req.rng_mode` so a caller opting into
+        // torch parity (the default; see `RngMode`) gets byte-exact
+        // agreement with `torch.manual_seed(seed); torch.randn(...)`
+        // under the PhiloxRNGEngine.h path — verified by
+        // `crates/vokra-models/tests/sbv2_sdp_torch_parity.rs`. The
+        // legacy path is unchanged so pre-Step-10 synthetic tests keep
+        // their byte-frozen assertions when they opt into it.
+        let mut durations = match req.rng_mode {
+            RngMode::PhiloxRngEnginePyTorchParity => {
+                let mut rng = TorchRandnStream::new(req.seed);
+                self.sdp.sample(
+                    &text_hidden,
+                    phon.phoneme_ids.len(),
+                    sdp_g,
+                    &mut rng,
+                    req.noise_scale_w,
+                )
+            }
+            RngMode::GaussianSplitMix64Legacy => {
+                let mut rng = GaussianSplitMix64::new(req.seed);
+                self.sdp.sample(
+                    &text_hidden,
+                    phon.phoneme_ids.len(),
+                    sdp_g,
+                    &mut rng,
+                    req.noise_scale_w,
+                )
+            }
+        };
         for d in &mut durations {
             *d = ((*d as f32) / req.speed).max(1.0) as i32;
         }
@@ -1074,6 +1108,11 @@ impl TtsEngine for SbV2Model {
             noise_scale,
             noise_scale_w,
             seed: 0,
+            // Cross-engine adapter callers get the torch-parity path by
+            // default — the only new construction site introduced after
+            // Step 10, so no byte-frozen synthetic fixture depends on
+            // its RNG choice.
+            rng_mode: RngMode::default(),
         };
         self.synthesize(&sbv2_request)
     }
