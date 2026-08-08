@@ -935,22 +935,6 @@ impl SbV2Model {
             );
         }
 
-        // TEMP DEBUG (2026-08-08): trace SDP output to catch runaway
-        // durations that inflate mel_seq_len (46 GiB alloc in CI run
-        // 31197123061). Remove once root-cause is fixed.
-        eprintln!(
-            "[sbv2-synth-trace] SDP durations n={} min={} max={} sum={} \
-             (phoneme_ids.len={}, noise_scale_w={}, speed={}) capped={}",
-            durations.len(),
-            durations.iter().copied().min().unwrap_or(0),
-            durations.iter().copied().max().unwrap_or(0),
-            durations.iter().copied().sum::<i32>(),
-            phon.phoneme_ids.len(),
-            req.noise_scale_w,
-            req.speed,
-            capped_any,
-        );
-
         // 7. Length regulate — uses `hidden_for_flow` (= text_hidden +
         // bridge, matching Python `bert_bridge_out`). Bug 4 fix
         // (2026-08-08): pre-fix code fed the accumulated `hidden` which
@@ -959,12 +943,6 @@ impl SbV2Model {
         // spk_emb_linear and decoder's `dec.cond` respectively).
         let mel_hidden = length_regulate(&hidden_for_flow, &durations, d_model);
         let mel_seq_len = durations.iter().sum::<i32>() as usize;
-        eprintln!(
-            "[sbv2-synth-trace] mel_seq_len={} d_model={} mel_hidden.len()={}",
-            mel_seq_len,
-            d_model,
-            mel_hidden.len(),
-        );
         debug_assert!(
             mel_seq_len > 0,
             "SbV2Model::synthesize: mel_seq_len must be positive (every SbV2SDP::sample \
@@ -1475,15 +1453,6 @@ impl SbV2Model {
                 .collect::<Result<Vec<_>>>()
         };
         let load_tensor_f32 = |name: &str| -> Result<Vec<f32>> {
-            // TEMP DEBUG (2026-08-08, run 31169002166 "memory allocation of
-            // 46638721600 bytes failed"): log every tensor before the alloc
-            // so CI can pinpoint which name blows up. Removed once the
-            // root cause is fixed.
-            if let Some(info) = main.tensor_info(name) {
-                let dims = info.dimensions.clone();
-                let elems: u64 = dims.iter().copied().fold(1u64, u64::saturating_mul);
-                eprintln!("[sbv2-load-trace] {name}: shape={dims:?} elems={elems}");
-            }
             main.tensor_f32(name).map_err(|e| {
                 VokraError::ModelLoad(format!("SbV2Model::from_gguf: tensor {name}: {e}"))
             })
