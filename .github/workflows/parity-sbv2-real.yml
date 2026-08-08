@@ -383,67 +383,19 @@ jobs:
           test -n "$sbv2_st"
           echo "[sbv2] picked Generator checkpoint: $sbv2_st"
 
-          # Shape-recover d_speaker + n_speakers from the actual G_0.safetensors
-          # tensor header — sbv2_prepare_checkpoint.py's --clean-room-defaults
-          # emits VITS defaults (d_speaker=256), but real SBV2 v2 JP-Extra base
-          # uses d_speaker=512 (raw speaker embedding width). Rust loader
-          # cross-checks `spk_emb_linear.weight.numel() == d_model * d_speaker`;
-          # without this override the load fails with:
-          #   sbv2.text_encoder.spk_emb_linear.weight has 98304 elements,
-          #   expected d_model * d_speaker = 192 * 256 = 49152
-          # (run 31168398408). Same Blocker 8 "recover from checkpoint shape,
-          # loud-warn on config disagreement" pattern the dumper already uses
-          # for upsample_kernel_sizes + gin_channels.
-          python3 - <<PYEOF
-          import json, struct, sys
-          cfg_path = "$RUNNER_TEMP/sbv2-checkpoint/vokra-sbv2-config.json"
-          st_path  = "$sbv2_st"
-          with open(cfg_path) as f:
-              cfg = json.load(f)
-          with open(st_path, "rb") as f:
-              (hlen,) = struct.unpack("<Q", f.read(8))
-              header = json.loads(f.read(hlen))
-          shape_updates = {}
-          # d_speaker <- enc_p.encoder.spk_emb_linear.weight [d_model, d_speaker]
-          for k in ("enc_p.encoder.spk_emb_linear.weight",):
-              info = header.get(k)
-              if info and "shape" in info and len(info["shape"]) == 2:
-                  shape_updates["d_speaker"] = int(info["shape"][1])
-                  break
-          # n_speakers <- emb_g.weight [n_speakers, d_speaker]
-          info = header.get("emb_g.weight")
-          if info and "shape" in info and len(info["shape"]) == 2:
-              shape_updates["n_speakers"] = int(info["shape"][0])
-          # decoder_upsample_kernel_sizes <- dec.ups.{i}.weight_v.shape[-1]
-          # Real SBV2 v2 base uses [16,16,8,2,2] (dumper Blocker 8 log
-          # confirms this on 2026-08-07 CI); the config side-car's
-          # --clean-room-defaults emits [16,16,4,4,4] (HiFi-GAN 2*stride
-          # rule). The Rust HiFi-GAN loader cross-checks each stage's
-          # weight.len() == in_ch * out_ch * kernel, so a mismatched
-          # kernel value hard-fails with "upsample_weights[2].weight.len()
-          # 65536 != in_ch*out_ch*kernel 32768" (run 31198620751).
-          recovered_kernels = []
-          for i in range(5):  # 5-stage HiFi-GAN 44.1 kHz ladder
-              key_v = f"dec.ups.{i}.weight_v"
-              key_plain = f"dec.ups.{i}.weight"
-              info = header.get(key_v) or header.get(key_plain)
-              if info and "shape" in info and len(info["shape"]) == 3:
-                  recovered_kernels.append(int(info["shape"][-1]))
-              else:
-                  recovered_kernels = None  # abort — incomplete recovery
-                  break
-          if recovered_kernels is not None:
-              shape_updates["decoder_upsample_kernel_sizes"] = recovered_kernels
-          for k, v in shape_updates.items():
-              old = cfg.get(k)
-              if old != v:
-                  print(f"[sbv2-config-fixup] {k}: {old} -> {v} (from safetensors shape)")
-                  cfg[k] = v
-              else:
-                  print(f"[sbv2-config-fixup] {k}: {v} (already matches)")
-          with open(cfg_path, "w") as f:
-              json.dump(cfg, f, indent=2)
-          PYEOF
+          # Wave-4 WORKFLOW-SHAPE-FIXUP (2026-08-09): the inline-Python
+          # shape-recovery that used to live here (patching d_speaker /
+          # n_speakers / decoder_upsample_kernel_sizes in
+          # vokra-sbv2-config.json between prep and convert) has moved
+          # INTO the converter itself — `crates/vokra-convert/src/models/
+          # sbv2.rs`'s `infer_d_speaker` / `infer_n_speakers` /
+          # `infer_decoder_upsample_kernel_sizes` helpers run inside
+          # `convert_sbv2_file` and produce the same "recover from
+          # safetensors shape, loud-warn on config disagreement" log
+          # entries the pre-Wave-4 inline Python emitted. This CI step
+          # is now free of the stopgap; the converter runs everywhere
+          # `convert_sbv2_file` runs (CI, local, sidecar tools), not
+          # only inside this YAML.
 
           ./target/release/vokra-cli convert \
             --model sbv2 \

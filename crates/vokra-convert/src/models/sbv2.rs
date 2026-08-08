@@ -397,6 +397,91 @@ fn add_u32_array(b: &mut GgufBuilder, key: &str, values: &[u32]) {
     );
 }
 
+/// Wave-4 WORKFLOW-SHAPE-FIXUP (2026-08-09): recovers `d_speaker` from
+/// the input safetensors' `enc_p.encoder.spk_emb_linear.weight` tensor
+/// shape (`[d_model, d_speaker]`) — the definitive per-checkpoint source.
+/// Fallback candidates: `emb_g.weight[1]` (speaker embedding table's
+/// per-row width). Returns `None` when neither tensor is present (e.g.
+/// single-speaker fine-tunes that ship no speaker weights).
+///
+/// The pre-Wave-4 pattern lived inline in `.github/workflows/parity-sbv2-
+/// real.yml`'s `python3 - <<PYEOF` block; moving it into the converter
+/// itself so the recovery runs everywhere `convert_sbv2_file` runs, not
+/// only inside CI.
+fn infer_d_speaker(st: &SafetensorsFile) -> Option<u32> {
+    // Primary: enc_p.encoder.spk_emb_linear.weight has shape
+    // [d_model, d_speaker] — Vokra loader's own dimensionality contract.
+    for cand in [
+        "enc_p.encoder.spk_emb_linear.weight",
+        // Fallback: some fine-tunes host spk_emb_linear elsewhere. Add
+        // aliases here as they surface; every candidate MUST have a
+        // shape whose LAST dim is d_speaker to be a valid match.
+    ] {
+        if let Some(info) = st.tensor_info(cand)
+            && let Some(&last) = info.shape.last()
+            && let Ok(u) = u32::try_from(last)
+        {
+            return Some(u);
+        }
+    }
+    // Fallback: emb_g.weight shape [n_speakers, d_speaker].
+    if let Some(info) = st.tensor_info("emb_g.weight")
+        && info.shape.len() == 2
+        && let Ok(u) = u32::try_from(info.shape[1])
+    {
+        return Some(u);
+    }
+    None
+}
+
+/// Wave-4 WORKFLOW-SHAPE-FIXUP: recovers `n_speakers` from `emb_g.weight`
+/// shape (`[n_speakers, d_speaker]`) — the definitive per-checkpoint
+/// source (mirrors the sibling `infer_d_speaker`'s fallback path but
+/// reads the first-axis extent). Single-speaker fine-tunes that ship no
+/// `emb_g` return `None`.
+fn infer_n_speakers(st: &SafetensorsFile) -> Option<u32> {
+    st.tensor_info("emb_g.weight")
+        .filter(|info| info.shape.len() == 2)
+        .and_then(|info| u32::try_from(info.shape[0]).ok())
+}
+
+/// Wave-4 WORKFLOW-SHAPE-FIXUP: recovers the per-stage HiFi-GAN upsample
+/// kernel sizes from `dec.ups.<i>.weight_v` (weight-normed) or
+/// `dec.ups.<i>.weight` (plain) tensor shape's LAST axis. Real SBV2 v2
+/// JP-Extra base ships `[16, 16, 8, 2, 2]`, not the HiFi-GAN 2*stride
+/// default `[16, 16, 4, 4, 4]` the config prep-script's
+/// `--clean-room-defaults` emits. Returns `None` when any stage's
+/// tensor is missing (incomplete recovery aborts to keep the config's
+/// declared value in play).
+///
+/// Follows the same 5-stage 44.1 kHz probe pattern the CI workflow's
+/// inline Python used; extended here to the same probe logic in native
+/// Rust so `convert_sbv2_file` is self-contained.
+fn infer_decoder_upsample_kernel_sizes(st: &SafetensorsFile) -> Option<Vec<u32>> {
+    const MAX_STAGES: usize = 8; // HiFi-GAN ladder cap — 5 stages typical
+    let mut out = Vec::with_capacity(MAX_STAGES);
+    for i in 0..MAX_STAGES {
+        let key_v = format!("dec.ups.{i}.weight_v");
+        let key_plain = format!("dec.ups.{i}.weight");
+        let info = st
+            .tensor_info(&key_v)
+            .or_else(|| st.tensor_info(&key_plain));
+        let Some(info) = info else {
+            // Stop on first absent stage; that's how many stages exist.
+            break;
+        };
+        // Every ConvTranspose1d weight is 3-D [in_ch, out_ch, kernel].
+        if info.shape.len() != 3 {
+            return None;
+        }
+        let Ok(kernel) = u32::try_from(info.shape[2]) else {
+            return None;
+        };
+        out.push(kernel);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
 /// Parsed `vokra.sbv2.*` config side-car — every field mirrors one
 /// `SbV2Model::from_gguf` metadata key 1:1 (see this crate's `sbv2` module
 /// doc "Hparams" section for the field-by-field rationale, and that
@@ -928,6 +1013,55 @@ pub fn convert_sbv2_file(
                 cfg_mut.n_sdp_layers,
             );
             cfg_mut.n_sdp_layers = sdp_flow_count;
+        }
+
+        // Wave-4 WORKFLOW-SHAPE-FIXUP (2026-08-09): shape-recover
+        // `d_speaker` + `n_speakers` + `decoder_upsample_kernel_sizes`
+        // from the input safetensors. This mirrors the inline-Python
+        // shape-recovery `.github/workflows/parity-sbv2-real.yml`
+        // previously did AFTER prep but BEFORE convert — moving it into
+        // the converter itself so the recovery runs everywhere convert
+        // runs (CI, local dev, offline sidecar), not only inside the CI
+        // workflow. Same "recover from shape, loud-warn on config
+        // disagreement" contract as `n_sdp_layers` above.
+        //
+        // d_speaker <- enc_p.encoder.spk_emb_linear.weight[1] (or fallback
+        // sources — see `infer_d_speaker` doc).
+        if let Some(new_d_speaker) = infer_d_speaker(&st)
+            && new_d_speaker != cfg_mut.d_speaker
+        {
+            eprintln!(
+                "convert_sbv2: shape-recovering vokra.sbv2.d_speaker: config \
+                 declared {} but tensor shape implies {new_d_speaker} — \
+                 overriding to {new_d_speaker} so downstream loaders can \
+                 cross-check spk_emb_linear + emb_g dimensions correctly.",
+                cfg_mut.d_speaker,
+            );
+            cfg_mut.d_speaker = new_d_speaker;
+        }
+        // n_speakers <- emb_g.weight[0]
+        if let Some(new_n_speakers) = infer_n_speakers(&st)
+            && new_n_speakers != cfg_mut.n_speakers
+        {
+            eprintln!(
+                "convert_sbv2: shape-recovering vokra.sbv2.n_speakers: config \
+                 declared {} but `emb_g.weight` shape implies {new_n_speakers} — \
+                 overriding to {new_n_speakers}.",
+                cfg_mut.n_speakers,
+            );
+            cfg_mut.n_speakers = new_n_speakers;
+        }
+        // decoder_upsample_kernel_sizes <- per-stage dec.ups.<i>.weight_v last dim
+        if let Some(new_kernels) = infer_decoder_upsample_kernel_sizes(&st)
+            && cfg_mut.decoder_upsample_kernel_sizes != new_kernels
+        {
+            eprintln!(
+                "convert_sbv2: shape-recovering vokra.sbv2.decoder_upsample_kernel_sizes: \
+                 config declared {:?} but `dec.ups.<i>.weight_v` shape implies {:?} — \
+                 overriding so HiFi-GAN loader's per-stage kernel cross-check succeeds.",
+                cfg_mut.decoder_upsample_kernel_sizes, new_kernels,
+            );
+            cfg_mut.decoder_upsample_kernel_sizes = new_kernels;
         }
     }
 
@@ -3596,5 +3730,174 @@ mod tests {
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
+    }
+
+    // =====================================================================
+    // Wave-4 WORKFLOW-SHAPE-FIXUP (2026-08-09)
+    // =====================================================================
+
+    /// `infer_d_speaker` primary path: `enc_p.encoder.spk_emb_linear.weight`
+    /// shape's last axis IS d_speaker. Real SBV2 v2 JP-Extra base ships
+    /// `[192, 512]` -> d_speaker = 512 (not the VITS default 256 the
+    /// clean-room fallback emits).
+    #[test]
+    fn infer_d_speaker_recovers_from_spk_emb_linear() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![(
+            "enc_p.encoder.spk_emb_linear.weight",
+            "F32",
+            &[192u64, 512],
+            f32_bytes(&vec![0.0; 192 * 512]),
+        )];
+        let blob = safetensors_multi(&entries);
+        let st = SafetensorsFile::parse(blob).expect("parse safetensors");
+        assert_eq!(
+            infer_d_speaker(&st),
+            Some(512),
+            "d_speaker must be recovered as 512 from spk_emb_linear.weight[1]"
+        );
+    }
+
+    /// `infer_d_speaker` fallback path: no `spk_emb_linear` but
+    /// `emb_g.weight` is present (some fine-tunes strip the linear).
+    #[test]
+    fn infer_d_speaker_falls_back_to_emb_g() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![(
+            "emb_g.weight",
+            "F32",
+            &[7u64, 384],
+            f32_bytes(&vec![0.0; 7 * 384]),
+        )];
+        let blob = safetensors_multi(&entries);
+        let st = SafetensorsFile::parse(blob).expect("parse safetensors");
+        assert_eq!(
+            infer_d_speaker(&st),
+            Some(384),
+            "d_speaker must be recovered as 384 from emb_g.weight[1]"
+        );
+    }
+
+    /// `infer_d_speaker` returns None when both primary and fallback
+    /// tensors are absent (single-speaker fine-tune with no speaker
+    /// weights at all) — the recovery block MUST then leave the config's
+    /// declared value in place.
+    #[test]
+    fn infer_d_speaker_returns_none_when_no_speaker_tensors() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![(
+            // A totally unrelated tensor.
+            "enc_p.emb.weight",
+            "F32",
+            &[10u64, 192],
+            f32_bytes(&vec![0.0; 10 * 192]),
+        )];
+        let blob = safetensors_multi(&entries);
+        let st = SafetensorsFile::parse(blob).expect("parse safetensors");
+        assert!(infer_d_speaker(&st).is_none());
+    }
+
+    /// `infer_n_speakers` reads `emb_g.weight[0]`.
+    #[test]
+    fn infer_n_speakers_reads_emb_g_first_axis() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![(
+            "emb_g.weight",
+            "F32",
+            &[5u64, 512],
+            f32_bytes(&vec![0.0; 5 * 512]),
+        )];
+        let blob = safetensors_multi(&entries);
+        let st = SafetensorsFile::parse(blob).expect("parse safetensors");
+        assert_eq!(infer_n_speakers(&st), Some(5));
+    }
+
+    /// `infer_decoder_upsample_kernel_sizes`: real SBV2 v2 JP-Extra base
+    /// ships `[16, 16, 8, 2, 2]`, not the HiFi-GAN 2*stride default
+    /// `[16, 16, 4, 4, 4]` that the config side-car's
+    /// `--clean-room-defaults` emits. Every stage's `dec.ups.<i>.weight`
+    /// is `[in_ch, out_ch, kernel]`; the helper reads the last axis.
+    #[test]
+    fn infer_decoder_upsample_kernel_sizes_recovers_full_ladder() {
+        let kernels = [16u64, 16, 8, 2, 2];
+        let mut entries: Vec<(String, &'static str, Vec<u64>, Vec<u8>)> = Vec::new();
+        for (i, &k) in kernels.iter().enumerate() {
+            // Shape [in_ch=64, out_ch=32, kernel=k] — the SBV2 loader only
+            // cares about the LAST axis for kernel-size recovery.
+            entries.push((
+                format!("dec.ups.{i}.weight"),
+                "F32",
+                vec![64u64, 32, k],
+                f32_bytes(&vec![0.0; 64 * 32 * (k as usize)]),
+            ));
+        }
+        let borrowed: Vec<(&str, &'static str, &[u64], Vec<u8>)> = entries
+            .iter()
+            .map(|(n, d, s, p)| (n.as_str(), *d, s.as_slice(), p.clone()))
+            .collect();
+        let blob = safetensors_multi(&borrowed);
+        let st = SafetensorsFile::parse(blob).expect("parse safetensors");
+        assert_eq!(
+            infer_decoder_upsample_kernel_sizes(&st),
+            Some(vec![16, 16, 8, 2, 2]),
+            "must recover the real SBV2 v2 JP-Extra base 5-stage ladder"
+        );
+    }
+
+    /// Weight-normed variant: real HF-hosted checkpoints often store
+    /// `dec.ups.<i>.weight_v` alongside `.weight_g`; the recovery must
+    /// prefer `.weight_v` (the raw pre-norm weight) when present.
+    #[test]
+    fn infer_decoder_upsample_kernel_sizes_prefers_weight_v() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![
+            (
+                "dec.ups.0.weight_v",
+                "F32",
+                &[64u64, 32, 20],
+                f32_bytes(&vec![0.0; 64 * 32 * 20]),
+            ),
+            // A stray `dec.ups.0.weight` with a DIFFERENT last dim would
+            // silently mismatch — if the helper picked the wrong one, the
+            // assertion below fails.
+            (
+                "dec.ups.0.weight",
+                "F32",
+                &[64u64, 32, 4],
+                f32_bytes(&vec![0.0; 64 * 32 * 4]),
+            ),
+        ];
+        let blob = safetensors_multi(&entries);
+        let st = SafetensorsFile::parse(blob).expect("parse safetensors");
+        assert_eq!(
+            infer_decoder_upsample_kernel_sizes(&st),
+            Some(vec![20]),
+            "weight_v (the raw pre-norm weight) must be preferred over the folded weight"
+        );
+    }
+
+    /// A stage gap (e.g. dec.ups.0 + dec.ups.1 present, then dec.ups.2
+    /// absent) stops the probe cleanly at the last-present stage. That's
+    /// the correct behavior: the ladder simply has fewer stages, not a
+    /// corrupt checkpoint.
+    #[test]
+    fn infer_decoder_upsample_kernel_sizes_stops_at_first_gap() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![
+            (
+                "dec.ups.0.weight",
+                "F32",
+                &[64u64, 32, 16],
+                f32_bytes(&vec![0.0; 64 * 32 * 16]),
+            ),
+            (
+                "dec.ups.1.weight",
+                "F32",
+                &[64u64, 32, 8],
+                f32_bytes(&vec![0.0; 64 * 32 * 8]),
+            ),
+            // dec.ups.2.* absent.
+        ];
+        let blob = safetensors_multi(&entries);
+        let st = SafetensorsFile::parse(blob).expect("parse safetensors");
+        assert_eq!(
+            infer_decoder_upsample_kernel_sizes(&st),
+            Some(vec![16, 8]),
+            "probe must stop at first missing stage, not extrapolate"
+        );
     }
 }
