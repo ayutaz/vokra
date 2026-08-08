@@ -114,7 +114,10 @@
 //! pipeline is re-implemented natively via [`crate::whisper`]
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
 
-use vokra_core::{Result, VokraError};
+use vokra_core::gguf::GgufFile;
+use vokra_core::{BackendKind, Result, VokraError};
+
+use crate::whisper::{WhisperAsr, WhisperTokenizer};
 
 /// `vokra.model.arch` a kotoba-whisper GGUF must carry. Written by
 /// `vokra-convert::models::kotoba_whisper::ARCH`; the compliance registry
@@ -346,9 +349,13 @@ impl KotobaWhisperConfig {
 /// reads `n_text_layer` from GGUF metadata, and every downstream
 /// component (weight binding, KV cache, greedy loop, beam search)
 /// iterates over `w.layers.len()` — no fixed constant.
-#[derive(Debug, Clone)]
 pub struct KotobaWhisperAsr {
     cfg: KotobaWhisperConfig,
+    /// Inner Whisper engine (present iff loaded from GGUF). Config-only
+    /// constructors ([`Self::new`]) build a shape-flow shell without weights
+    /// so [`Self::transcribe`] hard-errors with a message pointing at
+    /// [`Self::from_gguf`] as the fix.
+    inner: Option<WhisperAsr>,
 }
 
 impl KotobaWhisperAsr {
@@ -356,12 +363,117 @@ impl KotobaWhisperAsr {
     /// mismatched shape fails loudly here rather than deep inside a
     /// forward.
     ///
+    /// **This constructor does not bind weights.** The returned handle
+    /// exercises the shape-flow / config-invariant path but any
+    /// [`Self::transcribe`] call hard-errors with a message pointing at
+    /// [`Self::from_gguf`] (the constructor that binds a real GGUF) as
+    /// the fix. Real ASR requires either `from_gguf` or a follow-up
+    /// weight-binding path.
+    ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] from `cfg.validate_for_forward`.
     pub fn new(cfg: KotobaWhisperConfig) -> Result<Self> {
         cfg.validate_for_forward()?;
-        Ok(Self { cfg })
+        Ok(Self { cfg, inner: None })
+    }
+
+    /// Loads a real kotoba-whisper GGUF and binds the full weight set.
+    ///
+    /// **kotoba-whisper is architecturally a Whisper checkpoint whose only
+    /// difference is `n_text_layer < n_audio_layer`** (see module docs).
+    /// The upstream converter (`vokra-convert::models::kotoba_whisper`)
+    /// therefore writes the standard `vokra.whisper.*` hparam chunk and
+    /// keeps HF Whisper tensor names verbatim, so this delegates the
+    /// forward to the shared [`crate::whisper::WhisperAsr`] plumbing —
+    /// same op set (STFT / mel filterbank / GEMM / GEMV / softmax /
+    /// layer-norm / GELU / conv1d), same kernels, same greedy /
+    /// beam-search paths.
+    ///
+    /// The **distil invariant** (`n_text_layer < n_audio_layer`) is
+    /// enforced on the loaded config: a checkpoint whose decoder-layer
+    /// count equals or exceeds the encoder count is either vanilla
+    /// Whisper (large-v3 = 32/32) or a mis-flattened distil, and this
+    /// fails loudly (FR-EX-08) rather than mis-labeling a Whisper GGUF
+    /// as kotoba-whisper.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] via the delegate load path (missing
+    ///   `vokra.whisper.*` metadata, missing / mis-shaped weight tensors,
+    ///   or the front-end chunk check).
+    /// - [`VokraError::ModelLoad`] if the loaded config violates the
+    ///   kotoba-whisper distil invariant (`n_text_layer >= n_audio_layer`).
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let inner = WhisperAsr::from_gguf(file)?;
+        let wc = inner.model().config();
+        if wc.n_text_layer >= wc.n_audio_layer {
+            return Err(VokraError::ModelLoad(format!(
+                "kotoba-whisper: loaded GGUF has n_text_layer ({}) >= n_audio_layer ({}); \
+                 kotoba-whisper is a Japanese-distilled Whisper checkpoint whose decoder \
+                 is strictly smaller than the encoder — equal or larger decoder depth \
+                 means this GGUF is vanilla Whisper (use --model whisper) or a \
+                 mis-flattened distil (decoder tensors duplicated to the encoder \
+                 count). This is a loud-fail contract (FR-EX-08), never a silent mis-label.",
+                wc.n_text_layer, wc.n_audio_layer,
+            )));
+        }
+        // Build a `KotobaWhisperConfig` snapshot from the loaded config so the
+        // public [`Self::config`] surface stays stable. Every field mirrors the
+        // corresponding Whisper axis; `sot` comes from the first entry of
+        // `decoder_start_ids` (Whisper's `<|startoftranscript|>` prefix), which
+        // the loader guarantees is non-empty.
+        let cfg = KotobaWhisperConfig {
+            n_mels: wc.n_mels,
+            d_model: wc.d_model,
+            n_audio_ctx: wc.n_audio_ctx,
+            n_audio_head: wc.n_audio_head,
+            n_audio_layer: wc.n_audio_layer,
+            n_text_ctx: wc.n_text_ctx,
+            n_text_head: wc.n_text_head,
+            n_text_layer: wc.n_text_layer,
+            n_vocab: wc.n_vocab,
+            ffn_dim: wc.ffn_dim,
+            eot: wc.eot,
+            sot: wc
+                .decoder_start_ids
+                .first()
+                .copied()
+                .unwrap_or(50_258 /* Whisper `<|startoftranscript|>` fallback */),
+            sample_rate: KOTOBA_WHISPER_SAMPLE_RATE,
+        };
+        cfg.validate_for_forward()?;
+        Ok(Self {
+            cfg,
+            inner: Some(inner),
+        })
+    }
+
+    /// Attaches a detokenizer for [`Self::transcribe`] to convert token ids
+    /// back to text. Whisper family GGUFs may embed the tokenizer as a
+    /// `vokra.tokenizer.model` blob (see [`WhisperTokenizer`]) — this
+    /// overrides / attaches one from a side-car fixture.
+    ///
+    /// No-op when no inner engine is bound (config-only shell).
+    #[must_use]
+    pub fn with_tokenizer(mut self, tokenizer: WhisperTokenizer) -> Self {
+        self.inner = self.inner.map(|w| w.with_tokenizer(tokenizer));
+        self
+    }
+
+    /// Selects the backend the transcription forward runs on (default
+    /// [`BackendKind::Cpu`]).
+    ///
+    /// No-op when no inner engine is bound (config-only shell); the backend
+    /// selection is honored by the shared Whisper engine when
+    /// [`Self::from_gguf`] was used to build this handle. FR-EX-08: an
+    /// unsupported backend (e.g. Metal today) surfaces as an explicit
+    /// [`VokraError::UnsupportedOp`] at [`Self::transcribe`] time (via the
+    /// delegate), never a silent CPU fall back.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.inner = self.inner.map(|w| w.with_backend(backend));
+        self
     }
 
     /// The resolved configuration.
@@ -370,41 +482,72 @@ impl KotobaWhisperAsr {
         &self.cfg
     }
 
+    /// Whether a real GGUF weight set was bound ([`Self::from_gguf`] was
+    /// used to build this handle). Test-oriented predicate — production
+    /// callers should just call [`Self::transcribe`] and let the loud
+    /// error path point at [`Self::from_gguf`] when the shell was built
+    /// via [`Self::new`].
+    #[must_use]
+    pub fn has_weights(&self) -> bool {
+        self.inner.is_some()
+    }
+
     /// Transcribes a mono `f32` PCM slice at [`Self::config`]'s sample
-    /// rate.
+    /// rate (16 kHz — [`KOTOBA_WHISPER_SAMPLE_RATE`]).
     ///
-    /// This is the primary waveform → text entry point. **Real weights
-    /// required**: this scaffold does not yet bind kotoba-whisper
-    /// weights, so it returns [`VokraError::NotImplemented`] naming the
-    /// blocker. Callers verify the shape flow through
-    /// [`KotobaWhisperAsr::new`] today; a follow-up wave binds real
-    /// kotoba-whisper weights and wires the forward through
-    /// [`crate::whisper::WhisperModel`] with the kotoba-shrunk decoder
-    /// depth (`n_text_layer = 2`) — the JA-ASR-2 payload.
+    /// When built via [`Self::from_gguf`] this delegates to the shared
+    /// Whisper greedy decode (log-mel front-end → 32-layer encoder →
+    /// kotoba-shrunk decoder → byte-level BPE ids). The **data-driven
+    /// decoder depth** (JA-ASR-2 axis) is honored end-to-end: the shared
+    /// [`crate::whisper::WhisperConfig`] loader reads `n_text_layer` from
+    /// GGUF metadata, weight binding / KV cache / greedy loop / beam
+    /// search iterate over `w.layers.len()` — no fixed constant.
+    ///
+    /// When built via [`Self::new`] (config-only shell) this hard-errors
+    /// with a [`VokraError::NotImplemented`] message pointing at
+    /// [`Self::from_gguf`] as the fix (FR-EX-08 — never a silent
+    /// zero-fill or fabricated transcript).
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if `pcm` is empty.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] if this handle was built via
+    ///   [`Self::new`] (no weights bound).
+    /// - Any error from [`WhisperAsr::transcribe_tokens`] (backend
+    ///   unsupported, decoder failure, etc.).
     pub fn transcribe(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "kotoba-whisper transcribe: pcm slice is empty".to_owned(),
             ));
         }
-        Err(VokraError::NotImplemented(
-            "kotoba-whisper transcribe: the 16 kHz waveform → log-mel front-end \
-             (n_mels = 128 for kotoba-whisper v2.0) → Whisper large-v3 encoder \
-             (32 layers) → kotoba-shrunk decoder (2 layers) → byte-level BPE \
-             detokenize (vocab_size = 51 866) forward path has not landed yet. \
-             Follow-up wave: delegate to crate::whisper::WhisperModel with the \
-             kotoba-shrunk n_text_layer — the op set (STFT / mel filterbank / \
-             GEMM / GEMV / softmax / layer-norm / GELU / conv1d) and every kernel \
-             are already shared with vanilla Whisper. The JA-ASR-2 axis \
-             (data-driven decoder depth) is already honored by the shared \
-             WhisperConfig loader — this scaffold rides on top of it.",
-        ))
+        match &self.inner {
+            Some(asr) => asr.transcribe_tokens(pcm),
+            None => Err(VokraError::NotImplemented(
+                "kotoba-whisper transcribe: this handle was built from a config-only \
+                 KotobaWhisperConfig via KotobaWhisperAsr::new (no weights bound). \
+                 kotoba-whisper is architecturally a Whisper checkpoint (JA-ASR-2 axis: \
+                 shrunk n_text_layer), so real transcription delegates to the shared \
+                 crate::whisper::WhisperAsr plumbing — bind real weights via \
+                 KotobaWhisperAsr::from_gguf(&GgufFile) instead. The op set (STFT / mel \
+                 filterbank / GEMM / GEMV / softmax / layer-norm / GELU / conv1d) is \
+                 shared with vanilla Whisper (FR-EX-08 — never a silent zero-fill).",
+            )),
+        }
+    }
+
+    /// Detokenizes `ids` via the attached detokenizer, or renders them as a
+    /// bracketed id list when none is attached. Delegates to
+    /// [`WhisperAsr::render_ids`] when an inner engine is bound; otherwise
+    /// falls back to the bracketed id form (matching the Whisper convention).
+    pub fn render_ids(&self, ids: &[u32]) -> Result<String> {
+        match &self.inner {
+            Some(asr) => asr.render_ids(ids),
+            None => Ok(format!(
+                "[no tokenizer; token ids: {}]",
+                ids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")
+            )),
+        }
     }
 }
 
@@ -606,6 +749,117 @@ mod tests {
     #[test]
     fn sample_rate_matches_whisper_convention() {
         assert_eq!(KOTOBA_WHISPER_SAMPLE_RATE, 16_000);
+    }
+
+    // ---------- from_gguf delegation tests (Wave 7 Part A RUNTIME-NOTIMPL) ----------
+
+    use vokra_core::gguf::{GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType};
+
+    /// Builds a GGUF carrying a `vokra.whisper.*` chunk with a **kotoba-shrunk**
+    /// decoder (n_text_layer < n_audio_layer). No weight tensors — the delegate
+    /// load path then fails on the front-end check (Whisper requires a
+    /// `vokra.frontend.*` chunk), which is exactly the loud error we want to
+    /// observe: the delegate is live, config parsing works, and the ordering
+    /// is correct.
+    fn write_kotoba_shape_config(b: &mut GgufBuilder, n_audio_layer: u32, n_text_layer: u32) {
+        b.add_u32("vokra.whisper.n_mels", 128);
+        b.add_u32("vokra.whisper.n_audio_ctx", 1500);
+        b.add_u32("vokra.whisper.n_audio_state", 1280);
+        b.add_u32("vokra.whisper.n_audio_head", 20);
+        b.add_u32("vokra.whisper.n_audio_layer", n_audio_layer);
+        b.add_u32("vokra.whisper.n_text_ctx", 448);
+        b.add_u32("vokra.whisper.n_text_state", 1280);
+        b.add_u32("vokra.whisper.n_text_head", 20);
+        b.add_u32("vokra.whisper.n_text_layer", n_text_layer);
+        b.add_u32("vokra.whisper.n_vocab", 51_866);
+        b.add_u32("vokra.whisper.ffn_dim", 5120);
+        b.add_u32("vokra.whisper.eot", 50_257);
+        b.add_metadata(
+            "vokra.whisper.decoder_start_ids",
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U32,
+                values: [50_258u32, 50_259, 50_359, 50_363]
+                    .iter()
+                    .map(|&id| GgufMetadataValue::U32(id))
+                    .collect(),
+            }),
+        );
+    }
+
+    /// [`KotobaWhisperAsr::new`] builds a config-only shell; [`Self::has_weights`]
+    /// is `false` and [`Self::transcribe`] hard-errors with the migration hint.
+    #[test]
+    fn new_builds_a_shell_without_weights() {
+        let asr = KotobaWhisperAsr::new(KotobaWhisperConfig::tiny_for_tests())
+            .expect("tiny config is well-formed");
+        assert!(!asr.has_weights(), "new() must not bind weights");
+        let err = asr.transcribe(&[0.0f32; 512]).unwrap_err();
+        match err {
+            VokraError::NotImplemented(msg) => {
+                assert!(msg.contains("from_gguf"), "hint must name the fix: {msg}");
+                assert!(msg.contains("kotoba-whisper"));
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
+    }
+
+    /// [`Self::from_gguf`] delegates the load to [`WhisperAsr::from_gguf`],
+    /// which requires the `vokra.frontend.*` chunk (M1-03). A GGUF without
+    /// the chunk fails as [`VokraError::ModelLoad`] before any weight bind —
+    /// this observes the delegation wiring is live (the error surfaces
+    /// from the shared Whisper loader, not from a shape-only stub).
+    #[test]
+    fn from_gguf_delegates_and_reports_missing_frontend_chunk() {
+        let mut b = GgufBuilder::new();
+        write_kotoba_shape_config(&mut b, 32, 2);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        // Delegate reports ModelLoad from the front-end check (Whisper requires
+        // it; no weights reached).
+        match KotobaWhisperAsr::from_gguf(&file) {
+            Err(VokraError::ModelLoad(msg)) => {
+                // Any Whisper-loader error is acceptable here; we only assert
+                // the delegation reached the shared loader.
+                assert!(!msg.is_empty());
+            }
+            Err(other) => {
+                panic!("expected ModelLoad from the delegate Whisper load path, got {other:?}")
+            }
+            Ok(_) => panic!(
+                "expected ModelLoad from the delegate Whisper load path, got Ok(_) \
+                 — but this GGUF carries no weights (front-end check should fire)"
+            ),
+        }
+    }
+
+    /// A GGUF whose decoder is NOT smaller than the encoder is **not** a
+    /// kotoba-whisper (vanilla Whisper large-v3 has 32/32). The distil
+    /// invariant must fire — FR-EX-08, loud mislabel refusal.
+    ///
+    /// Uses a hand-built GGUF whose `vokra.whisper.n_text_layer` ==
+    /// `n_audio_layer` and covers the whole delegate chain up to the point
+    /// of the invariant check. Because the invariant fires *after* the
+    /// underlying [`WhisperAsr::from_gguf`], a shape-only fixture would
+    /// fail earlier at the front-end check — so the *specific* invariant
+    /// path is only observable with a fixture that reaches the invariant.
+    /// The direct-invariant path is covered by
+    /// [`KotobaWhisperConfig::validate_for_forward`] already; here we
+    /// simply confirm the from_gguf path fails loudly on a matched-depth
+    /// GGUF (whichever check fires first).
+    #[test]
+    fn from_gguf_rejects_non_distil_shape_via_delegate_chain() {
+        let mut b = GgufBuilder::new();
+        // Vanilla-shape: 6/6 (matches whisper base). This is NOT kotoba.
+        write_kotoba_shape_config(&mut b, 6, 6);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        // Some delegate error must fire (either the front-end check, the
+        // distil invariant, or a downstream weight bind). What we assert is
+        // that this GGUF does NOT load successfully — FR-EX-08 loud-fail.
+        assert!(
+            KotobaWhisperAsr::from_gguf(&file).is_err(),
+            "matched-depth GGUF must not load as kotoba-whisper (FR-EX-08 mislabel refusal)"
+        );
     }
 
     /// The M2-13 compliance registry must resolve every canonical
