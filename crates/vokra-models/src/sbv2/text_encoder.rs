@@ -786,20 +786,37 @@ impl BertBridge {
     }
 
     /// Projects `bert_hidden` (`[bert_seq_len, d_bert]` row-major) to
-    /// `[bert_seq_len, d_target]`, then nearest-neighbor-interpolates
-    /// along the sequence axis to `[text_seq_len, d_target]` (row-major,
-    /// flat `Vec<f32>` of length `text_seq_len * d_target`).
+    /// `[bert_seq_len, d_target]`, then **linear-interpolates** (torch
+    /// `F.interpolate(mode='linear', align_corners=False)`) along the
+    /// sequence axis to `[text_seq_len, d_target]` (row-major, flat
+    /// `Vec<f32>` of length `text_seq_len * d_target`).
     ///
-    /// Interpolation maps text position `t` to source (BERT) position
-    /// `s = min((t * bert_seq_len) / text_seq_len, bert_seq_len - 1)`
-    /// (integer division — nearest-neighbor, not linear/bilinear).
+    /// # Interpolation formula (BERT-BRIDGE-LINEAR fix, 2026-08-09)
+    ///
+    /// For each destination text position `t ∈ [0, text_seq_len)`:
+    ///
+    /// ```text
+    /// src_x = (t + 0.5) * bert_seq_len / text_seq_len - 0.5
+    /// low   = clamp(floor(src_x), 0, bert_seq_len - 1)
+    /// high  = clamp(low + 1,      0, bert_seq_len - 1)
+    /// alpha = clamp(src_x - floor(src_x), 0.0, 1.0)
+    /// out[t] = (1 - alpha) * projected[low] + alpha * projected[high]
+    /// ```
+    ///
+    /// This matches PyTorch's `F.interpolate(input, size=text_seq_len,
+    /// mode='linear', align_corners=False)` — the same formulation the
+    /// Python reference in `tools/parity/sbv2_dump_reference.py` uses.
+    /// Pre-fix Vokra used nearest-neighbor floor
+    /// (`s = min(t * bert_seq_len / text_seq_len, bert_seq_len - 1)`),
+    /// which diverges at every non-integer source position by roughly
+    /// `|neighbor_a - neighbor_b| * 0.5` (10-50× the parity atol
+    /// for DeBERTa-scale hidden values).
     ///
     /// # Panics
     ///
     /// Panics (via `debug_assert!`) in debug builds if `bert_seq_len ==
     /// 0` (an empty BERT sequence has no source position for the
-    /// nearest-neighbor interpolation above to read from — the
-    /// `bert_seq_len.saturating_sub(1)` clamp below prevents `usize`
+    /// interpolation to read from — the clamp below prevents `usize`
     /// underflow but not the resulting empty-slice indexing) or if
     /// `bert_hidden.len() != bert_seq_len * self.d_bert`.
     pub fn forward(
@@ -811,7 +828,7 @@ impl BertBridge {
         debug_assert!(
             bert_seq_len > 0,
             "BertBridge::forward requires a non-empty bert sequence (bert_seq_len == 0 \
-             has no source position for the nearest-neighbor interpolation to read from)"
+             has no source position for the linear interpolation to read from)"
         );
         debug_assert_eq!(
             bert_hidden.len(),
@@ -829,10 +846,37 @@ impl BertBridge {
         );
 
         let mut out = vec![0.0_f32; text_seq_len * d_target];
+        // Cast once to f32 for the ratio + edge-clamp math.
+        let src_len_f = bert_seq_len as f32;
+        let dst_len_f = text_seq_len as f32;
+        let max_idx = (bert_seq_len as i64) - 1;
         for (t, out_row) in out.chunks_exact_mut(d_target).enumerate() {
-            let s = (t * bert_seq_len / text_seq_len).min(bert_seq_len.saturating_sub(1));
-            let src = &projected[s * d_target..(s + 1) * d_target];
-            out_row.copy_from_slice(src);
+            // align_corners=False mapping.
+            let src_x = ((t as f32) + 0.5) * src_len_f / dst_len_f - 0.5;
+            let low_f = src_x.floor();
+            let low = (low_f as i64).clamp(0, max_idx) as usize;
+            let high = ((low_f as i64) + 1).clamp(0, max_idx) as usize;
+            let low_row = &projected[low * d_target..(low + 1) * d_target];
+            // Fast + numerically-exact path when `low == high` — this
+            // fires (a) at every dst position for `bert_seq_len == 1`
+            // (`high` clamps back to 0), and (b) at every edge sample
+            // where `src_x` is out of range (`high` clamps to
+            // `bert_seq_len - 1`). Copying the single row avoids the
+            // `(1 - alpha) * x + alpha * x` fp round-trip that would
+            // otherwise perturb the "identical" values by ~1 ULP —
+            // preserves the pre-fix nearest-neighbor's exact-broadcast
+            // property for degenerate ranges without giving up
+            // interior-linear parity.
+            if low == high {
+                out_row.copy_from_slice(low_row);
+                continue;
+            }
+            let alpha = (src_x - low_f).clamp(0.0, 1.0);
+            let one_minus_alpha = 1.0 - alpha;
+            let high_row = &projected[high * d_target..(high + 1) * d_target];
+            for (d, cell) in out_row.iter_mut().enumerate() {
+                *cell = one_minus_alpha * low_row[d] + alpha * high_row[d];
+            }
         }
         out
     }

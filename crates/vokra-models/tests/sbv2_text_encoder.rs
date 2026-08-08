@@ -161,9 +161,72 @@ fn bert_bridge_zero_weights_returns_zeros() {
     );
 }
 
+/// BERT-BRIDGE-LINEAR fix (2026-08-09) parity pin.
+///
+/// Pre-fix `BertBridge::forward` used nearest-neighbor floor
+/// interpolation: `s = min((t * bert_seq_len) / text_seq_len,
+/// bert_seq_len - 1)`. Python reference uses
+/// `F.interpolate(mode='linear', align_corners=False)` which computes
+/// `src_x = (dst_x + 0.5) * bert_seq_len / text_seq_len - 0.5` and
+/// linearly interpolates between `floor(src_x)` and `floor(src_x)+1`
+/// clamped to `[0, bert_seq_len-1]`.
+///
+/// This test picks a non-integer resample ratio (`text_seq_len=8`,
+/// `bert_seq_len=3`) where the two schemes disagree at multiple
+/// destination positions, and verifies the Rust output matches the
+/// hand-computed align_corners=False formula.
+#[test]
+fn bert_bridge_uses_linear_align_corners_false_interpolation() {
+    let d_bert = 2;
+    let d_target = 2;
+    let text_seq_len = 8;
+    let bert_seq_len = 3;
+    // Identity projection: `conv_weight = I_2`, `conv_bias = 0`. Then
+    // `projected == bert_hidden` and we can reason about
+    // interpolation in isolation from the linear projection.
+    let bridge = BertBridge::from_conv(
+        vec![1.0, 0.0, 0.0, 1.0], // [d_target=2, d_bert=2] row-major identity
+        vec![0.0; d_target],
+        d_bert,
+        d_target,
+    );
+    // Deliberate row-distinctive values so linear vs nearest picks
+    // observably different outputs.
+    // Row 0 = [10.0, 20.0], Row 1 = [30.0, 40.0], Row 2 = [50.0, 60.0].
+    let bert_hidden = vec![10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0];
+
+    let out = bridge.forward(&bert_hidden, text_seq_len, bert_seq_len);
+    assert_eq!(out.len(), text_seq_len * d_target);
+
+    // Reference (align_corners=False linear):
+    for t in 0..text_seq_len {
+        let src_x = ((t as f32) + 0.5) * (bert_seq_len as f32) / (text_seq_len as f32) - 0.5;
+        let low_f = src_x.floor();
+        let low = (low_f as i64).clamp(0, (bert_seq_len as i64) - 1) as usize;
+        let high = ((low_f as i64) + 1).clamp(0, (bert_seq_len as i64) - 1) as usize;
+        let alpha = (src_x - low_f).clamp(0.0, 1.0);
+        // If clamp pushed low_f out of range, alpha collapses so the
+        // clamped index still dominates.
+        for d in 0..d_target {
+            let low_val = bert_hidden[low * d_bert + d];
+            let high_val = bert_hidden[high * d_bert + d];
+            let expected = (1.0 - alpha) * low_val + alpha * high_val;
+            let got = out[t * d_target + d];
+            let delta = (got - expected).abs();
+            assert!(
+                delta < 1e-4,
+                "bert_bridge linear-interp mismatch at (t={t}, d={d}): expected {expected}, \
+                 got {got} (Δ = {delta}). src_x={src_x}, low={low}, high={high}, alpha={alpha}. \
+                 Pre-fix nearest-neighbor would produce very different values on this fixture; \
+                 post-fix must match the align_corners=False linear formula."
+            );
+        }
+    }
+}
+
 /// Regression: smallest valid `bert_seq_len` (1) must not panic; verifies
 /// the `debug_assert` boundary added for the empty-`bert_seq_len` defect
-/// (Task 17 review) and confirms nearest-neighbor interpolation correctly
+/// (Task 17 review) and confirms interpolation correctly
 /// collapses every text position onto the single source row.
 #[test]
 fn bert_bridge_single_bert_position_no_panic() {
