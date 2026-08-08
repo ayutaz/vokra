@@ -35,7 +35,9 @@ mod normal_kernel;
 mod philox_round;
 mod philox_state;
 mod seed_init;
-pub use normal_kernel::{SCALE, u32_to_uniform_f32_pytorch};
+pub use normal_kernel::{
+    SCALE, TorchRandnStream, philox_randn_sample, torch_randn_f32, u32_to_uniform_f32_pytorch,
+};
 pub use philox_round::{PHILOX_M0, PHILOX_M1, PHILOX_ROUNDS, PHILOX_W0, PHILOX_W1, philox4x32_10};
 pub use philox_state::PhiloxState;
 pub use seed_init::TorchPhiloxState;
