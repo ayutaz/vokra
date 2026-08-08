@@ -1306,6 +1306,40 @@ shape break. These are `vokra-core::m5_residual_ops` `&'static str` constants �
 | `titanet_speaker_encode`     | FR-OP-80 | CAM++ covers it; TitaNet NVIDIA NC restriction unconfirmed   |
 | `diarize`                    | FR-OP-82 | trigger + license (pyannote HF-gated) double blocker         |
 
+### 2026-08-09 — 1.0.0-rc.1-dev (Wave 7 Part C: Moshi head mapped-lazy, MOSHI-16GB-STRATEGY residual)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched (baseline 33 fn / 11 typedefs unchanged; `scripts/check-abi-changelog.sh`
+green), and **no `vokra.*` GGUF key was added or renamed**. Extends the
+cc-06 (2026-07-19) mapped-lazy load path with the Voxtral `MappedHeads`
+pattern (12e574e): `MoshiEngine::from_path` / `from_path_with_policy` now
+serve head reads (`text_emb` / `audio_emb` / `text_linear`) straight out of
+the mapping too, saving ~1.3 GiB additional resident footprint at the
+full-7B shape (projected ~10 GB peak on 16 GB hosts, from cc-06's 11.43 GB
+measurement — actual measurement is owner scope). Bit-identical to the
+resident path — per-row / per-chunk widen preserves the byte formula and
+each row's inner accumulation order (pinned by
+`fully_mapped_backbone_matches_resident_bitwise` + the existing
+`converted_gguf_loads_under_strict_policy_..._end_to_end` bit-identity
+assertion on dialog turn text + PCM).
+
+| Crate / area   | Symbol                                        | Kind  | Signature                                                                                              | Rationale                                                                                                     | Breaking? | PR    |
+| -------------- | --------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-models::moshi` | `MappedHeadWeights` (struct + `bind` / `embed_text_into` / `embed_audio_into` / `text_logits_into` / `out_norm_gamma` / `n_audio_tables` / `text_card`) | Added | bounded-memory head store: `text_emb`, `emb.{k}.weight`, `text_linear` descriptors kept mapped; `out_norm.alpha` widened once at bind and cached; per-row widen+accumulate for embeddings; chunked GEMV (`MOSHI_HEAD_CHUNK_ROWS = 128`) for the text head — all bit-identical to the resident path | full-7B on 16 GB machines, ~1.3 GiB additional headroom vs cc-06 | no | (TBD) |
+| `vokra-models::moshi` | `MoshiBackbone::new_mapped_full` / `MoshiBackbone::is_head_mapped` | Added | fully bounded-memory backbone constructor (head + blocks both mapped); observability accessor | wires `MappedHeadWeights` into the backbone dispatch (embed_step / text_logits_into / forward_impl.out_norm) | no | (TBD) |
+| `vokra-models::moshi` | `MoshiEngine::backbone_is_mapped` / `MoshiEngine::backbone_is_head_mapped` | Added | observability accessors — regression guards for `from_path`'s bounded-memory contract | test / operator visibility into the load posture | no | (TBD) |
+
+Notes:
+- `WeightResidency::MappedLazy` (private enum) was replaced by
+  `WeightResidency::MappedLazyFull` — no public API change, and direct
+  callers can still construct the intermediate "head resident + blocks
+  mapped" posture via `MoshiBackbone::new_mapped` (which `parity_moshi.rs`
+  Stage C exercises directly).
+- Audit `MOSHI-16GB-STRATEGY` was substantially resolved by cc-06
+  (measured peak 11.43 GB on M1 16 GB, 2026-07-19). This Wave 7 Part C
+  entry lands the natural Voxtral-pattern extension so future audits find
+  the head store mapped-lazy, not just the blocks.
+
 ### 2026-07-19 — 1.0.0-rc.1-dev (cc-06: Moshi full-7B streaming convert + mmap load)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
