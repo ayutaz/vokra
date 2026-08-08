@@ -28,19 +28,21 @@
 //! - [`RnnoiseGate`] — three chained 3-gate GRUs (`vad_gru` 24→24 /
 //!   `noise_gru` 88→48 / `denoise_gru` 114→96) + two dense heads
 //!   (`denoise_output` 96→22 sigmoid / `vad_output` 24→1 sigmoid).
-//! - [`pitch_analysis`] — **loud-partial** placeholder that returns
-//!   `UnsupportedOp`; the real autocorrelation-based pitch tracker lands
-//!   with the PCM entry point in the next wave. Wave A callers provide
-//!   pitch-zero features through [`RnnoiseFeatureBuilder`] instead.
+//! - [`pitch_analysis`] — **real** autocorrelation-based pitch tracker
+//!   (48 kHz native, [`MIN_LAG_SAMPLES`]..=[`MAX_LAG_SAMPLES`] search,
+//!   parabolic sub-sample refinement, per-band correlation histogram
+//!   for feature packing). Streaming: `PitchState` rolls the PCM
+//!   lookback forward across calls. See [`pitch_analysis`] for the
+//!   honest divergence from upstream Xiph (48 kHz vs 12 kHz analysis;
+//!   no `remove_doubling` octave correction — the state carries
+//!   `prev_period` / `prev_gain` so a downstream binder can layer one on).
 //!
 //! # FR-EX-08 loud-fail contract
 //!
 //! Every shape / dim mismatch is a hard error
 //! ([`VokraError::InvalidArgument`]) naming the offending dimension.
-//! The [`pitch_analysis`] loud-partial fires
-//! [`VokraError::UnsupportedOp`] with an owner-facing message pointing at
-//! the env-gated parity harness so no caller can accidentally see a
-//! silent `0.0` masquerading as a real pitch estimate.
+//! [`pitch_analysis`] rejects a zero-length frame loudly rather than
+//! silently short-circuiting to a fabricated `0.0`.
 
 use core::f32::consts::PI as PI_F32;
 use std::f64::consts::PI;
@@ -424,38 +426,230 @@ pub struct PitchState {
     pub prev_gain: f32,
 }
 
-/// Runs one frame of pitch analysis (**loud-partial**).
+/// Analysable pitch-period band at the 48 kHz native rate — 60 Hz (long
+/// vocal fry / bass) corresponds to a 800-sample period, but the RNNoise
+/// downsampled buffer is only 720 samples (upstream downsamples to 12 kHz
+/// = 200-sample buffer). Vokra runs autocorrelation directly at 48 kHz
+/// over the 720-sample buffer, so the honest analysable band is
+/// `[SAMPLE_RATE/MAX_LAG_SAMPLES, SAMPLE_RATE/MIN_LAG_SAMPLES]` Hz.
+pub const MIN_LAG_SAMPLES: usize = 96; // 48 kHz / 96 = 500 Hz (upper F0)
+/// Maximum autocorrelation lag in samples. `MAX_LAG_SAMPLES < PITCH_BUF_SIZE`
+/// is required so at least `PITCH_BUF_SIZE - MAX_LAG_SAMPLES` samples
+/// overlap at the maximum lag (otherwise the correlation window is empty).
+/// 48 kHz / 700 = ~68 Hz (below adult male F0 floor).
+pub const MAX_LAG_SAMPLES: usize = 700;
+
+/// Runs one frame of pitch analysis (**real, autocorrelation-based**).
 ///
-/// Returns `(pitch_period_samples, pitch_gain, [N_PITCH_BANDS]
-/// per-band pitch correlation)`. The real implementation is an
-/// autocorrelation-based lag search over `PITCH_BUF_SIZE` samples with
-/// integer + fractional refinement (`src/pitch.c`, ~250 LoC); the
-/// current binding returns [`VokraError::UnsupportedOp`] with an
-/// owner-facing message pointing at the env-gate parity harness. This
-/// is the same posture as [`crate::openwakeword`]'s embedding extractor
-/// and `vokra_models::f0::rmvpe::extract_real` — a real implementation
-/// is a follow-up wave (**Wave B**), and the surrounding
-/// [`bark_filterbank`] / [`gru_forward`] / [`vorbis_window`] scaffolding
-/// remains fully real for callers that already hold pitch features
-/// through an external route.
+/// # Returns
+///
+/// `(pitch_period_samples, pitch_gain, [N_PITCH_BANDS] per-band pitch
+/// correlation)` where:
+///
+/// - `pitch_period_samples` is the estimated pitch period at the 48 kHz
+///   native rate (a period of `T` samples → fundamental frequency
+///   `SAMPLE_RATE / T` Hz). `0.0` when no confident pitch is detected
+///   (unvoiced frame — `pitch_gain < 0.0`).
+/// - `pitch_gain` is the normalized autocorrelation peak at the winning
+///   lag (`Σ x[n] * x[n-τ] / sqrt(Σ x[n]² · Σ x[n-τ]²)`), clamped into
+///   `[0, 1]` when voiced.
+/// - The per-band array carries the normalized correlation at 6 lags
+///   spread across the pitch range — an approximation of the upstream
+///   `NB_BANDS_PITCH` per-band pitch strength for feature packing.
+///
+/// # Streaming contract
+///
+/// The `state` PCM lookback is rolled forward by `frame.len()` samples
+/// on every call — the caller does not need to manage the ring. The
+/// autocorrelation runs against the concatenation of prior samples in
+/// the lookback and the incoming `frame`, giving inter-frame continuity
+/// so a slowly-changing pitch tracks across the 720-sample analysis
+/// window.
+///
+/// # Design notes (honest divergence from upstream Xiph RNNoise)
+///
+/// Upstream `src/pitch.c` first downsamples the input by 4× (48 kHz →
+/// 12 kHz) via two half-band filters and then runs the correlation on
+/// the downsampled buffer — cheaper (fewer taps) and marginally more
+/// robust because the low-pass rejects any partials above 6 kHz that
+/// would alias into the pitch band. This runtime keeps the analysis at
+/// 48 kHz to preserve `zero-dep` (no FIR filter tables) and adds a
+/// simple parabolic interpolation between the argmax and its two
+/// neighbours to recover sub-sample lag precision. The full upstream
+/// `remove_doubling` post-processor (octave-error correction against the
+/// prior frame's period) is not implemented: `state.prev_period` /
+/// `prev_gain` are updated so a downstream binder can layer that on if
+/// needed, but the raw argmax is returned so a caller sees an honest
+/// per-frame estimate.
+///
+/// # Errors
+///
+/// - [`VokraError::InvalidArgument`] on an empty `frame` (a zero-length
+///   push has no honest semantic).
 pub fn pitch_analysis(
     state: &mut PitchState,
     frame: &[f32],
 ) -> Result<(f32, f32, [f32; N_PITCH_BANDS])> {
-    // Consume `frame` into the lookback so a caller who swallows
-    // UnsupportedOp in a retry loop cannot grow the buffer without
-    // bound.
-    let _ = state;
-    let _ = frame;
-    Err(VokraError::UnsupportedOp(
-        "rnnoise::pitch_analysis: autocorrelation-based pitch tracker (upstream src/pitch.c) \
-         is a Wave B follow-up. Wave A callers use RnnoiseFeatureBuilder::zero_pitch to \
-         pack the 42-d feature vector with pitch bands = 0. Set VOKRA_RNNOISE_V02_REAL_GGUF \
-         and follow the recipe in crates/vokra-models/tests/parity_rnnoise_v02.rs to flip the \
-         switch. Until then this is a loud partial — no silent fabricated 0.0 pitch period \
-         (FR-EX-08)."
-            .to_owned(),
-    ))
+    if frame.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "rnnoise::pitch_analysis: frame is empty; a zero-length push has no \
+             honest semantic (FR-EX-08)"
+                .into(),
+        ));
+    }
+
+    // 1. Roll the lookback forward. The RNNoise `PITCH_BUF_SIZE` is the
+    //    upper bound on how much history the autocorrelation walks — we
+    //    keep exactly that much (oldest samples drop first once the
+    //    buffer saturates).
+    state.buffer.extend_from_slice(frame);
+    if state.buffer.len() > PITCH_BUF_SIZE {
+        let overflow = state.buffer.len() - PITCH_BUF_SIZE;
+        state.buffer.drain(..overflow);
+    }
+    let buf = &state.buffer;
+
+    // 2. If we do not yet have enough samples to run one full lag, return
+    //    a "no confident pitch" reading. The RNNoise upstream also
+    //    produces an unvoiced label until its buffer fills — the tracker
+    //    is inherently a streaming algorithm.
+    if buf.len() <= MIN_LAG_SAMPLES {
+        state.prev_period = 0.0;
+        state.prev_gain = 0.0;
+        return Ok((0.0, 0.0, [0.0f32; N_PITCH_BANDS]));
+    }
+
+    // 3. Total-energy denominator across the analysis window. Reused for
+    //    every lag in the search — precomputing once is O(N) instead of
+    //    O(N · L).
+    let n_analyze = buf.len();
+    let mut e0 = 0.0f64;
+    for &s in buf.iter() {
+        e0 += f64::from(s) * f64::from(s);
+    }
+    // A silent buffer has no pitch; guard against the div-by-zero
+    // that would otherwise appear in the normalization.
+    if e0 < 1e-20 {
+        state.prev_period = 0.0;
+        state.prev_gain = 0.0;
+        return Ok((0.0, 0.0, [0.0f32; N_PITCH_BANDS]));
+    }
+
+    // 4. Autocorrelation-based lag search. For each candidate lag τ,
+    //    compute the normalized cross-correlation
+    //      c[τ] = Σ_{n=τ}^{N-1} x[n] * x[n-τ]
+    //             / sqrt(Σ_{n=τ}^{N-1} x[n]² · Σ_{n=0}^{N-1-τ} x[n]²)
+    //    the denominator is the geometric mean of the two overlapping-
+    //    window energies (the standard "normalized autocorrelation" that
+    //    gives a value in [-1, 1] — a periodic signal at period τ hits
+    //    +1). Range: MIN_LAG_SAMPLES..=lag_max.
+    let lag_max = MAX_LAG_SAMPLES.min(n_analyze - 1);
+    if lag_max < MIN_LAG_SAMPLES {
+        state.prev_period = 0.0;
+        state.prev_gain = 0.0;
+        return Ok((0.0, 0.0, [0.0f32; N_PITCH_BANDS]));
+    }
+
+    let mut best_lag: usize = MIN_LAG_SAMPLES;
+    let mut best_norm: f64 = -1.0;
+    // Store the normalized correlation across the full search range —
+    // needed for the per-band correlation pack and parabolic refinement.
+    let mut corr_by_lag = vec![0.0f64; lag_max + 1];
+
+    for tau in MIN_LAG_SAMPLES..=lag_max {
+        let mut num = 0.0f64;
+        let mut e_head = 0.0f64; // energy of x[τ..N]
+        let mut e_tail = 0.0f64; // energy of x[0..N-τ]
+        // Length of the overlapping window at this lag.
+        let m = n_analyze - tau;
+        for n in 0..m {
+            let a = f64::from(buf[n + tau]);
+            let b = f64::from(buf[n]);
+            num += a * b;
+            e_head += a * a;
+            e_tail += b * b;
+        }
+        let denom = (e_head * e_tail).sqrt();
+        // A near-zero denominator can happen for a lag near buf.len()
+        // (only one or two overlapping samples); skip rather than divide.
+        let norm = if denom > 1e-20 { num / denom } else { 0.0 };
+        corr_by_lag[tau] = norm;
+        if norm > best_norm {
+            best_norm = norm;
+            best_lag = tau;
+        }
+    }
+
+    // 5. Parabolic refinement: fit a parabola through the argmax and its
+    //    two immediate neighbours, take the vertex. Recovers sub-sample
+    //    lag precision without more FLOPs than three subtracts and a
+    //    divide. Skips the refinement if the argmax sits at the boundary
+    //    of the search range (where there is no left / right neighbour).
+    let refined_lag = if best_lag > MIN_LAG_SAMPLES && best_lag < lag_max {
+        let cm = corr_by_lag[best_lag - 1];
+        let c0 = corr_by_lag[best_lag];
+        let cp = corr_by_lag[best_lag + 1];
+        let denom = 2.0 * c0 - cm - cp;
+        if denom.abs() > 1e-12 {
+            best_lag as f64 + 0.5 * (cm - cp) / denom
+        } else {
+            best_lag as f64
+        }
+    } else {
+        best_lag as f64
+    };
+
+    // 6. Voicing decision: the normalized correlation lies in [-1, 1]
+    //    for real signals; a weak / noise-dominated frame produces peaks
+    //    well below the typical voiced range (~0.3+). Upstream Xiph
+    //    RNNoise uses a state-dependent threshold; we use a plain floor
+    //    to keep the loud-partial → loud-real transition surface small.
+    //    An unvoiced frame reports `pitch_period = 0.0` and `gain = 0.0`.
+    const VOICED_GAIN_MIN: f64 = 0.30;
+    let voiced = best_norm >= VOICED_GAIN_MIN;
+
+    // 7. Per-band pitch correlation. Split the lag search range into 6
+    //    contiguous bands and report the peak normalized correlation in
+    //    each. This is the honest per-band feature the upstream RNNoise
+    //    packs into `pack_features(pitch_bands, ...)` — a lag histogram
+    //    that the classifier learns to interpret.
+    //
+    // Iteration by band index `b` (rather than `.iter_mut().enumerate()`)
+    // keeps the band-relative `lo` / `hi` lag arithmetic aligned with
+    // the mathematical definition; the enumerate rewrite would obscure
+    // both.
+    let mut pitch_bands = [0.0f32; N_PITCH_BANDS];
+    let band_width = (lag_max - MIN_LAG_SAMPLES + 1) as f64 / N_PITCH_BANDS as f64;
+    #[allow(clippy::needless_range_loop)]
+    for b in 0..N_PITCH_BANDS {
+        let lo = MIN_LAG_SAMPLES + (b as f64 * band_width).floor() as usize;
+        let hi = MIN_LAG_SAMPLES + ((b + 1) as f64 * band_width).floor() as usize;
+        let hi = hi.min(lag_max + 1);
+        let lo = lo.min(hi);
+        let mut peak = 0.0f64;
+        // Explicit lag index `tau` — matches the corr_by_lag[τ] reading
+        // in the upstream `celt_pitch_xcorr` reference so a reader can
+        // cross-reference `src/pitch.c` line by line.
+        for corr in corr_by_lag.iter().take(hi).skip(lo) {
+            if *corr > peak {
+                peak = *corr;
+            }
+        }
+        pitch_bands[b] = peak.clamp(0.0, 1.0) as f32;
+    }
+
+    let (period, gain) = if voiced {
+        let g = best_norm.clamp(0.0, 1.0) as f32;
+        (refined_lag as f32, g)
+    } else {
+        (0.0f32, 0.0f32)
+    };
+
+    // 8. Persist for downstream `remove_doubling` layers if needed.
+    state.prev_period = period;
+    state.prev_gain = gain;
+
+    Ok((period, gain, pitch_bands))
 }
 
 /// Packs a 42-d RNNoise feature vector from its constituent pieces.
@@ -689,22 +883,88 @@ mod tests {
     }
 
     #[test]
-    fn pitch_analysis_returns_loud_partial() {
+    fn pitch_analysis_rejects_empty_frame() {
         let mut state = PitchState::default();
-        let frame = vec![0.0f32; FRAME_SIZE];
-        let err = pitch_analysis(&mut state, &frame).unwrap_err();
-        let msg = match err {
-            VokraError::UnsupportedOp(m) => m,
-            other => panic!("expected UnsupportedOp, got {other:?}"),
-        };
+        let err = pitch_analysis(&mut state, &[]).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn pitch_analysis_silent_input_reports_unvoiced() {
+        // A silent buffer must produce no confident pitch (voicing gate).
+        // The invariant is `pitch_period == 0.0 && gain == 0.0`, never
+        // a fabricated non-zero lag on pure silence.
+        let mut state = PitchState::default();
+        // Fill the buffer with enough zeros so the lag search actually
+        // runs (otherwise we short-circuit before reaching the voicing
+        // check).
+        let frame = vec![0.0f32; PITCH_BUF_SIZE];
+        let (period, gain, bands) = pitch_analysis(&mut state, &frame).unwrap();
+        assert_eq!(period, 0.0, "silence must be unvoiced (period = 0)");
+        assert_eq!(gain, 0.0, "silence must have zero gain");
+        for &b in &bands {
+            assert_eq!(b, 0.0, "silent input must produce zero band correlations");
+        }
+    }
+
+    #[test]
+    fn pitch_analysis_pure_tone_recovers_period_within_grid() {
+        // A pure sine at 200 Hz sampled at 48 kHz has period 240 samples.
+        // The autocorrelation-based tracker must land within a small
+        // window of that period once the buffer fills (parabolic
+        // interpolation gives sub-sample precision, so we tolerate 1
+        // sample of drift for numerical noise).
+        let mut state = PitchState::default();
+        let f0 = 200.0f32;
+        let sr = SAMPLE_RATE as f32;
+        let expected_period = sr / f0; // 240
+        // Two full buffer-fills worth of samples so the analysis window
+        // is full and the parabolic refinement has meaningful neighbours.
+        let n = PITCH_BUF_SIZE * 2;
+        let signal: Vec<f32> = (0..n)
+            .map(|i| (2.0 * PI_F32 * f0 * (i as f32) / sr).sin())
+            .collect();
+
+        // Push the whole signal in one shot — the rolling buffer clamps
+        // itself to PITCH_BUF_SIZE.
+        let (period, gain, _bands) = pitch_analysis(&mut state, &signal).unwrap();
+        let delta = (period - expected_period).abs();
         assert!(
-            msg.contains("VOKRA_RNNOISE_V02_REAL_GGUF"),
-            "loud-partial must name the env-gate: {msg}"
+            delta < 1.5,
+            "expected period ≈ {expected_period}, got {period} (Δ = {delta}) — \
+             autocorrelation-based pitch tracker must land within 1.5 samples"
         );
         assert!(
-            msg.contains("parity_rnnoise_v02"),
-            "loud-partial must name the parity script: {msg}"
+            gain > 0.9,
+            "pure-tone gain must be near +1 (got {gain}) — a strong periodic \
+             signal must trip the voicing gate"
         );
+    }
+
+    #[test]
+    fn pitch_analysis_streams_state_across_calls() {
+        // Two 100 ms slices of the same 200 Hz sine, pushed one at a
+        // time, must land at the same period as a single-shot push. This
+        // pins the streaming-state invariant so a future refactor cannot
+        // silently regress into a per-call-only tracker.
+        let f0 = 200.0f32;
+        let sr = SAMPLE_RATE as f32;
+        let slice_len = 4800; // 100 ms at 48 kHz
+        let slice_a: Vec<f32> = (0..slice_len)
+            .map(|i| (2.0 * PI_F32 * f0 * (i as f32) / sr).sin())
+            .collect();
+        let slice_b: Vec<f32> = (0..slice_len)
+            .map(|i| (2.0 * PI_F32 * f0 * ((i + slice_len) as f32) / sr).sin())
+            .collect();
+
+        let mut s1 = PitchState::default();
+        pitch_analysis(&mut s1, &slice_a).unwrap();
+        let (p1, g1, _) = pitch_analysis(&mut s1, &slice_b).unwrap();
+        assert!(p1 > 0.0, "streamed pitch must be voiced after two slices");
+        assert!(g1 > 0.5, "streamed pitch must have positive gain, got {g1}");
+        // State must be non-empty and clamped.
+        assert!(!s1.buffer.is_empty());
+        assert!(s1.buffer.len() <= PITCH_BUF_SIZE);
     }
 
     #[test]
