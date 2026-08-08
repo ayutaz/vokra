@@ -181,18 +181,26 @@ def _uniform_real_f32(v: int) -> float:
 def _normal_fill_16_scalar(data: list[float]) -> None:
     """Bit-exact port of `normal_fill_16` (DistributionTemplates.h:138-148)
     with `mean=0, std=1`. Consumes 16 pre-filled f32 uniforms in-place;
-    first 8 become cosines, second 8 become sines."""
+    first 8 become cosines, second 8 become sines.
+
+    IMPORTANT precision detail: C++'s `2.0f * c10::pi<double> * u2`
+    promotes `float * double` to double, keeps the second `* u2` at
+    double, then rounds to float at the assignment. A pure f32 chain
+    diverges for most `u2` inputs. Python's `math.cos/sin` return f64
+    which we round to f32 at the end — same effective computation as
+    C++'s `std::cos(float)` for the inputs the compiler sees this
+    theta at (the theta itself is now correctly f32 after the f64
+    compute)."""
     assert len(data) == 16
-    # 2.0f * c10::pi<double> cast to f32 — the same rounding torch does
-    # at `_mm256_set1_ps(2.0f * c10::pi<double>)` construction time.
-    two_pi_f32 = struct.unpack("<f", struct.pack("<f", 2.0 * math.pi))[0]
+    two_pi_f64 = 2.0 * math.pi
     for j in range(8):
         u1 = struct.unpack("<f", struct.pack("<f", 1.0 - data[j]))[0]
         u2 = data[j + 8]
         log_u1 = struct.unpack("<f", struct.pack("<f", math.log(u1)))[0]
         radius_sq = struct.unpack("<f", struct.pack("<f", -2.0 * log_u1))[0]
         radius = struct.unpack("<f", struct.pack("<f", math.sqrt(radius_sq)))[0]
-        theta = struct.unpack("<f", struct.pack("<f", two_pi_f32 * u2))[0]
+        # theta = (2π_f64 * u2_f64) as f32 — match C++ f64-intermediate.
+        theta = struct.unpack("<f", struct.pack("<f", two_pi_f64 * float(u2)))[0]
         cos_theta = struct.unpack("<f", struct.pack("<f", math.cos(theta)))[0]
         sin_theta = struct.unpack("<f", struct.pack("<f", math.sin(theta)))[0]
         data[j] = struct.unpack("<f", struct.pack("<f", radius * cos_theta))[0]

@@ -423,7 +423,7 @@ pub fn torch_randn_f32(seed: u64, out: &mut [f32]) {
 ///     u1 = 1 - data[j]                    // (0, 1] so log is finite
 ///     u2 = data[j + 8]
 ///     r  = sqrt(-2 * log(u1))             // f32 libm log/sqrt
-///     theta = 2.0 * f32(pi) * u2          // f32 libm mul; NOTE: 2.0f * f64(pi) rounds to f32(6.283185)
+///     theta = f32(2.0 * f64(pi) * f64(u2))    // f64 mul, then f32 rounding — see note
 ///     data[j]     = r * cos(theta)        // f32 libm cos
 ///     data[j + 8] = r * sin(theta)        // f32 libm sin
 /// ```
@@ -432,34 +432,42 @@ pub fn torch_randn_f32(seed: u64, out: &mut [f32]) {
 /// standard-normal samples in the same slice (first 8 → cosines,
 /// second 8 → sines).
 ///
-/// # Trailing constant
+/// # `theta` precision detail
 ///
-/// `2.0f * c10::pi<double>` in upstream: `c10::pi<double>` is
-/// `3.14159265358979323846`, `2.0 * pi` is computed in f64, then
-/// implicitly cast to f32 at the `_mm256_set1_ps` / `Vec` call. Rust
-/// mirrors this exactly with
-/// `(2.0_f64 * core::f64::consts::PI) as f32`, which produces
-/// f32(6.2831853) with bit pattern `0x40c90fdb` (the closest f32 to
-/// 2π). See `crates/vokra-core/tests/rng_torch_randn_cpu_parity.rs`
-/// for the exact-byte pin against torch on M1 at seed=0, N=16.
+/// Upstream: `const scalar_t theta = 2.0f * c10::pi<double> * u2;`
+/// with `scalar_t = float`. C++ operator precedence + usual
+/// arithmetic conversions promote `float * double` to `double` and
+/// `double * float` to `double`, so `theta` is computed at **f64
+/// precision** and rounded to f32 only at the final assignment. A
+/// naive Rust `f32 * f32 * f32` chain rounds at every step, which
+/// diverges from upstream for many `u2` inputs.
+///
+/// Same-precision detail on the AVX2 path: `_mm256_set1_ps(2.0f *
+/// c10::pi<double>)` narrows `2π` to f32 at construction, but then
+/// `_mm256_mul_ps(two_pi, u2)` is a single f32 multiply — so on AVX2
+/// hosts the constant is pre-rounded once but the `* u2` is a pure
+/// f32 op. That is what makes AVX2 vs scalar output differ by a few
+/// samples per block even before the transcendental approximations
+/// come in. This scalar port matches the SCALAR path exactly (f64
+/// intermediate); the AVX2 path is a separate residual documented on
+/// `torch_randn_f32`.
 #[inline]
 fn normal_fill_16_scalar(data: &mut [f32]) {
     // The array-length precondition (16 elements). Not a runtime
     // check on the hot path — `torch_randn_fill_f32` only calls this
     // with 16-element slices.
     debug_assert_eq!(data.len(), 16);
-    // 2.0f * c10::pi<double> = 6.283185307179586 in f64, then cast to
-    // f32 = 6.2831855 (bit 0x40c90fdb). Precomputed as an f32 const so
-    // the same cast rounding fires at load time, matching torch's
-    // `_mm256_set1_ps(2.0f * c10::pi<double>)` which does the f64→f32
-    // narrowing at construction and broadcasts the resulting f32.
-    #[allow(clippy::cast_possible_truncation)]
-    const TWO_PI_F32: f32 = (2.0_f64 * core::f64::consts::PI) as f32;
     for j in 0..8 {
         let u1 = 1.0_f32 - data[j];
         let u2 = data[j + 8];
         let radius = (-2.0_f32 * u1.ln()).sqrt();
-        let theta = TWO_PI_F32 * u2;
+        // Match C++'s `2.0f * c10::pi<double> * u2` precision: promote
+        // through f64 for both muls, cast to f32 at the end. See the
+        // module-doc §"`theta` precision detail" for why a straight
+        // `f32 * f32` chain diverges. `2.0 * PI` is a const-eval f64,
+        // and `u2 as f64` widens exactly (every f32 fits in f64).
+        #[allow(clippy::cast_possible_truncation)]
+        let theta = ((2.0_f64 * core::f64::consts::PI) * (u2 as f64)) as f32;
         // The (radius * cos(theta) * std + mean) sequence with std=1,
         // mean=0 simplifies to (radius * cos(theta)) — a single mul.
         // Rust f32 mul + libm cos matches torch's scalar path bit-

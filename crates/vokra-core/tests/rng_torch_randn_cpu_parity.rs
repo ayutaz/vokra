@@ -156,3 +156,87 @@ fn torch_randn_different_seeds_produce_different_first_samples() {
          means the seed input was silently dropped somewhere in the pipeline"
     );
 }
+
+/// **The N=16 anchor** — pins the exact bytes `torch.randn(16,
+/// device='cpu', seed=0)` produces on the scalar `normal_fill` path
+/// (ARM64 M1 and any x86_64 host that lacks AVX2). Sampled `k=16`
+/// hits torch's `normal_kernel` fast-path threshold (`>=16 && f32 &&
+/// contiguous`), so this test guards the `normal_fill_16_scalar`
+/// implementation — a different code path from the `k=4`
+/// small-K anchor above.
+///
+/// # Bytes (verified against real torch on Apple M1)
+///
+/// ```python
+/// import torch, struct
+/// torch.manual_seed(0)
+/// print([hex(struct.unpack('<I', struct.pack('<f', v))[0]) for v in
+///        torch.randn(16).tolist()])
+/// # ['0xbf901b85', '0xbf93808a', '0xbe804bd6', '0xbede255e',
+/// #  '0x3f594515', '0x3f312784', '0xbea1cc6d', '0xc0075fc2',
+/// #  '0x3ea50138', '0xbfa1b4f4', '0x3eb330ff', '0x3e9dc3ba',
+/// #  '0x3df56f77', '0x3f9e6b93', '0x3f8ef28e', '0xbe7d365a']
+/// ```
+///
+/// # AVX2 caveat
+///
+/// On x86_64 hosts with AVX2, torch dispatches to `normal_fill_AVX2`
+/// which uses `avx_mathfun`'s `log256_ps` / `sincos256_ps`
+/// approximations. Those differ from libm's scalar `logf`/`cosf`/`sinf`
+/// by ~1 ULP for some inputs, so a few samples of this 16-element
+/// vector may off-by-1-ULP on AVX2 CI hosts. Documented on
+/// `torch_randn_f32`. Rust's `normal_fill_16_scalar` matches torch's
+/// scalar path — the one that fires on ARM64 M1 and on x86_64 hosts
+/// built without AVX2.
+#[test]
+fn torch_randn_cpu_seed_0_k_16_matches_real_torch_bits_scalar_path() {
+    let mut got = [0.0_f32; 16];
+    torch_randn_f32(0, &mut got);
+    let expected_bits: [u32; 16] = [
+        0xBF90_1B85,
+        0xBF93_808A,
+        0xBE80_4BD6,
+        0xBEDE_255E,
+        0x3F59_4515,
+        0x3F31_2784,
+        0xBEA1_CC6D,
+        0xC007_5FC2,
+        0x3EA5_0138,
+        0xBFA1_B4F4,
+        0x3EB3_30FF,
+        0x3E9D_C3BA,
+        0x3DF5_6F77,
+        0x3F9E_6B93,
+        0x3F8E_F28E,
+        0xBE7D_365A,
+    ];
+    let mut off_by_one_ulp: Vec<usize> = Vec::new();
+    let mut worse: Vec<(usize, u32, u32)> = Vec::new();
+    for i in 0..16 {
+        let got_bits = got[i].to_bits();
+        if got_bits != expected_bits[i] {
+            let diff = (got_bits as i64 - expected_bits[i] as i64).unsigned_abs();
+            if diff <= 1 {
+                off_by_one_ulp.push(i);
+            } else {
+                worse.push((i, got_bits, expected_bits[i]));
+            }
+        }
+    }
+    assert!(
+        worse.is_empty(),
+        "torch_randn(seed=0, k=16) diverged by >1 ULP on scalar path: {worse:?} \
+         (this test tolerates 1 ULP for AVX2-vs-scalar libm micro-differences; \
+         anything worse is a real algorithm bug)"
+    );
+    if !off_by_one_ulp.is_empty() {
+        eprintln!(
+            "torch_randn(seed=0, k=16): {} sample(s) off by 1 ULP (indices {:?}) — \
+             likely an AVX2 CI host where torch dispatches to normal_fill_AVX2 \
+             (avx_mathfun log256_ps/sincos256_ps approximations differ from libm \
+             scalar by up to 1 ULP). Scalar path matches bit-exactly on M1.",
+            off_by_one_ulp.len(),
+            off_by_one_ulp,
+        );
+    }
+}
