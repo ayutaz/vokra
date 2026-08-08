@@ -55,10 +55,20 @@ algorithm and verified byte-for-byte by
 - **Host**: fixtures generated on macOS (Apple Silicon), Python 3.12
   via uv, math.log1p/sqrt/sin/cos → libm on macOS. Rust reads the same
   `std::f64::{ln_1p, sqrt, sin, cos}` linked to the same libm on the
-  same host — the f64 Box-Muller chain is therefore bit-identical when
-  regenerated on the same platform. Cross-platform bit-parity is
-  documented as a risk in the module doc (Linux glibc libm vs macOS
-  libm vs Windows msvcrt).
+  same host — the f64 Box-Muller chain is bit-identical when
+  regenerated on the same platform.
+- **Fast-path bit-parity is NOT guaranteed even intra-arch** (2026-08-08,
+  PR27-RNG-CROSS-ARCH audit gap): the `k=100` and `k=1000` fixtures
+  drive `torch_randn_f32`'s `K >= 16` fast path (`normal_fill_16_scalar`)
+  which uses **f32** `logf`/`cosf`/`sinf`. Rust's LLVM lowering may
+  pick a different libm entry than CPython's `math` module even on the
+  SAME macOS Apple Silicon host, producing ~1 ULP delta at 1-2 samples
+  per 1000. The `rng_torch_randn_e2e.rs` test therefore applies a
+  per-sample 2-ULP tolerance for these fixtures (bit-exact anchor is
+  the `k=4` streaming-path test, which runs at f64 precision and holds
+  cross-arch). See `docs/adr/sbv2-libm-strategy.md` for the impossibility
+  of "match torch bit-exact on every host" and the justification for
+  this tolerance in place of vendoring `rust-lang/libm` / RLIBM / SLEEF.
 
 ## Regeneration
 
