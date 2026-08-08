@@ -7,27 +7,53 @@
 //! Every VITS-family flow (piper-plus, GPT-SoVITS, RVC, upcoming
 //! CosyVoice2 CFM prior, Bark, F5-TTS — see rng/mod.rs) draws its
 //! stochastic-duration-predictor noise from what upstream PyTorch code
-//! calls `torch.randn`. On the GPU path (torch.cuda.manual_seed) that
-//! reduces to ATen's `PhiloxRNGEngine.h::randn`, whose algorithm is a
-//! Philox4x32-10 + Box-Muller pipeline fully specified in torch source
-//! (BSD-3-Clause).
+//! calls `torch.randn`. On the CPU path (the default backend, and the
+//! one SBV2's Python reference dumper uses via `torch.manual_seed(seed);
+//! ... torch.randn(1, 2, T)`) that reduces to
+//! `at::mt19937_engine` (Mersenne Twister) plus
+//! `at::normal_distribution<double>` (Box-Muller in f64 with pair
+//! caching) — fully specified in torch source (BSD-3-Clause) at
+//! `ATen/core/MT19937RNGEngine.h` and
+//! `ATen/core/DistributionsHelper.h:187-198`.
 //!
-//! Vokra's Rust port lives in `vokra_core::rng::{TorchRandnStream,
-//! philox4x32_10, ...}` and is byte-exact against a
-//! Random123-KAT-audited Python dumper (see
-//! `crates/vokra-core/tests/rng_torch_randn_e2e.rs`). Before this file
-//! existed, `SbV2Model::synthesize` internally constructed a
-//! `GaussianSplitMix64` (Vokra's pre-existing synthetic splitmix64 +
-//! Box-Muller wrapper) — good for reproducible synthetic tests but NOT
-//! byte-parity with any PyTorch reference.
+//! # 2026-08-08 correction (bisect wf_20fa0933-53d)
+//!
+//! Prior to this correction, `SbV2Model::synthesize` drove a
+//! `TorchRandnStream` backed by Philox4x32-10 in the belief that this
+//! reproduced `torch.randn(device='cpu')`. A byte-level bisect against
+//! real `torch.randn(4)` seed=0 (bit patterns `[0x3fc53f5c, 0xbe963c50,
+//! 0xc00b7149, 0x3f1184b6]`) found NO match at any sample — CPU torch
+//! uses MT19937, not Philox. The Philox path was `PhiloxRNGEngine.h`'s
+//! own `randn`, which the torch header itself disclaims as "not used
+//! anywhere except for tests in cpu_generator_test.cpp"
+//! (PhiloxRNGEngine.h:39-41).
+//!
+//! [`vokra_core::rng::TorchRandnStream`] was rewritten to use
+//! [`vokra_core::rng::TorchMt19937Engine`] with f64 Box-Muller and pair
+//! caching, and its seed=0 anchor now passes bit-exactly against real
+//! torch (see
+//! `crates/vokra-core/tests/rng_torch_randn_cpu_parity.rs`).
+//!
+//! # Enum variant naming (historical)
+//!
+//! The variant name [`RngMode::PhiloxRngEnginePyTorchParity`] and the
+//! GGUF metadata slug `"phyloxrngengine_10"` predate this correction
+//! and are kept for on-disk compatibility with any already-emitted
+//! metadata + to minimize churn in the seven downstream test files
+//! that construct `SbV2SynthRequest` literals with an explicit
+//! `rng_mode`. The name is now factually misleading — the underlying
+//! algorithm is MT19937 + `at::normal_distribution<double>`, not
+//! Philox — but the *behavior* (byte-exact against `torch.randn(cpu)`)
+//! matches what a reader would want from a "PyTorch parity" flag. A
+//! future PR will introduce a `TorchCpuMt19937Parity` alias and
+//! deprecate the current spelling.
 //!
 //! # What this enum does
 //!
 //! [`RngMode::PhiloxRngEnginePyTorchParity`] (the [`Default`]) makes
 //! `SbV2Model::synthesize` use `TorchRandnStream` so a fixture emitted
-//! by `torch.manual_seed(N); torch.randn(1, 2, T)` (via the Python
-//! PhiloxRNGEngine.h port in `tools/parity/torch_philox_dump.py`)
-//! byte-matches the noise buffer this crate produces.
+//! by `torch.manual_seed(N); torch.randn(1, 2, T)` byte-matches the
+//! noise buffer this crate produces.
 //! [`RngMode::GaussianSplitMix64Legacy`] preserves the pre-Step-10
 //! behavior for existing synthetic tests whose duration outputs are
 //! byte-frozen.
@@ -46,9 +72,21 @@
 /// stochastic-duration-predictor's Gaussian noise draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RngMode {
-    /// Byte-exact `torch.manual_seed(N); torch.randn(...)` parity via
-    /// [`vokra_core::rng::TorchRandnStream`] (Philox4x32-10 +
-    /// PhiloxRNGEngine.h Box-Muller). The default.
+    /// Byte-exact `torch.manual_seed(N); torch.randn(...)` parity on
+    /// the CPU backend, via [`vokra_core::rng::TorchRandnStream`].
+    ///
+    /// **Historical name, current algorithm**: this variant is called
+    /// `PhiloxRngEnginePyTorchParity` for on-disk / on-metadata
+    /// backward compatibility (the GGUF slug `"phyloxrngengine_10"`
+    /// and the seven `SbV2SynthRequest` literals across
+    /// `crates/vokra-models/tests/*.rs` construct with this name).
+    /// The underlying algorithm is **not** Philox; it is
+    /// `at::mt19937_engine` + `at::normal_distribution<double>` (f64
+    /// Box-Muller with pair caching), which is what CPU torch
+    /// actually uses. See the module doc's "2026-08-08 correction"
+    /// section for the bisect report and the rewrite.
+    ///
+    /// The default.
     PhiloxRngEnginePyTorchParity,
 
     /// The pre-Step-10 behavior: Vokra's synthetic
@@ -74,6 +112,14 @@ impl RngMode {
     /// Human-readable slug used in GGUF metadata (`vokra.sbv2.rng.torch_mode`)
     /// and in log lines. Stable across compiler versions so a producer /
     /// consumer contract remains diffable.
+    ///
+    /// **Note**: the `"phyloxrngengine_10"` slug is a historical
+    /// artifact of the pre-2026-08-08 belief that CPU torch used
+    /// Philox4x32-10 (see this module's doc). The underlying algorithm
+    /// today is MT19937 + `normal_distribution<double>`. The slug is
+    /// preserved so already-emitted GGUFs remain readable; a future
+    /// producer wanting a truthful slug should introduce a new
+    /// variant.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

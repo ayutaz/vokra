@@ -3,21 +3,36 @@
 increment, used to generate byte-exact reference fixtures for Vokra's Rust
 `vokra_core::rng::philox4x32_10` and friends.
 
-The port stays independent of PyTorch (no `import torch`) so it can (a)
-regenerate fixtures on a torch-less host, and (b) cross-check the Rust
-implementation against a second, algorithmically identical but source-
-independent implementation. If both had the same bug the tests would
-falsely pass, so this file's `--self-test` mode also verifies the block
-function against Random123 v1.14's published KAT vectors before writing
-any fixture — Random123 is an independent implementation of the same
-algorithm (Salmon et al., SC'11), which forecloses that shared-bug hazard.
+# 2026-08-08 correction — this script no longer claims torch.randn parity
 
-Usage:
+Prior to this correction, the `--randn-samples` mode of this script was
+believed to reproduce `torch.randn(device='cpu')` byte-for-byte via a port
+of `PhiloxRNGEngine.h::randn`. A byte-level bisect against real
+`torch.randn(4)` seed=0 (see `crates/vokra-core/src/rng/normal_kernel.rs`
+module doc §"Historical note") found NO match at any sample: CPU torch
+uses `at::mt19937_engine` + `at::normal_distribution<double>`, not
+Philox4x32-10. The `PhiloxRNGEngine.h::randn` function this script
+mirrors is dead code inside torch (that header, lines 39-41, states it
+is "not used anywhere except for tests in cpu_generator_test.cpp").
+
+The MT19937-based torch-parity dumper lives at
+`tools/parity/torch_randn_cpu_dump.py`; it is the honest
+`torch.manual_seed(seed); torch.randn(K)` byte oracle and is what
+`sbv2_sdp_noise_dump.py` now delegates to. This script is kept as an
+independent Python implementation of the Philox4x32-10 block function +
+counter machinery — its `--n` mode (raw u32 words) still cross-checks
+`vokra_core::rng::philox4x32_10` against the Random123 KAT-audited
+Python port, and its `--randn-samples` mode is now clearly documented
+as `PhiloxRNGEngine.h::randn` bytes (**not** real torch.randn bytes) so
+a future CUDA `curandStatePhilox4_32_10_t` parity path has a starting
+Python primitive to build on.
+
+# Usage
     uv run torch_philox_dump.py --self-test
     uv run torch_philox_dump.py --seed 0 --n 8 \\
         --out crates/vokra-core/tests/fixtures/rng_torch/torch_philox_seed0_n8.u32.bin
     uv run torch_philox_dump.py --seed 0 --randn-samples 4 \\
-        --out /tmp/ref.json
+        --out /tmp/ref.json  # emits PhiloxRNGEngine.h bytes, NOT torch.randn
 
 The `--out` file for `--n` mode is raw little-endian u32 words (4 bytes per
 u32); for `--randn-samples` mode it is a JSON dict of `{blocks, samples}`.

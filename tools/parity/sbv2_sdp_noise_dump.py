@@ -2,7 +2,7 @@
 """Emits the exact SBV2 SDP noise buffer that
 `crates/vokra-models/src/sbv2/duration.rs::SbV2SDP::sample`'s inner fill
 loop would produce given a torch-parity RNG (Vokra's `TorchRandnStream`
-under the PhiloxRNGEngine.h path).
+under the CPU MT19937 + f64 Box-Muller path).
 
 The buffer shape is `[2, T]` in C-contiguous (channel-major) layout — 2
 latent channels × T text-sequence timesteps — flattened to `2 * T` f32
@@ -11,7 +11,10 @@ buffer via `for v in &mut z { *v = rng.next_normal() * noise_scale_w;
 }` with `noise_scale_w = 1.0`; setting the scale to 1.0 means the
 noise buffer IS the raw RNG output, so this dumper reduces to K = 2*T
 calls to the Python port of torch_randn_f32 (from
-torch_philox_dump.py) — no SBV2-specific math involved.
+torch_randn_cpu_dump.py — the honest MT19937-based dumper — NOT
+torch_philox_dump.py, which was proven wrong by the 2026-08-08 bisect
+and rescoped to be a Philox primitive) — no SBV2-specific math
+involved.
 
 Usage:
     uv run sbv2_sdp_noise_dump.py --seed 0 --T 50 \\
@@ -25,19 +28,20 @@ import struct
 import sys
 from pathlib import Path
 
-# Reuse the audited PhiloxRNGEngine.h port from the sibling script — no
-# reimplementation, so a bug fix or SCALE change there propagates
-# automatically without a second edit.
+# Reuse the audited MT19937 + normal_distribution<double> port from the
+# sibling script — no reimplementation, so a bug fix or algorithm
+# change there propagates automatically without a second edit. Loaded
+# via sys.path insert so this script has no PyPI dep on tools/parity's
+# package layout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from torch_philox_dump import TorchPhiloxState, philox_randn_sample  # noqa: E402
+from torch_randn_cpu_dump import TorchRandn  # noqa: E402
 
 
 def torch_randn_f32(seed: int, k: int) -> list[float]:
     """Same as `TorchRandnStream::new(seed); next_f32() × k` in Rust —
-    one Philox block per f32 sample under the "one block per one
-    sample" convention documented in the Rust module."""
-    state = TorchPhiloxState(seed)
-    return [philox_randn_sample(state.next_block()) for _ in range(k)]
+    MT19937 + `at::normal_distribution<double>` with pair caching."""
+    rng = TorchRandn(seed)
+    return [rng.next_f32() for _ in range(k)]
 
 
 def main() -> int:
