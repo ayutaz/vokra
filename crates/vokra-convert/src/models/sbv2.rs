@@ -870,6 +870,13 @@ pub struct ConvertReport {
     /// `vokra.sbv2.*` key — see this module's doc "Hparams" section for
     /// why that is preferred over inventing placeholder values.
     pub hparams_written: bool,
+    /// Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS: count of `converter_zero_default`
+    /// tensors emitted at the end of [`convert_sbv2_file`] to replace the
+    /// pre-Wave-4 loader-side silent fallback path for optional slots
+    /// (`sbv2.decoder.conv_post.bias`, `sbv2.style_injector.proj_*`,
+    /// `sbv2.speaker.table`). Zero on ckpts that already ship every
+    /// optional slot; up to 3 on the SBV2 v2 base ckpt which ships none.
+    pub converter_zero_defaults_emitted: usize,
 }
 
 /// Rewrites the tail of an `sdp.<tail>` upstream tensor name into its
@@ -1230,6 +1237,15 @@ pub fn convert_sbv2_file(
         report.hparams_written = true;
     }
 
+    // Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS (2026-08-09): emit explicit
+    // all-zero tensors for the three optional slots that the SBV2 v2 base
+    // ckpt ships as absent (see the helper's doc for the full list). The
+    // pre-Wave-4 loader silently fabricated these; post-Wave-4 the
+    // converter emits them explicitly with a provenance-metadata trail.
+    // Idempotent: only emits slots the main tensor loop above did not
+    // already write.
+    emit_converter_zero_defaults(&mut b, cfg.as_ref(), &mut report)?;
+
     let spdx = license.unwrap_or(DEFAULT_LICENSE);
     let class = LicenseClass::from_license_str(spdx);
     vokra_core::stamp_provenance(&mut b, class, spdx, Some(NAME), Some(UPSTREAM_HF));
@@ -1320,6 +1336,122 @@ fn write_hparams(b: &mut GgufBuilder, cfg: &SbV2Config) {
     );
 
     b.add_f32(KEY_DECODER_LEAKY_RELU_SLOPE, cfg.decoder_leaky_relu_slope);
+}
+
+/// Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS metadata key: stamps the source
+/// for `converter_zero_default` tensor emissions. When present at load
+/// time, signals a Wave-4-or-later converter emitted explicit zero
+/// placeholders rather than leaving the slots empty; the loader can
+/// then honor its no-silent-fallback contract (a mismatch = converter
+/// bug, not a legitimate absent tensor).
+pub(crate) const KEY_CONVERTER_ZERO_DEFAULTS: &str = "vokra.sbv2.converter_zero_defaults";
+
+/// Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS (2026-08-09): emits explicit
+/// all-zero tensors for three optional slots that the SBV2 v2 base
+/// checkpoint (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`) ships as
+/// absent from the upstream safetensors:
+///
+/// (a) `sbv2.decoder.conv_post.bias` — upstream `dec.conv_post` has
+///     `bias=False`; a `[1]` zero bias is the identity behavior the
+///     Rust HiFi-GAN decoder expects.
+/// (b) `sbv2.style_injector.proj_{scale,bias}` — style is learned per
+///     fine-tune; base ckpt inference is an all-zero identity injector.
+/// (c) `sbv2.speaker.table` — base uses per-utterance external speaker
+///     vector via `enc_p.encoder.spk_emb_linear`; the table slot is a
+///     shape-valid placeholder never reached at request time.
+///
+/// The pre-Wave-4 loader silently fabricated these three tensors when
+/// absent from the GGUF. Post-Wave-4 the converter emits them
+/// explicitly with a provenance-metadata trail
+/// ([`KEY_CONVERTER_ZERO_DEFAULTS`] = comma-separated list of slots)
+/// so the loader's no-silent-fallback contract stays honest.
+///
+/// Idempotent: does not emit a slot that any earlier converter arm
+/// already wrote (the main tensor loop's `Rename` / `PassThrough`
+/// arms take precedence via [`GgufBuilder::has_tensor`]).
+fn emit_converter_zero_defaults(
+    b: &mut GgufBuilder,
+    cfg: Option<&SbV2Config>,
+    report: &mut ConvertReport,
+) -> Result<(), ConvertError> {
+    // Only emit when we have a config — need `d_model` / `d_style` /
+    // `d_speaker` for shape. Without a config the loader would fail
+    // loudly on the missing hparam chunk long before reaching a tensor
+    // absence anyway.
+    let Some(cfg) = cfg else { return Ok(()) };
+    let d_model = cfg.d_model as usize;
+    let d_style = cfg.d_style as usize;
+    let d_speaker = cfg.d_speaker as usize;
+
+    let mut emitted: Vec<&'static str> = Vec::new();
+
+    // (a) sbv2.decoder.conv_post.bias — [out_channels=1] zero.
+    if !b.has_tensor("sbv2.decoder.conv_post.bias") {
+        let bias = [0.0_f32; 1];
+        let bytes: Vec<u8> = bias.iter().flat_map(|v| v.to_le_bytes()).collect();
+        b.add_tensor("sbv2.decoder.conv_post.bias", GgmlType::F32, vec![1], bytes)?;
+        emitted.push("sbv2.decoder.conv_post.bias");
+        report.written += 1;
+        report.converter_zero_defaults_emitted += 1;
+    }
+
+    // (b) sbv2.style_injector.proj_scale + proj_bias — [d_model, d_style]
+    // zero. Only emitted when BOTH are absent (all-or-nothing per the
+    // loader's FR-EX-08 contract).
+    let scale_present = b.has_tensor("sbv2.style_injector.proj_scale");
+    let bias_present = b.has_tensor("sbv2.style_injector.proj_bias");
+    if !scale_present && !bias_present && d_style > 0 && d_model > 0 {
+        let n = d_model * d_style;
+        let zeros = vec![0.0_f32; n];
+        let bytes: Vec<u8> = zeros.iter().flat_map(|v| v.to_le_bytes()).collect();
+        b.add_tensor(
+            "sbv2.style_injector.proj_scale",
+            GgmlType::F32,
+            vec![d_model as u64, d_style as u64],
+            bytes.clone(),
+        )?;
+        b.add_tensor(
+            "sbv2.style_injector.proj_bias",
+            GgmlType::F32,
+            vec![d_model as u64, d_style as u64],
+            bytes,
+        )?;
+        emitted.push("sbv2.style_injector.proj_scale");
+        emitted.push("sbv2.style_injector.proj_bias");
+        report.written += 2;
+        report.converter_zero_defaults_emitted += 2;
+    }
+
+    // (c) sbv2.speaker.table — [1, d_speaker] shape-valid placeholder
+    // that is never reached at request time (synthesize dispatches
+    // through the projection path when `spk_emb_linear` is present).
+    if !b.has_tensor("sbv2.speaker.table") && d_speaker > 0 {
+        let zeros = vec![0.0_f32; d_speaker];
+        let bytes: Vec<u8> = zeros.iter().flat_map(|v| v.to_le_bytes()).collect();
+        b.add_tensor(
+            "sbv2.speaker.table",
+            GgmlType::F32,
+            vec![1, d_speaker as u64],
+            bytes,
+        )?;
+        emitted.push("sbv2.speaker.table");
+        report.written += 1;
+        report.converter_zero_defaults_emitted += 1;
+    }
+
+    // Emit the provenance trail iff at least one slot was zero-defaulted.
+    // Comma-separated list of full tensor names so a future audit can
+    // reconstruct exactly what the converter fabricated.
+    if !emitted.is_empty() {
+        let trail = emitted.join(",");
+        b.add_string(KEY_CONVERTER_ZERO_DEFAULTS, &trail);
+        eprintln!(
+            "convert_sbv2: emitted {} converter_zero_default tensor(s): {trail}",
+            emitted.len()
+        );
+    }
+
+    Ok(())
 }
 
 // =====================================================================
@@ -1629,6 +1761,15 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
         }
         "dec.conv_post.weight" => {
             return TensorClass::Rename("sbv2.decoder.conv_post.weight".into());
+        }
+        // Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS (2026-08-09): fine-tune SKUs
+        // that DO ship `dec.conv_post.bias` (upstream base ckpt does not)
+        // must land at the canonical Vokra name so the loader consumes
+        // the real value, not the converter's zero-default fallback.
+        // Pre-Wave-4 this passed through under its upstream name and the
+        // loader's silent-fabrication path swallowed the difference.
+        "dec.conv_post.bias" => {
+            return TensorClass::Rename("sbv2.decoder.conv_post.bias".into());
         }
         // HGAN-05-GIN-COND (2026-08-09): rename the decoder's
         // speaker-conditioning cond layer. Upstream `dec.cond` is
@@ -3557,7 +3698,20 @@ mod tests {
 
         let report = convert_sbv2_file(&input, &output, Some(&config), None).expect("convert");
         assert_eq!(report.read, 3);
-        assert_eq!(report.written, 2, "weight pair + bias → 2 emits");
+        // Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS (2026-08-09): the
+        // config-carrying path now also emits 4 converter_zero_default
+        // tensors for the optional slots the fixture's input does not
+        // supply (conv_post.bias + style_injector.proj_{scale,bias} +
+        // speaker.table). Bias + weight_norm pair = 2, + 4 zero defaults
+        // = 6.
+        assert_eq!(
+            report.written, 6,
+            "weight pair + bias + 4 zero-defaults = 6 emits"
+        );
+        assert_eq!(
+            report.converter_zero_defaults_emitted, 4,
+            "config-driven runs emit 4 zero-default tensors when the input fixture ships none of the optional slots"
+        );
         assert_eq!(report.weight_norm_reconstructed, 1);
         assert_eq!(report.renamed, 1);
         assert!(report.hparams_written);
@@ -3899,5 +4053,196 @@ mod tests {
             Some(vec![16, 8]),
             "probe must stop at first missing stage, not extrapolate"
         );
+    }
+
+    // =====================================================================
+    // Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS (2026-08-09)
+    // =====================================================================
+
+    /// A minimal config side-car covering only the fields
+    /// `emit_converter_zero_defaults` reads (d_model / d_style / d_speaker)
+    /// plus the required-fields the parser cross-checks. Every other field
+    /// is set to a valid nonzero value.
+    fn minimal_cfg_json(d_model: u32, d_style: u32, d_speaker: u32) -> String {
+        format!(
+            r#"{{
+                "sample_rate": 44100,
+                "n_speakers": 1,
+                "n_vocab": 112,
+                "n_tones": 12,
+                "d_model": {d_model},
+                "d_z": {d_model},
+                "d_speaker": {d_speaker},
+                "d_ff": 768,
+                "d_style": {d_style},
+                "d_bert": 1024,
+                "n_text_layers": 1,
+                "n_flow_layers": 1,
+                "n_sdp_layers": 1,
+                "n_heads": 2,
+                "window_size": 4,
+                "kernel_ffn": 3,
+                "decoder_initial_channel": 32,
+                "decoder_conv_pre_kernel": 7,
+                "decoder_conv_post_kernel": 7,
+                "decoder_upsample_rates": [8, 8, 2, 2, 2],
+                "decoder_upsample_kernel_sizes": [16, 16, 4, 4, 4],
+                "decoder_upsample_out_channels": [16, 8, 4, 2, 1],
+                "decoder_resblock_kernel_sizes": [3, 7, 11],
+                "decoder_resblock_dilation_counts": [3, 3, 3],
+                "decoder_resblock_dilations_flat": [1, 3, 5, 1, 3, 5, 1, 3, 5],
+                "decoder_leaky_relu_slope": 0.1
+            }}"#
+        )
+    }
+
+    /// Given an input safetensors that ships NONE of the three optional
+    /// slots, the converter emits all four zero-default tensors +
+    /// stamps `vokra.sbv2.converter_zero_defaults` with a comma-joined
+    /// trail listing every emitted slot.
+    #[test]
+    fn emit_converter_zero_defaults_full_trail_when_no_optional_slots_present() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![(
+            // Something non-conflicting the main loop passes through
+            "enc_p.emb.weight",
+            "F32",
+            &[112u64, 8],
+            f32_bytes(&vec![0.0; 112 * 8]),
+        )];
+        let blob = safetensors_multi(&entries);
+        let input = temp_path("cvz-full-in", "safetensors");
+        let cfg = temp_path("cvz-full-cfg", "json");
+        let output = temp_path("cvz-full-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input");
+        std::fs::write(&cfg, minimal_cfg_json(8, 4, 16).as_bytes()).expect("write cfg");
+
+        let report = convert_sbv2_file(&input, &output, Some(&cfg), None).expect("convert");
+        // 4 zero defaults: conv_post.bias + proj_scale + proj_bias + speaker.table.
+        assert_eq!(report.converter_zero_defaults_emitted, 4);
+
+        let out_bytes = std::fs::read(&output).expect("read");
+        let file = GgufFile::parse(out_bytes).expect("parse");
+
+        // Every zero-default slot is present in the emitted GGUF.
+        assert!(file.tensor_info("sbv2.decoder.conv_post.bias").is_some());
+        assert!(file.tensor_info("sbv2.style_injector.proj_scale").is_some());
+        assert!(file.tensor_info("sbv2.style_injector.proj_bias").is_some());
+        assert!(file.tensor_info("sbv2.speaker.table").is_some());
+
+        // Provenance trail lists all four slots in emission order.
+        let trail = file
+            .get(KEY_CONVERTER_ZERO_DEFAULTS)
+            .and_then(|v| v.as_str())
+            .expect("KEY_CONVERTER_ZERO_DEFAULTS must be stamped");
+        for name in [
+            "sbv2.decoder.conv_post.bias",
+            "sbv2.style_injector.proj_scale",
+            "sbv2.style_injector.proj_bias",
+            "sbv2.speaker.table",
+        ] {
+            assert!(
+                trail.contains(name),
+                "trail `{trail}` must mention `{name}`"
+            );
+        }
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&cfg).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// When the input safetensors ships one of the optional slots (e.g.
+    /// `dec.conv_post.bias` — a fine-tune SKU), the converter's main loop
+    /// passes it through; `emit_converter_zero_defaults` does NOT overwrite
+    /// it (idempotent contract) and the trail lists only the still-missing
+    /// slots.
+    #[test]
+    fn emit_converter_zero_defaults_skips_slots_already_written() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![
+            (
+                "enc_p.emb.weight",
+                "F32",
+                &[112u64, 8],
+                f32_bytes(&vec![0.0; 112 * 8]),
+            ),
+            (
+                // Real fine-tune value; main loop renames this to
+                // `sbv2.decoder.conv_post.bias` via classify_tensor.
+                "dec.conv_post.bias",
+                "F32",
+                &[1u64],
+                f32_bytes(&[0.5]),
+            ),
+        ];
+        let blob = safetensors_multi(&entries);
+        let input = temp_path("cvz-partial-in", "safetensors");
+        let cfg = temp_path("cvz-partial-cfg", "json");
+        let output = temp_path("cvz-partial-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input");
+        std::fs::write(&cfg, minimal_cfg_json(8, 4, 16).as_bytes()).expect("write cfg");
+
+        let report = convert_sbv2_file(&input, &output, Some(&cfg), None).expect("convert");
+        // 3 zero defaults (conv_post.bias came from input; other 3 emitted).
+        assert_eq!(report.converter_zero_defaults_emitted, 3);
+
+        let out_bytes = std::fs::read(&output).expect("read");
+        let file = GgufFile::parse(out_bytes).expect("parse");
+
+        // conv_post.bias present with the FINE-TUNE value (0.5), NOT
+        // overwritten by zero-default (0.0).
+        let bias = file
+            .tensor_f32("sbv2.decoder.conv_post.bias")
+            .expect("bias present");
+        assert_eq!(
+            bias,
+            vec![0.5],
+            "input fine-tune bias must not be overwritten by zero-default"
+        );
+
+        // Trail lists the 3 slots emitted, NOT the 1 already-present slot.
+        let trail = file
+            .get(KEY_CONVERTER_ZERO_DEFAULTS)
+            .and_then(|v| v.as_str())
+            .expect("KEY_CONVERTER_ZERO_DEFAULTS must be stamped");
+        assert!(!trail.contains("sbv2.decoder.conv_post.bias"));
+        assert!(trail.contains("sbv2.style_injector.proj_scale"));
+        assert!(trail.contains("sbv2.style_injector.proj_bias"));
+        assert!(trail.contains("sbv2.speaker.table"));
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&cfg).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// When NO config side-car is supplied, `emit_converter_zero_defaults`
+    /// is a no-op (needs `d_model`/`d_style`/`d_speaker` for shape). The
+    /// pre-Wave-4 loader-side fallback path stays reachable for those
+    /// (config-less) GGUFs.
+    #[test]
+    fn emit_converter_zero_defaults_no_op_without_config() {
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![(
+            "enc_p.emb.weight",
+            "F32",
+            &[112u64, 8],
+            f32_bytes(&vec![0.0; 112 * 8]),
+        )];
+        let blob = safetensors_multi(&entries);
+        let input = temp_path("cvz-noop-in", "safetensors");
+        let output = temp_path("cvz-noop-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input");
+        // No config passed.
+        let report = convert_sbv2_file(&input, &output, None, None).expect("convert");
+        assert_eq!(report.converter_zero_defaults_emitted, 0);
+
+        let out_bytes = std::fs::read(&output).expect("read");
+        let file = GgufFile::parse(out_bytes).expect("parse");
+        assert!(file.get(KEY_CONVERTER_ZERO_DEFAULTS).is_none());
+        // The three optional slots stay absent from the GGUF too, so
+        // the pre-Wave-4 loader-side fallback path is what the loader
+        // would use if it opened this file.
+        assert!(file.tensor_info("sbv2.decoder.conv_post.bias").is_none());
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
     }
 }
