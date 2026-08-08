@@ -984,13 +984,30 @@ impl SbV2SDP {
         // 2. Latent `z` [2, T].
         let mut z = vec![0.0_f32; 2 * text_seq_len];
         if noise_scale_w != 0.0 {
+            // Fill via `NormalSource::fill` — this dispatches:
+            //
+            // - `GaussianSplitMix64` (legacy, synthetic path) → default
+            //   per-sample loop, byte-identical to the pre-M-08 code
+            //   this replaced (which called `next_normal()` in the
+            //   same loop);
+            // - `TorchRandnStream` (torch parity path) → torch's exact
+            //   `normal_kernel` dispatch: `<16` streaming
+            //   `at::normal_distribution<double>` with pair caching,
+            //   `>=16` batch `normal_fill` (uniforms in-place, then
+            //   `normal_fill_16` transform, per ATen's DistributionTemplates.h).
+            //   Bit-parity with torch on non-AVX2 hosts; ~1 ULP off
+            //   per sample on AVX2 hosts due to vectorized `log256_ps`
+            //   / `sincos256_ps` approximations (documented on
+            //   `torch_randn_f32`).
+            //
+            // The `*v *= noise_scale_w` step below matches the Python
+            // SBV2 dumper's `torch.randn(1, 2, T) * noise_scale_w`
+            // exactly — torch's `torch.randn(...) * scalar` is a
+            // separate f32 mul, not baked into the normal draw (which
+            // uses mean=0, std=1 for torch.randn's defaults).
+            rng.fill(&mut z);
             for v in &mut z {
-                // `next_normal` is `NormalSource`'s single method — both the
-                // pre-existing `GaussianSplitMix64` (synthetic, backward-
-                // compatible) and the new `TorchRandnStream` (byte-parity
-                // with `torch.randn` under the PhiloxRNGEngine.h path) impl
-                // the trait, so this line is agnostic to the choice.
-                *v = rng.next_normal() * noise_scale_w;
+                *v *= noise_scale_w;
             }
         }
 

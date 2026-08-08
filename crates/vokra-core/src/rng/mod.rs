@@ -74,6 +74,30 @@ pub trait NormalSource {
     /// Returns the next standard-normal (mean 0, variance 1) deviate and
     /// advances the internal state.
     fn next_normal(&mut self) -> f32;
+
+    /// Fills `out` with `out.len()` standard-normal `f32` samples.
+    ///
+    /// The default implementation is `for v in out { *v = self.next_normal(); }`
+    /// — a per-sample streaming fill, which is what
+    /// [`GaussianSplitMix64`] (synthetic, backward-compat) wants: the
+    /// stream is one call per sample regardless of buffer size.
+    ///
+    /// Override on impls whose torch-parity depends on buffer size:
+    /// [`TorchRandnStream`] overrides this to dispatch to torch's
+    /// `normal_fill` fast path when `out.len() >= 16` (see
+    /// [`torch_randn_f32`]'s doc for the dispatch that must be
+    /// preserved), because torch itself takes a different byte path
+    /// at the same size threshold and per-sample streaming does not
+    /// reproduce those bytes.
+    ///
+    /// # Deterministic
+    ///
+    /// Same RNG state on entry → same bytes in `out` on exit.
+    fn fill(&mut self, out: &mut [f32]) {
+        for v in out {
+            *v = self.next_normal();
+        }
+    }
 }
 
 /// The splitmix64 generator (Steele, Lea & Flood, *Fast Splittable Pseudorandom

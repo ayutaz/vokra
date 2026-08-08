@@ -29,16 +29,25 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Replicates the exact `SbV2SDP::sample` inner fill loop —
-/// `for v in &mut z { *v = rng.next_normal() * noise_scale_w; }` — with
-/// `noise_scale_w = 1.0`, so the resulting bytes ARE the RNG output.
-/// If a future refactor changes the fill loop's iteration order or
-/// scale semantics this test will diverge, which is exactly the
-/// invariant we want to guard.
+/// Replicates the exact `SbV2SDP::sample` inner fill loop after the
+/// 2026-08-08 refactor that switched from per-sample `next_normal()`
+/// to buffer-oriented `rng.fill()` (see `SbV2SDP::sample`'s comment
+/// for why: torch's own `normal_kernel` dispatch splits on buffer
+/// size, and per-sample streaming can't reproduce the fast-path bytes
+/// at `N >= 16` — which SBV2 hits at every `T_text >= 8`).
+///
+/// `noise_scale_w = 1.0` means the resulting bytes ARE the RNG
+/// output. If a future refactor changes the fill order or scale
+/// semantics this test will diverge, which is exactly the invariant
+/// we want to guard.
 fn fill_sdp_noise<R: NormalSource>(rng: &mut R, text_seq_len: usize) -> Vec<f32> {
     let mut z = vec![0.0_f32; 2 * text_seq_len];
+    rng.fill(&mut z);
+    // noise_scale_w = 1.0 is the identity, applied post-fill exactly
+    // as `SbV2SDP::sample` does (matches Python `torch.randn(...) *
+    // noise_scale_w`).
     for v in &mut z {
-        *v = rng.next_normal() * 1.0_f32; // noise_scale_w = 1.0
+        *v *= 1.0_f32;
     }
     z
 }

@@ -162,6 +162,77 @@ class TorchRandn:
         return struct.unpack("<f", struct.pack("<f", r * math.cos(theta)))[0]
 
 
+# ---------- normal_fill fast path (DistributionTemplates.h:206-228) -----------
+
+
+def _uniform_real_f32(v: int) -> float:
+    """`uniform_real<float>` for a u32 source: mask to 24 bits, cast
+    to f32, divide by 2^24 (in f32). Matches ATen's
+    `uniform_real_distribution<float>` on `(0, 1)`."""
+    masked = v & 0xFFFFFF
+    # `masked as f32` is exact (24 bits fit the mantissa); `/ 2^24` is
+    # a single f32 division. Round-trip through struct to force f32
+    # rounding at each step.
+    m_f = struct.unpack("<f", struct.pack("<f", float(masked)))[0]
+    div = struct.unpack("<f", struct.pack("<f", float(1 << 24)))[0]
+    return struct.unpack("<f", struct.pack("<f", m_f / div))[0]
+
+
+def _normal_fill_16_scalar(data: list[float]) -> None:
+    """Bit-exact port of `normal_fill_16` (DistributionTemplates.h:138-148)
+    with `mean=0, std=1`. Consumes 16 pre-filled f32 uniforms in-place;
+    first 8 become cosines, second 8 become sines."""
+    assert len(data) == 16
+    # 2.0f * c10::pi<double> cast to f32 — the same rounding torch does
+    # at `_mm256_set1_ps(2.0f * c10::pi<double>)` construction time.
+    two_pi_f32 = struct.unpack("<f", struct.pack("<f", 2.0 * math.pi))[0]
+    for j in range(8):
+        u1 = struct.unpack("<f", struct.pack("<f", 1.0 - data[j]))[0]
+        u2 = data[j + 8]
+        log_u1 = struct.unpack("<f", struct.pack("<f", math.log(u1)))[0]
+        radius_sq = struct.unpack("<f", struct.pack("<f", -2.0 * log_u1))[0]
+        radius = struct.unpack("<f", struct.pack("<f", math.sqrt(radius_sq)))[0]
+        theta = struct.unpack("<f", struct.pack("<f", two_pi_f32 * u2))[0]
+        cos_theta = struct.unpack("<f", struct.pack("<f", math.cos(theta)))[0]
+        sin_theta = struct.unpack("<f", struct.pack("<f", math.sin(theta)))[0]
+        data[j] = struct.unpack("<f", struct.pack("<f", radius * cos_theta))[0]
+        data[j + 8] = struct.unpack("<f", struct.pack("<f", radius * sin_theta))[0]
+
+
+def torch_randn_fill(seed: int, size: int) -> list[float]:
+    """`normal_fill` fast path — size must be >= 16. Bit-exact against
+    torch on non-AVX2 hosts; ~1 ULP off per sample on AVX2 hosts
+    (where torch dispatches to `normal_fill_AVX2` with vectorized
+    approximations for log256_ps / sincos256_ps)."""
+    assert size >= 16
+    mt = TorchMt19937(seed)
+    data = [_uniform_real_f32(mt.next_u32()) for _ in range(size)]
+    # Full blocks
+    full_blocks = size // 16
+    for b in range(full_blocks):
+        start = b * 16
+        block = data[start:start + 16]
+        _normal_fill_16_scalar(block)
+        data[start:start + 16] = block
+    # Tail — recompute last 16 uniforms then transform (upstream comment
+    # "Recompute the last 16 values." — deliberate re-draw).
+    if size % 16 != 0:
+        tail = [_uniform_real_f32(mt.next_u32()) for _ in range(16)]
+        _normal_fill_16_scalar(tail)
+        data[size - 16:size] = tail
+    return data
+
+
+def torch_randn_dispatch(seed: int, k: int) -> list[float]:
+    """`torch.randn(k)` on CPU — dispatches on `k` exactly as ATen's
+    `normal_kernel`: `k < 16` → small-K streaming path, `k >= 16` →
+    `normal_fill` fast path."""
+    if k < 16:
+        rng = TorchRandn(seed)
+        return [rng.next_f32() for _ in range(k)]
+    return torch_randn_fill(seed, k)
+
+
 # ---------- Self-test (anchors against real torch) ----------------------------
 
 
@@ -247,8 +318,7 @@ def main() -> int:
     if args.out is None:
         p.error("--out required unless --self-test")
 
-    rng = TorchRandn(args.seed)
-    samples = [rng.next_f32() for _ in range(args.randn_samples)]
+    samples = torch_randn_dispatch(args.seed, args.randn_samples)
     if args.out.suffix == ".json":
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(

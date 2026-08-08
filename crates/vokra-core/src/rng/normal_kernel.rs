@@ -222,6 +222,11 @@ pub struct TorchRandnStream {
     /// engine, exactly as torch's `normal_distribution::operator()`
     /// caches the paired sample.
     cached_sin: Option<f64>,
+    /// The u64 seed the stream was constructed with. Kept so the
+    /// `fill()` override can rebuild the engine at the top of a fresh
+    /// `torch.randn(N)` call (torch dispatches on buffer size, not on
+    /// stream position — see the `NormalSource::fill` doc).
+    seed: u64,
 }
 
 impl TorchRandnStream {
@@ -237,6 +242,7 @@ impl TorchRandnStream {
         Self {
             engine: TorchMt19937Engine::new(seed),
             cached_sin: None,
+            seed,
         }
     }
 
@@ -296,30 +302,244 @@ impl NormalSource for TorchRandnStream {
     fn next_normal(&mut self) -> f32 {
         self.next_f32()
     }
+
+    /// Overrides the trait's per-sample default to dispatch on
+    /// `out.len()` the way `torch.randn` does — see
+    /// [`torch_randn_f32`]'s doc for the exact algorithm split.
+    ///
+    /// # Consumes fresh RNG state
+    ///
+    /// This override IGNORES `self`'s current MT19937 state and
+    /// creates a fresh engine seeded from an internal
+    /// `TorchMt19937Engine::new(seed)` derived from the seed stored
+    /// in `self` — matching torch's `torch.manual_seed(seed);
+    /// torch.randn(N)` idiom (a fresh call, not a resumption of a
+    /// prior state). A caller wanting to append to a prior stream
+    /// should call `next_normal()` in a loop directly, not this
+    /// method.
+    ///
+    /// Rationale: torch's `normal_fill` fast path is a batch
+    /// operation that does not compose with a streaming pair-cached
+    /// state (the two paths consume RNG in fundamentally different
+    /// orders — small-K reads 2 `random64` per sample, large-K reads
+    /// 1 `u32` per sample plus a tail-recompute). Trying to
+    /// interleave a streaming call and a batch call from the same
+    /// state would violate torch's contract on either side.
+    /// [`torch_randn_f32`]'s doc has the full derivation.
+    fn fill(&mut self, out: &mut [f32]) {
+        // Extract the seed the engine was constructed with. `TorchMt19937Engine`
+        // does not expose this today; use the seed stored in Self by
+        // walking through the internal API — the `new` constructor
+        // saves it implicitly in the state array. We already stashed
+        // the u64 seed into `Self` for exactly this purpose (see
+        // the new `seed` field below).
+        let seed = self.seed;
+        torch_randn_f32(seed, out);
+        // The engine has advanced fresh from `seed` — reset our own
+        // pair cache to match (a subsequent `next_normal()` would
+        // otherwise return a stale cached sine that has nothing to
+        // do with the freshly-generated buffer).
+        self.engine = TorchMt19937Engine::new(seed);
+        self.cached_sin = None;
+        // Skip the counters the batch just consumed so a subsequent
+        // `next_normal()` reads AFTER the batch's stream. The batch
+        // consumed `out.len()` u32s for uniforms + 16 more for the
+        // tail-recompute if `out.len() % 16 != 0` (see
+        // `torch_randn_fill_f32`'s bytes-consumed doc).
+        let consumed = if out.len() >= 16 && out.len() % 16 != 0 {
+            out.len() + 16
+        } else if out.len() >= 16 {
+            out.len()
+        } else {
+            // Small-K path consumes 2 u32s per sample (one random64
+            // per uniform, two uniforms per sample) — but with pair
+            // caching every OTHER sample reuses the previous pair's
+            // sine, so half the samples cost 0 u32s. Net:
+            // `out.len() / 2 + (out.len() % 2)` pairs each cost 4
+            // u32s (2 random64 = 4 u32).
+            let pairs = out.len().div_ceil(2);
+            pairs * 4
+        };
+        for _ in 0..consumed {
+            let _ = self.engine.next_u32();
+        }
+    }
 }
 
-/// Fills `out` with `out.len()` standard-normal `f32` samples from a
-/// fresh [`TorchRandnStream::new(seed)`], byte-exactly matching
-/// `torch.manual_seed(seed); torch.randn(1, out.len(), device='cpu')`
-/// bytes for `out.len() < 16` — verified by the fixture tests in
-/// `crates/vokra-core/tests/rng_torch_randn_e2e.rs` at (0, 4), (42,
-/// 100), and (12345, 1000).
+/// Fills `out` with `out.len()` standard-normal `f32` samples matching
+/// `torch.manual_seed(seed); torch.randn(1, out.len(), device='cpu')`.
 ///
-/// The output is C-contiguous little-endian when serialised via
-/// `f32::to_le_bytes`.
+/// Dispatches exactly as ATen's `normal_kernel`
+/// (ATen/native/cpu/DistributionTemplates.h:230-255):
 ///
-/// # Scope caveat
+/// * `out.len() < 16` → the streaming
+///   `at::normal_distribution<double>` path via [`TorchRandnStream`]
+///   (small-K, per-sample pair-cached Box-Muller in f64).
+/// * `out.len() >= 16` → the buffer `normal_fill` fast path (fill
+///   uniforms in-place, then transform 16-wide blocks in-place via
+///   [`normal_fill_16_scalar`], with a tail-recompute for the last
+///   partial block per ATen's own algorithm at lines 216-227).
 ///
-/// Contiguous `out.len() >= 16` calls to `torch.randn` on CPU dispatch
-/// to the SIMD `normal_fill` fast path with a different formula and no
-/// pair caching (see the [`super::mt19937`] module doc). This function
-/// matches the small-N path only; SBV2's SDP noise buffer stays well
-/// under 16 elements per timestep (`2 * text_seq_len`, typically 4-20
-/// per test phoneme string), so the small-N path is the one that fires
-/// in practice.
+/// # Cross-platform bit-parity caveat
+///
+/// The scalar `normal_fill` path Rust implements here matches torch's
+/// **scalar** path on all platforms — bit-exact against `torch.randn`
+/// when torch itself takes the scalar path (aarch64 M1, non-AVX2
+/// x86_64). On x86_64 hosts with AVX2, torch's own
+/// `normal_fill_AVX2` uses `avx_mathfun`'s `log256_ps` and
+/// `sincos256_ps` — vectorized approximations that differ from
+/// libm's scalar `logf` / `cosf` / `sinf` by ~1 ULP for a non-trivial
+/// fraction of inputs. So on such hosts, this function's output can
+/// differ from `torch.randn` by up to ~1 ULP per sample; downstream
+/// consumers whose parity tests run on AVX2 CI hosts should apply an
+/// atol that accounts for that residual (SBV2's `PER_TENSOR_ATOL`
+/// entry for `waveform` is where this shows up, per the honest-atol
+/// discipline).
+///
+/// # Output layout
+///
+/// C-contiguous little-endian when serialised via `f32::to_le_bytes`.
 pub fn torch_randn_f32(seed: u64, out: &mut [f32]) {
-    let mut stream = TorchRandnStream::new(seed);
-    for v in out {
-        *v = stream.next_f32();
+    if out.len() < 16 {
+        // ATen `normal_kernel` else-branch (line 246-251) → small-K
+        // streaming path with pair caching.
+        let mut stream = TorchRandnStream::new(seed);
+        for v in out {
+            *v = stream.next_f32();
+        }
+        return;
     }
+    // ATen `normal_kernel` fast-path (line 232-240): size >= 16 and
+    // f32 and contiguous → `normal_fill` with mean=0, std=1.
+    torch_randn_fill_f32(seed, out);
+}
+
+/// Bit-exact port of ATen's `normal_fill_16` scalar path
+/// (`aten/src/ATen/native/cpu/DistributionTemplates.h:138-148`),
+/// with `mean = 0.0`, `std = 1.0` (the `torch.randn` defaults):
+///
+/// ```text
+/// for j in 0..8:
+///     u1 = 1 - data[j]                    // (0, 1] so log is finite
+///     u2 = data[j + 8]
+///     r  = sqrt(-2 * log(u1))             // f32 libm log/sqrt
+///     theta = 2.0 * f32(pi) * u2          // f32 libm mul; NOTE: 2.0f * f64(pi) rounds to f32(6.283185)
+///     data[j]     = r * cos(theta)        // f32 libm cos
+///     data[j + 8] = r * sin(theta)        // f32 libm sin
+/// ```
+///
+/// Consumes 16 pre-filled f32 uniforms in-place and produces 16
+/// standard-normal samples in the same slice (first 8 → cosines,
+/// second 8 → sines).
+///
+/// # Trailing constant
+///
+/// `2.0f * c10::pi<double>` in upstream: `c10::pi<double>` is
+/// `3.14159265358979323846`, `2.0 * pi` is computed in f64, then
+/// implicitly cast to f32 at the `_mm256_set1_ps` / `Vec` call. Rust
+/// mirrors this exactly with
+/// `(2.0_f64 * core::f64::consts::PI) as f32`, which produces
+/// f32(6.2831853) with bit pattern `0x40c90fdb` (the closest f32 to
+/// 2π). See `crates/vokra-core/tests/rng_torch_randn_cpu_parity.rs`
+/// for the exact-byte pin against torch on M1 at seed=0, N=16.
+#[inline]
+fn normal_fill_16_scalar(data: &mut [f32]) {
+    // The array-length precondition (16 elements). Not a runtime
+    // check on the hot path — `torch_randn_fill_f32` only calls this
+    // with 16-element slices.
+    debug_assert_eq!(data.len(), 16);
+    // 2.0f * c10::pi<double> = 6.283185307179586 in f64, then cast to
+    // f32 = 6.2831855 (bit 0x40c90fdb). Precomputed as an f32 const so
+    // the same cast rounding fires at load time, matching torch's
+    // `_mm256_set1_ps(2.0f * c10::pi<double>)` which does the f64→f32
+    // narrowing at construction and broadcasts the resulting f32.
+    #[allow(clippy::cast_possible_truncation)]
+    const TWO_PI_F32: f32 = (2.0_f64 * core::f64::consts::PI) as f32;
+    for j in 0..8 {
+        let u1 = 1.0_f32 - data[j];
+        let u2 = data[j + 8];
+        let radius = (-2.0_f32 * u1.ln()).sqrt();
+        let theta = TWO_PI_F32 * u2;
+        // The (radius * cos(theta) * std + mean) sequence with std=1,
+        // mean=0 simplifies to (radius * cos(theta)) — a single mul.
+        // Rust f32 mul + libm cos matches torch's scalar path bit-
+        // exactly on non-AVX2 hosts; ~1 ULP off on AVX2 hosts where
+        // torch dispatches to `sincos256_ps` (documented above).
+        data[j] = radius * theta.cos();
+        data[j + 8] = radius * theta.sin();
+    }
+}
+
+/// Fill `out` with `out.len()` samples from torch's `normal_fill` fast
+/// path (bit-exact port of ATen's `normal_fill` scalar variant,
+/// `DistributionTemplates.h:206-228`), given `out.len() >= 16`.
+///
+/// # Algorithm (verbatim from upstream)
+///
+/// 1. Fill `out[i]` with `out.len()` `uniform_real<float>()` draws
+///    (`((mt.next_u32() & 0xFFFFFF) as f32) / (1u32 << 24) as f32`),
+///    one at a time.
+/// 2. For each 16-wide block `out[i..i+16]` with `i = 0, 16, 32, ...`
+///    while `i + 16 <= out.len()`: apply [`normal_fill_16_scalar`]
+///    in-place.
+/// 3. Tail (`out.len() % 16 != 0`): draw 16 fresh uniforms into
+///    `out[out.len()-16..out.len()]` (overwriting the last 16 that
+///    the first-pass fill produced), then apply
+///    [`normal_fill_16_scalar`] on that block. This is torch's exact
+///    "recompute the last 16 values" step — it does NOT skip the
+///    block boundary, it duplicates draws so the tail is always a
+///    complete 16-wide block.
+///
+/// # Bytes consumed
+///
+/// If `out.len()` is a multiple of 16: exactly `out.len()` MT19937
+/// `next_u32()` draws (each `uniform_real<float>` consumes one u32).
+/// Otherwise: `out.len() + 16` draws (16 extra for the tail-recompute
+/// per upstream — matches the counter advance a caller trying to
+/// reproduce torch's per-call MT state would need to account for).
+#[inline]
+fn torch_randn_fill_f32(seed: u64, out: &mut [f32]) {
+    // Contract: this fast path only makes sense for size >= 16 (the
+    // dispatcher in `torch_randn_f32` enforces this).
+    debug_assert!(out.len() >= 16);
+    let mut mt = TorchMt19937Engine::new(seed);
+
+    // Step 1: fill with uniform(0, 1) using `uniform_real<float>`
+    // (`(u32 & 0xFFFFFF) / 2^24`, matching torch's f32 uniform, not
+    // the f64 version used by `at::normal_distribution<double>`).
+    for v in out.iter_mut() {
+        *v = mt_uniform_real_f32(&mut mt);
+    }
+
+    // Step 2: in-place normal_fill_16 on each 16-wide block.
+    let size = out.len();
+    let full_blocks = size / 16;
+    for b in 0..full_blocks {
+        let start = b * 16;
+        normal_fill_16_scalar(&mut out[start..start + 16]);
+    }
+
+    // Step 3: tail — if size is not a multiple of 16, recompute the
+    // last 16 uniforms + transform in-place. Upstream comment:
+    // "Recompute the last 16 values." This is NOT an off-by-one — it
+    // is a deliberate re-draw so the tail block is always complete.
+    if size % 16 != 0 {
+        let tail_start = size - 16;
+        for v in out[tail_start..].iter_mut() {
+            *v = mt_uniform_real_f32(&mut mt);
+        }
+        normal_fill_16_scalar(&mut out[tail_start..]);
+    }
+}
+
+/// `uniform_real<float>` from `TransformationHelper.h:84-90` for
+/// MT19937's per-call `next_u32()` output: mask to 24 bits, cast to
+/// f32, divide by 2^24. Produces a value in `[0, 1)`. Bit-exact
+/// against torch's own `uniform_real_distribution<float>::operator()`
+/// with `from = 0, to = 1`.
+#[inline]
+#[allow(clippy::cast_precision_loss)]
+fn mt_uniform_real_f32(mt: &mut TorchMt19937Engine) -> f32 {
+    let masked = mt.next_u32() & 0x00FF_FFFF;
+    (masked as f32) / ((1u32 << 24) as f32)
 }
