@@ -6,17 +6,65 @@ use vokra_core::{Result, VokraError};
 use vokra_piper_plus::Phonemizer;
 
 /// SBV2 input language selector — drives which char-level mapping table
-/// (and which tone convention) `SbV2Phonemizer::phonemize` uses.
+/// (and which tone convention) `SbV2Phonemizer::phonemize` uses, and
+/// selects which row of
+/// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
+/// `language_embed` table
+/// ([`super::text_encoder::N_LANGUAGES`] = 3: JA/EN/ZH) is broadcast-added
+/// to every position.
 ///
 /// `Hash` derives are required so [`Language`] can key a
 /// [`PhonemizeFixture`]'s internal `HashMap<(Language, String), _>` (Task 7);
 /// the other derives predate that use.
+///
+/// # `ZH` scope note (M6, 2026-08-06)
+///
+/// The real SBV2 v2 base checkpoint
+/// (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`) ships a 3-row
+/// `enc_p.language_emb.weight` table (JA/EN/ZH), so this enum must expose
+/// all three variants for [`super::text_encoder::SbV2TextEncoder::forward`]'s
+/// `language_id` argument to be constructible for a real ZH request.
+/// **A production ZH G2P is not implemented in this crate** — Vokra's ZH
+/// G2P is out of scope for the M6 SBV2 v2 land. Selecting `ZH` at
+/// [`SbV2Phonemizer::phonemize`] currently returns a loud
+/// [`VokraError::NotImplemented`] (never a silent JA fallback — FR-EX-08);
+/// the ZH variant exists so future ZH G2P work can plug in without a
+/// second breaking enum change, and so a caller who has ZH phoneme ids
+/// from another source can still hit the `language_id = 2` code path via
+/// [`SbV2Phonemizer::from_fixture`] or by constructing a
+/// [`PhonemizeResult`] directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
-    /// Japanese input (SBV2 pitch-accent tones, 0-2).
+    /// Japanese input (SBV2 pitch-accent tones, 0-2). Maps to
+    /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
+    /// `language_embed` row 0.
     JA,
     /// English input (tones are always 0 — SBV2 has no EN pitch accent).
+    /// Maps to row 1.
     EN,
+    /// Chinese input (tones are Mandarin lexical tones 0-4). Maps to row
+    /// 2. See the enum-level "ZH scope note" — production ZH G2P is not
+    /// implemented here yet.
+    ZH,
+}
+
+impl Language {
+    /// Returns the row index into
+    /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
+    /// `language_embed` table that this language selects, per the
+    /// tentative row-ordering convention documented on
+    /// [`SbV2TextEncoder::forward`](super::text_encoder::SbV2TextEncoder::forward)'s
+    /// `language_id` doc (`JA = 0, EN = 1, ZH = 2`).
+    ///
+    /// The type is `u8` because the downstream text-encoder forward takes
+    /// a `u8` `language_id`; 3 fits comfortably.
+    pub fn language_id(self) -> u8 {
+        match self {
+            Language::JA => 0,
+            Language::EN => 1,
+            Language::ZH => 2,
+        }
+    }
 }
 
 /// The G2P output for one input string: phoneme ids in SBV2 vocabulary
@@ -327,6 +375,16 @@ impl SbV2Phonemizer {
         match language {
             Language::JA => self.phonemize_ja(text),
             Language::EN => self.phonemize_en(text),
+            Language::ZH => Err(VokraError::NotImplemented(
+                "SbV2Phonemizer: language ZH has no in-crate G2P (Vokra ZH G2P is out of scope \
+                 for the M6 SBV2 v2 land). The real SBV2 v2 base checkpoint's \
+                 `enc_p.language_emb.weight` table has 3 rows (JA/EN/ZH) so this enum variant \
+                 exists for language_id = 2 dispatch and future ZH-G2P wiring, but the piper/\
+                 char mapping paths do not yet cover it. To exercise the ZH code path in tests \
+                 or with pre-computed phoneme ids from another source, wire the phonemizer via \
+                 SbV2Phonemizer::from_fixture with a PhonemizeResult you constructed directly \
+                 (never a silent JA fallback — FR-EX-08).",
+            )),
         }
     }
 

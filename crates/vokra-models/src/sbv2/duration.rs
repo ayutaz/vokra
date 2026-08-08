@@ -1,269 +1,1091 @@
-//! SBV2 stochastic duration predictor (SDP): flow-based per-phoneme
-//! duration sampling with additive JP pitch-accent tone conditioning.
-//! (Clean-room comment: see `mod.rs` — the flow-based SDP structure below
-//! follows the generic affine-coupling normalizing-flow construction of
-//! RealNVP (arXiv:1605.08803, Dinh, Sohl-Dickstein & Bengio 2016); no
-//! SBV2/BV2 source referenced.)
+//! SBV2 stochastic duration predictor (SDP): the real Style-Bert-VITS2 v2
+//! shape — a `pre` 1×1 conv, a module-level 3-layer depth-wise-separable
+//! `DDSConv`, a speaker-conditioning 1×1 `cond` conv, a `proj` 1×1 conv, an
+//! `ElementwiseAffine` slot 0 and four `ConvFlow`s at slots 1/3/5/7 whose
+//! inverse walks a piecewise-rational-quadratic spline. **286 total
+//! tensors**: 144 production side (`sdp.*`) walked at inference time and 142
+//! training-side (`sdp.post_*`) the converter skips (Blocker 2c).
 //!
-//! `CouplingLayer` reuse decision (Task 19): **(B) new local
-//! [`SbV2CouplingLayer`]**, not a `piper_plus` reuse — `piper_plus`'s only
-//! flow-coupling type, `duration::ConvFlow`
-//! (`crates/vokra-models/src/piper_plus/duration.rs:138`), has **no
-//! visibility modifier at all** (module-private to `piper_plus::duration`,
-//! not even `pub(super)` like its owner `DurationPredictor`), so it is
-//! fully unreachable from `sbv2`. Its `reverse` method also takes a
-//! `&Compute` handle, a `[2, T]`-shaped whole-sequence buffer (the classic
-//! RealNVP-style 2-channel coupling: channel 0 fixed, channel 1
-//! transformed by a rational-quadratic spline whose params a `DDSConv`
-//! stack predicts from channel 0 + conditioning), and owns nine per-layer
-//! weight tensors loaded from a `TensorStore` — architecturally heavier
-//! than this task needs and not reachable regardless. See
-//! `text_encoder.rs`'s module doc for the identical reasoning applied to
-//! `TransformerBlock` (Task 17).
+//! (Clean-room comment: see `mod.rs`. The DDS-net + spline-coupling
+//! construction follows the VITS paper arXiv:2106.06103 and the vendored MIT
+//! reference at `tools/parity/vendor/vits/{modules,transforms,sdp}.py`
+//! (pinned commit `2e561ba58618d021b5b8323d3765880f7e0ecfdb`); no
+//! SBV2/BV2/AGPL source was referenced. The rewrite from the pre-Blocker-2c
+//! scalar-affine placeholder — which shipped as `SbV2CouplingLayer`, kept in
+//! `sbv2/mod.rs`'s `synthetic_for_test_e2e` factory only through end-of-file
+//! constant `FIXED_DURATION` and reachable through no other path — was
+//! forced by the real safetensors' 286-tensor layout: the placeholder had
+//! no way to load a real checkpoint at all, so Blocker 2c replaced the
+//! whole primitive stack rather than layer atop it.)
 //!
-//! [`SbV2CouplingLayer`] here is a **scalar** affine coupling (not
-//! 2-channel spline): each phoneme position's duration latent is a single
-//! scalar `x` (there is no "other half" of a per-position pair to split
-//! off, the way piper's `[2, T]` buffer has channel 0), so the "coupling"
-//! is between `x` and the external conditioning vector `cond`
-//! (tone+hidden, see below) rather than between two slices of the same
-//! buffer: `inverse(x, cond) = (x - shift(cond)) *
-//! exp(-log_scale(cond))`, the exact inverse of the canonical
-//! affine-coupling forward `y = x * exp(log_scale(cond)) + shift(cond)`.
-//! `log_scale`/`shift` are each one affine (bias + linear) readout of
-//! `cond`. Only `inverse` is implemented — [`SbV2SDP::sample`] below only
-//! ever walks the reverse/inference direction, matching
-//! `piper_plus::duration::ConvFlow`, which likewise implements only
-//! `reverse`, never a forward.
+//! # Layout conventions
 //!
-//! # Tone conditioning (JP pitch accent)
+//! Two different layouts appear here:
 //!
-//! `tone_proj` is a `[n_tones, d_hidden]` row-major **embedding table**
-//! (interpretation (b) of the task brief, matching
-//! [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
-//! `tone_embed` embedding-table convention rather than a `[d_hidden,
-//! n_tones]` one-hot-projection linear layer):
-//! `tone_proj[tone as usize * d_hidden .. (tone as usize + 1) * d_hidden]`
-//! is tone `tone`'s `[d_hidden]` additive delta. `tone_bias` (`[d_hidden]`)
-//! is a single global bias added at every position regardless of tone. Per
-//! phoneme position `p`: `cond[p, d] = hidden[p, d] + tone_proj[tones[p],
-//! d] + tone_bias[d]`.
+//! - **Row-major, position-major `[T, D]`** — the layout every other `sbv2`
+//!   module (`text_encoder.rs`, `flow.rs`, `style.rs`) uses. Row `p` is
+//!   `buf[p * D .. (p + 1) * D]`. `SbV2SDP::sample`'s `hidden` argument uses
+//!   this.
+//! - **Channel-major `[C, T]`** — the layout the DDS / ConvFlow / spline
+//!   primitives internally use, matching PyTorch/VITS `nn.Conv1d`'s native
+//!   `[N=batch, C, T]` (with N=1 elided) — channel `c` at time `t` is
+//!   `buf[c * T + t]`. Every primitive below (`DDSConv`, `ElementwiseAffine`,
+//!   `ConvFlow`, `SbV2SDP::body`) speaks this convention.
 //!
-//! # Layout convention
+//! `SbV2SDP::sample` transposes `hidden` from row-major `[T, D]` into
+//! channel-major `[D, T]` at the entry to `body`, and returns a flat
+//! `Vec<i32>` of length `text_seq_len` (no layout concern).
 //!
-//! `hidden` is flat, row-major, position-major `[text_seq_len, d_hidden]`
-//! (see `text_encoder.rs`'s identical convention) — position `p`'s
-//! `d_hidden`-wide row is `hidden[p * d_hidden .. (p + 1) * d_hidden]`.
+//! # Empty-flows / all-zero-weight identity path (backward compat)
+//!
+//! [`SbV2SDP::empty`] returns an SDP with `flows = vec![]`, an
+//! `ElementwiseAffine` with `m = 0, logs = 0` (identity), and every conv
+//! weight/bias zero. Combined with `noise_scale_w == 0.0`, that path
+//! deterministically returns all-`1`s (`exp(0).ceil().max(1) == 1`)
+//! regardless of `hidden`, `g`, or RNG state — mirrors the pre-Blocker-2c
+//! scaffold's empty-`flow_layers` behaviour so
+//! `SbV2Model::synthetic_for_test` (`sbv2/mod.rs`) continues to compile and
+//! pass without any parameter changes on the callers' side.
 
-use vokra_core::rng::GaussianSplitMix64;
+use vokra_core::rng::NormalSource;
 
-/// A single scalar affine flow-coupling layer — see the module doc's
-/// `CouplingLayer` reuse decision for why this is a fresh, minimal type
-/// rather than a `piper_plus` reuse, and for the exact inverse formula.
-pub struct SbV2CouplingLayer {
-    /// Row-major `[2, d_hidden]`: row 0 projects `cond` to `log_scale`, row
-    /// 1 projects `cond` to `shift` (both before adding `proj_bias`).
-    proj_weight: Vec<f32>,
-    /// `[2]`: `[log_scale_bias, shift_bias]`, added after the
-    /// `proj_weight` dot product.
-    proj_bias: Vec<f32>,
-    /// Conditioning-vector width this layer expects (`cond.len()`).
-    d_hidden: usize,
+// -----------------------------------------------------------------------------
+// SDP-wide constants (from upstream `models.py::StochasticDurationPredictor`
+// + `modules.py::ConvFlow` defaults + `transforms.py`; mirror piper_plus's
+// `piper_plus::config::{DP_KERNEL, DP_CONV_LAYERS, RQS_NUM_BINS,
+// RQS_TAIL_BOUND, LAYER_NORM_EPS}` verbatim — SBV2 v2 base uses the same
+// values).
+// -----------------------------------------------------------------------------
+
+/// DDS / ConvFlow kernel size (`kernel_size = 3` in
+/// `StochasticDurationPredictor.__init__`'s only construction call).
+pub(crate) const DP_KERNEL: usize = 3;
+/// DDS layer depth (`n_layers = 3` in the same `__init__`).
+pub(crate) const DP_CONV_LAYERS: usize = 3;
+/// Piecewise-rational-quadratic-spline bins per ConvFlow (upstream
+/// `ConvFlow`'s `num_bins = 10` default).
+pub(crate) const RQS_NUM_BINS: usize = 10;
+/// Spline tail bound (upstream `ConvFlow`'s `tail_bound = 5.0` default).
+pub(crate) const RQS_TAIL_BOUND: f32 = 5.0;
+/// LayerNorm epsilon (`nn.LayerNorm` default; VITS inherits it — see
+/// `modules.py::LayerNorm.__init__(eps=1e-5)`).
+pub(crate) const LAYER_NORM_EPS: f32 = 1e-5;
+
+/// Minimum spline bin width (`transforms.py::piecewise_rational_quadratic_transform`'s
+/// `min_bin_width = 1e-3` default).
+const MIN_BIN_WIDTH: f32 = 1e-3;
+/// Minimum spline bin height (same file, `min_bin_height = 1e-3`).
+const MIN_BIN_HEIGHT: f32 = 1e-3;
+/// Minimum spline derivative (same file, `min_derivative = 1e-3`).
+const MIN_DERIVATIVE: f32 = 1e-3;
+
+// -----------------------------------------------------------------------------
+// Numeric helpers — kept private to this module to preserve `sbv2`'s Compute-
+// free policy (see `flow.rs`'s module doc for the identical rationale
+// applied to `SbV2AffineCouplingLayer`).
+// -----------------------------------------------------------------------------
+
+/// Softplus `ln(1 + eˣ)` with the large-`x` guard PyTorch uses (mirror of
+/// `piper_plus::nn::softplus`).
+fn softplus(x: f32) -> f32 {
+    if x > 20.0 { x } else { (1.0 + x.exp()).ln() }
 }
 
-impl SbV2CouplingLayer {
-    /// Builds a coupling layer from a pre-trained `[2, d_hidden]`
-    /// `(log_scale, shift)` projection. Crate-internal: no caller
-    /// constructs a non-empty `flow_layers` stack yet — the future
-    /// `converter` module (see `mod.rs`'s roadmap comment) loads real
-    /// GGUF weights and will call this.
+/// Exact (erf-based) GELU, matching PyTorch `F.gelu` default (mirror of
+/// `piper_plus::nn::gelu`).
+fn gelu(x: f32) -> f32 {
+    0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
+}
+
+/// Error function (Abramowitz & Stegun 7.1.26; ~1e-7 max error — well
+/// inside the FP32 parity bound). Mirror of `piper_plus::nn::erf`.
+#[allow(clippy::excessive_precision)] // A&S reference coefficients kept verbatim
+fn erf(x: f32) -> f32 {
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+    let t = 1.0 / (1.0 + 0.327_591_1 * x);
+    let y = 1.0
+        - (((((1.061_405_43 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
+            + 0.254_829_592)
+            * t
+            * (-x * x).exp();
+    sign * y
+}
+
+/// LayerNorm over the channel axis of a channel-major `[C, T]` buffer
+/// (VITS `modules.py::LayerNorm.forward` normalises the channel vector at
+/// each time step, then affine-transforms with `gamma`/`beta`). Mirror of
+/// `piper_plus::nn::layer_norm_channels`.
+fn layer_norm_channels(
+    x: &[f32],
+    channels: usize,
+    time: usize,
+    gamma: &[f32],
+    beta: &[f32],
+) -> Vec<f32> {
+    let mut out = vec![0.0_f32; x.len()];
+    for t in 0..time {
+        let mut mean = 0.0_f32;
+        for c in 0..channels {
+            mean += x[c * time + t];
+        }
+        mean /= channels as f32;
+        let mut var = 0.0_f32;
+        for c in 0..channels {
+            let d = x[c * time + t] - mean;
+            var += d * d;
+        }
+        var /= channels as f32;
+        let inv = 1.0 / (var + LAYER_NORM_EPS).sqrt();
+        for c in 0..channels {
+            out[c * time + t] = (x[c * time + t] - mean) * inv * gamma[c] + beta[c];
+        }
+    }
+    out
+}
+
+/// General 1D convolution over a channel-major `[in_ch, in_len]` signal,
+/// producing `[out_ch, out_len]` channel-major. `weight` is
+/// `[out_ch, in_ch/groups, kernel]` row-major (PyTorch `nn.Conv1d`'s native
+/// layout). Same-padding controlled by the caller via `pad`. `groups` is
+/// depth-wise-separable's only knob (`groups == in_ch == out_ch` = depthwise
+/// per-channel conv). Written scalar rather than reusing
+/// `piper_plus::nn::conv1d` because that function threads a `Compute` handle
+/// through — the `sbv2` module deliberately stays Compute-free (see
+/// `flow.rs`'s module doc for the identical rationale).
+#[allow(clippy::too_many_arguments)]
+fn conv1d_scalar(
+    x: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    pad: usize,
+    dilation: usize,
+    groups: usize,
+) -> Vec<f32> {
+    let eff = dilation * (kernel - 1) + 1;
+    let out_len = in_len + 2 * pad - eff + 1; // stride=1
+    debug_assert!(out_len > 0, "conv1d_scalar: degenerate output length");
+    debug_assert_eq!(in_ch % groups, 0, "in_ch must be divisible by groups");
+    debug_assert_eq!(out_ch % groups, 0, "out_ch must be divisible by groups");
+    let in_g = in_ch / groups;
+    let out_g = out_ch / groups;
+    let mut out = vec![0.0_f32; out_ch * out_len];
+
+    for g in 0..groups {
+        for oc_local in 0..out_g {
+            let oc = g * out_g + oc_local;
+            let wrow_base = oc * (in_g * kernel);
+            let b = bias.map_or(0.0, |bs| bs[oc]);
+            for ot in 0..out_len {
+                let mut acc = b;
+                for ic_local in 0..in_g {
+                    let ic = g * in_g + ic_local;
+                    for kk in 0..kernel {
+                        // Signed index into x[ic, ...]; skip if in padding.
+                        let it = ot as isize + (kk * dilation) as isize - pad as isize;
+                        if it < 0 || (it as usize) >= in_len {
+                            continue;
+                        }
+                        let it = it as usize;
+                        let w = weight[wrow_base + ic_local * kernel + kk];
+                        acc += w * x[ic * in_len + it];
+                    }
+                }
+                out[oc * out_len + ot] = acc;
+            }
+        }
+    }
+    out
+}
+
+/// Channel flip of a `[2, T]` latent (`torch.flip(x, [1])` in the VITS SDP's
+/// upstream inference loop — swaps channel 0 and channel 1 pointwise across
+/// all `T` time steps). Mirror of `piper_plus::duration::flip2`.
+fn flip2(x: &mut [f32], time: usize) {
+    for t in 0..time {
+        x.swap(t, time + t);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Primitives — public so `tests/sbv2_sdp.rs` can build them from clean-room
+// weights; `pub(crate)` where a caller from outside the crate has no
+// legitimate use.
+// -----------------------------------------------------------------------------
+
+/// LayerNorm affine parameters, `[channels]`-shaped each.
+#[derive(Clone, Debug)]
+pub struct SdpLayerNorm {
+    /// Per-channel affine scale (`nn.LayerNorm.weight`).
+    pub gamma: Vec<f32>,
+    /// Per-channel affine bias (`nn.LayerNorm.bias`).
+    pub beta: Vec<f32>,
+}
+
+impl SdpLayerNorm {
+    /// Zero-weight LayerNorm (`gamma = 0, beta = 0`): output = 0 regardless
+    /// of input — the identity for the residual path in a
+    /// [`DDSConv`] built via [`DDSConv::zero`].
+    fn zero(channels: usize) -> Self {
+        Self {
+            gamma: vec![0.0; channels],
+            beta: vec![0.0; channels],
+        }
+    }
+}
+
+/// Dilated depth-separable conv stack (VITS `modules.py::DDSConv`):
+/// per-layer `convs_sep` (depthwise, `groups = channels`, `kernel = 3`,
+/// dilation `kernel^i` for layer `i`), a channel-wise LayerNorm, GELU, a
+/// point-wise `convs_1x1` (kernel 1), another LayerNorm, GELU, then a
+/// residual add — for `n_layers = 3` layers total.
+///
+/// Real SBV2 v2 base uses `channels = 192`. Tests use small values (4-8) —
+/// [`DDSConv::from_weights`] takes whatever `channels` the caller supplies.
+#[derive(Clone, Debug)]
+pub struct DDSConv {
+    channels: usize,
+    n_layers: usize,
+    kernel: usize,
+    // Per-layer weights, each list of length `n_layers`.
+    convs_sep_w: Vec<Vec<f32>>, // depthwise, each `[channels, 1, kernel]`
+    convs_sep_b: Vec<Vec<f32>>, // each `[channels]`
+    convs_1x1_w: Vec<Vec<f32>>, // pointwise, each `[channels, channels, 1]`
+    convs_1x1_b: Vec<Vec<f32>>, // each `[channels]`
+    norms_1: Vec<SdpLayerNorm>, // each `channels`-wide
+    norms_2: Vec<SdpLayerNorm>, // each `channels`-wide
+}
+
+impl DDSConv {
+    /// Builds a DDS-net from `n_layers`-long lists of per-layer weights,
+    /// each list shape-checked in debug builds. Public so the parity dumper
+    /// (`tools/parity/sbv2_dump_reference.py`) and unit tests can construct
+    /// an instance from real GGUF-loaded weights or hand-picked test
+    /// values.
     ///
     /// # Panics
     ///
     /// Panics (via `debug_assert!`, hot inner-loop constructor per this
     /// crate's established convention — see
     /// [`StyleVectorInjector::from_projections`](super::style::StyleVectorInjector::from_projections)'s
-    /// panic docs) if `proj_weight.len() != 2 * d_hidden` or
-    /// `proj_bias.len() != 2`.
-    #[allow(dead_code)] // constructed by the future converter once real GGUF-loaded SDP weights are wired
-    pub(crate) fn new(proj_weight: Vec<f32>, proj_bias: Vec<f32>, d_hidden: usize) -> Self {
-        debug_assert_eq!(
-            proj_weight.len(),
-            2 * d_hidden,
-            "proj_weight must be [2, d_hidden]"
-        );
-        debug_assert_eq!(proj_bias.len(), 2, "proj_bias must be [2]");
-        Self {
-            proj_weight,
-            proj_bias,
-            d_hidden,
-        }
-    }
-
-    /// Inverse affine-coupling transform: `(x - shift(cond)) *
-    /// exp(-log_scale(cond))` — see the module doc for the full
-    /// derivation.
-    ///
-    /// # Panics
-    ///
-    /// Panics (via `debug_assert!`) if `cond.len() != self.d_hidden`.
-    fn inverse(&self, x: f32, cond: &[f32]) -> f32 {
-        debug_assert_eq!(cond.len(), self.d_hidden, "cond must be [d_hidden]");
-        let d = self.d_hidden;
-        let log_scale = self.proj_bias[0] + dot(&self.proj_weight[..d], cond);
-        let shift = self.proj_bias[1] + dot(&self.proj_weight[d..2 * d], cond);
-        (x - shift) * (-log_scale).exp()
-    }
-}
-
-/// Dot product of two equal-length slices.
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
-/// SBV2's stochastic duration predictor: samples one non-negative integer
-/// duration per phoneme position by walking a stack of
-/// [`SbV2CouplingLayer`]s in reverse (inference direction) from Gaussian
-/// noise, conditioned on the text hidden state additively combined with a
-/// per-position JP pitch-accent tone (see the module doc's "Tone
-/// conditioning" section for the exact formula).
-pub struct SbV2SDP {
-    /// Flow-coupling stack, applied in **reverse** order (last layer
-    /// first) — the standard normalizing-flow inference/sampling
-    /// direction. An empty stack is a legitimate, exercised no-op
-    /// configuration (see this crate's `tests/sbv2_duration.rs`): the
-    /// sampled latent `z` passes through unchanged, so `x = z` (not a
-    /// silent fallback — it is the documented behavior of a documented
-    /// empty configuration, matching
-    /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s empty
-    /// `transformer_layers` precedent).
-    flow_layers: Vec<SbV2CouplingLayer>,
-    /// Tone embedding table, row-major `[n_tones, d_hidden]`
-    /// (interpretation (b) — see the module doc's "Tone conditioning"
-    /// section).
-    tone_proj: Vec<f32>,
-    /// Global additive bias, `[d_hidden]`, added at every position
-    /// regardless of tone.
-    tone_bias: Vec<f32>,
-    /// Hidden (text encoder) dimension shared by `hidden`, `tone_proj`'s
-    /// rows, `tone_bias`, and every [`SbV2CouplingLayer`]'s conditioning
-    /// input.
-    d_hidden: usize,
-    /// Pitch-accent tone count (`tone_proj.len() == n_tones * d_hidden`).
-    n_tones: usize,
-}
-
-impl SbV2SDP {
-    /// Builds a predictor from a pre-trained flow-coupling stack and tone
-    /// conditioning tables.
-    ///
-    /// # Panics
-    ///
-    /// Panics (via `debug_assert!`) if `tone_proj.len() != n_tones *
-    /// d_hidden` or `tone_bias.len() != d_hidden`.
+    /// panic docs) if any list length disagrees with `n_layers`, or any
+    /// weight/bias tensor's length disagrees with its documented shape.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_weights(
-        flow_layers: Vec<SbV2CouplingLayer>,
-        tone_proj: Vec<f32>,
-        tone_bias: Vec<f32>,
-        d_hidden: usize,
-        n_tones: usize,
+        channels: usize,
+        n_layers: usize,
+        kernel: usize,
+        convs_sep_w: Vec<Vec<f32>>,
+        convs_sep_b: Vec<Vec<f32>>,
+        convs_1x1_w: Vec<Vec<f32>>,
+        convs_1x1_b: Vec<Vec<f32>>,
+        norms_1: Vec<SdpLayerNorm>,
+        norms_2: Vec<SdpLayerNorm>,
     ) -> Self {
-        debug_assert_eq!(
-            tone_proj.len(),
-            n_tones * d_hidden,
-            "tone_proj must be [n_tones, d_hidden]"
-        );
-        debug_assert_eq!(tone_bias.len(), d_hidden, "tone_bias must be [d_hidden]");
+        debug_assert_eq!(convs_sep_w.len(), n_layers);
+        debug_assert_eq!(convs_sep_b.len(), n_layers);
+        debug_assert_eq!(convs_1x1_w.len(), n_layers);
+        debug_assert_eq!(convs_1x1_b.len(), n_layers);
+        debug_assert_eq!(norms_1.len(), n_layers);
+        debug_assert_eq!(norms_2.len(), n_layers);
+        for l in 0..n_layers {
+            debug_assert_eq!(
+                convs_sep_w[l].len(),
+                channels * kernel,
+                "convs_sep.{l}.weight shape mismatch"
+            );
+            debug_assert_eq!(convs_sep_b[l].len(), channels, "convs_sep.{l}.bias shape");
+            debug_assert_eq!(
+                convs_1x1_w[l].len(),
+                channels * channels,
+                "convs_1x1.{l}.weight shape"
+            );
+            debug_assert_eq!(convs_1x1_b[l].len(), channels, "convs_1x1.{l}.bias shape");
+            debug_assert_eq!(norms_1[l].gamma.len(), channels, "norms_1.{l}.gamma shape");
+            debug_assert_eq!(norms_1[l].beta.len(), channels, "norms_1.{l}.beta shape");
+            debug_assert_eq!(norms_2[l].gamma.len(), channels, "norms_2.{l}.gamma shape");
+            debug_assert_eq!(norms_2[l].beta.len(), channels, "norms_2.{l}.beta shape");
+        }
         Self {
-            flow_layers,
-            tone_proj,
-            tone_bias,
-            d_hidden,
-            n_tones,
+            channels,
+            n_layers,
+            kernel,
+            convs_sep_w,
+            convs_sep_b,
+            convs_1x1_w,
+            convs_1x1_b,
+            norms_1,
+            norms_2,
         }
     }
 
-    /// Samples one non-negative integer duration per phoneme position.
-    ///
-    /// For each position `p` in `0..text_seq_len`: draws `z =
-    /// rng.next_gaussian() * noise_scale_w`, sets `x = z`, walks
-    /// `flow_layers` in reverse applying [`SbV2CouplingLayer::inverse`]
-    /// (conditioned on `hidden[p] + tone_proj[tones[p]] + tone_bias`, see
-    /// the module doc), then returns `duration = ceil(exp(x)).max(1)` —
-    /// the standard VITS-family log-duration convention (mirrors
-    /// `piper_plus::duration::DurationPredictor`'s flow structure, whose
-    /// caller likewise computes `logw.exp() * length_scale).ceil().max(1)`
-    /// from the flow's output).
-    ///
-    /// `noise_scale_w` scales the Gaussian prior; `noise_scale_w == 0.0`
-    /// makes every draw exactly `0.0` regardless of `rng`'s state, so an
-    /// empty `flow_layers` stack combined with `noise_scale_w == 0.0`
-    /// deterministically returns all-`1`s (`exp(0).ceil().max(1) == 1`).
+    /// Zero-weight DDS: every layer's convs, bias, and LayerNorm affine
+    /// params are zero — so each layer's `y = norm(conv(x))` returns zero,
+    /// GELU of zero is zero, the residual `x += y` is a no-op, and the
+    /// whole stack is the identity. Used by [`SbV2SDP::empty`] for the
+    /// synthetic-test scaffold and by the RED-phase primitive tests
+    /// (`tests/sbv2_sdp.rs`).
+    pub fn zero(channels: usize, n_layers: usize, kernel: usize) -> Self {
+        let sep_w = vec![vec![0.0_f32; channels * kernel]; n_layers];
+        let sep_b = vec![vec![0.0_f32; channels]; n_layers];
+        let one_w = vec![vec![0.0_f32; channels * channels]; n_layers];
+        let one_b = vec![vec![0.0_f32; channels]; n_layers];
+        let n1 = (0..n_layers)
+            .map(|_| SdpLayerNorm::zero(channels))
+            .collect();
+        let n2 = (0..n_layers)
+            .map(|_| SdpLayerNorm::zero(channels))
+            .collect();
+        Self::from_weights(
+            channels, n_layers, kernel, sep_w, sep_b, one_w, one_b, n1, n2,
+        )
+    }
+
+    /// Runs the DDS-net forward on a channel-major `[channels, time]`
+    /// buffer, returning a `[channels, time]` buffer of the same shape.
+    /// `g`, when `Some`, is the ConvFlow-conditioning input (also
+    /// `[channels, time]`), pointwise-added to `x` **before** the first
+    /// layer — this is how upstream `modules.py::DDSConv.forward` folds the
+    /// SDP body's `[dp_filter, T]` conditioner into the flow's own
+    /// hidden state.
     ///
     /// # Panics
     ///
-    /// Panics (via `debug_assert!`) if `hidden.len() != text_seq_len *
-    /// self.d_hidden`, if `tones.len() != text_seq_len`, or if any
-    /// `tones` entry is `>= self.n_tones`.
-    pub fn sample(
-        &self,
-        hidden: &[f32],
-        tones: &[u8],
-        text_seq_len: usize,
-        rng: &mut GaussianSplitMix64,
-        noise_scale_w: f32,
-    ) -> Vec<i32> {
-        debug_assert_eq!(
-            hidden.len(),
-            text_seq_len * self.d_hidden,
-            "hidden must be [text_seq_len, d_hidden]"
-        );
-        debug_assert_eq!(
-            tones.len(),
-            text_seq_len,
-            "tones must have text_seq_len entries"
-        );
-        debug_assert!(
-            tones.iter().all(|&t| (t as usize) < self.n_tones),
-            "tone out of range"
-        );
+    /// Panics (via `debug_assert!`) if `x.len() != channels * time` or if
+    /// `g.is_some()` and `g.len() != channels * time`.
+    pub fn forward(&self, x: &[f32], time: usize, g: Option<&[f32]>) -> Vec<f32> {
+        debug_assert_eq!(x.len(), self.channels * time, "x shape");
+        if let Some(g) = g {
+            debug_assert_eq!(g.len(), self.channels * time, "g shape");
+        }
+        let c = self.channels;
+        let mut buf = if let Some(g) = g {
+            x.iter().zip(g).map(|(a, b)| a + b).collect::<Vec<f32>>()
+        } else {
+            x.to_vec()
+        };
+        for l in 0..self.n_layers {
+            let dilation = self.kernel.pow(l as u32); // 1, 3, 9 for kernel=3, n_layers=3
+            let pad = dilation * (self.kernel - 1) / 2;
 
-        let d = self.d_hidden;
-        let mut cond = vec![0.0_f32; d];
-        let mut out = Vec::with_capacity(text_seq_len);
-        for p in 0..text_seq_len {
-            let hidden_row = &hidden[p * d..(p + 1) * d];
-            let tone = tones[p] as usize;
-            let tone_row = &self.tone_proj[tone * d..(tone + 1) * d];
-            for i in 0..d {
-                cond[i] = hidden_row[i] + tone_row[i] + self.tone_bias[i];
+            // Depthwise sep conv (groups = channels).
+            let y = conv1d_scalar(
+                &buf,
+                c,
+                time,
+                &self.convs_sep_w[l],
+                c,
+                self.kernel,
+                Some(&self.convs_sep_b[l]),
+                pad,
+                dilation,
+                c, // groups = channels
+            );
+            let mut y =
+                layer_norm_channels(&y, c, time, &self.norms_1[l].gamma, &self.norms_1[l].beta);
+            for v in &mut y {
+                *v = gelu(*v);
             }
 
-            let mut x = rng.next_gaussian() * noise_scale_w;
-            for layer in self.flow_layers.iter().rev() {
-                x = layer.inverse(x, &cond);
+            // Point-wise 1x1 conv (groups = 1).
+            let y2 = conv1d_scalar(
+                &y,
+                c,
+                time,
+                &self.convs_1x1_w[l],
+                c,
+                1,
+                Some(&self.convs_1x1_b[l]),
+                0, // pad
+                1, // dilation
+                1, // groups
+            );
+            let mut y2 =
+                layer_norm_channels(&y2, c, time, &self.norms_2[l].gamma, &self.norms_2[l].beta);
+            for v in &mut y2 {
+                *v = gelu(*v);
             }
-            let duration = x.exp().ceil().max(1.0) as i32;
-            out.push(duration);
+            // Residual add (in place).
+            for (b, s) in buf.iter_mut().zip(&y2) {
+                *b += s;
+            }
+        }
+        buf
+    }
+}
+
+/// Element-wise affine flow (`modules.py::ElementwiseAffine`): a fixed
+/// 2-channel-wide, time-independent affine transform `x = m + exp(logs) * z`
+/// (forward) or `z = (x - m) * exp(-logs)` (reverse). SBV2 v2's SDP has
+/// exactly one such layer at flow slot 0 (`sdp.flows.0.{m,logs}`, each
+/// `[2, 1]`).
+#[derive(Clone, Debug)]
+pub struct ElementwiseAffine {
+    /// `[2]`, one value per channel (upstream stores as `[2, 1]`; the `1`
+    /// dimension is a broadcast axis over time and collapses at load).
+    m: Vec<f32>,
+    /// `[2]`, one value per channel.
+    logs: Vec<f32>,
+}
+
+impl ElementwiseAffine {
+    /// Builds an `ElementwiseAffine` from `[2]`-length `m` and `logs`
+    /// vectors. Panics in debug if either length is not 2.
+    pub fn from_weights(m: Vec<f32>, logs: Vec<f32>) -> Self {
+        debug_assert_eq!(m.len(), 2, "m must be [channels=2]");
+        debug_assert_eq!(logs.len(), 2, "logs must be [channels=2]");
+        Self { m, logs }
+    }
+
+    /// Zero-weight identity (`m = 0, logs = 0`): reverse output = input.
+    pub fn identity() -> Self {
+        Self::from_weights(vec![0.0, 0.0], vec![0.0, 0.0])
+    }
+
+    /// Inverse pass: `z = (x - m) * exp(-logs)`, applied per channel with
+    /// broadcast across the `time` axis. Returns a fresh `[2, time]`
+    /// channel-major buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics (via `debug_assert!`) if `x.len() != 2 * time`.
+    pub fn reverse(&self, x: &[f32], time: usize) -> Vec<f32> {
+        debug_assert_eq!(x.len(), 2 * time, "x must be [2, time]");
+        let mut out = vec![0.0_f32; 2 * time];
+        for c in 0..2 {
+            let m = self.m[c];
+            let inv = (-self.logs[c]).exp();
+            for t in 0..time {
+                out[c * time + t] = (x[c * time + t] - m) * inv;
+            }
         }
         out
     }
 }
 
+/// Piecewise-rational-quadratic-spline coupling flow
+/// (`modules.py::ConvFlow`) — the workhorse of VITS SDP's inference-time
+/// reverse pass. Splits a `[2, T]` latent into halves (channel 0 =
+/// `x0` passes through unchanged, channel 1 = `x1` is the transformed
+/// half), runs `x0` (plus the SDP body's `[dp_filter, T]` conditioning)
+/// through a `pre` 1×1 conv → [`DDSConv`] → `proj` 1×1 conv to predict the
+/// spline parameters (`[num_bins * 3 - 1, T]`, split into unnormalised
+/// widths / heights / derivatives), then inverts the spline per time step
+/// to compute the new `x1`.
+///
+/// Real SBV2 v2 base has 4 `ConvFlow`s, at `sdp.flows.{1,3,5,7}` (indices
+/// 2/4/6/8 are `Flip` layers with no parameters — see [`SbV2SDP::sample`]
+/// for how they are handled at inference time). Each ConvFlow's
+/// `dp_filter == 192` (matches the SDP-wide `d_hidden`).
+#[derive(Clone, Debug)]
+pub struct ConvFlow {
+    pre_w: Vec<f32>,  // `[dp_filter, 1, 1]` = `[dp_filter]`
+    pre_b: Vec<f32>,  // `[dp_filter]`
+    convs: DDSConv,   // channels = dp_filter
+    proj_w: Vec<f32>, // `[num_bins * 3 - 1, dp_filter, 1]`
+    proj_b: Vec<f32>, // `[num_bins * 3 - 1]`
+    dp_filter: usize,
+}
+
+impl ConvFlow {
+    /// Builds a `ConvFlow` from real safetensors-loaded weights (shapes
+    /// documented on each field). Panics in debug if any shape disagrees.
+    pub fn from_weights(
+        pre_w: Vec<f32>,
+        pre_b: Vec<f32>,
+        convs: DDSConv,
+        proj_w: Vec<f32>,
+        proj_b: Vec<f32>,
+        dp_filter: usize,
+    ) -> Self {
+        let out = RQS_NUM_BINS * 3 - 1;
+        debug_assert_eq!(pre_w.len(), dp_filter, "pre.weight [dp_filter, 1, 1]");
+        debug_assert_eq!(pre_b.len(), dp_filter, "pre.bias [dp_filter]");
+        debug_assert_eq!(
+            convs.channels, dp_filter,
+            "convs channels must be dp_filter"
+        );
+        debug_assert_eq!(
+            proj_w.len(),
+            out * dp_filter,
+            "proj.weight [num_bins*3-1={out}, dp_filter, 1]"
+        );
+        debug_assert_eq!(proj_b.len(), out, "proj.bias [num_bins*3-1={out}]");
+        Self {
+            pre_w,
+            pre_b,
+            convs,
+            proj_w,
+            proj_b,
+            dp_filter,
+        }
+    }
+
+    /// Reverse pass over a `[2, time]` channel-major latent, conditioned on
+    /// the SDP body's `g` `[dp_filter, time]` channel-major output. Returns
+    /// a fresh `[2, time]` buffer. Channel 0 is preserved bit-exact;
+    /// channel 1 is transformed by the per-time RQS inverse.
+    ///
+    /// # Panics
+    ///
+    /// Panics (via `debug_assert!`) if `x.len() != 2 * time` or `g.len() !=
+    /// dp_filter * time`.
+    pub fn reverse(&self, x: &[f32], time: usize, g: &[f32]) -> Vec<f32> {
+        debug_assert_eq!(x.len(), 2 * time, "x must be [2, time]");
+        debug_assert_eq!(
+            g.len(),
+            self.dp_filter * time,
+            "g must be [dp_filter, time]"
+        );
+
+        // 1. pre: `x0` (channel 0, `[1, T]`) → `h` `[dp_filter, T]`.
+        let x0 = &x[..time];
+        let h = conv1d_scalar(
+            x0,
+            1, // in_ch
+            time,
+            &self.pre_w,
+            self.dp_filter,
+            1, // kernel
+            Some(&self.pre_b),
+            0, // pad
+            1, // dilation
+            1, // groups
+        );
+
+        // 2. DDS(h, g).
+        let h = self.convs.forward(&h, time, Some(g));
+
+        // 3. proj: `h` → `params` `[num_bins*3-1, T]`.
+        let params = conv1d_scalar(
+            &h,
+            self.dp_filter,
+            time,
+            &self.proj_w,
+            RQS_NUM_BINS * 3 - 1,
+            1, // kernel
+            Some(&self.proj_b),
+            0, // pad
+            1, // dilation
+            1, // groups
+        );
+
+        // 4. Per-time RQS inverse on channel 1.
+        let scale = (self.dp_filter as f32).sqrt();
+        let mut result = x.to_vec();
+        for t in 0..time {
+            let mut w = [0.0_f32; RQS_NUM_BINS];
+            let mut hh = [0.0_f32; RQS_NUM_BINS];
+            let mut d = [0.0_f32; RQS_NUM_BINS - 1];
+            // params rows: [0..num_bins) = widths, [num_bins..2*num_bins) =
+            // heights, [2*num_bins..3*num_bins-1) = derivatives.
+            for b in 0..RQS_NUM_BINS {
+                w[b] = params[b * time + t] / scale;
+                hh[b] = params[(RQS_NUM_BINS + b) * time + t] / scale;
+            }
+            for b in 0..(RQS_NUM_BINS - 1) {
+                d[b] = params[(2 * RQS_NUM_BINS + b) * time + t];
+            }
+            let x1 = x[time + t];
+            result[time + t] = unconstrained_rqs_inverse(x1, &w, &hh, &d);
+        }
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rational-quadratic-spline inverse (mirror of `piper_plus::duration::rqs_*`
+// and upstream `transforms.py`).
+// -----------------------------------------------------------------------------
+
+fn unconstrained_rqs_inverse(
+    input: f32,
+    unnorm_w: &[f32; RQS_NUM_BINS],
+    unnorm_h: &[f32; RQS_NUM_BINS],
+    unnorm_d: &[f32; RQS_NUM_BINS - 1],
+) -> f32 {
+    let tb = RQS_TAIL_BOUND;
+    if input < -tb || input > tb {
+        return input;
+    }
+    // Pad derivatives with the linear-tail constant on both ends.
+    let constant = ((1.0 - MIN_DERIVATIVE).exp() - 1.0).ln();
+    let mut derivs = [0.0_f32; RQS_NUM_BINS + 1];
+    derivs[0] = constant;
+    derivs[RQS_NUM_BINS] = constant;
+    derivs[1..RQS_NUM_BINS].copy_from_slice(unnorm_d);
+    rqs_inverse(input, unnorm_w, unnorm_h, &derivs, -tb, tb, -tb, tb)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rqs_inverse(
+    input: f32,
+    unnorm_w: &[f32; RQS_NUM_BINS],
+    unnorm_h: &[f32; RQS_NUM_BINS],
+    derivatives_unnorm: &[f32; RQS_NUM_BINS + 1],
+    left: f32,
+    right: f32,
+    bottom: f32,
+    top: f32,
+) -> f32 {
+    let n = RQS_NUM_BINS;
+    let nf = n as f32;
+
+    let widths_sm = softmax(unnorm_w);
+    let mut widths = [0.0_f32; RQS_NUM_BINS];
+    for b in 0..n {
+        widths[b] = MIN_BIN_WIDTH + (1.0 - MIN_BIN_WIDTH * nf) * widths_sm[b];
+    }
+    let cumwidths = cumulative(&widths, left, right - left);
+    let widths = diffs(&cumwidths);
+
+    let mut derivatives = [0.0_f32; RQS_NUM_BINS + 1];
+    for b in 0..=n {
+        derivatives[b] = MIN_DERIVATIVE + softplus(derivatives_unnorm[b]);
+    }
+
+    let heights_sm = softmax(unnorm_h);
+    let mut heights = [0.0_f32; RQS_NUM_BINS];
+    for b in 0..n {
+        heights[b] = MIN_BIN_HEIGHT + (1.0 - MIN_BIN_HEIGHT * nf) * heights_sm[b];
+    }
+    let cumheights = cumulative(&heights, bottom, top - bottom);
+    let heights = diffs(&cumheights);
+
+    let bin = searchsorted(&cumheights, input);
+    let input_cumwidths = cumwidths[bin];
+    let input_bin_widths = widths[bin];
+    let input_cumheights = cumheights[bin];
+    let input_delta = heights[bin] / widths[bin];
+    let input_derivatives = derivatives[bin];
+    let input_derivatives_plus_one = derivatives[bin + 1];
+    let input_heights = heights[bin];
+
+    let dy = input - input_cumheights;
+    let a = dy * (input_derivatives + input_derivatives_plus_one - 2.0 * input_delta)
+        + input_heights * (input_delta - input_derivatives);
+    let b = input_heights * input_derivatives
+        - dy * (input_derivatives + input_derivatives_plus_one - 2.0 * input_delta);
+    let c = -input_delta * dy;
+    let discriminant = (b * b - 4.0 * a * c).max(0.0);
+    let root = 2.0 * c / (-b - discriminant.sqrt());
+    root * input_bin_widths + input_cumwidths
+}
+
+fn searchsorted(bin_locations: &[f32; RQS_NUM_BINS + 1], input: f32) -> usize {
+    let eps = 1e-6;
+    let mut count = 0_usize;
+    for (i, &loc) in bin_locations.iter().enumerate() {
+        let loc = if i == RQS_NUM_BINS { loc + eps } else { loc };
+        if input >= loc {
+            count += 1;
+        }
+    }
+    count.saturating_sub(1).min(RQS_NUM_BINS - 1)
+}
+
+fn cumulative(bins: &[f32; RQS_NUM_BINS], base: f32, span: f32) -> [f32; RQS_NUM_BINS + 1] {
+    let mut cum = [0.0_f32; RQS_NUM_BINS + 1];
+    let mut acc = 0.0_f32;
+    for b in 0..RQS_NUM_BINS {
+        acc += bins[b];
+        cum[b + 1] = acc;
+    }
+    for c in cum.iter_mut() {
+        *c = span * *c + base;
+    }
+    cum[0] = base;
+    cum[RQS_NUM_BINS] = base + span;
+    cum
+}
+
+fn diffs(cum: &[f32; RQS_NUM_BINS + 1]) -> [f32; RQS_NUM_BINS] {
+    let mut d = [0.0_f32; RQS_NUM_BINS];
+    for b in 0..RQS_NUM_BINS {
+        d[b] = cum[b + 1] - cum[b];
+    }
+    d
+}
+
+fn softmax(x: &[f32; RQS_NUM_BINS]) -> [f32; RQS_NUM_BINS] {
+    let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let mut out = [0.0_f32; RQS_NUM_BINS];
+    let mut sum = 0.0_f32;
+    for b in 0..RQS_NUM_BINS {
+        out[b] = (x[b] - max).exp();
+        sum += out[b];
+    }
+    for v in &mut out {
+        *v /= sum;
+    }
+    out
+}
+
+// -----------------------------------------------------------------------------
+// SbV2SDP — the full stochastic duration predictor
+// -----------------------------------------------------------------------------
+
+/// SBV2 (Style-Bert-VITS2 v2) stochastic duration predictor. Samples one
+/// non-negative integer duration per phoneme position by:
+///
+/// 1. Running `hidden` (row-major `[T, d_hidden]`) through a `pre` 1×1
+///    conv → speaker-conditioning add (`cond(g)`) → 3-layer [`DDSConv`] →
+///    `proj` 1×1 conv, yielding the SDP body `[d_hidden, T]` channel-major.
+/// 2. Sampling a 2-channel Gaussian latent `z ~ N(0, 1) * noise_scale_w`
+///    (deterministic all-zero when `noise_scale_w == 0.0`).
+/// 3. Walking the reverse flow — mirror of upstream
+///    `StochasticDurationPredictor.forward(reverse=True)`'s
+///    `flows = list(reversed(self.flows)); flows = flows[:-2] +
+///    [flows[-1]]` slice: iterate `self.flows[1..]` in reverse (dropping
+///    the "useless vflow" at `self.flows[0]` = upstream `sdp.flows.1`),
+///    calling `flip(z); z = flow.reverse(z, cond=body)` for each; then a
+///    final `flip(z)`; then the ElementwiseAffine reverse. Skipping the
+///    first ConvFlow matches upstream — the layer receives no gradients
+///    during training and applying it at inference produces divergent
+///    log-durations. See [`sample`](Self::sample)'s in-body comment for
+///    the full trace.
+/// 4. Returning `duration[p] = exp(z[0, p]).ceil().max(1)` as `i32`
+///    (VITS-family log-duration convention — mirrors
+///    `piper_plus::duration::DurationPredictor`'s caller-side
+///    `logw.exp() * length_scale).ceil().max(1)`).
+///
+/// # Empty / synthetic-test path
+///
+/// [`SbV2SDP::empty`] returns an SDP with `flows = vec![]` and every conv
+/// weight/bias zero (identity `ElementwiseAffine`, zero-weight `DDSConv`).
+/// Combined with `noise_scale_w == 0.0`, that path returns all-`1`s — the
+/// same behaviour the pre-Blocker-2c `SbV2SDP::from_weights(Vec::new(), ..)`
+/// scaffold provided (`SbV2Model::synthetic_for_test`'s dependent).
+pub struct SbV2SDP {
+    d_hidden: usize,
+    /// Global-conditioning width (speaker embedding). Equal to `d_speaker`
+    /// in `SbV2Model::from_gguf`; in the real SBV2 v2 base it is 512.
+    gin: usize,
+    // Body:
+    pre_w: Vec<f32>,  // `[d_hidden, d_hidden, 1]` — 1x1 conv
+    pre_b: Vec<f32>,  // `[d_hidden]`
+    convs: DDSConv,   // channels = d_hidden
+    cond_w: Vec<f32>, // `[d_hidden, gin, 1]` — 1x1 conv (speaker cond)
+    cond_b: Vec<f32>, // `[d_hidden]`
+    proj_w: Vec<f32>, // `[d_hidden, d_hidden, 1]`
+    proj_b: Vec<f32>, // `[d_hidden]`
+    // Flow stack:
+    ea: ElementwiseAffine,
+    /// ConvFlows stored in **forward-index order** — i.e. `flows[0]` maps
+    /// to upstream `sdp.flows.1` (the "useless vflow" skipped at inference),
+    /// `flows[1]` to `sdp.flows.3`, `flows[2]` to `sdp.flows.5`, `flows[3]`
+    /// to `sdp.flows.7`. See [`sample`](Self::sample) for the reverse-order
+    /// walk that mirrors upstream's `list(reversed(...))[:-2] + [flows[-1]]`
+    /// slice. The `Vec` is loader-order to keep the converter's dense re-
+    /// index `sbv2.sdp.flow.{0..n}` load path a straight `for i in 0..n`
+    /// with no additional `rev()` at load time — reversing at `sample` time
+    /// keeps the load path a simple `push`.
+    flows: Vec<ConvFlow>,
+}
+
+impl SbV2SDP {
+    /// Assembles an SDP from real GGUF-loaded weights. Every shape is
+    /// documented on the struct's field list. Public so the from_gguf
+    /// loader (`sbv2/mod.rs`) can call it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_weights(
+        d_hidden: usize,
+        gin: usize,
+        pre_w: Vec<f32>,
+        pre_b: Vec<f32>,
+        convs: DDSConv,
+        cond_w: Vec<f32>,
+        cond_b: Vec<f32>,
+        proj_w: Vec<f32>,
+        proj_b: Vec<f32>,
+        ea: ElementwiseAffine,
+        flows: Vec<ConvFlow>,
+    ) -> Self {
+        debug_assert_eq!(pre_w.len(), d_hidden * d_hidden, "pre.weight shape");
+        debug_assert_eq!(pre_b.len(), d_hidden, "pre.bias shape");
+        debug_assert_eq!(cond_w.len(), d_hidden * gin, "cond.weight shape");
+        debug_assert_eq!(cond_b.len(), d_hidden, "cond.bias shape");
+        debug_assert_eq!(proj_w.len(), d_hidden * d_hidden, "proj.weight shape");
+        debug_assert_eq!(proj_b.len(), d_hidden, "proj.bias shape");
+        debug_assert_eq!(convs.channels, d_hidden, "convs channels");
+        for flow in &flows {
+            debug_assert_eq!(
+                flow.dp_filter, d_hidden,
+                "every ConvFlow's dp_filter must equal the SDP's d_hidden"
+            );
+        }
+        Self {
+            d_hidden,
+            gin,
+            pre_w,
+            pre_b,
+            convs,
+            cond_w,
+            cond_b,
+            proj_w,
+            proj_b,
+            ea,
+            flows,
+        }
+    }
+
+    /// Zero-weight identity SDP: an [`ElementwiseAffine::identity`], a
+    /// zero-weight [`DDSConv::zero`], every conv weight/bias zero, and
+    /// `flows = vec![]`. Combined with `noise_scale_w == 0.0`,
+    /// [`sample`](Self::sample) returns all-`1`s (`exp(0).ceil().max(1) ==
+    /// 1`) regardless of `hidden`/`g`/RNG state — the documented
+    /// no-op path `SbV2Model::synthetic_for_test` (`sbv2/mod.rs`) relies
+    /// on.
+    pub fn empty(d_hidden: usize, gin: usize) -> Self {
+        Self::from_weights(
+            d_hidden,
+            gin,
+            vec![0.0; d_hidden * d_hidden],
+            vec![0.0; d_hidden],
+            DDSConv::zero(d_hidden, DP_CONV_LAYERS, DP_KERNEL),
+            vec![0.0; d_hidden * gin],
+            vec![0.0; d_hidden],
+            vec![0.0; d_hidden * d_hidden],
+            vec![0.0; d_hidden],
+            ElementwiseAffine::identity(),
+            Vec::new(),
+        )
+    }
+
+    /// SDP `d_hidden` (== `dp_filter` in the safetensors, == `d_model` in
+    /// [`SbV2Model`](super::SbV2Model)'s single-hidden-width scaffold).
+    pub fn d_hidden(&self) -> usize {
+        self.d_hidden
+    }
+
+    /// Speaker-embedding width (`gin` in upstream models.py; `d_speaker` in
+    /// `SbV2Model::from_gguf`'s metadata).
+    pub fn gin(&self) -> usize {
+        self.gin
+    }
+
+    /// Number of stored ConvFlows (real SBV2 v2 base has 4; empty SDP has
+    /// 0). ElementwiseAffine slot 0 is not counted here — it is a separate
+    /// mandatory field, not a variable-length flow list entry.
+    pub fn n_conv_flows(&self) -> usize {
+        self.flows.len()
+    }
+
+    /// SDP body: transposes `hidden` from row-major `[T, d_hidden]` into
+    /// channel-major `[d_hidden, T]`, then runs pre → +cond(g) → DDS →
+    /// proj, returning `[d_hidden, T]` channel-major.
+    fn body(&self, hidden_row_major: &[f32], text_seq_len: usize, g: &[f32]) -> Vec<f32> {
+        debug_assert_eq!(hidden_row_major.len(), text_seq_len * self.d_hidden);
+        debug_assert_eq!(g.len(), self.gin);
+        let d = self.d_hidden;
+
+        // Transpose [T, D] row-major -> [D, T] channel-major.
+        let mut x_dp = vec![0.0_f32; d * text_seq_len];
+        for t in 0..text_seq_len {
+            for c in 0..d {
+                x_dp[c * text_seq_len + t] = hidden_row_major[t * d + c];
+            }
+        }
+
+        // pre.
+        let x = conv1d_scalar(
+            &x_dp,
+            d,
+            text_seq_len,
+            &self.pre_w,
+            d,
+            1, // kernel
+            Some(&self.pre_b),
+            0, // pad
+            1, // dilation
+            1, // groups
+        );
+
+        // cond(g): treat g as a [gin, 1] "1-step" input, produce cg [d, 1],
+        // then broadcast-add across every time step. Equivalent to running
+        // conv1d over [gin, T] where every column is `g`.
+        let cg = conv1d_scalar(
+            g,
+            self.gin,
+            1, // in_len = 1 (broadcast axis)
+            &self.cond_w,
+            d,
+            1, // kernel
+            Some(&self.cond_b),
+            0, // pad
+            1, // dilation
+            1, // groups
+        );
+        debug_assert_eq!(cg.len(), d);
+        let mut x = x;
+        for c in 0..d {
+            let v = cg[c];
+            for t in 0..text_seq_len {
+                x[c * text_seq_len + t] += v;
+            }
+        }
+
+        // DDS (no additional conditioning at the body level — g was already
+        // folded above; upstream `models.py::SDP.forward` matches this
+        // shape).
+        let x = self.convs.forward(&x, text_seq_len, None);
+
+        // proj.
+        conv1d_scalar(
+            &x,
+            d,
+            text_seq_len,
+            &self.proj_w,
+            d,
+            1, // kernel
+            Some(&self.proj_b),
+            0, // pad
+            1, // dilation
+            1, // groups
+        )
+    }
+
+    /// Samples one duration per phoneme position. See the struct-level doc
+    /// for the exact 4-step algorithm.
+    ///
+    /// `hidden` is row-major `[text_seq_len, d_hidden]`. `g` is
+    /// `[gin]` — the raw speaker embedding, not broadcast-added into
+    /// `hidden` (this differs architecturally from the pre-Blocker-2c
+    /// scaffold; see this module's top-level doc). `noise_scale_w` scales
+    /// the Gaussian latent; `noise_scale_w == 0.0` makes every draw
+    /// exactly `0.0`.
+    ///
+    /// # Panics
+    ///
+    /// Panics (via `debug_assert!`) if `hidden.len() != text_seq_len *
+    /// self.d_hidden` or `g.len() != self.gin`.
+    pub fn sample<R: NormalSource>(
+        &self,
+        hidden: &[f32],
+        text_seq_len: usize,
+        g: &[f32],
+        rng: &mut R,
+        noise_scale_w: f32,
+    ) -> Vec<i32> {
+        debug_assert_eq!(hidden.len(), text_seq_len * self.d_hidden);
+        debug_assert_eq!(g.len(), self.gin);
+
+        if text_seq_len == 0 {
+            return Vec::new();
+        }
+
+        // 1. Body conditioner.
+        let body = self.body(hidden, text_seq_len, g);
+
+        // 2. Latent `z` [2, T].
+        let mut z = vec![0.0_f32; 2 * text_seq_len];
+        if noise_scale_w != 0.0 {
+            // Per-sample streaming fill via `NormalSource::next_normal`
+            // — see `SbV2SynthRequest::rng_mode` for the two impls
+            // this can be (`GaussianSplitMix64` for legacy synthetic
+            // tests, `TorchRandnStream` for torch parity).
+            //
+            // # Why per-sample streaming (not `rng.fill(&mut z)`)
+            //
+            // The `fill` trait method, when overridden by
+            // `TorchRandnStream`, dispatches to torch's `normal_fill`
+            // fast path (`normal_fill_16_scalar` in 16-wide blocks).
+            // That path is correct — but on x86_64 CI hosts, torch
+            // itself dispatches to `normal_fill_AVX2` which uses
+            // `avx_mathfun`'s vectorized `log256_ps` / `sincos256_ps`
+            // approximations (~1 ULP off from libm scalar). SBV2's
+            // downstream flow inverse amplifies that residual
+            // chaotically, giving CI parity mismatches that are not
+            // bugs but genuine AVX2-vs-scalar micro-differences.
+            //
+            // The Python SBV2 reference dumper
+            // (`tools/parity/sbv2_dump_reference.py`) works around
+            // this by constructing a NON-contiguous tensor for the
+            // SDP noise, which forces torch's `normal_kernel` to take
+            // the `else` branch (line 246) —
+            // `at::normal_distribution<double>` streaming with pair
+            // caching. Vokra's `TorchRandnStream::next_normal` is a
+            // bit-exact port of that same streaming path (verified
+            // by `crates/vokra-core/tests/rng_torch_randn_cpu_parity.rs`),
+            // so a per-sample loop here matches torch's dumper output
+            // byte-for-byte on every CPU host regardless of AVX2
+            // support. See that dumper file's inline note for the
+            // full rationale.
+            //
+            // The `*v *= noise_scale_w` step matches Python's
+            // `z * noise_scale_w` — a post-fill f32 multiply, not
+            // baked into the RNG (torch.randn's default is std=1).
+            for v in &mut z {
+                *v = rng.next_normal();
+            }
+            for v in &mut z {
+                *v *= noise_scale_w;
+            }
+        }
+
+        // 3. Reverse flow — matches upstream
+        // `models.py::StochasticDurationPredictor.forward(reverse=True)`:
+        //
+        //     flows = list(reversed(self.flows))
+        //     flows = flows[:-2] + [flows[-1]]  # remove a useless vflow
+        //     for flow in flows:
+        //         z = flow(z, x_mask, g=x, reverse=reverse)
+        //
+        // Upstream `self.flows` is `[EA, CF, Flip, CF, Flip, CF, Flip, CF, Flip]`
+        // (9 items — 1 ElementwiseAffine + 4 (ConvFlow, Flip) pairs). Reversed
+        // then `[:-2] + [-1]` drops the SECOND-TO-LAST item of the reversed
+        // list, which is the FIRST ConvFlow in forward order (upstream
+        // `sdp.flows.1`). At inference the "useless vflow" is skipped because
+        // it never received gradients (upstream only trains through the flow
+        // path when computing NLL in the non-reverse branch, and index-1 is
+        // the layer that ends up shielded by the interleaved Flips).
+        //
+        // Layout: the converter densifies upstream `sdp.flows.{1, 3, 5, 7}`
+        // into `sbv2.sdp.flow.{0, 1, 2, 3}`, and the loader pushes them in
+        // that order, so `self.flows[0]` == upstream `sdp.flows.1` == the
+        // useless vflow that must be skipped, and `self.flows[3]` == upstream
+        // `sdp.flows.7` == the first ConvFlow applied at inference. We walk
+        // `flows[1..]` in reverse (giving `flows[3], flows[2], flows[1]`),
+        // each preceded by a Flip, then one final Flip, then EA reverse.
+        // Sequence for n_flows=4: `Flip, flows[3], Flip, flows[2], Flip,
+        // flows[1], Flip, EA` = 4 Flips + 3 ConvFlows + 1 EA = 8 items,
+        // matching upstream's combined list length exactly.
+        //
+        // n_flows == 0 (empty SDP for `SbV2SDP::empty`) skips the whole
+        // Flip/ConvFlow chain and jumps straight to EA — matches upstream
+        // when `n_flows=0` reduces the 9-item list to `[EA]` and the
+        // `[:-2] + [-1]` slice degenerates to `[EA]`.
+        if let Some((_useless_vflow, rest)) = self.flows.split_first() {
+            for flow in rest.iter().rev() {
+                flip2(&mut z, text_seq_len);
+                z = flow.reverse(&z, text_seq_len, &body);
+            }
+            flip2(&mut z, text_seq_len);
+        }
+        let z = self.ea.reverse(&z, text_seq_len);
+
+        // 4. logw = z[0, :]; duration = ceil(exp(logw)).max(1).
+        z.iter()
+            .take(text_seq_len) // channel 0 spans the first text_seq_len entries
+            .map(|&logw| logw.exp().ceil().max(1.0) as i32)
+            .collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// length_regulate — unchanged from the pre-Blocker-2c module; kept public.
+// -----------------------------------------------------------------------------
+
 /// Expands per-phoneme hidden states into a mel-frame timeline: phoneme
 /// `i`'s `[d_model]` row is repeated `durations[i]` times, and every
 /// repeated row is appended in phoneme order — the standard VITS-family
-/// length-regulator step that consumes [`SbV2SDP::sample`]'s output
-/// (mirrors `piper_plus`'s internal `length_regulate` role, but
-/// row-major/position-major here — see this module's doc "Layout
-/// convention" section — rather than piper's channel-major `[channels,
-/// t_phonemes]`).
-///
-/// `hidden` is flat, row-major `[durations.len(), d_model]` (phoneme `i`'s
-/// row is `hidden[i * d_model..(i + 1) * d_model]`). For example, with
-/// `hidden` holding two rows `[1, 2]` and `[3, 4]` (`d_model = 2`) and
-/// `durations = [2, 3]`, the output is `[1, 2, 1, 2, 3, 4, 3, 4, 3, 4]` —
-/// row 0 twice, then row 1 three times.
+/// length-regulator step that consumes [`SbV2SDP::sample`]'s output.
+/// Row-major/position-major layout throughout (see this module's doc's
+/// "Layout conventions" section).
 ///
 /// Non-positive durations (`0` or negative) contribute **no** output rows
 /// for that phoneme, rather than being cast to `usize`: a negative `i32`
@@ -297,65 +1119,207 @@ pub fn length_regulate(hidden: &[f32], durations: &[i32], d_model: usize) -> Vec
     out
 }
 
+// -----------------------------------------------------------------------------
+// Internal unit tests — round-trip sanity for the primitives, exercised
+// beyond what `tests/sbv2_sdp.rs` covers externally (this crate's
+// `pub(crate)` helpers cannot be reached from the external test target).
+// -----------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `GaussianSplitMix64` is the concrete NormalSource these tests happened
+    // to use before the Step 8 generic refactor. Kept here so the tests
+    // continue to exercise the exact same numeric stream byte-for-byte
+    // (NFR-PT-01 cross-build non-interference — this refactor changes
+    // nothing observable to the tests).
+    use vokra_core::rng::GaussianSplitMix64;
 
     #[test]
-    fn zero_weight_coupling_layer_inverse_is_identity() {
-        let layer = SbV2CouplingLayer::new(vec![0.0; 8], vec![0.0; 2], 4);
-        let cond = [0.3, -1.2, 5.0, 0.0];
-        for &x in &[-2.5_f32, 0.0, 1.0, 7.25] {
-            assert_eq!(
-                layer.inverse(x, &cond),
-                x,
-                "zero-weight coupling layer must be the identity"
+    fn softplus_matches_reference_at_typical_inputs() {
+        // Reference values from Python's `math.log(1 + math.exp(x))`:
+        //  f(0.0) = ln 2                → checked via `f32::consts::LN_2`
+        //  f(1.0) = ln(1 + e) ≈ 1.3132617
+        //  f(-1.0) ≈ 0.3132617
+        for (x, want) in &[
+            (0.0_f32, std::f32::consts::LN_2),
+            (1.0, 1.313_261_7),
+            (-1.0, 0.313_261_7),
+        ] {
+            let got = softplus(*x);
+            assert!(
+                (got - want).abs() < 1e-5,
+                "softplus({x}) got {got}, want {want}"
             );
+        }
+        // Large-x guard: >20 short-circuits to x itself (no overflow).
+        assert_eq!(softplus(30.0), 30.0);
+    }
+
+    #[test]
+    fn erf_symmetric_within_tolerance() {
+        // `erf` is odd — `erf(-x) = -erf(x)`.
+        for x in [0.1_f32, 0.5, 1.0, 2.0, 3.0] {
+            assert!(
+                (erf(-x) + erf(x)).abs() < 1e-6,
+                "erf({x}) not antisymmetric"
+            );
+        }
+        // Reference: erf(1) ≈ 0.8427007929.
+        assert!((erf(1.0) - 0.8427008).abs() < 1e-5);
+    }
+
+    #[test]
+    fn conv1d_scalar_matches_hand_computed_1x1() {
+        // Simplest case: 1×1 pointwise conv over [2, 3] channel-major input,
+        // producing [2, 3] channel-major output. Weight [2, 2, 1] row-major
+        // = [[w00, w01], [w10, w11]].
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // [2, 3]
+        let w = vec![1.0, 0.5, 0.0, 2.0]; // out=2, in=2, kernel=1
+        let b = vec![0.5, -0.5];
+        let out = conv1d_scalar(&x, 2, 3, &w, 2, 1, Some(&b), 0, 1, 1);
+        // out[0, t] = 1.0 * x[0,t] + 0.5 * x[1,t] + 0.5
+        // out[1, t] = 0.0 * x[0,t] + 2.0 * x[1,t] - 0.5
+        // t=0: out[0]=1+2+0.5=3.5, out[1]=0+8-0.5=7.5
+        assert!((out[0] - 3.5).abs() < 1e-6);
+        assert!((out[3] - 7.5).abs() < 1e-6);
+        // t=2: out[0]=3+3+0.5=6.5, out[1]=0+12-0.5=11.5
+        assert!((out[2] - 6.5).abs() < 1e-6);
+        assert!((out[5] - 11.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn conv1d_scalar_depthwise_isolates_channels() {
+        // groups = channels = 2, kernel=3, so each output channel sees only
+        // its own input channel — a fingerprint depthwise conv should NOT
+        // mix channel 0 and channel 1.
+        let x = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]; // [2, 3]: chan 0 = [1,0,0], chan 1 = [0,1,0]
+        // Weight [2, 1, 3]: out=2, in_g=1, k=3. Channel 0 kernel = [1,2,3];
+        // channel 1 kernel = [4,5,6].
+        let w = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Same-padding for kernel=3, dilation=1: pad=1.
+        let out = conv1d_scalar(&x, 2, 3, &w, 2, 3, None, 1, 1, 2);
+        // Channel 0 output: convolve [1,0,0] with [1,2,3], pad=1
+        //   t=0: 0*1 + 1*2 + 0*3 = 2
+        //   t=1: 1*1 + 0*2 + 0*3 = 1
+        //   t=2: 0*1 + 0*2 + 0*3 = 0
+        assert_eq!(&out[..3], &[2.0, 1.0, 0.0]);
+        // Channel 1 output: convolve [0,1,0] with [4,5,6], pad=1
+        //   t=0: 0*4 + 0*5 + 1*6 = 6
+        //   t=1: 0*4 + 1*5 + 0*6 = 5
+        //   t=2: 1*4 + 0*5 + 0*6 = 4
+        assert_eq!(&out[3..], &[6.0, 5.0, 4.0]);
+    }
+
+    #[test]
+    fn element_wise_affine_reverse_matches_hand_computed() {
+        // m = [1.0, -2.0], logs = [ln 2, 0.0].
+        // reverse: z0 = (x0 - 1.0) * exp(-ln 2) = (x0 - 1.0) / 2
+        //          z1 = (x1 - (-2.0)) * exp(0)  = x1 + 2.0
+        let ea = ElementwiseAffine::from_weights(vec![1.0, -2.0], vec![2.0_f32.ln(), 0.0]);
+        let time = 2;
+        let x = vec![
+            // channel 0
+            3.0, 5.0, // channel 1
+            0.5, -1.0,
+        ];
+        let out = ea.reverse(&x, time);
+        assert!((out[0] - 1.0).abs() < 1e-6, "got {}", out[0]); // (3-1)/2 = 1
+        assert!((out[1] - 2.0).abs() < 1e-6, "got {}", out[1]); // (5-1)/2 = 2
+        assert!((out[2] - 2.5).abs() < 1e-6, "got {}", out[2]); // 0.5 + 2 = 2.5
+        assert!((out[3] - 1.0).abs() < 1e-6, "got {}", out[3]); // -1 + 2 = 1
+    }
+
+    #[test]
+    fn dds_conv_zero_weights_is_identity() {
+        // Every layer's y is zero (zero convs → zero LayerNorm affine
+        // → zero everywhere), so the residual `x += y` is a no-op and
+        // the whole DDS is the identity.
+        let channels = 3;
+        let time = 4;
+        let dds = DDSConv::zero(channels, 3, 3);
+        let x: Vec<f32> = (0..channels * time).map(|i| i as f32 * 0.1).collect();
+        let out = dds.forward(&x, time, None);
+        for (a, b) in out.iter().zip(&x) {
+            assert!((a - b).abs() < 1e-5, "zero-weight DDS must be identity");
         }
     }
 
     #[test]
-    fn coupling_layer_inverse_matches_hand_computed_affine() {
-        // d_hidden = 2. log_scale row = [1.0, 0.0], shift row = [0.0, 1.0],
-        // bias = [0.0, 0.0]. cond = [2.0, 3.0].
-        // log_scale = 1.0*2.0 + 0.0*3.0 = 2.0
-        // shift     = 0.0*2.0 + 1.0*3.0 = 3.0
-        // inverse(x=5.0) = (5.0 - 3.0) * exp(-2.0) = 2.0 * exp(-2.0)
-        let layer = SbV2CouplingLayer::new(vec![1.0, 0.0, 0.0, 1.0], vec![0.0, 0.0], 2);
-        let got = layer.inverse(5.0, &[2.0, 3.0]);
-        let expected = 2.0_f32 * (-2.0_f32).exp();
-        assert!(
-            (got - expected).abs() < 1e-6,
-            "got {got}, expected {expected}"
-        );
+    fn sdp_empty_returns_ones_deterministic() {
+        // Empty SDP + `noise_scale_w = 0.0` = every duration is 1.
+        let sdp = SbV2SDP::empty(4, 4);
+        let hidden = vec![0.5_f32; 3 * 4];
+        let g = vec![0.7_f32; 4];
+        let mut rng = GaussianSplitMix64::new(0);
+        let out = sdp.sample(&hidden, 3, &g, &mut rng, 0.0);
+        assert_eq!(out, vec![1_i32; 3]);
     }
 
     #[test]
-    fn sample_chains_through_nonempty_flow_stack() {
-        // Two identity (zero-weight) coupling layers in a row must still
-        // compose to the identity, exercising the reverse-order loop over
-        // a *non-empty* `flow_layers` (the external integration tests in
-        // `tests/sbv2_duration.rs` only cover the empty-stack no-op path).
-        let d_hidden = 3;
-        let n_tones = 2;
-        let flow_layers = vec![
-            SbV2CouplingLayer::new(vec![0.0; 2 * d_hidden], vec![0.0; 2], d_hidden),
-            SbV2CouplingLayer::new(vec![0.0; 2 * d_hidden], vec![0.0; 2], d_hidden),
-        ];
+    fn sdp_empty_with_biased_ea_produces_fixed_duration() {
+        // Empty flows + noise_scale_w = 0 leaves z = [0, 0], the final
+        // flip is a no-op (both halves are zero), and EA reverse with
+        // m = [-ln(40), 0], logs = [0, 0] maps z[0]=0 -> (0 - (-ln 40)) *
+        // exp(0) = ln(40); z[1]=0 -> 0. So every duration is exp(ln 40)
+        // ceil-ed to 40.
+        let d_hidden = 4;
+        let gin = 4;
+        let ea = ElementwiseAffine::from_weights(vec![-40.0_f32.ln(), 0.0], vec![0.0, 0.0]);
         let sdp = SbV2SDP::from_weights(
-            flow_layers,
-            vec![0.0; n_tones * d_hidden],
-            vec![0.0; d_hidden],
             d_hidden,
-            n_tones,
+            gin,
+            vec![0.0; d_hidden * d_hidden],
+            vec![0.0; d_hidden],
+            DDSConv::zero(d_hidden, DP_CONV_LAYERS, DP_KERNEL),
+            vec![0.0; d_hidden * gin],
+            vec![0.0; d_hidden],
+            vec![0.0; d_hidden * d_hidden],
+            vec![0.0; d_hidden],
+            ea,
+            Vec::new(),
         );
-        let text_seq_len = 4;
-        let hidden = vec![0.0_f32; text_seq_len * d_hidden];
-        let tones = vec![0u8; text_seq_len];
-        let mut rng = GaussianSplitMix64::new(1);
-        // noise_scale_w = 0.0 -> z = 0 at every position regardless of rng
-        // state; identity flow layers leave x = 0 -> duration = 1.
-        let out = sdp.sample(&hidden, &tones, text_seq_len, &mut rng, 0.0);
-        assert_eq!(out, vec![1; text_seq_len]);
+        let hidden = vec![0.0_f32; 3 * d_hidden];
+        let g = vec![0.0_f32; gin];
+        let mut rng = GaussianSplitMix64::new(0);
+        let out = sdp.sample(&hidden, 3, &g, &mut rng, 0.0);
+        assert_eq!(out, vec![40_i32; 3]);
+    }
+
+    #[test]
+    fn flip2_involution() {
+        let mut x = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // [2, 3]
+        let orig = x.clone();
+        flip2(&mut x, 3);
+        assert_eq!(x, vec![4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
+        flip2(&mut x, 3);
+        assert_eq!(x, orig, "flip2 is its own inverse");
+    }
+
+    #[test]
+    fn rqs_inverse_identity_outside_tails() {
+        let w = [0.0_f32; RQS_NUM_BINS];
+        let h = [0.0_f32; RQS_NUM_BINS];
+        let d = [0.0_f32; RQS_NUM_BINS - 1];
+        assert_eq!(unconstrained_rqs_inverse(7.0, &w, &h, &d), 7.0);
+        assert_eq!(unconstrained_rqs_inverse(-6.0, &w, &h, &d), -6.0);
+    }
+
+    #[test]
+    fn sample_deterministic_for_fixed_seed() {
+        // With noise_scale_w != 0, `sample` reads the RNG; same seed →
+        // same output.
+        let sdp = SbV2SDP::empty(2, 2);
+        let hidden = vec![0.0_f32; 3 * 2];
+        let g = vec![0.0_f32; 2];
+        let out1 = {
+            let mut rng = GaussianSplitMix64::new(7);
+            sdp.sample(&hidden, 3, &g, &mut rng, 0.6)
+        };
+        let out2 = {
+            let mut rng = GaussianSplitMix64::new(7);
+            sdp.sample(&hidden, 3, &g, &mut rng, 0.6)
+        };
+        assert_eq!(out1, out2, "same seed must give same durations");
     }
 }

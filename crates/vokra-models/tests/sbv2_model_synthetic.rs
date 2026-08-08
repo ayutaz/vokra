@@ -13,7 +13,7 @@
 //! same PCM as calling `SbV2Model::synthesize` directly.
 
 use vokra_core::{SynthesisRequest, TtsEngine};
-use vokra_models::sbv2::{Language, SbV2Model, SbV2SynthRequest};
+use vokra_models::sbv2::{Language, RngMode, SbV2Model, SbV2SynthRequest};
 
 #[test]
 fn synthesize_ja_returns_non_empty_pcm() {
@@ -22,11 +22,17 @@ fn synthesize_ja_returns_non_empty_pcm() {
         text: "あいう".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
         noise_scale_w: 0.0,
         seed: 42,
+        // Non-empty-PCM smoke test — RNG choice irrelevant because
+        // `noise_scale_w = 0.0` short-circuits the RNG (`SbV2SDP::sample`
+        // skips the fill loop). Legacy for symmetry with the other
+        // synthetic tests in this file.
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
     };
 
     let audio = model.synthesize(&req).expect("synthesize should succeed");
@@ -42,11 +48,15 @@ fn synthesize_en_returns_non_empty_pcm() {
         text: "test".to_string(),
         language: Language::EN,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
         noise_scale_w: 0.0,
         seed: 42,
+        // See `synthesize_ja_returns_non_empty_pcm` for the RNG-choice
+        // rationale (noise_scale_w = 0.0 short-circuits the RNG).
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
     };
 
     let audio = model.synthesize(&req).expect("synthesize should succeed");
@@ -77,11 +87,16 @@ fn tts_engine_adapter_matches_direct_synthesize() {
         text: "test".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
         noise_scale_w: 0.0,
         seed: 0,
+        // Must match `TtsEngine::synthesize`'s adapter default
+        // (`RngMode::default()` = torch parity) exactly — otherwise the
+        // byte-equality assertion below diverges purely on RNG choice.
+        rng_mode: RngMode::default(),
     };
     let direct = model
         .synthesize(&direct_req)

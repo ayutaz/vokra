@@ -202,10 +202,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Provision parity venv (huggingface_hub + torch + transformers)
-        # Versions mirror parity-whisper-real.yml's own already-vetted pins
-        # (torch CPU-only — no NVIDIA GPU on this runner; the transformers
-        # range keeps the DeBERTa v2/v3 AutoModel path importable).
+      - name: Provision parity venv (huggingface_hub + torch + transformers + spm/protobuf)
+        # torch>=2.6 は transformers 4.57+ が `torch.load(weights_only=True)`
+        # を呼ぶ際にハードチェックする ("Due to a serious vulnerability issue
+        # in torch.load, even with weights_only=True, we now require users
+        # to upgrade torch to at least v2.6")。CI で transformers 4.57.6 が
+        # 引かれるため torch は 2.6+ でないと dumper が checkpoint load で
+        # fail する。CPU-only なので extra-index-url は不要。
+        #
+        # `sentencepiece` + `protobuf` は DeBERTa v3 の spm tokenizer が
+        # `AutoTokenizer.from_pretrained` 経由で読める前提条件 (transformers
+        # 側の PROTOBUF_IMPORT_ERROR で fail する)。dumper (sbv2_dump_reference.py)
+        # は tokenize+forward の real reference を出すために両モデルの
+        # AutoTokenizer を呼ぶので、v3 (spm) 側で protobuf 必須になる。
+        # sibling parity-moshi-real.yml も sentencepiece を同 pattern で
+        # 入れている。
         shell: bash
         run: |
           set -euo pipefail
@@ -215,9 +226,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install \
             "huggingface_hub>=0.24,<1" \
-            "torch==2.4.*" \
-            "transformers>=4.44,<4.60"
-          python -m pip list | grep -Ei '^(huggingface[-_]hub|torch|transformers)\b'
+            "torch>=2.6,<3" \
+            "transformers>=4.44,<4.60" \
+            "sentencepiece>=0.2,<1" \
+            "protobuf>=4,<7"
+          python -m pip list | grep -Ei '^(huggingface[-_]hub|torch|transformers|sentencepiece|protobuf)\b'
 
       - name: Download SBV2 v2 checkpoint + build vokra.sbv2.* config side-car
         # tools/parity/sbv2_prepare_checkpoint.py (Task 29): snapshot_download
@@ -256,8 +269,14 @@ jobs:
               repo_id=os.environ["BERT_JA_HF_REPO"],
               repo_type="model",
               local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v2-ja"),
-              # ku-nlp/deberta-v2-large-japanese-char-wwm ships safetensors.
-              allow_patterns=["*.safetensors", "*.json"],
+              # ku-nlp/deberta-v2-large-japanese-char-wwm ships safetensors +
+              # vocab.txt (JA char-level BertJapaneseTokenizer). vocab.txt is
+              # the tokenizer side-car `vokra-cli convert --model deberta-v2
+              # --tokenizer <vocab.txt>` needs to stamp `vokra.bert.tokenizer.*`
+              # metadata (SbertTokenizer::from_gguf hard-fails without it —
+              # see run 31167865478 "missing GGUF metadata key:
+              # vokra.bert.tokenizer.pieces").
+              allow_patterns=["*.safetensors", "*.json", "vocab.txt"],
           )
           snapshot_download(
               repo_id=os.environ["BERT_EN_HF_REPO"],
@@ -268,11 +287,16 @@ jobs:
               # converts it to safetensors via safetensors.torch.save_file
               # (widely-standard bin→safetensors bridge, mirrors what
               # tools/parity/*_prepare_checkpoint.py does across the repo).
+              # `*.model` = SentencePiece `spm.model` for the v3 tokenizer;
+              # a follow-up step extracts it to a JSON side-car via
+              # tools/parity/extract_spm_metadata.py so `vokra-cli convert
+              # --model deberta-v3 --tokenizer <spm.json>` can stamp the
+              # `vokra.bert.tokenizer.*` metadata the Rust loader requires.
               # Empirical measurement 2026-08-05 (PR #24 CI run 31021206483)
               # showed the safetensors-only allow_patterns pulled 0 weight
               # files and the downstream `find *.safetensors` failed with
               # `test -n ""` (exit 1). Adding .bin fixes the root cause.
-              allow_patterns=["*.safetensors", "*.bin", "*.json"],
+              allow_patterns=["*.safetensors", "*.bin", "*.json", "*.model"],
           )
           print("DeBERTa v2/v3 snapshot_download OK")
           PYEOF
@@ -334,15 +358,96 @@ jobs:
         # ModelKind::as_arg() spellings (tests/fixtures/sbv2/README.md "3.
         # Convert to GGUF"). Multi-shard checkpoints are reported by
         # sbv2_prepare_checkpoint.py but not merged (its own documented
-        # limitation) — `sort | head -n1` below picks the first shard found,
-        # matching the common single-shard case; a genuinely sharded release
-        # needs an owner override, out of scope here.
+        # limitation).
+        #
+        # SBV2 v2 base checkpoints ship 3 safetensors siblings:
+        #   G_0.safetensors  — Generator (~1264 tensors, has enc_p.*)
+        #   D_0.safetensors  — Discriminator (~111 tensors, training-only)
+        #   WD_0.safetensors — Warmup Discriminator (~15 tensors)
+        # `find | sort` alphabetically picks D_0 (D < G < WD), i.e. the
+        # Discriminator, which lacks `enc_p.emb.weight` and every other
+        # inference-required tensor. The Rust loader then fails with
+        # "tensor sbv2.text_encoder.phoneme_embed not found in GGUF".
+        # Explicitly pin the Generator file so this doesn't recur.
         shell: bash
         run: |
           set -euo pipefail
+          # Activate the parity venv so `python tools/parity/extract_spm_metadata.py`
+          # below can import `sentencepiece` + `google.protobuf`.
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
 
-          sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name '*.safetensors' | sort | head -n1)"
+          sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name 'G_*.safetensors' | sort | head -n1)"
+          if [ -z "$sbv2_st" ]; then
+            # Fallback for SKUs that ship a single unqualified safetensors.
+            sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name '*.safetensors' \
+              -not -name 'D_*' -not -name 'WD_*' -not -name 'DUR_*' | sort | head -n1)"
+          fi
           test -n "$sbv2_st"
+          echo "[sbv2] picked Generator checkpoint: $sbv2_st"
+
+          # Shape-recover d_speaker + n_speakers from the actual G_0.safetensors
+          # tensor header — sbv2_prepare_checkpoint.py's --clean-room-defaults
+          # emits VITS defaults (d_speaker=256), but real SBV2 v2 JP-Extra base
+          # uses d_speaker=512 (raw speaker embedding width). Rust loader
+          # cross-checks `spk_emb_linear.weight.numel() == d_model * d_speaker`;
+          # without this override the load fails with:
+          #   sbv2.text_encoder.spk_emb_linear.weight has 98304 elements,
+          #   expected d_model * d_speaker = 192 * 256 = 49152
+          # (run 31168398408). Same Blocker 8 "recover from checkpoint shape,
+          # loud-warn on config disagreement" pattern the dumper already uses
+          # for upsample_kernel_sizes + gin_channels.
+          python3 - <<PYEOF
+          import json, struct, sys
+          cfg_path = "$RUNNER_TEMP/sbv2-checkpoint/vokra-sbv2-config.json"
+          st_path  = "$sbv2_st"
+          with open(cfg_path) as f:
+              cfg = json.load(f)
+          with open(st_path, "rb") as f:
+              (hlen,) = struct.unpack("<Q", f.read(8))
+              header = json.loads(f.read(hlen))
+          shape_updates = {}
+          # d_speaker <- enc_p.encoder.spk_emb_linear.weight [d_model, d_speaker]
+          for k in ("enc_p.encoder.spk_emb_linear.weight",):
+              info = header.get(k)
+              if info and "shape" in info and len(info["shape"]) == 2:
+                  shape_updates["d_speaker"] = int(info["shape"][1])
+                  break
+          # n_speakers <- emb_g.weight [n_speakers, d_speaker]
+          info = header.get("emb_g.weight")
+          if info and "shape" in info and len(info["shape"]) == 2:
+              shape_updates["n_speakers"] = int(info["shape"][0])
+          # decoder_upsample_kernel_sizes <- dec.ups.{i}.weight_v.shape[-1]
+          # Real SBV2 v2 base uses [16,16,8,2,2] (dumper Blocker 8 log
+          # confirms this on 2026-08-07 CI); the config side-car's
+          # --clean-room-defaults emits [16,16,4,4,4] (HiFi-GAN 2*stride
+          # rule). The Rust HiFi-GAN loader cross-checks each stage's
+          # weight.len() == in_ch * out_ch * kernel, so a mismatched
+          # kernel value hard-fails with "upsample_weights[2].weight.len()
+          # 65536 != in_ch*out_ch*kernel 32768" (run 31198620751).
+          recovered_kernels = []
+          for i in range(5):  # 5-stage HiFi-GAN 44.1 kHz ladder
+              key_v = f"dec.ups.{i}.weight_v"
+              key_plain = f"dec.ups.{i}.weight"
+              info = header.get(key_v) or header.get(key_plain)
+              if info and "shape" in info and len(info["shape"]) == 3:
+                  recovered_kernels.append(int(info["shape"][-1]))
+              else:
+                  recovered_kernels = None  # abort — incomplete recovery
+                  break
+          if recovered_kernels is not None:
+              shape_updates["decoder_upsample_kernel_sizes"] = recovered_kernels
+          for k, v in shape_updates.items():
+              old = cfg.get(k)
+              if old != v:
+                  print(f"[sbv2-config-fixup] {k}: {old} -> {v} (from safetensors shape)")
+                  cfg[k] = v
+              else:
+                  print(f"[sbv2-config-fixup] {k}: {v} (already matches)")
+          with open(cfg_path, "w") as f:
+              json.dump(cfg, f, indent=2)
+          PYEOF
+
           ./target/release/vokra-cli convert \
             --model sbv2 \
             --input "$sbv2_st" \
@@ -351,16 +456,35 @@ jobs:
 
           bert_ja_st="$(find "$RUNNER_TEMP/deberta-v2-ja" -name '*.safetensors' | sort | head -n1)"
           test -n "$bert_ja_st"
+          # v2 tokenizer = char-level BertJapaneseTokenizer, vocab.txt
+          # required for `vokra.bert.tokenizer.*` metadata stamping (see
+          # deberta-v2.rs KEY_TOKENIZER_PREFIX + KIND_BERT_JAPANESE_CHAR).
+          bert_ja_vocab="$RUNNER_TEMP/deberta-v2-ja/vocab.txt"
+          test -f "$bert_ja_vocab"
           ./target/release/vokra-cli convert \
             --model deberta-v2 \
             --input "$bert_ja_st" \
+            --tokenizer "$bert_ja_vocab" \
             --output "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf"
+
+          # v3 tokenizer = SentencePiece Unigram, spm.model. Convert to
+          # JSON side-car first (extract_spm_metadata.py) so vokra-cli
+          # doesn't need a protobuf runtime dep. Then pass the JSON via
+          # `--tokenizer`. The venv already has protobuf + sentencepiece
+          # (see "Provision parity venv" step); reuse the same venv here.
+          bert_en_spm="$RUNNER_TEMP/deberta-v3-en/spm.model"
+          test -f "$bert_en_spm"
+          bert_en_tok_json="$RUNNER_TEMP/deberta-v3-en/tokenizer_spm.json"
+          python tools/parity/extract_spm_metadata.py \
+            --input "$bert_en_spm" \
+            --output "$bert_en_tok_json"
 
           bert_en_st="$(find "$RUNNER_TEMP/deberta-v3-en" -name '*.safetensors' | sort | head -n1)"
           test -n "$bert_en_st"
           ./target/release/vokra-cli convert \
             --model deberta-v3 \
             --input "$bert_en_st" \
+            --tokenizer "$bert_en_tok_json" \
             --output "$FIXTURE_DIR/deberta-v3-large.gguf"
 
           ls -lh "$FIXTURE_DIR"/*.gguf

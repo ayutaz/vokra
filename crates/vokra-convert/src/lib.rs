@@ -5959,7 +5959,14 @@ pub fn convert_file_licensed(
             // `ku-nlp/deberta-v2-large-japanese-char-wwm`). Tensor-to-schema
             // mapping (Task 30) is deferred; every tensor is emitted verbatim
             // so the mapping can be validated once a real checkpoint arrives.
-            let report = convert_deberta_v2_file(input, output, license)?;
+            // Blocker 5 (2026-08-06): tokenizer side-car is a
+            // vokra-cli-front-end concern (mirror of the Voxtral
+            // `--tokenizer` boundary). The plain `convert_file_licensed`
+            // dispatch path here has no side-car parameter to forward,
+            // so pass `None` and let the CLI's own
+            // `convert_deberta_v2_file(..., Some(bytes))` route stamp the
+            // tokenizer when the flag is supplied.
+            let report = convert_deberta_v2_file(input, output, license, None)?;
             let notes = vec![format!(
                 "deberta-v2: {} float weights written verbatim, {} non-float skipped",
                 report.written, report.skipped_non_float,
@@ -5984,7 +5991,9 @@ pub fn convert_file_licensed(
             // from v2's `ku-nlp` JA upstream). Tensor-to-schema mapping
             // (Task 30) is deferred; every tensor is emitted verbatim so
             // the mapping can be validated once a real checkpoint arrives.
-            let report = convert_deberta_v3_file(input, output, license)?;
+            // Blocker 5 (2026-08-06): see the v2 arm above — tokenizer
+            // side-car flows through the CLI `--tokenizer` route only.
+            let report = convert_deberta_v3_file(input, output, license, None)?;
             let notes = vec![format!(
                 "deberta-v3: {} float weights written verbatim, {} non-float skipped",
                 report.written, report.skipped_non_float,

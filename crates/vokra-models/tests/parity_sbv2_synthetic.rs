@@ -18,7 +18,9 @@
 //! caveat" doc). `synthetic_shape_invariants_hold` below instead documents
 //! where a real per-tensor assertion will plug in.
 
-use vokra_models::sbv2::{ATOL_DEFAULT, Language, SbV2Model, SbV2SynthRequest, tolerance_for};
+use vokra_models::sbv2::{
+    ATOL_DEFAULT, Language, RngMode, SbV2Model, SbV2SynthRequest, tolerance_for,
+};
 
 /// Builds the shared JA request every test below starts from ("あいう" —
 /// 3 hiragana chars, each a distinct entry in
@@ -37,11 +39,18 @@ fn ja_request(seed: u64) -> SbV2SynthRequest {
         text: "あいう".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
         noise_scale_w: 0.0,
         seed,
+        // Synthetic test: keep the pre-Step-10 splitmix64 stream so any
+        // byte-frozen synthetic assertion continues to hold. The Step 9
+        // `sbv2_sdp_torch_parity` test proves the torch-parity path
+        // separately; this file only checks the SBV2 wiring around a
+        // deterministic stream.
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
     }
 }
 

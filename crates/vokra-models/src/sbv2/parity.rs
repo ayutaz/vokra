@@ -70,6 +70,26 @@ pub const ATOL_DEFAULT: f32 = 0.01;
 ///   same PRNG algorithm and seed (mismatched seeds make the two samples
 ///   independent draws, not a numerical-precision comparison) — Task
 ///   27/28's fixtures must record the seed used alongside this atol.
+///
+///   **Update (2026-08-08, torch.randn parity work Steps 1-10)**: the RNG
+///   layer itself is now byte-exact against
+///   `torch.manual_seed(seed); torch.randn(...)` under the
+///   PhiloxRNGEngine.h path when
+///   [`SbV2SynthRequest::rng_mode`](super::SbV2SynthRequest#structfield.rng_mode)
+///   = [`RngMode::PhiloxRngEnginePyTorchParity`](super::RngMode::PhiloxRngEnginePyTorchParity)
+///   (the [`Default`](super::RngMode::default)). Proof:
+///   `crates/vokra-models/tests/sbv2_sdp_torch_parity.rs::
+///   sdp_noise_matches_torch_philox_seed_0_t_50` (byte-diff against
+///   `tools/parity/sbv2_sdp_noise_dump.py` output, tolerance 0.0).
+///
+///   The `0.05` here now covers ONLY the residual downstream (flow
+///   inverse) rounding + duration `.floor().max(1)` step, since the
+///   noise layer is bit-zero. Once Task 28 wires a real dumper that
+///   emits `sdp_sample` for a real ckpt run, this bound should be
+///   re-derived from a measured floor × 1.5-2 margin (per the
+///   `feedback-honest-parity-atol` memory), NOT reused as a
+///   placeholder — the "seeds match, so noise matches" prerequisite is
+///   now satisfied by the torch-parity `rng_mode` default.
 /// - `"z_latent"` = `0.03` — [`SbV2Flow::inverse`](super::SbV2Flow::inverse)'s
 ///   output. Cumulative rounding across the acoustic flow's affine-coupling
 ///   stack (`docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §10: "4

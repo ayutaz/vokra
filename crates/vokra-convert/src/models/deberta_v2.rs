@@ -77,7 +77,9 @@
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
@@ -107,6 +109,38 @@ pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 /// same reason as [`KEY_MODEL_CATEGORY`].
 pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
+/// Metadata-key prefix consumed by
+/// [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] — shared by both
+/// the DeBERTa v2 (JA, `vocab.txt`) and v3 (EN, `spm.model`) converters
+/// because the runtime reader itself is prefix-parameterized and every
+/// SBV2 v2 call site (see `crates/vokra-models/src/sbv2/mod.rs`) passes
+/// `"vokra.bert.tokenizer"` regardless of which BERT sibling is loaded.
+pub(crate) const KEY_TOKENIZER_PREFIX: &str = "vokra.bert.tokenizer";
+
+/// Discriminator value stamped under `vokra.bert.tokenizer.kind` for a
+/// v2 (`BertJapaneseTokenizer` with `subword_tokenizer_type = "character"`)
+/// tokenizer. Distinguishes v2's char-level vocab from v3's
+/// `sentencepiece-unigram` bytes so a downstream tool can loud-refuse
+/// rather than silently mis-tokenize.
+pub(crate) const KIND_BERT_CHARSPLIT: &str = "bert-charsplit";
+
+/// Discriminator value stamped under `vokra.bert.tokenizer.kind` for a
+/// v3 SentencePiece Unigram tokenizer (`spm.model`).
+pub(crate) const KIND_SENTENCEPIECE_UNIGRAM: &str = "sentencepiece-unigram";
+
+/// v2 special-token ids, hard-coded to `[PAD] [CLS] [SEP] [UNK]` = 0/1/2/3
+/// (verified by a direct read of the real fixture's `vocab.txt` header at
+/// `/tmp/sbv2-fixtures/deberta-v2-ja/vocab.txt`). The
+/// [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] reader's own
+/// defaults (`unk=1, bos=2, eos=3`) disagree with what the real fixture
+/// actually ships, so this converter **must always write these keys
+/// explicitly** — silently accepting the loader default would produce a
+/// tokenizer that maps every `[UNK]` id to the wrong piece.
+pub(crate) const V2_PAD_ID: u32 = 0;
+pub(crate) const V2_BOS_ID: u32 = 1;
+pub(crate) const V2_EOS_ID: u32 = 2;
+pub(crate) const V2_UNK_ID: u32 = 3;
+
 /// Outcome of a DeBERTa conversion — shared shape for both v2
 /// ([`convert_deberta_v2_file`]) and
 /// [v3](crate::models::deberta_v3::convert_deberta_v3_file), since both
@@ -135,19 +169,48 @@ pub struct ConvertReport {
 /// GGUF at `output`. `license` overrides the upstream `cc-by-sa-4.0` stamp
 /// (mirror of the `convert_file --license <spdx>` boundary in `lib.rs`).
 ///
+/// `tokenizer_bytes` optionally stamps the `vokra.bert.tokenizer.*` chunk
+/// group [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] reads. The
+/// bytes are treated as a v2-flavored `vocab.txt` (one piece per line,
+/// UTF-8) — the char-based `BertJapaneseTokenizer` upstream ships (with
+/// `subword_tokenizer_type = "character"`), whose lack of per-piece score
+/// data is honestly recorded by writing `scores = 0.0` for every piece and
+/// stamping `vokra.bert.tokenizer.kind = "bert-charsplit"` so a downstream
+/// tool can loud-refuse rather than silently mis-tokenize. When
+/// `tokenizer_bytes` is [`None`] no `vokra.bert.tokenizer.*` metadata is
+/// written (SBV2 v2 loader-side `from_gguf` will then loud-fail — that's
+/// FR-EX-08 by design).
+///
 /// # Errors
 ///
 /// [`ConvertError::Io`] for I/O failures reading `input` or writing
-/// `output`; [`ConvertError::Parse`] for malformed safetensors input, or
-/// when no tensor looks like a token-embedding table (see
-/// [`infer_vocab_and_d_model`] — `vocab_size` has no default in
-/// `DebertaV2Encoder::from_gguf`, so this converter refuses to invent one);
-/// [`ConvertError::Gguf`] if the GGUF serialization fails.
+/// `output`; [`ConvertError::Parse`] for malformed safetensors input, an
+/// empty `tokenizer_bytes` argument, or when no tensor looks like a
+/// token-embedding table (see [`infer_vocab_and_d_model`] — `vocab_size`
+/// has no default in `DebertaV2Encoder::from_gguf`, so this converter
+/// refuses to invent one); [`ConvertError::Gguf`] if the GGUF
+/// serialization fails.
 pub fn convert_deberta_v2_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
+    tokenizer_bytes: Option<&[u8]>,
 ) -> Result<ConvertReport, ConvertError> {
+    // Front-load the tokenizer refuse — a zero-length side-car cannot
+    // become a valid `vokra.bert.tokenizer.*` chunk group (SbertTokenizer's
+    // reader would loud-fail on the empty `pieces` array anyway), so drop
+    // out here before touching the safetensors input. Mirror of the
+    // Voxtral `--tokenizer` gate in `vokra-cli`.
+    if let Some(t) = tokenizer_bytes
+        && t.is_empty()
+    {
+        return Err(ConvertError::Parse(
+            "deberta-v2 --tokenizer: file is empty — refusing to emit a zero-length \
+             vokra.bert.tokenizer.* chunk group (SbertTokenizer::from_gguf would fail to load)"
+                .to_owned(),
+        ));
+    }
+
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -170,31 +233,123 @@ pub fn convert_deberta_v2_file(
         vocab_size,
     );
 
+    // Tokenizer side-car — Blocker 5 (2026-08-06). Front-loads the
+    // `vokra.bert.tokenizer.*` chunk group so a downstream
+    // `SbertTokenizer::from_gguf` call succeeds without falling back to
+    // the reader's (wrong-for-this-fixture) default ids.
+    if let Some(bytes) = tokenizer_bytes {
+        write_tokenizer_vocab_txt(&mut b, bytes)?;
+    }
+
     let mut report = ConvertReport::default();
-    // Float tensors pass through **verbatim** — no convert-time widening,
-    // no renaming (see module doc "TODO(owner)" section).
+    // Task 30 (2026-08-06): upstream HF names → `bert.*` names that
+    // `DebertaV2Encoder::from_gguf` reads. The mapping table below is derived
+    // from a real `ku-nlp/deberta-v2-large-japanese-char-wwm` safetensors
+    // header dump (400 tensors, verified 2026-08-06). Tensors not matching a
+    // known upstream pattern (`cls.*` MLM head, `deberta.embeddings.
+    // position_ids` int buffer, `deberta.encoder.conv.*` — v2-specific but
+    // not currently consumed by the Rust loader) are skipped with a
+    // structured stderr log so a future reader can trace what was dropped
+    // and why (FR-EX-08 posture — mirrors `sbv2.rs`'s Task 30 skip logs).
+    //
+    // The Rust loader expects per-layer `wq_pos`/`wk_pos`/`pos_embed`
+    // separate tensors, but upstream HF stores rel_embeddings **once per
+    // encoder** (`deberta.encoder.rel_embeddings.weight [512, 1024]`). The
+    // Rust implementation's own doc notes that its `wq_pos`/`wk_pos` apply
+    // *the same content projections' weights* — the "position projection is
+    // separate" is a Rust-side struct-layout convention, not a genuine
+    // upstream weight-duplication. We resolve this by **copying**:
+    // `query_proj.weight` → `wq.weight` + `wq_pos.weight`, likewise
+    // `key_proj.weight` → `wk.weight` + `wk_pos.weight`. And the shared
+    // `encoder.rel_embeddings.weight [512, 1024]` gets duplicated into every
+    // layer's `pos_embed.weight`. All three copies are semantically
+    // equivalent to what the upstream forward pass computes — see the
+    // "duplication is semantic, not adding new weight capacity" note.
+    let mut skipped_names: Vec<(String, &'static str)> = Vec::new();
+    let mut renamed_count = 0usize;
+    let mut duplicated_count = 0usize;
+    // Grab a copy of the shared rel_embeddings up front for per-layer
+    // duplication (there is exactly one `deberta.encoder.rel_embeddings.
+    // weight` and it feeds every layer's `pos_embed.weight`).
+    let rel_embeddings: Option<(GgmlType, Vec<u64>, Vec<u8>)> = st
+        .tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.rel_embeddings.weight")
+        .map(|t| (t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec()));
+
     for t in st.tensors() {
         report.read += 1;
         match t.dtype {
             GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                // TODO(owner): map this upstream HF tensor name to the
-                // `bert.*` name `DebertaV2Encoder::from_gguf` expects.
-                // Verbatim pass-through until Task 30 confirms the real
-                // checkpoint's tensor-name manifest.
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
+                // Try to map to `bert.*` name. `None` → skip with log.
+                match map_deberta_name(&t.name) {
+                    Some(MapAction::Rename(new_name)) => {
+                        b.add_tensor(
+                            &new_name,
+                            t.dtype,
+                            t.shape.clone(),
+                            st.tensor_bytes(t).to_vec(),
+                        )?;
+                        report.written += 1;
+                        renamed_count += 1;
+                        if t.dtype == GgmlType::BF16 {
+                            report.bf16_passthrough += 1;
+                        }
+                    }
+                    Some(MapAction::Duplicate(name1, name2)) => {
+                        // `query_proj.weight` / `key_proj.weight` /
+                        // `query_proj.bias` / `key_proj.bias` — the same
+                        // upstream tensor is emitted under both the
+                        // content and position projection names to satisfy
+                        // the Rust loader's per-projection struct layout
+                        // without changing forward-pass semantics.
+                        let bytes = st.tensor_bytes(t).to_vec();
+                        b.add_tensor(&name1, t.dtype, t.shape.clone(), bytes.clone())?;
+                        report.written += 1;
+                        if t.dtype == GgmlType::BF16 {
+                            report.bf16_passthrough += 1;
+                        }
+                        b.add_tensor(&name2, t.dtype, t.shape.clone(), bytes)?;
+                        report.written += 1;
+                        if t.dtype == GgmlType::BF16 {
+                            report.bf16_passthrough += 1;
+                        }
+                        duplicated_count += 1;
+                    }
+                    None => {
+                        // Skip with reason. Emit stderr log for provenance.
+                        let reason = classify_skip(&t.name);
+                        skipped_names.push((t.name.clone(), reason));
+                    }
                 }
             }
             _ => report.skipped_non_float += 1,
         }
     }
+    // Duplicate the shared rel_embeddings into every layer's pos_embed.weight.
+    // n_layers is derived from the checkpoint's own tensor shapes above.
+    if let Some((dtype, shape, bytes)) = rel_embeddings {
+        for i in 0..n_layers {
+            let name = format!("bert.encoder.layer.{i}.attn.pos_embed.weight");
+            b.add_tensor(&name, dtype, shape.clone(), bytes.clone())?;
+            report.written += 1;
+            duplicated_count += 1;
+            if dtype == GgmlType::BF16 {
+                report.bf16_passthrough += 1;
+            }
+        }
+    }
+    // Structured stderr log for skipped tensors (matches sbv2.rs Task 30
+    // posture).
+    for (name, reason) in &skipped_names {
+        eprintln!("convert_deberta_v2: skipping tensor `{name}` ({reason})");
+    }
+    eprintln!(
+        "convert_deberta_v2: {} renamed, {} duplicated (rel_embeddings shared into per-layer pos_embed), {} skipped",
+        renamed_count,
+        duplicated_count,
+        skipped_names.len(),
+    );
 
     let spdx = license.unwrap_or(DEFAULT_LICENSE);
     let class = LicenseClass::from_license_str(spdx);
@@ -206,6 +361,236 @@ pub fn convert_deberta_v2_file(
     std::fs::write(output, out_bytes)?;
 
     Ok(report)
+}
+
+/// What to do with a single upstream tensor name during Task 30 mapping.
+///
+/// - [`MapAction::Rename`]: emit under a new name (the common case).
+/// - [`MapAction::Duplicate`]: emit twice, under two distinct names
+///   (used for `query_proj` / `key_proj` weight/bias to satisfy the Rust
+///   loader's per-projection `wq`+`wq_pos` / `wk`+`wk_pos` struct layout
+///   — semantically equivalent to upstream where the same content
+///   projection is applied to both content and position representations).
+///
+/// A `None` return from [`map_deberta_name`] means "skip this tensor" (see
+/// [`classify_skip`] for the reason categories).
+pub(crate) enum MapAction {
+    Rename(String),
+    Duplicate(String, String),
+}
+
+/// Maps one upstream HF DeBERTa v2 tensor name to the `bert.*` name(s) the
+/// Rust loader (`crates/vokra-bert/src/deberta_v2.rs`) expects. Returns
+/// `None` for tensors that intentionally are not consumed (see
+/// [`classify_skip`]). Shared by [`crate::models::deberta_v3`] via the
+/// identical HF `deberta.*` prefix convention — v3 only differs in the
+/// vocabulary size (128100 vs 22012) and the MLM head names (`lm_predictions.
+/// *` / `mask_predictions.*` vs `cls.*`), both of which are handled by
+/// `classify_skip`.
+pub(crate) fn map_deberta_name(upstream: &str) -> Option<MapAction> {
+    // Embeddings.
+    if upstream == "deberta.embeddings.word_embeddings.weight" {
+        return Some(MapAction::Rename("bert.embed.weight".into()));
+    }
+    if upstream == "deberta.embeddings.LayerNorm.weight" {
+        return Some(MapAction::Rename("bert.embed.ln.gamma".into()));
+    }
+    if upstream == "deberta.embeddings.LayerNorm.bias" {
+        return Some(MapAction::Rename("bert.embed.ln.beta".into()));
+    }
+
+    // Per-encoder-layer transformer stack.
+    if let Some(rest) = upstream.strip_prefix("deberta.encoder.layer.") {
+        // rest = "<N>.<sub>..."
+        let (idx_str, tail) = rest.split_once('.')?;
+        let i: usize = idx_str.parse().ok()?;
+        let p = format!("bert.encoder.layer.{i}");
+        return match tail {
+            // Attention Q/K/V/O projections.
+            // Rust expects wq + wq_pos (both content and position variants)
+            // for query and key. Upstream stores just one query_proj /
+            // key_proj — duplicate it to satisfy the Rust struct layout.
+            "attention.self.query_proj.weight" => Some(MapAction::Duplicate(
+                format!("{p}.attn.wq.weight"),
+                format!("{p}.attn.wq_pos.weight"),
+            )),
+            "attention.self.query_proj.bias" => {
+                Some(MapAction::Rename(format!("{p}.attn.wq.bias")))
+            }
+            "attention.self.key_proj.weight" => Some(MapAction::Duplicate(
+                format!("{p}.attn.wk.weight"),
+                format!("{p}.attn.wk_pos.weight"),
+            )),
+            "attention.self.key_proj.bias" => Some(MapAction::Rename(format!("{p}.attn.wk.bias"))),
+            "attention.self.value_proj.weight" => {
+                Some(MapAction::Rename(format!("{p}.attn.wv.weight")))
+            }
+            "attention.self.value_proj.bias" => {
+                Some(MapAction::Rename(format!("{p}.attn.wv.bias")))
+            }
+            "attention.output.dense.weight" => {
+                Some(MapAction::Rename(format!("{p}.attn.w_out.weight")))
+            }
+            "attention.output.dense.bias" => {
+                Some(MapAction::Rename(format!("{p}.attn.w_out.bias")))
+            }
+            // Attention output LayerNorm (post-attention residual norm) →
+            // ln1 by the loader's convention (pre-FFN norm).
+            "attention.output.LayerNorm.weight" => {
+                Some(MapAction::Rename(format!("{p}.ln1.gamma")))
+            }
+            "attention.output.LayerNorm.bias" => Some(MapAction::Rename(format!("{p}.ln1.beta"))),
+            // FFN.
+            "intermediate.dense.weight" => Some(MapAction::Rename(format!("{p}.ffn.w1.weight"))),
+            "intermediate.dense.bias" => Some(MapAction::Rename(format!("{p}.ffn.w1.bias"))),
+            "output.dense.weight" => Some(MapAction::Rename(format!("{p}.ffn.w2.weight"))),
+            "output.dense.bias" => Some(MapAction::Rename(format!("{p}.ffn.w2.bias"))),
+            // Post-FFN LayerNorm → ln2.
+            "output.LayerNorm.weight" => Some(MapAction::Rename(format!("{p}.ln2.gamma"))),
+            "output.LayerNorm.bias" => Some(MapAction::Rename(format!("{p}.ln2.beta"))),
+            _ => None,
+        };
+    }
+
+    // Shared rel_embeddings gets duplicated into per-layer pos_embed by the
+    // caller after the main loop (see the `if let Some((dtype, shape,
+    // bytes)) = rel_embeddings` block). Return None here so the main loop
+    // does not accidentally emit it under some other name.
+    if upstream == "deberta.encoder.rel_embeddings.weight" {
+        return None;
+    }
+
+    // Not consumed by the Rust loader — skip with a categorized reason.
+    None
+}
+
+/// Categorizes why an upstream tensor was skipped, for structured stderr
+/// logs (FR-EX-08 posture — never silently drop tensors without stating
+/// the reason).
+pub(crate) fn classify_skip(name: &str) -> &'static str {
+    // MLM head (v2 uses `cls.predictions.*`, v3 uses `lm_predictions.*` +
+    // `mask_predictions.*` for the RTD auxiliary head). SBV2 v2 never
+    // consumes the MLM output — only encoder hidden states — so drop.
+    if name.starts_with("cls.")
+        || name.starts_with("lm_predictions.")
+        || name.starts_with("mask_predictions.")
+    {
+        return "MLM head — SBV2 consumes encoder hidden states only";
+    }
+    // Position-id buffer (int, not float, and derivable at runtime as
+    // arange(0, seq_len)).
+    if name == "deberta.embeddings.position_ids" {
+        return "position_ids buffer — derivable at runtime as arange(0, seq_len)";
+    }
+    // Absolute position embeddings (v3 has them, v2 does not; the Rust
+    // DeBERTa loader is disentangled-attention-only and does not consume
+    // absolute position embeddings).
+    if name == "deberta.embeddings.position_embeddings.weight" {
+        return "absolute position embeddings — disentangled attention uses rel_embeddings only";
+    }
+    // v2-specific conv layer inside the encoder. The Rust DeBERTa v2
+    // loader does not consume this today (its struct has no conv slot);
+    // future support would require both a struct-layout change and a
+    // rename entry here.
+    if name.starts_with("deberta.encoder.conv.") {
+        return "v2-specific encoder conv — not consumed by Rust loader today";
+    }
+    // Top-level encoder LayerNorm (applied after the last transformer
+    // block, before returning hidden states). The Rust loader applies its
+    // own final normalization inside `EncoderLayer.ln2` on the last layer;
+    // dropping this upstream `encoder.LayerNorm.*` matches the loader's
+    // current struct shape. Explicitly documented in `classify_skip` so a
+    // future reader can trace what happened.
+    if name.starts_with("deberta.encoder.LayerNorm.") {
+        return "top-level encoder LayerNorm — loader applies its own final norm inside ln2";
+    }
+    "unmapped tensor — no rename rule matched"
+}
+
+/// Parses a v2 `vocab.txt` (one piece per line, UTF-8) and stamps the
+/// `vokra.bert.tokenizer.*` chunk group [`SbertTokenizer::from_gguf`]
+/// reads. Trailing blank lines are stripped (upstream
+/// `BertJapaneseTokenizer` treats them as `[UNK]` placeholders, but the
+/// reader assigns ids by position and a blank piece is ambiguous — see
+/// this converter's Blocker-5 rationale). Scores are written as `0.0`
+/// for every piece because the char-based upstream carries no per-piece
+/// log-probabilities; the resulting viterbi degenerates to
+/// "longest-match" (for a char vocab with all pieces length-1 that's a
+/// no-op — matches the observed upstream behavior on pure-JA inputs).
+///
+/// Also stamps `vokra.bert.tokenizer.kind = "bert-charsplit"` and the
+/// hard-coded `unk_id=3 / bos_id=1 / eos_id=2` triple verified against
+/// the real fixture (`/tmp/sbv2-fixtures/deberta-v2-ja/vocab.txt` +
+/// `special_tokens_map.json`).
+///
+/// # Errors
+///
+/// [`ConvertError::Parse`] when the bytes are not valid UTF-8.
+pub(crate) fn write_tokenizer_vocab_txt(
+    b: &mut GgufBuilder,
+    bytes: &[u8],
+) -> Result<(), ConvertError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        ConvertError::Parse("deberta-v2 --tokenizer: vocab.txt is not valid UTF-8".to_owned())
+    })?;
+    // `.lines()` handles both `\n` and `\r\n`, and does NOT emit a
+    // trailing empty element for a file that ends in newline (BufRead
+    // convention — trimming trailing blanks is a separate concern).
+    let mut pieces: Vec<String> = text.lines().map(str::to_owned).collect();
+    // Strip trailing blank lines — the real fixture ends with 8 empty
+    // lines that upstream `BertJapaneseTokenizer` interprets as `[UNK]`
+    // placeholders; since the loader assigns ids by index we cannot
+    // safely reproduce that (a blank piece string would never match
+    // viterbi's byte-prefix probe).
+    while pieces.last().is_some_and(String::is_empty) {
+        pieces.pop();
+    }
+    if pieces.is_empty() {
+        return Err(ConvertError::Parse(
+            "deberta-v2 --tokenizer: vocab.txt has no non-empty lines".to_owned(),
+        ));
+    }
+    let scores: Vec<f32> = vec![0.0; pieces.len()];
+    let vocab_size = pieces.len() as u32;
+
+    b.add_string(&format!("{KEY_TOKENIZER_PREFIX}.kind"), KIND_BERT_CHARSPLIT);
+    add_string_array(b, &format!("{KEY_TOKENIZER_PREFIX}.pieces"), &pieces);
+    add_f32_array(b, &format!("{KEY_TOKENIZER_PREFIX}.scores"), &scores);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.unk_id"), V2_UNK_ID);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.bos_id"), V2_BOS_ID);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.eos_id"), V2_EOS_ID);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.pad_id"), V2_PAD_ID);
+    b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.vocab_size"), vocab_size);
+    Ok(())
+}
+
+/// Emit a `String` array under `key` — follows the kokoro / piper-plus
+/// pattern (`add_metadata(GgufMetadataValue::Array(...))`, no typed
+/// shortcut on `GgufBuilder`). Shared by both DeBERTa v2 and v3
+/// tokenizer emitters.
+pub(crate) fn add_string_array(b: &mut GgufBuilder, key: &str, values: &[String]) {
+    b.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: values
+                .iter()
+                .map(|s| GgufMetadataValue::String(s.clone()))
+                .collect(),
+        }),
+    );
+}
+
+/// Emit an `F32` array under `key` — mirror of `fsmn_vad.rs`'s
+/// `f32_array_chunk` helper (kept local to avoid unrelated crate churn).
+pub(crate) fn add_f32_array(b: &mut GgufBuilder, key: &str, values: &[f32]) {
+    b.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::F32,
+            values: values.iter().map(|&v| GgufMetadataValue::F32(v)).collect(),
+        }),
+    );
 }
 
 /// Writes the shared six-key `vokra.bert.<arch>.*` hparam chunk group
@@ -402,11 +787,26 @@ mod tests {
         let (input, output) = temp_pair("hparams");
         std::fs::write(&input, &blob).expect("write input safetensors");
 
-        let report = convert_deberta_v2_file(&input, &output, None).expect("convert");
+        // After Task 30 rename table (2026-08-06): 4 upstream tensors map to
+        // 5 written entries:
+        //   - `word_embeddings` → renamed to `bert.embed.weight` (1 written)
+        //   - `position_embeddings` → skipped (absolute pos embed, disent
+        //     attention uses rel_embeddings only — see classify_skip)
+        //   - `layer.0.attention.self.query_proj.weight` → duplicated
+        //     (`wq.weight` + `wq_pos.weight`, both F32 = 2 written)
+        //   - `layer.2.attention.self.query_proj.weight` → duplicated (BF16,
+        //     both copies BF16 = 2 written, 2 bf16_passthrough)
+        let report = convert_deberta_v2_file(&input, &output, None, None).expect("convert");
         assert_eq!(report.read, 4);
-        assert_eq!(report.written, 4, "F32 and BF16 both pass through");
+        assert_eq!(
+            report.written, 5,
+            "1 renamed + 0 skipped + 2*2 duplicated = 5 (position_embeddings skipped)"
+        );
         assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(report.bf16_passthrough, 1, "exactly one BF16 tensor");
+        assert_eq!(
+            report.bf16_passthrough, 2,
+            "the BF16 query_proj is duplicated twice, both copies BF16"
+        );
 
         let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
@@ -444,14 +844,23 @@ mod tests {
             Some(512)
         );
 
-        let bf16_info = file
-            .tensor_info("deberta.encoder.layer.2.attention.self.query_proj.weight")
-            .expect("BF16 tensor present under its verbatim upstream name");
-        assert_eq!(
-            bf16_info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — GGUF dtype must remain BF16 (type 30)"
-        );
+        // Task 30 (2026-08-06): the upstream `query_proj.weight` name is
+        // renamed to `bert.encoder.layer.<i>.attn.wq.weight` (and duplicated
+        // to `wq_pos.weight`). Check both duplicates preserve BF16 dtype
+        // verbatim — no convert-time widening on either copy.
+        for name in [
+            "bert.encoder.layer.2.attn.wq.weight",
+            "bert.encoder.layer.2.attn.wq_pos.weight",
+        ] {
+            let bf16_info = file
+                .tensor_info(name)
+                .unwrap_or_else(|| panic!("BF16 tensor `{name}` present after rename"));
+            assert_eq!(
+                bf16_info.dtype,
+                GgmlType::BF16,
+                "no convert-time widening — {name} GGUF dtype must remain BF16 (type 30)"
+            );
+        }
 
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
@@ -491,7 +900,7 @@ mod tests {
         let (input, output) = temp_pair("license-override");
         std::fs::write(&input, &blob).expect("write input safetensors");
 
-        convert_deberta_v2_file(&input, &output, Some("apache-2.0")).expect("convert");
+        convert_deberta_v2_file(&input, &output, Some("apache-2.0"), None).expect("convert");
 
         let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
@@ -525,10 +934,187 @@ mod tests {
         let (input, output) = temp_pair("no-embed");
         std::fs::write(&input, &blob).expect("write input safetensors");
 
-        let err = convert_deberta_v2_file(&input, &output, None).expect_err("must fail loudly");
+        let err =
+            convert_deberta_v2_file(&input, &output, None, None).expect_err("must fail loudly");
         assert!(matches!(err, ConvertError::Parse(_)));
         assert!(!output.exists(), "no partial GGUF must be left behind");
 
+        std::fs::remove_file(&input).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — tokenizer_bytes = None emits **no**
+    /// `vokra.bert.tokenizer.*` metadata (the runtime side loud-fails on
+    /// `SbertTokenizer::from_gguf` — that's FR-EX-08 by design; silently
+    /// stamping placeholder data would produce a GGUF that appears
+    /// loadable but tokenizes wrong).
+    #[test]
+    fn no_tokenizer_bytes_emits_no_tokenizer_chunk() {
+        let blob = safetensors_multi(&base_fixture());
+        let (input, output) = temp_pair("no-tokenizer");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v2_file(&input, &output, None, None).expect("convert");
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+        for suffix in [
+            "kind",
+            "pieces",
+            "scores",
+            "unk_id",
+            "bos_id",
+            "eos_id",
+            "pad_id",
+            "vocab_size",
+        ] {
+            let key = format!("{KEY_TOKENIZER_PREFIX}.{suffix}");
+            assert!(
+                file.get(&key).is_none(),
+                "no --tokenizer supplied: `{key}` must NOT be present"
+            );
+        }
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — tokenizer_bytes = Some(vocab_txt) stamps
+    /// the full `vokra.bert.tokenizer.*` chunk group under the prefix
+    /// [`SbertTokenizer::from_gguf`] reads. Uses a synthetic 6-line
+    /// `vocab.txt` mirroring the real `deberta-v2-ja` fixture's header
+    /// (`[PAD] [CLS] [SEP] [UNK] [MASK] ▁`); the special-token ids
+    /// (`unk=3, bos=1, eos=2, pad=0`) are the hard-coded values verified
+    /// against `/tmp/sbv2-fixtures/deberta-v2-ja/vocab.txt` at scout
+    /// time.
+    #[test]
+    fn converter_stamps_vocab_txt_tokenizer_metadata() {
+        let vocab_txt = b"[PAD]\n[CLS]\n[SEP]\n[UNK]\n[MASK]\n\xe2\x96\x81\n";
+        let blob = safetensors_multi(&base_fixture());
+        let (input, output) = temp_pair("tok-vocab-txt");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v2_file(&input, &output, None, Some(vocab_txt)).expect("convert");
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.kind"))
+                .and_then(|v| v.as_str()),
+            Some(KIND_BERT_CHARSPLIT),
+            "v2 discriminator must be `bert-charsplit`, not `sentencepiece-unigram`"
+        );
+        let pieces = file
+            .get(&format!("{KEY_TOKENIZER_PREFIX}.pieces"))
+            .and_then(|v| v.as_array())
+            .expect("pieces array present");
+        assert_eq!(pieces.values.len(), 6, "6-line vocab.txt → 6 pieces");
+        let piece_at = |i: usize| pieces.values[i].as_str().unwrap();
+        assert_eq!(piece_at(0), "[PAD]");
+        assert_eq!(piece_at(1), "[CLS]");
+        assert_eq!(piece_at(2), "[SEP]");
+        assert_eq!(piece_at(3), "[UNK]");
+        assert_eq!(piece_at(4), "[MASK]");
+        assert_eq!(
+            piece_at(5),
+            "▁",
+            "U+2581 word-start piece preserved verbatim"
+        );
+
+        let scores = file
+            .get(&format!("{KEY_TOKENIZER_PREFIX}.scores"))
+            .and_then(|v| v.as_array())
+            .expect("scores array present");
+        assert_eq!(scores.values.len(), 6, "scores length must match pieces");
+
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.unk_id"))
+                .and_then(|v| v.as_u64()),
+            Some(u64::from(V2_UNK_ID)),
+            "v2 unk_id must be 3, NOT the SbertTokenizer::from_gguf default of 1"
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.bos_id"))
+                .and_then(|v| v.as_u64()),
+            Some(u64::from(V2_BOS_ID)),
+            "v2 bos_id must be 1 ([CLS]), NOT the reader default of 2"
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.eos_id"))
+                .and_then(|v| v.as_u64()),
+            Some(u64::from(V2_EOS_ID)),
+            "v2 eos_id must be 2 ([SEP]), NOT the reader default of 3"
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.pad_id"))
+                .and_then(|v| v.as_u64()),
+            Some(u64::from(V2_PAD_ID))
+        );
+        assert_eq!(
+            file.get(&format!("{KEY_TOKENIZER_PREFIX}.vocab_size"))
+                .and_then(|v| v.as_u64()),
+            Some(6),
+            "vocab_size stamp mirrors pieces.len()"
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — trailing blank lines in `vocab.txt`
+    /// (the real fixture ends with 8 empties that upstream
+    /// `BertJapaneseTokenizer` uses as `[UNK]` placeholders) are stripped
+    /// so `SbertTokenizer::from_gguf`'s viterbi never has to probe an
+    /// empty piece string.
+    #[test]
+    fn trailing_blank_lines_are_stripped() {
+        let vocab_txt = b"[PAD]\n[CLS]\n[SEP]\n[UNK]\n\n\n\n";
+        let blob = safetensors_multi(&base_fixture());
+        let (input, output) = temp_pair("tok-trailing-blanks");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        convert_deberta_v2_file(&input, &output, None, Some(vocab_txt)).expect("convert");
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+        let pieces = file
+            .get(&format!("{KEY_TOKENIZER_PREFIX}.pieces"))
+            .and_then(|v| v.as_array())
+            .expect("pieces array present");
+        assert_eq!(pieces.values.len(), 4, "trailing blanks stripped");
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — an empty `--tokenizer` argument is a
+    /// loud usage error (FR-EX-08): silently emitting a zero-length
+    /// `pieces` array would produce a GGUF that `SbertTokenizer::from_gguf`
+    /// itself refuses to load (the reader defaults `unk=1` to id 1, which
+    /// does not exist in a 0-piece vocab).
+    #[test]
+    fn empty_tokenizer_bytes_is_a_loud_error() {
+        let blob = safetensors_multi(&base_fixture());
+        let (input, output) = temp_pair("tok-empty");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        let err = convert_deberta_v2_file(&input, &output, None, Some(&[]))
+            .expect_err("empty tokenizer must be refused");
+        assert!(matches!(err, ConvertError::Parse(_)));
+        assert!(!output.exists(), "no partial GGUF left behind");
+        std::fs::remove_file(&input).ok();
+    }
+
+    /// Blocker 5 (2026-08-06) — a `vocab.txt` that is not valid UTF-8
+    /// is a loud parse error, never silently truncated to what happens
+    /// to be UTF-8 up to the first invalid byte.
+    #[test]
+    fn non_utf8_vocab_txt_is_a_loud_error() {
+        // A single high byte 0xFF that is never a valid leading UTF-8
+        // byte (RFC 3629 §4). Emits a `Parse` error.
+        let vocab_txt = b"[PAD]\n\xff\n";
+        let blob = safetensors_multi(&base_fixture());
+        let (input, output) = temp_pair("tok-non-utf8");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        let err = convert_deberta_v2_file(&input, &output, None, Some(vocab_txt))
+            .expect_err("non-UTF-8 tokenizer bytes must be refused");
+        assert!(matches!(err, ConvertError::Parse(_)));
         std::fs::remove_file(&input).ok();
     }
 }

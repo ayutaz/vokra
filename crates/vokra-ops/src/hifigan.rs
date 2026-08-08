@@ -77,7 +77,7 @@
 //! (FR-EX-08). See `docs/adr/M3-06-mimi-rvq.md` §D5 for the identical deferred-
 //! GPU-seam stance mimi_rvq took.
 
-use vokra_core::ir::graph::HifiGanAttrs;
+use vokra_core::ir::graph::{HifiGanAttrs, ResBlockType};
 use vokra_core::{Result, VokraError};
 
 // ---------------------------------------------------------------------------
@@ -106,16 +106,54 @@ pub struct UpsampleStageWeights {
     pub stride: usize,
 }
 
-/// One layer of an MRF ResBlock (a `[leaky_relu → dilated conv1d]` step).
+/// One layer of an MRF ResBlock — one iteration of `for (c1, c2) in
+/// zip(convs1, convs2)` (V1) or `for c in convs` (V2). Which arithmetic
+/// runs is decided by [`HifiGanAttrs::res_block_type`], not by this
+/// struct's field-presence — a V1 attrs *must* have `weight_c2` +
+/// `bias_c2` on every layer (loud-fail via
+/// [`mrf_branch_forward`](fn.mrf_branch_forward.html)-adjacent code
+/// otherwise), a V2 attrs *must* have them `None` (partial mixing is
+/// unsound: the loader can't decide which of two topologies to run).
+///
+/// # Layout
+///
+/// - `weight` (aka `convs1[j].weight` for V1, `convs[j].weight` for V2):
+///   `[out_ch, in_ch, kernel]` row-major. `in_ch == out_ch` (MRF branch
+///   is channel-preserving).
+/// - `bias`: `[out_ch]`.
+/// - `weight_c2` (`convs2[j].weight` — V1 only, `None` for V2): same
+///   `[out_ch, in_ch, kernel]` shape, but the reference always sets
+///   `dilation=1` (`convs2` is the undilated conv per
+///   `tools/parity/vendor/vits/modules.py::ResBlock1.__init__` at line
+///   244-251).
+/// - `bias_c2`: `[out_ch]`.
+///
+/// The `dilation` field carries the `convs1` dilation only; the `c2`
+/// dilation is architecturally `1` per the upstream reference (see the
+/// `dilation=1` on every `convs2` `Conv1d` in the reference) and this
+/// module hard-codes that — a future variant that changed the `c2`
+/// dilation would be a schema break, not an attribute override.
 #[derive(Debug, Clone)]
 pub struct ResBlockLayer {
-    /// `[out_ch, in_ch, kernel]` row-major weight (in_ch == out_ch for MRF).
+    /// `convs1[j].weight` (V1) or `convs[j].weight` (V2). `[out_ch,
+    /// in_ch, kernel]` row-major.
     pub weight: Vec<f32>,
-    /// `[out_ch]` bias.
+    /// `convs1[j].bias` (V1) or `convs[j].bias` (V2). `[out_ch]`.
     pub bias: Vec<f32>,
-    /// Dilation factor (`resblock_dilation_sizes[branch][layer]`).
+    /// `convs2[j].weight` (V1 only). Must be `Some` when the enclosing
+    /// [`HifiGanAttrs::res_block_type`] is [`ResBlockType::V1`] and
+    /// `None` for [`ResBlockType::V2`]. Same `[out_ch, in_ch, kernel]`
+    /// shape as `weight` — the `c2` conv is channel-preserving too.
+    pub weight_c2: Option<Vec<f32>>,
+    /// `convs2[j].bias` (V1 only). Presence must match `weight_c2`.
+    /// `[out_ch]`.
+    pub bias_c2: Option<Vec<f32>>,
+    /// Dilation of `convs1[j]`. `convs2[j]` is architecturally
+    /// `dilation=1` per upstream and is not a separate field.
     pub dilation: usize,
-    /// Kernel size (`resblock_kernel_sizes[branch]`).
+    /// Kernel size (`resblock_kernel_sizes[branch]`). Shared between
+    /// `convs1[j]` and `convs2[j]` (upstream `ResBlock1.__init__` passes
+    /// the same `kernel_size` to both).
     pub kernel: usize,
     /// Number of channels (branch is channel-preserving).
     pub channels: usize,
@@ -158,7 +196,14 @@ pub struct HifiGanWeights {
     /// Final `conv1d` mapping `[channels] → [1]`.
     /// `[1, ch_last, conv_post_kernel]` row-major.
     pub conv_post_weight: Vec<f32>,
-    /// `[1]` bias.
+    /// `[1]` bias — **or `[]` (empty) when the upstream `conv_post` was
+    /// trained `bias=False`** (HGAN-04 fix, 2026-08-09). VITS-family
+    /// upstreams (`tools/parity/vendor/vits/models.py` at `Conv1d(ch,
+    /// 1, 7, 1, padding=3, bias=False)`) and SBV2 v2 both ship
+    /// bias-less `conv_post`; storing an empty `Vec` here lets a
+    /// converter emit the true upstream shape without the pre-HGAN-04
+    /// zero-placeholder workaround. Both shapes are numerically
+    /// identical (`x + 0.0 == x`).
     pub conv_post_bias: Vec<f32>,
     /// Kernel size of the final `conv1d` (upstream default = 7).
     pub conv_post_kernel: usize,
@@ -672,8 +717,14 @@ pub fn hifigan_generator(
         let mrf_stage = &weights.mrf_stage_weights[stage];
         let mut mrf_acc = vec![0.0_f32; up.out_ch * out_time];
         for branch in mrf_stage {
-            let branch_out =
-                mrf_branch_forward(&up_out, up.out_ch, out_time, branch, attrs.leaky_relu_slope)?;
+            let branch_out = mrf_branch_forward(
+                &up_out,
+                up.out_ch,
+                out_time,
+                branch,
+                attrs.leaky_relu_slope,
+                attrs.res_block_type,
+            )?;
             for (a, b) in mrf_acc.iter_mut().zip(branch_out.iter()) {
                 *a += *b;
             }
@@ -688,7 +739,29 @@ pub fn hifigan_generator(
     }
 
     // --- Final leaky_relu → conv1d → tanh ---
-    leaky_relu_inplace(&mut h, attrs.leaky_relu_slope);
+    //
+    // HGAN-03 fix (2026-08-09): reference
+    // `tools/parity/vendor/vits/models.Generator.forward` at
+    // `decoder.py:97` calls plain `F.leaky_relu(x)` **without** the
+    // `LRELU_SLOPE=0.1` argument that its in-loop calls use — PyTorch's
+    // default slope is `0.01`, distinct from the `LRELU_SLOPE = 0.1`
+    // constant threaded through the upsample loop above. Pin the final
+    // pre-conv_post activation at the reference's implicit default so
+    // this call matches upstream regardless of how a caller (or a
+    // future SKU) tunes `attrs.leaky_relu_slope`.
+    const FINAL_LEAKY_RELU_SLOPE: f32 = 0.01;
+    leaky_relu_inplace(&mut h, FINAL_LEAKY_RELU_SLOPE);
+    // HGAN-04 (2026-08-09): pass `None` when the upstream conv_post was
+    // trained `bias=False` (represented by an empty `conv_post_bias`
+    // vector — see the field doc). `x + 0.0 == x` for finite `x`, so the
+    // two paths are numerically identical; the fork exists so a
+    // converter can emit the true upstream shape without fabricating a
+    // zero placeholder.
+    let conv_post_bias_slot: Option<&[f32]> = if weights.conv_post_bias.is_empty() {
+        None
+    } else {
+        Some(&weights.conv_post_bias)
+    };
     let final_out = conv1d_scalar(
         &h,
         cur_channels,
@@ -696,7 +769,7 @@ pub fn hifigan_generator(
         &weights.conv_post_weight,
         1,
         weights.conv_post_kernel,
-        Some(&weights.conv_post_bias),
+        conv_post_bias_slot,
         1,
         weights.conv_post_kernel / 2,
     )?;
@@ -906,17 +979,43 @@ fn transposed_conv1d_scalar(
     Ok(out)
 }
 
-/// Runs one MRF branch: sequential `[leaky_relu → dilated conv1d]` layers with
-/// an outer residual add (`out = h + branch(h)`).
+/// Runs one MRF branch, matching upstream
+/// [`ResBlock1.forward`](https://raw.githubusercontent.com/jik876/hifi-gan/master/models.py#L54)
+/// / [`ResBlock2.forward`](https://raw.githubusercontent.com/jik876/hifi-gan/master/models.py#L92)
+/// as vendored to `tools/parity/vendor/vits/modules.py::ResBlock1` (line 254)
+/// / `::ResBlock2` (line 287). The `res_block_type` argument picks between:
 ///
-/// Per upstream jik876/hifi-gan the outer residual wraps every layer inside the
-/// branch — that's the "residual stack" M3-07 T05 alludes to.
+/// - **V1** — per iteration `(c1, c2) in zip(convs1, convs2)`:
+///   `xt = c2(lrelu(c1(lrelu(x)))); x = xt + x`.
+/// - **V2** — per iteration `c in convs`: `xt = c(lrelu(x)); x = xt + x`.
+///
+/// # Wave-2 audit fix (HGAN-01 + HGAN-02)
+///
+/// Pre-Wave-2 this function did `h = conv_last(lrelu(conv_{n-1}(lrelu(…
+/// lrelu(input)))))) + input` — one outer residual add regardless of
+/// depth (the audit's HGAN-02). It also had no notion of the `c2`
+/// convs2 chain — the converter's `convs2.*` tensors were passed
+/// through unread, silently dropping half of every V1 vocoder's
+/// convolutions (the audit's HGAN-01). Both together made SBV2 v2
+/// waveform parity structurally impossible.
+///
+/// # Layout invariants
+///
+/// - `input` / return: `[channels, time]` row-major (`h[c * time + t]`).
+///   The reference operates in `[B=1, D, T]` channel-major layout too
+///   (upstream `ResBlock*.forward` sits at the same layout as the
+///   surrounding VITS decoder `Generator.forward`); no transpose here.
+/// - Every `layer.channels` must equal `channels`.
+/// - V1 requires `layer.weight_c2 + layer.bias_c2 == Some` on every
+///   layer; V2 requires them both `None`. Partial mixing is a converter
+///   bug (loud `InvalidArgument`, FR-EX-08).
 fn mrf_branch_forward(
     input: &[f32],
     channels: usize,
     time: usize,
     branch: &MrfBranchWeights,
     leaky_slope: f32,
+    res_block_type: ResBlockType,
 ) -> Result<Vec<f32>> {
     if input.len() != channels * time {
         return Err(VokraError::InvalidArgument(format!(
@@ -930,19 +1029,22 @@ fn mrf_branch_forward(
             "mrf_branch_forward: branch must have at least one layer".to_owned(),
         ));
     }
-    let mut h = input.to_vec();
-    for layer in &branch.layers {
+    // Running state — starts as `x = input`; each iteration mutates via
+    // `x = xt + x` (residual add INSIDE the loop, matching upstream).
+    let mut x = input.to_vec();
+    for (layer_idx, layer) in branch.layers.iter().enumerate() {
         if layer.channels != channels {
             return Err(VokraError::InvalidArgument(format!(
                 "mrf_branch_forward: layer.channels {} != branch channels {channels}",
                 layer.channels
             )));
         }
-        leaky_relu_inplace(&mut h, leaky_slope);
-        // Dilated conv1d preserves length via `padding = dilation * (kernel-1) / 2`.
-        let padding = layer.dilation * (layer.kernel - 1) / 2;
-        h = dilated_conv1d_scalar(
-            &h,
+        // ---- xt = c1(lrelu(x)) ----
+        let mut xt = x.clone();
+        leaky_relu_inplace(&mut xt, leaky_slope);
+        let padding_c1 = layer.dilation * (layer.kernel - 1) / 2;
+        xt = dilated_conv1d_scalar(
+            &xt,
             channels,
             time,
             &layer.weight,
@@ -950,14 +1052,62 @@ fn mrf_branch_forward(
             layer.kernel,
             Some(&layer.bias),
             layer.dilation,
-            padding,
+            padding_c1,
         )?;
+        // ---- V1: xt = c2(lrelu(xt)) with c2.dilation = 1 ----
+        match res_block_type {
+            ResBlockType::V1 => {
+                let (weight_c2, bias_c2) =
+                    match (layer.weight_c2.as_deref(), layer.bias_c2.as_deref()) {
+                        (Some(w), Some(b)) => (w, b),
+                        _ => {
+                            return Err(VokraError::InvalidArgument(format!(
+                                "mrf_branch_forward: ResBlockType::V1 requires \
+                             weight_c2 + bias_c2 on every layer, but layer {layer_idx} has \
+                             weight_c2.is_some() = {} / bias_c2.is_some() = {}. \
+                             Converter and loader must supply both convs1[j] and convs2[j] \
+                             for V1 topology (upstream ResBlock1 signature).",
+                                layer.weight_c2.is_some(),
+                                layer.bias_c2.is_some()
+                            )));
+                        }
+                    };
+                leaky_relu_inplace(&mut xt, leaky_slope);
+                // `convs2[j]` is architecturally undilated (dilation=1) per
+                // upstream `ResBlock1.__init__` — see
+                // `tools/parity/vendor/vits/modules.py:244-251`.
+                let padding_c2 = (layer.kernel - 1) / 2;
+                xt = dilated_conv1d_scalar(
+                    &xt,
+                    channels,
+                    time,
+                    weight_c2,
+                    channels,
+                    layer.kernel,
+                    Some(bias_c2),
+                    1, // dilation
+                    padding_c2,
+                )?;
+            }
+            ResBlockType::V2 => {
+                if layer.weight_c2.is_some() || layer.bias_c2.is_some() {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "mrf_branch_forward: ResBlockType::V2 must not carry \
+                         weight_c2 or bias_c2 (V2 has no convs2 chain — upstream ResBlock2). \
+                         layer {layer_idx} has weight_c2.is_some() = {} / \
+                         bias_c2.is_some() = {}. Converter must emit None for both under V2.",
+                        layer.weight_c2.is_some(),
+                        layer.bias_c2.is_some()
+                    )));
+                }
+            }
+        }
+        // ---- x = xt + x (residual add INSIDE the loop, per iteration) ----
+        for (xv, tv) in x.iter_mut().zip(xt.iter()) {
+            *xv += *tv;
+        }
     }
-    // Outer residual add.
-    for (out, inp) in h.iter_mut().zip(input.iter()) {
-        *out += *inp;
-    }
-    Ok(h)
+    Ok(x)
 }
 
 /// Dilated `conv1d` (stride == 1 always). `weight` layout matches
@@ -1170,9 +1320,15 @@ fn validate_weights(w: &HifiGanWeights, attrs: &HifiGanAttrs) -> Result<()> {
             expected_in * w.conv_post_kernel
         )));
     }
-    if w.conv_post_bias.len() != 1 {
+    // HGAN-04 (2026-08-09): accept `len == 0` as the "no bias"
+    // (upstream `Conv1d(..., bias=False)`) shape and `len == 1` as the
+    // pre-HGAN-04 explicit-zero shape. Any other length is a schema
+    // bug (`conv_post` outputs a 1-channel waveform, so a `!= 1`
+    // bias buffer would mismatch even under a permissive shape check).
+    if w.conv_post_bias.len() > 1 {
         return Err(VokraError::InvalidArgument(format!(
-            "HifiGanWeights: conv_post_bias.len() {} != 1",
+            "HifiGanWeights: conv_post_bias.len() {} != 0 (upstream bias=False) or 1 \
+             (explicit-zero shape)",
             w.conv_post_bias.len()
         )));
     }
@@ -1189,6 +1345,12 @@ mod tests {
 
     /// Tiny attrs shape used across tests — big enough to exercise the
     /// upsample stack + MRF branch average, small enough to reason about.
+    ///
+    /// Uses [`ResBlockType::V2`] because `tiny_weights` builds single-conv
+    /// per layer (no `convs2` chain) — the historical shape these tests
+    /// exercise. See `tiny_attrs_v1` + `tiny_weights_v1` for the V1
+    /// (SBV2 v2 / canonical HiFi-GAN) counterparts introduced by the
+    /// Wave-2 HGAN-01 fix.
     fn tiny_attrs() -> HifiGanAttrs {
         HifiGanAttrs {
             n_mels: 4,
@@ -1199,6 +1361,17 @@ mod tests {
             resblock_dilation_sizes: vec![vec![1, 3], vec![1, 3]],
             sample_rate: 16_000,
             leaky_relu_slope: 0.1,
+            res_block_type: ResBlockType::V2,
+        }
+    }
+
+    /// V1 counterpart of [`tiny_attrs`] — same shape but declares the
+    /// SBV2 v2 / canonical HiFi-GAN V1 topology (two convs per layer with
+    /// per-iteration residual). Paired with `tiny_weights_v1`.
+    fn tiny_attrs_v1() -> HifiGanAttrs {
+        HifiGanAttrs {
+            res_block_type: ResBlockType::V1,
+            ..tiny_attrs()
         }
     }
 
@@ -1274,6 +1447,8 @@ mod tests {
                         ResBlockLayer {
                             weight,
                             bias,
+                            weight_c2: None,
+                            bias_c2: None,
                             dilation: *dilation,
                             kernel,
                             channels: out_ch,
@@ -1295,6 +1470,47 @@ mod tests {
             }
         }
         w.conv_post_bias = vec![0.0];
+        w
+    }
+
+    /// V1 counterpart of [`tiny_weights`] — same as `tiny_weights` but
+    /// also populates `weight_c2` / `bias_c2` on every layer so V1's
+    /// `for (c1, c2) in zip(convs1, convs2)` forward has real convs2
+    /// weights to run. `c2` weights are a deterministic function of the
+    /// layer indices (a shifted sinusoid) so the branch output is
+    /// reproducible across runs.
+    fn tiny_weights_v1(attrs: &HifiGanAttrs) -> HifiGanWeights {
+        let mut w = tiny_weights(attrs);
+        // Rebuild the MRF branches with populated c2 weights. `out_ch`
+        // varies per stage the same way `tiny_weights` computes it —
+        // we walk `w.upsample_weights` for the exact same schedule.
+        for (stage, up) in w.upsample_weights.iter().enumerate() {
+            let out_ch = up.out_ch;
+            let branches = &mut w.mrf_stage_weights[stage];
+            for (branch_idx, branch) in branches.iter_mut().enumerate() {
+                for (layer_idx, layer) in branch.layers.iter_mut().enumerate() {
+                    let kernel = layer.kernel;
+                    // A deterministic weight bank distinct from `weight`
+                    // — otherwise V1's `c2(lrelu(c1(lrelu(x))))` chain
+                    // would degenerate to `c1(lrelu(c1(lrelu(x))))` and
+                    // hide a whole class of parity bugs.
+                    let mut weight_c2 = Vec::with_capacity(out_ch * out_ch * kernel);
+                    for oc in 0..out_ch {
+                        for ic in 0..out_ch {
+                            for k in 0..kernel {
+                                weight_c2.push(
+                                    ((oc + ic + k + branch_idx + layer_idx + 17) as f32)
+                                        .mul_add(0.003, -0.005),
+                                );
+                            }
+                        }
+                    }
+                    let bias_c2: Vec<f32> = (0..out_ch).map(|i| (i + 3) as f32 * 0.00025).collect();
+                    layer.weight_c2 = Some(weight_c2);
+                    layer.bias_c2 = Some(bias_c2);
+                }
+            }
+        }
         w
     }
 
@@ -1734,5 +1950,397 @@ mod tests {
         let variant = vokra_core::OpKind::HifiGanGenerator(attrs.clone());
         // Just make sure the variant survives Debug + PartialEq round-trip.
         assert_eq!(variant, vokra_core::OpKind::HifiGanGenerator(attrs));
+    }
+
+    // ---- Wave-2 HGAN-01 + HGAN-02: per-iteration residual + convs2 chain --
+    //
+    // These tests reproduce the upstream `ResBlock1.forward` /
+    // `ResBlock2.forward` semantics directly using scalar Python-shape
+    // arithmetic, then check `mrf_branch_forward` matches. They are the
+    // TDD anchor for the two audit findings:
+    //
+    // - HGAN-02: pre-fix, residual was one outer add (`h = conv(...) +
+    //   x`) instead of per-iteration inside the loop
+    //   (`for c in convs: xt = c(lrelu(x)); x = xt + x`). This test
+    //   builds a 2-layer branch with hand-picked weights where the two
+    //   arithmetics differ observably (residual outside collapses to
+    //   `conv(conv(lrelu(lrelu(x)))) + x`; residual inside builds
+    //   `x_1 = conv(lrelu(x_0)) + x_0; x_2 = conv(lrelu(x_1)) + x_1`).
+    //
+    // - HGAN-01: pre-fix, `mrf_branch_forward` had no notion of `convs2`
+    //   (the undilated conv chain V1 pairs with each `convs1` step).
+    //   This test declares a V1 branch with populated `weight_c2` +
+    //   `bias_c2` and reproduces `c2(lrelu(c1(lrelu(x)))) + x` per
+    //   iteration.
+
+    /// Manual scalar reference for one V1 iteration of `for (c1, c2) in
+    /// zip(convs1, convs2)`: `xt = c2(lrelu(c1(lrelu(x)))); x = xt +
+    /// x`. Takes flat `[channels, time]` buffers and per-layer
+    /// (weight, bias, dilation, kernel) tuples. Returns the updated
+    /// running `x` after this iteration.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_v1_iteration(
+        x: &[f32],
+        channels: usize,
+        time: usize,
+        w1: &[f32],
+        b1: &[f32],
+        d1: usize,
+        w2: &[f32],
+        b2: &[f32],
+        kernel: usize,
+        slope: f32,
+    ) -> Vec<f32> {
+        // xt = lrelu(x)
+        let mut xt = x.to_vec();
+        for v in xt.iter_mut() {
+            if *v < 0.0 {
+                *v *= slope;
+            }
+        }
+        // xt = c1(xt)
+        let padding_c1 = d1 * (kernel - 1) / 2;
+        xt = dilated_conv1d_scalar(
+            &xt,
+            channels,
+            time,
+            w1,
+            channels,
+            kernel,
+            Some(b1),
+            d1,
+            padding_c1,
+        )
+        .unwrap();
+        // xt = lrelu(xt)
+        for v in xt.iter_mut() {
+            if *v < 0.0 {
+                *v *= slope;
+            }
+        }
+        // xt = c2(xt) with dilation=1
+        let padding_c2 = (kernel - 1) / 2;
+        xt = dilated_conv1d_scalar(
+            &xt,
+            channels,
+            time,
+            w2,
+            channels,
+            kernel,
+            Some(b2),
+            1,
+            padding_c2,
+        )
+        .unwrap();
+        // x = xt + x
+        let mut out = x.to_vec();
+        for (o, tv) in out.iter_mut().zip(xt.iter()) {
+            *o += *tv;
+        }
+        out
+    }
+
+    /// Manual scalar reference for one V2 iteration: `xt = c(lrelu(x));
+    /// x = xt + x`.
+    fn ref_v2_iteration(
+        x: &[f32],
+        channels: usize,
+        time: usize,
+        w: &[f32],
+        b: &[f32],
+        d: usize,
+        kernel: usize,
+        slope: f32,
+    ) -> Vec<f32> {
+        let mut xt = x.to_vec();
+        for v in xt.iter_mut() {
+            if *v < 0.0 {
+                *v *= slope;
+            }
+        }
+        let padding = d * (kernel - 1) / 2;
+        xt = dilated_conv1d_scalar(
+            &xt,
+            channels,
+            time,
+            w,
+            channels,
+            kernel,
+            Some(b),
+            d,
+            padding,
+        )
+        .unwrap();
+        let mut out = x.to_vec();
+        for (o, tv) in out.iter_mut().zip(xt.iter()) {
+            *o += *tv;
+        }
+        out
+    }
+
+    #[test]
+    fn mrf_branch_v2_residual_is_per_iteration_not_outer_add() {
+        // Two channels, three time steps. Two layers so the outer-add
+        // and per-iteration-add arithmetics differ observably (a
+        // single-layer branch is a boundary case where the two
+        // arithmetics coincide).
+        let channels = 2;
+        let time = 3;
+        let kernel = 3;
+        let slope: f32 = 0.1;
+        // Deterministic-but-nonzero input.
+        let input: Vec<f32> = (0..channels * time)
+            .map(|i| ((i as f32) * 0.3).sin())
+            .collect();
+        // Two layers, distinct weights so the second conv sees a
+        // real transformation, not an identity.
+        let build_wb = |seed: usize| -> (Vec<f32>, Vec<f32>) {
+            let mut w = Vec::with_capacity(channels * channels * kernel);
+            for oc in 0..channels {
+                for ic in 0..channels {
+                    for k in 0..kernel {
+                        w.push(((oc + ic + k + seed) as f32 * 0.19).sin() * 0.3);
+                    }
+                }
+            }
+            let b: Vec<f32> = (0..channels).map(|i| (i + seed) as f32 * 0.05).collect();
+            (w, b)
+        };
+        let (w0, b0) = build_wb(0);
+        let (w1, b1) = build_wb(1);
+        let branch = MrfBranchWeights {
+            layers: vec![
+                ResBlockLayer {
+                    weight: w0.clone(),
+                    bias: b0.clone(),
+                    weight_c2: None,
+                    bias_c2: None,
+                    dilation: 1,
+                    kernel,
+                    channels,
+                },
+                ResBlockLayer {
+                    weight: w1.clone(),
+                    bias: b1.clone(),
+                    weight_c2: None,
+                    bias_c2: None,
+                    dilation: 1,
+                    kernel,
+                    channels,
+                },
+            ],
+        };
+        // Reference computation using per-iteration residual add.
+        let x0 = input.clone();
+        let x1 = ref_v2_iteration(&x0, channels, time, &w0, &b0, 1, kernel, slope);
+        let x2 = ref_v2_iteration(&x1, channels, time, &w1, &b1, 1, kernel, slope);
+        let expected = x2;
+        // Actual output from mrf_branch_forward.
+        let actual = mrf_branch_forward(&input, channels, time, &branch, slope, ResBlockType::V2)
+            .expect("V2 mrf_branch_forward");
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "V2 output shape must match reference"
+        );
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "V2 element {i}: mrf_branch_forward = {a}, per-iteration ref = {e}, |Δ| = {}",
+                (a - e).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn mrf_branch_v1_runs_c1_then_c2_with_per_iteration_residual() {
+        // Same shape as the V2 test, but each layer carries a distinct
+        // `c2` weight bank so we can prove `mrf_branch_forward` runs the
+        // c2 chain (HGAN-01 pre-fix silently dropped it).
+        let channels = 2;
+        let time = 3;
+        let kernel = 3;
+        let slope: f32 = 0.1;
+        let input: Vec<f32> = (0..channels * time)
+            .map(|i| ((i as f32) * 0.4 + 0.1).cos())
+            .collect();
+        let build_wb = |seed: usize, scale: f32| -> (Vec<f32>, Vec<f32>) {
+            let mut w = Vec::with_capacity(channels * channels * kernel);
+            for oc in 0..channels {
+                for ic in 0..channels {
+                    for k in 0..kernel {
+                        w.push(((oc + ic + k + seed) as f32 * 0.23).sin() * scale);
+                    }
+                }
+            }
+            let b: Vec<f32> = (0..channels)
+                .map(|i| (i + seed) as f32 * 0.03 * scale)
+                .collect();
+            (w, b)
+        };
+        let (w0_c1, b0_c1) = build_wb(0, 0.3);
+        let (w0_c2, b0_c2) = build_wb(100, 0.35);
+        let (w1_c1, b1_c1) = build_wb(1, 0.3);
+        let (w1_c2, b1_c2) = build_wb(101, 0.35);
+        let branch = MrfBranchWeights {
+            layers: vec![
+                ResBlockLayer {
+                    weight: w0_c1.clone(),
+                    bias: b0_c1.clone(),
+                    weight_c2: Some(w0_c2.clone()),
+                    bias_c2: Some(b0_c2.clone()),
+                    dilation: 1,
+                    kernel,
+                    channels,
+                },
+                ResBlockLayer {
+                    weight: w1_c1.clone(),
+                    bias: b1_c1.clone(),
+                    weight_c2: Some(w1_c2.clone()),
+                    bias_c2: Some(b1_c2.clone()),
+                    dilation: 1,
+                    kernel,
+                    channels,
+                },
+            ],
+        };
+        let x0 = input.clone();
+        let x1 = ref_v1_iteration(
+            &x0, channels, time, &w0_c1, &b0_c1, 1, &w0_c2, &b0_c2, kernel, slope,
+        );
+        let x2 = ref_v1_iteration(
+            &x1, channels, time, &w1_c1, &b1_c1, 1, &w1_c2, &b1_c2, kernel, slope,
+        );
+        let expected = x2;
+        let actual = mrf_branch_forward(&input, channels, time, &branch, slope, ResBlockType::V1)
+            .expect("V1 mrf_branch_forward");
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "V1 output shape must match reference"
+        );
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "V1 element {i}: mrf_branch_forward = {a}, ref = {e}, |Δ| = {}",
+                (a - e).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn mrf_branch_v1_rejects_missing_c2_weights() {
+        // FR-EX-08: V1 without c2 must loudly fail, not silently
+        // degrade to V2. Regression pin for HGAN-01's converter bug:
+        // if convs2 tensors don't land in the GGUF the loader must
+        // never make up zeros — that would produce plausible but wrong
+        // audio.
+        let channels = 2;
+        let time = 3;
+        let kernel = 3;
+        let input = vec![0.1_f32; channels * time];
+        let branch = MrfBranchWeights {
+            layers: vec![ResBlockLayer {
+                weight: vec![0.01_f32; channels * channels * kernel],
+                bias: vec![0.0_f32; channels],
+                weight_c2: None,
+                bias_c2: None,
+                dilation: 1,
+                kernel,
+                channels,
+            }],
+        };
+        let err = mrf_branch_forward(&input, channels, time, &branch, 0.1, ResBlockType::V1)
+            .expect_err("V1 without c2 must fail");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains("ResBlockType::V1 requires")
+                        && msg.contains("weight_c2")
+                        && msg.contains("bias_c2"),
+                    "V1 missing-c2 error must name the missing fields, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mrf_branch_v2_rejects_unexpected_c2_weights() {
+        // FR-EX-08 mirror: V2 with populated c2 must loudly fail.
+        // Partial mixing is a converter bug (loader can't decide which
+        // of two topologies to run).
+        let channels = 2;
+        let time = 3;
+        let kernel = 3;
+        let input = vec![0.1_f32; channels * time];
+        let branch = MrfBranchWeights {
+            layers: vec![ResBlockLayer {
+                weight: vec![0.01_f32; channels * channels * kernel],
+                bias: vec![0.0_f32; channels],
+                weight_c2: Some(vec![0.02_f32; channels * channels * kernel]),
+                bias_c2: Some(vec![0.0_f32; channels]),
+                dilation: 1,
+                kernel,
+                channels,
+            }],
+        };
+        let err = mrf_branch_forward(&input, channels, time, &branch, 0.1, ResBlockType::V2)
+            .expect_err("V2 with c2 must fail");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains("V2 must not carry"),
+                    "V2 unexpected-c2 error must flag the mismatch, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hifigan_generator_v1_uses_convs2_weights() {
+        // End-to-end regression: build V1 attrs, run the full generator,
+        // then run again with c2 weights zeroed (which is *not* the
+        // same as V2 — V1 still runs both convs, just c2 evaluates to
+        // its bias only). The outputs must differ.
+        let attrs = tiny_attrs_v1();
+        let weights = tiny_weights_v1(&attrs);
+        let n_frames = 4;
+        let mel: Vec<f32> = (0..attrs.n_mels * n_frames)
+            .map(|i| ((i as f32) * 0.1).sin() * 0.3)
+            .collect();
+        let with_c2 =
+            hifigan_generator(&mel, n_frames, &weights, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+        // Now zero every c2 weight (keep biases — they still land).
+        // A pre-Wave-2 forward that silently dropped c2 would produce
+        // identical output regardless of these weights.
+        let mut zeroed = weights.clone();
+        for stage in &mut zeroed.mrf_stage_weights {
+            for branch in stage.iter_mut() {
+                for layer in &mut branch.layers {
+                    if let Some(w2) = layer.weight_c2.as_mut() {
+                        for v in w2.iter_mut() {
+                            *v = 0.0;
+                        }
+                    }
+                }
+            }
+        }
+        let without_c2 =
+            hifigan_generator(&mel, n_frames, &zeroed, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+        assert_eq!(with_c2.len(), without_c2.len());
+        let max_delta = with_c2
+            .iter()
+            .zip(without_c2.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_delta > 1e-4,
+            "V1 output must depend on c2 weights (HGAN-01): max Δ = {max_delta} \
+             (a pre-fix generator that dropped c2 would produce identical output)"
+        );
     }
 }
