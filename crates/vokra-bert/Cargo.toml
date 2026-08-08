@@ -12,3 +12,6 @@ vokra-core = { path = "../vokra-core" }
 vokra-mmap = { path = "../vokra-mmap" }
 
 [dev-dependencies]
+# Wave-4 DEBERTA-CONV-NAMES: verify converter → loader round-trip. First-party
+# vokra-* dev-only edge — no runtime dependency, no external crate added.
+vokra-convert = { path = "../vokra-convert" }

@@ -225,12 +225,18 @@ pub fn convert_deberta_v2_file(
     // real checkpoint; Task 30 fixup.
     let (vocab_size, d_model) = infer_vocab_and_d_model(&st)?;
     let n_layers = count_layers(&st);
+    // Wave-4 DEBERTA-CONV-NAMES (2026-08-09): derive n_pos_buckets from the
+    // rel_embeddings tensor shape (genuinely shape-derivable), rather than
+    // stamping the -large placeholder 512 that no longer matches the
+    // duplicated per-layer `pos_embed.weight` bytes.
+    let n_pos_buckets = infer_n_pos_buckets(&st);
     write_hparams(
         &mut b,
         "vokra.bert.deberta_v2",
         n_layers,
         d_model,
         vocab_size,
+        n_pos_buckets,
     );
 
     // Tokenizer side-car — Blocker 5 (2026-08-06). Front-loads the
@@ -593,28 +599,83 @@ pub(crate) fn add_f32_array(b: &mut GgufBuilder, key: &str, values: &[f32]) {
     );
 }
 
+/// Wave-4 DEBERTA-CONV-NAMES (2026-08-09): head-dim convention for the HF
+/// DeBERTa family. Both `ku-nlp/deberta-v2-large-japanese-char-wwm` and
+/// `microsoft/deberta-v3-large` use `head_dim = 64` (16 heads × 64 =
+/// 1024 = d_model); the "base" variants use 12 heads × 64 = 768. Every
+/// public HF DeBERTa checkpoint we ever plan to load holds this constant.
+/// `d_model / HEAD_DIM_HF_DEFAULT` is therefore a shape-derived (not
+/// invented) value that matches every real target exactly and keeps the
+/// synthetic round-trip test [d_model=8 → 1 head] loader-loadable.
+pub(crate) const HEAD_DIM_HF_DEFAULT: u32 = 64;
+
+/// Derives `n_heads` from `d_model` via [`HEAD_DIM_HF_DEFAULT`] with a
+/// floor of 1 (single-head fallback for tiny synthetic fixtures — real
+/// HF checkpoints always have `d_model >= 768`, so the floor never fires
+/// on real inputs). Guarantees `d_model % n_heads == 0` for every
+/// `d_model` that is a multiple of `HEAD_DIM_HF_DEFAULT` OR smaller than
+/// it, which covers every checkpoint the converter can encounter.
+pub(crate) fn derive_n_heads(d_model: u64) -> u32 {
+    let raw = (d_model / u64::from(HEAD_DIM_HF_DEFAULT)) as u32;
+    raw.max(1)
+}
+
 /// Writes the shared six-key `vokra.bert.<arch>.*` hparam chunk group
 /// (`n_layers` / `d_model` / `n_heads` / `vocab_size` / `n_pos_buckets` /
-/// `max_pos_dist`) under `prefix`. `n_heads` / `n_pos_buckets` /
-/// `max_pos_dist` are not derivable from tensor shapes (see module doc)
-/// and are written as the same placeholder values
-/// `DebertaV2Encoder::from_gguf` / `DebertaV3Encoder::from_gguf` already
-/// default to when the key is absent — this converter writes them
-/// explicitly so the GGUF is self-describing rather than relying on a
-/// downstream default.
+/// `max_pos_dist`) under `prefix`.
+///
+/// **`n_heads`** is derived from `d_model` via
+/// [`derive_n_heads`] (shape-driven — HF DeBERTa convention of
+/// `head_dim=64`). The previous hard-coded `16` was a placeholder that
+/// only happened to be correct for `-large` variants and tripped the
+/// loader's `d_model % n_heads == 0` divisibility check on any smaller
+/// checkpoint (Wave-4 DEBERTA-CONV-NAMES round-trip finding).
+///
+/// **`n_pos_buckets`** is the caller-supplied value derived from the
+/// upstream `rel_embeddings.weight` first-axis extent
+/// (`[n_pos_buckets, d_model]`) — genuinely shape-derivable and required
+/// for the loader's `pos_embed` slice-length math to match the tensor
+/// the converter emitted. `None` falls back to the `-large` default 512
+/// (only reachable when the input safetensors contains no rel_embeddings
+/// at all, an unrealistic edge case that keeps existing per-tensor
+/// tests running).
+///
+/// **`max_pos_dist`** is the `-large` convention default (512). No
+/// public HF DeBERTa checkpoint uses a different value and no loader
+/// assertion depends on it — can be tightened by owner in a follow-up
+/// (Task 30 follow-up) once a real fine-tune with a non-default value
+/// is inspected.
 pub(crate) fn write_hparams(
     b: &mut GgufBuilder,
     prefix: &str,
     n_layers: u32,
     d_model: u64,
     vocab_size: u64,
+    n_pos_buckets: Option<u32>,
 ) {
     b.add_u32(&format!("{prefix}.n_layers"), n_layers);
     b.add_u32(&format!("{prefix}.d_model"), d_model as u32);
-    b.add_u32(&format!("{prefix}.n_heads"), 16); // "large" convention — assumed, unverified (Task 30)
+    b.add_u32(&format!("{prefix}.n_heads"), derive_n_heads(d_model));
     b.add_u32(&format!("{prefix}.vocab_size"), vocab_size as u32);
-    b.add_u32(&format!("{prefix}.n_pos_buckets"), 512); // loader default — not independently derived
-    b.add_u32(&format!("{prefix}.max_pos_dist"), 512); // loader default — not independently derived
+    b.add_u32(
+        &format!("{prefix}.n_pos_buckets"),
+        n_pos_buckets.unwrap_or(512),
+    );
+    b.add_u32(&format!("{prefix}.max_pos_dist"), 512); // -large convention — Task 30 follow-up
+}
+
+/// Recovers `n_pos_buckets` from the upstream `deberta.encoder.
+/// rel_embeddings.weight` tensor's first-axis extent, which is exactly
+/// `[n_pos_buckets, d_model]` in every real HF DeBERTa checkpoint (both
+/// v2 char-JA and v3-large). Returns `None` when the tensor is absent
+/// (unrealistic — HF DeBERTa always ships it) so the caller can fall
+/// back to a per-arch default.
+pub(crate) fn infer_n_pos_buckets(st: &SafetensorsFile) -> Option<u32> {
+    st.tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.rel_embeddings.weight")
+        .and_then(|t| t.shape.first().copied())
+        .and_then(|v| u32::try_from(v).ok())
 }
 
 /// Counts the highest `N` in any tensor name containing the literal
@@ -828,10 +889,16 @@ mod tests {
             Some(3),
             "highest layer index observed is 2 (layer.0 and layer.2) -> n_layers = 3"
         );
+        // Wave-4 DEBERTA-CONV-NAMES (2026-08-09): `n_heads` is derived from
+        // `d_model` via `HEAD_DIM_HF_DEFAULT = 64` with a floor of 1
+        // (single-head fallback for tiny synthetic fixtures — the base
+        // fixture's `d_model = 4` gives `4 / 64 = 0 → 1`). Real HF
+        // checkpoints (`d_model = 1024`) yield the correct `n_heads = 16`.
         assert_eq!(
             file.get("vokra.bert.deberta_v2.n_heads")
                 .and_then(|v| v.as_u64()),
-            Some(16)
+            Some(1),
+            "n_heads is derive_n_heads(d_model=4) = max(1, 0) = 1, not the old placeholder 16"
         );
         assert_eq!(
             file.get("vokra.bert.deberta_v2.n_pos_buckets")
@@ -1099,6 +1166,28 @@ mod tests {
         assert!(matches!(err, ConvertError::Parse(_)));
         assert!(!output.exists(), "no partial GGUF left behind");
         std::fs::remove_file(&input).ok();
+    }
+
+    /// Wave-4 DEBERTA-CONV-NAMES (2026-08-09) — `derive_n_heads` matches
+    /// the HF DeBERTa convention (`head_dim = 64`) for every real target
+    /// checkpoint. Every value listed here comes from the corresponding
+    /// upstream `config.json`; the floor-of-1 branch protects tiny
+    /// synthetic fixtures without silently falling to 0 (which would
+    /// trip the loader's `n_heads == 0` guard).
+    #[test]
+    fn derive_n_heads_matches_hf_convention() {
+        // Real HF DeBERTa checkpoints.
+        assert_eq!(derive_n_heads(1024), 16, "deberta-*-large: 16 heads");
+        assert_eq!(derive_n_heads(768), 12, "deberta-*-base: 12 heads");
+        assert_eq!(derive_n_heads(384), 6, "deberta-*-small: 6 heads");
+        // Synthetic tiny fixtures — must not collapse to 0 (would trip
+        // loader's `n_heads == 0` guard, silently break the round-trip
+        // test); must divide `d_model` evenly (loader's `d_model %
+        // n_heads == 0` guard).
+        assert_eq!(derive_n_heads(8), 1, "tiny fixture d_model=8 → single head");
+        assert_eq!(derive_n_heads(4), 1, "even tinier — floor still 1, not 0");
+        assert_eq!(derive_n_heads(64), 1, "d_model=head_dim exactly → 1 head");
+        assert_eq!(derive_n_heads(128), 2, "d_model=2*head_dim → 2 heads");
     }
 
     /// Blocker 5 (2026-08-06) — a `vocab.txt` that is not valid UTF-8

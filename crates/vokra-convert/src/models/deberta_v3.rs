@@ -45,7 +45,7 @@ use crate::safetensors::SafetensorsFile;
 use super::deberta_v2::{
     CATEGORY, ConvertReport, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, KEY_TOKENIZER_PREFIX,
     KIND_SENTENCEPIECE_UNIGRAM, MapAction, add_f32_array, add_string_array, classify_skip,
-    count_layers, infer_vocab_and_d_model, map_deberta_name, write_hparams,
+    count_layers, infer_n_pos_buckets, infer_vocab_and_d_model, map_deberta_name, write_hparams,
 };
 
 /// `vokra.model.arch` for DeBERTa v3 GGUFs.
@@ -121,12 +121,16 @@ pub fn convert_deberta_v3_file(
     // NOT independently verified against a real checkpoint; Task 30 fixup.
     let (vocab_size, d_model) = infer_vocab_and_d_model(&st)?;
     let n_layers = count_layers(&st);
+    // Wave-4 DEBERTA-CONV-NAMES (2026-08-09): shape-derived n_pos_buckets
+    // (same rationale as v2 — see `infer_n_pos_buckets` doc).
+    let n_pos_buckets = infer_n_pos_buckets(&st);
     write_hparams(
         &mut b,
         "vokra.bert.deberta_v3",
         n_layers,
         d_model,
         vocab_size,
+        n_pos_buckets,
     );
 
     // Tokenizer side-car — Blocker 5 (2026-08-06). See `write_tokenizer_spm_json`.

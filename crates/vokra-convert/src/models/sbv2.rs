@@ -2585,7 +2585,12 @@ mod tests {
         // OUT of this PassThrough list and INTO Rename because the
         // runtime `HifiGanWeights::cond` slot now consumes them. See
         // `classify_dec_cond_now_renamed_hgan05` below.
-        for name in ["enc_p.proj.weight"] {
+        {
+            // Wave-4 (2026-08-09): unrolled from a single-element `for` to
+            // satisfy clippy `single_element_loop -D warnings`. Kept as a
+            // block so the list can grow back if HGAN-05 gets follow-up
+            // "still-PassThrough" names.
+            let name = "enc_p.proj.weight";
             assert!(
                 matches!(
                     classify_tensor(name, Some(3)),

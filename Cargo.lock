@@ -60,6 +60,7 @@ dependencies = [
 name = "vokra-bert"
 version = "0.1.0"
 dependencies = [
+ "vokra-convert",
  "vokra-core",
  "vokra-mmap",
 ]
