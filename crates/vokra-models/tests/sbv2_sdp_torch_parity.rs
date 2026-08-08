@@ -102,6 +102,110 @@ fn sdp_noise_matches_torch_philox_seed_0_t_50() {
     }
 }
 
+/// Seed 0, T=8 → 16 samples (2 channels × 8 timesteps), 64 bytes.
+///
+/// # RNG-BISECT regression trap (audit gap #28, Wave-1 2026-08-08)
+///
+/// The T=50 anchor above proves that Rust's `SbV2SDP::sample` inner
+/// fill loop matches Python's `torch.empty(1, 2, 51)[..., :50].normal_()`
+/// scalar-path bytes end-to-end on a 400-byte buffer. This T=8 trap
+/// adds a second anchor at exactly the SBV2-short-input case
+/// (a `[2, 8]` noise buffer is what a 4-phoneme input like "テスト"
+/// produces when `2 * text_seq_len = 8`), where any regression in the
+/// pair-cache logic or the streaming Box-Muller order would surface
+/// FIRST (16 samples = 8 pair evaluations = the exact granularity
+/// where a swap of cos/sin or a mis-seeded engine reset would show
+/// up as a rotate-by-1 pair divergence).
+///
+/// A future maintainer refactoring `TorchRandnStream::next_f32` (e.g.
+/// merging the pair-cache into a fill-array API) can use this test as
+/// an immediate red flag before the T=50 test runs — same bytes as
+/// the first 64 bytes of the T=50 fixture (prefix consistency of the
+/// deterministic per-seed stream is a first-principles property of
+/// the pair-cached Box-Muller construction, so this trap ALSO cross-
+/// validates the fixture-pair itself).
+///
+/// # Why this is not just "T=50 prefix"
+///
+/// This test loads a Python-generated fixture (`sdp_noise_seed0_T8.f32.bin`)
+/// independently produced by `tools/parity/sbv2_sdp_noise_dump.py`,
+/// NOT a slice of the T=50 fixture. If someone regenerated only the
+/// T=50 fixture from a buggy dumper, this test would catch it because
+/// the T=8 fixture would still hold the old bytes — proving they were
+/// bit-exact against each other AND against the invariant that the
+/// stream is prefix-deterministic.
+#[test]
+fn sdp_noise_matches_torch_philox_seed_0_t_8() {
+    let path = fixture_path("sdp_noise_seed0_T8.f32.bin");
+    let expected = fs::read(&path).unwrap_or_else(|_| {
+        panic!(
+            "fixture {} missing; regenerate via `cd tools/parity && uv run \
+             python sbv2_sdp_noise_dump.py --seed 0 --T 8 --out {}`",
+            path.display(),
+            path.display()
+        )
+    });
+    assert_eq!(
+        expected.len(),
+        2 * 8 * 4,
+        "fixture must be 2*T*4 = 64 bytes"
+    );
+
+    let mut rng = TorchRandnStream::new(0);
+    let got = fill_sdp_noise(&mut rng, 8);
+    let got_bytes: Vec<u8> = got.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+    if got_bytes != expected {
+        let first_diff = got_bytes
+            .iter()
+            .zip(expected.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(0);
+        panic!(
+            "fixture {} diverged at byte offset {} (sample index {}): \
+             got_bytes[{}..{}] = {:?}, expected[{}..{}] = {:?}",
+            path.display(),
+            first_diff,
+            first_diff / 4,
+            first_diff,
+            (first_diff + 4).min(got_bytes.len()),
+            &got_bytes[first_diff..(first_diff + 4).min(got_bytes.len())],
+            first_diff,
+            (first_diff + 4).min(expected.len()),
+            &expected[first_diff..(first_diff + 4).min(expected.len())],
+        );
+    }
+}
+
+/// Prefix-determinism property: the first 64 bytes of the T=50 fixture
+/// MUST equal the entire T=8 fixture. This is a first-principles
+/// property of `TorchRandnStream::next_f32` (deterministic per-seed
+/// pair-cached Box-Muller — a fresh stream at seed=0 always produces
+/// the same sample-0, sample-1, ...), and it acts as a cross-fixture
+/// integrity check: if the two fixtures were regenerated at different
+/// times from different `torch.randn` implementations (say, one from
+/// AVX2 fast-path bytes and the other from scalar-path bytes), the
+/// prefix invariant would fail without any Rust code needing to change.
+#[test]
+fn sdp_noise_t8_is_prefix_of_t50_fixture() {
+    let t8 = fs::read(fixture_path("sdp_noise_seed0_T8.f32.bin"))
+        .expect("T=8 fixture readable (regenerate per the T=8 test above)");
+    let t50 = fs::read(fixture_path("sdp_noise_seed0_T50.f32.bin"))
+        .expect("T=50 fixture readable (regenerate per the T=50 test above)");
+    assert!(
+        t50.len() >= t8.len(),
+        "T=50 fixture must be longer than T=8"
+    );
+    assert_eq!(
+        &t50[..t8.len()],
+        t8.as_slice(),
+        "prefix invariant broken: the two SBV2 SDP noise fixtures were \
+         regenerated from different Python paths (one scalar, one AVX2, \
+         or two different dumper versions). The two fixtures must be \
+         bit-exact prefixes of each other at seed=0."
+    );
+}
+
 /// Cross-check that the Step 8 refactor kept `SbV2SDP::sample` generic:
 /// building the same noise buffer via `GaussianSplitMix64` (the
 /// pre-existing synthetic RNG) must produce a DIFFERENT byte sequence
