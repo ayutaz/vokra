@@ -755,6 +755,32 @@ impl SbV2Model {
         // then intentionally DISCARDED (its former use was the broadcast
         // add that this fix removes).
         //
+        // # SBV2-SPK-EMB-LINEAR-DECISION (2026-08-09)
+        //
+        // The upstream `enc_p.encoder.spk_emb_linear.{weight,bias}`
+        // pair is loaded by the converter into
+        // `sbv2.text_encoder.spk_emb_linear.*` and materialized as
+        // this `ExternalSpeakerProjection`. Its **projection output
+        // is discarded** here (only its shape-validation side-effect
+        // survives), which mirrors Python reference behavior for the
+        // SBV2 v2 base ckpt: upstream feeds SPEAKER conditioning via
+        // (a) the flow's per-block `spk_emb_linear` (weights live in
+        // `flow.flows.<i>.enc.spk_emb_linear`, distinct from
+        // `enc_p.encoder.spk_emb_linear`), and (b) the SDP's `cond(g)`
+        // primitive at step 6, both fed the raw `[d_speaker]`
+        // conditioning vector `speaker_e_flow` — NOT the projected
+        // `[d_model]` output of `enc_p.encoder.spk_emb_linear`.
+        //
+        // The upstream role of `enc_p.encoder.spk_emb_linear` is not
+        // yet transcribed in this scaffold (would require reading the
+        // AGPL StyleBertVITS2 code — owner ADR needed), so this pipeline
+        // preserves shape-validation without silently mixing the
+        // projected vector into any wrong place. If a future owner
+        // ADR determines the projection SHOULD be broadcast-added at
+        // some specific pipeline stage, wire it in there; do not
+        // reintroduce the pre-Bug-4 broadcast-add into `hidden_for_flow`
+        // (that was the exact scale-inflation that gated OOM STOPGAP).
+        //
         // | request.speaker_embedding | model.speaker_projection | path                                                            |
         // |---------------------------|--------------------------|-----------------------------------------------------------------|
         // | `Some(vec)`               | `Some(proj)`             | validate via `proj.forward(vec)`; pass `vec` to SDP.g and flow |

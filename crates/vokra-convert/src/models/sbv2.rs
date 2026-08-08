@@ -1706,7 +1706,29 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
         "SBV2 encoder auxiliary tensor — no matching per-layer rename in \
          classify_encoder_layer_tensor (preserved verbatim for a follow-up wave)"
     } else if name.starts_with("enc_p.proj.") {
-        "VITS output projection to (mu, log_sigma) — no Rust text_encoder field yet"
+        // SBV2-INFO-01-ENC-P-PROJ (2026-08-09): upstream VITS prior head
+        // projects the text_encoder output to `(mu, log_sigma)` — the
+        // prior mean and log-standard-deviation used by the FLOW-NOISE-
+        // SCALE reparameterization (`z_p = mu + torch.randn * exp(logs)
+        // * noise_scale`). The Rust scaffold currently treats
+        // `mel_hidden` as the mean directly and `logs = 0`
+        // (`exp(0) = 1`), which is arithmetically equivalent when
+        // upstream's `enc_p.proj` weights are near-identity for `mu`
+        // and near-zero for `log_sigma`. Real fine-tune ckpts may
+        // ship `enc_p.proj` weights that meaningfully diverge from
+        // that assumption.
+        //
+        // Preserving verbatim means a future SbV2 wave can implement
+        // `PriorHead::from_gguf` + `mel_hidden.mean, mel_hidden.logstd
+        // = prior_head(text_hidden)` without a re-conversion. Owner
+        // decision is required to (a) transcribe upstream forward
+        // topology under a licensing-cleared source, or (b) trace a
+        // real fine-tune ckpt's arithmetic through the AGPL upstream,
+        // or (c) accept the current mean=mel_hidden approximation as
+        // permanent (base-ckpt agnostic behavior is unchanged by
+        // either choice).
+        "VITS output projection to (mu, log_sigma) — no Rust text_encoder field yet \
+         (SBV2-INFO-01-ENC-P-PROJ: owner decision pending on prior-head implementation)"
     } else if name.starts_with("sdp.") {
         "production SBV2 SDP path (DDS-net + rational-quadratic-spline ConvFlow) — Rust \
          duration.rs simplified"
