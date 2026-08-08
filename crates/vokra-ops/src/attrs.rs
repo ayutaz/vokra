@@ -23,5 +23,5 @@
 pub use vokra_core::ir::graph::{
     DctAttrs, DurationUnit, HifiGanAttrs, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs,
     LengthConditioningMode, MelAttrs, MelNorm, MelScale, MfccAttrs, Normalization, PadMode,
-    StftAttrs, Window, WindowSymmetry,
+    ResBlockType, StftAttrs, Window, WindowSymmetry,
 };

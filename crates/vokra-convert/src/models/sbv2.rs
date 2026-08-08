@@ -87,10 +87,12 @@
 //!    using DDS-net + rational-quadratic-spline `ConvFlow` — the Rust
 //!    `SbV2SDP` is a scalar-affine simplification), `dec.cond.*` (decoder
 //!    speaker conditioning), `enc_p.proj.*` (VITS output projection to
-//!    `(mu, log_sigma)`), `enc_p.encoder.spk_emb_linear.*` ("Blocker 3"
-//!    speaker-conditioning projection), and `dec.resblocks.*.convs2.*`
-//!    (undilated residual convs the Rust simplified HiFi-GAN does not
-//!    consume). See [`classify_tensor`] for the per-family reason strings.
+//!    `(mu, log_sigma)`), and `enc_p.encoder.spk_emb_linear.*` ("Blocker
+//!    3" speaker-conditioning projection). Pre-Wave-2 (2026-08-09) also
+//!    included `dec.resblocks.*.convs2.*` — that arm now
+//!    [`Rename`](TensorClass::Rename)s to `sbv2.decoder.mrf.<s>.<b>.layer.<l>.{weight,bias}_c2`
+//!    as part of the HGAN-01 fix; see [`classify_tensor`]'s convs2
+//!    arm. See [`classify_tensor`] for the per-family reason strings.
 //! 4. **`Skip`** — tensor is dropped with a stderr log line. Applies to
 //!    training-side tensors that `SbV2Model::from_gguf` never loads:
 //!    `enc_q.*` (posterior encoder), `dp.*` (deterministic duration
@@ -135,20 +137,23 @@
 //! (1264 tensors, all F32), the classification breakdown is (verified
 //! end-to-end on 2026-08-06 against the real checkpoint):
 //!
-//! - Rename emits: 514 = 58 (pre-Blocker-2b) + 456 (Blocker 2b flow
-//!   family: `flow.flows.{0,2,4,6}.*` = 4 blocks × 114 tensors/block,
-//!   see [`classify_flow_block_tensor`] for the per-family breakdown)
-//! - WeightNorm reconstructions: 50 (`dec.ups.{0..4}` = 5 +
-//!   `dec.resblocks.{0..14}.convs1.{0..2}` = 45)
-//! - Verbatim pass-through: 393 = 849 (pre-Blocker-2b) − 456 (flow
-//!   tensors, now renamed) = `enc_p.encoder.spk_emb_linear.*` = 2 +
+//! - Rename emits (post-Wave-2): 604 = 58 (pre-Blocker-2b) + 456 (Blocker
+//!   2b flow family: `flow.flows.{0,2,4,6}.*` = 4 blocks × 114 tensors/block,
+//!   see [`classify_flow_block_tensor`] for the per-family breakdown) +
+//!   90 (HGAN-01 convs2 bare-weight + bias renames — 15 flat resblocks ×
+//!   3 layers × 2 tail slots)
+//! - WeightNorm reconstructions (post-Wave-2): 95 (`dec.ups.{0..4}` = 5 +
+//!   `dec.resblocks.{0..14}.convs1.{0..2}` = 45 +
+//!   `dec.resblocks.{0..14}.convs2.{0..2}` = 45 — HGAN-01 added the
+//!   convs2 weight_g/weight_v pairs)
+//! - Verbatim pass-through (post-Wave-2): 258 = 393 (pre-Wave-2)
+//!   − 135 (`dec.resblocks.*.convs2.*` now renamed) = `enc_p.encoder.spk_emb_linear.*` = 2 +
 //!   `sdp.*` production (not `post_`) = 144 +
-//!   `dec.resblocks.*.convs2.*` = 135 + `enc_p.proj.*` = 2 +
-//!   `dec.cond.*` = 2 + `flow.flows.{1,3,5,7}.*` = 0 (Flip has no
-//!   tensors) + auxiliary residual
-//! - **Total written to output GGUF: 957** = 514 + 50 + 393
-//!   (unchanged from pre-Blocker-2b — the same 957 tensors land in the
-//!   output, just under new target names for the flow family)
+//!   `enc_p.proj.*` = 2 +
+//!   `dec.cond.*` = 2 + auxiliary residual
+//! - **Total written to output GGUF: 957** = 604 + 95 + 258 (unchanged
+//!   from pre-Wave-2 — the same 957 tensors land in the output, just
+//!   under new target names for the convs2 family)
 //! - Skipped training-side: 257 (`enc_q.*` = 103 + `dp.*` = 12 +
 //!   `sdp.post_*` = 142)
 //! - `weight_v` consumed as pair sibling (read but not written): 50
@@ -1587,15 +1592,52 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
                 let convs = parts[1];
                 let tail = parts[3];
                 if convs == "convs2" {
-                    // Rust's simplified HiFi-GAN keeps only one Conv1d
-                    // per dilation (the dilated one, `convs1`). The
-                    // undilated residual convs — `convs2` in upstream —
-                    // have no landing spot yet. Preserve verbatim so a
-                    // later architecture wave can flip them on.
-                    return TensorClass::PassThrough {
-                        reason: "convs2 (undilated residual conv) — Rust simplified HiFi-GAN \
-                                 has no consumer yet",
+                    // Wave-2 HGAN-01 fix (2026-08-09): pre-fix this
+                    // arm was `PassThrough` because the Rust runtime
+                    // had no `weight_c2` / `bias_c2` slot to bind
+                    // convs2 into. `mrf_branch_forward` now runs the
+                    // upstream `for (c1, c2) in zip(convs1, convs2)`
+                    // chain (V1 topology), and the from_gguf loader
+                    // requires both convs1 + convs2 tensors — a
+                    // converter that continued to drop convs2 would
+                    // fail the loader's FR-EX-08 gate loudly.
+                    let n_branches = match n_resblock_branches {
+                        Some(n) if n > 0 => n,
+                        _ => {
+                            // Without a config side-car we cannot
+                            // honestly split the flat index — preserve
+                            // verbatim so no data is dropped, and the
+                            // downstream loader's shape check surfaces
+                            // the config gap.
+                            return TensorClass::PassThrough {
+                                reason: "resblock stage/branch split requires config side-car's \
+                                         decoder_resblock_kernel_sizes.len() (n_branches)",
+                            };
+                        }
                     };
+                    let stage = flat_i / n_branches;
+                    let branch = flat_i % n_branches;
+                    let target_base = format!("sbv2.decoder.mrf.{stage}.{branch}.layer.{j}");
+                    match tail {
+                        "weight_g" => {
+                            return TensorClass::WeightNorm {
+                                sibling_v: format!("dec.resblocks.{flat_i}.convs2.{j}.weight_v"),
+                                target_name: format!("{target_base}.weight_c2"),
+                            };
+                        }
+                        "weight_v" => {
+                            return TensorClass::PassThrough {
+                                reason: "orphan dec.resblocks convs2 weight_v (weight_g missing)",
+                            };
+                        }
+                        "bias" => {
+                            return TensorClass::Rename(format!("{target_base}.bias_c2"));
+                        }
+                        "weight" => {
+                            return TensorClass::Rename(format!("{target_base}.weight_c2"));
+                        }
+                        _ => {}
+                    }
                 }
                 if convs == "convs1" {
                     let n_branches = match n_resblock_branches {
@@ -2408,18 +2450,43 @@ mod tests {
     }
 
     #[test]
-    fn classify_dec_resblocks_convs2_always_passes_through() {
-        // Rust's simplified HiFi-GAN has no consumer for convs2
-        // (undilated residual conv). Even with a valid config that would
-        // let us do the stage/branch math for convs1, convs2 stays
-        // pass-through until a later architecture wave lands.
-        for cfg in [None, Some(3usize)] {
-            let out = classify_tensor("dec.resblocks.0.convs2.0.weight_g", cfg);
-            assert!(
-                matches!(out, TensorClass::PassThrough { .. }),
-                "convs2 must be PassThrough (cfg={cfg:?}) but got {out:?}"
-            );
-        }
+    fn classify_dec_resblocks_convs2_renames_when_config_available() {
+        // Wave-2 HGAN-01 (2026-08-09): pre-fix this arm was
+        // PassThrough because the Rust runtime had no `weight_c2` slot.
+        // Now `mrf_branch_forward` runs the full V1 `convs1 + convs2`
+        // chain and the from_gguf loader demands both — the converter
+        // must emit convs2.* under the sibling `sbv2.decoder.mrf.<s>.<b>.layer.<l>.weight_c2 / bias_c2`
+        // names so the loader can bind them.
+        //
+        // Without a config (cannot do stage/branch math) it still falls
+        // back to PassThrough so no data is silently lost — the
+        // downstream loader will then loud-fail on the missing weight_c2
+        // tensor, which is the honest FR-EX-08 outcome.
+        let no_cfg = classify_tensor("dec.resblocks.0.convs2.0.weight_g", None);
+        assert!(
+            matches!(no_cfg, TensorClass::PassThrough { .. }),
+            "convs2 without config must PassThrough (config-derivable field), got {no_cfg:?}"
+        );
+
+        // With n_branches=3 and flat_i=0 → (stage=0, branch=0).
+        assert_eq!(
+            classify_tensor("dec.resblocks.0.convs2.0.weight_g", Some(3)),
+            TensorClass::WeightNorm {
+                sibling_v: "dec.resblocks.0.convs2.0.weight_v".into(),
+                target_name: "sbv2.decoder.mrf.0.0.layer.0.weight_c2".into(),
+            }
+        );
+        // convs2 bias also remaps to `bias_c2` (distinct from convs1's
+        // `bias` — the loader has two named slots per layer).
+        assert_eq!(
+            classify_tensor("dec.resblocks.7.convs2.0.bias", Some(3)),
+            TensorClass::Rename("sbv2.decoder.mrf.2.1.layer.0.bias_c2".into())
+        );
+        // Bare weight (post-weight-norm collapsed) also renames.
+        assert_eq!(
+            classify_tensor("dec.resblocks.14.convs2.1.weight", Some(3)),
+            TensorClass::Rename("sbv2.decoder.mrf.4.2.layer.1.weight_c2".into())
+        );
     }
 
     #[test]
@@ -3164,11 +3231,14 @@ mod tests {
     }
 
     #[test]
-    fn dec_resblocks_convs2_pass_through_verbatim_never_lands_under_mrf() {
-        // convs2 is the "convs1 with dilation=1" residual conv in
-        // HiFi-GAN's ResBlock1; Rust's simplified impl has no landing
-        // spot for it. Even with a valid config, it must stay verbatim
-        // rather than being folded into the mrf.*.layer.* path.
+    fn dec_resblocks_convs2_lands_under_mrf_layer_c2_slots() {
+        // Wave-2 HGAN-01 (2026-08-09) — pre-fix this test asserted
+        // convs2 stayed as PassThrough because the Rust runtime had no
+        // consumer for it. Now `mrf_branch_forward` runs the full V1
+        // `for (c1, c2) in zip(convs1, convs2)` chain and the loader
+        // demands both convs1 + convs2 tensors, so the converter now
+        // renames convs2.{weight_g/weight_v pairs, bias, bare weight}
+        // to sibling `sbv2.decoder.mrf.<s>.<b>.layer.<l>.{weight_c2,bias_c2}`.
         let cfg_bytes = valid_config_json();
         let entries: Vec<(&str, &str, &[u64], Vec<u8>)> = vec![
             (
@@ -3191,35 +3261,40 @@ mod tests {
             ),
         ];
         let blob = safetensors_multi(&entries);
-        let input = temp_path("convs2-pt-in", "safetensors");
-        let config = temp_path("convs2-pt-cfg", "json");
-        let output = temp_path("convs2-pt-out", "gguf");
+        let input = temp_path("convs2-mrf-c2-in", "safetensors");
+        let config = temp_path("convs2-mrf-c2-cfg", "json");
+        let output = temp_path("convs2-mrf-c2-out", "gguf");
         std::fs::write(&input, &blob).expect("write input");
         std::fs::write(&config, &cfg_bytes).expect("write cfg");
 
         let report = convert_sbv2_file(&input, &output, Some(&config), None).expect("convert");
-        // All 3 tensors verbatim pass-through (bias, weight_g, weight_v).
+        // 3 tensors read; weight_g + weight_v pair reconstructs to one
+        // weight_c2 (1 weight-norm), bias renames to bias_c2 (1 rename).
         assert_eq!(report.read, 3);
+        assert_eq!(report.weight_norm_reconstructed, 1);
+        assert_eq!(report.renamed, 1);
         assert_eq!(
-            report.passed_through_verbatim, 3,
-            "convs2 stays fully verbatim under upstream names"
+            report.passed_through_verbatim, 0,
+            "convs2 must no longer PassThrough — it renames to weight_c2/bias_c2"
         );
-        assert_eq!(report.renamed, 0);
-        assert_eq!(report.weight_norm_reconstructed, 0);
 
         let out_bytes = std::fs::read(&output).expect("read");
         let file = GgufFile::parse(out_bytes).expect("parse");
         assert!(
-            file.tensor_info("dec.resblocks.0.convs2.0.weight_g")
+            file.tensor_info("sbv2.decoder.mrf.0.0.layer.0.weight_c2")
                 .is_some(),
-            "convs2 weight_g preserved under upstream name"
+            "convs2 weight lands under sbv2.decoder.mrf.0.0.layer.0.weight_c2"
         );
-        // Confirm we did NOT accidentally emit anything under the mrf.*
-        // path — no convs2-driven target should land at mrf.0.0.layer.0.
         assert!(
-            file.tensor_info("sbv2.decoder.mrf.0.0.layer.0.weight")
+            file.tensor_info("sbv2.decoder.mrf.0.0.layer.0.bias_c2")
+                .is_some(),
+            "convs2 bias lands under sbv2.decoder.mrf.0.0.layer.0.bias_c2"
+        );
+        // The upstream names must not leak into the output.
+        assert!(
+            file.tensor_info("dec.resblocks.0.convs2.0.weight_g")
                 .is_none(),
-            "convs2 must never land under the mrf.*.layer.*.weight target"
+            "post-Wave-2: upstream convs2 name must not survive"
         );
 
         std::fs::remove_file(&input).ok();

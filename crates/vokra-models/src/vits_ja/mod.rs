@@ -864,6 +864,14 @@ impl VitsJaConfig {
                 .collect(),
             sample_rate: self.sample_rate,
             leaky_relu_slope: VITS_JA_LEAKY_RELU_SLOPE,
+            // Canonical VITS/MB-iSTFT-VITS2 preset ships with
+            // `resblock='1'` (ResBlock1) — see
+            // `tools/parity/vendor/vits/modules.py`. The real weight
+            // path is a scaffold today (no `convs2` tensor emission yet
+            // for VITS JA) but declaring the topology honestly here
+            // means when the loader lands it must supply c2 or fail
+            // loudly per `mrf_branch_forward`'s FR-EX-08 gate.
+            res_block_type: vokra_core::ir::ResBlockType::V1,
         };
         // Redundant with `validate_for_forward` on paper, but the two
         // validators enforce their own contracts — running both here

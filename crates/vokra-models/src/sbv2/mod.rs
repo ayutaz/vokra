@@ -66,7 +66,7 @@ use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
-use vokra_ops::attrs::HifiGanAttrs;
+use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
     HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer, UpsampleStageWeights,
 };
@@ -398,6 +398,12 @@ impl SbV2Model {
             resblock_dilation_sizes: vec![vec![1]],
             sample_rate: 44_100,
             leaky_relu_slope: 0.1,
+            // Synthetic weights below build single-conv layers (no c2)
+            // to keep synthesize()-shape smoke tests unchanged from
+            // pre-Wave-2 behavior. A future synthesize e2e that swaps
+            // in real ckpt weights should build V1 attrs — the real
+            // SBV2 v2 checkpoint uses ResBlock1.
+            res_block_type: ResBlockType::V2,
         };
         let weights = synthetic_hifigan_weights(&attrs);
         let sample_rate = attrs.sample_rate;
@@ -582,6 +588,9 @@ impl SbV2Model {
             resblock_dilation_sizes: vec![vec![1]],
             sample_rate: 44_100,
             leaky_relu_slope: 0.1,
+            // See the sibling synthetic constructor above: synthetic
+            // weights builder emits single-conv per layer (no c2).
+            res_block_type: ResBlockType::V2,
         };
         let weights = synthetic_hifigan_weights_e2e(&attrs);
         let sample_rate = attrs.sample_rate;
@@ -2099,6 +2108,13 @@ impl SbV2Model {
             resblock_dilation_sizes: resblock_dilation_sizes.clone(),
             sample_rate,
             leaky_relu_slope,
+            // SBV2 v2 base checkpoint uses `resblock='1'` (ResBlock1)
+            // per upstream `tools/parity/vendor/vits/modules.py` +
+            // `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §7.
+            // The `weight_c2 + bias_c2` loader below requires this to
+            // be V1 — a mismatch would loudly fail via
+            // `mrf_branch_forward`'s FR-EX-08 gate.
+            res_block_type: ResBlockType::V1,
         };
 
         let conv_pre_weight = load_tensor_f32("sbv2.decoder.conv_pre.weight")?;
@@ -2124,9 +2140,23 @@ impl SbV2Model {
                 let mut layers = Vec::with_capacity(dilations.len());
                 for (layer, &dilation) in dilations.iter().enumerate() {
                     let p = format!("sbv2.decoder.mrf.{stage}.{branch}.layer.{layer}");
+                    // HGAN-01 fix (Wave 2, 2026-08-09): load convs2.*
+                    // — the undilated conv chain the upstream ResBlock1
+                    // forward pairs with each convs1 iteration
+                    // (`tools/parity/vendor/vits/modules.py:254 for (c1,
+                    // c2) in zip(self.convs1, self.convs2)`). Pre-fix
+                    // the converter passed convs2 through unread and
+                    // the loader had no `weight_c2` slot; half the
+                    // vocoder convs were silently dropped, guaranteeing
+                    // SBV2 v2 waveform parity would never converge.
+                    // Loader now requires both convs2.weight and
+                    // convs2.bias — a converter that emits neither is
+                    // a bug (loud `VokraError::ModelLoad`, FR-EX-08).
                     layers.push(ResBlockLayer {
                         weight: load_tensor_f32(&format!("{p}.weight"))?,
                         bias: load_tensor_f32(&format!("{p}.bias"))?,
+                        weight_c2: Some(load_tensor_f32(&format!("{p}.weight_c2"))?),
+                        bias_c2: Some(load_tensor_f32(&format!("{p}.bias_c2"))?),
                         dilation,
                         kernel,
                         channels: out_ch,
@@ -2343,6 +2373,13 @@ fn synthetic_hifigan_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
                     ResBlockLayer {
                         weight,
                         bias,
+                        // Synthetic V2 fixture: no convs2 chain — the
+                        // paired synthetic HifiGanAttrs sets
+                        // `res_block_type = V2`, and mrf_branch_forward's
+                        // FR-EX-08 gate rejects any layer that mixes
+                        // V2 topology with populated c2 weights.
+                        weight_c2: None,
+                        bias_c2: None,
                         dilation: *dilation,
                         kernel,
                         channels: out_ch,
@@ -2450,6 +2487,11 @@ fn synthetic_hifigan_weights_e2e(attrs: &HifiGanAttrs) -> HifiGanWeights {
                     ResBlockLayer {
                         weight,
                         bias,
+                        // Synthetic V2 e2e fixture — no convs2 chain.
+                        // See the sibling synthetic_hifigan_weights
+                        // builder for the same rationale.
+                        weight_c2: None,
+                        bias_c2: None,
                         dilation: *dilation,
                         kernel,
                         channels: out_ch,

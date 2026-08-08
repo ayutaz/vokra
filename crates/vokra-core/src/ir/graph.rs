@@ -423,6 +423,58 @@ pub struct PreEmphasisAttrs {
     pub coeff: f32,
 }
 
+/// MRF ResBlock topology variant. Matches upstream `jik876/hifi-gan` /
+/// `jaywalnut310/vits` / SBV2 v2's `resblock` config key (values `'1'` or
+/// `'2'`), which selects between the two structurally-different ResBlock
+/// forwards. Default is [`ResBlockType::V1`] — SBV2 v2, canonical HiFi-GAN
+/// V1/V2 presets, VITS/MB-iSTFT-VITS2 all use it.
+///
+/// # V1 vs V2 forward (upstream `tools/parity/vendor/vits/modules.py`
+/// `ResBlock1` at line 254 / `ResBlock2` at line 287)
+///
+/// - **V1** (`resblock='1'`): three parallel branches per stage. Each
+///   branch runs `n_dilations` iterations, where each iteration is:
+///
+///   ```text
+///     xt = leaky_relu(x, slope)      // channel-preserving
+///     xt = c1(xt)                    // dilated conv, dilation from list
+///     xt = leaky_relu(xt, slope)
+///     xt = c2(xt)                    // undilated (dilation=1) conv
+///     x  = xt + x                    // residual add INSIDE loop
+///   ```
+///
+///   So each branch has `2 * n_dilations` convolutions. Rust drops the
+///   x_mask multiply (single-utterance inference) but keeps everything
+///   else. Historical drop of `c2` (the audit's HGAN-01) silently omitted
+///   half the vocoder convs; historical outer-residual (the audit's
+///   HGAN-02) telescoped every layer into a single add.
+///
+/// - **V2** (`resblock='2'`): three parallel branches per stage. Each
+///   branch runs `n_dilations` iterations, where each iteration is:
+///
+///   ```text
+///     xt = leaky_relu(x, slope)
+///     xt = c(xt)                     // single conv (no c2 chain)
+///     x  = xt + x                    // residual add INSIDE loop
+///   ```
+///
+/// The variant lives on [`HifiGanAttrs::res_block_type`] so a single
+/// `hifigan_generator` call routes both topologies without a schema
+/// bifurcation. The converter picks the variant from the checkpoint's
+/// config side-car (`resblock: '1'` vs `resblock: '2'` — see the
+/// consuming SBV2/CosyVoice2 converter for the pin).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResBlockType {
+    /// `resblock='1'` — the SBV2 v2 / canonical HiFi-GAN V1 default.
+    /// Each branch layer has both a dilated `c1` conv and an undilated
+    /// `c2` conv, with residual add per iteration.
+    #[default]
+    V1,
+    /// `resblock='2'` — a lighter variant with a single conv per layer
+    /// (no `c2` chain), residual add per iteration.
+    V2,
+}
+
 /// Attributes of the `hifigan_generator` operator (FR-OP-10, M3-07).
 ///
 /// HiFi-GAN is a mel-conditioned neural vocoder: the generator stack takes a
@@ -489,6 +541,23 @@ pub struct HifiGanAttrs {
     /// attribute rather than hard-coded so a re-trained variant can override it
     /// without requiring an op enum change (SRS §3, "上流の実装差異に耐性").
     pub leaky_relu_slope: f32,
+    /// MRF ResBlock topology (V1 = SBV2 v2 / canonical HiFi-GAN, V2 =
+    /// lighter variant). See [`ResBlockType`] for the per-variant forward
+    /// semantics. Default (V1) matches every SBV2 v2 checkpoint and every
+    /// canonical HiFi-GAN preset that ships with `resblock='1'`.
+    ///
+    /// # Migration note
+    ///
+    /// Pre-Wave-2 code implicitly assumed V2-shape single-conv per layer.
+    /// A converter that omitted `res_block_type` used the field-level
+    /// default via `..Default::default()` — that now resolves to V1,
+    /// which will reject the load with `mrf_branch_forward` requiring
+    /// `weight_c2 + bias_c2` on every layer. Existing test fixtures that
+    /// carried only `weight`/`bias` (no `c2`) must set
+    /// `res_block_type: ResBlockType::V2` explicitly (see the tests
+    /// module in `crates/vokra-ops/src/hifigan.rs` for the reference
+    /// pattern).
+    pub res_block_type: ResBlockType,
 }
 
 impl HifiGanAttrs {

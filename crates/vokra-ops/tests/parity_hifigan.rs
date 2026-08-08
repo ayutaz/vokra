@@ -27,7 +27,7 @@
 //! approach — see `docs/adr/M3-06-mimi-rvq.md` §D5.
 
 use vokra_core::VokraError;
-use vokra_core::ir::graph::HifiGanAttrs;
+use vokra_core::ir::graph::{HifiGanAttrs, ResBlockType};
 use vokra_ops::{
     CalibrationTable, HifiGanConfig, HifiGanPrecision, HifiGanWeights, MrfBranchWeights,
     ResBlockLayer, UpsampleStageWeights, hifigan_generator,
@@ -48,6 +48,9 @@ fn parity_attrs() -> HifiGanAttrs {
         resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5]],
         sample_rate: 24_000,
         leaky_relu_slope: 0.1,
+        // parity_weights below builds V2-shape single-conv layers (no c2).
+        // Post-Wave-2 the res_block_type field is the sole selector.
+        res_block_type: ResBlockType::V2,
     }
 }
 
@@ -124,6 +127,8 @@ fn parity_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
                     ResBlockLayer {
                         weight,
                         bias,
+                        weight_c2: None,
+                        bias_c2: None,
                         dilation: *dilation,
                         kernel,
                         channels: out_ch,
