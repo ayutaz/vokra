@@ -35,24 +35,21 @@
 # `parity` job below is skipped entirely — an FR-EX-08 explicit, annotated
 # skip, never a silent no-op and never a fabricated pass.
 #
-# ## Honest failure while the gate is open (VITS vendoring not landed yet)
+# ## Honest failure while the gate is open (vendoring landed; workflow now
+# ## fails LOUDLY on any dumper error, no `set +e` cover-up)
 #
-# Once the gate opens, this workflow WILL fail — on purpose, today — at the
-# "Regenerate reference dump" step. `tools/parity/sbv2_dump_reference.py
-# --do-dump` (Task 30) always exits nonzero right now: its clean-room VITS
-# core reference (`jaywalnut310/vits`, MIT) is vendored only as a
-# `tools/parity/vendor/vits/{LICENSE,README.md}` scaffold, no ported module
-# yet (see that script's own module doc, tier 3 of its documented
-# dependency ladder). That is a real, already-documented, honestly-surfaced
-# gap — not a bug in this workflow, and not something to paper over with a
-# soft-skip / advisory-downgrade the way `parity-kokoro-real.yml` downgrades
-# an ISA-mismatch FAIL. The Rust parity test step still runs afterwards
-# (`if: always()`) for whatever diagnostic value it offers today (loading
-# the freshly-converted GGUFs via `SbV2Model::from_gguf`, which — per that
-# function's own doc — currently answers every `synthesize()` call with a
-# documented `NotImplemented` regardless of dumper output, since
-# `from_gguf` wires no G2P). The job's final status reflects BOTH steps
-# honestly (see the tail-position "Fail if ..." step).
+# Wave-4 TASK-34-DUMPER (2026-08-09): Task 4's VITS vendoring landed —
+# `tools/parity/vendor/vits/{text_encoder,coupling,flow,decoder,attentions,
+# commons,modules,transforms}.py` are all in place, and the dumper's
+# `run_pipeline_body` (design doc §7, 15 steps) is fully wired. Once the
+# checkpoint-sidecar gate opens, the dumper is EXPECTED to succeed (writes
+# 11 tensor `.bin` + 4 fixture `.bin` + `reference_dump.manifest.json` to
+# `tests/fixtures/sbv2/reference_dump/`). Any nonzero exit from the dumper
+# is now a REAL failure, not a documented deferral — the tail-position
+# "Fail if ..." step propagates it and the job goes red. The Rust parity
+# test step still runs `if: always()` for diagnostic value (loading the
+# freshly-converted GGUFs even if the dump failed), but its outcome does
+# not mask the dumper's exit.
 #
 # ## Clean-room reminder
 #
@@ -490,12 +487,11 @@ jobs:
           ls -lh "$FIXTURE_DIR"/*.gguf
 
       - name: Regenerate reference dump (sbv2_dump_reference.py --do-dump)
-        # EXPECTED TO FAIL TODAY — see this workflow's header comment
-        # ("Honest failure while the gate is open"). --language ja (the
-        # default) with no --text override reproduces exactly the request
-        # already baked into the committed
-        # tests/fixtures/sbv2/reference_dump.manifest.json
-        # ("text": "テスト", "language": "JA").
+        # Wave-4 TASK-34-DUMPER (2026-08-09): the vendoring + pipeline body
+        # both landed; a nonzero exit here is a REAL failure and is
+        # propagated by the tail-position "Fail if ..." step. `set +e` is
+        # kept only to allow the log-collection tail below to run in the
+        # failure case; DUMP_EXIT is faithfully echoed to GITHUB_ENV.
         id: dump
         shell: bash
         run: |
@@ -517,11 +513,11 @@ jobs:
             echo '```'
             if [ "$exit_code" -ne 0 ]; then
               echo ""
-              echo "**Expected today**: \`tools/parity/vendor/vits/\` ships only a LICENSE"
-              echo "+ README scaffold (Task 30) — no vendored \`jaywalnut310/vits\` (MIT)"
-              echo "module yet, so \`--do-dump\` cannot run a real forward pass. Documented,"
-              echo "honest failure (FR-EX-08), not a bug in this workflow — see that"
-              echo "script's own module doc and \`tools/parity/vendor/vits/README.md\`."
+              echo "**REAL FAILURE** — the vendored VITS pipeline + \`run_pipeline_body\`"
+              echo "are fully wired (Wave-4 TASK-34-DUMPER). Investigate the traceback"
+              echo "above: missing/unmapped tensor names in the safetensors state_dict,"
+              echo "a shape mismatch vs the clean-room vendored primitives, or a"
+              echo "network/HF-hub fetch failure for one of the two DeBERTa BERTs."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

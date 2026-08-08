@@ -43,8 +43,7 @@ recalled from memory to write this file.
   never the AGPL Python code itself, matching
   ``tools/parity/sbv2_prepare_checkpoint.py``'s own posture).
 
-# Status: CLI + manifest-schema scaffold + Task-4 vendor-import gate landed;
-# the real forward pipeline body is still deferred
+# Status: end-to-end wired (Wave-4 TASK-34-DUMPER, 2026-08-09)
 
 This dumper has two modes:
 
@@ -58,10 +57,15 @@ This dumper has two modes:
   manifest that *looks* real but is not would itself be a fabricated
   artifact (NFR-QL-04 / FR-EX-08). Needs no dependency beyond the stdlib,
   so it (like ``--help``) works in a bare interpreter.
-* **Real dump** (``--do-dump``): attempts the actual reference forward
-  pass. As of Task 4's vendoring commit, this fails loudly at one of
-  four tiers depending on what is installed and how far execution has
-  advanced:
+* **Real dump** (``--do-dump``): runs the design-doc §7 forward pipeline
+  end-to-end (G2P -> ``SbV2TextEncoder`` -> DeBERTa-bridge -> SDP -> flow
+  -> HiFi-GAN) and writes 11 ``reference_dump/*.bin`` files + 4 fixture
+  side files (phoneme_ids/tones/word_boundaries/language_id) +
+  a fully-resolved ``reference_dump.manifest.json`` to ``--output-dir``.
+  Files are raw little-endian f32, matching every other ``*_dump*.py``
+  sibling's ``arr.tobytes()`` convention (*not* ``numpy.save``'s ``.npy``
+  format, which ``parity_sbv2_real.rs``'s ``read_f32_bin`` does not
+  parse). Fails loudly at one of these tiers:
 
   1. ``torch`` missing -> actionable ``pip install torch``.
   2. ``transformers`` missing -> actionable ``pip install transformers``
@@ -69,31 +73,15 @@ This dumper has two modes:
   3. Vendor import failure (``from vendor.vits import text_encoder / coupling
      / flow / decoder``) -> actionable message pointing at
      ``tools/parity/vendor/vits/README.md`` and its sha256/upstream-URL
-     trail. Before Task 4 landed this was the terminal gate (only
-     ``LICENSE`` + ``README.md`` scaffolded there); Task 4 vendored the 8
-     supporting modules so this gate now passes cleanly in a torch +
-     transformers-equipped interpreter.
-  4. Pipeline body not yet written -> ``NotImplementedError`` with an
-     actionable message. This is Task 4's new terminal gate: the vendor
-     import above now succeeds, but the design doc §7 forward pipeline
-     body (G2P -> ``SbV2TextEncoder`` -> DeBERTa-bridge -> SDP -> flow
-     -> HiFi-GAN, writing 11 ``reference_dump/*.bin`` files + a fully-
-     resolved ``reference_dump.manifest.json``) is a separate follow-up
-     task, gated on a real SBV2 v2 checkpoint being inspected first
-     (design doc §12 owner step) — otherwise a self-consistent mirror
-     of the architecture would validate nothing, the same NFR-QL-04 /
-     FR-EX-08 lesson ``tools/parity/utmos_dump_reference.py``'s own
-     module doc draws from the Kokoro ``92dbc92`` incident.
-
-  Nothing is stubbed, mocked, or approximated to make this path "succeed"
-  early — the writing of tier 4's pipeline body is refused (with a
-  ``NotImplementedError``, not a silent ``return 0``) until a real
-  checkpoint exists to validate the dumped tensors against. Once that
-  follow-up lands, tier 4 writes ``reference_dump/*.bin`` (raw little-
-  endian f32, matching every other ``*_dump*.py`` sibling's
-  ``arr.tobytes()`` convention — *not* ``numpy.save``'s ``.npy`` format,
-  which ``parity_sbv2_real.rs``'s ``read_f32_bin`` does not parse) plus
-  the real, fully-resolved ``reference_dump.manifest.json``.
+     trail. Task 4 vendored 8 supporting modules — this gate only fires
+     on a corrupted vendor tree.
+  4. Any missing state_dict tensor (`_load_tensor` FR-EX-08 message
+     naming exact candidate keys tried) or unpopulated G2P row
+     (`MinimalG2P` NotImplementedError). Nothing is stubbed or
+     approximated — every tensor must be present or the run fails loud,
+     the same NFR-QL-04 / FR-EX-08 lesson
+     ``tools/parity/utmos_dump_reference.py``'s own module doc draws
+     from the Kokoro ``92dbc92`` incident.
 
 # The 11 dumped tensors (design doc §10 / ``parity_sbv2_real.rs`` contract)
 
@@ -2079,22 +2067,6 @@ def run_dump(args: argparse.Namespace) -> int:
     # partial fixture (FR-EX-08).
     # ------------------------------------------------------------------
     return run_pipeline_body(args, torch, transformers)
-
-    # ------------------------------------------------------------------
-    # Unreachable — retained as historical FR-EX-08 trace so that a
-    # future maintainer bisecting when the pipeline body landed can see
-    # the pre-`run_pipeline_body` gate this call replaced. `run_dump`
-    # returned via `run_pipeline_body(...)` above; control cannot fall
-    # through here at runtime. See git blame for the original tier-4
-    # gate this hosted (design doc §7 pipeline body was the follow-up
-    # that closed the gate).
-    # ------------------------------------------------------------------
-    raise NotImplementedError(  # pragma: no cover  # noqa: F821
-        f"{LOG_PREFIX} unreachable: `run_dump` returned via "
-        "`run_pipeline_body(...)` above. If you see this in a traceback, "
-        "control flow around `return run_pipeline_body(...)` has been "
-        "altered — investigate that first."
-    )
 
 
 def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
