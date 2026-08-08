@@ -33,8 +33,10 @@
 
 mod philox_round;
 mod philox_state;
+mod seed_init;
 pub use philox_round::{PHILOX_M0, PHILOX_M1, PHILOX_ROUNDS, PHILOX_W0, PHILOX_W1, philox4x32_10};
 pub use philox_state::PhiloxState;
+pub use seed_init::TorchPhiloxState;
 
 /// Trait for a source of standard-normal (mean 0, variance 1) `f32` deviates.
 ///
