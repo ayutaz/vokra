@@ -27,7 +27,7 @@ CC で converter 側実装を追加すれば publish 可能な tier。owner の 
 | **WavTokenizer** | (未確定) | 未取得 | converter 未実装 | M5-07 sign-off + converter 新規実装 (spec `docs/superpowers/specs/2026-07-28-wavtokenizer-design.md` 塩漬け) |
 | **Matcha-TTS** | (未確定) | 未取得 | converter 未実装 | M5-07 sign-off + converter 新規実装 (spec `docs/superpowers/specs/2026-07-28-matcha-tts-design.md` は 見送り = 塩漬けのまま再開放しない) |
 | **Bark** | `suno/bark` | 未取得 | converter 未実装、Suno の voice-cloning 再学習禁止方針 | M5-07 sign-off (v2.0+ 検討) + converter 新規実装 |
-| **Voxtral-Small-24B** | `mistralai/Voxtral-Small-24B-2507` | ☑ Commercial (2026-07-23) | 48GB BF16。**Wave 1 (A-3, `12efb13` 2026-07-29) で `convert_voxtral_file_streaming` = header-only mmap + 1-tensor-at-a-time streaming 実装済 → M1 iMac (16GB RAM) 上でも `max(shard_header) + max(tensor_payload)` フットプリントで理論変換可**。ただし K-quant path は widen-then-quantize が in-memory 必須ゆえ streaming 非対応 = pass-through BF16 のみ | (a) local M1 で streaming path 実測 (owner) + `publish-one.sh --push`、または (b) vast.ai instance 経路 (`docs/handoff/vast-ai-large-model-publish.md` §2) の 2 択 |
+| **Voxtral-Small-24B** | `mistralai/Voxtral-Small-24B-2507` | ☑ Commercial (2026-07-23) | ~~converter 未実装~~ **✅ CC-side complete** (Wave 1 A-3, `12efb13` 2026-07-29 — `convert_voxtral_file_streaming` = header-only mmap + 1-tensor-at-a-time streaming implemented, M1 iMac 16GB RAM can convert 48GB BF16 with `max(shard_header) + max(tensor_payload)` footprint). Remaining = **owner publish action only** (K-quant path is widen-then-quantize in-memory ゆえ streaming 非対応 = pass-through BF16 のみ) | Owner: (a) local M1 で streaming path 実測 + `publish-one.sh --push`、または (b) vast.ai instance 経路 (`docs/handoff/vast-ai-large-model-publish.md` §2) の 2 択 |
 
 ---
 
