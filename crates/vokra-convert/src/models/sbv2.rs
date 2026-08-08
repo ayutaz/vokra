@@ -1496,6 +1496,21 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
         "dec.conv_post.weight" => {
             return TensorClass::Rename("sbv2.decoder.conv_post.weight".into());
         }
+        // HGAN-05-GIN-COND (2026-08-09): rename the decoder's
+        // speaker-conditioning cond layer. Upstream `dec.cond` is
+        // `Conv1d(gin_channels, initial_channel, 1)` — present on
+        // SBV2 v2 multi-speaker base ckpt (`gin_channels = 512`),
+        // absent on single-speaker fixtures. Pre-HGAN-05 these were
+        // PassThrough with the reason "no Rust HifiGanAttrs field
+        // yet"; now the runtime loader binds them into the
+        // `HifiGanWeights::cond` slot and drives upstream's `x = x +
+        // self.cond(g)` broadcast-add.
+        "dec.cond.weight" => {
+            return TensorClass::Rename("sbv2.decoder.cond.weight".into());
+        }
+        "dec.cond.bias" => {
+            return TensorClass::Rename("sbv2.decoder.cond.bias".into());
+        }
         _ => {}
     }
 
@@ -1733,7 +1748,14 @@ fn classify_tensor(name: &str, n_resblock_branches: Option<usize>) -> TensorClas
         "production SBV2 SDP path (DDS-net + rational-quadratic-spline ConvFlow) — Rust \
          duration.rs simplified"
     } else if name.starts_with("dec.cond.") {
-        "decoder speaker conditioning — no Rust HifiGanAttrs field yet"
+        // HGAN-05-GIN-COND (2026-08-09): `dec.cond.weight` and
+        // `dec.cond.bias` are Rename-mapped above (see `dec.cond.*`
+        // arms in the earlier `match`), so this arm should be
+        // unreachable in practice. A tensor named `dec.cond.<other>`
+        // (unknown sub-name a future SBV2 SKU might add) still lands
+        // here rather than being silently dropped.
+        "decoder speaker conditioning — auxiliary sub-tensor beyond the HGAN-05 loader's \
+         .weight / .bias slots (preserved verbatim for a follow-up wave)"
     } else {
         "unrecognized upstream tensor — passed through verbatim so no data is silently discarded"
     };
@@ -2556,10 +2578,14 @@ mod tests {
         // `ExternalSpeakerProjection` loader path — see
         // `classify_encoder_spk_emb_linear_now_renamed_blocker3`. What
         // still passes through with a per-family reason: `enc_p.proj.*`
-        // (VITS output projection to (mu, log_sigma), no Rust text_encoder
-        // field yet) and `dec.cond.*` (decoder speaker conditioning, no
-        // Rust HifiGanAttrs field yet).
-        for name in ["enc_p.proj.weight", "dec.cond.weight", "dec.cond.bias"] {
+        // (VITS output projection to (mu, log_sigma), no Rust
+        // text_encoder field yet — tracked as SBV2-INFO-01-ENC-P-PROJ).
+        //
+        // HGAN-05-GIN-COND (2026-08-09): `dec.cond.{weight,bias}` moved
+        // OUT of this PassThrough list and INTO Rename because the
+        // runtime `HifiGanWeights::cond` slot now consumes them. See
+        // `classify_dec_cond_now_renamed_hgan05` below.
+        for name in ["enc_p.proj.weight"] {
             assert!(
                 matches!(
                     classify_tensor(name, Some(3)),
@@ -2568,6 +2594,23 @@ mod tests {
                 "{name} must be PassThrough"
             );
         }
+    }
+
+    // HGAN-05-GIN-COND regression pin (2026-08-09): `dec.cond.*` are
+    // now consumed by the runtime via `HifiGanWeights::cond`. A
+    // converter that dropped the Rename entries would leave those
+    // tensors under upstream names and the loader's shape check
+    // would fail with "tensor not found".
+    #[test]
+    fn classify_dec_cond_now_renamed_hgan05() {
+        assert_eq!(
+            classify_tensor("dec.cond.weight", Some(3)),
+            TensorClass::Rename("sbv2.decoder.cond.weight".into())
+        );
+        assert_eq!(
+            classify_tensor("dec.cond.bias", Some(3)),
+            TensorClass::Rename("sbv2.decoder.cond.bias".into())
+        );
     }
 
     // -----------------------------------------------------------------
@@ -3095,17 +3138,23 @@ mod tests {
     #[test]
     fn flow_and_encoder_families_pass_through_verbatim_when_no_rename_applies() {
         // Preservation invariant: `enc_p.proj.*` (VITS output projection
-        // to (mu, log_sigma), no Rust text_encoder field yet) + `dec.cond.*`
-        // (decoder speaker conditioning, no Rust HifiGanAttrs field yet)
-        // stay under their upstream names so a future Rust wave can consume
-        // them without reconverting the checkpoint. Post-Blocker-2b (2026-
-        // 08-06) the `flow.flows.<even>.*` per-block tensors are Rename-
-        // mapped (see `classify_flow_pre_and_post_rename_by_block_index_
+        // to (mu, log_sigma), no Rust text_encoder field yet — tracked
+        // as SBV2-INFO-01-ENC-P-PROJ) stays under its upstream names so
+        // a future Rust wave can consume it without reconverting the
+        // checkpoint. Post-Blocker-2b (2026-08-06) the
+        // `flow.flows.<even>.*` per-block tensors are Rename-mapped
+        // (see `classify_flow_pre_and_post_rename_by_block_index_
         // halving` and siblings), and post-Blocker-3 (2026-08-06)
         // `enc_p.encoder.spk_emb_linear.*` is Rename-mapped to
-        // `sbv2.text_encoder.spk_emb_linear.*`, so both no longer belong
-        // in this pass-through-invariant set. Note `sdp.*` is now
-        // sdp-rewritten (Blocker 2c) rather than pass-through.
+        // `sbv2.text_encoder.spk_emb_linear.*`, so both no longer
+        // belong in this pass-through-invariant set. Note `sdp.*` is
+        // now sdp-rewritten (Blocker 2c) rather than pass-through.
+        //
+        // HGAN-05-GIN-COND (2026-08-09): `dec.cond.*` moved OUT of
+        // this pass-through-invariant set (it is now Rename → the
+        // HifiGanWeights::cond loader path). See
+        // `classify_dec_cond_now_renamed_hgan05` for the per-tensor
+        // pin.
         let entries: Vec<(&str, &str, &[u64], Vec<u8>)> = vec![
             (
                 "enc_p.proj.weight",
@@ -3119,12 +3168,6 @@ mod tests {
                 &[384],
                 f32_bytes(&[0.03_f32; 384]),
             ),
-            (
-                "dec.cond.weight",
-                "F32",
-                &[512, 512, 1],
-                f32_bytes(&[0.04_f32; 512 * 512]),
-            ),
         ];
         let blob = safetensors_multi(&entries);
         let input = temp_path("verbatim-pt-in", "safetensors");
@@ -3132,14 +3175,14 @@ mod tests {
         std::fs::write(&input, &blob).expect("write input");
 
         let report = convert_sbv2_file(&input, &output, None, None).expect("convert");
-        assert_eq!(report.read, 3);
-        assert_eq!(report.written, 3);
-        assert_eq!(report.passed_through_verbatim, 3);
+        assert_eq!(report.read, 2);
+        assert_eq!(report.written, 2);
+        assert_eq!(report.passed_through_verbatim, 2);
         assert_eq!(report.renamed, 0);
 
         let out_bytes = std::fs::read(&output).expect("read");
         let file = GgufFile::parse(out_bytes).expect("parse");
-        for name in ["enc_p.proj.weight", "enc_p.proj.bias", "dec.cond.weight"] {
+        for name in ["enc_p.proj.weight", "enc_p.proj.bias"] {
             assert!(
                 file.tensor_info(name).is_some(),
                 "{name}: must land under upstream name"

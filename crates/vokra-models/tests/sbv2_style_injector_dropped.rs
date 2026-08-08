@@ -235,6 +235,7 @@ fn tiny_hifigan_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
         conv_post_weight,
         conv_post_bias: vec![0.0],
         conv_post_kernel,
+        cond: None,
     }
 }
 

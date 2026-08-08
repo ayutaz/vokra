@@ -67,6 +67,7 @@ fn parity_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
         mrf_stage_weights: Vec::new(),
         conv_post_weight: Vec::new(),
         conv_post_bias: Vec::new(),
+        cond: None,
         conv_post_kernel,
     };
     // Initial conv1d: [initial_channel, n_mels, k].
@@ -438,6 +439,7 @@ fn hgan_03_pre_conv_post_leaky_slope_ignores_attrs_slope() {
         conv_post_weight: vec![0.1_f32; out_ch * conv_post_kernel],
         conv_post_bias: vec![0.0_f32],
         conv_post_kernel,
+        cond: None,
     };
 
     let out_a =
@@ -527,6 +529,225 @@ fn hgan_04_conv_post_bias_absent_is_accepted_and_bit_identical_to_zero_bias() {
         "HGAN-04: `conv_post_bias == []` (upstream shape) must produce bit-identical output \
          to `conv_post_bias == [0.0]` (Vokra pre-fix placeholder shape). Observed \
          max|Δ| = {max_delta}"
+    );
+}
+
+// ---- HGAN-05: gin conditioning path ------------------------------------------
+//
+// Upstream reference (`tools/parity/vendor/vits/models.py`
+// `Generator.forward`):
+//
+// ```python
+// x = self.conv_pre(x)
+// if g is not None:
+//     x = x + self.cond(g)  # broadcast-add per-time-step
+// ```
+//
+// where `self.cond = Conv1d(gin_channels, upsample_initial_channel, 1)`.
+// Pre-HGAN-05 Vokra had no `cond` slot in HifiGanWeights and
+// hifigan_generator ignored the speaker vector entirely — multi-speaker
+// SBV2 collapsed to a single average voice.
+//
+// # Oracle
+//
+// * `weights.cond = None` + `g = None`: unconditioned path,
+//   byte-identical to pre-HGAN-05 output.
+// * `weights.cond = Some(cond)` + `g = Some(zeros)`: cond output is
+//   `bias` (broadcast), still perturbs the pipeline (non-zero bias)
+//   → output differs from unconditioned path.
+// * `weights.cond = Some(cond)` + `g = Some(distinctive)`: different
+//   from `g = Some(zeros)` — the cond linear map is actually consumed.
+// * `weights.cond = None` + `g = Some(_)`: FR-EX-08 loud error.
+// * `weights.cond = Some(_)` + `g = None`: FR-EX-08 loud error.
+// * `weights.cond = Some(_)` + `g.len() != gin_channels`: loud error.
+use vokra_ops::{GinCondition, hifigan_generator_conditioned};
+
+fn cond_weights(attrs: &HifiGanAttrs, gin_channels: usize) -> HifiGanWeights {
+    let mut w = parity_weights(attrs);
+    // Non-zero cond weight bank so g!=0 observably differs from g=0.
+    let mut weight = Vec::with_capacity(attrs.initial_channel * gin_channels);
+    for c in 0..attrs.initial_channel {
+        for i in 0..gin_channels {
+            weight.push(((c + i) as f32 * 0.041).sin() * 0.02);
+        }
+    }
+    // Non-zero bias so g=0 still contributes (cond(0) = bias).
+    let bias: Vec<f32> = (0..attrs.initial_channel)
+        .map(|c| (c as f32 * 0.03).cos() * 0.01)
+        .collect();
+    w.cond = Some(GinCondition {
+        weight,
+        bias,
+        gin_channels,
+    });
+    w
+}
+
+#[test]
+fn hgan_05_unconditioned_output_matches_pre_fix_when_cond_is_none() {
+    // Regression: `hifigan_generator` (unconditioned wrapper) must
+    // produce identical bytes to `hifigan_generator_conditioned(..,
+    // None)` — pre-HGAN-05 callers see no observable change.
+    let attrs = parity_attrs();
+    let weights = parity_weights(&attrs);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let out_default =
+        hifigan_generator(&mel, n_frames, &weights, &attrs, &HifiGanConfig::fp32()).unwrap();
+    let out_explicit_none = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &weights,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        out_default, out_explicit_none,
+        "HGAN-05: hifigan_generator (unconditioned) must be byte-identical to \
+         hifigan_generator_conditioned(.., None). Any drift here breaks pre-HGAN-05 callers."
+    );
+}
+
+#[test]
+fn hgan_05_g_zero_with_cond_bias_still_perturbs_output() {
+    // cond(zeros) = bias (bias-only contribution). Output must
+    // differ from the unconditioned path because bias is non-zero
+    // for every initial_channel and is broadcast-added to every
+    // time step.
+    let attrs = parity_attrs();
+    let gin_channels = 4;
+    let cond_w = cond_weights(&attrs, gin_channels);
+    let uncond_w = parity_weights(&attrs);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let out_uncond =
+        hifigan_generator(&mel, n_frames, &uncond_w, &attrs, &HifiGanConfig::fp32()).unwrap();
+    let g_zero = vec![0.0_f32; gin_channels];
+    let out_cond_zero_g = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_zero),
+    )
+    .unwrap();
+    let max_delta = out_uncond
+        .iter()
+        .zip(out_cond_zero_g.iter())
+        .map(|(&a, &b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_delta > 0.0,
+        "HGAN-05: cond(g=zeros) contributes cond.bias × T time steps — output must differ \
+         from unconditioned. Observed max|Δ| = {max_delta}"
+    );
+}
+
+#[test]
+fn hgan_05_g_nonzero_differs_from_g_zero() {
+    // Distinctive non-zero g must produce distinct output from g=0
+    // — the linear map `cond(g) = W·g + b` is consumed.
+    let attrs = parity_attrs();
+    let gin_channels = 4;
+    let cond_w = cond_weights(&attrs, gin_channels);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let g_zero = vec![0.0_f32; gin_channels];
+    let g_distinctive = vec![0.7_f32, -0.3, 0.5, 0.1];
+    let out_g_zero = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_zero),
+    )
+    .unwrap();
+    let out_g_distinctive = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_distinctive),
+    )
+    .unwrap();
+    assert_ne!(
+        out_g_zero, out_g_distinctive,
+        "HGAN-05: cond(g_nonzero) ≠ cond(g_zero) — the linear map must be consumed"
+    );
+}
+
+#[test]
+fn hgan_05_g_with_no_cond_layer_errors_loudly() {
+    // FR-EX-08: caller supplied `g` but weights.cond is None →
+    // loud InvalidArgument (not silent discard).
+    let attrs = parity_attrs();
+    let weights = parity_weights(&attrs); // cond: None
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let g = vec![0.0_f32; 4];
+    let err = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &weights,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for g-without-cond-layer, got: {err}"
+    );
+}
+
+#[test]
+fn hgan_05_cond_layer_with_no_g_errors_loudly() {
+    // FR-EX-08 mirror: cond layer loaded but caller forgot g →
+    // loud InvalidArgument.
+    let attrs = parity_attrs();
+    let cond_w = cond_weights(&attrs, 4);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let err = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for cond-layer-without-g, got: {err}"
+    );
+}
+
+#[test]
+fn hgan_05_g_length_mismatch_errors_loudly() {
+    // Shape check: g.len() must equal cond.gin_channels.
+    let attrs = parity_attrs();
+    let cond_w = cond_weights(&attrs, 4);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let g_wrong = vec![0.0_f32; 3]; // gin_channels = 4
+    let err = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_wrong),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for g-length-mismatch, got: {err}"
     );
 }
 

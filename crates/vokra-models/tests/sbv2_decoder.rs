@@ -64,6 +64,7 @@ fn jp_extra_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
         mrf_stage_weights: Vec::new(),
         conv_post_weight: Vec::new(),
         conv_post_bias: Vec::new(),
+        cond: None,
         conv_post_kernel,
     };
     // Initial conv1d: [initial_channel, n_mels, k].

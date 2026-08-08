@@ -207,6 +207,68 @@ pub struct HifiGanWeights {
     pub conv_post_bias: Vec<f32>,
     /// Kernel size of the final `conv1d` (upstream default = 7).
     pub conv_post_kernel: usize,
+    /// **HGAN-05-GIN-COND** (2026-08-09) — optional `cond` layer for
+    /// speaker (or general gin) conditioning. `Some(_)` when the
+    /// upstream ships a `dec.cond` `Conv1d(gin_channels,
+    /// initial_channel, 1)` (present on SBV2 v2, all multi-speaker
+    /// VITS HiFi-GAN generators, and any generator trained with
+    /// `gin_channels > 0`); `None` on unconditioned generators
+    /// (piper-plus, single-speaker VITS-JA). See [`GinCondition`]'s
+    /// field docs for the shape contract.
+    ///
+    /// **Backward-compat**: pre-HGAN-05 callers construct
+    /// [`HifiGanWeights`] without this field via
+    /// `.. HifiGanWeights { cond: None, .. }`; the runtime forward
+    /// pass short-circuits the cond broadcast-add when `cond ==
+    /// None`, preserving byte-identical output for every
+    /// pre-HGAN-05 consumer (piper-plus, CosyVoice2, VITS-JA).
+    pub cond: Option<GinCondition>,
+}
+
+/// HGAN-05-GIN-COND: `cond` layer weight bundle (2026-08-09).
+///
+/// Upstream reference (`tools/parity/vendor/vits/models.py`
+/// `Generator.__init__`):
+///
+/// ```python
+/// if gin_channels != 0:
+///     self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
+/// ```
+///
+/// Applied in `Generator.forward` after `conv_pre`:
+///
+/// ```python
+/// x = self.conv_pre(x)
+/// if g is not None:
+///     x = x + self.cond(g)  # broadcast-add per-time-step
+/// ```
+///
+/// where `g` is `[B, gin_channels, 1]` and the 1×1 conv output is
+/// `[B, upsample_initial_channel, 1]`, broadcast along the time
+/// axis when added to `x` (shape `[B, upsample_initial_channel,
+/// T]`).
+///
+/// # Layout
+///
+/// - `weight` is `[upsample_initial_channel, gin_channels, 1]`
+///   row-major (PyTorch `Conv1d` convention `[out_ch, in_ch, kernel]`,
+///   kernel = 1). Storage size: `initial_channel * gin_channels`.
+/// - `bias` is `[upsample_initial_channel]`. Present in upstream
+///   (default `bias=True`), so this field is **required** when
+///   `cond` is `Some(_)`.
+/// - `gin_channels`: input conditioning-vector width (e.g. 512 for
+///   SBV2 v2). Also validated against `g.len()` at forward time.
+#[derive(Debug, Clone)]
+pub struct GinCondition {
+    /// `dec.cond.weight`, row-major `[initial_channel, gin_channels,
+    /// 1]`.
+    pub weight: Vec<f32>,
+    /// `dec.cond.bias`, `[initial_channel]`.
+    pub bias: Vec<f32>,
+    /// Input conditioning-vector width (upstream `gin_channels`,
+    /// = 512 on SBV2 v2). Cross-checked against `g.len()` at forward
+    /// time.
+    pub gin_channels: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +712,48 @@ pub fn hifigan_generator(
     attrs: &HifiGanAttrs,
     config: &HifiGanConfig,
 ) -> Result<Vec<f32>> {
+    hifigan_generator_conditioned(mel, n_frames, weights, attrs, config, None)
+}
+
+/// HGAN-05-GIN-COND (2026-08-09): HiFi-GAN generator with optional
+/// speaker (or general gin) conditioning.
+///
+/// Extends [`hifigan_generator`] with a `g: Option<&[f32]>` parameter
+/// carrying the per-utterance conditioning vector. When `g` is
+/// `Some(vec)` **and** `weights.cond` is `Some(cond)`, the runtime
+/// applies the upstream `x = x + self.cond(g)` broadcast-add after
+/// `conv_pre`. When `g` is `None`, this function is byte-identical
+/// to [`hifigan_generator`] — the pre-HGAN-05 unconditioned path.
+///
+/// # Contract table
+///
+/// | `g`         | `weights.cond` | behavior                                                     |
+/// |-------------|----------------|--------------------------------------------------------------|
+/// | `None`      | `None`         | unconditioned generator (piper-plus, VITS-JA single-speaker) |
+/// | `Some(v)`   | `Some(cond)`   | multi-speaker: broadcast-add `cond(v)` after `conv_pre`      |
+/// | `Some(_)`   | `None`         | loud `InvalidArgument` (FR-EX-08 — caller sent g without a cond layer) |
+/// | `None`      | `Some(_)`      | loud `InvalidArgument` (FR-EX-08 — cond layer loaded but g missing)    |
+///
+/// The loud-error arms are the FR-EX-08 no-silent-fallback contract:
+/// a converter that emitted `dec.cond.*` tensors (into
+/// `weights.cond`) but a caller that forgot to thread `g` through
+/// would produce single-speaker-quality output on a multi-speaker
+/// model without any assertion firing. Explicit mismatch → loud
+/// panic path.
+///
+/// # Errors
+///
+/// See [`hifigan_generator`]. Additionally raises
+/// [`VokraError::InvalidArgument`] when `(g, weights.cond)` mismatches
+/// as described in the contract table.
+pub fn hifigan_generator_conditioned(
+    mel: &[f32],
+    n_frames: usize,
+    weights: &HifiGanWeights,
+    attrs: &HifiGanAttrs,
+    config: &HifiGanConfig,
+    g: Option<&[f32]>,
+) -> Result<Vec<f32>> {
     attrs.validate_shape()?;
     config.validate()?;
 
@@ -678,6 +782,42 @@ pub fn hifigan_generator(
     }
     validate_weights(weights, attrs)?;
 
+    // HGAN-05-GIN-COND: cross-validate (g, weights.cond) pairing per
+    // the contract table above.
+    match (g, weights.cond.as_ref()) {
+        (Some(_), None) => {
+            return Err(VokraError::InvalidArgument(
+                "hifigan_generator_conditioned: caller supplied g but weights.cond is None — \
+                 an unconditioned generator cannot consume speaker conditioning. Either drop \
+                 g (pass None) or load a cond weight bundle."
+                    .to_owned(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(VokraError::InvalidArgument(
+                "hifigan_generator_conditioned: weights.cond is Some but g is None — a \
+                 multi-speaker generator requires the per-utterance conditioning vector. \
+                 Either provide g or drop weights.cond (build an unconditioned generator)."
+                    .to_owned(),
+            ));
+        }
+        (Some(g_vec), Some(cond)) => {
+            if g_vec.len() != cond.gin_channels {
+                return Err(VokraError::InvalidArgument(format!(
+                    "hifigan_generator_conditioned: g.len() {} != cond.gin_channels {}",
+                    g_vec.len(),
+                    cond.gin_channels
+                )));
+            }
+            if g_vec.iter().any(|v| !v.is_finite()) {
+                return Err(VokraError::InvalidArgument(
+                    "hifigan_generator_conditioned: g must be finite".to_owned(),
+                ));
+            }
+        }
+        (None, None) => {} // unconditioned path — nothing to check
+    }
+
     // --- Stage 0: initial conv1d [n_mels, n_frames] → [initial_channel, n_frames] ---
     let mut h = conv1d_scalar(
         mel,
@@ -690,6 +830,52 @@ pub fn hifigan_generator(
         1,                           // stride
         weights.conv_pre_kernel / 2, // "same" padding
     )?;
+
+    // --- HGAN-05-GIN-COND: broadcast-add cond(g) after conv_pre ---
+    //
+    // Upstream reference (`tools/parity/vendor/vits/models.py`
+    // `Generator.forward`):
+    //
+    // ```python
+    // x = self.conv_pre(x)
+    // if g is not None:
+    //     x = x + self.cond(g)
+    // ```
+    //
+    // `self.cond` is `Conv1d(gin_channels, initial_channel, 1)` — the
+    // 1×1 conv output is `[B, initial_channel, 1]`, broadcast along
+    // the time axis when added to x's `[B, initial_channel, T]`. In
+    // our row-major channel-major `[initial_channel, n_frames]` layout,
+    // this is `h[c, t] += (cond_weight · g)[c] + cond_bias[c]` for
+    // every `t`. The `(cond_weight · g)[c] + cond_bias[c]` value is
+    // computed once per call and added identically to every `t`.
+    if let (Some(g_vec), Some(cond)) = (g, weights.cond.as_ref()) {
+        // 1×1 conv: `cond_out[c] = Σ_i cond_weight[c, i] * g[i] + cond_bias[c]`.
+        // Weight is `[initial_channel, gin_channels, 1]` = `[initial_channel, gin_channels]`
+        // when kernel is 1 (contiguous).
+        let mut cond_out = vec![0.0_f32; attrs.initial_channel];
+        for (c, out_c) in cond_out.iter_mut().enumerate() {
+            let row = &cond.weight[c * cond.gin_channels..(c + 1) * cond.gin_channels];
+            let mut acc = 0.0_f32;
+            for (&w, &g_val) in row.iter().zip(g_vec.iter()) {
+                acc += w * g_val;
+            }
+            *out_c = acc + cond.bias[c];
+        }
+        // Broadcast-add across every time step. Chunk `h` into
+        // per-channel rows (`[cur_channels=initial_channel, n_frames]`
+        // layout — every row is `n_frames` samples wide).
+        for (c, row) in h
+            .chunks_exact_mut(n_frames)
+            .enumerate()
+            .take(attrs.initial_channel)
+        {
+            let cond_c = cond_out[c];
+            for v in row.iter_mut() {
+                *v += cond_c;
+            }
+        }
+    }
     // Feature-map width after conv_pre.
     let mut cur_channels = attrs.initial_channel;
     let mut cur_time = n_frames;
@@ -1332,6 +1518,41 @@ fn validate_weights(w: &HifiGanWeights, attrs: &HifiGanAttrs) -> Result<()> {
             w.conv_post_bias.len()
         )));
     }
+    // HGAN-05-GIN-COND (2026-08-09): validate the optional cond
+    // (speaker conditioning) layer's shape. Upstream stores
+    // `dec.cond` as `Conv1d(gin_channels, initial_channel, 1)`, so
+    // `weight.len() == initial_channel * gin_channels` (kernel = 1)
+    // and `bias.len() == initial_channel`. `gin_channels == 0` is
+    // structurally forbidden (a 0-input conv layer is upstream's
+    // way of expressing "no cond layer" — represent that as
+    // `weights.cond == None`, not a zero-gin-channels bundle).
+    if let Some(cond) = w.cond.as_ref() {
+        if cond.gin_channels == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HifiGanWeights: cond.gin_channels must be > 0 (upstream represents \
+                 no-cond-layer via `cond = None`, not gin_channels = 0)"
+                    .to_owned(),
+            ));
+        }
+        let expected_weight = attrs.initial_channel * cond.gin_channels;
+        if cond.weight.len() != expected_weight {
+            return Err(VokraError::InvalidArgument(format!(
+                "HifiGanWeights: cond.weight.len() {} != initial_channel * gin_channels = \
+                 {} * {} = {}",
+                cond.weight.len(),
+                attrs.initial_channel,
+                cond.gin_channels,
+                expected_weight,
+            )));
+        }
+        if cond.bias.len() != attrs.initial_channel {
+            return Err(VokraError::InvalidArgument(format!(
+                "HifiGanWeights: cond.bias.len() {} != initial_channel {}",
+                cond.bias.len(),
+                attrs.initial_channel,
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1390,6 +1611,7 @@ mod tests {
             conv_post_weight: Vec::new(),
             conv_post_bias: Vec::new(),
             conv_post_kernel,
+            cond: None,
         };
         // conv_pre: [initial_channel, n_mels, k]
         for oc in 0..attrs.initial_channel {

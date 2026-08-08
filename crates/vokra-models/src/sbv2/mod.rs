@@ -68,7 +68,8 @@ use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
-    HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer, UpsampleStageWeights,
+    GinCondition, HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
+    UpsampleStageWeights,
 };
 
 /// Both BERT encoders (+ their tokenizers) [`SbV2Model`] needs, loaded
@@ -1127,8 +1128,41 @@ impl SbV2Model {
         // construction-time contract, held by `synthetic_for_test` above);
         // a mismatch surfaces as `SbV2Decoder::generate`'s own
         // `debug_assert!`.
+        //
+        // HGAN-05-GIN-COND (2026-08-09): when the loaded decoder carries
+        // a `cond` (speaker conditioning) layer, thread the raw
+        // `[d_speaker]` speaker vector through — sliced/padded to
+        // `decoder.gin_channels()` — so the upstream `x = x +
+        // self.cond(g)` broadcast-add fires after `conv_pre`. Multi-
+        // speaker SBV2 v2 checkpoints ship `dec.cond.*` (gin_channels =
+        // 512); single-speaker fixtures / synthetic tests do not, and
+        // decoder.has_gin_condition() → false short-circuits to the
+        // unconditioned path.
         let z_channel_major = transpose_time_major_to_channel_major(&z, mel_seq_len);
-        let pcm = self.decoder.generate(&z_channel_major, mel_seq_len);
+        let pcm = if self.decoder.has_gin_condition() {
+            let decoder_gin = self.decoder.gin_channels();
+            // Slice/pad speaker_e_flow to decoder.gin_channels() — the
+            // same reconciliation pattern SDP + flow use above (see
+            // steps 6 and 8).
+            let decoder_g_owned: Vec<f32> = if speaker_e_flow.len() == decoder_gin {
+                Vec::new()
+            } else if speaker_e_flow.len() >= decoder_gin {
+                speaker_e_flow[..decoder_gin].to_vec()
+            } else {
+                let mut v = vec![0.0_f32; decoder_gin];
+                v[..speaker_e_flow.len()].copy_from_slice(&speaker_e_flow);
+                v
+            };
+            let decoder_g: &[f32] = if decoder_g_owned.is_empty() {
+                &speaker_e_flow
+            } else {
+                &decoder_g_owned
+            };
+            self.decoder
+                .generate_conditioned(&z_channel_major, mel_seq_len, Some(decoder_g))
+        } else {
+            self.decoder.generate(&z_channel_major, mel_seq_len)
+        };
 
         Ok(SynthesizedAudio::new(pcm, self.decoder.sample_rate()))
     }
@@ -2295,6 +2329,74 @@ impl SbV2Model {
             vec![0.0_f32; 1]
         };
 
+        // HGAN-05-GIN-COND (2026-08-09): load the optional
+        // `sbv2.decoder.cond.{weight,bias}` pair. Upstream
+        // `dec.cond` is a `Conv1d(gin_channels, initial_channel, 1)`
+        // — the multi-speaker HiFi-GAN's speaker-conditioning layer.
+        // Present on SBV2 v2 base ckpt (`d_speaker = 512`); absent on
+        // single-speaker fixtures / synthetic tests.
+        //
+        // All-or-nothing: one present without the other is a
+        // converter bug (loud `VokraError::ModelLoad`, FR-EX-08).
+        let cond_weight = main.get("sbv2.decoder.cond.weight").is_some();
+        let cond_bias = main.get("sbv2.decoder.cond.bias").is_some();
+        let cond = match (cond_weight, cond_bias) {
+            (true, true) => {
+                let cond_weight_vec = load_tensor_f32("sbv2.decoder.cond.weight")?;
+                let cond_bias_vec = load_tensor_f32("sbv2.decoder.cond.bias")?;
+                // Bias length pins initial_channel; weight length
+                // determines gin_channels via
+                // `weight.len() = initial_channel * gin_channels`.
+                if cond_bias_vec.len() != initial_channel {
+                    return Err(VokraError::ModelLoad(format!(
+                        "SbV2Model::from_gguf: sbv2.decoder.cond.bias has {} elements, expected \
+                         initial_channel = {}",
+                        cond_bias_vec.len(),
+                        initial_channel,
+                    )));
+                }
+                if cond_weight_vec.len() % initial_channel != 0 {
+                    return Err(VokraError::ModelLoad(format!(
+                        "SbV2Model::from_gguf: sbv2.decoder.cond.weight length {} is not a \
+                         multiple of initial_channel {} — expected shape \
+                         [initial_channel, gin_channels, 1]",
+                        cond_weight_vec.len(),
+                        initial_channel,
+                    )));
+                }
+                let gin_channels = cond_weight_vec.len() / initial_channel;
+                if gin_channels == 0 {
+                    return Err(VokraError::ModelLoad(
+                        "SbV2Model::from_gguf: sbv2.decoder.cond.weight implies gin_channels = 0 \
+                         — a zero-input cond layer is upstream's way of representing \
+                         no-cond-layer; a converter that observed dec.cond.* must not emit an \
+                         empty weight"
+                            .to_owned(),
+                    ));
+                }
+                Some(GinCondition {
+                    weight: cond_weight_vec,
+                    bias: cond_bias_vec,
+                    gin_channels,
+                })
+            }
+            (false, false) => None,
+            (true, false) => {
+                return Err(VokraError::ModelLoad(
+                    "SbV2Model::from_gguf: sbv2.decoder.cond.weight is present but its .bias \
+                     is missing — a converter must emit both or neither"
+                        .to_owned(),
+                ));
+            }
+            (false, true) => {
+                return Err(VokraError::ModelLoad(
+                    "SbV2Model::from_gguf: sbv2.decoder.cond.bias is present but its .weight \
+                     is missing — a converter must emit both or neither"
+                        .to_owned(),
+                ));
+            }
+        };
+
         let weights = HifiGanWeights {
             conv_pre_weight,
             conv_pre_bias,
@@ -2304,6 +2406,7 @@ impl SbV2Model {
             conv_post_weight,
             conv_post_bias,
             conv_post_kernel,
+            cond,
         };
         let decoder = SbV2Decoder::new(weights, attrs, HifiGanConfig::fp32(), sample_rate);
 
@@ -2419,6 +2522,12 @@ fn synthetic_hifigan_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
         conv_post_weight: Vec::new(),
         conv_post_bias: Vec::new(),
         conv_post_kernel,
+        // Synthetic tests use the unconditioned generator path
+        // (piper-plus / VITS-JA parity). `SbV2Model::synthetic_for_test`
+        // and `_e2e` construct these weights and pass a `None` `g` at
+        // decode time (see the `SbV2Decoder::generate` doc for the
+        // pre-HGAN-05 default).
+        cond: None,
     };
     for oc in 0..attrs.initial_channel {
         for ic in 0..attrs.n_mels {
@@ -2533,6 +2642,9 @@ fn synthetic_hifigan_weights_e2e(attrs: &HifiGanAttrs) -> HifiGanWeights {
         conv_post_weight: Vec::new(),
         conv_post_bias: Vec::new(),
         conv_post_kernel,
+        // Synthetic e2e path is unconditioned — see
+        // `synthetic_hifigan_weights`'s comment on the same field.
+        cond: None,
     };
     for oc in 0..attrs.initial_channel {
         for ic in 0..attrs.n_mels {

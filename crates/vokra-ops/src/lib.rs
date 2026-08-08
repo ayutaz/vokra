@@ -359,9 +359,10 @@ pub use fsmn_vad::{
 pub use fused_logmel::fused_log_mel_scalar;
 // ---- M3-07 hifigan_generator re-exports ---------------------------------
 pub use hifigan::{
-    CalibrationStrategy, CalibrationTable, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision,
-    HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
+    CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig,
+    HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
     SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator,
+    hifigan_generator_conditioned,
 };
 // -------------------------------------------------------------------------
 pub use istft::istft;
