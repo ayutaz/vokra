@@ -94,8 +94,11 @@
 //! pipeline is re-implemented natively via [`crate::whisper`]
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
 
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
-use vokra_core::{Result, VokraError};
+use vokra_core::{BackendKind, Result, VokraError};
+
+use crate::whisper::{WhisperAsr, WhisperTokenizer};
 
 /// `vokra.model.arch` a distil-whisper GGUF must carry. Written by
 /// `vokra-convert::models::distil_whisper::ARCH`; the compliance registry
@@ -562,18 +565,53 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// bound (see the module docstring) it returns
 /// [`VokraError::NotImplemented`] with a message naming the blocker
 /// (FR-EX-08 — never a silent zero-fill or empty transcript).
-#[derive(Debug, Clone)]
+/// distil-whisper ASR engine handle.
+///
+/// # Two construction paths
+///
+/// - [`Self::new`] — the scaffold path (cfg + owned `DistilWhisperWeights`),
+///   for shape-flow / invariant / synthesized-weight tests. `transcribe`
+///   hard-errors with [`VokraError::NotImplemented`] on this path (real
+///   forward not bound against the module's own weight store).
+/// - [`Self::from_gguf`] — the real path: delegates to the shared
+///   [`crate::whisper::WhisperAsr`] engine (distil-whisper is
+///   architecturally a Whisper checkpoint whose only axis of difference is
+///   `n_text_layer < n_audio_layer`; the upstream converter writes the
+///   standard `vokra.whisper.*` chunk and keeps HF Whisper tensor names
+///   verbatim, so the runtime forward is a delegation, not a
+///   re-implementation).
+///
+/// `Debug` / `Clone` are intentionally NOT derived: [`WhisperAsr`] carries
+/// non-trivially-cloneable engine state (Arc + kv caches). Introspection is
+/// exposed via [`Self::has_weights_bound`], [`Self::is_synthesized`], and
+/// [`Self::config`].
 pub struct DistilWhisperAsr {
     cfg: DistilWhisperConfig,
-    weights: DistilWhisperWeights,
+    kind: DistilWhisperAsrKind,
+}
+
+/// Internal — how this handle was built.
+///
+/// - `Scaffold(w)` = old `new(cfg, w)` path. `transcribe` returns a loud
+///   NotImplemented naming the follow-up wave (real weights required).
+/// - `Delegate(asr)` = new `from_gguf` path. `transcribe` delegates to the
+///   shared Whisper engine (real forward).
+enum DistilWhisperAsrKind {
+    Scaffold(Box<DistilWhisperWeights>),
+    Delegate(WhisperAsr),
 }
 
 impl DistilWhisperAsr {
-    /// Assembles an engine from `cfg` and `weights`. Cross-checks the
-    /// weight-store shapes against `cfg` (encoder / decoder block
-    /// counts + per-tensor sizes, positional embedding shapes, token
-    /// embedding shape, conv stem shape) so a mismatched pair fails
-    /// loudly here rather than deep inside a forward.
+    /// Assembles a scaffold engine from `cfg` and `weights` (shape-flow
+    /// path). Cross-checks the weight-store shapes against `cfg` (encoder
+    /// / decoder block counts + per-tensor sizes, positional embedding
+    /// shapes, token embedding shape, conv stem shape) so a mismatched
+    /// pair fails loudly here rather than deep inside a forward.
+    ///
+    /// **This scaffold does not wire a real forward** — the resulting
+    /// handle exercises shape flow / invariant checks / the loud
+    /// [`Self::transcribe`] refusal path. For real transcription, use
+    /// [`Self::from_gguf`] which delegates to the shared Whisper engine.
     ///
     /// # Errors
     ///
@@ -650,7 +688,98 @@ impl DistilWhisperAsr {
             d,
         )?;
 
-        Ok(Self { cfg, weights })
+        Ok(Self {
+            cfg,
+            kind: DistilWhisperAsrKind::Scaffold(Box::new(weights)),
+        })
+    }
+
+    /// Loads a real distil-whisper GGUF and binds the full weight set by
+    /// delegating to the shared [`crate::whisper::WhisperAsr`] engine.
+    ///
+    /// **distil-whisper is architecturally a Whisper checkpoint whose only
+    /// difference is `n_text_layer < n_audio_layer`** (see module docs).
+    /// The upstream converter (`vokra-convert::models::distil_whisper`)
+    /// therefore writes the standard `vokra.whisper.*` hparam chunk and
+    /// keeps HF Whisper tensor names verbatim, so this delegates the
+    /// forward to the shared Whisper plumbing — same op set (STFT / mel
+    /// filterbank / GEMM / GEMV / softmax / layer-norm / GELU / conv1d),
+    /// same kernels, same greedy / beam-search paths.
+    ///
+    /// The **distil invariant** (`n_text_layer < n_audio_layer`) is
+    /// enforced on the loaded config: a checkpoint whose decoder-layer
+    /// count equals or exceeds the encoder count is either vanilla
+    /// Whisper (large-v3 = 32/32) or a mis-flattened distil, and this
+    /// fails loudly (FR-EX-08) rather than mis-labeling a Whisper GGUF
+    /// as distil-whisper.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] via the delegate load path (missing
+    ///   `vokra.whisper.*` metadata, missing / mis-shaped weight tensors,
+    ///   or the front-end chunk check).
+    /// - [`VokraError::ModelLoad`] if the loaded config violates the
+    ///   distil-whisper distil invariant (`n_text_layer >= n_audio_layer`).
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let inner = WhisperAsr::from_gguf(file)?;
+        let wc = inner.model().config();
+        if wc.n_text_layer >= wc.n_audio_layer {
+            return Err(VokraError::ModelLoad(format!(
+                "distil-whisper: loaded GGUF has n_text_layer ({}) >= n_audio_layer ({}); \
+                 distil-whisper is a Whisper checkpoint whose decoder is strictly smaller \
+                 than the encoder — equal or larger decoder depth means this GGUF is \
+                 vanilla Whisper (use --model whisper) or a mis-flattened distil \
+                 (decoder tensors duplicated to the encoder count). This is a loud-fail \
+                 contract (FR-EX-08), never a silent mis-label.",
+                wc.n_text_layer, wc.n_audio_layer,
+            )));
+        }
+        // Build a `DistilWhisperConfig` snapshot from the loaded Whisper config
+        // so [`Self::config`] stays stable across construction paths.
+        let cfg = DistilWhisperConfig {
+            n_mels: wc.n_mels,
+            d_model: wc.d_model,
+            n_audio_ctx: wc.n_audio_ctx,
+            n_audio_head: wc.n_audio_head,
+            n_audio_layer: wc.n_audio_layer,
+            n_text_ctx: wc.n_text_ctx,
+            n_text_head: wc.n_text_head,
+            n_text_layer: wc.n_text_layer,
+            n_vocab: wc.n_vocab,
+            ffn_dim: wc.ffn_dim,
+            eot: wc.eot,
+            sot: wc.decoder_start_ids.first().copied().unwrap_or(50_258),
+            sample_rate: DISTIL_WHISPER_SAMPLE_RATE,
+        };
+        cfg.validate_for_forward()?;
+        Ok(Self {
+            cfg,
+            kind: DistilWhisperAsrKind::Delegate(inner),
+        })
+    }
+
+    /// Attaches a detokenizer for [`Self::transcribe`]. No-op on the
+    /// scaffold path ([`Self::new`]) — the scaffold has no inner engine.
+    #[must_use]
+    pub fn with_tokenizer(mut self, tokenizer: WhisperTokenizer) -> Self {
+        if let DistilWhisperAsrKind::Delegate(asr) = self.kind {
+            self.kind = DistilWhisperAsrKind::Delegate(asr.with_tokenizer(tokenizer));
+        }
+        self
+    }
+
+    /// Selects the backend the transcription forward runs on (default
+    /// [`BackendKind::Cpu`]).
+    ///
+    /// No-op on the scaffold path. On the delegate path an unsupported
+    /// backend surfaces as an explicit [`VokraError::UnsupportedOp`] at
+    /// [`Self::transcribe`] time (never a silent CPU fall back — FR-EX-08).
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        if let DistilWhisperAsrKind::Delegate(asr) = self.kind {
+            self.kind = DistilWhisperAsrKind::Delegate(asr.with_backend(backend));
+        }
+        self
     }
 
     /// The resolved configuration.
@@ -659,63 +788,95 @@ impl DistilWhisperAsr {
         &self.cfg
     }
 
-    /// True iff the weight store was built by
-    /// [`DistilWhisperWeights::synthesized`] (never a real upstream
-    /// checkpoint).
+    /// True iff this handle was built via [`Self::from_gguf`] (real
+    /// Whisper delegation is bound). Scaffold path ([`Self::new`]) is
+    /// `false`.
+    #[must_use]
+    pub fn has_weights_bound(&self) -> bool {
+        matches!(self.kind, DistilWhisperAsrKind::Delegate(_))
+    }
+
+    /// True iff the *scaffold* weight store was built by
+    /// [`DistilWhisperWeights::synthesized`]. Returns `false` on the
+    /// delegate path ([`Self::from_gguf`] loads real Whisper weights,
+    /// which are by definition not synthesized).
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
-        self.weights.is_synthesized
+        match &self.kind {
+            DistilWhisperAsrKind::Scaffold(w) => w.is_synthesized,
+            DistilWhisperAsrKind::Delegate(_) => false,
+        }
     }
 
     /// Transcribes a mono `f32` PCM slice at [`Self::config`]'s sample
-    /// rate.
+    /// rate (16 kHz — [`DISTIL_WHISPER_SAMPLE_RATE`]).
     ///
-    /// This is the primary waveform → text entry point. **Real weights
-    /// required**: synthesized-weight builds cannot produce meaningful
-    /// text (they would be noise or a hallucinated fixed sequence), so
-    /// this returns [`VokraError::NotImplemented`] naming the blocker.
-    /// Callers verify the shape flow through [`DistilWhisperAsr::new`] +
-    /// [`DistilWhisperWeights::synthesized`] today; a follow-up wave
-    /// binds real distil-whisper weights and wires the forward through
-    /// [`crate::whisper::WhisperModel`] with the distil-shrunk decoder
-    /// depth.
+    /// # Path-dependent behavior
+    ///
+    /// - **Delegate path** ([`Self::from_gguf`]): delegates to the shared
+    ///   Whisper greedy decode (log-mel front-end → 32-layer encoder →
+    ///   distil-shrunk decoder → byte-level BPE ids). Real forward.
+    /// - **Scaffold path** ([`Self::new`]): hard-errors with
+    ///   [`VokraError::NotImplemented`] naming `from_gguf` (or real weight
+    ///   binding on the scaffold) as the fix. Both synthesized and
+    ///   real-weight scaffolds error — the scaffold surface never invokes
+    ///   the forward (its weight store is not wired to the shared Whisper
+    ///   engine; use `from_gguf` for real ASR).
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if `pcm` is empty.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] on the scaffold path (real forward
+    ///   is only bound via [`Self::from_gguf`]).
+    /// - Any error from [`WhisperAsr::transcribe_tokens`] on the delegate
+    ///   path (backend unsupported, decoder failure, etc.).
     pub fn transcribe(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "distil-whisper transcribe: pcm slice is empty".to_owned(),
             ));
         }
-        if self.weights.is_synthesized {
-            return Err(VokraError::NotImplemented(
-                "distil-whisper transcribe: this engine holds synthesized weights \
-                 (deterministic fixture from DistilWhisperWeights::synthesized) — \
-                 synthesized-weight text would be a hallucinated sequence, not a \
-                 real transcript. Bind real distil-whisper weights (MIT, \
-                 huggingface.co/distil-whisper/distil-large-v3.5) before invoking \
-                 transcribe. The shape flow (config validation with the distil \
-                 invariant, weight-store construction, PCM boundary check) is \
-                 exercised through DistilWhisperAsr::new; real-checkpoint binding \
-                 lands in a follow-up wave (T29-equivalent) that delegates the \
-                 forward to WhisperModel with the shrunk decoder depth.",
-            ));
+        match &self.kind {
+            DistilWhisperAsrKind::Delegate(asr) => asr.transcribe_tokens(pcm),
+            DistilWhisperAsrKind::Scaffold(w) if w.is_synthesized => {
+                Err(VokraError::NotImplemented(
+                    "distil-whisper transcribe: this engine holds synthesized weights \
+                     (deterministic fixture from DistilWhisperWeights::synthesized) — \
+                     synthesized-weight text would be a hallucinated sequence, not a \
+                     real transcript. Bind real distil-whisper weights (MIT, \
+                     huggingface.co/distil-whisper/distil-large-v3.5) via \
+                     DistilWhisperAsr::from_gguf(&GgufFile) instead of ::new(cfg, w). \
+                     The shape flow (config validation with the distil invariant, \
+                     weight-store construction, PCM boundary check) stays exercised \
+                     through DistilWhisperAsr::new; real transcription delegates to \
+                     the shared crate::whisper::WhisperAsr plumbing.",
+                ))
+            }
+            DistilWhisperAsrKind::Scaffold(_) => Err(VokraError::NotImplemented(
+                "distil-whisper transcribe: this handle was built from a \
+                 shape-flow scaffold via DistilWhisperAsr::new (weights are not \
+                 wired to the shared Whisper engine). Real transcription requires \
+                 DistilWhisperAsr::from_gguf(&GgufFile) — distil-whisper is \
+                 architecturally a Whisper checkpoint (only n_text_layer < \
+                 n_audio_layer differs), so the forward delegates to the shared \
+                 crate::whisper::WhisperAsr plumbing (op set STFT / mel filterbank / \
+                 GEMM / GEMV / softmax / layer-norm / GELU / conv1d shared verbatim \
+                 with vanilla Whisper). FR-EX-08: never a silent zero-fill.",
+            )),
         }
-        Err(VokraError::NotImplemented(
-            "distil-whisper transcribe: real weights are bound but the 16 kHz \
-             waveform → log-mel front-end (n_mels = 128 for distil-large-v3.5) → \
-             Whisper large-v3 encoder (32 layers) → distil-shrunk decoder \
-             (2 layers) → byte-level BPE detokenize (vocab_size = 51 866) forward \
-             path has not landed yet. Follow-up wave: delegate to \
-             crate::whisper::WhisperModel with the distil-shrunk n_text_layer — \
-             the op set (STFT / mel filterbank / GEMM / GEMV / softmax / \
-             layer-norm / GELU / conv1d) and every kernel are already shared \
-             with vanilla Whisper.",
-        ))
+    }
+
+    /// Detokenizes `ids`. Delegates to [`WhisperAsr::render_ids`] on the
+    /// delegate path; falls back to the bracketed id form on the scaffold
+    /// path (matching the Whisper convention).
+    pub fn render_ids(&self, ids: &[u32]) -> Result<String> {
+        match &self.kind {
+            DistilWhisperAsrKind::Delegate(asr) => asr.render_ids(ids),
+            DistilWhisperAsrKind::Scaffold(_) => Ok(format!(
+                "[no tokenizer; token ids: {}]",
+                ids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")
+            )),
+        }
     }
 }
 
@@ -1172,6 +1333,108 @@ mod tests {
     #[test]
     fn sample_rate_matches_whisper_convention() {
         assert_eq!(DISTIL_WHISPER_SAMPLE_RATE, 16_000);
+    }
+
+    // ---------- from_gguf delegation tests (Wave 7 Part A RUNTIME-NOTIMPL) ----------
+
+    use vokra_core::gguf::{GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType};
+
+    /// Builds a GGUF carrying a `vokra.whisper.*` chunk with the distil-shape
+    /// (n_text_layer < n_audio_layer). No weight tensors — the delegate load
+    /// path then fails on the front-end check (Whisper requires a
+    /// `vokra.frontend.*` chunk), which is exactly the loud error we want to
+    /// observe: the delegate is live and config parsing works.
+    fn write_distil_shape_config(b: &mut GgufBuilder, n_audio_layer: u32, n_text_layer: u32) {
+        b.add_u32("vokra.whisper.n_mels", 128);
+        b.add_u32("vokra.whisper.n_audio_ctx", 1500);
+        b.add_u32("vokra.whisper.n_audio_state", 1280);
+        b.add_u32("vokra.whisper.n_audio_head", 20);
+        b.add_u32("vokra.whisper.n_audio_layer", n_audio_layer);
+        b.add_u32("vokra.whisper.n_text_ctx", 448);
+        b.add_u32("vokra.whisper.n_text_state", 1280);
+        b.add_u32("vokra.whisper.n_text_head", 20);
+        b.add_u32("vokra.whisper.n_text_layer", n_text_layer);
+        b.add_u32("vokra.whisper.n_vocab", 51_866);
+        b.add_u32("vokra.whisper.ffn_dim", 5120);
+        b.add_u32("vokra.whisper.eot", 50_257);
+        b.add_metadata(
+            "vokra.whisper.decoder_start_ids",
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U32,
+                values: [50_258u32, 50_259, 50_359, 50_363]
+                    .iter()
+                    .map(|&id| GgufMetadataValue::U32(id))
+                    .collect(),
+            }),
+        );
+    }
+
+    /// Scaffold path (`new`) reports `has_weights_bound() = false` and
+    /// `transcribe` returns a NotImplemented naming `from_gguf` as the fix.
+    #[test]
+    fn scaffold_path_reports_no_delegate_bound() {
+        let c = DistilWhisperConfig::tiny_for_tests();
+        let w = DistilWhisperWeights::synthesized(&c, 42).expect("weights");
+        let asr = DistilWhisperAsr::new(c, w).expect("distil-whisper asr");
+        assert!(
+            !asr.has_weights_bound(),
+            "scaffold path must not have a delegate bound"
+        );
+        assert!(asr.is_synthesized());
+
+        let err = asr.transcribe(&[0.0f32; 512]).unwrap_err();
+        match err {
+            VokraError::NotImplemented(msg) => {
+                assert!(msg.contains("from_gguf"), "hint must name the fix: {msg}");
+                assert!(
+                    msg.contains("synthesized")
+                        || msg.contains("distil")
+                        || msg.contains("scaffold"),
+                    "message must name the blocker: {msg}"
+                );
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
+    }
+
+    /// `from_gguf` delegates the load to `WhisperAsr::from_gguf`, which
+    /// requires the `vokra.frontend.*` chunk. A shape-only GGUF fails as
+    /// `ModelLoad` before any weight bind — this observes that the
+    /// delegation wiring is live.
+    #[test]
+    fn from_gguf_delegates_and_reports_missing_frontend_chunk() {
+        let mut b = GgufBuilder::new();
+        write_distil_shape_config(&mut b, 32, 2);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        match DistilWhisperAsr::from_gguf(&file) {
+            Err(VokraError::ModelLoad(msg)) => assert!(!msg.is_empty()),
+            Err(other) => {
+                panic!("expected ModelLoad from the delegate Whisper load path, got {other:?}")
+            }
+            Ok(_) => panic!(
+                "expected ModelLoad from the delegate Whisper load path, got Ok(_) \
+                 — but this GGUF carries no weights (front-end check should fire)"
+            ),
+        }
+    }
+
+    /// A GGUF whose decoder is NOT smaller than the encoder is **not** a
+    /// distil-whisper (vanilla Whisper large-v3 has 32/32). The distil
+    /// invariant must fire — FR-EX-08, loud mislabel refusal. Whichever
+    /// check (front-end / distil-invariant / weight-bind) fires first,
+    /// the GGUF must not load as distil-whisper.
+    #[test]
+    fn from_gguf_rejects_non_distil_shape_via_delegate_chain() {
+        let mut b = GgufBuilder::new();
+        // Vanilla-shape: 6/6 (matches whisper base). NOT distil.
+        write_distil_shape_config(&mut b, 6, 6);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        assert!(
+            DistilWhisperAsr::from_gguf(&file).is_err(),
+            "matched-depth GGUF must not load as distil-whisper (FR-EX-08 mislabel refusal)"
+        );
     }
 
     /// The M2-13 compliance registry must resolve every canonical
