@@ -1070,13 +1070,24 @@ impl MoshiBackboneState {
 /// The Helium temporal backbone (config + weights + backend selection).
 pub struct MoshiBackbone {
     config: MoshiConfig,
-    /// Head weights always resident; in mapped mode `weights.blocks` is
-    /// **empty** and the temporal blocks come from `mapped` instead.
+    /// Head weights (resident by default). On the [`Self::new_mapped`]
+    /// path, `weights.blocks` is empty and the temporal blocks come from
+    /// `mapped`. On the [`Self::new_mapped_full`] path (head **and**
+    /// blocks mapped-lazy), every head field in `weights` is also empty
+    /// (`text_emb` / `audio_emb` / `text_linear` / `out_norm_gamma`) and
+    /// the head reads dispatch to `mapped_heads` instead.
     weights: MoshiBackboneWeights,
     /// `Some` on the bounded-memory path ([`Self::new_mapped`]): the
     /// temporal blocks stay in the GGUF mapping and materialize one layer
     /// at a time during the forward (bit-identical values — type docs).
     mapped: Option<MappedTemporalBlocks>,
+    /// `Some` on the fully mapped-lazy path ([`Self::new_mapped_full`]):
+    /// `text_emb` / `audio_emb` / `text_linear` stay in the GGUF mapping
+    /// (row-lookup and chunked GEMV) and `out_norm.alpha` is served from
+    /// the cached scalar. Values are bit-identical to the resident path
+    /// (per-row / per-chunk widen preserves the byte formula) —
+    /// [`MappedHeadWeights`] docs.
+    mapped_heads: Option<MappedHeadWeights>,
     backend: BackendKind,
     /// Plain (unscaled) interleaved-pair RoPE frequencies `[head_dim/2]`
     /// at the config max_period (ADR M4-06 §D2 gap analysis: the
@@ -1091,6 +1102,7 @@ impl std::fmt::Debug for MoshiBackbone {
             .field("config", &self.config)
             .field("weights.is_synthesized", &self.weights.is_synthesized)
             .field("mapped", &self.mapped.is_some())
+            .field("mapped_heads", &self.mapped_heads.is_some())
             .field("backend", &self.backend)
             .finish()
     }
@@ -1132,6 +1144,7 @@ impl MoshiBackbone {
             config,
             weights,
             mapped: None,
+            mapped_heads: None,
             backend: BackendKind::Cpu,
             inv_freqs,
         })
@@ -1178,6 +1191,86 @@ impl MoshiBackbone {
             config,
             weights: head,
             mapped: Some(mapped),
+            mapped_heads: None,
+            backend: BackendKind::Cpu,
+            inv_freqs,
+        })
+    }
+
+    /// Builds a **fully** bounded-memory backbone: both the head store
+    /// ([`MappedHeadWeights`]) and the temporal blocks
+    /// ([`MappedTemporalBlocks`]) stay in the GGUF mapping and widen on
+    /// demand — the natural extension of [`Self::new_mapped`] with the
+    /// head-side savings the Voxtral pattern (`MappedHeads` — 12e574e)
+    /// brings, ~1.3 GiB at the full-7B shape. Numerically **bit-
+    /// identical** to the resident path (per-row / per-chunk widen
+    /// preserves the byte formula — [`MappedHeadWeights`] docs).
+    ///
+    /// The internal `MoshiBackboneWeights` is constructed empty on this
+    /// path (head fields deliberately left as `Vec::new()`), since every
+    /// head read dispatches to `mapped_heads` instead. Callers should not
+    /// consult [`Self::weights`] fields on this path.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a layer-count mismatch between
+    /// `mapped` and `config`, or head validation errors from
+    /// `mapped_heads` (`d_model` / `n_q_in` / `text_card` disagreement).
+    pub fn new_mapped_full(
+        config: MoshiConfig,
+        mapped_heads: MappedHeadWeights,
+        mapped: MappedTemporalBlocks,
+    ) -> Result<Self> {
+        config.validate_for_forward()?;
+        if mapped.n_layer() != config.temporal.n_layer {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped store has {} layers, \
+                 config expects {}",
+                mapped.n_layer(),
+                config.temporal.n_layer
+            )));
+        }
+        // Cross-check the mapped_heads shapes match the config the caller
+        // passes here (a diverging bind would produce plausibly-wrong
+        // logits — loud, FR-EX-08).
+        let d = config.temporal.d_model;
+        if mapped_heads.out_norm_gamma().len() != d {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped_heads d_model = {} \
+                 != config d_model {d}",
+                mapped_heads.out_norm_gamma().len()
+            )));
+        }
+        if mapped_heads.n_audio_tables() != config.n_q_in {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped_heads n_audio_tables = {} \
+                 != config n_q_in {}",
+                mapped_heads.n_audio_tables(),
+                config.n_q_in
+            )));
+        }
+        if mapped_heads.text_card() != config.text_card {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped_heads text_card = {} \
+                 != config text_card {}",
+                mapped_heads.text_card(),
+                config.text_card
+            )));
+        }
+        let empty_head = MoshiBackboneWeights {
+            text_emb: Vec::new(),
+            audio_emb: Vec::new(),
+            blocks: Vec::new(),
+            out_norm_gamma: Vec::new(),
+            text_linear: Vec::new(),
+            is_synthesized: false,
+        };
+        let inv_freqs = llama3_inv_freqs(config.temporal.head_dim(), config.rope_max_period, None)?;
+        Ok(Self {
+            config,
+            weights: empty_head,
+            mapped: Some(mapped),
+            mapped_heads: Some(mapped_heads),
             backend: BackendKind::Cpu,
             inv_freqs,
         })
@@ -1188,6 +1281,13 @@ impl MoshiBackbone {
     #[must_use]
     pub fn is_mapped(&self) -> bool {
         self.mapped.is_some()
+    }
+
+    /// Whether the head weights (embeddings + text_linear) are
+    /// mapped-lazy (the [`Self::new_mapped_full`] load).
+    #[must_use]
+    pub fn is_head_mapped(&self) -> bool {
+        self.mapped_heads.is_some()
     }
 
     /// Synthesized-fixture constructor.
@@ -1252,7 +1352,16 @@ impl MoshiBackbone {
             )));
         }
         out.iter_mut().for_each(|v| *v = 0.0);
-        // Text channel (index 0).
+        // Text channel (index 0), then audio channels (emb.{k} tables).
+        // Both paths (resident + mapped) share the same accumulate-into-`out`
+        // contract and byte-formula, so token streams are bit-identical.
+        if let Some(mh) = &self.mapped_heads {
+            mh.embed_text_into(tokens[0], out)?;
+            for (k, &tok) in tokens[1..].iter().enumerate() {
+                mh.embed_audio_into(k, tok, out)?;
+            }
+            return Ok(());
+        }
         let text_tok = tokens[0];
         if text_tok != MOSHI_ZERO_TOKEN {
             let rows = self.config.text_card + 1;
@@ -1267,7 +1376,6 @@ impl MoshiBackbone {
                 *dst += *src;
             }
         }
-        // Audio channels (emb.{k} tables).
         let rows = self.config.audio_card + 1;
         for (k, &tok) in tokens[1..].iter().enumerate() {
             if tok == MOSHI_ZERO_TOKEN {
@@ -1354,6 +1462,12 @@ impl MoshiBackbone {
             )));
         }
         let compute = self.compute()?;
+        // Mapped-head path: chunked GEMV out of the mapping — bit-identical
+        // to the resident `compute.gemv_f32` (per-chunk widen preserves the
+        // row-inner accumulation order — MappedHeadWeights docs).
+        if let Some(mh) = &self.mapped_heads {
+            return mh.text_logits_into(hidden, out, &compute);
+        }
         compute.gemv_f32(vocab, d, &self.weights.text_linear, hidden, None, out)
     }
 
@@ -1630,13 +1744,15 @@ impl MoshiBackbone {
         state.seq_len += t;
 
         // out_norm into the caller's buffer (read by both heads).
-        rms_norm(
-            &scratch.h[..t * d],
-            &self.weights.out_norm_gamma,
-            eps,
-            t,
-            hidden_out,
-        )?;
+        // On the fully mapped-lazy path the γ vector comes from the
+        // cached scalar in `mapped_heads` (widened once at bind — small),
+        // otherwise the resident `weights.out_norm_gamma`. Same bytes
+        // either way, so the RMSNorm result is bit-identical.
+        let out_norm_gamma = match &self.mapped_heads {
+            Some(mh) => mh.out_norm_gamma(),
+            None => &self.weights.out_norm_gamma,
+        };
+        rms_norm(&scratch.h[..t * d], out_norm_gamma, eps, t, hidden_out)?;
         Ok(())
     }
 }
@@ -2515,6 +2631,83 @@ mod tests {
         assert!(
             msg.contains("from_gguf_with_policy"),
             "points at the resident loader: {msg}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // MoshiBackbone::new_mapped_full — the fully mapped-lazy load
+    // (head + blocks). The forward on this backbone must reproduce the
+    // resident forward BIT-identically (same widen formula, same GEMV
+    // accumulation order — see MappedHeadWeights docs).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn fully_mapped_backbone_matches_resident_bitwise() {
+        // Full end-to-end contract: a MoshiBackbone built through the
+        // fully mapped-lazy path (mapped_heads + mapped_blocks) must
+        // return the exact same hidden state AND text logits as the
+        // resident MoshiBackbone::new for every step, over both F32 and
+        // BF16 stored payloads.
+        for dtype in [GgmlType::F32, GgmlType::BF16] {
+            let cfg = MoshiConfig::tiny_for_tests();
+            let src = MoshiBackbone::synthesized(cfg.clone(), 214).unwrap();
+            let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
+            let file = Arc::new(GgufFile::parse(bytes).unwrap());
+            let resident = MoshiBackbone::new(
+                cfg.clone(),
+                MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap(),
+            )
+            .unwrap();
+            let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg).expect("mapped heads");
+            let mb = MappedTemporalBlocks::bind(Arc::clone(&file), &cfg).expect("mapped blocks");
+            let full_mapped =
+                MoshiBackbone::new_mapped_full(cfg.clone(), mh, mb).expect("fully mapped");
+            assert!(full_mapped.is_mapped());
+            assert!(full_mapped.is_head_mapped());
+
+            let d = cfg.temporal.d_model;
+            let mut s_res = MoshiBackboneState::new(&cfg).unwrap();
+            let mut s_map = MoshiBackboneState::new(&cfg).unwrap();
+            let mut h_res = vec![0.0f32; d];
+            let mut h_map = vec![0.0f32; d];
+            let mut l_res = vec![0.0f32; cfg.text_card];
+            let mut l_map = vec![0.0f32; cfg.text_card];
+            for i in 0..5u32 {
+                let tokens = step_tokens(&cfg, i * 11 + 4);
+                resident.step_into(&mut s_res, &tokens, &mut h_res).unwrap();
+                full_mapped
+                    .step_into(&mut s_map, &tokens, &mut h_map)
+                    .unwrap();
+                assert_eq!(
+                    h_res, h_map,
+                    "dtype {dtype:?} step {i}: fully mapped hidden diverged"
+                );
+                resident.text_logits_into(&h_res, &mut l_res).unwrap();
+                full_mapped.text_logits_into(&h_map, &mut l_map).unwrap();
+                assert_eq!(
+                    l_res, l_map,
+                    "dtype {dtype:?} step {i}: fully mapped text logits diverged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fully_mapped_backbone_rejects_layer_count_mismatch() {
+        // Layer-count mismatch between mapped_blocks and config is loud.
+        let cfg = MoshiConfig::tiny_for_tests();
+        let mut cfg2 = cfg.clone();
+        cfg2.temporal.n_layer = cfg.temporal.n_layer + 1;
+        let src = MoshiBackbone::synthesized(cfg.clone(), 42).unwrap();
+        let bytes = packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32);
+        let file = Arc::new(GgufFile::parse(bytes).unwrap());
+        let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg).unwrap();
+        let mb = MappedTemporalBlocks::bind(Arc::clone(&file), &cfg).unwrap();
+        // mapped_blocks was bound for cfg (fewer layers) but we pass cfg2.
+        let err = MoshiBackbone::new_mapped_full(cfg2, mh, mb).unwrap_err();
+        assert!(
+            err.to_string().contains("layers"),
+            "names the layer mismatch: {err}"
         );
     }
 }
