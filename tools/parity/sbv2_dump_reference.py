@@ -1335,7 +1335,34 @@ class SDPReference:
         # Inference: sample from Gaussian prior, invert the flow.
         b = x.shape[0]
         t = x.shape[2]
-        z = torch.randn(b, 2, t, dtype=x.dtype, device=x.device) * noise_scale_w
+        # RNG parity note (2026-08-08, workflow wf_eadb75fc-2eb-2 fix): the
+        # naïve `torch.randn(b, 2, t)` produces a contiguous tensor, so
+        # torch's `normal_kernel` dispatches to the SIMD `normal_fill_AVX2`
+        # fast path on x86_64 CI hosts (see
+        # ATen/native/cpu/DistributionTemplates.h:230-255). That path uses
+        # `avx_mathfun`'s `log256_ps` / `sincos256_ps` — vectorized
+        # approximations that differ from libm's scalar `logf`/`cosf`/`sinf`
+        # by ~1 ULP for a non-trivial fraction of inputs. Vokra's Rust port
+        # (`vokra_core::rng::TorchRandnStream`) is bit-exact against
+        # `at::normal_distribution<double>` (the scalar streaming path);
+        # matching the AVX2 approximations would require porting
+        # `avx_mathfun`, which is out of scope and would break on ARM64
+        # (M1 dev machines, no AVX2). Instead, force torch to take the
+        # `else` branch of `normal_kernel` (line 246) by giving it a
+        # non-contiguous tensor — `torch.empty(...)[...]` with a stride
+        # mismatch does exactly this, without changing the sample count
+        # (still b*2*t) or the seed contract.
+        z_big = torch.empty(b, 2, t + 1, dtype=x.dtype, device=x.device)
+        z = z_big[..., :t]
+        assert not z.is_contiguous(), (
+            "SBV2 SDP noise buffer must be non-contiguous so torch's "
+            "normal_kernel takes the scalar `at::normal_distribution<double>` "
+            "path (which matches Vokra Rust bit-exactly). If this assert "
+            "fires, `torch.empty(...)[..., :t]` no longer produces a stride-"
+            "mismatched view on this torch version — pick another view op."
+        )
+        z.normal_(0, 1)
+        z = z * noise_scale_w
         # Upstream: `flows = list(reversed(self.flows))[:-2] + [flows[-1]]`.
         # `self._m.flows` is `[EA, CF, Flip, CF, Flip, CF, Flip, CF, Flip]`
         # (9 items for n_flows=4). Reversed then `[:-2] + [-1]` drops the

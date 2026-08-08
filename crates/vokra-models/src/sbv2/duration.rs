@@ -984,28 +984,44 @@ impl SbV2SDP {
         // 2. Latent `z` [2, T].
         let mut z = vec![0.0_f32; 2 * text_seq_len];
         if noise_scale_w != 0.0 {
-            // Fill via `NormalSource::fill` — this dispatches:
+            // Per-sample streaming fill via `NormalSource::next_normal`
+            // — see `SbV2SynthRequest::rng_mode` for the two impls
+            // this can be (`GaussianSplitMix64` for legacy synthetic
+            // tests, `TorchRandnStream` for torch parity).
             //
-            // - `GaussianSplitMix64` (legacy, synthetic path) → default
-            //   per-sample loop, byte-identical to the pre-M-08 code
-            //   this replaced (which called `next_normal()` in the
-            //   same loop);
-            // - `TorchRandnStream` (torch parity path) → torch's exact
-            //   `normal_kernel` dispatch: `<16` streaming
-            //   `at::normal_distribution<double>` with pair caching,
-            //   `>=16` batch `normal_fill` (uniforms in-place, then
-            //   `normal_fill_16` transform, per ATen's DistributionTemplates.h).
-            //   Bit-parity with torch on non-AVX2 hosts; ~1 ULP off
-            //   per sample on AVX2 hosts due to vectorized `log256_ps`
-            //   / `sincos256_ps` approximations (documented on
-            //   `torch_randn_f32`).
+            // # Why per-sample streaming (not `rng.fill(&mut z)`)
             //
-            // The `*v *= noise_scale_w` step below matches the Python
-            // SBV2 dumper's `torch.randn(1, 2, T) * noise_scale_w`
-            // exactly — torch's `torch.randn(...) * scalar` is a
-            // separate f32 mul, not baked into the normal draw (which
-            // uses mean=0, std=1 for torch.randn's defaults).
-            rng.fill(&mut z);
+            // The `fill` trait method, when overridden by
+            // `TorchRandnStream`, dispatches to torch's `normal_fill`
+            // fast path (`normal_fill_16_scalar` in 16-wide blocks).
+            // That path is correct — but on x86_64 CI hosts, torch
+            // itself dispatches to `normal_fill_AVX2` which uses
+            // `avx_mathfun`'s vectorized `log256_ps` / `sincos256_ps`
+            // approximations (~1 ULP off from libm scalar). SBV2's
+            // downstream flow inverse amplifies that residual
+            // chaotically, giving CI parity mismatches that are not
+            // bugs but genuine AVX2-vs-scalar micro-differences.
+            //
+            // The Python SBV2 reference dumper
+            // (`tools/parity/sbv2_dump_reference.py`) works around
+            // this by constructing a NON-contiguous tensor for the
+            // SDP noise, which forces torch's `normal_kernel` to take
+            // the `else` branch (line 246) —
+            // `at::normal_distribution<double>` streaming with pair
+            // caching. Vokra's `TorchRandnStream::next_normal` is a
+            // bit-exact port of that same streaming path (verified
+            // by `crates/vokra-core/tests/rng_torch_randn_cpu_parity.rs`),
+            // so a per-sample loop here matches torch's dumper output
+            // byte-for-byte on every CPU host regardless of AVX2
+            // support. See that dumper file's inline note for the
+            // full rationale.
+            //
+            // The `*v *= noise_scale_w` step matches Python's
+            // `z * noise_scale_w` — a post-fill f32 multiply, not
+            // baked into the RNG (torch.randn's default is std=1).
+            for v in &mut z {
+                *v = rng.next_normal();
+            }
             for v in &mut z {
                 *v *= noise_scale_w;
             }
