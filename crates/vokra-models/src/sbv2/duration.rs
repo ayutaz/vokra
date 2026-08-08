@@ -47,7 +47,7 @@
 //! `SbV2Model::synthetic_for_test` (`sbv2/mod.rs`) continues to compile and
 //! pass without any parameter changes on the callers' side.
 
-use vokra_core::rng::GaussianSplitMix64;
+use vokra_core::rng::NormalSource;
 
 // -----------------------------------------------------------------------------
 // SDP-wide constants (from upstream `models.py::StochasticDurationPredictor`
@@ -963,12 +963,12 @@ impl SbV2SDP {
     ///
     /// Panics (via `debug_assert!`) if `hidden.len() != text_seq_len *
     /// self.d_hidden` or `g.len() != self.gin`.
-    pub fn sample(
+    pub fn sample<R: NormalSource>(
         &self,
         hidden: &[f32],
         text_seq_len: usize,
         g: &[f32],
-        rng: &mut GaussianSplitMix64,
+        rng: &mut R,
         noise_scale_w: f32,
     ) -> Vec<i32> {
         debug_assert_eq!(hidden.len(), text_seq_len * self.d_hidden);
@@ -985,7 +985,12 @@ impl SbV2SDP {
         let mut z = vec![0.0_f32; 2 * text_seq_len];
         if noise_scale_w != 0.0 {
             for v in &mut z {
-                *v = rng.next_gaussian() * noise_scale_w;
+                // `next_normal` is `NormalSource`'s single method — both the
+                // pre-existing `GaussianSplitMix64` (synthetic, backward-
+                // compatible) and the new `TorchRandnStream` (byte-parity
+                // with `torch.randn` under the PhiloxRNGEngine.h path) impl
+                // the trait, so this line is agnostic to the choice.
+                *v = rng.next_normal() * noise_scale_w;
             }
         }
 
@@ -1090,6 +1095,12 @@ pub fn length_regulate(hidden: &[f32], durations: &[i32], d_model: usize) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `GaussianSplitMix64` is the concrete NormalSource these tests happened
+    // to use before the Step 8 generic refactor. Kept here so the tests
+    // continue to exercise the exact same numeric stream byte-for-byte
+    // (NFR-PT-01 cross-build non-interference — this refactor changes
+    // nothing observable to the tests).
+    use vokra_core::rng::GaussianSplitMix64;
 
     #[test]
     fn softplus_matches_reference_at_typical_inputs() {
