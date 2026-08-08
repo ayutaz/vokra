@@ -314,7 +314,30 @@ impl SbV2TransformerCouplingLayer {
         //    spk_emb(g) is a [d_hidden] scalar computed once per call
         //    (upstream `h = h + self.spk_emb_linear(g.mT).mT` — one
         //    projection per block, added identically to every `T`).
-        let spk = linear_g(&self.spk_emb_weight, &self.spk_emb_bias, g, self.d_hidden);
+        //
+        // FLOW-DEFENSE-BUNDLE guard (2026-08-09): when `gin_channels == 0`,
+        // the coupling was trained WITHOUT speaker conditioning (empty
+        // `spk_emb_weight`; upstream `nn.Linear(0, d_hidden)` collapses
+        // to an add-bias-only op). `linear_g` would loop over an empty
+        // `g` slice and still emit the bias, so the pre-fix behavior is
+        // subtly correct-by-accident but confusing on inspection.
+        // Explicit branch documents intent + short-circuits the empty
+        // dot product.
+        let spk = if self.gin_channels == 0 {
+            debug_assert!(
+                g.is_empty(),
+                "SbV2TransformerCouplingLayer::inverse: gin_channels == 0 requires g == [] \
+                 (caller passed g of length {})",
+                g.len()
+            );
+            // With `gin_channels == 0`, upstream `nn.Linear(0, d_hidden)`
+            // reduces to the bias vector: `linear_g` on empty weight and
+            // empty g would return `spk_emb_bias.clone()` anyway. Short
+            // circuit both to make the empty-conditioning contract explicit.
+            self.spk_emb_bias.clone()
+        } else {
+            linear_g(&self.spk_emb_weight, &self.spk_emb_bias, g, self.d_hidden)
+        };
         for row in h.chunks_exact_mut(self.d_hidden) {
             for (o, &s) in row.iter_mut().zip(spk.iter()) {
                 *o += s;
@@ -410,6 +433,30 @@ impl SbV2Flow {
             0,
             "d_z must be even (VITS2 affine coupling splits into two equal halves)"
         );
+        // FLOW-DEFENSE-BUNDLE cross-validation (2026-08-09): every
+        // `FlowLayer::Coupling` must share the same `gin_channels`
+        // value. A mismatched inner would silently truncate/pad `g`
+        // per-layer and produce garbage. `SbV2Flow::gin_channels()`
+        // returns the first Coupling's value, so a caller assuming
+        // that value is the flow-wide contract would be lied to.
+        let mut expected_gin: Option<usize> = None;
+        for (idx, layer) in layers.iter().enumerate() {
+            if let FlowLayer::Coupling(c) = layer {
+                let gin = c.gin_channels();
+                match expected_gin {
+                    None => expected_gin = Some(gin),
+                    Some(want) => debug_assert_eq!(
+                        gin, want,
+                        "SbV2Flow::from_layers: FlowLayer::Coupling at index {idx} has \
+                         gin_channels {gin} but earlier Coupling layers used {want} — every \
+                         Coupling in a well-formed flow must share the same per-utterance \
+                         conditioning contract (`SbV2Flow::gin_channels()` returns the first \
+                         Coupling's value; a mismatched later layer would be silently truncated \
+                         / padded)"
+                    ),
+                }
+            }
+        }
         Self { layers, d_z }
     }
 
@@ -1054,5 +1101,162 @@ mod tests {
         let (z_a, z_b) = split_halves(&z, d_z, half);
         let merged = merge_halves(&z_a, &z_b, half);
         assert_eq!(merged, z);
+    }
+
+    // ---------------------------------------------------------------
+    // FLOW-DEFENSE-BUNDLE (2026-08-09) tripwires
+    // ---------------------------------------------------------------
+
+    /// A coupling layer with `gin_channels == 0` (no speaker
+    /// conditioning at train time — upstream `nn.Linear(0, d_hidden)`)
+    /// must accept `g == []` at inference and produce the bias-only
+    /// speaker contribution (`spk = spk_emb_bias.clone()`). This pins
+    /// the explicit empty-conditioning branch added in FLOW-DEFENSE.
+    #[test]
+    fn zero_gin_channels_accepts_empty_g_and_uses_bias_only_spk() {
+        let half_d_z = 2;
+        let d_hidden = 3;
+        let gin_channels = 0; // no speaker conditioning
+        // Use non-zero post_weight so the pipeline observably mutates
+        // z_b (a fully-zero post would trivially leave z_b unchanged,
+        // making the "accepts empty g" contract vacuously satisfied).
+        let tcl = make_tcl(
+            half_d_z,
+            d_hidden,
+            gin_channels,
+            vec![0.5; d_hidden * half_d_z],
+            vec![0.1; d_hidden],
+            Vec::new(),           // spk_emb_weight is [d_hidden, 0] == empty
+            vec![0.7, -0.4, 0.2], // spk_emb_bias becomes the sole speaker term
+            vec![0.3; half_d_z * d_hidden],
+            vec![0.05; half_d_z],
+            true,
+        );
+        let z_a = vec![1.0_f32, 2.0, 3.0, 4.0]; // T=2, half_d_z=2
+        let z_b_before = vec![10.0_f32, 20.0, 30.0, 40.0];
+        let mut z_b = z_b_before.clone();
+        // Must not panic on empty g; loud-fail would be a
+        // debug_assert on the gin_channels==0 → g!=[] mismatch.
+        tcl.inverse(&z_a, &mut z_b, 2, &[]);
+        // Non-zero post_weight guarantees observable mutation of z_b.
+        assert_ne!(
+            z_b, z_b_before,
+            "FLOW-DEFENSE: the gin_channels==0 + empty-g branch must run the pipeline through \
+             to post/affine (not short-circuit into a no-op)"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "g must be [gin_channels]")]
+    fn zero_gin_channels_rejects_nonempty_g() {
+        // The existing generic shape-check `g.len() == self.gin_channels`
+        // already fires when g is non-empty on a gin_channels=0 layer.
+        // FLOW-DEFENSE's explicit empty-conditioning branch adds a
+        // redundant `g.is_empty()` `debug_assert!` inside its arm —
+        // but the generic shape-check fires first, so the observable
+        // panic message is the generic one. Pin to that.
+        let half_d_z = 2;
+        let d_hidden = 3;
+        let gin_channels = 0;
+        let tcl = make_tcl(
+            half_d_z,
+            d_hidden,
+            gin_channels,
+            vec![0.0; d_hidden * half_d_z],
+            vec![0.0; d_hidden],
+            Vec::new(),
+            vec![0.0; d_hidden],
+            vec![0.0; half_d_z * d_hidden],
+            vec![0.0; half_d_z],
+            true,
+        );
+        let z_a = vec![1.0_f32, 2.0, 3.0, 4.0];
+        let mut z_b = vec![10.0_f32, 20.0, 30.0, 40.0];
+        // Non-empty g on a gin_channels==0 layer: debug_assert must fire.
+        tcl.inverse(&z_a, &mut z_b, 2, &[0.1_f32, -0.2, 0.3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "every Coupling in a well-formed flow must share")]
+    fn from_layers_rejects_mismatched_gin_channels() {
+        // Two coupling layers with DIFFERENT gin_channels — a
+        // well-formed flow requires them to agree. `from_layers`
+        // debug-asserts cross-layer consistency post-FLOW-DEFENSE.
+        let half_d_z = 2;
+        let d_hidden = 3;
+        let layer_a = make_tcl(
+            half_d_z,
+            d_hidden,
+            4, // gin_channels = 4
+            vec![0.0; d_hidden * half_d_z],
+            vec![0.0; d_hidden],
+            vec![0.0; d_hidden * 4],
+            vec![0.0; d_hidden],
+            vec![0.0; half_d_z * d_hidden],
+            vec![0.0; half_d_z],
+            true,
+        );
+        let layer_b = make_tcl(
+            half_d_z,
+            d_hidden,
+            5, // MISMATCH: gin_channels = 5 ≠ 4
+            vec![0.0; d_hidden * half_d_z],
+            vec![0.0; d_hidden],
+            vec![0.0; d_hidden * 5],
+            vec![0.0; d_hidden],
+            vec![0.0; half_d_z * d_hidden],
+            vec![0.0; half_d_z],
+            true,
+        );
+        let _flow = SbV2Flow::from_layers(
+            vec![
+                FlowLayer::Coupling(layer_a),
+                FlowLayer::Flip,
+                FlowLayer::Coupling(layer_b),
+            ],
+            2 * half_d_z,
+        );
+    }
+
+    #[test]
+    fn from_layers_accepts_consistent_gin_channels() {
+        // All layers agree on gin_channels — must construct without
+        // panic.
+        let half_d_z = 2;
+        let d_hidden = 3;
+        let gin = 4;
+        let layer_a = make_tcl(
+            half_d_z,
+            d_hidden,
+            gin,
+            vec![0.0; d_hidden * half_d_z],
+            vec![0.0; d_hidden],
+            vec![0.0; d_hidden * gin],
+            vec![0.0; d_hidden],
+            vec![0.0; half_d_z * d_hidden],
+            vec![0.0; half_d_z],
+            true,
+        );
+        let layer_b = make_tcl(
+            half_d_z,
+            d_hidden,
+            gin,
+            vec![0.0; d_hidden * half_d_z],
+            vec![0.0; d_hidden],
+            vec![0.0; d_hidden * gin],
+            vec![0.0; d_hidden],
+            vec![0.0; half_d_z * d_hidden],
+            vec![0.0; half_d_z],
+            true,
+        );
+        let flow = SbV2Flow::from_layers(
+            vec![
+                FlowLayer::Coupling(layer_a),
+                FlowLayer::Flip,
+                FlowLayer::Coupling(layer_b),
+            ],
+            2 * half_d_z,
+        );
+        assert_eq!(flow.gin_channels(), gin);
     }
 }
