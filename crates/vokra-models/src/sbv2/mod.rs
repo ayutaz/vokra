@@ -41,7 +41,9 @@ pub use decoder::SbV2Decoder;
 pub use duration::{ConvFlow, DDSConv, ElementwiseAffine, SbV2SDP, SdpLayerNorm, length_regulate};
 pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
 pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
-pub use parity::{ATOL_DEFAULT, PER_TENSOR_ATOL, tolerance_for};
+pub use parity::{
+    ATOL_DEFAULT, AtolCalibration, PER_TENSOR_ATOL, atol_calibration_for, tolerance_for,
+};
 pub use speaker::{ExternalSpeakerProjection, SpeakerEmbedding};
 pub use style::StyleVectorInjector;
 pub use text_encoder::{BertBridge, N_LANGUAGES, SbV2TextEncoder};
