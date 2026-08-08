@@ -130,7 +130,12 @@ mod tests {
     /// value (all mulhilo products are 0, so the output is just the lane
     /// permutation of `ctr[1..=3]` XOR key words XOR zero). Freezes the
     /// exact lane pairing so a future permutation typo fails immediately.
+    ///
+    /// The `identity_op` lint is allowed here so the `hi1 XOR ctr[1] XOR
+    /// key[0]` structure of each expected lane is visible in the test,
+    /// rather than pre-collapsed to just `key[0]`.
     #[test]
+    #[allow(clippy::identity_op)]
     fn single_round_zeros_is_pure_lane_permutation() {
         assert_eq!(
             single_round([0, 0, 0, 0], [0xdead_beef, 0xcafe_babe]),
