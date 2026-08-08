@@ -10,8 +10,8 @@ tests that sit next to it (`crates/vokra-models/tests/sbv2_gguf_loader.rs`,
 ships no real checkpoint data**, only:
 
 - this `README.md` (the recipe below),
-- three `*.gguf.sha256` **placeholders** (not real checksums — see
-  "Placeholder format" below),
+- three `*.gguf.sha256` **real committed SHA256 sidecars** (committed
+  `6580061`, 2026-08-06 — CI gate now OPEN, see "Sidecar format" below),
 - `reference_dump.manifest.json` (a **schema template**, not a real dump —
   see "About the committed manifest" below).
 
@@ -52,9 +52,9 @@ see "What this README does NOT do" below).
 tests/fixtures/sbv2/
 ├── README.md                                        # committed (this file)
 ├── reference_dump.manifest.json                     # committed (schema template)
-├── sbv2-v2-multilingual-base.gguf.sha256             # committed (placeholder)
-├── deberta-v2-large-japanese-char-wwm.gguf.sha256    # committed (placeholder)
-├── deberta-v3-large.gguf.sha256                      # committed (placeholder)
+├── sbv2-v2-multilingual-base.gguf.sha256             # committed (real SHA256, `6580061`)
+├── deberta-v2-large-japanese-char-wwm.gguf.sha256    # committed (real SHA256, `6580061`)
+├── deberta-v3-large.gguf.sha256                      # committed (real SHA256, `6580061`)
 │
 ├── sbv2-v2-multilingual-base.gguf                    # gitignored — produced locally
 ├── deberta-v2-large-japanese-char-wwm.gguf           # gitignored — produced locally
@@ -211,10 +211,14 @@ sha256sum tests/fixtures/sbv2/deberta-v3-large.gguf > \
     tests/fixtures/sbv2/deberta-v3-large.gguf.sha256
 ```
 
-Each command **overwrites** that file's placeholder with the real
-`sha256sum` output — a single `<hash>  <path>` line. Only these three
+Each command **overwrites** that file's current contents with a fresh
+`sha256sum` line — a single `<hash>  <path>` line. Only these three
 `.sha256` files (plus this README and the manifest) get committed; the
-`.gguf` / `.safetensors` themselves stay local (`.gitignore`d).
+`.gguf` / `.safetensors` themselves stay local (`.gitignore`d). The
+sidecars currently on disk (post-`6580061`) already carry real hashes;
+this step is only needed after regenerating a GGUF (e.g. after a
+converter bump changes what tensors get emitted — see Wave-4
+CONVERTER-EMIT-EXPLICIT-ZEROS).
 
 ### 5. Run the gated tests
 
@@ -277,34 +281,30 @@ per-stage `SbV2Model` accessors):
 | `z_latent` | `[T_mel, 192]` | normalizing-flow output |
 | `waveform` | `[1, samples]` | final PCM (the tensor `parity_sbv2_real.rs` compares) |
 
-## Placeholder format (the three `.gguf.sha256` files)
+## Sidecar format (the three `.gguf.sha256` files)
 
-Each `*.gguf.sha256` in this directory is a **comment-only** file (every
-line starts with `#`) containing the word `placeholder`. That combination
-is deliberate, not incidental:
+**Status (2026-08-09)**: all three sidecars now carry **real
+`sha256sum`-format** lines (committed `6580061`, "feat(fixtures/sbv2):
+commit real sha256 sidecars — opens parity-sbv2-real CI gate"). The
+gate `[ -s <sidecar> ] && ! grep -q "placeholder" <sidecar>` sketched in
+`docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §10 ("fixture 管理"
+/ "CI workflow") now evaluates TRUE for every sidecar, so
+`parity-sbv2-real.yml` proceeds to its real dumper + convert + parity
+steps rather than skipping.
 
-- **Comment-only body** matches the convention
-  `tests/fixtures/audio/jfk-30s.wav.sha256` used before its real audio
-  fixture landed, and the exact thing
-  `.github/workflows/parity-whisper-real.yml`'s "Detect audio fixture
-  presence" step checks for: `grep -vE '^\s*(#|$)' <sidecar> | grep -q .`
-  — a sidecar only counts as "present" once it has at least one
-  non-comment, non-empty line (by convention, a `sha256sum`-format
-  `<hash>  <path>` line).
-- **Containing the word `placeholder`** matches the illustrative
-  `parity-sbv2-real.yml` gate sketched in
-  `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §10 ("fixture 管理"
-  / "CI workflow"), which checks
-  `[ -s <sidecar> ] && ! grep -q "placeholder" <sidecar>`. A future workflow
-  built from that sketch stays correctly gated off (`fixtures_present=false`)
-  against these files.
-- Neither form parses as a `sha256sum -c` input, so feeding one to
-  `sha256sum -c` today fails loudly and obviously (FR-EX-08) rather than
-  silently validating.
+Historical (pre-`6580061`) format was a **comment-only** placeholder
+containing the word `placeholder`, mirroring the convention
+`tests/fixtures/audio/jfk-30s.wav.sha256` used before its real audio
+fixture landed. That format is preserved in the workflow's own
+"Detect ... presence" step (`grep -vE '^\s*(#|$)' <sidecar> | grep -q .`),
+so a future SKU whose real hash is not yet computed can be added under
+the same placeholder scheme and cleanly gate off until Step 4 replaces
+the body with a real `sha256sum` line.
 
-Step 4 above ("Hash and commit") replaces the entire placeholder body with
-a real `sha256sum` line — do not append to it or mix comment lines with a
-real hash line.
+Step 4 above ("Hash and commit") is the canonical way to keep these
+sidecars in sync when an owner regenerates the GGUFs — do not
+`sha256sum` a stale local file and mix comment lines with a real hash
+line.
 
 ## Known limitations (read before assuming the recipe "just works" end to end)
 
