@@ -228,6 +228,80 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-08 — 1.0.0-rc.1-dev (Philox4x32-10 + MT19937 + torch.randn parity primitives added to `vokra_core::rng` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the PR #27 RNG plumbing that gives
+`SbV2SDP::sample` a byte-exact `torch.randn(..., device='cpu')` parity path.
+The C ABI (`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
+(`scripts/gen-c-abi.sh --check` = no diff). Follows the SBV2 / FSMN-VAD
+precedent for internal-only Rust-surface additions: advisory changelog entry,
+`scripts/check-abi-changelog.sh` does not gate on it (no C symbol changed).
+
+**Module reshuffle** (structural, no behaviour change): `crates/vokra-core/src/rng.rs`
+→ `crates/vokra-core/src/rng/mod.rs` with children `mt19937.rs`,
+`normal_kernel.rs`, `philox_round.rs`, `philox_state.rs`, `seed_init.rs`.
+Pre-existing exports (`SplitMix64`, `GaussianSplitMix64`, `Xorshift64Star`,
+`NormalSource`) stay at the same public paths — the `pub use` re-exports at
+the crate root are byte-exact against the flat-file layout.
+
+**New public exports** (all re-exported through `vokra_core::rng::*`, so
+consumers see them at the same crate path they'd use for the pre-existing
+generators):
+
+| Symbol | Path | Kind | Origin |
+|---|---|---|---|
+| `philox4x32_10` | `mt19937::` — via `philox_round` | Added | Steps 1-2 (Random123 KAT-audited) |
+| `PHILOX_M0` / `PHILOX_M1` / `PHILOX_W0` / `PHILOX_W1` / `PHILOX_ROUNDS` | `philox_round::` | Added | Steps 1-2 (KAT constants) |
+| `PhiloxState` | `philox_state::` | Added | Step 3 (128-bit counter, O(1) seek) |
+| `TorchPhiloxState` | `seed_init::` | Added | Step 4 (PyTorch-compatible seed init) |
+| `SCALE` / `u32_to_uniform_f32_pytorch` | `normal_kernel::` | Added | Step 5 (bit-exact `PhiloxRNGEngine.h` bridge) |
+| `philox_randn_sample` | `normal_kernel::` | Added | Steps 6-7 (Box-Muller of one Philox block, internal primitive) |
+| `TorchRandnStream` | `normal_kernel::` | Added | Steps 6-7 (streaming source for `torch.randn(K<16)`) |
+| `torch_randn_f32` | `normal_kernel::` | Added | Steps 6-7 (top-level dispatcher, mirrors ATen `normal_kernel`) |
+| `TorchMt19937Engine` | `mt19937::` | Added | MT19937 rewrite (bit-exact `at::mt19937_engine`) |
+
+**Motivation**: real CPU `torch.randn` uses `at::mt19937_engine` +
+`at::normal_distribution<double>` (BSD-3-Clause), NOT `PhiloxRNGEngine.h::randn`
+(the earlier "Philox is torch.randn" claim was traced by bisect
+`wf_20fa0933-53d` to be wrong; upstream's own header disclaims that path).
+The MT19937 rewrite (commit `b28f35e`) makes `TorchRandnStream::next_f32`
+byte-exact against `torch.manual_seed(N); torch.randn(K)` for `K < 16` and
+for non-contiguous tensors; `torch_randn_f32` adds the `K >= 16`
+`normal_fill` scalar fast-path port (contiguous slice, in-place uniform fill
++ 16-wide `normal_fill_16` blocks + tail-recompute). See
+`crates/vokra-core/src/rng/normal_kernel.rs` §"Historical note" +
+`crates/vokra-core/src/rng/mt19937.rs` for the derivation.
+
+**Interop caveat**: the Philox primitives (`philox4x32_10`, `PhiloxState`,
+`TorchPhiloxState`, `philox_randn_sample`, `u32_to_uniform_f32_pytorch`)
+are kept as **internal, KAT-audited primitives** — they do NOT reproduce
+`torch.randn` on any real torch backend. Documented in
+`normal_kernel.rs` §"`SCALE` / `u32_to_uniform_f32_pytorch` — legacy
+pipeline glue" and `philox_randn_sample`'s "Not a torch.randn parity path"
+section. Kept because a future CUDA `curandStatePhilox4_32_10_t` parity
+path can build on the same block function once subsequence/offset packing
+is settled.
+
+**Files touched**:
+- `crates/vokra-core/src/rng/mod.rs` (was `rng.rs`) — `pub use` re-exports
+  + `NormalSource` trait boundary.
+- `crates/vokra-core/src/rng/{mt19937,normal_kernel,philox_round,philox_state,seed_init}.rs` — new.
+- `crates/vokra-core/tests/rng_{philox_kat,philox_randn,philox_state,torch_randn_cpu_parity,torch_randn_e2e,torch_seed,uniform_transform,module_layout}.rs` — new integration tests + KAT anchors.
+- `crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed*.f32.bin` +
+  `torch_philox_seed*.u32.bin` — pinned byte anchors regenerated on M1
+  aarch64 via `tools/parity/torch_philox_dump.py`.
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-core` (std + core only,
+no new external crates); root `Cargo.lock` unchanged.
+
+**Related**: PR27-RNG-CROSS-ARCH audit gap — the `torch_randn_seed_42_k_100`
+and `torch_randn_seed_12345_k_1000` fixture tests now apply per-arch
+1-ULP tolerance for the `K >= 16` fast path, since Rust's `f32::ln` /
+`f32::cos` / `f32::sin` lower to target-dependent LLVM intrinsics. See
+`docs/adr/sbv2-libm-strategy.md` for the "bit-exact within Vokra on all
+platforms" contract vs the "match torch bit-exact on every host"
+impossibility ADR.
+
 ### 2026-08-03 — 1.0.0-rc.1-dev (GGUF `MAX_TENSOR_DIMS` raised 4 → 8 for multimodal Conv3d weights — Rust surface only, advisory)
 
 Additive **Rust public API** + **GGUF wire semantics** entry: the loader
