@@ -145,15 +145,24 @@ pub struct SbV2SynthRequest {
     /// 1.0` = faster speech, `< 1.0` = slower. Must be positive —
     /// [`synthesize`](SbV2Model::synthesize) rejects `speed <= 0.0`.
     pub speed: f32,
-    /// Flow-latent noise scale. **Not yet consumed** by
-    /// [`SbV2Model::synthesize`]'s scaffold pipeline — a full VITS-family
-    /// inverse reparameterizes the flow's Gaussian prior with this scale
-    /// (`z ~ N(mel_hidden_mean, exp(mel_hidden_logstd) * noise_scale)`);
-    /// this scaffold instead feeds `mel_hidden` straight into
-    /// [`SbV2Flow::inverse`] with no added noise, since the prior-head
-    /// weights that would produce a mean/logstd split do not exist until
-    /// Task 24-27 loads a real checkpoint. Kept on the request now so this
-    /// public shape does not need to grow later.
+    /// Flow-latent noise scale, consumed by [`SbV2Model::synthesize`]
+    /// (FLOW-NOISE-SCALE fix, 2026-08-09) as part of the VITS-family
+    /// prior reparameterization: `z_p = mel_hidden + torch.randn *
+    /// noise_scale` before [`SbV2Flow::inverse`]. Draws use the
+    /// [`rng_mode`](Self::rng_mode) dispatch (torch-parity RNG by
+    /// default) with the same `seed` the SDP consumes.
+    ///
+    /// `noise_scale = 0.0` short-circuits the RNG entirely — a
+    /// deterministic byte-frozen pipeline regardless of `seed` /
+    /// `rng_mode`. This is the fully-deterministic posture every
+    /// pre-Step-10 synthetic parity test uses.
+    ///
+    /// Upstream default (from `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
+    /// §7) is `0.667`. The full VITS-family scheme also multiplies the
+    /// scaled noise by `exp(logs_p)` — a mean/logstd split from the
+    /// prior head (`enc_p.proj.*`, tracked as SBV2-INFO-01-ENC-P-PROJ)
+    /// — which this scaffold treats as `logs = 0` (equivalent to
+    /// `logstd = 0`, i.e. `exp(0) = 1`) pending the prior-head loader.
     pub noise_scale: f32,
     /// Stochastic-duration-predictor noise scale, forwarded to
     /// [`SbV2SDP::sample`] — `0.0` is fully deterministic (every predicted
@@ -1036,7 +1045,53 @@ impl SbV2Model {
         } else {
             &flow_g_owned
         };
-        let z = self.flow.inverse(&mel_hidden, mel_seq_len, flow_g);
+
+        // FLOW-NOISE-SCALE fix (2026-08-09): reparameterize the flow's
+        // Gaussian prior with `req.noise_scale`. The Python reference
+        // draws `torch.randn_like(mel_hidden)`, scales by
+        // `req.noise_scale`, and adds elementwise to `mel_hidden`
+        // before `flow.inverse` — the standard VITS-family
+        // reparameterization step (`z_p = mean + torch.randn * scale`),
+        // simplified here to `mean = mel_hidden, logstd = 0` (real
+        // prior-head mean/logstd split lands with the
+        // SBV2-INFO-01-ENC-P-PROJ scaffold; until then this bridge
+        // treats the length-regulated text hidden as the mean).
+        //
+        // Draws use `req.rng_mode` dispatch (identical to the SDP step
+        // 6 above) so the torch-parity path byte-matches
+        // `torch.manual_seed(seed); torch.randn(...)` under the
+        // PhiloxRNGEngine.h contract that
+        // `crates/vokra-core/tests/rng_torch_randn_cpu_parity.rs` pins.
+        // The legacy Split-Mix64 stream is preserved so pre-Step-10
+        // synthetic tests that opt into it keep byte-frozen output when
+        // `noise_scale == 0.0` (skipped fill loop) or when they pass
+        // `RngMode::GaussianSplitMix64Legacy`.
+        //
+        // Zero-noise fast path: when `noise_scale == 0.0` the pre-fix
+        // behavior (feed `mel_hidden` unchanged into `flow.inverse`) is
+        // byte-identical — skip the RNG draw entirely so `noise_scale =
+        // 0.0` remains a byte-frozen deterministic pipeline regardless
+        // of `req.seed` and `req.rng_mode` (matches every existing
+        // synthetic parity test's noise_scale=0.0 posture).
+        let mel_hidden_with_noise: Vec<f32> = if req.noise_scale == 0.0 {
+            mel_hidden
+        } else {
+            let flow_noise = draw_flow_prior_noise(req.seed, req.rng_mode, mel_seq_len * d_model);
+            debug_assert_eq!(
+                flow_noise.len(),
+                mel_hidden.len(),
+                "flow prior noise buffer length must match mel_hidden"
+            );
+            let scale = req.noise_scale;
+            let mut buf = mel_hidden;
+            for (m, n) in buf.iter_mut().zip(flow_noise.iter()) {
+                *m += *n * scale;
+            }
+            buf
+        };
+        let z = self
+            .flow
+            .inverse(&mel_hidden_with_noise, mel_seq_len, flow_g);
 
         // 9. HiFi-GAN decoder — transpose SbV2Flow::inverse's time-major
         // [mel_seq_len, d_z] into SbV2Decoder::generate's channel-major
@@ -2550,6 +2605,33 @@ fn synthetic_hifigan_weights_e2e(attrs: &HifiGanAttrs) -> HifiGanWeights {
 /// Panics (via `debug_assert!`, so only in debug builds — matches every
 /// other `sbv2` module's shape-check convention) if `rows == 0` or
 /// `buf.len()` is not a multiple of `rows`.
+/// FLOW-NOISE-SCALE helper (2026-08-09): draws `n` standard-normal
+/// `f32` deviates from either the torch-parity `TorchRandnStream` or
+/// the legacy `GaussianSplitMix64` per `rng_mode`, seeded with `seed`.
+///
+/// Callers scale + add elementwise to `mel_hidden` before
+/// `SbV2Flow::inverse` so `req.noise_scale = 0.667` (docs/superpowers/
+/// specs/2026-07-26-sbv2-v2-design.md §7 default) reproduces VITS's
+/// standard prior reparameterization `z_p = mel_hidden + torch.randn
+/// * noise_scale`. Delegates to `NormalSource::fill` so both streams
+/// use the per-stream contract (`TorchRandnStream::fill` overrides for
+/// the `>= 16` normal_fill dispatch that byte-matches `torch.randn`).
+fn draw_flow_prior_noise(seed: u64, rng_mode: RngMode, n: usize) -> Vec<f32> {
+    use vokra_core::rng::NormalSource;
+    let mut buf = vec![0.0_f32; n];
+    match rng_mode {
+        RngMode::PhiloxRngEnginePyTorchParity => {
+            let mut rng = TorchRandnStream::new(seed);
+            rng.fill(&mut buf);
+        }
+        RngMode::GaussianSplitMix64Legacy => {
+            let mut rng = GaussianSplitMix64::new(seed);
+            rng.fill(&mut buf);
+        }
+    }
+    buf
+}
+
 fn transpose_time_major_to_channel_major(buf: &[f32], rows: usize) -> Vec<f32> {
     debug_assert!(
         rows > 0,
