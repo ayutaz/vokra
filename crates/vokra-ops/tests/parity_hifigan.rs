@@ -317,3 +317,168 @@ fn int8_gate_with_both_proofs_but_kernel_unimplemented_errors_unsupported() {
         "expected UnsupportedOp (INT8 kernel deferred to consumer WP), got: {err}"
     );
 }
+
+// ---- HGAN-03: pre-conv_post leaky_relu slope is 0.01, not attrs.slope 0.1 -----
+//
+// Reference `tools/parity/vendor/vits/models.Generator.forward` at
+// `decoder.py:97` explicitly calls plain `F.leaky_relu(x)` (default slope
+// 0.01) **without** the `LRELU_SLOPE=0.1` argument that its in-loop calls
+// use. In-loop calls stay at `attrs.leaky_relu_slope` (0.1); the final
+// pre-conv_post activation must be hard-pinned to 0.01 regardless of what
+// `attrs.leaky_relu_slope` is set to.
+//
+// # Oracle
+//
+// We engineer a scenario where the ONLY leaky_relu that fires with any
+// negative input is the FINAL (pre-conv_post) one. Under those conditions:
+//
+//   * Post-fix: final leaky is hard-coded 0.01. Two runs with different
+//     `attrs.leaky_relu_slope` values (that both leave the in-loop path
+//     as identity) produce IDENTICAL output.
+//   * Pre-fix: final leaky uses `attrs.leaky_relu_slope`. Two runs with
+//     different `attrs.leaky_relu_slope` produce DIFFERENT output.
+//
+// # Engineering the "in-loop is identity" invariant
+//
+// The in-loop leaky_relu is identity iff its input is ≥ 0 at every
+// stage. We chain fully-positive tensors:
+//   * Mel input: all-positive (parity_mel_positive_only).
+//   * conv_pre weights + bias: all-positive.
+//   * transposed_conv weights + bias: all-positive.
+//   * mrf branches: crafted so `x + branch(x)` stays positive at each
+//     branch step (positive weights + identity residual keeps `h` ≥ 0).
+//
+// Then we craft the mrf branch weights of the LAST stage such that its
+// output is dominated by a negative-weight last conv → mrf output has
+// some strictly-negative cells → the final leaky_relu fires with a
+// slope-dependent contribution.
+//
+// # Fixture-specific caveat
+//
+// The engineering above is fragile: any weight-signage tweak will break
+// the "in-loop is identity" invariant. This test is documentation +
+// tripwire, not an architectural pin — the ADR / rustdoc on
+// `hifigan_generator` is the true statement of intent.
+#[test]
+fn hgan_03_pre_conv_post_leaky_slope_ignores_attrs_slope() {
+    // Attrs: 1 upsample stage, 1 mrf branch of 1 layer, dilation 1.
+    // Minimal shape → maximal control over signage.
+    let attrs = HifiGanAttrs {
+        n_mels: 2,
+        initial_channel: 4,
+        upsample_rates: vec![2],
+        upsample_kernel_sizes: vec![4],
+        resblock_kernel_sizes: vec![3],
+        resblock_dilation_sizes: vec![vec![1]],
+        sample_rate: 8_000,
+        leaky_relu_slope: 0.1,
+        res_block_type: ResBlockType::V2,
+    };
+
+    let conv_pre_kernel = 3;
+    let conv_post_kernel = 3;
+    let n_frames = 3;
+    // All-positive mel input.
+    let mel: Vec<f32> = (0..attrs.n_mels * n_frames)
+        .map(|i| 0.3 + (i as f32) * 0.01)
+        .collect();
+
+    let out_ch = 3; // last stage out_ch (before conv_post)
+    // conv_pre: [initial_channel, n_mels, kernel] — all positive.
+    let mut conv_pre_weight = Vec::new();
+    for _ in 0..(attrs.initial_channel * attrs.n_mels * conv_pre_kernel) {
+        conv_pre_weight.push(0.1);
+    }
+    let conv_pre_bias = vec![0.01_f32; attrs.initial_channel];
+
+    // transposed conv1d: [in_ch, out_ch, kernel] — all positive.
+    let mut up_weight = Vec::new();
+    for _ in 0..(attrs.initial_channel * out_ch * attrs.upsample_kernel_sizes[0]) {
+        up_weight.push(0.05);
+    }
+    let up_bias = vec![0.05_f32; out_ch];
+
+    // MRF branch: single layer, kernel 3, dilation 1. Choose weights so
+    // that `branch_out = conv1d(lrelu(up_out))` produces STRICTLY-NEGATIVE
+    // values in some positions AND `up_out + branch_out` (the residual
+    // after mrf_branch_forward's inner add) can be negative too. Because
+    // this is the LAST stage, the branch output value becomes `h`.
+    //
+    // Use large-magnitude negative weights + zero bias so the conv output
+    // is a signed weighted-sum of positive `up_out` values.
+    let mut branch_weight = Vec::new();
+    for _ in 0..(out_ch * out_ch * attrs.resblock_kernel_sizes[0]) {
+        branch_weight.push(-2.0);
+    }
+    let branch_bias = vec![0.0_f32; out_ch];
+
+    let weights = HifiGanWeights {
+        conv_pre_weight,
+        conv_pre_bias,
+        conv_pre_kernel,
+        upsample_weights: vec![UpsampleStageWeights {
+            weight: up_weight,
+            bias: up_bias,
+            in_ch: attrs.initial_channel,
+            out_ch,
+            kernel: attrs.upsample_kernel_sizes[0],
+            stride: attrs.upsample_rates[0],
+        }],
+        mrf_stage_weights: vec![vec![MrfBranchWeights {
+            layers: vec![ResBlockLayer {
+                weight: branch_weight,
+                bias: branch_bias,
+                weight_c2: None,
+                bias_c2: None,
+                dilation: 1,
+                kernel: attrs.resblock_kernel_sizes[0],
+                channels: out_ch,
+            }],
+        }]],
+        conv_post_weight: vec![0.1_f32; out_ch * conv_post_kernel],
+        conv_post_bias: vec![0.0_f32],
+        conv_post_kernel,
+    };
+
+    let out_a =
+        hifigan_generator(&mel, n_frames, &weights, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+    // Second run with a very different attrs.leaky_relu_slope. Under the
+    // fixed code, this should have NO effect at all (the ONLY leaky_relu
+    // that fires on this fixture is the final pre-conv_post one, and it
+    // is hard-coded 0.01 independent of attrs). Under the pre-fix code,
+    // the final activation flips from slope=0.1 to slope=0.5 → output
+    // differs at positions where pre-conv_post h < 0.
+    let mut attrs_b = attrs.clone();
+    attrs_b.leaky_relu_slope = 0.5;
+    let out_b =
+        hifigan_generator(&mel, n_frames, &weights, &attrs_b, &HifiGanConfig::fp32()).unwrap();
+
+    let max_delta = out_a
+        .iter()
+        .zip(out_b.iter())
+        .map(|(&a, &b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+
+    // Sanity: this fixture must actually exercise a non-trivial signal
+    // (otherwise the negative test above is vacuously true). Assert
+    // at least one output cell is meaningfully non-zero.
+    let max_abs_a = out_a.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+    assert!(
+        max_abs_a > 1e-3,
+        "fixture degenerate: |out_a|_∞ = {max_abs_a} — signal too small to observe leaky slope \
+         effect. Adjust test weights."
+    );
+
+    // Under the FIXED code: identical outputs. Under the pre-fix code:
+    // clearly divergent (in-loop is identity here by construction, so
+    // the ONLY leaky_relu that changed is the final one).
+    assert!(
+        max_delta < 1e-8,
+        "HGAN-03: pre-conv_post leaky_relu must be pinned at slope=0.01 (independent of \
+         attrs.leaky_relu_slope). Under this fixture the in-loop leaky_relu is identity by \
+         construction (all in-loop inputs ≥ 0), so ANY delta between attrs.slope=0.1 and \
+         attrs.slope=0.5 runs comes from the final activation. Observed max|Δ| = {max_delta} \
+         (must be ≤ 1e-8 post-fix; pre-fix would be ≫ 0)."
+    );
+}

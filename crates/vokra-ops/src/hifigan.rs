@@ -732,7 +732,18 @@ pub fn hifigan_generator(
     }
 
     // --- Final leaky_relu → conv1d → tanh ---
-    leaky_relu_inplace(&mut h, attrs.leaky_relu_slope);
+    //
+    // HGAN-03 fix (2026-08-09): reference
+    // `tools/parity/vendor/vits/models.Generator.forward` at
+    // `decoder.py:97` calls plain `F.leaky_relu(x)` **without** the
+    // `LRELU_SLOPE=0.1` argument that its in-loop calls use — PyTorch's
+    // default slope is `0.01`, distinct from the `LRELU_SLOPE = 0.1`
+    // constant threaded through the upsample loop above. Pin the final
+    // pre-conv_post activation at the reference's implicit default so
+    // this call matches upstream regardless of how a caller (or a
+    // future SKU) tunes `attrs.leaky_relu_slope`.
+    const FINAL_LEAKY_RELU_SLOPE: f32 = 0.01;
+    leaky_relu_inplace(&mut h, FINAL_LEAKY_RELU_SLOPE);
     let final_out = conv1d_scalar(
         &h,
         cur_channels,
