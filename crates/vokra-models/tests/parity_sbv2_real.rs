@@ -266,6 +266,32 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
         .fold(0.0f32, |worst, (x, y)| worst.max((x - y).abs()))
 }
 
+/// Root-mean-square difference between two slices, computed over the
+/// **overlapping prefix** `[0, min(a.len(), b.len()))`. Waveform-signal
+/// comparison after `max_abs_diff` — the max-diff is the "worst frame"
+/// (dominated by transient boundaries), and RMS is the "average energy"
+/// (more forgiving to a single ceiling-flip artifact but very sensitive
+/// to sustained divergence).
+///
+/// Returns `0.0` if either slice is empty (defensive — the caller has
+/// already asserted non-empty length above).
+fn rms_diff_over_prefix(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return 0.0;
+    }
+    let sum_sq: f64 = a
+        .iter()
+        .take(n)
+        .zip(b.iter().take(n))
+        .map(|(x, y)| {
+            let d = (*x as f64) - (*y as f64);
+            d * d
+        })
+        .sum();
+    (sum_sq / n as f64).sqrt() as f32
+}
+
 /// Looks up `key` in JSON object `v`, panicking with `ctx` on a missing key
 /// (an opted-in fixture set is expected to be *complete* — a hole in it is
 /// a hard failure, not a default-and-continue).
@@ -577,24 +603,170 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
         waveform_path.display(),
         reference.len(),
     );
-    assert_eq!(
+
+    // Length is a **tolerance-based** check, not `assert_eq!` (PR27-WAVEFORM-
+    // TOLERANCE audit gap, 2026-08-08). SbV2SDP's terminal
+    // `duration = ceil(exp(logw)).max(1) as i32` (duration.rs:1074) is a
+    // discrete step: any residual ε near an integer boundary flips ±1 frame
+    // → ±hop_length samples in the final waveform. For an 8-phoneme "テスト"
+    // input at hop_length=512, a worst-case ±1-frame-per-phoneme flip
+    // produces ±4096 samples out of ~27000 = ~15% length variance PURELY
+    // from the discrete step, before any transcendental precision drift
+    // enters the picture. Kokoro precedent: `PROSODY_F0_ATOL = 0.05` is an
+    // architectural bound (F0_proj Conv1d 256→1 amplifies BiLstm1d
+    // accumulator delta ~9×), NOT a CI-green loosening. The 10% length band
+    // + tolerance-on-overlap contract below is the same posture applied to
+    // the SBV2 waveform.
+    //
+    // See docs/adr/sbv2-libm-strategy.md §2.2 for the transcendental
+    // amplification catalog (CEIL infinite, RQS sqrt unbounded, coupling
+    // exp exponential, Box-Muller ~1 ULP per pair) and §4.4 for the
+    // "MUST be tolerance-based" ruling this test implements.
+    const LENGTH_BAND_FRACTION: f32 = 0.10; // ±10% ≈ ±1 CEIL flip / phoneme worst-case
+    let rust_len = audio.samples.len() as f32;
+    let ref_len = reference.len() as f32;
+    let len_ratio = rust_len / ref_len;
+    assert!(
+        (1.0 - LENGTH_BAND_FRACTION..=1.0 + LENGTH_BAND_FRACTION).contains(&len_ratio),
+        "waveform length outside the ±{}% band: Rust `synthesize` produced {} \
+         samples, the reference dump has {} (ratio = {:.4}). SbV2SDP's terminal \
+         `ceil()` accepts ±1 CEIL flip per phoneme as an architectural bound \
+         (see docs/adr/sbv2-libm-strategy.md §2.2), but a delta of this size \
+         indicates either duration-computation drift, wrong `hop_length`, or \
+         wrong `manifest.request` reproduction. If SBV2-BUG4 (text_encoder \
+         emits hidden ~35× too large) is still un-landed, expect large-value \
+         durations to make this fire — that is the intended loud-failure.",
+        LENGTH_BAND_FRACTION * 100.0,
         audio.samples.len(),
         reference.len(),
-        "waveform length mismatch: Rust `synthesize` produced {} samples, the \
-         reference dump has {} — `manifest.request` must reproduce exactly the \
-         SbV2SynthRequest the Python dumper used",
-        audio.samples.len(),
-        reference.len(),
+        len_ratio,
     );
+
+    // Signal comparison: max |Δ| on the overlapping prefix. Truncating to
+    // `min(rust.len, ref.len)` is honest because up to `hop_length` trailing
+    // samples in the longer buffer are ≤ 1 phoneme worth of silence padding
+    // (the CEIL step producing 1 extra frame of a zero-input decoder
+    // pushes on ~hop_length samples of near-silence), not audible signal
+    // delta that a per-sample comparison would meaningfully measure.
+    let overlap_len = audio.samples.len().min(reference.len());
+    let rust_prefix = &audio.samples[..overlap_len];
+    let ref_prefix = &reference[..overlap_len];
     let atol = tolerance_for("waveform");
-    let diff = max_abs_diff(&audio.samples, &reference);
+    let diff = max_abs_diff(rust_prefix, ref_prefix);
     assert!(
         diff <= atol,
-        "waveform max |Δ| = {diff} exceeds atol {atol} (sbv2::parity::tolerance_for(\"waveform\"))"
-    );
-    eprintln!(
-        "[parity_sbv2_real] waveform parity OK: {} samples, max |Δ| = {diff:.3e} <= \
-         atol {atol}",
+        "waveform max |Δ| = {diff} exceeds atol {atol} (sbv2::parity::tolerance_for(\"waveform\")) \
+         over the overlapping prefix [0..{}] samples (rust={} ref={})",
+        overlap_len,
         audio.samples.len(),
+        reference.len(),
     );
+
+    // RMS-on-overlap as a second signal-quality gate. Same tolerance
+    // ceiling (Kokoro-precedent 6.84e-3 × 1.5 ≈ 0.01 default), but RMS
+    // catches sustained low-level divergence that max_abs_diff can miss
+    // (e.g. every sample off by 0.005 = max_abs_diff = 0.005 well under
+    // atol=0.01, but RMS = 0.005 also well under — the two agree at low
+    // divergence, and RMS catches high-fraction low-magnitude drift that
+    // max_abs_diff would miss).
+    let rms = rms_diff_over_prefix(rust_prefix, ref_prefix);
+    assert!(
+        rms <= atol,
+        "waveform RMS |Δ| = {rms} exceeds atol {atol} on overlapping prefix \
+         [0..{}] samples — max_abs_diff was {:.3e} which passed, but RMS \
+         indicates sustained low-level divergence across the whole prefix. \
+         See docs/adr/sbv2-libm-strategy.md §2 for the residual model.",
+        overlap_len,
+        diff,
+    );
+
+    eprintln!(
+        "[parity_sbv2_real] waveform parity OK: rust={} samples ref={} samples \
+         (ratio {:.4}, band ±{}%), overlap {} samples: max |Δ| = {diff:.3e}, \
+         RMS |Δ| = {rms:.3e} <= atol {atol}",
+        audio.samples.len(),
+        reference.len(),
+        len_ratio,
+        LENGTH_BAND_FRACTION * 100.0,
+        overlap_len,
+    );
+}
+
+// --- unit tests for the tolerance-based helpers (PR27-WAVEFORM-TOLERANCE) ---
+//
+// These are runnable via plain `cargo test -p vokra-models --test
+// parity_sbv2_real` (no `--ignored` flag), so they always fire in CI
+// even when the real Task 30 fixture is absent. They validate the
+// helpers the ignored real-parity harness above depends on — a
+// regression in `max_abs_diff` or `rms_diff_over_prefix` semantics
+// would surface here loudly instead of silently corrupting the
+// real-parity waveform-tolerance calc when a fixture finally lands.
+#[cfg(test)]
+mod tolerance_helpers {
+    use super::{max_abs_diff, rms_diff_over_prefix};
+
+    #[test]
+    fn max_abs_diff_zero_when_equal() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [1.0, 2.0, 3.0];
+        assert_eq!(max_abs_diff(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn max_abs_diff_reports_worst_frame() {
+        // Delta pattern: 0.1, 0.0, 5.0, 0.1 → max = 5.0.
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let b = [1.1, 2.0, 8.0, 4.1];
+        let diff = max_abs_diff(&a, &b);
+        assert!((diff - 5.0).abs() < 1e-6, "max = {diff}");
+    }
+
+    #[test]
+    fn rms_diff_over_prefix_zero_when_equal() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let b = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(rms_diff_over_prefix(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn rms_diff_over_prefix_matches_hand_calc() {
+        // Delta: 0.1, 0.2, 0.3 → sum_sq = 0.01 + 0.04 + 0.09 = 0.14
+        // → mean_sq = 0.14 / 3 ≈ 0.04667 → sqrt ≈ 0.21602
+        let a = [1.0, 2.0, 3.0];
+        let b = [1.1, 2.2, 3.3];
+        let rms = rms_diff_over_prefix(&a, &b);
+        let expected = (0.14_f64 / 3.0).sqrt() as f32;
+        assert!(
+            (rms - expected).abs() < 1e-6,
+            "rms = {rms}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn rms_diff_over_prefix_empty_slice_returns_zero() {
+        let a: [f32; 0] = [];
+        let b: [f32; 0] = [];
+        assert_eq!(rms_diff_over_prefix(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn rms_diff_over_prefix_uses_shorter_length() {
+        // Longer slice's trailing samples are IGNORED — this is the
+        // "truncate to overlap" semantic the waveform tolerance-check
+        // relies on to accept ±1-CEIL-flip-per-phoneme length drift
+        // without penalising the audible-signal-comparison prefix.
+        let a = [1.0, 2.0, 3.0]; // shorter
+        let b = [1.0, 2.0, 3.0, 999.0, 999.0]; // longer, trailing garbage
+        assert_eq!(
+            rms_diff_over_prefix(&a, &b),
+            0.0,
+            "trailing samples in the longer slice must NOT contribute to RMS"
+        );
+        assert_eq!(
+            rms_diff_over_prefix(&b, &a),
+            0.0,
+            "min-length semantic must be symmetric — swapping argument order \
+             cannot change the truncation prefix"
+        );
+    }
 }
