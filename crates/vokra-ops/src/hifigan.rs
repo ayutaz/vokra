@@ -76,6 +76,52 @@
 //! the same "one kernel per (backend, op), no per-op host fall back" contract
 //! (FR-EX-08). See `docs/adr/M3-06-mimi-rvq.md` §D5 for the identical deferred-
 //! GPU-seam stance mimi_rvq took.
+//!
+//! # Weight-norm folding contract (converter-side, HGAN-WEIGHT-NORM-DOC)
+//!
+//! Every conv / transposed-conv weight in a `[HifiGanWeights]` bundle
+//! (upsample stages, `MrfBranchWeights::layers[j].weight` / `.weight_c2`,
+//! plus the initial `conv_pre` and terminal `conv_post` layers the consumer
+//! WP materialises) is the **fully-materialised effective inference weight**.
+//! Upstream references (jik876/hifi-gan and derivatives) wrap every one of
+//! these convs in `torch.nn.utils.weight_norm(Conv1d(...))`, which decomposes
+//! `weight` into a `(weight_g, weight_v)` pair whose effective inference
+//! tensor is
+//!
+//! ```text
+//! weight = weight_g * weight_v / ||weight_v||_2
+//! ```
+//!
+//! where `||weight_v||_2` is the L2 norm taken over every dimension **except
+//! the first (`out_channels`)** — i.e. a per-output-channel scalar normaliser.
+//! This is exactly what PyTorch's `torch.nn.utils.remove_weight_norm(module)`
+//! computes and writes back as a single `weight` attribute at export time.
+//!
+//! **Converters MUST fold weight-norm before emitting `vokra.hifigan.*` GGUF
+//! chunks.** Concretely, either:
+//!
+//! 1. Load the reference checkpoint, call `remove_weight_norm(module)` on
+//!    every `Conv1d` / `ConvTranspose1d` under the generator (upstream shim
+//!    scripts do this before ONNX / TorchScript export), then read the fused
+//!    `weight` tensor; **or**
+//! 2. If the checkpoint stores raw `(weight_g, weight_v)` pairs (the typical
+//!    training-time state_dict layout — see e.g. `jik876/hifi-gan` official
+//!    `g_02500000` checkpoints, whose keys are `.weight_g` / `.weight_v` per
+//!    conv), fold them explicitly per the formula above before writing the
+//!    resulting `weight` into the GGUF chunk this module reads.
+//!
+//! Emitting raw `weight_v` bytes as if they were the effective weight is a
+//! **silent-wrong bug**: the forward pass runs to completion (all shapes
+//! match) but produces garbage audio, exactly the class of latent bug that
+//! only real-checkpoint parity catches (see the [[project-real-weight-eval]]
+//! memory's M4-scale trap catalogue and the Kokoro architectural-bound
+//! precedent in `docs/adr/M2-07-kokoro-per-tensor-atol.md` §Amplification for
+//! why loud-fail on structural mismatch is preferred to silent-wrong on
+//! numerical mismatch — FR-EX-08).
+//!
+//! This module intentionally accepts only fused effective weights: `(weight_g,
+//! weight_v)` pairs are converter-side concerns and this crate's structs
+//! (`UpsampleStageWeights`, `ResBlockLayer`) have no fields for the raw pair.
 
 use vokra_core::ir::graph::{HifiGanAttrs, ResBlockType};
 use vokra_core::{Result, VokraError};
