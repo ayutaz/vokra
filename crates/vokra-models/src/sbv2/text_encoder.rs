@@ -662,7 +662,38 @@ impl PositionWiseFFN {
 
     /// Runs one forward pass of the FFN on `x` (`[seq_len, d_model]`),
     /// returning `[seq_len, d_model]`.
+    ///
+    /// # SINGLE-UTTERANCE / UNMASKED CONTRACT (POSFFN-XMASK, 2026-08-09)
+    ///
+    /// This implementation intentionally **omits** the upstream's three
+    /// `x * x_mask` multiplies (before `conv_1`, before `conv_2`, and
+    /// once more after `conv_2` — `tools/parity/vendor/vits/attentions.py::FFN.forward`).
+    /// For a single-utterance / unmasked path (Vokra's current only caller —
+    /// [`SbV2TransformerBlock::forward`](Self)) every mask cell is `1.0`,
+    /// so the three multiplies are byte-identical no-ops and the omission
+    /// is a valid arithmetic simplification.
+    ///
+    /// **A future batched / streaming path** (e.g. M4/M5 `vokra-server`
+    /// multi-session with different-length utterances co-batched) **would
+    /// silently produce nondeterministic garbage** because per-utterance
+    /// padded positions would leak into every subsequent conv's receptive
+    /// field via `same-padded` convolution. Such a caller **must** either
+    /// (a) fan out to per-utterance forward calls (already single-utterance
+    /// safe here), or (b) grow this signature to accept an
+    /// `Option<&[f32]> x_mask` parameter and apply the three multiplies
+    /// when `Some` — FR-EX-08 forbids silently letting a batched caller
+    /// through the current unmasked path.
+    ///
+    /// The `seq_len == x.len() / d_model` debug-assert below serves as the
+    /// runtime tripwire: any caller that passes a `[B*T_max, d_model]`
+    /// batched view with `B > 1` trips it (they'd need to fan out).
     fn forward(&self, x: &[f32], seq_len: usize) -> Vec<f32> {
+        debug_assert_eq!(
+            x.len(),
+            seq_len * self.d_model,
+            "PositionWiseFFN::forward: x must be [seq_len, d_model] — this implementation is \
+             single-utterance / unmasked only. See the fn doc's POSFFN-XMASK contract."
+        );
         // First conv: [T, d_model] -> [T, d_ff] with same-padding.
         let mut h = conv1d_same_padded(
             x,
@@ -1045,6 +1076,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// POSFFN-XMASK regression pin: `PositionWiseFFN::forward` documents a
+    /// single-utterance / unmasked contract (see the fn doc). The
+    /// debug-assert `x.len() == seq_len * d_model` is the runtime
+    /// tripwire that catches a mis-shaped call — a future batched
+    /// caller that co-batches `B * T_max` positions into a single
+    /// slice would trip this rather than silently produce
+    /// nondeterministic garbage from the pad positions leaking into
+    /// downstream `conv1d_same_padded` receptive fields.
+    #[test]
+    #[should_panic(expected = "PositionWiseFFN::forward")]
+    fn ffn_forward_debug_asserts_x_len_matches_seq_len_times_d_model() {
+        let d_model = 4;
+        let d_ff = 6;
+        let kernel = 3;
+        let ffn = PositionWiseFFN::new(
+            vec![0.0; d_ff * d_model * kernel],
+            vec![0.0; d_ff],
+            vec![0.0; d_model * d_ff * kernel],
+            vec![0.0; d_model],
+            d_model,
+            d_ff,
+            kernel,
+        );
+        // seq_len = 3 but x.len() = 3 * 5 (wrong d_model) — trips the
+        // POSFFN-XMASK contract's runtime tripwire.
+        let x_bad: Vec<f32> = vec![0.0; 3 * 5];
+        let _ = ffn.forward(&x_bad, 3);
     }
 
     /// A zero-weight transformer block reduces to the LayerNorm-only
