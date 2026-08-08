@@ -182,6 +182,74 @@ pub struct SbV2SynthRequest {
     pub rng_mode: RngMode,
 }
 
+/// Per-stage intermediate tensors from
+/// [`SbV2Model::synthesize_with_intermediates`], each field corresponding
+/// to one entry in `tools/parity/sbv2_dump_reference.py`'s manifest
+/// `tensors[]` array (design doc §10). Every buffer is flat, row-major
+/// — see each field's doc for its exact shape and dumper filename.
+///
+/// Wave-4 INTERMEDIATE-ACCESSORS (2026-08-09): added so
+/// `crates/vokra-models/tests/parity_sbv2_real.rs` can diff per-stage
+/// tensors against Python reference `.bin` fixtures instead of only
+/// comparing the final waveform (`parity_kokoro` / `parity_whisper` have
+/// per-tensor tables for exactly this reason). The Python dumper writes
+/// each field as its own `reference_dump/<name>.bin` file; the
+/// [`Self::to_dumper_map`] helper maps every Rust field to its dumper
+/// filename for a driver-style tensor-diff loop.
+///
+/// The only intermediate the dumper writes but this struct does NOT
+/// carry separately is `phonemize_fixture/*` (the G2P inputs — those are
+/// captured in the request, not the model's output).
+#[derive(Debug, Clone)]
+pub struct SbV2Intermediates {
+    /// `[T_text, d_model]` — pre-transformer sum
+    /// `(phoneme_embed[id] + tone_embed[tone] + language_embed[lang]) *
+    /// sqrt(d_model)`. Dumper filename: `phoneme_embed.bin`.
+    pub phoneme_embed: Vec<f32>,
+    /// `[T_text, d_model]` — post-transformer text encoder hidden state
+    /// (the value fed to the SDP at step 6 — see the Bug-4 fix comment
+    /// in [`SbV2Model::synthesize_with_intermediates`]). Dumper filename:
+    /// `text_hidden.bin`.
+    pub text_hidden: Vec<f32>,
+    /// `[T_bert_ja, D_BERT]` — DeBERTa v2 (JA) `last_hidden_state`, present
+    /// on JA-language requests. Dumper filename: `bert_hidden_ja.bin`.
+    /// Empty when `req.language != Language::JA`.
+    pub bert_hidden_ja: Vec<f32>,
+    /// `[T_bert_en, D_BERT]` — DeBERTa v3 (EN) `last_hidden_state`, present
+    /// on EN-language requests. Dumper filename: `bert_hidden_en.bin`.
+    /// Empty when `req.language != Language::EN`.
+    pub bert_hidden_en: Vec<f32>,
+    /// `[T_text, d_model]` — bert-bridge projected contribution alone,
+    /// pre-addition into `text_hidden`. The dumper writes
+    /// `bert_bridge_out.bin = text_hidden + bridge_projected`
+    /// (matching Python `bert_bridge_out` which the length regulator
+    /// consumes); this field carries the SAME sum so the accessor can be
+    /// diffed against `reference_dump/bert_bridge_out.bin` directly.
+    pub bert_bridge_out: Vec<f32>,
+    /// `[d_speaker]` — raw speaker conditioning vector, before per-stage
+    /// slice/pad reconciliation (SDP / flow / decoder each slice or pad
+    /// this to their own gin_channels; the intermediate is the pre-slice
+    /// source). Dumper filename: `speaker_embed.bin`. Length depends on
+    /// which speaker path fired (external projection / lookup / synthetic).
+    pub speaker_embed: Vec<f32>,
+    /// `[d_target]` — [`StyleVectorInjector::project`] output on
+    /// `req.style_vec`. Dumper filename: `style_projected.bin`. See that
+    /// method's doc for why this returns the bias projection alone (the
+    /// Python reference has one linear projection; Vokra's AdaIN has two).
+    pub style_projected: Vec<f32>,
+    /// `[T_text]` — SDP-sampled per-phoneme durations (post-speed
+    /// scaling, post-OOM-clamp, discretized to i32). Dumper filename:
+    /// `sdp_sample.bin`.
+    pub sdp_sample: Vec<i32>,
+    /// `[T_mel, d_model]` — length-regulated `hidden_for_flow` (=
+    /// `text_hidden + bert_bridge_out`, expanded by `sdp_sample`).
+    /// Dumper filename: `mel_hidden.bin`.
+    pub mel_hidden: Vec<f32>,
+    /// `[T_mel, d_z]` — normalizing-flow `inverse` output (post-noise
+    /// reparameterization). Dumper filename: `z_latent.bin`.
+    pub z_latent: Vec<f32>,
+}
+
 /// SBV2 (Style-Bert-VITS2 v2) native TTS model: the full inference pipeline
 /// wiring [`SbV2Phonemizer`] (G2P) → [`SbV2TextEncoder`] +
 /// [`SbV2BertContainer`] + [`BertBridge`] (text/BERT hidden state) →
@@ -634,6 +702,32 @@ impl SbV2Model {
     /// wired through [`from_piper_g2p`](SbV2Phonemizer::from_piper_g2p),
     /// also propagates any error the injected G2P returns.
     pub fn synthesize(&self, req: &SbV2SynthRequest) -> Result<SynthesizedAudio> {
+        // Full pipeline; discards intermediates. See
+        // [`Self::synthesize_with_intermediates`] for the accessor variant
+        // that returns each per-stage tensor alongside the final PCM
+        // (Wave-4 INTERMEDIATE-ACCESSORS).
+        self.synthesize_with_intermediates(req).map(|(pcm, _)| pcm)
+    }
+
+    /// Same forward pipeline as [`Self::synthesize`], but returns every
+    /// per-stage intermediate the Python reference dumper
+    /// (`tools/parity/sbv2_dump_reference.py`) writes to `reference_dump/*.bin`.
+    ///
+    /// Added for Wave-4 `INTERMEDIATE-ACCESSORS` so
+    /// `parity_sbv2_real.rs` can diff per-stage tensors against Python
+    /// reference `.bin` fixtures instead of only comparing the final
+    /// waveform. Every field of [`SbV2Intermediates`] corresponds to one
+    /// entry in the manifest's `tensors[]` array (design doc §10, dumper's
+    /// `TENSOR_SCHEMA`) — see [`SbV2Intermediates`]'s field docs for the
+    /// exact shape and dumper filename each maps to.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::synthesize`].
+    pub fn synthesize_with_intermediates(
+        &self,
+        req: &SbV2SynthRequest,
+    ) -> Result<(SynthesizedAudio, SbV2Intermediates)> {
         if req.speed <= 0.0 {
             return Err(VokraError::InvalidArgument(format!(
                 "SbV2Model::synthesize: req.speed must be positive, got {}",
@@ -654,9 +748,19 @@ impl SbV2Model {
         // `SbV2TextEncoder::language_embed` that gets broadcast-added to
         // every position. See `SbV2TextEncoder::forward`'s `language_id`
         // doc for the tentative JA=0/EN=1/ZH=2 row-ordering convention.
-        let text_hidden =
-            self.text_encoder
-                .forward(&phon.phoneme_ids, &phon.tones, req.language.language_id());
+        //
+        // Wave-4 INTERMEDIATE-ACCESSORS: capture both the pre-transformer
+        // sum (`phoneme_embed`) and the post-transformer hidden state
+        // (`text_hidden`) so parity harnesses can diff each independently
+        // against the Python dumper's `phoneme_embed.bin` and
+        // `text_hidden.bin`. The full pipeline consumes only `text_hidden`
+        // downstream; `phoneme_embed` is a pure snapshot of the sum
+        // buffer taken before the in-place transformer stack.
+        let (phoneme_embed, text_hidden) = self.text_encoder.forward_with_embed(
+            &phon.phoneme_ids,
+            &phon.tones,
+            req.language.language_id(),
+        );
 
         // 3. BERT (per-language). ZH has no in-crate BERT encoder yet
         // (BERT bridge is JA/EN only in the M6 land — see the ZH scope
@@ -739,6 +843,28 @@ impl SbV2Model {
         for (h, &b) in hidden_for_flow.iter_mut().zip(bridged.iter()) {
             *h += b;
         }
+        // Wave-4 INTERMEDIATE-ACCESSORS: snapshot the summed
+        // `bert_bridge_out` (dumper name) before the downstream in-place
+        // length-regulate + flow. The Python dumper writes
+        // `text_hidden + bridge_projected`; this snapshot IS that same
+        // sum, so the parity harness can diff against
+        // `reference_dump/bert_bridge_out.bin` directly.
+        let bert_bridge_out_snapshot = hidden_for_flow.clone();
+        // Split BERT hidden into per-language buckets. The active-language
+        // path already carries the tensor; the other path is empty (this
+        // matches parity-test-side "compare only the active language"
+        // convention, and keeps the intermediate struct's byte cost bounded
+        // for callers who only diff the active side).
+        let bert_hidden_ja_snapshot = if req.language == Language::JA {
+            bert_hidden.clone()
+        } else {
+            Vec::new()
+        };
+        let bert_hidden_en_snapshot = if req.language == Language::EN {
+            bert_hidden.clone()
+        } else {
+            Vec::new()
+        };
 
         // 5. Speaker + style — derive `speaker_e_flow` (the raw
         // `[d_speaker]` conditioning vector consumed by SDP's `.cond(g)`
@@ -856,6 +982,20 @@ impl SbV2Model {
                 speaker_e.to_vec()
             }
         };
+        // Wave-4 INTERMEDIATE-ACCESSORS: snapshot the raw speaker
+        // conditioning vector BEFORE per-stage slice/pad reconciliation
+        // (SDP / flow / decoder each slice this to their own gin_channels
+        // separately). The Python dumper writes `speaker_embed.bin` as
+        // the pre-conditioning vector, so this snapshot matches its shape
+        // exactly on every path arm.
+        let speaker_embed_snapshot = speaker_e_flow.clone();
+        // Wave-4 INTERMEDIATE-ACCESSORS: snapshot the style projection
+        // `[d_target]` — matches the Python dumper's `style_projected.bin`
+        // slot (see `StyleVectorInjector::project` doc). Computed even
+        // though it is not otherwise mixed into `hidden_for_flow` (see
+        // STYLE-INJECTOR fix below) so parity harnesses can diff the
+        // projection value directly.
+        let style_projected_snapshot = self.style_injector.project(&req.style_vec);
         // STYLE-INJECTOR fix (2026-08-09): the Python reference
         // (`sbv2_dump_reference.py` step 9) explicitly does NOT mix
         // style into `text_hidden` on the base-checkpoint path — "style
@@ -1024,6 +1164,11 @@ impl SbV2Model {
             );
         }
 
+        // Wave-4 INTERMEDIATE-ACCESSORS: snapshot post-clamp durations
+        // for the `sdp_sample.bin` slot (matches Python dumper's post-
+        // speed-scale, post-ceil integer durations).
+        let sdp_sample_snapshot = durations.clone();
+
         // 7. Length regulate — uses `hidden_for_flow` (= text_hidden +
         // bridge, matching Python `bert_bridge_out`). Bug 4 fix
         // (2026-08-08): pre-fix code fed the accumulated `hidden` which
@@ -1031,6 +1176,11 @@ impl SbV2Model {
         // not add speaker/style here (they enter via flow's per-block
         // spk_emb_linear and decoder's `dec.cond` respectively).
         let mel_hidden = length_regulate(&hidden_for_flow, &durations, d_model);
+        // Wave-4 INTERMEDIATE-ACCESSORS: snapshot the length-regulated
+        // mel_hidden BEFORE the flow's noise reparameterization consumes
+        // it — matches Python dumper's `mel_hidden.bin` shape (dumper
+        // dumps mel_hidden pre-flow too).
+        let mel_hidden_snapshot = mel_hidden.clone();
         let mel_seq_len = durations.iter().sum::<i32>() as usize;
         debug_assert!(
             mel_seq_len > 0,
@@ -1119,6 +1269,10 @@ impl SbV2Model {
         let z = self
             .flow
             .inverse(&mel_hidden_with_noise, mel_seq_len, flow_g);
+        // Wave-4 INTERMEDIATE-ACCESSORS: snapshot the flow inverse
+        // output BEFORE the transpose + decoder consume it — matches
+        // Python dumper's `z_latent.bin` shape.
+        let z_latent_snapshot = z.clone();
 
         // 9. HiFi-GAN decoder — transpose SbV2Flow::inverse's time-major
         // [mel_seq_len, d_z] into SbV2Decoder::generate's channel-major
@@ -1164,7 +1318,62 @@ impl SbV2Model {
             self.decoder.generate(&z_channel_major, mel_seq_len)
         };
 
-        Ok(SynthesizedAudio::new(pcm, self.decoder.sample_rate()))
+        let audio = SynthesizedAudio::new(pcm, self.decoder.sample_rate());
+        let intermediates = SbV2Intermediates {
+            phoneme_embed,
+            text_hidden,
+            bert_hidden_ja: bert_hidden_ja_snapshot,
+            bert_hidden_en: bert_hidden_en_snapshot,
+            bert_bridge_out: bert_bridge_out_snapshot,
+            speaker_embed: speaker_embed_snapshot,
+            style_projected: style_projected_snapshot,
+            sdp_sample: sdp_sample_snapshot,
+            mel_hidden: mel_hidden_snapshot,
+            z_latent: z_latent_snapshot,
+        };
+        Ok((audio, intermediates))
+    }
+}
+
+impl SbV2Intermediates {
+    /// Maps every intermediate field to its dumper filename
+    /// (`reference_dump/<name>.bin`), keyed as `(dumper_name,
+    /// as_f32_bytes)` for a driver-style tensor-diff loop. `sdp_sample`
+    /// is emitted as f32 (matching the Python dumper's f32 dump — it
+    /// writes `sdp_sample.tobytes()` after keeping durations as float
+    /// tensors internally); consumers reading the returned `Vec<u8>`
+    /// slice can `bytemuck::cast_slice` back to f32.
+    ///
+    /// Wave-4 INTERMEDIATE-ACCESSORS: added so parity harnesses can
+    /// iterate every intermediate uniformly against the manifest's
+    /// `tensors[]` array without switching on each field individually.
+    /// Empty per-language BERT hidden buckets (`bert_hidden_ja` on an EN
+    /// request; `bert_hidden_en` on a JA request) are OMITTED from the
+    /// map — the parity harness should skip the corresponding manifest
+    /// entry on the inactive side.
+    #[must_use]
+    pub fn to_dumper_map(&self) -> Vec<(&'static str, Vec<u8>)> {
+        fn f32_bytes(v: &[f32]) -> Vec<u8> {
+            v.iter().flat_map(|f| f.to_le_bytes()).collect()
+        }
+        let mut out: Vec<(&'static str, Vec<u8>)> = Vec::with_capacity(10);
+        out.push(("phoneme_embed", f32_bytes(&self.phoneme_embed)));
+        out.push(("text_hidden", f32_bytes(&self.text_hidden)));
+        if !self.bert_hidden_ja.is_empty() {
+            out.push(("bert_hidden_ja", f32_bytes(&self.bert_hidden_ja)));
+        }
+        if !self.bert_hidden_en.is_empty() {
+            out.push(("bert_hidden_en", f32_bytes(&self.bert_hidden_en)));
+        }
+        out.push(("bert_bridge_out", f32_bytes(&self.bert_bridge_out)));
+        out.push(("speaker_embed", f32_bytes(&self.speaker_embed)));
+        out.push(("style_projected", f32_bytes(&self.style_projected)));
+        // `sdp_sample` matches the Python dumper's f32-cast dump.
+        let sdp_f32: Vec<f32> = self.sdp_sample.iter().map(|&d| d as f32).collect();
+        out.push(("sdp_sample", f32_bytes(&sdp_f32)));
+        out.push(("mel_hidden", f32_bytes(&self.mel_hidden)));
+        out.push(("z_latent", f32_bytes(&self.z_latent)));
+        out
     }
 }
 

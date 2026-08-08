@@ -99,6 +99,52 @@ impl StyleVectorInjector {
         self.d_style
     }
 
+    /// The output width the projections write into (`d_model`-sized on
+    /// the SBV2 v2 base — mirrors [`d_style`](Self::d_style)'s accessor
+    /// precedent). Used by
+    /// [`super::SbV2Model::synthesize_with_intermediates`] to size the
+    /// `style_projected` intermediate buffer.
+    pub fn d_target(&self) -> usize {
+        self.d_target
+    }
+
+    /// Projects `style_vec` to a `[d_target]` intermediate — the
+    /// Python-reference `style_projected.bin` slot (dumper's
+    /// `StyleVectorInjector.forward(style_vec)` = `style_vec @ weight.T +
+    /// bias`, `[1, d_target]`).
+    ///
+    /// Rust's `StyleVectorInjector` carries TWO projections (scale + bias)
+    /// for its AdaIN in-place path (see [`inject`](Self::inject)); the
+    /// Python reference has only one linear projection. This accessor
+    /// returns the **bias** projection alone
+    /// (`out[d] = sum_s proj_bias[d, s] * style_vec[s]`), which matches
+    /// the Python `style_projected` slot's math when Vokra's `proj_scale`
+    /// happens to be all-zero (the SBV2 v2 base ckpt's actual layout —
+    /// see the module's "Style vector injector" section).
+    ///
+    /// Wave-4 INTERMEDIATE-ACCESSORS: added so
+    /// [`super::SbV2Model::synthesize_with_intermediates`] can populate
+    /// [`super::SbV2Intermediates::style_projected`] without opening
+    /// [`inject`](Self::inject)'s in-place buffer path.
+    ///
+    /// # Panics
+    ///
+    /// Panics (via `debug_assert!`) if `style_vec.len() != self.d_style`.
+    pub fn project(&self, style_vec: &[f32]) -> Vec<f32> {
+        debug_assert_eq!(style_vec.len(), self.d_style, "style_vec must be [d_style]");
+        let mut out = vec![0.0_f32; self.d_target];
+        for (d, o) in out.iter_mut().enumerate() {
+            let row = d * self.d_style;
+            let bias_row = &self.proj_bias[row..row + self.d_style];
+            let mut s = 0.0_f32;
+            for (&bw, &x) in bias_row.iter().zip(style_vec.iter()) {
+                s += bw * x;
+            }
+            *o = s;
+        }
+        out
+    }
+
     /// Applies AdaIN-style style conditioning to `hidden` in place.
     ///
     /// `hidden` is a flat `[seq_len, d_target]` row-major buffer (i.e.

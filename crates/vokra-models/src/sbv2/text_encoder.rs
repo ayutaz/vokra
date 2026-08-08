@@ -187,6 +187,39 @@ impl SbV2TextEncoder {
     /// if any `tones` entry is `>= self.n_tones`, or if `language_id
     /// as usize >= N_LANGUAGES`.
     pub fn forward(&self, phoneme_ids: &[u16], tones: &[u8], language_id: u8) -> Vec<f32> {
+        // Full pipeline; discards the pre-transformer `phoneme_embed`.
+        // See [`Self::forward_with_embed`] for the accessor variant that
+        // returns both intermediates (Wave-4 INTERMEDIATE-ACCESSORS).
+        self.forward_with_embed(phoneme_ids, tones, language_id).1
+    }
+
+    /// Same forward pass as [`Self::forward`], but returns the
+    /// **pre-transformer** sum `(phoneme + tone + language) * sqrt(d_model)`
+    /// alongside the **post-transformer** hidden state. Both buffers are
+    /// row-major `[seq_len, d_model]`. Added for Wave-4
+    /// `INTERMEDIATE-ACCESSORS` so parity harnesses can diff
+    /// `phoneme_embed.bin` and `text_hidden.bin` from the Python reference
+    /// dumper separately — the pre-transformer sum is what upstream calls
+    /// `phoneme_embed` (design doc §10, dumper's `phoneme_embed.bin`) and
+    /// is not otherwise observable from outside the encoder.
+    ///
+    /// # Returns
+    ///
+    /// `(phoneme_embed, text_hidden)`, both `[seq_len, d_model]` row-major.
+    /// `phoneme_embed == (phoneme_embed_table[id] + tone_embed[tone] +
+    /// language_embed[language_id]) * sqrt(d_model)`. `text_hidden` is
+    /// that same buffer after the transformer stack was applied
+    /// in place.
+    ///
+    /// # Panics
+    ///
+    /// Same preconditions as [`Self::forward`].
+    pub fn forward_with_embed(
+        &self,
+        phoneme_ids: &[u16],
+        tones: &[u8],
+        language_id: u8,
+    ) -> (Vec<f32>, Vec<f32>) {
         debug_assert_eq!(
             phoneme_ids.len(),
             tones.len(),
@@ -230,11 +263,14 @@ impl SbV2TextEncoder {
             }
         }
 
+        // Snapshot the pre-transformer sum before the in-place stack.
+        let phoneme_embed = hidden.clone();
+
         for block in &self.transformer_layers {
             block.forward(&mut hidden, seq_len);
         }
 
-        hidden
+        (phoneme_embed, hidden)
     }
 }
 
