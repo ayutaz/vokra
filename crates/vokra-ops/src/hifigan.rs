@@ -196,7 +196,14 @@ pub struct HifiGanWeights {
     /// Final `conv1d` mapping `[channels] → [1]`.
     /// `[1, ch_last, conv_post_kernel]` row-major.
     pub conv_post_weight: Vec<f32>,
-    /// `[1]` bias.
+    /// `[1]` bias — **or `[]` (empty) when the upstream `conv_post` was
+    /// trained `bias=False`** (HGAN-04 fix, 2026-08-09). VITS-family
+    /// upstreams (`tools/parity/vendor/vits/models.py` at `Conv1d(ch,
+    /// 1, 7, 1, padding=3, bias=False)`) and SBV2 v2 both ship
+    /// bias-less `conv_post`; storing an empty `Vec` here lets a
+    /// converter emit the true upstream shape without the pre-HGAN-04
+    /// zero-placeholder workaround. Both shapes are numerically
+    /// identical (`x + 0.0 == x`).
     pub conv_post_bias: Vec<f32>,
     /// Kernel size of the final `conv1d` (upstream default = 7).
     pub conv_post_kernel: usize,
@@ -744,6 +751,17 @@ pub fn hifigan_generator(
     // future SKU) tunes `attrs.leaky_relu_slope`.
     const FINAL_LEAKY_RELU_SLOPE: f32 = 0.01;
     leaky_relu_inplace(&mut h, FINAL_LEAKY_RELU_SLOPE);
+    // HGAN-04 (2026-08-09): pass `None` when the upstream conv_post was
+    // trained `bias=False` (represented by an empty `conv_post_bias`
+    // vector — see the field doc). `x + 0.0 == x` for finite `x`, so the
+    // two paths are numerically identical; the fork exists so a
+    // converter can emit the true upstream shape without fabricating a
+    // zero placeholder.
+    let conv_post_bias_slot: Option<&[f32]> = if weights.conv_post_bias.is_empty() {
+        None
+    } else {
+        Some(&weights.conv_post_bias)
+    };
     let final_out = conv1d_scalar(
         &h,
         cur_channels,
@@ -751,7 +769,7 @@ pub fn hifigan_generator(
         &weights.conv_post_weight,
         1,
         weights.conv_post_kernel,
-        Some(&weights.conv_post_bias),
+        conv_post_bias_slot,
         1,
         weights.conv_post_kernel / 2,
     )?;
@@ -1302,9 +1320,15 @@ fn validate_weights(w: &HifiGanWeights, attrs: &HifiGanAttrs) -> Result<()> {
             expected_in * w.conv_post_kernel
         )));
     }
-    if w.conv_post_bias.len() != 1 {
+    // HGAN-04 (2026-08-09): accept `len == 0` as the "no bias"
+    // (upstream `Conv1d(..., bias=False)`) shape and `len == 1` as the
+    // pre-HGAN-04 explicit-zero shape. Any other length is a schema
+    // bug (`conv_post` outputs a 1-channel waveform, so a `!= 1`
+    // bias buffer would mismatch even under a permissive shape check).
+    if w.conv_post_bias.len() > 1 {
         return Err(VokraError::InvalidArgument(format!(
-            "HifiGanWeights: conv_post_bias.len() {} != 1",
+            "HifiGanWeights: conv_post_bias.len() {} != 0 (upstream bias=False) or 1 \
+             (explicit-zero shape)",
             w.conv_post_bias.len()
         )));
     }

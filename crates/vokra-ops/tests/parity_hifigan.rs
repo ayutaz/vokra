@@ -482,3 +482,67 @@ fn hgan_03_pre_conv_post_leaky_slope_ignores_attrs_slope() {
          (must be ≤ 1e-8 post-fix; pre-fix would be ≫ 0)."
     );
 }
+
+// ---- HGAN-04: conv_post_bias may be absent (upstream sets bias=False) --------
+//
+// VITS/SBV2 HiFi-GAN `conv_post` per `tools/parity/vendor/vits/models.py`
+// (`Conv1d(ch, 1, 7, 1, padding=3, bias=False)`) has NO bias — the
+// upstream ships nothing. Vokra pre-fix required `conv_post_bias.len()
+// == 1` unconditionally, forcing SBV2 (+ any bias-less-conv_post
+// upstream) converters to fabricate a zero placeholder. Post-fix an
+// empty `conv_post_bias` (length 0) is a valid "no bias" schema.
+//
+// Observationally the zero-placeholder path adds `+ 0.0` per sample, so
+// bit-parity with the post-fix `bias == []` path is expected — the
+// change is a schema relaxation, not an arithmetic change. The tests
+// pin (a) the shape-validation acceptance of `len == 0` and (b)
+// bit-identical output between the two shapes.
+#[test]
+fn hgan_04_conv_post_bias_absent_is_accepted_and_bit_identical_to_zero_bias() {
+    let attrs = parity_attrs();
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+
+    // Baseline: with explicit zero bias (existing schema).
+    let mut w_zero_bias = parity_weights(&attrs);
+    assert_eq!(w_zero_bias.conv_post_bias, vec![0.0_f32]);
+    let out_zero_bias =
+        hifigan_generator(&mel, n_frames, &w_zero_bias, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+    // Post-fix: with no bias tensor at all (upstream shape).
+    w_zero_bias.conv_post_bias = Vec::new();
+    let out_absent_bias =
+        hifigan_generator(&mel, n_frames, &w_zero_bias, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+    assert_eq!(out_zero_bias.len(), out_absent_bias.len());
+    // Bit-identical: `+ 0.0` vs no-add differ only by floating-point
+    // identity — and `x + 0.0 == x` for finite `x`.
+    let max_delta = out_zero_bias
+        .iter()
+        .zip(out_absent_bias.iter())
+        .map(|(&a, &b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_delta == 0.0,
+        "HGAN-04: `conv_post_bias == []` (upstream shape) must produce bit-identical output \
+         to `conv_post_bias == [0.0]` (Vokra pre-fix placeholder shape). Observed \
+         max|Δ| = {max_delta}"
+    );
+}
+
+#[test]
+fn hgan_04_conv_post_bias_wrong_length_still_rejected() {
+    // Regression guard: len != 0 and len != 1 must still hard-error
+    // (schema mismatch). Pre-fix accepted only len == 1; post-fix
+    // accepts {len == 0, len == 1}; any other length is a shape bug.
+    let attrs = parity_attrs();
+    let mut w = parity_weights(&attrs);
+    w.conv_post_bias = vec![0.0_f32; 3]; // wrong length
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let err = hifigan_generator(&mel, n_frames, &w, &attrs, &HifiGanConfig::fp32()).unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for wrong-length conv_post_bias, got: {err}"
+    );
+}
