@@ -113,3 +113,62 @@ my branch の **pyannote 追加 (Crepe / Rmvpe / PyannoteSegmentation ModelKind 
   worktree base 選定なら解決するが、他の要因も可能性あり)
 - **Option 3** = 今すぐ partial 反映して次段階に進む、CLI wiring を owner
   or 別 session に defer
+
+## 2026-08-09 addendum: Wave 6 lead status verification (RESOLVED)
+
+以下は本 handoff が **RESOLVED** = 全 tier1/tier2 CLI wiring が land 済であることを
+Wave 6 lead が現 HEAD (`0703579`) で verify した結果。**新規追加コミット無し** — 単に
+先行 wave (M5 gap wave 1 = `02664f6` / SBV2 Phase 1 = `f7af1ba` / SoTA Phase 1-4 = `7ed0548` /
+M5 CC 実装 = `64485c7`) で段階的に land 済であることを確認する retrospective note。
+
+**Wave 6 lead verification protocol** (feat/sbv2-voxtral-real-verify-2026-08-06 HEAD `0703579`):
+
+**"Deferred (follow-up wave 必須)" 5 file wiring — 全て land 済**:
+
+- `crates/vokra-convert/src/lib.rs`:
+  - `ModelKind` enum: 25 tier1/tier2 variant 全て present (Qwen3Asr / Wav2Vec2Ctc /
+    MossTts / MeloTts* / SpeechT5Tts / ParlerTts* / VieNeuTts / HifiganVocoder /
+    BigVGan / Focalcodec / TigerSeparator / MpSenet / MetricganPlus / SepFormer /
+    FsmnVad / FireredVad / SmartTurn / Clap / Ast / LangIdVoxlingua107 / XVector /
+    DeepfakeDetection / KyutaiTts / AudioboxAesthetics)
+  - `impl ModelKind::from_arg`: 全て `Some(Self::*)` match arm 存在
+  - `impl ModelKind::as_arg`: 全て `Self::* => "*"` match arm 存在
+  - `convert_file` dispatch: 全て `ModelKind::* => {...}` arm 存在
+  - `pub use models::*::convert_*_file`: 全て re-export 済
+- `crates/vokra-convert/src/main.rs`: verify match arm 全 addition 済
+- `crates/vokra-cli/src/convert.rs`: `parses_every_model_kind_and_help_lists_them` test green
+- `crates/vokra-core/src/compliance/license_class.rs`: family prefix walks 全 land
+- `docs/license-audit.md` §3.1: sign-off template 追加済 (blank rows は依頼者専任)
+
+**帰結の訂正**: 本 handoff の line 48 が言った「`vokra-cli convert --model qwen3-asr ...`
+は本 land では動作しない」は **現時点では失効** — CLI 経由の全 25 tier1/tier2 model は
+`0703579` HEAD で routing 動作する (`parses_every_model_kind_and_help_lists_them` test で
+137 passed = 全 ModelKind の parse pass 含む)。
+
+**Verification (Wave 6 lead, 2026-08-09)**:
+
+- `cargo test -p vokra-cli --release parses_every_model_kind`: 1 passed / 0 failed
+- `cargo test -p vokra-cli --release`: 137 lib + 4 policy_e2e + 2 quant_fused = 0 failed
+- 新規 C ABI = 0 (Rust surface のみ、v1.0-rc baseline 33 fn + 11 typedef 不変)
+- root `Cargo.lock` = vokra-* のみ (NFR-DS-02 preserved)
+
+**同 Wave 6 audit で "wiring gap" と表示された他 3 items も同様に land 済 verified**:
+
+- BF16-FLEET-WIRING (16 skeletons): KimiAudio/StepAudio2Mini/BaichuanAudio/Speechtokenizer/
+  Funcodec/XyTokenizer/Bicodec/Neucodec/EcapaTdnn/Wespeaker/Speaker3d/Emotion2vec (12 non-VC)
+  全て full quad (enum + from_arg + as_arg + dispatch) 揃い。voice-clone 4 (openvoice_v2/
+  knn_vc/freevc/meanvc) も ModelKind 内に配線済 (ELVIS Act 別リポ move は依然 owner 決定)。
+- WAVE3-CHERRY-PICKS (FCPE / Silero v6.2.1 / FSMN-VAD): `fcpe.rs` / `fsmn_vad.rs` present
+  in `crates/vokra-convert/src/models/`; `SileroVariant::{V5, V6_2_1}` in `silero.rs`;
+  `ModelKind::{Fcpe, FsmnVad}` fully wired.
+- M5-14-BACKLOG (12 tickets/6h spec): CC 側 6 landed (T01=ADR, T02/T06/T07/T08 実装,
+  T10 changelog) + 2 honest defer with ADR-documented mechanism analysis (T03-T05
+  pack-once-share = mechanism mismatch on CAM++; T09 batched forward override =
+  beam≥5 gain-limited, foundation landed for future override). T11/T12 = owner.
+  Detailed reasoning: `docs/adr/M5-14-BACKLOG-pack-cache-batched-beam.md` (ACCEPTED).
+
+**教訓 (Wave 6 audit ↔ 実 HEAD の乖離)**: 本 handoff が生成された 2026-07-30 時点では
+partial land だったが、その後の follow-up wave で全 wiring が land 済 → Wave 6 audit の
+"actionable gap" 判定は state-stale。今後は audit 前に per-file verification (from_arg /
+as_arg / dispatch triple grep) を回すか、または `cargo test -p vokra-cli
+parses_every_model_kind` の 1 shot check で state を confirm する。
