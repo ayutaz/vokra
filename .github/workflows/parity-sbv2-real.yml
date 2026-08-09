@@ -493,14 +493,107 @@ jobs:
             echo "### No fixture drift" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Prepare UTMOS22-strong GGUF (WP-24 UTMOS quality gate)
+        # Opt-in tail-position quality gate: when repository variable
+        # `VOKRA_SBV2_UTMOS_ENABLE == "1"` the SBV2 parity test asserts
+        # `|utmos(rust_wave) - utmos(reference_wave)| <= 0.05` after the
+        # numerical-waveform assertion passes. See the module doc of
+        # `crates/vokra-models/tests/parity_sbv2_real.rs` ("WP-24: UTMOS
+        # quality gate") for the Rust-side semantics and
+        # `crates/vokra-models/src/sbv2/parity.rs`'s `UTMOS_ATOL` for the
+        # honest-atol derivation.
+        #
+        # Weight source: reuses the already-committed
+        # `tests/parity/utmos/source.env` (UTMOS §3.1 sign-off = ☑ Commercial
+        # yousan 2026-07-23; the same URL + sha256 `parity-utmos.yml` uses).
+        # No new owner artifact required — enabling is a one-line repo-vars
+        # flip.
+        #
+        # Fail-closed skip when the variable is not `"1"` (the whole step is
+        # `if:`-gated off, and the Rust test observes `VOKRA_SBV2_UTMOS_ENABLE`
+        # empty → deliberate skip with an eprintln + workflow annotation, per
+        # `parity-deepfilternet3-real.yml` / `parity-utmos.yml` precedent —
+        # fabricated pass 禁止, FR-EX-08 / NFR-QL-04).
+        id: utmos_prep
+        if: vars.VOKRA_SBV2_UTMOS_ENABLE == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          # `safetensors` is not in the sbv2 base venv but IS required by
+          # `utmos_prepare_checkpoint.py` — install only when we opt in.
+          python -m pip install --quiet safetensors
+          # Reuse the already-committed UTMOS source pin (owner sign-off
+          # docs/license-audit.md §3.1 UTMOS row on 2026-07-23).
+          # shellcheck disable=SC1091
+          source tests/parity/utmos/source.env
+          : "${CKPT_URL:?tests/parity/utmos/source.env must define CKPT_URL}"
+          : "${CKPT_SHA256:?tests/parity/utmos/source.env must define CKPT_SHA256}"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/utmos-checkpoint.ckpt" "$CKPT_URL"
+          echo "$CKPT_SHA256  $RUNNER_TEMP/utmos-checkpoint.ckpt" | sha256sum -c -
+          python3 tools/parity/utmos_prepare_checkpoint.py \
+            --ckpt "$RUNNER_TEMP/utmos-checkpoint.ckpt" \
+            --output "$RUNNER_TEMP/utmos.safetensors" \
+            --config-out "$RUNNER_TEMP/utmos-config.json"
+          ./target/release/vokra-cli convert \
+            --model utmos \
+            --input "$RUNNER_TEMP/utmos.safetensors" \
+            --config "$RUNNER_TEMP/utmos-config.json" \
+            --output "$RUNNER_TEMP/utmos.gguf"
+          ls -lh "$RUNNER_TEMP/utmos.gguf"
+          echo "utmos_gguf=$RUNNER_TEMP/utmos.gguf" >> "$GITHUB_OUTPUT"
+
+      - name: Announce WP-24 UTMOS quality gate posture
+        # Runs regardless — the annotation on a *disabled* gate is the
+        # honest signal that the CI leg is off (never a fabricated pass).
+        if: always()
+        shell: bash
+        env:
+          UTMOS_ENABLE_VAR: ${{ vars.VOKRA_SBV2_UTMOS_ENABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${UTMOS_ENABLE_VAR}" = "1" ]; then
+            {
+              echo "### WP-24 UTMOS quality gate: ENABLED"
+              echo ""
+              echo "\`vars.VOKRA_SBV2_UTMOS_ENABLE=1\` — the tail-position UTMOS delta assertion"
+              echo "( \`|Δ| <= UTMOS_ATOL\` = 0.05 per \`crates/vokra-models/src/sbv2/parity.rs\`)"
+              echo "will fire once the numeric waveform-parity assertion above passes."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### WP-24 UTMOS quality gate: SKIPPED"
+              echo ""
+              echo "\`vars.VOKRA_SBV2_UTMOS_ENABLE\` is not \`1\` — the tail-position UTMOS delta"
+              echo "assertion will not fire. Set the repository variable"
+              echo "\`VOKRA_SBV2_UTMOS_ENABLE=1\` to enable (no other owner artifact required —"
+              echo "\`tests/parity/utmos/source.env\` is already committed)."
+              echo ""
+              echo "This is an FR-EX-08 explicit skip, not a fabricated pass — the SBV2"
+              echo "parity test observes the empty env var and logs an \`eprintln!\` skip diag."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::parity-sbv2-real: WP-24 UTMOS quality gate skipped (vars.VOKRA_SBV2_UTMOS_ENABLE != '1')"
+          fi
+
       - name: Run SBV2 real-checkpoint parity test (--ignored)
         # Runs regardless of the dumper's outcome (if: always()): the GGUF
         # load + SbV2Model::from_gguf + synthesize() call path is exercised
         # (and, per that function's own doc, expected to answer with a
         # documented NotImplemented today — see this file's header comment)
         # independent of whether reference_dump/*.bin exists yet.
+        #
+        # WP-24: when `vars.VOKRA_SBV2_UTMOS_ENABLE == "1"`, the two
+        # `VOKRA_SBV2_UTMOS_*` env vars below opt the tail-position UTMOS
+        # quality gate in (see the module doc of `parity_sbv2_real.rs` and
+        # the "Prepare UTMOS22-strong GGUF" step above); an empty value
+        # (var unset OR prep step skipped) triggers the Rust-side clean
+        # skip.
         id: parity
         if: always()
+        env:
+          VOKRA_SBV2_UTMOS_ENABLE: ${{ vars.VOKRA_SBV2_UTMOS_ENABLE }}
+          VOKRA_SBV2_UTMOS_GGUF: ${{ steps.utmos_prep.outputs.utmos_gguf }}
         shell: bash
         run: |
           set +e

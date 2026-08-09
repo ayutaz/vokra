@@ -179,6 +179,42 @@
 //! the one manifest-declared test sentence per run. Extending coverage
 //! means populating the fixture with more `(language, text)` entries and
 //! adding manifest side files for each, not adding a fall-through.
+//!
+//! # WP-24: UTMOS quality gate (env-gated tail check)
+//!
+//! Once the waveform max-|Δ| check above passes, an *optional* UTMOS
+//! quality gate runs — an absolute UTMOS-delta assertion between the Rust
+//! forward pass's waveform and the reference-dumped waveform, gated at
+//! [`vokra_models::sbv2::UTMOS_ATOL`] (see [`vokra_models::sbv2::parity`]'s
+//! module doc for the honest-atol derivation). The waveform check pins
+//! numerical parity (bit-for-bit-ish agreement at the tolerance floor);
+//! the UTMOS check pins **perceptual** parity (a real regression could in
+//! principle slip below the raw sample delta while degrading the
+//! MOS-predicted quality noticeably — that is exactly what NFR-QL-02 asks
+//! the scorer to catch).
+//!
+//! The gate is **fail-closed opt-in** (mirrors `parity-deepfilternet3-real.yml`
+//! and `parity-utmos.yml`'s discipline): the environment variable
+//! `VOKRA_SBV2_UTMOS_ENABLE=1` **plus** `VOKRA_SBV2_UTMOS_GGUF=<path to a
+//! `vokra.utmos.*` GGUF>` are both required to opt in. When `ENABLE` is
+//! unset, the whole leg silently skips (a clean, deliberate skip — never a
+//! fabricated pass, FR-EX-08); when `ENABLE=1` but `GGUF` is missing/
+//! unreadable/synthesized/wrong-shape, the test panics loudly (a broken
+//! opt-in must never look like a skip). See [`utmos_gate`] for the
+//! implementation and [`UtmosGateSettings`] for the opt-in resolution.
+//!
+//! Sample-rate handling: UTMOS22-strong runs at 16 kHz, SBV2 outputs
+//! 44.1 kHz. The UTMOS metric refuses silent resampling (FR-EX-08), so
+//! this leg resamples **both** waveforms explicitly via
+//! [`vokra_ops::resample`] before scoring — the Rust and reference
+//! waveforms take the identical resampler path, so any downsample-induced
+//! rounding cancels between the two scores (an absolute delta is
+//! symmetric).
+//!
+//! CI wiring lives in `.github/workflows/parity-sbv2-real.yml` (the
+//! "UTMOS quality gate" step conditionally sets both env vars from
+//! `vars.VOKRA_SBV2_UTMOS_ENABLE` + a converted UTMOS GGUF the same
+//! workflow produces before running this test).
 
 use std::path::{Path, PathBuf};
 
@@ -186,10 +222,11 @@ use vokra_core::VokraError;
 use vokra_core::gguf::GgufFile;
 use vokra_core::ir::graph::{MelAttrs, MelInterp, MelNorm, MelScale, StftAttrs};
 use vokra_core::json::{self, JsonValue};
+use vokra_eval::metrics::utmos::Utmos;
 use vokra_models::sbv2::{
     AtolCalibration, Language, MEL_LOSS_ATOL, PhonemizeFixture, PhonemizeResult, RngMode,
-    SbV2Intermediates, SbV2Model, SbV2Phonemizer, SbV2SynthRequest, atol_calibration_for,
-    tolerance_for,
+    SbV2Intermediates, SbV2Model, SbV2Phonemizer, SbV2SynthRequest, UTMOS_ATOL,
+    atol_calibration_for, tolerance_for,
 };
 use vokra_ops::{mel_filterbank, stft};
 
@@ -718,7 +755,182 @@ fn diff_intermediates_against_manifest(
     }
 }
 
-/// Real-checkpoint SBV2 full-manifest parity, gated on the Task 34 + Task 30
+/// WP-24 UTMOS opt-in env vars, parsed once via [`UtmosGateSettings::resolve`]
+/// so the fail-closed decision is centralized (loud when only one of the
+/// two is set — "opted in but no scorer" is not a skip).
+///
+/// - `VOKRA_SBV2_UTMOS_ENABLE`: `"1"` opts in. Any other value (including
+///   unset / `"0"` / `"false"`) skips the leg entirely.
+/// - `VOKRA_SBV2_UTMOS_GGUF`: filesystem path to a `vokra.utmos.*` GGUF
+///   (see `parity-utmos.yml` for the CI-side conversion recipe, or
+///   `tests/parity/utmos/README.md` for the local recipe). Required when
+///   `ENABLE=1`; unset with `ENABLE=1` is a loud panic (broken opt-in).
+const ENV_UTMOS_ENABLE: &str = "VOKRA_SBV2_UTMOS_ENABLE";
+const ENV_UTMOS_GGUF: &str = "VOKRA_SBV2_UTMOS_GGUF";
+
+/// Resolved WP-24 UTMOS opt-in state; see [`UtmosGateSettings::resolve`].
+enum UtmosGateSettings {
+    /// The gate is off (env var unset or explicitly `"0"` / `"false"`).
+    /// `utmos_gate` will emit a skip diagnostic and return without
+    /// scoring.
+    Disabled,
+    /// The gate is on and the GGUF path is populated. `utmos_gate` will
+    /// panic loudly on any downstream failure — the caller explicitly
+    /// opted in, so a broken opt-in is a hard failure.
+    Enabled { gguf_path: PathBuf },
+}
+
+impl UtmosGateSettings {
+    /// Reads both env vars and dispatches:
+    /// - `ENABLE` unset / not `"1"` → [`Self::Disabled`] (silent skip);
+    /// - `ENABLE=1` **and** `GGUF` set to a non-empty string →
+    ///   [`Self::Enabled`];
+    /// - `ENABLE=1` **without** `GGUF` (or with an empty string) → loud
+    ///   panic (a broken opt-in must never masquerade as a skip,
+    ///   FR-EX-08).
+    fn resolve() -> Self {
+        let enabled = std::env::var(ENV_UTMOS_ENABLE)
+            .ok()
+            .is_some_and(|v| v == "1");
+        if !enabled {
+            return Self::Disabled;
+        }
+        let gguf_path = std::env::var_os(ENV_UTMOS_GGUF).unwrap_or_else(|| {
+            panic!(
+                "{ENV_UTMOS_ENABLE}=1 but {ENV_UTMOS_GGUF} is unset — the WP-24 UTMOS quality \
+                 gate needs a `vokra.utmos.*` GGUF path to score against. A broken opt-in must \
+                 not look like a skip (FR-EX-08). Convert one with `parity-utmos.yml`'s recipe \
+                 (or the local one in `tests/parity/utmos/README.md`) and re-run this test \
+                 with `{ENV_UTMOS_GGUF}=<path>` set."
+            )
+        });
+        let path = PathBuf::from(&gguf_path);
+        assert!(
+            !path.as_os_str().is_empty(),
+            "{ENV_UTMOS_ENABLE}=1 but {ENV_UTMOS_GGUF} is empty — see the panic message above"
+        );
+        Self::Enabled { gguf_path: path }
+    }
+}
+
+/// WP-24: runs the tail-position UTMOS quality gate over the Rust and
+/// reference waveforms once the numerical waveform parity has already
+/// passed. Fail-closed opt-in: see [`UtmosGateSettings`] and the module
+/// doc's "WP-24: UTMOS quality gate" section.
+///
+/// Panics on any downstream failure (missing/unreadable/synthesized GGUF,
+/// resample failure, scorer error, delta over [`UTMOS_ATOL`]) — the
+/// caller explicitly opted in, so every failure is a real regression, not
+/// a skip.
+fn utmos_gate(rust_wave: &[f32], reference_wave: &[f32], sbv2_sample_rate: u32) {
+    let settings = UtmosGateSettings::resolve();
+    let UtmosGateSettings::Enabled { gguf_path } = settings else {
+        eprintln!(
+            "[parity_sbv2_real] UTMOS quality gate: SKIPPED ({ENV_UTMOS_ENABLE} not set to \"1\"). \
+             This is an FR-EX-08 explicit skip, not a fabricated pass. Set \
+             `{ENV_UTMOS_ENABLE}=1 {ENV_UTMOS_GGUF}=<path/to/utmos.gguf>` to opt in — see the \
+             module doc's \"WP-24: UTMOS quality gate\" section for the recipe."
+        );
+        return;
+    };
+
+    // Cross-input sanity: both waveforms must be the same length here (the
+    // caller has just asserted that above, but re-checking makes the
+    // panic message point at the right root cause if a future edit moves
+    // things around).
+    assert_eq!(
+        rust_wave.len(),
+        reference_wave.len(),
+        "[parity_sbv2_real] UTMOS gate: rust/reference length mismatch ({} vs {}) — the \
+         waveform-parity assertion above should have caught this first",
+        rust_wave.len(),
+        reference_wave.len(),
+    );
+
+    // Load the scorer. Refusing synthesized weights (fabricated-pass ban,
+    // NFR-QL-04) mirrors `parity_utmos.rs`'s `native_score_for_parity`.
+    let scorer = Utmos::from_path(&gguf_path).unwrap_or_else(|e| {
+        panic!(
+            "[parity_sbv2_real] UTMOS gate: failed to load `vokra.utmos.*` GGUF from {}: {e}",
+            gguf_path.display()
+        )
+    });
+    assert!(
+        !scorer.is_synthesized(),
+        "[parity_sbv2_real] UTMOS gate: refusing to score against a synthesized-weight \
+         UTMOS GGUF ({}) — a synthetic scorer cannot honestly measure perceptual parity \
+         against a real waveform (NFR-QL-04). Point {ENV_UTMOS_GGUF} at a GGUF converted from \
+         the real upstream UTMOS22-strong checkpoint (see `parity-utmos.yml`'s recipe).",
+        gguf_path.display(),
+    );
+
+    // UTMOS22-strong is 16 kHz; SBV2 is 44.1 kHz. The metric refuses
+    // silent resampling, so downsample both waveforms explicitly (same
+    // resampler path for both = the rounding cancels in the absolute
+    // delta comparison below). Equal rates are a bit-exact no-op inside
+    // `vokra_ops::resample`, so this is safe even in the (unusual) case
+    // where SBV2 and the UTMOS GGUF happen to share a rate.
+    let target_sr = scorer.config().sample_rate;
+    let rust_at_target = if target_sr == sbv2_sample_rate {
+        rust_wave.to_vec()
+    } else {
+        vokra_ops::resample(
+            rust_wave,
+            sbv2_sample_rate,
+            target_sr,
+            vokra_ops::resample::DEFAULT_QUALITY,
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "[parity_sbv2_real] UTMOS gate: resample of rust_wave from {sbv2_sample_rate} \
+                 Hz to {target_sr} Hz failed: {e}"
+            )
+        })
+    };
+    let reference_at_target = if target_sr == sbv2_sample_rate {
+        reference_wave.to_vec()
+    } else {
+        vokra_ops::resample(
+            reference_wave,
+            sbv2_sample_rate,
+            target_sr,
+            vokra_ops::resample::DEFAULT_QUALITY,
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "[parity_sbv2_real] UTMOS gate: resample of reference_wave from \
+                 {sbv2_sample_rate} Hz to {target_sr} Hz failed: {e}"
+            )
+        })
+    };
+
+    let score_rust = scorer
+        .score(&rust_at_target, target_sr)
+        .unwrap_or_else(|e| panic!("[parity_sbv2_real] UTMOS gate: rust waveform scoring: {e}"));
+    let score_reference = scorer
+        .score(&reference_at_target, target_sr)
+        .unwrap_or_else(|e| {
+            panic!("[parity_sbv2_real] UTMOS gate: reference waveform scoring: {e}")
+        });
+
+    let delta = (score_rust - score_reference).abs();
+    assert!(
+        delta <= UTMOS_ATOL,
+        "[parity_sbv2_real] UTMOS gate FAILED: |utmos(rust) - utmos(reference)| = {delta:.6e} \
+         > UTMOS_ATOL {UTMOS_ATOL:.6e} (rust = {score_rust}, reference = {score_reference}, \
+         resampled from {sbv2_sample_rate} Hz to {target_sr} Hz for scoring). If the divergence \
+         is an architectural bound — not a real regression — record a per-fixture honest atol \
+         with rationale in `sbv2::parity`'s module doc (Kokoro `PROSODY_F0_ATOL` precedent), \
+         never widen `UTMOS_ATOL` itself to hunt a green."
+    );
+    eprintln!(
+        "[parity_sbv2_real] UTMOS quality gate OK: |Δ| = {delta:.6e} <= {UTMOS_ATOL:.6e} \
+         (rust = {score_rust}, reference = {score_reference}, resampled {sbv2_sample_rate} Hz \
+         → {target_sr} Hz)"
+    );
+}
+
+/// Real-checkpoint SBV2 full-manifest + UTMOS parity, gated on the Task 34 + Task 30
 /// fixture set (`tests/fixtures/sbv2/`). See the module doc for: the
 /// manifest schema this reads (including the Task 7 `phonemize_fixture`
 /// block that bypasses the missing in-workspace 8-language G2P), the
@@ -926,6 +1138,14 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
          sr={SBV2_MEL_SR})",
         MEL_LOSS_ATOL,
     );
+
+    // WP-24: tail-position UTMOS quality gate. Fail-closed opt-in — see
+    // the module doc's "WP-24: UTMOS quality gate" section for the
+    // fixture recipe and CI wiring, and `utmos_gate` for the panic /
+    // skip semantics. Runs AFTER the raw-waveform assertion above so a
+    // failing UTMOS score always points at a real perceptual regression
+    // rather than an incidental sample-level noise floor drift.
+    utmos_gate(&audio.samples, &reference, audio.sample_rate);
 }
 
 /// Aggregator mel-loss (WP-04, ADR `docs/adr/sbv2-libm-strategy.md` §2.2):

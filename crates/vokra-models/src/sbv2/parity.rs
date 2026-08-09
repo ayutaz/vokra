@@ -372,3 +372,43 @@ pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
 /// updated to record the actual measurement (never delete the derivation —
 /// honest-atol discipline).
 pub const MEL_LOSS_ATOL: f32 = 0.05;
+
+/// UTMOS-delta tolerance for the SBV2 real-checkpoint parity harness
+/// (WP-24; NFR-QL-02).
+///
+/// See [`tolerance_for`] / [`PER_TENSOR_ATOL`] for the per-tensor **waveform**
+/// atol. This constant is a *separate* per-metric bound: the absolute
+/// difference `|utmos(rust_wave) - utmos(reference_wave)|` allowed before
+/// the UTMOS quality gate fails, in raw MOS points (UTMOS22-strong output
+/// range is roughly `[1.0, 5.0]`).
+///
+/// # Honest-atol rationale (memory `feedback-honest-parity-atol`)
+///
+/// `0.05` matches the same numerical band the M4-18 UTMOS ratification
+/// installed as the perceptual-safety threshold in
+/// [`vokra_eval::degradation::check_degradation_with_utmos`] — that gate's
+/// `MosAssessment::rel_decrease <= threshold` semantics use `0.05` as the
+/// NFR-QL-02 5 % boundary. The absolute vs. relative axis differs
+/// intentionally between the two: `check_degradation_with_utmos` measures a
+/// *degradation from a fp32 baseline* (so a fraction of the baseline is
+/// meaningful), whereas the SBV2 parity harness measures **agreement
+/// between two forward passes of the same model** (Rust vs. Python
+/// reference), where there is no fixed "reference score" whose fraction is
+/// meaningful — a shift of `0.05` in either direction is equally suspicious.
+///
+/// For UTMOS22-strong specifically, `0.05` sits ~1 order of magnitude above
+/// the reference reproduction band recorded in
+/// `tests/parity/utmos/score.json`'s `atol` field (which the sibling
+/// [`vokra_eval::metrics::utmos::Utmos`] parity harness uses to gate the
+/// scorer itself against upstream). That order-of-magnitude widening
+/// accounts for the extra float rounding accumulated across the full SBV2
+/// forward pass (text encoder + BERT bridge + SDP + flow + HiFi-GAN
+/// decoder) that produces the *audio being scored*, on top of the scorer's
+/// own reproduction error. Widening past `0.05` (i.e. to hide a genuine
+/// regression) violates the honest-atol rule (memory reference above);
+/// pinning is enforced by `sbv2_parity_atol_calibration.rs`'s
+/// `utmos_atol_is_pinned_at_0_05` test.
+///
+/// The comparison is **absolute delta**, not the relative decrease used by
+/// the quantization gate; see the doc's third paragraph for why.
+pub const UTMOS_ATOL: f64 = 0.05;
