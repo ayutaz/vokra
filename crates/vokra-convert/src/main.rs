@@ -1984,6 +1984,49 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 "; arch={arch} name={name} category={category} n_layer={n_layers} d_model={d_model} vocab_size={vocab_size}"
             );
         }
+        ModelKind::BertBase => {
+            // WP-14 (2026-08-10): plain BERT verify surface — arch /
+            // name / category plus the encoder axes (n_layers /
+            // hidden / heads / vocab / max_pos) from the
+            // `vokra.bert_base.*` chunk group. Mirrors the DeBERTa v2
+            // / v3 arms above; the key prefix change reflects the
+            // arch-different rename table this converter uses.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_layers = file
+                .get("vokra.bert_base.n_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden = file
+                .get("vokra.bert_base.hidden")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let heads = file
+                .get("vokra.bert_base.heads")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.bert_base.vocab")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let max_pos = file
+                .get("vokra.bert_base.max_pos")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} category={category} n_layers={n_layers} hidden={hidden} heads={heads} vocab={vocab} max_pos={max_pos}"
+            );
+        }
         ModelKind::DebertaV3 => {
             // SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v3 BERT encoder
             // verify surface — arch / name / category plus the encoder

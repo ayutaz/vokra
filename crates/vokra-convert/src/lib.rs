@@ -871,6 +871,24 @@ pub enum ModelKind {
     /// Convert with [`convert_deberta_v3_file`] with a safetensors
     /// checkpoint.
     DebertaV3,
+    /// **hfl/chinese-roberta-wwm-ext-large** plain-BERT checkpoint
+    /// (WP-14, 2026-08-10). `BertForMaskedLM` Chinese BERT-large from
+    /// HFL (whole-word masking, 21,128-piece WordPiece vocab, 1024
+    /// hidden, 24 layers, 16 heads). **Apache-2.0** upstream weight
+    /// (owner-side sign-off queued at `docs/license-audit.md` §3.1;
+    /// primary source verified 2026-08-10 via HF cardData). Wired into
+    /// the SBV2 v2 `language_id = 2` (ZH) BERT slot at runtime via
+    /// [`SbV2Model::from_gguf_with_zh_bert`](https://docs.rs/vokra-models).
+    /// Arch-different from [`Self::DebertaV2`] / [`Self::DebertaV3`]:
+    /// post-norm, standard attention, no disentangled position path,
+    /// no per-layer `wq_pos` / `wk_pos` / `pos_embed` duplication —
+    /// see [`crate::models::bert_base`] for the rename table and
+    /// [`crate::models::bert_base::convert_bert_base_file`] for the
+    /// vocab-txt `--tokenizer` side-car channel. F32 / F16 / BF16
+    /// tensors pass through verbatim under the `bert_base.*` names
+    /// [`BertBaseEncoder::from_gguf`](https://docs.rs/vokra-bert)
+    /// reads.
+    BertBase,
     /// Style-Bert-VITS2 v2 (SBV2) official checkpoint (SBV2 v2 plan Task 25,
     /// 2026-07-26): a `litagin02/style_bert_vits2`-family safetensors
     /// checkpoint for the multilingual (JA + EN) base model
@@ -3204,6 +3222,18 @@ impl ModelKind {
                 Some(Self::DebertaV2)
             }
             "deberta-v3" | "deberta_v3" | "microsoft/deberta-v3-large" => Some(Self::DebertaV3),
+            // WP-14 (2026-08-10): plain BERT (`hfl/chinese-roberta-wwm-ext-large`,
+            // Apache-2.0). Accept the canonical arch tag, the underscore
+            // variant, and the real HF release id. First consumer is the
+            // SBV2 v2 ZH branch (`SbV2Model::from_gguf_with_zh_bert`);
+            // future English WordPiece checkpoints
+            // (`google-bert/bert-base-uncased`, ...) also route here — the
+            // converter's `--tokenizer` + `do_lower_case` axes serve both.
+            "bert-base"
+            | "bert_base"
+            | "chinese-roberta-wwm-ext-large"
+            | "chinese_roberta_wwm_ext_large"
+            | "hfl/chinese-roberta-wwm-ext-large" => Some(Self::BertBase),
             // Style-Bert-VITS2 v2 (SBV2 v2 plan Task 25, 2026-07-26). Accept
             // the canonical arch spelling, the design doc's SKU id, and the
             // common project-name spellings (with/without hyphen, with/
@@ -4512,6 +4542,7 @@ impl ModelKind {
             Self::StyleTts2 => "styletts2",
             Self::DebertaV2 => "deberta-v2",
             Self::DebertaV3 => "deberta-v3",
+            Self::BertBase => "bert-base",
             Self::SbV2 => "sbv2",
             Self::XCodec2 => "xcodec2",
             // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
@@ -5975,6 +6006,33 @@ pub fn convert_file_licensed(
                 model: ModelKind::DebertaV2,
                 tensor_count: report.written,
                 metadata_count: 0, // Populated by convert_deberta_v2_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::BertBase => {
+            // WP-14 (2026-08-10): plain BERT
+            // (`hfl/chinese-roberta-wwm-ext-large`, apache-2.0) →
+            // `bert_base.*` GGUF names + `vokra.bert_base.*` hparam
+            // chunk group + optional `vokra.bert.wordpiece.*` tokenizer
+            // side-car. The generic dispatch path has no `--tokenizer`
+            // parameter to forward, so tokenizer emission is left off
+            // here — the CLI's own `--tokenizer` flag routes directly
+            // to `convert_bert_base_file(_, _, _, Some(bytes), _)`
+            // (mirror of the deberta-v2 / deberta-v3 vocab-txt / spm.json
+            // gates). `do_lower_case = false` is the ZH-first-consumer
+            // default; English WordPiece checkpoints pass through
+            // the direct-call path with `do_lower_case = true`.
+            let report = convert_bert_base_file(input, output, license, None, false)?;
+            let notes = vec![format!(
+                "bert-base: {} float weights renamed + written verbatim, {} unmapped skipped, \
+                 {} non-float skipped",
+                report.written, report.skipped_unmapped, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BertBase,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_bert_base_file's builder
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -10089,6 +10147,7 @@ pub use models::xy_tokenizer::{XyTokenizerReport, convert_xy_tokenizer_file};
 // and thus dead code — because `mod models` itself is private, same
 // reasoning as the `speaker_3d` re-export above). Not yet routed through
 // `ModelKind` / `convert_file` dispatch — that wiring is Task 12's job.
+pub use models::bert_base::{BertBaseReport, convert_bert_base_file};
 pub use models::deberta_v2::{ConvertReport, convert_deberta_v2_file};
 pub use models::deberta_v3::convert_deberta_v3_file;
 // `sbv2::ConvertReport` is re-exported under an alias, not the bare name:

@@ -7,6 +7,15 @@
 // qwen3_tts / vibevoice / voxcpm2 pattern; real-weight parity is
 // deferred to owner (`docs/license-audit.md` §3.1 sign-off).
 pub mod baichuan_audio;
+// WP-14 (2026-08-10, SBV2 v2 plan follow-on): plain BERT converter
+// (`hfl/chinese-roberta-wwm-ext-large`, apache-2.0). Category: bert.
+// Arch-different from DeBERTa v2/v3 (post-norm, standard attention,
+// no disentangled position path) so the rename table cannot share
+// `map_deberta_name`; kept in its own module for the same reason
+// `deberta_v2` / `deberta_v3` are two files rather than one. Wired
+// into the SBV2 v2 ZH branch at runtime via
+// `SbV2Model::from_gguf_with_zh_bert`.
+pub mod bert_base;
 pub mod bicodec;
 pub(crate) mod campplus;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Canary-1B-v2 — multilingual

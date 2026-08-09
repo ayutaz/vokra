@@ -126,6 +126,13 @@ integrations/vokra-godot/pkg/
 # tickets / SDD progress). This section lists the internal ones explicitly so
 # tracked handoff files remain unaffected.
 /docs/handoff/sbv2-v2-phase1.md
+# WP-14 (2026-08-10): ZH BERT publish runbook — task-by-task publish
+# instructions (converter invocation, upload command, owner sign-off
+# flip location). Internal PM artefact; the corresponding audit row
+# (docs/license-audit.md §3.1 for hfl/chinese-roberta-wwm-ext-large) is
+# tracked and public. Convention aligned with the batch-7 handoff-doc
+# gitignore pattern above.
+/docs/handoff/zh-bert-publish-2026-08-10.md
 
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)
