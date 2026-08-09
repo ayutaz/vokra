@@ -14,7 +14,10 @@
 use std::path::{Path, PathBuf};
 
 use vokra_core::json::{self, JsonValue};
-use vokra_models::sbv2::{AtolCalibration, PER_TENSOR_ATOL, atol_calibration_for, tolerance_for};
+use vokra_models::sbv2::{
+    ATOL_DEFAULT, AtolCalibration, MEL_LOSS_ATOL, PER_TENSOR_ATOL, atol_calibration_for,
+    tolerance_for,
+};
 
 /// Every [`PER_TENSOR_ATOL`] key MUST have a match arm in
 /// [`atol_calibration_for`] — a silent add without corresponding
@@ -242,4 +245,49 @@ fn tolerance_for_returns_finite_positive_on_every_manifest_tensor() {
             "tolerance_for({name}) = {atol} is non-positive or non-finite"
         );
     }
+}
+
+/// WP-04 (2026-08-09): `MEL_LOSS_ATOL` is a derived-aggregate atol (not
+/// keyed under any dumped tensor name) that
+/// `crates/vokra-models/tests/parity_sbv2_real.rs`'s mel-loss aggregator
+/// uses. Pin its value here as a redundant-recording drift detector
+/// (memory `feedback-honest-parity-atol` = the constant's own rustdoc
+/// in `crates/vokra-models/src/sbv2/parity.rs` derives the value; this
+/// pin fails if the const drifts without touching the derivation
+/// docstring). Status is `EstimatedPreFixture`-equivalent — no
+/// per-tensor `AtolCalibration` entry because MEL_LOSS_ATOL is not
+/// a tolerance_for lookup target; instead we assert the raw const
+/// stays at the scaffolded pre-fixture 0.05 until a real CI
+/// measurement flips it (WP-04 follow-up = same owner-side workflow as
+/// PER_TENSOR_ATOL `Measured` promotion in `docs/adr/sbv2-parity-atol.md`
+/// §5-§6).
+#[test]
+fn mel_loss_atol_is_pinned_at_wp04_scaffold_value() {
+    assert!(
+        (MEL_LOSS_ATOL - 0.05).abs() < f32::EPSILON,
+        "MEL_LOSS_ATOL drifted from the WP-04 scaffold 0.05. To flip \
+         this to `Measured`, run parity-sbv2-real workflow_dispatch, \
+         capture max mel-loss, update the derivation docstring in \
+         `crates/vokra-models/src/sbv2/parity.rs::MEL_LOSS_ATOL` \
+         (append-never-delete, per Kokoro PROSODY_F0_ATOL precedent), \
+         and update THIS pin in the same commit"
+    );
+}
+
+/// WP-04 (2026-08-09): `ATOL_DEFAULT` is the fall-through returned by
+/// `tolerance_for` for any tensor NOT in `PER_TENSOR_ATOL`. WP-01
+/// closed the atol_calibration_for hole by pinning every manifest
+/// tensor's calibration status, but the fall-through value itself
+/// (0.01, NFR-QL-01) can still silently drift. This pin fires as a
+/// last-line-of-defense drift detector.
+#[test]
+fn atol_default_is_pinned_at_nfr_ql_01_scaffold() {
+    assert!(
+        (ATOL_DEFAULT - 0.01).abs() < f32::EPSILON,
+        "ATOL_DEFAULT drifted from 0.01 (NFR-QL-01). Any change here \
+         cascades to every UnmeasuredDefault tensor's effective bound \
+         (WP-01 landed 6 such tensors) — update the derivation ADR \
+         + this pin together, honest-atol discipline (memory \
+         feedback-honest-parity-atol)."
+    );
 }

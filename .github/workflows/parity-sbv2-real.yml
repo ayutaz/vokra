@@ -508,12 +508,39 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/parity.log"
           exit_code=${PIPESTATUS[0]}
           echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          # WP-04: surface the mel_loss aggregator's per-run measurement so
+          # the first successful CI run's `[parity_sbv2_real] mel_loss parity OK`
+          # line is easy to lift into `MEL_LOSS_ATOL`'s docstring when
+          # WP-04's `AtolMeasurement::EstimatedPreFixture` is promoted to
+          # `Measured`. Extract the exact line the test emits (see
+          # `mel_loss_rms` wire-in in `parity_sbv2_real.rs`), pointer-quoted
+          # for clean copy-paste.
+          mel_loss_line=$(grep -E '^\[parity_sbv2_real\] mel_loss parity' "$RUNNER_TEMP/parity.log" \
+            | head -n1 || true)
           {
             echo "### parity_sbv2_real (exit ${exit_code})"
             echo ""
             echo '```'
             grep -E '^\[parity_sbv2_real\]' "$RUNNER_TEMP/parity.log" || echo "(no [parity_sbv2_real] diagnostic lines emitted)"
             echo '```'
+            echo ""
+            echo "**WP-04 mel_loss aggregator** (log-mel RMS, tighter architectural"
+            echo "bound than raw waveform atol per ADR"
+            echo "\`docs/adr/sbv2-libm-strategy.md\` §2.2):"
+            echo ""
+            if [ -n "$mel_loss_line" ]; then
+              echo '```'
+              echo "$mel_loss_line"
+              echo '```'
+              echo ""
+              echo "Once the fixture gate opens and this line reports a real measurement,"
+              echo "promote \`MEL_LOSS_ATOL\` (\`crates/vokra-models/src/sbv2/parity.rs\`) from"
+              echo "\`EstimatedPreFixture\` to \`Measured\` in the calibration snapshot at"
+              echo "\`crates/vokra-models/tests/sbv2_parity_atol_calibration.rs\`."
+            else
+              echo "*(no \`[parity_sbv2_real] mel_loss parity\` line emitted — parity test"
+              echo "did not reach the mel_loss assertion, likely because an earlier step failed.)*"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Zero-dependency invariant (root Cargo.lock unchanged, NFR-DS-02)

@@ -49,7 +49,8 @@ pub use duration::{ConvFlow, DDSConv, ElementwiseAffine, SbV2SDP, SdpLayerNorm, 
 pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
 pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 pub use parity::{
-    ATOL_DEFAULT, AtolCalibration, PER_TENSOR_ATOL, atol_calibration_for, tolerance_for,
+    ATOL_DEFAULT, AtolCalibration, MEL_LOSS_ATOL, PER_TENSOR_ATOL, atol_calibration_for,
+    tolerance_for,
 };
 pub use speaker::{ExternalSpeakerProjection, SpeakerEmbedding};
 pub use style::StyleVectorInjector;

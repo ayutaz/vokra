@@ -323,3 +323,52 @@ pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
         _ => None,
     }
 }
+
+/// Aggregator mel-loss atol (WP-04 — ADR
+/// `docs/adr/sbv2-libm-strategy.md` §2.2). Bound on the RMS of the
+/// log-mel-magnitude difference between the Rust `synthesize` output and the
+/// Python reference-dump `waveform`.
+///
+/// # Why a separate constant, not [`PER_TENSOR_ATOL`]
+///
+/// [`PER_TENSOR_ATOL`] entries key by *tensor* names dumped by the Python
+/// reference (`bert_hidden_ja` etc.). `mel_loss` is a *derived aggregate*
+/// computed by the parity test itself from the `waveform` tensor — it is
+/// **not** a dumped tensor, so folding it into [`PER_TENSOR_ATOL`] would
+/// mis-key it under a tensor name that no dumper produces. Keeping it a
+/// distinct constant keeps [`tolerance_for`]'s contract clean (one lookup
+/// per real dumped tensor).
+///
+/// # Status: `EstimatedPreFixture` (WP-04 follow-up)
+///
+/// This value is scaffolded ahead of the first real Style-Bert-VITS2-2.0
+/// checkpoint parity CI run — no measured floor yet. Following the same
+/// honest-atol discipline as the four [`PER_TENSOR_ATOL`] entries above
+/// (memory `feedback-honest-parity-atol`), the number is a *theoretical
+/// upper bound* on the log-mel aggregate rather than an arbitrary
+/// CI-green pick:
+///
+/// - Raw waveform atol (`tolerance_for("waveform") == ATOL_DEFAULT == 0.01`
+///   currently — a scaffold default; the CI-measured 1.5 for the
+///   synthetic-weight leg [commit `77078ce`] lives outside `tolerance_for`
+///   today, WP-01 folds it in). On synthetic weights that CI run
+///   [31303426623] measured a raw max-abs-diff of ~1.5 absorbing the
+///   ~130M-transcendental cross-platform accumulation.
+/// - Log-mel of a power spectrum divides the same amplitude noise by
+///   two-to-three orders of magnitude: `log(1 + delta / signal)` compresses
+///   `delta / signal` linearly, and a 1.5 raw-amplitude delta on a
+///   ~1e2 signal envelope is `log(1 + 1.5e-2) ≈ 1.5e-2` per bin — the RMS
+///   over ~128 bands × the fixture's ~100 frames sits well under
+///   `sqrt(mean(1.5e-2^2)) ≈ 1.5e-2` before margin.
+/// - `0.05` = ~3× the theoretical floor above — the same ~1.5-2× margin
+///   band Kokoro's `PROSODY_F0_ATOL` uses (see [`PER_TENSOR_ATOL`]'s
+///   `sdp_sample` doc for the precedent), stretched slightly since this
+///   entry has NO measured confirmation yet.
+///
+/// A WP-04 follow-up will pin this to `AtolMeasurement::Measured(m)` in the
+/// `sbv2_parity_atol_calibration.rs` snapshot table once the first
+/// parity-sbv2-real CI run produces a real measurement; the number here
+/// should then be revised to `max(measured × 1.5, 0.01)` and this docstring
+/// updated to record the actual measurement (never delete the derivation —
+/// honest-atol discipline).
+pub const MEL_LOSS_ATOL: f32 = 0.05;

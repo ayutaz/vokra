@@ -182,12 +182,32 @@
 
 use std::path::{Path, PathBuf};
 
+use vokra_core::VokraError;
 use vokra_core::gguf::GgufFile;
+use vokra_core::ir::graph::{MelAttrs, MelInterp, MelNorm, MelScale, StftAttrs};
 use vokra_core::json::{self, JsonValue};
 use vokra_models::sbv2::{
-    AtolCalibration, Language, PhonemizeFixture, PhonemizeResult, RngMode, SbV2Intermediates,
-    SbV2Model, SbV2Phonemizer, SbV2SynthRequest, atol_calibration_for, tolerance_for,
+    AtolCalibration, Language, MEL_LOSS_ATOL, PhonemizeFixture, PhonemizeResult, RngMode,
+    SbV2Intermediates, SbV2Model, SbV2Phonemizer, SbV2SynthRequest, atol_calibration_for,
+    tolerance_for,
 };
+use vokra_ops::{mel_filterbank, stft};
+
+// SBV2 v2 JP-Extra base target: 44.1 kHz output (see
+// `crates/vokra-models/src/sbv2/decoder.rs`'s module doc, `sample_rate` field
+// there is pinned to `44_100`), with the mel-loss front-end using the same
+// n_fft / hop / n_mels VITS-family checkpoints train against.
+// `n_fft=2048, hop=512, n_mels=128` matches the litagin/Style-Bert-VITS2 v2
+// upstream config the parity CI (`.github/workflows/parity-sbv2-real.yml`)
+// downloads (`filter_length=2048`, `hop_length=512`, `n_mel_channels=128`).
+// Sample rate, n_fft, and hop are also what the SbV2 config side-car
+// (`vokra.sbv2.sample_rate` / `vokra.sbv2.decoder.upsample_rates` product =
+// hop) exposes to the loader — this front-end matches, so a real-fixture run
+// diffs against the same mel band structure the reference dumper computes.
+const SBV2_MEL_SR: u32 = 44_100;
+const SBV2_MEL_N_FFT: usize = 2048;
+const SBV2_MEL_HOP: usize = 512;
+const SBV2_MEL_N_MELS: usize = 128;
 
 /// Repo-root-relative real-fixture directory for SBV2 parity
 /// (`tests/fixtures/sbv2/`, sibling of the existing `tests/fixtures/audio/`
@@ -816,6 +836,275 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
         len_ratio,
         LENGTH_BAND_FRACTION * 100.0,
         overlap_len,
+    );
+
+    // WP-04: mel_loss aggregator — a tighter architectural bound than raw
+    // waveform atol. `log(|X|^2 · mel_fb)` compresses the same
+    // ~130M-transcendental cross-platform delta by two-three orders of
+    // magnitude (ADR `docs/adr/sbv2-libm-strategy.md` §2.2), so a real
+    // parity regression that stays under the (loose) waveform floor still
+    // shows up here. Run AFTER the waveform check so both sides get to
+    // emit their per-metric diagnostic on a partial pass.
+    let mel_loss = mel_loss_rms(
+        &audio.samples,
+        &reference,
+        SBV2_MEL_SR,
+        SBV2_MEL_N_FFT,
+        SBV2_MEL_HOP,
+        SBV2_MEL_N_MELS,
+    )
+    .unwrap_or_else(|e| panic!("mel_loss_rms(rust, reference): {e}"));
+    assert!(
+        mel_loss <= MEL_LOSS_ATOL as f64,
+        "mel_loss RMS = {mel_loss} exceeds MEL_LOSS_ATOL {} \
+         (sbv2::parity::MEL_LOSS_ATOL, WP-04 EstimatedPreFixture — see docstring \
+         for derivation; a genuine regression means widening this needs an ADR + \
+         updated derivation, not silent loosening)",
+        MEL_LOSS_ATOL
+    );
+    eprintln!(
+        "[parity_sbv2_real] mel_loss parity OK: rms = {mel_loss:.3e} <= \
+         atol {} (n_fft={SBV2_MEL_N_FFT}, hop={SBV2_MEL_HOP}, n_mels={SBV2_MEL_N_MELS}, \
+         sr={SBV2_MEL_SR})",
+        MEL_LOSS_ATOL,
+    );
+}
+
+/// Aggregator mel-loss (WP-04, ADR `docs/adr/sbv2-libm-strategy.md` §2.2):
+/// computes mel-spectrograms of `a` and `b` and returns the RMS of the
+/// log-mel-magnitude difference over their shared frame overlap.
+///
+/// Pipeline (matches every `vokra_ops::mel_filterbank` consumer in this
+/// workspace — see `crates/vokra-models/src/whisper/mel.rs` for the
+/// canonical STFT → |X|² → mel-filterbank → log chain):
+///   1. `vokra_ops::stft(_, StftAttrs::new(n_fft, hop))` on each input;
+///   2. `Spectrogram::power()` → `[frames, n_freqs]` (element-wise
+///      `re² + im²`);
+///   3. `MelFilterbank::apply(power, frames)` → `[frames, n_mels]`;
+///   4. clamp-with-epsilon-then-ln, per-bin subtract, RMS over the shared
+///      `min(frames_a, frames_b)` frames × `n_mels` bins.
+///
+/// The `MelAttrs` this builds mirror librosa/torchaudio defaults for the
+/// SBV2 v2 base: `Slaney` scale, `Slaney` norm, `Hz`-linear ramp, `fmin=0`,
+/// `fmax=sr/2` (the frontend spec the reference dumper uses; a per-model
+/// override would flow through the manifest's `phonemize_fixture` sibling
+/// once a follow-up widens the API — WP-04 keeps the front-end constant so
+/// this parity's mel bound matches what the CI dumper computes).
+///
+/// # Length handling
+///
+/// Mirrors `tolerance_for("waveform")`'s implicit contract at the
+/// waveform level (`max_abs_diff` currently asserts equal lengths, so a
+/// length mismatch surfaces at that check first): if the two waveforms
+/// produce a differing number of STFT frames, only the leading
+/// `min(frames_a, frames_b)` frames are compared, matching the sibling
+/// `vokra_eval::MelLoss::loss` shared-overlap convention.
+///
+/// # Errors
+///
+/// Returns [`VokraError::InvalidArgument`] if either input is too short to
+/// produce a single STFT frame (i.e. `signal.len() + n_fft < n_fft` under
+/// centered padding), or if `vokra_ops::stft`'s own attrs validation
+/// rejects the constructed [`StftAttrs`]. Never silently returns `0.0` on
+/// a degenerate input — FR-EX-08.
+fn mel_loss_rms(
+    a: &[f32],
+    b: &[f32],
+    sample_rate: u32,
+    n_fft: usize,
+    hop: usize,
+    n_mels: usize,
+) -> vokra_core::Result<f64> {
+    if n_mels == 0 {
+        return Err(VokraError::InvalidArgument(
+            "mel_loss_rms: n_mels must be non-zero".to_owned(),
+        ));
+    }
+    let stft_attrs = StftAttrs::new(n_fft, hop);
+    let mel_attrs = MelAttrs {
+        norm: MelNorm::Slaney,
+        scale: MelScale::Slaney,
+        interp: MelInterp::Hz,
+        fmin: 0.0,
+        fmax: Some(sample_rate as f32 / 2.0),
+        ..MelAttrs::new(sample_rate, n_fft, n_mels)
+    };
+    let fb = mel_filterbank(&mel_attrs);
+
+    let spec_a = stft(a, &stft_attrs)?;
+    let spec_b = stft(b, &stft_attrs)?;
+
+    let common = spec_a.frames.min(spec_b.frames);
+    if common == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "mel_loss_rms: no shared STFT frames (spec_a.frames={}, spec_b.frames={}, \
+             a.len()={}, b.len()={}, n_fft={n_fft}, hop={hop}); inputs are too short",
+            spec_a.frames,
+            spec_b.frames,
+            a.len(),
+            b.len()
+        )));
+    }
+
+    // Compute power then project through mel filterbank. `MelFilterbank::apply`
+    // expects `[frames, n_freqs]`; `Spectrogram::power()` returns exactly that
+    // shape. Only the leading `common` frames matter — save the trailing work.
+    let n_freqs = spec_a.bins; // == n_fft/2 + 1 (real_input default)
+    let power_a: Vec<f32> = spec_a.re[..common * n_freqs]
+        .iter()
+        .zip(&spec_a.im[..common * n_freqs])
+        .map(|(r, i)| r * r + i * i)
+        .collect();
+    let power_b: Vec<f32> = spec_b.re[..common * n_freqs]
+        .iter()
+        .zip(&spec_b.im[..common * n_freqs])
+        .map(|(r, i)| r * r + i * i)
+        .collect();
+    let mel_a = fb.apply(&power_a, common);
+    let mel_b = fb.apply(&power_b, common);
+
+    // Log-mel + RMS. `1e-10` matches the sibling `vokra_eval::MelLoss` epsilon
+    // (log-domain floor keeps `.ln()` finite on true-zero bands from the
+    // filterbank cutoff).
+    let eps: f32 = 1e-10;
+    let mut sum_sq: f64 = 0.0;
+    let mut count: usize = 0;
+    for t in 0..common {
+        for m in 0..n_mels {
+            let la = mel_a[t * n_mels + m].max(eps).ln();
+            let lb = mel_b[t * n_mels + m].max(eps).ln();
+            let d = (la - lb) as f64;
+            sum_sq += d * d;
+            count += 1;
+        }
+    }
+    Ok((sum_sq / count as f64).sqrt())
+}
+
+// ---------------------------------------------------------------------------
+// WP-04 TDD RED-turned-GREEN: the two unit tests below assert
+// `mel_loss_rms`'s core contract (identical inputs → 0.0, differing inputs →
+// > 0.0). Written BEFORE the implementation above; without `mel_loss_rms`
+// this test binary refuses to compile — the concrete RED signal — so
+// landing them together with the implementation is the honest GREEN.
+// ---------------------------------------------------------------------------
+
+/// Synthetic mono sinusoid at `freq_hz` for `duration_s` seconds sampled at
+/// `sr` Hz — the fixture the two unit tests below build inputs from.
+fn sinusoid(freq_hz: f32, duration_s: f32, sr: u32) -> Vec<f32> {
+    let n = (duration_s * sr as f32) as usize;
+    let two_pi = 2.0 * std::f32::consts::PI;
+    (0..n)
+        .map(|t| (two_pi * freq_hz * t as f32 / sr as f32).sin())
+        .collect()
+}
+
+#[test]
+fn mel_loss_rms_is_zero_on_identical_inputs() {
+    // Log-mel RMS of a waveform against itself is 0 by construction (every
+    // per-bin delta is exactly 0). Uses an f64 epsilon rather than a strict
+    // `== 0.0` — the RMS accumulator is f64, so intermediate `sum_sq / count`
+    // divisions can produce a bit-flipped 0 depending on ordering.
+    let a = sinusoid(440.0, 0.25, SBV2_MEL_SR);
+    let loss = mel_loss_rms(
+        &a,
+        &a,
+        SBV2_MEL_SR,
+        SBV2_MEL_N_FFT,
+        SBV2_MEL_HOP,
+        SBV2_MEL_N_MELS,
+    )
+    .expect("mel_loss_rms on non-degenerate inputs");
+    assert!(
+        loss < 1e-6,
+        "mel_loss_rms(a, a) = {loss}, expected ~0 (log-mel of a waveform against \
+         itself is 0 by construction)"
+    );
+}
+
+#[test]
+fn mel_loss_rms_is_positive_on_differing_inputs() {
+    // Two sinusoids at different frequencies produce mel-spectrograms with
+    // different band-energy distributions; the log-mel RMS therefore must
+    // be strictly positive. This is the "detect a real difference" half of
+    // WP-04's mel-loss guard — if this ever returns 0, the aggregator has
+    // silently collapsed (e.g. an accidental `mel_b = mel_a`).
+    let a = sinusoid(440.0, 0.25, SBV2_MEL_SR);
+    let b = sinusoid(880.0, 0.25, SBV2_MEL_SR);
+    let loss = mel_loss_rms(
+        &a,
+        &b,
+        SBV2_MEL_SR,
+        SBV2_MEL_N_FFT,
+        SBV2_MEL_HOP,
+        SBV2_MEL_N_MELS,
+    )
+    .expect("mel_loss_rms on non-degenerate inputs");
+    assert!(
+        loss > 1e-3,
+        "mel_loss_rms(a, b) = {loss} but the inputs are different frequencies \
+         (440 Hz vs 880 Hz); a near-zero result means the aggregator has \
+         silently collapsed"
+    );
+}
+
+#[test]
+fn mel_loss_rms_rejects_degenerate_inputs_loudly() {
+    // FR-EX-08: n_mels==0 is a documented error path — never a silent 0.0.
+    // (An empty / too-short signal is NOT a degenerate input under centered
+    // STFT: `pad_for_analysis` reflects `n_fft/2` samples on each end, so
+    // even `signal.len()==0` produces exactly one frame of pure padding
+    // and mel_loss_rms of an empty input against itself is a legitimate
+    // 0.0 — that mirrors `vokra_ops::stft`'s own semantics and does NOT
+    // violate FR-EX-08 because the returned number is arithmetically
+    // correct, not silently wrong.)
+    let a = sinusoid(440.0, 0.05, SBV2_MEL_SR);
+    let err_zero_mels =
+        mel_loss_rms(&a, &a, SBV2_MEL_SR, SBV2_MEL_N_FFT, SBV2_MEL_HOP, 0).expect_err("n_mels=0");
+    assert!(
+        matches!(err_zero_mels, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument on n_mels=0, got {err_zero_mels:?}"
+    );
+    // A downstream `stft` error (from a n_fft=0 attrs, which our aggregator
+    // does NOT construct itself but a caller could conceivably plumb) also
+    // propagates via `?` — proven by asking for n_fft=0 directly. This is
+    // the FR-EX-08 loud-propagation half.
+    let err_zero_nfft =
+        mel_loss_rms(&a, &a, SBV2_MEL_SR, 0, SBV2_MEL_HOP, SBV2_MEL_N_MELS).expect_err("n_fft=0");
+    assert!(
+        matches!(err_zero_nfft, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument from stft on n_fft=0, got {err_zero_nfft:?}"
+    );
+}
+
+#[test]
+fn mel_loss_rms_handles_length_mismatch_via_shared_overlap() {
+    // Mirrors `tolerance_for("waveform")`'s spirit at the frame level:
+    // rather than error on a length mismatch, mel_loss_rms compares the
+    // leading `min(frames_a, frames_b)` frames.
+    //
+    // The tail frames of the shorter input use `reflect` padding for
+    // samples past its own end, while the longer input uses its real
+    // samples in the same positions — so the two spectrograms will differ
+    // on the last frame or two, and this test does NOT expect a strict 0.
+    // What it DOES prove is (a) the call succeeds without an error /
+    // panic and (b) the return value is a finite non-negative real (the
+    // shared-overlap machinery ran instead of the shape-mismatch error a
+    // strict-equal-length aggregator would raise).
+    let a = sinusoid(440.0, 0.5, SBV2_MEL_SR);
+    let b = &a[..a.len() / 2];
+    let loss = mel_loss_rms(
+        &a,
+        b,
+        SBV2_MEL_SR,
+        SBV2_MEL_N_FFT,
+        SBV2_MEL_HOP,
+        SBV2_MEL_N_MELS,
+    )
+    .expect("mel_loss_rms on length-mismatched inputs must not error");
+    assert!(
+        loss.is_finite() && loss >= 0.0,
+        "shared-overlap mel_loss must be a finite non-negative real, got {loss}"
     );
 }
 
