@@ -415,19 +415,31 @@ pub(crate) fn map_deberta_name(upstream: &str) -> Option<MapAction> {
             // Attention Q/K/V/O projections.
             // Rust expects wq + wq_pos (both content and position variants)
             // for query and key. Upstream stores just one query_proj /
-            // key_proj — duplicate it to satisfy the Rust struct layout.
+            // key_proj (share_att_key=True in ku-nlp/deberta-v2-large-japanese
+            // -char-wwm and every SBV2-v2 checkpoint we ship for) — duplicate
+            // both the weight AND the bias to satisfy the Rust struct
+            // layout. WP-15: `wq_pos.bias` / `wk_pos.bias` were previously
+            // dropped, forcing the Rust forward to fall back to `bq` / `bk`
+            // for the position projection; explicitly stamping the same bias
+            // tensor under both names makes the loader-side wiring first-class
+            // (see `crates/vokra-bert/src/deberta_v2.rs` `AttnWeights`
+            // "Position-aware biases").
             "attention.self.query_proj.weight" => Some(MapAction::Duplicate(
                 format!("{p}.attn.wq.weight"),
                 format!("{p}.attn.wq_pos.weight"),
             )),
-            "attention.self.query_proj.bias" => {
-                Some(MapAction::Rename(format!("{p}.attn.wq.bias")))
-            }
+            "attention.self.query_proj.bias" => Some(MapAction::Duplicate(
+                format!("{p}.attn.wq.bias"),
+                format!("{p}.attn.wq_pos.bias"),
+            )),
             "attention.self.key_proj.weight" => Some(MapAction::Duplicate(
                 format!("{p}.attn.wk.weight"),
                 format!("{p}.attn.wk_pos.weight"),
             )),
-            "attention.self.key_proj.bias" => Some(MapAction::Rename(format!("{p}.attn.wk.bias"))),
+            "attention.self.key_proj.bias" => Some(MapAction::Duplicate(
+                format!("{p}.attn.wk.bias"),
+                format!("{p}.attn.wk_pos.bias"),
+            )),
             "attention.self.value_proj.weight" => {
                 Some(MapAction::Rename(format!("{p}.attn.wv.weight")))
             }
@@ -981,6 +993,92 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some(LicenseClass::Permissive.as_str())
         );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// WP-15: `attention.self.query_proj.bias` / `key_proj.bias` are
+    /// duplicated into both content (`wq.bias`/`wk.bias`) and
+    /// position-projection (`wq_pos.bias`/`wk_pos.bias`) names —
+    /// mirroring the existing `query_proj.weight` / `key_proj.weight`
+    /// weight duplication for upstream `share_att_key=True` semantics.
+    /// Without this the runtime forward silently falls back to the
+    /// content bias for the position projection; this test locks in
+    /// that the loader-visible `wq_pos.bias` / `wk_pos.bias` names are
+    /// emitted (see `crates/vokra-bert/src/deberta_v2.rs`
+    /// `AttnWeights::bq_pos`).
+    #[test]
+    fn query_key_bias_is_duplicated_into_pos_projection_bias() {
+        // Bare minimum: one embed table + one layer with query/key/value
+        // proj weights *and* biases. The bias-duplication is what this
+        // test pins; other tensors are along for the ride.
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![
+            (
+                "deberta.embeddings.word_embeddings.weight",
+                "F32",
+                &[6, 4],
+                f32_bytes(&[0.01; 24]),
+            ),
+            (
+                "deberta.encoder.layer.0.attention.self.query_proj.weight",
+                "F32",
+                &[4, 4],
+                f32_bytes(&[0.03; 16]),
+            ),
+            (
+                "deberta.encoder.layer.0.attention.self.query_proj.bias",
+                "F32",
+                &[4],
+                f32_bytes(&[0.11; 4]),
+            ),
+            (
+                "deberta.encoder.layer.0.attention.self.key_proj.weight",
+                "F32",
+                &[4, 4],
+                f32_bytes(&[0.04; 16]),
+            ),
+            (
+                "deberta.encoder.layer.0.attention.self.key_proj.bias",
+                "F32",
+                &[4],
+                f32_bytes(&[0.13; 4]),
+            ),
+        ];
+        let blob = safetensors_multi(&entries);
+        let (input, output) = temp_pair("qk-bias-dupe");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v2_file(&input, &output, None, None).expect("convert");
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        // Both content and position bias names must be present, and
+        // must carry the SAME bytes (share_att_key=True — the same
+        // upstream tensor emitted twice under two names).
+        let wq_bias = file
+            .tensor_f32("bert.encoder.layer.0.attn.wq.bias")
+            .expect("wq.bias present");
+        let wq_pos_bias = file
+            .tensor_f32("bert.encoder.layer.0.attn.wq_pos.bias")
+            .expect("wq_pos.bias present (WP-15)");
+        assert_eq!(
+            wq_bias, wq_pos_bias,
+            "wq.bias and wq_pos.bias are the same upstream tensor emitted twice"
+        );
+        assert_eq!(wq_bias, vec![0.11_f32; 4]);
+
+        let wk_bias = file
+            .tensor_f32("bert.encoder.layer.0.attn.wk.bias")
+            .expect("wk.bias present");
+        let wk_pos_bias = file
+            .tensor_f32("bert.encoder.layer.0.attn.wk_pos.bias")
+            .expect("wk_pos.bias present (WP-15)");
+        assert_eq!(
+            wk_bias, wk_pos_bias,
+            "wk.bias and wk_pos.bias are the same upstream tensor emitted twice"
+        );
+        assert_eq!(wk_bias, vec![0.13_f32; 4]);
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();

@@ -100,6 +100,8 @@ impl DebertaV3Encoder {
                 bk: vec![0.0_f32; d_model],
                 bv: vec![0.0_f32; d_model],
                 bout: vec![0.0_f32; d_model],
+                bq_pos: None,
+                bk_pos: None,
             };
             EncoderLayer {
                 attn: DisentangledAttention::new(w, d_model, n_heads, head_dim, n_pos_buckets, 512),
@@ -143,17 +145,14 @@ impl DebertaV3Encoder {
     ///   layer's `AttnWeights.pos_embed` below).
     /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,wq_pos,wk_pos,w_out}.weight`
     /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,w_out}.bias`
+    /// - `bert.encoder.layer.<i>.attn.{wq_pos,wk_pos}.bias` — **optional**
+    ///   (WP-15). Loaded into [`AttnWeights::bq_pos`] / [`AttnWeights::bk_pos`]
+    ///   when present; when absent, forward falls back to the content
+    ///   biases `bq` / `bk` (backward-compat with pre-WP-15 GGUFs and
+    ///   upstream `share_att_key=True` configs — see the [`AttnWeights`]
+    ///   struct-level "Position-aware biases" section).
     /// - `bert.encoder.layer.<i>.ffn.{w1,w2}.{weight,bias}`
     /// - `bert.encoder.layer.<i>.ln{1,2}.{gamma,beta}`
-    ///
-    /// # Known limitation
-    ///
-    /// Same as [`crate::deberta_v2::DebertaV2Encoder::from_gguf`]:
-    /// [`AttnWeights`] has no dedicated `bq_pos`/`bk_pos` fields, so the
-    /// position-aware Q/K projections (`wq_pos`/`wk_pos`) are applied with
-    /// the *content* biases (`bq`/`bk`) in
-    /// [`DisentangledAttention::forward`]. No `wq_pos.bias`/`wk_pos.bias`
-    /// tensors are read here.
     pub fn from_gguf(g: &GgufFile) -> Result<Self, VokraError> {
         let meta_u32 =
             |key: &str| -> Option<u32> { g.get(key).and_then(|v| v.as_u64()).map(|u| u as u32) };
@@ -179,6 +178,16 @@ impl DebertaV3Encoder {
         let load_tensor_f32 = |name: &str| -> Result<Vec<f32>, VokraError> {
             g.tensor_f32(name)
                 .map_err(|e| VokraError::ModelLoad(format!("{name}: {e}")))
+        };
+        // WP-15: `wq_pos.bias` / `wk_pos.bias` are optional (see
+        // `AttnWeights` "Position-aware biases"). Same probe pattern as
+        // `DebertaV2Encoder::from_gguf`.
+        let load_optional_tensor_f32 = |name: &str| -> Result<Option<Vec<f32>>, VokraError> {
+            if g.tensor_info(name).is_some() {
+                Ok(Some(load_tensor_f32(name)?))
+            } else {
+                Ok(None)
+            }
         };
 
         let embed = load_tensor_f32("bert.embed.weight")?;
@@ -208,6 +217,8 @@ impl DebertaV3Encoder {
                 bk: load_tensor_f32(&format!("{p}.attn.wk.bias"))?,
                 bv: load_tensor_f32(&format!("{p}.attn.wv.bias"))?,
                 bout: load_tensor_f32(&format!("{p}.attn.w_out.bias"))?,
+                bq_pos: load_optional_tensor_f32(&format!("{p}.attn.wq_pos.bias"))?,
+                bk_pos: load_optional_tensor_f32(&format!("{p}.attn.wk_pos.bias"))?,
             };
             let ffn = FfnBlock::new(
                 load_tensor_f32(&format!("{p}.ffn.w1.weight"))?,

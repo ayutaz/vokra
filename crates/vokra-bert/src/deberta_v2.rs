@@ -68,6 +68,33 @@ pub fn relative_position_bucket(q_pos: i32, k_pos: i32, bucket_size: i32, max_di
 
 /// Weight bundle for one disentangled attention layer.
 /// All matrices are row-major, stored as (out_dim × in_dim) flattened.
+///
+/// # Position-aware biases (`bq_pos` / `bk_pos`)
+///
+/// Upstream DeBERTa v2/v3 `DisentangledSelfAttention` (HuggingFace
+/// transformers `deberta_v2`, Apache-2.0) applies a distinct
+/// `nn.Linear` (with bias) to the relative-position embeddings when
+/// `share_att_key=False`. When `share_att_key=True` (the standard for
+/// `ku-nlp/deberta-v2-large-japanese-char-wwm`), the same content Q/K
+/// projections — biases included — are reused for the position path;
+/// upstream carries only one `query_proj.bias` / `key_proj.bias` and no
+/// separate `pos_query_proj.bias` / `pos_key_proj.bias`.
+///
+/// `bq_pos` / `bk_pos` are [`Option`] so a GGUF built from either
+/// upstream style loads cleanly:
+///
+/// - **share_att_key=True** (or any pre-WP-15 GGUF): `None`.
+///   [`DisentangledAttention::forward`] transparently falls back to
+///   `bq` / `bk` (semantically identical to what upstream computes —
+///   the *same* projection with its *same* bias).
+/// - **share_att_key=False**: `Some(...)` carries the distinct
+///   position-projection bias; forward uses it in place of `bq` / `bk`.
+///
+/// The Rust `wq_pos` / `wk_pos` weight fields are always populated
+/// (either by verbatim upstream tensors under `share_att_key=False` or
+/// by the converter duplicating `wq` / `wk` under `share_att_key=True`),
+/// so *weight* symmetry is enforced at load time; the *bias* is the one
+/// piece the loader honestly cannot always fill.
 pub struct AttnWeights {
     pub wq: Vec<f32>, // [d_model, d_model]
     pub wk: Vec<f32>,
@@ -80,6 +107,14 @@ pub struct AttnWeights {
     pub bk: Vec<f32>,
     pub bv: Vec<f32>,
     pub bout: Vec<f32>,
+    /// Optional distinct bias for the position-aware Q projection. See
+    /// the struct-level "Position-aware biases" section for the
+    /// two-config-style contract.
+    pub bq_pos: Option<Vec<f32>>,
+    /// Optional distinct bias for the position-aware K projection. See
+    /// the struct-level "Position-aware biases" section for the
+    /// two-config-style contract.
+    pub bk_pos: Option<Vec<f32>>,
 }
 
 /// DeBERTa v2 disentangled attention (arXiv:2006.03654 §3.2).
@@ -131,17 +166,23 @@ impl DisentangledAttention {
         let q = self.matmul_bias(hidden, &self.w.wq, &self.w.bq, seq_len);
         let k = self.matmul_bias(hidden, &self.w.wk, &self.w.bk, seq_len);
         let v = self.matmul_bias(hidden, &self.w.wv, &self.w.bv, seq_len);
-        // 2. position-aware Q_p, K_p from pos_embed (fresh per relative pos)
+        // 2. position-aware Q_p, K_p from pos_embed (fresh per relative pos).
+        // `bq_pos` / `bk_pos` carry the distinct position-projection bias
+        // when upstream is share_att_key=False; fall back to `bq` / `bk`
+        // for share_att_key=True (or pre-WP-15 GGUFs that never stamped a
+        // separate tensor) — see [`AttnWeights`] "Position-aware biases".
+        let bq_pos = self.w.bq_pos.as_deref().unwrap_or(self.w.bq.as_slice());
+        let bk_pos = self.w.bk_pos.as_deref().unwrap_or(self.w.bk.as_slice());
         let q_p = self.matmul_bias(
             &self.w.pos_embed,
             &self.w.wq_pos,
-            &self.w.bq,
+            bq_pos,
             self.n_pos_buckets as usize,
         );
         let k_p = self.matmul_bias(
             &self.w.pos_embed,
             &self.w.wk_pos,
-            &self.w.bk,
+            bk_pos,
             self.n_pos_buckets as usize,
         );
 
@@ -389,6 +430,17 @@ impl DebertaV2Encoder {
         self.d_model
     }
 
+    /// Test-only probe (`#[doc(hidden)]`, WP-15): reports whether layer
+    /// `i` loaded a distinct `bq_pos` / `bk_pos` bias tensor for the
+    /// disentangled position-aware Q/K projections. Panics on
+    /// out-of-range `i`. Used by `from_gguf` loader tests to prove the
+    /// optional bias load path fires when the tensor is present.
+    #[doc(hidden)]
+    pub fn probe_layer_has_pos_biases(&self, i: usize) -> (bool, bool) {
+        let attn = &self.layers[i].attn;
+        (attn.w.bq_pos.is_some(), attn.w.bk_pos.is_some())
+    }
+
     /// Builds a `DebertaV2Encoder` with deterministic synthetic weights, for
     /// structure/shape tests only (no real checkpoint involved).
     #[doc(hidden)]
@@ -413,6 +465,8 @@ impl DebertaV2Encoder {
                 bk: vec![0.0; d_model],
                 bv: vec![0.0; d_model],
                 bout: vec![0.0; d_model],
+                bq_pos: None,
+                bk_pos: None,
             };
             EncoderLayer {
                 attn: DisentangledAttention::new(w, d_model, n_heads, head_dim, n_pos_buckets, 512),
@@ -453,17 +507,14 @@ impl DebertaV2Encoder {
     /// - `bert.embed.weight`, `bert.embed.ln.{gamma,beta}`
     /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,wq_pos,wk_pos,w_out,pos_embed}.weight`
     /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,w_out}.bias`
+    /// - `bert.encoder.layer.<i>.attn.{wq_pos,wk_pos}.bias` — **optional**
+    ///   (WP-15). Loaded into [`AttnWeights::bq_pos`] / [`AttnWeights::bk_pos`]
+    ///   when present; when absent, forward falls back to the content
+    ///   biases `bq` / `bk` (backward-compat with pre-WP-15 GGUFs and
+    ///   upstream `share_att_key=True` configs — see the [`AttnWeights`]
+    ///   struct-level "Position-aware biases" section).
     /// - `bert.encoder.layer.<i>.ffn.{w1,w2}.{weight,bias}`
     /// - `bert.encoder.layer.<i>.ln{1,2}.{gamma,beta}`
-    ///
-    /// # Known limitation
-    ///
-    /// [`AttnWeights`] has no dedicated `bq_pos`/`bk_pos` fields, so the
-    /// position-aware Q/K projections (`wq_pos`/`wk_pos`) are applied with
-    /// the *content* biases (`bq`/`bk`) in [`DisentangledAttention::forward`].
-    /// No `wq_pos.bias`/`wk_pos.bias` tensors are read here — this mirrors
-    /// that existing struct shape and is a pre-existing approximation, not
-    /// something this loader introduces.
     pub fn from_gguf(g: &GgufFile) -> Result<Self, VokraError> {
         let meta_u32 =
             |key: &str| -> Option<u32> { g.get(key).and_then(|v| v.as_u64()).map(|u| u as u32) };
@@ -490,6 +541,18 @@ impl DebertaV2Encoder {
             g.tensor_f32(name)
                 .map_err(|e| VokraError::ModelLoad(format!("{name}: {e}")))
         };
+        // WP-15: `wq_pos.bias` / `wk_pos.bias` are optional (see
+        // `AttnWeights` "Position-aware biases"). `tensor_info` probes
+        // presence without incurring a Read error; only tensors that
+        // actually exist are load-attempted, and any dtype / shape error
+        // during the actual load still surfaces loudly (FR-EX-08).
+        let load_optional_tensor_f32 = |name: &str| -> Result<Option<Vec<f32>>, VokraError> {
+            if g.tensor_info(name).is_some() {
+                Ok(Some(load_tensor_f32(name)?))
+            } else {
+                Ok(None)
+            }
+        };
 
         let embed = load_tensor_f32("bert.embed.weight")?;
         let embed_ln = LayerNorm::new(
@@ -513,6 +576,8 @@ impl DebertaV2Encoder {
                 bk: load_tensor_f32(&format!("{p}.attn.wk.bias"))?,
                 bv: load_tensor_f32(&format!("{p}.attn.wv.bias"))?,
                 bout: load_tensor_f32(&format!("{p}.attn.w_out.bias"))?,
+                bq_pos: load_optional_tensor_f32(&format!("{p}.attn.wq_pos.bias"))?,
+                bk_pos: load_optional_tensor_f32(&format!("{p}.attn.wk_pos.bias"))?,
             };
             let ffn = FfnBlock::new(
                 load_tensor_f32(&format!("{p}.ffn.w1.weight"))?,
