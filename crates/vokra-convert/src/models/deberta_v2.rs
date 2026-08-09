@@ -282,6 +282,54 @@ pub fn convert_deberta_v2_file(
         .iter()
         .find(|t| t.name == "deberta.encoder.rel_embeddings.weight")
         .map(|t| (t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec()));
+    // Companion to rel_embeddings: HF `DebertaV2Encoder.get_rel_embedding`
+    // (transformers `deberta_v2`, Apache-2.0) applies a per-encoder
+    // LayerNorm to `rel_embeddings.weight` ONCE per forward and feeds the
+    // result into every layer's disentangled C2P + P2C attention terms
+    // when the config's `norm_rel_ebd` string contains `"layer_norm"`.
+    // The ku-nlp/deberta-v2-large-japanese-char-wwm checkpoint sets this
+    // (`"norm_rel_ebd": "layer_norm"`, `"layer_norm_eps": 1e-07`, verified
+    // 2026-08-10 via live fetch of
+    // `huggingface.co/ku-nlp/deberta-v2-large-japanese-char-wwm/resolve/main/config.json`).
+    // Capture the LN gamma/beta bytes+dtype up front so we can pre-normalize
+    // `rel_embeddings` before per-layer duplication. If exactly one of the
+    // (gamma, beta) pair is present the checkpoint is malformed by HF's own
+    // contract — refuse loudly (FR-EX-08) rather than silently applying an
+    // LN with a synthesized default for the missing half.
+    let rel_ln_gamma: Option<(GgmlType, usize, Vec<u8>)> = st
+        .tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.LayerNorm.weight")
+        .map(|t| {
+            (
+                t.dtype,
+                t.element_count() as usize,
+                st.tensor_bytes(t).to_vec(),
+            )
+        });
+    let rel_ln_beta: Option<(GgmlType, usize, Vec<u8>)> = st
+        .tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.LayerNorm.bias")
+        .map(|t| {
+            (
+                t.dtype,
+                t.element_count() as usize,
+                st.tensor_bytes(t).to_vec(),
+            )
+        });
+    if rel_ln_gamma.is_some() != rel_ln_beta.is_some() {
+        let missing = if rel_ln_gamma.is_none() {
+            "weight (gamma)"
+        } else {
+            "bias (beta)"
+        };
+        return Err(ConvertError::Parse(format!(
+            "deberta.encoder.LayerNorm: partial pair — missing {missing} but the other \
+             half is present. LN cannot pre-normalize rel_embeddings without both halves; \
+             refusing rather than synthesizing a default (FR-EX-08)"
+        )));
+    }
 
     for t in st.tensors() {
         report.read += 1;
@@ -334,13 +382,56 @@ pub fn convert_deberta_v2_file(
     }
     // Duplicate the shared rel_embeddings into every layer's pos_embed.weight.
     // n_layers is derived from the checkpoint's own tensor shapes above.
+    //
+    // When the checkpoint carries encoder-level LayerNorm tensors
+    // (`deberta.encoder.LayerNorm.{weight,bias}`, captured above into
+    // `rel_ln_gamma`/`rel_ln_beta`), pre-normalize rel_embeddings with LN
+    // BEFORE duplicating. This is semantically identical to what HF's
+    // `DebertaV2Encoder.get_rel_embedding` computes at forward time when
+    // `norm_rel_ebd` contains `"layer_norm"` — dropping the LN here
+    // (pre-2026-08-10 behavior) fed raw rel_embeddings into every layer's
+    // disentangled attention, causing a per-layer scale mismatch that
+    // accumulated to bert_hidden_ja Δ ~11.72 on ku-nlp/deberta-v2-large
+    // (CI run 31321544187). Emitted dtype widens to F32 in the LN'd path
+    // because LN mixes gamma/beta multiplications and inv-sqrt into the
+    // bytes, and F32 preserves that arithmetic exactly (BF16 round-trip
+    // would lose LN precision); no LN → dtype passes through verbatim.
     if let Some((dtype, shape, bytes)) = rel_embeddings {
+        let (out_dtype, out_bytes) = match (&rel_ln_gamma, &rel_ln_beta) {
+            (Some((g_dt, g_n, g_bytes)), Some((b_dt, b_n, b_bytes))) => {
+                let n_elts = shape.iter().product::<u64>() as usize;
+                let d = *shape.last().ok_or_else(|| {
+                    ConvertError::Parse(
+                        "deberta.encoder.rel_embeddings.weight: empty shape — cannot \
+                         derive d_model for LN pre-normalization"
+                            .to_owned(),
+                    )
+                })? as usize;
+                if *g_n != d || *b_n != d {
+                    return Err(ConvertError::Parse(format!(
+                        "deberta.encoder.LayerNorm: gamma/beta element count ({} / {}) \
+                         does not match rel_embeddings d_model ({d}); LN cannot be \
+                         applied (FR-EX-08)",
+                        g_n, b_n
+                    )));
+                }
+                let rel_f32 = widen_bytes_to_f32(dtype, &bytes, n_elts)?;
+                let gamma_f32 = widen_bytes_to_f32(*g_dt, g_bytes, *g_n)?;
+                let beta_f32 = widen_bytes_to_f32(*b_dt, b_bytes, *b_n)?;
+                let normed = apply_layer_norm_rows(&rel_f32, &gamma_f32, &beta_f32, d, 1e-7);
+                (GgmlType::F32, f32_slice_to_le_bytes(&normed))
+            }
+            (None, None) => (dtype, bytes),
+            _ => unreachable!(
+                "the (Some, None) / (None, Some) case is refused above with a Parse error"
+            ),
+        };
         for i in 0..n_layers {
             let name = format!("bert.encoder.layer.{i}.attn.pos_embed.weight");
-            b.add_tensor(&name, dtype, shape.clone(), bytes.clone())?;
+            b.add_tensor(&name, out_dtype, shape.clone(), out_bytes.clone())?;
             report.written += 1;
             duplicated_count += 1;
-            if dtype == GgmlType::BF16 {
+            if out_dtype == GgmlType::BF16 {
                 report.bf16_passthrough += 1;
             }
         }
@@ -513,14 +604,30 @@ pub(crate) fn classify_skip(name: &str) -> &'static str {
     if name.starts_with("deberta.encoder.conv.") {
         return "v2-specific encoder conv — not consumed by Rust loader today";
     }
-    // Top-level encoder LayerNorm (applied after the last transformer
-    // block, before returning hidden states). The Rust loader applies its
-    // own final normalization inside `EncoderLayer.ln2` on the last layer;
-    // dropping this upstream `encoder.LayerNorm.*` matches the loader's
-    // current struct shape. Explicitly documented in `classify_skip` so a
-    // future reader can trace what happened.
+    // Encoder-level LayerNorm for `rel_embeddings` (HF
+    // `DebertaV2Encoder.get_rel_embedding` when `norm_rel_ebd` contains
+    // `"layer_norm"` — ku-nlp/deberta-v2-large-japanese-char-wwm sets
+    // this). In the v2 converter these tensors ARE consumed but
+    // out-of-band (captured by `convert_deberta_v2_file` before the
+    // tensor-loop walk and applied to `rel_embeddings` in the per-layer
+    // `pos_embed` duplication block); they intentionally have no entry
+    // in `map_deberta_name` because they don't map to a per-layer name.
+    // The v3 converter shares this `classify_skip` helper but does NOT
+    // yet apply the same pre-normalization to its shared
+    // `bert.encoder.pos_embed.weight` output — if a v3 checkpoint sets
+    // `norm_rel_ebd = "layer_norm"` the same class of parity drift the
+    // v2 fix addresses will manifest there (owner follow-up, tracked
+    // separately). The pre-2026-08-10 reason string ("top-level
+    // encoder LayerNorm — loader applies its own final norm inside
+    // ln2") was doubly wrong: (a) this is not the top-level encoder LN
+    // — it's the rel_embeddings LN — and (b) `ln2` in the loader is
+    // the per-block post-FFN norm, not a final one. See
+    // `convert_deberta_v2_file`'s `rel_ln_gamma`/`rel_ln_beta` capture
+    // block for the v2 consumer.
     if name.starts_with("deberta.encoder.LayerNorm.") {
-        return "top-level encoder LayerNorm — loader applies its own final norm inside ln2";
+        return "rel_embeddings LayerNorm — v2 converter pre-normalizes rel_embeddings \
+                into per-layer pos_embed when both weight+bias present; v3 converter \
+                does not yet consume (follow-up if norm_rel_ebd=layer_norm)";
     }
     "unmapped tensor — no rename rule matched"
 }
@@ -749,6 +856,86 @@ pub(crate) fn infer_vocab_and_d_model(st: &SafetensorsFile) -> Result<(u64, u64)
                     .to_owned(),
             )
         })
+}
+
+/// Widens a raw byte payload of `dtype ∈ {F32, F16, BF16}` into a
+/// `Vec<f32>` by delegating to [`vokra_core::gguf::quant::dequantize`] —
+/// the same single choke point the runtime uses at load time. BF16 → f32
+/// is bit-exact (`bits << 16`); F16 → f32 is safe (see
+/// [`vokra_core::gguf::quant::f16_to_f32`]); F32 → f32 is a straight
+/// little-endian decode.
+///
+/// Used by [`convert_deberta_v2_file`] to widen `rel_embeddings` and its
+/// companion LayerNorm gamma/beta into f32 before the pre-normalization
+/// pass so the emitted per-layer `pos_embed.weight` bytes carry the LN'd
+/// values regardless of the upstream checkpoint's storage precision.
+///
+/// Also used by [`crate::models::deberta_v3::convert_deberta_v3_file`]
+/// (through the shared `deberta_v2` re-export chain) for the identical
+/// pre-normalization pass.
+pub(crate) fn widen_bytes_to_f32(
+    dtype: GgmlType,
+    bytes: &[u8],
+    n_elements: usize,
+) -> Result<Vec<f32>, ConvertError> {
+    vokra_core::gguf::quant::dequantize(dtype, bytes, n_elements)
+        .map_err(|e| ConvertError::Parse(format!("widen bytes to f32: {e}")))
+}
+
+/// Packs a `&[f32]` into little-endian F32 bytes for GGUF emission.
+/// Inverse of the F32 arm of [`vokra_core::gguf::quant::dequantize`].
+pub(crate) fn f32_slice_to_le_bytes(vals: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vals.len() * 4);
+    for v in vals {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// Applies row-wise LayerNorm — `y[i, j] = (x[i, j] - mean_i) /
+/// sqrt(var_i + eps) * gamma[j] + beta[j]` — to a flat `[n_rows, d]`
+/// tensor. Semantics mirror `crates/vokra-bert/src/deberta_v2.rs`
+/// `LayerNorm::forward` verbatim (same accumulator order, same `f32`
+/// precision), so an LN'd `rel_embeddings` emitted by the converter
+/// is bit-identical to what the runtime would compute if it applied
+/// LN on-the-fly.
+///
+/// # Reference
+///
+/// - HF `transformers/src/transformers/models/deberta_v2/modeling_deberta_v2.py`
+///   `DebertaV2Encoder.get_rel_embedding` (Apache-2.0) — this function
+///   is the offline mirror of the ONE-per-forward LN call that feeds
+///   every attention layer's disentangled C2P + P2C terms.
+/// - ku-nlp/deberta-v2-large-japanese-char-wwm `config.json`:
+///   `"norm_rel_ebd": "layer_norm"`, `"layer_norm_eps": 1e-07`
+///   (verified 2026-08-10 via live fetch of
+///   `huggingface.co/ku-nlp/deberta-v2-large-japanese-char-wwm/resolve/main/config.json`).
+pub(crate) fn apply_layer_norm_rows(
+    rel: &[f32],
+    gamma: &[f32],
+    beta: &[f32],
+    d: usize,
+    eps: f32,
+) -> Vec<f32> {
+    debug_assert!(
+        d != 0 && rel.len() % d == 0,
+        "rel length {} must be a positive multiple of d = {d}",
+        rel.len()
+    );
+    debug_assert_eq!(gamma.len(), d);
+    debug_assert_eq!(beta.len(), d);
+    let n_rows = rel.len() / d;
+    let mut y = vec![0.0_f32; rel.len()];
+    for i in 0..n_rows {
+        let row = &rel[i * d..(i + 1) * d];
+        let mean: f32 = row.iter().sum::<f32>() / d as f32;
+        let var: f32 = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / d as f32;
+        let inv = 1.0 / (var + eps).sqrt();
+        for j in 0..d {
+            y[i * d + j] = (row[j] - mean) * inv * gamma[j] + beta[j];
+        }
+    }
+    y
 }
 
 #[cfg(test)]
@@ -1302,6 +1489,303 @@ mod tests {
         let err = convert_deberta_v2_file(&input, &output, None, Some(vocab_txt))
             .expect_err("non-UTF-8 tokenizer bytes must be refused");
         assert!(matches!(err, ConvertError::Parse(_)));
+        std::fs::remove_file(&input).ok();
+    }
+
+    // ----------------------------------------------------------------
+    // rel_embeddings LayerNorm pre-normalization (2026-08-10 fix).
+    //
+    // Root-cause report (post-Wave-1 CI run 31321544187, bert_hidden_ja Δ
+    // 11.72): HF `DebertaV2Encoder.get_rel_embedding` applies a per-encoder
+    // LayerNorm to `rel_embeddings.weight` when the config's
+    // `norm_rel_ebd` contains `"layer_norm"` — which is exactly what the
+    // ku-nlp/deberta-v2-large-japanese-char-wwm real config sets. The
+    // pre-fix converter dropped the LN tensors as "not consumed", so the
+    // per-layer `pos_embed.weight` bytes were the RAW `rel_embeddings`
+    // instead of `LN(rel_embeddings, γ, β)`. This scale mismatch
+    // propagates through every one of the 24 attention layers'
+    // disentangled C2P + P2C softmax terms and is the dominant driver
+    // (~9-11 of the 11.72) of the residual bert_hidden_ja Δ.
+    //
+    // Fix approach: converter-side pre-normalization (see report §5). The
+    // runtime side needs no schema change — the per-layer pos_embed
+    // tensor bytes simply carry the LN'd values transparently.
+    // ----------------------------------------------------------------
+
+    /// Reference LN mirror of `crates/vokra-bert/src/deberta_v2.rs`
+    /// [`LayerNorm::forward`] for the test — kept out of `super::` to
+    /// prove the converter's own arithmetic without importing the runtime
+    /// crate. Standard `y = (x - mean) / sqrt(var + eps) * gamma + beta`
+    /// per-row with `eps = 1e-7`, matching the ku-nlp config's
+    /// `layer_norm_eps` (verified 2026-08-10 via live fetch of
+    /// `huggingface.co/ku-nlp/deberta-v2-large-japanese-char-wwm/
+    /// resolve/main/config.json`).
+    fn reference_layer_norm_rows(
+        rel: &[f32],
+        gamma: &[f32],
+        beta: &[f32],
+        d_model: usize,
+        eps: f32,
+    ) -> Vec<f32> {
+        assert_eq!(rel.len() % d_model, 0);
+        assert_eq!(gamma.len(), d_model);
+        assert_eq!(beta.len(), d_model);
+        let n_rows = rel.len() / d_model;
+        let mut y = vec![0.0_f32; rel.len()];
+        for i in 0..n_rows {
+            let row = &rel[i * d_model..(i + 1) * d_model];
+            let mean: f32 = row.iter().sum::<f32>() / d_model as f32;
+            let var: f32 = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / d_model as f32;
+            let inv = 1.0 / (var + eps).sqrt();
+            for j in 0..d_model {
+                y[i * d_model + j] = (row[j] - mean) * inv * gamma[j] + beta[j];
+            }
+        }
+        y
+    }
+
+    /// Fixture with rel_embeddings + LN gamma/beta. Uses
+    /// **non-uniform** rel_embeddings values (row-varying) so LN
+    /// pre-normalization visibly changes the per-row bytes (a uniform
+    /// row LN's to all zeros — trivially "different" but not a useful
+    /// regression pin).
+    fn ln_rel_fixture(
+        n_pos_buckets: usize,
+        d_model: usize,
+        gamma_val: f32,
+        beta_val: f32,
+        with_ln: bool,
+    ) -> Vec<u8> {
+        // Row-varying rel_embeddings: value = (row_idx + 1) * 0.1 + (col_idx + 1) * 0.01.
+        // Each row has a distinct mean and variance, so LN produces a
+        // distinctive per-row transformation (proven pin, not a trivial
+        // all-zeros collapse).
+        let rel_vals: Vec<f32> = (0..n_pos_buckets)
+            .flat_map(|i| {
+                (0..d_model).map(move |j| (i as f32 + 1.0) * 0.1 + (j as f32 + 1.0) * 0.01)
+            })
+            .collect();
+        let mut entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![
+            (
+                "deberta.embeddings.word_embeddings.weight",
+                "F32",
+                Box::leak(vec![6u64, d_model as u64].into_boxed_slice()),
+                f32_bytes(&vec![0.01_f32; 6 * d_model]),
+            ),
+            (
+                "deberta.encoder.layer.0.attention.self.query_proj.weight",
+                "F32",
+                Box::leak(vec![d_model as u64, d_model as u64].into_boxed_slice()),
+                f32_bytes(&vec![0.02_f32; d_model * d_model]),
+            ),
+            (
+                "deberta.encoder.rel_embeddings.weight",
+                "F32",
+                Box::leak(vec![n_pos_buckets as u64, d_model as u64].into_boxed_slice()),
+                f32_bytes(&rel_vals),
+            ),
+        ];
+        if with_ln {
+            entries.push((
+                "deberta.encoder.LayerNorm.weight",
+                "F32",
+                Box::leak(vec![d_model as u64].into_boxed_slice()),
+                f32_bytes(&vec![gamma_val; d_model]),
+            ));
+            entries.push((
+                "deberta.encoder.LayerNorm.bias",
+                "F32",
+                Box::leak(vec![d_model as u64].into_boxed_slice()),
+                f32_bytes(&vec![beta_val; d_model]),
+            ));
+        }
+        safetensors_multi(&entries)
+    }
+
+    /// **RED before 2026-08-10 fix**: when the checkpoint carries
+    /// `deberta.encoder.LayerNorm.{weight,bias}` alongside
+    /// `deberta.encoder.rel_embeddings.weight`, the per-layer
+    /// `bert.encoder.layer.<i>.attn.pos_embed.weight` bytes must equal
+    /// `LN(rel_embeddings, γ, β, ε=1e-7)`, NOT the raw rel_embeddings
+    /// bytes. Pre-fix this test fails because the converter dropped the
+    /// LN tensors and duplicated the raw bytes into every layer.
+    ///
+    /// # Reference
+    ///
+    /// - `transformers/src/transformers/models/deberta_v2/modeling_deberta_v2.py`
+    ///   `DebertaV2Encoder.get_rel_embedding` (Apache-2.0, verified
+    ///   2026-08-10). Applied ONCE per forward, feeds every layer.
+    /// - `huggingface.co/ku-nlp/deberta-v2-large-japanese-char-wwm/
+    ///   resolve/main/config.json` — `"norm_rel_ebd": "layer_norm"`,
+    ///   `"layer_norm_eps": 1e-07`.
+    #[test]
+    fn rel_embeddings_ln_prenormalized_when_ln_tensors_present() {
+        let n_pos_buckets = 8;
+        let d_model = 4;
+        let gamma_val = 2.0_f32; // non-1.0 so LN visibly scales
+        let beta_val = 0.5_f32; // non-0.0 so LN visibly shifts
+        let blob = ln_rel_fixture(n_pos_buckets, d_model, gamma_val, beta_val, true);
+        let (input, output) = temp_pair("rel-ln-present");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v2_file(&input, &output, None, None)
+            .expect("convert must succeed with LN tensors present");
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        // Reconstruct the expected LN(rel_embeddings) values.
+        let rel_vals: Vec<f32> = (0..n_pos_buckets)
+            .flat_map(|i| {
+                (0..d_model).map(move |j| (i as f32 + 1.0) * 0.1 + (j as f32 + 1.0) * 0.01)
+            })
+            .collect();
+        let gamma = vec![gamma_val; d_model];
+        let beta = vec![beta_val; d_model];
+        let expected = reference_layer_norm_rows(&rel_vals, &gamma, &beta, d_model, 1e-7);
+
+        // The per-layer pos_embed must match the LN'd bytes (n_layers=1
+        // in this fixture; the highest-layer-index scan makes n_layers = 1
+        // because layer.0 is the only per-layer tensor).
+        let pos_embed = file
+            .tensor_f32("bert.encoder.layer.0.attn.pos_embed.weight")
+            .expect("per-layer pos_embed present");
+
+        assert_eq!(
+            pos_embed.len(),
+            expected.len(),
+            "pos_embed element count must match LN'd rel_embeddings"
+        );
+        // Bit-exact: the converter's LN arithmetic and this test's mirror
+        // both do f32 sum→div→sqrt→FMA in the same order, so the
+        // rounding pattern is identical. If the converter later switches
+        // to a different accumulator order this pin fails loudly and
+        // deliberately (parity contract per
+        // `docs/adr/sbv2-parity-atol.md` §5).
+        for (i, (&a, &b)) in pos_embed.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "pos_embed[{i}] = {a} (bits {:#x}), expected LN'd = {b} (bits {:#x}); \
+                 pre-fix converter emits raw rel_embeddings = {}",
+                a.to_bits(),
+                b.to_bits(),
+                rel_vals[i],
+            );
+        }
+
+        // Sanity guard: verify LN actually changed things — if
+        // pos_embed == rel_embeddings we'd have a false-negative pass
+        // (the converter is broken but the test would say "matches").
+        let mismatch_count = pos_embed
+            .iter()
+            .zip(rel_vals.iter())
+            .filter(|(a, b)| (**a - **b).abs() > 1e-6)
+            .count();
+        assert!(
+            mismatch_count > 0,
+            "sanity: LN'd bytes must differ from raw rel_embeddings for a non-uniform \
+             fixture — a match here would mean this test cannot distinguish LN'd from raw"
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// Backward compatibility: when the source checkpoint does NOT carry
+    /// `deberta.encoder.LayerNorm.*` (e.g. a hypothetical DeBERTa v2
+    /// config with `norm_rel_ebd != "layer_norm"`), the converter must
+    /// emit per-layer pos_embed = raw rel_embeddings verbatim, matching
+    /// the pre-2026-08-10 behavior for such checkpoints.
+    #[test]
+    fn rel_embeddings_raw_when_ln_tensors_absent() {
+        let n_pos_buckets = 8;
+        let d_model = 4;
+        let blob = ln_rel_fixture(n_pos_buckets, d_model, 0.0, 0.0, false);
+        let (input, output) = temp_pair("rel-ln-absent");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v2_file(&input, &output, None, None)
+            .expect("convert must succeed without LN tensors (backward compat)");
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        let rel_vals: Vec<f32> = (0..n_pos_buckets)
+            .flat_map(|i| {
+                (0..d_model).map(move |j| (i as f32 + 1.0) * 0.1 + (j as f32 + 1.0) * 0.01)
+            })
+            .collect();
+
+        let pos_embed = file
+            .tensor_f32("bert.encoder.layer.0.attn.pos_embed.weight")
+            .expect("per-layer pos_embed present");
+
+        assert_eq!(
+            pos_embed, rel_vals,
+            "no LN tensors → pos_embed must equal raw rel_embeddings verbatim"
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// FR-EX-08 loud-fail: a checkpoint that carries only ONE of the
+    /// (gamma, beta) LN pair is malformed by HF's own contract — LN
+    /// needs both. Converter refuses rather than silently applying an
+    /// LN with a synthesized default for the missing half.
+    #[test]
+    fn partial_ln_pair_is_a_loud_error() {
+        let n_pos_buckets = 8;
+        let d_model = 4;
+        // Build a fixture with rel_embeddings + gamma only (missing beta).
+        let rel_vals: Vec<f32> = (0..n_pos_buckets)
+            .flat_map(|i| {
+                (0..d_model).map(move |j| (i as f32 + 1.0) * 0.1 + (j as f32 + 1.0) * 0.01)
+            })
+            .collect();
+        let entries: Vec<(&'static str, &'static str, &'static [u64], Vec<u8>)> = vec![
+            (
+                "deberta.embeddings.word_embeddings.weight",
+                "F32",
+                Box::leak(vec![6u64, d_model as u64].into_boxed_slice()),
+                f32_bytes(&vec![0.01_f32; 6 * d_model]),
+            ),
+            (
+                "deberta.encoder.layer.0.attention.self.query_proj.weight",
+                "F32",
+                Box::leak(vec![d_model as u64, d_model as u64].into_boxed_slice()),
+                f32_bytes(&vec![0.02_f32; d_model * d_model]),
+            ),
+            (
+                "deberta.encoder.rel_embeddings.weight",
+                "F32",
+                Box::leak(vec![n_pos_buckets as u64, d_model as u64].into_boxed_slice()),
+                f32_bytes(&rel_vals),
+            ),
+            (
+                "deberta.encoder.LayerNorm.weight",
+                "F32",
+                Box::leak(vec![d_model as u64].into_boxed_slice()),
+                f32_bytes(&vec![2.0_f32; d_model]),
+            ),
+            // NOTE: no LayerNorm.bias
+        ];
+        let blob = safetensors_multi(&entries);
+        let (input, output) = temp_pair("rel-ln-partial");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        let err = convert_deberta_v2_file(&input, &output, None, None)
+            .expect_err("partial LN pair must be refused loudly");
+        assert!(matches!(err, ConvertError::Parse(_)));
+        // Reason string mentions the missing component so the user can
+        // fix their checkpoint rather than staring at a generic error.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LayerNorm") && (msg.contains("bias") || msg.contains("pair")),
+            "error message should mention LayerNorm and the missing bias half; got: {msg}"
+        );
+        assert!(!output.exists(), "no partial GGUF must be left behind");
+
         std::fs::remove_file(&input).ok();
     }
 }
