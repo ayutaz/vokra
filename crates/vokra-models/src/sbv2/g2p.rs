@@ -67,6 +67,41 @@ impl Language {
     }
 }
 
+/// Policy for out-of-vocabulary (OOV) inputs the char-level maps or the
+/// piper→SBV2 id maps do not cover (WP-14).
+///
+/// The four OOV lookup sites in this module —
+/// [`SbV2Phonemizer::phonemize_ja_via_piper`],
+/// [`SbV2Phonemizer::phonemize_ja_char_mapping`],
+/// [`SbV2Phonemizer::phonemize_en_via_piper`] and
+/// [`SbV2Phonemizer::phonemize_en_char_mapping`] — historically fell back
+/// silently to `sbv2_default_phoneme_id` (tone `0`) for any input the
+/// active mapping did not cover, producing byte-valid but wrong TTS audio
+/// with no signal to the caller. FR-EX-08 forbids that class of silent
+/// failure, so every [`SbV2Phonemizer`] construction path now defaults to
+/// [`OovPolicy::Strict`] and callers that genuinely want the pre-WP-14
+/// behavior (test fixtures, throwaway experiments) must opt in explicitly
+/// via [`SbV2Phonemizer::with_oov_policy`].
+///
+/// The [`Default`] impl is [`OovPolicy::Strict`] — a drift here would
+/// silently flip every future constructor that reads the default, so the
+/// `wp14_default_policy_is_strict` test in
+/// `crates/vokra-models/tests/sbv2_g2p.rs` pins it explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum OovPolicy {
+    /// Any OOV input aborts phonemization with
+    /// [`VokraError::InvalidArgument`] naming the offending char (or piper
+    /// phoneme id) and its position in the input sequence — the FR-EX-08
+    /// fail-closed default.
+    #[default]
+    Strict,
+    /// Any OOV input is silently replaced by `sbv2_default_phoneme_id`
+    /// (tone `0` on the JA paths). Matches the pre-WP-14 behavior. Opt in
+    /// explicitly with [`SbV2Phonemizer::with_oov_policy`]; never the
+    /// default, per FR-EX-08.
+    Lenient,
+}
+
 /// The G2P output for one input string: phoneme ids in SBV2 vocabulary
 /// space, per-phoneme pitch-accent tones, per-phoneme word-boundary flags,
 /// and the original text (fed separately to the BERT bridge).
@@ -252,6 +287,12 @@ pub struct SbV2Phonemizer {
     // (Task 14) when Task 15 added the id-keyed real-G2P mapping above.
     ja_char_mapping: HashMap<char, (u16, u8)>,
     en_char_mapping: HashMap<char, u16>,
+    // WP-14: how the four OOV lookup sites behave when the active mapping
+    // does not cover an input. Every constructor initialises this to
+    // [`OovPolicy::Strict`] (FR-EX-08 fail-closed default); the legacy
+    // silent-fallback path is only reachable via
+    // [`SbV2Phonemizer::with_oov_policy`].
+    oov_policy: OovPolicy,
 }
 
 impl SbV2Phonemizer {
@@ -278,6 +319,7 @@ impl SbV2Phonemizer {
             sbv2_default_phoneme_id: 0,
             ja_char_mapping: ja,
             en_char_mapping: en,
+            oov_policy: OovPolicy::Strict, // WP-14 FR-EX-08 default
         }
     }
 
@@ -309,6 +351,7 @@ impl SbV2Phonemizer {
             sbv2_default_phoneme_id: 0,
             ja_char_mapping: HashMap::new(),
             en_char_mapping: HashMap::new(),
+            oov_policy: OovPolicy::Strict, // WP-14 FR-EX-08 default
         }
     }
 
@@ -341,7 +384,36 @@ impl SbV2Phonemizer {
             sbv2_default_phoneme_id: 0,
             ja_char_mapping: HashMap::new(),
             en_char_mapping: HashMap::new(),
+            // The fixture path itself is already fail-closed on a miss
+            // ([`PhonemizeFixture::lookup`]'s own loud
+            // [`VokraError::InvalidArgument`]), so `oov_policy` is only
+            // consulted if a caller also does `.with_oov_policy(Lenient)`
+            // AND swaps the phonemizer out of fixture mode — an
+            // unreachable combination on this construction path. Kept
+            // Strict here to preserve the "every path defaults Strict"
+            // FR-EX-08 invariant.
+            oov_policy: OovPolicy::Strict,
         }
+    }
+
+    /// Overrides this phonemizer's [`OovPolicy`] (WP-14). Consumes and
+    /// returns `self` so it composes with the three
+    /// `synthetic_for_test`/`from_piper_g2p`/`from_fixture` construction
+    /// paths without extra plumbing:
+    ///
+    /// ```no_run
+    /// # use vokra_models::sbv2::{OovPolicy, SbV2Phonemizer};
+    /// let lenient = SbV2Phonemizer::synthetic_for_test()
+    ///     .with_oov_policy(OovPolicy::Lenient);
+    /// ```
+    ///
+    /// The default is [`OovPolicy::Strict`] (FR-EX-08 fail-closed — see
+    /// [`OovPolicy`]'s own doc for why); the only reason to call this with
+    /// [`OovPolicy::Lenient`] is a test fixture or throwaway experiment
+    /// that has already accepted the silent-fallback risk.
+    pub fn with_oov_policy(mut self, policy: OovPolicy) -> Self {
+        self.oov_policy = policy;
+        self
     }
 
     /// Phonemize `text` under the given `language`, producing SBV2 phoneme
@@ -365,9 +437,17 @@ impl SbV2Phonemizer {
     /// [`VokraError::InvalidArgument`] for any `(language, text)` pair the
     /// fixture does not contain. When wired via
     /// [`from_piper_g2p`](Self::from_piper_g2p), propagates any error the
-    /// injected piper-plus [`Phonemizer`] returns. The synthetic
-    /// char-mapping path ([`synthetic_for_test`](Self::synthetic_for_test))
-    /// never fails.
+    /// injected piper-plus [`Phonemizer`] returns.
+    ///
+    /// Under the default [`OovPolicy::Strict`] (WP-14, FR-EX-08 fail-closed
+    /// — see [`OovPolicy`]'s own doc), any OOV input the active char /
+    /// piper→SBV2 mapping does not cover is also
+    /// [`VokraError::InvalidArgument`] naming the offending char (or piper
+    /// phoneme id) and its position; under
+    /// [`OovPolicy::Lenient`](OovPolicy::Lenient) (opt-in via
+    /// [`with_oov_policy`](Self::with_oov_policy)) the same OOV input is
+    /// silently replaced by `sbv2_default_phoneme_id` (tone `0`) and this
+    /// path never fails.
     pub fn phonemize(&self, text: &str, language: Language) -> Result<PhonemizeResult> {
         if let Some(fixture) = &self.fixtures {
             return fixture.lookup(language, text);
@@ -403,11 +483,15 @@ impl SbV2Phonemizer {
         let mut tones = Vec::with_capacity(piper_ids.len());
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
-            let (id, tone) = self
-                .ja_mapping
-                .get(piper_id)
-                .copied()
-                .unwrap_or((self.sbv2_default_phoneme_id, 0));
+            let (id, tone) = match self.ja_mapping.get(piper_id).copied() {
+                Some(pair) => pair,
+                None => match self.oov_policy {
+                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, 0),
+                    OovPolicy::Strict => {
+                        return Err(oov_error_piper(Language::JA, *piper_id, i, "ja_mapping"));
+                    }
+                },
+            };
             ids.push(id);
             tones.push(tone);
             // The piper-plus id sequence carries only BOS/PAD/EOS framing
@@ -446,12 +530,16 @@ impl SbV2Phonemizer {
         let mut ids = Vec::new();
         let mut tones = Vec::new();
         let mut wb = Vec::new();
-        for c in text.chars() {
-            let (id, tone) = self
-                .ja_char_mapping
-                .get(&c)
-                .copied()
-                .unwrap_or((self.sbv2_default_phoneme_id, 0));
+        for (i, c) in text.chars().enumerate() {
+            let (id, tone) = match self.ja_char_mapping.get(&c).copied() {
+                Some(pair) => pair,
+                None => match self.oov_policy {
+                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, 0),
+                    OovPolicy::Strict => {
+                        return Err(oov_error_char(Language::JA, c, i, "ja_char_mapping"));
+                    }
+                },
+            };
             ids.push(id);
             tones.push(tone);
             wb.push(false);
@@ -483,11 +571,15 @@ impl SbV2Phonemizer {
         let mut ids = Vec::with_capacity(piper_ids.len());
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
-            let id = self
-                .en_mapping
-                .get(piper_id)
-                .copied()
-                .unwrap_or(self.sbv2_default_phoneme_id);
+            let id = match self.en_mapping.get(piper_id).copied() {
+                Some(id) => id,
+                None => match self.oov_policy {
+                    OovPolicy::Lenient => self.sbv2_default_phoneme_id,
+                    OovPolicy::Strict => {
+                        return Err(oov_error_piper(Language::EN, *piper_id, i, "en_mapping"));
+                    }
+                },
+            };
             ids.push(id);
             // COSMETIC-BUNDLE (2026-08-09): the pre-fix
             // `TODO(Task 17-19): tighten word-boundary detection` is moot
@@ -524,16 +616,22 @@ impl SbV2Phonemizer {
         // (see `en_phonemize_multiword_word_boundaries_aligned` regression
         // test).
         let mut next_is_word_start = true;
-        for c in text.to_ascii_lowercase().chars() {
+        // Position reports the input-char index (including spaces) so the
+        // caller can locate the offending char in their original text.
+        for (i, c) in text.to_ascii_lowercase().chars().enumerate() {
             if c == ' ' {
                 next_is_word_start = true;
                 continue;
             }
-            let id = self
-                .en_char_mapping
-                .get(&c)
-                .copied()
-                .unwrap_or(self.sbv2_default_phoneme_id);
+            let id = match self.en_char_mapping.get(&c).copied() {
+                Some(id) => id,
+                None => match self.oov_policy {
+                    OovPolicy::Lenient => self.sbv2_default_phoneme_id,
+                    OovPolicy::Strict => {
+                        return Err(oov_error_char(Language::EN, c, i, "en_char_mapping"));
+                    }
+                },
+            };
             ids.push(id);
             wb.push(next_is_word_start);
             next_is_word_start = false;
@@ -546,4 +644,37 @@ impl SbV2Phonemizer {
             bert_input_text: text.to_string(),
         })
     }
+}
+
+// WP-14 OOV error constructors, factored out so all four Strict-arm sites
+// (`phonemize_{ja,en}_via_piper` + `phonemize_{ja,en}_char_mapping`) share
+// the same message shape — a caller that greps error text for one form
+// will find every path. Both messages carry the concrete offending value
+// (char or piper phoneme id) AND its 0-based position AND the mapping
+// name AND the WP-14 opt-out affordance, so no field the WP-14 tests
+// (`crates/vokra-models/tests/sbv2_g2p.rs` `wp14_*`) assert on drifts
+// silently between paths.
+
+fn oov_error_char(language: Language, c: char, position: usize, mapping_name: &str) -> VokraError {
+    VokraError::InvalidArgument(format!(
+        "SbV2Phonemizer::phonemize ({language:?} char path): char {c:?} \
+         (U+{codepoint:04X}) at position {position} is absent from {mapping_name} — \
+         OovPolicy::Strict rejects this per FR-EX-08. Add a mapping entry, or opt into \
+         legacy silent fallback via SbV2Phonemizer::with_oov_policy(OovPolicy::Lenient).",
+        codepoint = c as u32,
+    ))
+}
+
+fn oov_error_piper(
+    language: Language,
+    piper_id: i64,
+    position: usize,
+    mapping_name: &str,
+) -> VokraError {
+    VokraError::InvalidArgument(format!(
+        "SbV2Phonemizer::phonemize ({language:?} piper path): piper phoneme id {piper_id} at \
+         position {position} is absent from {mapping_name} (SBV2 id) — OovPolicy::Strict \
+         rejects this per FR-EX-08. Add a mapping entry, or opt into legacy silent fallback \
+         via SbV2Phonemizer::with_oov_policy(OovPolicy::Lenient)."
+    ))
 }

@@ -38,7 +38,7 @@
 //! output shape.
 
 use vokra_core::VokraError;
-use vokra_models::sbv2::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
+use vokra_models::sbv2::{Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 
 #[test]
 fn ja_phonemize_produces_ids() {
@@ -123,10 +123,12 @@ fn en_phonemize_multiword_word_boundaries_aligned() {
 /// id-sequence form (`crates/vokra-piper-plus/src/phonemizer.rs`), parsed to
 /// `[3, 4]` and framed by the table to `[BOS=1, 3, PAD=0, 4, PAD=0, EOS=2]`
 /// (6 ids). With an *empty* `en_mapping`, every one of those 6 piper ids
-/// falls back to `sbv2_default_phoneme_id` (0) — the documented mapping
-/// fallback, not a silent no-op (FR-EX-08); the empty map is this test's
-/// deliberate input, matching the brief's "空 mapping = 全 phoneme が
-/// default id にfallback" note.
+/// would fall back to `sbv2_default_phoneme_id` (0) — the WP-14 OovPolicy
+/// setter is explicitly flipped to [`OovPolicy::Lenient`] here so the
+/// routing assertion below (6 default ids came back) survives WP-14's new
+/// strict-by-default behavior. The `wp14_strict_default_oov_piper_id_ja_returns_loud_error`
+/// test below covers the reverse case (Strict + empty mapping is a loud
+/// error).
 #[test]
 fn wired_with_passthrough_phonemizer() {
     use vokra_piper_plus::{PassthroughPhonemizer, PhonemeTable};
@@ -150,9 +152,13 @@ fn wired_with_passthrough_phonemizer() {
     let p = SbV2Phonemizer::from_piper_g2p(
         ja,
         en,
-        std::collections::HashMap::new(), // ja mapping (empty = all default)
-        std::collections::HashMap::new(), // en mapping (empty = all default)
-    );
+        std::collections::HashMap::new(), // ja mapping (empty = all default under Lenient)
+        std::collections::HashMap::new(), // en mapping (empty = all default under Lenient)
+    )
+    // WP-14: opt in to the pre-WP-14 silent-fallback behavior so this
+    // routing test can assert the "6 default ids came back" post-condition.
+    // The strict-default gate is covered separately below.
+    .with_oov_policy(OovPolicy::Lenient);
 
     let r = p.phonemize("3 4", Language::EN).expect("ok");
 
@@ -333,4 +339,183 @@ fn fixture_insert_overwrites_and_returns_prior_value() {
         got.phoneme_ids, second.phoneme_ids,
         "phonemize must reflect the latest inserted value"
     );
+}
+
+// ---------------------------------------------------------------------------
+// WP-14: OovPolicy — strict-by-default OOV loud-fail (FR-EX-08)
+// ---------------------------------------------------------------------------
+//
+// Before WP-14 the 4 OOV lookup sites in `g2p.rs`
+// (`phonemize_{ja,en}_via_piper` + `phonemize_{ja,en}_char_mapping`) fell back
+// silently to `sbv2_default_phoneme_id` (tone `0`) — a byte-valid but
+// wrong-audio replacement that FR-EX-08 forbids. WP-14 threads
+// [`OovPolicy`] through the phonemizer and defaults every construction path
+// to [`OovPolicy::Strict`], so an unmapped input aborts with
+// [`VokraError::InvalidArgument`] naming the offending char (or piper id)
+// and its position — the legacy silent fallback is available only under an
+// explicit opt-in via [`SbV2Phonemizer::with_oov_policy`].
+
+/// WP-14 (RED→GREEN): `synthetic_for_test` defaults to
+/// [`OovPolicy::Strict`], so a JA char absent from its hiragana map is a
+/// loud [`VokraError::InvalidArgument`] naming the offending char and its
+/// position — not a silent `Ok` with the default id.
+#[test]
+fn wp14_strict_default_oov_char_ja_returns_loud_error() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    // Kanji '漢' is not in synthetic_for_test's hiragana JA map — the pre-WP-14
+    // path would silently return the default id.
+    match p.phonemize("あ漢い", Language::JA) {
+        Ok(res) => {
+            panic!("OOV JA char must fail loudly under OovPolicy::Strict (FR-EX-08), got {res:?}")
+        }
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains('漢'),
+                "error must name the offending char, got: {msg}"
+            );
+            assert!(
+                msg.contains("position"),
+                "error must name the offending position for actionability, got: {msg}"
+            );
+            // The error must point at index 1 (the kanji sits between 'あ' and 'い').
+            assert!(
+                msg.contains(" 1"),
+                "error must include position 1 (kanji sits between あ and い), got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// WP-14: same as the JA test above but for the EN char-mapping path
+/// (`phonemize_en_char_mapping`) — proves the Strict-default gate is wired
+/// on both language paths, not just JA.
+#[test]
+fn wp14_strict_default_oov_char_en_returns_loud_error() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    // '@' is not in synthetic_for_test's "abcdefghijklmnopqrstuvwxyz " map.
+    match p.phonemize("h@llo", Language::EN) {
+        Ok(res) => {
+            panic!("OOV EN char must fail loudly under OovPolicy::Strict (FR-EX-08), got {res:?}")
+        }
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains('@'),
+                "error must name the offending char, got: {msg}"
+            );
+            assert!(
+                msg.contains("position"),
+                "error must name the offending position, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// WP-14: the piper-plus real-G2P path (`phonemize_ja_via_piper`) is also
+/// Strict by default — an unmapped piper id is a loud error naming the
+/// piper id (not the source char, which the piper→SBV2 boundary does not
+/// carry) and the frame position.
+#[test]
+fn wp14_strict_default_oov_piper_id_ja_returns_loud_error() {
+    use vokra_piper_plus::{PassthroughPhonemizer, PhonemeTable};
+
+    let symbols = vec![
+        "_".to_owned(),
+        "^".to_owned(),
+        "$".to_owned(),
+        "a".to_owned(),
+        "i".to_owned(),
+    ];
+    let table = PhonemeTable::from_symbols(&symbols).expect("valid table");
+    let ja = Box::new(PassthroughPhonemizer::new(table.clone()));
+    let en = Box::new(PassthroughPhonemizer::new(table));
+    let p = SbV2Phonemizer::from_piper_g2p(
+        ja,
+        en,
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+    );
+    match p.phonemize("3 4", Language::JA) {
+        Ok(res) => panic!(
+            "empty ja_mapping must NOT silently fall back under OovPolicy::Strict; got {res:?}"
+        ),
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("piper"),
+                "error must name the piper-plus boundary for actionability, got: {msg}"
+            );
+            assert!(
+                msg.contains("position"),
+                "error must name the offending position, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// WP-14: `with_oov_policy(OovPolicy::Lenient)` explicitly reinstates the
+/// pre-WP-14 silent-fallback behavior — the char-mapping path returns
+/// `sbv2_default_phoneme_id` (tone `0`) for every OOV input, no error.
+/// This is the opt-in escape hatch fixtures and throwaway experiments need
+/// (never the default per FR-EX-08 — see [`wp14_default_policy_is_strict`]).
+#[test]
+fn wp14_lenient_opt_in_falls_back_silently() {
+    let p = SbV2Phonemizer::synthetic_for_test().with_oov_policy(OovPolicy::Lenient);
+    let r = p
+        .phonemize("漢", Language::JA)
+        .expect("lenient must not error on OOV");
+    assert_eq!(r.phoneme_ids, vec![0u16], "OOV char maps to the default id");
+    assert_eq!(r.tones, vec![0u8], "OOV char maps to tone 0");
+    assert_eq!(r.bert_input_text, "漢");
+}
+
+/// WP-14: regression guard — a full JA sentence whose every char IS in
+/// `synthetic_for_test`'s hiragana map still succeeds under Strict. Guards
+/// against the OOV gate accidentally rejecting all inputs (an obvious
+/// implementation-inversion bug).
+#[test]
+fn wp14_strict_in_vocab_ja_sentence_still_succeeds() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    // "こんにちは" is fully present in synthetic_for_test's map (its final
+    // slots literally spell "...わをんこんにちは").
+    let r = p
+        .phonemize("こんにちは", Language::JA)
+        .expect("fully in-vocab input must succeed under Strict");
+    assert_eq!(r.phoneme_ids.len(), 5);
+    assert_eq!(r.tones.len(), 5);
+    assert_eq!(r.word_boundaries.len(), 5);
+    // No id may be 0 — that would only happen via the silent fallback path
+    // (which we just proved is loud in Strict mode).
+    assert!(
+        r.phoneme_ids.iter().all(|&id| id != 0),
+        "no id may be the default fallback under a fully in-vocab input, got {:?}",
+        r.phoneme_ids
+    );
+}
+
+/// WP-14: regression guard for the EN path — same shape as the JA test
+/// above, using `synthetic_for_test`'s "abcdefghijklmnopqrstuvwxyz " map.
+#[test]
+fn wp14_strict_in_vocab_en_sentence_still_succeeds() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    let r = p
+        .phonemize("hello world", Language::EN)
+        .expect("fully in-vocab EN input must succeed under Strict");
+    // 10 non-space chars → 10 phoneme ids (space is consumed by
+    // phonemize_en_char_mapping without pushing an entry).
+    assert_eq!(r.phoneme_ids.len(), 10);
+    assert!(
+        r.phoneme_ids.iter().all(|&id| id != 0),
+        "no id may be the fallback under a fully in-vocab input, got {:?}",
+        r.phoneme_ids
+    );
+}
+
+/// WP-14: [`OovPolicy`]'s `Default` impl must be `Strict` — this is the
+/// FR-EX-08 fail-closed contract, and a drift here would silently flip
+/// every future constructor that reads the default.
+#[test]
+fn wp14_default_policy_is_strict() {
+    assert_eq!(OovPolicy::default(), OovPolicy::Strict);
 }

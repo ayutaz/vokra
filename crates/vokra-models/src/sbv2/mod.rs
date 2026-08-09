@@ -47,7 +47,7 @@ pub use rng_mode::RngMode;
 pub use decoder::SbV2Decoder;
 pub use duration::{ConvFlow, DDSConv, ElementwiseAffine, SbV2SDP, SdpLayerNorm, length_regulate};
 pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
-pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
+pub use g2p::{Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 pub use parity::{
     ATOL_DEFAULT, AtolCalibration, MEL_LOSS_ATOL, PER_TENSOR_ATOL, atol_calibration_for,
     tolerance_for,

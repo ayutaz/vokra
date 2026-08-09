@@ -73,18 +73,27 @@ fn synthesize_en_returns_non_empty_pcm() {
 /// language and `.with_language("ja")`'s explicit selection agree), speaker
 /// 0, the identity (all-zero) style vector, unit speed, and both noise
 /// scales zeroed (the adapter's `deterministic` mapping).
+///
+/// The input text `"あい"` is 2 hiragana chars both present in
+/// `SbV2Phonemizer::synthetic_for_test`'s JA char map (see `g2p.rs`).
+/// Using ASCII text with `language="ja"` (e.g. `"test"` — the pre-WP-14
+/// input) would silently map every char to the default phoneme id under
+/// the old Lenient behavior, and reject loudly under the new
+/// [`OovPolicy::Strict`] default (WP-14, FR-EX-08). Neither is what this
+/// "adapter equivalence" test wants to check — it needs a JA input the
+/// synthetic G2P actually covers.
 #[test]
 fn tts_engine_adapter_matches_direct_synthesize() {
     let model = SbV2Model::synthetic_for_test();
 
-    let request = SynthesisRequest::new("test")
+    let request = SynthesisRequest::new("あい")
         .with_language("ja")
         .deterministic();
     let via_trait =
         TtsEngine::synthesize(&model, &request).expect("trait synthesize should succeed");
 
     let direct_req = SbV2SynthRequest {
-        text: "test".to_string(),
+        text: "あい".to_string(),
         language: Language::JA,
         speaker_id: 0,
         speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
