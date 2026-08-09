@@ -543,6 +543,63 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Emit atol-summary.json artifact (WP-02, 2026-08-09)
+        # Parses the per-tensor `[parity_sbv2_real]` rows the parity test
+        # writes to `parity.log` (WP-02 refactor of
+        # `diff_intermediates_against_manifest`: rows are emitted BEFORE
+        # any assertion, so a failing tensor still shows up in the
+        # summary — an owner reviewing the artifact never has to guess
+        # whether "no line" meant "not run" or "failed silently").
+        #
+        # The resulting `atol-summary.json` is picked up by
+        # `tools/parity/sbv2_atol_updater.py` (`--summary <path>`),
+        # which PROPOSES atol table edits (`PROMOTE_TO_MEASURED` /
+        # `PROMOTE_TO_ESTIMATED` / `TIGHTEN` / `LOOSEN`) — but never
+        # auto-commits, per memory `feedback-honest-parity-atol` (Kokoro
+        # T17-fixup #5/#6 REVERT precedent). Owner reviews the printed
+        # proposal, decides what to accept, then edits BOTH the code
+        # side and `tests/fixtures/sbv2/atol-measurements.json` in ONE
+        # commit (redundant-recording rule).
+        #
+        # `if: always()`: even a failing parity run should produce a
+        # summary — that is precisely the case where the owner-review
+        # cycle needs to see per-tensor max|Δ| numbers to decide what to
+        # tighten/loosen.
+        id: atol_summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          python3 tools/parity/sbv2_atol_summary_from_log.py \
+            --log "$RUNNER_TEMP/parity.log" \
+            --output "$RUNNER_TEMP/atol-summary.json" \
+            --ci-run-id "${{ github.run_id }}" \
+            --ci-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          summary_exit=$?
+          echo "ATOL_SUMMARY_EXIT=${summary_exit}" >> "$GITHUB_ENV"
+
+          # Render human-readable proposals into step summary + also
+          # emit as text alongside the JSON artifact for the owner.
+          python3 tools/parity/sbv2_atol_updater.py \
+            --summary "$RUNNER_TEMP/atol-summary.json" \
+            --ci-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            2>&1 | tee "$RUNNER_TEMP/atol-proposal.txt"
+          {
+            echo "### atol updater proposals (WP-02)"
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/atol-proposal.txt"
+            echo '```'
+            echo ""
+            echo "**Consumed by**: \`tools/parity/sbv2_atol_updater.py\` — read the"
+            echo "\`atol-summary.json\` artifact locally with \`uv run python\`"
+            echo "\`tools/parity/sbv2_atol_updater.py --summary <path>\` to"
+            echo "re-render / adjust the margin factor. Proposal-only; CC never"
+            echo "auto-commits atol changes (honest-atol discipline)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Zero-dependency invariant (root Cargo.lock unchanged, NFR-DS-02)
         if: always()
         run: git diff --exit-code Cargo.lock
@@ -556,7 +613,10 @@ jobs:
             ${{ runner.temp }}/sbv2-dump.log
             ${{ runner.temp }}/parity.log
             ${{ runner.temp }}/fixture-drift.txt
+            ${{ runner.temp }}/atol-summary.json
+            ${{ runner.temp }}/atol-proposal.txt
             tests/fixtures/sbv2/reference_dump.manifest.json
+            tests/fixtures/sbv2/atol-measurements.json
           retention-days: 7
           if-no-files-found: warn
 

@@ -291,3 +291,154 @@ fn atol_default_is_pinned_at_nfr_ql_01_scaffold() {
          feedback-honest-parity-atol)."
     );
 }
+
+/// WP-02 (2026-08-09): drift detector — every `PER_TENSOR_ATOL` value
+/// must stay within ±50% of the pinned baseline recorded in
+/// `tests/fixtures/sbv2/atol-measurements.json`. A "silent" change to
+/// any of the five atol numbers (or to any future entry) — that is,
+/// tightening because the CI happened to pass, or loosening to unstick
+/// a red run without capturing a fresh measurement — trips this test
+/// even when the honesty-audit tests above still pass, because the
+/// baseline file is what changes when the owner runs the empirical
+/// measurement cycle (owner CI dispatch -> `sbv2_atol_updater.py`
+/// proposes a new baseline -> owner reviews and commits).
+///
+/// # The 50% threshold: intentional, not arbitrary
+///
+/// The Kokoro precedent (`feedback-honest-parity-atol`, T17-fixup
+/// #5/#6 REVERT) shows the risk pattern: an owner or an automated fix
+/// nudges an atol from `0.02` to `0.05` "because CI is red" without
+/// recording a measured max|Δ|. `0.05 / 0.02 = 2.5×` is caught here
+/// (>50% drift). Conversely, an owner running the empirical cycle and
+/// legitimately tightening `bert_hidden_ja` from an `EstimatedPreFixture`
+/// `0.02` upper bound to a `Measured` `0.001` (say, `measured_max_diff
+/// = 6e-4 × 1.6× margin`) is also caught here (drift ≫ 50%) — and that
+/// is CORRECT: promoting `EstimatedPreFixture` → `Measured` with a
+/// large tightening is exactly the moment the owner should be forced
+/// to also update this baseline and the ADR, per the redundant-
+/// recording rule. A small owner-driven tightening (say, `0.02 -> 0.015`,
+/// 25% drift) passes here silently, which is fine — the ADR and the
+/// snapshot table above ALSO gate that path.
+///
+/// # Why this file and not the ADR
+///
+/// `docs/adr/sbv2-parity-atol.md` is gitignore-local by the standing
+/// `docs/adr/` convention (see this repo's `.gitignore` §"Second batch
+/// 2026-07-04"); a test cannot depend on a file that a fresh clone
+/// does not carry. `tests/fixtures/sbv2/atol-measurements.json` is
+/// tracked so `cargo test` in a fresh clone can find it — the ADR
+/// records the *human* narrative for a measurement, this file records
+/// the *machine-checkable* baseline the drift detector reads.
+///
+/// # RED->GREEN->REFACTOR
+///
+/// A missing or malformed baseline file is a loud panic (FR-EX-08), not
+/// a soft-skip: this is the "prep infra for the empirical cycle" landed
+/// by WP-02, so the file MUST be committed alongside the test that
+/// consumes it. A baseline entry with a non-finite / non-positive
+/// number is also a loud panic — the drift ratio calculation would
+/// silently divide by zero or overflow otherwise.
+#[test]
+fn atol_values_are_pinned_against_baseline_drift() {
+    /// The maximum allowed ratio between an atol value and its pinned
+    /// baseline. 50% drift in either direction is the "loud change"
+    /// threshold — see the test's rustdoc for the Kokoro precedent
+    /// this ratio was chosen against.
+    const MAX_DRIFT_FRACTION: f32 = 0.50;
+
+    let baseline_path = fixtures_dir().join("atol-measurements.json");
+    let bytes = std::fs::read(&baseline_path).unwrap_or_else(|e| {
+        panic!(
+            "{}: cannot read the WP-02 pinned atol baseline ({e}). The file MUST be \
+             committed alongside this test — a fresh clone must be able to run \
+             `cargo test -p vokra-models --test sbv2_parity_atol_calibration` \
+             without external CI artifacts. See the test's rustdoc for the \
+             owner-side procedure that updates this baseline.",
+            baseline_path.display(),
+        )
+    });
+    let baseline = json::parse(&bytes)
+        .unwrap_or_else(|e| panic!("{}: JSON parse error: {e}", baseline_path.display()));
+    let per_tensor = baseline
+        .get("per_tensor_atol")
+        .and_then(JsonValue::as_object)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: `per_tensor_atol` key missing or not an object — the WP-02 \
+                 baseline schema is `{{\"per_tensor_atol\": {{<name>: <value>, ...}}}}`",
+                baseline_path.display(),
+            )
+        });
+
+    // Cross-check: every current `PER_TENSOR_ATOL` entry MUST be in the
+    // baseline. A new entry added to the code without a matching baseline
+    // update trips this — FR-EX-08 loud rather than a silent
+    // "unpinned, so no drift possible" fall-through.
+    for (name, atol) in PER_TENSOR_ATOL {
+        let baseline_value = per_tensor
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: PER_TENSOR_ATOL entry `{name}` = {atol} has no baseline \
+                     entry — add \"{name}\": {atol} to `per_tensor_atol` in \
+                     the baseline file so future silent drift can be detected. \
+                     Do NOT leave it out of the baseline just to make this test \
+                     pass; the whole point is that new entries also get pinned.",
+                    baseline_path.display(),
+                )
+            });
+        let baseline_atol = match baseline_value {
+            JsonValue::Float(f) => *f as f32,
+            JsonValue::Int(i) => *i as f32,
+            other => panic!(
+                "{}: `per_tensor_atol.{name}` is not a JSON number: {other:?}",
+                baseline_path.display(),
+            ),
+        };
+        assert!(
+            baseline_atol > 0.0 && baseline_atol.is_finite(),
+            "{}: `per_tensor_atol.{name}` = {baseline_atol} is non-positive or \
+             non-finite — baselines must be finite positive floats or the drift \
+             ratio calculation is nonsense.",
+            baseline_path.display(),
+        );
+
+        // Symmetric ratio: `abs(current - baseline) / baseline`. Because
+        // `baseline_atol > 0` above, this cannot NaN or divide by zero.
+        let drift = ((*atol - baseline_atol).abs()) / baseline_atol;
+        assert!(
+            drift <= MAX_DRIFT_FRACTION,
+            "PER_TENSOR_ATOL entry `{name}` drifted {:.1}% from the pinned \
+             baseline ({baseline_atol} -> {atol}); the WP-02 drift detector \
+             refuses any change larger than {:.0}% without a matching baseline \
+             update. Rerun the owner cycle (workflow_dispatch on \
+             `parity-sbv2-real.yml`, then feed the atol-summary artifact into \
+             `tools/parity/sbv2_atol_updater.py --apply`), review the proposal, \
+             and commit the updated baseline + code change TOGETHER — never one \
+             without the other. See `docs/adr/sbv2-parity-atol.md` §5.",
+            drift * 100.0,
+            MAX_DRIFT_FRACTION * 100.0,
+        );
+    }
+
+    // Reverse cross-check: every baseline entry MUST have a matching
+    // `PER_TENSOR_ATOL` entry. A stale baseline row (someone removed
+    // an override from `PER_TENSOR_ATOL` but forgot to prune the
+    // baseline) is a silent "why is this here" and eventually starts
+    // masking bugs — fail LOUDLY on the first PR that drops the code
+    // side without cleaning up the baseline.
+    for (name, _) in per_tensor {
+        let present_in_code = PER_TENSOR_ATOL.iter().any(|(n, _)| *n == name);
+        assert!(
+            present_in_code,
+            "{}: baseline has an entry for `{name}` but `PER_TENSOR_ATOL` \
+             does not — either the code lost an override (add it back or \
+             promote `atol_calibration_for` to `UnmeasuredDefault` for a \
+             pass-through) or the baseline is stale (remove the row and \
+             record the removal in `docs/adr/sbv2-parity-atol.md`).",
+            baseline_path.display(),
+        );
+    }
+}

@@ -1,0 +1,39 @@
+{
+  "_schema_version": 1,
+  "_schema_doc": "WP-02 pinned atol baseline (2026-08-09). Consumed by `crates/vokra-models/tests/sbv2_parity_atol_calibration.rs::atol_values_are_pinned_against_baseline_drift` to detect silent drift (>50% in either direction) of any `crates/vokra-models/src/sbv2/parity.rs::PER_TENSOR_ATOL` value against its pinned baseline. The updater `tools/parity/sbv2_atol_updater.py` proposes edits to this file plus the code side; owner reviews and commits both TOGETHER per the memory `feedback-honest-parity-atol` redundant-recording rule. See `docs/adr/sbv2-parity-atol.md` §5 for the empirical-measurement cycle this file participates in, and this crate's `sbv2_parity_atol_calibration.rs` test's rustdoc for the RED->GREEN->REFACTOR walkthrough.",
+  "per_tensor_atol": {
+    "bert_hidden_ja": 0.02,
+    "bert_hidden_en": 0.02,
+    "sdp_sample": 0.05,
+    "z_latent": 0.03,
+    "waveform": 1.5
+  },
+  "provenance": {
+    "sources": {
+      "bert_hidden_ja": {
+        "status": "EstimatedPreFixture",
+        "note": "Pre-fixture theoretical upper bound; see `PER_TENSOR_ATOL`'s `\"bert_hidden_ja\"` rustdoc block for the per-op × depth × amplification derivation. Flip status to `Measured` once owner CI dispatch has recorded a real max|Δ|."
+      },
+      "bert_hidden_en": {
+        "status": "EstimatedPreFixture",
+        "note": "Same derivation as `bert_hidden_ja` — DeBERTa v3 is v2's shared-position variant, not a deeper stack."
+      },
+      "sdp_sample": {
+        "status": "EstimatedPreFixture",
+        "note": "SDP `.max(1)` boundary + ordinary flow-stack rounding; requires matching PRNG algorithm + seed on both sides for the comparison to be meaningful (currently satisfied by `RngMode::PhiloxRngEnginePyTorchParity` default). See `PER_TENSOR_ATOL`'s `\"sdp_sample\"` rustdoc block for the 2026-08-08 torch.randn parity Steps 1-10 landing note."
+      },
+      "z_latent": {
+        "status": "EstimatedPreFixture",
+        "note": "4 coupling blocks + WaveNet-residual internal net + affine-scale amplification when the flow's `logs` output nears ±3."
+      },
+      "waveform": {
+        "status": "Measured",
+        "measurement_source": "CI run 31303426623 (Linux ubuntu-latest AVX2 + glibc libm)",
+        "measurement_date": "2026-08-09",
+        "measured_max_diff": 0.9248,
+        "margin_factor": 1.6,
+        "note": "Bit-exact libm follow-up documented as deferral in `docs/adr/sbv2-libm-strategy.md` §4; do not tighten below 1.0 without pinning libm bit-exact across archs."
+      }
+    }
+  }
+}

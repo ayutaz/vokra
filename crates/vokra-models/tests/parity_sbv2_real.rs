@@ -599,6 +599,25 @@ fn diff_intermediates_against_manifest(
     dir: &Path,
     ctx: &str,
 ) {
+    // WP-02 (2026-08-09): collect every tensor's max|Δ| BEFORE asserting.
+    // The pre-WP-02 shape (assert! in-loop, eprintln! post-assert) meant a
+    // failing tensor never emitted its diagnostic line, so
+    // `.github/workflows/parity-sbv2-real.yml`'s downstream atol-summary
+    // step could only see PASSING tensor rows — an owner reviewing the
+    // artifact would have to guess whether "no line for bert_hidden_ja"
+    // meant "not run" or "failed silently". The two-phase shape here
+    // emits ALL 10 rows first (mirroring the Kokoro parity CI's per-tensor
+    // summary), then asserts once at the end so a failing tensor is loud
+    // AND still leaves the workflow parser a full row set to feed into
+    // `tools/parity/sbv2_atol_updater.py`.
+    struct Row {
+        name: &'static str,
+        max_diff: f32,
+        atol: f32,
+        marker: &'static str,
+        verdict: &'static str,
+    }
+    let mut rows: Vec<Row> = Vec::new();
     for (name, rust_bytes) in intermediates.to_dumper_map() {
         let (rel, shape) = find_tensor(manifest, name, ctx);
         let ref_path = dir.join(rel);
@@ -621,7 +640,11 @@ fn diff_intermediates_against_manifest(
         // `f32_bytes` helper). Rebuild the f32 slice here to diff against
         // the reference. A length mismatch is a real bug — the Rust
         // pipeline emitted a different tensor shape than the Python
-        // dumper — so panic loudly, not soft-skip (FR-EX-08).
+        // dumper — so panic loudly, not soft-skip (FR-EX-08). This kind
+        // of failure is a fixture / pipeline inconsistency that cannot
+        // be papered over by a bigger atol, so it stays in-loop as a
+        // hard early exit (unlike the numeric max|Δ| gate below, which
+        // the two-phase pattern defers to the end).
         assert_eq!(
             rust_bytes.len() % 4,
             0,
@@ -647,16 +670,51 @@ fn diff_intermediates_against_manifest(
         let atol = tolerance_for(name);
         let diff = max_abs_diff(&rust, &reference);
         let marker = calibration_marker(name);
-        assert!(
-            diff <= atol,
-            "[parity_sbv2_real] {name}: max |Δ| = {diff} exceeds atol {atol} \
-             (sbv2::parity::tolerance_for(\"{name}\")) {marker}. See \
-             `docs/adr/sbv2-parity-atol.md` for the derivation on record. \
-             `sbv2::parity::atol_calibration_for` marks this tensor as {marker} — \
-             if the bound needs promoting (e.g. UnmeasuredDefault → \
-             EstimatedPreFixture with a derived value), follow §5 of the ADR."
+        let verdict = if diff <= atol { "PASS" } else { "FAIL" };
+        // Emit the diagnostic line BEFORE deferring the assertion so the
+        // workflow's downstream atol-summary parser (regex against
+        // `[parity_sbv2_real] ...`) sees a row for every tensor even
+        // when one fails. Format is stable: workflow parser depends on
+        // this exact prefix.
+        eprintln!(
+            "[parity_sbv2_real] {name}: max |Δ| = {diff:.6e} atol {atol} verdict {verdict} \
+             {marker}"
         );
-        eprintln!("[parity_sbv2_real] {name}: max |Δ| = {diff:.3e} <= atol {atol} {marker}");
+        rows.push(Row {
+            name,
+            max_diff: diff,
+            atol,
+            marker,
+            verdict,
+        });
+    }
+
+    // Two-phase gate: fail LOUDLY once at the end, naming EVERY failing
+    // tensor at once. Under the pre-WP-02 in-loop assert, an owner
+    // reviewing a red CI run saw one failure and had to iterate. Now the
+    // first CI cycle produces the complete "here are all 3 tensors that
+    // exceeded their atol" list, so the empirical-measurement cycle can
+    // batch-propose in one pass.
+    let failures: Vec<&Row> = rows.iter().filter(|r| r.verdict == "FAIL").collect();
+    if !failures.is_empty() {
+        let names: Vec<String> = failures
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} (max |Δ| = {:.3e} > atol {} {})",
+                    r.name, r.max_diff, r.atol, r.marker
+                )
+            })
+            .collect();
+        panic!(
+            "[parity_sbv2_real] {} of {} intermediate tensors exceeded their atol: {}. \
+             See `docs/adr/sbv2-parity-atol.md` §5 for the empirical-measurement cycle \
+             and `tools/parity/sbv2_atol_updater.py` (WP-02, 2026-08-09) for the atol \
+             proposal from the workflow's atol-summary artifact.",
+            failures.len(),
+            rows.len(),
+            names.join(", "),
+        );
     }
 }
 
