@@ -10,7 +10,7 @@
 //! the Metal / CUDA / Vulkan crates carry theirs)
 //!
 //! - **(a) Integration = raw extern-import shim, NO `wgpu` crate**
-//!   (NFR-DS-02): [`sys`] declares a
+//!   (NFR-DS-02): `sys` declares a
 //!   `#[link(wasm_import_module = "vokra_webgpu")]` import surface and the
 //!   hand-written JS glue (`glue/vokra_webgpu.js`, zero npm dependencies)
 //!   satisfies it against the browser `navigator.gpu` API. Import-object
@@ -51,7 +51,7 @@
 //! workspace-wide `unsafe_code = "deny"` (below), joining the other backend
 //! crates on the unsafe-boundary allow list. Public APIs stay safe
 //! (`Result` errors, never a panic across the boundary), and **every
-//! `unsafe` block carries a `// SAFETY:` comment** citing the [`sys`] import
+//! `unsafe` block carries a `// SAFETY:` comment** citing the `sys` import
 //! contract (enforced by `clippy::undocumented_unsafe_blocks`).
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the

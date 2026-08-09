@@ -7,7 +7,7 @@
 //! head + the pre-projected cross-attention K/V per construction — a one-time
 //! cost inside the session's lifetime, but *repeated* on every fresh
 //! transcription of long-form audio (Whisper's 30 s window slides across the
-//! input). Cross-segment reuse — build the session once, [`reset`] it between
+//! input). Cross-segment reuse — build the session once, [`CudaDecodeSession::reset`] it between
 //! segments — collapses that per-segment build overhead onto the very first
 //! segment.
 //!
@@ -31,8 +31,8 @@
 //!   commit.
 //! - Cross-segment reuse is opted in by (a) constructing a
 //!   [`CudaDecodeSessionPool`], (b) building the first session via
-//!   [`CudaDecodeSession::new`] then wrapping it with [`Self::wrap`], and
-//!   (c) subsequent segments calling [`Self::acquire`] to LIFO-reuse.
+//!   [`CudaDecodeSession::new`] then wrapping it with [`CudaDecodeSessionPool::wrap`], and
+//!   (c) subsequent segments calling [`CudaDecodeSessionPool::acquire`] to LIFO-reuse.
 //! - The CLI's `--reuse-cuda-session` flag is the intended surface; without
 //!   it, no user-facing binary flips this switch on.
 //!
@@ -57,7 +57,7 @@
 //!   n_vocab, n_ctx)` the caller asked for; anything else is discarded (its
 //!   `Drop` runs → device buffers freed → context torn down) rather than
 //!   coerced.
-//! - **Bounded capacity.** [`Self::new`] takes a `capacity`; a
+//! - **Bounded capacity.** [`CudaDecodeSessionPool::new`] takes a `capacity`; a
 //!   [`PooledSession::drop`] that would push a `(capacity + 1)`th session
 //!   instead lets it drop (device buffers freed). Zero-capacity pools are
 //!   accepted and behave like "reuse disabled" (every acquired session is
@@ -87,11 +87,11 @@
 //!    has *not* run yet at this point (it runs on `PooledSession::drop`, the
 //!    moment the entry re-enters the pool, so the acquired handle sees a
 //!    fresh state on the next acquire).
-//! 3. If the pool has no matching entry, [`Self::acquire`] returns
+//! 3. If the pool has no matching entry, [`CudaDecodeSessionPool::acquire`] returns
 //!    [`VokraError::BackendUnavailable`] with the message
 //!    `"cuda session pool: no matching entry"`. The caller then builds a fresh
 //!    [`CudaDecodeSession`] via [`CudaDecodeSession::new`] and wraps it with
-//!    [`Self::wrap`] — the wrapper enters the pool on `Drop` (subject to
+//!    [`CudaDecodeSessionPool::wrap`] — the wrapper enters the pool on `Drop` (subject to
 //!    `capacity`).
 //!
 //! This split keeps the pool free of weight-shaped constructor arguments (the

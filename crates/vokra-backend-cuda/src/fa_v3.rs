@@ -379,7 +379,7 @@ extern "C" __global__ void vokra_fa_v3_feasibility_probe(
 
 /// The FA v3 NVRTC program (M4-07-T05..T08). Compiled **only** for
 /// `compute_90a` and **only** when the device probe reports SM ≥ 9.0 — never
-/// part of [`super::context`]'s shared `KERNELS_CUDA` program (see the module
+/// part of `super::context`'s shared `KERNELS_CUDA` program (see the module
 /// docs for why).
 ///
 /// # Numeric contract (rounding points — the FA_V3 parity-atol material)

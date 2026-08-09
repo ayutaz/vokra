@@ -23,7 +23,7 @@
 //!
 //! - **Zero external deps (NFR-DS-02)**: only `vokra-core`. When the real
 //!   forward lands, transcendentals will come from a shared scalar module
-//!   (mirroring [`vokra_vad_micro::scalar`]) — **no `libm`** (deny.toml bans it).
+//!   (mirroring `vokra_vad_micro::scalar`) — **no `libm`** (deny.toml bans it).
 //! - **No `unsafe` (NFR-RL-07)**: workspace lint `unsafe_code = "deny"`.
 //! - **1:1 preservation (FR-LD-06 / FR-OP-50 / NFR-QL-05)**: microWakeWord
 //!   will be a dedicated subgraph, not lowered to generic audio-dialect ops

@@ -35,7 +35,7 @@
 //! A C ABI inevitably requires `unsafe` (raw pointers across the FFI
 //! boundary), so this crate opts out of the workspace-wide
 //! `unsafe_code = "deny"` below. Safety is guaranteed *at the API boundary*
-//! (argument validation, no panics across FFI — see [`ffi_guard`]), and every
+//! (argument validation, no panics across FFI — see `ffi_guard`), and every
 //! `unsafe` block carries a `// SAFETY:` comment (enforced by
 //! `clippy::undocumented_unsafe_blocks` at the workspace level).
 //!

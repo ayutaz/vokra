@@ -409,8 +409,8 @@ pub enum ModelKind {
     /// with-bias + GELU FFN topology, not Llama's RMSNorm + SwiGLU);
     /// sample rate swaps from 24 kHz to **32 kHz**; text-token vocabulary
     /// swaps from 2454 (multilingual) / 704 (English-only) to **50 276**
-    /// (GPT-2 base 50 257 + 19 paralinguistic tags [angry]/[fear]/
-    /// [surprised]/[whispering]/[cough]/[laugh]/[chuckle]/… from
+    /// (GPT-2 base 50 257 + 19 paralinguistic tags `[angry]`/`[fear]`/
+    /// `[surprised]`/`[whispering]`/`[cough]`/`[laugh]`/`[chuckle]`/… from
     /// `added_tokens.json`); speech-token vocabulary shrinks 8194 → 6563;
     /// max text/speech tokens shrink 2048 → 402 / 4096 → 604 for
     /// low-latency serving; the speech-token-to-mel decoder is distilled

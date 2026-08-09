@@ -3,7 +3,7 @@
 //!
 //! # Why this exists
 //!
-//! The Silero VAD forward calls `exp` (sigmoid, [`crate::math`]), `tanh` (the
+//! The Silero VAD forward calls `exp` (sigmoid, `crate::math`), `tanh` (the
 //! LSTM cell) and `sqrt` (the pseudo-STFT magnitude). Those `f32`
 //! transcendentals live in **`std`**, not `core`: on the Cortex-M55
 //! (`thumbv8m-none`) Tier-3 target (NFR-PT-03) `f32::exp` / `tanh` / `sqrt` do

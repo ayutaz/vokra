@@ -82,7 +82,7 @@ pub struct VulkanCapabilities {
     /// The selection policy prefers a compute-*only* family (no graphics bit)
     /// where available — dedicated compute queues avoid contention with the
     /// display path on Adreno / Mali. See
-    /// [`crate::context::VulkanInstance::find_compute_queue_family`] for the
+    /// `crate::context::VulkanInstance::find_compute_queue_family` for the
     /// full algorithm.
     pub compute_queue_family_index: Option<u32>,
 }

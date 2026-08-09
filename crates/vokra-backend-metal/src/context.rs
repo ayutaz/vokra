@@ -1110,7 +1110,7 @@ impl MetalDeviceTensor<'_> {
 /// analogue of the host [`vokra_core::KvCache`] (same append semantics, same
 /// bytes, only the destination is a device buffer at a row offset).
 ///
-/// It owns raw [`OwnedBuf`]s (no `MetalDeviceTensor<'ctx>` borrow), so — like the
+/// It owns raw `OwnedBuf`s (no `MetalDeviceTensor<'ctx>` borrow), so — like the
 /// [`MetalDecodeSession`]'s inline self-KV — it can outlive any single op and be
 /// carried across decode steps. `cap`/`len`/`width` are plain `usize`.
 pub struct MetalKvCache {
@@ -2518,7 +2518,7 @@ impl MetalContext {
     /// bit-identical to writing `-inf` into the future scores and running the
     /// plain fused attention. Every other pass is shared with [`Self::attn_f32`],
     /// so the two chains are single-sourced. Used by the decode-step parity tests
-    /// and (via [`Self::encode_attn_passes`]) by [`MetalDecodeSession`].
+    /// and (via `Self::encode_attn_passes`) by [`MetalDecodeSession`].
     ///
     /// # Errors
     ///
@@ -2893,7 +2893,7 @@ impl MetalContext {
     }
 
     /// Uploads `data` into a fresh device-resident buffer (H2D once). The returned
-    /// [`MetalDeviceTensor`] borrows the context, so it cannot outlive it.
+    /// `MetalDeviceTensor` borrows the context, so it cannot outlive it.
     ///
     /// # Errors
     ///
@@ -3480,8 +3480,8 @@ impl MetalContext {
     /// `scale = (d / n_head)^-0.5`.
     ///
     /// It encodes **exactly** the per-op path's op sequence — the same
-    /// `layer_norm` / GEMM / [`encode_attn_passes`](Self::encode_attn_passes) /
-    /// [`encode_mlp_passes`](Self::encode_mlp_passes) / residual-add kernels, in
+    /// `layer_norm` / GEMM / `encode_attn_passes` /
+    /// `encode_mlp_passes` / residual-add kernels, in
     /// the same order and launch geometry — so it is **bit-identical** to running
     /// the blocks per-op on the GPU, and matches the CPU within the FP32 bound. The
     /// difference is the readback: ONE `commit` + `waitUntilCompleted` for the
@@ -4223,9 +4223,9 @@ struct DevDecoderLayer {
 ///
 /// # `Send`, thread-affine at use
 ///
-/// The session **owns** its [`MetalContext`] and holds only raw [`OwnedBuf`]
+/// The session **owns** its [`MetalContext`] and holds only raw `OwnedBuf`
 /// device buffers (no `MetalDeviceTensor<'ctx>`, so no self-referential
-/// lifetime). Even though the raw `Id` handles in [`MetalContext`] / [`OwnedBuf`]
+/// lifetime). Even though the raw `Id` handles in [`MetalContext`] / `OwnedBuf`
 /// are `!Send` at the Rust type level (`*mut c_void`), the objects they refer
 /// to — `MTLDevice`, `MTLCommandQueue`, `MTLBuffer` and compute-pipeline
 /// objects — are documented by Apple as thread-safe, and the one non-thread-
