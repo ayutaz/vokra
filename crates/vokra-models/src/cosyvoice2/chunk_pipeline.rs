@@ -215,7 +215,7 @@ impl<'a> ChunkAwareStreamingPipeline<'a> {
     /// # Errors
     ///
     /// Propagates every downstream error verbatim
-    /// ([`length_conditioning`], [`ChunkAwareCfm::run_chunks`],
+    /// ([`length_conditioning()`], [`ChunkAwareCfm::run_chunks`],
     /// [`MimiBridge::decode_chunk`]) and additionally:
     /// - `VokraError::InvalidArgument` if `code_fn` returns a wrongly-shaped
     ///   codes vector for any chunk (FR-EX-08).

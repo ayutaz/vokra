@@ -71,7 +71,7 @@
 //!   HiFTNet vocoder produces 24 kHz PCM, matching CosyVoice2).
 //!
 //! When the real checkpoint lands (owner T29-equivalent hand-off), the
-//! [`CosyVoice3Config::fun_cosyvoice3_0_5b`] constructor can be filled
+//! [`CosyVoice3Config::fun_cosyvoice3_0_5b_placeholder`] constructor can be filled
 //! in with the transcribed values without changing any downstream code
 //! (the [`CosyVoice3Tts`] engine and the converter both read the
 //! shape-derived path today).

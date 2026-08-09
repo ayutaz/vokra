@@ -35,7 +35,7 @@
 //!     Qwen LM).
 //!   - **License**: **CC-BY 4.0** (attribution required — the whole
 //!     Canary family ships under CC-BY 4.0; the `canary-` family prefix
-//!     walk in [`vokra_core::compliance::license_class`] already
+//!     walk in `vokra_core::compliance::license_class` already
 //!     resolves `canary-qwen*` to `LicenseClass::AttributionRequired`).
 //!   - **Encoder** = FastConformer, `32 layers` (same as Canary-1B-v2).
 //!   - **Decoder** = Qwen LLM (the release notes name Qwen-2.5-1.7B-
@@ -76,7 +76,7 @@
 //! - [`CanaryQwenConfig`] — top-level config bundling the shared
 //!   [`crate::canary::CanaryEncoderConfig`] (FastConformer encoder,
 //!   real values) and a Qwen-flavour decoder config (the Voxtral
-//!   [`TextDecoderConfig`] alias — same shape / same ops).
+//!   [`crate::voxtral::config::TextDecoderConfig`] alias — same shape / same ops).
 //! - [`CanaryQwenWeights`] — a scaffold weight store that reuses the
 //!   [`crate::canary::CanaryWeights`] encoder layout and adds a Qwen-
 //!   flavour decoder scaffold aligned with the Voxtral text-decoder

@@ -7,7 +7,7 @@
 //! - a reference to the parent [`VoxtralConfig`] (hparams);
 //! - a self-attention [`KvCache`] (one per-layer buffer of width
 //!   `n_head_kv * head_dim`);
-//! - a reusable [`StepScratch`] the block forward writes into;
+//! - a reusable `StepScratch` the block forward writes into;
 //! - a [`Compute`] dispatcher (CPU foundation; a GPU
 //!   `VoxtralDecodeSession` is reserved as a follow-up seam — see the
 //!   streaming module's `allow_device_session` slot).
@@ -203,7 +203,7 @@ impl<'m> TextDecoderSession<'m> {
     ///
     /// # Errors
     ///
-    /// See [`text_decoder::forward_step`] for the full error taxonomy.
+    /// See `text_decoder::forward_step` for the full error taxonomy.
     pub fn step_into(&mut self, tokens: &[u32]) -> Result<()> {
         if tokens.is_empty() {
             return Ok(());
@@ -238,7 +238,7 @@ impl<'m> TextDecoderSession<'m> {
     ///
     /// # Errors
     ///
-    /// See [`text_decoder::forward_step_with_embed_prefix`] for the full error
+    /// See `text_decoder::forward_step_with_embed_prefix` for the full error
     /// taxonomy — the same shape / config / n_ctx checks apply.
     pub fn step_into_with_embed_prefix(
         &mut self,

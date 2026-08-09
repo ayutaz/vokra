@@ -15,14 +15,14 @@
 //!    `pyannote/mod.rs` module docstring).
 //! 3. **Speaker embedding**: for every contiguous per-speaker-slot region,
 //!    slice the PCM and hand it to a caller-supplied
-//!    [`SpeakerEncoder`] (a trait CAM++ implements — see the note on
+//!    `SpeakerEncoder` (a trait CAM++ implements — see the note on
 //!    the trait's rustdoc). The pipeline is generic over `E: SpeakerEncoder`
 //!    so a mock encoder can drive the wire-check test.
 //! 4. **Agglomerative clustering + merge**: cluster the region embeddings
 //!    with [`vokra_ops::clustering::AgglomerativeClustering`] (cosine
 //!    distance, average linkage, `cluster_threshold` cutoff), stamp
 //!    every region with its cluster id, then delegate to
-//!    [`super::rttm::merge_segments`] for the "merge same-speaker
+//!    `super::rttm::merge_segments` for the "merge same-speaker
 //!    segments separated by ≤ `merge_gap_s`" step and finally drop
 //!    segments shorter than `min_segment_s`.
 //!
@@ -63,10 +63,10 @@
 //!   SincNet primitive lands. This module never fabricates the missing
 //!   step; the pipeline simply propagates whatever `segment_powerset`
 //!   returns.
-//! - The **CAM++ [`SpeakerEncoder`] impl is a follow-up commit** — the
+//! - The **CAM++ `SpeakerEncoder` impl is a follow-up commit** — the
 //!   trait definition here is the sole thing the pipeline needs; the
 //!   bridge from CAM++'s `fbank → 192-d embedding` API to
-//!   [`SpeakerEncoder::encode`]'s `PCM + sample_rate → Vec<f32>` API
+//!   `SpeakerEncoder::encode`'s `PCM + sample_rate → Vec<f32>` API
 //!   lands separately so `speaker/campplus.rs` stays untouched by this
 //!   wave (task-mandated).
 //!
@@ -198,10 +198,10 @@ impl<E: SpeakerEncoder> DiarizationPipeline<E> {
     ///   [`VokraError::UnsupportedOp`]).
     /// * [`VokraError::InvalidArgument`] on `sample_rate == 0`, on a
     ///   powerset activity matrix whose class count is not one of the
-    ///   supported [`num_speakers_from_powerset`] shapes, or on an
+    ///   supported `num_speakers_from_powerset` shapes, or on an
     ///   embedding whose length disagrees with
     ///   [`SpeakerEncoder::embedding_dim`].
-    /// * Propagates whatever [`SpeakerEncoder::encode`] returns (a
+    /// * Propagates whatever `SpeakerEncoder::encode` returns (a
     ///   Metal-uncovered op, an out-of-range sample rate, …).
     /// * [`VokraError::UnsupportedOp`] when the clustering primitive
     ///   itself surfaces an error (parallel wave's contract).

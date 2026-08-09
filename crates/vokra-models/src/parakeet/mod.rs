@@ -38,7 +38,7 @@
 //! - **TDT / joint / vocab**:
 //!   - `vocab_size` = 8193 (**8192 pieces + 1 blank**),
 //!   - `blank_token_id` = 8192 (blank at the tail of the head — the
-//!     NeMo-canonical convention that matches [`vokra_ops::rnnt_decode`]'s
+//!     NeMo-canonical convention that matches [`vokra_ops::rnnt_decode()`]'s
 //!     `blank_id = vocab_size` default),
 //!   - `pad_token_id` = 2,
 //!   - `durations` = `[0, 1, 2, 3, 4]` (5 TDT duration bins),
@@ -65,7 +65,7 @@
 //!   `ConvSubsampleKind::Stacking { factor: 8 }` (matches
 //!   `subsampling_factor=8`). The primitive was authored for exactly this
 //!   family (its module docs list `parakeet` as the first consumer).
-//! - **TDT decoding**: [`vokra_ops::rnnt_decode`] — the primitive covers
+//! - **TDT decoding**: [`vokra_ops::rnnt_decode()`] — the primitive covers
 //!   greedy / beam / TDT with the exact NeMo semantics
 //!   (`durations = [0..=4]`, `blank_id = vocab_size`, `max_symbols_per_step
 //!   = 10`).
@@ -231,7 +231,7 @@ pub struct ParakeetJointConfig {
     /// into [`vokra_ops::rnnt_decode::RnntAttrs::max_symbols_per_step`].
     pub max_symbols_per_step: usize,
     /// Top-level `hidden_act` — `"relu"` (post-joint activation).
-    /// Recorded verbatim; the ops-side [`vokra_ops::rnnt_decode`] takes
+    /// Recorded verbatim; the ops-side [`vokra_ops::rnnt_decode()`] takes
     /// materialised joint log-probs so this is descriptive metadata.
     pub joint_act: String,
 }

@@ -12,7 +12,7 @@
 //! prefix** that carries task-specific tokens (`<source_lang>`,
 //! `<target_lang>`, `<taskname>`, `<pnc>`, `<itn>`, `<timestamp>`,
 //! `<diarize>`, `<emotion>`), and decoding uses a standard beam search over
-//! the vocabulary head (the shared [`vokra_ops::beam_search`] primitive —
+//! the vocabulary head (the shared `vokra_ops::beam_search` primitive —
 //! same op class Whisper and Voxtral consume). No new op is introduced by
 //! Canary; the encoder body reuses [`vokra_ops::conformer`] via the shared
 //! `Stacking { factor: 8 }` variant, exactly like Parakeet.
@@ -77,7 +77,7 @@
 //!   FastConformer encoder covers Canary via
 //!   `ConvSubsampleKind::Stacking { factor: 8 }` (matches
 //!   `subsampling_factor=8`). Same primitive Parakeet uses.
-//! - **Decoder search (OP-3)**: [`vokra_ops::beam_search`] — the beam
+//! - **Decoder search (OP-3)**: `vokra_ops::beam_search` — the beam
 //!   search / length-normalisation / early-stopping / n-best surface
 //!   Whisper and Voxtral already consume. Canary reuses it; no per-model
 //!   decoder primitive is introduced.

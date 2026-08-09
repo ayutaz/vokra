@@ -133,7 +133,7 @@ pub struct CosyVoice2Tokenizer {
 
 impl CosyVoice2Tokenizer {
     /// Loads the tokenizer from the two U8 GGUF chunks
-    /// ([`KEY_TOKENIZER_VOCAB`] + [`KEY_TOKENIZER_MERGES`]).
+    /// (`KEY_TOKENIZER_VOCAB` + `KEY_TOKENIZER_MERGES`).
     ///
     /// # Errors
     ///

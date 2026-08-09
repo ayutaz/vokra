@@ -33,7 +33,7 @@
 //! 2026-07-30 yousan). This module ships:
 //!
 //! - the exact tensor / hparam contract the future
-//!   `FsmnVadV1::from_gguf` binds against (see [`Self::from_gguf`]);
+//!   `FsmnVadV1::from_gguf` binds against (see [`FsmnVadV1::from_gguf`]);
 //! - synthetic-weight structural tests pinning FR-EX-08 (loud errors on
 //!   every shape / config-mismatch violation);
 //! - a `VadEngine` implementation that carries the FSMN rolling
@@ -593,7 +593,7 @@ impl FsmnVadStream {
     /// FSMN-streaming contract (verified by
     /// `vokra_ops::fsmn_vad::tests::state_carry_matches_single_chunk`).
     ///
-    /// The [`VadStreamHandle::push_pcm`] implementation goes through
+    /// The [`vokra_core::engines::VadStreamHandle::push_pcm`] implementation goes through
     /// this method after the front-end (kaldi fbank + LFR + CMVN)
     /// produces LFR features; parity harnesses that pre-compute the
     /// features can bypass the front-end by calling here directly.

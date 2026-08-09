@@ -13,7 +13,7 @@
 //! The audio→fbank front-end (Kaldi fbank + CMN) is a separate work item and is
 //! validated once an offline Kaldi-fbank oracle exists; this module's
 //! fbank→embedding network is fully validated against onnxruntime fixtures
-//! (`tests/parity/camplus/`) by the [`parity`] submodule.
+//! (`tests/parity/camplus/`) by the `parity` submodule.
 
 pub mod camplus;
 // M4-20 (b): speaker verification (FR-OP-81) — cosine similarity of two

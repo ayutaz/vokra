@@ -306,7 +306,7 @@ pub struct VibeVoiceAcousticTokenizerConfig {
     pub layernorm_eps: f32,
     /// Convolution-fusion mixer layer (`mixer_layer`).
     /// `"depthwise_conv"` — maps to the shared
-    /// [`ContinuousVaeConfig::depthwise=true`].
+    /// `ContinuousVaeConfig::depthwise=true`.
     pub mixer_layer: String,
     /// Padding mode for the causal Conv1d (`pad_mode`). `"constant"`.
     pub pad_mode: String,

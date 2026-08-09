@@ -40,10 +40,10 @@
 //!     append, returns `[vocab]` logits for the new position.
 //!   - [`LlmBackbone::greedy_decode`] — argmax loop with early stop on EOS
 //!     and a configurable `max_new_tokens` cap.
-//! - **Shared primitives** ([`voxtral::text_decoder::rms_norm`],
-//!   [`voxtral::text_decoder::silu_inplace`],
-//!   [`voxtral::text_decoder::hadamard_inplace`],
-//!   [`voxtral::text_decoder::rope_apply`]) — imported at module level so
+//! - **Shared primitives** (`voxtral::text_decoder::rms_norm`,
+//!   `voxtral::text_decoder::silu_inplace`,
+//!   `voxtral::text_decoder::hadamard_inplace`,
+//!   `voxtral::text_decoder::rope_apply`) — imported at module level so
 //!   the Mistral GQA/RoPE/SwiGLU/RMSNorm primitives serve both models. A
 //!   future GQA bug fix lands once.
 //!

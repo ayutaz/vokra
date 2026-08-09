@@ -308,7 +308,7 @@ pub struct RmvpeWeights {
 impl RmvpeWeights {
     /// Scans `gguf` for all recognized RMVPE `state_dict` tensors and
     /// dequantizes each to f32. Refuses to bind if no tensor matches
-    /// any [`REQUIRED_TENSOR_PREFIXES`] entry (FR-EX-08).
+    /// any `REQUIRED_TENSOR_PREFIXES` entry (FR-EX-08).
     ///
     /// # Errors
     ///
@@ -747,7 +747,7 @@ impl RMVPE {
     /// 1. Be openable by the standard GGUF reader — errors surface as
     ///    [`VokraError::Io`] / [`VokraError::ModelLoad`].
     /// 2. Carry at least one recognized RMVPE state_dict tensor
-    ///    ([`REQUIRED_TENSOR_PREFIXES`]) — otherwise
+    ///    (`REQUIRED_TENSOR_PREFIXES`) — otherwise
     ///    [`RmvpeWeights::from_gguf`] refuses the bind (FR-EX-08).
     ///
     /// `vokra.rmvpe.*` metadata is optional (absent keys fall back to

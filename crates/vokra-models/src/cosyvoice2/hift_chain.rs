@@ -21,7 +21,7 @@
 //! Mimi at any point; instead it composes `SourceModuleHnNSF` (NSF) with a
 //! `torch.istft` post-conv (ISTFTNet) and a `Snake` activation stack (see
 //! `:320 SourceModuleHnNSF`, `:503 torch.istft`, `:102 Snake`). The
-//! `super::mimi_bridge` module is therefore [`#[deprecated]`][super::mimi_bridge]
+//! `super::mimi_bridge` module is therefore `#[deprecated]`
 //! and kept only to avoid breaking existing test imports and the
 //! `super::chunk_pipeline` scaffold; new callers use [`HiFTChain`].
 //!

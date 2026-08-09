@@ -198,7 +198,7 @@ impl VoxtralAsr {
     }
 
     /// Like [`Self::new`] but on an explicit backend. The backend is
-    /// consulted at each [`transcribe`] call so a runtime toggle can
+    /// consulted at each `transcribe` call so a runtime toggle can
     /// switch between CPU and a GPU seam without rebuilding the adaptor.
     pub fn new_with_backend(model: VoxtralModel, backend: BackendKind) -> Result<Self> {
         let is_asr = matches!(model.config().mode.as_str(), "asr" | "s2s");
@@ -227,7 +227,7 @@ impl VoxtralAsr {
     /// [`AsrEngine`], also loading the embedded tokenizer if present. A
     /// missing tokenizer chunk is NOT a hard error at construction (some
     /// converter paths write shape-only GGUFs) — it surfaces at
-    /// [`transcribe`] time as an explicit [`VokraError::ModelLoad`] naming
+    /// `transcribe` time as an explicit [`VokraError::ModelLoad`] naming
     /// the missing chunk. Same posture as other model surfaces here (never
     /// a silent fabrication).
     pub fn from_gguf(file: &vokra_core::gguf::GgufFile) -> Result<Self> {
@@ -542,15 +542,13 @@ impl VoxtralAsr {
     /// When `true`, [`Self::transcribe`] picks a GPU backend at call time —
     /// Metal on an Apple + `metal` build, CUDA on a Unix/Windows + `cuda`
     /// build — and drives the encoder + decoder through the matching
-    /// [`VoxtralMetalDecodeSession`] / [`VoxtralCudaDecodeSession`]. A
+    /// `VoxtralMetalDecodeSession` / `VoxtralCudaDecodeSession`. A
     /// platform / build with no GPU backend surfaces an explicit
     /// [`VokraError::BackendUnavailable`] at transcribe time — **never a
     /// silent CPU fall back** (FR-EX-08). When `false` (default) the
     /// transcribe path uses [`Self::with_backend`]'s explicit backend
     /// selector (`BackendKind::Cpu` unless overridden).
     ///
-    /// [`VoxtralMetalDecodeSession`]: super::text_decoder_session_metal::VoxtralMetalDecodeSession
-    /// [`VoxtralCudaDecodeSession`]: super::text_decoder_session_cuda::VoxtralCudaDecodeSession
     /// [`VokraError::BackendUnavailable`]: vokra_core::VokraError::BackendUnavailable
     #[must_use]
     pub fn with_allow_device_session(mut self, allow: bool) -> Self {

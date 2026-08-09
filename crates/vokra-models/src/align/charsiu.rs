@@ -18,7 +18,7 @@
 //!
 //! 1. `Wav2Vec2FeatureEncoder` — the raw-waveform 7-layer strided
 //!    Conv1D stem (`total_stride=320`, output = `[T', 512]` at 50 Hz).
-//!    Implemented by [`vokra_ops::waveform_frontend`] with
+//!    Implemented by [`vokra_ops::waveform_frontend()`] with
 //!    [`vokra_ops::WaveformFrontendAttrs::wav2vec2_base`].
 //! 2. `Wav2Vec2FeatureProjection` — a Linear from the stem's 512-d
 //!    output to the residual `hidden_size` (transformer width).
@@ -49,7 +49,7 @@
 //!   optional bias).
 //! - `head.{weight,bias}` — the CTC vocab projection.
 //!
-//! The scaffold [`Charsiu::synthesized`] builds a deterministic
+//! The scaffold [`CharsiuWeights::synthesized`] builds a deterministic
 //! [`CharsiuWeights`] from a [`CharsiuConfig`] so the shape flow and CTC
 //! decoding path can be exercised without a real HF checkpoint (SplitMix64
 //! Xavier — the omniASR-CTC / VITS-JA fixture pattern). Real-weight
@@ -275,7 +275,7 @@ pub struct CharsiuWeights {
     /// Raw-waveform 7-layer wav2vec2-base stem.
     pub stem_attrs: WaveformFrontendAttrs,
     /// Per-stem-layer weights (bindable to
-    /// [`vokra_ops::waveform_frontend`]).
+    /// [`vokra_ops::waveform_frontend()`]).
     pub stem_weights: WaveformFrontendWeights,
     /// Feature projection (stem's 512-d output → residual `hidden_size`).
     pub feature_projection: CharsiuFeatureProjection,
@@ -510,7 +510,7 @@ impl Charsiu {
     ///
     /// - [`VokraError::InvalidArgument`] on empty `pcm` or a sample-rate
     ///   mismatch.
-    /// - Propagated `VokraError` from [`vokra_ops::waveform_frontend`]
+    /// - Propagated `VokraError` from [`vokra_ops::waveform_frontend()`]
     ///   (shape gates on the stem — never silent-truncated).
     pub fn align(
         &self,
@@ -920,7 +920,7 @@ fn log_softmax(logits: &[f32], t: usize, vocab: usize) -> Vec<f32> {
 
 /// Exact erf-based GELU (`0.5 * x * (1 + erf(x / √2))`) — HF wav2vec2
 /// uses `ACT2FN["gelu"]` = exact GELU. Same A&S 7.1.26 erf approximation
-/// as [`vokra_ops::waveform_frontend`]; kept private here so the align
+/// as [`vokra_ops::waveform_frontend()`]; kept private here so the align
 /// module has no cross-crate constraints on the ops erf.
 #[inline]
 fn gelu_exact(x: f32) -> f32 {

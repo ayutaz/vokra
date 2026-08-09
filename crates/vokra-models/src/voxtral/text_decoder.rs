@@ -33,7 +33,7 @@
 //!   self-attention with RoPE + causal mask + per-block K/V cache append,
 //!   pre-norm SwiGLU FFN, final RMSNorm and tied-logits head — through the
 //!   Compute seam so a GPU backend runs the same GEMM path (see
-//!   [`forward_step`]);
+//!   `forward_step`);
 //! - the KV cache lives on the caller side (`TextDecoderSession`) — one
 //!   `KvCache` with width `n_head_kv * head_dim` per layer.
 //!
@@ -131,7 +131,7 @@ struct MappedTextLayerLocs {
 /// - **Bind time** ([`Self::bind`]): all nine tensors of every layer are
 ///   resolved and shape/dtype-validated up front, so a malformed GGUF fails at
 ///   load rather than mid-stream (FR-EX-08).
-/// - **Step time** ([`Self::materialize_into`]): the requested layer is
+/// - **Step time** (`Self::materialize_into`): the requested layer is
 ///   widened + transposed straight out of the mapped bytes into the reused
 ///   scratch block, producing **bit-identical** f32 values to the resident
 ///   binding — same widening formula, same `[out, in]` -> `[in, out]` index
@@ -144,7 +144,7 @@ struct MappedTextLayerLocs {
 /// each, i.e. ~1.5 GiB apiece. The honest ceiling is therefore
 /// "~3 GiB of heads + one layer of scratch", not "bounded". Streaming the
 /// `lm_head` GEMV out of the mapping is a separate change — it would have to
-/// replace [`TextDecoder::output_head`]'s `&[f32]` contract.
+/// replace `TextDecoder::output_head`'s `&[f32]` contract.
 ///
 /// The scratch sits behind a `Mutex` so the owning decoder stays `Send + Sync`
 /// (`VoxtralAsr` is served concurrently from the server registry). Concurrent
@@ -176,7 +176,7 @@ impl std::fmt::Debug for MappedTextBlocks {
 impl MappedTextBlocks {
     /// Resolves and validates every layer's nine tensors against `cfg`.
     ///
-    /// `prefix` must be the same one [`pick_prefix`] chose for the resident
+    /// `prefix` must be the same one `pick_prefix` chose for the resident
     /// path, so both bindings name identical tensors.
     ///
     /// # Errors
@@ -446,7 +446,7 @@ impl BlockSource<'_> {
 
 /// All text-decoder weights. The logits head is the untied `lm_head` when
 /// the checkpoint ships one, else the tied token embedding — read it through
-/// [`TextDecoder::output_head`].
+/// `TextDecoder::output_head`.
 pub struct TextDecoder {
     /// Token embedding `[vocab_size, hidden_dim]` — also the tied LM head
     /// when `lm_head` is `None`.

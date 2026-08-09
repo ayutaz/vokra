@@ -32,7 +32,7 @@
 //!
 //! - `vokra_ops::flow_sample` (M3-05, FR-EX-10 — runtime function, NOT a
 //!   graph op; sampler axes are configurable per invocation);
-//! - `vokra_ops::mimi_rvq_decode` / [`MimiDecoder`] (M3-06, RVQ decode +
+//! - `vokra_ops::mimi_rvq_decode` / `MimiDecoder` (M3-06, RVQ decode +
 //!   Mimi CC-BY 4.0 attribution recorded in NOTICE / license-audit.md);
 //! - `vokra_ops::length_conditioning` (M3-08, mode A `UserSpecified` /
 //!   mode B `RefLinear`);
@@ -63,7 +63,7 @@
 //! [`WatermarkConfig::default()`] preserves the FR-CP-01/02 design intent
 //! (AudioSeal + C2PA + SilentCipher = ON), and
 //! [`WatermarkConfig::backend_status()`] returns
-//! [`WatermarkBackendStatus::Deferred`] — no embedding backend was
+//! [`vokra_core::compliance::WatermarkBackendStatus::Deferred`] — no embedding backend was
 //! implemented (M1-07 client drop 2026-07-04). CosyVoice2 must NOT lie
 //! about watermarking: **the deployer-side disclosure MUST**
 //! (`docs/legal-compliance.md` §1.4) still applies regardless of config

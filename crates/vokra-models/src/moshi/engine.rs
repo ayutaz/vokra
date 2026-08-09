@@ -502,7 +502,7 @@ impl MoshiEngine {
     /// standalone Mimi GGUF produced by `vokra-cli convert --model mimi`
     /// from the kyutai tokenizer checkpoint replaces the synthesized codec
     /// bridge on **both** ends (mic encode + model-frame decode), clipped
-    /// to `dep_q` codebooks ([`Self::bind_real_mimi`]).
+    /// to `dep_q` codebooks (`Self::bind_real_mimi`).
     ///
     /// Runs under the fail-closed strict compliance policy; use
     /// [`Self::with_mimi_gguf_with_policy`] to supply another. The side-car
@@ -736,7 +736,7 @@ impl MoshiEngine {
     }
 
     /// Opens an **owning** duplex session (the facade / C ABI shape —
-    /// `'static`, movable across threads). See [`Self::duplex_front_for`]
+    /// `'static`, movable across threads). See `Self::duplex_front_for`
     /// for the AEC posture rules.
     ///
     /// # Errors

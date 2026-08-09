@@ -156,7 +156,7 @@ impl WhisperAsr {
     /// * `config.length_normalization` maps to HF `length_penalty` (α in the
     ///   `score / len^α` ranking).
     /// * Hypotheses are unique by token sequence (the model-independent
-    ///   [`beam_search`] dedupes).
+    ///   [`beam_search()`](vokra_core::decode::beam_search()) dedupes).
     ///
     /// FR-EX-08: hypotheses are returned raw (untruncated to top-1). The
     /// caller decides whether to collapse to the top-1 (legacy

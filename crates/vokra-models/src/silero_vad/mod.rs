@@ -6,7 +6,7 @@
 //!   dedicated subgraph, *not* lowered to generic audio-dialect ops, and it is
 //!   *not* an audio-dialect op itself. Its internal recurrent state (LSTM
 //!   `h`/`c`) and the learned pseudo-STFT are hidden behind the stream handle
-//!   ([`VadStream`](stream::VadStream), via [`vokra_core::engines::VadEngine`]).
+//!   (`VadStream`, via [`vokra_core::engines::VadEngine`]).
 //! - **No librosa/FFT STFT approximation (NFR-QL-05)**: the pseudo-STFT is a
 //!   *learned* `Conv1d(1, 2*bins, k)`, reproduced op-for-op and never lowered to
 //!   a standard `stft` op (FR-OP-01) — see [`vokra_vad_micro::pseudo_stft`].
@@ -19,7 +19,7 @@
 //! (IoT Tier 3 / NFR-PT-03) without pulling in the std-heavy `vokra-ops` /
 //! `vokra-backend-cpu` that `vokra-models` depends on. This module is the **std
 //! veneer** over it: the [`VadEngine`] implementation, the streaming handle
-//! ([`stream`]), the WAV reader ([`wav`]) and the file-path [`open`](SileroVadV5::open)
+//! (`stream`), the WAV reader ([`wav`]) and the file-path [`open`](SileroVadV5::open)
 //! constructor. There is therefore ONE forward — the std and no_std builds are
 //! bit-identical by construction (M5-03 T08/T11).
 //!

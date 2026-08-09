@@ -309,7 +309,7 @@ struct MappedBlockScratch {
 /// - **Bind time** ([`Self::bind`]): every layer's six tensors are
 ///   resolved and shape/dtype-validated up front, so a malformed GGUF
 ///   fails at load, not mid-stream (FR-EX-08).
-/// - **Step time** ([`Self::materialize_into`]): the requested layer is
+/// - **Step time** (`Self::materialize_into`): the requested layer is
 ///   widened + transposed straight out of the mapped bytes into the
 ///   reused scratch block, with **bit-identical** f32 values to the
 ///   resident [`MoshiBackboneWeights::from_gguf`] binding (same BF16
@@ -547,7 +547,7 @@ const MOSHI_HEAD_CHUNK_ROWS: usize = 128;
 ///   accumulator, so lookup cost is `O(d)` per token (identical to the
 ///   resident path's memcpy+add).
 /// - `text_linear` is consumed by a per-row GEMV, so it is walked in
-///   [`MOSHI_HEAD_CHUNK_ROWS`]-row chunks by [`Self::text_logits_into`]:
+///   `MOSHI_HEAD_CHUNK_ROWS`-row chunks by [`Self::text_logits_into`]:
 ///   `out[v] = Σ_c head[v, c] * hidden[c]` involves no cross-row term
 ///   and each row's accumulation order is untouched, so the chunked
 ///   result is **bit-identical** to the resident `compute.gemv_f32`.
