@@ -1788,11 +1788,6 @@ impl TtsEngine for SbV2Model {
     /// # Errors
     ///
     /// Returns [`VokraError::InvalidArgument`] if:
-    /// - `request.speaker_embedding` is `Some(..)` — SBV2 selects
-    ///   speakers through [`SpeakerEmbedding`]'s discrete id lookup, not
-    ///   a caller-supplied continuous embedding (Blocker 3 speaker-
-    ///   conditioning posture; both TtsEngine trait path and inherent
-    ///   [`synthesize`](SbV2Model::synthesize) call surface identical errors).
     /// - `request.prosody_features` is `Some(..)` — SBV2 derives
     ///   pitch-accent tones from its own G2P, not a caller-supplied
     ///   per-phoneme accent triple; honoring it would silently discard
@@ -1800,21 +1795,32 @@ impl TtsEngine for SbV2Model {
     /// - `request.style_vec = Some(v)` with `v.len() != d_style` — the
     ///   AdaIN projection cannot silently reshape a mismatched vector
     ///   (FR-EX-08).
+    /// - The inherent [`synthesize`](SbV2Model::synthesize) call fails
+    ///   for any reason it documents there. In particular,
+    ///   `request.speaker_embedding = Some(_)` on a model with no
+    ///   [`ExternalSpeakerProjection`] loaded surfaces as
+    ///   [`VokraError::InvalidArgument`] from that inherent method (the
+    ///   "loud-error posture" the pre-Blocker-3 adapter used to enforce
+    ///   itself, moved down into the pipeline so both entry points
+    ///   surface identical errors — see the "Speaker conditioning" note
+    ///   above).
     ///
-    /// All three follow the codebase's established "loudly error on a
-    /// request field a specific engine cannot honor" convention (see the
-    /// Whisper `no_repeat_ngram_size` gate in `integrations/vokra-server`).
-    /// Also propagates any error the inherent
-    /// [`synthesize`](SbV2Model::synthesize) call returns.
+    /// # WP-13a (2026-08-10)
+    ///
+    /// Pre-Blocker-3 the adapter rejected any `request.speaker_embedding
+    /// = Some(_)` upfront with a hard-coded `InvalidArgument`. Blocker 3
+    /// moved the loud-error contract down into
+    /// [`SbV2Model::synthesize`], which now honors a caller-supplied
+    /// embedding when [`.with_external_speaker_projection(_)`] has been
+    /// wired (and still surfaces the same loud error when it has not).
+    /// This adapter's job is now to *thread* `speaker_embedding` through,
+    /// not to reject it — the pre-Blocker-3 rejection block was orphaned
+    /// dead code by the earlier refactor. `sbv2_speaker_external.rs`
+    /// tests hit the loud-error path via the inherent method, not this
+    /// adapter, so removing the guard here restores the intended
+    /// symmetry the Blocker-3 rustdoc already advertised (see the
+    /// "Speaker conditioning" paragraph above).
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
-        if request.speaker_embedding.is_some() {
-            return Err(VokraError::InvalidArgument(
-                "SbV2Model (TtsEngine): caller-supplied speaker_embedding is not supported — \
-                 SBV2 selects speakers via a discrete id (SynthesisRequest::speaker_id / \
-                 SbV2SynthRequest::speaker_id)"
-                    .to_string(),
-            ));
-        }
         if request.prosody_features.is_some() {
             return Err(VokraError::InvalidArgument(
                 "SbV2Model (TtsEngine): caller-supplied prosody_features is not supported — \
