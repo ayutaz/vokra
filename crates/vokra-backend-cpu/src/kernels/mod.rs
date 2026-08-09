@@ -62,12 +62,18 @@ pub(crate) mod gemm_driver;
 #[cfg(feature = "simd-transcendental")]
 pub(crate) mod vexp;
 
-// M5-03-T06: self-contained scalar `exp` / `tanh` / `sqrt` in pure `core`
-// arithmetic (no `std`, no `libm`) for the no_std Cortex-M55 subset. Provided in
-// Wave 1 and exercised only by its own property tests; T08 (Wave 2) wires it
-// into the Silero forward. `#[allow(dead_code)]` covers the interim: the
-// functions are not yet called from production code (a plain `cargo build`
-// would otherwise flag them under `-D warnings`).
+// M5-03-T06 (Wave 1: exp/tanh/sqrt) + WP-06 (2026-08-09: sin/cos/log/log1p):
+// self-contained scalar transcendentals in pure `core` arithmetic (no `std`,
+// no `libm`). **WP-07** hoisted the implementations into the new `vokra-math`
+// crate — this module is now a thin `pub(crate) use vokra_math::…` re-export
+// shim so any internal caller reaching them via
+// `crate::kernels::scalar_transcendental::{…}` keeps compiling unchanged.
+// `#[allow(dead_code)]` covers the interim: internal callers migrate to
+// naming `vokra_math::*` directly (SBV2 hot path, WP-05 owner decision),
+// leaving the shim's re-exports unused in non-test builds; the wrap of
+// `#[allow(unused_imports)]` on the `use` line inside the shim is the peer
+// tolerance for that. Production wiring (Silero forward T08, SBV2 kernels)
+// still calls the primitives at runtime — through `vokra-math` after WP-07.
 #[allow(dead_code)]
 pub(crate) mod scalar_transcendental;
 

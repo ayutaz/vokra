@@ -79,6 +79,16 @@ vokra-vad-micro = { path = "crates/vokra-vad-micro", version = "0.1.0-alpha.0" }
 # `vokra-*` crate with only a `vokra-core` + `vokra-mmap` dep, so the root
 # Cargo.lock stays vokra-* only (NFR-DS-02).
 vokra-bert = { path = "crates/vokra-bert", version = "0.1.0-alpha.0" }
+# WP-07: the shared home for the scalar f32 transcendental primitives
+# (`exp`/`tanh`/`sqrt`/`sin`/`cos`/`log`/`log1p`) — extracted from
+# `crates/vokra-backend-cpu/src/kernels/scalar_transcendental.rs` so
+# non-backend crates (`vokra-ops::hifigan`, `vokra-bert::deberta_v2`, and
+# future SBV2 kernels) can call them WITHOUT depending on
+# `vokra-backend-cpu` (that edge would pull the full CPU kernel tier
+# — AVX-512, dotprod / i8mm, K-quants, thread pool — into every op crate).
+# Zero external deps (not even `vokra-core`): the whole crate is pure `core`
+# arithmetic, so the root Cargo.lock stays vokra-* only (NFR-DS-02).
+vokra-math = { path = "crates/vokra-math", version = "0.1.0-alpha.0" }
 
 # Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +

@@ -20,6 +20,16 @@ categories.workspace = true
 
 [dependencies]
 vokra-core.workspace = true
+# WP-07: shared home for the scalar f32 transcendentals
+# (`exp`/`tanh`/`sqrt`/`sin`/`cos`/`log`/`log1p`). The bodies used to live in
+# `src/kernels/scalar_transcendental.rs` here; that module is now a thin
+# `pub(crate) use vokra_math::…` re-export shim so internal callers keep
+# compiling unchanged, while non-backend crates can name `vokra-math` directly
+# without pulling `vokra-backend-cpu` (which would flip the crate graph
+# inside-out — every op crate would import the full CPU kernel tier). Zero
+# external deps preserved (NFR-DS-02): `vokra-math`'s own graph is only
+# `core`.
+vokra-math.workspace = true
 
 # Feature flags (no external crates — the workspace stays dependency-free,
 # NFR-DS-02).

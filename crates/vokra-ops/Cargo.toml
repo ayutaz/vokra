@@ -24,6 +24,15 @@ vokra-core.workspace = true
 # `./scripts/check-zero-deps.sh` audits the release lock.
 [dev-dependencies]
 vokra-models = { path = "../vokra-models" }
+# WP-07 wiring pin (tests/vokra_math_shared_primitives.rs): prove that
+# `vokra-ops` — and by extension every non-backend first-party crate — can
+# call the shared scalar transcendentals in `vokra-math` WITHOUT depending
+# on `vokra-backend-cpu`. Dev-only edge: this dependency exists solely to
+# link the smoke test; production code inside `vokra-ops` picks up the
+# same crate through its own future runtime edge as the SBV2 hot-path
+# migration lands. First-party `vokra-*` crate, so the root `Cargo.lock`
+# continues to list only `vokra-*` packages (NFR-DS-02).
+vokra-math.workspace = true
 
 # M0-04-T19: FFT / RFFT / STFT micro-benchmarks. `harness = false` uses a plain
 # `fn main()` binary (std timing) instead of the unstable libtest `#[bench]`
