@@ -3132,7 +3132,16 @@ mod tests {
 
         let summary = convert_sbv2(&input, Some(config.as_path()), &output, None)
             .expect("convert_sbv2 must succeed with a valid config side-car");
-        assert_eq!(summary.tensor_count, 1);
+        // Wave-4 CONVERTER-EMIT-EXPLICIT-ZEROS (2026-08-09): converter now
+        // emits 4 fabricated zero-slot placeholders for optional real-ckpt
+        // tensors the loader still requires (conv_post.bias +
+        // style_injector.{proj_scale,proj_bias} + speaker.table). So the
+        // total = 1 real synthetic input tensor + 4 fabricated zeros = 5.
+        // Before the Wave-4 refactor this was 1; the loader fabricated the
+        // zeros. The invariant this test still pins is "converter runs to
+        // completion with a valid config side-car" — the exact count is a
+        // sibling assertion, updated to match the new converter contract.
+        assert_eq!(summary.tensor_count, 5);
         assert!(
             summary
                 .notes

@@ -386,17 +386,11 @@ fn hgan_03_pre_conv_post_leaky_slope_ignores_attrs_slope() {
 
     let out_ch = 3; // last stage out_ch (before conv_post)
     // conv_pre: [initial_channel, n_mels, kernel] — all positive.
-    let mut conv_pre_weight = Vec::new();
-    for _ in 0..(attrs.initial_channel * attrs.n_mels * conv_pre_kernel) {
-        conv_pre_weight.push(0.1);
-    }
+    let conv_pre_weight = vec![0.1_f32; attrs.initial_channel * attrs.n_mels * conv_pre_kernel];
     let conv_pre_bias = vec![0.01_f32; attrs.initial_channel];
 
     // transposed conv1d: [in_ch, out_ch, kernel] — all positive.
-    let mut up_weight = Vec::new();
-    for _ in 0..(attrs.initial_channel * out_ch * attrs.upsample_kernel_sizes[0]) {
-        up_weight.push(0.05);
-    }
+    let up_weight = vec![0.05_f32; attrs.initial_channel * out_ch * attrs.upsample_kernel_sizes[0]];
     let up_bias = vec![0.05_f32; out_ch];
 
     // MRF branch: single layer, kernel 3, dilation 1. Choose weights so

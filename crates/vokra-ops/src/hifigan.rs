@@ -2310,6 +2310,7 @@ mod tests {
 
     /// Manual scalar reference for one V2 iteration: `xt = c(lrelu(x));
     /// x = xt + x`.
+    #[allow(clippy::too_many_arguments)]
     fn ref_v2_iteration(
         x: &[f32],
         channels: usize,
