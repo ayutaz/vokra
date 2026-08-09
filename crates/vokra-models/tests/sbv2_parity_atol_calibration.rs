@@ -155,6 +155,19 @@ fn atol_calibration_status_is_pinned() {
         // `PER_TENSOR_ATOL`'s `"waveform"` block-doc for derivation +
         // `docs/adr/sbv2-libm-strategy.md` §2.2 for why the bit-exact
         // libm follow-up is a documented deferral (not a fabricated pass).
+        //
+        // Status update 2026-08-09: the SBV2 hot-path libm swap (WP-05,
+        // ~40h CC budget) has been ACCEPTED as a scoped exception; see
+        // `docs/adr/sbv2-libm-strategy.md` §3.2.1. The "documented
+        // deferral" wording above is preserved as pre-decision history
+        // (append-never-delete). Workspace-wide vendoring of
+        // `rust-lang/libm` / RLIBM / SLEEF stays rejected (§3.1/§3.2);
+        // the in-tree hot-path swap is now the tightening path. When
+        // WP-06 → WP-07 → WP-08 lands and CI measures a tighter bound,
+        // flip this row's value in `PER_TENSOR_ATOL` per
+        // `docs/adr/sbv2-parity-atol.md` §5 Revert 手続き (5-point
+        // simultaneous update; do NOT loosen). The status here stays
+        // `Measured` — the WP-05 land tightens the value, not the tier.
         ("waveform", AtolCalibration::Measured),
         // ---- WP-01 pinned pass-throughs (manifest but no override) ----
         // Each of these currently falls back to ATOL_DEFAULT (0.01) in

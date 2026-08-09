@@ -234,6 +234,25 @@ pub enum AtolCalibration {
 ///     Do NOT tighten below `1.0` without a follow-up that pins libm
 ///     bit-exact (see `docs/adr/sbv2-libm-strategy.md` §4 for the
 ///     options and why we defer them).
+///
+///     **Status update 2026-08-09**: the SBV2 hot-path libm swap
+///     (WP-05, ~40h CC budget) has since been ACCEPTED as a scoped
+///     exception — see `docs/adr/sbv2-libm-strategy.md` §3.2.1. The
+///     "why we defer them" text above is preserved as the pre-decision
+///     historical record (append-never-delete per the Kokoro
+///     `PROSODY_F0_ATOL` precedent), but the resolution is now:
+///     workspace-wide vendoring of `rust-lang/libm` / RLIBM / SLEEF
+///     remains rejected (§3.1 / §3.2 unchanged), while an in-tree
+///     hot-path swap covering HiFi-GAN `tanh` / `sqrt` (WP-08), DeBERTa
+///     transcendentals (WP-10), text-encoder / flow primitives
+///     (WP-11), and SbV2SDP sampling (WP-12) is authorized. The
+///     tightening path is WP-06 (parity harness prep + per-arch
+///     byte-exact baseline pinning) → WP-07 (in-tree module scaffold +
+///     FMA discipline audit) → WP-08 (dominant term swap), with the
+///     `1.5` bound expected to tighten toward `~1e-3` (Kokoro-tier)
+///     once WP-08 lands. Until then the `1.0` floor above still
+///     applies; the `docs/adr/sbv2-parity-atol.md` §5 Revert 手続き
+///     governs any post-measurement tightening.
 ///   - [`AtolCalibration::Measured`] since the fixture measurement is
 ///     now real and byte-derived from the CI Linux run (31303426623),
 ///     not a paper-cited estimate.
@@ -300,6 +319,18 @@ pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
         // and `docs/adr/sbv2-libm-strategy.md` §2.2 for the cross-plat
         // libm amplification through HiFi-GAN that gates the tightening
         // path (bit-exact libm follow-up is a documented deferral).
+        //
+        // Status update 2026-08-09: the SBV2 hot-path libm swap
+        // (WP-05, ~40h CC budget) has since been ACCEPTED as a scoped
+        // exception — see `docs/adr/sbv2-libm-strategy.md` §3.2.1. The
+        // "documented deferral" phrasing above is preserved as pre-
+        // decision history (append-never-delete). Practical resolution:
+        // workspace-wide vendoring stays rejected (§3.1 / §3.2); the
+        // in-tree hot-path swap (HiFi-GAN `tanh`/`sqrt` = WP-08 is the
+        // dominant term) is authorized and expected to tighten this
+        // `Measured` 1.5 toward ~1e-3 (Kokoro-tier) once WP-08 lands.
+        // The Revert 手続き in `docs/adr/sbv2-parity-atol.md` §5 still
+        // governs any actual value change.
         "waveform" => Some(AtolCalibration::Measured),
         // WP-01 CALIBRATION-COVERAGE (2026-08-09): the six manifest
         // tensors below are not in [`PER_TENSOR_ATOL`], so

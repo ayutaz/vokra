@@ -70,6 +70,23 @@ algorithm and verified byte-for-byte by
   of "match torch bit-exact on every host" and the justification for
   this tolerance in place of vendoring `rust-lang/libm` / RLIBM / SLEEF.
 
+  **Status update 2026-08-09**: workspace-wide vendoring of
+  `rust-lang/libm` / RLIBM / SLEEF stays **rejected** (ADR §3.1 / §3.2
+  unchanged) — the tolerance justification above is still in force. But
+  the SBV2 hot-path libm swap (WP-05, ~40h CC budget) has since been
+  **ACCEPTED** as a scoped exception; see `docs/adr/sbv2-libm-strategy.md`
+  §3.2.1 for the boundary between "workspace-wide vendoring, still
+  rejected" and "SBV2-only in-tree hot-path swap, now authorized". The
+  in-tree swap covers HiFi-GAN `tanh` / `sqrt` (WP-08 dominant term),
+  DeBERTa transcendentals (WP-10), text-encoder / flow primitives
+  (WP-11), and SbV2SDP sampling (WP-12 — this is the site that touches
+  `TorchRandnStream::next_f32`'s Box-Muller). WP-12 may retire this
+  per-sample 2-ULP tolerance on the SBV2 downstream consumers of the
+  RNG (via per-arch byte-exact baseline pinning, WP-06); the fixtures
+  themselves and the `rng_torch_randn_e2e.rs` test continue to describe
+  the general RNG contract vs torch on **host** libm, which does not
+  change.
+
 ## Regeneration
 
 ```bash
