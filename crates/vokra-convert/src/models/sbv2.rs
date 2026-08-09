@@ -181,9 +181,10 @@
 //!
 //! # Hparams — config-side-car-driven, never invented
 //!
-//! `SbV2Model::from_gguf` requires 22 `vokra.sbv2.*` metadata keys (13
-//! top-level dims + 3 decoder scalars + 6 decoder arrays) plus one optional
-//! key (`decoder.leaky_relu_slope`, default `0.1`) — 23 keys total, none of
+//! `SbV2Model::from_gguf` requires 23 `vokra.sbv2.*` metadata keys (13
+//! top-level dims + 3 decoder scalars + 6 decoder arrays + the
+//! `decoder.leaky_relu_slope` `f32`; WP-13 promoted the slope from
+//! optional-with-`0.1`-fallback to required per FR-EX-08) — none of
 //! which is recoverable from a generic tensor-shape scan the way
 //! `deberta_v2.rs`'s `infer_vocab_and_d_model` recovers DeBERTa's
 //! `vocab_size` / `d_model` (SBV2's real upstream tensor-naming convention
@@ -313,14 +314,20 @@ const KEY_DECODER_RESBLOCK_KERNEL_SIZES: &str = "vokra.sbv2.decoder.resblock_ker
 const KEY_DECODER_RESBLOCK_DILATION_COUNTS: &str = "vokra.sbv2.decoder.resblock_dilation_counts";
 const KEY_DECODER_RESBLOCK_DILATIONS_FLAT: &str = "vokra.sbv2.decoder.resblock_dilations_flat";
 
-// Optional (1).
+// Optional at the JSON side-car level only (WP-13 promoted the loader-side
+// read to required per FR-EX-08 — see `SbV2Model::from_gguf`'s doc). The
+// converter always emits this key downstream, using
+// `DEFAULT_LEAKY_RELU_SLOPE` when the side-car omits it, so no Vokra-produced
+// GGUF ever ends up with the key missing.
 const KEY_DECODER_LEAKY_RELU_SLOPE: &str = "vokra.sbv2.decoder.leaky_relu_slope";
 
 /// Default `decoder.leaky_relu_slope` when the config side-car omits it —
-/// mirrors `SbV2Model::from_gguf`'s own `unwrap_or(0.1)` fallback (the
-/// universal jik876/hifi-gan `LRELU_SLOPE` every sibling decoder in this
-/// codebase uses — `vits_ja::VITS_JA_LEAKY_RELU_SLOPE`, piper-plus's
-/// `LRELU_SLOPE`).
+/// the universal jik876/hifi-gan `LRELU_SLOPE` every sibling decoder in
+/// this codebase compiles in (`vits_ja::VITS_JA_LEAKY_RELU_SLOPE`,
+/// piper-plus's `LRELU_SLOPE`). This defaulting is a **converter-side
+/// convenience only** (it lets a stock config side-car omit the field);
+/// the loader (`SbV2Model::from_gguf`) requires the emitted GGUF metadata
+/// key unconditionally (WP-13, FR-EX-08).
 const DEFAULT_LEAKY_RELU_SLOPE: f32 = 0.1;
 
 /// Post-M6 (2026-08-06) relative-position transformer defaults for the
@@ -564,8 +571,9 @@ pub(crate) struct SbV2Config {
 impl SbV2Config {
     /// Parses a JSON config side-car. Every field is required except
     /// `decoder_leaky_relu_slope` (defaults to [`DEFAULT_LEAKY_RELU_SLOPE`]
-    /// when the key is absent, mirroring `SbV2Model::from_gguf`'s own
-    /// fallback).
+    /// when the key is absent — a converter-side convenience only; the
+    /// loader `SbV2Model::from_gguf` requires the emitted GGUF metadata key
+    /// unconditionally per WP-13 / FR-EX-08).
     ///
     /// # Errors
     ///

@@ -1498,10 +1498,11 @@ impl SbV2Model {
     ///
     /// # Metadata keys (`vokra.sbv2.*`, all read from `main`)
     ///
-    /// Every key below is a required `u32` unless noted otherwise — a
-    /// missing or wrong-typed key is [`VokraError::ModelLoad`] naming the
-    /// key, never a silent default (FR-EX-08). Rationale for why each value
-    /// lives here (vs. being derivable some other way) follows each entry.
+    /// Every key below is required; scalar dims are `u32` unless noted
+    /// otherwise (`decoder.leaky_relu_slope` is `f32`). A missing or
+    /// wrong-typed key is [`VokraError::ModelLoad`] naming the key, never a
+    /// silent default (FR-EX-08). Rationale for why each value lives here
+    /// (vs. being derivable some other way) follows each entry.
     ///
     /// - `d_model` — [`SbV2TextEncoder`]/[`SbV2SDP`]/[`SbV2Flow`]-conditioning
     ///   shared hidden width (SBV2 v2's real-world value is 192, per
@@ -1580,12 +1581,16 @@ impl SbV2Model {
     ///   table. A flat array avoids relying on nested-array metadata (no
     ///   other loader in this codebase emits or reads one, so this stays
     ///   consistent with the established flat-metadata convention).
-    /// - `decoder.leaky_relu_slope` (`f32`, **optional**, default `0.1`) —
-    ///   [`HifiGanAttrs::leaky_relu_slope`]. Defaults to the universal
-    ///   jik876/hifi-gan `LRELU_SLOPE` every sibling decoder in this
-    ///   codebase uses (`vits_ja::VITS_JA_LEAKY_RELU_SLOPE`, piper-plus's
-    ///   `LRELU_SLOPE`), so a converter need not emit it for a stock
-    ///   config.
+    /// - `decoder.leaky_relu_slope` (`f32`) — [`HifiGanAttrs::leaky_relu_slope`].
+    ///   Historically defaulted to the universal jik876/hifi-gan `LRELU_SLOPE`
+    ///   = `0.1` (`vits_ja::VITS_JA_LEAKY_RELU_SLOPE`, piper-plus's
+    ///   `LRELU_SLOPE`) when the metadata key was absent; WP-13 promoted the
+    ///   read to required per FR-EX-08 — silently defaulting a hparam that
+    ///   the checkpoint can legitimately vary would produce audio that is
+    ///   subtly wrong with no observable signal. The Vokra converter
+    ///   ([`vokra_convert::models::sbv2::write_hparams`]) always emits this
+    ///   key (falling back to `0.1` at config-parse time when the JSON
+    ///   side-car omits it), so no Vokra-produced GGUF is affected.
     ///
     /// `n_pos_buckets` is deliberately **not** read here: it is a
     /// DeBERTa-only concept (relative-position attention bucketing) that
@@ -1780,8 +1785,20 @@ impl SbV2Model {
                 ))
             })
         };
-        let meta_f32 =
-            |key: &str| -> Option<f32> { main.get(key).and_then(|v| v.as_f64()).map(|f| f as f32) };
+        // `require_f32` is the `f32` sibling of `require_u32` — SBV2's only
+        // scalar float hparam today is `decoder.leaky_relu_slope`, but
+        // structured this way so the pattern is reusable if the schema grows
+        // (mirrors the `require_u32` / `require_array_usize` shape below).
+        let require_f32 = |key: &str| -> Result<f32> {
+            main.get(key)
+                .and_then(|v| v.as_f64())
+                .map(|f| f as f32)
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "SbV2Model::from_gguf: missing GGUF metadata key: {key}"
+                    ))
+                })
+        };
         let require_array_usize = |key: &str| -> Result<Vec<usize>> {
             let val = main.get(key).ok_or_else(|| {
                 VokraError::ModelLoad(format!(
@@ -1874,6 +1891,20 @@ impl SbV2Model {
             };
         let n_sdp_layers = require_u32("vokra.sbv2.n_sdp_layers")? as usize;
         let sample_rate = require_u32("vokra.sbv2.sample_rate")?;
+        // `decoder.leaky_relu_slope` is read up front alongside the other
+        // scalar dims (rather than beside the decoder-array metadata block
+        // below) so all scalar hparam reads are validated before any tensor
+        // load — a missing key surfaces a named-key error instead of a
+        // misleading downstream "tensor not found" (WP-13, FR-EX-08). The
+        // read is required (never a silent default): while `0.1` is the
+        // universal jik876/hifi-gan `LRELU_SLOPE` every sibling decoder in
+        // this codebase compiles in (`vits_ja::VITS_JA_LEAKY_RELU_SLOPE`,
+        // piper-plus's `LRELU_SLOPE`), the SBV2 schema treats it as a
+        // per-checkpoint hparam that the converter always emits — silently
+        // defaulting when the GGUF omits it would produce audio that is
+        // subtly wrong (leaky-ReLU negative-slope drift) with no observable
+        // signal.
+        let leaky_relu_slope = require_f32("vokra.sbv2.decoder.leaky_relu_slope")?;
 
         // Cross-check the relative-position transformer hparams against
         // `d_model` before any tensor load — `n_heads` must divide
@@ -2381,7 +2412,8 @@ impl SbV2Model {
             require_array_usize("vokra.sbv2.decoder.resblock_dilation_counts")?;
         let resblock_dilations_flat =
             require_array_usize("vokra.sbv2.decoder.resblock_dilations_flat")?;
-        let leaky_relu_slope = meta_f32("vokra.sbv2.decoder.leaky_relu_slope").unwrap_or(0.1);
+        // `leaky_relu_slope` was read up front alongside the top-level scalar
+        // dims — see that read's comment for the FR-EX-08 rationale.
 
         let n_upsample_stages = upsample_rates.len();
         if upsample_kernel_sizes.len() != n_upsample_stages {

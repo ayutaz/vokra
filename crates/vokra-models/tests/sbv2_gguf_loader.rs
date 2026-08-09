@@ -76,6 +76,86 @@ fn from_gguf_on_empty_main_file_fails_loudly_naming_first_missing_key() {
     }
 }
 
+/// Builds a `main` GGUF with every required `vokra.sbv2.*` **scalar dim** key
+/// present but no tensors or decoder-array metadata. Used by WP-13 unit
+/// tests that assert loud-fail on a specific missing scalar hparam key
+/// (mirrors the "all-except-one" fixture pattern
+/// `vokra-bert`'s deberta_v2 loader tests use). Every value is a legal
+/// minimum: `n_text_layers`/`n_flow_layers`/`n_sdp_layers` = 0 skips every
+/// per-layer loop (each stack's `0` is exercised, per `from_gguf`'s doc),
+/// `d_z` = 2 satisfies the "non-zero and even" `SbV2Flow::from_layers`
+/// contract with the minimum legal value, and all other dims are non-zero.
+/// Values are internally consistent but deliberately not representative of
+/// any real checkpoint — these fixtures never progress past the top-level
+/// metadata read stage.
+fn scalar_dims_only_main() -> GgufBuilder {
+    let mut b = GgufBuilder::new();
+    b.add_u32("vokra.sbv2.d_model", 8);
+    b.add_u32("vokra.sbv2.d_bert", 8);
+    b.add_u32("vokra.sbv2.d_speaker", 8);
+    b.add_u32("vokra.sbv2.n_speakers", 1);
+    b.add_u32("vokra.sbv2.d_style", 8);
+    b.add_u32("vokra.sbv2.d_z", 2);
+    b.add_u32("vokra.sbv2.n_vocab", 4);
+    b.add_u32("vokra.sbv2.n_tones", 2);
+    b.add_u32("vokra.sbv2.d_ff", 8);
+    b.add_u32("vokra.sbv2.n_text_layers", 0);
+    b.add_u32("vokra.sbv2.n_flow_layers", 0);
+    b.add_u32("vokra.sbv2.n_sdp_layers", 0);
+    b.add_u32("vokra.sbv2.sample_rate", 22050);
+    b
+}
+
+/// WP-13: a `main` GGUF that populates every required `vokra.sbv2.*` scalar
+/// dim key but omits `vokra.sbv2.decoder.leaky_relu_slope` must fail loudly
+/// with `VokraError::ModelLoad` naming the missing key, never silently
+/// default to the universal jik876/hifi-gan `LRELU_SLOPE = 0.1` — FR-EX-08
+/// forbids silent-wrong defaults for hparams the model architecture can
+/// legitimately vary.
+///
+/// Rationale for the "required" classification (WP-13 audit): while `0.1`
+/// is the universal jik876/hifi-gan value every sibling Vokra decoder uses
+/// (`vits_ja::VITS_JA_LEAKY_RELU_SLOPE`, piper-plus's `LRELU_SLOPE`), a
+/// Style-Bert-VITS2 checkpoint's decoder *could* train with a different
+/// value. Silently defaulting when the GGUF omits the key would produce
+/// audio that is subtly wrong (leaky-ReLU negative-slope drift) without any
+/// observable signal to the caller — exactly the class of failure
+/// FR-EX-08 forbids. The Vokra converter always emits this key
+/// (`vokra_convert::models::sbv2::write_hparams`), so no Vokra-produced
+/// GGUF is affected — a third-party GGUF that omits it now surfaces a
+/// clear, named-key error rather than degrading silently.
+#[test]
+fn from_gguf_missing_leaky_relu_slope_fails_loudly() {
+    let main = GgufFile::parse(
+        scalar_dims_only_main()
+            .to_bytes()
+            .expect("build main gguf bytes"),
+    )
+    .expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    // `SbV2Model` has no `Debug` impl, so `Result::expect_err` is not usable.
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!(
+            "expected loud-fail on missing vokra.sbv2.decoder.leaky_relu_slope; loader \
+             silently accepted the omission (FR-EX-08 violation)"
+        ),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("vokra.sbv2.decoder.leaky_relu_slope"),
+                "expected error to name the missing key \
+                 `vokra.sbv2.decoder.leaky_relu_slope`, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
 /// Real-fixture gated: requires the repo-root
 /// `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
 /// trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
