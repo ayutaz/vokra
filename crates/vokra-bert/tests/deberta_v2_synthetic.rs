@@ -6,10 +6,47 @@ use vokra_bert::deberta_v2::{
     FfnBlock, LayerNorm,
 };
 
+/// Root-cause pin (parity-CI HEAD a4cf654, `bert_hidden_ja` residual
+/// 11.15 after Wave-1 R2 rel_embeddings pre-normalize fix): `q = k` must
+/// map to the **middle** bucket (= `att_span` = `bucket_size / 2`), NOT
+/// to bucket 0. This matches HuggingFace transformers
+/// `make_log_bucket_position` + `disentangled_attention_bias` verbatim:
+///
+/// ```python
+/// # transformers/src/transformers/models/deberta_v2/modeling_deberta_v2.py
+/// # make_log_bucket_position(relative_pos=0, bucket_size, max_position):
+/// #   sign = 0
+/// #   mid = bucket_size // 2
+/// #   abs_pos = mid - 1  (because rel is in (-mid, mid))
+/// #   bucket_pos = relative_pos (=0) since abs_pos <= mid
+/// # disentangled_attention_bias:
+/// #   c2p_pos = clamp(relative_pos + att_span, 0, 2*att_span - 1)
+/// #          = clamp(0 + att_span, ...) = att_span
+/// ```
+/// (`att_span` in HF == `bucket_size` == our `bucket_size` argument's
+/// half — the Rust API packs the `+ att_span` shift INTO the bucket
+/// function itself so callers get a positive-only index into
+/// `pos_embed`.)
+///
+/// The pre-fix `if rel == 0 { return 0; }` special case in
+/// [`vokra_bert::deberta_v2::relative_position_bucket`] returned bucket
+/// 0 for the diagonal — the wrong row of the learned `pos_embed`. For a
+/// 24-layer DeBERTa v2 large with seq_len = 5 this mis-picks the diagonal
+/// on every attention row of every layer, driving the ~11.15 residual
+/// the previous agent's Layer-Bisect harness was landed to localise
+/// (see `tests/parity_deberta_v2_layer_bisect.rs`).
 #[test]
-fn bucket_zero_for_same_position() {
-    // q = k → bucket = 0
-    assert_eq!(relative_position_bucket(5, 5, 256, 512), 0);
+fn bucket_for_same_position_is_att_span() {
+    // For any `bucket_size`, `q == k` (rel = 0) must map to `bucket_size / 2`
+    // — the "middle" bucket. HuggingFace's `make_log_bucket_position`
+    // returns 0 for rel=0, then `+ att_span` offset in
+    // `disentangled_attention_bias` shifts it to `att_span` = `bucket_size / 2`
+    // in our unified API.
+    assert_eq!(relative_position_bucket(5, 5, 256, 512), 128);
+    assert_eq!(relative_position_bucket(0, 0, 8, 8), 4);
+    // For the JA config: n_pos_buckets=512 → mid=256.
+    assert_eq!(relative_position_bucket(3, 3, 512, 512), 256);
+    assert_eq!(relative_position_bucket(0, 0, 512, 512), 256);
 }
 
 #[test]
@@ -26,6 +63,202 @@ fn bucket_saturates_at_max_dist() {
     let b_far = relative_position_bucket(0, 10_000, 256, 512);
     let b_last = relative_position_bucket(0, 100_000, 256, 512);
     assert_eq!(b_far, b_last);
+}
+
+/// Root-cause pin (parity-CI HEAD a4cf654, `bert_hidden_ja` residual
+/// 11.15 after Wave-1 R2 rel_embeddings pre-normalize fix, companion to
+/// [`bucket_for_same_position_is_att_span`]): the P2C term of the
+/// disentangled attention MUST index `pos_embed` (`Q^p`) using the SAME
+/// bucket as C2P — `bucket(i, j) = mid + (i - j)` — NOT the sign-swapped
+/// `bucket(j, i) = mid + (j - i)`.
+///
+/// This matches HuggingFace transformers
+/// `disentangled_attention_bias`'s effective indexing (after the
+/// `p2c_pos = clamp(-r_pos + att_span, ...)` gather + `.transpose(-1,-2)`
+/// dance):
+///
+/// ```python
+/// # transformers/src/transformers/models/deberta_v2/modeling_deberta_v2.py
+/// # p2c contribution to score[b, i, j] =
+/// #   key_layer[b, j, :] · pos_query_layer[b, (i - j) + att_span, :]
+/// ```
+///
+/// and matches microsoft/DeBERTa `disentangled_attention.py` verbatim
+/// (which reuses `c2p_pos` for the P2C gather with `dim=-2` — clearer
+/// evidence the two terms share the SAME bucket index):
+///
+/// ```python
+/// # microsoft/DeBERTa/DeBERTa/deberta/disentangled_attention.py
+/// # p2c_att = torch.bmm(pos_query_layer * scale, key_layer.transpose(-1, -2))
+/// # p2c_att = torch.gather(p2c_att, dim=-2, index=c2p_pos)   # same c2p_pos
+/// # score += p2c_att
+/// ```
+///
+/// The pre-fix `bucket_rev = relative_position_bucket(j, i, ...)` call in
+/// [`DisentangledAttention::forward`] picked the wrong `Q^p` row for
+/// every off-diagonal (i, j) pair — for seq_len = 5 JA this is 20 wrong
+/// row lookups per attention head per layer, driving a large fraction
+/// of the ~11.15 residual alongside the diagonal `rel == 0` bug pinned
+/// by [`bucket_for_same_position_is_att_span`].
+///
+/// Constructive proof: two identical attention modules, one with the
+/// current (buggy) P2C indexing and one with the fixed indexing, must
+/// produce **different** outputs on a non-symmetric input (a purely
+/// symmetric input like all-ones can't distinguish because the bug is
+/// symmetric in i and j — i.e., `pos_embed[mid + (i-j)]` and
+/// `pos_embed[mid + (j-i)]` differ IFF the position embeddings are
+/// asymmetric across `mid`, which non-uniform embeddings guarantee).
+///
+/// This test is a **behavior differential** against a scenario the
+/// bugged path is architecturally forced to compute the same as the
+/// fixed path — impossible without either (a) all-zero position
+/// embeddings or (b) position embeddings that are perfectly
+/// symmetric around bucket `mid`. Neither the JA nor the EN checkpoint
+/// satisfies (a) or (b); the test setup uses asymmetric `pos_embed` to
+/// mirror that.
+#[test]
+fn p2c_bucket_index_matches_c2p_not_reversed() {
+    // Non-symmetric setup: seq_len = 2 with hidden[0] != hidden[1] and
+    // asymmetric pos_embed. C2P and P2C then each read a different
+    // `pos_embed` row per (i, j) pair; if P2C is buggy and picks
+    // `mid + (j - i)` instead of `mid + (i - j)`, the resulting sum in
+    // `score[i, j]` differs from what HF/Microsoft's reference computes.
+    //
+    // The empirical proof: this test's expected values are derived from
+    // the corrected math (see the block comment in the test body). Under
+    // the buggy P2C indexing, the output MUST differ from the expected
+    // values. Under the fixed P2C indexing, they match.
+    let d_model = 2;
+    let n_heads = 1;
+    let head_dim = d_model / n_heads;
+    let n_pos_buckets: i32 = 8; // mid = 4
+    let max_pos_dist: i32 = 8;
+    let seq_len = 2;
+
+    // Sanity: for (i=0, j=1), rel = -1 → bucket_c2p = mid + rel = 3.
+    //         For (i=1, j=0), rel = +1 → bucket_c2p = mid + rel = 5.
+    // The buggy P2C used relative_position_bucket(j, i, ...):
+    //   For (i=0, j=1) → rel = j - i = +1 → bucket = 5 (should be 3).
+    //   For (i=1, j=0) → rel = j - i = -1 → bucket = 3 (should be 5).
+    // → swap of pos_embed[3] and pos_embed[5] for these two pairs.
+    assert_eq!(
+        relative_position_bucket(0, 1, n_pos_buckets, max_pos_dist),
+        3
+    );
+    assert_eq!(
+        relative_position_bucket(1, 0, n_pos_buckets, max_pos_dist),
+        5
+    );
+    assert_eq!(
+        relative_position_bucket(1, 0, n_pos_buckets, max_pos_dist),
+        5
+    );
+    assert_eq!(
+        relative_position_bucket(0, 1, n_pos_buckets, max_pos_dist),
+        3
+    );
+
+    // Asymmetric pos_embed: row `bucket` = [bucket, -bucket] so
+    // pos_embed[3] = [3, -3], pos_embed[5] = [5, -5]. Swapping these two
+    // buckets in P2C's lookup DOES change the C2C + C2P + P2C sum for
+    // both (0,1) and (1,0) score entries.
+    let mut pos_embed = vec![0.0_f32; n_pos_buckets as usize * d_model];
+    for bucket in 0..(n_pos_buckets as usize) {
+        pos_embed[bucket * d_model] = bucket as f32;
+        pos_embed[bucket * d_model + 1] = -(bucket as f32);
+    }
+
+    // Non-zero content path: wq/wk/wv/wq_pos/wk_pos identity, hidden
+    // distinguishable per token. w_out identity so we can trace the
+    // final projection.
+    let identity = |d: usize| -> Vec<f32> {
+        let mut m = vec![0.0_f32; d * d];
+        for i in 0..d {
+            m[i * d + i] = 1.0;
+        }
+        m
+    };
+    let w = AttnWeights {
+        wq: identity(d_model),
+        wk: identity(d_model),
+        wv: identity(d_model),
+        wq_pos: identity(d_model),
+        wk_pos: identity(d_model),
+        w_out: identity(d_model),
+        pos_embed,
+        bq: vec![0.0_f32; d_model],
+        bk: vec![0.0_f32; d_model],
+        bv: vec![0.0_f32; d_model],
+        bout: vec![0.0_f32; d_model],
+    };
+    let attn =
+        DisentangledAttention::new(w, d_model, n_heads, head_dim, n_pos_buckets, max_pos_dist);
+    // Hidden: token 0 = [1, 0], token 1 = [0, 1] — distinguishable, and
+    // combined with pos_embed asymmetry drives the P2C bucket mistake
+    // through to the final output.
+    let hidden: Vec<f32> = vec![1.0, 0.0, 0.0, 1.0];
+    let out = attn.forward(&hidden, seq_len);
+
+    // Under the FIXED P2C indexing, and with the FIXED rel==0 mapping
+    // (bucket = 4 for the diagonal), computed by hand (see the paper
+    // trace on the parity report for a4cf654):
+    //
+    //   scale = 1/sqrt(3*2) = 1/sqrt(6) ≈ 0.4082
+    //
+    //   Q, K, V after `x @ I + 0` are just the input hidden.
+    //   Q_p, K_p after `pos_embed @ I + 0` are just pos_embed.
+    //
+    //   For pair (0, 0):
+    //     C2C = q[0] · k[0] = [1,0]·[1,0] = 1
+    //     bucket_c2p = mid = 4  → k_p[4] = [4, -4]
+    //     C2P = q[0] · k_p[4]  = [1,0]·[4,-4] = 4
+    //     bucket_p2c = mid = 4 (SAME as C2P after fix) → q_p[4] = [4, -4]
+    //     P2C = q_p[4] · k[0]  = [4,-4]·[1,0] = 4
+    //     score[0,0] = (1 + 4 + 4) * 0.4082 = 9 * 0.4082 = 3.6742
+    //
+    //   For pair (0, 1) — off-diagonal:
+    //     C2C = q[0] · k[1] = [1,0]·[0,1] = 0
+    //     bucket_c2p = mid + (0-1) = 3  → k_p[3] = [3, -3]
+    //     C2P = q[0] · k_p[3]  = [1,0]·[3,-3] = 3
+    //     bucket_p2c (FIXED, same as c2p) = 3 → q_p[3] = [3, -3]
+    //     P2C = q_p[3] · k[1]  = [3,-3]·[0,1] = -3
+    //     score[0,1] = (0 + 3 + (-3)) * 0.4082 = 0
+    //
+    //   For pair (1, 0):
+    //     C2C = q[1] · k[0] = [0,1]·[1,0] = 0
+    //     bucket_c2p = mid + (1-0) = 5  → k_p[5] = [5, -5]
+    //     C2P = q[1] · k_p[5]  = [0,1]·[5,-5] = -5
+    //     bucket_p2c (FIXED) = 5 → q_p[5] = [5, -5]
+    //     P2C = q_p[5] · k[0]  = [5,-5]·[1,0] = 5
+    //     score[1,0] = (0 + (-5) + 5) * 0.4082 = 0
+    //
+    //   For pair (1, 1):
+    //     C2C = q[1] · k[1] = 1
+    //     bucket = mid = 4 → C2P = q[1] · k_p[4] = [0,1]·[4,-4] = -4
+    //     P2C = q_p[4] · k[1] = [4,-4]·[0,1] = -4
+    //     score[1,1] = (1 + (-4) + (-4)) * 0.4082 = -7 * 0.4082 = -2.858
+    //
+    //   softmax row 0: [3.6742, 0]. shift: [0, -3.6742]. exp: [1, 0.02535].
+    //     sum = 1.02535. probs: [0.9753, 0.02472].
+    //   out row 0 = 0.9753 * V[0] + 0.02472 * V[1] = 0.9753 * [1,0] + 0.02472 * [0,1]
+    //             = [0.9753, 0.02472]
+    //
+    //   softmax row 1: [0, -2.858]. shift: [0, -2.858]. exp: [1, 0.05733].
+    //     sum = 1.05733. probs: [0.9458, 0.05423].
+    //   out row 1 = 0.9458 * [1,0] + 0.05423 * [0,1] = [0.9458, 0.05423]
+    //
+    //   Final projection: w_out = I, bout = 0 → out unchanged.
+    let expected: [f32; 4] = [0.9753, 0.02472, 0.9458, 0.05423];
+    for (i, (&actual, &want)) in out.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - want).abs() < 5e-3,
+            "P2C-indexing pin: output[{i}] = {actual:e}, expected ≈ {want} — a mismatch \
+             here means either (a) rel==0 still maps to bucket 0 (the pre-fix diagonal \
+             bug), or (b) P2C still uses `relative_position_bucket(j, i, ...)` instead \
+             of `(i, j, ...)`. The hand-derived expected values are the HF/Microsoft \
+             reference (see the block comment above)."
+        );
+    }
 }
 
 fn synthetic_attn(d_model: usize, n_heads: usize, _seq_len: usize) -> DisentangledAttention {

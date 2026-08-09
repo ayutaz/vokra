@@ -34,26 +34,44 @@ const SQRT_TWO_OVER_PI: f32 = 0.797_884_560_802_865_4_f32;
 ///
 /// # Arguments
 /// - `q_pos`, `k_pos`: absolute positions of query and key
-/// - `bucket_size`: number of buckets (typically 256)
+/// - `bucket_size`: total buckets in `pos_embed` (= HF `2 * position_buckets`)
 /// - `max_dist`: distance beyond which all positions share the last bucket
 ///
-/// # Algorithm (arXiv:2006.03654 eq. after §3.2)
+/// # Algorithm (matches HuggingFace transformers `make_log_bucket_position`
+/// + the `+ att_span` shift `disentangled_attention_bias` applies inline)
 ///
+/// ```text
 /// rel = q_pos - k_pos
-/// sign = sign(rel)
-/// mid = bucket_size / 2
+/// mid = bucket_size / 2   (= HF `att_span` = `position_buckets`)
 /// if |rel| < mid: bucket = mid + rel   # linear near-region
-/// else: bucket = mid + sign * (mid + log(|rel|/mid) / log(max_dist/mid) * mid)
-///                            .clamp(0, bucket_size - 1)
+/// else: bucket = mid + sign(rel) * min(mid, mid + log(|rel|/mid) / log(max_dist/mid) * mid)
+/// bucket = clamp(bucket, 0, bucket_size - 1)
+/// ```
+///
+/// # Diagonal (`rel == 0`)
+///
+/// HF's `make_log_bucket_position` returns 0 for `rel = 0`, and
+/// `disentangled_attention_bias` then adds `att_span` inline so the
+/// diagonal reads row `att_span = mid` of the position embedding. Our
+/// packing is `mid + rel`, so `rel = 0` naturally falls through the
+/// linear branch to `mid` — no `if rel == 0` short-circuit is
+/// mathematically justified (a prior version returned 0 on the
+/// diagonal, mis-picking the wrong `pos_embed` row on every attention
+/// diagonal — the parity-CI residual `bert_hidden_ja = 11.15` on HEAD
+/// `a4cf654` traces to this exact off-by-`mid`).
+///
+/// # References
+///
+/// - `transformers/src/transformers/models/deberta_v2/modeling_deberta_v2.py`
+///   (`make_log_bucket_position`, `build_relative_position`,
+///   `disentangled_attention_bias`)
+/// - `microsoft/DeBERTa/DeBERTa/deberta/disentangled_attention.py`
+///   (both C2P and P2C gather use the SAME `c2p_pos = clamp(relative_pos
+///   + att_span, ...)` — see `p2c_bucket_index_matches_c2p_not_reversed`
+///   pin in `tests/deberta_v2_synthetic.rs`)
 pub fn relative_position_bucket(q_pos: i32, k_pos: i32, bucket_size: i32, max_dist: i32) -> i32 {
     let rel = q_pos - k_pos;
-
-    // Special case: same position → bucket 0
-    if rel == 0 {
-        return 0;
-    }
-
-    let sign = if rel > 0 { 1 } else { -1 };
+    let sign = if rel >= 0 { 1 } else { -1 };
     let mid = bucket_size / 2;
     let abs_rel = rel.abs();
     if abs_rel < mid {
@@ -124,9 +142,29 @@ pub struct AttnWeights {
 ///
 /// - **C2C** (content-to-content): standard `Q · K^T`.
 /// - **C2P** (content-to-position): `Q_i · K_pos[bucket(i, j)]`.
-/// - **P2C** (position-to-content): `Q_pos[bucket(j, i)] · K_j`.
+/// - **P2C** (position-to-content): `Q_pos[bucket(i, j)] · K_j`.
 ///
 /// Final score = `(C2C + C2P + P2C) / sqrt(3 * head_dim)`.
+///
+/// # P2C bucket indexing (parity-CI HEAD `a4cf654`, `bert_hidden_ja` = 11.15)
+///
+/// HuggingFace transformers `disentangled_attention_bias` computes
+/// `p2c_pos = clamp(-r_pos + att_span, ...)` and then, after
+/// `torch.gather(dim=-1)` + `.transpose(-1, -2)`, the P2C contribution
+/// to `score[b, i, j]` is `key_layer[j] · pos_query_layer[(i - j) +
+/// att_span]` — the SAME `(i - j) + att_span` index the C2P term uses.
+/// microsoft/DeBERTa's `disentangled_attention.py` makes this explicit
+/// by reusing `c2p_pos` directly in the `p2c_att` gather (`dim=-2`
+/// instead of `-1`, but same index tensor). Both HF and Microsoft
+/// **contradict** the DeBERTa paper's formula `K^c_j (Q^{r}_{δ(j,i)})^⊤`
+/// — the trained checkpoints follow the code, not the paper.
+///
+/// Prior to the fix this comment documents, our `DisentangledAttention::forward`
+/// called `relative_position_bucket(j, i, ...)` for the P2C bucket
+/// (giving `mid + (j - i)`) — a sign flip vs the HF/Microsoft reference
+/// that mis-picked the position embedding row for every off-diagonal
+/// `(i, j)` pair. See `p2c_bucket_index_matches_c2p_not_reversed` in
+/// `tests/deberta_v2_synthetic.rs` for the constructive pin.
 pub struct DisentangledAttention {
     w: AttnWeights,
     d_model: usize,
@@ -203,25 +241,29 @@ impl DisentangledAttention {
                     for d in 0..self.head_dim {
                         s += q[i * self.d_model + ho + d] * k[j * self.d_model + ho + d];
                     }
-                    // C2P: q_i · k_p[bucket(i,j)]
+                    // C2P and P2C share the SAME bucket index — HF
+                    // transformers `disentangled_attention_bias` builds
+                    // `p2c_pos = clamp(-r_pos + att_span, ...)` then the
+                    // `gather(dim=-1)` + `.transpose(-1,-2)` dance
+                    // effectively swaps the two axes back so score[i, j]
+                    // reads `pos_query_layer[(i - j) + att_span]` — the
+                    // exact index c2p_pos already carries. microsoft/DeBERTa
+                    // makes it explicit by using c2p_pos DIRECTLY in the
+                    // P2C gather (dim=-2). See the doc block on
+                    // `DisentangledAttention` for the parity trail.
                     let bucket = relative_position_bucket(
                         i as i32,
                         j as i32,
                         self.n_pos_buckets,
                         self.max_pos_dist,
                     ) as usize;
+                    // C2P: q_i · k_p[bucket(i, j)]
                     for d in 0..self.head_dim {
                         s += q[i * self.d_model + ho + d] * k_p[bucket * self.d_model + ho + d];
                     }
-                    // P2C: q_p[bucket(j,i)] · k_j (rev direction)
-                    let bucket_rev = relative_position_bucket(
-                        j as i32,
-                        i as i32,
-                        self.n_pos_buckets,
-                        self.max_pos_dist,
-                    ) as usize;
+                    // P2C: q_p[bucket(i, j)] · k_j  — SAME bucket, not `bucket(j, i)`.
                     for d in 0..self.head_dim {
-                        s += q_p[bucket_rev * self.d_model + ho + d] * k[j * self.d_model + ho + d];
+                        s += q_p[bucket * self.d_model + ho + d] * k[j * self.d_model + ho + d];
                     }
                     scores[i * seq_len + j] = s * scale;
                 }
