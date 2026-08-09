@@ -33,6 +33,31 @@ use vokra_piper_plus::Phonemizer;
 /// from another source can still hit the `language_id = 2` code path via
 /// [`SbV2Phonemizer::from_fixture`] or by constructing a
 /// [`PhonemizeResult`] directly.
+///
+/// # ZH code-side status (WP-21 doc sweep, 2026-08-10)
+///
+/// **Forward pointer — additive to the M6 scope note above (which still
+/// describes the runtime `phonemize()` ZH arm's fail-closed state)**. The
+/// SBV2 v2 language-embed table's row-2 dispatch (`Language::ZH` →
+/// `language_id() = 2` → [`super::text_encoder::SbV2TextEncoder`]'s
+/// `language_embed` row 2) is downstream-ready as of WP-16 (three-row
+/// table landed) and exercised in synthetic-parity tests. What is still
+/// open is the phonemizer wiring itself.
+///
+/// **Owner decision (2026-08-09)**: **ZH G2P = piper-plus reuse**. The
+/// future ZH G2P route bridges the existing 8-language piper-plus G2P
+/// via the excluded-workspace `integrations/vokra-piper-g2p` crate
+/// (which already covers `zh` via `PassthroughPhonemizer` — see that
+/// crate's `README.md`), so [`SbV2Phonemizer::from_piper_g2p`] can be
+/// extended to accept a ZH-capable phonemizer without an enum change.
+/// The pairing ZH BERT decision the same day is
+/// `hfl/chinese-roberta-wwm-ext-large` (Apache-2.0, standard
+/// `BertForMaskedLM` — NOT DeBERTa; see [`crate::sbv2`]'s module-level
+/// "ZH code-side status" doc for the encoder-side gap-fill plan).
+///
+/// **Publish is deferred** per "モデルは公開しない" — §3.1 sign-off
+/// blank remains fail-closed default until owner CI fixture regeneration
+/// (WP-20) and license sign-off. WP-21 is docs-only sweep, not gap-fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     /// Japanese input (SBV2 pitch-accent tones, 0-2). Maps to

@@ -554,6 +554,16 @@ fn phonemize_fixture_from_manifest(
 /// reachable in the text encoder but will loud-fail at the BERT
 /// tokenizer step (see `SbV2Model::synthesize`'s ZH note); a real ZH
 /// parity run requires the pending ZH BERT + G2P plumbing.
+///
+/// FORWARD POINTER (WP-21 doc sweep, 2026-08-10): the "pending ZH BERT +
+/// G2P plumbing" above is now concretely scoped by the 2026-08-09 owner
+/// decisions — ZH BERT = `hfl/chinese-roberta-wwm-ext-large` (Apache-2.0,
+/// standard `BertForMaskedLM`, NOT DeBERTa) and ZH G2P = piper-plus reuse
+/// via `integrations/vokra-piper-g2p`. WP-17 landed the WordPiece
+/// tokenizer that pairs with the ZH BERT encoder; the remaining
+/// `BertBaseEncoder` + `SbV2Phonemizer::from_piper_g2p` ZH-wiring gap-fill
+/// is a later WP, plus owner CI fixture regeneration (WP-20) and owner
+/// §3.1 license sign-off before any HF publish.
 fn request_from_manifest(manifest: &JsonValue, ctx: &str) -> SbV2SynthRequest {
     let request = json_get(manifest, "request", ctx);
     let language = match json_str(request, "language", ctx) {

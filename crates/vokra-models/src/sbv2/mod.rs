@@ -25,6 +25,53 @@
 //! produces degraded audio; genuine multilingual synthesis requires switching
 //! to a non-JP-Extra multilingual base. See `docs/adr/sbv2-cleanroom.md` and
 //! CLAUDE.md "documented ceilings".
+//!
+//! # ZH code-side status (WP-21 doc sweep, 2026-08-10)
+//!
+//! **Forward pointer — additive, does not contradict the JP-Extra caveat
+//! above (which still governs real-checkpoint audio quality).** As of the
+//! Phase D SBV2 v2 wave, the ZH code path is wired end-to-end at the
+//! scaffolding level: [`text_encoder::N_LANGUAGES`] = 3 (JA/EN/ZH),
+//! [`Language::ZH`] and its `language_id() = 2` dispatch to
+//! [`SbV2TextEncoder`]'s `language_embed` row 2 are exercised in
+//! synthetic-parity tests, and the WordPiece tokenizer aimed at the
+//! owner-approved ZH BERT checkpoint (`hfl/chinese-roberta-wwm-ext-large`,
+//! Apache-2.0) landed as [`vokra_bert::wordpiece::BertWordpieceTokenizer`]
+//! (WP-17). See [`g2p::Language`]'s "ZH scope note" for the enum-side
+//! historical + owner-decision context.
+//!
+//! **Owner decisions (2026-08-09)**:
+//!
+//! - **ZH BERT PERMITTED** = `hfl/chinese-roberta-wwm-ext-large`
+//!   (Apache-2.0, standard `BertForMaskedLM` — vocab 21128 / hidden 1024
+//!   / 24 layers / 16 heads / **learned absolute position embedding +
+//!   token_type + word embedding sum + LayerNorm**, i.e. **standard BERT
+//!   NOT DeBERTa disentangled** — a `BertBaseEncoder` distinct from
+//!   [`DebertaV2Encoder`] / [`DebertaV3Encoder`] is required, per
+//!   `wordpiece.rs`'s target-model doc). Code-side wiring only; publish
+//!   is deferred per "モデルは公開しない" (§3.1 sign-off blank remains
+//!   fail-closed default).
+//! - **ZH G2P = piper-plus reuse** = bridge the existing 8-language G2P
+//!   via the excluded-workspace `integrations/vokra-piper-g2p` crate
+//!   (which already routes `zh` through `PassthroughPhonemizer`; see that
+//!   crate's `README.md`).
+//!
+//! **Remaining runtime gaps (WP-21 is docs-only, gap-fill = later WPs)**:
+//!
+//! 1. [`g2p::SbV2Phonemizer::phonemize`]'s `Language::ZH` arm still returns
+//!    [`VokraError::NotImplemented`] — fail-closed placeholder for the
+//!    future piper-plus reuse route (never a silent JA fallback, FR-EX-08).
+//! 2. [`SbV2Model::synthesize`]'s `Language::ZH` BERT-tokenizer arm
+//!    (below in this file) still returns [`VokraError::NotImplemented`]
+//!    — fail-closed placeholder for the future
+//!    [`vokra_bert::wordpiece::BertWordpieceTokenizer`] + `BertBaseEncoder`
+//!    wiring against the owner-approved checkpoint.
+//!
+//! Genuine ZH synthesis quality additionally requires
+//! (i) `hfl/chinese-roberta-wwm-ext-large` weights on the runtime side,
+//! (ii) owner CI fixture regeneration for the ZH real-checkpoint parity
+//! leg (WP-20), and (iii) owner §3.1 license sign-off before any HF
+//! publish — none of which WP-21 attempts to satisfy.
 
 pub mod decoder;
 pub mod duration;
