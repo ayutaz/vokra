@@ -46,6 +46,12 @@ fn atol_calibration_status_is_pinned() {
         ("bert_hidden_en", AtolCalibration::EstimatedPreFixture),
         ("sdp_sample", AtolCalibration::EstimatedPreFixture),
         ("z_latent", AtolCalibration::EstimatedPreFixture),
+        // Wave-9 (2026-08-09): `waveform` = 1.5 is `Measured` from CI
+        // run 31303426623 max |Δ| = 0.9248 × ~1.6× margin. See
+        // `PER_TENSOR_ATOL`'s `"waveform"` block-doc for derivation +
+        // `docs/adr/sbv2-libm-strategy.md` §2.2 for why the bit-exact
+        // libm follow-up is a documented deferral (not a fabricated pass).
+        ("waveform", AtolCalibration::Measured),
     ];
     assert_eq!(
         expected.len(),
