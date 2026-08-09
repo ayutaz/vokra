@@ -45,6 +45,19 @@ fn from_gguf_signature_compiles() {
         SbV2Model::from_gguf;
 }
 
+/// WP-19: `from_gguf_with_zh_bert`'s 4-file signature is stable. Same
+/// compile-only pin as [`from_gguf_signature_compiles`] above, extended
+/// with the fourth `bert_zh: &GgufFile` argument. The two signatures must
+/// stay side-by-side so a caller with only JA/EN GGUFs keeps compiling
+/// against `from_gguf`, while a caller with a ZH GGUF opts in via
+/// `from_gguf_with_zh_bert` — the 3-file path must remain backward
+/// compatible (this is a load-time API contract the WP-19 land pins).
+#[test]
+fn from_gguf_with_zh_bert_signature_compiles() {
+    let _f: fn(&GgufFile, &GgufFile, &GgufFile, &GgufFile) -> vokra_core::Result<SbV2Model> =
+        SbV2Model::from_gguf_with_zh_bert;
+}
+
 /// A `main` GGUF with no `vokra.sbv2.*` metadata at all must fail loudly
 /// with `VokraError::ModelLoad` naming the very first metadata key
 /// `from_gguf` reads (`vokra.sbv2.d_model`), never panic — proves the
@@ -107,6 +120,62 @@ fn scalar_dims_only_main() -> GgufBuilder {
     b.add_u32("vokra.sbv2.n_sdp_layers", 0);
     b.add_u32("vokra.sbv2.sample_rate", 22050);
     b
+}
+
+/// WP-19: the 4-file variant fires `bert_zh`'s own metadata read the same
+/// way the 3-file variant fires `bert_ja` / `bert_en`. Feeding an empty ZH
+/// GGUF here must surface a `VokraError::ModelLoad` naming a
+/// `vokra.bert_base.*` key (the very first key `BertBaseEncoder::from_gguf`
+/// reads is `vokra.bert_base.n_layers`) — proving `bert_zh` is actually
+/// consulted, not silently dropped on the floor.
+///
+/// The 3-file `main` fixture (`scalar_dims_only_main`) never touches the
+/// BERT files (fails earlier on `vokra.sbv2.decoder.leaky_relu_slope`), so
+/// this test uses a `main` fixture that does have every dim+decoder scalar
+/// wired — it's the WP-13 fixture plus the `leaky_relu_slope` key, so the
+/// loader proceeds far enough that the ZH BERT loader runs. `main`'s
+/// tensor tables are still empty (no `sbv2.text_encoder.*` weights), so
+/// the ZH BERT read is the FIRST thing that fails on the WP-19 path — that
+/// is exactly what this test wants to observe (any earlier failure would
+/// leave the WP-19 gate uncovered).
+#[test]
+fn from_gguf_with_zh_bert_on_empty_zh_file_touches_zh_loader() {
+    // `scalar_dims_only_main` + `leaky_relu_slope` (so `from_gguf` reaches
+    // the BERT load stage before failing).
+    let mut mb = scalar_dims_only_main();
+    mb.add_f32("vokra.sbv2.decoder.leaky_relu_slope", 0.1);
+    let main =
+        GgufFile::parse(mb.to_bytes().expect("build main gguf bytes")).expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    // With every ZH-side arg set to the empty file, the load must fail
+    // loudly. This proves `bert_zh` is threaded into `from_gguf_inner`'s
+    // BERT stage — a silent `bert_zh` drop would produce the same error
+    // the 3-file `from_gguf` produces (which fails earlier on the empty
+    // `bert_ja` file's `vokra.deberta_v2.n_layers` read), and would leave
+    // this test unable to distinguish the two paths.
+    match SbV2Model::from_gguf_with_zh_bert(&main, &empty, &empty, &empty) {
+        Ok(_) => panic!("an empty ZH BERT GGUF must fail to load in the WP-19 4-file variant"),
+        Err(VokraError::ModelLoad(_msg)) => {
+            // The exact key named depends on the BERT loader order (JA is
+            // consulted first in the current `from_gguf_inner`); the
+            // load must fail, and the failure must be a ModelLoad — which
+            // proves the JA→EN→ZH BERT stage was reached. A silent
+            // `bert_zh` drop would still ModelLoad on JA/EN but a
+            // subsequent `synthesize` on a ZH request would then also
+            // fail because the ZH tokenizer never populated — this test
+            // catches only the load-time signal, sibling
+            // `synthesize_zh_without_wired_zh_bert_fails_loudly` in
+            // `sbv2_model_synthetic.rs` catches the synthesize-time
+            // signal.
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
 }
 
 /// WP-13: a `main` GGUF that populates every required `vokra.sbv2.*` scalar

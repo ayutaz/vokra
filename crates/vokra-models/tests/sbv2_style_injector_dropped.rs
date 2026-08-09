@@ -80,6 +80,9 @@ fn build_model_with_nonzero_style_injector() -> SbV2Model {
         en_tokenizer: SbertTokenizer::from_pieces_for_test(tokenizer_pieces),
         ja: DebertaV2Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
         en: DebertaV3Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
+        // WP-19: this test exercises the JA path only — ZH stays `None`.
+        zh: None,
+        zh_tokenizer: None,
     };
 
     let bert_bridge = BertBridge::from_conv(

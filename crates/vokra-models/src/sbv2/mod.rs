@@ -70,9 +70,11 @@ pub use text_encoder::{BertBridge, N_LANGUAGES, SbV2TextEncoder};
 // `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §7's pipeline
 // diagram for the canonical forward order this mirrors.
 
+use vokra_bert::bert_base::BertBaseEncoder;
 use vokra_bert::deberta_v2::DebertaV2Encoder;
 use vokra_bert::deberta_v3::DebertaV3Encoder;
 use vokra_bert::tokenizer::SbertTokenizer;
+use vokra_bert::wordpiece::BertWordpieceTokenizer;
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
@@ -87,6 +89,23 @@ use vokra_ops::hifigan::{
 /// a reload: JA text routes through [`DebertaV2Encoder`], EN through
 /// [`DebertaV3Encoder`] (`docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
 /// §7's "BERT Router").
+///
+/// # WP-19: optional ZH branch
+///
+/// The [`zh`](Self::zh) / [`zh_tokenizer`](Self::zh_tokenizer) pair holds
+/// the ZH BERT branch introduced by WP-19 (owner decision 2026-08-09:
+/// `hfl/chinese-roberta-wwm-ext-large`, `BertForMaskedLM`, Apache-2.0 —
+/// **plain BERT**, not DeBERTa, so [`BertBaseEncoder`] rather than
+/// `DebertaV2Encoder`/`DebertaV3Encoder`; WordPiece rather than
+/// SentencePiece). Both fields default to `None` — the legacy 3-file
+/// (`main` + `bert_ja` + `bert_en`) loader
+/// [`SbV2Model::from_gguf`] and every synthetic `SbV2Model` constructor
+/// leave them `None`, so pre-WP-19 code continues to compile and behave
+/// identically. The WP-19 [`SbV2Model::from_gguf_with_zh_bert`] loader
+/// populates them together (either both `Some`, both `None` — one-side
+/// is a caller bug the loader refuses), matching
+/// [`SbV2Model::synthesize`]'s ZH-branch dispatch which likewise refuses
+/// to run with only one side of the pair wired (FR-EX-08).
 pub struct SbV2BertContainer {
     /// SentencePiece tokenizer feeding [`ja`](Self::ja)'s input ids.
     pub ja_tokenizer: SbertTokenizer,
@@ -96,6 +115,17 @@ pub struct SbV2BertContainer {
     pub ja: DebertaV2Encoder,
     /// EN BERT encoder (DeBERTa v3).
     pub en: DebertaV3Encoder,
+    /// ZH BERT encoder (plain BERT, `hfl/chinese-roberta-wwm-ext-large`)
+    /// — `Some` only on 4-file
+    /// [`SbV2Model::from_gguf_with_zh_bert`]-loaded models and the
+    /// [`SbV2Model::synthetic_with_zh_for_test`] synthetic constructor.
+    /// See the struct-level "WP-19: optional ZH branch" doc.
+    pub zh: Option<BertBaseEncoder>,
+    /// WordPiece tokenizer feeding [`zh`](Self::zh)'s input ids — paired
+    /// with [`zh`](Self::zh) (either both `Some`, both `None`; a mixed
+    /// state is a caller bug that [`SbV2Model::synthesize`]'s ZH-branch
+    /// dispatch refuses to accept, per FR-EX-08).
+    pub zh_tokenizer: Option<BertWordpieceTokenizer>,
 }
 
 /// Inputs to [`SbV2Model::synthesize`] — the SBV2-native request shape,
@@ -448,6 +478,10 @@ impl SbV2Model {
             // `encoder_stack_forward_shape` test exercises this exact tuple.
             ja: DebertaV2Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
             en: DebertaV3Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
+            // WP-19: `synthetic_for_test` leaves ZH unwired — a caller that
+            // needs a ZH branch uses `synthetic_with_zh_for_test` instead.
+            zh: None,
+            zh_tokenizer: None,
         };
 
         let bert_bridge = BertBridge::from_conv(
@@ -517,6 +551,107 @@ impl SbV2Model {
         )
     }
 
+    /// WP-19 test-only factory: like
+    /// [`synthetic_for_test`](Self::synthetic_for_test) but with the
+    /// [`SbV2Phonemizer`] slot swappable by the caller. The other 8
+    /// components (text encoder, BERT container, bridge, speaker, style,
+    /// SDP, flow, decoder) are byte-identical to
+    /// [`synthetic_for_test`](Self::synthetic_for_test).
+    ///
+    /// Used by `tests/sbv2_model_synthetic.rs`'s WP-19 tests to swap in a
+    /// [`SbV2Phonemizer::from_fixture`]-backed phonemizer that supplies
+    /// pre-computed ZH phoneme ids — the production ZH G2P is a
+    /// piper-plus delegation (WP-18) that lives in an excluded workspace,
+    /// so this crate's tests use a `PhonemizeFixture` to reach the ZH
+    /// BERT dispatch arm without wiring a real 8-language G2P.
+    ///
+    /// `#[doc(hidden)]` — for `tests/sbv2_*.rs` only; do not use in
+    /// production code (a production caller wires
+    /// [`from_gguf_with_phonemizer`](Self::from_gguf_with_phonemizer) or
+    /// [`from_gguf_with_zh_bert`](Self::from_gguf_with_zh_bert)).
+    #[doc(hidden)]
+    pub fn synthetic_for_test_with_phonemizer(phonemizer: SbV2Phonemizer) -> Self {
+        let mut model = Self::synthetic_for_test();
+        model.phonemizer = phonemizer;
+        model
+    }
+
+    /// WP-19 test-only factory: like
+    /// [`synthetic_for_test`](Self::synthetic_for_test) but with the ZH
+    /// branch of [`SbV2BertContainer`] wired (both
+    /// [`SbV2BertContainer::zh`] and [`SbV2BertContainer::zh_tokenizer`]
+    /// are `Some`). Uses the caller-supplied [`PhonemizeFixture`] as the
+    /// G2P (WP-18 production ZH G2P is a piper-plus-side delegation the
+    /// vokra-models crate cannot exercise standalone; the fixture pattern
+    /// is what `parity_sbv2_real.rs` also uses for the same reason).
+    ///
+    /// The synthetic ZH BERT is a tiny 1-layer [`BertBaseEncoder`] and a
+    /// 6-entry WordPiece vocab (`[PAD]`/`[UNK]`/`[CLS]`/`[SEP]` + two
+    /// content tokens `"你"` / `"好"`) — enough that the tokenize step
+    /// segments any input into at least one non-special id per
+    /// `bert_input_text` (unmatched characters fall to `[UNK]`), matching
+    /// the JA/EN synthetic tokenizers' "any input tokenizes to something"
+    /// contract. Dimensions match [`synthetic_for_test`] byte-for-byte
+    /// (`D_BERT = 8`, `d_model = 8`, `type_vocab = 2`), so the shared
+    /// [`BertBridge`] (`D_BERT` → `d_model` projection) is directly
+    /// reusable — a mismatch would fire the loader's `d_bert` guard on
+    /// the real path.
+    ///
+    /// `#[doc(hidden)]` — for `tests/sbv2_*.rs` only; do not use in
+    /// production code.
+    #[doc(hidden)]
+    pub fn synthetic_with_zh_for_test(fixture: PhonemizeFixture) -> Self {
+        // Base the model on `synthetic_for_test` so every non-ZH
+        // component (text encoder, JA/EN BERT, bridge, speaker, style,
+        // SDP, flow, decoder) is byte-identical to the reference
+        // synthetic pipeline — the only differences are the phonemizer
+        // (fixture-backed for ZH) and the two ZH BERT slots
+        // (`Some(BertBaseEncoder)` / `Some(BertWordpieceTokenizer)`).
+        let mut model = Self::synthetic_for_test();
+
+        // ZH BERT: tiny plain-BERT encoder shaped to match
+        // `synthetic_for_test`'s `D_BERT = 8` and `type_vocab = 2` so the
+        // shared `BertBridge` (`D_BERT` → `d_model` projection built by
+        // `synthetic_for_test`) accepts its output without shape
+        // reconciliation.
+        const D_BERT: usize = 8;
+        const ZH_VOCAB: usize = 6;
+        let cfg = vokra_bert::bert_base::BertConfig {
+            vocab_size: ZH_VOCAB,
+            hidden_size: D_BERT,
+            num_hidden_layers: 1,
+            num_attention_heads: 2, // 8 / 2 = 4, valid head_dim
+            intermediate_size: 32,
+            max_position_embeddings: 32,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
+        };
+        let zh_enc = BertBaseEncoder::synthetic_for_test(&cfg);
+
+        // ZH tokenizer: 6-entry vocab (`[PAD]/[UNK]/[CLS]/[SEP]` + `"你"` +
+        // `"好"`). `from_vocab` defaults to `OovPolicy::Unk`, so any
+        // codepoint outside `{你, 好}` maps to `[UNK]` — every input
+        // produces a non-empty id sequence (`[CLS] ... [SEP]`), matching
+        // the JA/EN synthetic tokenizers' contract.
+        let vocab: Vec<String> = vec![
+            "[PAD]".to_string(),
+            "[UNK]".to_string(),
+            "[CLS]".to_string(),
+            "[SEP]".to_string(),
+            "你".to_string(),
+            "好".to_string(),
+        ];
+        let zh_tok = BertWordpieceTokenizer::from_vocab(
+            vocab, /* unk */ 1, /* cls */ 2, /* sep */ 3, /* pad */ 0,
+        )
+        .expect("synthetic ZH wordpiece vocab is well-formed");
+
+        model.bert.zh = Some(zh_enc);
+        model.bert.zh_tokenizer = Some(zh_tok);
+        model.phonemizer = SbV2Phonemizer::from_fixture(fixture);
+        model
+    }
+
     /// WP-23 test-only factory: a shape-preserving twin of
     /// [`synthetic_for_test`](Self::synthetic_for_test) whose
     /// [`StyleVectorInjector`] carries **nonzero** projection weights so
@@ -584,6 +719,12 @@ impl SbV2Model {
             en_tokenizer,
             ja: DebertaV2Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
             en: DebertaV3Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
+            // WP-19: this synthetic constructor does not exercise the ZH
+            // branch. `synthetic_with_zh_for_test` is the sibling that
+            // wires ZH; every other synthetic constructor mirrors the
+            // legacy 2-language shape (both `None`).
+            zh: None,
+            zh_tokenizer: None,
         };
 
         let bert_bridge = BertBridge::from_conv(
@@ -754,6 +895,12 @@ impl SbV2Model {
             en_tokenizer,
             ja: DebertaV2Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
             en: DebertaV3Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
+            // WP-19: this synthetic constructor does not exercise the ZH
+            // branch. `synthetic_with_zh_for_test` is the sibling that
+            // wires ZH; every other synthetic constructor mirrors the
+            // legacy 2-language shape (both `None`).
+            zh: None,
+            zh_tokenizer: None,
         };
 
         let bert_bridge = BertBridge::from_conv(
@@ -917,24 +1064,30 @@ impl SbV2Model {
             req.language.language_id(),
         );
 
-        // 3. BERT (per-language). ZH has no in-crate BERT encoder yet
-        // (BERT bridge is JA/EN only in the M6 land — see the ZH scope
-        // note on `Language`); reaching ZH here would be a bug (the
-        // phonemizer's `phonemize_zh` already returned NotImplemented and
-        // step 1 propagated it), but if a caller has bypassed the
-        // phonemizer via `PhonemizeFixture` for ZH the tokenizer step
-        // becomes reachable and must fail loudly rather than silently
-        // routing to JA/EN — FR-EX-08.
+        // 3. BERT (per-language). ZH is optional (WP-19): the ZH arm below
+        // routes through [`SbV2BertContainer::zh_tokenizer`] +
+        // [`SbV2BertContainer::zh`] when both are wired (`Some`), and
+        // fails loudly with [`VokraError::NotImplemented`] when either is
+        // `None` — never a silent fall-through to JA/EN (FR-EX-08).
         //
-        // WP-18 note: [`Language::ZH`] takes a fail-closed early exit here
-        // (loud [`VokraError::NotImplemented`]) — this WP landed only the ZH
-        // G2P trait boundary + delegation in `g2p.rs`; the ZH BERT path
-        // (hfl/chinese-roberta-wwm-ext-large — `BertForMaskedLM`, NOT
-        // DeBERTa, with the WP-17 WordPiece tokenizer already landed at
-        // `crates/vokra-bert/src/wordpiece.rs`) is a separate WP. Callers
-        // that only need G2P (parity fixture builders, WP-19 wiring tests)
-        // can still call [`SbV2Phonemizer::phonemize`] directly with
-        // `Language::ZH`; only the full [`synthesize`] pipeline is gated.
+        // Two paths make this reachable at runtime:
+        // (a) the ZH G2P is wired via WP-18's [`SbV2Phonemizer::with_zh_g2p`]
+        //     (phonemize_zh succeeds instead of returning NotImplemented);
+        // (b) a caller feeds a `PhonemizeFixture` that maps a ZH
+        //     `(language, text)` entry (see `parity_sbv2_real.rs` for
+        //     the fixture pattern used by parity/WP-19 wiring tests).
+        //
+        // The ZH BERT stack itself is `hfl/chinese-roberta-wwm-ext-large`
+        // (`BertForMaskedLM`, NOT DeBERTa; owner decision 2026-08-09) —
+        // loaded through the WP-16 `BertBaseEncoder` + WP-17 WordPiece
+        // tokenizer (`crates/vokra-bert/src/wordpiece.rs`), wired into
+        // [`SbV2BertContainer`] by WP-19's
+        // [`SbV2Model::from_gguf_with_zh_bert`]. Callers that only need
+        // ZH G2P (fixture builders, WP-19 loader tests) can still call
+        // [`SbV2Phonemizer::phonemize`] directly with `Language::ZH`;
+        // this fail-closed BERT gate only fires from the full
+        // [`synthesize`] pipeline when the loader path did not supply
+        // the ZH pair.
         let bert_ids = match req.language {
             Language::JA => self
                 .bert
@@ -945,19 +1098,19 @@ impl SbV2Model {
                 .en_tokenizer
                 .encode_with_special_tokens(&phon.bert_input_text),
             Language::ZH => {
-                return Err(VokraError::NotImplemented(
-                    "SbV2Model::synthesize: Language::ZH BERT tokenizer/encoder not yet wired \
-                     (WP-18 landed only the ZH G2P trait boundary + delegation in \
-                     `crates/vokra-models/src/sbv2/g2p.rs`; the ZH BERT path — \
-                     `hfl/chinese-roberta-wwm-ext-large`, `BertForMaskedLM` (owner decision \
-                     2026-08-09, NOT DeBERTa) with the WP-17 WordPiece tokenizer at \
-                     `crates/vokra-bert/src/wordpiece.rs` — is a separate WP). The text \
-                     encoder's language_embed row 2 is reachable, but the BERT bridge path is \
-                     not — Vokra ZH BERT is out of scope for the M6 SBV2 v2 land (FR-EX-08). \
-                     The G2P delegation itself is exercised by \
-                     `crates/vokra-models/tests/sbv2_g2p.rs::zh_phonemize_via_wired_g2p_produces_ids`; \
-                     bypass this gate by calling `SbV2Phonemizer::phonemize` directly.",
-                ));
+                let zh_tok = self
+                    .bert
+                    .zh_tokenizer
+                    .as_ref()
+                    .ok_or(VokraError::NotImplemented(
+                        "SbV2Model::synthesize: language ZH requested but no ZH BERT \
+                         tokenizer is wired on this model (SbV2BertContainer::zh_tokenizer \
+                         is None). Load the model via SbV2Model::from_gguf_with_zh_bert \
+                         (WP-19) to bind the ZH branch — the pre-WP-19 3-file \
+                         SbV2Model::from_gguf leaves ZH unwired on purpose (FR-EX-08 \
+                         fail-closed default).",
+                    ))?;
+                zh_tok.encode(&phon.bert_input_text, true)?
             }
         };
         if bert_ids.is_empty() {
@@ -969,19 +1122,15 @@ impl SbV2Model {
         let bert_hidden = match req.language {
             Language::JA => self.bert.ja.forward(&bert_ids),
             Language::EN => self.bert.en.forward(&bert_ids),
-            // Unreachable: the `Language::ZH` arm of the tokenizer match
-            // above returns `VokraError::NotImplemented` early, so control
-            // cannot reach this second match with `Language::ZH`. Kept as
-            // an explicit `unreachable!()` (rather than a wildcard `_`,
-            // and not a silent fall-through) so a future ZH BERT wiring
-            // can't accidentally leave this arm speaking for JA — FR-EX-08
-            // — and so any future WP that wires the ZH BERT path is
-            // forced to update BOTH matches together.
-            Language::ZH => unreachable!(
-                "SbV2Model::synthesize: Language::ZH returned VokraError::NotImplemented from \
-                 the tokenizer match above; reaching the encoder-forward match with \
-                 Language::ZH is impossible"
-            ),
+            Language::ZH => {
+                let zh_enc = self.bert.zh.as_ref().ok_or(VokraError::NotImplemented(
+                    "SbV2Model::synthesize: language ZH requested and ZH tokenizer \
+                         is wired but the ZH encoder (SbV2BertContainer::zh) is None — \
+                         one-sided ZH wiring is a caller bug (FR-EX-08). Use \
+                         SbV2Model::from_gguf_with_zh_bert to load both sides together.",
+                ))?;
+                zh_enc.forward(&bert_ids, None)
+            }
         };
 
         // 4. BERT bridge — build `hidden_for_flow` (matches Python
@@ -2019,19 +2168,23 @@ impl SbV2Model {
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
         );
-        Self::from_gguf_inner(main, bert_ja, bert_en, phonemizer)
+        Self::from_gguf_inner(main, bert_ja, bert_en, None, phonemizer)
     }
 
     // The full loader body — shared by [`from_gguf`] (which passes the
-    // [`UnwiredPhonemizer`]-backed default phonemizer) and Task 7's
-    // [`from_gguf_with_phonemizer`] (which passes the caller's own). Every
-    // step besides the `phonemizer` argument is identical, so both public
-    // entry points share this to guarantee the same error surface (Task 7
-    // must not silently change the load path).
+    // [`UnwiredPhonemizer`]-backed default phonemizer + `bert_zh = None`),
+    // Task 7's [`from_gguf_with_phonemizer`] (which passes the caller's own
+    // phonemizer + `bert_zh = None`), and WP-19's
+    // [`from_gguf_with_zh_bert`] (which passes the default phonemizer +
+    // `bert_zh = Some(...)`). Every step besides the two shared arguments
+    // is identical, so all three public entry points share this to
+    // guarantee the same error surface — a WP-19 code path change cannot
+    // silently degrade the pre-WP-19 3-file loader.
     fn from_gguf_inner(
         main: &GgufFile,
         bert_ja: &GgufFile,
         bert_en: &GgufFile,
+        bert_zh: Option<&GgufFile>,
         phonemizer: SbV2Phonemizer,
     ) -> Result<Self> {
         // ---- metadata + tensor read helpers (mirrors
@@ -2315,11 +2468,58 @@ impl SbV2Model {
         }
         let ja_tokenizer = SbertTokenizer::from_gguf(bert_ja, "vokra.bert.tokenizer")?;
         let en_tokenizer = SbertTokenizer::from_gguf(bert_en, "vokra.bert.tokenizer")?;
+
+        // ---- WP-19: optional ZH BERT (plain BERT, WordPiece) ----
+        //
+        // `bert_zh = None` (the 3-file `from_gguf` / `from_gguf_with_phonemizer`
+        // entry points) leaves `zh` / `zh_tokenizer` at `None` — the pre-WP-19
+        // ZH path in `synthesize` (loud NotImplemented) survives unchanged.
+        //
+        // `bert_zh = Some(g)` (the 4-file `from_gguf_with_zh_bert` entry point)
+        // loads a [`BertBaseEncoder`] and its paired [`BertWordpieceTokenizer`]
+        // from `g` — same `d_bert`-consistency check as the JA/EN branches
+        // above so the three BERT files' hidden widths must agree (a
+        // mismatch means the four files were not converted together, exactly
+        // the class of loader mistake FR-EX-08 wants caught at load time).
+        //
+        // The tokenizer prefix is `vokra.bert.wordpiece` — parallel to the
+        // JA/EN SentencePiece prefix `vokra.bert.tokenizer` (`from_gguf`
+        // above), but with a distinct suffix because the two tokenizer
+        // families read different schema keys
+        // (`{prefix}.vocab`/`unk_id`/`cls_id`/`sep_id`/`pad_id`/`do_lower_case`
+        // for WordPiece vs the SentencePiece piece table).
+        let (zh, zh_tokenizer) = match bert_zh {
+            Some(g) => {
+                let zh_enc = BertBaseEncoder::from_gguf(g).map_err(|e| {
+                    VokraError::ModelLoad(format!(
+                        "SbV2Model::from_gguf_with_zh_bert: bert_zh: {e}"
+                    ))
+                })?;
+                if zh_enc.d_model() != d_bert {
+                    return Err(VokraError::ModelLoad(format!(
+                        "SbV2Model::from_gguf_with_zh_bert: vokra.sbv2.d_bert ({d_bert}) \
+                         disagrees with bert_zh's own hidden width ({}) — main.gguf and \
+                         bert_zh.gguf were not converted together",
+                        zh_enc.d_model()
+                    )));
+                }
+                let zh_tok =
+                    BertWordpieceTokenizer::from_gguf(g, "vokra.bert.wordpiece").map_err(|e| {
+                        VokraError::ModelLoad(format!(
+                            "SbV2Model::from_gguf_with_zh_bert: bert_zh tokenizer: {e}"
+                        ))
+                    })?;
+                (Some(zh_enc), Some(zh_tok))
+            }
+            None => (None, None),
+        };
         let bert = SbV2BertContainer {
             ja_tokenizer,
             en_tokenizer,
             ja,
             en,
+            zh,
+            zh_tokenizer,
         };
 
         // ---- BERT bridge ----
@@ -2985,7 +3185,69 @@ impl SbV2Model {
         bert_en: &GgufFile,
         phonemizer: SbV2Phonemizer,
     ) -> Result<Self> {
-        Self::from_gguf_inner(main, bert_ja, bert_en, phonemizer)
+        Self::from_gguf_inner(main, bert_ja, bert_en, None, phonemizer)
+    }
+
+    /// WP-19 4-file loader — [`from_gguf`](Self::from_gguf)'s sibling that
+    /// also loads a ZH BERT branch (plain BERT +
+    /// [`BertWordpieceTokenizer`], per owner decision 2026-08-09:
+    /// `hfl/chinese-roberta-wwm-ext-large`, Apache-2.0). The 3-file
+    /// [`from_gguf`](Self::from_gguf) signature is preserved unchanged for
+    /// backward compatibility — a caller with only JA/EN GGUFs keeps
+    /// working; a caller with a ZH GGUF calls this instead.
+    ///
+    /// # Arguments
+    ///
+    /// - `main` — the SBV2 pipeline GGUF (text encoder, BERT bridge,
+    ///   speaker, style, SDP, flow, decoder).
+    /// - `bert_ja` — JA BERT (DeBERTa v2) — same file the 3-file loader
+    ///   takes.
+    /// - `bert_en` — EN BERT (DeBERTa v3) — same file the 3-file loader
+    ///   takes.
+    /// - `bert_zh` — ZH BERT (plain BERT — [`BertBaseEncoder`] +
+    ///   [`BertWordpieceTokenizer`]), populating
+    ///   [`SbV2BertContainer::zh`] and [`SbV2BertContainer::zh_tokenizer`].
+    ///
+    /// # G2P
+    ///
+    /// This loader installs the same [`UnwiredPhonemizer`]-backed
+    /// placeholder [`from_gguf`](Self::from_gguf) does — a caller that
+    /// needs a working G2P (production or fixture-driven) instead
+    /// composes [`from_gguf_with_phonemizer`](Self::from_gguf_with_phonemizer)
+    /// on the 3-file signature and then attaches the ZH BERT via a
+    /// setter (not yet exposed — this loader is the current single ZH
+    /// wiring path). A future 4-file
+    /// `from_gguf_with_zh_bert_and_phonemizer` sibling can layer both
+    /// axes if the need arises; the private [`from_gguf_inner`] body
+    /// already accepts both.
+    ///
+    /// # Errors
+    ///
+    /// Every error [`from_gguf`](Self::from_gguf) itself returns, plus
+    /// [`VokraError::ModelLoad`] on any of the following ZH-specific
+    /// mistakes:
+    ///
+    /// - `bert_zh` fails [`BertBaseEncoder::from_gguf`]'s own load (a
+    ///   missing `vokra.bert_base.*` metadata key, a shape mismatch, or
+    ///   any error the delegated loader surfaces).
+    /// - `bert_zh` fails [`BertWordpieceTokenizer::from_gguf`]'s own load
+    ///   under the `vokra.bert.wordpiece` prefix.
+    /// - `bert_zh`'s hidden width disagrees with
+    ///   `main`'s `vokra.sbv2.d_bert` — same class of mistake the JA/EN
+    ///   branches catch, extended to the ZH branch.
+    pub fn from_gguf_with_zh_bert(
+        main: &GgufFile,
+        bert_ja: &GgufFile,
+        bert_en: &GgufFile,
+        bert_zh: &GgufFile,
+    ) -> Result<Self> {
+        let phonemizer = SbV2Phonemizer::from_piper_g2p(
+            Box::new(UnwiredPhonemizer),
+            Box::new(UnwiredPhonemizer),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        );
+        Self::from_gguf_inner(main, bert_ja, bert_en, Some(bert_zh), phonemizer)
     }
 }
 
