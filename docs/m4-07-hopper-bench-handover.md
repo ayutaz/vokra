@@ -110,3 +110,81 @@ cargo test -p vokra-backend-cuda --release --test parity_kernels_cuda flash_attn
 - [ ] baseline JSON fill + bench-baselines コミット（§5）
 - [ ] **ダッシュボード登録（§5-3）→ WP close 発火**
 - [ ] instance destroy
+
+---
+
+## 8. Shortcut: `tools/parity/provision-h100.sh`（2026-08-10 追加）
+
+§1 のインスタンス確保後、SSH 内で toolchain + Hopper gate + build を
+一発で通す helper。§1 の手順を毎回コピペする代わりに:
+
+```bash
+# vast.ai の H100 インスタンス上で（git clone 済み前提）:
+cd vokra
+git checkout <M4-07 branch or merge commit>
+./tools/parity/provision-h100.sh
+# → SM 9.0 gate / rustup / cargo build --release -p vokra-cli / FA v3 probe
+```
+
+`--skip-hopper-gate` を付けると Ada / Ampere 上でもツールチェーンだけは
+入る（FA v3 probe は honest-skip する。RTX 4090 SSH 環境の smoke test 用）。
+`--self-test` は 0-cost の probe だけを走らせて何が足りないか報告する
+（rustup 未インストール / nvidia-smi 未対応ドライバ等の事前診断）。
+
+Gate の red-line: **compute_cap < 9.0 は exit 1**。FA v3 kernel は
+`compute_90a` 専用ゆえ、間違ってた RTX 4090 で 5 分の cargo build を
+走らせない防波堤。設計判断: `provision-h100.sh` は
+`scripts/publish/vast-ai/provision.sh`（HF publish 用）と分離されている
+（前者は Hopper measurement 専用、後者は HF upload 用の uv + hf-transfer
+系。混ぜると 40 GB 分の HF workload machinery が Hopper bench にも
+入って余計な複雑化を招く）。
+
+## 9. Expected output（§3 e2e ハーネス）
+
+`cuda_rtf_variance.sh --iters 10 --fa-mode v3` を H100 で走らせた場合の
+JSONL は 1 行 1 iter で以下を含むべき（成功 iter 抜粋）:
+
+```json
+{
+  "iter": 3,
+  "timestamp": "2026-08-10T10:00:40Z",
+  "status": "ok",
+  "rtf": 0.070,
+  "latency_ms": 2100.0,
+  "fa_mode": "v3",
+  "fa_v2_mode": "on",
+  "backend": "cuda",
+  "gpu": "NVIDIA H100 PCIe",
+  "driver": "550.90.07"
+}
+```
+
+`fa_mode: "v3"` かつ RTF が decomposed 比で有意に下がっている（研究 §10
+の 2-3x は kernel-level 面の目安、e2e はもっと薄い）ならばパスは効いて
+いる。逆に `fa_mode: "v3"` なのに RTF が `v2` と同値なら、
+`VOKRA_CUDA_FA_V3_ENCODER=1` が読まれていない（binary が古い）か Hopper
+probe が false negative（driver 古すぎ）。§6 差し戻し条件へ。
+
+解析:
+
+```bash
+./tools/parity/cuda_rtf_analyze.py rtf-h100-fa-v3.jsonl \
+    --output rtf-h100-fa-v3.report.md
+```
+
+CV > 0.20 の WARN が出た場合は §3 を N=20 で再実行する（H100 spot は
+熱で揺れやすい）。CV 単独で 2× verdict を落とすものではない
+（`docs/adr/M2-03-followup-rtf.md` §D6 と同じ red-line）。
+
+## 10. N=10 protocol と variance guard
+
+- N=10 は `cuda_rtf_variance.sh` の default。M4-07 の 3 mode すべてで
+  最低 N=10 を通し、`docs/perf/cuda-large-v3-h100-fa-v3-baseline.json`
+  に median / CV を埋める。
+- **CV > 0.20 のときは N を増やす**（20 → 30）。gate はしない
+  （analyzer は WARN のみで exit 0）が、baseline JSON に高 CV の
+  median を書き込むと後段の regression 判定が壊れるので、実測
+  variance が落ちるまで N を積む。
+- **kernel-level 2-3x は §4 の面でのみ照合**。e2e RTF の 2-3x は
+  達成できなくても honest 登録で WP close 可（milestones §8 M4-07
+  行の完了条件は「有効化 + FA v2 比の記録」であり「N x 速い」ではない）。

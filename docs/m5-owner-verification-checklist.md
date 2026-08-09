@@ -37,10 +37,83 @@ The freeze machinery is landed (`abi-diff.sh --gate`, proven to fail on a blocki
 
 ## 1.5 NPU bakeoff (M5-01 CoreML/ANE + M5-02 QNN/Hexagon)
 
-- **(a)**: run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥2× over the CPU baseline). Feeds T19.
+- **(a)**: run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥ 2× over the CPU baseline). Feeds T19.
 - **(b)**: needs real ANE / Hexagon silicon; this machine has neither an NPU bakeoff rig nor the delegate runtimes.
-- **(c)**: spec M5-01-T24 / M5-02-T12 (gitignore-local).
-- **(d)**: a pass/fail vs the 2× bar is recorded for each delegate.
+- **(c)**: spec M5-01-T24 / M5-02-T12 (gitignore-local); runbook is the sub-sections below.
+- **(d)**: a `PASS` / `FAIL` / `INSUFFICIENT DATA` verdict vs the 2× bar is recorded for each delegate in the sibling template files.
+
+### 1.5.1 Baseline discipline (NFR-PF-12 protocol)
+
+The 2× ratio compares an NPU RTF to a **CPU baseline captured on the same host in the same session**. The CPU baseline is **M5-14-post CPU** (SIMD hot-path optimised, libm-route — the leg landed by M5-14). An NPU RTF captured without a matched CPU baseline **cannot** feed the 2× verdict; a matched pair collected minutes apart on the same box is what NFR-PF-12 acceptance requires. This is codified in `docs/system-requirements.md` NFR-PF-12 (footnote + hazard clause), mirrored in the tracked glossary at `docs/requirement-ids.md` NFR-PF-12, and cross-referenced from `docs/handoff/m5-02.md` §"NFR-PF-12 baseline".
+
+Silent-CPU-fallback (< 90 % placement on the target NPU) **disqualifies** the run — the analyzer surfaces this as a `WARN`, and the template forces the owner to record `INSUFFICIENT DATA` rather than a numeric 2× ratio. This is the FR-EX-08 hazard clause, not a soft warning.
+
+### 1.5.2 CC-side machinery landed
+
+CC has landed the CC-actionable prep (WP-15) for owner NPU bakeoff. No hardware access was needed for the prep itself; all artifacts are docs + shell/python tooling. The owner-visible pieces are:
+
+- `tools/parity/npu_rtf_variance.sh` — generic NPU RTF variance harness (mirrors `cuda_rtf_variance.sh`, `--backend {coreml|qnn|cuda|cpu}`, folds an optional placement probe's JSON into each iteration line).
+- `tools/parity/npu_rtf_analyze.py` — analyzer (stdlib only, matches the `cuda_rtf_analyze.py` red-line — never asserts an RTF ceiling — but adds a `WARN` on CV > 0.20 or placement < 90 %).
+- `tools/parity/test_npu_rtf_analyze.py` — Python unit tests covering clean / flaky-fallback / noisy runs plus the QNN `htp_frac` vs legacy `dsp_frac` alias.
+- `tools/parity/provision-h100.sh` — H100 provisioning script for the M4-07 FA v3 bench, sibling of `scripts/publish/vast-ai/provision.sh`; includes a Hopper compute-cap gate (exit 1 if < 9.0).
+- `docs/handoff/m5-01-coreml-bakeoff-template.md` — CoreML/ANE bakeoff report template.
+- `docs/handoff/m5-02-qnn-bakeoff-template.md` — QNN/Hexagon bakeoff report template.
+
+### 1.5.3 Owner runbook (per delegate)
+
+Run this loop once per delegate (CoreML then QNN). Both loops end with a
+recorded verdict feeding **§1.3 T19 GO/NO-GO** on the C-ABI symbol call.
+
+**Prep**
+1. Wire up a **placement probe** for the delegate — a shell wrapper that
+   emits `{"ane_frac": …, "gpu_frac": …, "cpu_frac": …}` (CoreML — from
+   Xcode Instruments MLModel trace) or `{"htp_frac": …, "cpu_frac": …}`
+   (QNN — from `qnn-net-run --profiling_option=op`). The analyzer refuses
+   to declare a 2× verdict without one — a missing probe is
+   `INSUFFICIENT DATA` per FR-EX-08.
+2. Copy the template file next to the runbook artifact:
+   `cp docs/handoff/m5-0{1,2}-*-bakeoff-template.md docs/handoff/m5-0{1,2}-*-bakeoff-YYYY-MM-DD.md`.
+3. Fill in §1 (hardware fingerprint) before running the harness — makes
+   the run reproducible even if the box gets destroyed later.
+
+**Baseline capture** (§2 of the template)
+4. Run `tools/parity/npu_rtf_variance.sh --backend cpu --iters 10` on the
+   target hardware. The `cpu` arm invokes vokra-cli's M5-14-post CPU
+   path (SIMD hot-path optimised, libm-route). Save the JSONL.
+5. Run `tools/parity/npu_rtf_analyze.py` on the JSONL. Confirm
+   `Analyzer CV verdict = OK` before recording the mean.
+
+**Delegate capture** (§3 of the template)
+6. Run `tools/parity/npu_rtf_variance.sh --backend {coreml|qnn} --iters 10
+   --placement-probe /path/to/probe.sh` on the target hardware. Save the
+   JSONL.
+7. Run `tools/parity/npu_rtf_analyze.py` on the JSONL. Confirm both
+   `Analyzer CV verdict = OK` and `Analyzer placement verdict = OK`
+   before recording the mean. If placement < 90 %, treat as
+   `INSUFFICIENT DATA` and hand the failing-op inventory back to CC as
+   an M5-01 / M5-02 follow-up ticket.
+
+**Verdict** (§4 of the template)
+8. Compute `speedup = CPU_median / NPU_median` and compare to 2.0.
+9. Record `PASS` / `FAIL` / `INSUFFICIENT DATA` and the reason.
+
+**Commit** (§6 of the template)
+10. Commit the JSONL + report + filled template under
+    `docs/bench-baselines/m5-0{1,2}-*-bakeoff-YYYY-MM-DD/` and
+    `docs/handoff/m5-0{1,2}-*-bakeoff-YYYY-MM-DD.md`.
+11. Tick the §1.5 checkbox below and feed the verdict into §1.3 T19.
+
+### 1.5.4 Bakeoff checklist
+
+- [ ] CoreML placement probe (Xcode Instruments MLModel trace wrapper) is wired up + emits the expected JSON.
+- [ ] CoreML baseline captured (`cpu`, N=10, CV ≤ 0.20).
+- [ ] CoreML NPU captured (`coreml`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
+- [ ] CoreML verdict recorded in `docs/handoff/m5-01-coreml-bakeoff-YYYY-MM-DD.md`.
+- [ ] QNN placement probe (`qnn-net-run --profiling_option=op` wrapper) is wired up + emits the expected JSON.
+- [ ] QNN baseline captured (`cpu`, N=10, CV ≤ 0.20).
+- [ ] QNN NPU captured (`qnn`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
+- [ ] QNN verdict recorded in `docs/handoff/m5-02-qnn-bakeoff-YYYY-MM-DD.md`.
+- [ ] Both verdicts fed into §1.3 T19 (GO/NO-GO on the delegate selector C-ABI symbol).
 
 ---
 

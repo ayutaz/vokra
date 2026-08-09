@@ -253,8 +253,14 @@ ID を持ちます）。
 | `NFR-PF-08` | Web（WASM / WebGPU）ターゲットの動作目標。 |
 | `NFR-PF-09` | Tier-1 / Tier-2 エッジデバイス（Raspberry Pi クラス）の real-time-factor 目標。CI VM ではなく gated nightly device workflow で実機計測する（`NFR-PF-10` と対）。 |
 | `NFR-PF-11` | cold start。`mmap` ベースのロードでモデルロード時間をほぼゼロに保つ。本プロジェクトが回避しようとした失敗モードそのもの。 |
-| `NFR-PF-12` | delegate 型 NPU バックエンド（CoreML / QNN）が採用に値するために CPU baseline に対して達成すべき速度向上 = NPU bakeoff の受け入れ基準。 |
+| `NFR-PF-12` | delegate 型 NPU バックエンド（CoreML / QNN）が採用に値するために CPU baseline に対して達成すべき速度向上 = NPU bakeoff の受け入れ基準。表下の NFR-PF-12 プロトコル注を参照（baseline 定義と silent-CPU-fallback ハザード条項）。 |
 | `NFR-PF-13` | 性能 regression ゲート。PR ごとに RTF / TTFA / レイテンシを計測し、regression は黙って merge せず justify を要する。 |
+
+**NFR-PF-12 プロトコル**（2026-08-09 codification）:
+
+- **Baseline 定義**: 2× 比率における「CPU baseline」は **M5-14-post CPU** — M5-14 で land した SIMD hot-path 最適化 libm-route 経路（`docs/handoff/m5-02.md` §"NFR-PF-12 baseline"）。未最適化 CPU（pre-M5-14）を baseline にすると比率が過大に膨らみ、実際に出荷する CPU 経路との比較にならない。baseline は NPU 計測と**同一ホスト・同一セッション**で採取し、thermal state / OS / driver / background load を固定する。
+- **Silent-CPU-fallback ハザード条項**: NPU bakeoff は「NPU が実際に hot ops を走らせた」ことを実証しなければならない。対象 NPU（CoreML なら ANE、QNN なら HTP）の placement が計測 window 全体で ≥ 90 % であること。90 % 未満は silent CPU fallback — 未対応 op（kernel 未実装 / shape 未対応 / dtype 未対応 / driver 古すぎ）が error surface なしに CPU 側で走っている状態。FR-EX-08 に従い、これは 2× verdict の入力から**失格**とする — その run は数値ではなく `INSUFFICIENT DATA` で記録する。ハザード条項であり soft warning ではない。placement gate は `tools/parity/npu_rtf_analyze.py` が `WARN` として上げるが、`PASS` を記録する前に owner が解決する必要がある。
+- **Bakeoff runbook**: `docs/m5-owner-verification-checklist.md` §1.5（owner runbook）/ `docs/handoff/m5-01-coreml-bakeoff-template.md` / `docs/handoff/m5-02-qnn-bakeoff-template.md`（delegate 別テンプレート）/ `tools/parity/npu_rtf_variance.sh`（汎用 NPU RTF variance ハーネス、placement probe を fold-in）/ `tools/parity/npu_rtf_analyze.py`（CV + placement WARN 二軸のアナライザ）。
 
 ## NFR-QL
 

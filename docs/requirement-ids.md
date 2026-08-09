@@ -257,8 +257,14 @@ themselves are part of the private specification.
 | `NFR-PF-08` | The capability target for the Web (WASM / WebGPU) target. |
 | `NFR-PF-09` | The real-time-factor target for Tier-1/Tier-2 edge devices (Raspberry Pi class), verified on real hardware in the gated nightly device workflow rather than on CI VMs (paired with `NFR-PF-10`). |
 | `NFR-PF-11` | Cold start: `mmap`-based loading keeps model load time close to zero, which is the failure mode this project was started to avoid. |
-| `NFR-PF-12` | The speed-up a delegate NPU backend (CoreML / QNN) must clear over the CPU baseline to justify adoption — the NPU-bakeoff acceptance criterion. |
+| `NFR-PF-12` | The speed-up a delegate NPU backend (CoreML / QNN) must clear over the CPU baseline to justify adoption — the NPU-bakeoff acceptance criterion. See the NFR-PF-12 protocol note below for the baseline definition and the silent-CPU-fallback hazard clause. |
 | `NFR-PF-13` | The performance regression gate — RTF / TTFA / latency are measured per PR and a regression must be justified rather than merged silently. |
+
+**NFR-PF-12 protocol** (2026-08-09 codification):
+
+- **Baseline definition**: the "CPU baseline" for the 2× ratio is **M5-14-post CPU** — the SIMD hot-path optimised, libm-route leg landed by M5-14 (`docs/handoff/m5-02.md` §"NFR-PF-12 baseline"). An NPU RTF captured against an unoptimised CPU baseline (pre-M5-14) is not comparable, because the pre-M5-14 CPU number would inflate the ratio without reflecting the shipped CPU path. The baseline MUST be collected on the same host in the same session as the NPU measurement so thermal state / OS / driver / background load are held constant.
+- **Silent-CPU-fallback hazard clause**: an NPU bakeoff MUST demonstrate that the NPU actually ran the hot ops. Placement on the target NPU (ANE for CoreML, HTP for QNN) MUST be ≥ 90 % across the measurement window. Anything below 90 % is a silent CPU fallback — an unsupported op (kernel not implemented, unsupported shape, unsupported dtype, driver too old) being run on the CPU arm without an error surface. Per FR-EX-08 this **disqualifies** the run from feeding a 2× verdict — the bakeoff is recorded as `INSUFFICIENT DATA` rather than a numeric ratio. This is a hazard clause, not a soft warning; the placement gate is enforced by `tools/parity/npu_rtf_analyze.py` as a `WARN` that the owner MUST resolve before recording a `PASS`.
+- **Bakeoff runbook**: `docs/m5-owner-verification-checklist.md` §1.5 (owner runbook); `docs/handoff/m5-01-coreml-bakeoff-template.md` / `docs/handoff/m5-02-qnn-bakeoff-template.md` (per-delegate templates); `tools/parity/npu_rtf_variance.sh` (generic NPU RTF variance harness with placement-probe fold-in); `tools/parity/npu_rtf_analyze.py` (analyzer with the CV + placement WARN axes).
 
 ## NFR-QL
 
