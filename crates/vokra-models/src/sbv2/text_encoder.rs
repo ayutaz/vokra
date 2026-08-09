@@ -9,6 +9,18 @@
 //! actually uses (117 tensors under `enc_p.*`, one 6-layer relative-
 //! position transformer stack under `enc_p.encoder.*`).
 //!
+//! # `phoneme_embed` snapshot convention
+//!
+//! [`SbV2TextEncoder::forward_with_embed`] returns the **pre-scale** sum
+//! `(phoneme + tone + language)` as its first element — the snapshot
+//! matches the Python reference dumper's
+//! `tools/parity/sbv2_dump_reference.py:928`
+//! (`phoneme_embed = x_phon + x_tone + lang_row`, captured BEFORE the
+//! line-929 `x = phoneme_embed * sqrt(D_MODEL)` step). The `* sqrt(d_model)`
+//! scale still runs in place on the buffer fed into the transformer stack;
+//! only the snapshot point moved (parity CI run 31314913038 root-cause
+//! fix, 2026-08-09).
+//!
 //! Clean-room reference: `tools/parity/vendor/vits/attentions.py` +
 //! `.../modules.py` (jaywalnut310/vits, MIT). NOT referenced:
 //! github.com/litagin02/Style-Bert-VITS2 (AGPL-3.0),
@@ -75,7 +87,10 @@ pub struct SbV2TextEncoder {
     /// configuration (see this crate's `tests/sbv2_text_encoder.rs` and
     /// `synthetic_for_test`) — the sum-then-`sqrt(d_model)` scaling
     /// still runs, so an empty-stack forward returns `(phoneme_embed +
-    /// tone_embed + language_embed) * sqrt(d_model)`.
+    /// tone_embed + language_embed) * sqrt(d_model)`. Note that
+    /// [`Self::forward_with_embed`]'s snapshot of `phoneme_embed` is
+    /// taken BEFORE this scale multiplication, per the parity dumper's
+    /// convention — see this method's "Snapshot convention" doc block.
     transformer_layers: Vec<SbV2TransformerBlock>,
     /// Hidden (model) dimension shared by every embedding table and
     /// every transformer block.
@@ -194,22 +209,36 @@ impl SbV2TextEncoder {
     }
 
     /// Same forward pass as [`Self::forward`], but returns the
-    /// **pre-transformer** sum `(phoneme + tone + language) * sqrt(d_model)`
-    /// alongside the **post-transformer** hidden state. Both buffers are
-    /// row-major `[seq_len, d_model]`. Added for Wave-4
-    /// `INTERMEDIATE-ACCESSORS` so parity harnesses can diff
-    /// `phoneme_embed.bin` and `text_hidden.bin` from the Python reference
-    /// dumper separately — the pre-transformer sum is what upstream calls
-    /// `phoneme_embed` (design doc §10, dumper's `phoneme_embed.bin`) and
-    /// is not otherwise observable from outside the encoder.
+    /// **pre-scale** embedding sum `(phoneme + tone + language)` alongside
+    /// the **post-transformer** hidden state. Both buffers are row-major
+    /// `[seq_len, d_model]`. Added for Wave-4 `INTERMEDIATE-ACCESSORS` so
+    /// parity harnesses can diff `phoneme_embed.bin` and `text_hidden.bin`
+    /// from the Python reference dumper separately — the pre-scale sum is
+    /// what upstream calls `phoneme_embed` (design doc §10, dumper's
+    /// `phoneme_embed.bin`) and is not otherwise observable from outside
+    /// the encoder.
+    ///
+    /// # Snapshot convention (parity CI 2026-08-09, run 31314913038)
+    ///
+    /// The Python reference dumper's `run_text_encoder`
+    /// (`tools/parity/sbv2_dump_reference.py:923-929`) writes
+    /// `phoneme_embed = x_phon + x_tone + lang_row` at line 928 **before**
+    /// the separate line-929 `x = phoneme_embed * sqrt(D_MODEL)` scaling
+    /// step. This method therefore snapshots the buffer BEFORE the
+    /// `* self.scale` multiplication so the returned `phoneme_embed`
+    /// matches the dumper's convention byte-for-a-factor-of-sqrt(d_model);
+    /// the pre-fix version snapshotted after the fused
+    /// `(p + t + l) * self.scale` loop and diffed as
+    /// `sum * sqrt(192) ≈ sum * 13.86` against the dumper's pre-scale sum,
+    /// producing the 36.25 max|Δ| CI reported.
     ///
     /// # Returns
     ///
     /// `(phoneme_embed, text_hidden)`, both `[seq_len, d_model]` row-major.
     /// `phoneme_embed == (phoneme_embed_table[id] + tone_embed[tone] +
-    /// language_embed[language_id]) * sqrt(d_model)`. `text_hidden` is
-    /// that same buffer after the transformer stack was applied
-    /// in place.
+    /// language_embed[language_id])` — the pre-scale sum. `text_hidden` is
+    /// that same buffer after `* sqrt(d_model)` and the transformer stack
+    /// were applied in place.
     ///
     /// # Panics
     ///
@@ -247,6 +276,13 @@ impl SbV2TextEncoder {
         let lang_start = (language_id as usize) * d_model;
         let lang_row = &self.language_embed[lang_start..lang_start + d_model];
         let mut hidden = vec![0.0_f32; seq_len * d_model];
+        // Pass 1: build the unscaled embedding sum
+        // `hidden[i,d] = phoneme_embed[id_i, d] + tone_embed[tone_i, d] +
+        //  language_embed[language_id, d]`. This is what the Python dumper
+        // writes as `phoneme_embed.bin` (see the "Snapshot convention"
+        // block on this method's doc); the `* sqrt(d_model)` scale runs in
+        // a separate in-place pass below so the snapshot point sits on the
+        // Python-side line-928 sum, not the line-929 scaled product.
         for ((out_row, &id), &tone) in hidden
             .chunks_exact_mut(d_model)
             .zip(phoneme_ids.iter())
@@ -259,12 +295,23 @@ impl SbV2TextEncoder {
                 .zip(ph_row.iter().zip(tone_row.iter()))
                 .zip(lang_row.iter())
             {
-                *o = (p + t + l) * self.scale;
+                *o = p + t + l;
             }
         }
 
-        // Snapshot the pre-transformer sum before the in-place stack.
+        // Snapshot BEFORE scaling — matches the Python dumper's
+        // `phoneme_embed = x_phon + x_tone + lang_row` (line 928, taken
+        // before the line-929 `x = phoneme_embed * sqrt(D_MODEL)` step).
         let phoneme_embed = hidden.clone();
+
+        // Pass 2: apply the `sqrt(d_model)` scale in place, matching
+        // upstream VITS `TextEncoder.forward`'s
+        // `x = self.emb(x) * math.sqrt(self.hidden_channels)` — this is the
+        // buffer the transformer stack consumes below (and, with an empty
+        // stack, the value `text_hidden` returns).
+        for h in hidden.iter_mut() {
+            *h *= self.scale;
+        }
 
         for block in &self.transformer_layers {
             block.forward(&mut hidden, seq_len);

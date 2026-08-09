@@ -7,6 +7,99 @@
 
 use vokra_models::sbv2::{BertBridge, N_LANGUAGES, SbV2TextEncoder};
 
+/// Parity-CI root-cause pin (2026-08-09, phoneme_embed Δ 36.25 on run
+/// 31314913038, HEAD 427bfd3): `SbV2TextEncoder::forward_with_embed` must
+/// snapshot `phoneme_embed` as the **pre-scale** sum
+/// `(phoneme_table[id] + tone_table[tone] + language_table[lang])`, NOT
+/// the post-scale product `sum * sqrt(d_model)`. The Python reference
+/// dumper's `run_text_encoder` (`tools/parity/sbv2_dump_reference.py:923-929`)
+/// writes `phoneme_embed = x_phon + x_tone + lang_row` (line 928)
+/// **before** the separate line-929 `x = phoneme_embed * sqrt(D_MODEL)`
+/// scaling step; the Rust snapshot must match the Python's convention or
+/// every real-checkpoint parity run diffs against `sum * sqrt(192) ≈
+/// sum * 13.86` — exactly the 36.25 ÷ 2.6 ≈ 13.86 factor CI reported.
+///
+/// The `text_hidden` half of the return tuple must still be the fully
+/// processed hidden state (with an empty transformer stack this equals
+/// `phoneme_embed * sqrt(d_model)`), so the scale is not lost — only its
+/// snapshot point moves. Asserting both halves in one test pins BOTH the
+/// snapshot-point contract and the "scale still runs" invariant, so a
+/// future refactor that silently drops the scale would trip this test.
+#[test]
+fn phoneme_embed_snapshot_matches_pre_scale_sum() {
+    let (n_vocab, n_tones, d_model) = (2, 2, 4);
+    // Hand-picked distinct row values so the expected sum on each of
+    // 2 positions is unambiguously predictable and every element differs.
+    // phoneme_embed rows:
+    //   row 0 = [1.0, 2.0, 3.0, 4.0]
+    //   row 1 = [0.5, -0.5, 0.5, -0.5]
+    let mut phoneme_embed = vec![0.0_f32; n_vocab * d_model];
+    phoneme_embed[..d_model].copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+    phoneme_embed[d_model..].copy_from_slice(&[0.5, -0.5, 0.5, -0.5]);
+    // tone_embed rows:
+    //   row 0 = [0.1, 0.1, 0.1, 0.1]
+    //   row 1 = [-0.1, 0.0, 0.2, 0.3]
+    let mut tone_embed = vec![0.0_f32; n_tones * d_model];
+    tone_embed[..d_model].copy_from_slice(&[0.1, 0.1, 0.1, 0.1]);
+    tone_embed[d_model..].copy_from_slice(&[-0.1, 0.0, 0.2, 0.3]);
+    // language_embed row 0 (JA) = [0.0, 0.1, 0.2, 0.3].
+    let mut language_embed = vec![0.0_f32; N_LANGUAGES * d_model];
+    language_embed[..d_model].copy_from_slice(&[0.0, 0.1, 0.2, 0.3]);
+    let enc = SbV2TextEncoder::from_weights(
+        phoneme_embed,
+        tone_embed,
+        language_embed,
+        Vec::new(), // empty transformer stack → text_hidden == phoneme_embed * scale
+        d_model,
+        n_vocab,
+        n_tones,
+    );
+
+    let phoneme_ids: [u16; 2] = [0, 1];
+    let tones: [u8; 2] = [0, 1];
+    let (phoneme_snapshot, text_hidden) =
+        enc.forward_with_embed(&phoneme_ids, &tones, /*language_id=*/ 0);
+
+    // Expected UN-scaled sums (what the Python dumper writes):
+    // position 0: phoneme[0] + tone[0] + lang[0]
+    //           = [1.0+0.1+0.0, 2.0+0.1+0.1, 3.0+0.1+0.2, 4.0+0.1+0.3]
+    //           = [1.1, 2.2, 3.3, 4.4]
+    // position 1: phoneme[1] + tone[1] + lang[0]
+    //           = [0.5-0.1+0.0, -0.5+0.0+0.1, 0.5+0.2+0.2, -0.5+0.3+0.3]
+    //           = [0.4, -0.4, 0.9, 0.1]
+    let expected_pre_scale: [f32; 8] = [1.1, 2.2, 3.3, 4.4, 0.4, -0.4, 0.9, 0.1];
+    for (i, (&actual, &expected)) in phoneme_snapshot
+        .iter()
+        .zip(expected_pre_scale.iter())
+        .enumerate()
+    {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "phoneme_embed[{i}] = {actual} but expected pre-scale sum {expected} \
+             (snapshot must be BEFORE the sqrt(d_model) scale to match \
+             tools/parity/sbv2_dump_reference.py:928)"
+        );
+    }
+
+    // `text_hidden` with an empty transformer stack must be the scaled
+    // pre-transformer buffer — pins that the scale is still applied
+    // downstream so we know the fix only moved the snapshot point.
+    let scale = (d_model as f32).sqrt(); // sqrt(4) = 2.0
+    for (i, (&hidden, &expected)) in text_hidden
+        .iter()
+        .zip(expected_pre_scale.iter())
+        .enumerate()
+    {
+        let expected_scaled = expected * scale;
+        assert!(
+            (hidden - expected_scaled).abs() < 1e-6,
+            "text_hidden[{i}] = {hidden} but expected scaled value {expected_scaled} \
+             (= phoneme_embed[{i}] * sqrt({d_model})) — the sqrt(d_model) \
+             scale must still run on the buffer fed to the transformer stack"
+        );
+    }
+}
+
 /// `SbV2TextEncoder::forward` returns a flat `[seq_len * d_model]` buffer
 /// (empty `transformer_layers` — the tested no-op stack configuration).
 #[test]

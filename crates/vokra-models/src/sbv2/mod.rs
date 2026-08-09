@@ -212,9 +212,16 @@ pub struct SbV2SynthRequest {
 /// captured in the request, not the model's output).
 #[derive(Debug, Clone)]
 pub struct SbV2Intermediates {
-    /// `[T_text, d_model]` — pre-transformer sum
-    /// `(phoneme_embed[id] + tone_embed[tone] + language_embed[lang]) *
-    /// sqrt(d_model)`. Dumper filename: `phoneme_embed.bin`.
+    /// `[T_text, d_model]` — **pre-scale** embedding sum
+    /// `(phoneme_embed[id] + tone_embed[tone] + language_embed[lang])`,
+    /// snapshot BEFORE the `sqrt(d_model)` scale multiplication. Dumper
+    /// filename: `phoneme_embed.bin`. Matches the Python reference
+    /// dumper's `tools/parity/sbv2_dump_reference.py:928`
+    /// (`phoneme_embed = x_phon + x_tone + lang_row`, before the line-929
+    /// `x = phoneme_embed * sqrt(D_MODEL)` step) — see
+    /// [`SbV2TextEncoder::forward_with_embed`](super::text_encoder::SbV2TextEncoder::forward_with_embed)'s
+    /// "Snapshot convention" doc for the parity-CI root cause behind this
+    /// convention (2026-08-09 fix, run 31314913038).
     pub phoneme_embed: Vec<f32>,
     /// `[T_text, d_model]` — post-transformer text encoder hidden state
     /// (the value fed to the SDP at step 6 — see the Bug-4 fix comment
