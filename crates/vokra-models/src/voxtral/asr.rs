@@ -7,7 +7,7 @@
 //! uniformly through the [`vokra_core::AsrEngine`] trait. This file supplies
 //! the Voxtral side of that trait — a thin adaptor that owns a
 //! [`VoxtralModel`] plus a runtime [`BackendKind`] and dispatches
-//! [`AsrEngine::transcribe`](vokra_core::AsrEngine::transcribe) through the
+//! [`vokra_core::AsrEngine::transcribe`] through the
 //! [`AsrHead`] + [`VoxtralTokenizer`].
 //!
 //! # Autoregressive greedy decode (M3-10 core)

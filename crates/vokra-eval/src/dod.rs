@@ -3,7 +3,7 @@
 //! DoD item 2 (`docs/milestones.md` §9) says the official model zoo's models
 //! must **all** pass the NFR-QL-02 5 % degradation gate and numerical-parity
 //! CI. This runner turns that into a machine check: it iterates the
-//! [`ZooManifest`](crate::zoo::ZooManifest), dispatches each gated model to the
+//! [`ZooManifest`], dispatches each gated model to the
 //! right quality axis ([`crate::gate`]), and — crucially — reports what it
 //! *could not* measure as honestly as what it could.
 //!

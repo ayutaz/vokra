@@ -29,7 +29,7 @@
 //!
 //! Every entry point on this module surfaces missing hparams / missing
 //! tensors / unsupported dtypes as an explicit
-//! [`VokraError`](vokra_core::VokraError) — never a silent widening or
+//! [`vokra_core::VokraError`] — never a silent widening or
 //! substitution. The runtime rejects a `0`-sentinel hparam (from the
 //! shape-only converter path) at forward time so a broken conversion cannot
 //! be papered over.

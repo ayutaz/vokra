@@ -12,7 +12,7 @@
 //!
 //! The Rust surface M0-09 wraps is: [`WhisperAsr::from_gguf`] /
 //! [`WhisperAsr::with_tokenizer`] to build, and the
-//! [`AsrEngine::transcribe`](vokra_core::AsrEngine::transcribe) trait method
+//! [`vokra_core::AsrEngine::transcribe`] trait method
 //! (plus [`WhisperAsr::transcribe_tokens`] for a tokenizer-free id stream).
 //! C-ABI export (`vokra_asr_transcribe`, FR-API-01) is out of this WP's scope.
 
@@ -171,7 +171,7 @@ impl WhisperAsr {
     ///   greedy [`transcribe_tokens`](Self::transcribe_tokens) enforces
     ///   (no silent CPU fall back, FR-EX-08).
     /// * Any error surfaced by
-    ///   [`beam_search`](vokra_core::decode::beam_search) itself (empty
+    ///   [`vokra_core::decode::beam_search()`] itself (empty
     ///   prefix, zero widths, `word_timestamps` enabled, …).
     pub fn transcribe_tokens_beam_nbest(
         &self,

@@ -27,7 +27,7 @@
 //! against the GGUF's shape config (the documented honest bridge —
 //! `LlmBackbone::from_gguf` precedent) and the GGUF tokenizer's `encode`
 //! stays `NotImplemented`; fixture flows inject
-//! [`FixtureByteTokenizer`](super::tokenizer::FixtureByteTokenizer) by
+//! [`FixtureByteTokenizer`] by
 //! name. A `0`-placeholder GGUF (scaffold converter) is rejected loudly at
 //! load.
 

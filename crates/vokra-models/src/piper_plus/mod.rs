@@ -398,7 +398,7 @@ impl PiperPlusTts {
     ///
     /// # Errors
     ///
-    /// [`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument)
+    /// [`VokraError::InvalidArgument`]
     /// if a phoneme / language id is out of range, or `prosody_features` is
     /// present with a length other than `3 · phoneme_ids.len()`.
     // The explicit low-level primitive takes the model's natural conditioning

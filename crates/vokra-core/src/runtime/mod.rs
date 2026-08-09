@@ -20,7 +20,7 @@
 //! - **Validation lives in the engine.** A backend's
 //!   [`eval_op`](crate::Backend::eval_op) only computes; [`run_graph`] checks
 //!   its output arity and shapes against the declared
-//!   [`TensorDesc`](crate::TensorDesc)s.
+//!   [`TensorDesc`]s.
 //!
 //! The module is named `runtime` (not `engine`) to avoid confusion with
 //! [`engines`](crate::engines), which holds the task-level `AsrEngine` /

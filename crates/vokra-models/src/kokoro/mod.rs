@@ -11,7 +11,7 @@
 //!
 //! - [`config`] — `vokra.kokoro.*` metadata + shape-cross-checked dims
 //!   (T09);
-//! - [`weights`] — F32-only [`GgufFile`](vokra_core::gguf::GgufFile) tensor
+//! - [`weights`] — F32-only [`GgufFile`] tensor
 //!   store, rejecting a non-F32 tensor as a converter bug (T10);
 //! - [`nn`] — 1-D dilated / grouped / transposed convolutions, activations
 //!   plus a private [`nn::adain`] helper (StyleTTS 2 AdaIN as a composition
