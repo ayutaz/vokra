@@ -134,9 +134,9 @@ impl WhisperModel {
     ///
     /// # Errors
     ///
-    /// [`VokraError::ModelLoad`] if a hyperparameter key or a weight tensor is
+    /// [`vokra_core::VokraError::ModelLoad`] if a hyperparameter key or a weight tensor is
     /// missing, mistyped or mis-shaped, or the `vokra.frontend.*` chunk is
-    /// absent; [`VokraError::FrontendMismatch`](vokra_core::VokraError) if the
+    /// absent; [`vokra_core::VokraError::FrontendMismatch`] if the
     /// declared front-end differs from the runtime's.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         Self::from_gguf_with(file, WhisperLoadOptions::default())

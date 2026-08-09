@@ -12,7 +12,7 @@
 //! spectrogram produced by the chunk-aware CFM and emits 24 kHz PCM. Vokra's
 //! port lives in [`vokra_ops::hiftnet`] (Waves 3c-2/3c-3 + Wave 4 harness).
 //!
-//! # Why this seam (and not the [`super::mimi_bridge`] module)
+//! # Why this seam (and not the `super::mimi_bridge` module)
 //!
 //! The 2026-07-22 SoTA-plan §1(a) 訂正 identified that the previous
 //! CosyVoice2 → Mimi wiring was built on a wrong premise: **CosyVoice2 does
@@ -21,9 +21,9 @@
 //! Mimi at any point; instead it composes `SourceModuleHnNSF` (NSF) with a
 //! `torch.istft` post-conv (ISTFTNet) and a `Snake` activation stack (see
 //! `:320 SourceModuleHnNSF`, `:503 torch.istft`, `:102 Snake`). The
-//! [`super::mimi_bridge`] module is therefore [`#[deprecated]`][super::mimi_bridge]
+//! `super::mimi_bridge` module is therefore [`#[deprecated]`][super::mimi_bridge]
 //! and kept only to avoid breaking existing test imports and the
-//! [`super::chunk_pipeline`] scaffold; new callers use [`HiFTChain`].
+//! `super::chunk_pipeline` scaffold; new callers use [`HiFTChain`].
 //!
 //! # Zero-dependency posture (NFR-DS-02)
 //!
@@ -99,7 +99,7 @@ impl HiFTChain {
     /// Propagates every [`HiFTGenerator::new`] validation error verbatim.
     /// The op-crate rustdoc enumerates them; the common ones are:
     ///
-    /// - [`VokraError::InvalidArgument`] on empty `upsample_rates`, mismatched
+    /// - [`vokra_core::VokraError::InvalidArgument`] on empty `upsample_rates`, mismatched
     ///   `upsample_kernel_sizes` / `resblock_dilation_sizes` lengths, or a
     ///   conv weight vector whose length does not match the expected
     ///   `[out_ch, in_ch, kernel]` layout.
@@ -140,7 +140,7 @@ impl HiFTChain {
     ///
     /// Propagates [`HiFTGenerator::forward`] errors verbatim:
     ///
-    /// - [`VokraError::InvalidArgument`] on `t_mel == 0` or
+    /// - [`vokra_core::VokraError::InvalidArgument`] on `t_mel == 0` or
     ///   `mel.len() != in_channels * t_mel`.
     /// - Any downstream op error surfaces with the op-crate's original
     ///   message.

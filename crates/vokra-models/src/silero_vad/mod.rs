@@ -92,7 +92,7 @@ impl SileroVadV5 {
     /// Binds the model from a parsed GGUF (FR-LD-01).
     ///
     /// Accepts the corrected both-rate GGUF (`sr8k.*` / `sr16k.*`) or the legacy
-    /// single-rate one. Returns [`VokraError::ModelLoad`] if no Silero weights
+    /// single-rate one. Returns [`vokra_core::VokraError::ModelLoad`] if no Silero weights
     /// are present or a tensor has the wrong shape/dtype.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
         Ok(Self {

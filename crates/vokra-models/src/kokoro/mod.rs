@@ -5,29 +5,29 @@
 //! only the upstream **checkpoint** (Apache 2.0, converted offline to GGUF by
 //! `vokra-convert`) is consumed at runtime. No ONNX runs at runtime
 //! (FR-LD-05). G2P (misaki) is out of scope for M2-07; the runtime consumes
-//! phoneme ids only (see [`docs/adr/0007-kokoro-native.md`]).
+//! phoneme ids only (see `docs/adr/0007-kokoro-native.md`).
 //!
 //! # Layout (M2-07)
 //!
-//! - [`config`] — `vokra.kokoro.*` metadata + shape-cross-checked dims
+//! - `config` — `vokra.kokoro.*` metadata + shape-cross-checked dims
 //!   (T09);
-//! - [`weights`] — F32-only [`GgufFile`] tensor
+//! - `weights` — F32-only [`GgufFile`] tensor
 //!   store, rejecting a non-F32 tensor as a converter bug (T10);
-//! - [`nn`] — 1-D dilated / grouped / transposed convolutions, activations
-//!   plus a private [`nn::adain`] helper (StyleTTS 2 AdaIN as a composition
+//! - `nn` — 1-D dilated / grouped / transposed convolutions, activations
+//!   plus a private `nn::adain` helper (StyleTTS 2 AdaIN as a composition
 //!   of instance-norm + affine, **not** a new first-class op — FR-EX-08
 //!   permits composition);
-//! - [`text_encoder`] / [`bert`] / [`prosody`] / [`decoder`] — component
+//! - `text_encoder` / `bert` / `prosody` / `decoder` — component
 //!   skeletons; the concrete forward paths land at T12–T17. `bert` is the
 //!   T13-beta PL-BERT branch (`bert.module.*` + `bert_encoder.module.*`,
 //!   loaded only when the canary tensor is present — see
-//!   [`BERT_CANARY_TENSOR`]). The iSTFT head uses FR-OP-01 `istft`, **not**
+//!   `BERT_CANARY_TENSOR`). The iSTFT head uses FR-OP-01 `istft`, **not**
 //!   the FR-OP-12 `vocos_head` — Kokoro is iSTFTNet 系.
 //!
 //! # Hot ops (M2-08 alignment)
 //!
-//! Kokoro dispatches **GEMM only** through the [`Compute`](crate::compute::Compute)
-//! seam (every conv routes through [`nn::conv1d`]'s im2col + GEMM); the
+//! Kokoro dispatches **GEMM only** through the [`crate::compute::Compute`]
+//! seam (every conv routes through `nn::conv1d`'s im2col + GEMM); the
 //! LeakyReLU / GELU / sigmoid / AdaIN / iSTFT / voicepack lookup glue is
 //! model-internal scalar work. Kokoro is **not** a FR-OP-12 `vocos_head`
 //! consumer, so it does not opt in to any `vocos_head` FP16-forbidden
@@ -252,7 +252,7 @@ impl KokoroTts {
     ///   `pack[len(ps) - 1]` from a per-voice `[max_tokens, 1, 2·style_dim]`
     ///   table (`pipeline.py:232`), so the row is
     ///   `min(phoneme_ids.len() - 1, max_tokens - 1)` and the resulting
-    ///   `2·style_dim` `ref_s` feeds the same [`split_ref_s`] path as a full
+    ///   `2·style_dim` `ref_s` feeds the same `split_ref_s` path as a full
     ///   voicepack `style_override`. A voice GGUF built the canonical way
     ///   (no stacked `voicepack` tensor — upstream ships voices as separate
     ///   `voices/*.pt` files) has nothing to look up: a **known** name then

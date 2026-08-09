@@ -42,14 +42,14 @@
 //! Two-block `ComplexDense → ComplexPReLU → ComplexGRU →
 //! ComplexDense → ComplexPReLU → ComplexDense` with **fixed** widths:
 //!
-//! - `fc_in`  — [`ComplexDense`]`(in = 2L+1 = 9, out = fc_dim = 18)`
-//! - `prelu_1` — [`ComplexPReLU`]
-//! - `complex_gru` — [`ComplexGru`]`(input_size = fc_dim = 18,
+//! - `fc_in`  — `ComplexDense``(in = 2L+1 = 9, out = fc_dim = 18)`
+//! - `prelu_1` — `ComplexPReLU`
+//! - `complex_gru` — `ComplexGru``(input_size = fc_dim = 18,
 //!                                  hidden_size = rnn_dim = 18,
 //!                                  layers = 1)`
-//! - `fc_out.0` — [`ComplexDense`]`(in = rnn_dim = 18, out = fc_dim = 18)`
-//! - `prelu_2` — [`ComplexPReLU`]
-//! - `fc_out.2` — [`ComplexDense`]`(in = fc_dim = 18, out = L = 4)`
+//! - `fc_out.0` — `ComplexDense``(in = rnn_dim = 18, out = fc_dim = 18)`
+//! - `prelu_2` — `ComplexPReLU`
+//! - `fc_out.2` — `ComplexDense``(in = fc_dim = 18, out = L = 4)`
 //!
 //! Every `Complex*` primitive is a pair of real primitives (see the
 //! `ComplexGru` / `ComplexDense` / `ComplexPReLU` doc comments) — 22

@@ -63,10 +63,10 @@ const SELF_KV_RESERVE_HINT: usize = 64;
 ///
 /// # Reusable scratch (M1-04, FR-EX-05)
 ///
-/// The residual buffer [`h`](Self::h), the per-block [`BlockScratch`] and the
-/// [`LogitsScratch`] are owned here and **reused for every step and every
+/// The residual buffer `h`, the per-block `BlockScratch` and the
+/// `LogitsScratch` are owned here and **reused for every step and every
 /// layer**: each is reserved once (to the text-context / prefix bounds) in
-/// [`new`](Self::new) and thereafter only `clear()`/`resize()`-d, so the
+/// `new` and thereafter only `clear()`/`resize()`-d, so the
 /// autoregressive decode loop performs no heap allocation at steady state. This
 /// is the whisper.cpp reused-buffer pattern in safe Rust; the capacity-stability
 /// test below is its oracle.
@@ -267,7 +267,7 @@ impl DecoderState {
 
     /// Restores a snapshot taken by [`selfkv_snapshot`](Self::selfkv_snapshot)
     /// on this same state (same model, same encoder binding): the next
-    /// [`step_into`](Self::step_into) continues bit-identically from the
+    /// `step_into` continues bit-identically from the
     /// snapshot's position, exactly as if the snapshot's tokens had just been
     /// decoded on a fresh reset state.
     pub(crate) fn selfkv_restore(&mut self, snap: &vokra_core::KvCache) {
@@ -286,7 +286,7 @@ impl DecoderState {
     ///
     /// The caller reads the last row for greedy / beam expansion; the parity
     /// tests use all rows. Internally forwards to the allocation-free
-    /// [`step_into`](Self::step_into) and clones its logits scratch out.
+    /// `step_into` and clones its logits scratch out.
     ///
     /// # Errors
     ///
@@ -301,7 +301,7 @@ impl DecoderState {
     }
 
     /// Logits for the last token after advancing by `tokens` (greedy / beam).
-    /// `tokens` must be non-empty. Forwards to [`step_into`](Self::step_into)
+    /// `tokens` must be non-empty. Forwards to `step_into`
     /// and clones only the final row.
     pub fn step_last(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
         self.step_into(tokens)?;
@@ -466,7 +466,7 @@ impl DecoderState {
     // ZERO-ALLOC-END
 
     /// The final token's logits `[n_vocab]` from the last
-    /// [`step_into`](Self::step_into) — the greedy / beam read. Must not be
+    /// `step_into` — the greedy / beam read. Must not be
     /// called before a non-empty step (the logits scratch would be empty).
     pub(crate) fn last_logits_row(&self) -> &[f32] {
         let v = self.model.config().n_vocab;
@@ -480,7 +480,7 @@ impl DecoderState {
     ///
     /// This is a **decode-independent second forward** over the full `tokens`
     /// sequence (openai-whisper `find_alignment` posture): it runs the same
-    /// per-op forward as [`step_into`](Self::step_into) but, at each layer's
+    /// per-op forward as `step_into` but, at each layer's
     /// cross-attention, also copies out the softmax weights via
     /// [`cross_attention_capture`]. It is NOT the hot path (it allocates
     /// freely) and forces the CPU per-op path — never the device session
