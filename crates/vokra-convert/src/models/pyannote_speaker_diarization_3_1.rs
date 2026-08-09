@@ -12,9 +12,9 @@
 //!
 //! - **`pyannote/segmentation-3.0`** (PyanNet VAD / speaker-segmentation
 //!   backbone, MIT — already covered by
-//!   [`super::pyannote_segmentation`]).
+//!   `super::pyannote_segmentation`).
 //! - **`pyannote/wespeaker-voxceleb-resnet34-LM`** (WeSpeaker speaker
-//!   embedding, MIT — already covered by [`super::wespeaker`]).
+//!   embedding, MIT — already covered by `super::wespeaker`).
 //!
 //! Both dependencies are Vokra-published (2026-08-01 wave §3.1
 //! sign-off queue). This converter emits a **weightless GGUF** that
@@ -122,7 +122,7 @@ use crate::ConvertError;
 
 /// `vokra.model.arch` for pyannote speaker-diarization pipelines.
 /// Distinct arch tag from every sibling (including
-/// [`super::pyannote_segmentation`] `pyannote-segmentation` — this is
+/// `super::pyannote_segmentation` `pyannote-segmentation` — this is
 /// a *pipeline orchestrator* over that VAD backbone plus a WeSpeaker
 /// embedding backbone plus a clusterer, not the VAD backbone itself.
 /// Silently sharing an arch tag would misroute the future runtime
@@ -161,7 +161,7 @@ const SOURCE_DESCRIPTION: &str = "pyannote/speaker-diarization-3.1 (SpeakerDiari
      AgglomerativeClustering, MIT)";
 
 /// Ad-hoc metadata key for the model category. Same key
-/// [`super::pyannote_segmentation`] / `wespeaker` / `rmvpe` use.
+/// `super::pyannote_segmentation` / `wespeaker` / `rmvpe` use.
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 
 // -------------------------------------------------------------------------
@@ -322,7 +322,7 @@ pub struct PyannoteSpeakerDiarization31Report {
 ///   weight repos ([`DEFAULT_SEGMENTATION_MODEL`] +
 ///   [`DEFAULT_EMBEDDING_MODEL`]), it does not embed their weights.
 ///
-/// `license` overrides [`DEFAULT_LICENSE`] (`"mit"`) — the same
+/// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
 /// mechanism `lib.rs::convert_file_licensed` uses when the
 /// implementation is clean-room but the redistributed pipeline
 /// carries a different SPDX.

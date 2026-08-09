@@ -108,7 +108,7 @@ pub struct StableAudioOpenSmallReport {
 /// [`StableAudioOpenSmallReport`].
 ///
 /// `license` optionally overrides the stamped weight license (raw SPDX
-/// string). The default is [`DEFAULT_LICENSE_SPDX`]
+/// string). The default is `DEFAULT_LICENSE_SPDX`
 /// (`"stability-ai-community-license"`) which is hard-mapped here to
 /// [`LicenseClass::NonCommercial`] (SPDX 未登録, CPML precedent in
 /// `xtts_v2.rs`).

@@ -119,8 +119,8 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of a HiFi-GAN vocoder conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::wespeaker::WespeakerReport`],
-/// [`super::ecapa_tdnn::EcapaTdnnReport`]) adapted to the
+/// (`super::wespeaker::WespeakerReport`,
+/// `super::ecapa_tdnn::EcapaTdnnReport`) adapted to the
 /// file-oriented `convert_hifigan_vocoder_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HifiganVocoderReport {
@@ -152,7 +152,7 @@ pub struct HifiganVocoderReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — the
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the
 /// upstream HF release ships apache-2.0 end-to-end.
 ///
 /// # Errors

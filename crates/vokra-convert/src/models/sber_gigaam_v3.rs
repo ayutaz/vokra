@@ -127,8 +127,8 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_h
 /// Outcome of a Sber GigaAM v3 conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::emotion2vec::Emotion2vecReport`],
-/// [`super::wespeaker::WespeakerReport`]). Tracks every tensor the
+/// (`super::emotion2vec::Emotion2vecReport`,
+/// `super::wespeaker::WespeakerReport`). Tracks every tensor the
 /// safetensors reader surfaced so the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
@@ -167,7 +167,7 @@ pub struct SberGigaamV3Report {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`) — the standing
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`) — the standing
 /// override mechanism for "implementation is clean-room but the
 /// redistributed checkpoint carries a different SPDX" scenarios
 /// (mirror of `convert_file_licensed` in `lib.rs`).

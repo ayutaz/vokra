@@ -144,9 +144,9 @@ const KEY_DNSMOS_P835_CKPT: &str = "vokra.dnsmos.p835.checkpoint";
 /// Outcome of a DNSMOS conversion.
 ///
 /// Mirrors the recent file-based sibling report shape
-/// ([`super::openvoice_v2::OpenvoiceV2Report`] /
-/// [`super::ecapa_tdnn::EcapaTdnnReport`] /
-/// [`super::emotion2vec::Emotion2vecReport`]) with an added
+/// (`super::openvoice_v2::OpenvoiceV2Report` /
+/// `super::ecapa_tdnn::EcapaTdnnReport` /
+/// `super::emotion2vec::Emotion2vecReport`) with an added
 /// `bundle_variants` counter so the caller can distinguish "both models
 /// present" from "single-variant partial bundle" without walking the
 /// GGUF metadata.
@@ -186,7 +186,7 @@ pub struct DnsmosReport {
 /// groups pin the artifact's identity for the runtime compliance gate
 /// (FR-CP-03) and the future `vokra_eval::dnsmos::from_gguf` binder.
 ///
-/// `license` overrides [`DEFAULT_LICENSE`] (`"mit"`) — the same
+/// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
 /// mechanism `lib.rs::convert_file_licensed` uses when a redistributed
 /// checkpoint carries a different SPDX.
 ///

@@ -177,8 +177,8 @@ impl BigVGanVariant {
 /// Outcome of a BigVGAN conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::wespeaker::WespeakerReport`],
-/// [`super::ecapa_tdnn::EcapaTdnnReport`]) adapted to the
+/// (`super::wespeaker::WespeakerReport`,
+/// `super::ecapa_tdnn::EcapaTdnnReport`) adapted to the
 /// file-oriented `convert_bigvgan_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BigVGanReport {
@@ -210,7 +210,7 @@ pub struct BigVGanReport {
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`) — the upstream HF
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`) — the upstream HF
 /// releases all ship MIT (verified 2026-07-30 via HF API cardData;
 /// GitHub NVIDIA/BigVGAN LICENSE is also standard MIT).
 ///

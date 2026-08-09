@@ -123,7 +123,7 @@ pub struct BicodecReport {
 /// `input` is the upstream safetensors path; the emitted GGUF is written
 /// to `output`. `license` overrides the raw SPDX string stamped into
 /// `vokra.provenance.license` — the default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`), matching the SparkAudio
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`), matching the SparkAudio
 /// weight card at `huggingface.co/SparkAudio/Spark-TTS-0.5B`. Pass
 /// `Some(other_spdx)` when the immediate redistribution source has
 /// re-tagged the artifact.

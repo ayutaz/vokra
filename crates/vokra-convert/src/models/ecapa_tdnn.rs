@@ -95,8 +95,8 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of an ECAPA-TDNN conversion.
 ///
 /// Mirrors the sibling converters' counter shape
-/// ([`super::qwen3_tts::Qwen3TtsReport`], [`super::vibevoice::VibeVoiceReport`],
-/// [`super::voxcpm2::VoxCpm2Report`]) adapted to the file-oriented
+/// (`super::qwen3_tts::Qwen3TtsReport`, `super::vibevoice::VibeVoiceReport`,
+/// `super::voxcpm2::VoxCpm2Report`) adapted to the file-oriented
 /// `convert_ecapa_tdnn_file` surface (adds `read` tracking every tensor
 /// the safetensors reader surfaced so the invariant
 /// `read == written + skipped_non_float` is auditable).
@@ -130,7 +130,7 @@ pub struct EcapaTdnnReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — the upstream
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the upstream
 /// HF release ships apache-2.0 end-to-end.
 ///
 /// # Errors

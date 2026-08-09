@@ -184,7 +184,7 @@ pub struct RnnoiseReport {
 /// side-car lookup). `vokra.schema.*` is written unconditionally by the
 /// GGUF writer.
 ///
-/// `license` overrides [`DEFAULT_LICENSE`] (`"bsd-3-clause"`) — the same
+/// `license` overrides `DEFAULT_LICENSE` (`"bsd-3-clause"`) — the same
 /// mechanism `lib.rs::convert_file_licensed` uses when the implementation
 /// is clean-room but the redistributed checkpoint carries a different
 /// SPDX.

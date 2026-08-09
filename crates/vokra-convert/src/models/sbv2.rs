@@ -206,7 +206,7 @@
 //! - `config_side_car = Some(path)`: every one of the 22 required keys must
 //!   be present in the JSON or this function returns [`ConvertError::Parse`]
 //!   naming the missing field (mirrors `models::dac::DacConfig::parse`'s
-//!   `req()` closure). [`SbV2Config::parse`] additionally cross-checks the
+//!   `req()` closure). `SbV2Config::parse` additionally cross-checks the
 //!   same internal-consistency invariants `SbV2Model::from_gguf` itself
 //!   checks at load time (`d_z` non-zero + even; the three decoder array
 //!   lengths agreeing with `upsample_rates`/`resblock_kernel_sizes`; the
@@ -296,7 +296,7 @@ const KEY_SAMPLE_RATE: &str = "vokra.sbv2.sample_rate";
 const KEY_N_LANGUAGES: &str = "vokra.sbv2.n_languages";
 /// The fixed value stamped under [`KEY_N_LANGUAGES`] — a hard-coded
 /// architectural anchor rather than a config-side-car field, so
-/// [`SbV2Config`] does not carry it and [`SbV2Config::parse`] does not
+/// [`SbV2Config`] does not carry it and `SbV2Config::parse` does not
 /// read it. Mirrors `vokra_models::sbv2::N_LANGUAGES`.
 const N_LANGUAGES: u32 = 3;
 
@@ -929,7 +929,7 @@ fn rewrite_sdp_tensor_name(tail: &str) -> String {
 /// at `output`.
 ///
 /// `config_side_car`, when `Some`, points at a JSON file supplying every
-/// `vokra.sbv2.*` hparam (see [`SbV2Config::parse`] for the schema); when
+/// `vokra.sbv2.*` hparam (see `SbV2Config::parse` for the schema); when
 /// `None`, tensors still pass through but the `vokra.sbv2.*` chunk is
 /// omitted entirely rather than filled with invented placeholders (module
 /// doc "Hparams" section). `license` overrides the upstream `agpl-3.0`
@@ -941,7 +941,7 @@ fn rewrite_sdp_tensor_name(tail: &str) -> String {
 /// [`ConvertError::Io`] for I/O failures reading `input` / `config_side_car`
 /// or writing `output`; [`ConvertError::Parse`] for malformed safetensors
 /// input, or a malformed/incomplete config side-car (see
-/// [`SbV2Config::parse`]'s doc for the full list of required fields and
+/// `SbV2Config::parse`'s doc for the full list of required fields and
 /// consistency checks); [`ConvertError::Gguf`] if the GGUF serialization
 /// fails.
 pub fn convert_sbv2_file(

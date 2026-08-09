@@ -65,7 +65,7 @@ pub(crate) const DEFAULT_LICENSE: &str = "mit";
 /// of the `convert_file --license <spdx>` boundary in `lib.rs`).
 ///
 /// `tokenizer_bytes` optionally stamps the `vokra.bert.tokenizer.*` chunk
-/// group [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] reads. The
+/// group `vokra_bert::tokenizer::SbertTokenizer::from_gguf` reads. The
 /// bytes are treated as a JSON side-car produced by
 /// `tools/parity/extract_spm_metadata.py` from an upstream `spm.model`
 /// — the intermediate JSON keeps a SentencePiece protobuf parser out of

@@ -130,8 +130,8 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_
 /// Outcome of a torchaudio Squim conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::nkf_aec::NkfAecReport`],
-/// [`super::facebook_denoiser::FacebookDenoiserReport`]) — the
+/// (`super::nkf_aec::NkfAecReport`,
+/// `super::facebook_denoiser::FacebookDenoiserReport`) — the
 /// invariant `read == written + skipped_non_float` is auditable at the
 /// report level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -170,7 +170,7 @@ pub struct TorchaudioSquimReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"bsd-2-clause"`, `Permissive`) — the
+/// `DEFAULT_LICENSE_SPDX` (`"bsd-2-clause"`, `Permissive`) — the
 /// upstream torchaudio repo ships BSD-2-Clause.
 ///
 /// # Errors

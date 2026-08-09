@@ -98,7 +98,7 @@ pub struct NisqaV2WeightReport {
 /// Vokra-native GGUF at `output`, returning a [`NisqaV2WeightReport`].
 ///
 /// `license` optionally overrides the stamped weight license (raw SPDX
-/// string). The default is [`DEFAULT_LICENSE_SPDX`]
+/// string). The default is `DEFAULT_LICENSE_SPDX`
 /// (`"cc-by-nc-sa-4.0"`) which resolves to
 /// [`LicenseClass::NonCommercialShareAlike`] (T4 fail-closed).
 ///

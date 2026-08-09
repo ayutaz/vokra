@@ -23,7 +23,7 @@
 //! 音楽系,音声分離など全てのモデルに対応したい」（memory
 //! `[[project-scope-expansion-2026-07-30]]`). This converter uses the
 //! same `category = "music"` tag as sibling
-//! [`super::musicgen_medium`] / [`super::musicgen_large`] — AudioLDM 2's
+//! `super::musicgen_medium` / `super::musicgen_large` — AudioLDM 2's
 //! output space includes music (the CVSSP release ships a canonical
 //! text-to-music prompt suite) alongside general audio; a separate
 //! `audio-generation` taxonomy tag would be premature before a second
@@ -286,8 +286,8 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of an AudioLDM 2 conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::musicgen_medium::MusicGenMediumReport`],
-/// [`super::xcodec2::XCodec2Report`]) adapted to the file-oriented
+/// (`super::musicgen_medium::MusicGenMediumReport`,
+/// `super::xcodec2::XCodec2Report`) adapted to the file-oriented
 /// `convert_audioldm2_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AudioLdm2Report {
@@ -337,7 +337,7 @@ pub struct AudioLdm2Report {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-sa-4.0"`,
+/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-sa-4.0"`,
 /// `NonCommercialShareAlike`) — the doubly-restrictive class the
 /// upstream CVSSP primary source pins.
 ///
@@ -382,7 +382,7 @@ pub fn convert_audioldm2_file(
 /// `license` optionally overrides the stamped weight license — see
 /// [`convert_audioldm2_file`] for the override semantics + empty-
 /// string research-flag-downgrade guard + SA-cascade-downgrade guard.
-/// Defaults to [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-sa-4.0"`,
+/// Defaults to `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-sa-4.0"`,
 /// `NonCommercialShareAlike`) — every sibling in the AudioLDM 2
 /// family carries the same CVSSP primary-source license.
 ///

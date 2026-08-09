@@ -149,7 +149,7 @@ pub struct AudiosealRealWeightReport {
 /// gate (FR-CP-03).
 ///
 /// `license` optionally overrides the stamped weight license. The
-/// default is [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`).
+/// default is `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`).
 ///
 /// # Errors
 ///

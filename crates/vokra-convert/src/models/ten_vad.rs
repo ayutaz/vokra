@@ -129,8 +129,8 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_
 /// Outcome of a TEN-VAD conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::nkf_aec::NkfAecReport`],
-/// [`super::torchaudio_squim::TorchaudioSquimReport`]) — the invariant
+/// (`super::nkf_aec::NkfAecReport`,
+/// `super::torchaudio_squim::TorchaudioSquimReport`) — the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ pub struct TenVadReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`).
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`).
 ///
 /// # Errors
 ///

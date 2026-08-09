@@ -55,7 +55,7 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 /// Outcome of a kNN-VC conversion.
 ///
-/// Mirrors [`super::qwen3_tts::Qwen3TtsReport`] counter shape (the SoTA
+/// Mirrors `super::qwen3_tts::Qwen3TtsReport` counter shape (the SoTA
 /// plan Phase 3 pattern) plus a `read` counter for the total number of
 /// safetensors entries walked (BF16 pass-through campaign 2026-07-25).
 #[derive(Debug, Default)]

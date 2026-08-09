@@ -142,7 +142,7 @@ pub const TITANET_ATTRIBUTION_TEXT: &str = "This application uses NVIDIA TitaNet
 
 /// Outcome of a TitaNet conversion.
 ///
-/// Mirrors [`crate::models::wespeaker::WespeakerReport`]'s counter set
+/// Mirrors `crate::models::wespeaker::WespeakerReport`'s counter set
 /// (float pass-through + BF16 subset counter + non-float defensive
 /// counter), plus a leading `read` count of every tensor observed in
 /// the input safetensors header. `read == written + skipped_non_float`

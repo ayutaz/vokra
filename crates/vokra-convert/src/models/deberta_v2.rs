@@ -61,7 +61,7 @@
 //!
 //! `n_layers` / `vocab_size` / `d_model` are derived from the checkpoint's
 //! own tensor shapes (never invented — see [`count_layers`] /
-//! [`infer_vocab_and_d_model`]). `n_heads` (16) and `n_pos_buckets` /
+//! `infer_vocab_and_d_model`). `n_heads` (16) and `n_pos_buckets` /
 //! `max_pos_dist` (512 / 512) cannot be recovered from any single tensor's
 //! shape (HF stores unsplit `d_model × d_model` projections, not
 //! per-head-split matrices) and are written as the same "large-variant"
@@ -110,7 +110,7 @@ pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 /// Metadata-key prefix consumed by
-/// [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] — shared by both
+/// `vokra_bert::tokenizer::SbertTokenizer::from_gguf` — shared by both
 /// the DeBERTa v2 (JA, `vocab.txt`) and v3 (EN, `spm.model`) converters
 /// because the runtime reader itself is prefix-parameterized and every
 /// SBV2 v2 call site (see `crates/vokra-models/src/sbv2/mod.rs`) passes
@@ -131,7 +131,7 @@ pub(crate) const KIND_SENTENCEPIECE_UNIGRAM: &str = "sentencepiece-unigram";
 /// v2 special-token ids, hard-coded to `[PAD] [CLS] [SEP] [UNK]` = 0/1/2/3
 /// (verified by a direct read of the real fixture's `vocab.txt` header at
 /// `/tmp/sbv2-fixtures/deberta-v2-ja/vocab.txt`). The
-/// [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] reader's own
+/// `vokra_bert::tokenizer::SbertTokenizer::from_gguf` reader's own
 /// defaults (`unk=1, bos=2, eos=3`) disagree with what the real fixture
 /// actually ships, so this converter **must always write these keys
 /// explicitly** — silently accepting the loader default would produce a
@@ -170,7 +170,7 @@ pub struct ConvertReport {
 /// (mirror of the `convert_file --license <spdx>` boundary in `lib.rs`).
 ///
 /// `tokenizer_bytes` optionally stamps the `vokra.bert.tokenizer.*` chunk
-/// group [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`] reads. The
+/// group `vokra_bert::tokenizer::SbertTokenizer::from_gguf` reads. The
 /// bytes are treated as a v2-flavored `vocab.txt` (one piece per line,
 /// UTF-8) — the char-based `BertJapaneseTokenizer` upstream ships (with
 /// `subword_tokenizer_type = "character"`), whose lack of per-piece score
@@ -186,7 +186,7 @@ pub struct ConvertReport {
 /// [`ConvertError::Io`] for I/O failures reading `input` or writing
 /// `output`; [`ConvertError::Parse`] for malformed safetensors input, an
 /// empty `tokenizer_bytes` argument, or when no tensor looks like a
-/// token-embedding table (see [`infer_vocab_and_d_model`] — `vocab_size`
+/// token-embedding table (see `infer_vocab_and_d_model` — `vocab_size`
 /// has no default in `DebertaV2Encoder::from_gguf`, so this converter
 /// refuses to invent one); [`ConvertError::Gguf`] if the GGUF
 /// serialization fails.
@@ -803,7 +803,7 @@ mod tests {
 
     /// A minimal but shape-meaningful fixture: a `word_embeddings` table
     /// (vocab=6, d_model=4 — deliberately larger `shape[0]` than the
-    /// `position_embeddings` table below, so [`infer_vocab_and_d_model`]
+    /// `position_embeddings` table below, so `infer_vocab_and_d_model`
     /// must pick the right one, not just "any embed-named tensor"), a
     /// `position_embeddings` table that *also* matches the `embed`
     /// substring (regression guard against a naive "first embed match"

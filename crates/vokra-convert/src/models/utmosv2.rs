@@ -125,7 +125,7 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_h
 /// Outcome of a UTMOSv2 conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::sensevoicesmall::SenseVoiceSmallReport`]) — the invariant
+/// (`super::sensevoicesmall::SenseVoiceSmallReport`) — the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +158,7 @@ pub struct Utmosv2Report {
 /// (FR-CP-03).
 ///
 /// `license` optionally overrides the stamped weight license (raw SPDX
-/// string). The default is [`DEFAULT_LICENSE_SPDX`] (`"mit"`,
+/// string). The default is `DEFAULT_LICENSE_SPDX` (`"mit"`,
 /// `Permissive`).
 ///
 /// # Errors

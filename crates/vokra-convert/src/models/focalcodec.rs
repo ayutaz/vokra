@@ -117,8 +117,8 @@ const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// `vokra.focalcodec.variant`: `"50hz"` / `"25hz"` / `"12_5hz"`.
 /// Consumers pick a specific frame-rate head without parsing free-text
-/// `vokra.model.name` (mirrors [`super::bigvgan`] +
-/// [`super::tiger`] discriminators).
+/// `vokra.model.name` (mirrors `super::bigvgan` +
+/// `super::tiger` discriminators).
 pub const KEY_FOCALCODEC_VARIANT: &str = "vokra.focalcodec.variant";
 
 /// Which FocalCodec release the caller is converting. Selects the
@@ -197,9 +197,9 @@ impl FocalcodecVariant {
 /// Outcome of a FocalCodec conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::funcodec::FuncodecReport`],
-/// [`super::wespeaker::WespeakerReport`],
-/// [`super::tiger::TigerReport`]) adapted to the file-oriented
+/// (`super::funcodec::FuncodecReport`,
+/// `super::wespeaker::WespeakerReport`,
+/// `super::tiger::TigerReport`) adapted to the file-oriented
 /// `convert_focalcodec_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FocalcodecReport {
@@ -237,7 +237,7 @@ pub struct FocalcodecReport {
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — every
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — every
 /// upstream FocalCodec HF release ships apache-2.0.
 ///
 /// # Errors

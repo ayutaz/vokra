@@ -115,7 +115,7 @@ pub struct FacebookDenoiserReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-4.0"`) which resolves to
+/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-4.0"`) which resolves to
 /// [`LicenseClass::NonCommercial`] (T4 fail-closed).
 ///
 /// # Errors

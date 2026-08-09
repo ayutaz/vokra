@@ -122,8 +122,8 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_h
 /// Outcome of a MagpieTTS-v2602 conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::frcrn::FrcrnReport`], [`super::emotion2vec::Emotion2vecReport`],
-/// [`super::wespeaker::WespeakerReport`]) — adds `read` tracking every
+/// (`super::frcrn::FrcrnReport`, `super::emotion2vec::Emotion2vecReport`,
+/// `super::wespeaker::WespeakerReport`) — adds `read` tracking every
 /// tensor the safetensors reader surfaced so the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
@@ -162,7 +162,7 @@ pub struct MagpiettsV2602Report {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — the
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the
 /// upstream release is Apache-2.0 per the audit ticket. A downstream
 /// repackager may pass e.g. `Some("apache-2.0")` verbatim to make the
 /// stamp explicit even without a licence change (mirror of the

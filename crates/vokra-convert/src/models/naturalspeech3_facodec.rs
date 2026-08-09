@@ -193,8 +193,8 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// `vokra.facodec.variant`: `"v1"` / `"v2"` / `"redecoder-v1"` /
 /// `"redecoder-v2"`. Consumers pick a specific encoder+decoder pair
 /// (+ optional redecoder) without parsing free-text
-/// `vokra.model.name` (mirrors [`super::snac`] +
-/// [`super::focalcodec`] discriminators).
+/// `vokra.model.name` (mirrors `super::snac` +
+/// `super::focalcodec` discriminators).
 pub const KEY_FACODEC_VARIANT: &str = "vokra.facodec.variant";
 
 // Frontend / factorization chunk keys — the Amphion FACodec release
@@ -337,9 +337,9 @@ impl FacodecVariant {
 /// Outcome of a NaturalSpeech 3 FACodec conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::snac::SnacReport`],
-/// [`super::moss_audio_tokenizer::MossAudioTokenizerReport`],
-/// [`super::neucodec::NeucodecReport`]) adapted to the
+/// (`super::snac::SnacReport`,
+/// `super::moss_audio_tokenizer::MossAudioTokenizerReport`,
+/// `super::neucodec::NeucodecReport`) adapted to the
 /// variant-taking `convert_naturalspeech3_facodec_variant_file`
 /// surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -403,8 +403,8 @@ pub fn convert_naturalspeech3_facodec_file(
 
 /// Variant-taking entry — the explicit form used by
 /// `convert_file_with_slug` for per-slug dispatch (mirror of
-/// [`super::snac::convert_snac_file`] +
-/// [`super::moss_audio_tokenizer::convert_moss_audio_tokenizer_variant_file`]).
+/// `super::snac::convert_snac_file` +
+/// `super::moss_audio_tokenizer::convert_moss_audio_tokenizer_variant_file`).
 ///
 /// See [`convert_naturalspeech3_facodec_file`] for the prerequisite
 /// (offline `.bin` → safetensors bridge via
@@ -423,7 +423,7 @@ pub fn convert_naturalspeech3_facodec_file(
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — the
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the
 /// upstream Amphion release ships apache-2.0 end-to-end.
 ///
 /// # Errors

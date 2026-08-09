@@ -390,7 +390,7 @@ pub(crate) struct Shards {
 /// Descriptor lookup shared by the in-memory [`Shards`] and the windowed
 /// [`ShardsReader`] paths, so shape derivation is written once and cannot
 /// diverge between the two. Mirrors the trait Moshi uses
-/// ([`super::moshi::MoshiCheckpointIndex`]).
+/// (`super::moshi::MoshiCheckpointIndex`).
 trait VoxtralCheckpointIndex {
     /// Iterates every `(shard_idx, tensor_info)` pair across shards.
     fn iter_tensors(&self) -> Box<dyn Iterator<Item = (usize, &SafeTensorInfo)> + '_>;
@@ -867,7 +867,7 @@ pub(crate) fn convert_shards(
 /// enough RAM for the in-memory path).
 ///
 /// Reader / writer / tokenizer follow the same three-scan structure as
-/// [`super::moshi::convert_streaming`]: (1) header parse, (2) shape derive,
+/// `super::moshi::convert_streaming`: (1) header parse, (2) shape derive,
 /// (3) declaration order, then a single payload-copy loop.
 pub(crate) fn convert_shards_streaming(
     paths: &[std::path::PathBuf],
