@@ -36,7 +36,7 @@ use vokra_core::{Result, VokraError};
 /// [`openwakeword_classifier_forward`] caller).
 ///
 /// Every field is required and must be self-consistent: the runtime
-/// binder ([`vokra_models::kws::openwakeword`]) validates the shapes at
+/// binder (`vokra_models::kws::openwakeword`) validates the shapes at
 /// GGUF load time via [`Self::validate`], and
 /// [`openwakeword_classifier_forward`] re-validates at forward time so a
 /// hand-built bundle in a downstream crate cannot silently misforward.

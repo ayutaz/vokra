@@ -1,7 +1,7 @@
 //! Streaming inverse STFT via chunked weighted overlap-add (M2-05; FR-OP-02,
 //! FR-ST-05).
 //!
-//! The chunked, tail-buffering counterpart of [`crate::istft`]. Where the batch
+//! The chunked, tail-buffering counterpart of [`crate::istft()`]. Where the batch
 //! op accumulates *every* frame into one contiguous overlap-add buffer and then
 //! trims/normalizes, the streaming op ingests frames a chunk at a time,
 //! **flushes every sample whose overlap-add is complete**, and carries the
@@ -9,7 +9,7 @@
 //! the next chunk. The design contract is exact: for the same spectrogram and
 //! attributes, the concatenation of every [`IstftStreamingState::push`] output
 //! followed by [`IstftStreamingState::finish`] is **bit-for-bit** equal to a
-//! single [`crate::istft`] call — regardless of how the frames are split into
+//! single [`crate::istft()`] call — regardless of how the frames are split into
 //! chunks (per-chunk / per-frame invariance). That is the essence of FR-OP-02's
 //! "per-layer state carry-over": the tail state is the only thing that crosses a
 //! chunk boundary, and it crosses losslessly.
@@ -25,9 +25,9 @@
 //! - processes frames in order and adds each frame's windowed contribution in
 //!   the identical order the batch op uses (so the floating-point running sums
 //!   are the same bits), reusing the batch op's exact per-frame inverse
-//!   ([`crate::istft::FrameInverter`]), synthesis window
-//!   ([`crate::istft::build_synth_window`]) and NOLA guard
-//!   ([`crate::istft::NOLA_EPS`]);
+//!   (`crate::istft::FrameInverter`), synthesis window
+//!   (`crate::istft::build_synth_window`) and NOLA guard
+//!   (`crate::istft::NOLA_EPS`);
 //! - only *emits* a sample once **no future frame can touch it** (`i <
 //!   frames_done · hop`) and it is **outside the final `center` tail-trim zone**
 //!   (held back by `n_fft/2`), so a flushed sample already has its final,
@@ -351,7 +351,7 @@ impl IstftStreamingState {
 
 /// One-shot streaming reconstruction: `new` → `push(all frames)` → `finish`.
 ///
-/// Equivalent to [`crate::istft`] with `attrs.istft` — the degenerate
+/// Equivalent to [`crate::istft()`] with `attrs.istft` — the degenerate
 /// single-chunk case of the streaming op, used by the IR dispatch (a graph node
 /// evaluates the whole spectrogram at once, its tail state never a graph tensor)
 /// and as a parity oracle.

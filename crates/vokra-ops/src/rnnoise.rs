@@ -25,7 +25,7 @@
 //!   spectrum.
 //! - [`interp_bark_gains`] — linearly interpolates the 22 Bark-band gains
 //!   back to `n_bins` STFT-bin gains (the multiplicative mask).
-//! - [`RnnoiseGate`] — three chained 3-gate GRUs (`vad_gru` 24→24 /
+//! - `RnnoiseGate` — three chained 3-gate GRUs (`vad_gru` 24→24 /
 //!   `noise_gru` 88→48 / `denoise_gru` 114→96) + two dense heads
 //!   (`denoise_output` 96→22 sigmoid / `vad_output` 24→1 sigmoid).
 //! - [`pitch_analysis`] — **real** autocorrelation-based pitch tracker

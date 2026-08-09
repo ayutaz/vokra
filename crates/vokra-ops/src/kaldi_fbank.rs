@@ -94,7 +94,7 @@ impl KaldiFbankOpts {
 /// Computes Kaldi fbank features from mono PCM at `opts.sample_rate`.
 ///
 /// Returns `(feats, n_frames)` where `feats` is row-major `[n_frames,
-/// num_mel_bins]` (frame-major) — the layout [`SpeakerEncoder::embed`] expects.
+/// num_mel_bins]` (frame-major) — the layout `SpeakerEncoder::embed` expects.
 ///
 /// # Errors
 ///

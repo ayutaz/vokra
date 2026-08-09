@@ -198,7 +198,7 @@ pub struct DdpmSamplerConfig {
     /// semantics as [`crate::flow_sampler::CfgScaleProfile`] — a
     /// [`CfgScaleProfile::Dynamic`] vector's length must equal
     /// `num_inference_steps` (validated up-front by
-    /// [`validate_config`]).
+    /// `validate_config`).
     pub cfg_scale: CfgScaleProfile,
 }
 
@@ -344,7 +344,7 @@ fn validate_config(config: &DdpmSamplerConfig) -> Result<()> {
 /// # Errors
 ///
 /// Returns [`VokraError::InvalidArgument`] iff `config` fails
-/// [`validate_config`]. Never allocates a zero-length table.
+/// `validate_config`. Never allocates a zero-length table.
 pub fn build_alphas_cumprod(config: &DdpmSamplerConfig) -> Result<Vec<f32>> {
     validate_config(config)?;
     let t_total = config.num_train_steps as usize;
@@ -649,7 +649,7 @@ fn ddim_step(
 /// # Errors
 ///
 /// [`VokraError::InvalidArgument`] on:
-/// - a failed [`validate_config`] (see that function's list);
+/// - a failed `validate_config` (see that function's list);
 /// - a forward closure returning a state with a mismatched shape;
 /// - an unrecoverable degeneracy (e.g. `PredictionType::Epsilon` at
 ///   `ᾱ_t = 0` — the recovery would divide by zero).

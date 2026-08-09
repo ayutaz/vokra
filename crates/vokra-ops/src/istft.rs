@@ -1,6 +1,6 @@
 //! Inverse STFT via weighted overlap-add (M0-04-T12; FR-OP-01).
 //!
-//! Inverts [`crate::stft`]: each frame is transformed back to the time domain,
+//! Inverts [`crate::stft()`]: each frame is transformed back to the time domain,
 //! multiplied by the synthesis window, and overlap-added; the running sum of
 //! squared windows compensates the analysis+synthesis windowing (the NOLA
 //! condition — non-zero window-overlap-add — must hold for the division to be

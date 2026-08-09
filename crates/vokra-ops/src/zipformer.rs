@@ -14,7 +14,7 @@
 //!
 //! 1. an encoder embed that produces a low-rate hidden stream at
 //!    `d_model = downsampling_factor(0) · d_model_stage(0)` (per stage);
-//! 2. a series of [`ZipformerStack`]s where each stack is
+//! 2. a series of [`ZipformerStackDesc`]s where each stack is
 //!    `DownSampling → k Conformer-family layers → UpSampling → bypass`. The
 //!    downsampling drops the sample rate before the layers, the upsampling
 //!    restores it, and the bypass fuses the pre-stack signal into the

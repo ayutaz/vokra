@@ -32,7 +32,7 @@
 //!
 //! Equal rates short-circuit to a bit-exact copy. This module ships the
 //! **one-shot** path; the streaming wrapper (phase-accumulator + input-history
-//! carry-over across chunks) is M1-08, and [`SincResampler`] is laid out with
+//! carry-over across chunks) is M1-08, and `SincResampler` is laid out with
 //! that split already in mind.
 
 use vokra_core::{Result, VokraError};

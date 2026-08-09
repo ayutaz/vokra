@@ -2,7 +2,7 @@
 //!
 //! Composition op: `mfcc = dct-II( ln(max(mel, log_floor)) )`. It reuses the
 //! [`crate::mel`] filter bank (so the Slaney/HTK choice flows through) and the
-//! [`crate::dct`] DCT-II, keeping the first `n_mfcc` cepstral coefficients.
+//! [`crate::dct()`] DCT-II, keeping the first `n_mfcc` cepstral coefficients.
 //!
 //! Reference tools differ in the compression stage — librosa's `power_to_db`
 //! uses `10·log10` with a dynamic-range clamp; matching a specific tool is a

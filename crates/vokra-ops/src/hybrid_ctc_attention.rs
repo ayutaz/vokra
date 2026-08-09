@@ -5,7 +5,7 @@
 //!
 //! [`hybrid_ctc_attention_decode`] is a host-side runtime function, not an
 //! `OpKind` variant. Same posture as [`crate::ctc_decode::ctc_decode_beam`]
-//! and [`vokra_core::decode::beam_search`]: encoding a hybrid rescorer as
+//! and [`vokra_core::decode::beam_search()`]: encoding a hybrid rescorer as
 //! a graph op would freeze `ctc_weight` / `lm_weight` / `beam_width` into
 //! the model at conversion time, precisely the axes callers change most
 //! often.

@@ -18,7 +18,7 @@
 //! Every existing Vokra ASR encoder path (Whisper, CosyVoice2's audio
 //! encoder, Voxtral, Kokoro's textless path) takes an `[time, n_mels]`
 //! log-mel tensor produced by [`crate::apply_frontend`] +
-//! [`crate::stft`] + [`crate::mel_filterbank`]. wav2vec 2.0 / HuBERT
+//! [`crate::stft()`] + [`crate::mel_filterbank`]. wav2vec 2.0 / HuBERT
 //! / k2SSL deliberately skips that pipeline and consumes **raw waveform**
 //! directly (`[1, T_wave]` mono PCM at 16 kHz), so a `frontend_spec`
 //! `vokra.frontend.*` chunk that carries `n_fft` / `hop` / `n_mels`
@@ -116,7 +116,7 @@
 //! `reazonspeech_k2ssl_ctc`) can flip the switch on real weights; a
 //! future `Compute::waveform_frontend_f32` would delegate to a Metal /
 //! CUDA MSL/NVRTC strided conv1d + LN chain (mostly a reuse of the
-//! prenorm / conv kernels already in [`vokra-models::compute`]). Same
+//! prenorm / conv kernels already in `vokra-models::compute`). Same
 //! posture as [`crate::fsq_codec`] / [`crate::dac_rvq`]: GPU is
 //! `UnsupportedOp` at the seam until a kernel lands.
 //!
@@ -218,8 +218,8 @@ pub struct WaveformFrontendAttrs {
 
 impl WaveformFrontendAttrs {
     /// The canonical 7-layer wav2vec 2.0 base topology. Pinned by
-    /// [`tests::wav2vec2_base_matches_omniasr_ctc_transcribed_table`] and
-    /// [`tests::wav2vec2_base_total_stride_is_320`].
+    /// `tests::wav2vec2_base_matches_omniasr_ctc_transcribed_table` and
+    /// `tests::wav2vec2_base_total_stride_is_320`.
     ///
     /// | layer | out\_ch | kernel | stride |
     /// |------:|--------:|-------:|-------:|

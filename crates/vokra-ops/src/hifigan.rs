@@ -69,7 +69,7 @@
 //! # Runtime function — not backed by `HotOp` dispatch
 //!
 //! `hifigan_generator` is a composite runtime function (many primitives
-//! sequenced with residual + MRF averaging); the [`vokra_models::compute::HotOp`]
+//! sequenced with residual + MRF averaging); the `vokra_models::compute::HotOp`
 //! dispatch surface is for individual hot-path primitives (`Gemm` / `Softmax` /
 //! `LayerNorm` / …), not whole vocoder stacks. The GPU seam (Metal / CUDA)
 //! lands with the consumer WP (M3-09 or a HiFi-GAN-standalone GPU WP), following

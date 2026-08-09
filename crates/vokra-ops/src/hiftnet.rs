@@ -921,7 +921,7 @@ impl HiFTGeneratorConfig {
 /// - `conv_pre_w`: `[base_channels, in_channels, 7]`
 /// - `ups_w[i]`: `[in_ch_i, out_ch_i, upsample_kernel_sizes[i]]` (PyTorch
 ///   `nn.ConvTranspose1d` layout with in-channels leading — same as
-///   [`conv_transpose1d`] takes).
+///   `conv_transpose1d` takes).
 /// - `source_downs_w[i]`: `[out_ch_i, istft_n_fft + 2, kernel_i]` (regular
 ///   Conv1d). `kernel_i` and stride are chosen by upstream's decision:
 ///   `u == 1` gives `k = 1, stride = 1`; otherwise `k = 2u, stride = u,
@@ -968,7 +968,7 @@ pub struct HiFTGeneratorWeights {
 }
 
 /// HiFTNet generator — the full "Neural Source Filter + ISTFTNet" stack.
-/// See [`Self::forward`] for the top-level call sequence and [`Self::decode`]
+/// See [`Self::forward`] for the top-level call sequence and `Self::decode`
 /// for the fusion/upsample chain (upstream `generator.py:467-506`).
 #[derive(Debug, Clone)]
 pub struct HiFTGenerator {
