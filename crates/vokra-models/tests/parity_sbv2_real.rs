@@ -111,19 +111,29 @@
 //!   `noise_scale_w`/`seed` verbatim. `speed` must be strictly positive
 //!   (`SbV2Model::synthesize`'s own precondition).
 //!
-//! # Scope: only `waveform` is compared (Task 28.x follow-up for the rest)
+//! # Scope: full 11-tensor manifest diff (WP-01, 2026-08-09)
 //!
-//! `SbV2Model`'s pipeline fields (`text_encoder`, `bert`, `sdp`, `flow`, …)
-//! are private — `synthesize` is the only public entry point, and it
-//! returns final PCM, not the 10 intermediate tensors design doc §10 also
-//! lists. Exposing per-stage accessors is real API-surface work outside
-//! this compile-only-DoD scaffold's remit (`parity_sbv2_synthetic.rs`'s own
-//! module doc names this same gap). The manifest schema above nonetheless
-//! carries all 11 tensors so Task 34/30 can produce a complete dump now;
-//! `bert_hidden_ja` / `bert_hidden_en` / `bert_bridge_out` / `speaker_embed`
-//! / `style_projected` / `sdp_sample` / `mel_hidden` / `z_latent` /
-//! `phoneme_embed` / `text_hidden` simply sit unread until a Task 28.x
-//! follow-up adds `SbV2Model` accessors and iterates them too.
+//! WP-01 wires the harness through
+//! [`SbV2Model::synthesize_with_intermediates`] +
+//! [`SbV2Intermediates::to_dumper_map`] (both landed in Wave-4
+//! INTERMEDIATE-ACCESSORS), so the harness now diffs every manifest tensor
+//! it can — not just `waveform` — against its `reference_dump/<name>.bin`
+//! fixture, using `sbv2::parity::tolerance_for` for the per-tensor bound
+//! (`sbv2::parity::atol_calibration_for` records whether that bound is
+//! measured, estimated pre-fixture, or an `UnmeasuredDefault` pass-through
+//! to `ATOL_DEFAULT`).
+//!
+//! The waveform assertion mechanism is unchanged (tolerance-based length
+//! band + max_abs_diff + RMS on the overlapping prefix — see the
+//! `PR27-WAVEFORM-TOLERANCE` block below). Intermediate tensors use a
+//! simpler per-tensor `max_abs_diff` gate — their shapes are pinned by the
+//! manifest schema, so a length mismatch there is a real bug, not a
+//! discrete-step ±1 flip like the waveform's `CEIL(exp(logw))` boundary.
+//!
+//! Every step emits a `[parity_sbv2_real] <name>: max |Δ| = X <= atol Y
+//! (status)` summary line to stderr — mirroring the Kokoro parity CI's
+//! per-tensor summary format, so a CI viewer can see all 11 rows even when
+//! all 11 pass.
 //!
 //! # The G2P bypass: `from_gguf_with_phonemizer` + `PhonemizeFixture` (Task 7)
 //!
@@ -175,8 +185,8 @@ use std::path::{Path, PathBuf};
 use vokra_core::gguf::GgufFile;
 use vokra_core::json::{self, JsonValue};
 use vokra_models::sbv2::{
-    Language, PhonemizeFixture, PhonemizeResult, RngMode, SbV2Model, SbV2Phonemizer,
-    SbV2SynthRequest, tolerance_for,
+    AtolCalibration, Language, PhonemizeFixture, PhonemizeResult, RngMode, SbV2Intermediates,
+    SbV2Model, SbV2Phonemizer, SbV2SynthRequest, atol_calibration_for, tolerance_for,
 };
 
 /// Repo-root-relative real-fixture directory for SBV2 parity
@@ -525,11 +535,118 @@ fn request_from_manifest(manifest: &JsonValue, ctx: &str) -> SbV2SynthRequest {
     }
 }
 
-/// Real-checkpoint SBV2 waveform parity, gated on the Task 34 + Task 30
+/// Renders one [`AtolCalibration`] variant to a short marker string used
+/// in the per-tensor stderr summary the parity harness emits. `waveform`
+/// is `[Measured]`, the 4 pre-fixture bounds are `[EstimatedPreFixture]`,
+/// and the 6 pass-throughs are `[UnmeasuredDefault(ATOL_DEFAULT)]` — a
+/// CI viewer sees the calibration status alongside each `max |Δ|` row.
+fn calibration_marker(name: &str) -> &'static str {
+    match atol_calibration_for(name) {
+        Some(AtolCalibration::Measured) => "[Measured]",
+        Some(AtolCalibration::EstimatedPreFixture) => "[EstimatedPreFixture]",
+        Some(AtolCalibration::UnmeasuredDefault) => "[UnmeasuredDefault(ATOL_DEFAULT)]",
+        None => "[UNPINNED]",
+    }
+}
+
+/// WP-01 (2026-08-09): iterates every intermediate tensor from
+/// [`SbV2Intermediates::to_dumper_map`] and diffs it against the
+/// corresponding `reference_dump/<name>.bin` fixture named in the
+/// manifest.
+///
+/// Contract:
+/// - Every dumper-map entry MUST have a matching manifest `tensors[]`
+///   entry (finding it goes through [`find_tensor`], which panics
+///   loudly on a miss — the harness expects the two to stay in sync,
+///   drift is a real fixture bug, not a soft-skip).
+/// - Every fixture's `.bin` byte length MUST match the manifest's
+///   declared shape product AND the intermediate's own element count.
+///   Both mismatches panic loudly.
+/// - The per-element `max_abs_diff` MUST be `<= tolerance_for(name)`.
+///   Emits `[parity_sbv2_real] <name>: max |Δ| = ... <= atol ... <status>`
+///   to stderr for each tensor, so a CI viewer sees the full 11-row
+///   report even when every row passes (mirrors the Kokoro parity CI's
+///   per-tensor summary format).
+///
+/// The `waveform` diff stays outside this loop — its length is
+/// discretely dependent on SDP durations and needs the tolerance-based
+/// length-band + max-diff + RMS-on-overlap gate (see the caller).
+/// Every OTHER manifest tensor's shape is pinned exactly by the
+/// manifest schema.
+fn diff_intermediates_against_manifest(
+    manifest: &JsonValue,
+    intermediates: &SbV2Intermediates,
+    dir: &Path,
+    ctx: &str,
+) {
+    for (name, rust_bytes) in intermediates.to_dumper_map() {
+        let (rel, shape) = find_tensor(manifest, name, ctx);
+        let ref_path = dir.join(rel);
+        require_fixture(
+            &ref_path,
+            &format!("tensors[name={name}].path (Task 30 dump)"),
+        );
+        let reference = read_f32_bin(&ref_path);
+        let declared_len: u64 = shape.iter().product();
+        assert_eq!(
+            reference.len() as u64,
+            declared_len,
+            "{}: byte length ({} f32 elements) disagrees with the manifest's declared \
+             `shape` {shape:?} — Task 34/30's dumper produced an inconsistent fixture",
+            ref_path.display(),
+            reference.len(),
+        );
+
+        // `to_dumper_map`'s `Vec<u8>` payload is little-endian f32 (its
+        // `f32_bytes` helper). Rebuild the f32 slice here to diff against
+        // the reference. A length mismatch is a real bug — the Rust
+        // pipeline emitted a different tensor shape than the Python
+        // dumper — so panic loudly, not soft-skip (FR-EX-08).
+        assert_eq!(
+            rust_bytes.len() % 4,
+            0,
+            "SbV2Intermediates::to_dumper_map(`{name}`) payload {} bytes is not \
+             f32-aligned — Wave-4 INTERMEDIATE-ACCESSORS contract violation",
+            rust_bytes.len(),
+        );
+        let rust: Vec<f32> = rust_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(
+            rust.len(),
+            reference.len(),
+            "{}: Rust `{name}` len {} != reference len {} — shape mismatch is a real \
+             pipeline bug, not a numeric drift (the manifest fixes each intermediate's \
+             shape exactly; unlike waveform, no discrete-step ±1 flip applies)",
+            ref_path.display(),
+            rust.len(),
+            reference.len(),
+        );
+
+        let atol = tolerance_for(name);
+        let diff = max_abs_diff(&rust, &reference);
+        let marker = calibration_marker(name);
+        assert!(
+            diff <= atol,
+            "[parity_sbv2_real] {name}: max |Δ| = {diff} exceeds atol {atol} \
+             (sbv2::parity::tolerance_for(\"{name}\")) {marker}. See \
+             `docs/adr/sbv2-parity-atol.md` for the derivation on record. \
+             `sbv2::parity::atol_calibration_for` marks this tensor as {marker} — \
+             if the bound needs promoting (e.g. UnmeasuredDefault → \
+             EstimatedPreFixture with a derived value), follow §5 of the ADR."
+        );
+        eprintln!("[parity_sbv2_real] {name}: max |Δ| = {diff:.3e} <= atol {atol} {marker}");
+    }
+}
+
+/// Real-checkpoint SBV2 full-manifest parity, gated on the Task 34 + Task 30
 /// fixture set (`tests/fixtures/sbv2/`). See the module doc for: the
 /// manifest schema this reads (including the Task 7 `phonemize_fixture`
-/// block that bypasses the missing in-workspace 8-language G2P), why only
-/// `waveform` is compared, and how the G2P bypass wires
+/// block that bypasses the missing in-workspace 8-language G2P), the
+/// WP-01 (2026-08-09) full-manifest iteration built on
+/// `SbV2Model::synthesize_with_intermediates` +
+/// `SbV2Intermediates::to_dumper_map`, and how the G2P bypass wires
 /// `SbV2Model::from_gguf_with_phonemizer` +
 /// `SbV2Phonemizer::from_fixture` together.
 #[test]
@@ -582,12 +699,22 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     let model = SbV2Model::from_gguf_with_phonemizer(&main, &bert_ja, &bert_en, phonemizer)
         .unwrap_or_else(|e| panic!("SbV2Model::from_gguf_with_phonemizer: {e}"));
 
-    // `synthesize` under the Task 7 fixture wiring has no
-    // architecturally-expected NotImplemented outcome to log-and-pass:
-    // every `Err` here is a real parity failure, so propagate loudly.
-    let audio = model
-        .synthesize(&req)
-        .unwrap_or_else(|e| panic!("SbV2Model::synthesize: {e}"));
+    // WP-01 (2026-08-09): `synthesize_with_intermediates` returns the
+    // final PCM AND the per-stage tensor snapshots the Python dumper
+    // records — driving the whole 11-tensor manifest diff off a SINGLE
+    // forward pass (rather than one per tensor). See
+    // `SbV2Intermediates::to_dumper_map` for the emit order and the
+    // per-language BERT bucket skip convention.
+    let (audio, intermediates) = model
+        .synthesize_with_intermediates(&req)
+        .unwrap_or_else(|e| panic!("SbV2Model::synthesize_with_intermediates: {e}"));
+
+    // Diff every intermediate tensor against its manifest fixture.
+    // The waveform assertion below stays separate — its length is
+    // discretely dependent on SDP durations and needs the
+    // tolerance-based length-band + RMS-on-overlap gate (see the
+    // PR27-WAVEFORM-TOLERANCE block).
+    diff_intermediates_against_manifest(&manifest, &intermediates, &dir, &ctx);
 
     let (waveform_rel, waveform_shape) = find_tensor(&manifest, "waveform", &ctx);
     let waveform_path = dir.join(waveform_rel);

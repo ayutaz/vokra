@@ -9,6 +9,9 @@
 //! tables. This test proves the accessor exists and returns every
 //! intermediate the manifest schema names.
 
+use std::path::{Path, PathBuf};
+
+use vokra_core::json::{self, JsonValue};
 use vokra_models::sbv2::{Language, RngMode, SbV2Model, SbV2SynthRequest};
 
 /// Every field of SbV2Intermediates is populated on a JA request; the
@@ -174,6 +177,133 @@ fn to_dumper_map_lists_all_active_tensors_in_manifest_order() {
             bytes.len() % 4,
             0,
             "{name} payload must be a multiple of 4 bytes (f32)"
+        );
+    }
+}
+
+/// Repo-root-relative fixture directory (mirror of
+/// [`parity_sbv2_real::fixtures_dir`]).
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join("sbv2")
+}
+
+/// Loads every tensor name listed in the committed
+/// `reference_dump.manifest.json`.
+fn manifest_tensor_names() -> Vec<String> {
+    let manifest_path = fixtures_dir().join("reference_dump.manifest.json");
+    let bytes = std::fs::read(&manifest_path)
+        .unwrap_or_else(|e| panic!("{}: cannot read manifest: {e}", manifest_path.display()));
+    let manifest = json::parse(&bytes)
+        .unwrap_or_else(|e| panic!("{}: JSON parse error: {e}", manifest_path.display()));
+    manifest
+        .get("tensors")
+        .and_then(JsonValue::as_array)
+        .unwrap_or_else(|| panic!("{}: `tensors` missing/not-array", manifest_path.display()))
+        .iter()
+        .map(|t| {
+            t.get("name")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_else(|| panic!("tensors[] entry missing name"))
+                .to_string()
+        })
+        .collect()
+}
+
+/// WP-01 (2026-08-09): every name emitted by [`to_dumper_map`] MUST have
+/// a matching manifest `tensors[]` entry so
+/// `parity_sbv2_real::diff_intermediates_against_manifest`'s
+/// `find_tensor` lookup succeeds for every dumper-map row. Fires without
+/// the real fixtures — the manifest JSON alone is a committed schema
+/// anchor. Fail-closed rationale: without this pin, a rename of a
+/// dumper-map key or a manifest key would surface only when the
+/// `#[ignore]`d harness ran with the real fixture bundle — much later
+/// than the drift was introduced.
+#[test]
+fn every_dumper_map_name_is_present_in_manifest() {
+    let model = SbV2Model::synthetic_for_test();
+    let req = SbV2SynthRequest {
+        text: "あいう".to_string(),
+        language: Language::JA,
+        speaker_id: 0,
+        speaker_embedding: None,
+        style_vec: vec![0.0; 4],
+        speed: 1.0,
+        noise_scale: 0.0,
+        noise_scale_w: 0.0,
+        seed: 42,
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
+    };
+    let (_audio, inter) = model
+        .synthesize_with_intermediates(&req)
+        .expect("synthesize_with_intermediates should succeed");
+
+    let manifest = manifest_tensor_names();
+    for (dumper_name, _bytes) in inter.to_dumper_map() {
+        assert!(
+            manifest.iter().any(|m| m == dumper_name),
+            "to_dumper_map emits `{dumper_name}` but the committed manifest \
+             does not list it — either rename the map arm to match the \
+             manifest, or add `{dumper_name}` to \
+             `tests/fixtures/sbv2/reference_dump.manifest.json`"
+        );
+    }
+}
+
+/// WP-01 (2026-08-09): every manifest tensor (except `waveform`, which is
+/// returned via [`SynthesizedAudio::samples`] rather than the intermediate
+/// map) MUST be emitted by [`to_dumper_map`] on the appropriate
+/// per-language request. This test picks JA — so the ONE manifest tensor
+/// that legitimately does NOT appear on a JA request is `bert_hidden_en`;
+/// everything else is expected.
+///
+/// A future new manifest tensor added to §10 of the design doc that
+/// forgets to grow [`SbV2Intermediates`] + [`to_dumper_map`] trips this
+/// assertion at plain `cargo test` time, not `--ignored`-only.
+#[test]
+fn every_ja_active_manifest_tensor_is_emitted_by_dumper_map() {
+    let model = SbV2Model::synthetic_for_test();
+    let req = SbV2SynthRequest {
+        text: "あいう".to_string(),
+        language: Language::JA,
+        speaker_id: 0,
+        speaker_embedding: None,
+        style_vec: vec![0.0; 4],
+        speed: 1.0,
+        noise_scale: 0.0,
+        noise_scale_w: 0.0,
+        seed: 42,
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
+    };
+    let (_audio, inter) = model
+        .synthesize_with_intermediates(&req)
+        .expect("synthesize_with_intermediates should succeed");
+    let dumper_names: Vec<&str> = inter.to_dumper_map().iter().map(|(n, _)| *n).collect();
+    for manifest_name in manifest_tensor_names() {
+        // `waveform` is returned via `SynthesizedAudio::samples`, not
+        // via the intermediate dumper map — the parity harness has a
+        // dedicated tolerance-based length/RMS gate for it.
+        if manifest_name == "waveform" {
+            continue;
+        }
+        // `bert_hidden_en` is legitimately skipped on a JA request per
+        // `to_dumper_map`'s per-language convention (see that method's
+        // doc); an EN request would have `bert_hidden_ja` skipped
+        // symmetrically. This test picks JA, so filter EN out here.
+        if manifest_name == "bert_hidden_en" {
+            continue;
+        }
+        assert!(
+            dumper_names.iter().any(|d| *d == manifest_name),
+            "manifest tensor `{manifest_name}` is not emitted by \
+             `SbV2Intermediates::to_dumper_map` on a JA request — either \
+             extend `SbV2Intermediates` + `to_dumper_map` to carry it, or \
+             adjust this test's skip list if the tensor is a documented \
+             out-of-map slot (like `waveform`)"
         );
     }
 }

@@ -32,6 +32,18 @@ pub const ATOL_DEFAULT: f32 = 0.01;
 /// `atol_calibration_status_is_pinned` in this crate's own
 /// `sbv2_parity_atol_calibration.rs` integration test, which enforces
 /// no silent loosening of any entry.
+///
+/// # WP-01 CALIBRATION-COVERAGE (2026-08-09)
+///
+/// The manifest names 11 tensors; [`PER_TENSOR_ATOL`] overrides only a
+/// subset (5 at the time of writing). The 6 remaining tensors legitimately
+/// fall through to [`ATOL_DEFAULT`], but pre-WP-01 that fall-through was
+/// invisible: [`atol_calibration_for`] returned `None`, so the pinning
+/// test could not detect a future manifest-tensor addition that also silently
+/// depended on the default. [`Self::UnmeasuredDefault`] closes that hole
+/// by making the fall-through an explicit, pinned status — the same
+/// diff-visible mechanism the memory `feedback-honest-parity-atol`
+/// redundant-recording rule uses for the tightened bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtolCalibration {
     /// Pre-real-fixture estimate derived from theoretical
@@ -48,6 +60,20 @@ pub enum AtolCalibration {
     /// derivation MUST be recorded in `docs/adr/sbv2-parity-atol.md`
     /// (never deleted on revision, only extended).
     Measured,
+    /// WP-01 (2026-08-09): tensor is listed in the manifest but has
+    /// no entry in [`PER_TENSOR_ATOL`] — [`tolerance_for`] returns
+    /// [`ATOL_DEFAULT`] for it. This status makes the fall-through
+    /// **explicit and pinned** rather than a `None` return that a
+    /// future maintainer could silently rely on; it is neither an
+    /// estimate nor a measurement, only an acknowledged pass-through.
+    ///
+    /// Flip to [`Self::EstimatedPreFixture`] the moment a theoretical
+    /// bound is derived for the tensor (and add the corresponding
+    /// [`PER_TENSOR_ATOL`] override), or to [`Self::Measured`] once a
+    /// real-fixture max|Δ| has been recorded in
+    /// `docs/adr/sbv2-parity-atol.md`. See that ADR's §5 for the
+    /// full owner-side flip procedure.
+    UnmeasuredDefault,
 }
 
 /// Per-tensor absolute-tolerance overrides for [`tolerance_for`], keyed by
@@ -236,18 +262,32 @@ pub fn tolerance_for(name: &str) -> f32 {
 
 /// Wave-4 PER-TENSOR-ATOL-CALIB (2026-08-09): returns the
 /// [`AtolCalibration`] status for the tensor named `name`. Every
-/// [`PER_TENSOR_ATOL`] key MUST have a match arm here; an unlisted key
-/// returns `None`. See [`PER_TENSOR_ATOL`]'s doc "Wave-4
-/// PER-TENSOR-ATOL-CALIB" section for how to flip an entry from
-/// `EstimatedPreFixture` to `Measured`.
+/// [`PER_TENSOR_ATOL`] key MUST have a match arm here — and, since WP-01
+/// (2026-08-09), every tensor named in the committed
+/// `tests/fixtures/sbv2/reference_dump.manifest.json` `tensors[]` array
+/// MUST also have a match arm, using [`AtolCalibration::UnmeasuredDefault`]
+/// when it legitimately falls through to [`ATOL_DEFAULT`] with no
+/// explicit override. An unlisted key still returns `None` so a
+/// non-manifest lookup (e.g. a typo) remains distinguishable from a
+/// pinned pass-through.
 ///
-/// Pinned by the integration test
-/// `atol_calibration_status_is_pinned` in
-/// `crates/vokra-models/tests/sbv2_parity_atol_calibration.rs`, which
-/// asserts (a) every [`PER_TENSOR_ATOL`] key has a match arm here, and
-/// (b) no `Measured` entry lives without a corresponding ADR
-/// entry — enforcing the memory `feedback-honest-parity-atol`
-/// redundant-recording rule.
+/// See [`PER_TENSOR_ATOL`]'s doc "Wave-4 PER-TENSOR-ATOL-CALIB" section
+/// for how to flip an entry from `EstimatedPreFixture` to `Measured`,
+/// and `docs/adr/sbv2-parity-atol.md` §5-§6 for how to promote an
+/// `UnmeasuredDefault` entry to `EstimatedPreFixture` (derive the bound)
+/// and then to `Measured` (real-fixture calibration).
+///
+/// Pinned by two sibling integration tests in
+/// `crates/vokra-models/tests/sbv2_parity_atol_calibration.rs`:
+/// (a) `every_atol_entry_has_a_calibration_status` — every
+///     [`PER_TENSOR_ATOL`] key has a match arm here.
+/// (b) `every_manifest_tensor_has_a_calibration_status` (WP-01) — every
+///     manifest tensor has a match arm here (either the derived variant
+///     or [`AtolCalibration::UnmeasuredDefault`] for a pinned pass-through).
+/// (c) `atol_calibration_status_is_pinned` — no entry can silently
+///     change status without touching the snapshot table there and, for
+///     any `Measured` entry, the corresponding derivation in
+///     `docs/adr/sbv2-parity-atol.md`.
 pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
     match name {
         "bert_hidden_ja" => Some(AtolCalibration::EstimatedPreFixture),
@@ -261,6 +301,25 @@ pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
         // libm amplification through HiFi-GAN that gates the tightening
         // path (bit-exact libm follow-up is a documented deferral).
         "waveform" => Some(AtolCalibration::Measured),
+        // WP-01 CALIBRATION-COVERAGE (2026-08-09): the six manifest
+        // tensors below are not in [`PER_TENSOR_ATOL`], so
+        // [`tolerance_for`] returns [`ATOL_DEFAULT`] (0.01) for each. Pre-
+        // WP-01 that fall-through was invisible — the pinning test could
+        // not fire on a future silent addition. Explicitly pinning each
+        // to [`AtolCalibration::UnmeasuredDefault`] makes the pass-through
+        // status a diff-visible commitment: a new manifest tensor that
+        // forgets to add itself here now trips
+        // `every_manifest_tensor_has_a_calibration_status`, and a
+        // maintainer wanting to tighten one of these bounds must first
+        // promote its status here (and add the corresponding override
+        // to [`PER_TENSOR_ATOL`]). See `docs/adr/sbv2-parity-atol.md`
+        // §5 for the promotion procedure.
+        "phoneme_embed" => Some(AtolCalibration::UnmeasuredDefault),
+        "text_hidden" => Some(AtolCalibration::UnmeasuredDefault),
+        "bert_bridge_out" => Some(AtolCalibration::UnmeasuredDefault),
+        "speaker_embed" => Some(AtolCalibration::UnmeasuredDefault),
+        "style_projected" => Some(AtolCalibration::UnmeasuredDefault),
+        "mel_hidden" => Some(AtolCalibration::UnmeasuredDefault),
         _ => None,
     }
 }
