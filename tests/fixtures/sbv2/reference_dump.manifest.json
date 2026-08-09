@@ -243,7 +243,7 @@
       "name": "mel_hidden",
       "path": "reference_dump/mel_hidden.bin",
       "shape": [
-        26,
+        53,
         192
       ],
       "dtype": "float32"
@@ -252,7 +252,7 @@
       "name": "z_latent",
       "path": "reference_dump/z_latent.bin",
       "shape": [
-        26,
+        53,
         192
       ],
       "dtype": "float32"
@@ -262,7 +262,7 @@
       "path": "reference_dump/waveform.bin",
       "shape": [
         1,
-        13312
+        27136
       ],
       "dtype": "float32"
     }

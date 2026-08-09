@@ -1585,16 +1585,37 @@ def build_flow(state_dict: dict, torch):
     return flow
 
 
-def run_flow(flow, mel_hidden, x_mask_mel, g, noise_scale: float, torch):
+def run_flow(flow, mel_hidden, x_mask_mel, g, noise_scale: float, torch, seed: int):
     """Step 12b. `mel_hidden`: [T_mel, D_MODEL] (prior mean). Returns
     `z_latent`: [T_mel, D_MODEL].
 
     VITS inference: sample `z_p ~ N(mel_hidden, noise_scale * I)`, then
     pass through `flow.reverse` to invert to `z`.
+
+    RNG PARITY (2026-08-09): the noise draw uses a **fresh** `torch.manual_seed(seed)`
+    stream fed through a NON-CONTIGUOUS view (`torch.empty(B, D, T+1)[..., :T]`)
+    so it byte-matches Rust's `draw_flow_prior_noise`, which uses
+    `TorchRandnStream::new(seed)` — a fresh stream at the same seed. Rationale
+    is identical to the SDP.sample fix above (see the block comment there);
+    the non-contig view forces torch's `normal_kernel` off the AVX2 fast path
+    onto the scalar `at::normal_distribution<double>` path that Rust's port
+    bit-matches.
     """
     # Rearrange to VITS-convention [B, D, T].
     z_p = mel_hidden.transpose(0, 1).unsqueeze(0)  # [1, D, T_mel]
-    z_p = z_p + torch.randn_like(z_p) * noise_scale
+    if noise_scale != 0.0:
+        # Fresh seed → matches Rust `TorchRandnStream::new(seed)`.
+        torch.manual_seed(seed)
+        b, d, t = z_p.shape
+        # Non-contig view to force scalar path (see SDP.sample comment above).
+        noise_big = torch.empty(b, d, t + 1, dtype=z_p.dtype, device=z_p.device)
+        noise = noise_big[..., :t]
+        assert not noise.is_contiguous(), (
+            "flow noise buffer must be non-contiguous so torch takes the "
+            "scalar at::normal_distribution<double> path that matches Rust"
+        )
+        noise.normal_(0, 1)
+        z_p = z_p + noise * noise_scale
     z = flow(z_p, x_mask_mel, g=g, reverse=True)
     return z.squeeze(0).transpose(0, 1)  # [T_mel, D_MODEL]
 
@@ -1899,6 +1920,30 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     # ---- Step 10: SDP sample ----
     # SDP conditioning: takes text_hidden (transposed to [1, D, T]).
     sdp = SDPReference(state_dict, filter_channels=D_MODEL, torch=torch)
+
+    # RNG PARITY (2026-08-09, workflow_dispatch b459e5b bisect): reset the
+    # global torch RNG right before SDP.sample so its noise buffer matches
+    # Rust's `TorchRandnStream::new(seed)` — a FRESH stream at seed=`args.seed`.
+    #
+    # Without this reset, the dumper's earlier model-construction and load
+    # steps (nn.Module `__init__` runs Kaiming init on every Conv/Linear/
+    # LayerNorm, drawing from `torch.rand()` / `torch.randn()`) consume an
+    # UNSPECIFIED number of RNG samples between `prepare_torch`'s
+    # `torch.manual_seed(seed)` and this point. That leaves SDP.sample
+    # drawing from a state Rust has no way to reproduce (Rust reads GGUF
+    # weights directly with no init phase), so the "sdp_sample.bin"
+    # committed values diverged wildly from Rust's `SbV2SDP::sample`
+    # output — even though `TorchRandnStream::new(seed)` is a bit-exact
+    # port of torch's `at::normal_distribution<double>` (verified by
+    # `crates/vokra-core/tests/rng_torch_randn_cpu_parity.rs`).
+    #
+    # Empirical evidence from the bisect (M1 iMac, seed=42, "テスト" 8
+    # phonemes): pre-fix Python durs=[2, 4, 28, 1, 13, 4, 6, 5] sum=63 vs
+    # Rust durs=[3, 3, 13, 4, 5, 1, 19, 5] sum=53 (delta 10 frames = 16%
+    # length variance, breaks the ±10% waveform band). Post-fix Python
+    # durs=[3, 3, 13, 4, 5, 1, 19, 5] sum=53 — bit-exact match to Rust.
+    torch.manual_seed(args.seed)
+
     sdp_sample = sdp.sample(
         text_hidden_transposed.unsqueeze(0),  # [1, D_MODEL, T_text]
         x_mask_text,
@@ -1918,7 +1963,7 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
 
     # ---- Step 12: flow reverse ----
     flow = build_flow(state_dict, torch)
-    z_latent = run_flow(flow, mel_hidden, x_mask_mel, g_cond, args.noise_scale, torch)
+    z_latent = run_flow(flow, mel_hidden, x_mask_mel, g_cond, args.noise_scale, torch, args.seed)
     print(f"{LOG_PREFIX} z_latent {tuple(z_latent.shape)}")
 
     # ---- Step 13: HiFi-GAN ----

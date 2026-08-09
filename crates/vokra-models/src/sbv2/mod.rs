@@ -1221,7 +1221,7 @@ impl SbV2Model {
         let mel_hidden_with_noise: Vec<f32> = if req.noise_scale == 0.0 {
             mel_hidden
         } else {
-            let flow_noise = draw_flow_prior_noise(req.seed, req.rng_mode, mel_seq_len * d_model);
+            let flow_noise = draw_flow_prior_noise(req.seed, req.rng_mode, mel_seq_len, d_model);
             debug_assert_eq!(
                 flow_noise.len(),
                 mel_hidden.len(),
@@ -2939,20 +2939,76 @@ fn synthetic_hifigan_weights_e2e(attrs: &HifiGanAttrs) -> HifiGanWeights {
 /// * noise_scale`. Delegates to `NormalSource::fill` so both streams
 /// use the per-stream contract (`TorchRandnStream::fill` overrides for
 /// the `>= 16` normal_fill dispatch that byte-matches `torch.randn`).
-fn draw_flow_prior_noise(seed: u64, rng_mode: RngMode, n: usize) -> Vec<f32> {
+fn draw_flow_prior_noise(
+    seed: u64,
+    rng_mode: RngMode,
+    mel_seq_len: usize,
+    d_model: usize,
+) -> Vec<f32> {
     use vokra_core::rng::NormalSource;
-    let mut buf = vec![0.0_f32; n];
+    let n = mel_seq_len * d_model;
     match rng_mode {
         RngMode::PhiloxRngEnginePyTorchParity => {
+            // RNG PARITY (2026-08-09, PR27-parity-bisect): per-sample streaming
+            // (`next_normal()` in a loop) — NOT the batch `fill()` fast path.
+            //
+            // The Python reference dumper's `run_flow` draws the flow prior
+            // noise via `torch.empty(B, D, T+1)[..., :T].normal_(0, 1)` on a
+            // NON-CONTIGUOUS strided view. Two consequences:
+            //
+            // 1. `.normal_()` on a non-contig view forces torch's
+            //    `normal_kernel` off the `normal_fill` fast path onto the
+            //    scalar streaming `at::normal_distribution<double>` path
+            //    (with pair caching). `TorchRandnStream::next_normal` is a
+            //    bit-exact port of exactly that streaming path (verified by
+            //    `rng_torch_randn_cpu_parity.rs` k=4 anchor).
+            //
+            // 2. torch's tensor iterator visits the visible elements in
+            //    memory-linear order over the underlying `[B, D, T+1]`
+            //    contiguous storage. For a `[..., :T]` view that skips
+            //    index T in the last dim, the visit order is:
+            //    `(b=0, c=0, t=0..T-1), (b=0, c=1, t=0..T-1), …` — i.e.
+            //    channel-major (channel varies slowest, time varies
+            //    fastest). This CHANNEL-MAJOR ordering is critical:
+            //    Rust adds `flow_noise[i]` to `mel_hidden[i]` where
+            //    `mel_hidden` is `[T, D]` **position-major** row-major
+            //    (see `length_regulate`). To honor Python's channel-major
+            //    fill while landing samples on the correct positions in
+            //    `mel_hidden`, we fill a `[D, T]` scratch and transpose
+            //    into `[T, D]` on the way out.
+            //
+            // Batch `fill()` was also considered — it takes Rust down
+            // `normal_fill_16_scalar`, which byte-matches torch's SCALAR
+            // fast path (M1, non-AVX2 x86_64) but NOT torch's streaming
+            // path: the two consume RNG in fundamentally different orders
+            // (see `TorchRandnStream::fill`'s doc). On AVX2 CI hosts torch
+            // takes `normal_fill_AVX2` for contig-fast-path tensors, which
+            // is a THIRD ordering (vectorized `avx_mathfun`). Per-sample
+            // streaming is the only ordering that Python can honestly
+            // reproduce on every CPU host (via the non-contig trick above),
+            // so that is the ordering Rust commits to here.
             let mut rng = TorchRandnStream::new(seed);
-            rng.fill(&mut buf);
+            let mut ct = vec![0.0_f32; n]; // channel-major scratch [D, T]
+            for v in &mut ct {
+                *v = rng.next_normal();
+            }
+            // Transpose `[D, T]` channel-major → `[T, D]` position-major.
+            let mut buf = vec![0.0_f32; n];
+            for c in 0..d_model {
+                for t in 0..mel_seq_len {
+                    buf[t * d_model + c] = ct[c * mel_seq_len + t];
+                }
+            }
+            buf
         }
         RngMode::GaussianSplitMix64Legacy => {
+            // Legacy synthetic path — no cross-parity claim, no transpose.
+            let mut buf = vec![0.0_f32; n];
             let mut rng = GaussianSplitMix64::new(seed);
             rng.fill(&mut buf);
+            buf
         }
     }
-    buf
 }
 
 fn transpose_time_major_to_channel_major(buf: &[f32], rows: usize) -> Vec<f32> {
