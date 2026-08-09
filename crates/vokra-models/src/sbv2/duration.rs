@@ -88,7 +88,13 @@ const MIN_DERIVATIVE: f32 = 1e-3;
 /// Softplus `ln(1 + eˣ)` with the large-`x` guard PyTorch uses (mirror of
 /// `piper_plus::nn::softplus`).
 fn softplus(x: f32) -> f32 {
-    if x > 20.0 { x } else { (1.0 + x.exp()).ln() }
+    // WP-12 (2026-08-10): exp + log through vokra_math for cross-plat
+    // determinism within Vokra (SDP softplus, per-block feed-forward).
+    if x > 20.0 {
+        x
+    } else {
+        vokra_math::log(1.0 + vokra_math::exp(x))
+    }
 }
 
 /// Exact (erf-based) GELU, matching PyTorch `F.gelu` default (mirror of
@@ -104,11 +110,13 @@ fn erf(x: f32) -> f32 {
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let x = x.abs();
     let t = 1.0 / (1.0 + 0.327_591_1 * x);
+    // WP-12 (2026-08-10): erf exp through vokra_math for cross-plat
+    // determinism within Vokra (SDP GELU derivation, per-hidden-dim).
     let y = 1.0
         - (((((1.061_405_43 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
             + 0.254_829_592)
             * t
-            * (-x * x).exp();
+            * vokra_math::exp(-x * x);
     sign * y
 }
 
@@ -136,7 +144,9 @@ fn layer_norm_channels(
             var += d * d;
         }
         var /= channels as f32;
-        let inv = 1.0 / (var + LAYER_NORM_EPS).sqrt();
+        // WP-12 (2026-08-10): LayerNorm sqrt through vokra_math for cross-plat
+        // determinism within Vokra (SDP LayerNorm, per-time per-block).
+        let inv = 1.0 / vokra_math::sqrt(var + LAYER_NORM_EPS);
         for c in 0..channels {
             out[c * time + t] = (x[c * time + t] - mean) * inv * gamma[c] + beta[c];
         }
@@ -458,7 +468,9 @@ impl ElementwiseAffine {
         let mut out = vec![0.0_f32; 2 * time];
         for c in 0..2 {
             let m = self.m[c];
-            let inv = (-self.logs[c]).exp();
+            // WP-12 (2026-08-10): ElementwiseAffine inverse exp through
+            // vokra_math for cross-plat determinism within Vokra (SDP flow).
+            let inv = vokra_math::exp(-self.logs[c]);
             for t in 0..time {
                 out[c * time + t] = (x[c * time + t] - m) * inv;
             }
@@ -575,7 +587,9 @@ impl ConvFlow {
         );
 
         // 4. Per-time RQS inverse on channel 1.
-        let scale = (self.dp_filter as f32).sqrt();
+        // WP-12 (2026-08-10): ConvFlow scale sqrt through vokra_math for
+        // cross-plat determinism within Vokra (SDP RQS parameter scaling).
+        let scale = vokra_math::sqrt(self.dp_filter as f32);
         let mut result = x.to_vec();
         for t in 0..time {
             let mut w = [0.0_f32; RQS_NUM_BINS];
@@ -613,7 +627,9 @@ fn unconstrained_rqs_inverse(
         return input;
     }
     // Pad derivatives with the linear-tail constant on both ends.
-    let constant = ((1.0 - MIN_DERIVATIVE).exp() - 1.0).ln();
+    // WP-12 (2026-08-10): RQS tail constant exp/log through vokra_math for
+    // cross-plat determinism within Vokra (SDP RQS boundary derivative pad).
+    let constant = vokra_math::log(vokra_math::exp(1.0 - MIN_DERIVATIVE) - 1.0);
     let mut derivs = [0.0_f32; RQS_NUM_BINS + 1];
     derivs[0] = constant;
     derivs[RQS_NUM_BINS] = constant;
@@ -672,7 +688,9 @@ fn rqs_inverse(
         - dy * (input_derivatives + input_derivatives_plus_one - 2.0 * input_delta);
     let c = -input_delta * dy;
     let discriminant = (b * b - 4.0 * a * c).max(0.0);
-    let root = 2.0 * c / (-b - discriminant.sqrt());
+    // WP-12 (2026-08-10): quadratic root sqrt through vokra_math for
+    // cross-plat determinism within Vokra (SDP RQS inverse solver).
+    let root = 2.0 * c / (-b - vokra_math::sqrt(discriminant));
     root * input_bin_widths + input_cumwidths
 }
 
@@ -716,7 +734,9 @@ fn softmax(x: &[f32; RQS_NUM_BINS]) -> [f32; RQS_NUM_BINS] {
     let mut out = [0.0_f32; RQS_NUM_BINS];
     let mut sum = 0.0_f32;
     for b in 0..RQS_NUM_BINS {
-        out[b] = (x[b] - max).exp();
+        // WP-12 (2026-08-10): RQS bin softmax exp through vokra_math for
+        // cross-plat determinism within Vokra (SDP RQS width/height/slope).
+        out[b] = vokra_math::exp(x[b] - max);
         sum += out[b];
     }
     for v in &mut out {
@@ -1069,9 +1089,19 @@ impl SbV2SDP {
         let z = self.ea.reverse(&z, text_seq_len);
 
         // 4. logw = z[0, :]; duration = ceil(exp(logw)).max(1).
+        //
+        // WP-12 (2026-08-10) CRITICAL PATH: this exp gates the integer
+        // duration quantization. Wave-1 investigation flagged this as the
+        // one site where cross-plat 1-ULP scatter could shift an integer
+        // by 1, which propagates as a whole-frame duration shift downstream
+        // (mel_seq_len changes → decoder output length changes → NO atol
+        // can absorb the shape divergence). Routing through vokra_math::exp
+        // ensures cross-plat deterministic input to ceil() — the integer
+        // output is now guaranteed identical across Linux/macOS/Windows
+        // for any given logw.
         z.iter()
             .take(text_seq_len) // channel 0 spans the first text_seq_len entries
-            .map(|&logw| logw.exp().ceil().max(1.0) as i32)
+            .map(|&logw| vokra_math::exp(logw).ceil().max(1.0) as i32)
             .collect()
     }
 }

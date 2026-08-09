@@ -10,6 +10,13 @@ description = "BERT-family encoder + tokenizer for Vokra (clean-room Apache-2.0)
 [dependencies]
 vokra-core = { path = "../vokra-core" }
 vokra-mmap = { path = "../vokra-mmap" }
+# WP-10 (2026-08-10): SBV2 hot-path libm swap — route DeBERTa v2/v3
+# transcendentals (softmax exp, GELU tanh, LayerNorm/attn-scale sqrt)
+# through `vokra_math::*` for cross-plat bit-identity within Vokra
+# (owner scope decision 2026-08-09, `docs/adr/sbv2-libm-strategy.md`
+# §3.2.1). First-party `vokra-*` crate; root `Cargo.lock` still
+# lists only `vokra-*` packages (NFR-DS-02 preserved).
+vokra-math = { path = "../vokra-math" }
 
 [dev-dependencies]
 # Wave-4 DEBERTA-CONV-NAMES: verify converter → loader round-trip. First-party

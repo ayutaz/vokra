@@ -63,6 +63,7 @@ version = "0.1.0"
 dependencies = [
  "vokra-convert",
  "vokra-core",
+ "vokra-math",
  "vokra-mmap",
 ]
 
@@ -144,6 +145,7 @@ dependencies = [
  "vokra-convert",
  "vokra-core",
  "vokra-eval",
+ "vokra-math",
  "vokra-mmap",
  "vokra-ops",
  "vokra-piper-plus",

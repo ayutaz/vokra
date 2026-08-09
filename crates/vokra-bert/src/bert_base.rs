@@ -100,7 +100,9 @@ fn erf_approx(x: f32) -> f32 {
     let sign = if x < 0.0 { -1.0_f32 } else { 1.0_f32 };
     let ax = x.abs();
     let t = 1.0 / (1.0 + P * ax);
-    let y = 1.0 - (((((A5 * t + A4) * t) + A3) * t + A2) * t + A1) * t * (-ax * ax).exp();
+    // WP-10 (2026-08-10): route erf's exp through vokra_math for cross-plat
+    // determinism within Vokra (BertBaseEncoder GELU, per-hidden-dim hot site).
+    let y = 1.0 - (((((A5 * t + A4) * t) + A3) * t + A2) * t + A1) * t * vokra_math::exp(-ax * ax);
     sign * y
 }
 
@@ -326,7 +328,9 @@ impl BertSelfAttention {
         let v = matmul_bias_rm(hidden, &self.wv, &self.bv, seq_len, d, d);
 
         // 2. Multi-head attention.
-        let scale = 1.0 / (self.head_dim as f32).sqrt();
+        // WP-10 (2026-08-10): attention scale sqrt through vokra_math for
+        // cross-plat determinism within Vokra.
+        let scale = 1.0 / vokra_math::sqrt(self.head_dim as f32);
         let mut out = vec![0.0_f32; seq_len * d];
         let mut scores = vec![0.0_f32; seq_len * seq_len];
 
@@ -354,7 +358,10 @@ impl BertSelfAttention {
                     .fold(f32::NEG_INFINITY, f32::max);
                 let mut sum = 0.0_f32;
                 for j in 0..seq_len {
-                    let e = (scores[row_start + j] - max_v).exp();
+                    // WP-10 (2026-08-10): softmax exp through vokra_math
+                    // for cross-plat determinism within Vokra
+                    // (BertBaseEncoder, plain BERT variant for ZH path).
+                    let e = vokra_math::exp(scores[row_start + j] - max_v);
                     scores[row_start + j] = e;
                     sum += e;
                 }

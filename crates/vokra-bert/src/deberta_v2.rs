@@ -187,7 +187,9 @@ impl DisentangledAttention {
         );
 
         // 3. Multi-head split
-        let scale = 1.0 / ((3 * self.head_dim) as f32).sqrt();
+        // WP-10 (2026-08-10): route through vokra_math::sqrt for cross-plat
+        // determinism within Vokra (SBV2 hot path, `docs/adr/sbv2-libm-strategy.md` §3.2.1).
+        let scale = 1.0 / vokra_math::sqrt((3 * self.head_dim) as f32);
         let mut out = vec![0.0_f32; seq_len * self.d_model];
 
         for head in 0..self.n_heads {
@@ -233,7 +235,11 @@ impl DisentangledAttention {
                     .fold(f32::NEG_INFINITY, f32::max);
                 let mut sum = 0.0;
                 for j in 0..seq_len {
-                    scores[row_start + j] = (scores[row_start + j] - max_v).exp();
+                    // WP-10 (2026-08-10): softmax exp routed through
+                    // vokra_math::exp for cross-plat determinism within Vokra
+                    // (dominant DeBERTa v2 transcendental site, ~50M+ calls
+                    // per SBV2 utterance across 24 layers × 16 heads).
+                    scores[row_start + j] = vokra_math::exp(scores[row_start + j] - max_v);
                     sum += scores[row_start + j];
                 }
                 for j in 0..seq_len {
@@ -316,7 +322,12 @@ impl FfnBlock {
                     a += x[i * self.d_model + d] * self.w1[o * self.d_model + d];
                 }
                 // GELU (Hendrycks approx): 0.5*x*(1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-                let g = 0.5 * a * (1.0 + (SQRT_TWO_OVER_PI * (a + 0.044715 * a * a * a)).tanh());
+                // WP-10 (2026-08-10): tanh through vokra_math for cross-plat
+                // determinism within Vokra (per-hidden-dim per-token hot site;
+                // ~40M+ calls per SBV2 utterance).
+                let g = 0.5
+                    * a
+                    * (1.0 + vokra_math::tanh(SQRT_TWO_OVER_PI * (a + 0.044715 * a * a * a)));
                 h[i * self.d_ff + o] = g;
             }
         }
@@ -357,7 +368,10 @@ impl LayerNorm {
             let row = &x[i * d..(i + 1) * d];
             let mean: f32 = row.iter().sum::<f32>() / d as f32;
             let var: f32 = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / d as f32;
-            let inv = 1.0 / (var + self.eps).sqrt();
+            // WP-10 (2026-08-10): LayerNorm sqrt through vokra_math for
+            // cross-plat determinism within Vokra (per-row per-layer,
+            // ~10K+ calls per SBV2 utterance).
+            let inv = 1.0 / vokra_math::sqrt(var + self.eps);
             for j in 0..d {
                 y[i * d + j] = (row[j] - mean) * inv * self.gamma[j] + self.beta[j];
             }

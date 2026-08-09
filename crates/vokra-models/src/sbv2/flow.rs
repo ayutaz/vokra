@@ -380,7 +380,10 @@ impl SbV2TransformerCouplingLayer {
             {
                 let (m_row, logs_row) = stats_row.split_at(half);
                 for ((b, &m), &l) in b_row.iter_mut().zip(m_row.iter()).zip(logs_row.iter()) {
-                    *b = (*b - m) * (-l).exp();
+                    // WP-11 (2026-08-10): flow-prior exp through vokra_math
+                    // for cross-plat determinism within Vokra (SBV2 flow
+                    // affine-coupling inverse, 4 blocks × d_z per sample).
+                    *b = (*b - m) * vokra_math::exp(-l);
                 }
             }
         }

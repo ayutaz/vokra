@@ -149,7 +149,9 @@ impl SbV2TextEncoder {
                 "every transformer block must share the encoder's d_model"
             );
         }
-        let scale = (d_model as f32).sqrt();
+        // WP-11 (2026-08-10): scale sqrt through vokra_math for cross-plat
+        // determinism within Vokra (SBV2 text encoder embedding scale factor).
+        let scale = vokra_math::sqrt(d_model as f32);
         Self {
             phoneme_embed,
             tone_embed,
@@ -590,7 +592,9 @@ impl RelPositionMHA {
 
         let n_heads = self.n_heads;
         let d_head = self.d_head;
-        let scale = 1.0_f32 / (d_head as f32).sqrt();
+        // WP-11 (2026-08-10): attention scale sqrt through vokra_math for
+        // cross-plat determinism within Vokra (SBV2 text encoder attention).
+        let scale = 1.0_f32 / vokra_math::sqrt(d_head as f32);
 
         // rel_k / rel_v are shared across heads (heads_share=True).
         let rel_k = get_relative_embeddings(&self.emb_rel_k, self.window_size, seq_len, d_head);
@@ -1109,7 +1113,9 @@ fn softmax_inplace(x: &mut [f32]) {
     let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0_f32;
     for v in x.iter_mut() {
-        *v = (*v - max).exp();
+        // WP-11 (2026-08-10): softmax exp through vokra_math for cross-plat
+        // determinism within Vokra (SBV2 text encoder attention softmax).
+        *v = vokra_math::exp(*v - max);
         sum += *v;
     }
     if sum > 0.0 {
@@ -1125,7 +1131,9 @@ fn layer_norm_rows_inplace(x: &mut [f32], d_model: usize, gamma: &[f32], beta: &
     for row in x.chunks_exact_mut(d_model) {
         let mean = row.iter().sum::<f32>() / d_model as f32;
         let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / d_model as f32;
-        let inv_std = 1.0 / (var + LN_EPS).sqrt();
+        // WP-11 (2026-08-10): LayerNorm sqrt through vokra_math for cross-plat
+        // determinism within Vokra (SBV2 text encoder LN, per-row per-block).
+        let inv_std = 1.0 / vokra_math::sqrt(var + LN_EPS);
         for (v, (&g, &b)) in row.iter_mut().zip(gamma.iter().zip(beta.iter())) {
             *v = (*v - mean) * inv_std * g + b;
         }
