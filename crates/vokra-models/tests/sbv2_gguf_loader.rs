@@ -99,6 +99,9 @@ fn scalar_dims_only_main() -> GgufBuilder {
     b.add_u32("vokra.sbv2.n_vocab", 4);
     b.add_u32("vokra.sbv2.n_tones", 2);
     b.add_u32("vokra.sbv2.d_ff", 8);
+    b.add_u32("vokra.sbv2.n_heads", 1);
+    b.add_u32("vokra.sbv2.window_size", 4);
+    b.add_u32("vokra.sbv2.kernel_ffn", 3);
     b.add_u32("vokra.sbv2.n_text_layers", 0);
     b.add_u32("vokra.sbv2.n_flow_layers", 0);
     b.add_u32("vokra.sbv2.n_sdp_layers", 0);

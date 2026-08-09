@@ -781,8 +781,14 @@ impl SbV2Model {
         // becomes reachable and must fail loudly rather than silently
         // routing to JA/EN — FR-EX-08.
         let bert_ids = match req.language {
-            Language::JA => self.bert.ja_tokenizer.encode(&phon.bert_input_text),
-            Language::EN => self.bert.en_tokenizer.encode(&phon.bert_input_text),
+            Language::JA => self
+                .bert
+                .ja_tokenizer
+                .encode_with_special_tokens(&phon.bert_input_text),
+            Language::EN => self
+                .bert
+                .en_tokenizer
+                .encode_with_special_tokens(&phon.bert_input_text),
             Language::ZH => {
                 return Err(VokraError::NotImplemented(
                     "SbV2Model::synthesize: language ZH has no BERT tokenizer wired in this \

@@ -22,12 +22,42 @@ use vokra_core::VokraError;
 
 const WORD_START: char = '▁'; // U+2581 LOWER ONE EIGHTH BLOCK — SentencePiece word boundary
 
+/// Runtime tokenizer algorithm. HF `BertJapaneseTokenizer` with
+/// `subword_tokenizer_type="character"` (used by
+/// `ku-nlp/deberta-v2-large-japanese-char-wwm`) splits by Unicode code point;
+/// SentencePiece Unigram tokenizers (used by `microsoft/deberta-v3-large`)
+/// run a Viterbi search with a `▁` word-start marker. The converter stamps
+/// the discriminator into `<prefix>.kind`
+/// (`vokra_convert::models::deberta_v2::{KIND_BERT_CHARSPLIT,
+/// KIND_SENTENCEPIECE_UNIGRAM}`) so `from_gguf` can pick the correct branch.
+/// Runtime choice is intentional over converter-time flattening: the tensor
+/// vocabulary is the same shape either way, only encode's semantics differ.
+///
+/// # Why char-split was silent-wrong pre-2026-08-09 (task #7 root cause)
+///
+/// Before this enum, `encode()` always ran SentencePiece Viterbi + prepended
+/// `▁`. Fed a char-level vocab (which has entries like `"テ"` but not `"▁テ"`),
+/// it turned "テスト" into 4 tokens (`[unk, テ, ス, ト]` — 1 spurious for the
+/// `▁` prefix), not the 3 chars HF `BertJapaneseTokenizer(add_special_tokens=True)`
+/// wraps into `[CLS, テ, ス, ト, SEP]` = 5 tokens. The 4 vs 5 length mismatch
+/// then propagated into `bert_hidden_ja` as a `[4, 1024]` vs `[5, 1024]`
+/// shape divergence in the parity harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenizerKind {
+    /// HF `BertJapaneseTokenizer(subword_tokenizer_type="character")` — one
+    /// Unicode code point per token, unknown chars go to `unk_id`.
+    BertCharSplit,
+    /// SentencePiece Unigram Viterbi (existing behaviour).
+    SentencePiece,
+}
+
 #[derive(Debug, Clone)]
 pub struct SbertTokenizer {
     pieces: Vec<(String, f32)>, // (piece, log_prob)
     unk_id: u32,
     bos_id: u32,
     eos_id: u32,
+    kind: TokenizerKind,
     // For fast lookup: map piece -> id (used in Task 4)
     #[allow(dead_code)]
     piece_to_id: std::collections::HashMap<String, u32>,
@@ -50,12 +80,80 @@ impl SbertTokenizer {
             unk_id: 1,
             bos_id: 2,
             eos_id: 3,
+            kind: TokenizerKind::SentencePiece,
             piece_to_id,
         }
     }
 
+    /// Test constructor for char-level HF BERT tokenizers
+    /// (`BertJapaneseTokenizer(subword_tokenizer_type="character")`). Explicit
+    /// unk/cls/sep ids because the char vocab convention (`[PAD]=0, [CLS]=1,
+    /// [SEP]=2, [UNK]=3`) does NOT match SentencePiece defaults
+    /// (`<pad>=0, <unk>=1, <s>=2, </s>=3`) — silently reusing SentencePiece
+    /// ids would put `[UNK]` where `[SEP]` belongs (task #7 root cause
+    /// pattern).
+    #[doc(hidden)]
+    pub fn from_pieces_for_test_charsplit(
+        pieces: Vec<(String, f32)>,
+        unk_id: u32,
+        cls_id: u32,
+        sep_id: u32,
+    ) -> Self {
+        assert!(pieces.len() >= 4);
+        let piece_to_id = pieces
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| (p.clone(), i as u32))
+            .collect();
+        Self {
+            pieces,
+            unk_id,
+            bos_id: cls_id,
+            eos_id: sep_id,
+            kind: TokenizerKind::BertCharSplit,
+            piece_to_id,
+        }
+    }
+
+    /// Char-level encode for HF `BertJapaneseTokenizer(subword_tokenizer_type="character")`:
+    /// one Unicode code point per token, out-of-vocab chars go to `unk_id`.
+    /// Consumers that need HF's `add_special_tokens=True` wrap should call
+    /// [`encode_with_special_tokens`](Self::encode_with_special_tokens) instead.
+    fn encode_charsplit(&self, text: &str) -> Vec<u32> {
+        text.chars()
+            .map(|c| {
+                let key = c.to_string();
+                self.piece_to_id.get(&key).copied().unwrap_or(self.unk_id)
+            })
+            .collect()
+    }
+
+    /// HF `tokenizer(text, add_special_tokens=True)` equivalent — wraps the
+    /// active tokenizer's output with `bos_id` (=CLS for BERT-family char /
+    /// `<s>` for SentencePiece) at the front and `eos_id` (=SEP / `</s>`) at
+    /// the tail. Consumers reading `bert_hidden_*` reference dumps from HF
+    /// MUST call this (not [`encode`](Self::encode)) so the token count
+    /// matches; see [`TokenizerKind::BertCharSplit`]'s doc for the task #7
+    /// regression that motivated this API.
+    pub fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
+        let mut ids = Vec::new();
+        ids.push(self.bos_id);
+        ids.extend(match self.kind {
+            TokenizerKind::BertCharSplit => self.encode_charsplit(text),
+            TokenizerKind::SentencePiece => self.encode(text),
+        });
+        ids.push(self.eos_id);
+        ids
+    }
+
     /// Encode a UTF-8 string into piece ids using viterbi.
     /// Prepends `▁` for word starts (SentencePiece "add_dummy_prefix" default).
+    ///
+    /// NOTE: for char-level HF `BertJapaneseTokenizer` consumers the Viterbi
+    /// path silently produces wrong-shape output (WORD_START token is not in
+    /// the char vocab so it maps to UNK, adding a spurious token). Use
+    /// [`encode_with_special_tokens`](Self::encode_with_special_tokens) —
+    /// which respects [`TokenizerKind`] — for those consumers instead.
     pub fn encode(&self, text: &str) -> Vec<u32> {
         // Prepare input: replace ASCII space with `▁`, prepend `▁` to first token.
         let mut prepared = String::with_capacity(text.len() + 4);
@@ -148,6 +246,7 @@ impl SbertTokenizer {
         let unk_key = format!("{prefix}.unk_id");
         let bos_key = format!("{prefix}.bos_id");
         let eos_key = format!("{prefix}.eos_id");
+        let kind_key = format!("{prefix}.kind");
 
         // Extract pieces array
         let pieces: Vec<String> = {
@@ -215,6 +314,21 @@ impl SbertTokenizer {
             .map(|v| v as u32)
             .unwrap_or(3);
 
+        // Kind discriminator stamped by the converter (see
+        // `vokra_convert::models::deberta_v2::{KIND_BERT_CHARSPLIT,
+        // KIND_SENTENCEPIECE_UNIGRAM}`). Default = SentencePiece for
+        // backward compat with GGUFs written before the kind stamp existed.
+        let kind = match gguf.get(&kind_key).and_then(|v| v.as_str()) {
+            Some("bert-charsplit") => TokenizerKind::BertCharSplit,
+            Some("sentencepiece-unigram") | None => TokenizerKind::SentencePiece,
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "{kind_key}: unknown tokenizer kind {other:?} — expected \
+                     \"bert-charsplit\" or \"sentencepiece-unigram\""
+                )));
+            }
+        };
+
         let piece_to_id = pieces
             .iter()
             .enumerate()
@@ -226,6 +340,7 @@ impl SbertTokenizer {
             unk_id,
             bos_id,
             eos_id,
+            kind,
             piece_to_id,
         })
     }
