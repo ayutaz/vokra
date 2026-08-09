@@ -402,7 +402,21 @@ pub struct SynthesisRequest {
     /// floats — 192 for the v7 voice). `None` uses the zero vector, the
     /// deterministic zero-shot default; note the voice's speaker projection maps
     /// even a zero embedding to a non-zero conditioning contribution
-    /// (bias / LayerNorm / GELU). A wrong-length vector is treated as zeros.
+    /// (bias / LayerNorm / GELU).
+    ///
+    /// **Per-engine wrong-length policy** — this field crosses the cross-engine
+    /// [`TtsEngine`] boundary, so a `Some(..)` whose length differs from the
+    /// loaded voice's `speaker_embedding_dim` is handled per-engine, not
+    /// centrally:
+    /// - `piper_plus::PiperPlusTts` falls back to the zero vector (its
+    ///   documented zero-shot default; see `piper_plus::conditioning::g`).
+    /// - `sbv2::SbV2Model`'s [`TtsEngine`] adapter returns
+    ///   [`VokraError::InvalidArgument`] for any `Some(..)` (SBV2 selects
+    ///   speakers through a discrete id, not a continuous embedding, so
+    ///   honoring the field at all would silently discard caller data — FR-EX-08).
+    ///
+    /// Callers wanting portable behavior should either supply a correctly-sized
+    /// vector or leave the field `None`.
     pub speaker_embedding: Option<Vec<f32>>,
     /// Optional per-phoneme **prosody features** — one `(A1, A2, A3)` accent
     /// triple per phoneme (piper-plus JA path). `None`, or any non-JA language,

@@ -46,6 +46,11 @@ project's `LicenseClass::Copyleft` distribution path (`docs/license-audit.md`
 §3.1; the sign-off rows for these three SKUs are intentionally still blank —
 see "What this README does NOT do" below).
 
+**Language coverage caveat**: current base ckpt is a JP-Extra fine-tune —
+EN/ZH synthesis runs but produces degraded audio; genuine multilingual
+synthesis requires switching to a non-JP-Extra multilingual base. See
+`docs/adr/sbv2-cleanroom.md` and CLAUDE.md "documented ceilings".
+
 ## Directory layout (what's committed vs. gitignored)
 
 ```

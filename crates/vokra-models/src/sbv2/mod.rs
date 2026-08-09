@@ -18,6 +18,13 @@
 //! - github.com/litagin02/Style-Bert-VITS2 (AGPL-3.0)
 //! - github.com/fishaudio/Bert-VITS2 (AGPL-3.0)
 //! - Any AGPL derivative of the above.
+//!
+//! # Language coverage caveat (JP-Extra base checkpoint)
+//!
+//! Current base ckpt is a JP-Extra fine-tune — EN/ZH synthesis runs but
+//! produces degraded audio; genuine multilingual synthesis requires switching
+//! to a non-JP-Extra multilingual base. See `docs/adr/sbv2-cleanroom.md` and
+//! CLAUDE.md "documented ceilings".
 
 pub mod decoder;
 pub mod duration;
