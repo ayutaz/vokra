@@ -18,9 +18,7 @@
 //! caveat" doc). `synthetic_shape_invariants_hold` below instead documents
 //! where a real per-tensor assertion will plug in.
 
-use vokra_models::sbv2::{
-    ATOL_DEFAULT, Language, RngMode, SbV2Model, SbV2SynthRequest, tolerance_for,
-};
+use vokra_models::sbv2::{Language, RngMode, SbV2Model, SbV2SynthRequest, tolerance_for};
 
 /// Builds the shared JA request every test below starts from ("あいう" —
 /// 3 hiragana chars, each a distinct entry in
@@ -153,5 +151,14 @@ fn synthetic_shape_invariants_hold() {
         "PCM length must equal mel_seq_len * total_upsample_factor exactly"
     );
 
-    assert_eq!(tolerance_for("waveform"), ATOL_DEFAULT);
+    // Wave-9 (2026-08-09): `waveform` was promoted from ATOL_DEFAULT (0.01)
+    // to Measured override 1.5 after CI run 31303426623 measured max |Δ| =
+    // 0.9248 through the HiFi-GAN vocoder stack on real fixtures. See
+    // `PER_TENSOR_ATOL`'s `"waveform"` block-doc + ADR sbv2-parity-atol §5
+    // for the full derivation (cross-plat libm through ~600k transcendental
+    // calls). This pin fires alongside `sbv2_parity_atol_calibration.rs`
+    // whenever the override drifts — updating either side alone (breaking
+    // the redundant-recording rule in memory `feedback-honest-parity-atol`)
+    // now turns this test red on top of the calibration status test.
+    assert_eq!(tolerance_for("waveform"), 1.5);
 }
