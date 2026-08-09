@@ -51,6 +51,7 @@ impl BertEncoder for deberta_v3::DebertaV3Encoder {
 pub mod deberta_v2;
 pub mod deberta_v3;
 pub mod tokenizer;
+pub mod wordpiece;
 
 #[cfg(test)]
 mod tests {
