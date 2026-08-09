@@ -25,7 +25,7 @@
 //! - **It never declares "item 2 satisfied".** The strongest verdict the
 //!   runner returns is [`Item2RunnerVerdict::MeasuredGreen`] — "the measurable
 //!   half is green"; the final item-2 call (parity CI + owner judgment) is
-//!   [T11] owner work.
+//!   T11 owner work.
 //!
 //! # Testability
 //!

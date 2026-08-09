@@ -5,7 +5,7 @@
 //! attends key `k` iff `0 <= q - k < context` (`moshi/backbone.rs`,
 //! `transformer.py attn_bias = (delta >= 0) & (delta < context)`). Keys older
 //! than `context` contribute `exp(-inf) = 0` to every future softmax, so they
-//! are dead weight the moment they leave the window. The M3-03 [`PagedKvCache`]
+//! are dead weight the moment they leave the window. The M3-03 [`super::paged::PagedKvCache`]
 //! still keeps them resident (memory `O(max_ctx)`), which is fine for a bounded
 //! prompt but unbounded-in-practice for a long streaming session.
 //!
@@ -15,7 +15,7 @@
 //! retained window is **exactly** the set of keys a streaming (single new
 //! position per step) decoder can still attend, so reading the ring over that
 //! window is numerically identical to reading the full paged history and
-//! letting the mask zero the rest (proven against [`PagedKvCache`] in the tests
+//! letting the mask zero the rest (proven against [`super::paged::PagedKvCache`] in the tests
 //! and in `crates/vokra-models/src/moshi/backbone.rs`).
 //!
 //! # Streaming only — the ring is not a drop-in for bulk forward
@@ -41,7 +41,7 @@ use crate::error::{Result, VokraError};
 /// stream of unbounded length stays within `O(n_layer · capacity · row_width)`
 /// memory.
 ///
-/// Logical addressing mirrors [`PagedKvCache`](super::paged::PagedKvCache): a
+/// Logical addressing mirrors [`super::paged::PagedKvCache`]: a
 /// row is `(layer, t, stream, codebook)` with a per-slot payload of
 /// `n_head · d_head` elements; the physical slot is `t % capacity`. A slot
 /// holds position `t` until position `t + capacity` overwrites it — the
@@ -70,7 +70,7 @@ pub struct RingKvCache<T: KvElement> {
     /// window bookkeeping).
     highest: Option<usize>,
     /// Committed-position clock, advanced by [`Self::advance`] (API parity with
-    /// [`PagedKvCache`](super::paged::PagedKvCache)).
+    /// [`super::paged::PagedKvCache`]).
     pos: usize,
 }
 
@@ -459,7 +459,7 @@ mod tests {
 
     /// The whole point: over a streaming (single new position per step)
     /// session, reading the ring's window is byte-identical to reading the full
-    /// [`PagedKvCache`] history over the same window — the masked keys the
+    /// [`super::paged::PagedKvCache`] history over the same window — the masked keys the
     /// paged cache still holds would contribute exactly zero anyway. This is the
     /// equivalence the Moshi wire-in relies on.
     #[test]

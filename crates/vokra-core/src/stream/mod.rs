@@ -5,7 +5,7 @@
 //! session-unique id, released on [`Drop`]. On top of that M0 lifecycle, M1-08
 //! adds the streaming inference API:
 //!
-//! - a lock-free SPSC [`channel`] ([`ring`], FR-ST-02);
+//! - a lock-free SPSC [`channel`] (`ring`, FR-ST-02);
 //! - the three [`StreamStep`] patterns (frame / chunk / cache, FR-ST-01);
 //! - [`Stream::step_chunk`] / [`step_frame`](Stream::step_frame) for ergonomic
 //!   single-thread stepping, and [`Stream::push`] + [`Stream::take_poller`] →

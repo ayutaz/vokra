@@ -15,19 +15,19 @@
 //!   lower-level primitive, consumed by the [`Sampler`] (temperature / top-k /
 //!   top-p / repetition penalty) and by [`sample_sequence`].
 //! - [`BeamScorer`] returns normalized **log-probabilities**, consumed by
-//!   [`beam_search`]. A concrete scorer is a thin adapter over a
+//!   [`beam_search()`]. A concrete scorer is a thin adapter over a
 //!   [`LogitsSource`] (a `log_softmax` of its logits).
 //!
 //! # Scope
 //!
-//! - **M0-06** adds [`beam_search`] (FR-OP-40: beam width, length
+//! - **M0-06** adds [`beam_search()`] (FR-OP-40: beam width, length
 //!   normalization, early stopping, n-best, word-level timestamps).
 //! - **M1-04** adds [`LogitsSource`], the [`Sampler`] / [`sample_sequence`]
 //!   stochastic decoder, and the classifier-free-guidance combiner
 //!   ([`apply_cfg`], [`CfgMode`], FR-EX-10).
 //! - **M1-08f** adds [`DecodeStepper`], the cache-based incremental decode
 //!   stepper (the FR-ST-01 cache pattern) over the same [`LogitsSource`].
-//! - **M5-06** adds [`wfst`] (FR-OP-43 `wfst_decode`, behind the opt-in
+//! - **M5-06** adds `wfst` (FR-OP-43 `wfst_decode`, behind the opt-in
 //!   `vokra-wfst` feature): an OpenFST binary reader + tropical semiring +
 //!   token-passing decoder + lattice/n-best, a **decode-only** search over a
 //!   pre-composed HCLG-style graph. `ctc_decode` / `rnnt_decode` (FR-OP-41/42)

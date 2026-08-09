@@ -38,7 +38,7 @@
 //! # FR-EX-08 de-fusion rule (no silent cross-backend fallback)
 //!
 //! The pass takes an optional
-//! `&dyn `[`Backend`](crate::runtime::Backend). Before emitting a
+//! `&dyn `[`crate::Backend`]. Before emitting a
 //! `FusedOp` node the matcher queries `backend.supports(...)`; if the
 //! backend cannot execute the fused variant, the pass **leaves the base
 //! ops in place**. Base ops (`Stft`, `MelFilterbank`, `Mul`, …) have full
@@ -276,7 +276,7 @@ impl FusionOptions {
 ///    base ops are the primary implementation, fusion is a pure optimization
 ///    overlay.
 /// 5. Applies collected rewrites via the crate-internal
-///    [`AudioGraph::rewrite_with`](super::graph::AudioGraph::rewrite_with)
+///    `AudioGraph::rewrite_with`
 ///    and returns the count.
 ///
 /// The `backend` argument is optional (`None` means "assume all fused

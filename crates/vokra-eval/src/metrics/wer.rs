@@ -49,7 +49,7 @@ fn edit_rate<T: PartialEq>(hyp: &[T], reference: &[T]) -> f64 {
 pub struct Wer;
 
 impl Wer {
-    /// WER of `hyp` against `reference` (see [`edit_rate`] for the
+    /// WER of `hyp` against `reference` (see `edit_rate` for the
     /// empty-reference convention).
     pub fn rate(hyp: &str, reference: &str) -> f64 {
         let h: Vec<&str> = hyp.split_whitespace().collect();
@@ -79,7 +79,7 @@ impl TextMetric for Wer {
 pub struct Cer;
 
 impl Cer {
-    /// CER of `hyp` against `reference` (see [`edit_rate`] for the
+    /// CER of `hyp` against `reference` (see `edit_rate` for the
     /// empty-reference convention).
     pub fn rate(hyp: &str, reference: &str) -> f64 {
         let h: Vec<char> = hyp.chars().collect();

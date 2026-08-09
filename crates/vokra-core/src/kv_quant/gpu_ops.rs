@@ -36,7 +36,7 @@ use crate::error::Result;
 
 /// GPU-side fused dequantization + row-wise GEMV.
 ///
-/// # Contract (mirrors [`dequant_gemv_scalar`])
+/// # Contract (mirrors [`crate::kv_quant::dequant_gemm::dequant_gemv_scalar`])
 ///
 /// - `mode` selects `Q4_0` / `Q5_0` / `Q8_0`. `KvQuant::Fp32` is an explicit
 ///   [`crate::VokraError::InvalidArgument`] — the FP32 path uses

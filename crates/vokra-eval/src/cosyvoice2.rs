@@ -62,7 +62,7 @@ pub const COSYVOICE2_MEL_LOSS_THRESHOLD: f64 = 0.05;
 /// CosyVoice2 output sample rate (Hz). Fixed at 24 kHz — the upstream
 /// model card and the Mimi codec's native rate. Kept here as a constant
 /// so the CI gate can validate the reference matches without importing
-/// [`CosyVoice2Config`] from `vokra-models` (which would create a
+/// `CosyVoice2Config` from `vokra-models` (which would create a
 /// vokra-eval → vokra-models dep — banned by the crate layer: eval
 /// depends only on vokra-core + vokra-ops).
 pub const COSYVOICE2_SAMPLE_RATE: u32 = 24_000;

@@ -172,7 +172,7 @@ pub struct KvDims {
 impl KvDims {
     /// One page's row width in element count: `n_stream * n_codebook *
     /// n_head * d_head`. `k` and `v` each carry `block_size` rows of this
-    /// width, doubled for `k|v` in [`KvPage::row_len_kv`].
+    /// width, doubled for `k|v` in `KvPage::row_len_kv`.
     #[inline]
     #[must_use]
     pub const fn row_width(&self) -> usize {

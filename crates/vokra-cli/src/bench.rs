@@ -844,7 +844,7 @@ const COSYVOICE2_SYNTHETIC_CHUNK_SIZE: u32 = 4;
 /// `None` and the task hint is [`TaskHint::Cosyvoice2Synthetic`].
 ///
 /// Builds a synthetic CosyVoice2 GGUF in memory (arch, Mimi shape defaults,
-/// streaming chunk_size / hop), loads a [`CosyVoice2Tts`] from it, and runs
+/// streaming chunk_size / hop), loads a `CosyVoice2Tts` from it, and runs
 /// the chunk-aware streaming pipeline with injected deterministic closures
 /// (zero velocity, constant-ones code closure) over a 1 s target-frame
 /// budget. This exercises the T24 RTF measurement API path without a real

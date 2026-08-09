@@ -8,7 +8,7 @@
 //! This module provides:
 //!
 //! - [`GgufFile`] — parse a GGUF file and lend tensor payloads as zero-copy
-//!   `&[u8]` slices (see the [`reader`] module docs for the std-I/O-vs-mmap
+//!   `&[u8]` slices (see the `reader` module docs for the std-I/O-vs-mmap
 //!   trade-off in a crate that forbids `unsafe`);
 //! - [`GgufBuilder`] — serialize metadata and tensors back to GGUF, used by
 //!   the offline conversion tool and by round-trip tests;

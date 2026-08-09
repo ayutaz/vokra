@@ -3,7 +3,7 @@
 //! The concrete model implementations live in `vokra-models` (Silero VAD =
 //! M0-05, Whisper base = M0-06, piper-plus native TTS = M0-07). To keep
 //! `vokra-core` free of any model/graph specifics — and free of external
-//! dependencies (NFR-DS-02) — the models are injected into a [`Session`] as
+//! dependencies (NFR-DS-02) — the models are injected into a [`crate::Session`] as
 //! trait objects through these interfaces.
 //!
 //! The task facades ([`crate::tasks`]) delegate to the injected engine when
@@ -223,7 +223,7 @@ impl DuplexSessionConfig {
 /// The trait deliberately hides the two-stage internal architecture
 /// (mel front-end → shared embedding extractor → per-wake-word
 /// classifier MLP) — a change to that architecture is a
-/// [`vokra_models::kws`] implementation detail, not an engine-contract
+/// `vokra_models::kws` implementation detail, not an engine-contract
 /// break.
 pub trait KwsEngine: Send + Sync {
     /// Names of the wake-words this engine can recognise, in the order
@@ -345,7 +345,7 @@ pub trait VadStreamHandle {
 ///
 /// This trait absorbs both the neural RNNoise session (real GRU
 /// weights) and a future thin wrapper around the existing
-/// [`vokra_ops::denoise`] fn (DeepFilterNet3) so the dispatch layer
+/// `vokra_ops::denoise` fn (DeepFilterNet3) so the dispatch layer
 /// sees one shape.
 pub trait DenoiseEngine: Send + Sync {
     /// Opens a fresh streaming handle with zero-initialised recurrent
@@ -591,7 +591,7 @@ impl SynthesisRequest {
 /// (`vokra_models::dnsmos_p808_p835`, 2026-08-05) and the future UTMOS
 /// runtime binder.
 ///
-/// Unlike the metrics-side [`AudioMosMetric`](vokra_eval::metrics::AudioMosMetric)
+/// Unlike the metrics-side `AudioMosMetric` (in `vokra_eval::metrics`)
 /// (which lives in `vokra-eval` and is a single-scalar per-clip abstraction
 /// with a stable string `name()`), this trait sits in `vokra-core` alongside
 /// the other engine seams so a runtime session (or a C ABI handle) can drive

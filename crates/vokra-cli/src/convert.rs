@@ -416,7 +416,7 @@ struct Parsed {
     input: PathBuf,
     config: Option<PathBuf>,
     /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
-    /// [`convert_voxtral_file_with_adapter_config`] and emits the adapter
+    /// `convert_voxtral_file_with_adapter_config` and emits the adapter
     /// metadata chunk into the GGUF so the runtime binds real adapter tensors
     /// and does audio-conditioned ASR.
     adapter_config: Option<PathBuf>,

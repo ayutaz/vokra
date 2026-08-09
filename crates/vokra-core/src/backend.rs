@@ -47,8 +47,8 @@ pub trait Backend {
     /// This is the per-op compute surface the graph evaluator
     /// [`run_graph`](crate::run_graph) drives (one call per node, in
     /// topological order). A backend derives each output's shape from the op
-    /// semantics and the inputs; [`run_graph`] checks that shape against the
-    /// declared [`TensorDesc`](crate::TensorDesc), so a backend only computes.
+    /// semantics and the inputs; [`crate::run_graph`] checks that shape against the
+    /// declared [`crate::TensorDesc`], so a backend only computes.
     ///
     /// # Contract (FR-EX-08, permanent)
     ///

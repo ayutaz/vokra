@@ -169,7 +169,7 @@ pub const KEY_SILERO_VERSION: &str = "vokra.silero.version";
 
 /// `vokra.schema.version` — Vokra GGUF **schema** generation (`UINT32`).
 ///
-/// Hand-bumped ([`SCHEMA_VERSION`]) whenever a converter starts emitting a
+/// Hand-bumped ([`crate::gguf::SCHEMA_VERSION`]) whenever a converter starts emitting a
 /// metadata or tensor group that loaders may rely on. Its whole purpose is to
 /// make a **stale artifact** — a GGUF produced by an older converter, missing a
 /// group newer code expects — visible at load instead of degrading quietly.

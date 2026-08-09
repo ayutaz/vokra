@@ -96,7 +96,7 @@ impl DegradationReport {
 /// | `true` | `true` | `Some(passes_5pct_gate=true)` | `Ok(())` |
 /// | `true` | `true` | `Some(passes_5pct_gate=false)` | [`VokraError::HifiganInt8DegradationExceeded`] |
 ///
-/// Vocos / BigVGAN never reach here — [`validate_policy_against_model`] (T09)
+/// Vocos / BigVGAN never reach here — [`crate::quant::validate::validate_policy_against_model`] (T09)
 /// rejects them at a higher altitude.
 pub fn verify_hifigan_int8(
     policy: &QuantPolicy,

@@ -121,7 +121,7 @@ pub(crate) enum ModelTask {
     /// [`load_session_with_backend`] entirely (arch dispatch is not yet
     /// wired for `cosyvoice2`, T07/T08 follow-on). The variant is kept
     /// because the exhaustive match arms in [`crate::run::main`] and
-    /// [`crate::bench::execute`] rely on it to surface an explicit
+    /// `crate::bench::execute` rely on it to surface an explicit
     /// unimplemented signal if a future engine.rs change ever *does*
     /// return it (defense in depth against a silent fall back — the
     /// FR-EX-08 posture the whole CLI upholds). The dead-code allow
@@ -183,7 +183,7 @@ pub(crate) fn load_session(path: &str) -> Result<(Session, ModelTask), String> {
     load_session_with_backend(path, BackendKind::Cpu, None)
 }
 
-/// As [`load_session`], but runs the model's hot ops on `backend` (CPU / Metal /
+/// As `load_session`, but runs the model's hot ops on `backend` (CPU / Metal /
 /// CUDA) and lets the caller override the default arch → task mapping via
 /// `hint`. Only the ASR (Whisper) path is backend-parameterised today; VAD/TTS
 /// stay on the CPU. A backend that does not cover the model's op set surfaces an
