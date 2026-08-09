@@ -104,11 +104,11 @@ pub const KEY_ARCH_VARIANT: &str = "vokra.utmos.arch.variant";
 /// `vokra.utmos.sample_rate` — required input sample rate (UINT32).
 pub const KEY_SAMPLE_RATE: &str = "vokra.utmos.sample_rate";
 /// `vokra.utmos.conv.channels` — feature-encoder per-layer out-channels
-/// (ARRAY<UINT32>).
+/// (`ARRAY<UINT32>`).
 pub const KEY_CONV_CHANNELS: &str = "vokra.utmos.conv.channels";
-/// `vokra.utmos.conv.kernels` — per-layer kernel widths (ARRAY<UINT32>).
+/// `vokra.utmos.conv.kernels` — per-layer kernel widths (`ARRAY<UINT32>`).
 pub const KEY_CONV_KERNELS: &str = "vokra.utmos.conv.kernels";
-/// `vokra.utmos.conv.strides` — per-layer strides (ARRAY<UINT32>).
+/// `vokra.utmos.conv.strides` — per-layer strides (`ARRAY<UINT32>`).
 pub const KEY_CONV_STRIDES: &str = "vokra.utmos.conv.strides";
 /// `vokra.utmos.conv.activation` — feature-encoder activation (STRING;
 /// `"gelu"` is the only v0 value).
@@ -127,7 +127,7 @@ pub const KEY_TF_NORM: &str = "vokra.utmos.transformer.norm";
 /// `vokra.utmos.transformer.ln_eps` — LayerNorm epsilon (FLOAT32).
 pub const KEY_TF_LN_EPS: &str = "vokra.utmos.transformer.ln_eps";
 /// `vokra.utmos.head.dims` — regression-head linear output dims, last must
-/// be 1 (ARRAY<UINT32>).
+/// be 1 (`ARRAY<UINT32>`).
 pub const KEY_HEAD_DIMS: &str = "vokra.utmos.head.dims";
 /// `vokra.utmos.head.pool` — time pooling placement (STRING;
 /// `"mean_before"` / `"mean_after"`).
@@ -146,13 +146,13 @@ pub const KEY_HEAD_OFFSET: &str = "vokra.utmos.head.offset";
 // carries one is a loud error rather than a silently-ignored tensor budget.
 
 /// `vokra.utmos.conv.group_norm_layers` — feature-encoder layer indices that
-/// carry a GroupNorm (ARRAY<UINT32>). Upstream ships `[0]`: fairseq's
+/// carry a GroupNorm (`ARRAY<UINT32>`). Upstream ships `[0]`: fairseq's
 /// `extractor_mode = "default"` group-norms **layer 0 only**
 /// (`ConvFeatureExtractionModel::block`, `is_group_norm = mode == "default"
 /// and i == 0`, pinned at `d03f4e77`).
 pub const KEY_CONV_GN_LAYERS: &str = "vokra.utmos.conv.group_norm_layers";
 /// `vokra.utmos.conv.group_norm_groups` — group count per listed layer
-/// (ARRAY<UINT32>, same length as [`KEY_CONV_GN_LAYERS`]). Upstream ships
+/// (`ARRAY<UINT32>`, same length as [`KEY_CONV_GN_LAYERS`]). Upstream ships
 /// `[512]` = one group per channel (`Fp32GroupNorm(dim, dim, affine=True)`).
 pub const KEY_CONV_GN_GROUPS: &str = "vokra.utmos.conv.group_norm_groups";
 /// `vokra.utmos.conv.group_norm_eps` — GroupNorm epsilon (FLOAT32).

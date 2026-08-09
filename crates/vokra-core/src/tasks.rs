@@ -66,10 +66,10 @@ impl Tts<'_> {
     /// Synthesizes speech audio from `text` (voice defaults).
     ///
     /// The FR-API-02 verbatim shape. Delegates to the
-    /// [`TtsEngine`](crate::engines::TtsEngine) injected via
-    /// [`Session::with_tts_engine`](crate::Session::with_tts_engine)
+    /// [`crate::engines::TtsEngine`] injected via
+    /// [`crate::Session::with_tts_engine`]
     /// (piper-plus native TTS = M0-07) with a default
-    /// [`SynthesisRequest`](crate::engines::SynthesisRequest). Use
+    /// [`crate::engines::SynthesisRequest`]. Use
     /// [`synthesize_request`](Self::synthesize_request) for explicit options.
     /// Without an injected engine it returns [`VokraError::NotImplemented`].
     pub fn synthesize(&self, text: &str) -> Result<SynthesizedAudio> {
@@ -77,7 +77,7 @@ impl Tts<'_> {
     }
 
     /// Synthesizes speech audio for an explicit
-    /// [`SynthesisRequest`](crate::engines::SynthesisRequest) (language,
+    /// [`crate::engines::SynthesisRequest`] (language,
     /// determinism, ...).
     pub fn synthesize_request(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
         match self.session.tts_engine() {

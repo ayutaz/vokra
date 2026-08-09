@@ -69,7 +69,7 @@
 //! SIMD intrinsics require `unsafe`, so this crate opts out of the
 //! workspace-wide `unsafe_code = "deny"`. Public APIs stay safe: every kernel
 //! wrapper in [`kernels`] validates shapes at the boundary and returns
-//! [`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument) on
+//! [`VokraError::InvalidArgument`] on
 //! a mismatch. SIMD `unsafe fn`s are reached only after
 //! [`CpuFeatures::detect`] confirms the feature (the dispatch invariant), and
 //! every `unsafe` block carries a `// SAFETY:` comment (enforced by

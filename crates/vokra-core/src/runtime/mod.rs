@@ -1,7 +1,7 @@
 //! Data-carrying graph evaluator (Phase 1 of the GPU execution architecture).
 //!
-//! The [`AudioGraph`](crate::AudioGraph) IR is a *descriptor*: its tensors
-//! carry shapes but no data, and its [`Backend`](crate::Backend) `execute`
+//! The [`crate::AudioGraph`] IR is a *descriptor*: its tensors
+//! carry shapes but no data, and its [`crate::Backend`] `execute`
 //! entry point only validates op coverage. This module adds the piece that was
 //! deferred there — an engine that actually runs a graph, threading real
 //! [`Tensor`] values from node to node.

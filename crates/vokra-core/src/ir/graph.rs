@@ -978,7 +978,7 @@ impl AudioGraph {
     ///   consistency of node outputs).
     ///
     /// Op-kind specific *shape* checks (e.g. that a
-    /// [`FusedOp::LogMel`](super::fusion::FusedOp::LogMel) input is a
+    /// [`super::fusion::FusedOp::LogMel`] input is a
     /// `[samples]` real signal and its output a `[n_mels, n_frames]` mel
     /// spectrogram) are **deferred to the backend**: `validate` only enforces
     /// structural consistency and accepts every [`OpKind`] variant — including

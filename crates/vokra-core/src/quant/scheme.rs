@@ -103,7 +103,7 @@ impl QuantScheme {
     /// deferred per `vokra-backend-cpu/src/lib.rs:16-17`) and is reported as
     /// *not* supported on every [`BackendKind`] — the T09 validate pass in a
     /// follow-up ticket uses this to raise
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) rather
+    /// [`VokraError::UnsupportedOp`] rather
     /// than silently widen (FR-EX-08).
     pub fn backend_supported(&self, backend: BackendKind) -> bool {
         match self {
