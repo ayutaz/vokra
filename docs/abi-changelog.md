@@ -287,6 +287,15 @@ rotation is the M5-13/IF-01 freeze owner's action. All items are
 additive (existing signatures unchanged; `SynthesisRequest` is already
 `#[non_exhaustive]` for future-safe growth), Breaking? = no.
 
+**Snapshot regenerated 2026-08-10** to close the advisory gate
+(`abi-surface (advisory)` was red because the new `with_speaker_id` /
+`with_style_vec` builders + `TtsStreamHandle` trait were missing from
+the v1.0-rc snapshot). Regenerated via
+`bash scripts/rust-public-api-list.sh --update-snapshot`; delta = 3
+entries under `vokra-core::engines::` matching this WP verbatim.
+`abi-diff.sh --gate` is still non-firing (v1.0-rc pre-release policy;
+IF-01 semver freeze is M5-13/v1.0 GA).
+
 ### 2026-08-09 — 1.0.0-rc.1-dev (Wave 3 HGAN-05 speaker conditioning + Wave 6 packed-cache exports — Rust surface only)
 
 Additive **Rust public API** changes only — C ABI (`include/vokra.h`) untouched

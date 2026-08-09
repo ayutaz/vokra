@@ -385,6 +385,8 @@ FN vokra-core::engines::with_prosody_features|pub fn with_prosody_features(mut s
 FN vokra-core::engines::with_reply_speaker|pub fn with_reply_speaker(mut self, speaker: u32) -> Self {
 FN vokra-core::engines::with_seed|pub fn with_seed(mut self, seed: u64) -> Self {
 FN vokra-core::engines::with_speaker_embedding|pub fn with_speaker_embedding(mut self, embedding: impl Into<Vec<f32>>) -> Self {
+FN vokra-core::engines::with_speaker_id|pub fn with_speaker_id(mut self, speaker_id: u32) -> Self {
+FN vokra-core::engines::with_style_vec|pub fn with_style_vec(mut self, style: impl Into<Vec<f32>>) -> Self {
 FN vokra-core::gguf::chunks::is_vokra_key|pub fn is_vokra_key(key: &str) -> bool {
 FN vokra-core::gguf::frontend_spec::check_against|pub fn check_against(
 FN vokra-core::gguf::frontend_spec::diff|pub fn diff(&self, runtime: &FrontendSpec) -> Vec<FieldMismatch> {
@@ -1308,6 +1310,7 @@ TRAIT vokra-core::engines::S2sDuplexEngine|pub trait S2sDuplexEngine: Send + Syn
 TRAIT vokra-core::engines::S2sDuplexHandle|pub trait S2sDuplexHandle {
 TRAIT vokra-core::engines::S2sEngine|pub trait S2sEngine: Send + Sync {
 TRAIT vokra-core::engines::TtsEngine|pub trait TtsEngine: Send + Sync {
+TRAIT vokra-core::engines::TtsStreamHandle|pub trait TtsStreamHandle {
 TRAIT vokra-core::engines::VadEngine|pub trait VadEngine: Send + Sync {
 TRAIT vokra-core::engines::VadStreamHandle|pub trait VadStreamHandle {
 TRAIT vokra-core::gguf::reader::AsBytes|pub trait AsBytes: Send + Sync {

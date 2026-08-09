@@ -170,7 +170,7 @@ class ProposalTests(unittest.TestCase):
         # We do not need to feed a real baseline path — propose_from_
         # summary is pure by construction. This test is a signature-
         # level contract check: the function is called without any
-        # writeable filesystem argument.
+        # writable filesystem argument.
         summary = make_summary([
             {
                 "name": "z_latent",
