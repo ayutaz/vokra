@@ -559,8 +559,14 @@ fn request_from_manifest(manifest: &JsonValue, ctx: &str) -> SbV2SynthRequest {
     let language = match json_str(request, "language", ctx) {
         "JA" => Language::JA,
         "EN" => Language::EN,
+        // WP-18: fixture manifests can declare ZH so future ZH reference
+        // dumps can flow through this same loader; note that
+        // `SbV2Model::synthesize` currently fail-closes on Language::ZH
+        // until the ZH BERT WP lands (WP-19+).
         "ZH" => Language::ZH,
-        other => panic!("{ctx}: request.language must be \"JA\", \"EN\", or \"ZH\", got {other:?}"),
+        other => {
+            panic!("{ctx}: request.language must be \"JA\", \"EN\", or \"ZH\", got {other:?}")
+        }
     };
     SbV2SynthRequest {
         text: json_str(request, "text", ctx).to_string(),

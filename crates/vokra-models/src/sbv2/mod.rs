@@ -925,6 +925,16 @@ impl SbV2Model {
         // phonemizer via `PhonemizeFixture` for ZH the tokenizer step
         // becomes reachable and must fail loudly rather than silently
         // routing to JA/EN — FR-EX-08.
+        //
+        // WP-18 note: [`Language::ZH`] takes a fail-closed early exit here
+        // (loud [`VokraError::NotImplemented`]) — this WP landed only the ZH
+        // G2P trait boundary + delegation in `g2p.rs`; the ZH BERT path
+        // (hfl/chinese-roberta-wwm-ext-large — `BertForMaskedLM`, NOT
+        // DeBERTa, with the WP-17 WordPiece tokenizer already landed at
+        // `crates/vokra-bert/src/wordpiece.rs`) is a separate WP. Callers
+        // that only need G2P (parity fixture builders, WP-19 wiring tests)
+        // can still call [`SbV2Phonemizer::phonemize`] directly with
+        // `Language::ZH`; only the full [`synthesize`] pipeline is gated.
         let bert_ids = match req.language {
             Language::JA => self
                 .bert
@@ -936,10 +946,17 @@ impl SbV2Model {
                 .encode_with_special_tokens(&phon.bert_input_text),
             Language::ZH => {
                 return Err(VokraError::NotImplemented(
-                    "SbV2Model::synthesize: language ZH has no BERT tokenizer wired in this \
-                     crate (SbV2BertContainer holds only ja/en). The text encoder's \
-                     language_embed row 2 is reachable, but the BERT bridge path is not — \
-                     Vokra ZH BERT + G2P are out of scope for the M6 SBV2 v2 land (FR-EX-08).",
+                    "SbV2Model::synthesize: Language::ZH BERT tokenizer/encoder not yet wired \
+                     (WP-18 landed only the ZH G2P trait boundary + delegation in \
+                     `crates/vokra-models/src/sbv2/g2p.rs`; the ZH BERT path — \
+                     `hfl/chinese-roberta-wwm-ext-large`, `BertForMaskedLM` (owner decision \
+                     2026-08-09, NOT DeBERTa) with the WP-17 WordPiece tokenizer at \
+                     `crates/vokra-bert/src/wordpiece.rs` — is a separate WP). The text \
+                     encoder's language_embed row 2 is reachable, but the BERT bridge path is \
+                     not — Vokra ZH BERT is out of scope for the M6 SBV2 v2 land (FR-EX-08). \
+                     The G2P delegation itself is exercised by \
+                     `crates/vokra-models/tests/sbv2_g2p.rs::zh_phonemize_via_wired_g2p_produces_ids`; \
+                     bypass this gate by calling `SbV2Phonemizer::phonemize` directly.",
                 ));
             }
         };
@@ -952,13 +969,18 @@ impl SbV2Model {
         let bert_hidden = match req.language {
             Language::JA => self.bert.ja.forward(&bert_ids),
             Language::EN => self.bert.en.forward(&bert_ids),
-            // Unreachable: the tokenizer arm above already returned for ZH.
-            // Kept as a loud panic (not silent fall-through) so a future
-            // ZH BERT wiring can't accidentally leave this arm speaking
-            // for JA — FR-EX-08.
+            // Unreachable: the `Language::ZH` arm of the tokenizer match
+            // above returns `VokraError::NotImplemented` early, so control
+            // cannot reach this second match with `Language::ZH`. Kept as
+            // an explicit `unreachable!()` (rather than a wildcard `_`,
+            // and not a silent fall-through) so a future ZH BERT wiring
+            // can't accidentally leave this arm speaking for JA — FR-EX-08
+            // — and so any future WP that wires the ZH BERT path is
+            // forced to update BOTH matches together.
             Language::ZH => unreachable!(
-                "SbV2Model::synthesize: ZH tokenizer arm above must have returned \
-                 NotImplemented before reaching here"
+                "SbV2Model::synthesize: Language::ZH returned VokraError::NotImplemented from \
+                 the tokenizer match above; reaching the encoder-forward match with \
+                 Language::ZH is impossible"
             ),
         };
 
@@ -1512,9 +1534,15 @@ impl TtsEngine for SbV2Model {
     /// `TtsEngine` impl uses.
     ///
     /// `request.language` maps case-insensitively: any value starting with
-    /// `"en"` selects [`Language::EN`]; anything else — including `None` —
-    /// selects [`Language::JA`] (SBV2's base config is Japanese-first, per
-    /// its JP-Extra heritage — see `decoder.rs`'s module doc).
+    /// `"en"` selects [`Language::EN`]; any value starting with `"zh"`
+    /// (WP-18: covers `"zh"` / `"zh-cn"` / `"zh_cn"` etc.) selects
+    /// [`Language::ZH`]; anything else — including `None` — selects
+    /// [`Language::JA`] (SBV2's base config is Japanese-first, per its
+    /// JP-Extra heritage — see `decoder.rs`'s module doc). Note that
+    /// selecting [`Language::ZH`] here reaches [`Self::synthesize`]'s
+    /// fail-closed ZH gate until the ZH BERT WP lands; only the G2P side
+    /// is exercisable end-to-end today (via [`SbV2Phonemizer::phonemize`]
+    /// directly).
     /// `request.deterministic` zeroes both `noise_scale` and
     /// `noise_scale_w` (mirrors the piper-plus adapter's identical
     /// convention); otherwise this adapter applies
@@ -1609,6 +1637,10 @@ impl TtsEngine for SbV2Model {
         // step below — see `Language`'s ZH scope note.
         let language = match request.language.as_deref() {
             Some(lang) if lang.to_ascii_lowercase().starts_with("en") => Language::EN,
+            // WP-18: `"zh"` / `"zh-cn"` / `"zh_cn"` all select ZH — same
+            // case-insensitive prefix convention EN uses. Note that the
+            // full [`Self::synthesize`] pipeline still fail-closes on ZH
+            // until the ZH BERT WP lands; only G2P is wired here.
             Some(lang) if lang.to_ascii_lowercase().starts_with("zh") => Language::ZH,
             _ => Language::JA,
         };
