@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::error::Result;
+use crate::error::{Result, VokraError};
 use crate::tasks::{DialogTurn, SynthesizedAudio, Transcription};
 
 /// A speech-to-text engine (implemented natively in `vokra-models`, e.g.
@@ -247,9 +247,98 @@ pub trait KwsEngine: Send + Sync {
 
 /// A text-to-speech engine (implemented natively in `vokra-models`, e.g.
 /// piper-plus MB-iSTFT-VITS2 = M0-07).
+///
+/// # Capability discovery (WP-23)
+///
+/// The three defaulted helpers below let a caller — most notably the
+/// cross-engine [`SynthesisRequest`] adapter path — discover, at runtime,
+/// whether an engine can honor the *optional* [`SynthesisRequest::style_vec`]
+/// / [`SynthesisRequest::speaker_id`] fields *before* it constructs a
+/// request that carries them. An engine that ignores the fields keeps the
+/// defaults (`supports_style_vec() = supports_multi_speaker() = false`);
+/// an engine that reads them overrides the corresponding method to return
+/// `true`. The unified request shape stays the same across engines — only
+/// the capability advertisement (and the internal reject-loudly-if-set
+/// path an engine chooses on the not-supported branch, per FR-EX-08)
+/// differs.
+///
+/// [`synthesize_stream`](Self::synthesize_stream) is the placeholder
+/// streaming-synthesis entry (real streaming lands in a separate WP —
+/// piper-plus M4-03 / SBV2 streaming). Its default impl loudly returns
+/// [`VokraError::UnsupportedOp`] so a caller can probe capability without
+/// silently getting a synchronous full-utterance render disguised as a
+/// stream.
 pub trait TtsEngine: Send + Sync {
     /// Synthesizes speech audio for `request`.
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio>;
+
+    /// Returns `true` iff [`synthesize`](Self::synthesize) reads
+    /// [`SynthesisRequest::style_vec`] as the AdaIN-style per-utterance
+    /// style conditioning vector (SBV2 / VITS2-family), rather than
+    /// silently discarding it. Default: `false`.
+    ///
+    /// An engine that returns `true` must (i) accept a well-shaped
+    /// `style_vec` and thread it into its own native request shape and
+    /// (ii) loudly reject a wrong-length vector with
+    /// [`VokraError::InvalidArgument`] (FR-EX-08 — no silent shape
+    /// coercion). An engine that returns `false` should either ignore
+    /// `style_vec = None` (the common case) or loudly reject
+    /// `style_vec = Some(_)` when the engine cannot honor it.
+    fn supports_style_vec(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` iff [`synthesize`](Self::synthesize) reads
+    /// [`SynthesisRequest::speaker_id`] as a discrete speaker-table
+    /// index (SBV2 / VITS-family multi-speaker voices), rather than
+    /// silently discarding it. Default: `false`.
+    ///
+    /// An engine that returns `true` must thread the id into its own
+    /// native request shape and let its speaker-table lookup validate
+    /// the id (out-of-range → [`VokraError::InvalidArgument`], FR-EX-08).
+    /// A single-speaker engine keeps the default `false`.
+    fn supports_multi_speaker(&self) -> bool {
+        false
+    }
+
+    /// Opens an incremental TTS stream for `request` (placeholder — WP-23).
+    ///
+    /// Real streaming synthesis is a separate WP (piper-plus streaming
+    /// M4-03 / SBV2 streaming) and no engine returns `Ok(..)` from this
+    /// default impl today — [`VokraError::UnsupportedOp`] is the loud
+    /// probe answer, never a silent full-utterance synthesis disguised
+    /// as a stream (FR-EX-08). An engine that lands real streaming
+    /// later overrides this method and returns a
+    /// `Box<dyn TtsStreamHandle + Send>`; callers pull PCM chunks via
+    /// [`TtsStreamHandle::next_pcm_chunk`].
+    fn synthesize_stream(
+        &self,
+        _request: &SynthesisRequest,
+    ) -> Result<Box<dyn TtsStreamHandle + Send>> {
+        Err(VokraError::UnsupportedOp(
+            "TtsEngine::synthesize_stream: incremental streaming synthesis is a separate WP \
+             (piper-plus M4-03 / SBV2 streaming) not yet implemented for this engine — \
+             the default trait impl loudly refuses per FR-EX-08 (no silent full-utterance \
+             render disguised as a stream)"
+                .to_string(),
+        ))
+    }
+}
+
+/// A stateful TTS stream: pull PCM chunks until the utterance completes
+/// (WP-23 placeholder).
+///
+/// No engine returns one from [`TtsEngine::synthesize_stream`] today —
+/// the trait exists to pin the incremental-streaming *shape* so a later
+/// WP (piper-plus M4-03 / SBV2 streaming) can wire it without a
+/// [`TtsEngine`] contract break.
+pub trait TtsStreamHandle {
+    /// Pulls the next PCM chunk (`Some(chunk)`), or `None` once the
+    /// utterance is fully synthesized.
+    fn next_pcm_chunk(&mut self) -> Result<Option<Vec<f32>>>;
+
+    /// PCM sample rate of the emitted chunks (Hz).
+    fn sample_rate(&self) -> u32;
 }
 
 /// A voice-activity-detection engine (implemented natively in `vokra-models`,
@@ -424,6 +513,34 @@ pub struct SynthesisRequest {
     /// match the phoneme count the engine's tokenizer / phonemizer produces, or
     /// synthesis fails with a clear error.
     pub prosody_features: Option<Vec<[i64; 3]>>,
+    /// Optional per-utterance **AdaIN-style style-vector** (SBV2 / VITS2
+    /// style conditioning — WP-23). `None` = the engine's zero-shot
+    /// default (typically an all-zero vector sized from the loaded
+    /// voice's style width, which is the identity injection).
+    ///
+    /// An engine that advertises
+    /// [`TtsEngine::supports_style_vec`]`() == true` (SBV2) reads this,
+    /// validates its length matches the loaded voice's style width, and
+    /// loudly rejects a wrong-length vector with
+    /// [`crate::VokraError::InvalidArgument`] (FR-EX-08 — no silent
+    /// truncate / zero-pad). An engine that advertises `false` (default)
+    /// either ignores `None` and errors on `Some(_)`, or silently ignores
+    /// the field — it MUST NOT pretend the style was applied.
+    pub style_vec: Option<Vec<f32>>,
+    /// Optional discrete **speaker id** for multi-speaker voices
+    /// (SBV2 / VITS multi-speaker table lookup — WP-23). `None` = the
+    /// engine's default speaker (speaker id `0`).
+    ///
+    /// An engine that advertises
+    /// [`TtsEngine::supports_multi_speaker`]`() == true` (SBV2) reads
+    /// this and threads it into its speaker-table lookup, which loudly
+    /// rejects out-of-range ids with
+    /// [`crate::VokraError::InvalidArgument`] (FR-EX-08). A
+    /// single-speaker engine (`supports_multi_speaker() == false`) either
+    /// ignores `None` and errors on `Some(_)`, or silently ignores the
+    /// field — it MUST NOT silently substitute speaker 0 for a nonzero
+    /// id.
+    pub speaker_id: Option<u32>,
 }
 
 /// One prior turn of dialog context an [`S2sEngine`] conditions on.
@@ -566,6 +683,8 @@ impl SynthesisRequest {
             deterministic: false,
             speaker_embedding: None,
             prosody_features: None,
+            style_vec: None,
+            speaker_id: None,
         }
     }
 
@@ -596,6 +715,34 @@ impl SynthesisRequest {
     #[must_use]
     pub fn with_prosody_features(mut self, features: impl Into<Vec<[i64; 3]>>) -> Self {
         self.prosody_features = Some(features.into());
+        self
+    }
+
+    /// Sets the AdaIN-style style-vector (SBV2 / VITS2, WP-23).
+    ///
+    /// The engine validates the vector's length against the loaded voice's
+    /// style width and loudly rejects a mismatch with
+    /// [`crate::VokraError::InvalidArgument`] (FR-EX-08). Only engines that
+    /// advertise [`TtsEngine::supports_style_vec`]`() == true` read the
+    /// field — see that method's doc for the reject-loudly-on-`Some(_)`
+    /// contract other engines follow.
+    #[must_use]
+    pub fn with_style_vec(mut self, style: impl Into<Vec<f32>>) -> Self {
+        self.style_vec = Some(style.into());
+        self
+    }
+
+    /// Sets the discrete speaker id for multi-speaker voices (SBV2 /
+    /// VITS multi-speaker, WP-23).
+    ///
+    /// The engine threads the id into its speaker-table lookup, which
+    /// loudly rejects an out-of-range id with
+    /// [`crate::VokraError::InvalidArgument`] (FR-EX-08). Only engines
+    /// that advertise [`TtsEngine::supports_multi_speaker`]`() == true`
+    /// read the field.
+    #[must_use]
+    pub fn with_speaker_id(mut self, speaker_id: u32) -> Self {
+        self.speaker_id = Some(speaker_id);
         self
     }
 }
@@ -641,4 +788,104 @@ pub struct MosScore {
     pub bak: Option<f32>,
     /// ITU-T P.835 overall MOS.
     pub ovrl: Option<f32>,
+}
+
+#[cfg(test)]
+mod tts_engine_extension_tests {
+    //! WP-23: `SynthesisRequest::style_vec` / `speaker_id` + `TtsEngine`
+    //! capability advertisement + `synthesize_stream` placeholder tests.
+    //!
+    //! These trait-level tests use a spy [`TtsEngine`] implementation that
+    //! stores the last received request. They prove the two new
+    //! `SynthesisRequest` fields are (a) reachable through the trait
+    //! (the spy sees them) and (b) their defaults are `None` (so an
+    //! existing caller that never touches the new builders keeps the
+    //! pre-WP-23 behavior byte-for-byte). They also prove the trait's
+    //! three new defaulted methods behave as documented on an engine
+    //! that does not override them (all three defaults hold for a
+    //! minimal implementor).
+
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A spy engine that stores the last `SynthesisRequest` it saw so the
+    /// tests below can assert what threaded through the trait boundary.
+    struct SpyTts {
+        last: Mutex<Option<SynthesisRequest>>,
+    }
+
+    impl SpyTts {
+        fn new() -> Self {
+            Self {
+                last: Mutex::new(None),
+            }
+        }
+        fn take_last(&self) -> Option<SynthesisRequest> {
+            self.last.lock().unwrap().take()
+        }
+    }
+
+    impl TtsEngine for SpyTts {
+        fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
+            *self.last.lock().unwrap() = Some(request.clone());
+            Ok(SynthesizedAudio::new(vec![0.0; 1], 22_050))
+        }
+    }
+
+    #[test]
+    fn new_request_defaults_both_new_fields_to_none() {
+        // Backward-compatible default: an existing caller that only touched
+        // the pre-WP-23 builders sees `None` for both new optional fields,
+        // so downstream engines see exactly the pre-WP-23 shape.
+        let req = SynthesisRequest::new("hi");
+        assert!(req.style_vec.is_none());
+        assert!(req.speaker_id.is_none());
+    }
+
+    #[test]
+    fn with_style_vec_and_with_speaker_id_thread_through_trait_boundary() {
+        // The spy engine sees exactly what the builder set — proving the
+        // fields cross the trait boundary intact (not silently dropped by
+        // the request's clone / adapter path).
+        let engine = SpyTts::new();
+        let style = vec![0.1, 0.2, 0.3, 0.4];
+        let req = SynthesisRequest::new("hi")
+            .with_style_vec(style.clone())
+            .with_speaker_id(7);
+
+        engine.synthesize(&req).unwrap();
+        let observed = engine
+            .take_last()
+            .expect("spy engine must have seen the request");
+
+        assert_eq!(observed.style_vec.as_deref(), Some(style.as_slice()));
+        assert_eq!(observed.speaker_id, Some(7));
+    }
+
+    #[test]
+    fn tts_engine_defaults_advertise_no_style_vec_no_multi_speaker() {
+        // A minimal implementor keeps the two capability defaults, so an
+        // engine author only overrides them when they truthfully honor
+        // the corresponding request field.
+        let engine = SpyTts::new();
+        assert!(!TtsEngine::supports_style_vec(&engine));
+        assert!(!TtsEngine::supports_multi_speaker(&engine));
+    }
+
+    #[test]
+    fn tts_engine_synthesize_stream_default_is_loud_unsupported_op() {
+        // The default streaming impl loudly refuses per FR-EX-08 — never a
+        // silent full-utterance render disguised as a stream. `Box<dyn
+        // TtsStreamHandle + Send>` does not implement `Debug` (the trait
+        // deliberately omits it — the WP that lands real streaming
+        // decides its handle's debug shape), so `expect_err` is not
+        // usable here; matching directly is the shape-neutral way.
+        let engine = SpyTts::new();
+        let req = SynthesisRequest::new("hi");
+        match TtsEngine::synthesize_stream(&engine, &req) {
+            Err(VokraError::UnsupportedOp(_)) => {}
+            Err(other) => panic!("expected UnsupportedOp, got {other:?}"),
+            Ok(_) => panic!("default synthesize_stream must be Err (FR-EX-08)"),
+        }
+    }
 }

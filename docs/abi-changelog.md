@@ -228,6 +228,65 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-10 — 1.0.0-rc.1-dev (WP-23: `TtsEngine` trait extension + `SynthesisRequest::style_vec` / `speaker_id` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the WP-23 `TtsEngine` extension
+(SBV2 `style_vec` + multi-speaker `speaker_id` threading; streaming
+placeholder). The C ABI (`include/vokra.h`, 33 fn + 11 typedef) is
+**untouched** — the trait, the new struct fields, and the new placeholder
+trait are all Rust-surface-only, not cbindgen-exported
+(`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: the pre-WP-23 SBV2 `TtsEngine` adapter (`vokra-models::sbv2`)
+hard-coded `SbV2SynthRequest::speaker_id = 0` and `style_vec = vec![0.0;
+d_style()]`, silently discarding any caller-supplied speaker choice or
+style conditioning that came in through the cross-engine
+[`SynthesisRequest`] shape. WP-23 lifts both into the unified request
+and lets a caller advertise capability up-front so a mixed-engine
+pipeline (piper-plus + SBV2 + Kokoro + ...) never has to know which
+engine reads which optional field.
+
+**Backward compatibility**: `SynthesisRequest` is already
+`#[non_exhaustive]` (external crates cannot use struct-literal
+construction), so adding two `Option<..>` fields with `None` defaults
+in `SynthesisRequest::new` and a matching builder for each is a purely
+additive change. The `TtsEngine` trait's three new methods all have
+defaults (`false` / `false` / `Err(UnsupportedOp)`) so every existing
+implementor (piper-plus, Kokoro, CosyVoice2, ...) keeps compiling
+without a source edit.
+
+**Files touched**:
+- `crates/vokra-core/src/engines.rs` — `SynthesisRequest` gains
+  `style_vec: Option<Vec<f32>>` + `speaker_id: Option<u32>`, matching
+  `with_style_vec` / `with_speaker_id` builders, and `SynthesisRequest::new`
+  updated to default both to `None`. `TtsEngine` gains three defaulted
+  methods (`supports_style_vec` = `false`, `supports_multi_speaker` =
+  `false`, `synthesize_stream` = loud `VokraError::UnsupportedOp`). New
+  placeholder trait `TtsStreamHandle` (methods `next_pcm_chunk`,
+  `sample_rate`) pins the incremental-streaming *shape* for a later WP.
+- `crates/vokra-models/src/sbv2/mod.rs` — `<SbV2Model as TtsEngine>::synthesize`
+  now threads `request.style_vec` / `request.speaker_id`. Both capability
+  probes override to `true`. New `#[doc(hidden)] pub fn
+  synthetic_for_test_with_nonzero_style() -> Self` for a WP-23 threading
+  test that observes `None` vs `Some(nonzero)` PCM difference.
+- `crates/vokra-models/tests/sbv2_tts_engine_extension.rs` (new) — 5 tests
+  covering both PCM-difference paths + loud-error paths + capability
+  advertisement.
+- `crates/vokra-core/src/engines.rs` (unit tests) — 4 trait-level tests
+  using a spy `TtsEngine`.
+
+**Downstream `TtsEngine` implementors** (piper-plus / Kokoro /
+CosyVoice2) compile untouched.
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-core` and
+`vokra-models`; root `Cargo.lock` unchanged.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. Snapshot
+rotation is the M5-13/IF-01 freeze owner's action. All items are
+additive (existing signatures unchanged; `SynthesisRequest` is already
+`#[non_exhaustive]` for future-safe growth), Breaking? = no.
+
 ### 2026-08-09 — 1.0.0-rc.1-dev (Wave 3 HGAN-05 speaker conditioning + Wave 6 packed-cache exports — Rust surface only)
 
 Additive **Rust public API** changes only — C ABI (`include/vokra.h`) untouched
