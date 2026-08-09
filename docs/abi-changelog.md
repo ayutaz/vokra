@@ -228,6 +228,28 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-09 — 1.0.0-rc.1-dev (Wave 3 HGAN-05 speaker conditioning + Wave 6 packed-cache exports — Rust surface only)
+
+Additive **Rust public API** changes only — C ABI (`include/vokra.h`) untouched
+(baseline 33 fn / 11 typedefs unchanged; `scripts/check-abi-changelog.sh`
+green), no `vokra.*` GGUF key added or renamed. Captures the SBV2 v2 waves
+that landed 2026-08-09 (72-gap audit-plan execution, Waves 1-8).
+
+The `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is regenerated
+(net +38 lines) to match. The full-surface additions grouped by wave:
+
+| Wave / area                    | New export(s)                                                                                                     | Kind  | Rationale                                                                        | Breaking? |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------- | --------- |
+| Wave 3 HGAN-05 (vokra-ops)     | `GinCondition`, `hifigan_generator_conditioned`                                                                   | Added | Real HiFi-GAN `dec.cond(g)` speaker conditioning path (SBV2/CosyVoice2/BigVGAN)  | no        |
+| Wave 2 HGAN-01 (vokra-core)    | `ir::graph::ResBlockType` enum                                                                                    | Added | ResBlock1 vs ResBlock2 topology switch — SBV2 needs V1's convs2 chain            | no        |
+| Wave 4 (vokra-core)            | `gguf::writer::has_tensor`                                                                                         | Added | Converter needs to check-then-emit optional-slot fabricated zeros                | no        |
+| Wave 7B LOUD-PARTIAL (vokra-ops) | `rnnoise::MIN_LAG_SAMPLES`, `rnnoise::MAX_LAG_SAMPLES`                                                          | Added | Real autocorrelation-based pitch analysis exposes its search bounds              | no        |
+
+Plus the `vokra_core::rng::*` re-exports the 2026-08-08 entry already
+records; regenerating the snapshot captures them under `USE` rows too.
+Snapshot generated via `scripts/rust-public-api-list.sh --update-snapshot`
+per the tool's own README.
+
 ### 2026-08-08 — 1.0.0-rc.1-dev (Philox4x32-10 + MT19937 + torch.randn parity primitives added to `vokra_core::rng` — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the PR #27 RNG plumbing that gives
