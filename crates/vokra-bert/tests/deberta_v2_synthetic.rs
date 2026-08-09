@@ -2,8 +2,8 @@
 //! Clean-room per arXiv:2006.03654 + HF transformers deberta_v2 (Apache-2.0).
 
 use vokra_bert::deberta_v2::{
-    relative_position_bucket, AttnWeights, DebertaV2Encoder, DisentangledAttention, FfnBlock,
-    LayerNorm,
+    relative_position_bucket, AttnWeights, DebertaV2Encoder, DisentangledAttention, EncoderLayer,
+    FfnBlock, LayerNorm,
 };
 
 #[test]
@@ -265,4 +265,130 @@ fn none_pos_bias_matches_content_bias_fallback() {
         out_none, out_dupe,
         "None must be bit-identical to Some(bq)/Some(bk) — the documented backward-compat fallback"
     );
+}
+
+/// Parity-CI root-cause pin (2026-08-09, bert_hidden_ja Δ 1.368e2 on run
+/// 31314913038, HEAD 427bfd3): `EncoderLayer::forward` MUST apply
+/// LayerNorm AFTER the residual add (post-norm), matching HuggingFace
+/// transformers `DebertaV2SelfOutput.forward` / `DebertaV2Output.forward`
+/// verbatim:
+///
+/// ```python
+/// def forward(self, hidden_states, input_tensor):
+///     hidden_states = self.dense(hidden_states)
+///     hidden_states = self.dropout(hidden_states)
+///     hidden_states = self.LayerNorm(hidden_states + input_tensor)  # LN AFTER residual
+///     return hidden_states
+/// ```
+/// (`transformers/src/transformers/models/deberta_v2/modeling_deberta_v2.py`,
+/// verified 2026-08-09 via WebFetch of upstream `main`.)
+///
+/// The pre-fix `EncoderLayer::forward` applied LN BEFORE the residual
+/// (`h = hidden + attn(ln1(hidden))`), producing the ~136.8 accumulated
+/// per-layer drift over 24 large-variant DeBERTa v2 layers CI reported —
+/// weights loaded correctly (the converter maps `attention.output.LayerNorm.*`
+/// → `ln1`, `output.LayerNorm.*` → `ln2`), only the graph topology
+/// differed.
+///
+/// Construction: a single-position input `[1, 2, 3, 4]` with all-zero
+/// attn+ffn weights + gamma=1/beta=0 LN produces different results
+/// under pre-norm vs post-norm:
+///
+/// - **pre-norm** (buggy): `h = hidden + attn(ln(hidden)) = hidden + 0 =
+///   hidden`; `y = h + ffn(ln(h)) = hidden + 0 = [1,2,3,4]` (unchanged).
+/// - **post-norm** (fixed): `h = ln(hidden + attn(hidden)) = ln(hidden + 0)
+///   = ln([1,2,3,4]) = [-1.342, -0.447, 0.447, 1.342]`; `y = ln(h + ffn(h))
+///   = ln(h + 0) = ln(h) = h` (LN is idempotent on already-normalized
+///   input up to a tiny eps effect).
+///
+/// So the differentiating assertion is `output != hidden` — pre-norm
+/// returns hidden verbatim, post-norm returns the normalized values. We
+/// pin the exact normalized values too so a future refactor that
+/// accidentally uses different LN placement (e.g. "sandwich" norm) trips
+/// on the specific expected numbers, not just the inequality.
+#[test]
+fn encoder_layer_forward_uses_post_norm() {
+    let d_model = 4;
+    let n_heads = 1;
+    let head_dim = d_model / n_heads;
+    let n_pos_buckets: i32 = 8;
+    let seq_len = 1;
+
+    // All-zero attn weights + biases → attn.forward returns all zeros
+    // regardless of input (w_out · anything = 0, bout = 0). This is what
+    // makes the "residual + LN(residual)" vs "residual" distinction bare.
+    let attn_weights = AttnWeights {
+        wq: vec![0.0_f32; d_model * d_model],
+        wk: vec![0.0_f32; d_model * d_model],
+        wv: vec![0.0_f32; d_model * d_model],
+        wq_pos: vec![0.0_f32; d_model * d_model],
+        wk_pos: vec![0.0_f32; d_model * d_model],
+        w_out: vec![0.0_f32; d_model * d_model],
+        pos_embed: vec![0.0_f32; n_pos_buckets as usize * d_model],
+        bq: vec![0.0_f32; d_model],
+        bk: vec![0.0_f32; d_model],
+        bv: vec![0.0_f32; d_model],
+        bout: vec![0.0_f32; d_model],
+        bq_pos: None,
+        bk_pos: None,
+    };
+    let attn =
+        DisentangledAttention::new(attn_weights, d_model, n_heads, head_dim, n_pos_buckets, 32);
+    // Same story: all-zero FFN produces zero output for any input.
+    let d_ff = 4 * d_model;
+    let ffn = FfnBlock::new(
+        vec![0.0_f32; d_ff * d_model],
+        vec![0.0_f32; d_ff],
+        vec![0.0_f32; d_model * d_ff],
+        vec![0.0_f32; d_model],
+        d_model,
+        d_ff,
+    );
+    // gamma=1, beta=0 → LN is pure normalization (mean 0, unit variance).
+    let ln1 = LayerNorm::new(vec![1.0_f32; d_model], vec![0.0_f32; d_model], 1e-7);
+    let ln2 = LayerNorm::new(vec![1.0_f32; d_model], vec![0.0_f32; d_model], 1e-7);
+    let layer = EncoderLayer {
+        attn,
+        ffn,
+        ln1,
+        ln2,
+    };
+
+    // Concrete input with distinguishable per-element values so a
+    // "returns input unchanged" pre-norm output is obvious vs the
+    // "returns LN(input)" post-norm output.
+    let hidden: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+
+    let out = layer.forward(&hidden, seq_len);
+
+    // Pre-norm (pre-fix) would return `hidden` unchanged (all zeros pass
+    // through both residual add slots). Post-norm must not.
+    assert_ne!(
+        out, hidden,
+        "post-norm EncoderLayer must not return the input verbatim when attn/ffn are zero — \
+         pre-norm arithmetic returns `hidden + 0 = hidden` (the exact bug parity CI's \
+         bert_hidden_ja Δ 1.368e2 pinned)"
+    );
+
+    // Expected post-norm output for `hidden = [1,2,3,4]`:
+    //   step 1: h = ln1(hidden + attn(hidden)) = ln1([1,2,3,4] + 0) = ln1([1,2,3,4])
+    //     mean = 2.5, var = 1.25, std = sqrt(1.25 + 1e-7) ≈ 1.11803
+    //     ln1([1,2,3,4]) = [(x - 2.5) / 1.11803] = [-1.34164, -0.44721, 0.44721, 1.34164]
+    //   step 2: y = ln2(h + ffn(h)) = ln2(h + 0) = ln2(h)
+    //     h is already mean 0, var 1 → ln2(h) = h (up to eps effect)
+    //   so y ≈ [-1.34164, -0.44721, 0.44721, 1.34164]
+    let expected: [f32; 4] = [
+        -1.341_640_8_f32,
+        -0.447_213_6_f32,
+        0.447_213_6_f32,
+        1.341_640_8_f32,
+    ];
+    for (i, (&actual, &want)) in out.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - want).abs() < 5e-3,
+            "post-norm output[{i}] = {actual}, expected ≈ {want} (= ln(ln([1,2,3,4]))[{i}] \
+             under gamma=1/beta=0; a mismatch here means LN placement changed to something \
+             other than the HuggingFace DebertaV2SelfOutput.forward pattern)"
+        );
+    }
 }

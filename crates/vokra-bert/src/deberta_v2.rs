@@ -366,7 +366,28 @@ impl LayerNorm {
     }
 }
 
-/// One DeBERTa v2 transformer block, pre-norm order.
+/// One DeBERTa v2 transformer block, **post-norm** order — matches
+/// HuggingFace transformers `DebertaV2SelfOutput.forward` +
+/// `DebertaV2Output.forward` (both apply LayerNorm AFTER the residual
+/// add: `hidden_states = LayerNorm(hidden_states + input_tensor)`).
+///
+/// The converter maps upstream `attention.output.LayerNorm.*` → [`ln1`]
+/// and `output.LayerNorm.*` → [`ln2`] (see
+/// `crates/vokra-convert/src/models/deberta_v2.rs`); [`ln1`] fires after
+/// the attention residual, [`ln2`] after the FFN residual, matching
+/// upstream verbatim.
+///
+/// Historical: prior to the 2026-08-09 parity-CI fix (run 31314913038,
+/// `bert_hidden_ja` max |Δ| = 1.368e2) this block computed
+/// `h = hidden + attn(ln1(hidden))` — pre-norm — while the converter
+/// loaded the post-norm tensors into the pre-norm slots, so weights were
+/// correct but the graph topology drifted. Accumulated per-op drift over
+/// 24 large-variant layers reached the observed magnitude. See
+/// `crates/vokra-bert/tests/deberta_v2_synthetic.rs::encoder_layer_forward_uses_post_norm`
+/// for the pin.
+///
+/// [`ln1`]: EncoderLayer::ln1
+/// [`ln2`]: EncoderLayer::ln2
 pub struct EncoderLayer {
     pub attn: DisentangledAttention,
     pub ffn: FfnBlock,
@@ -375,22 +396,34 @@ pub struct EncoderLayer {
 }
 
 impl EncoderLayer {
-    /// Pre-norm order: hidden = hidden + attn(ln1(hidden)); hidden = hidden + ffn(ln2(hidden)).
+    /// Post-norm order (matches HuggingFace `DebertaV2SelfOutput.forward`
+    /// + `DebertaV2Output.forward`):
+    ///
+    /// ```text
+    /// h = ln1(hidden + attn(hidden))
+    /// y = ln2(h      + ffn(h))
+    /// ```
+    ///
+    /// LayerNorm fires **after** the residual add — do not confuse with
+    /// the pre-norm variant `h = hidden + attn(ln1(hidden))` used by
+    /// GPT-2 / LLaMA family models. See the struct-level doc for the
+    /// parity-CI fix history and the citation-pin test.
     pub fn forward(&self, hidden: &[f32], seq_len: usize) -> Vec<f32> {
         let d = self.ln1.gamma.len();
-        let normed = self.ln1.forward(hidden, seq_len, d);
-        let attn_out = self.attn.forward(&normed, seq_len);
+        // Attention path: attn(hidden) + residual, then LayerNorm.
+        let attn_out = self.attn.forward(hidden, seq_len);
         let mut h = vec![0.0_f32; hidden.len()];
         for i in 0..hidden.len() {
             h[i] = hidden[i] + attn_out[i];
         }
-        let normed2 = self.ln2.forward(&h, seq_len, d);
-        let ffn_out = self.ffn.forward(&normed2, seq_len);
+        let h = self.ln1.forward(&h, seq_len, d);
+        // FFN path: ffn(h) + residual, then LayerNorm.
+        let ffn_out = self.ffn.forward(&h, seq_len);
         let mut y = vec![0.0_f32; hidden.len()];
         for i in 0..hidden.len() {
             y[i] = h[i] + ffn_out[i];
         }
-        y
+        self.ln2.forward(&y, seq_len, d)
     }
 }
 
