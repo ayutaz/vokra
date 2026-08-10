@@ -62,6 +62,7 @@ labels these "M1-rig reference (NOT a CI gate)".
 | `rtf-decomposed-2026-07-08.jsonl` / `.report.md` | early CUDA RTF probe (decomposed attention) |
 | `rtf-fa-v2-2026-07-08.jsonl` / `.report.md` | early CUDA RTF probe (FA v2) |
 | `vast-2026-07-10/` | vast.ai RTX 4090 N=10 references (rtf-decomposed / rtf-fa-v2 jsonl + reports, in-process latency, server-help) |
+| `vast-2026-08-10-h100/` | vast.ai H100 PCIe N=10 references (rtf-h100-decomposed / rtf-h100-fa-v2 / rtf-h100-fa-v3 jsonl + reports, M4-07 T17/T18 bakeoff, 5.7% e2e speedup vs decomposed at `--fa-mode v3`) |
 | `whisper_large_v3_cuda_rtf.json` | CUDA large-v3 RTF sanity capture |
 | `metal-transcript-parity-2026-07-19/` | Metal-vs-CPU transcript parity |
 | `silero-8k-ctx288-2026-07-19/` | Silero 8 kHz ctx288 measurement |

@@ -13,6 +13,52 @@ this task's file scope. The remaining bug is upstream of the SDP
 separate follow-up in `crates/vokra-models/src/sbv2/text_encoder.rs`
 (or wherever the true scale mismatch lives).
 
+## Post-handoff resolution (2026-08-09 → 2026-08-10)
+
+**Bug 4 was RESOLVED on 2026-08-09.** See
+`docs/handoff/sbv2-bug4-resolved-2026-08-09.md` for the close-out:
+the text encoder produces **bit-exact** `text_hidden` on the real
+SBV2 v2 base fixture (`max |Rust - Python| = 8.34e-7`, ≈ 1 ULP on
+a d_model=192 accumulator). The ~35× magnitude claim in this doc's
+"Bug 4 (out of scope — REMAINING)" section below was **stale** —
+commit `ae0ac1d` (2026-08-08, "feed SDP raw text_hidden, not
+bridge+speaker+style accumulated") had already fixed the actual
+root cause by removing the accumulated buffer that fed SDP,
+replacing it with `text_hidden` direct from `text_encoder.forward`.
+
+The residual 2× waveform-length symptom (mel_seq_len 106 vs 52) is
+a **downstream** bug (SDP body or flow), not a text-encoder
+magnitude issue. As of 2026-08-10 (Wave 1+2 residual audit) that
+downstream investigation is **scaffolded** by a 4-commit chain on
+`feat/sbv2-voxtral-real-verify-2026-08-06`:
+
+- `f1b7815` (Wave 1, Blocker 2c) — rational-quadratic spline math
+  primitive (`crates/vokra-models/src/sbv2/spline.rs`); the core
+  RQS routine the SDP body's DDS+RQS chain requires.
+- `5027b2b` (Wave 2) — spline `.sqrt()` → `vokra_math::sqrt()` for
+  cross-platform bit-exactness on the SDP flow path.
+- `879ba8e` (Wave 2) — loud-fail defensive check on anomalous
+  `sbv2.sdp.flows.<even>.*` tensors in the loader; addresses the
+  auditability concern about the Bug 2 `n_sdp_layers` fix (the
+  loader now emits a clear panic instead of silently binding a
+  mis-shaped SDP).
+- `c8e2777` (Wave 2) — `#[ignore]`d `sdp_body_matches_torch_ref`
+  test scaffold; the flip-the-switch gate for the residual bisect
+  once the owner-provisioned per-op reference dump lands.
+
+The Stopgap left in place (`PER_PHONEME_DURATION_CEILING = 500`,
+commit `d62353b`) in `crates/vokra-models/src/sbv2/mod.rs::synthesize`
+is **still in place** per this doc's original guidance ("leave it
+in place as safety") — the residual 2× symptom does not currently
+trip it, but the guard remains for defence-in-depth until the
+downstream bisect closes.
+
+Reader landing on this doc later: read
+`sbv2-bug4-resolved-2026-08-09.md` for the text-encoder close-out,
+then its own "## 2026-08-10 Wave 1+2 residual audit landings"
+subsection for the current SDP body defensive posture and the
+scaffolded bisect gate.
+
 ## Root causes + fixes
 
 ### Bug 1 (SDP flow order — FIXED)

@@ -107,7 +107,9 @@ Vokra は以下のモデルのネイティブ実装を同梱します。Weight �
   / PT / SV / KO）
 - Kokoro-82M
 - CosyVoice2（FSQ tokens + Qwen2.5-0.5B AR + chunk-aware CFM → mel → HiFTNet）
-- Style-Bert-VITS2 v2（DeBERTa v2/v3 コンディショニングエンコーダ付き）
+- Style-Bert-VITS2 v2 — 多言語（JA / EN / ZH）、言語別コンディショニング
+  エンコーダ付き: DeBERTa v2（JA）、DeBERTa v3（EN）、
+  Chinese-RoBERTa-wwm-ext（ZH）
 - VoxCPM-0.5B / VoxCPM2-2B
 - Qwen3-TTS 1.7B
 - Fun-CosyVoice3-0.5B

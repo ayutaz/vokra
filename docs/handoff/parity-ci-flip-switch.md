@@ -43,7 +43,7 @@ no downloads happen; the run is visibly a skip, never a green pass.
 | tts-japanese | `.github/workflows/parity-tts-japanese-real.yml` | `VOKRA_TTS_JA_ENABLE` | `VOKRA_IRODORI_GGUF` / `VOKRA_VITS_JA_GGUF` (+ `_REFDIR`) | irodori / vits_ja | SoTA Phase JA. Cron Mon 12:00 UTC. `only=irodori` / `only=vits_ja`. `vits_ja` is **operator-provisioned only** (HF mirror is 401 AND JSUT corpus terms forbid weight redistribution); the workflow does not auto-fetch, and the harness honest-skips absent `VOKRA_VITS_JA_GGUF`. Irodori HF slug is `Aratako/Irodori-TTS-500M-v3` (task-tracker's `Irodori-tech/…` is 401 — honest header). |
 | deepfilternet3 | `.github/workflows/parity-deepfilternet3-real.yml` | `VOKRA_DFN3_ENABLE` | `VOKRA_DFN3_GGUF` (+ `VOKRA_DFN3_DATA_URL` for byte-parity bundle, optional `VOKRA_DFN3_DATA_SHA256`) | deepfilternet3 | M4-20 T17 follow-up. Cron Mon 12:30 UTC. **Two-phase**: Phase A (`vokra-cli convert --model denoise` on the pinned GitHub `Rikorose/DeepFilterNet` zip @ `82b0c7ad…`, sha256 `49c52edc…`) runs on `_ENABLE=1`. Phase B (byte-parity vs `parity_denoise_dfn3` reference bundle) needs `_DATA_URL` populated with a pre-baked `.tar.gz` mirror — the exact `prep_noisy.py` recipe lives outside the repo. See `docs/handoff/parity-deepfilternet3-real.md` §Phase B for the two provisioning paths. |
 | deberta-v3-large | `.github/workflows/parity-deberta-v3-large-real.yml` | `VOKRA_DEBERTA_V3_ENABLE` | `VOKRA_DEBERTA_V3_HARNESS_READY` (gates Phase B dumper leg) | deberta-v3-large | SBV2 v2 plan Task 31 follow-up, 2026-07-28 (commit `62a10b7`). Cron Mon 13:00 UTC. **Two-phase**: Phase A (`vokra-cli convert --model deberta-v3` on the pinned `microsoft/deberta-v3-large` snapshot @ `64a8c8eab3e…` — upstream ships `pytorch_model.bin` only, bridged via `tools/parity/bin_to_safetensors.py` in the parity venv) runs on `_ENABLE=1` and re-checks the emitted bytes via `deberta_v3_convert_smoke (--ignored)`. Phase B (reference dumper via `tools/parity/deberta_v3_dump_reference.py --do-dump`) is opt-in on `VOKRA_DEBERTA_V3_HARNESS_READY=1` or dispatch input `run_dumper=true`; the Rust-side numerical parity leg honest-skips with a `::notice::` because no consumer harness exists yet (only synthetic + convert-smoke tests) — fabricated pass 禁止 (FR-EX-08). If HF hits 401, set `HF_TOKEN` as a repo secret (read-only, model-card-accepted). See `docs/handoff/parity-deberta-v3-large-real.md`. |
-| sbv2 | `.github/workflows/parity-sbv2-real.yml` | `VOKRA_SBV2_UTMOS_ENABLE` (gates the tail-position UTMOS quality assertion — WP-24) | sidecar-hash gate on three GGUF fixtures: `tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256`, `deberta-v2-large-japanese-char-wwm.gguf.sha256`, `deberta-v3-large.gguf.sha256` (main + JA BERT + EN BERT — the WP-19 3-file loader shape; ZH BERT fixture lands as a fourth sidecar when the WP-19 4-file loader flip-the-switch lands). Set `VOKRA_SBV2_UTMOS_GGUF` after populating `VOKRA_SBV2_UTMOS_ENABLE=1` to opt the tail UTMOS delta leg on. | sbv2 (Style-Bert-VITS2 v2 multilingual base) | SBV2 v2 plan follow-up, `feat/sbv2-voxtral-real-verify-2026-08-06`. Cron Mon 07:15 UTC. Follows the Kokoro/Whisper **sidecar-hash gating** pattern rather than the `_ENABLE`-variable pattern: dispatch or cron always runs the `setup` job, which opens the parity leg only when all three fixture sha256 sidecars are populated (not empty, not the string `placeholder`). Absent sidecars → visible `parity-sbv2-real fixture gate: CLOSED (clean skip)` step summary, never a green pass. WP-24 tail-position UTMOS delta assertion is gated on the ENABLE variable + UTMOS GGUF env — opt-in on top of the fixture gate. See `docs/handoff/sbv2-bug4-resolved-2026-08-09.md` and `docs/handoff/sbv2-sdp-debug-2026-08-08.md`. |
+| sbv2 | `.github/workflows/parity-sbv2-real.yml` | `VOKRA_SBV2_UTMOS_ENABLE` (gates the tail-position UTMOS quality assertion — WP-24) | sidecar-hash gate on four GGUF fixtures: `tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256`, `deberta-v2-large-japanese-char-wwm.gguf.sha256`, `deberta-v3-large.gguf.sha256`, `chinese-roberta-wwm-ext-large.gguf.sha256` (main + JA BERT + EN BERT + ZH BERT — the WP-19 4-file loader shape; ZH BERT sidecar populated on 2026-08-10 with commit `3f76abf`, completing the SBV2 v2 3-language BERT set). Set `VOKRA_SBV2_UTMOS_GGUF` after populating `VOKRA_SBV2_UTMOS_ENABLE=1` to opt the tail UTMOS delta leg on. | sbv2 (Style-Bert-VITS2 v2 multilingual base) | SBV2 v2 plan follow-up, `feat/sbv2-voxtral-real-verify-2026-08-06`. Cron Mon 07:15 UTC. Follows the Kokoro/Whisper **sidecar-hash gating** pattern rather than the `_ENABLE`-variable pattern: dispatch or cron always runs the `setup` job, which opens the parity leg only when all four fixture sha256 sidecars are populated (not empty, not the string `placeholder`). Absent sidecars → visible `parity-sbv2-real fixture gate: CLOSED (clean skip)` step summary, never a green pass. WP-24 tail-position UTMOS delta assertion is gated on the ENABLE variable + UTMOS GGUF env — opt-in on top of the fixture gate. The 4-file loader machinery landed via CLI `bert-base` arm + shared-tensor dedup in `nemo_pt_to_safetensors.py` (commit `1ea38bd`), and the WP-19 tokenizer stack (SentencePiece ModelProto parser `cb2cd7b`, WordPiece + SbertTokenizer scheme dispatch `e7dc2e4`, DeBERTa v2/v3 sibling tokenizer discovery `7242f94`) fully wires text preprocessing across all four BERTs. See `docs/handoff/sbv2-bug4-resolved-2026-08-09.md` and `docs/handoff/sbv2-sdp-debug-2026-08-08.md`, plus the tail "2026-08-10 SBV2 v2 + ZH BERT wave (post-land)" section below. |
 
 Every workflow additionally carries a **narrow `pull_request` paths filter**
 that only fires on family-adjacent code, so per-PR runner minutes stay
@@ -255,3 +255,100 @@ explicit `workflow_dispatch`; every family workflow still emits the
 setup-job annotation on skip; every family workflow still refuses to
 count as a green pass without a real run. The Owner action checklist
 above is unchanged.
+
+## 2026-08-10 SBV2 v2 + ZH BERT wave (post-land)
+
+The `sbv2` family row above went from a **three-fixture** sidecar
+gate with a prospective note ("ZH BERT fixture lands as a fourth
+sidecar when the WP-19 4-file loader flip-the-switch lands") to a
+**four-fixture** gate. That prospective note is now historical:
+the WP-19 4-file loader flip-the-switch itself landed in this same
+wave, along with the ZH BERT publish + §3.1 sign-off + fixture
+sidecar populate. Nothing here changes the sidecar-hash gating
+posture (still not `_ENABLE`-variable-gated), the cron slot
+(still Mon 07:15 UTC), the fabricated-pass-禁止 posture, or the
+Owner action checklist above — only the count of required sidecars
+and the surface area of the tokenizer stack expanded.
+
+The 4-commit chain (`feat/sbv2-voxtral-real-verify-2026-08-06`)
+that expanded the sbv2 family row from 3 → 4 fixtures:
+
+* **`315b8f7 chore(license/§3.1): row 318 (ZH BERT
+  hfl/chinese-roberta-wwm-ext-large) blank → ☑ Commercial
+  (2026-08-10 owner delegation)`** — `docs/license-audit.md` §3.1
+  row 318 flipped from blank to `☑ Commercial` with owner
+  delegation. Closes the license precondition for distributing
+  the ZH BERT GGUF at `huggingface.co/vokra/chinese-roberta-wwm-ext-large`
+  (apache-2.0 upstream); mirrors the JA BERT
+  `deberta-v2-large-japanese-char-wwm` sign-off pattern.
+
+* **`1ea38bd feat(cli/convert+tools): bert-base CLI arm +
+  safetensors shared-tensor dedup (ZH BERT publish path)`** —
+  vokra-cli grew a `--model bert-base` arm for the plain BERT
+  converter path (WP-19 4-file loader machinery), and
+  `tools/parity/nemo_pt_to_safetensors.py` grew a shared-tensor
+  dedup that clones `.contiguous()` on data_ptr collision (safetensors
+  refuses shared pointers, per [[reference-safetensors-shared-tensor-dedup]]).
+  These two together are the "CLI + prep pipe" needed to build
+  the ZH BERT GGUF from the upstream `hfl/chinese-roberta-wwm-ext-large`
+  release, and the same primitives feed the other three BERTs in
+  the SBV2 v2 stack (JA `deberta-v2-large-japanese-char-wwm`,
+  EN `deberta-v3-large`, main `sbv2-v2-multilingual-base`).
+
+* **`3f76abf chore(fixture/sbv2): add
+  chinese-roberta-wwm-ext-large.gguf.sha256 sidecar (WP-19 4-file
+  loader)`** — the fourth sidecar file this row now watches:
+  `tests/fixtures/sbv2/chinese-roberta-wwm-ext-large.gguf.sha256`,
+  populated with the hash of the locally-regenerated ZH BERT
+  GGUF. This is the file that flips the `parity-sbv2-real`
+  `setup` job's sidecar gate from CLOSED (`clean skip`) to OPEN
+  on a per-machine basis — owners regenerate the fixture locally
+  via `vokra-cli convert --model bert-base` on the pinned
+  `hfl/chinese-roberta-wwm-ext-large` snapshot, then commit the
+  sha256 sidecar (the GGUF itself remains gitignored per the M2
+  Whisper/Kokoro precedent).
+
+* **Wave 1 tokenizer stack** — three prerequisite commits landed
+  earlier in the same wave and expand the tokenizer surface all
+  four BERTs consume:
+  - `cb2cd7b` — SentencePiece ModelProto proto3 parser
+    (`crates/vokra-bert/src/sentencepiece.rs`, self-implemented
+    zero-dep, feeds the DeBERTa v3 EN BERT path).
+  - `e7dc2e4` — WordPiece tokenizer +
+    `SbertTokenizer::from_gguf` scheme-dispatch (SentencePiece
+    for DeBERTa v3, WordPiece for the char-BPE JA + ZH BERTs)
+    at `crates/vokra-bert/src/{tokenizer,wordpiece}.rs`.
+  - `7242f94` — DeBERTa v2/v3 converter sibling tokenizer
+    discovery + `vokra.sbv2.tokenizer.*` metadata stamp
+    (the converter now reads `tokenizer.model` / `vocab.txt` /
+    `tokenizer.json` alongside the safetensors and embeds them
+    verbatim into the emitted GGUF so runtime `from_gguf` is
+    self-contained; the same sibling-discovery walk applies to
+    the JA + ZH BERT converters via the shared `bert-base` arm).
+
+The `parity-sbv2-real` workflow itself did not need a YAML edit
+— the sidecar-hash gate loop is glob-based (`ls tests/fixtures/sbv2/*.sha256`
+after excluding `placeholder`-content sidecars), so the fourth
+file was picked up automatically once `3f76abf` populated the
+sidecar. The step summary now advertises 4-of-4 required sidecars
+and refuses to open the parity leg until all four are populated
+on the runner (owners set them per-machine).
+
+**HF publish outcomes (2026-08-10)** — the 4-file loader
+completion enabled two HF publishes this same window (both live
+under `huggingface.co/vokra/`):
+`vokra/deberta-v2-large-japanese-char-wwm` (CC-BY-SA-4.0, SBV2 v2
+JA BERT — the sign-off pattern precedent) and
+`vokra/chinese-roberta-wwm-ext-large` (apache-2.0, SBV2 v2 ZH BERT
+— the wave-3 publish). Combined with `vokra/sbv2-v2-jp-extra-base`
+(AGPL-3.0) and `vokra/deberta-v3-large` (MIT) from earlier waves,
+the SBV2 v2 3-language BERT set (JA/EN/ZH) is now fully published,
+and the parity CI can validate the entire 4-file loader chain end
+to end once the owner populates the four sidecars on the runner.
+
+The Owner action checklist above still applies verbatim to this
+family. The one difference for `sbv2`: the enable-variable step
+(step 3) does not apply (the family uses sidecar-hash gating, not
+`VOKRA_SBV2_ENABLE=1`); the `VOKRA_SBV2_UTMOS_ENABLE` variable
+gates only the tail-position UTMOS delta leg (WP-24), on top of
+the fixture gate.

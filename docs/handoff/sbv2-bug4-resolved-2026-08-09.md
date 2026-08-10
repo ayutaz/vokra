@@ -180,6 +180,69 @@ loudly with a clear message pointing at this handoff.
 | Cross-diff each candidate against Python reference on 8-phoneme test input until magnitude matches ±0.9 | **Bit-exact match delivered** — 8.34e-7 delta, well below ±0.9. |
 | Verify SBV2 SDP output sum matches Python reference (~26-28 for 8-phoneme "テスト") | **Text-encoder side verified**; SDP-side gap (52 vs 106 durations) is a **new downstream bug** that needs its own audit entry. |
 
+## 2026-08-10 Wave 1+2 residual audit landings
+
+The "Residual bug (out of scope for Wave 2)" section above
+enumerates 5 candidate causes for the 2× mel_seq_len symptom and
+names the "Next step" as extending sibling accessor tests then
+bisecting. That path is now **scaffolded** (not yet bisected) by a
+4-commit chain on `feat/sbv2-voxtral-real-verify-2026-08-06`:
+
+- **`f1b7815`** (Wave 1, Blocker 2c Wave 1) —
+  `crates/vokra-models/src/sbv2/spline.rs` new: rational-quadratic
+  spline math primitive. This is the core RQS routine the SDP
+  body's DDS+RQS chain requires; landing it isolates the spline
+  math from the flow-order + config-recovery fixes already in
+  place. Candidate cause **#5 (RQS bounds saturation)** now has a
+  first-class tested primitive to instrument against, rather than
+  living inline in the SDP body.
+- **`5027b2b`** (Wave 2, Blocker 2c residual) —
+  `spline.rs` `.sqrt()` → `vokra_math::sqrt()`. Cross-platform
+  bit-exactness on the SDP flow path; removes an FP-order source
+  of divergence that would otherwise show up on non-M1 hosts and
+  contaminate any downstream numerical bisect.
+- **`879ba8e`** (Wave 2, Blocker 2c residual) — `from_gguf`
+  loud-fail defensive check for `sbv2.sdp.flows.<even>.*` tensors
+  the loader does not expect (odd-indexed only, per the Bug 2
+  `n_sdp_layers = 4` fix in `sbv2-sdp-debug-2026-08-08.md`). This
+  addresses the auditability gap in the Bug 2 fix: any future
+  converter regression that emits an even-indexed SDP flow now
+  loud-fails at load rather than silently binding a mis-shaped
+  SDP. Companion regression test pins the panic message.
+- **`c8e2777`** (Wave 2, Blocker 2c residual) —
+  `parity_sbv2_text_encoder.rs` sibling: `#[ignore]`d
+  `sdp_body_matches_torch_ref` test scaffold. This is the
+  flip-the-switch gate the "Next step" describes — the test skeleton
+  is in place with the same fixture + reference-dumper loading
+  pattern as `parity_sbv2_text_encoder` (bit-exact), waiting for
+  the owner-provisioned per-op SDP reference dump (`sdp_sample.bin`
+  + intermediate stage taps) to flip the ignore off. Once the
+  reference dump lands the bisect described in the residual
+  section becomes a matter of running one `--ignored` test.
+
+**Current primary open bisect targets** (narrowed by the scaffold):
+
+- Candidate **#1 (SDP body / DDS / ConvFlow numerical drift)** —
+  now bisectable by comparing Rust `SbV2SDP::sample` per-op output
+  against the owner's reference dump through the
+  `sdp_body_matches_torch_ref` gate.
+- Candidate **#4 (Reverse-flow order)** — the Bug 1 fix in the
+  2026-08-08 handoff should re-verify against upstream
+  `flows[:-2] + [flows[-1]]` slice under the new defensive loader;
+  the `879ba8e` even-index panic assertion + Bug 2's
+  `n_sdp_layers=4` override together fence off the two most-likely
+  regressions of the fix.
+
+Candidates **#2 (noise_scale_w interpretation)** and
+**#3 (speaker vector at `sdp.cond(g)`)** remain plausible but
+lower-priority per the bit-exact `text_hidden` established above
++ the 2026-08-08 SDP-override experiment result (`sum=28` vs
+reference `sum=26` under `VOKRA_SBV2_SDP_HIDDEN_OVERRIDE`).
+
+The scaffolded posture means the residual bisect is now
+**owner-fixture-waited** (SDP per-op reference dump) rather than
+**CC-implementation-blocked**.
+
 ## Files touched
 
 - `docs/handoff/sbv2-bug4-resolved-2026-08-09.md` (this doc, new).

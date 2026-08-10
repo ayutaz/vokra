@@ -105,7 +105,9 @@ files live in the `vokra-convert` crate.
   / PT / SV / KO)
 - Kokoro-82M
 - CosyVoice2 (FSQ tokens + Qwen2.5-0.5B AR + chunk-aware CFM → mel → HiFTNet)
-- Style-Bert-VITS2 v2 (with DeBERTa v2/v3 conditioning encoders)
+- Style-Bert-VITS2 v2 — multilingual (JA / EN / ZH) with per-language
+  conditioning encoders: DeBERTa v2 (JA), DeBERTa v3 (EN), and
+  Chinese-RoBERTa-wwm-ext (ZH)
 - VoxCPM-0.5B and VoxCPM2-2B
 - Qwen3-TTS 1.7B
 - Fun-CosyVoice3-0.5B

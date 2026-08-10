@@ -4,6 +4,14 @@
 
 **CC-side status (2026-07-21)**: this checklist covers the owner tasks left by the M5 WPs whose CC-side work has landed on branch `feat/m5-plan-and-wave1`. It is the input to the **v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13).
 
+**2026-08-10 addendum (SBV2 v2 4-Blocker + Blocker 2c residual + ZH BERT publish + H100 FA v3 bakeoff, PR #27 open)**: on branch `feat/sbv2-voxtral-real-verify-2026-08-06` (18 commits ahead of `origin/main`, tip `8d469eb`), the SBV2 v2 3-language full-publish stack landed in four waves:
+- **Wave 1** (2026-08-10, 9 commits `16a8410..9cb4d52`): SBV2 4 Blockers closed — Blocker 5 (SentencePiece proto parser + WordPiece + DeBERTa v2/v3 sibling tokenizer discovery, `cb2cd7b`/`e7dc2e4`/`7242f94`), Blocker 3 (`SbV2Model::speaker_projection()` accessor, `1a90e0d`), Blocker 2b (TDD-hardening 3 commits: flow rename table + metadata-key contract + converter spelling, `296dba1`/`672ef5b`/`922d3f5`), Blocker 2c Wave 1 (rational-quadratic spline math primitive, `f1b7815`).
+- **Wave 2** (2026-08-10, 3 commits `5027b2b..c8e2777`): Blocker 2c residual — `.sqrt()` routed through `vokra_math` (`5027b2b`), from_gguf loud-fail defensive check for `sbv2.sdp.flows.<even>.*` unread tensors (`879ba8e`), `#[ignore]`d `sdp_body_matches_torch_ref` scaffold as owner-fixture-待ち gate (`c8e2777`).
+- **Wave 3** (2026-08-10, 3 commits `315b8f7..3f76abf`): license-audit.md §3.1 row 318 (ZH BERT `hfl/chinese-roberta-wwm-ext-large`) blank → ☑ Commercial 2026-08-10 owner delegation (`315b8f7`), CLI `bert-base` arm + `nemo_pt_to_safetensors.py` shared-tensor dedup (`1ea38bd`), fixture sidecar populate for WP-19 4-file loader (`3f76abf`).
+- **Wave 4** (2026-08-10, 1 commit `8d469eb`): M4-07 T17/T18 H100 FA v3 bakeoff on vast.ai H100 PCIe (60 min, $1.73, offer #31427212). See §7 (SoTA cross-cutting) for owner ripples — the M4-07 owner ripple is tracked in `docs/m4-owner-verification-checklist.md` §2.1 (dashboard registration only remains).
+
+**Verify snapshot at branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). PR #27 is **OPEN** and needs owner review + merge.
+
 **Tracking**: this file (`docs/m5-owner-verification-checklist.md`) is **tracked (public)**, same convention as `docs/m3-` / `docs/m4-owner-verification-checklist.md`. Referenced handoffs `docs/handoff/m5-*.md` are tracked/public; specs `docs/tickets/m5/*.md` and ADRs `docs/adr/M5-*.md` are gitignore-local internal docs (referenced by ID).
 
 Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** done-when.
@@ -342,9 +350,9 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 - [ ] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker, row 300) — Apache-2.0 default. category=speaker.
 - [ ] **emotion2vec/emotion2vec_plus_large** (row 301) — MIT default. category=emotion.
 
-**Copyleft (1 row)**:
+**Copyleft (1 row) — SKU rename + PUBLISHED 2026-07-28**:
 
-- [ ] **litagin02/style_bert_vits2** (SBV2 v2 multilingual base, license-audit.md §3.1 row 302) — AGPL-3.0. Primary source: upstream repo LICENSE. Blocker: (a) AGPL-3.0 network-use clause acceptance (obligation propagates to downstream users), (b) real checkpoint fixture status per `tests/fixtures/sbv2/README.md` completion. Publish path: `publish-one.sh --license-spdx agpl-3.0 --acknowledge-copyleft --push` (T3 6a-6e gate).
+- [x] **~~litagin02/style_bert_vits2~~ → `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`** (SBV2 v2 JP-Extra 2.0 base, license-audit.md §3.1 **row 315**, replaces the deprecated row 302 reference above) — AGPL-3.0 ☑ Commercial 2026-07-28 yousan (依頼者許可 = CC 判断). **PUBLISHED**: `huggingface.co/vokra/sbv2-v2-jp-extra-base` = live. SKU rename rationale (per row 315 audit note): original `litagin02/style_bert_vits2` = typo (correct author = `litagin`, upstream returns 404) + actual distribution is JP-Extra 2.0 base (the current SBV2 v2 mainline), not the 1.0 multilingual base (which has no HF `cardData.license` and is defer-blocked fail-closed). Publish path used = T3 Copyleft gate (`publish-one.sh --license-spdx agpl-3.0 --acknowledge-copyleft --push` = LICENSE full text bundled + NOTICE + SOURCE.md + `--acknowledge-copyleft` opt-in flag). Fixture-status prerequisite (Blocker 2b/2c per `tests/fixtures/sbv2/README.md`) is fully resolved by 2026-08-10 Waves 1-2 (see §7 below); the residual `#[ignore]`d `sdp_body_matches_torch_ref` scaffold (commit `c8e2777`) remains an owner-fixture-待ち gate for the SDP parity flip, but is not a publish blocker for the AGPL-3.0 weight itself.
 
 **Non-implementable (signed but converter needed)**:
 
@@ -367,3 +375,28 @@ Investigation 2026-07-28: all 16 converters (`crates/vokra-convert/src/models/ki
 **Voice-clone territory (4 rows: openvoice_v2 / knn_vc / freevc / meanvc) — ELVIS Act policy defer**:
 
 Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `ayutaz/vokra` public repo to avoid tool-distributor liability under ELVIS Act §3 (Tennessee, 2024-07-01) + NO FAKES Act (federal). These 4 converters should either be moved to `vokra-voiceclone-experimental` (M5-05 T15 owner-only) or explicitly Rejected in §3.1. Owner action: choose destination.
+
+---
+
+## 7. SBV2 v2 3-language full publish (2026-08-10, PR #27)
+
+**Status**: PR #27 **OPEN** on branch `feat/sbv2-voxtral-real-verify-2026-08-06` (18 commits ahead of `origin/main`, tip `8d469eb`). All 4 SBV2 Blockers (2b / 2c / 3 / 5) closed on CC side + ZH BERT license sign-off delivered via owner delegation. SBV2 v2 3-language full publish achieved (JA / EN / ZH BERT + base = 4 models on `huggingface.co/vokra`). See header addendum (2026-08-10) for wave-by-wave commit ledger.
+
+### 7.1 Published models (4 SKUs, all live on huggingface.co/vokra)
+
+- [x] **`huggingface.co/vokra/sbv2-v2-jp-extra-base`** (SBV2 v2 base, AGPL-3.0, license-audit.md §3.1 row 315) — signed 2026-07-28 yousan, published via T3 Copyleft gate (`publish-one.sh --acknowledge-copyleft --license-spdx agpl-3.0 --push`). Owner ripple: none (publish complete, SA cascade obligation documented in NOTICE + README front-matter).
+- [x] **`huggingface.co/vokra/deberta-v2-large-japanese-char-wwm`** (SBV2 v2 JA BERT, CC-BY-SA-4.0, license-audit.md §3.1 row 316) — signed 2026-08-06 yousan (owner delegation, T3 Copyleft path with SA cascade disclosure in NOTICE + README). Owner ripple: none (publish complete).
+- [x] **`huggingface.co/vokra/deberta-v3-large`** (SBV2 v2 EN BERT, MIT, license-audit.md §3.1 row 317) — signed 2026-07-27 yousan, published via standard permissive path. Owner ripple: none (publish complete).
+- [x] **`huggingface.co/vokra/chinese-roberta-wwm-ext-large`** (SBV2 v2 ZH BERT, apache-2.0, license-audit.md §3.1 row 318) — signed 2026-08-10 yousan (owner delegation "モデルは公開してください（code license に影響がない限り）"), published via standard permissive path. Runbook = `docs/handoff/zh-bert-publish-2026-08-10.md` (gitignore-local). Fixture sidecar `tests/fixtures/sbv2/chinese-roberta-wwm-ext-large.gguf.sha256` populated for WP-19 4-file loader (commit `3f76abf`). Owner ripple: none (publish complete).
+
+### 7.2 Blocker 2c residual — owner-fixture-待ち gate
+
+- [ ] **`sdp_body_matches_torch_ref` real-parity flip** (Blocker 2c residual, commit `c8e2777` = `#[ignore]`d scaffold). Owner action: provide the SDP torch reference fixture (`tests/fixtures/sbv2/sdp_body_torch_ref.*` per `tests/fixtures/sbv2/README.md`) so the CC can flip `#[ignore]` → `#[test]` and gate SDP body parity in CI. Until the fixture lands the scaffold stays honest-ignored (does not fake a pass). This is a parity flip only; it does not gate the AGPL-3.0 weight publish (already done, §7.1) or the 4-Blocker close-out itself.
+
+### 7.3 PR #27 merge
+
+- [ ] **Review PR #27** (branch `feat/sbv2-voxtral-real-verify-2026-08-06` → `main`, currently 18 commits ahead of `origin/main`, tip `8d469eb`) covering Waves 1-4 = SBV2 4 Blockers + Blocker 2c residual + ZH BERT publish + M4-07 H100 FA v3 bakeoff, and **merge**. Verify snapshot at branch tip: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites, all gates green, no new C ABI (v1.0-rc baseline 33 fn + 11 typedef unchanged). Merge unblocks: (a) default-branch `workflow_dispatch` for parity CI families landed on this branch, (b) M4-07 dashboard registration (§7.4) which reads baseline JSON on `main`, (c) any downstream owner runbook that assumes main is caught up.
+
+### 7.4 M4-07 X-06 nightly dashboard registration (cross-cutting)
+
+- [ ] **X-06 nightly dashboard row** for `fa_v3_vs_fa_v2_e2e_median = 1.0573` (M4-07 T18 WP-close trigger, source = `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` `e2e_speedup_summary`). This is the M4-07 owner ripple from Wave 4 = the final owner-only step to close M4-07 T18. Full detail lives in `docs/m4-owner-verification-checklist.md` §2.1 (M4 checklist is the canonical owning WP location); this bullet exists here for the SBV2 addendum's owner cross-reference completeness.

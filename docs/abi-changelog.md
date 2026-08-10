@@ -339,6 +339,49 @@ subsequent regenerate (`bash scripts/rust-public-api-list.sh
 --update-snapshot`) to close the `abi-surface (advisory)` job — same
 posture as the WP-23 companion above.
 
+### 2026-08-10 — 1.0.0-rc.1-dev (SBV2 v2 Blocker 3 close-out + Blocker 2c Wave 1 spline primitive — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the two SBV2 v2 blocker
+close-outs that landed on `feat/sbv2-voxtral-real-verify-2026-08-06`
+on 2026-08-10, alongside the WP-23 and SBV2 v2 ZH branch entries above.
+The C ABI (`include/vokra.h`, 33 fn + 11 typedef baseline) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff). Follows the
+SBV2 v2 ZH branch and X-Codec-2 precedents for new pub modules /
+accessors in `vokra-models`: **advisory Rust-surface entry**,
+`scripts/check-abi-changelog.sh` does not gate on it (no C symbol
+changed).
+
+| Commit    | Area                                       | New export(s) / behaviour change                                                                                                                                                                                                                                                                                       | Kind  | Rationale                                                                                                                                                                                                                                                                    | Breaking? |
+| --------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `1a90e0d` | `vokra-models::sbv2` (Blocker 3 close-out) | `pub fn SbV2Model::speaker_projection(&self) -> Option<&ExternalSpeakerProjection>` accessor                                                                                                                                                                                                                          | Added | Companion to the pre-existing (WP-13a era) `ExternalSpeakerProjection` type + `with_external_speaker_projection` builder + `speaker_projection: Option<..>` field. Lets callers / tests observe whether external-speaker wiring has been attached without reaching into private state. | no        |
+| `f1b7815` | `vokra-models::sbv2::spline` (new mod)     | `pub mod spline` at `crates/vokra-models/src/sbv2/mod.rs:83`, exposing `pub struct SplineParams<'a>` (bin-edge / knot-height / knot-slope descriptor) + `pub fn rational_quadratic_spline_forward(x: f32, p: SplineParams<'_>) -> f32` + `pub fn rational_quadratic_spline_inverse(y: f32, p: SplineParams<'_>) -> f32` | Added | Rational-quadratic spline math primitive that the SBV2 SDP flow-body forward / inverse pair need. Kept as a small `pub mod` so downstream tests (and the `#[ignore]`d `sdp_body_matches_torch_ref` scaffold) can exercise the math primitive in isolation.                | no        |
+
+**Blocker 2c residual behaviour anchors** (commits `5027b2b` /
+`879ba8e` / `c8e2777`): no Rust surface change worth flagging
+separately, but preserved here as behavioural anchors for the SDP
+flow-body parity gate:
+
+- `5027b2b` — `spline.rs`'s internal `.sqrt()` sites route through
+  `vokra_math::sqrt` (the WP-07 first-party scalar transcendental
+  crate) so the spline math is bit-exact across every host without
+  a `libm` intrusion into `vokra-models`'s dependency graph.
+- `879ba8e` — SBV2 `from_gguf` gains a defensive loud-fail check for
+  `sbv2.sdp.flows.<even>.*` unread tensors (FR-EX-08 — a mis-shaped
+  converter can no longer silently drop even-indexed flow layers).
+- `c8e2777` — `#[ignore]`d `sdp_body_matches_torch_ref` scaffold
+  parked on the owner fixture wait; the gate flips on when
+  `tests/fixtures/sbv2/sdp-body-torch-ref.bin` lands.
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-models`; root
+`Cargo.lock` unchanged.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. Snapshot
+rotation is the M5-13/IF-01 freeze owner's action; regenerating
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` via
+`bash scripts/rust-public-api-list.sh --update-snapshot` will pick up
+both the `speaker_projection` accessor and the new `spline::*` re-exports.
+
 ### 2026-08-09 — 1.0.0-rc.1-dev (WP-17: `BertWordpieceTokenizer` clean-room in `vokra-bert` — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the WP-17 clean-room WordPiece
