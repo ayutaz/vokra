@@ -161,6 +161,65 @@ impl BertWordpieceTokenizer {
         })
     }
 
+    /// Test / SbertTokenizer-scheme-dispatch constructor.
+    ///
+    /// Convenience wrapper over [`Self::from_vocab`] with the two-argument
+    /// simplification that fits [`crate::tokenizer::SbertTokenizer`]'s
+    /// wave-2 scheme-dispatch load path (`unk / bos = cls / eos = sep`;
+    /// `pad_id = 0` by BERT convention). Panics on the same conditions as
+    /// [`Self::from_vocab`] would return an error (only called in trusted
+    /// GGUF-derived paths).
+    ///
+    /// Applies `.with_lower_case(false)` so callers who ship a
+    /// pre-normalized vocab (as SbertTokenizer WordPiece consumers do)
+    /// don't silently lowercase user text before the greedy match.
+    pub fn from_pieces(pieces: Vec<String>, unk_id: u32, bos_id: u32, eos_id: u32) -> Self {
+        Self::from_vocab(pieces, unk_id, bos_id, eos_id, 0)
+            .expect("BertWordpieceTokenizer::from_pieces: invalid vocab / ids")
+            .with_lower_case(false)
+    }
+
+    /// Infallible encode without special-token wrapping — the entry
+    /// point [`crate::tokenizer::SbertTokenizer::encode`] uses when
+    /// dispatching to the WordPiece scheme. Runs the same pipeline as
+    /// [`Self::encode`] but always with `add_special_tokens = false` and
+    /// under the default `OovPolicy::Unk` (which is documented-infallible),
+    /// so no `Result` shows up in the caller.
+    pub fn encode_no_special(&self, text: &str) -> Vec<u32> {
+        // `encode(text, false)` under OovPolicy::Unk (the constructor default)
+        // is documented infallible; we defensively fall back to an empty
+        // vector rather than panicking if a future refactor changes that.
+        self.encode(text, false).unwrap_or_default()
+    }
+
+    /// Decode `ids` back to a UTF-8 string, stitching `##` continuation
+    /// markers into their preceding word and filtering special tokens
+    /// (`[PAD]/[UNK]/[CLS]/[SEP]`). Non-continuation pieces are separated
+    /// by ASCII space — matching HuggingFace `BertTokenizer.decode`'s
+    /// default `clean_up_tokenization_spaces=False` behaviour close
+    /// enough for byte-level round-trip inside SBV2's parity harness.
+    pub fn decode(&self, ids: &[u32]) -> String {
+        let mut out = String::new();
+        for &id in ids {
+            if id == self.pad_id || id == self.unk_id || id == self.cls_id || id == self.sep_id {
+                continue;
+            }
+            let piece = match self.ids_to_tokens.get(id as usize) {
+                Some(p) => p,
+                None => continue,
+            };
+            if let Some(cont) = piece.strip_prefix(CONTINUATION_PREFIX) {
+                out.push_str(cont);
+            } else {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(piece);
+            }
+        }
+        out
+    }
+
     /// Enable or disable the initial-lowercasing pass (default `true`).
     #[must_use]
     pub fn with_lower_case(mut self, do_lower_case: bool) -> Self {
