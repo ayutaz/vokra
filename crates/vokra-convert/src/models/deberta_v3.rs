@@ -41,11 +41,14 @@ use vokra_core::json::{self, JsonValue};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
+use crate::spm_proto::{PieceType, parse_model};
 
+use super::deberta_v2::ConvertReport;
 use super::deberta_v2::{
-    CATEGORY, ConvertReport, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, KEY_TOKENIZER_PREFIX,
-    KIND_SENTENCEPIECE_UNIGRAM, MapAction, add_f32_array, add_string_array, classify_skip,
-    count_layers, infer_n_pos_buckets, infer_vocab_and_d_model, map_deberta_name, write_hparams,
+    CATEGORY, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, KEY_TOKENIZER_PREFIX,
+    KIND_SENTENCEPIECE_UNIGRAM, MapAction, TokenizerMetadata, add_f32_array, add_string_array,
+    classify_skip, count_layers, infer_n_pos_buckets, infer_vocab_and_d_model, map_deberta_name,
+    write_hparams, write_tokenizer_metadata,
 };
 
 /// `vokra.model.arch` for DeBERTa v3 GGUFs.
@@ -133,9 +136,26 @@ pub fn convert_deberta_v3_file(
         n_pos_buckets,
     );
 
-    // Tokenizer side-car — Blocker 5 (2026-08-06). See `write_tokenizer_spm_json`.
+    // Tokenizer side-car — Blocker 5. Two mechanisms coexist:
+    //
+    // 1. HEAD (2026-08-06): explicit `tokenizer_bytes` = JSON produced by
+    //    `tools/parity/extract_spm_metadata.py` (offline, uses upstream
+    //    `sentencepiece` in a Python venv). See `write_tokenizer_spm_json`.
+    //
+    // 2. Wave 3 (2026-08-10): native sibling `spm.model` discovery via
+    //    the hand-rolled proto3 reader (`crate::spm_proto`). One-step,
+    //    no Python round-trip.
+    //
+    // Precedence: caller-supplied JSON wins (backward compat); when
+    // absent, fall back to sibling-file discovery. When neither is
+    // available, leave the metadata unwritten — the runtime
+    // `SbertTokenizer::from_gguf` loud-errors on the missing `.pieces`
+    // key which is the correct FR-EX-08 outcome.
     if let Some(bytes) = tokenizer_bytes {
         write_tokenizer_spm_json(&mut b, bytes)?;
+    } else if let Some(spm_path) = discover_spm_model(input) {
+        let tokenizer = parse_spm_model(&spm_path)?;
+        write_tokenizer_metadata(&mut b, &tokenizer);
     }
 
     let mut report = ConvertReport::default();
@@ -364,6 +384,80 @@ pub(crate) fn write_tokenizer_spm_json(
     }
     b.add_u32(&format!("{KEY_TOKENIZER_PREFIX}.vocab_size"), vocab_size);
     Ok(())
+}
+
+/// Look for a SentencePiece `spm.model` alongside `input` — the
+/// tokenizer file HF's DeBERTa v3 releases ship next to the safetensors
+/// checkpoint. Returns `None` when it is not present at either
+/// `<parent>/spm.model` or the nested `<parent>/tokenizer/spm.model`.
+pub(crate) fn discover_spm_model(input: &Path) -> Option<std::path::PathBuf> {
+    let parent = input.parent()?;
+    let direct = parent.join("spm.model");
+    if direct.exists() {
+        return Some(direct);
+    }
+    let nested = parent.join("tokenizer").join("spm.model");
+    if nested.exists() {
+        return Some(nested);
+    }
+    None
+}
+
+/// Parse a SentencePiece `spm.model` at `path` into a shared
+/// [`TokenizerMetadata`] with `scheme = "unigram"`. The special-token
+/// ids are discovered by walking the parsed piece list for the
+/// SentencePiece sentinels (`<unk>` / `<s>` / `</s>`), falling back to
+/// the standard SentencePiece defaults (0 / 1 / 2) when absent so a
+/// custom vocab that redefines the sentinels is honored.
+///
+/// # Errors
+///
+/// [`ConvertError::Io`] on read failure; [`ConvertError::Parse`] with
+/// the underlying [`crate::spm_proto::SpmProtoError`] rendered as the
+/// message on malformed proto3 input.
+pub(crate) fn parse_spm_model(path: &Path) -> Result<TokenizerMetadata, ConvertError> {
+    let bytes = std::fs::read(path)?;
+    let model = parse_model(&bytes).map_err(|e| {
+        ConvertError::Parse(format!("deberta-v3 spm.model at {}: {e}", path.display()))
+    })?;
+
+    let mut pieces = Vec::with_capacity(model.pieces.len());
+    let mut scores = Vec::with_capacity(model.pieces.len());
+    let mut unk_id: Option<u32> = None;
+    let mut bos_id: Option<u32> = None;
+    let mut eos_id: Option<u32> = None;
+    for (i, p) in model.pieces.iter().enumerate() {
+        // Discover sentinels by SentencePiece piece-type first (the
+        // canonical signal), then by name as a fallback (some vocabs
+        // ship `<unk>` as UserDefined rather than Unknown).
+        let idx = i as u32;
+        if matches!(p.piece_type, PieceType::Unknown) {
+            unk_id.get_or_insert(idx);
+        }
+        match p.piece.as_str() {
+            "<unk>" => {
+                unk_id.get_or_insert(idx);
+            }
+            "<s>" => {
+                bos_id.get_or_insert(idx);
+            }
+            "</s>" => {
+                eos_id.get_or_insert(idx);
+            }
+            _ => {}
+        }
+        pieces.push(p.piece.clone());
+        scores.push(p.score);
+    }
+
+    Ok(TokenizerMetadata {
+        pieces,
+        scores,
+        unk_id: unk_id.unwrap_or(0),
+        bos_id: bos_id.unwrap_or(1),
+        eos_id: eos_id.unwrap_or(2),
+        scheme: "unigram",
+    })
 }
 
 #[cfg(test)]

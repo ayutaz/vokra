@@ -239,12 +239,26 @@ pub fn convert_deberta_v2_file(
         n_pos_buckets,
     );
 
-    // Tokenizer side-car — Blocker 5 (2026-08-06). Front-loads the
-    // `vokra.bert.tokenizer.*` chunk group so a downstream
-    // `SbertTokenizer::from_gguf` call succeeds without falling back to
-    // the reader's (wrong-for-this-fixture) default ids.
+    // Tokenizer side-car — Blocker 5. Two mechanisms coexist:
+    //
+    // 1. HEAD (2026-08-06): explicit `tokenizer_bytes` = raw `vocab.txt`
+    //    passed by the caller (via `--tokenizer <path>` at CLI level).
+    //    See `write_tokenizer_vocab_txt`.
+    //
+    // 2. Wave 3 (2026-08-10): native sibling `vocab.txt` discovery via
+    //    `discover_wordpiece_vocab`. One-step conversion, no caller
+    //    plumbing required.
+    //
+    // Precedence: caller-supplied bytes win (backward compat); when
+    // absent, fall back to sibling-file discovery. When neither is
+    // available, leave the metadata unwritten — the runtime
+    // `SbertTokenizer::from_gguf` loud-errors on the missing `.pieces`
+    // key which is the correct FR-EX-08 outcome.
     if let Some(bytes) = tokenizer_bytes {
         write_tokenizer_vocab_txt(&mut b, bytes)?;
+    } else if let Some(vocab_path) = discover_wordpiece_vocab(input) {
+        let tokenizer = parse_wordpiece_vocab(&vocab_path)?;
+        write_tokenizer_metadata(&mut b, &tokenizer);
     }
 
     let mut report = ConvertReport::default();
@@ -737,6 +751,148 @@ pub(crate) const HEAD_DIM_HF_DEFAULT: u32 = 64;
 pub(crate) fn derive_n_heads(d_model: u64) -> u32 {
     let raw = (d_model / u64::from(HEAD_DIM_HF_DEFAULT)) as u32;
     raw.max(1)
+}
+
+/// The four pieces of `vokra.bert.tokenizer.*` metadata a converter
+/// emits for a BERT-family checkpoint: the vocab list, per-piece scores
+/// (all zeros for WordPiece), the three special-token IDs, and the
+/// scheme tag consumed by [`vokra_bert::tokenizer::SbertTokenizer::from_gguf`].
+#[derive(Debug, Clone)]
+pub(crate) struct TokenizerMetadata {
+    /// Vocabulary pieces, id = index. UTF-8 must be preserved exactly
+    /// (SentencePiece `▁` and Japanese chars in WordPiece both matter).
+    pub pieces: Vec<String>,
+    /// Log-probabilities for SentencePiece Unigram; all zeros for
+    /// WordPiece (BERT's greedy longest-match ignores the field).
+    pub scores: Vec<f32>,
+    /// `[UNK]` / `<unk>` ID discovered in the vocab (falls back to `1`
+    /// when the vocab is missing the sentinel).
+    pub unk_id: u32,
+    /// `[CLS]` / `<s>` ID discovered in the vocab (falls back to `2`).
+    pub bos_id: u32,
+    /// `[SEP]` / `</s>` ID discovered in the vocab (falls back to `3`).
+    pub eos_id: u32,
+    /// `"wordpiece"` for DeBERTa v2, `"unigram"` for DeBERTa v3 — the
+    /// scheme dispatch string.
+    pub scheme: &'static str,
+}
+
+/// Look for a WordPiece `vocab.txt` alongside `input` (BERT convention:
+/// the tokenizer file sits in the same directory as the checkpoint).
+///
+/// Returns `None` when neither `vocab.txt` nor `tokenizer/vocab.txt`
+/// (some HF releases nest the tokenizer under a subdir) is found. The
+/// caller decides whether to hard-error (v2 sign-off gate) or leave
+/// the metadata unwritten (backward compat).
+pub(crate) fn discover_wordpiece_vocab(input: &Path) -> Option<std::path::PathBuf> {
+    let parent = input.parent()?;
+    let direct = parent.join("vocab.txt");
+    if direct.exists() {
+        return Some(direct);
+    }
+    let nested = parent.join("tokenizer").join("vocab.txt");
+    if nested.exists() {
+        return Some(nested);
+    }
+    None
+}
+
+/// Parse a BERT-style `vocab.txt`: one piece per line, id = 0-indexed
+/// line number, UTF-8 throughout, no scores. Returns loud-error if the
+/// file is not UTF-8 or contains fewer than the four BERT sentinels
+/// (`[PAD]`, `[UNK]`, `[CLS]`, `[SEP]`). Blank lines are preserved as
+/// empty pieces (some HF vocab.txt shipments include one trailing
+/// blank; the id count must match the runtime tokenizer's expectation).
+///
+/// # Errors
+///
+/// [`ConvertError::Io`] on read failure; [`ConvertError::Parse`] on
+/// non-UTF-8 or missing sentinels.
+pub(crate) fn parse_wordpiece_vocab(path: &Path) -> Result<TokenizerMetadata, ConvertError> {
+    let bytes = std::fs::read(path)?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| {
+        ConvertError::Parse(format!(
+            "deberta-v2 vocab.txt at {}: not valid UTF-8: {e}",
+            path.display()
+        ))
+    })?;
+    // BERT `vocab.txt` uses `\n` line separators; a trailing `\n`
+    // produces a trailing empty piece, which the runtime tokenizer
+    // handles fine (id count must match, not "no empty pieces").
+    // `str::lines` drops the trailing `\n` before an empty final line,
+    // so use `split` to preserve every id.
+    let mut pieces: Vec<String> = text.split('\n').map(str::to_owned).collect();
+    // Strip a single trailing empty piece iff the file ends with `\n`
+    // AND that would be the only trailing empty — this matches HF's
+    // AutoTokenizer behavior. If the trailing empty is intentional
+    // (i.e., a piece deliberately declared as ""), the caller can
+    // detect this via the id count.
+    if pieces.last().map(String::is_empty) == Some(true) && text.ends_with('\n') {
+        pieces.pop();
+    }
+
+    let scores = vec![0.0f32; pieces.len()];
+    let unk_id = find_special_id(&pieces, "[UNK]").unwrap_or(1);
+    let bos_id = find_special_id(&pieces, "[CLS]").unwrap_or(2);
+    let eos_id = find_special_id(&pieces, "[SEP]").unwrap_or(3);
+
+    // Verify the four BERT sentinels are all present — a vocab that
+    // lacks them is almost certainly not a BERT vocab, and silently
+    // shipping it would misroute the downstream tokenizer (FR-EX-08).
+    for sentinel in ["[PAD]", "[UNK]", "[CLS]", "[SEP]"] {
+        if !pieces.iter().any(|p| p == sentinel) {
+            return Err(ConvertError::Parse(format!(
+                "deberta-v2 vocab.txt at {}: missing required BERT sentinel `{sentinel}`",
+                path.display()
+            )));
+        }
+    }
+
+    Ok(TokenizerMetadata {
+        pieces,
+        scores,
+        unk_id,
+        bos_id,
+        eos_id,
+        scheme: "wordpiece",
+    })
+}
+
+/// Linear search for the 0-indexed line number where `piece` appears.
+fn find_special_id(pieces: &[String], piece: &str) -> Option<u32> {
+    pieces.iter().position(|p| p == piece).map(|i| i as u32)
+}
+
+/// Stamp the `vokra.bert.tokenizer.*` metadata group into `b` from the
+/// parsed [`TokenizerMetadata`]. Shared by both v2 (WordPiece) and v3
+/// (SentencePiece Unigram) converters.
+pub(crate) fn write_tokenizer_metadata(b: &mut GgufBuilder, meta: &TokenizerMetadata) {
+    b.add_string("vokra.bert.tokenizer.scheme", meta.scheme);
+    b.add_metadata(
+        "vokra.bert.tokenizer.pieces",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: meta
+                .pieces
+                .iter()
+                .map(|p| GgufMetadataValue::String(p.clone()))
+                .collect(),
+        }),
+    );
+    b.add_metadata(
+        "vokra.bert.tokenizer.scores",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::F32,
+            values: meta
+                .scores
+                .iter()
+                .map(|s| GgufMetadataValue::F32(*s))
+                .collect(),
+        }),
+    );
+    b.add_u32("vokra.bert.tokenizer.unk_id", meta.unk_id);
+    b.add_u32("vokra.bert.tokenizer.bos_id", meta.bos_id);
+    b.add_u32("vokra.bert.tokenizer.eos_id", meta.eos_id);
 }
 
 /// Writes the shared six-key `vokra.bert.<arch>.*` hparam chunk group
