@@ -12,14 +12,15 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ConvertSummary, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant, VoxtralConfig,
-    convert_chatterbox_file, convert_chatterbox_nano_file, convert_chatterbox_turbo_file,
-    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_crepe_file, convert_dac_file,
-    convert_deberta_v2_file, convert_deberta_v3_file, convert_file, convert_file_quantized,
-    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
-    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
-    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    convert_bert_base_file, convert_chatterbox_file, convert_chatterbox_nano_file,
+    convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
+    convert_crepe_file, convert_dac_file, convert_deberta_v2_file, convert_deberta_v3_file,
+    convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
+    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
+    convert_vits_ja_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
+    convert_voxtral_file_streaming, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -608,14 +609,14 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     // flag rather than silently ignoring it.
     if !matches!(
         model,
-        ModelKind::Voxtral | ModelKind::DebertaV2 | ModelKind::DebertaV3
+        ModelKind::Voxtral | ModelKind::DebertaV2 | ModelKind::DebertaV3 | ModelKind::BertBase
     ) && p.tokenizer.is_some()
     {
         return Err(
-            "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3. \
-             Other archs embed their tokenizer through their own path (whisper: the converter \
-             bakes the vocab; csm / moshi: the standalone `vokra-convert` binary's --config \
-             side-car)"
+            "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
+             bert-base. Other archs embed their tokenizer through their own path (whisper: \
+             the converter bakes the vocab; csm / moshi: the standalone `vokra-convert` \
+             binary's --config side-car)"
                 .to_owned(),
         );
     }
@@ -1065,6 +1066,71 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             .map_err(|e| e.to_string())?;
             let notes = deberta_notes("deberta-v3", &report, tokenizer_bytes.is_some());
             return finalize_deberta_summary(model, report, &p.output, &notes);
+        }
+        ModelKind::BertBase => {
+            // 2026-08-10: mirror of the DebertaV2 / DebertaV3 arms — plain
+            // BERT (hfl/chinese-roberta-wwm-ext-large first consumer). The
+            // Rust `convert_bert_base_file` (WP-14 land 2026-08-10,
+            // `crates/vokra-convert/src/models/bert_base.rs`) takes the
+            // same `(input, output, license, tokenizer_bytes)` shape as
+            // its DeBERTa siblings, plus a `do_lower_case: bool` for the
+            // wordpiece side-car. The SBV2 v2 ZH BERT slot never lower-
+            // cases (`hfl/chinese-roberta-wwm-ext-large`
+            // `tokenizer_config.json` = `do_lower_case: true` for BERT-
+            // base-uncased convention, but the ZH vocab is already
+            // char-level so lowering is a no-op). Pass `false` as the
+            // conservative default matching the WP-16 loader.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let tokenizer_bytes: Option<Vec<u8>> = read_tokenizer_bytes(p.tokenizer.as_ref())?;
+            let report = convert_bert_base_file(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer_bytes.as_deref(),
+                false, // do_lower_case: false for ZH char-level vocab
+            )
+            .map_err(|e| e.to_string())?;
+            // BertBaseReport shares the deberta_notes `written` /
+            // `skipped_non_float` field-name convention but is a
+            // distinct type — hand-format the same shape inline.
+            let mut notes = vec![format!(
+                "bert-base: {} float weights written verbatim, {} non-float skipped, {} unmapped dropped",
+                report.written, report.skipped_non_float, report.skipped_unmapped,
+            )];
+            notes.push(if tokenizer_bytes.is_some() {
+                "bert-base: vokra.bert.wordpiece.* chunk group emitted \
+                 (BertWordpieceTokenizer::from_gguf ready)"
+                    .to_owned()
+            } else {
+                "bert-base: no --tokenizer supplied; the emitted GGUF carries no \
+                 vokra.bert.wordpiece.* metadata (BertWordpieceTokenizer::from_gguf will \
+                 fail — supply `--tokenizer <vocab.txt>`)"
+                    .to_owned()
+            });
+            let output_bytes = std::fs::metadata(&p.output).map(|m| m.len()).unwrap_or(0);
+            let summary = ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes,
+                notes,
+            };
+            println!(
+                "converted {model}: {} tensors, {} metadata keys, {} bytes -> {}",
+                summary.tensor_count,
+                summary.metadata_count,
+                summary.output_bytes,
+                p.output.display()
+            );
+            for note in &summary.notes {
+                println!("  note: {note}");
+            }
+            return Ok(ExitCode::SUCCESS);
         }
         ModelKind::Crepe => {
             // M5 gap follow-up (2026-07-30): CREPE needs the prepare-script

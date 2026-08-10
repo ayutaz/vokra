@@ -202,6 +202,28 @@ def main() -> int:
               file=sys.stderr)
         return 3
 
+    # Tied-embedding dedup — memory [[reference-safetensors-shared-tensor-dedup]]:
+    # safetensors.torch.save_file refuses tensors that share the same data_ptr
+    # (Bark / XTTS-v2 / MOSS variants / BERT MLM heads with tied
+    # bert.embeddings.word_embeddings.weight <-> cls.predictions.decoder.weight
+    # are the recurring cases). Clone the later occurrences so each name gets
+    # a distinct storage — semantics are preserved (both names load identical
+    # values), disk cost is minimal for a single tied pair, and downstream
+    # converters that need only one of the pair simply pick the canonical one.
+    # Audit trail lands in shared_pairs.json alongside the manifest.
+    seen: dict[int, str] = {}
+    shared_pairs: list[tuple[str, str]] = []
+    for n, t in list(kept.items()):
+        try:
+            ptr = t.data_ptr()
+        except Exception:
+            continue
+        if ptr in seen:
+            shared_pairs.append((seen[ptr], n))
+            kept[n] = t.clone().contiguous()
+        else:
+            seen[ptr] = n
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_file(kept, str(args.output))
 
@@ -213,6 +235,7 @@ def main() -> int:
         "prefix_strip": args.tensor_prefix_strip,
         "dropped_tensors": [{"name": n, "dtype": d, "shape": s} for n, d, s in dropped],
         "unknown_stripped": [{"name": n, "dtype": d, "shape": s} for n, d, s in unknown] if args.allow_strip_any else [],
+        "shared_pairs": [{"canonical": a, "cloned": b} for a, b in shared_pairs],
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".stripped-manifest.json")
     manifest_path.write_text(json.dumps(manifest, indent=2))
