@@ -229,3 +229,74 @@ fn sdp_noise_from_gaussian_splitmix_diverges_from_torch_philox() {
          being erased somewhere"
     );
 }
+
+/// Blocker 2c residual (2026-08-10) — real-fixture-gated SDP body
+/// forward parity test. Closes the "no unit-level SDP forward parity"
+/// gap this file's header calls out (see lines 6-19): the existing
+/// `sdp_noise_matches_torch_philox_seed_0_t_{50,8}` tests isolate the
+/// RNG layer at atol = 0.0, but the `SbV2SDP::body` composition
+/// (transpose → pre 1×1 → `+cond(g)` broadcast-add → `DDSConv::forward` →
+/// proj 1×1) has never been directly asserted against a torch dump;
+/// only the end-to-end `sdp_sample.bin` path via `parity_sbv2_real.rs`
+/// covers it, and there the DDS-inverse math error compounds with the
+/// RNG-then-flow errors into the placeholder atol `PER_TENSOR_ATOL
+/// ["sdp_sample"] = 0.05` in `crates/vokra-models/src/sbv2/parity.rs`.
+///
+/// A body-only test isolates a tighter bound: the body has no RNG, no
+/// flow inverse, no `.ceil()` non-linearity — it is a deterministic
+/// composition of conv1d + affine ops. atol should land near float32
+/// noise (~1e-6) rather than the SDP-sample-end-to-end 0.05.
+///
+/// This test is `#[ignore]`d until the fixture bundle lands:
+///
+///   `tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin`
+///     — reference SDP body output `[d_hidden, T]` channel-major f32
+///       bytes, computed against a fixed test hidden `[T=50, d_hidden]`
+///       + speaker `[gin]` input. Regeneration recipe should live in
+///       `tools/parity/sbv2_sdp_body_dump.py` (mirror of the existing
+///       `sbv2_sdp_noise_dump.py`), invoked as
+///       `cd tools/parity && uv run python sbv2_sdp_body_dump.py \
+///        --seed 0 --T 50 --out tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin`.
+///
+///   `tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf`
+///     — the real SBV2 v2 base checkpoint (Task 28 real fixture), used
+///       only for `SbV2Model::from_gguf` → `.sdp` extraction. Any
+///       simpler fixture that pins the SDP weights would also work;
+///       the base ckpt is convenient because the sibling parity tests
+///       already require it.
+///
+/// Once the fixture bundle is populated, remove `#[ignore]` and this
+/// test becomes a first-class member of the SDP parity suite. atol
+/// should land near float32 noise (~1e-6 or looser depending on the
+/// DDS+conv accumulation length) — record the measured bound and
+/// tighten `PER_TENSOR_ATOL["sdp_sample"]` (currently 0.05) toward it
+/// on the same land.
+///
+/// This scaffold does not read any fixture bytes yet — the actual body
+/// invocation shape (weights slice-out from `SbV2Model.sdp`, hidden /
+/// gin input construction, byte-exact SDP body dump comparison) lands
+/// with the fixture. Leaving the scaffold ignored keeps the file
+/// compilable and the test named/searchable for the future fixture
+/// author.
+#[test]
+#[ignore = "Blocker 2c residual: needs tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin \
+            + tools/parity/sbv2_sdp_body_dump.py (see test doc)"]
+fn sdp_body_matches_torch_ref() {
+    // Deliberate: the fixture bundle is not yet populated. Un-ignore
+    // this test once the two paths listed in the doc land. See the
+    // doc-comment for the regeneration recipe.
+    //
+    // FR-EX-08: no silent-skip — the `#[ignore]` attribute IS the gate,
+    // per `parity_sbv2_real.rs`'s established pattern (a `#[test]` +
+    // `#[ignore]` combination means "runs on explicit
+    // `--include-ignored`, otherwise skipped visibly"). This is not a
+    // no-op body — a future fixture author must implement the actual
+    // body-forward comparison and remove the panic below in the same
+    // land as the fixture files.
+    panic!(
+        "SDP body parity fixture (`tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin` + \
+         `tools/parity/sbv2_sdp_body_dump.py`) not yet populated — see the test's \
+         doc-comment for the recipe. Remove `#[ignore]` + this panic when the \
+         fixture bundle lands."
+    );
+}
