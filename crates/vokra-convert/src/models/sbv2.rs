@@ -3021,6 +3021,188 @@ mod tests {
         }
     }
 
+    /// Blocker 2b TDD-hardening (2026-08-10) — full-block exhaustive
+    /// enumeration pin: for each of the four upstream coupling-block
+    /// indices `0/2/4/6`, enumerate every tensor of every sub-namespace
+    /// the base SBV2 v2 checkpoint carries, assert (a) every one lands as
+    /// `TensorClass::Rename` with the exact `sbv2.flow.layer.<i>.*` target
+    /// name the loader (`SbV2Model::from_gguf`) reads, and (b) the total
+    /// count is exactly `4 * 114 = 456` — the base checkpoint's own tensor
+    /// count for the flow block (`4 blocks × 114 tensors/block`, matching
+    /// the module doc's line-141 accounting: 4 blocks × (2 `pre` + 2
+    /// `post` + 2 `spk_emb_linear` + 6 encoder layers × (8 attn conv +
+    /// 2 attn rel_pos + 4 ffn conv + 4 norm) = 4 × (6 + 6 × 18) = 4 ×
+    /// 114 = 456).
+    ///
+    /// The three existing per-family tests
+    /// (`classify_flow_pre_and_post_rename_by_block_index_halving`,
+    /// `classify_flow_spk_emb_linear_renames_to_spk_emb`,
+    /// `classify_flow_encoder_attn_ffn_norm_all_rename`) each cover **one
+    /// sub-namespace at a time**; this test walks all seven together with a
+    /// per-tensor rename equality *and* a total-count assertion, so a
+    /// regression that (i) silently drops a sub-namespace or (ii) mis-counts
+    /// how many tensors a block should have surfaces here as a single
+    /// clearly-labelled fail. This is the "flow tensor rename table
+    /// contract" pin — every tensor the real base checkpoint carries
+    /// must have a stable target name the loader knows how to find.
+    #[test]
+    fn classify_flow_full_block_renames_all_114_tensors_per_upstream_block() {
+        // (upstream_i, target_i) pairs for the four base-checkpoint
+        // coupling blocks; upstream indices 1/3/5/7 are `Flip` slots
+        // (no tensors — covered by
+        // `classify_flow_odd_upstream_index_falls_through_to_pass_through`
+        // above).
+        let block_pairs = [(0usize, 0usize), (2, 1), (4, 2), (6, 3)];
+        // Base SBV2 v2 hparams (design doc §7 + upstream config):
+        //   flow.n_encoder_layers = 6
+        // (kernel_ffn = 5 / gin_channels = 512 / mean_only = true are
+        // architectural but do not enter the rename table — they are
+        // metadata-only, covered by the sbv2_gguf_loader.rs pin tests).
+        const N_ENCODER_LAYERS: usize = 6;
+        // Assemble (upstream_name, expected_target_name) pairs for one
+        // upstream block; the outer loop below iterates over the four
+        // (upstream_i, target_i) pairs and prepends the block prefix.
+        let per_block_pairs: Vec<(String, String)> = {
+            let mut v: Vec<(String, String)> = Vec::new();
+            // pre / post — 1×1 Conv1d each.
+            for (tail_in, tail_out) in [
+                ("pre.weight", "pre.weight"),
+                ("pre.bias", "pre.bias"),
+                ("post.weight", "post.weight"),
+                ("post.bias", "post.bias"),
+            ] {
+                v.push((tail_in.to_string(), tail_out.to_string()));
+            }
+            // enc.spk_emb_linear — Blocker 3-style g projection at block level.
+            for (tail_in, tail_out) in [
+                ("enc.spk_emb_linear.weight", "spk_emb.weight"),
+                ("enc.spk_emb_linear.bias", "spk_emb.bias"),
+            ] {
+                v.push((tail_in.to_string(), tail_out.to_string()));
+            }
+            // Per-encoder-layer j: attn (10) + ffn (4) + norm (4) = 18 tensors.
+            for j in 0..N_ENCODER_LAYERS {
+                // Attention: 4 conv q/k/v/o × {weight, bias} + 2 emb_rel_{k, v}
+                for (tail_in, tail_out) in [
+                    ("conv_q.weight", "attn.conv_q.weight"),
+                    ("conv_q.bias", "attn.conv_q.bias"),
+                    ("conv_k.weight", "attn.conv_k.weight"),
+                    ("conv_k.bias", "attn.conv_k.bias"),
+                    ("conv_v.weight", "attn.conv_v.weight"),
+                    ("conv_v.bias", "attn.conv_v.bias"),
+                    ("conv_o.weight", "attn.conv_o.weight"),
+                    ("conv_o.bias", "attn.conv_o.bias"),
+                    ("emb_rel_k", "attn.rel_pos_k"),
+                    ("emb_rel_v", "attn.rel_pos_v"),
+                ] {
+                    v.push((
+                        format!("enc.attn_layers.{j}.{tail_in}"),
+                        format!("enc.{j}.{tail_out}"),
+                    ));
+                }
+                // FFN: 2 conv × {weight, bias}
+                for (tail_in, tail_out) in [
+                    ("conv_1.weight", "ffn.conv_1.weight"),
+                    ("conv_1.bias", "ffn.conv_1.bias"),
+                    ("conv_2.weight", "ffn.conv_2.weight"),
+                    ("conv_2.bias", "ffn.conv_2.bias"),
+                ] {
+                    v.push((
+                        format!("enc.ffn_layers.{j}.{tail_in}"),
+                        format!("enc.{j}.{tail_out}"),
+                    ));
+                }
+                // Norm: 2 layers × {gamma, beta}
+                for (norm_i, dst_prefix) in [(1usize, "norm1"), (2, "norm2")] {
+                    for (tail_in, tail_out) in [("gamma", "gamma"), ("beta", "beta")] {
+                        v.push((
+                            format!("enc.norm_layers_{norm_i}.{j}.{tail_in}"),
+                            format!("enc.{j}.{dst_prefix}.{tail_out}"),
+                        ));
+                    }
+                }
+            }
+            v
+        };
+        // Sanity: per-block enumeration is exactly 114 (4 + 2 + 6 × 18 = 114).
+        // A drift here (e.g. one of the sub-namespace enumerations goes
+        // stale) would silently reduce the total-count check below.
+        assert_eq!(
+            per_block_pairs.len(),
+            114,
+            "per-block enumeration must be exactly 114 tensors — got {}",
+            per_block_pairs.len()
+        );
+
+        let mut total_renamed = 0usize;
+        for (upstream_i, target_i) in block_pairs {
+            for (tail_in, tail_out) in &per_block_pairs {
+                let input = format!("flow.flows.{upstream_i}.{tail_in}");
+                let expected = format!("sbv2.flow.layer.{target_i}.{tail_out}");
+                let got = classify_tensor(&input, Some(3));
+                assert_eq!(
+                    got,
+                    TensorClass::Rename(expected.clone()),
+                    "{input} must rename to {expected}"
+                );
+                total_renamed += 1;
+            }
+        }
+        assert_eq!(
+            total_renamed, 456,
+            "4 upstream blocks × 114 tensors/block must yield exactly 456 Rename \
+             classifications — got {total_renamed}"
+        );
+    }
+
+    /// Blocker 2b TDD-hardening (2026-08-10) — malformed / unknown
+    /// per-block sub-namespaces must fall through to `PassThrough` with
+    /// the `flow.` per-family reason, NOT be silently dropped. Complements
+    /// `classify_flow_odd_upstream_index_falls_through_to_pass_through`
+    /// (which covers `Flip`-slot indices) by covering typo / rename-drift
+    /// on the tail side (a stale upstream config might rename
+    /// `emb_rel_k` → `emb_rel_key` in a future revision — the converter
+    /// must surface that as a preserved-verbatim tensor, not silently drop
+    /// it or panic).
+    #[test]
+    fn classify_flow_unknown_per_block_subname_falls_through_to_pass_through() {
+        // Each of these is a plausible-looking tail that does NOT match
+        // any classify_flow_block_tensor arm.
+        let unknown_tails = [
+            "pre.gamma",                       // pre has {weight, bias} only
+            "post.beta",                       // post has {weight, bias} only
+            "enc.spk_emb_linear.rel",          // spk_emb_linear has {weight, bias} only
+            "enc.attn_layers.0.conv_x.weight", // no `conv_x` — {q,k,v,o} only
+            "enc.attn_layers.0.emb_rel_q",     // {k, v} only
+            "enc.ffn_layers.0.conv_3.weight",  // {1, 2} only
+            "enc.norm_layers_3.0.gamma",       // {1, 2} only
+            "enc.attn_layers.0.conv_q.scale",  // {weight, bias} only
+            "enc.random_new_sub_module.0",     // whole new sub-namespace
+        ];
+        for tail in unknown_tails {
+            let input = format!("flow.flows.0.{tail}");
+            match classify_tensor(&input, Some(3)) {
+                TensorClass::PassThrough { reason } => {
+                    // FR-EX-08: the fall-through must land on the
+                    // `flow.` per-family reason (the "SBV2 flow auxiliary
+                    // tensor" arm at classify_tensor's default 5-arm),
+                    // not the generic "unrecognized upstream tensor" arm
+                    // — a future maintainer needs the family label to
+                    // triage.
+                    assert!(
+                        reason.starts_with("SBV2 flow auxiliary tensor"),
+                        "{input} must fall through to the flow.* per-family PassThrough \
+                         reason, got: {reason}"
+                    );
+                }
+                other => panic!(
+                    "{input} (unknown per-block sub-namespace) must fall through to \
+                     PassThrough, got {other:?}"
+                ),
+            }
+        }
+    }
+
     // Post-M6 (2026-08-06) encoder-layer rename tests. Each entry pins
     // one upstream `enc_p.encoder.*` tensor to its target GGUF name
     // under `sbv2.text_encoder.layer.<i>.*` — a stale converter that
