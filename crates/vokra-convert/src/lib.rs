@@ -46,6 +46,7 @@ mod models;
 mod onnx;
 mod quantize;
 mod safetensors;
+pub mod spm_proto;
 
 use std::fmt;
 use std::path::Path;
