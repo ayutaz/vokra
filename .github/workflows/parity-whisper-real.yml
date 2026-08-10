@@ -471,6 +471,14 @@ jobs:
           exit_code=${PIPESTATUS[0]}
           echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
           echo "cargo test parity_whisper exited with ${exit_code}"
+          {
+            echo ""
+            echo "### parity_whisper — ${SIZE} (exit ${exit_code})"
+            echo ""
+            echo "\`\`\`"
+            grep -E '^\[parity\]' /tmp/parity.log || echo "(no [parity] diagnostic lines emitted)"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       # Audit 2026-08-10 (Rank 9): M5-15 fused K-quant path on real Whisper
       # weights. `crates/vokra-cli/tests/quant_fused_real_weights.rs` gates
       # on VOKRA_WHISPER_GGUF (non-quantized) + optionally VOKRA_WHISPER_WAV;
@@ -498,14 +506,6 @@ jobs:
             exit 0
           fi
           cargo test --release -p vokra-cli --test quant_fused_real_weights -- --nocapture
-          {
-            echo ""
-            echo "### parity_whisper — ${SIZE} (exit ${exit_code})"
-            echo ""
-            echo "\`\`\`"
-            grep -E '^\[parity\]' /tmp/parity.log || echo "(no [parity] diagnostic lines emitted)"
-            echo "\`\`\`"
-          } >> "$GITHUB_STEP_SUMMARY"
       - name: Per-size atol verdict + fabricated-pass guard
         # M4-14-T06 (ADR M4-14 §D2). Parses the `[parity] <ctx>: max |Δ| =
         # <val> over <n> elems (atol <atol>)` lines that assert_close()
