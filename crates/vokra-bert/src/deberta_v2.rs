@@ -422,6 +422,138 @@ impl LayerNorm {
     }
 }
 
+/// DeBERTa v2 encoder-input convolution layer (arXiv:2006.03654 §3.4
+/// "Enhanced Mask Decoder"; see also `conv_kernel_size` in HuggingFace
+/// transformers `DebertaV2Config`).
+///
+/// # Where this fires in the encoder graph
+///
+/// Applied ONCE at position 0 of the transformer stack, between the
+/// embedding LayerNorm output and the first transformer layer input.
+/// The upstream `DebertaV2Encoder.forward` gates it on the `i == 0`
+/// step and only when `getattr(config, "conv_kernel_size", 0) > 0`
+/// (fires for `ku-nlp/deberta-v2-large-japanese-char-wwm` which sets
+/// `conv_kernel_size=3` / `conv_act="gelu"`; does NOT fire for the v3
+/// checkpoints which drop the layer entirely).
+///
+/// # Structure
+///
+/// ```text
+/// x = embed_ln output                          # [L, H]
+/// conv_out = Conv1D(x, kernel=3, padding=1)    # [L, H]
+/// conv_out = GELU(conv_out)                    # [L, H]
+/// output   = LayerNorm(x + conv_out)           # [L, H]  (residual + LN)
+/// ```
+///
+/// # Padding mask
+///
+/// Upstream applies `input_mask` to zero-out padding rows before the
+/// LayerNorm step. `parity_sbv2_real` (and every real-checkpoint parity
+/// caller today) feeds unbatched, unpadded input, so the mask is all-1s
+/// and skipped here — a mask-aware overload can be added when the first
+/// caller actually needs it (FR-EX-08 loud-fail rather than a silent
+/// mask stub).
+///
+/// # Weight layout
+///
+/// - `conv_weight` = flattened `[out_ch=H, in_ch=H, kernel=K]` row-major,
+///   matching HF `nn.Conv1d.weight.shape` = `[H, H, K]`
+///   (see [`EncoderConv::forward`] for the index arithmetic).
+/// - `conv_bias` = `[H]`
+/// - `ln` = LayerNorm gamma/beta = `[H]` each
+///
+/// # Historical
+///
+/// Missing this layer left `bert_hidden_ja` at max |Δ| = 1.083e1 vs the
+/// HF reference dump on the parity-CI Aug 2026 wave, cascading into
+/// `bert_bridge_out` / `mel_hidden` (~4.41e0) — see
+/// `parity_sbv2_real.rs` history + the `[EstimatedPreFixture]` atol
+/// entries in `tests/fixtures/sbv2/atol-measurements.json` for the
+/// pre-fix delta.
+pub struct EncoderConv {
+    conv_weight: Vec<f32>, // [H, H, K] flattened row-major
+    conv_bias: Vec<f32>,   // [H]
+    ln: LayerNorm,
+    d_model: usize,
+    kernel_size: usize,
+}
+
+impl EncoderConv {
+    pub fn new(
+        conv_weight: Vec<f32>,
+        conv_bias: Vec<f32>,
+        ln: LayerNorm,
+        d_model: usize,
+        kernel_size: usize,
+    ) -> Self {
+        assert_eq!(
+            conv_weight.len(),
+            d_model * d_model * kernel_size,
+            "EncoderConv weight expected {}×{}×{} floats, got {}",
+            d_model,
+            d_model,
+            kernel_size,
+            conv_weight.len(),
+        );
+        assert_eq!(conv_bias.len(), d_model);
+        Self {
+            conv_weight,
+            conv_bias,
+            ln,
+            d_model,
+            kernel_size,
+        }
+    }
+
+    /// Apply Conv1D(kernel=K, padding=K/2, groups=1) → GELU → residual → LayerNorm.
+    ///
+    /// `hidden` shape is `[seq_len, d_model]` row-major. Output has the
+    /// same shape.
+    pub fn forward(&self, hidden: &[f32], seq_len: usize) -> Vec<f32> {
+        let d = self.d_model;
+        let k = self.kernel_size;
+        // padding = (k - 1) / 2 for the "same-length" HF default; k=3 → pad=1.
+        let pad = (k - 1) / 2;
+        assert_eq!(hidden.len(), seq_len * d);
+        // Conv1D: output[t, oc] = bias[oc] + Σ_{ic, dk} W[oc, ic, dk] * x[t + dk - pad, ic]
+        let mut conv_out = vec![0.0_f32; seq_len * d];
+        for t in 0..seq_len {
+            for oc in 0..d {
+                let mut acc = self.conv_bias[oc];
+                for dk in 0..k {
+                    let src_t = t as isize + dk as isize - pad as isize;
+                    if src_t < 0 || (src_t as usize) >= seq_len {
+                        continue; // implicit zero-pad matches HF default
+                    }
+                    let src_t = src_t as usize;
+                    for ic in 0..d {
+                        // Row-major [oc, ic, dk]: oc * (d * k) + ic * k + dk.
+                        acc += self.conv_weight[oc * d * k + ic * k + dk] * hidden[src_t * d + ic];
+                    }
+                }
+                conv_out[t * d + oc] = acc;
+            }
+        }
+        // GELU (Hendrycks tanh approximation — matches FfnBlock GELU +
+        // HF `ACT2FN["gelu"]` for DeBERTa v2 which pins the tanh variant.)
+        // WP-10 (2026-08-10): tanh through vokra_math for cross-plat
+        // determinism within Vokra.
+        for v in conv_out.iter_mut() {
+            let x = *v;
+            *v = 0.5 * x * (1.0 + vokra_math::tanh(SQRT_TWO_OVER_PI * (x + 0.044_715 * x * x * x)));
+        }
+        // Residual + LayerNorm: `output = LayerNorm(x + GELU(conv(x)))`.
+        // Upstream `ConvLayer.forward` does `layer_norm_input = residual_states + out`
+        // where residual_states == the input to the conv, so we add `hidden`
+        // (the pre-conv value) to the activated conv output.
+        let mut combined = vec![0.0_f32; seq_len * d];
+        for i in 0..seq_len * d {
+            combined[i] = hidden[i] + conv_out[i];
+        }
+        self.ln.forward(&combined, seq_len, d)
+    }
+}
+
 /// One DeBERTa v2 transformer block, **post-norm** order — matches
 /// HuggingFace transformers `DebertaV2SelfOutput.forward` +
 /// `DebertaV2Output.forward` (both apply LayerNorm AFTER the residual
@@ -484,11 +616,19 @@ impl EncoderLayer {
 }
 
 /// Full DeBERTa v2 encoder: token embedding lookup → embed LayerNorm →
-/// N-layer transformer stack.
+/// optional encoder-input conv (v2-only, fires when `conv_kernel_size > 0`
+/// in the upstream config) → N-layer transformer stack.
 pub struct DebertaV2Encoder {
     layers: Vec<EncoderLayer>,
     embed: Vec<f32>, // [vocab, d_model]
     embed_ln: LayerNorm,
+    /// Optional v2-specific pre-transformer 1D conv layer (see
+    /// [`EncoderConv`]'s docstring). `None` for checkpoints that ship no
+    /// `bert.encoder.conv.*` tensors — the field stays absent both to
+    /// preserve DeBERTa v3 loading (where the upstream layer does not
+    /// exist) and to keep older Vokra GGUFs (converted before the encoder
+    /// conv was wired) backward-compatible.
+    encoder_conv: Option<EncoderConv>,
     d_model: usize,
     vocab_size: usize,
 }
@@ -509,6 +649,13 @@ impl DebertaV2Encoder {
             }
         }
         hidden = self.embed_ln.forward(&hidden, seq_len, self.d_model);
+        // v2-only: encoder-input conv fires once between embed_ln and layer[0]
+        // when the checkpoint ships the tensors. HF gates this on
+        // `conv_kernel_size > 0`; we gate on the presence of the loaded
+        // `EncoderConv` (same effective condition, honestly propagated).
+        if let Some(ref conv) = self.encoder_conv {
+            hidden = conv.forward(&hidden, seq_len);
+        }
         for layer in &self.layers {
             hidden = layer.forward(&hidden, seq_len);
         }
@@ -575,6 +722,12 @@ impl DebertaV2Encoder {
             layers: (0..n_layers).map(|_| make_layer()).collect(),
             embed: vec![0.01; vocab * d_model],
             embed_ln: LayerNorm::new(vec![1.0; d_model], vec![0.0; d_model], 1e-7),
+            // Synthetic test builds skip the encoder-input conv — existing
+            // callers assert against the "no conv" topology. A dedicated
+            // conv-aware synthetic constructor can be added when a test
+            // needs one; FR-EX-08: keeping the default `None` preserves
+            // every existing synthetic assertion verbatim.
+            encoder_conv: None,
             d_model,
             vocab_size: vocab,
         }
@@ -594,6 +747,13 @@ impl DebertaV2Encoder {
     /// # Tensor names
     ///
     /// - `bert.embed.weight`, `bert.embed.ln.{gamma,beta}`
+    /// - `bert.encoder.conv.{weight,bias}` — **optional** (v2-only
+    ///   encoder-input Conv1D, fires when `conv_kernel_size > 0` in the
+    ///   upstream config; present for `ku-nlp/deberta-v2-large-japanese-
+    ///   char-wwm`, absent for every DeBERTa v3 checkpoint).
+    /// - `bert.encoder.conv.ln.{gamma,beta}` — **optional** (LayerNorm
+    ///   inside the encoder-input ConvLayer, present alongside
+    ///   `bert.encoder.conv.weight`).
     /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,wq_pos,wk_pos,w_out,pos_embed}.weight`
     /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,w_out}.bias`
     /// - `bert.encoder.layer.<i>.attn.{wq_pos,wk_pos}.bias` — **optional**
@@ -650,6 +810,38 @@ impl DebertaV2Encoder {
             1e-7,
         );
 
+        // Encoder-input Conv1D (v2-only, gated on the tensor's presence).
+        // Weight layout is HF `nn.Conv1d.weight` = [out_ch=H, in_ch=H,
+        // kernel=K] flattened row-major. We derive K from the loaded
+        // tensor size (K = numel / H²) so a future kernel-size change in
+        // an upstream config lands automatically. Both bias + LN
+        // gamma/beta ship alongside the weight — if the weight is present
+        // but any of them is missing the load fails loudly (FR-EX-08).
+        let encoder_conv = if g.tensor_info("bert.encoder.conv.weight").is_some() {
+            let cw = load_tensor_f32("bert.encoder.conv.weight")?;
+            let expected_hh = d_model * d_model;
+            if !cw.len().is_multiple_of(expected_hh) {
+                return Err(VokraError::ModelLoad(format!(
+                    "bert.encoder.conv.weight: expected d_model² * kernel = {}*k floats, got {}",
+                    expected_hh,
+                    cw.len(),
+                )));
+            }
+            let kernel_size = cw.len() / expected_hh;
+            let cb = load_tensor_f32("bert.encoder.conv.bias")?;
+            let ln_gamma = load_tensor_f32("bert.encoder.conv.ln.gamma")?;
+            let ln_beta = load_tensor_f32("bert.encoder.conv.ln.beta")?;
+            Some(EncoderConv::new(
+                cw,
+                cb,
+                LayerNorm::new(ln_gamma, ln_beta, 1e-7),
+                d_model,
+                kernel_size,
+            ))
+        } else {
+            None
+        };
+
         let mut layers = Vec::with_capacity(n_layers);
         for i in 0..n_layers {
             let p = format!("bert.encoder.layer.{i}");
@@ -705,6 +897,7 @@ impl DebertaV2Encoder {
             layers,
             embed,
             embed_ln,
+            encoder_conv,
             d_model,
             vocab_size,
         })

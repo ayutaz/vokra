@@ -583,6 +583,28 @@ pub(crate) fn map_deberta_name(upstream: &str) -> Option<MapAction> {
         return None;
     }
 
+    // Encoder-input Conv1D layer (v2-only, fires when upstream config sets
+    // `conv_kernel_size > 0` — present in `ku-nlp/deberta-v2-large-japanese-
+    // char-wwm`). Upstream `DebertaV2Encoder` inserts this once between the
+    // embedding LayerNorm output and the first transformer layer input; the
+    // Rust `DebertaV2Encoder` loader gates its `EncoderConv` field on the
+    // presence of `bert.encoder.conv.weight`. Missing this layer left
+    // `bert_hidden_ja` diverging at max |Δ| = 10.83 vs the HF reference dump
+    // (parity-sbv2-real 2026-08-11 wave); adding these rename rules is the
+    // matched half of the Rust-side implementation.
+    if upstream == "deberta.encoder.conv.conv.weight" {
+        return Some(MapAction::Rename("bert.encoder.conv.weight".into()));
+    }
+    if upstream == "deberta.encoder.conv.conv.bias" {
+        return Some(MapAction::Rename("bert.encoder.conv.bias".into()));
+    }
+    if upstream == "deberta.encoder.conv.LayerNorm.weight" {
+        return Some(MapAction::Rename("bert.encoder.conv.ln.gamma".into()));
+    }
+    if upstream == "deberta.encoder.conv.LayerNorm.bias" {
+        return Some(MapAction::Rename("bert.encoder.conv.ln.beta".into()));
+    }
+
     // Not consumed by the Rust loader — skip with a categorized reason.
     None
 }
@@ -611,12 +633,14 @@ pub(crate) fn classify_skip(name: &str) -> &'static str {
     if name == "deberta.embeddings.position_embeddings.weight" {
         return "absolute position embeddings — disentangled attention uses rel_embeddings only";
     }
-    // v2-specific conv layer inside the encoder. The Rust DeBERTa v2
-    // loader does not consume this today (its struct has no conv slot);
-    // future support would require both a struct-layout change and a
-    // rename entry here.
+    // Every `deberta.encoder.conv.*` tensor is now mapped by
+    // `map_deberta_name` (Rust `EncoderConv` land 2026-08-11); nothing
+    // reaches this classifier under that prefix. Kept the pattern here as
+    // a loud negative-control so any future variant (e.g. a per-head
+    // conv) that we DON'T rename yet gets a categorized reason rather
+    // than the generic "unmapped tensor" fallback.
     if name.starts_with("deberta.encoder.conv.") {
-        return "v2-specific encoder conv — not consumed by Rust loader today";
+        return "encoder-input conv variant not yet consumed — see map_deberta_name for the mapped members";
     }
     // Encoder-level LayerNorm for `rel_embeddings` (HF
     // `DebertaV2Encoder.get_rel_embedding` when `norm_rel_ebd` contains
