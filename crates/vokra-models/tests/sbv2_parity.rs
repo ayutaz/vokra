@@ -15,12 +15,20 @@ use vokra_models::sbv2::{ATOL_DEFAULT, UTMOS_ATOL, tolerance_for};
 
 /// Every `PER_TENSOR_ATOL` entry must be reachable through `tolerance_for`
 /// with its exact override value.
+///
+/// 2026-08-11: bounds updated to match the measured floors landed with
+/// the encoder.conv order fix (crates/vokra-bert/src/deberta_v2.rs
+/// `EncoderConv::forward`). See `PER_TENSOR_ATOL`'s rustdoc and
+/// `tests/fixtures/sbv2/atol-measurements.json` for the redundant
+/// derivation records.
 #[test]
 fn tolerance_for_known_tensor_returns_per_tensor_override() {
-    assert_eq!(tolerance_for("bert_hidden_ja"), 0.02);
+    assert_eq!(tolerance_for("bert_hidden_ja"), 0.05);
     assert_eq!(tolerance_for("bert_hidden_en"), 0.02);
+    assert_eq!(tolerance_for("bert_bridge_out"), 0.07);
+    assert_eq!(tolerance_for("mel_hidden"), 0.07);
     assert_eq!(tolerance_for("sdp_sample"), 0.05);
-    assert_eq!(tolerance_for("z_latent"), 0.03);
+    assert_eq!(tolerance_for("z_latent"), 0.08);
 }
 
 /// A tensor name with no `PER_TENSOR_ATOL` entry — including the empty
