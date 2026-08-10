@@ -48,13 +48,21 @@ on:
     # Mondays 07:00 UTC — 1-2h after the other weekly parity crons so a
     # shared runner pool doesn't stack them.
     - cron: "0 7 * * 1"
-    # Audit 2026-08-10 (Rank 12): monthly cron (1st of month, 07:00 UTC) that
-    # fires the whisper-wasm-e2e job below via the same-name env-var check the
-    # workflow_dispatch input drives. Weekly cron above only runs wasm-build
-    # (no HF DL); adding a monthly leg catches HF-side wasm-decode regressions
-    # without burning multi-GB DL every week. The e2e job's `if:` guard
-    # (below) treats the monthly cron identically to workflow_dispatch.
-    - cron: "0 7 1 * *"
+    # Audit 2026-08-10 (Rank 12): monthly cron (1st of month, 08:10 UTC) that
+    # fires the whisper-wasm-e2e job below. Weekly cron above only runs
+    # wasm-build (no HF DL); adding a monthly leg catches HF-side wasm-decode
+    # regressions without burning multi-GB DL every week. The e2e job's `if:`
+    # guard (below) treats the monthly cron identically to workflow_dispatch.
+    #
+    # Slot: 08:10 UTC keeps this out of every existing Monday slot
+    # (kokoro 04:00 / whisper 05:00 / vulkan 05:30 / cuda-rtf 06:00 /
+    # csm 06:30 / web-wasm-weekly 07:00 / moshi 07:30 / utmos 08:00 /
+    # godot 08:30 / cosyvoice2 08:45 / release-cadence 09:00 / nemo-asr 09:05 /
+    # rmvpe 09:15 / whisper-extras 09:35 / silero-nostd 10:00 ...) and avoids
+    # colliding with the weekly `0 7 * * 1` above (check-workflow-hygiene.sh
+    # collision guard: same minute+hour+DOW-intersection = same slot). No
+    # daily-cron slot at 08:10 either.
+    - cron: "10 8 1 * *"
   pull_request:
     # Phase 5a-3 (2026-07-23): WebGPU backend / WASM SIMD128 kernel / CPU
     # features + dispatch / wasm harness / node scripts / web package /
@@ -137,12 +145,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Audit 2026-08-10 (Rank 12): fires on (a) explicit workflow_dispatch with
-    # opt-in input, OR (b) monthly cron (1st of month) — both trigger the
-    # multi-GB HF DL + JFK transcript byte-match. Weekly cron (Mondays) does
-    # NOT fire this (schedule event with cron != "0 7 1 * *" skips).
+    # opt-in input, OR (b) monthly cron (1st of month, 08:10 UTC) — both
+    # trigger the multi-GB HF DL + JFK transcript byte-match. Weekly cron
+    # (Mondays 07:00) does NOT fire this (schedule event with cron !=
+    # "10 8 1 * *" skips).
     if: |
       (github.event_name == 'workflow_dispatch' && inputs.run_whisper_e2e) ||
-      (github.event_name == 'schedule' && github.event.schedule == '0 7 1 * *')
+      (github.event_name == 'schedule' && github.event.schedule == '10 8 1 * *')
     env:
       # Snapshot SHA (openai/whisper-base@main as of 2026-07-23). MUST
       # match pins.yaml `whisper-base-wasm` hf_revision and stay in
