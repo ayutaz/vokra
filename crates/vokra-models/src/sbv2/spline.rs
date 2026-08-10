@@ -213,7 +213,11 @@ pub fn rational_quadratic_spline_inverse(y: f32, p: SplineParams<'_>) -> f32 {
          indicates a non-monotonic spline (violated invertibility precondition)",
         discriminant
     );
-    let xi = 2.0 * c / (-b - discriminant.sqrt());
+    // Route sqrt through vokra_math for cross-plat bit-exactness within
+    // Vokra — matches the SBV2 hot-path libm swap in `duration.rs::rqs_inverse`
+    // (WP-08/10/11/12). If ConvFlow ever dedups its inline RQS by calling
+    // this primitive, the two paths stay numerically consistent.
+    let xi = 2.0 * c / (-b - vokra_math::sqrt(discriminant));
 
     p.cum_widths[k] + xi * w_k
 }
