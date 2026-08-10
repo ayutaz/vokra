@@ -228,6 +228,228 @@ fn from_gguf_missing_leaky_relu_slope_fails_loudly() {
     }
 }
 
+/// Blocker 2b TDD-hardening (2026-08-10) — builds a `main` GGUF with
+/// every required scalar dim key present AND `n_flow_layers = 1` (nonzero,
+/// so `SbV2Model::from_gguf` takes the flow-hparam-read branch), plus the
+/// four `vokra.sbv2.flow.*` keys except the one named in `omit`. Every
+/// non-omitted value is a legal minimum: `n_encoder_layers = 6` +
+/// `kernel_ffn = 5` + `gin_channels = 8` (non-zero) + `mean_only = true`
+/// mirror the base checkpoint's shape at hparam scale.
+///
+/// The `omit` argument is one of `"vokra.sbv2.flow.n_encoder_layers"`,
+/// `"vokra.sbv2.flow.kernel_ffn"`, `"vokra.sbv2.flow.gin_channels"`, or
+/// `"vokra.sbv2.flow.mean_only"` — each of the four flow-hparam keys the
+/// loader reads at lines 2341-2352 (see `crates/vokra-models/src/sbv2/mod.rs`).
+/// Any other value (or `None`) is a helper misuse for these tests.
+///
+/// The loader stops on the FIRST missing flow-hparam key it reads
+/// (read order = `n_encoder_layers → kernel_ffn → gin_channels →
+/// mean_only`), so omitting one key while including all three others
+/// exposes exactly that key's error message. This is the metadata-key
+/// spelling-contract pin between the converter's `KEY_FLOW_*` constants
+/// (`crates/vokra-convert/src/models/sbv2.rs` lines 378-381) and the
+/// loader's `require_u32` / `.and_then(|v| v.as_bool())` reads: any typo
+/// on either side that survives converter tests surfaces here as a
+/// wrongly-named error message.
+fn n_flow_layers_1_main_omit_flow_key(omit: &str) -> GgufBuilder {
+    let mut b = scalar_dims_only_main();
+    // Nonzero n_flow_layers triggers the flow-hparam read block.
+    b.add_u32("vokra.sbv2.n_flow_layers", 1);
+    // Add the four flow-hparam keys, skipping the one named in `omit`.
+    for (key, val) in [
+        ("vokra.sbv2.flow.n_encoder_layers", 6u32),
+        ("vokra.sbv2.flow.kernel_ffn", 5),
+        ("vokra.sbv2.flow.gin_channels", 8),
+    ] {
+        if key != omit {
+            b.add_u32(key, val);
+        }
+    }
+    if omit != "vokra.sbv2.flow.mean_only" {
+        b.add_bool("vokra.sbv2.flow.mean_only", true);
+    }
+    b
+}
+
+/// Blocker 2b TDD-hardening (2026-08-10) — a `main` GGUF with every
+/// non-flow scalar hparam present + `n_flow_layers = 1` but MISSING
+/// `vokra.sbv2.flow.n_encoder_layers` must fail loudly with
+/// `VokraError::ModelLoad` naming the exact missing key. This pins the
+/// FIRST of the four flow-hparam keys `SbV2Model::from_gguf` reads
+/// (`crates/vokra-models/src/sbv2/mod.rs` line 2341, via `require_u32`);
+/// a converter typo like `flow.n_encoder_layer` (missing `s`) or a loader
+/// typo like `flow.num_encoder_layers` would fail this test with a
+/// wrongly-named key — the two spellings must match byte-for-byte.
+///
+/// `bert_ja` / `bert_en` are never consulted on this path (the flow-hparam
+/// read fails before either BERT file's `from_gguf` is called), so the same
+/// empty file is reused for all three arguments (matches the
+/// `from_gguf_on_empty_main_file_fails_loudly_naming_first_missing_key`
+/// pattern above).
+#[test]
+fn from_gguf_positive_n_flow_layers_missing_flow_n_encoder_layers_fails_loudly() {
+    let main = GgufFile::parse(
+        n_flow_layers_1_main_omit_flow_key("vokra.sbv2.flow.n_encoder_layers")
+            .to_bytes()
+            .expect("build main gguf bytes"),
+    )
+    .expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!(
+            "expected loud-fail on missing vokra.sbv2.flow.n_encoder_layers; loader \
+             silently accepted the omission (FR-EX-08 violation)"
+        ),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("vokra.sbv2.flow.n_encoder_layers"),
+                "expected error to name the missing key \
+                 `vokra.sbv2.flow.n_encoder_layers`, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// Blocker 2b TDD-hardening (2026-08-10) — sibling of
+/// `from_gguf_positive_n_flow_layers_missing_flow_n_encoder_layers_fails_loudly`
+/// for the SECOND flow-hparam key (`vokra.sbv2.flow.kernel_ffn`). Distinct
+/// from the top-level `vokra.sbv2.kernel_ffn` (which is the text encoder's
+/// FFN kernel width, = 3 on the base ckpt) — the flow's inner encoder
+/// stack ships a different value (= 5 on the base ckpt), see
+/// `crates/vokra-models/src/sbv2/flow.rs`'s module doc for why the two
+/// live under separate metadata keys.
+#[test]
+fn from_gguf_positive_n_flow_layers_missing_flow_kernel_ffn_fails_loudly() {
+    let main = GgufFile::parse(
+        n_flow_layers_1_main_omit_flow_key("vokra.sbv2.flow.kernel_ffn")
+            .to_bytes()
+            .expect("build main gguf bytes"),
+    )
+    .expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!(
+            "expected loud-fail on missing vokra.sbv2.flow.kernel_ffn; loader \
+             silently accepted the omission (FR-EX-08 violation)"
+        ),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("vokra.sbv2.flow.kernel_ffn"),
+                "expected error to name the missing key \
+                 `vokra.sbv2.flow.kernel_ffn`, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// Blocker 2b TDD-hardening (2026-08-10) — sibling of
+/// `from_gguf_positive_n_flow_layers_missing_flow_n_encoder_layers_fails_loudly`
+/// for the THIRD flow-hparam key (`vokra.sbv2.flow.gin_channels`). This is
+/// the `g` (per-utterance conditioning vector) input dimension threaded
+/// through every coupling layer's `spk_emb_linear` projection — a silent
+/// zero-default would leave every coupling accepting an empty `g` and
+/// producing arithmetic-wrong output with no observable signal (FR-EX-08).
+#[test]
+fn from_gguf_positive_n_flow_layers_missing_flow_gin_channels_fails_loudly() {
+    let main = GgufFile::parse(
+        n_flow_layers_1_main_omit_flow_key("vokra.sbv2.flow.gin_channels")
+            .to_bytes()
+            .expect("build main gguf bytes"),
+    )
+    .expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!(
+            "expected loud-fail on missing vokra.sbv2.flow.gin_channels; loader \
+             silently accepted the omission (FR-EX-08 violation)"
+        ),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("vokra.sbv2.flow.gin_channels"),
+                "expected error to name the missing key \
+                 `vokra.sbv2.flow.gin_channels`, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// Blocker 2b TDD-hardening (2026-08-10) — sibling of
+/// `from_gguf_positive_n_flow_layers_missing_flow_n_encoder_layers_fails_loudly`
+/// for the FOURTH and last flow-hparam key (`vokra.sbv2.flow.mean_only`),
+/// with two differences from its three siblings: (a) this key is a `bool`
+/// not a `u32` (the loader uses `.and_then(|v| v.as_bool()).ok_or_else(...)`
+/// at lines 2344-2352, NOT `require_u32`), and (b) the error message
+/// hand-formats a distinct suffix `(bool)` to make the type mismatch
+/// diagnostic clearer than the generic `require_u32` message. This test
+/// pins BOTH the key name AND the `(bool)` suffix.
+///
+/// A silent default here (say, `false`) would cause the coupling to
+/// consume an extra `half_d_z` channels from `post`'s output that the
+/// converted GGUF's `post.weight` shape doesn't provide — either loud-fail
+/// downstream on shape mismatch (best case) or produce silently-wrong
+/// output for a fine-tune ckpt that happens to have matching shape by
+/// coincidence (worst case). FR-EX-08 requires the load-time error.
+#[test]
+fn from_gguf_positive_n_flow_layers_missing_flow_mean_only_fails_loudly() {
+    let main = GgufFile::parse(
+        n_flow_layers_1_main_omit_flow_key("vokra.sbv2.flow.mean_only")
+            .to_bytes()
+            .expect("build main gguf bytes"),
+    )
+    .expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!(
+            "expected loud-fail on missing vokra.sbv2.flow.mean_only; loader \
+             silently accepted the omission (FR-EX-08 violation)"
+        ),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("vokra.sbv2.flow.mean_only"),
+                "expected error to name the missing key \
+                 `vokra.sbv2.flow.mean_only`, got: {msg}"
+            );
+            // The `mean_only` read uses a bespoke error string with a
+            // `(bool)` suffix (loader line 2349) — pinning this makes a
+            // silent refactor that drops the type-hint diagnostic caught
+            // here rather than by a future reader trying to understand a
+            // stale error message.
+            assert!(
+                msg.contains("(bool)"),
+                "expected error to include the `(bool)` type-hint suffix, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
 /// Real-fixture gated: requires the repo-root
 /// `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
 /// trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
