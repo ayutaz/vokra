@@ -149,8 +149,12 @@ fi
 # 出力に「pre-push profile」明記、CI-covered の説明は .config/nextest.toml
 # 冒頭)。VOKRA_HOOK_DEEP=1 で `--profile default` に fallback。
 #
-# Doc-tests も pre-push から除外 (CI 側で `cargo test --workspace --doc`)。
-# 個別 doc-test は各 crate compile を trigger する重量 leg = CI territory。
+# Doc-tests も pre-push から除外 (nextest is not doctest-capable)。
+# 個別 doc-test は各 crate compile を trigger する重量 leg = CI territory
+# ゆえ、ci-quality.yml の advisory `doctests` job で拾う (2026-08-10 audit
+# fix; 以前のコメントは 'CI 側で `cargo test --workspace --doc`' と主張
+# していたが実際には CI 内で invoke されていなかった — audit 発見に伴い
+# advisory job を新設し、コメント側の主張と実装を整合させた)。
 
 nextest_profile="pre-push"
 nextest_skip_reason="CI-covered GPU backends / wasm harness / heavy parity integration are skipped (see .config/nextest.toml)"

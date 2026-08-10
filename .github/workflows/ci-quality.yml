@@ -270,6 +270,30 @@ jobs:
       - name: Verify documentation code examples
         run: python3 tools/docs/check_doc_examples.py
 
+  # Audit 2026-08-10 gap: rustdoc `///` doctests were executed NOWHERE.
+  # `cargo test --workspace` (which runs them) is invoked by no workflow,
+  # coverage.yml explicitly nightly-gates `llvm-cov --doctests`, nextest
+  # cannot execute doctests, and the pre-push comment claiming CI ran them
+  # was objectively false (also fixed in this audit wave). This job is
+  # advisory (continue-on-error) so an existing doctest failure does not
+  # block PRs while the initial baseline settles; promotion to required
+  # is the owner's call (same posture as doc-examples above).
+  doctests:
+    name: doctests (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace --doc  (`///` doctests, rustdoc-side)
+        # --no-fail-fast so a single failing doctest reports every failure
+        # in one run (mirrors the shell-self-tests aggregator pattern).
+        # No `-D warnings` — advisory posture is a "does it still compile
+        # + assert?" check, not a doc-hygiene ratchet (that lives in the
+        # rustdoc-warnings job below).
+        run: cargo test --workspace --doc --no-fail-fast
+
   # X-09b-T15: rustdoc / API-reference generation. ADVISORY (continue-on-error),
   # not a branch-protection required check — promotion is the owner's call,
   # same posture as doc-examples / fa-v3-confinement / the license doc-drift
