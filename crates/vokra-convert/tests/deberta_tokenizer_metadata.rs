@@ -144,7 +144,7 @@ fn deberta_v2_reads_wordpiece_vocab_and_stamps_metadata() {
     let input = dir.write("model.safetensors", &safetensors_embed_only(9, 4));
     let output = dir.join("out.gguf");
 
-    convert_deberta_v2_file(&input, &output, None).expect("convert with tokenizer");
+    convert_deberta_v2_file(&input, &output, None, None).expect("convert with tokenizer");
     let bytes = std::fs::read(&output).expect("read gguf");
     let g = GgufFile::parse(bytes).expect("parse gguf");
 
@@ -206,7 +206,7 @@ fn deberta_v2_missing_vocab_txt_leaves_metadata_unwritten() {
     let input = dir.write("model.safetensors", &safetensors_embed_only(9, 4));
     let output = dir.join("out.gguf");
 
-    convert_deberta_v2_file(&input, &output, None).expect("convert without tokenizer");
+    convert_deberta_v2_file(&input, &output, None, None).expect("convert without tokenizer");
     let g = GgufFile::parse(std::fs::read(&output).unwrap()).expect("parse");
 
     // Metadata group must not be stamped (backward compat with pre-
@@ -227,7 +227,8 @@ fn deberta_v2_vocab_missing_sentinel_is_loud_error() {
     dir.write("vocab.txt", vocab.as_bytes());
     let input = dir.write("model.safetensors", &safetensors_embed_only(9, 4));
     let output = dir.join("out.gguf");
-    let err = convert_deberta_v2_file(&input, &output, None).expect_err("missing [CLS] must fail");
+    let err =
+        convert_deberta_v2_file(&input, &output, None, None).expect_err("missing [CLS] must fail");
     let msg = format!("{err}");
     assert!(msg.contains("[CLS]"), "error must name the sentinel: {msg}");
 }
@@ -242,8 +243,8 @@ fn deberta_v2_vocab_non_utf8_is_loud_error() {
     );
     let input = dir.write("model.safetensors", &safetensors_embed_only(9, 4));
     let output = dir.join("out.gguf");
-    let err =
-        convert_deberta_v2_file(&input, &output, None).expect_err("non-UTF-8 vocab must fail");
+    let err = convert_deberta_v2_file(&input, &output, None, None)
+        .expect_err("non-UTF-8 vocab must fail");
     let msg = format!("{err}");
     assert!(
         msg.contains("UTF-8"),
@@ -276,7 +277,7 @@ fn deberta_v3_reads_spm_model_and_stamps_metadata() {
     let input = dir.write("model.safetensors", &safetensors_embed_only(5, 4));
     let output = dir.join("out.gguf");
 
-    convert_deberta_v3_file(&input, &output, None).expect("convert with tokenizer");
+    convert_deberta_v3_file(&input, &output, None, None).expect("convert with tokenizer");
     let g = GgufFile::parse(std::fs::read(&output).unwrap()).expect("parse");
 
     // Scheme = unigram.
@@ -338,7 +339,7 @@ fn deberta_v3_missing_spm_model_leaves_metadata_unwritten() {
     let input = dir.write("model.safetensors", &safetensors_embed_only(5, 4));
     let output = dir.join("out.gguf");
 
-    convert_deberta_v3_file(&input, &output, None).expect("convert without tokenizer");
+    convert_deberta_v3_file(&input, &output, None, None).expect("convert without tokenizer");
     let g = GgufFile::parse(std::fs::read(&output).unwrap()).expect("parse");
 
     assert!(g.get("vokra.bert.tokenizer.scheme").is_none());
@@ -357,8 +358,8 @@ fn deberta_v3_malformed_spm_model_is_loud_error() {
     dir.write("spm.model", &bad);
     let input = dir.write("model.safetensors", &safetensors_embed_only(5, 4));
     let output = dir.join("out.gguf");
-    let err =
-        convert_deberta_v3_file(&input, &output, None).expect_err("truncated spm.model must fail");
+    let err = convert_deberta_v3_file(&input, &output, None, None)
+        .expect_err("truncated spm.model must fail");
     let msg = format!("{err}");
     assert!(msg.contains("spm.model"), "error must name the file: {msg}");
 }
@@ -376,7 +377,7 @@ fn deberta_v3_nested_tokenizer_dir_discovery_works() {
     let input = dir.write("model.safetensors", &safetensors_embed_only(5, 4));
     let output = dir.join("out.gguf");
 
-    convert_deberta_v3_file(&input, &output, None).expect("nested spm.model is found");
+    convert_deberta_v3_file(&input, &output, None, None).expect("nested spm.model is found");
     let g = GgufFile::parse(std::fs::read(&output).unwrap()).expect("parse");
     assert_eq!(
         g.get("vokra.bert.tokenizer.scheme")
