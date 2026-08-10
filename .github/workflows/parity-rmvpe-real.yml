@@ -1,0 +1,122 @@
+# RMVPE (Wave 3 F0 pitch extractor) real-checkpoint parity CI
+# (audit 2026-08-10, Rank 8).
+#
+# Runs the env-gated harness `crates/vokra-models/tests/parity_rmvpe.rs`
+# against a real Vokra GGUF converted from the upstream RMVPE checkpoint.
+# Without this workflow the harness silently PASSES on every CI run:
+#
+#   * `VOKRA_RMVPE_REAL_GGUF` — path to the converted GGUF
+#
+# Loud-partial status (see CLAUDE.md "現在のタスク状態" residual-wave3 §):
+# `RMVPE::extract_real` currently returns `VokraError::UnsupportedOp` while
+# the internal U-Net + GRU forward waits on an owner-provisioned bundle.
+# The harness scaffold (converter + config + real mel front-end + 360-class →
+# Hz decoder + parity harness) is already in place, so when the owner flips
+# both the GGUF fixture and the enable variable, this workflow instantly
+# starts exercising the runtime — no CI edit needed at that time.
+#
+# Design (parity-csm-real.yml + parity-deepfilternet3-real.yml discipline):
+#
+#   * Trigger: workflow_dispatch (owner-driven initial dispatch) + weekly
+#     cron "15 9 * * 1" (Monday 09:15 UTC — its own slot in the staggered
+#     weekly parity roster; see parity-deepfilternet3-real.yml header).
+#
+#   * Repository-variable gate `VOKRA_RMVPE_ENABLE=1` is required for the
+#     parity job to fire on schedule / PR. Cron / PR clean-skip with a
+#     `::notice::` when the variable is not set — fabricated pass 禁止
+#     (FR-EX-08). workflow_dispatch is an owner-explicit opt-in.
+#
+#   * Runtime GGUF is supplied via repository variable
+#     `VOKRA_RMVPE_REAL_GGUF_PATH` — owner-provisioned. Absent = clean
+#     skip inside the harness itself (fixture gate at parity_rmvpe.rs:75).
+#
+#   * NOT registered as a required check. HF/GitHub flakiness must not
+#     block PRs. Promotion to required is an explicit owner decision
+#     after weeks of consecutive greens.
+
+name: parity-rmvpe-real
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 9 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/parity-rmvpe-real.yml"
+      - "crates/vokra-models/src/f0/rmvpe*.rs"
+      - "crates/vokra-models/src/f0/rmvpe/**"
+      - "crates/vokra-models/tests/parity_rmvpe.rs"
+      - "crates/vokra-convert/src/models/rmvpe*.rs"
+      - "tools/parity/rmvpe_*.py"
+
+concurrency:
+  group: parity-rmvpe-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  parity-rmvpe:
+    name: parity (rmvpe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VOKRA_RMVPE_REAL_GGUF: ${{ vars.VOKRA_RMVPE_REAL_GGUF_PATH || '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Gate — VOKRA_RMVPE_ENABLE
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_RMVPE_ENABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] \
+             && [ "${ENABLE_VAR}" != "1" ]; then
+            echo "::notice title=parity-rmvpe-real clean skip::VOKRA_RMVPE_ENABLE is not '1' — this family opt-in is off. Set the repository variable VOKRA_RMVPE_ENABLE=1 (or workflow_dispatch) to enable. Fabricated pass 禁止 (FR-EX-08)."
+            echo "GATE_OPEN=0" >> "$GITHUB_ENV"
+          else
+            echo "GATE_OPEN=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Rust toolchain
+        if: env.GATE_OPEN == '1'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: env.GATE_OPEN == '1'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run parity_rmvpe (loud-partial — real forward = UnsupportedOp today)
+        if: env.GATE_OPEN == '1'
+        run: |
+          set -euo pipefail
+          # The harness self-gates on VOKRA_RMVPE_REAL_GGUF (parity_rmvpe.rs
+          # L163). When absent it prints an explicit skip; when set but
+          # extract_real still returns UnsupportedOp (current loud-partial
+          # state), that fails loudly — fabricated pass 禁止 (FR-EX-08).
+          # The scaffold ↔ implementation transition is precisely what this
+          # workflow watches for.
+          cargo test -p vokra-models --test parity_rmvpe -- --nocapture
+
+      - name: Verify root Cargo.lock unchanged (NFR-DS-02)
+        if: env.GATE_OPEN == '1'
+        run: git diff --exit-code Cargo.lock
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## parity-rmvpe-real"
+            echo ""
+            if [ "${GATE_OPEN:-0}" = "1" ]; then
+              echo "- gate: VOKRA_RMVPE_ENABLE = 1 (opened)"
+              [ -n "${VOKRA_RMVPE_REAL_GGUF}" ] \
+                && echo "- real GGUF: **set** (\`${VOKRA_RMVPE_REAL_GGUF}\`) — parity leg attempts real forward" \
+                || echo "- real GGUF: unset — harness internally clean-skips"
+              echo ""
+              echo "**Loud-partial status**: \`RMVPE::extract_real\` returns \`UnsupportedOp\` until the internal U-Net + GRU forward lands (defer to owner-provisioned bundle wave). This workflow will start passing automatically the moment both fixtures and implementation are in place."
+            else
+              echo "- gate: VOKRA_RMVPE_ENABLE ≠ 1 — full clean skip (never a fabricated pass)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

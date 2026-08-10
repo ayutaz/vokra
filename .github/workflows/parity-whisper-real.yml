@@ -471,6 +471,33 @@ jobs:
           exit_code=${PIPESTATUS[0]}
           echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
           echo "cargo test parity_whisper exited with ${exit_code}"
+      # Audit 2026-08-10 (Rank 9): M5-15 fused K-quant path on real Whisper
+      # weights. `crates/vokra-cli/tests/quant_fused_real_weights.rs` gates
+      # on VOKRA_WHISPER_GGUF (non-quantized) + optionally VOKRA_WHISPER_WAV;
+      # no workflow ever set them so both integration tests silently SKIP on
+      # every CI run. Runs only on the base matrix cell (fused-quant path is
+      # arch-not-size dependent — a single size validates the fusion), and
+      # only when the outer parity leg produced a GGUF (skip on quant-only
+      # tar).
+      #
+      # VOKRA_WHISPER_WAV is the committed tests/fixtures/audio/jfk-30s.wav
+      # (M2 item 4) — the same file the outer parity leg validates the base
+      # transcript against. FR-EX-08 compliant: cargo test failure fails
+      # this step (no `set +e`); when the harness self-skips (env unset),
+      # cargo reports PASS, and the printed skip is the audit trail.
+      - name: Run quant_fused_real_weights (base size only, M5-15 audit 2026-08-10 Rank 9)
+        if: matrix.size == 'base'
+        shell: bash
+        env:
+          VOKRA_WHISPER_GGUF: ${{ github.workspace }}/${{ matrix.gguf }}
+          VOKRA_WHISPER_WAV: ${{ github.workspace }}/tests/fixtures/audio/jfk-30s.wav
+        run: |
+          set -euo pipefail
+          if [ ! -f "${VOKRA_WHISPER_GGUF}" ]; then
+            echo "::notice title=quant_fused_real_weights skipped::VOKRA_WHISPER_GGUF path ${VOKRA_WHISPER_GGUF} does not exist — outer parity leg presumably failed before conversion. Clean skip, not a pass."
+            exit 0
+          fi
+          cargo test --release -p vokra-cli --test quant_fused_real_weights -- --nocapture
           {
             echo ""
             echo "### parity_whisper — ${SIZE} (exit ${exit_code})"

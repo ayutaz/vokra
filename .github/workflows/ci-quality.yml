@@ -145,6 +145,14 @@ jobs:
   capi-smoke:
     name: capi-smoke
     runs-on: ubuntu-latest
+    env:
+      # Audit 2026-08-10 (Rank 15): the C ABI smoke_asr.c / smoke_tts.c legs
+      # clean-skip when these env vars are unset (fail-closed pattern, not
+      # fabricated pass). Wiring them to repo variables lets an owner flip
+      # them on without editing YAML — happy-path C ABI runs only once vars
+      # are set. Unset (default) keeps today's behavior.
+      VOKRA_WHISPER_GGUF: ${{ vars.VOKRA_WHISPER_GGUF_PATH || '' }}
+      VOKRA_PIPER_GGUF: ${{ vars.VOKRA_PIPER_GGUF_PATH || '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -529,12 +537,35 @@ jobs:
             echo "No Whisper base GGUF fixture found; base-gated tests will skip." >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "Whisper large-v3 is nightly-only; large-v3-gated tests will skip on per-PR runs." >> "$GITHUB_STEP_SUMMARY"
-      - name: Compat tests (openai / vllm / piper_http / wyoming)
-        # M2-09-T22 required checks: these four test binaries speak the wire
+      - name: Inline unit tests (--lib, ~320 #[test] + #[tokio::test] across src/)
+        # Audit 2026-08-10 (test-coverage-audit workflow, Rank 3): the previous
+        # step only ran named --test binaries and silently excluded every inline
+        # unit test in the crate. Named-binary invocation does NOT imply --lib
+        # because cargo test with any --test arg suppresses the default
+        # binaries. This step restores lib-tier coverage without changing the
+        # wire-protocol leg below (they intentionally use --release for perf
+        # sensitivity; --lib runs debug for iteration speed).
+        if: matrix.run_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test \
+            --manifest-path integrations/vokra-server/Cargo.toml \
+            -p vokra-server --lib
+      - name: Compat tests (openai / vllm / piper_http / wyoming / wyoming_info_reply / multi_session)
+        # M2-09-T22 required checks: these six test binaries exercise the wire
         # protocols end-to-end. On main-PR builds this is where a compat break
         # is caught. Each test binds 127.0.0.1 on an ephemeral port picked by
         # the test itself (see openai_compat.rs / wyoming_compat.rs); no
         # coordination or shared-port setup is needed.
+        #
+        # Audit 2026-08-10 additions (Rank 1+2):
+        #   * wyoming_info_reply.rs — hard-fail regression gate for the
+        #     accept-loop lifetime bug (d076b8f); runs in <1s, no fixture.
+        #   * multi_session.rs — M3-15 T09/T10/T12 acceptance for the
+        #     Scheduler + Registry + PagedKvCache combo (parallel dispatch,
+        #     KV state-leak isolation, oversubscription graceful degradation);
+        #     runs in <200ms, no HTTP, no GGUF.
         if: matrix.run_tests
         shell: bash
         run: |
@@ -546,6 +577,8 @@ jobs:
             --test vllm_compat \
             --test piper_http_compat \
             --test wyoming_compat \
+            --test wyoming_info_reply \
+            --test multi_session \
             -- --nocapture
       - name: GGUF-gate skip summary
         # Print the compat matrix state to the job summary so reviewers see
@@ -897,6 +930,11 @@ jobs:
           }
           run "check-binary-size"             bash scripts/check-binary-size.sh          --self-test
           run "check-console-static"          bash scripts/check-console-static.sh       --self-test
+          # Audit 2026-08-10 (Rank 4): the script ships --self-test with negative
+          # controls but was called by ZERO workflows. The M5-04 production run
+          # also never fires (delegate/no-dlopen check). Wiring the --self-test
+          # here at least catches drift in the check-script itself.
+          run "check-no-dynamic-load"         bash scripts/check-no-dynamic-load.sh      --self-test
           run "kill-switch-metrics"           bash scripts/kill-switch-metrics.sh        --self-test
           run "publish/check-catalog-reality" bash scripts/publish/check-catalog-reality.sh --self-test
           run "publish/check-converter-signoff" bash scripts/publish/check-converter-signoff.sh --self-test

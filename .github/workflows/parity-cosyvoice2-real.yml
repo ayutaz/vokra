@@ -1,0 +1,131 @@
+# CosyVoice2 (M3-09) real-checkpoint parity CI (audit 2026-08-10, Rank 7).
+#
+# Runs the env-gated harness `crates/vokra-models/tests/parity_cosyvoice2.rs`
+# against a real Vokra GGUF converted from the upstream CosyVoice2-0.5B
+# checkpoint (Apache-2.0). Without this workflow the harness — which has
+# THREE env-var gates — silently PASSES on every CI run:
+#
+#   * `VOKRA_COSYVOICE2_GGUF`           — path to the converted GGUF
+#   * `VOKRA_COSYVOICE2_HF_REFERENCE`   — path to the reference tensor dumps
+#   * `VOKRA_COSYVOICE2_TOKENIZER_DIR`  — path to the Qwen2 tokenizer files
+#
+# Design (parity-csm-real.yml + parity-deepfilternet3-real.yml discipline):
+#
+#   * Trigger: workflow_dispatch (owner-driven initial dispatch) + weekly
+#     cron "45 8 * * 1" (Monday 08:45 UTC — its own slot in the staggered
+#     weekly parity roster; see parity-deepfilternet3-real.yml header for
+#     the full slot inventory).
+#
+#   * Repository-variable gate `VOKRA_COSYVOICE2_ENABLE=1` is required for
+#     the parity job to fire on schedule / PR. Cron / PR clean-skip with a
+#     `::notice::` when the variable is not set — fabricated pass 禁止
+#     (FR-EX-08). workflow_dispatch is an owner-explicit opt-in.
+#
+#   * Runtime GGUF / tokenizer / reference are supplied via repository
+#     variables `VOKRA_COSYVOICE2_GGUF_PATH` / `VOKRA_COSYVOICE2_HF_REFERENCE_PATH`
+#     / `VOKRA_COSYVOICE2_TOKENIZER_DIR_PATH` — owner-provisioned (either
+#     on a self-hosted runner path or via download in a preceding job the
+#     owner adds when they wire fetch). Absent = clean skip, never a
+#     fabricated pass. The bare `VOKRA_COSYVOICE2_ENABLE=1` gate turns the
+#     invocation on; the per-env-var paths select which legs actually run
+#     (each individual leg internally skips when its own env var is unset).
+#
+#   * NOT registered as a required check. HF/GitHub flakiness must not
+#     block PRs (same posture as every other parity-*-real workflow).
+#     Promotion to required is an explicit owner decision after weeks of
+#     consecutive greens.
+
+name: parity-cosyvoice2-real
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 08:45 UTC — see parity-deepfilternet3-real.yml header
+    # for the full staggered roster.
+    - cron: "45 8 * * 1"
+  pull_request:
+    # Fires only on CosyVoice2-adjacent code — parity_cosyvoice2 harness +
+    # runtime module + shared HiFTNet/mel/tokenizer deps.
+    paths:
+      - ".github/workflows/parity-cosyvoice2-real.yml"
+      - "crates/vokra-models/src/cosyvoice2/**"
+      - "crates/vokra-models/tests/parity_cosyvoice2.rs"
+      - "crates/vokra-convert/src/models/cosyvoice2*.rs"
+
+concurrency:
+  group: parity-cosyvoice2-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  parity-cosyvoice2:
+    name: parity (cosyvoice2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VOKRA_COSYVOICE2_GGUF: ${{ vars.VOKRA_COSYVOICE2_GGUF_PATH || '' }}
+      VOKRA_COSYVOICE2_HF_REFERENCE: ${{ vars.VOKRA_COSYVOICE2_HF_REFERENCE_PATH || '' }}
+      VOKRA_COSYVOICE2_TOKENIZER_DIR: ${{ vars.VOKRA_COSYVOICE2_TOKENIZER_DIR_PATH || '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Gate — VOKRA_COSYVOICE2_ENABLE
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_COSYVOICE2_ENABLE }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch is always an owner-explicit opt-in — proceed.
+          # For pull_request + schedule the gate variable must be '1'.
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] \
+             && [ "${ENABLE_VAR}" != "1" ]; then
+            echo "::notice title=parity-cosyvoice2-real clean skip::VOKRA_COSYVOICE2_ENABLE is not '1' — this family opt-in is off. Set the repository variable VOKRA_COSYVOICE2_ENABLE=1 (or workflow_dispatch) to enable. Fabricated pass 禁止 (FR-EX-08)."
+            echo "GATE_OPEN=0" >> "$GITHUB_ENV"
+          else
+            echo "GATE_OPEN=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Rust toolchain
+        if: env.GATE_OPEN == '1'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: env.GATE_OPEN == '1'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run parity_cosyvoice2 (env-gated legs internally clean-skip)
+        if: env.GATE_OPEN == '1'
+        run: |
+          set -euo pipefail
+          # Every internal leg checks its own env var (VOKRA_COSYVOICE2_GGUF /
+          # VOKRA_COSYVOICE2_HF_REFERENCE / VOKRA_COSYVOICE2_TOKENIZER_DIR) and
+          # prints an explicit skip when unset. cargo test reports each as
+          # PASS in that case; the printed skip is the audit trail (FR-EX-08).
+          cargo test -p vokra-models --test parity_cosyvoice2 -- --nocapture
+
+      - name: Verify root Cargo.lock unchanged (NFR-DS-02)
+        if: env.GATE_OPEN == '1'
+        run: git diff --exit-code Cargo.lock
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## parity-cosyvoice2-real"
+            echo ""
+            if [ "${GATE_OPEN:-0}" = "1" ]; then
+              echo "- gate: VOKRA_COSYVOICE2_ENABLE = 1 (opened)"
+              [ -n "${VOKRA_COSYVOICE2_GGUF}" ] \
+                && echo "- main GGUF: **set** (\`${VOKRA_COSYVOICE2_GGUF}\`) — parity_forward_*/tokenizer legs will run" \
+                || echo "- main GGUF: unset — parity legs will internally clean-skip"
+              [ -n "${VOKRA_COSYVOICE2_HF_REFERENCE}" ] \
+                && echo "- HF reference dir: **set**" \
+                || echo "- HF reference dir: unset — tensor-comparison leg clean-skips"
+              [ -n "${VOKRA_COSYVOICE2_TOKENIZER_DIR}" ] \
+                && echo "- tokenizer dir: **set**" \
+                || echo "- tokenizer dir: unset — tokenizer leg clean-skips"
+            else
+              echo "- gate: VOKRA_COSYVOICE2_ENABLE ≠ 1 — full clean skip (never a fabricated pass)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -202,3 +202,144 @@ impl GgufMetadataValue {
         }
     }
 }
+
+// Audit 2026-08-10 (Rank 13, test-coverage-audit workflow): value.rs public
+// API had zero direct tests — coverage was incidental via reader.rs /
+// writer.rs, so an accidental widening in as_str/bool/array or a broken
+// tag() ↔ from_tag() pair could reach production without a red build. The
+// tag values are load-bearing on-disk contract (GGUF spec, §upstream).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(not(feature = "std"))]
+    use alloc::{string::String, vec, vec::Vec};
+
+    #[test]
+    fn from_tag_roundtrips_every_defined_discriminant() {
+        // Tags 0..=12 are spec-defined and must round-trip. This pins the
+        // wire contract: renaming a variant without updating the numeric
+        // repr would fail here immediately.
+        for tag in 0u32..=12 {
+            let v = GgufValueType::from_tag(tag)
+                .unwrap_or_else(|e| panic!("spec-defined tag {tag} rejected: {e:?}"));
+            assert_eq!(v.tag(), tag, "round-trip mismatch at tag {tag}");
+        }
+    }
+
+    #[test]
+    fn from_tag_rejects_first_unassigned_tag() {
+        // Tag 13 is the smallest unassigned tag. If upstream ever assigns
+        // it, this test fails and forces a conscious extension of the enum.
+        let err = GgufValueType::from_tag(13).unwrap_err();
+        assert!(matches!(err, GgufError::UnsupportedValueType(13)));
+    }
+
+    #[test]
+    fn from_tag_rejects_max_u32() {
+        let err = GgufValueType::from_tag(u32::MAX).unwrap_err();
+        assert!(matches!(err, GgufError::UnsupportedValueType(t) if t == u32::MAX));
+    }
+
+    #[test]
+    fn value_type_matches_wrapped_variant_for_all_scalars() {
+        // Every variant must report its own discriminant — a wire-format
+        // regression if any pair diverges. Array covered separately below
+        // to avoid nested-array boilerplate in this list.
+        let cases: [(GgufMetadataValue, GgufValueType); 12] = [
+            (GgufMetadataValue::U8(0), GgufValueType::U8),
+            (GgufMetadataValue::I8(0), GgufValueType::I8),
+            (GgufMetadataValue::U16(0), GgufValueType::U16),
+            (GgufMetadataValue::I16(0), GgufValueType::I16),
+            (GgufMetadataValue::U32(0), GgufValueType::U32),
+            (GgufMetadataValue::I32(0), GgufValueType::I32),
+            (GgufMetadataValue::F32(0.0), GgufValueType::F32),
+            (GgufMetadataValue::Bool(false), GgufValueType::Bool),
+            (
+                GgufMetadataValue::String(String::new()),
+                GgufValueType::String,
+            ),
+            (GgufMetadataValue::U64(0), GgufValueType::U64),
+            (GgufMetadataValue::I64(0), GgufValueType::I64),
+            (GgufMetadataValue::F64(0.0), GgufValueType::F64),
+        ];
+        for (v, expected) in &cases {
+            assert_eq!(v.value_type(), *expected);
+        }
+    }
+
+    #[test]
+    fn value_type_matches_wrapped_variant_for_array() {
+        let arr = GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: Vec::new(),
+        });
+        assert_eq!(arr.value_type(), GgufValueType::Array);
+    }
+
+    #[test]
+    fn as_str_only_matches_string_variant() {
+        assert_eq!(
+            GgufMetadataValue::String(String::from("hi")).as_str(),
+            Some("hi"),
+        );
+        // Non-string variants MUST return None. A silent widening would
+        // let a U32-tagged field satisfy a String-typed reader — silent
+        // corruption of any caller in vokra-models.
+        assert_eq!(GgufMetadataValue::U8(0).as_str(), None);
+        assert_eq!(GgufMetadataValue::Bool(false).as_str(), None);
+        assert_eq!(GgufMetadataValue::F32(0.0).as_str(), None);
+    }
+
+    #[test]
+    fn as_bool_only_matches_bool_variant() {
+        assert_eq!(GgufMetadataValue::Bool(true).as_bool(), Some(true));
+        assert_eq!(GgufMetadataValue::Bool(false).as_bool(), Some(false));
+        assert_eq!(GgufMetadataValue::U8(1).as_bool(), None);
+        assert_eq!(
+            GgufMetadataValue::String(String::from("true")).as_bool(),
+            None
+        );
+    }
+
+    #[test]
+    fn as_array_only_matches_array_variant() {
+        let arr = GgufArray {
+            element_type: GgufValueType::U8,
+            values: vec![GgufMetadataValue::U8(1), GgufMetadataValue::U8(2)],
+        };
+        let wrapped = GgufMetadataValue::Array(arr);
+        let got = wrapped.as_array().expect("array variant should match");
+        assert_eq!(got.element_type, GgufValueType::U8);
+        assert_eq!(got.values.len(), 2);
+        assert_eq!(GgufMetadataValue::U8(0).as_array(), None);
+    }
+
+    #[test]
+    fn as_u64_widens_unsigned_variants_only() {
+        assert_eq!(GgufMetadataValue::U8(255).as_u64(), Some(255));
+        assert_eq!(GgufMetadataValue::U16(65_535).as_u64(), Some(65_535));
+        assert_eq!(
+            GgufMetadataValue::U32(u32::MAX).as_u64(),
+            Some(u64::from(u32::MAX)),
+        );
+        assert_eq!(GgufMetadataValue::U64(u64::MAX).as_u64(), Some(u64::MAX));
+        // Signed variants MUST NOT widen — a -1 silently promoted to
+        // u64::MAX corrupts every caller inspecting a signed-declared
+        // field.
+        assert_eq!(GgufMetadataValue::I8(-1).as_u64(), None);
+        assert_eq!(GgufMetadataValue::I64(-1).as_u64(), None);
+        assert_eq!(GgufMetadataValue::F64(0.0).as_u64(), None);
+        assert_eq!(GgufMetadataValue::String(String::from("0")).as_u64(), None);
+    }
+
+    #[test]
+    fn as_f64_widens_float_variants_only() {
+        assert_eq!(GgufMetadataValue::F32(1.5).as_f64(), Some(1.5));
+        assert_eq!(
+            GgufMetadataValue::F64(core::f64::consts::PI).as_f64(),
+            Some(core::f64::consts::PI),
+        );
+        assert_eq!(GgufMetadataValue::U32(1).as_f64(), None);
+        assert_eq!(GgufMetadataValue::I64(-1).as_f64(), None);
+    }
+}

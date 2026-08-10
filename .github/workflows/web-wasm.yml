@@ -48,6 +48,13 @@ on:
     # Mondays 07:00 UTC — 1-2h after the other weekly parity crons so a
     # shared runner pool doesn't stack them.
     - cron: "0 7 * * 1"
+    # Audit 2026-08-10 (Rank 12): monthly cron (1st of month, 07:00 UTC) that
+    # fires the whisper-wasm-e2e job below via the same-name env-var check the
+    # workflow_dispatch input drives. Weekly cron above only runs wasm-build
+    # (no HF DL); adding a monthly leg catches HF-side wasm-decode regressions
+    # without burning multi-GB DL every week. The e2e job's `if:` guard
+    # (below) treats the monthly cron identically to workflow_dispatch.
+    - cron: "0 7 1 * *"
   pull_request:
     # Phase 5a-3 (2026-07-23): WebGPU backend / WASM SIMD128 kernel / CPU
     # features + dispatch / wasm harness / node scripts / web package /
@@ -64,6 +71,12 @@ on:
       - "crates/vokra-backend-webgpu/**"
       - "crates/vokra-cli/src/convert.rs"
       - "crates/vokra-core/**"
+      # Audit 2026-08-10 (Rank 10): tests/wasm-harness/Cargo.toml depends on
+      # vokra-models with features=[webgpu] (WhisperAsr entry). Whisper
+      # decoder / tokenizer / mel changes in vokra-models slip into the
+      # wasm-harness closure without triggering this workflow — silent drift
+      # only surfaces on Monday cron.
+      - "crates/vokra-models/**"
       - "crates/vokra-ops/**"
       - "scripts/build-wasm.sh"
       - "tests/wasm-harness/**"
@@ -123,7 +136,13 @@ jobs:
     name: Whisper base WASM e2e (opt-in — HF download)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    if: github.event_name == 'workflow_dispatch' && inputs.run_whisper_e2e
+    # Audit 2026-08-10 (Rank 12): fires on (a) explicit workflow_dispatch with
+    # opt-in input, OR (b) monthly cron (1st of month) — both trigger the
+    # multi-GB HF DL + JFK transcript byte-match. Weekly cron (Mondays) does
+    # NOT fire this (schedule event with cron != "0 7 1 * *" skips).
+    if: |
+      (github.event_name == 'workflow_dispatch' && inputs.run_whisper_e2e) ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 7 1 * *')
     env:
       # Snapshot SHA (openai/whisper-base@main as of 2026-07-23). MUST
       # match pins.yaml `whisper-base-wasm` hf_revision and stay in
