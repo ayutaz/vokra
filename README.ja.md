@@ -2,81 +2,251 @@
 
 [English](README.md) | **日本語**
 
-**Vokra** は、音声 AI — TTS・ASR・Speech-to-Speech・ボイスコンバージョン・話者識別・VAD — に特化した推論ランタイムです。音声ワークロード向けの ONNX / ONNX Runtime 代替として Rust で構築しています。
+**Vokra** は、音声 AI — TTS・ASR・Speech-to-Speech・ボイスコンバージョン・
+話者識別・VAD — に特化した Rust 製推論ランタイムです。音声ワークロード向けの
+ONNX / ONNX Runtime 代替として構築されています。
+
+汎用推論ランタイムは音声モデルに対して慢性的に力不足です。STFT / iSTFT の
+ストリーミング状態、ボコーダの数値精度、ニューラルコーデック (RVQ / FSQ) の
+デコード、Flow Matching サンプラ、ビーム / CTC / RNN-T デコーディング、
+VAD、話者エンベディング — こういった要素はどれもグラフエクスポート時に壊れやすかったり、
+ホスト側の泥臭い接着コードに追いやられがちです。Vokra はこれらを一級のネイティブ演算子
+として扱います。
 
 - **発音**: "vo-krah"（英語）/「ヴォクラ」（日本語）
-- **ライセンス**: [Apache-2.0](LICENSE)
-- **ステータス**: **プレリリース、活発に開発中** — v0.5（M2）と v0.9（M3）は `main` にマージ済み。v1.0-rc（M4）の機能実装は開発ブランチ上で完了（依頼者検証待ち）。タグ付きリリースは `v0.1.0` のみで、API・ファイルフォーマット・モデル対応はいずれも不安定かつ未完成です。
+- **ライセンス**: [Apache-2.0](LICENSE)（依存クロージャに GPL / LGPL は
+  一切含みません）
+- **リポジトリ**: <https://github.com/ayutaz/vokra>
+- **モデルハブ**: <https://huggingface.co/vokra>
 
-## Vokra とは
+> API・ファイルフォーマット・モデル対応はいずれも pre-1.0 で、破壊的変更が
+> 入り得ます。安定 C ABI は最初の安定リリースと同時に提供予定です。
 
-汎用ランタイムは音声モデルを慢性的に十分サポートできていません。STFT/iSTFT とストリーミング状態、vocoder の数値計算、ニューラルコーデック（RVQ/FSQ）のデコード、Flow Matching サンプラー、beam search / CTC / RNN-T デコード、VAD、話者埋め込み — これらはいずれも壊れやすいグラフエクスポートやホスト側の繋ぎコードに追いやられてしまいます。Vokra はこれらを第一級のネイティブオペレータにします。
+## 目次
 
-主要な設計方針:
+- [主要な特徴](#主要な特徴)
+- [対応モデル](#対応モデル)
+- [対応プラットフォームとバックエンド](#対応プラットフォームとバックエンド)
+- [はじめに](#はじめに)
+- [C ABI の利用](#c-abi-の利用)
+- [アーキテクチャ概要](#アーキテクチャ概要)
+- [バインディングと統合](#バインディングと統合)
+- [モデル配布](#モデル配布)
+- [piper-plus 統合](#piper-plus-統合)
+- [ドキュメント](#ドキュメント)
+- [関連プロジェクト](#関連プロジェクト)
+- [コントリビューション](#コントリビューション)
+- [法務・コンプライアンス](#法務コンプライアンス)
+- [ライセンス](#ライセンス)
 
-- **Rust コア + C ABI**（cbindgen で生成）により Unity / Godot その他のエンジン・言語バインディングへ対応。Apache-2.0 で GPL/LGPL 依存はありません。
-- GGUF（`vokra.*` 音声メタデータ chunk 付き）と safetensors からの **weight 直接ロード**。**ランタイムは ONNX グラフを一切ロードしません** — ONNX モデルはオフライン変換ツールでのみ扱うため、ランタイムは onnx/protobuf 依存を持ちません。
-- **音声ファーストなオペレータ集合**: STFT/iSTFT（window/hop/norm/RFFT を明示的な属性として持つ）、mel filterbank、リサンプリング、vocoder chain、Flow Matching サンプラー、コーデックデコード、beam search / CTC / RNN-T、ストリーミング KV cache、VAD、音声強調（AEC/denoise）、話者埋め込み、F0 抽出。CC-BY-NC ライセンスの weight を research フラグなしではデフォルト経路から締め出す weight ライセンス compliance ゲートを備えます（音声電子透かしは設計済みですが未有効化）。
-- **CPU を第一級バックエンドに**（x86-64 は SSE2 ベースラインから AVX2/AVX-512/AMX まで、ARM64 は NEON から SVE/SME まで、ランタイムディスパッチ付き）。その後、GPU/NPU アクセラレーションを段階的に追加: Metal、CUDA、Vulkan、WebGPU、CoreML、QNN。**Metal と CUDA バックエンドは実装済みで実機検証済み**（下記ステータス参照）。GPU 対応は zero-dependency の手書き FFI（`metal-rs` / `cudarc` 等の binding crate を使わない）で、未対応 op を CPU に暗黙フォールバックせず明示エラーにします。
-- **全プラットフォームがスコープ**: Windows / macOS / Linux / Android / iOS / Web、および x86-64・ARM64 サーバ。ロードマップが段階化しているのは各バックエンドが公式アクセラレーションを*いつ*得るかであって、あるプラットフォームを*対応するか否か*ではありません。
+## 主要な特徴
 
-## ステータスと設計文書
+- **音声モデルのネイティブ再実装**（whisper.cpp スタイル）: モデルコードは
+  Rust で書き下し、上流の `safetensors` / `GGUF` チェックポイントを直接
+  読み込みます。ランタイムは ONNX グラフを一切ロードしないので、`onnx` /
+  `protobuf` / `abseil` の推移的依存を持ち込みません。
+- **ゼロ外部依存の不変条件**: ルート `Cargo.lock` は first-party の
+  `vokra-*` クレートのみで解決されます。GPU / NPU バックエンドは手書きの FFI
+  を使い（`metal-rs` / `cudarc` / `ash` / `wgpu` に依存しない）、いずれも
+  Cargo フィーチャで opt-in されます。デフォルトビルドは常に first-party
+  だけで完結し、CI の [`scripts/check-zero-deps.sh`](scripts/check-zero-deps.sh)
+  で強制されます。
+- **音声ファーストな演算子セット**: 明示的な window / hop / normalization /
+  RFFT 属性を持つ STFT / iSTFT、mel フィルタバンク、ポリフェーズリサンプラ、
+  ボコーダチェーン（HiFi-GAN、BigVGAN、HiFTNet、Vocos 型 iSTFT ヘッド）、
+  設定可能な CFG モードとスケジュールを持つ Flow Matching サンプラ、ニューラル
+  コーデックデコーダ（DAC、Mimi、WavTokenizer、X-Codec 2）、ビームサーチ /
+  CTC / RNN-T デコーディング、ストリーミング KV キャッシュ（paged、
+  3D `[time, stream, codebook]`）、VAD、音声強調（AEC / AGC / HPF /
+  loudness-norm / DeepFilterNet3）、話者エンベディング、F0 抽出、客観品質
+  メトリクスを一級 op として持ちます。
+- **一級バックエンドとしての CPU** とランタイム ISA ディスパッチ: x86-64 は
+  SSE2 baseline から AVX2、AVX-512F/DQ/BW/VL、AVX-512 VNNI/BF16、AVX-VNNI
+  256-bit、AMX まで。ARM64 は NEON、fp16 演算、dotprod (SDOT/UDOT)、i8mm、
+  bf16。RVV 1.0 baseline。K-quants（Q4_K / Q5_K / Q6_K）と、数値的に脆弱な
+  ボコーダに対して INT8 を拒否する minimum-dtype レジストリ付きのレイヤ別
+  量子化ポリシーを含みます。
+- **サイレントフォールバック禁止**: バックエンドが実装していない演算子は
+  明示的な loud エラーです。GPU バックエンドが黙って CPU にドロップすること
+  は絶対にありません。誤った回答よりもハードエラーを優先します。
+- **音声メタデータ付き GGUF**: モデルファイルは GGUF に `vokra.*` チャンク
+  （`vokra.frontend.*`、`vokra.whisper.*`、`vokra.piper.*`、
+  `vokra.provenance.*`、`vokra.quant.*`、`vokra.schema.*`）を追加した形式
+  で、フロントエンド仕様・量子化ポリシー・ライセンス provenance がすべて
+  weight と一緒に運ばれ、bit-exact に再現可能です。
+- **クロスプラットフォーム配布**: 単一ライブラリ、単一 C ABI ヘッダ、静的
+  または動的リンク。iOS XCFramework + Swift Package、Unity UPM パッケージ、
+  Godot GDExtension、Python `ctypes` wheel、OpenAI Whisper / vLLM /
+  piper-plus / Wyoming Protocol 互換エンドポイントを提供する HTTP
+  互換サーバ。
+- **デフォルトで安全な Rust**: ワークスペース全体で `unsafe_code = "deny"`
+  を設定。`unsafe` はバックエンドと FFI クレートでのみ許可され、
+  `clippy::undocumented_unsafe_blocks = "deny"` によって `// SAFETY:`
+  コメントが強制されます。
+- **構造的ライセンス衛生**: コンプライアンスゲートが、明示的な research flag
+  / `--allow-noncommercial` を指定しない限り、非商用ライセンスの weight
+  （F5-TTS、Fish-Speech、EnCodec、X-Codec 2）をデフォルト経路で拒否します。
 
-v0.1 spike と v0.1 MVP は完了。**v0.5**（Metal / CUDA GPU バックエンド）と **v0.9**（CUDA 完成、Vulkan、CosyVoice2、Voxtral、RVV 1.0）は `main` にマージ済みで、**v1.0-rc**（M4: WebGPU/WASM、Sesame CSM-1B、Moshi、全プラットフォームサポート）の機能実装は開発ブランチ上で完了しています。まだ本番利用できる段階ではありませんが、以下は実装・検証済みです:
+## 対応モデル
 
-- **CPU 音声スタック**: Silero VAD、Whisper（base〜large-v3、正しい転写のための detokenizer を埋め込み）、実 8 言語 G2P を配線した piper-plus native TTS、zero-shot 声クローン用の native CAM++ 話者エンコーダ。いずれも参照ランタイム（onnxruntime / PyTorch）に対し FP32 `atol = 0.01` で数値一致を検証済み。**実 checkpoint 検証**（Apple M1、同一 weight で onnxruntime 1.19.2 CPU と比較）: Whisper base/small/medium/turbo の転写は **ONNX Runtime と byte 一致**（WER 同値）、piper は near-bit-exact（mel-L1 ≈ 0.003）、Mimi/DAC/WavTokenizer の codec parity 全 PASS、DeepFilterNet3 は SI-SNR 差 2.0e-7 dB で upstream に一致（[`docs/bench-baselines/m1-real-weight-eval-2026-07-16/`](docs/bench-baselines/m1-real-weight-eval-2026-07-16/)）。
-- **CPU 速度**（rig 限定: Apple M1・8 スレッド、同一マシン・同一 weight の onnxruntime 1.19.2 CPU 比。方法論と生ログは [`docs/bench-baselines/m5-14-final-2026-07-18/`](docs/bench-baselines/m5-14-final-2026-07-18/)）: packed-GEMM / ベクトル化 wave の後、**Whisper base は ONNX Runtime 比 約 2.5 倍高速、whisper-turbo 約 2.7 倍、Silero VAD 約 2.3 倍**。whisper-medium/small は ORT の 1.17〜1.24 倍以内、piper は約 2.2 倍以内。全最適化は構成上 bit-identical（parity 許容誤差の変更ゼロ）。
-- **GPU バックエンド**（`vokra-backend-metal` / `vokra-backend-cuda`）: データ運搬グラフ評価器 + モデル単位のディスパッチ seam。**Whisper が Metal（Apple M1 で検証）と CUDA（RTX 4090 で検証）の両方で e2e 動作**し、greedy 出力が CPU 経路と完全一致。GPU 中間を **Whisper encoder 全体**（全 pre-norm block を 1 submission に融合）と**自己回帰 decoder の各ステップ**（causal attention 融合 + on-device KV cache）にわたって device 常駐にし、host↔device readback を小さな定数まで削減。これにより **Whisper large-v3 が RTX 4090 で RTF < 0.15**（30 秒音声で実測 0.081〜0.115、個体差・実行時条件で変動。CPU 経路の数倍）を達成。両バックエンドとも外部 crate ゼロの手書き FFI で、CI でも検証しています。
-- **ツール**: `vokra-cli`（`run` / `convert` / `bench`、GPU RTF 計測用の `bench --backend cpu|metal|cuda`）、オフライン `vokra-convert`、`vokra-eval` メトリクス crate、true zero-copy `mmap` GGUF ローディング。
-- **配布形態**: iOS **XCFramework + Swift Package**（arm64 実機 + Simulator slice、静的リンク、`DllImport("__Internal")` 対応）、**Unity UPM パッケージ**（`com.vokra.unity`、IL2CPP-safe callback + Android `persistentDataPath` ヘルパー）、**Python bindings**（pure `ctypes`、`pyo3` 不使用、`cibuildwheel` で PyPI wheel を発行）。詳細は [`bindings/`](bindings) と [`Package.swift`](Package.swift)。
-- **サーバ**: [`integrations/vokra-server`](integrations/vokra-server) は隔離ワークスペース（独自 `Cargo.lock`）で、4 種の HTTP 互換 API を公開します — **OpenAI Whisper**（`/v1/audio/transcriptions`、faster-whisper ドロップイン）、**vLLM**（`/v1/completions`、`/v1/chat/completions`）、**piper-plus HTTP**（`/api/tts`）、**Wyoming Protocol**（Home Assistant Voice バックエンド）。ルートワークスペースから除外することで、コアの zero-dependency 不変条件を維持しています。
-- **グラフ融合**: log-mel フロントエンド融合（STFT + magnitude + mel + log を 1 kernel に集約）を AVX2 / NEON 特化で実装。`mel-frontend` の `vokra-cli bench` タスクと CI 上の 5% regression ゲートで測定・保護されます。
-- **量子化ポリシー**: config 駆動の層別量子化（`W4A16Q4K` / `W8A8Int8` / `FP16` / `FP32`）と最低精度 registry。Vocos / BigVGAN のように FP16 が必須の op には INT8 指定を拒否し、`vokra-convert` 実行時に `vokra.quant.*` chunk へ焼き込みます。
-- **コンプライアンスゲート**: research フラグ enforcement 層。CC-BY-NC / CC-BY-NC-SA weight（F5-TTS / Fish-Speech / EnCodec）を明示的な opt-in なしにはロードさせません。判定は compliance API と同じ `vokra.provenance.*` chunk から行います。
-- **モデルハブ**: [`huggingface.co/vokra`](https://huggingface.co/vokra) — 2026-07-23 時点で **16 モデルの Vokra 変換済み GGUF を公開**。各成果物は自身の metadata から生成した README、`LICENSE`、`NOTICE`（attribution 必須のもの）、上流 URL と再変換手順を含む `SOURCE.md` を同梱します。公開経路（`scripts/publish/*.sh`）は 5 段階のゲート — 契約による再配布禁止（VOICEVOX / CSJ / JSUT・JVS）、自身のライセンスを語れない成果物、§3.1 sign-off 空欄をすべて fail-closed で拒否します。`restamp_provenance` による低メモリ再刻印で 8.7 GB の checkpoint も 16 GB 機で公開できます（peak footprint 実測 6.4 MB）。公開中: **whisper-{base,small,medium,turbo}**（各配布元 repo のライセンスに一致、apache-2.0 / mit）、**kokoro-82m** と **kokoro-82m-stacked**（54 voices + 178 音素）、**piper-plus-css10-ja-6lang** と **piper-plus-mera-multilingual**、**silero-vad-v5**、**campplus-speaker-encoder**、**dac-24khz**、**mimi**（CC-BY-4.0、Kyutai attribution をカードに反映）、**deepfilternet3**、**utmos22-strong**、**moshiko-7b-bf16**（15 GB、「本ランタイムではリアルタイムではない」旨の警告付き）、**voxtral-mini-3b-2507**（8.7 GB）。
+Vokra は以下のモデルのネイティブ実装を同梱します。Weight ローダとトークナイザ
+はランタイムに組み込まれており、GGUF ファイルを生成するコンバータは
+`vokra-convert` クレートに含まれます。
 
-上記はすべて Vokra の **zero-external-dependency** 不変条件を保っています（解決後の依存グラフは first-party の `vokra-*` crate のみ、CI で強制）。
+**ASR**
+- Whisper — `base`、`small`、`medium`、`large-v3`、`turbo`
+- Voxtral — `Mini-3B`、`Small-24B`（大容量バリアント向けストリーミングローダ）
+- Canary-Qwen-2.5B（FastConformer + Qwen デコーダ）
+- omniASR-CTC — 300M / 7B バリアント
+- Charsiu（wav2vec2 CTC）
+- Kyutai STT
+- Zipformer / E-Branchformer / Hybrid CTC-Attention デコーダ
 
-公開リファレンス文書（日本語）:
+**TTS**
+- piper-plus（ネイティブ MB-iSTFT-VITS2、8 言語 G2P: JA / EN / ZH / ES / FR
+  / PT / SV / KO）
+- Kokoro-82M
+- CosyVoice2（FSQ tokens + Qwen2.5-0.5B AR + chunk-aware CFM → mel → HiFTNet）
+- Style-Bert-VITS2 v2（DeBERTa v2/v3 コンディショニングエンコーダ付き）
+- VoxCPM-0.5B / VoxCPM2-2B
+- Qwen3-TTS 1.7B
+- Fun-CosyVoice3-0.5B
 
-- [docs/license-audit.md](docs/license-audit.md) — モデル / 依存ライセンス監査
-- [docs/legal-compliance.md](docs/legal-compliance.md) — EU AI Act, SB 942, ELVIS Act, C2PA 対応
+**Speech-to-speech（フルデュプレックス）**
+- Sesame CSM-1B
+- Moshi（Helium + Mimi コーデック）
 
-要求定義・要件定義・成果物定義・マイルストーン計画の詳細は作者が非公開で管理しており、下記のロードマップ概要がその要約です。
+**VAD**
+- Silero VAD v5（デフォルト）/ v6.2.1
+- FSMN-VAD
 
-## ロードマップ
+**話者エンベディング / 検証**
+- CAM++（192 次元、ゼロショット音声クローンの入力）
+- TitaNet-L
+- ECAPA-TDNN
 
-期間は Claude Code 主導の実装モデルにおけるエンジニアリング見積りです。そこから導かれるカレンダー上の日付はいずれも**あくまで目安**であり、コミットメントではありません。
+**F0 / ピッチ**
+- RMVPE（フロントエンド + デコーダ。内部 U-Net + GRU forward は
+  loud-partial、実 checkpoint 検証待ち）
+- FCPE（実 Conformer forward）
+- CREPE（実 6-block CNN、5 モデルサイズ）
 
-| フェーズ | 見積り期間 | 焦点 |
+**ニューラルコーデック**
+- DAC（24 kHz）、Mimi、WavTokenizer、X-Codec 2（研究用途のみ、
+  CC-BY-NC-4.0）
+
+**音声強調**
+- DeepFilterNet3、AEC、AGC、HPF、loudness normalization
+
+**客観品質**
+- UTMOS22-strong
+
+ライセンスの詳細は [`docs/license-audit.md`](docs/license-audit.md) を、
+そこから導かれる配布規則は [`docs/legal-compliance.md`](docs/legal-compliance.md)
+を参照してください。
+
+## 対応プラットフォームとバックエンド
+
+以下のプラットフォームはすべて単一ライブラリ・単一 C ABI で対応対象です。
+バックエンドアクセラレーションは Cargo フィーチャで有効化するため、
+デフォルトビルドはゼロ依存のままです。
+
+| バックエンド | Cargo フィーチャ | 備考 |
 |---|---|---|
-| v0.1 spike | 1.5〜2ヶ月 | Rust scaffold、GGUF ローダー + `vokra.*` メタデータ、STFT/iSTFT/mel op、Silero VAD、Whisper base、piper-plus native TTS、CPU バックエンド（AVX2/NEON）、C ABI、Unity デモ、リポジトリ public 化 + CI ゲート — **完了** |
-| v0.1 MVP | 1.5〜2.5ヶ月 | K-quant ローダー、engine、streaming、resample、`vokra-cli` / `vokra-eval`、実 8 言語 G2P 配線、native CAM++ zero-shot クローン、`vokra-mmap` — **完了** |
-| v0.5 | 2.5〜4ヶ月 | Metal + CUDA バックエンド（グラフ評価器 + モデル単位の GPU ディスパッチ。Whisper が両方で e2e、M1 / RTX 4090 で検証）、Whisper large-v3 変換 + tokenizer、encoder 全体・decoder 各ステップの device 常駐（large-v3 が RTX 4090 で RTF < 0.15、実測 0.081〜0.115）、Kokoro-82M、`vokra-server`（4 種の HTTP 互換 API）、`bench --backend` — **完了**（`main` にマージ済み） |
-| v0.9 | 4〜5ヶ月 | CUDA 完成、Vulkan、CosyVoice2、Voxtral、RVV 1.0 ベースライン — **完了**（`main` にマージ済み） |
-| **v1.0-rc**（現在） | 4〜5ヶ月 | WebGPU/WASM（**実装済**: 生 WebGPU import shim + WASM SIMD128 2-artifact CPU パスでブラウザ Whisper base、npm パッケージ CD — [docs/tutorials/web.ja.md](docs/tutorials/web.ja.md) 参照）、Sesame CSM-1B、Moshi（full-duplex + AEC）、全プラットフォーム公式サポート — **開発ブランチ上で機能完成**（依頼者検証待ち） |
-| v1.0 GA | 8ヶ月以上 | CoreML（ANE）/ QNN delegate、MCU tier 再評価、商用 GA、C ABI 凍結（v1.0 以降 semver 準拠） |
+| CPU（デフォルト） | — | x86-64 SSE2 → AVX2 → AVX-512F/DQ/BW/VL → AVX-512 VNNI/BF16 → AVX-VNNI 256 → AMX；ARM64 NEON → fp16 → dotprod → i8mm → bf16；RVV 1.0 |
+| Metal（macOS / iOS） | `metal` | 手書きの生 `objc` + Metal FFI、MSL コンピュートカーネル |
+| CUDA（Windows / Linux） | `cuda` | Driver API + NVRTC を `dlopen` / `LoadLibrary` で実行時ロード — NVIDIA ライブラリは同梱しません（NVIDIA EULA 準拠） |
+| Vulkan（Android / Linux / Windows） | `vulkan` | dlopen + pre-compiled SPIR-V、subgroup と cooperative matrix + フォールバック |
+| WebGPU / WASM（ブラウザ） | `webgpu`, target `wasm32-unknown-unknown` | wasm extern-import shim、`wgpu` / `wasm-bindgen` 非依存 |
+| CoreML（Apple ANE） | `coreml` | opt-in delegate スキャフォールド |
+| QNN（Qualcomm Hexagon） | `qnn` | opt-in delegate スキャフォールド |
 
-v1.0 GA までの累計見積り: **20〜25ヶ月**。バージョンラベルは 2026-07-14 に再割当されました: 従来 v2.0 までに計画していたスコープを v1.0 として出荷します（旧 v1.0 / v1.5 フェーズは v0.9 / v1.0-rc に）。v1.0-rc は semver プレリリースであり、C ABI は v1.0 GA タグで凍結されます。v0.1 spike は piper-plus native TTS 実装をスコープに追加したことで 1〜1.5ヶ月から 1.5〜2ヶ月へ延長されました（2026-07-02 の決定）。
+**オペレーティングシステム**: Windows、macOS、Linux、Android、iOS、
+モダンブラウザ（WebGPU / WASM SIMD128 + threads 経由）。
 
-## piper-plus 統合（native TTS）
+**明示的非対応**: NNAPI（Google が Android 15、2024-10 で deprecated 化）、
+Piper `OHF-Voice/piper1-gpl`（GPL-3.0 + eSpeak-NG GPL-3.0 の推移的依存 —
+Piper 系で対応するのは依頼者作の MIT ライセンス
+[`piper-plus`](https://github.com/ayutaz/piper-plus) フォークのみ）。
 
-[piper-plus](https://github.com/ayutaz/piper-plus) は、プロジェクトオーナーによる MIT ライセンスの Piper フォークです（eSpeak-NG に依存しない 8 言語 G2P、MB-iSTFT-VITS2 decoder）。Vokra はこれを標準 TTS レイヤとして、かつ **Vokra 初の native 実装 TTS モデル** として統合します（2026-07-02 決定）:
+## はじめに
 
-- MB-iSTFT-VITS2 の推論スタック（text encoder / duration predictor / flow / MB-iSTFT decoder）を Rust でネイティブ再実装します。既存の ONNX ベース実装を wrap する当初計画は廃止しました。
-- **e2e の推論経路に onnxruntime は一切含まれません。** voice model はオフラインで GGUF に変換し、ランタイムは GGUF のみをロードします。
-- G2P（テキスト前処理、8 言語: JA/EN/ZH/ES/FR/PT/SV/KO）は当面 piper-plus のものを流用します。Rust 移植は将来再評価します。
+### 前提
+
+- Rust toolchain（edition 2024）。MSRV は `1.85`。`vokra-backend-cpu` の
+  一部 AVX-512 intrinsic は `1.89` を要求します。<https://rustup.rs> から
+  インストール。
+- C コンパイラ（C ABI をリンクする場合のみ）。
+
+### CLI をビルドする
+
+```sh
+git clone https://github.com/ayutaz/vokra.git
+cd vokra
+cargo build --release -p vokra-cli
+# バイナリは target/release/vokra-cli
+```
+
+### モデルをダウンロードする
+
+<https://huggingface.co/vokra> の各モデルカードに、取得すべき `.gguf`
+ファイルが明記されています。例えば Whisper base の checkpoint を取得するには:
+
+```sh
+# curl / wget / huggingface-cli のいずれでも可 — ファイルは素の GGUF blob です。
+huggingface-cli download vokra/whisper-base whisper-base.gguf --local-dir .
+```
+
+### 音声を文字起こしする
+
+```sh
+target/release/vokra-cli run whisper-base.gguf --input audio.wav
+```
+
+### GPU バックエンドで推論する
+
+該当する Cargo フィーチャをビルド時に有効化してください:
+
+```sh
+# macOS / iOS
+cargo build --release -p vokra-cli --features metal
+target/release/vokra-cli run whisper-base.gguf --input audio.wav --backend metal
+
+# Linux / Windows（NVIDIA GPU、開発者側 CUDA インストール必須）
+cargo build --release -p vokra-cli --features cuda
+target/release/vokra-cli run whisper-base.gguf --input audio.wav --backend cuda
+```
+
+### 上流 checkpoint を変換する
+
+```sh
+target/release/vokra-cli convert --model whisper \
+  --input path/to/upstream/checkpoint --output whisper-base.gguf
+```
+
+より詳しい情報 — バックエンド別ガイド、プラットフォーム別チュートリアル
+（CLI、Android、iOS、Godot、Unity、Python、server、web）、onnxruntime /
+whisper.cpp からの移行ガイドは [`docs/`](docs) にあります。
 
 ## C ABI の利用
 
-Vokra は単一の C ヘッダ [`include/vokra.h`](include/vokra.h) を公開します（cbindgen 生成。`scripts/gen-c-abi.sh` で再生成）。`vokra-capi` crate をビルドすると共有ライブラリと静的ライブラリが生成されます:
+Vokra は単一の C ヘッダ [`include/vokra.h`](include/vokra.h) を公開して
+います（cbindgen で生成、[`scripts/gen-c-abi.sh`](scripts/gen-c-abi.sh) で
+再生成可能）。`vokra-capi` クレートをビルドすると共有・静的ライブラリが
+生成されます:
 
 ```sh
 cargo build -p vokra-capi --release
 # -> target/release/libvokra.dylib | libvokra.so | vokra.dll  (+ libvokra.a)
 ```
 
-セッションは GGUF モデルから作成します。アーキテクチャはファイルの `vokra.model.arch` メタデータから検出され、対応するタスクが自動的に配線されます（Whisper → ASR、Silero VAD → VAD ストリーム、piper-plus → TTS）。すべての関数は `vokra_status_t` を返します（`VOKRA_OK` は 0）。エラー時はスレッドごとのメッセージを `vokra_last_error()` から取得できます。Vokra が確保した出力は、対応する `vokra_*_free` / `vokra_*_destroy` 関数で解放します。
+セッションは GGUF モデルから生成されます。アーキテクチャは
+`vokra.model.arch` メタデータから検出され、対応するタスクが自動的に配線
+されます（Whisper → ASR、Silero VAD → VAD ストリーム、piper-plus → TTS）。
+すべての関数は `vokra_status_t`（`VOKRA_OK` = `0`）を返し、エラー時は
+`vokra_last_error()` でスレッドローカルなメッセージを取得できます。
+Vokra が確保した出力は対応する `vokra_*_free` / `vokra_*_destroy` で
+解放してください。
 
 ```c
 #include "vokra.h"
@@ -101,43 +271,202 @@ vokra_session_destroy(session);
 cc app.c -I include -L target/release -lvokra -Wl,-rpath,target/release -o app
 ```
 
-実行可能な e2e サンプル（ASR / TTS / VAD）は [`tests/capi/`](tests/capi) にあります。`scripts/run-capi-smoke.sh` がビルドと実行を行います。M0（v0.1 spike）の ABI は **安定していません** — v1.0 の semver コミットまでは互換性を壊す変更があり得ます。
+エンドツーエンドの実行可能サンプル（ASR / TTS / VAD）は
+[`tests/capi/`](tests/capi) にあります。`scripts/run-capi-smoke.sh` で
+ビルドと実行が可能です。
 
-## 対応予定モデル
+## アーキテクチャ概要
 
-公式 model zoo は **Apache-2.0 / MIT の weight のみ** を配布します。完全な監査は [docs/license-audit.md](docs/license-audit.md) を参照してください。
+**ネイティブ再実装**。対応モデルはすべて、tokenizer・tensor レイアウト・
+forward pass・decoder loop・streaming state を含む Rust モジュールで、
+上流の `safetensors` または Vokra 向け `GGUF` ファイルを直接消費します。
+これにより `torch.onnx.export` の音声モデルにおける慢性的な脆さを回避し、
+`onnx` / `protobuf` / `abseil` をランタイムから排除し、バグレポートが
+実行可能になります（単一の Rust ファイルであり、グラフエクスポートでは
+ありません）。
 
-| モデル | タスク | ライセンス（code / weight） | 商用利用 | 対応予定 |
-|---|---|---|---|---|
-| Silero VAD v5 | VAD | MIT / MIT | 可 | v0.1 MVP |
-| Whisper base/small/medium/large-v3/turbo | ASR | MIT / MIT | 可 | v0.1 MVP（base）、v0.5（large-v3）、v1.0-rc（small/medium/turbo） |
-| piper-plus | TTS | MIT / MIT | 可 | v0.1 spike（native 実装） |
-| Kokoro-82M | TTS | Apache-2.0 / Apache-2.0 | 可 | v0.5 |
-| CosyVoice2 | TTS / S2S | Apache-2.0 / Apache-2.0 | 可 | v0.9 |
-| Voxtral (Mistral) | ASR / S2S | Apache-2.0 / Apache-2.0 | 可 | v0.9 |
-| Sesame CSM-1B | S2S | Apache-2.0 / Apache-2.0 | 可 | v1.0-rc |
-| Moshi (Helium + Mimi) | S2S | Apache-2.0 / CC-BY 4.0（attribution 要） | 可（credit 要） | v1.0-rc |
-| F5-TTS | TTS | MIT / **CC-BY-NC 4.0** | **不可（非商用 weight）** | エンジン対応のみ。weight は公式 zoo から除外、research flag の背後 |
-| Fish-Speech v1.4/v1.5 | TTS | Apache-2.0 / **CC-BY-NC-SA 4.0** | **不可（非商用 weight）** | エンジン対応のみ。weight 除外、research flag |
-| RVC v2 / GPT-SoVITS | VC | MIT / 不明 | 制限あり（学習データ懸念） | 別リポジトリ `vokra-voiceclone-experimental` |
-| Bark (Suno) | TTS | MIT / MIT（Suno ポリシーで voice-cloning 再学習は禁止） | 制限あり | v1.0 GA 以降（検討中、research flag） |
-| StyleTTS 2 | TTS | MIT / 不明（監査待ち） | 制限あり | v1.0 GA 以降（監査後） |
-| Matcha-TTS | TTS | MIT / MIT | 可 | v1.0 GA 以降 |
+**ゼロ外部依存**。ルートワークスペースの `Cargo.lock` は first-party
+`vokra-*` クレートのみを解決します。この不変条件は CI 実行のたびに
+`scripts/check-zero-deps.sh` で検証されます。この条件を破るもの — 8 言語
+G2P ポート、Godot GDExtension、HTTP サーバ、ONNX コンバータ — は
+`integrations/` の独立サブワークスペースにその crate 独自の `Cargo.lock`
+とともに配置されます。
 
-補足:
+**手書き FFI、EULA 準拠の CUDA**。GPU / NPU バックエンドはバインディング
+クレートに依存しません。Metal は生 `objc` ランタイム呼び出しと MSL
+コンピュートカーネル。CUDA は開発者インストールされた CUDA に対して
+NVIDIA Driver API と NVRTC を実行時に `dlopen` / `LoadLibrary`（何も
+同梱しないため NVIDIA CUDA / cuDNN EULA と互換 — [`NOTICE`](NOTICE)
+参照）。Vulkan は SPIR-V を事前コンパイルし loader を `dlopen`。
+WebGPU は小さな wasm extern-import shim 経由でブラウザと会話します。
 
-- **F5-TTS と Fish-Speech の weight は CC-BY-NC(-SA) ライセンスであり、いかなる公式 Vokra 配布物にも含まれません。** エンジンは明示的な research flag により研究目的で実行できます。
-- ボイスクローニング（RVC v2、GPT-SoVITS、話者クローン）は法的理由（ELVIS Act / NO FAKES Act）により `vokra-voiceclone-experimental` リポジトリへ完全に分離されています。zero-shot TTS 用の話者埋め込みは core に残します。
-- Piper（OHF-Voice/piper1-gpl）は **非対応** です（GPL-3.0 + eSpeak-NG GPL-3.0）。Piper 系の統合は piper-plus のみです。
+**GGUF + `vokra.*` メタデータ**。Weight ファイルは標準 GGUF に Vokra
+所有のチャンク群（STFT / mel spec の `vokra.frontend.*`、モデル別
+ハイパーパラメータの `vokra.<arch>.*`、量子化ポリシーの
+`vokra.quant.*`、ライセンス provenance の `vokra.provenance.*`、
+producer identity の `vokra.schema.version` / `vokra.schema.producer`）
+を加えたものです。フロントエンド仕様が weight と一緒に運ばれるため、
+ランタイムはトレーニング時と bit-exact 一致しない spec を持つ checkpoint
+を拒否します — librosa vs torchaudio の Mel フィルタ差分に起因する
+無音の drift はありません。
 
-## コミュニティ
+**Compute seam とグラフ実行エンジン**。各モデルは小さな `Compute` seam
+（GEMM ホットパス用の per-backend `Cpu` / `Metal` / `Cuda` / `Vulkan`
+arm）を通じてバックエンドに到達します。より長寿命なパイプライン — pre-norm
+エンコーダスタック、デバイス常駐 KV キャッシュ付き自己回帰デコーダステップ、
+コーデックチェーン — はデータ搬送グラフで表現され、中間結果はデバイス常駐
+のまま、ホスト↔デバイス readback はステップあたり小さな定数に抑えられます。
 
-- **最初の一歩**: [docs/good-first-tasks.ja.md](docs/good-first-tasks.ja.md) — 独立して完結する着手候補の一覧です。各項目に file:line アンカーまたは再現コマンド、自分で確認できる受け入れ条件、おおよその規模が付いています。
-- **質問・議論**: [GitHub issue](https://github.com/ayutaz/vokra/issues) をご利用ください。
-- **Issue / Pull Request**: [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。すべての変更は CI 品質ゲート付きの PR を経由します。
+**Loud エラー、決して誤った回答を返さない**。バックエンドが演算子を実装
+していない場合、呼び出しは明示的な `VokraError::UnsupportedOp` で失敗します。
+Vokra は決して別のバックエンドや dtype に silently リルートしません。
+
+## バインディングと統合
+
+- **iOS** — XCFramework + Swift Package
+  ([`Package.swift`](Package.swift), [`scripts/build-ios.sh`](scripts/build-ios.sh)
+  でビルド): arm64 デバイスと Simulator スライス、静的リンク、
+  `DllImport("__Internal")` 互換。
+- **Unity** — [`bindings/unity/`](bindings/unity) 配下の UPM パッケージ
+  `com.vokra.unity`、[`scripts/build-unity-plugin.sh`](scripts/build-unity-plugin.sh)
+  でビルド: IL2CPP セーフなコールバックマーシャリング、Android
+  `persistentDataPath` ヘルパー、CUDA ライブラリの誤同梱を防ぐ
+  非 NVIDIA-bundle スキャナ (`check-unity-package-no-nvidia.sh`)。
+- **Godot** — [`integrations/vokra-godot/`](integrations/vokra-godot) の
+  GDExtension、[`scripts/build-godot-gdextension.sh`](scripts/build-godot-gdextension.sh)
+  でビルド: 5-target クロスビルドマトリクス（macOS Intel + Apple Silicon、
+  Linux x64、Windows MSVC、Android arm64）、AssetLib 形状のリリース
+  レイアウト。
+- **Python** — [`bindings/python/`](bindings/python) の純粋 `ctypes`
+  実装（`pyo3` 非使用）、`cibuildwheel` で PyPI wheel を発行。
+- **HTTP サーバ** — [`integrations/vokra-server`](integrations/vokra-server):
+  既存クライアントを無改変で置き換えられる 4 種類の互換 API を公開する
+  独立ワークスペース。**OpenAI Whisper** (`/v1/audio/transcriptions`)、
+  **vLLM** (`/v1/completions`、`/v1/chat/completions`)、
+  **piper-plus HTTP** (`/api/tts`)、Home Assistant Voice バックエンド用の
+  **Wyoming Protocol**。
+
+## モデル配布
+
+すぐに動かせる GGUF 変換物は Hugging Face 上の
+[`vokra`](https://huggingface.co/vokra) 組織で公開しています。公開される
+成果物はすべて以下を同梱します:
+
+- モデルカード（メタデータから生成）。
+- 上流ライセンス本文を含む `LICENSE`（publish 時に
+  [`scripts/publish/fetch_license.sh`](scripts/publish/fetch_license.sh)
+  が取得）。
+- 上流が attribution を要求する場合の `NOTICE`（例: Mimi は CC-BY-4.0 で
+  Kyutai へのクレジットが必要）。
+- 上流 URL と再変換手順を記載した `SOURCE.md`。
+
+すべての publish は
+[`scripts/publish/publish-one.sh`](scripts/publish/publish-one.sh) を経由し、
+fail-closed に設計された 5 段ゲートを通過します:
+
+1. **Catalog reality** — tracked catalog に無いモデルの publish を拒否
+   （未レビューのモデルが誤って publish されない）。
+2. **Redistributability** — 契約上再配布が禁止されているコーパスを拒否
+   （VOICEVOX、CSJ、JSUT、JVS）。
+3. **Provenance stamp presence** — `vokra.schema.version` と
+   `vokra.schema.producer` チャンクを必須化し、消費者が producer を
+   識別可能にします。
+4. **Owner sign-off** — [`docs/license-audit.md`](docs/license-audit.md)
+   §3.1 の対応行への署名（source-of-truth リンク付き）を必須化。
+5. **Non-commercial opt-in** — 研究用途 tier（例: X-Codec 2、CC-BY-NC-4.0）
+   には明示的な `--allow-noncommercial` フラグを必須化。
+
+低メモリ `restamp_provenance` 書き換え経路と組み合わせることで、
+控えめなハードウェアからでも数 GB の checkpoint publish を日常的に
+実行できます。
+
+## piper-plus 統合
+
+[piper-plus](https://github.com/ayutaz/piper-plus) は依頼者作の MIT
+ライセンス Piper フォークです（eSpeak-NG 依存を排除した 8 言語 G2P、
+MB-iSTFT-VITS2 デコーダ、CUDA / CoreML / DirectML 対応、Unity binding）。
+Vokra はこれを標準 TTS レイヤ、かつ Vokra 初のネイティブ実装 TTS モデル
+として統合しています:
+
+- MB-iSTFT-VITS2 推論スタック — text encoder、duration predictor、flow、
+  MB-iSTFT decoder — は Rust でネイティブに再実装されています。上流の
+  ONNX ベース実装の wrap ではなく、Vokra のエンドツーエンド推論経路には
+  `onnxruntime` は含まれません。
+- Voice モデルはオフラインで GGUF に変換し、ランタイムは GGUF のみを
+  ロードします。
+- 8 言語 G2P（JA / EN / ZH / ES / FR / PT / SV / KO）は当面 piper-plus
+  から流用します。Rust ポートは follow-up 項目です。
+
+## ドキュメント
+
+ユーザ向けドキュメントはすべて [`docs/`](docs) 配下にあります。トップ
+レベル文書はすべて英語版 (`.md`) と日本語版 (`.ja.md`) が用意されています。
+
+| ドキュメント | 内容 |
+|---|---|
+| [`docs/getting-started.md`](docs/getting-started.md) | 5 分クイックスタート |
+| [`docs/architecture.md`](docs/architecture.md) | 内部アーキテクチャ、クレート構成、グラフ実行エンジン |
+| [`docs/api-reference.md`](docs/api-reference.md) | C ABI + CLI リファレンス |
+| [`docs/backend-guide.md`](docs/backend-guide.md) | CPU / Metal / CUDA / Vulkan / WebGPU / CoreML / QNN ガイド |
+| [`docs/tutorials/`](docs/tutorials) | プラットフォーム別チュートリアル: CLI、Android、iOS、Godot、Unity、Python、server、web |
+| [`docs/migration-guide.md`](docs/migration-guide.md) | onnxruntime / whisper.cpp / piper からの移行 |
+| [`docs/license-audit.md`](docs/license-audit.md) | モデルと依存の license 監査 |
+| [`docs/legal-compliance.md`](docs/legal-compliance.md) | EU AI Act Article 50、SB 942、ELVIS Act、C2PA |
+| [`docs/good-first-tasks.md`](docs/good-first-tasks.md) | コントリビュータ向け入口 |
+| [`docs/abi-changelog.md`](docs/abi-changelog.md) | C ABI 変更履歴 |
+| [`NOTICE`](NOTICE) | Attribution 要件と bundling ポリシー |
+
+## 関連プロジェクト
+
+- **[piper-plus](https://github.com/ayutaz/piper-plus)** — Vokra が標準
+  TTS レイヤとして統合している、依頼者作の MIT ライセンス Piper
+  フォーク（上記参照）。
+
+## コントリビューション
+
+コントリビューションを歓迎します。大きめの PR を出す前に、まず issue を
+開いてスコープと方針を早めに整合させてください。
+
+- **入り口**:
+  [`docs/good-first-tasks.md`](docs/good-first-tasks.md) — file:line
+  アンカーや再現コマンド、自分で確認できる受け入れ基準、おおよそのサイズ
+  付きの、自己完結タスクを掲載しています。
+- **質問・議論**:
+  [GitHub issue](https://github.com/ayutaz/vokra/issues) を開いてください。
+- **プルリクエスト**: [`CONTRIBUTING.md`](CONTRIBUTING.md) を参照。
+  変更はすべて CI 品質ゲート（build / tests / formatting /
+  clippy `-D warnings` / zero-dependency 不変条件 / C ABI changelog /
+  license audit）付きの PR 経由で入ります。
+
+## 法務・コンプライアンス
+
+- **EU AI Act Article 50** および **California SB 942**: TTS と
+  voice-conversion 出力は合成音声とみなされ、開示義務があります。Vokra は
+  building block として AudioSeal watermarking と C2PA manifest サポート
+  （`c2pa-rs` 経由）を提供します。デプロイ側の開示義務は
+  [`docs/legal-compliance.md`](docs/legal-compliance.md) に記載しています。
+- **Voice-cloning 分離**: RVC v2、GPT-SoVITS などの voice-conversion
+  「trigger」モデルは意図的にこのリポジトリに **含まれていません**。
+  Tennessee ELVIS Act（2024-07-01）と連邦 NO FAKES Act のため、別プロジェクト
+  `vokra-voiceclone-experimental` に分離しています。ゼロショット TTS 用の
+  話者エンベディング（特徴抽出のみ、変換なし）は core に残します。
+- **NVIDIA CUDA / cuDNN EULA**: Vokra は NVIDIA ライブラリを一切同梱しません。
+  CUDA バックエンドは開発者がインストールしたシステム CUDA を実行時に
+  `dlopen` します。[`NOTICE`](NOTICE) と
+  [`docs/license-audit.md`](docs/license-audit.md) に記録されています。
+- **非商用 weight**: F5-TTS (CC-BY-NC-4.0)、Fish-Speech (CC-BY-NC-SA-4.0)、
+  EnCodec (CC-BY-NC-4.0)、X-Codec 2 (CC-BY-NC-4.0) はデフォルトの
+  model zoo に含まれません。エンジンは明示的な research flag /
+  `--allow-noncommercial` の指定で実行できます。
+- **Piper (`OHF-Voice/piper1-gpl`) は非対応** です（GPL-3.0 + eSpeak-NG
+  GPL-3.0 の推移的依存）。Vokra が対応する Piper 系統合は
+  [piper-plus](https://github.com/ayutaz/piper-plus) のみです。
 
 ## ライセンス
 
-[Apache License, Version 2.0](LICENSE) の下でライセンスされます。
+Vokra は [Apache License, Version 2.0](LICENSE) の下でライセンスされています。
 
-追加のライセンス・配布告知 — BigVGAN のスクラッチ再実装ポリシーと NVIDIA ランタイムの非同梱ポリシー — は [NOTICE](NOTICE) に記録されています。
+追加のライセンス通知および配布通知 — 例えばモデル別 attribution
+（Mimi の CC-BY-4.0 attribution 義務、BigVGAN の attribution）、
+NVIDIA ランタイム非同梱ポリシー — は [`NOTICE`](NOTICE) に記録
+されています。
