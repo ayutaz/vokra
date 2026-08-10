@@ -1,6 +1,6 @@
 ---
 name: add-speech-model
-description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-ID / VAD）対応を追加するときに使う。native 自前再実装・GGUF 変換・数値 parity・ライセンス/法務/model-zoo ゲートまでの全手順とレッドラインを示す。
+description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-ID / VAD / 音楽生成 / 音声分離 / 音声 LLM）対応を追加するときに使う。native 自前再実装・GGUF 変換・数値 parity・ライセンス/法務/model-zoo ゲートまでの全手順とレッドラインを示す。
 ---
 
 # 音声モデルを Vokra に追加する
@@ -9,8 +9,9 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 ## 0. 事前判断（着手前に必ず）
 
+- **スコープ判定**: 音声 AI 全域が in-scope（2026-07-30 依頼者 override、旧「TTS/ASR/VAD/Speaker-ID のみ」の絞りは廃止）。**新たに含まれる**: 音楽生成（MusicGen / Stable Audio / ACE-Step 等）／音声分離（SepFormer / Demucs / TIGER 等）／音声 LLM（Voxtral / Qwen2-Audio / Moshi 等）。**out-of-scope 継続**: 汎用 LLM、CV、multimodal（vision 側）— [[project-scope-expansion-2026-07-30]]。
 - **ライセンス audit を先に通す** → skill `license-audit`。weight が **CC-BY-NC / CC-BY-NC-SA / 学習データ権利不明**なら公式 model zoo から除外し、engine 対応のみ・research flag 分離（例: F5-TTS, Fish-Speech は weight 非配布）。
-- 用途が **voice cloning（RVC / VC / speaker cloning）** なら core に入れない → 別リポジトリ `vokra-voiceclone-experimental`（ELVIS Act / NO FAKES Act、CLAUDE.md 設計判断 #8）。**speaker embedding 抽出は core に残す**（zero-shot TTS 必須）。
+- 用途が **voice cloning（RVC / VC / speaker cloning の trigger 側）** なら core に入れない → 別リポジトリ `vokra-voiceclone-experimental`（ELVIS Act / NO FAKES Act、CLAUDE.md 設計判断 #8）。**speaker embedding 抽出は core に残す**（zero-shot TTS 必須）。voice-clone の共通 op（F0 抽出等）は core に残し、trigger model のみ別リポへ。
 
 ## 1. native 自前再実装（whisper.cpp 型）
 
@@ -26,6 +27,33 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 - 上流 checkpoint → GGUF 変換は `crates/vokra-convert/` に追加。ONNX / protobuf を扱うのはこの**オフラインツールのみ**（runtime 側には持ち込まない）。
 - 音声固有 metadata は **`vokra.*` prefix の独自 chunk** で焼き込む（llama.cpp 本体との命名衝突回避、CLAUDE.md 設計判断 #3）。frontend を持つモデルは `vokra.frontend.*`（n_fft/hop/win_length/window_type/mel_norm/htk_mode/fmin/fmax/n_mels/pad_mode/sample_rate 等）を必須で書く（bit-exact 再現、レビュアー C 指摘 #2）。
+
+### 2.1 事前 merge が要る checkpoint 形状
+
+以下は **vokra-cli convert に直渡しできない** — Python sidecar で事前処理してから渡す。
+
+- **sharded safetensors（`model.safetensors.index.json` + 複数 `model-*-of-*.safetensors`）**: `vokra-cli` は直渡し不可（"safetensors buffer truncated" で落ちる、例外は Voxtral の streaming reader だけ）。→ `tools/parity/<slug>_prepare_checkpoint.py` を書いて事前 merge。既存例は `kokoro_prepare_checkpoint.py` / `nemo_pt_to_safetensors.py`。**int64/f64/bool は f32/f16 に strip**（GGUF writer が受けない dtype を潰しておく）。[[project-vokra-cli-sharded-safetensors]]。
+- **tied embedding（shared tensor）**: `safetensors.torch.save_file` は複数 name が同一 `data_ptr` を指すと `RuntimeError`。Bark / XTTS-v2 / MOSS 変種の MLM head や LM head が該当。→ dedup が必須:
+  ```python
+  seen: dict[int, str] = {}
+  shared_pairs: list[tuple[str, str]] = []
+  for n, t in list(kept.items()):
+      ptr = t.data_ptr()
+      if ptr in seen:
+          shared_pairs.append((seen[ptr], n))
+          kept[n] = t.clone().contiguous()  # 別領域にコピーして collision 解消
+      else:
+          seen[ptr] = n
+  # shared_pairs は shared_pairs.json に audit trail として吐く（後で復元ロジックが要る）
+  ```
+  [[reference-safetensors-shared-tensor-dedup]]。
+- **5D 以上の tensor**: GGUF writer は現状 4D まで（>4D は `"too many dimensions: 5"` で hard-error）。Qwen2.5-Omni 系 multimodal adapter が該当し publish blocked。回避 = writer 拡張 or `reshape(5D → 4D + metadata)`、判断は M6 investigation phase。着手前に上流 tensor shape を `python -c "import safetensors; ..."` で確認して 5D を含むなら **converter に着手しない**。[[project-gguf-5d-tensor-limit]]。
+
+### 2.2 大モデル（>8 GB safetensors）は M1 iMac で変換しない
+
+- 依頼者機（M1 iMac 16 GB）で >8 GB safetensors を mmap すると swap が急伸して macOS が強制終了する（Voxtral-Small-24B 48 GB で swap 40 GB 到達実証）。→ **vast.ai へ escalate** → skill `vast-ai-workflow`。
+- 安全ライン: whisper-* / csm-1b（6.21 GB tight OK）/ kyutai-stt（5.23 GB）/ parakeet-* は M1 OK。要 vast.ai: Voxtral-Small-24B / Kimi-Audio-7B 系 / 30B+。
+- 既存 GGUF の provenance 差替のみなら `restamp_provenance`（mmap 読取 + `GgufStreamWriter` で tensor コピーせず metadata だけ差替、8.7 GB Voxtral を M1 16 GB で peak footprint 6.4 MB で実測）→ skill `publish-model-to-hf` §restamp。[[project-restamp-provenance]]。
 
 ## 3. 新規 op が要るか（gap analysis）
 
