@@ -486,3 +486,75 @@ fn from_gguf_loads_real_sbv2_weights() {
     SbV2Model::from_gguf(&main, &bert_ja, &bert_en)
         .unwrap_or_else(|e| panic!("SbV2Model::from_gguf: {e}"));
 }
+
+/// Blocker 2c defensive check (2026-08-10) — a `main` GGUF that carries
+/// an anomalous `sbv2.sdp.flows.<even>.<w>` tensor must fail loudly with
+/// `VokraError::ModelLoad` naming the offending tensor. Upstream VITS-SDP
+/// architecture puts `Flip` (parameter-free) modules at even flow slots,
+/// so no such production tensor should ever survive the converter's
+/// `rewrite_sdp_tensor_name` — the converter maps even-index survivors
+/// verbatim to `sbv2.sdp.flows.<even>.<w>` (the loud-detect path) and
+/// the loader (`crates/vokra-models/src/sbv2/mod.rs`, lines near the top
+/// of `from_gguf_inner`) rejects them here.
+///
+/// This test needs only the anomalous tensor + a valid GGUF header —
+/// the loader's format-anomaly check runs BEFORE any metadata read, so
+/// no scalar hparams are required. That makes the test cheap: it does
+/// not need to reproduce a fully-loadable SBV2 v2 config, only the
+/// anomaly itself.
+///
+/// If real checkpoints ever legitimately ship `sbv2.sdp.flows.*`
+/// tensors (an SDP variant that stores parameters at even slots), this
+/// check must be relaxed and this test updated with the rationale.
+/// Until then it acts as a canary for converter regressions in
+/// `crates/vokra-convert/src/models/sbv2.rs::rewrite_sdp_tensor_name`
+/// (Blocker 2c) or checkpoint format corruption.
+#[test]
+fn from_gguf_rejects_anomalous_sdp_flows_even_index_tensor() {
+    use vokra_core::gguf::GgmlType;
+    let mut b = GgufBuilder::new();
+    // A 4-byte F32 tensor is enough to trip the check — the loader's
+    // format-anomaly walk runs on tensor NAMES, not shapes.
+    b.add_tensor(
+        "sbv2.sdp.flows.2.pre.weight",
+        GgmlType::F32,
+        vec![1u64],
+        vec![0u8; 4],
+    )
+    .expect("add anomalous flow tensor");
+    let main =
+        GgufFile::parse(b.to_bytes().expect("build main gguf bytes")).expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!(
+            "expected loud-fail on anomalous `sbv2.sdp.flows.2.pre.weight` tensor; loader \
+             silently accepted the anomaly (FR-EX-08 violation — would be dropped without \
+             the format-anomaly check in from_gguf_inner)"
+        ),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("sbv2.sdp.flows.2.pre.weight"),
+                "expected error to name the offending tensor \
+                 `sbv2.sdp.flows.2.pre.weight`, got: {msg}"
+            );
+            assert!(
+                msg.contains("Flip"),
+                "expected error to explain the Flip-at-even-slots invariant, got: {msg}"
+            );
+            // FR-EX-08 attribution should be present so a future maintainer
+            // reads the pattern (no silent-wrong) and does not disable the
+            // check without recording a rationale.
+            assert!(
+                msg.contains("FR-EX-08"),
+                "expected error to cite FR-EX-08, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}

@@ -2266,6 +2266,40 @@ impl SbV2Model {
         bert_zh: Option<&GgufFile>,
         phonemizer: SbV2Phonemizer,
     ) -> Result<Self> {
+        // Blocker 2c defensive check (2026-08-10): the converter
+        // (`crates/vokra-convert/src/models/sbv2.rs::rewrite_sdp_tensor_name`)
+        // maps even-index upstream `sdp.flows.<even>.*` production tensors
+        // verbatim to `sbv2.sdp.flows.<even>.*` (preserving the loud-detect
+        // path for anomalies). Upstream VITS-SDP architecture puts `Flip`
+        // modules at even indices — Flip has zero parameters, so a healthy
+        // checkpoint should have NO `sbv2.sdp.flows.<even>.*` tensors at
+        // all. The load path below reads only `sbv2.sdp.flow.<dense>.*`
+        // (the densified odd-index ConvFlow slots), so any surviving
+        // `sbv2.sdp.flows.*` tensor would be silently dropped without
+        // this check — FR-EX-08 no-silent-wrong. If real checkpoints ever
+        // legitimately ship such tensors (e.g. an SDP variant that stores
+        // parameters at even slots), this check must be relaxed with a
+        // recorded rationale, but until then it acts as a canary for
+        // converter regressions or format corruption.
+        //
+        // Placed up-front (before all metadata / tensor reads) so a test
+        // can exercise it without constructing a fully-loadable SDP —
+        // the anomaly is a pure format check with no other dependencies.
+        for t in main.tensors() {
+            if let Some(rest) = t.name.strip_prefix("sbv2.sdp.flows.") {
+                return Err(VokraError::ModelLoad(format!(
+                    "SbV2Model::from_gguf: unexpected `sbv2.sdp.flows.{rest}` tensor — upstream \
+                     VITS-SDP puts `Flip` (parameter-free) modules at even flow slots, so no \
+                     `sbv2.sdp.flows.*` production tensor should reach the loader. Loaded \
+                     ConvFlow tensors live under `sbv2.sdp.flow.<dense>.*`. This tensor \
+                     would be silently dropped without this check (FR-EX-08). Root cause \
+                     is either a converter regression in `rewrite_sdp_tensor_name` \
+                     (Blocker 2c) or a checkpoint format anomaly — inspect the emitting \
+                     tool before disabling this check."
+                )));
+            }
+        }
+
         // ---- metadata + tensor read helpers (mirrors
         // vokra_bert::deberta_v2::DebertaV2Encoder::from_gguf's established
         // closure shape) ----
@@ -2835,6 +2869,21 @@ impl SbV2Model {
             )
         };
 
+        // Blocker 2c defensive check (2026-08-10): the converter
+        // (`crates/vokra-convert/src/models/sbv2.rs::rewrite_sdp_tensor_name`)
+        // maps even-index upstream `sdp.flows.<even>.*` production tensors
+        // verbatim to `sbv2.sdp.flows.<even>.*` (preserving the loud-detect
+        // path for anomalies). Upstream VITS-SDP architecture puts `Flip`
+        // modules at even indices — Flip has zero parameters, so a healthy
+        // checkpoint should have NO `sbv2.sdp.flows.<even>.*` tensors at
+        // all. The load path above reads only `sbv2.sdp.flow.<dense>.*`
+        // (the densified odd-index ConvFlow slots), so any surviving
+        // `sbv2.sdp.flows.*` tensor would be silently dropped without
+        // this check — FR-EX-08 no-silent-wrong. If real checkpoints ever
+        // legitimately ship such tensors (e.g. an SDP variant that stores
+        // parameters at even slots), this check must be relaxed with a
+        // recorded rationale, but until then it acts as a canary for
+        // converter regressions or format corruption.
         // ---- VITS2 normalizing flow (Blocker 2b, 2026-08-06) ----
         //
         // Upstream `p0p4k/vits2_pytorch/models.TransformerCouplingBlock`
