@@ -509,12 +509,48 @@ impl EncoderConv {
     ///
     /// `hidden` shape is `[seq_len, d_model]` row-major. Output has the
     /// same shape.
-    pub fn forward(&self, hidden: &[f32], seq_len: usize) -> Vec<f32> {
+    /// Apply Conv1D(kernel=K, padding=K/2, groups=1) → GELU → residual → LayerNorm.
+    ///
+    /// # Argument ordering (HF ConvLayer.forward — NOT what a residual-add
+    /// convention would suggest)
+    ///
+    /// - `conv_input` is what the 1D convolution reads (`hidden_states` in
+    ///   HF's `ConvLayer.forward` signature) — for DeBERTa v2 encoder this
+    ///   is the **embedding-LN output** (pre-layer-0 hidden state).
+    /// - `residual` is what the LayerNorm's residual add uses
+    ///   (`residual_states` in HF) — for DeBERTa v2 encoder this is the
+    ///   **post-layer-0 output**, NOT the conv input.
+    ///
+    /// The two args are the SAME in a naive "residual-around-conv" reading
+    /// but DIFFERENT in DeBERTa v2 encoder's actual invocation order, per
+    /// upstream `DebertaV2Encoder.forward` (transformers HEAD):
+    ///
+    /// ```text
+    /// for i, layer_module in enumerate(self.layer):
+    ///     output_states, _ = layer_module(next_kv, ...)      # runs layer i
+    ///     if i == 0 and self.conv is not None:
+    ///         output_states = self.conv(
+    ///             hidden_states,     # <-- CONV INPUT: pre-layer-0
+    ///             output_states,     # <-- RESIDUAL:    post-layer-0
+    ///             input_mask,
+    ///         )
+    ///     next_kv = output_states
+    /// ```
+    ///
+    /// The pre-2026-08-11 Vokra impl fed `conv_input == residual` (both
+    /// were the pre-layer-0 hidden), which is architecturally wrong and
+    /// left `bert_hidden_ja` diverging at max |Δ| ≈ 9.99 (post the
+    /// initial encoder.conv wire but with the wrong invocation order).
+    ///
+    /// `conv_input` and `residual` shapes are both `[seq_len, d_model]`
+    /// row-major flatten. Output is the same shape.
+    pub fn forward(&self, conv_input: &[f32], residual: &[f32], seq_len: usize) -> Vec<f32> {
         let d = self.d_model;
         let k = self.kernel_size;
         // padding = (k - 1) / 2 for the "same-length" HF default; k=3 → pad=1.
         let pad = (k - 1) / 2;
-        assert_eq!(hidden.len(), seq_len * d);
+        assert_eq!(conv_input.len(), seq_len * d);
+        assert_eq!(residual.len(), seq_len * d);
         // Conv1D: output[t, oc] = bias[oc] + Σ_{ic, dk} W[oc, ic, dk] * x[t + dk - pad, ic]
         let mut conv_out = vec![0.0_f32; seq_len * d];
         for t in 0..seq_len {
@@ -528,7 +564,8 @@ impl EncoderConv {
                     let src_t = src_t as usize;
                     for ic in 0..d {
                         // Row-major [oc, ic, dk]: oc * (d * k) + ic * k + dk.
-                        acc += self.conv_weight[oc * d * k + ic * k + dk] * hidden[src_t * d + ic];
+                        acc +=
+                            self.conv_weight[oc * d * k + ic * k + dk] * conv_input[src_t * d + ic];
                     }
                 }
                 conv_out[t * d + oc] = acc;
@@ -542,13 +579,13 @@ impl EncoderConv {
             let x = *v;
             *v = 0.5 * x * (1.0 + vokra_math::tanh(SQRT_TWO_OVER_PI * (x + 0.044_715 * x * x * x)));
         }
-        // Residual + LayerNorm: `output = LayerNorm(x + GELU(conv(x)))`.
-        // Upstream `ConvLayer.forward` does `layer_norm_input = residual_states + out`
-        // where residual_states == the input to the conv, so we add `hidden`
-        // (the pre-conv value) to the activated conv output.
+        // Residual + LayerNorm: `output = LayerNorm(residual + GELU(conv(conv_input)))`.
+        // Upstream `ConvLayer.forward` does `layer_norm_input =
+        // residual_states + out`; DeBERTa v2 encoder calls the layer AFTER
+        // layer 0, so residual is post-layer-0 (not conv_input).
         let mut combined = vec![0.0_f32; seq_len * d];
         for i in 0..seq_len * d {
-            combined[i] = hidden[i] + conv_out[i];
+            combined[i] = residual[i] + conv_out[i];
         }
         self.ln.forward(&combined, seq_len, d)
     }
@@ -649,15 +686,30 @@ impl DebertaV2Encoder {
             }
         }
         hidden = self.embed_ln.forward(&hidden, seq_len, self.d_model);
-        // v2-only: encoder-input conv fires once between embed_ln and layer[0]
-        // when the checkpoint ships the tensors. HF gates this on
-        // `conv_kernel_size > 0`; we gate on the presence of the loaded
-        // `EncoderConv` (same effective condition, honestly propagated).
-        if let Some(ref conv) = self.encoder_conv {
-            hidden = conv.forward(&hidden, seq_len);
-        }
-        for layer in &self.layers {
+        // Save the embed_ln output as the encoder.conv input. See
+        // `EncoderConv::forward`'s doc block for the upstream invocation
+        // order: the conv reads the pre-layer-0 hidden while its residual
+        // uses the POST-layer-0 output.
+        let embed_ln_out = if self.encoder_conv.is_some() {
+            Some(hidden.clone())
+        } else {
+            None
+        };
+        for (idx, layer) in self.layers.iter().enumerate() {
             hidden = layer.forward(&hidden, seq_len);
+            // v2-only: encoder-input conv fires AFTER layer[0] (not before).
+            // HF `DebertaV2Encoder.forward` computes `output_states =
+            // self.conv(hidden_states, output_states, input_mask)` where
+            // `hidden_states` is the pre-layer-0 embed_ln output and
+            // `output_states` is the post-layer-0 result. The conv input is
+            // therefore the SAVED embed_ln output; the residual is the
+            // current post-layer-0 `hidden`. Every subsequent layer (1..24)
+            // then receives the post-conv value.
+            if idx == 0 {
+                if let (Some(ref conv), Some(ref x0)) = (&self.encoder_conv, &embed_ln_out) {
+                    hidden = conv.forward(x0, &hidden, seq_len);
+                }
+            }
         }
         hidden
     }

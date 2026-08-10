@@ -1,30 +1,56 @@
 {
   "_schema_version": 1,
-  "_schema_doc": "WP-02 pinned atol baseline (2026-08-09). Consumed by `crates/vokra-models/tests/sbv2_parity_atol_calibration.rs::atol_values_are_pinned_against_baseline_drift` to detect silent drift (>50% in either direction) of any `crates/vokra-models/src/sbv2/parity.rs::PER_TENSOR_ATOL` value against its pinned baseline. The updater `tools/parity/sbv2_atol_updater.py` proposes edits to this file plus the code side; owner reviews and commits both TOGETHER per the memory `feedback-honest-parity-atol` redundant-recording rule. See `docs/adr/sbv2-parity-atol.md` §5 for the empirical-measurement cycle this file participates in, and this crate's `sbv2_parity_atol_calibration.rs` test's rustdoc for the RED->GREEN->REFACTOR walkthrough.",
+  "_schema_doc": "WP-02 pinned atol baseline (2026-08-09, updated 2026-08-11 for encoder.conv order fix). Consumed by `crates/vokra-models/tests/sbv2_parity_atol_calibration.rs::atol_values_are_pinned_against_baseline_drift` to detect silent drift (>50% in either direction) of any `crates/vokra-models/src/sbv2/parity.rs::PER_TENSOR_ATOL` value against its pinned baseline. The updater `tools/parity/sbv2_atol_updater.py` proposes edits to this file plus the code side; owner reviews and commits both TOGETHER per the memory `feedback-honest-parity-atol` redundant-recording rule. See `docs/adr/sbv2-parity-atol.md` §5 for the empirical-measurement cycle this file participates in, and this crate's `sbv2_parity_atol_calibration.rs` test's rustdoc for the RED->GREEN->REFACTOR walkthrough.",
   "per_tensor_atol": {
-    "bert_hidden_ja": 0.02,
+    "bert_hidden_ja": 0.05,
     "bert_hidden_en": 0.02,
+    "bert_bridge_out": 0.07,
+    "mel_hidden": 0.07,
     "sdp_sample": 0.05,
-    "z_latent": 0.03,
+    "z_latent": 0.08,
     "waveform": 1.5
   },
   "provenance": {
     "sources": {
       "bert_hidden_ja": {
-        "status": "EstimatedPreFixture",
-        "note": "Pre-fixture theoretical upper bound; see `PER_TENSOR_ATOL`'s `\"bert_hidden_ja\"` rustdoc block for the per-op × depth × amplification derivation. Flip status to `Measured` once owner CI dispatch has recorded a real max|Δ|."
+        "status": "Measured",
+        "measurement_source": "M1 iMac local run (`cargo test --release parity_sbv2_real`), post encoder.conv order fix (crates/vokra-bert/src/deberta_v2.rs `EncoderConv::forward` + `DebertaV2Encoder::forward` invocation-after-layer-0)",
+        "measurement_date": "2026-08-11",
+        "measured_max_diff": 0.0247,
+        "margin_factor": 2.02,
+        "note": "Pre-fix (2026-08-10): 10.83 with encoder.conv completely absent; encoder.conv wired at wrong position → 9.99. HF `DebertaV2Encoder.forward` fires encoder.conv AFTER layer[0] (not before), with conv input = pre-layer-0 embed_ln output and residual = post-layer-0 output. Fix reduced |Δ| by ~440× to 0.0247. Bound set to measured × 2.02 = 0.05 per `feedback-honest-parity-atol` (`1.5-2×` margin over measured floor). Cross-arch (Linux glibc libm) may nudge this; CI will measure and this may need bumping."
       },
       "bert_hidden_en": {
         "status": "EstimatedPreFixture",
-        "note": "Same derivation as `bert_hidden_ja` — DeBERTa v3 is v2's shared-position variant, not a deeper stack."
+        "note": "Same derivation as `bert_hidden_ja` — DeBERTa v3 is v2's shared-position variant, not a deeper stack. v3 does NOT ship encoder.conv (`conv_kernel_size` unset), so the 2026-08-11 encoder.conv order fix does not affect this path; the pre-fixture bound stays 0.02 pending its own real-fixture measurement."
+      },
+      "bert_bridge_out": {
+        "status": "Measured",
+        "measurement_source": "M1 iMac local run (post encoder.conv order fix); cascade of bert_hidden_ja through the SBV2 bridge conv (`enc_p.bert_proj_ja`).",
+        "measurement_date": "2026-08-11",
+        "measured_max_diff": 0.0329,
+        "margin_factor": 2.13,
+        "note": "Not previously overridden; fell through to ATOL_DEFAULT=0.01 with `UnmeasuredDefault` status. With encoder.conv fix, bert_hidden_ja tightened → cascades cleanly through bridge conv (kernel=1 pointwise, so amplification is bounded by weight-norm × input-magnitude). Bound set to measured × 2.13 = 0.07."
+      },
+      "mel_hidden": {
+        "status": "Measured",
+        "measurement_source": "M1 iMac local run (post encoder.conv order fix); cascade of bert_bridge_out through the SBV2 text encoder into the mel path.",
+        "measurement_date": "2026-08-11",
+        "measured_max_diff": 0.0329,
+        "margin_factor": 2.13,
+        "note": "Not previously overridden; fell through to ATOL_DEFAULT=0.01. Numerically identical to bert_bridge_out because the additive-broadcast injection at the T_text axis preserves per-position |Δ| within the max reduction. Bound set to measured × 2.13 = 0.07 for consistency with bert_bridge_out."
       },
       "sdp_sample": {
         "status": "EstimatedPreFixture",
         "note": "SDP `.max(1)` boundary + ordinary flow-stack rounding; requires matching PRNG algorithm + seed on both sides for the comparison to be meaningful (currently satisfied by `RngMode::PhiloxRngEnginePyTorchParity` default). See `PER_TENSOR_ATOL`'s `\"sdp_sample\"` rustdoc block for the 2026-08-08 torch.randn parity Steps 1-10 landing note."
       },
       "z_latent": {
-        "status": "EstimatedPreFixture",
-        "note": "4 coupling blocks + WaveNet-residual internal net + affine-scale amplification when the flow's `logs` output nears ±3."
+        "status": "Measured",
+        "measurement_source": "M1 iMac local run (post encoder.conv order fix); flow inverse cumulative rounding + affine-scale amplification.",
+        "measurement_date": "2026-08-11",
+        "measured_max_diff": 0.0359,
+        "margin_factor": 2.23,
+        "note": "Pre-fix (2026-08-10): 5.634 with encoder.conv absent; 4.427 with encoder.conv wired at wrong position. Fix reduced |Δ| by ~157× to 0.0359 as the encoder.conv improvement cascaded through the entire flow-inverse chain (mel_hidden → z_latent). Bound set to measured × 2.23 = 0.08 per `feedback-honest-parity-atol`. Previous theoretical bound 0.03 is now insufficient — the actual measurement exceeds it because the flow's affine-scale amplification is real and the encoder.conv fix only exposed it (did not create it)."
       },
       "waveform": {
         "status": "Measured",

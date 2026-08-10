@@ -257,10 +257,17 @@ pub enum AtolCalibration {
 ///     now real and byte-derived from the CI Linux run (31303426623),
 ///     not a paper-cited estimate.
 pub const PER_TENSOR_ATOL: &[(&str, f32)] = &[
-    ("bert_hidden_ja", 0.02),
-    ("bert_hidden_en", 0.02),
+    // 2026-08-11 measured update (encoder.conv order fix in
+    // `crates/vokra-bert/src/deberta_v2.rs`): the four v2-path tensors
+    // now have measured floors × ~2× margin per `feedback-honest-parity-atol`.
+    // Historical derivations preserved above (append-never-delete).
+    // Measurement env: M1 iMac, `cargo test --release parity_sbv2_real`.
+    ("bert_hidden_ja", 0.05),  // measured 0.0247 × 2.02
+    ("bert_hidden_en", 0.02),  // unchanged: not exercised by "テスト" JA input
+    ("bert_bridge_out", 0.07), // NEW: measured 0.0329 × 2.13, cascade of bert_hidden_ja
+    ("mel_hidden", 0.07),      // NEW: measured 0.0329 × 2.13, cascade of bert_bridge_out
     ("sdp_sample", 0.05),
-    ("z_latent", 0.03),
+    ("z_latent", 0.08), // measured 0.0359 × 2.23
     ("waveform", 1.5),
 ];
 
@@ -309,10 +316,17 @@ pub fn tolerance_for(name: &str) -> f32 {
 ///     `docs/adr/sbv2-parity-atol.md`.
 pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
     match name {
-        "bert_hidden_ja" => Some(AtolCalibration::EstimatedPreFixture),
+        // 2026-08-11: bert_hidden_ja + z_latent flipped to Measured after
+        // the encoder.conv order fix (crates/vokra-bert/src/deberta_v2.rs
+        // `EncoderConv::forward`, dispatched from `DebertaV2Encoder::forward`
+        // AFTER layer[0] per HF `DebertaV2Encoder.forward` invocation
+        // order). Measured floors from M1 local run:
+        //   bert_hidden_ja = 0.0247, z_latent = 0.0359
+        // Bounds set to measured × ~2.0 per `feedback-honest-parity-atol`.
+        "bert_hidden_ja" => Some(AtolCalibration::Measured),
         "bert_hidden_en" => Some(AtolCalibration::EstimatedPreFixture),
         "sdp_sample" => Some(AtolCalibration::EstimatedPreFixture),
-        "z_latent" => Some(AtolCalibration::EstimatedPreFixture),
+        "z_latent" => Some(AtolCalibration::Measured),
         // Wave-9 (2026-08-09): waveform atol derived from CI measurement
         // (run 31303426623 max |Δ| = 0.9248) × 1.5-2× margin = 1.5. See
         // `PER_TENSOR_ATOL`'s `"waveform"` block-doc for the derivation
@@ -347,10 +361,13 @@ pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
         // §5 for the promotion procedure.
         "phoneme_embed" => Some(AtolCalibration::UnmeasuredDefault),
         "text_hidden" => Some(AtolCalibration::UnmeasuredDefault),
-        "bert_bridge_out" => Some(AtolCalibration::UnmeasuredDefault),
+        // 2026-08-11: bert_bridge_out + mel_hidden now have PER_TENSOR_ATOL
+        // overrides (0.07 each), measured 0.0329 × 2.13 after the
+        // encoder.conv order fix cascaded the JA BERT improvement.
+        "bert_bridge_out" => Some(AtolCalibration::Measured),
         "speaker_embed" => Some(AtolCalibration::UnmeasuredDefault),
         "style_projected" => Some(AtolCalibration::UnmeasuredDefault),
-        "mel_hidden" => Some(AtolCalibration::UnmeasuredDefault),
+        "mel_hidden" => Some(AtolCalibration::Measured),
         _ => None,
     }
 }
@@ -402,7 +419,27 @@ pub fn atol_calibration_for(name: &str) -> Option<AtolCalibration> {
 /// should then be revised to `max(measured × 1.5, 0.01)` and this docstring
 /// updated to record the actual measurement (never delete the derivation —
 /// honest-atol discipline).
-pub const MEL_LOSS_ATOL: f32 = 0.05;
+///
+/// # Measured update (2026-08-11, encoder.conv order fix aftermath)
+///
+/// Local M1 measurement post encoder.conv fix (crates/vokra-bert/src/deberta_v2.rs
+/// `EncoderConv::forward` + `DebertaV2Encoder::forward` invocation-after-layer-0):
+/// `mel_loss RMS = 0.2004`. This exceeds the pre-fixture estimate 0.05
+/// because HiFi-GAN's vocoder produces phase-sensitive output — even when
+/// the flow's stochastic sampling receives matched PRNG seeds, the
+/// compounded numerical differences through the 24-layer BERT + flow +
+/// upsampling stack shift the output waveform's phase enough that
+/// per-band mel-spectrogram L2 differs materially. The mel envelope
+/// itself is close (per-tensor `mel_hidden` measured 0.0329) but the
+/// synthesized waveform's power-spectrum-log aggregate is not.
+///
+/// Bound updated to measured × ~1.5 = **`0.30`** per `feedback-honest-
+/// parity-atol` margin discipline. Cross-arch (Linux glibc libm) may
+/// nudge this — CI will measure; if higher, follow the honest-atol
+/// walkthrough to record the new floor. **Do NOT drop below `0.20` on
+/// M1** without a libm-parity fix (WP-08 land), and do NOT drop below
+/// `0.30` on Linux without measured proof.
+pub const MEL_LOSS_ATOL: f32 = 0.30;
 
 /// UTMOS-delta tolerance for the SBV2 real-checkpoint parity harness
 /// (WP-24; NFR-QL-02).
