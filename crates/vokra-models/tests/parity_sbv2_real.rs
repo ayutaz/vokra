@@ -1005,6 +1005,48 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     let model = SbV2Model::from_gguf_with_phonemizer(&main, &bert_ja, &bert_en, phonemizer)
         .unwrap_or_else(|e| panic!("SbV2Model::from_gguf_with_phonemizer: {e}"));
 
+    // Blocker 3 close-out (2026-08-10): the SBV2 v2 base ckpt
+    // (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra` and its
+    // downstream fine-tunes) has **no per-speaker embedding table** —
+    // speaker conditioning enters through `enc_p.encoder.spk_emb_linear`
+    // which the Blocker 1 converter mapping table renames to
+    // `sbv2.text_encoder.spk_emb_linear.{weight,bias}` and the
+    // `SbV2Model::from_gguf` speaker section (mod.rs
+    // `---- speaker ----`) binds as an `ExternalSpeakerProjection`.
+    //
+    // Assert-loudly here that the projection actually bound at load
+    // time. A converter regression that silently drops the pair (or
+    // renames it under a different tensor path) would otherwise only
+    // surface as a subtle waveform drift downstream — and even then
+    // only when a caller supplies a non-`None` speaker_embedding on the
+    // request. FR-EX-08 prefers a loud, named-cause failure at load
+    // time, and `model.speaker_projection()` (see that method's doc)
+    // gives us exactly that observability.
+    //
+    // The current manifest sets `speaker_embedding: None` (see
+    // `request_from_manifest`'s "Blocker 3" comment above), so the
+    // projection is not exercised on the forward pass — but that is
+    // fine for this assertion: we only need to confirm the tensors
+    // bound, not that they influenced the waveform. Extending the
+    // manifest schema to carry an explicit reference 512-d embedding
+    // (which would exercise the projection on the forward pass) is
+    // a follow-up.
+    assert!(
+        model.speaker_projection().is_some(),
+        "{ctx}: expected the SBV2 v2 real-ckpt loader to bind an \
+         ExternalSpeakerProjection from `sbv2.text_encoder.spk_emb_linear.\
+         {{weight,bias}}` — the tensors are absent (or the converter \
+         renamed them under a different path). Check that Blocker 1's \
+         classify_tensor rename table still emits \
+         `sbv2.text_encoder.spk_emb_linear.{{weight,bias}}` for upstream \
+         `enc_p.encoder.spk_emb_linear.{{weight,bias}}`, and that the \
+         checkpoint fixture at `{}` is a real Style-Bert-VITS2 v2 base \
+         ckpt (fine-tunes with `emb_g` populated but no `spk_emb_linear` \
+         would also fail this assertion — the two paths co-exist per the \
+         `speaker` module doc).",
+        main_path.display(),
+    );
+
     // WP-01 (2026-08-09): `synthesize_with_intermediates` returns the
     // final PCM AND the per-stage tensor snapshots the Python dumper
     // records — driving the whole 11-tensor manifest diff off a SINGLE

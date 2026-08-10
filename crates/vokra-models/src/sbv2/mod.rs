@@ -447,6 +447,31 @@ impl SbV2Model {
         self
     }
 
+    /// Returns a read-only handle to the loaded [`ExternalSpeakerProjection`]
+    /// (Blocker 3), or `None` if this model routes speaker conditioning
+    /// through the legacy [`SpeakerEmbedding::lookup`] path only (see
+    /// [`synthesize`](Self::synthesize)'s step-5 dispatch table).
+    ///
+    /// The projection is bound in one of two ways:
+    /// - [`with_external_speaker_projection`](Self::with_external_speaker_projection)
+    ///   attaches a caller-built one (synthetic tests, custom fine-tunes).
+    /// - [`from_gguf`](Self::from_gguf) binds the pair when the loaded
+    ///   `main` GGUF carries the
+    ///   `sbv2.text_encoder.spk_emb_linear.{weight,bias}` tensors (the real
+    ///   SBV2 v2 base ckpt's `enc_p.encoder.spk_emb_linear.*` renamed by
+    ///   the Blocker 1 converter mapping table).
+    ///
+    /// A read-only handle (rather than exposing `speaker_projection`
+    /// directly as `pub`) so callers cannot mutate the projection weights
+    /// post-load — matches every other SBV2 field's encapsulation. Used
+    /// by `parity_sbv2_real.rs` to assert-loudly that a real-ckpt load
+    /// bound the projection (otherwise a converter regression that
+    /// silently drops the pair would only surface as a subtle waveform
+    /// drift; FR-EX-08 prefers loud-fail at load time).
+    pub fn speaker_projection(&self) -> Option<&ExternalSpeakerProjection> {
+        self.speaker_projection.as_ref()
+    }
+
     /// Test-only constructor: assembles a full pipeline out of tiny,
     /// deterministic, "shaped-like-the-real-thing" components — this proves
     /// the Task 23 *wiring*, not any trained voice's quality (no real

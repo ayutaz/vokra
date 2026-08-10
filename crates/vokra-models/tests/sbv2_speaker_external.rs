@@ -246,6 +246,53 @@ fn tts_engine_synthesize_honors_request_speaker_embedding() {
     assert_eq!(via_trait.sample_rate, direct.sample_rate);
 }
 
+/// `SbV2Model::speaker_projection()` accessor — read-only observability
+/// so a caller (parity harness, licence audit report, converter
+/// round-trip smoke test) can confirm the real-ckpt speaker path bound
+/// without exposing a mutable handle to the projection weights. This
+/// specifically closes the parity-side gap: `parity_sbv2_real.rs`'s
+/// `#[ignore]`d owner-fixture test can now assert-loudly that a real
+/// SBV2 v2 base ckpt (whose upstream `enc_p.encoder.spk_emb_linear.*`
+/// pair the Blocker 1 rename table lands under
+/// `sbv2.text_encoder.spk_emb_linear.*`) actually binds the projection
+/// at load time, catching a converter regression that would otherwise
+/// only surface as a subtle waveform drift.
+#[test]
+fn speaker_projection_accessor_returns_none_on_synthetic_by_default() {
+    let model = SbV2Model::synthetic_for_test();
+    assert!(
+        model.speaker_projection().is_none(),
+        "synthetic_for_test() must not carry an ExternalSpeakerProjection — \
+         the pre-Blocker-3 lookup path is the synthetic fixture's contract"
+    );
+}
+
+/// `SbV2Model::speaker_projection()` after
+/// `with_external_speaker_projection()` returns `Some(&proj)` with the
+/// same `d_in` / `d_out` the builder was called with — proves the
+/// accessor observes what the builder set (not a stale zero-shape
+/// stub).
+#[test]
+fn speaker_projection_accessor_returns_some_after_with_external() {
+    const D_SPEAKER: usize = 6;
+    const D_MODEL: usize = 8;
+    let proj = synthetic_external_projection(D_SPEAKER, D_MODEL);
+    let model = SbV2Model::synthetic_for_test().with_external_speaker_projection(proj);
+    let bound = model
+        .speaker_projection()
+        .expect("with_external_speaker_projection must make the projection observable");
+    assert_eq!(
+        bound.d_in(),
+        D_SPEAKER,
+        "accessor must return the projection the builder installed (d_in must match)"
+    );
+    assert_eq!(
+        bound.d_out(),
+        D_MODEL,
+        "accessor must return the projection the builder installed (d_out must match)"
+    );
+}
+
 /// `TtsEngine::synthesize` still rejects `prosody_features` loudly — SBV2
 /// derives pitch-accent tones from its own G2P (see the `TtsEngine` impl
 /// doc). Blocker 3 does not touch this gate.
