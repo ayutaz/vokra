@@ -29,7 +29,7 @@ guessing.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — 103 IDs cited across the public documents.**
+**Last verified: 2026-08-10 — 103 IDs cited across the public documents (NFR-PF-12 refresh landed with WP-15 NPU / H100 bakeoff harness).**
 
 The set this page must cover is mechanically derived, not curated by hand.
 Regenerate it with:

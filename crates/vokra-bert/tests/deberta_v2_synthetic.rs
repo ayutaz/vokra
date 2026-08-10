@@ -190,6 +190,11 @@ fn p2c_bucket_index_matches_c2p_not_reversed() {
         bk: vec![0.0_f32; d_model],
         bv: vec![0.0_f32; d_model],
         bout: vec![0.0_f32; d_model],
+        // WP-15 (rebase 2026-08-10): AttnWeights gained bq_pos/bk_pos
+        // Option fields after this test was authored. Share-att-key=True
+        // path (share bias with content Q/K) = leave as None.
+        bq_pos: None,
+        bk_pos: None,
     };
     let attn =
         DisentangledAttention::new(w, d_model, n_heads, head_dim, n_pos_buckets, max_pos_dist);

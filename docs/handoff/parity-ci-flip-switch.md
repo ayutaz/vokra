@@ -3,15 +3,16 @@
 Tracked / public. This handoff is the operational counterpart to the family
 parity-CI workflows landed on `feat/sota-phase1-2026-07-23` for SoTA plan Phase
 1-4 (originally seven; two follow-up workflows landed 2026-07-28 — see
-`deepfilternet3` and `deberta-v3-large` rows below, taking the current family
-count to **nine**). Every workflow is **opt-in by design** — landing the harness does not fire
+`deepfilternet3` and `deberta-v3-large` rows below; one more SBV2 v2 follow-up
+landed on `feat/sbv2-voxtral-real-verify-2026-08-06` — see the `sbv2` row —
+taking the current family count to **ten**). Every workflow is **opt-in by design** — landing the harness does not fire
 the multi-GB HF downloads. The owner "flips the switch" per family after
 sign-off; before that, cron / PR events clean-skip with a visible
 `::notice::` (fabricated-pass 禁止 = FR-EX-08).
 
 ## Overview — what "flip the switch" means
 
-The nine `parity-<family>-real.yml` workflows follow the
+The ten `parity-<family>-real.yml` workflows follow the
 `parity-kokoro-real.yml` precedent. Two independent surfaces gate whether a
 real-checkpoint parity run fires:
 
@@ -42,6 +43,7 @@ no downloads happen; the run is visibly a skip, never a green pass.
 | tts-japanese | `.github/workflows/parity-tts-japanese-real.yml` | `VOKRA_TTS_JA_ENABLE` | `VOKRA_IRODORI_GGUF` / `VOKRA_VITS_JA_GGUF` (+ `_REFDIR`) | irodori / vits_ja | SoTA Phase JA. Cron Mon 12:00 UTC. `only=irodori` / `only=vits_ja`. `vits_ja` is **operator-provisioned only** (HF mirror is 401 AND JSUT corpus terms forbid weight redistribution); the workflow does not auto-fetch, and the harness honest-skips absent `VOKRA_VITS_JA_GGUF`. Irodori HF slug is `Aratako/Irodori-TTS-500M-v3` (task-tracker's `Irodori-tech/…` is 401 — honest header). |
 | deepfilternet3 | `.github/workflows/parity-deepfilternet3-real.yml` | `VOKRA_DFN3_ENABLE` | `VOKRA_DFN3_GGUF` (+ `VOKRA_DFN3_DATA_URL` for byte-parity bundle, optional `VOKRA_DFN3_DATA_SHA256`) | deepfilternet3 | M4-20 T17 follow-up. Cron Mon 12:30 UTC. **Two-phase**: Phase A (`vokra-cli convert --model denoise` on the pinned GitHub `Rikorose/DeepFilterNet` zip @ `82b0c7ad…`, sha256 `49c52edc…`) runs on `_ENABLE=1`. Phase B (byte-parity vs `parity_denoise_dfn3` reference bundle) needs `_DATA_URL` populated with a pre-baked `.tar.gz` mirror — the exact `prep_noisy.py` recipe lives outside the repo. See `docs/handoff/parity-deepfilternet3-real.md` §Phase B for the two provisioning paths. |
 | deberta-v3-large | `.github/workflows/parity-deberta-v3-large-real.yml` | `VOKRA_DEBERTA_V3_ENABLE` | `VOKRA_DEBERTA_V3_HARNESS_READY` (gates Phase B dumper leg) | deberta-v3-large | SBV2 v2 plan Task 31 follow-up, 2026-07-28 (commit `62a10b7`). Cron Mon 13:00 UTC. **Two-phase**: Phase A (`vokra-cli convert --model deberta-v3` on the pinned `microsoft/deberta-v3-large` snapshot @ `64a8c8eab3e…` — upstream ships `pytorch_model.bin` only, bridged via `tools/parity/bin_to_safetensors.py` in the parity venv) runs on `_ENABLE=1` and re-checks the emitted bytes via `deberta_v3_convert_smoke (--ignored)`. Phase B (reference dumper via `tools/parity/deberta_v3_dump_reference.py --do-dump`) is opt-in on `VOKRA_DEBERTA_V3_HARNESS_READY=1` or dispatch input `run_dumper=true`; the Rust-side numerical parity leg honest-skips with a `::notice::` because no consumer harness exists yet (only synthetic + convert-smoke tests) — fabricated pass 禁止 (FR-EX-08). If HF hits 401, set `HF_TOKEN` as a repo secret (read-only, model-card-accepted). See `docs/handoff/parity-deberta-v3-large-real.md`. |
+| sbv2 | `.github/workflows/parity-sbv2-real.yml` | `VOKRA_SBV2_UTMOS_ENABLE` (gates the tail-position UTMOS quality assertion — WP-24) | sidecar-hash gate on three GGUF fixtures: `tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256`, `deberta-v2-large-japanese-char-wwm.gguf.sha256`, `deberta-v3-large.gguf.sha256` (main + JA BERT + EN BERT — the WP-19 3-file loader shape; ZH BERT fixture lands as a fourth sidecar when the WP-19 4-file loader flip-the-switch lands). Set `VOKRA_SBV2_UTMOS_GGUF` after populating `VOKRA_SBV2_UTMOS_ENABLE=1` to opt the tail UTMOS delta leg on. | sbv2 (Style-Bert-VITS2 v2 multilingual base) | SBV2 v2 plan follow-up, `feat/sbv2-voxtral-real-verify-2026-08-06`. Cron Mon 07:15 UTC. Follows the Kokoro/Whisper **sidecar-hash gating** pattern rather than the `_ENABLE`-variable pattern: dispatch or cron always runs the `setup` job, which opens the parity leg only when all three fixture sha256 sidecars are populated (not empty, not the string `placeholder`). Absent sidecars → visible `parity-sbv2-real fixture gate: CLOSED (clean skip)` step summary, never a green pass. WP-24 tail-position UTMOS delta assertion is gated on the ENABLE variable + UTMOS GGUF env — opt-in on top of the fixture gate. See `docs/handoff/sbv2-bug4-resolved-2026-08-09.md` and `docs/handoff/sbv2-sdp-debug-2026-08-08.md`. |
 
 Every workflow additionally carries a **narrow `pull_request` paths filter**
 that only fires on family-adjacent code, so per-PR runner minutes stay

@@ -296,6 +296,71 @@ entries under `vokra-core::engines::` matching this WP verbatim.
 `abi-diff.sh --gate` is still non-firing (v1.0-rc pre-release policy;
 IF-01 semver freeze is M5-13/v1.0 GA).
 
+### 2026-08-10 — 1.0.0-rc.1-dev (SBV2 v2 ZH branch: WP-07 `vokra-math` + WP-13a/14/16/18/19 — Rust surface only, advisory)
+
+Grouped additive **Rust public API** entry covering the 2026-08-10 wave
+that landed the SBV2 v2 Chinese (`language_id = 2`) branch and the
+first-party scalar transcendental crate it — plus `vokra-ops`,
+`vokra-bert` and `vokra-models::sbv2` — was extracted for. C ABI
+(`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
+across all six WPs (`scripts/gen-c-abi.sh --check` = no diff); no
+`vokra.*` GGUF chunk was renamed or removed, though WP-14 adds new
+optional `vokra.bert_base.*` hparam keys + a `vokra.bert.wordpiece.*`
+tokenizer side-car chunk (both additive, existing SBV2 v2 3-file
+loader path unaffected).
+
+| WP / area                                | New export(s) / behaviour change                                                                                                                                                            | Kind    | Rationale                                                                                                                                                | Breaking? |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| WP-07 (new crate `vokra-math`)           | 7 new top-level `pub fn` for `f32`: `exp`, `tanh`, `sqrt`, `sin`, `cos`, `log`, `log1p`                                                                                                     | Added   | Extracts the scalar transcendental primitives that `vokra-backend-cpu`'s scalar path already used so `vokra-ops`, `vokra-bert` and `vokra-models::sbv2` can reach them without pulling the whole CPU-kernel tier upward (WP-05 owner decision, `docs/adr/sbv2-libm-strategy.md`). `core`-only, no `libm`. Follows the M5-03 `vokra-vad-micro` precedent for first-party leaf-crate additions. | no        |
+| WP-14 (`vokra-convert`)                  | `convert_bert_base_file(input, output, license, tokenizer_bytes, do_lower_case) -> Result<BertBaseReport, ConvertError>`; `pub struct BertBaseReport`; `ModelKind::BertBase` variant + slug + `convert_file` dispatch | Added   | Plain-BERT (`BertForMaskedLM`) converter for `hfl/chinese-roberta-wwm-ext-large` (Apache-2.0). Emits `bert_base.*` tensor names + `vokra.bert_base.*` hparam chunk + optional `vokra.bert.wordpiece.*` tokenizer side-car. First consumer = SBV2 v2 ZH branch; the `--tokenizer` + `do_lower_case` axes also cover future English WordPiece checkpoints. | no        |
+| WP-16 (`vokra-bert`)                     | `pub struct BertBaseEncoder` (+ `impl BertEncoder for BertBaseEncoder` in `lib.rs`, `from_gguf` constructor, `forward(ids, segments)`, `d_model()`)                                       | Added   | Clean-room plain-BERT encoder (Devlin 2018) sitting on WP-14's GGUF schema. The runtime side of the WP-14 converter; consumed by WP-19.                | no        |
+| WP-18 (`vokra-models::sbv2::g2p`)        | `Language::ZH` enum variant (language_id = 2); `SbV2Phonemizer::with_zh_g2p(zh_g2p: Box<dyn Phonemizer>, zh_mapping: HashMap<i64, (u16, u8)>) -> Self` builder                              | Added   | SBV2 v2 gains ZH via piper-plus 8-language G2P reuse; this WP lands only the vokra-models-side trait boundary + delegation. `phonemize(_, Language::ZH)` fail-closes with `NotImplemented` when no ZH G2P is wired (FR-EX-08 — no synthetic char-map that could mask absence). | no        |
+| WP-19 (`vokra-models::sbv2`)             | `SbV2Model::from_gguf_with_zh_bert(main, bert_ja, bert_en, bert_zh) -> Result<Self>` additive 4-file loader; `SbV2BertContainer` gains `zh: Option<BertBaseEncoder>` + `zh_tokenizer: Option<BertWordpieceTokenizer>` fields (both default `None`) | Added   | Wires WP-16 + WP-17 into the SBV2 v2 language-id-2 slot without changing the pre-WP-19 3-file `from_gguf(main, bert_ja, bert_en)` signature — every existing call site keeps compiling and behaving identically. `d_bert` consistency guard extended to the ZH branch. | no        |
+| WP-13a (`vokra-models::sbv2`, behaviour) | `<SbV2Model as TtsEngine>::synthesize` — pre-Blocker-3 orphan rejection block that returned `VokraError::InvalidArgument` on `SynthesisRequest::speaker_embedding = Some(_)` is **removed** | Fixed   | The Blocker-3 refactor (commits `0351a3a` / `2a50088` / `70bd8a7`, speaker conditioning moved into the pipeline) landed the test + rustdoc contract but accidentally left the adapter's upstream rejection block intact. WP-13a removes the orphan; the loud-error contract is now correctly enforced by the inherent `SbV2Model::synthesize` (which raises `InvalidArgument` when `.with_external_speaker_projection` has not been wired). No signature change. | no        |
+
+**Companion WPs recorded in prose only (no Rust surface change, out-of-scope
+per L44)**: WP-08/10/11/12 (`sbv2/libm`) — replace direct `f32::exp` /
+`f32::tanh` / etc. call sites in `vokra-ops::hifigan`, `vokra-bert::deberta_v2`,
+`vokra-models::sbv2` with the newly-extracted `vokra_math::*` primitives, so
+the same reproducible-across-hosts scalar path is used everywhere. The
+`vokra-math` dependency edge is additive to each `Cargo.toml`; behaviour is
+bit-identical to WP-07's own tests.
+
+**Zero-dep** (NFR-DS-02): `vokra-math` is a first-party leaf crate with
+`core`-only dependencies; root `Cargo.lock` gains no external entries.
+The new `[dependencies]` edges from `vokra-ops`, `vokra-bert`, and
+`vokra-models` into `vokra-math` are all `vokra-*` → `vokra-*`, so the
+`vokra-*`-only invariant holds.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. The
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot needs a
+subsequent regenerate (`bash scripts/rust-public-api-list.sh
+--update-snapshot`) to close the `abi-surface (advisory)` job — same
+posture as the WP-23 companion above.
+
+### 2026-08-09 — 1.0.0-rc.1-dev (WP-17: `BertWordpieceTokenizer` clean-room in `vokra-bert` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the WP-17 clean-room WordPiece
+tokenizer (Devlin 2018 + Wu 2016 primary sources). C ABI
+(`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
+(`scripts/gen-c-abi.sh --check` = no diff); the new
+`vokra.bert.wordpiece.*` GGUF side-car chunk is additive and gated on
+the caller passing `--tokenizer <vocab.txt>` to WP-14's
+`convert_bert_base_file` (default = tokenizer chunk not emitted).
+
+| Crate / area                    | Symbol                                                                                                                                                                                                                          | Kind  | Rationale                                                                                                                                                                                                                                 | Breaking? |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `vokra-bert::wordpiece`         | `pub struct BertWordpieceTokenizer { … }` (with `from_gguf`, `encode`, `decode`, `vocab_size`, `cls_id`, `sep_id`, `pad_id`, `unk_id` methods); `pub enum OovPolicy` (variants `Strict`, `MapToUnk`)                            | Added | Runtime tokenizer for `hfl/chinese-roberta-wwm-ext-large` (SBV2 v2 ZH branch) and for future English `google-bert/bert-base-*` checkpoints. Feeds `BertBaseEncoder::forward` (WP-16) with the same tokenization the upstream `BertTokenizer` produces. | no        |
+
+**Zero-dep** (NFR-DS-02): entirely inside `vokra-bert`; no new external
+crate. `OovPolicy::Strict` (the default) enforces FR-EX-08 by returning
+a loud error on unknown pieces instead of silently substituting `[UNK]`.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. Snapshot
+rotation is the M5-13/IF-01 freeze owner's action.
+
 ### 2026-08-09 — 1.0.0-rc.1-dev (Wave 3 HGAN-05 speaker conditioning + Wave 6 packed-cache exports — Rust surface only)
 
 Additive **Rust public API** changes only — C ABI (`include/vokra.h`) untouched
