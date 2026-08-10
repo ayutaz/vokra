@@ -2404,6 +2404,82 @@ mod tests {
         std::fs::remove_file(&output).ok();
     }
 
+    /// Blocker 2b TDD-hardening (2026-08-10) — converter-side flow-key
+    /// spelling-contract pin. The existing
+    /// `hparams_written_and_round_trip_with_config_side_car` reads back
+    /// the four flow-hparam keys through the module-private `KEY_FLOW_*`
+    /// constants; if any of those constants has a typo (say,
+    /// `"vokra.sbv2.flow.n_encoder_layer"` missing the trailing `s`),
+    /// both the write path AND the assertion path go through the same
+    /// buggy constant and the test wrongly passes.
+    ///
+    /// This test asserts each flow-hparam key is present in the emitted
+    /// GGUF under its HARDCODED spelling — the strings live only here,
+    /// not through any converter-side constant. A converter typo now
+    /// surfaces as a missing-key panic here (this test fails) rather
+    /// than as a runtime "tensor not found" or an arithmetic-wrong
+    /// output downstream (per FR-EX-08).
+    ///
+    /// The four hardcoded strings here MUST match the four hardcoded
+    /// strings in the loader's `require_u32` / `.and_then(|v| v.as_bool())`
+    /// reads (`crates/vokra-models/src/sbv2/mod.rs` lines 2341-2352) and
+    /// the four hardcoded strings pinned by the corresponding
+    /// `from_gguf_positive_n_flow_layers_missing_flow_*_fails_loudly`
+    /// tests in `crates/vokra-models/tests/sbv2_gguf_loader.rs`. Any
+    /// drift among the three sites breaks the flow-hparam contract.
+    #[test]
+    fn write_hparams_stamps_flow_keys_under_exact_hardcoded_string_spellings() {
+        let blob = safetensors_multi(&base_fixture());
+        let input = temp_path("spelling-contract-in", "safetensors");
+        let config = temp_path("spelling-contract-cfg", "json");
+        let output = temp_path("spelling-contract-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input");
+        std::fs::write(&config, valid_config_json()).expect("write config");
+
+        let report = convert_sbv2_file(&input, &output, Some(&config), None).expect("convert");
+        assert!(report.hparams_written);
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        // Hardcoded strings — the "external ground truth" for the
+        // converter/loader spelling contract.
+        for u32_key in [
+            "vokra.sbv2.flow.n_encoder_layers",
+            "vokra.sbv2.flow.kernel_ffn",
+            "vokra.sbv2.flow.gin_channels",
+        ] {
+            let val = file.get(u32_key).unwrap_or_else(|| {
+                panic!(
+                    "converter must stamp `{u32_key}` — a typo in one of the `KEY_FLOW_*` \
+                     constants (`crates/vokra-convert/src/models/sbv2.rs` lines 378-381) \
+                     would land here as a missing key. The loader (`crates/vokra-models/src/\
+                     sbv2/mod.rs`) reads this exact spelled string."
+                )
+            });
+            assert!(
+                val.as_u64().is_some(),
+                "`{u32_key}` must be a UINT32-typed value in the emitted GGUF"
+            );
+        }
+        // `mean_only` is a `bool`, distinct type — hand-check.
+        match file.get("vokra.sbv2.flow.mean_only") {
+            Some(GgufMetadataValue::Bool(_)) => (),
+            Some(other) => panic!(
+                "`vokra.sbv2.flow.mean_only` must be BOOL in the emitted GGUF, got {other:?}"
+            ),
+            None => panic!(
+                "converter must stamp `vokra.sbv2.flow.mean_only` — a typo in the \
+                 `KEY_FLOW_MEAN_ONLY` constant would land here as a missing key. The \
+                 loader reads this exact spelled string."
+            ),
+        }
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&config).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
     #[test]
     fn leaky_relu_slope_defaults_when_omitted() {
         let blob = safetensors_multi(&base_fixture());
