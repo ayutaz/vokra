@@ -80,6 +80,7 @@ pub mod g2p;
 pub mod parity;
 pub mod rng_mode;
 pub mod speaker;
+pub mod spline;
 pub mod style;
 pub mod text_encoder;
 
