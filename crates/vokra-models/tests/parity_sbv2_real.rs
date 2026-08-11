@@ -993,11 +993,14 @@ fn diff_intermediates_against_manifest(
 ///   (see `parity-utmos.yml` for the CI-side conversion recipe, or
 ///   `tests/parity/utmos/README.md` for the local recipe). Required when
 ///   `ENABLE=1`; unset with `ENABLE=1` is a loud panic (broken opt-in).
-const ENV_UTMOS_ENABLE: &str = "VOKRA_SBV2_UTMOS_ENABLE";
-const ENV_UTMOS_GGUF: &str = "VOKRA_SBV2_UTMOS_GGUF";
+/// Environment variable name for opting in to UTMOS quality gate (WP-24).
+pub const ENV_UTMOS_ENABLE: &str = "VOKRA_SBV2_UTMOS_ENABLE";
+
+/// Environment variable name for the path to the UTMOS22-strong GGUF (WP-24).
+pub const ENV_UTMOS_GGUF: &str = "VOKRA_SBV2_UTMOS_GGUF";
 
 /// Resolved WP-24 UTMOS opt-in state; see [`UtmosGateSettings::resolve`].
-enum UtmosGateSettings {
+pub enum UtmosGateSettings {
     /// The gate is off (env var unset or explicitly `"0"` / `"false"`).
     /// `utmos_gate` will emit a skip diagnostic and return without
     /// scoring.
@@ -1005,7 +1008,10 @@ enum UtmosGateSettings {
     /// The gate is on and the GGUF path is populated. `utmos_gate` will
     /// panic loudly on any downstream failure — the caller explicitly
     /// opted in, so a broken opt-in is a hard failure.
-    Enabled { gguf_path: PathBuf },
+    Enabled {
+        /// Path to the UTMOS GGUF file.
+        gguf_path: PathBuf,
+    },
 }
 
 impl UtmosGateSettings {
@@ -1016,7 +1022,7 @@ impl UtmosGateSettings {
     /// - `ENABLE=1` **without** `GGUF` (or with an empty string) → loud
     ///   panic (a broken opt-in must never masquerade as a skip,
     ///   FR-EX-08).
-    fn resolve() -> Self {
+    pub fn resolve() -> Self {
         let enabled = std::env::var(ENV_UTMOS_ENABLE)
             .ok()
             .is_some_and(|v| v == "1");
@@ -1802,5 +1808,142 @@ mod tolerance_helpers {
             "min-length semantic must be symmetric — swapping argument order \
              cannot change the truncation prefix"
         );
+    }
+}
+
+// --- unit tests for UTMOS opt-in settings (WP-24) ---
+//
+// T19: pins the UtmosGateSettings::resolve() env-var resolution mechanism.
+// Without VOKRA_SBV2_UTMOS_ENABLE=1, the gate MUST skip; with it, the
+// gate MUST require VOKRA_SBV2_UTMOS_GGUF to point at a real (non-
+// synthesized) UTMOS22-strong GGUF. Neither path should silently pass.
+//
+// NOTE: These tests modify global env vars and can interfere with each
+// other if run in parallel. Run with `--test-threads=1` to ensure
+// isolation:
+//   cargo test -p vokra-models --test parity_sbv2_real utmos_gate_settings -- --test-threads=1
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod utmos_gate_settings {
+    use std::panic;
+    use std::path::PathBuf;
+
+    /// T19 snapshot: pins that when VOKRA_SBV2_UTMOS_ENABLE is unset,
+    /// resolve() returns Disabled (no panic, silent skip).
+    #[test]
+    fn utmos_gate_settings_disabled_when_enable_unset() {
+        // Save-and-restore so this test doesn't clobber a run's actual settings
+        let saved_enable = std::env::var(crate::ENV_UTMOS_ENABLE).ok();
+        let saved_gguf = std::env::var_os(crate::ENV_UTMOS_GGUF);
+
+        // SAFETY: This test runs in isolation; no concurrent env access.
+        unsafe {
+            // Clear both
+            std::env::remove_var(crate::ENV_UTMOS_ENABLE);
+            std::env::remove_var(crate::ENV_UTMOS_GGUF);
+
+            // Expected: UtmosGateSettings::resolve() returns Disabled variant
+            let settings = crate::UtmosGateSettings::resolve();
+            assert!(
+                matches!(settings, crate::UtmosGateSettings::Disabled),
+                "utmos_gate must skip (Disabled) when VOKRA_SBV2_UTMOS_ENABLE is unset"
+            );
+
+            // Restore
+            if let Some(v) = saved_enable {
+                std::env::set_var(crate::ENV_UTMOS_ENABLE, v);
+            }
+            if let Some(v) = saved_gguf {
+                std::env::set_var(crate::ENV_UTMOS_GGUF, v);
+            } else {
+                std::env::remove_var(crate::ENV_UTMOS_GGUF);
+            }
+        }
+    }
+
+    /// T19 snapshot: pins that when VOKRA_SBV2_UTMOS_ENABLE=1 but
+    /// VOKRA_SBV2_UTMOS_GGUF is unset, resolve() panics loudly with an
+    /// FR-EX-08 explicit error (never a silent skip).
+    #[test]
+    fn utmos_gate_settings_panics_when_enable_set_but_gguf_unset() {
+        // Save-and-restore
+        let saved_enable = std::env::var(crate::ENV_UTMOS_ENABLE).ok();
+        let saved_gguf = std::env::var_os(crate::ENV_UTMOS_GGUF);
+
+        // SAFETY: This test runs in isolation; no concurrent env access.
+        unsafe {
+            // Set enable to "1", clear gguf
+            std::env::set_var(crate::ENV_UTMOS_ENABLE, "1");
+            std::env::remove_var(crate::ENV_UTMOS_GGUF);
+
+            // Expected: resolve() panics with a clear message containing
+            // both env var names and "FR-EX-08" guidance.
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                crate::UtmosGateSettings::resolve()
+            }));
+
+            assert!(
+                result.is_err(),
+                "utmos_gate must panic when ENABLE=1 but GGUF is unset \
+                 (broken opt-in is never a skip, FR-EX-08)"
+            );
+
+            // Restore
+            if let Some(v) = saved_enable {
+                std::env::set_var(crate::ENV_UTMOS_ENABLE, v);
+            } else {
+                std::env::remove_var(crate::ENV_UTMOS_ENABLE);
+            }
+            if let Some(v) = saved_gguf {
+                std::env::set_var(crate::ENV_UTMOS_GGUF, v);
+            } else {
+                std::env::remove_var(crate::ENV_UTMOS_GGUF);
+            }
+        }
+    }
+
+    /// T19 snapshot: pins that when both VOKRA_SBV2_UTMOS_ENABLE=1 and
+    /// VOKRA_SBV2_UTMOS_GGUF are set to valid values, resolve() returns
+    /// Enabled variant with the correct PathBuf.
+    #[test]
+    fn utmos_gate_settings_enabled_when_both_set() {
+        // Save-and-restore
+        let saved_enable = std::env::var(crate::ENV_UTMOS_ENABLE).ok();
+        let saved_gguf = std::env::var_os(crate::ENV_UTMOS_GGUF);
+
+        // SAFETY: This test runs in isolation; no concurrent env access.
+        unsafe {
+            // Set both to valid values (no need for file to exist in this unit test)
+            let test_path = "/tmp/test_utmos.gguf";
+            std::env::set_var(crate::ENV_UTMOS_ENABLE, "1");
+            std::env::set_var(crate::ENV_UTMOS_GGUF, test_path);
+
+            // Expected: resolve() returns Enabled with the correct path
+            let settings = crate::UtmosGateSettings::resolve();
+            match settings {
+                crate::UtmosGateSettings::Enabled { gguf_path } => {
+                    assert_eq!(
+                        gguf_path,
+                        PathBuf::from(test_path),
+                        "Enabled variant must contain the exact path from VOKRA_SBV2_UTMOS_GGUF"
+                    );
+                }
+                crate::UtmosGateSettings::Disabled => {
+                    panic!("expected Enabled variant, got Disabled");
+                }
+            }
+
+            // Restore
+            if let Some(v) = saved_enable {
+                std::env::set_var(crate::ENV_UTMOS_ENABLE, v);
+            } else {
+                std::env::remove_var(crate::ENV_UTMOS_ENABLE);
+            }
+            if let Some(v) = saved_gguf {
+                std::env::set_var(crate::ENV_UTMOS_GGUF, v);
+            } else {
+                std::env::remove_var(crate::ENV_UTMOS_GGUF);
+            }
+        }
     }
 }
