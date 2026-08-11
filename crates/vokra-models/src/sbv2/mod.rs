@@ -1287,31 +1287,46 @@ impl SbV2Model {
         // then intentionally DISCARDED (its former use was the broadcast
         // add that this fix removes).
         //
-        // # SBV2-SPK-EMB-LINEAR-DECISION (2026-08-09)
+        // # SBV2-SPK-EMB-LINEAR-DECISION (2026-08-11, RESOLVED)
+        // See: docs/adr/sbv2-spk-emb-linear-decision.md (gitignored local, Task 12)
         //
-        // The upstream `enc_p.encoder.spk_emb_linear.{weight,bias}`
-        // pair is loaded by the converter into
-        // `sbv2.text_encoder.spk_emb_linear.*` and materialized as
-        // this `ExternalSpeakerProjection`. Its **projection output
-        // is discarded** here (only its shape-validation side-effect
-        // survives), which mirrors Python reference behavior for the
-        // SBV2 v2 base ckpt: upstream feeds SPEAKER conditioning via
-        // (a) the flow's per-block `spk_emb_linear` (weights live in
-        // `flow.flows.<i>.enc.spk_emb_linear`, distinct from
-        // `enc_p.encoder.spk_emb_linear`), and (b) the SDP's `cond(g)`
-        // primitive at step 6, both fed the raw `[d_speaker]`
-        // conditioning vector `speaker_e_flow` — NOT the projected
-        // `[d_model]` output of `enc_p.encoder.spk_emb_linear`.
+        // **Decision: (c) INFERENCE NO-OP** — the projected `[d_model=192]`
+        // output of `enc_p.encoder.spk_emb_linear.{weight,bias}` is
+        // DISCARDED at inference; only its shape-validation side-effect
+        // (loud FR-EX-08 error on wrong-length caller input, exercised by
+        // `sbv2_speaker_external::synthesize_with_wrong_length_*`) survives.
         //
-        // The upstream role of `enc_p.encoder.spk_emb_linear` is not
-        // yet transcribed in this scaffold (would require reading the
-        // AGPL StyleBertVITS2 code — owner ADR needed), so this pipeline
-        // preserves shape-validation without silently mixing the
-        // projected vector into any wrong place. If a future owner
-        // ADR determines the projection SHOULD be broadcast-added at
-        // some specific pipeline stage, wire it in there; do not
-        // reintroduce the pre-Bug-4 broadcast-add into `hidden_for_flow`
-        // (that was the exact scale-inflation that gated OOM STOPGAP).
+        // **Rationale** (ADR §3: full evidence chain; NOT REFERENCED: AGPL
+        // litagin02/Style-Bert-VITS2, fishaudio/Bert-VITS2):
+        // - Vendored p0p4k/vits2_pytorch (MIT) has the canonical mechanism
+        //   at attentions.py::Encoder with `cond_layer_idx=2`, but SBV2's
+        //   TextEncoder-level `spk_emb_linear` behavior is behind AGPL
+        //   red-line — unresolvable from permissive sources alone.
+        // - Reference dumper (tools/parity/sbv2_dump_reference.py) also
+        //   discards (constructs jaywalnut310/vits VITS1 TextEncoder with
+        //   `strict=False`, silently drops the ckpt weight).
+        // - T6 baseline parity_sbv2_real: text_hidden Δ 5.51e-7 at atol
+        //   0.01 = float noise floor — matches only because BOTH sides
+        //   discard consistently.
+        //
+        // **SPEAKER conditioning IS active via:**
+        // (1) the flow's per-block `spk_emb_linear` (weights live in
+        //     `flow.flows.<i>.enc.spk_emb_linear`, wired in
+        //     `SbV2TransformerCouplingLayer`)
+        // (2) the SDP's `cond(g)` primitive (step 6 below)
+        // both fed the raw `[d_speaker]` conditioning vector
+        // `speaker_e_flow` — NOT the projected `[d_model]` output of
+        // `enc_p.encoder.spk_emb_linear`.
+        //
+        // **Revisit trigger** (ADR §6): if T15's per-layer flow dumps +
+        // UTMOS delta > 0.1 exposes a real missing speaker-conditioning
+        // path, the ADR is revisited with owner-supplied primary-source
+        // evidence for a two-side upgrade to (a).
+        //
+        // **CRITICAL**: Do NOT reintroduce the pre-Bug-4 broadcast-add
+        // into `hidden_for_flow` (mod.rs:1215-1236 documented the OOM
+        // chain: bridge+speaker ±33 → RQS softmax saturation → runaway
+        // durations sum=24229/max=12036 → 46.6 GiB peak).
         //
         // | request.speaker_embedding | model.speaker_projection | path                                                            |
         // |---------------------------|--------------------------|-----------------------------------------------------------------|
