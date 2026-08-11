@@ -241,3 +241,120 @@ fn spm_scheme_absent_defaults_to_unigram() {
     // ▁hi matches piece 3 directly
     assert_eq!(ids, vec![3]);
 }
+
+// ============================================================================
+// WordPiece (BertCharSplit) scheme verification tests — Task 9 synthetic roundtrip
+// ============================================================================
+
+/// Helper: build a GGUF with WordPiece/BertCharSplit tokenizer metadata
+/// (pieces, control ids). This mirrors what the deberta-v2 converter writes
+/// to GGUF for char-based Japanese tokenizers.
+fn build_wordpiece_test_gguf(
+    pieces: &[&str],
+    unk_id: u32,
+    bos_id: u32, // CLS for BERT-family
+    eos_id: u32, // SEP for BERT-family
+) -> GgufFile {
+    let mut builder = GgufBuilder::new();
+
+    // Stamp the scheme as "unigram" (SentencePiece algorithm, but kind="bert-charsplit"
+    // determines char-split encoding instead of Viterbi)
+    builder.add_string("vokra.bert.tokenizer.scheme", "unigram");
+
+    // Pieces array
+    builder.add_metadata(
+        "vokra.bert.tokenizer.pieces",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: pieces
+                .iter()
+                .map(|p| GgufMetadataValue::String((*p).to_owned()))
+                .collect(),
+        }),
+    );
+
+    // Scores array (dummy values for WordPiece, not used by char-split but required by from_gguf)
+    let scores: Vec<f32> = pieces.iter().map(|_| 0.0_f32).collect();
+    builder.add_metadata(
+        "vokra.bert.tokenizer.scores",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::F32,
+            values: scores.iter().map(|s| GgufMetadataValue::F32(*s)).collect(),
+        }),
+    );
+
+    // Control ids (stored as bos_id=CLS, eos_id=SEP for compatibility)
+    builder.add_u32("vokra.bert.tokenizer.unk_id", unk_id);
+    builder.add_u32("vokra.bert.tokenizer.bos_id", bos_id);
+    builder.add_u32("vokra.bert.tokenizer.eos_id", eos_id);
+
+    // Tokenizer kind
+    builder.add_string("vokra.bert.tokenizer.kind", "bert-charsplit");
+
+    let bytes = builder.to_bytes().expect("build GGUF");
+    GgufFile::parse(bytes).expect("parse GGUF")
+}
+
+/// Task 9: Synthetic WordPiece/BertCharSplit scheme GGUF roundtrip verification.
+/// Creates a minimal char-split vocab (Japanese characters), writes it to GGUF
+/// with scheme="bert-charsplit", and verifies from_gguf loads it correctly
+/// with the expected control ids and char-split encoding dispatch.
+#[test]
+fn wordpiece_scheme_synthetic_vocab_roundtrip_via_gguf() {
+    // Build a tiny char-based vocab: control tokens + Japanese characters
+    let pieces = vec!["[PAD]", "[CLS]", "[SEP]", "[UNK]", "テ", "ス", "ト"];
+    let unk_id = 3u32;
+    let bos_id = 1u32; // CLS for BERT-family
+    let eos_id = 2u32; // SEP for BERT-family
+
+    let gguf = build_wordpiece_test_gguf(&pieces, unk_id, bos_id, eos_id);
+
+    // Load via from_gguf with the expected metadata prefix
+    let tok = SbertTokenizer::from_gguf(&gguf, "vokra.bert.tokenizer")
+        .expect("from_gguf should load WordPiece scheme GGUF");
+
+    // Verify control ids
+    assert_eq!(tok.unk_id(), unk_id, "unk_id should match metadata");
+    assert_eq!(tok.bos_id(), bos_id, "bos_id (CLS) should match metadata");
+    assert_eq!(tok.eos_id(), eos_id, "eos_id (SEP) should match metadata");
+
+    // Encode with special tokens to verify char-split encoding.
+    // NOTE: encode() does not respect kind=BertCharSplit — use
+    // encode_with_special_tokens() which does check kind and dispatch to
+    // encode_charsplit() when kind=BertCharSplit.
+    let ids_with_special = tok.encode_with_special_tokens("テスト");
+    // Expect: [CLS=1, テ=4, ス=5, ト=6, SEP=2]
+    assert_eq!(
+        ids_with_special,
+        vec![1, 4, 5, 6, 2],
+        "encode_with_special_tokens should split by character with CLS/SEP wrap"
+    );
+}
+
+/// Verify that WordPiece scheme correctly dispatches to char-split encoding
+/// even when pieces contain multi-byte UTF-8 sequences.
+#[test]
+fn wordpiece_scheme_char_split_does_not_viterbi() {
+    // Build vocab with pieces that could confuse a Viterbi matcher
+    let pieces = vec![
+        "[PAD]", "[CLS]", "[SEP]", "[UNK]", "こ", "ん", "に", "ち", "は",
+    ];
+    let unk_id = 3u32;
+    let bos_id = 1u32; // CLS for BERT-family
+    let eos_id = 2u32; // SEP for BERT-family
+
+    let gguf = build_wordpiece_test_gguf(&pieces, unk_id, bos_id, eos_id);
+
+    let tok = SbertTokenizer::from_gguf(&gguf, "vokra.bert.tokenizer")
+        .expect("from_gguf should load WordPiece scheme GGUF");
+
+    // "こんにちは" should split character-by-character with CLS/SEP wrap.
+    // NOT as a single piece (which Viterbi might attempt for a high-scoring "こんにちは" piece).
+    let ids_with_special = tok.encode_with_special_tokens("こんにちは");
+    // Expect: [CLS=1, こ=4, ん=5, に=6, ち=7, は=8, SEP=2]
+    assert_eq!(
+        ids_with_special,
+        vec![1, 4, 5, 6, 7, 8, 2],
+        "encode_with_special_tokens should split by character, not use Viterbi"
+    );
+}
