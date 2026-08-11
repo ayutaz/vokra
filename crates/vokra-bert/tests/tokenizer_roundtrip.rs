@@ -198,8 +198,8 @@ fn spm_scheme_synthetic_vocab_roundtrip_via_gguf() {
 fn spm_scheme_absent_defaults_to_unigram() {
     let mut builder = GgufBuilder::new();
 
-    let pieces = vec!["<unk>", "<s>", "</s>", "▁hi"];
-    let scores = vec![0.0_f32, 0.0, 0.0, -1.0];
+    let pieces = ["<unk>", "<s>", "</s>", "▁hi"];
+    let scores = [0.0_f32, 0.0, 0.0, -1.0];
     let unk_id = 0u32;
     let bos_id = 1u32;
     let eos_id = 2u32;
