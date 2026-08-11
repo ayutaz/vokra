@@ -1693,6 +1693,76 @@ Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS 
 
 -->
 
+### 2026-08-11 — 1.0.0-rc.1-dev (SBV2 v2 Blocker 2b/2c/3/5 verification: test helpers + integration tests — Rust surface only, advisory)
+
+Advisory **Rust public API** entry for the final T21 closure of the SBV2 v2
+blocker verification branch (`feat/sbv2-v2-blockers-2b-2c-3-2026-08-11`).
+The C ABI (`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
+(`scripts/gen-c-abi.sh --check` = no diff); four test-helper visibility
+changes and ~15 new integration/unit tests are the sole surface additions.
+This is purely a **verification and integrity-check entry** — the main
+SBV2 v2 functionality was landed in earlier branches.
+
+**Test visibility additions** (Rust surface only, no C ABI impact):
+
+| Module / Type                                   | New visibility | Rationale                                                                                                                                 | Kind  |
+| ----------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `crates/vokra-models/tests/parity_sbv2_real.rs` | `pub`          | `ENV_UTMOS_ENABLE`, `ENV_UTMOS_GGUF`, `UtmosGateSettings`, `UtmosGateSettings::resolve()` — lifted to `pub` for test-suite cross-crate access within the blocker verification harness (T19 snapshot pins) | Added |
+
+**Tests added** (no C ABI impact):
+
+- **SPM / WordPiece scheme dispatch** (T7–T11, `crates/vokra-bert/tests/`):
+  3 roundtrip tests + 2 tokenizer metadata tests verifying Blocker 5 (BERT
+  tokenizer scheme selection) end-to-end behavior across `SentencePiece` and
+  `WordPiece` vocabulary formats.
+- **ADR (c) speaker regression** (T14, `crates/vokra-models/tests/sbv2_speaker_external.rs`):
+  structural pin test confirming that external speaker-embedding wiring does
+  not regress after the speaker-projection no-op inference consolidation
+  (SBV2-SPK-EMB-LINEAR-DECISION ADR resolution, T13 comment-only update).
+- **Flow-layer readiness verification** (T17, `crates/vokra-models/tests/sbv2_parity_atol_calibration.rs`):
+  `flow_layers_are_structurally_ready_but_functionally_inert` scaffold gate
+  that halts if the SDP flow body tries to forward during a WIP state (FR-EX-08 — no silent failures).
+- **UTMOS gate environment resolution** (T19, `crates/vokra-models/tests/parity_sbv2_real.rs`):
+  new `utmos_gate_opt_in_env_resolution` test confirming that the env-based
+  opt-in gate (`VOKRA_UTMOS_ENABLE=1`) correctly toggles the snapshot fixture
+  gate behavior.
+
+**Code edits** (comment/test-refactor only):
+
+- `crates/vokra-models/tests/parity_sbv2_real.rs` — all-stage aggregation
+  refactor (T6) consolidating per-stage result dumps into a single
+  `Vec<StageResult>` structure for cleaner comparison loop.
+- `crates/vokra-models/src/sbv2/mod.rs` — SBV2-SPK-EMB-LINEAR-DECISION ADR
+  comment block updated to reflect the Blocker-3 refactor resolution (T13);
+  dispatch table + discard code (`let _ = projected;`) remain **unchanged**.
+
+**GGUF metadata** (pre-existing, verified working):
+
+- `vokra.bert.tokenizer.scheme` — recorded as `"sentencepiece-unigram"` or
+  `"bert-charsplit"` depending on the BERT checkpoint type; pre-existed in
+  the codebase prior to this branch, but this branch added test coverage
+  verifying end-to-end load and encode behavior.
+- `vokra.bert.tokenizer.{pieces, scores, unk_id, bos_id, eos_id}` — optional
+  side-car keys for BERT tokenizer configuration; all additive (existing
+  GGUFs without these keys continue to work).
+
+**CI and fixtures**:
+
+- `.github/workflows/parity-sbv2-real.yml` (T20) — advisory workflow wiring
+  the end-to-end SBV2 v2 parity CI; not required, weekly + manual dispatch.
+- Manifest.json refreshed with `flow_layers` sibling key (T16).
+- `tools/parity/sbv2_v2_bundle_prepare_checkpoint.py` (T4) — offlinne converter
+  helper; not reflected in C or Rust public API.
+- `tools/parity/sbv2_dump_reference.py` extended for per-layer flow (T15).
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-bert`, `vokra-models`,
+`vokra-core`; root `Cargo.lock` **unchanged** (`scripts/check-zero-deps.sh`
+clean per T18).
+
+**M5-13 relevance**: advisory Rust-surface entry only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry (no C symbol
+changed). Snapshot rotation is the M5-13/IF-01 freeze owner's action.
+
 ## Reserved additions
 
 Forward reservations recorded **before** the IF-01 freeze so that
