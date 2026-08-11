@@ -1,191 +1,700 @@
-# Style-Bert-VITS2 v2 real-checkpoint parity CI (Blocker 2b/2c/3/5 completion).
+# Vokra SBV2 (Style-Bert-VITS2 v2) real-checkpoint parity CI (SBV2 v2 plan
+# Task 35; design doc `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
+# §10 "parity CI + fixture" / "CI workflow").
 #
-# The Rust parity harness `crates/vokra-models/tests/parity_sbv2_real.rs`
-# compares outputs against fixtures hooked from the TRUE upstream
-# `style-bert-vits2` library (tools/parity/sbv2_dump_reference.py). SBV2 v2
-# parity depends on real checkpoints (sbv2-v2-multilingual-base.safetensors +
-# deberta-v2 + deberta-v3), which are bulky and impractical to run on every
-# PR — this workflow is opt-in (workflow_dispatch, weekly cron, and a narrow
-# pull_request paths filter).
+# Sibling of `.github/workflows/parity-whisper-real.yml` and
+# `.github/workflows/parity-kokoro-real.yml`: a `#[ignore]`d Rust parity
+# test (`crates/vokra-models/tests/parity_sbv2_real.rs`, Task 28) needs a
+# real, non-Apache-2.0-licensed checkpoint family this repo can never commit
+# as binary fixtures. `tests/fixtures/sbv2/README.md` (Task 34) is the
+# owner recipe this workflow automates end to end: download the SBV2 v2
+# base (AGPL-3.0) + DeBERTa v2 JA (cc-by-sa-4.0) + DeBERTa v3 EN (MIT)
+# checkpoints, convert each to GGUF, regenerate the Python reference dump,
+# then run the Rust parity test against the freshly-built GGUFs.
 #
-# Design (Blocker 2b/2c/3/5):
+# ## Gating (sidecar-hash gate, fabricated-pass prevention)
 #
-#   * Trigger: workflow_dispatch (owner-initiated) + weekly schedule (Mondays
-#     06:00 UTC) + pull_request scoped to a narrow paths filter (sbv2
-#     source, tests, converter, dumper, vendor, this workflow itself).
-#     PRs that don't touch those paths never trigger this job.
+# `tests/fixtures/sbv2/*.gguf.sha256` are committed as comment-only
+# PLACEHOLDER files until an owner completes the README recipe end to end
+# and overwrites them with real `sha256sum` output (see that README's "Owner
+# recipe" step 4 and "Placeholder format" section, which this gate's exact
+# per-file test is drawn from verbatim: `[ -s <sidecar> ] && ! grep -q
+# "placeholder" <sidecar>`). The `setup` job below checks all THREE
+# sidecars — design doc §10's own YAML sketch illustrates the gate against
+# only `sbv2-v2-multilingual-base.gguf.sha256`, but `SbV2Model::from_gguf`
+# takes all three checkpoints (`main` + `bert_ja` + `bert_en`) to even
+# construct a model, and the README's own recipe updates all three sidecars
+# together in one step ("4. Hash and commit") — so gating on the full set is
+# a faithful, deliberate extension of the sketch's intent, not a deviation
+# from it. That README's own "Placeholder format" section already
+# anticipates exactly this: "A future workflow built from that sketch stays
+# correctly gated off (`fixtures_present=false`) against these files"
+# (plural — all three).
 #
-#   * Fixture gate: tests/fixtures/sbv2/reference_dump.manifest.json.sha256
-#     must be non-placeholder for the parity leg to actually run. Otherwise
-#     clean skip (workflow step summary emits SKIP line). Fixture
-#     provisioning strategy (LFS / release artifact / self-hosted runner) is
-#     owner responsibility, pending decision post-merge.
+# While the gate is closed (today, and until an owner runs the recipe), the
+# `parity` job below is skipped entirely — an FR-EX-08 explicit, annotated
+# skip, never a silent no-op and never a fabricated pass.
 #
-#   * Initial workflow_dispatch = owner-initiated (per plan 2026-08-11).
-#     Fabricated pass 禁止 (FR-EX-08) — this CI never fires until the owner
-#     explicitly opts in.
+# ## Honest failure while the gate is open (vendoring landed; workflow now
+# ## fails LOUDLY on any dumper error, no `set +e` cover-up)
 #
-#   * Root Cargo.lock is untouched (NFR-DS-02 zero-dep; final
-#     `git diff --exit-code Cargo.lock` step is the tripwire).
+# Wave-4 TASK-34-DUMPER (2026-08-09): Task 4's VITS vendoring landed —
+# `tools/parity/vendor/vits/{text_encoder,coupling,flow,decoder,attentions,
+# commons,modules,transforms}.py` are all in place, and the dumper's
+# `run_pipeline_body` (design doc §7, 15 steps) is fully wired. Once the
+# checkpoint-sidecar gate opens, the dumper is EXPECTED to succeed (writes
+# 11 tensor `.bin` + 4 fixture `.bin` + `reference_dump.manifest.json` to
+# `tests/fixtures/sbv2/reference_dump/`). Any nonzero exit from the dumper
+# is now a REAL failure, not a documented deferral — the tail-position
+# "Fail if ..." step propagates it and the job goes red. The Rust parity
+# test step still runs `if: always()` for diagnostic value (loading the
+# freshly-converted GGUFs even if the dump failed), but its outcome does
+# not mask the dumper's exit.
 #
-#   * Not registered as a required check (no branch-protection promotion
-#     at this time). It's a scheduled + owner-triggered gate until the acid
-#     test is stable. Once green for 4+ consecutive weekly runs, owner can
-#     promote it.
+# ## Clean-room reminder
 #
-#   * Honest reporting (FR-EX-08): every observed delta is logged regardless
-#     of PASS / FAIL. Per-tensor max |Δ| table is emitted to the step
-#     summary for triage.
+# Nothing this workflow runs was built by reading
+# `github.com/litagin02/Style-Bert-VITS2` (AGPL-3.0),
+# `github.com/fishaudio/Bert-VITS2` (AGPL-3.0), or any fork/derivative of
+# either — see design doc §6 and `tests/fixtures/sbv2/README.md`'s own
+# "Clean-room reminder" section for the full permissive-source allow-list
+# this workflow's downstream tools inherit.
+#
+# ## Zero-dependency invariant (NFR-DS-02)
+#
+# The whole run must not mutate the root workspace `Cargo.lock` — Python
+# deps live in a job-scoped `/tmp` venv, `vokra-cli convert` operates on
+# already-checked-in workspace code. The final `git diff --exit-code
+# Cargo.lock` guard (mirrors parity-whisper-real.yml / parity-kokoro-real.yml)
+# catches any accidental drift.
+#
+# ## Not a required check
+#
+# Like its two siblings, this workflow is opt-in (workflow_dispatch + weekly
+# cron + a narrow pull_request paths filter) and is not registered in
+# branch-protection required checks. Promotion is an owner decision after
+# consecutive green runs — and, concretely for SBV2, only possible after the
+# VITS vendoring follow-up lands (see above).
+#
+# ## Schedule slot
+#
+# Design doc §10's sketch uses `cron: '0 4 * * 1'` — but that is
+# `parity-kokoro-real.yml`'s own existing Monday-04:00-UTC slot, and
+# `parity-whisper-real.yml` already documents why IT offset itself by an
+# hour to `0 5 * * 1` ("avoids GH Actions cron collisions with the Kokoro
+# job and spreads HF hub load across the hour"). This workflow followed the
+# same precedent — first '0 6 * * 1', then '15 7 * * 1' (2026-07-27) once
+# `gpu-cuda-rtf.yml` (06:00) and `web-wasm.yml` (07:00) fully booked the
+# adjacent :00 slots and `check-workflow-hygiene.sh` started flagging
+# collisions. 07:15 is the closest free slot to the design-doc sketch, in
+# between web-wasm (07:00) and parity-moshi-real (07:30).
 
 name: parity-sbv2-real
 
 on:
   workflow_dispatch:
   schedule:
-    # Weekly Monday 06:00 UTC — off-peak US/EU business hours so a HF hub
-    # outage surfaces without blocking active development.
-    - cron: '0 6 * * 1'
+    - cron: '15 7 * * 1'
   pull_request:
-    # Fires ONLY on sbv2-adjacent code. Non-matching PRs run the unit tests
-    # (sbv2_synthetic.rs + sbv2_convert.rs) via the per-PR required jobs in
-    # ci.yml.
+    # Paths reflect the files Tasks 25-34 actually landed under, not design
+    # doc §10's illustrative sketch (`tests/parity/parity_sbv2_*`, written
+    # before the SBV2 crate layout existed — the real parity test lives at
+    # `crates/vokra-models/tests/parity_sbv2_real.rs`).
     paths:
       - '.github/workflows/parity-sbv2-real.yml'
-      - 'crates/vokra-models/src/sbv2/**'
-      - 'crates/vokra-models/tests/parity_sbv2_real.rs'
-      - 'crates/vokra-models/tests/sbv2_parity_atol_calibration.rs'
-      - 'crates/vokra-convert/src/models/sbv2.rs'
-      - 'crates/vokra-convert/src/models/sbv2_tokenizer.rs'
+      - 'crates/vokra-bert/**'
       - 'crates/vokra-convert/src/models/deberta_v2.rs'
       - 'crates/vokra-convert/src/models/deberta_v3.rs'
+      - 'crates/vokra-convert/src/models/sbv2.rs'
+      - 'crates/vokra-core/**'
+      - 'crates/vokra-models/src/compute.rs'
+      - 'crates/vokra-models/src/sbv2/**'
+      - 'crates/vokra-models/tests/parity_sbv2_real.rs'
+      - 'crates/vokra-ops/**'
+      - 'tests/fixtures/sbv2/**'
       - 'tools/parity/sbv2_dump_reference.py'
-      - 'tools/parity/vendor/vits2/**'
-
-# Cancel superseded runs on the same ref. The job is a ~30-45 minute one-shot
-# (HF DL + convert + parity), so a rapid re-push should not double-book the
-# runner. `cancel-in-progress: true` is safe here because the job has no
-# side effects that outlive the workspace (no PyPI upload, no branch-write).
-concurrency:
-  group: parity-sbv2-real-${{ github.ref }}
-  cancel-in-progress: true
+      - 'tools/parity/sbv2_prepare_checkpoint.py'
+      - 'tools/parity/vendor/vits/**'
 
 permissions:
   contents: read
 
+# Mirrors parity-kokoro-real.yml: a one-shot HF DL + convert + dump + parity
+# run with no side effects that outlive the workspace, so cancelling a
+# superseded run on a rapid re-push is always safe.
+concurrency:
+  group: parity-sbv2-real-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  # Python venv path (built once at job start, reused by later steps).
-  PARITY_VENV: /tmp/vokra-py-parity-sbv2
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Sidecar-hash gate (see header comment). Never fails: gate-closed is an
+  # expected, valid, honestly-annotated state, not an error — only the
+  # `fixtures_present` output communicates the verdict to the `parity` job.
   setup:
-    name: gate (fixture check)
+    name: setup
     runs-on: ubuntu-latest
     outputs:
       fixtures_present: ${{ steps.check.outputs.present }}
     steps:
-      - uses: actions/checkout@v4
-
-      - id: check
-        name: Check fixture sidecar
+      - uses: actions/checkout@v7
+      - name: Detect real fixture sidecars (sidecar-hash gate)
+        id: check
+        shell: bash
         run: |
           set -euo pipefail
-          SIDECAR="tests/fixtures/sbv2/reference_dump.manifest.json.sha256"
-          if [[ ! -f "$SIDECAR" ]]; then
+          DIR=tests/fixtures/sbv2
+          all_present=true
+          reasons=()
+          for f in \
+            "$DIR/sbv2-v2-multilingual-base.gguf.sha256" \
+            "$DIR/deberta-v2-large-japanese-char-wwm.gguf.sha256" \
+            "$DIR/deberta-v3-large.gguf.sha256"; do
+            if [ -s "$f" ] && ! grep -q "placeholder" "$f"; then
+              continue
+            fi
+            all_present=false
+            reasons+=("$f is absent, empty, or still a placeholder")
+          done
+          if [ "$all_present" = "true" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "### parity-sbv2-real fixture gate: OPEN (all 3 sidecars real)" >> "$GITHUB_STEP_SUMMARY"
+          else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=parity-sbv2-real fixture check::SKIP: $SIDECAR missing — fixture not provisioned"
-            exit 0
+            {
+              echo "### parity-sbv2-real fixture gate: CLOSED (clean skip)"
+              echo ""
+              echo "Expected state until an owner completes \`tests/fixtures/sbv2/README.md\`'s recipe:"
+              echo ""
+              for r in "${reasons[@]}"; do
+                echo "- $r"
+              done
+              echo ""
+              echo "FR-EX-08 explicit skip — not a synthetic fallback, not a fabricated pass."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::parity-sbv2-real: fixture gate closed (see step summary) — parity job will be skipped"
           fi
-          if grep -q "PLACEHOLDER" "$SIDECAR"; then
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=parity-sbv2-real fixture check::SKIP: $SIDECAR is placeholder — fixture not provisioned"
-            exit 0
-          fi
-          echo "present=true" >> "$GITHUB_OUTPUT"
 
   parity:
-    name: parity (sbv2-real)
-    runs-on: ubuntu-latest
+    name: parity-sbv2-real
     needs: setup
     if: needs.setup.outputs.fixtures_present == 'true'
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    # HF DL (SBV2 base + 2 DeBERTa-large encoders) + 3x convert + dump +
+    # cargo test. Generous cap matching the whisper large-v3 / kokoro legs
+    # (multi-GB checkpoint class); a truly stuck run is still bounded.
+    timeout-minutes: 60
+    env:
+      SBV2_HF_REPO: litagin/Style-Bert-VITS2-2.0-base-JP-Extra
+      BERT_JA_HF_REPO: ku-nlp/deberta-v2-large-japanese-char-wwm
+      BERT_EN_HF_REPO: microsoft/deberta-v3-large
+      FIXTURE_DIR: tests/fixtures/sbv2
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Provision parity venv (sbv2-required deps)
-        # torch CPU for reference dumping (no CUDA in the runner).
-        # safetensors for checkpoint handling. numpy is pinned per parity
-        # audit precedents (defensive belt-and-suspenders).
+      - name: Provision parity venv (huggingface_hub + torch + transformers + spm/protobuf)
+        # torch>=2.6 は transformers 4.57+ が `torch.load(weights_only=True)`
+        # を呼ぶ際にハードチェックする ("Due to a serious vulnerability issue
+        # in torch.load, even with weights_only=True, we now require users
+        # to upgrade torch to at least v2.6")。CI で transformers 4.57.6 が
+        # 引かれるため torch は 2.6+ でないと dumper が checkpoint load で
+        # fail する。CPU-only なので extra-index-url は不要。
+        #
+        # `sentencepiece` + `protobuf` は DeBERTa v3 の spm tokenizer が
+        # `AutoTokenizer.from_pretrained` 経由で読める前提条件 (transformers
+        # 側の PROTOBUF_IMPORT_ERROR で fail する)。dumper (sbv2_dump_reference.py)
+        # は tokenize+forward の real reference を出すために両モデルの
+        # AutoTokenizer を呼ぶので、v3 (spm) 側で protobuf 必須になる。
+        # sibling parity-moshi-real.yml も sentencepiece を同 pattern で
+        # 入れている。
+        shell: bash
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
+          python -m venv /tmp/vokra-py-sbv2
           # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
+          . /tmp/vokra-py-sbv2/bin/activate
           python -m pip install --upgrade pip
-          # torch 2.4 (CPU) is the reference for SBV2 v2 upstream
           python -m pip install \
-            --index-url https://download.pytorch.org/whl/cpu \
-            'torch==2.4.*'
-          python -m pip install \
-            'numpy>=2,<3' \
-            'safetensors>=0.4' \
-            'huggingface_hub>=0.24,<1'
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
-          import torch, numpy, safetensors, huggingface_hub
-          print(
-              f"sbv2 parity venv: "
-              f"torch={torch.__version__} numpy={numpy.__version__} "
-              f"safetensors={safetensors.__version__} "
-              f"huggingface_hub={huggingface_hub.__version__}"
-          )
-          PY
+            "huggingface_hub>=0.24,<1" \
+            "torch>=2.6,<3" \
+            "transformers>=4.44,<4.60" \
+            "sentencepiece>=0.2,<1" \
+            "protobuf>=4,<7"
+          python -m pip list | grep -Ei '^(huggingface[-_]hub|torch|transformers|sentencepiece|protobuf)\b'
 
-      - name: Provision fixtures (owner-selected strategy)
-        # Fixture provisioning is owner responsibility. This step is a
-        # placeholder that exits with code 78 (neutral) until the owner
-        # decides on a provisioning strategy (LFS / release artifact /
-        # self-hosted runner). See
-        # docs/superpowers/plans/2026-08-11-sbv2-v2-blockers-2b-2c-3.md
-        # Wave 4 Task 20.
+      - name: Download SBV2 v2 checkpoint + build vokra.sbv2.* config side-car
+        # tools/parity/sbv2_prepare_checkpoint.py (Task 29): snapshot_download
+        # + best-effort config.json -> vokra.sbv2.* mapping. Its own
+        # RESOLVED/UNRESOLVED per-field report lands in this step's log.
+        shell: bash
         run: |
           set -euo pipefail
-          echo "TODO: fixture provisioning strategy (LFS / release artifact / self-hosted runner)"
-          echo "For now, this step is a placeholder — real provisioning is owner responsibility"
-          echo "See docs/superpowers/plans/2026-08-11-sbv2-v2-blockers-2b-2c-3.md Wave 4 Task 20"
-          exit 78  # neutral exit until fixture provisioning is settled
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          # SBV2 v2 base ships weights only (no config.json). The prep script
+          # provides `--clean-room-defaults` as the author-designed escape
+          # hatch for this exact case: it fills the `vokra.sbv2.*` side-car
+          # from cited VITS/HiFi-GAN/StyleTTS 2 MIT reference defaults
+          # instead of erroring. Without this flag CI aborts with
+          # "no config.json found under ... — Pass --clean-room-defaults".
+          python3 tools/parity/sbv2_prepare_checkpoint.py \
+            --hf-repo "$SBV2_HF_REPO" \
+            --output-dir "$RUNNER_TEMP/sbv2-checkpoint" \
+            --clean-room-defaults
+
+      - name: Download DeBERTa v2 (JA) + v3 (EN) checkpoints
+        # Plain HF transformers-style repos (flat safetensors, no .pth to
+        # flatten) — a direct snapshot_download is enough, matching
+        # tests/fixtures/sbv2/README.md's own inline recipe verbatim.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          python3 - <<'PYEOF'
+          import os
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id=os.environ["BERT_JA_HF_REPO"],
+              repo_type="model",
+              local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v2-ja"),
+              # ku-nlp/deberta-v2-large-japanese-char-wwm ships safetensors +
+              # vocab.txt (JA char-level BertJapaneseTokenizer). vocab.txt is
+              # the tokenizer side-car `vokra-cli convert --model deberta-v2
+              # --tokenizer <vocab.txt>` needs to stamp `vokra.bert.tokenizer.*`
+              # metadata (SbertTokenizer::from_gguf hard-fails without it —
+              # see run 31167865478 "missing GGUF metadata key:
+              # vokra.bert.tokenizer.pieces").
+              allow_patterns=["*.safetensors", "*.json", "vocab.txt"],
+          )
+          snapshot_download(
+              repo_id=os.environ["BERT_EN_HF_REPO"],
+              repo_type="model",
+              local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v3-en"),
+              # microsoft/deberta-v3-large ships `pytorch_model.bin` only —
+              # no safetensors. Pull the .bin here; a follow-up step below
+              # converts it to safetensors via safetensors.torch.save_file
+              # (widely-standard bin→safetensors bridge, mirrors what
+              # tools/parity/*_prepare_checkpoint.py does across the repo).
+              # `*.model` = SentencePiece `spm.model` for the v3 tokenizer;
+              # a follow-up step extracts it to a JSON side-car via
+              # tools/parity/extract_spm_metadata.py so `vokra-cli convert
+              # --model deberta-v3 --tokenizer <spm.json>` can stamp the
+              # `vokra.bert.tokenizer.*` metadata the Rust loader requires.
+              # Empirical measurement 2026-08-05 (PR #24 CI run 31021206483)
+              # showed the safetensors-only allow_patterns pulled 0 weight
+              # files and the downstream `find *.safetensors` failed with
+              # `test -n ""` (exit 1). Adding .bin fixes the root cause.
+              allow_patterns=["*.safetensors", "*.bin", "*.json", "*.model"],
+          )
+          print("DeBERTa v2/v3 snapshot_download OK")
+          PYEOF
+
+      - name: Convert DeBERTa v3 pytorch_model.bin -> safetensors
+        # microsoft/deberta-v3-large only ships pytorch_model.bin (upstream
+        # convention pre-safetensors era, never migrated). vokra-cli
+        # `--model deberta-v3` expects a safetensors input — bridge the gap
+        # here with the standard safetensors.torch conversion (already in
+        # the venv above). Skip cleanly when .safetensors is already present
+        # (future-proof: if microsoft ever adds native safetensors, this
+        # step is a no-op).
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          python3 - <<'PYEOF'
+          import glob
+          import os
+          import sys
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "deberta-v3-en"
+
+          # Fast path — already safetensors (owner-provided or upstream
+          # migrated). Skip conversion silently.
+          if any(root.rglob("*.safetensors")):
+              print("[deberta-v3 bin→st] .safetensors already present, no conversion needed.")
+              sys.exit(0)
+
+          bins = sorted(root.rglob("pytorch_model.bin"))
+          if not bins:
+              print(f"::error::No pytorch_model.bin or *.safetensors found under {root}", file=sys.stderr)
+              sys.exit(1)
+
+          # Deferred imports: torch + safetensors already installed in the
+          # venv above (`transformers>=4.44` pulls torch as a transitive).
+          import torch
+          from safetensors.torch import save_file
+
+          for bin_path in bins:
+              out = bin_path.with_suffix(".safetensors").with_name("model.safetensors")
+              print(f"[deberta-v3 bin→st] {bin_path} -> {out}")
+              state = torch.load(str(bin_path), map_location="cpu", weights_only=True)
+              # `state` is dict[str, Tensor]. Save file expects contiguous
+              # tensors — clone().contiguous() covers the shared-memory
+              # case (some HF checkpoints tie embed_tokens ↔ lm_head).
+              cleaned = {k: v.detach().clone().contiguous() for k, v in state.items()}
+              save_file(cleaned, str(out))
+              print(f"[deberta-v3 bin→st] wrote {out} ({len(cleaned)} tensors)")
+          PYEOF
 
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
 
-      - name: Run parity_sbv2_real
-        # Runs only when fixtures are provisioned (env var set by owner).
-        # The harness compares 12 SBV2 stages against reference fixtures at
-        # per-tensor atol derived from architectural bounds.
-        if: false  # unreachable until fixture provisioning step is settled
-        env:
-          VOKRA_SBV2_GGUF: ${{ runner.temp }}/sbv2-v2-multilingual-base.gguf
-          VOKRA_DEBERTA_V2_GGUF: ${{ runner.temp }}/deberta-v2-large-japanese-char-wwm.gguf
-          VOKRA_DEBERTA_V3_GGUF: ${{ runner.temp }}/deberta-v3-large.gguf
+      - name: Convert 3 checkpoints -> GGUF (vokra-cli convert)
+        # --model sbv2 / deberta-v2 / deberta-v3 are the canonical
+        # ModelKind::as_arg() spellings (tests/fixtures/sbv2/README.md "3.
+        # Convert to GGUF"). Multi-shard checkpoints are reported by
+        # sbv2_prepare_checkpoint.py but not merged (its own documented
+        # limitation).
+        #
+        # SBV2 v2 base checkpoints ship 3 safetensors siblings:
+        #   G_0.safetensors  — Generator (~1264 tensors, has enc_p.*)
+        #   D_0.safetensors  — Discriminator (~111 tensors, training-only)
+        #   WD_0.safetensors — Warmup Discriminator (~15 tensors)
+        # `find | sort` alphabetically picks D_0 (D < G < WD), i.e. the
+        # Discriminator, which lacks `enc_p.emb.weight` and every other
+        # inference-required tensor. The Rust loader then fails with
+        # "tensor sbv2.text_encoder.phoneme_embed not found in GGUF".
+        # Explicitly pin the Generator file so this doesn't recur.
+        shell: bash
         run: |
           set -euo pipefail
-          cargo test --release -p vokra-models --test parity_sbv2_real \
-            parity_sbv2_real_waveform_matches_reference_dump -- --nocapture
+          # Activate the parity venv so `python tools/parity/extract_spm_metadata.py`
+          # below can import `sentencepiece` + `google.protobuf`.
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+
+          sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name 'G_*.safetensors' | sort | head -n1)"
+          if [ -z "$sbv2_st" ]; then
+            # Fallback for SKUs that ship a single unqualified safetensors.
+            sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name '*.safetensors' \
+              -not -name 'D_*' -not -name 'WD_*' -not -name 'DUR_*' | sort | head -n1)"
+          fi
+          test -n "$sbv2_st"
+          echo "[sbv2] picked Generator checkpoint: $sbv2_st"
+
+          # Wave-4 WORKFLOW-SHAPE-FIXUP (2026-08-09): the inline-Python
+          # shape-recovery that used to live here (patching d_speaker /
+          # n_speakers / decoder_upsample_kernel_sizes in
+          # vokra-sbv2-config.json between prep and convert) has moved
+          # INTO the converter itself — `crates/vokra-convert/src/models/
+          # sbv2.rs`'s `infer_d_speaker` / `infer_n_speakers` /
+          # `infer_decoder_upsample_kernel_sizes` helpers run inside
+          # `convert_sbv2_file` and produce the same "recover from
+          # safetensors shape, loud-warn on config disagreement" log
+          # entries the pre-Wave-4 inline Python emitted. This CI step
+          # is now free of the stopgap; the converter runs everywhere
+          # `convert_sbv2_file` runs (CI, local, sidecar tools), not
+          # only inside this YAML.
+
+          ./target/release/vokra-cli convert \
+            --model sbv2 \
+            --input "$sbv2_st" \
+            --config "$RUNNER_TEMP/sbv2-checkpoint/vokra-sbv2-config.json" \
+            --output "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf"
+
+          bert_ja_st="$(find "$RUNNER_TEMP/deberta-v2-ja" -name '*.safetensors' | sort | head -n1)"
+          test -n "$bert_ja_st"
+          # v2 tokenizer = char-level BertJapaneseTokenizer, vocab.txt
+          # required for `vokra.bert.tokenizer.*` metadata stamping (see
+          # deberta-v2.rs KEY_TOKENIZER_PREFIX + KIND_BERT_JAPANESE_CHAR).
+          bert_ja_vocab="$RUNNER_TEMP/deberta-v2-ja/vocab.txt"
+          test -f "$bert_ja_vocab"
+          ./target/release/vokra-cli convert \
+            --model deberta-v2 \
+            --input "$bert_ja_st" \
+            --tokenizer "$bert_ja_vocab" \
+            --output "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf"
+
+          # v3 tokenizer = SentencePiece Unigram, spm.model. Convert to
+          # JSON side-car first (extract_spm_metadata.py) so vokra-cli
+          # doesn't need a protobuf runtime dep. Then pass the JSON via
+          # `--tokenizer`. The venv already has protobuf + sentencepiece
+          # (see "Provision parity venv" step); reuse the same venv here.
+          bert_en_spm="$RUNNER_TEMP/deberta-v3-en/spm.model"
+          test -f "$bert_en_spm"
+          bert_en_tok_json="$RUNNER_TEMP/deberta-v3-en/tokenizer_spm.json"
+          python tools/parity/extract_spm_metadata.py \
+            --input "$bert_en_spm" \
+            --output "$bert_en_tok_json"
+
+          bert_en_st="$(find "$RUNNER_TEMP/deberta-v3-en" -name '*.safetensors' | sort | head -n1)"
+          test -n "$bert_en_st"
+          ./target/release/vokra-cli convert \
+            --model deberta-v3 \
+            --input "$bert_en_st" \
+            --tokenizer "$bert_en_tok_json" \
+            --output "$FIXTURE_DIR/deberta-v3-large.gguf"
+
+          ls -lh "$FIXTURE_DIR"/*.gguf
+
+      - name: Regenerate reference dump (sbv2_dump_reference.py --do-dump)
+        # Wave-4 TASK-34-DUMPER (2026-08-09): the vendoring + pipeline body
+        # both landed; a nonzero exit here is a REAL failure and is
+        # propagated by the tail-position "Fail if ..." step. `set +e` is
+        # kept only to allow the log-collection tail below to run in the
+        # failure case; DUMP_EXIT is faithfully echoed to GITHUB_ENV.
+        id: dump
+        shell: bash
+        run: |
+          set +e
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          python3 tools/parity/sbv2_dump_reference.py \
+            --checkpoint "$RUNNER_TEMP/sbv2-checkpoint" \
+            --output-dir "$FIXTURE_DIR" \
+            --language ja \
+            --do-dump 2>&1 | tee "$RUNNER_TEMP/sbv2-dump.log"
+          exit_code=${PIPESTATUS[0]}
+          echo "DUMP_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          {
+            echo "### sbv2_dump_reference.py --do-dump (exit ${exit_code})"
+            echo ""
+            echo '```'
+            tail -n 40 "$RUNNER_TEMP/sbv2-dump.log"
+            echo '```'
+            if [ "$exit_code" -ne 0 ]; then
+              echo ""
+              echo "**REAL FAILURE** — the vendored VITS pipeline + \`run_pipeline_body\`"
+              echo "are fully wired (Wave-4 TASK-34-DUMPER). Investigate the traceback"
+              echo "above: missing/unmapped tensor names in the safetensors state_dict,"
+              echo "a shape mismatch vs the clean-room vendored primitives, or a"
+              echo "network/HF-hub fetch failure for one of the two DeBERTa BERTs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Detect fixture drift (informational, never auto-commits)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          git diff --stat -- "$FIXTURE_DIR" > "$RUNNER_TEMP/fixture-drift.txt"
+          if [ -s "$RUNNER_TEMP/fixture-drift.txt" ]; then
+            {
+              echo "### Fixture drift (informational)"
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/fixture-drift.txt"
+              echo '```'
+              echo ""
+              echo "Owner reviews and commits intentionally — this workflow never auto-commits."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### No fixture drift" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Prepare UTMOS22-strong GGUF (WP-24 UTMOS quality gate)
+        # Opt-in tail-position quality gate: when repository variable
+        # `VOKRA_SBV2_UTMOS_ENABLE == "1"` the SBV2 parity test asserts
+        # `|utmos(rust_wave) - utmos(reference_wave)| <= 0.05` after the
+        # numerical-waveform assertion passes. See the module doc of
+        # `crates/vokra-models/tests/parity_sbv2_real.rs` ("WP-24: UTMOS
+        # quality gate") for the Rust-side semantics and
+        # `crates/vokra-models/src/sbv2/parity.rs`'s `UTMOS_ATOL` for the
+        # honest-atol derivation.
+        #
+        # Weight source: reuses the already-committed
+        # `tests/parity/utmos/source.env` (UTMOS §3.1 sign-off = ☑ Commercial
+        # yousan 2026-07-23; the same URL + sha256 `parity-utmos.yml` uses).
+        # No new owner artifact required — enabling is a one-line repo-vars
+        # flip.
+        #
+        # Fail-closed skip when the variable is not `"1"` (the whole step is
+        # `if:`-gated off, and the Rust test observes `VOKRA_SBV2_UTMOS_ENABLE`
+        # empty → deliberate skip with an eprintln + workflow annotation, per
+        # `parity-deepfilternet3-real.yml` / `parity-utmos.yml` precedent —
+        # fabricated pass 禁止, FR-EX-08 / NFR-QL-04).
+        id: utmos_prep
+        if: vars.VOKRA_SBV2_UTMOS_ENABLE == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          # `safetensors` is not in the sbv2 base venv but IS required by
+          # `utmos_prepare_checkpoint.py` — install only when we opt in.
+          python -m pip install --quiet safetensors
+          # Reuse the already-committed UTMOS source pin (owner sign-off
+          # docs/license-audit.md §3.1 UTMOS row on 2026-07-23).
+          # shellcheck disable=SC1091
+          source tests/parity/utmos/source.env
+          : "${CKPT_URL:?tests/parity/utmos/source.env must define CKPT_URL}"
+          : "${CKPT_SHA256:?tests/parity/utmos/source.env must define CKPT_SHA256}"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/utmos-checkpoint.ckpt" "$CKPT_URL"
+          echo "$CKPT_SHA256  $RUNNER_TEMP/utmos-checkpoint.ckpt" | sha256sum -c -
+          python3 tools/parity/utmos_prepare_checkpoint.py \
+            --ckpt "$RUNNER_TEMP/utmos-checkpoint.ckpt" \
+            --output "$RUNNER_TEMP/utmos.safetensors" \
+            --config-out "$RUNNER_TEMP/utmos-config.json"
+          ./target/release/vokra-cli convert \
+            --model utmos \
+            --input "$RUNNER_TEMP/utmos.safetensors" \
+            --config "$RUNNER_TEMP/utmos-config.json" \
+            --output "$RUNNER_TEMP/utmos.gguf"
+          ls -lh "$RUNNER_TEMP/utmos.gguf"
+          echo "utmos_gguf=$RUNNER_TEMP/utmos.gguf" >> "$GITHUB_OUTPUT"
+
+      - name: Announce WP-24 UTMOS quality gate posture
+        # Runs regardless — the annotation on a *disabled* gate is the
+        # honest signal that the CI leg is off (never a fabricated pass).
+        if: always()
+        shell: bash
+        env:
+          UTMOS_ENABLE_VAR: ${{ vars.VOKRA_SBV2_UTMOS_ENABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${UTMOS_ENABLE_VAR}" = "1" ]; then
+            {
+              echo "### WP-24 UTMOS quality gate: ENABLED"
+              echo ""
+              echo "\`vars.VOKRA_SBV2_UTMOS_ENABLE=1\` — the tail-position UTMOS delta assertion"
+              echo "( \`|Δ| <= UTMOS_ATOL\` = 0.05 per \`crates/vokra-models/src/sbv2/parity.rs\`)"
+              echo "will fire once the numeric waveform-parity assertion above passes."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### WP-24 UTMOS quality gate: SKIPPED"
+              echo ""
+              echo "\`vars.VOKRA_SBV2_UTMOS_ENABLE\` is not \`1\` — the tail-position UTMOS delta"
+              echo "assertion will not fire. Set the repository variable"
+              echo "\`VOKRA_SBV2_UTMOS_ENABLE=1\` to enable (no other owner artifact required —"
+              echo "\`tests/parity/utmos/source.env\` is already committed)."
+              echo ""
+              echo "This is an FR-EX-08 explicit skip, not a fabricated pass — the SBV2"
+              echo "parity test observes the empty env var and logs an \`eprintln!\` skip diag."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::parity-sbv2-real: WP-24 UTMOS quality gate skipped (vars.VOKRA_SBV2_UTMOS_ENABLE != '1')"
+          fi
+
+      - name: Run SBV2 real-checkpoint parity test (--ignored)
+        # Runs regardless of the dumper's outcome (if: always()): the GGUF
+        # load + SbV2Model::from_gguf + synthesize() call path is exercised
+        # (and, per that function's own doc, expected to answer with a
+        # documented NotImplemented today — see this file's header comment)
+        # independent of whether reference_dump/*.bin exists yet.
+        #
+        # WP-24: when `vars.VOKRA_SBV2_UTMOS_ENABLE == "1"`, the two
+        # `VOKRA_SBV2_UTMOS_*` env vars below opt the tail-position UTMOS
+        # quality gate in (see the module doc of `parity_sbv2_real.rs` and
+        # the "Prepare UTMOS22-strong GGUF" step above); an empty value
+        # (var unset OR prep step skipped) triggers the Rust-side clean
+        # skip.
+        id: parity
+        if: always()
+        env:
+          VOKRA_SBV2_UTMOS_ENABLE: ${{ vars.VOKRA_SBV2_UTMOS_ENABLE }}
+          VOKRA_SBV2_UTMOS_GGUF: ${{ steps.utmos_prep.outputs.utmos_gguf }}
+        shell: bash
+        run: |
+          set +e
+          cargo test --release -p vokra-models --test parity_sbv2_real -- --ignored --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/parity.log"
+          exit_code=${PIPESTATUS[0]}
+          echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          # WP-04: surface the mel_loss aggregator's per-run measurement so
+          # the first successful CI run's `[parity_sbv2_real] mel_loss parity OK`
+          # line is easy to lift into `MEL_LOSS_ATOL`'s docstring when
+          # WP-04's `AtolMeasurement::EstimatedPreFixture` is promoted to
+          # `Measured`. Extract the exact line the test emits (see
+          # `mel_loss_rms` wire-in in `parity_sbv2_real.rs`), pointer-quoted
+          # for clean copy-paste.
+          mel_loss_line=$(grep -E '^\[parity_sbv2_real\] mel_loss parity' "$RUNNER_TEMP/parity.log" \
+            | head -n1 || true)
+          {
+            echo "### parity_sbv2_real (exit ${exit_code})"
+            echo ""
+            echo '```'
+            grep -E '^\[parity_sbv2_real\]' "$RUNNER_TEMP/parity.log" || echo "(no [parity_sbv2_real] diagnostic lines emitted)"
+            echo '```'
+            echo ""
+            echo "**WP-04 mel_loss aggregator** (log-mel RMS, tighter architectural"
+            echo "bound than raw waveform atol per ADR"
+            echo "\`docs/adr/sbv2-libm-strategy.md\` §2.2):"
+            echo ""
+            if [ -n "$mel_loss_line" ]; then
+              echo '```'
+              echo "$mel_loss_line"
+              echo '```'
+              echo ""
+              echo "Once the fixture gate opens and this line reports a real measurement,"
+              echo "promote \`MEL_LOSS_ATOL\` (\`crates/vokra-models/src/sbv2/parity.rs\`) from"
+              echo "\`EstimatedPreFixture\` to \`Measured\` in the calibration snapshot at"
+              echo "\`crates/vokra-models/tests/sbv2_parity_atol_calibration.rs\`."
+            else
+              echo "*(no \`[parity_sbv2_real] mel_loss parity\` line emitted — parity test"
+              echo "did not reach the mel_loss assertion, likely because an earlier step failed.)*"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Emit atol-summary.json artifact (WP-02, 2026-08-09)
+        # Parses the per-tensor `[parity_sbv2_real]` rows the parity test
+        # writes to `parity.log` (WP-02 refactor of
+        # `diff_intermediates_against_manifest`: rows are emitted BEFORE
+        # any assertion, so a failing tensor still shows up in the
+        # summary — an owner reviewing the artifact never has to guess
+        # whether "no line" meant "not run" or "failed silently").
+        #
+        # The resulting `atol-summary.json` is picked up by
+        # `tools/parity/sbv2_atol_updater.py` (`--summary <path>`),
+        # which PROPOSES atol table edits (`PROMOTE_TO_MEASURED` /
+        # `PROMOTE_TO_ESTIMATED` / `TIGHTEN` / `LOOSEN`) — but never
+        # auto-commits, per memory `feedback-honest-parity-atol` (Kokoro
+        # T17-fixup #5/#6 REVERT precedent). Owner reviews the printed
+        # proposal, decides what to accept, then edits BOTH the code
+        # side and `tests/fixtures/sbv2/atol-measurements.json` in ONE
+        # commit (redundant-recording rule).
+        #
+        # `if: always()`: even a failing parity run should produce a
+        # summary — that is precisely the case where the owner-review
+        # cycle needs to see per-tensor max|Δ| numbers to decide what to
+        # tighten/loosen.
+        id: atol_summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-sbv2/bin/activate
+          python3 tools/parity/sbv2_atol_summary_from_log.py \
+            --log "$RUNNER_TEMP/parity.log" \
+            --output "$RUNNER_TEMP/atol-summary.json" \
+            --ci-run-id "${{ github.run_id }}" \
+            --ci-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          summary_exit=$?
+          echo "ATOL_SUMMARY_EXIT=${summary_exit}" >> "$GITHUB_ENV"
+
+          # Render human-readable proposals into step summary + also
+          # emit as text alongside the JSON artifact for the owner.
+          python3 tools/parity/sbv2_atol_updater.py \
+            --summary "$RUNNER_TEMP/atol-summary.json" \
+            --ci-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            2>&1 | tee "$RUNNER_TEMP/atol-proposal.txt"
+          {
+            echo "### atol updater proposals (WP-02)"
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/atol-proposal.txt"
+            echo '```'
+            echo ""
+            echo "**Consumed by**: \`tools/parity/sbv2_atol_updater.py\` — read the"
+            echo "\`atol-summary.json\` artifact locally with \`uv run python\`"
+            echo "\`tools/parity/sbv2_atol_updater.py --summary <path>\` to"
+            echo "re-render / adjust the margin factor. Proposal-only; CC never"
+            echo "auto-commits atol changes (honest-atol discipline)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Zero-dependency invariant (root Cargo.lock unchanged, NFR-DS-02)
-        # Belt-and-suspenders: pip-installing torch/safetensors inside the
-        # parity venv must not touch the root Rust lockfile.
+        if: always()
         run: git diff --exit-code Cargo.lock
 
       - name: Upload parity artifacts
@@ -194,9 +703,25 @@ jobs:
         with:
           name: sbv2-parity-artifacts
           path: |
-            ${{ runner.temp }}/parity-log.txt
-            ${{ runner.temp }}/sbv2-v2-multilingual-base.gguf
-            ${{ runner.temp }}/deberta-v2-large-japanese-char-wwm.gguf
-            ${{ runner.temp }}/deberta-v3-large.gguf
+            ${{ runner.temp }}/sbv2-dump.log
+            ${{ runner.temp }}/parity.log
+            ${{ runner.temp }}/fixture-drift.txt
+            ${{ runner.temp }}/atol-summary.json
+            ${{ runner.temp }}/atol-proposal.txt
+            tests/fixtures/sbv2/reference_dump.manifest.json
+            tests/fixtures/sbv2/atol-measurements.json
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Fail if the dumper or the Rust parity test failed (honest exit propagation)
+        # Placed after artifact upload (artifacts-first, exit-last — same
+        # ordering parity-whisper-real.yml / parity-kokoro-real.yml use) so
+        # a failing job still ships the diagnostic bundle. Empty env values
+        # (a step that never ran because an earlier hard-required step
+        # failed) compare != '0' too, so an upstream failure still fails
+        # the job here.
+        if: env.DUMP_EXIT != '0' || env.PARITY_EXIT != '0'
+        shell: bash
+        run: |
+          echo "::error::parity-sbv2-real failed — sbv2_dump_reference.py exit ${DUMP_EXIT:-?}, parity_sbv2_real exit ${PARITY_EXIT:-?} — see step summary + artifacts"
+          exit 1
