@@ -47,7 +47,7 @@
 //! - `vokra.openwakeword.sample_rate` (u32): PCM sample rate (16 000).
 //! - `vokra.openwakeword.hop_samples` (u32): analysis hop between
 //!   melspec frames (160 = 10 ms at 16 kHz).
-//! - `vokra.openwakeword.wakeword_names` (Array<String> of length
+//! - `vokra.openwakeword.wakeword_names` (`Array<String>` of length
 //!   `n_wakewords`): human-readable per-wake-word names in the order
 //!   the classifier weights are indexed.
 //! - `vokra.openwakeword.classifier.{i}.linear{1,2}.{weight,bias}`
@@ -107,7 +107,7 @@ pub const KEY_SAMPLE_RATE: &str = "vokra.openwakeword.sample_rate";
 /// GGUF metadata key: analysis hop between melspec frames (u32 samples;
 /// upstream = 160 = 10 ms at 16 kHz).
 pub const KEY_HOP_SAMPLES: &str = "vokra.openwakeword.hop_samples";
-/// GGUF metadata key: per-wake-word names (Array<String>).
+/// GGUF metadata key: per-wake-word names (`Array<String>`).
 pub const KEY_WAKEWORD_NAMES: &str = "vokra.openwakeword.wakeword_names";
 
 /// Formats a per-wake-word classifier tensor name for the first linear

@@ -155,6 +155,17 @@ impl GgufBuilder {
         self.tensors.len()
     }
 
+    /// Whether a tensor with the given `name` has been queued via
+    /// [`add_tensor`](Self::add_tensor). Wave-4 addition for
+    /// `vokra-convert::models::sbv2::emit_converter_zero_defaults`,
+    /// which needs an idempotent-emit contract on the three
+    /// converter_zero_default optional slots: only emit when the main
+    /// tensor loop's `Rename` / `PassThrough` arms did not already
+    /// write the target name.
+    pub fn has_tensor(&self, name: &str) -> bool {
+        self.tensors.iter().any(|t| t.name == name)
+    }
+
     /// Number of metadata entries that will be written, including any
     /// auto-injected `general.alignment`.
     pub fn metadata_count(&self) -> usize {

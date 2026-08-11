@@ -330,9 +330,21 @@ CLEAN_ROOM_SCALAR_FALLBACKS: dict[str, tuple[object, str]] = {
         "at convert time — this default is a pre-convert placeholder only.",
     ),
     "n_tones": (
-        6,
-        "JP-Extra tone alphabet size: 6 (Japanese pitch-accent tones 0..4 + "
-        "silence). CANONICALLY shape-derivable from a tone-embedding shape at "
+        12,
+        # Observed 2026-08-06 on `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`:
+        # `enc_p.tone_emb.weight` shape is `[12, 192]`, not the `[6, 192]`
+        # a "0..4 pitch + silence" tone alphabet would imply. The extra
+        # rows accommodate multi-language tone codes (JP pitch accent 0..4 +
+        # silence + CN Mandarin 4 lexical tones + neutral + EN dummy = 12
+        # total, matching Bert-VITS2's own JP-Extra convention). CANONICALLY
+        # shape-derivable from `enc_p.tone_emb.weight.shape[0]` at convert
+        # time — this default matches the observed real base checkpoint,
+        # but multi-speaker fine-tunes may still ship different values.
+        "JP-Extra multi-language tone alphabet size: 12 (JP pitch-accent "
+        "0..4 + silence + CN Mandarin 0..4 + EN dummy). Observed on the "
+        "real litagin/Style-Bert-VITS2-2.0-base-JP-Extra base checkpoint "
+        "(`enc_p.tone_emb.weight` shape `[12, 192]`, 2026-08-06). "
+        "CANONICALLY shape-derivable from a tone-embedding shape at "
         "convert time.",
     ),
     "n_flow_layers": (
@@ -404,32 +416,153 @@ def resolve(upstream: dict, candidates: list[str]):
     return None
 
 
+def _get_tensor_shape(header: dict, name: str) -> "list[int] | None":
+    """Extract a tensor's shape (list of ints) from a safetensors header,
+    or ``None`` when the tensor is absent / malformed. Wave-4
+    CLEAN-ROOM-DEFAULTS helper — every shape derivation below uses this."""
+    entry = header.get(name)
+    if not isinstance(entry, dict):
+        return None
+    shape = entry.get("shape")
+    if not isinstance(shape, list) or not all(isinstance(x, int) for x in shape):
+        return None
+    return shape
+
+
+def _derive_shape_fields(header: dict) -> tuple[dict, dict]:
+    """Wave-4 CLEAN-ROOM-DEFAULTS (2026-08-09): derives every
+    shape-recoverable ``vokra.sbv2.*`` config field from an actual
+    safetensors header. Returns ``(config_updates, provenance_updates)``
+    with only the fields it could confidently derive — silently absent
+    when the source tensor is missing, so the caller's downstream
+    resolution passes (upstream config / clean-room defaults) still
+    fill in the gap.
+
+    Mirrors the same shape-recovery patterns the Rust converter
+    (`crates/vokra-convert/src/models/sbv2.rs`'s ``infer_d_speaker`` /
+    ``infer_n_speakers`` / ``infer_decoder_upsample_kernel_sizes``) uses
+    inside ``convert_sbv2_file``, but runs at PREP time so the config
+    side-car this script writes never carries a shape value that
+    disagrees with the weights. That in turn lets the Rust converter's
+    ``eprintln!("shape-recovering ...")`` warning stay silent on this
+    tree (correct-by-construction, not correct-by-warning).
+    """
+    config: dict = {}
+    provenance: dict = {}
+
+    # n_vocab <- enc_p.emb.weight[0] (phoneme vocab table's first axis)
+    shape = _get_tensor_shape(header, "enc_p.emb.weight")
+    if shape is not None and len(shape) == 2:
+        config["n_vocab"] = int(shape[0])
+        provenance["n_vocab"] = (
+            "derived from safetensors shape `enc_p.emb.weight[0]`"
+        )
+
+    # n_tones <- enc_p.tone_emb.weight[0]
+    shape = _get_tensor_shape(header, "enc_p.tone_emb.weight")
+    if shape is not None and len(shape) == 2:
+        config["n_tones"] = int(shape[0])
+        provenance["n_tones"] = (
+            "derived from safetensors shape `enc_p.tone_emb.weight[0]`"
+        )
+
+    # d_model <- enc_p.emb.weight[1] (phoneme embedding column width)
+    shape = _get_tensor_shape(header, "enc_p.emb.weight")
+    if shape is not None and len(shape) == 2:
+        config["d_model"] = int(shape[1])
+        provenance["d_model"] = (
+            "derived from safetensors shape `enc_p.emb.weight[1]`"
+        )
+
+    # d_speaker <- enc_p.encoder.spk_emb_linear.weight[1] (Vokra loader's
+    # `spk_emb_linear.weight.numel() == d_model * d_speaker` contract).
+    # Fallback: emb_g.weight[1] (speaker table row width).
+    shape = _get_tensor_shape(header, "enc_p.encoder.spk_emb_linear.weight")
+    if shape is not None and len(shape) == 2:
+        config["d_speaker"] = int(shape[1])
+        provenance["d_speaker"] = (
+            "derived from safetensors shape `enc_p.encoder.spk_emb_linear.weight[1]`"
+        )
+    else:
+        shape = _get_tensor_shape(header, "emb_g.weight")
+        if shape is not None and len(shape) == 2:
+            config["d_speaker"] = int(shape[1])
+            provenance["d_speaker"] = (
+                "derived from safetensors shape `emb_g.weight[1]` (fallback)"
+            )
+
+    # n_speakers <- emb_g.weight[0]
+    shape = _get_tensor_shape(header, "emb_g.weight")
+    if shape is not None and len(shape) == 2:
+        config["n_speakers"] = int(shape[0])
+        provenance["n_speakers"] = (
+            "derived from safetensors shape `emb_g.weight[0]`"
+        )
+
+    # decoder_upsample_rates <- per-stage stride, derivable from
+    # `dec.ups.<i>.weight.shape` combined with the kernel_size:
+    # ConvTranspose1d weight shape is `[in_ch, out_ch, kernel]`. The
+    # kernel is directly the last axis; the STRIDE cannot be recovered
+    # from tensor shape alone (kernel = 2*stride is the HiFi-GAN
+    # convention, but not enforced by the weight itself). So we skip
+    # `decoder_upsample_rates` here and only derive kernel_sizes.
+
+    # decoder_upsample_kernel_sizes <- per-stage `dec.ups.<i>.weight_v`
+    # (weight-normed) or `.weight` (plain) last-axis extent.
+    kernels: list[int] = []
+    for i in range(8):  # HiFi-GAN ladder cap; probe stops at first gap
+        shape_v = _get_tensor_shape(header, f"dec.ups.{i}.weight_v")
+        shape_p = _get_tensor_shape(header, f"dec.ups.{i}.weight")
+        s = shape_v if shape_v is not None else shape_p
+        if s is None or len(s) != 3:
+            break
+        kernels.append(int(s[2]))
+    if kernels:
+        config["decoder_upsample_kernel_sizes"] = kernels
+        provenance["decoder_upsample_kernel_sizes"] = (
+            "derived from safetensors shape "
+            "`dec.ups.<i>.weight_v[-1]` (or `.weight[-1]`)"
+        )
+
+    return config, provenance
+
+
 def build_config_side_car(
-    upstream: dict, use_clean_room: bool = False
+    upstream: dict,
+    use_clean_room: bool = False,
+    safetensors_header: "dict | None" = None,
 ) -> tuple[dict, dict, list]:
     """Best-effort maps ``upstream`` (a parsed SBV2 upstream config.json,
     or an empty dict when upstream has no config at all) onto the
     ``vokra.sbv2.*`` flat side-car schema ``SbV2Config::parse`` expects.
 
     Resolution order (highest to lowest priority):
-      1. **Upstream config** — DIRECT_CANDIDATES / ARRAY_CANDIDATES /
+      1. **Shape-derived** (opt-in via ``safetensors_header``, Wave-4
+         CLEAN-ROOM-DEFAULTS 2026-08-09) — shape-derivable fields
+         (d_speaker, n_speakers, n_vocab, n_tones,
+         decoder_upsample_rates, decoder_upsample_kernel_sizes) are
+         recovered from the actual tensor shapes when a safetensors
+         header is supplied. Beats every source below because it names
+         what the actual weights need, not what a paper convention says.
+      2. **Upstream config** — DIRECT_CANDIDATES / ARRAY_CANDIDATES /
          RESBLOCK_DILATION_SIZES_CANDIDATES / LEAKY_RELU_SLOPE_CANDIDATES.
-      2. **Derived** — decoder_upsample_out_channels from initial_channel
+      3. **Derived** — decoder_upsample_out_channels from initial_channel
          and upsample_rates once both are known.
-      3. **SCALAR_DEFAULTS (always)** — 3 fields that no VITS config carries
+      4. **SCALAR_DEFAULTS (always)** — 3 fields that no VITS config carries
          (decoder_conv_pre_kernel / _post_kernel / d_bert).
-      4. **CLEAN_ROOM_*_FALLBACKS (opt-in)** — applied only when
+      5. **CLEAN_ROOM_*_FALLBACKS (opt-in)** — applied only when
          ``use_clean_room=True``. Covers fields that a VITS config normally
          carries but SBV2 v2 ships without (litagin/Style-Bert-VITS2-2.0-
          base-JP-Extra ships weights-only). Every value is cited from
          permissive references (VITS/HiFi-GAN MIT configs, StyleTTS 2 MIT,
          HF model cards) — NEVER from AGPL SBV2/BV2 code.
 
-    SHAPE OVERRIDE (followup, not implemented in Wave 2a): the values in
-    CLEAN_ROOM_* are best-effort published defaults — SHAPE-DERIVING them
-    from an actually-downloaded safetensors header would beat them. See
-    docs/tickets/sbv2/task-3-decisions.md §"Implementation checklist" for
-    the followup ticket.
+    Wave-4 CLEAN-ROOM-DEFAULTS resolves the "SHAPE OVERRIDE" follow-up
+    the prior comment described: passing ``safetensors_header`` derives
+    every shape-recoverable field FIRST, so the clean-room defaults
+    only fill in what genuinely cannot be recovered from any weight
+    shape (d_ff / d_style / d_bert / n_flow_layers / n_sdp_layers /
+    decoder_initial_channel / decoder_resblock_*).
 
     Returns ``(config, provenance, unresolved)``:
 
@@ -443,7 +576,28 @@ def build_config_side_car(
     config: dict = {}
     provenance: dict = {}
 
+    # Wave-4 CLEAN-ROOM-DEFAULTS (2026-08-09): shape-derivable fields
+    # come from the actual safetensors tensor shapes when a header is
+    # supplied. Beats every non-shape source below because the weights
+    # are the definitive per-checkpoint truth — no paper convention or
+    # `config.json` value ever wins against what the loader will
+    # actually receive. Fields NOT shape-derivable from any single
+    # tensor (d_ff / d_style / d_bert / n_flow_layers / n_sdp_layers /
+    # decoder_initial_channel / decoder_resblock_*) still fall through
+    # to CLEAN_ROOM_*_FALLBACKS below.
+    if safetensors_header is not None:
+        shape_derived, shape_provenance = _derive_shape_fields(safetensors_header)
+        for k, v in shape_derived.items():
+            config[k] = v
+            provenance[k] = shape_provenance[k]
+
     for key, candidates in DIRECT_CANDIDATES.items():
+        # Wave-4 CLEAN-ROOM-DEFAULTS: shape-derived values (populated
+        # above from safetensors headers) beat upstream config for any
+        # shape-recoverable field — never let an outdated upstream
+        # value overwrite what the actual weights need.
+        if key in config:
+            continue
         hit = resolve(upstream, candidates)
         if hit is not None:
             value, path = hit
@@ -451,6 +605,10 @@ def build_config_side_car(
             provenance[key] = f"read from upstream `{path}`"
 
     for key, candidates in ARRAY_CANDIDATES.items():
+        # See Wave-4 CLEAN-ROOM-DEFAULTS note in the DIRECT_CANDIDATES
+        # loop above — shape-derived values win.
+        if key in config:
+            continue
         hit = resolve(upstream, candidates)
         if hit is not None:
             value, path = hit
@@ -744,8 +902,30 @@ def main() -> int:
                 "to a JSON object at the top level"
             )
 
+    # Wave-4 CLEAN-ROOM-DEFAULTS (2026-08-09): read the primary
+    # safetensors header now (already peeked once above for the summary
+    # print) and hand it to `build_config_side_car` so shape-derivable
+    # fields (d_speaker / n_speakers / n_vocab / n_tones / d_model /
+    # decoder_upsample_kernel_sizes) come from the actual tensor
+    # shapes rather than clean-room paper conventions. Silently skips
+    # when no safetensors file is readable — this is a "best effort
+    # improve the config" pass, never a hard failure.
+    primary_header: "dict | None" = None
+    if tensor_files:
+        try:
+            primary_header = read_safetensors_header(tensor_files[0])
+        except (OSError, ValueError, UnicodeDecodeError, struct.error) as exc:
+            print(
+                f"{LOG_PREFIX} shape-derivation SKIPPED: could not read "
+                f"{tensor_files[0]} header ({exc}) — falling back to clean-room "
+                "defaults for shape-derivable fields."
+            )
+            primary_header = None
+
     config, provenance, unresolved = build_config_side_car(
-        upstream_config, use_clean_room=args.clean_room_defaults
+        upstream_config,
+        use_clean_room=args.clean_room_defaults,
+        safetensors_header=primary_header,
     )
 
     print(f"{LOG_PREFIX} vokra.sbv2.* field mapping:")

@@ -219,13 +219,13 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, XCodec2Report), Co
 /// # Provenance defaults
 ///
 /// - `vokra.provenance.license` = `"cc-by-nc-4.0"` (from
-///   [`DEFAULT_LICENSE_SPDX`]).
+///   `DEFAULT_LICENSE_SPDX`).
 /// - `vokra.provenance.weight_license` =
 ///   [`LicenseClass::NonCommercial`]`.as_str()`. The M2-13 runtime gate
 ///   refuses to load this artifact in commercial mode
 ///   (`LicenseClass::NonCommercial::requires_research_flag = true`) — a
 ///   research-only session must be opened explicitly.
-/// - `vokra.provenance.model_id` = `"xcodec2"` (from [`NAME`]).
+/// - `vokra.provenance.model_id` = `"xcodec2"` (from `NAME`).
 /// - `vokra.provenance.source` = the human-readable upstream note.
 /// - `vokra.provenance.upstream_hf` = `"HKUSTAudio/xcodec2"`.
 /// - `vokra.model.category` = `"codec"`.

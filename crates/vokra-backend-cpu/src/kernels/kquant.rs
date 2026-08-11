@@ -735,7 +735,7 @@ fn int8_tail_tier(isa: IsaPath) -> IsaPath {
     }
 }
 
-/// [`int8_tail_tier`] with the host gate on the **requested** path kept
+/// `int8_tail_tier` with the host gate on the **requested** path kept
 /// intact.
 ///
 /// A single-activation i8mm request (`n_act == 1`, or any batch after its
@@ -765,7 +765,7 @@ fn int8_tail_isa(isa: IsaPath) -> Result<IsaPath> {
 /// `M5-15-quant.md` §D2 — the alternative, one scale set for the whole batch,
 /// would change the numbers with the batch size). The SMMLA tier consumes two
 /// vectors per pass and the odd tail through the single-vector kernel on
-/// [`int8_tail_tier`] (SMMLA has no 1-activation form); since every accepted
+/// `int8_tail_tier` (SMMLA has no 1-activation form); since every accepted
 /// path is bit-identical, tiling is a speed choice only.
 ///
 /// # Errors
@@ -840,7 +840,7 @@ pub fn kquant_gemvn_i8_on(
 /// [`VokraError::BackendUnavailable`] when `isa` is a path this host lacks;
 /// whatever the underlying kernel returns for an unrunnable `isa`. An odd
 /// activation count is **not** an error on the SMMLA tier: the unpaired tail
-/// runs on [`int8_tail_tier`], bit-identically.
+/// runs on `int8_tail_tier`, bit-identically.
 #[allow(clippy::too_many_arguments)] // GEMM operands + the forced isa + the batch width
 pub fn kquant_gemm_i8_on(
     isa: IsaPath,

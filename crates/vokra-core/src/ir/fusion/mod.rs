@@ -6,14 +6,14 @@
 //! implementation:
 //!
 //! - **Face A — IR pass.** `fuse` (added in M2-04-T03) walks an
-//!   [`AudioGraph`](super::graph::AudioGraph) in
+//!   [`super::graph::AudioGraph`] in
 //!   [`topo_order`](super::graph::AudioGraph::topo_order) order, matches
 //!   fusable op chains (e.g. `Stft → power → MelFilterbank → log10` for
 //!   the future `FusedOp::LogMel`), and rewrites them into a single
 //!   `OpKind::Fused(FusedOp)` node. This is the graph-level path used by
 //!   any future `AudioGraph`-driven model (M2-07 Kokoro, post-M2 IR-native
 //!   Whisper). The rewrite is invoked through a crate-internal mutator
-//!   on [`AudioGraph`](super::graph::AudioGraph) (`rewrite_with`,
+//!   on [`super::graph::AudioGraph`] (`rewrite_with`,
 //!   visibility narrowed to `pub(in crate::ir)`); the public `AudioGraph`
 //!   API stays immutable-by-construction —
 //!   [`GraphBuilder`](super::graph::GraphBuilder) remains the only
@@ -38,7 +38,7 @@
 //! # FR-EX-08 de-fusion rule (no silent cross-backend fallback)
 //!
 //! The pass takes an optional
-//! `&dyn `[`Backend`](crate::runtime::Backend). Before emitting a
+//! `&dyn `[`crate::Backend`]. Before emitting a
 //! `FusedOp` node the matcher queries `backend.supports(...)`; if the
 //! backend cannot execute the fused variant, the pass **leaves the base
 //! ops in place**. Base ops (`Stft`, `MelFilterbank`, `Mul`, …) have full
@@ -63,7 +63,7 @@
 //! ahead of it. This module therefore ships only the *pattern shape*
 //! (M2-04-T09/T10, `patterns::snake`) behind a `fusion-snake-stub` cfg —
 //! enough to unit-test matcher plumbing without adding orphan ops to
-//! [`OpKind`](super::graph::OpKind). The Snake `internal_precision`
+//! [`super::graph::OpKind`]. The Snake `internal_precision`
 //! default stays FP32 (BF16 mantissa loss per FR-OP-13); Vocos / BigVGAN
 //! honour their fp16 minimum dtype (INT8 崩壊 per FR-QT-03); BigVGAN
 //! kernel bodies remain a scratch reimplementation obligation (NVIDIA
@@ -99,7 +99,7 @@ pub mod patterns;
 use self::patterns::logmel::LogMelPattern;
 
 /// A fused operator payload — the variant behind
-/// [`OpKind::Fused`](super::graph::OpKind::Fused).
+/// [`super::graph::OpKind::Fused`].
 ///
 /// M2-04-T02 introduces this enum with the single [`FusedOp::LogMel`]
 /// variant driving the Whisper log-mel front-end (STFT → power → Mel →
@@ -270,13 +270,13 @@ impl FusionOptions {
 ///    (observability preservation).
 /// 4. **FR-EX-08 de-fusion**: when `backend` is provided and does *not*
 ///    support the fused variant this rewrite would emit
-///    ([`Backend::supports`](crate::Backend::supports) returns `false` for
+///    ([`crate::Backend::supports`] returns `false` for
 ///    `OpKind::Fused(pattern.fused_variant_probe())`), the rewrite is
 ///    skipped — base ops stay in place. This is *not* a silent fallback: the
 ///    base ops are the primary implementation, fusion is a pure optimization
 ///    overlay.
 /// 5. Applies collected rewrites via the crate-internal
-///    [`AudioGraph::rewrite_with`](super::graph::AudioGraph::rewrite_with)
+///    `AudioGraph::rewrite_with`
 ///    and returns the count.
 ///
 /// The `backend` argument is optional (`None` means "assume all fused

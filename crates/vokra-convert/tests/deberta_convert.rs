@@ -41,10 +41,18 @@ fn fixtures_dir() -> PathBuf {
 fn deberta_v2_convert_smoke() {
     let input = fixtures_dir().join("deberta-v2-large-japanese-char-wwm.safetensors");
     let output = std::env::temp_dir().join("vokra-deberta-v2-smoke.gguf");
-    let report = convert_deberta_v2_file(&input, &output, None)
+    let report = convert_deberta_v2_file(&input, &output, None, None)
         .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
+    // Post-Blocker-4 (Task 30 rename table, 2026-08-06): `report.written`
+    // includes the Q/K content-position duplications (`query_proj.weight`
+    // → wq.weight + wq_pos.weight, +1 per layer) and rel_embeddings →
+    // per-layer pos_embed duplications, so `written` no longer equals
+    // `read - skipped_non_float`. Just assert the invariant that survives
+    // the rename: `written` is > 0 and >= `read`'s renamed-consumable
+    // subset (i.e. `written >= read - skipped_non_float`, and can exceed
+    // when duplications fire).
     assert!(report.written > 0);
-    assert_eq!(report.read, report.written + report.skipped_non_float);
+    assert!(report.written >= report.read - report.skipped_non_float);
 }
 
 #[test]
@@ -52,10 +60,11 @@ fn deberta_v2_convert_smoke() {
 fn deberta_v3_convert_smoke() {
     let input = fixtures_dir().join("deberta-v3-large.safetensors");
     let output = std::env::temp_dir().join("vokra-deberta-v3-smoke.gguf");
-    let report = convert_deberta_v3_file(&input, &output, None)
+    let report = convert_deberta_v3_file(&input, &output, None, None)
         .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
+    // Same invariant relaxation as `deberta_v2_convert_smoke` (see there).
     assert!(report.written > 0);
-    assert_eq!(report.read, report.written + report.skipped_non_float);
+    assert!(report.written >= report.read - report.skipped_non_float);
 }
 
 #[test]

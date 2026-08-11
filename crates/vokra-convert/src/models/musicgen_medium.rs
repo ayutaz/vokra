@@ -216,9 +216,9 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of a MusicGen-Medium conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::xcodec2::XCodec2Report`],
-/// [`super::wavtokenizer::WavtokenizerReport`],
-/// [`super::neucodec::NeucodecReport`]) adapted to the file-oriented
+/// (`super::xcodec2::XCodec2Report`,
+/// `super::wavtokenizer::WavtokenizerReport`,
+/// `super::neucodec::NeucodecReport`) adapted to the file-oriented
 /// `convert_musicgen_medium_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MusicGenMediumReport {
@@ -266,7 +266,7 @@ pub struct MusicGenMediumReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-4.0"`, `NonCommercial`) — the
+/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-4.0"`, `NonCommercial`) — the
 /// upstream HF release ships CC-BY-NC 4.0 per Meta AudioCraft weight
 /// policy.
 ///
@@ -311,7 +311,7 @@ pub fn convert_musicgen_medium_file(
 /// `license` optionally overrides the stamped weight license — see
 /// [`convert_musicgen_medium_file`] for the override semantics + empty-
 /// string research-flag-downgrade guard. Defaults to
-/// [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-4.0"`, `NonCommercial`).
+/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-4.0"`, `NonCommercial`).
 ///
 /// # Errors
 ///

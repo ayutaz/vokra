@@ -44,7 +44,7 @@
 //!
 //! This is a **usage agreement**, not a standard SPDX permissive license.
 //! The registry (`vokra-core::LicenseClass::from_id`) resolves
-//! `styletts2` / `styletts-2` to [`LicenseClass::Unknown`], which fails
+//! `styletts2` / `styletts-2` to `LicenseClass::Unknown`, which fails
 //! closed under M2-13 — the runtime refuses to load StyleTTS 2 GGUFs
 //! outside `--i-understand-risks --research-only` mode
 //! (`docs/license-audit.md` §3.1 sign-off for StyleTTS 2 remains

@@ -62,7 +62,9 @@ use std::path::Path;
 
 use vokra_core::VokraError;
 use vokra_core::engines::MosScorerEngine;
-use vokra_models::dnsmos_p808_p835::Dnsmos;
+use vokra_models::dnsmos_p808_p835::{
+    Dnsmos, DnsmosSubmodel, EXPECTED_SAMPLE_RATE, INPUT_LENGTH_SAMPLES,
+};
 
 /// Env var the owner sets to point the gated harness at a real DNSMOS
 /// GGUF. Absent = skip cleanly (never a fabricated pass).
@@ -84,6 +86,63 @@ const REFERENCE_JSONL_ENV: &str = "VOKRA_DNSMOS_REFERENCE_JSONL";
 /// the openwakeword `PROB_ATOL = 1e-4`).
 #[allow(dead_code)]
 const MOS_ATOL: f32 = 1e-2;
+
+/// FIXTURE-FREE: primary-source constants pin. `INPUT_LENGTH_SAMPLES`
+/// = 144160 (9.01 s at 16 kHz) is transcribed verbatim from
+/// `microsoft/DNS-Challenge/DNSMOS/dnsmos_local.py:INPUT_LENGTH` — a
+/// silent drift in this constant would misalign the chunking window
+/// against every reference dumper run.
+#[test]
+fn dnsmos_primary_source_constants_pin() {
+    assert_eq!(
+        EXPECTED_SAMPLE_RATE, 16_000,
+        "DNSMOS is trained at 16 kHz PCM in (dnsmos_local.py::SAMPLING_RATE)"
+    );
+    assert_eq!(
+        INPUT_LENGTH_SAMPLES, 144_160,
+        "DNSMOS chunks input to 9.01 s windows (dnsmos_local.py::INPUT_LENGTH)"
+    );
+    // Sub-model short-name pin — the tensor prefix and metadata key
+    // both derive from these strings.
+    assert_eq!(DnsmosSubmodel::P808.short(), "p808");
+    assert_eq!(DnsmosSubmodel::P835.short(), "p835");
+    assert_eq!(DnsmosSubmodel::P808.tensor_prefix(), "p808.");
+    assert_eq!(DnsmosSubmodel::P835.tensor_prefix(), "p835.");
+}
+
+/// FIXTURE-FREE: the loud-partial `Dnsmos::score_*` contract must
+/// surface a `VokraError::UnsupportedOp` naming both the future
+/// topology metadata chunk and the sidecar to extend so an owner
+/// reading the error knows exactly where to flip the switch. Uses the
+/// synthesized-bundle constructor which lets this test run without a
+/// real GGUF fixture.
+#[test]
+fn dnsmos_score_paths_are_loud_partial() {
+    let session = Dnsmos::synthesized();
+    let pcm = vec![0.0f32; 16_000]; // 1 s zero — small enough to short-circuit.
+
+    let err = session
+        .score_p808(&pcm)
+        .expect_err("loud-partial p808 must not return Ok");
+    let msg = match err {
+        VokraError::UnsupportedOp(m) => m,
+        other => panic!("expected UnsupportedOp for p808, got {other:?}"),
+    };
+    assert!(
+        msg.contains("vokra.dnsmos") && msg.contains("topology"),
+        "loud-partial message must name the topology metadata: {msg}"
+    );
+    assert!(
+        msg.contains("dnsmos_prepare_checkpoint"),
+        "loud-partial message must name the sidecar to extend: {msg}"
+    );
+
+    // Same posture for the 3-scalar P.835 head.
+    let err = session
+        .score_p835(&pcm)
+        .expect_err("loud-partial p835 must not return Ok");
+    assert!(matches!(err, VokraError::UnsupportedOp(_)));
+}
 
 /// GATED: opens a real DNSMOS GGUF and verifies the load path is a
 /// genuine bind (real config parse, real bundle-inventory walk, real

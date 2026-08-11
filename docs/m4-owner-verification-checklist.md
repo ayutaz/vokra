@@ -89,10 +89,10 @@ CC 側は各モデルの **flip-the-switch parity harness**（実 checkpoint 到
 
 ### 2.1 Hopper H100 で FA v3 有効化 + FA v2 比計測 + ダッシュボード登録（M4-07）
 
-- **(a)**: vast.ai H100（SM 9.0）を起動 → probe が SM 9.0 報告 → NVRTC feasibility（`fa_v3_nvrtc_feasibility`）green → FA v3 parity 3 面（causal / non-causal / validation）green + worst |Δ| 記録 → e2e RTF `--fa-mode {decomposed,v2,v3}` × N=10 → kernel-level FA v2 比（研究 §10「2-3x」照合はここのみ）→ `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` の TBD を実測で fill → **ダッシュボード（X-06 nightly 結果公開面）に FA v2 比の行を追加 = WP close 発火**。
-- **(b)**: H100（Hopper）は CC 機体（M1 iMac / vast.ai RTX 4090 = SM 8.9）に無い。kernel は CUDA-less 機体で blind 転記された **OWNER-VERIFY hotspot**（wgmma descriptor LBO/SBO 割当・d-fragment map・compute_90a NVRTC 通過が実機未検証）で、§1-§2 が最初の実証。
-- **(c)**: handover `docs/m4-07-hopper-bench-handover.md`（全手順 + §6 差し戻し条件 + §7 チェックリスト）/ spec `M4-07-T17`（有効化確認）`T18`（計測 + 登録）。**H100 数値を RTX 4090 gate 用 baseline に混ぜない**。届かなくても honest 登録で WP close（2-3x は受け入れ基準ではない）。**FA v3 の v1.0 以前前倒しは設計制約違反 = red-line**（Hopper 専用ゆえ本 WP に閉じる）。
-- **(d)**: FA v3 parity 3 面 green + worst |Δ| 記録（完了条件前半）+ ダッシュボード登録（完了条件後半）+ `vastai destroy`。
+- **(a)**: **T17 + T18 の実測は完了（2026-08-10、commit `8d469eb`、vast.ai H100 PCIe SM 9.0、offer #31427212、実費 $1.73 / 60 分）**。probe = SM 9.0（H100 PCIe, driver 550.163.01, CUDA 12.4.1）+ **NVRTC feasibility 4/4 pass**（`fa_v3_snippet_compiles_for_compute_90a` / `fa_v3_full_program_compiles_for_compute_90a` 実 PASS、PTX 69917 B、加えて `compute_89` snippet も unexpected PASS = arch check が module-load time gate に deferred の findings を ADR §(b) 追記対象として記録）+ **FA v3 parity 3 面 green**（causal max\|Δ\| = **1.206e-2**（atol 0.02 の 60%）、non-causal max\|Δ\| = **1.026e-2**（51%）= 事前登録 bound 完全遵守）+ **e2e RTF `--fa-mode {decomposed,v2,v3}` × N=10 完走**（decomposed median **0.9656** / v2 median **0.9656**（gate off @ t_q=1 = RTX 4090 honest negative の Hopper 継承）/ **v3 median 0.9133 = 5.7% e2e speedup**、CV ≤ 0.0023 の低 variance）+ `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` **全 TBD 実測で fill 済み**（kernel-level micro comparison のみ TBD = owner follow-up）+ bench artifacts `docs/bench-baselines/vast-2026-08-10-h100/`（README + 3 JSONL + 3 report）commit 済 + `vastai destroy` 実行済（`2026-08-10T11:48Z`）。**owner に残るのは T18-c ステップ 3 のダッシュボード（X-06 nightly 結果公開面）への FA v2 比行の追加のみ**（= WP close 発火）。kernel-level micro measurement（§4 参考値 2-3x 照合面）は e2e §3 側で WP close 条件は既に充足しているため advisory follow-up。
+- **(b)**: H100（Hopper）は CC 機体（M1 iMac / vast.ai RTX 4090 = SM 8.9）に無かった。kernel は CUDA-less 機体で blind 転記された **OWNER-VERIFY hotspot**（wgmma descriptor LBO/SBO 割当・d-fragment map・compute_90a NVRTC 通過）だったが、**§1-§2 が 2026-08-10 の H100 実機で最初の実証を完了**（parity 3 面 green + NVRTC 4/4 pass = hotspot 3 点全 clear）。残るダッシュボード登録は X-06 nightly 統合作業ゆえ owner。
+- **(c)**: handover `docs/m4-07-hopper-bench-handover.md` §7（**チェックリスト全 8 項目のうち 6 項目 DONE = 2026-08-10**、残 = dashboard 登録 + kernel-level micro）/ spec `M4-07-T17`（**達成済**）`T18`（**e2e + baseline JSON + bench artifacts 部分 = 達成済 / ダッシュボード登録のみ残**）+ baseline JSON `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json`（v1 schema、all measured fields populated）。**H100 数値を RTX 4090 gate 用 baseline に混ぜない red-line 遵守済**（別ファイル）。
+- **(d)**: FA v3 parity 3 面 green + worst \|Δ\| 記録 = **達成済**（完了条件前半）。ダッシュボード登録 = **owner 残**（完了条件後半、`docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` の `e2e_speedup_summary.fa_v3_vs_fa_v2_e2e_median = 1.0573` を X-06 nightly 表示面に追加）。
 
 ### 2.2 RISC-V LicheePi 4A / Milk-V Duo 実機（M4-08、RVV 0.7.1）
 
@@ -337,7 +337,7 @@ CC は評価材料 + ADR 草案を **Status: Proposed** で止め、判断記録
 | M4-04 | T20 DAC/Mimi sign-off / T21 parity-rvq dispatch | §3.2 / §1.6 / §4.5 | ✅ mimi_rvq + dac_rvq + parity scaffold + **実 checkpoint ローカル first-fire 106/106**（残 = Actions 初回 dispatch + encodec leg） |
 | M4-05 | T29 checkpoint+license / T30 legal+streaming demo | §1.1 / §3.1 / §2.6 | ✅ CSM native + flip-the-switch harness（blocker は HF gate 受諾 + fresh token の 2 点に特定済） |
 | M4-06 | T29 weight+license / T30 full-duplex demo+dispatch | §1.2 / §3.1 / §2.6 | ✅ Moshi native + attribution 3 面 + **実 weight 14.32 GiB で切詰め parity 11/11 bit-exact**（残 = full-7B RAM 戦略 + dispatch 再設計） |
-| M4-07 | T17 Hopper 有効化 / T18 FA v2 比+dashboard | §2.1 | ✅ FA v3 kernel + 3-way dispatch + gated tests |
+| M4-07 | ~~T17 Hopper 有効化~~（達成済 2026-08-10）/ T18 dashboard 登録（残） + kernel-level micro（advisory follow-up） | §2.1 | ✅ FA v3 kernel + 3-way dispatch + gated tests + **H100 実機 parity 3 面 green + NVRTC 4/4 pass + e2e 5.7% speedup 実測（commit `8d469eb`）** |
 | M4-08 | T14 board+dump / T15 LicheePi 4A / T16 Milk-V Duo | §2.2 | ✅ RVV 0.7.1 probe/dispatch/kernel + cross-build CI |
 | M4-09 | T05 G2P 方針 3 択（ADR §8） | §5.1 | ✅ ADR 材料 3 pack + Proposed 草案 |
 | M4-10 | T08 MLIR 採否（ADR §13） | §5.2 | ✅ ADR 材料 + supersede 系譜 + Proposed 草案 |
@@ -355,7 +355,7 @@ CC は評価材料 + ADR 草案を **Status: Proposed** で止め、判断記録
 **カテゴリ別内訳（distinct owner チケット）**: 件数は **open（owner 未消化）のみ**を数え、上の WP 別表で取り消し線を入れたチケットは「完了」として併記する（表と tally が食い違わないための規律）。
 
 - **§1 weight parity = open 4**（M4-05-T29 / M4-06-T29 / M4-14-T10 / M4-04-T21）＋ **完了 2**（M4-14-T09 = 変換 + fixture 再生成 / M4-20-T17 = DFN3 実 checkpoint parity）＋ **M5-15 移管 1**（M4-18-T02 = UTMOS 実装面、§1.5。license sign-off 面は §3 に残置）＋ M4-05-T14+T34 は CC harness（ローカル発火済 = owner 作業なし）
-- **§2 実機 = open 12**（M4-07-T17,T18 / M4-08-T14,T15,T16 / M4-13-T17 / M4-01-T28 / M4-11-T11 / M4-17-T23,T24 / M4-05-T30 / M4-06-T30）
+- **§2 実機 = open 10**（M4-08-T14,T15,T16 / M4-13-T17 / M4-01-T28 / M4-11-T11 / M4-17-T23,T24 / M4-05-T30 / M4-06-T30）＋ **完了 1**（M4-07-T17 = H100 実機 parity + NVRTC + e2e 実測、§2.1、2026-08-10 commit `8d469eb`）＋ **owner-dashboard-only 残 1**（M4-07-T18 = X-06 nightly ダッシュボードへの FA v2 比行追加のみ、実測数値は baseline JSON 側に populate 済）
 - **§3 license = open 8**（M4-05-T29 / M4-06-T29 / M4-14-T11 / M4-04-T20 / M4-16-T14 / M4-18-T02,T03 / M4-20-T18）＋ **M3 carry-over queue**（§3.7 = CosyVoice2 / Voxtral / Mimi の sign-off、M4 の 8 件には数えないが owner 残としては存置）
 - **§4 infra = open 5**（M4-01-T27 / M4-11-T12 / M4-02 UNITY / M4-13-T18 + 初回 dispatch 群）＋ **完了 1**（M4-13-T16 = glslc `.spv` commit、§4.3 = §2.3 Android soak の前提解除）
 - **§5 ADR = open 4**（M4-09-T05 / M4-10-T08 / M4-18-T01 / M4-01-T02）

@@ -383,8 +383,8 @@ impl YueBundleVariant {
 /// Outcome of a YuE bundle conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::vocos::VocosReport`], [`super::snac::SnacReport`],
-/// [`super::focalcodec::FocalcodecReport`]) adapted to the
+/// (`super::vocos::VocosReport`, `super::snac::SnacReport`,
+/// `super::focalcodec::FocalcodecReport`) adapted to the
 /// variant-taking [`convert_yue_bundle_variant_file`] surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct YueBundleReport {
@@ -450,7 +450,7 @@ pub fn convert_yue_bundle_file(
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — both
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — both
 /// upstream YuE HF releases ship apache-2.0.
 ///
 /// # Errors

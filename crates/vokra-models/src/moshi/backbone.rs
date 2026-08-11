@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use vokra_core::cache::paged::{BlockSize, KvDims, PagedKvCache};
 use vokra_core::cache::ring::RingKvCache;
-use vokra_core::gguf::{GgufFile, GgufTensorInfo};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufTensorInfo};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -309,7 +309,7 @@ struct MappedBlockScratch {
 /// - **Bind time** ([`Self::bind`]): every layer's six tensors are
 ///   resolved and shape/dtype-validated up front, so a malformed GGUF
 ///   fails at load, not mid-stream (FR-EX-08).
-/// - **Step time** ([`Self::materialize_into`]): the requested layer is
+/// - **Step time** (`Self::materialize_into`): the requested layer is
 ///   widened + transposed straight out of the mapped bytes into the
 ///   reused scratch block, with **bit-identical** f32 values to the
 ///   resident [`MoshiBackboneWeights::from_gguf`] binding (same BF16
@@ -518,6 +518,319 @@ impl MappedTemporalBlocks {
         b.k_b = None;
         b.v_b = None;
         Ok(&scratch.block)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mapped-lazy head weights (the second half of the bounded-memory 7B load)
+// ---------------------------------------------------------------------------
+
+/// Text-linear rows widened per chunk of the head GEMV.
+///
+/// 128 rows × 4096 f32 = 2 MiB — L2/L3-resident across the chunk's
+/// accumulation, small enough that the per-chunk call overhead is noise
+/// against 128 dot products of length `d`. Mirrors the Voxtral
+/// `HEAD_CHUNK_ROWS` sizing (12e574e) — the same locality argument.
+const MOSHI_HEAD_CHUNK_ROWS: usize = 128;
+
+/// Bounded-memory alternative to the resident head fields on
+/// [`MoshiBackboneWeights`] (M4 cc-06 extension, Voxtral `MappedHeads`
+/// precedent — 12e574e).
+///
+/// The Moshi head at the full-7B shape widens to ~1.3 GiB f32
+/// (`text_emb` 524 MiB + `audio_emb` 268 MiB + `text_linear` 524 MiB).
+/// Neither is used in a way that needs the whole matrix live:
+///
+/// - `text_emb` / `audio_emb` are read **one row per token** through
+///   [`Self::embed_text_into`] / [`Self::embed_audio_into`] — the mapped
+///   store widens the bf16 (or f32) row bytes straight into the caller's
+///   accumulator, so lookup cost is `O(d)` per token (identical to the
+///   resident path's memcpy+add).
+/// - `text_linear` is consumed by a per-row GEMV, so it is walked in
+///   `MOSHI_HEAD_CHUNK_ROWS`-row chunks by [`Self::text_logits_into`]:
+///   `out[v] = Σ_c head[v, c] * hidden[c]` involves no cross-row term
+///   and each row's accumulation order is untouched, so the chunked
+///   result is **bit-identical** to the resident `compute.gemv_f32`.
+/// - `out_norm.alpha` is `[d]` (16 KiB at 7B) so it is widened **once at
+///   bind** and cached; every step reads a shared slice (mirrors the
+///   Voxtral final-norm resident scalar).
+///
+/// Holds the mapping alive via `Arc<GgufFile>`; the GEMV scratch sits
+/// behind a `Mutex` so the owning engine stays `Send + Sync` (concurrent
+/// sessions serialize on the head chunk, same trade as
+/// [`MappedTemporalBlocks`]).
+pub struct MappedHeadWeights {
+    file: Arc<GgufFile>,
+    /// `text_emb.weight` `[(text_card + 1), d]` — payload stays mapped.
+    text_emb: GgufTensorInfo,
+    /// Per-channel `emb.{k}.weight` `[(audio_card + 1), d]` descriptors,
+    /// indexed by input audio channel `k in 0..n_q_in`.
+    audio_emb: Vec<GgufTensorInfo>,
+    /// `text_linear.weight` `[text_card, d]` — payload stays mapped.
+    text_linear: GgufTensorInfo,
+    d: usize,
+    text_rows: usize,
+    audio_rows: usize,
+    text_card: usize,
+    /// Widened `out_norm.alpha` — small, read every step, cached at bind.
+    out_norm_gamma: Vec<f32>,
+    /// One widened `text_linear` row chunk
+    /// (`MOSHI_HEAD_CHUNK_ROWS × d`); resized on first use.
+    chunk: Mutex<Vec<f32>>,
+}
+
+impl std::fmt::Debug for MappedHeadWeights {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MappedHeadWeights")
+            .field("d", &self.d)
+            .field("text_rows", &self.text_rows)
+            .field("audio_rows", &self.audio_rows)
+            .field("text_card", &self.text_card)
+            .field("n_audio_tables", &self.audio_emb.len())
+            .finish()
+    }
+}
+
+impl MappedHeadWeights {
+    /// Resolves and validates every head tensor against `config`
+    /// (upstream-verbatim names — the same manifest the resident loader
+    /// binds). `out_norm.alpha` is widened here (small, always resident);
+    /// `text_emb`, `emb.{k}.weight` and `text_linear` stay in the mapping.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] naming any missing tensor, any element
+    /// count that disagrees with the config shapes, or any payload dtype
+    /// outside `{F32, BF16}` — mirrors [`MappedTemporalBlocks::bind`].
+    pub fn bind(file: Arc<GgufFile>, config: &MoshiConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        let d = config.temporal.d_model;
+        let text_rows = config.text_card + 1;
+        let audio_rows = config.audio_card + 1;
+        let text_emb = mapped_info(&file, "text_emb.weight", text_rows * d, MOSHI_MAPPED)?;
+        let mut audio_emb = Vec::with_capacity(config.n_q_in);
+        for k in 0..config.n_q_in {
+            audio_emb.push(mapped_info(
+                &file,
+                &format!("emb.{k}.weight"),
+                audio_rows * d,
+                MOSHI_MAPPED,
+            )?);
+        }
+        let text_linear = mapped_info(
+            &file,
+            "text_linear.weight",
+            config.text_card * d,
+            MOSHI_MAPPED,
+        )?;
+        // out_norm.alpha is small (~16 KiB at 7B) — widen once, cache.
+        let out_norm_info = mapped_info(&file, "out_norm.alpha", d, MOSHI_MAPPED)?;
+        let mut out_norm_gamma = Vec::with_capacity(d);
+        widen_into(
+            file.tensor_bytes(&out_norm_info),
+            out_norm_info.dtype,
+            &mut out_norm_gamma,
+            MOSHI_MAPPED,
+        )?;
+        Ok(Self {
+            file,
+            text_emb,
+            audio_emb,
+            text_linear,
+            d,
+            text_rows,
+            audio_rows,
+            text_card: config.text_card,
+            out_norm_gamma,
+            chunk: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// The cached `out_norm.alpha` (widened once at bind).
+    #[must_use]
+    pub fn out_norm_gamma(&self) -> &[f32] {
+        &self.out_norm_gamma
+    }
+
+    /// Number of audio input tables (equals `config.n_q_in`).
+    #[must_use]
+    pub fn n_audio_tables(&self) -> usize {
+        self.audio_emb.len()
+    }
+
+    /// `text_card` the store was bound against (equals `config.text_card`).
+    #[must_use]
+    pub fn text_card(&self) -> usize {
+        self.text_card
+    }
+
+    /// Sums the `tok`-th row of `text_emb` into `dst[..d]` — the mapped
+    /// mirror of the resident `text_emb[tok*d..(tok+1)*d]` add in
+    /// [`MoshiBackbone::embed_step`]. `tok == MOSHI_ZERO_TOKEN` is a
+    /// no-op (upstream `ScaledEmbedding.zero_idx = -1`).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a wrong-sized `dst` or an
+    /// out-of-range `tok`; [`VokraError::ModelLoad`] on unsupported dtype
+    /// (bind-time validation should have made this unreachable).
+    pub fn embed_text_into(&self, tok: u32, dst: &mut [f32]) -> Result<()> {
+        if dst.len() != self.d {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi mapped embed_text: dst len {} != d_model {}",
+                dst.len(),
+                self.d
+            )));
+        }
+        if tok == MOSHI_ZERO_TOKEN {
+            return Ok(());
+        }
+        let tok = tok as usize;
+        if tok >= self.text_rows {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi mapped embed_text: text token {tok} >= text rows {}",
+                self.text_rows
+            )));
+        }
+        add_widened_row(&self.file, &self.text_emb, tok, self.d, dst)
+    }
+
+    /// Sums the `tok`-th row of audio input channel `k` into `dst[..d]` —
+    /// the mapped mirror of the resident `audio_emb[base..base+d]` add.
+    /// `tok == MOSHI_ZERO_TOKEN` is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a wrong-sized `dst`, an
+    /// out-of-range `k`, or an out-of-range `tok`.
+    pub fn embed_audio_into(&self, k: usize, tok: u32, dst: &mut [f32]) -> Result<()> {
+        if dst.len() != self.d {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi mapped embed_audio: dst len {} != d_model {}",
+                dst.len(),
+                self.d
+            )));
+        }
+        if k >= self.audio_emb.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi mapped embed_audio: channel {k} >= n_q_in {}",
+                self.audio_emb.len()
+            )));
+        }
+        if tok == MOSHI_ZERO_TOKEN {
+            return Ok(());
+        }
+        let tok = tok as usize;
+        if tok >= self.audio_rows {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi mapped embed_audio: audio token {tok} on channel {k} \
+                 >= audio rows {}",
+                self.audio_rows
+            )));
+        }
+        add_widened_row(&self.file, &self.audio_emb[k], tok, self.d, dst)
+    }
+
+    /// Row-chunked text-head GEMV: `out[v] = Σ_c text_linear[v, c] *
+    /// hidden[c]`. Widens `MOSHI_HEAD_CHUNK_ROWS` rows at a time into a
+    /// shared scratch, then delegates each chunk to
+    /// [`Compute::gemv_f32`]. Bit-identical to the resident
+    /// `compute.gemv_f32(vocab, d, &weights.text_linear, hidden, None,
+    /// out)` — each row's inner accumulation order is untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on `hidden.len() != d` or
+    /// `out.len() != text_card`; Compute-seam errors verbatim.
+    pub fn text_logits_into(
+        &self,
+        hidden: &[f32],
+        out: &mut [f32],
+        compute: &crate::compute::Compute,
+    ) -> Result<()> {
+        if hidden.len() != self.d {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi mapped text_logits: hidden len {} != d_model {}",
+                hidden.len(),
+                self.d
+            )));
+        }
+        if out.len() != self.text_card {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi mapped text_logits: out len {} != text_card {}",
+                out.len(),
+                self.text_card
+            )));
+        }
+        let d = self.d;
+        let esz = self.text_linear.dtype.type_size();
+        let bytes = self.file.tensor_bytes(&self.text_linear);
+        let mut guard = lock_scratch(&self.chunk, MOSHI_MAPPED)?;
+        let scratch = &mut *guard;
+        let mut row = 0usize;
+        while row < self.text_card {
+            let chunk_rows = MOSHI_HEAD_CHUNK_ROWS.min(self.text_card - row);
+            let n = chunk_rows * d;
+            scratch.clear();
+            scratch.reserve(n);
+            let start = row * d * esz;
+            let end = start + n * esz;
+            widen_into(
+                &bytes[start..end],
+                self.text_linear.dtype,
+                scratch,
+                MOSHI_MAPPED,
+            )?;
+            debug_assert_eq!(scratch.len(), n);
+            compute.gemv_f32(
+                chunk_rows,
+                d,
+                &scratch[..n],
+                hidden,
+                None,
+                &mut out[row..row + chunk_rows],
+            )?;
+            row += chunk_rows;
+        }
+        Ok(())
+    }
+}
+
+/// Widen row `tok` of a `[rows, d]` mapped tensor and add it into
+/// `dst[..d]` — the fused equivalent of `widen_into(row_bytes) + acc[i] +=
+/// row[i]` without the intermediate Vec. Byte-formula-identical to the
+/// resident path (same F32 / BF16 widen), so tests can compare bytewise.
+fn add_widened_row(
+    file: &GgufFile,
+    info: &GgufTensorInfo,
+    tok: usize,
+    d: usize,
+    dst: &mut [f32],
+) -> Result<()> {
+    let esz = info.dtype.type_size();
+    let bytes = file.tensor_bytes(info);
+    let start = tok * d * esz;
+    let end = start + d * esz;
+    let src = &bytes[start..end];
+    match info.dtype {
+        GgmlType::F32 => {
+            for (i, c) in src.chunks_exact(4).enumerate() {
+                dst[i] += f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            }
+            Ok(())
+        }
+        GgmlType::BF16 => {
+            for (i, c) in src.chunks_exact(2).enumerate() {
+                dst[i] += f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16);
+            }
+            Ok(())
+        }
+        other => Err(VokraError::ModelLoad(format!(
+            "moshi mapped head row: unsupported dtype {other:?}; \
+             the bounded-memory mapped path serves F32 and BF16 payloads \
+             only — load through MoshiEngine::from_gguf_with_policy \
+             (resident) for this GGUF (FR-EX-08)"
+        ))),
     }
 }
 
@@ -757,13 +1070,24 @@ impl MoshiBackboneState {
 /// The Helium temporal backbone (config + weights + backend selection).
 pub struct MoshiBackbone {
     config: MoshiConfig,
-    /// Head weights always resident; in mapped mode `weights.blocks` is
-    /// **empty** and the temporal blocks come from `mapped` instead.
+    /// Head weights (resident by default). On the [`Self::new_mapped`]
+    /// path, `weights.blocks` is empty and the temporal blocks come from
+    /// `mapped`. On the [`Self::new_mapped_full`] path (head **and**
+    /// blocks mapped-lazy), every head field in `weights` is also empty
+    /// (`text_emb` / `audio_emb` / `text_linear` / `out_norm_gamma`) and
+    /// the head reads dispatch to `mapped_heads` instead.
     weights: MoshiBackboneWeights,
     /// `Some` on the bounded-memory path ([`Self::new_mapped`]): the
     /// temporal blocks stay in the GGUF mapping and materialize one layer
     /// at a time during the forward (bit-identical values — type docs).
     mapped: Option<MappedTemporalBlocks>,
+    /// `Some` on the fully mapped-lazy path ([`Self::new_mapped_full`]):
+    /// `text_emb` / `audio_emb` / `text_linear` stay in the GGUF mapping
+    /// (row-lookup and chunked GEMV) and `out_norm.alpha` is served from
+    /// the cached scalar. Values are bit-identical to the resident path
+    /// (per-row / per-chunk widen preserves the byte formula) —
+    /// [`MappedHeadWeights`] docs.
+    mapped_heads: Option<MappedHeadWeights>,
     backend: BackendKind,
     /// Plain (unscaled) interleaved-pair RoPE frequencies `[head_dim/2]`
     /// at the config max_period (ADR M4-06 §D2 gap analysis: the
@@ -778,6 +1102,7 @@ impl std::fmt::Debug for MoshiBackbone {
             .field("config", &self.config)
             .field("weights.is_synthesized", &self.weights.is_synthesized)
             .field("mapped", &self.mapped.is_some())
+            .field("mapped_heads", &self.mapped_heads.is_some())
             .field("backend", &self.backend)
             .finish()
     }
@@ -819,6 +1144,7 @@ impl MoshiBackbone {
             config,
             weights,
             mapped: None,
+            mapped_heads: None,
             backend: BackendKind::Cpu,
             inv_freqs,
         })
@@ -865,6 +1191,86 @@ impl MoshiBackbone {
             config,
             weights: head,
             mapped: Some(mapped),
+            mapped_heads: None,
+            backend: BackendKind::Cpu,
+            inv_freqs,
+        })
+    }
+
+    /// Builds a **fully** bounded-memory backbone: both the head store
+    /// ([`MappedHeadWeights`]) and the temporal blocks
+    /// ([`MappedTemporalBlocks`]) stay in the GGUF mapping and widen on
+    /// demand — the natural extension of [`Self::new_mapped`] with the
+    /// head-side savings the Voxtral pattern (`MappedHeads` — 12e574e)
+    /// brings, ~1.3 GiB at the full-7B shape. Numerically **bit-
+    /// identical** to the resident path (per-row / per-chunk widen
+    /// preserves the byte formula — [`MappedHeadWeights`] docs).
+    ///
+    /// The internal `MoshiBackboneWeights` is constructed empty on this
+    /// path (head fields deliberately left as `Vec::new()`), since every
+    /// head read dispatches to `mapped_heads` instead. Callers should not
+    /// consult [`Self::weights`] fields on this path.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a layer-count mismatch between
+    /// `mapped` and `config`, or head validation errors from
+    /// `mapped_heads` (`d_model` / `n_q_in` / `text_card` disagreement).
+    pub fn new_mapped_full(
+        config: MoshiConfig,
+        mapped_heads: MappedHeadWeights,
+        mapped: MappedTemporalBlocks,
+    ) -> Result<Self> {
+        config.validate_for_forward()?;
+        if mapped.n_layer() != config.temporal.n_layer {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped store has {} layers, \
+                 config expects {}",
+                mapped.n_layer(),
+                config.temporal.n_layer
+            )));
+        }
+        // Cross-check the mapped_heads shapes match the config the caller
+        // passes here (a diverging bind would produce plausibly-wrong
+        // logits — loud, FR-EX-08).
+        let d = config.temporal.d_model;
+        if mapped_heads.out_norm_gamma().len() != d {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped_heads d_model = {} \
+                 != config d_model {d}",
+                mapped_heads.out_norm_gamma().len()
+            )));
+        }
+        if mapped_heads.n_audio_tables() != config.n_q_in {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped_heads n_audio_tables = {} \
+                 != config n_q_in {}",
+                mapped_heads.n_audio_tables(),
+                config.n_q_in
+            )));
+        }
+        if mapped_heads.text_card() != config.text_card {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped_full: mapped_heads text_card = {} \
+                 != config text_card {}",
+                mapped_heads.text_card(),
+                config.text_card
+            )));
+        }
+        let empty_head = MoshiBackboneWeights {
+            text_emb: Vec::new(),
+            audio_emb: Vec::new(),
+            blocks: Vec::new(),
+            out_norm_gamma: Vec::new(),
+            text_linear: Vec::new(),
+            is_synthesized: false,
+        };
+        let inv_freqs = llama3_inv_freqs(config.temporal.head_dim(), config.rope_max_period, None)?;
+        Ok(Self {
+            config,
+            weights: empty_head,
+            mapped: Some(mapped),
+            mapped_heads: Some(mapped_heads),
             backend: BackendKind::Cpu,
             inv_freqs,
         })
@@ -875,6 +1281,13 @@ impl MoshiBackbone {
     #[must_use]
     pub fn is_mapped(&self) -> bool {
         self.mapped.is_some()
+    }
+
+    /// Whether the head weights (embeddings + text_linear) are
+    /// mapped-lazy (the [`Self::new_mapped_full`] load).
+    #[must_use]
+    pub fn is_head_mapped(&self) -> bool {
+        self.mapped_heads.is_some()
     }
 
     /// Synthesized-fixture constructor.
@@ -939,7 +1352,16 @@ impl MoshiBackbone {
             )));
         }
         out.iter_mut().for_each(|v| *v = 0.0);
-        // Text channel (index 0).
+        // Text channel (index 0), then audio channels (emb.{k} tables).
+        // Both paths (resident + mapped) share the same accumulate-into-`out`
+        // contract and byte-formula, so token streams are bit-identical.
+        if let Some(mh) = &self.mapped_heads {
+            mh.embed_text_into(tokens[0], out)?;
+            for (k, &tok) in tokens[1..].iter().enumerate() {
+                mh.embed_audio_into(k, tok, out)?;
+            }
+            return Ok(());
+        }
         let text_tok = tokens[0];
         if text_tok != MOSHI_ZERO_TOKEN {
             let rows = self.config.text_card + 1;
@@ -954,7 +1376,6 @@ impl MoshiBackbone {
                 *dst += *src;
             }
         }
-        // Audio channels (emb.{k} tables).
         let rows = self.config.audio_card + 1;
         for (k, &tok) in tokens[1..].iter().enumerate() {
             if tok == MOSHI_ZERO_TOKEN {
@@ -1041,6 +1462,12 @@ impl MoshiBackbone {
             )));
         }
         let compute = self.compute()?;
+        // Mapped-head path: chunked GEMV out of the mapping — bit-identical
+        // to the resident `compute.gemv_f32` (per-chunk widen preserves the
+        // row-inner accumulation order — MappedHeadWeights docs).
+        if let Some(mh) = &self.mapped_heads {
+            return mh.text_logits_into(hidden, out, &compute);
+        }
         compute.gemv_f32(vocab, d, &self.weights.text_linear, hidden, None, out)
     }
 
@@ -1317,13 +1744,15 @@ impl MoshiBackbone {
         state.seq_len += t;
 
         // out_norm into the caller's buffer (read by both heads).
-        rms_norm(
-            &scratch.h[..t * d],
-            &self.weights.out_norm_gamma,
-            eps,
-            t,
-            hidden_out,
-        )?;
+        // On the fully mapped-lazy path the γ vector comes from the
+        // cached scalar in `mapped_heads` (widened once at bind — small),
+        // otherwise the resident `weights.out_norm_gamma`. Same bytes
+        // either way, so the RMSNorm result is bit-identical.
+        let out_norm_gamma = match &self.mapped_heads {
+            Some(mh) => mh.out_norm_gamma(),
+            None => &self.weights.out_norm_gamma,
+        };
+        rms_norm(&scratch.h[..t * d], out_norm_gamma, eps, t, hidden_out)?;
         Ok(())
     }
 }
@@ -2006,6 +2435,279 @@ mod tests {
         assert!(
             b.forward(&steps, &mut paged).is_ok(),
             "paged serves wide bulk"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // MappedHeadWeights: bounded-memory head store (M4 cc-06 extension,
+    // Voxtral MappedHeads precedent — 12e574e). Tests verify that per-row
+    // lookups and the chunked GEMV are BIT-identical to the resident head
+    // (`MoshiBackboneWeights::from_gguf` → `text_emb / audio_emb /
+    // text_linear`) over both F32 and BF16 stored payloads.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn mapped_head_weights_bind_validates_shapes_and_dtype() {
+        // Bind succeeds on F32 and BF16 payloads, exposing the widened
+        // out_norm_gamma (small, cached) and every head tensor descriptor.
+        for dtype in [GgmlType::F32, GgmlType::BF16] {
+            let cfg = MoshiConfig::tiny_for_tests();
+            let src = MoshiBackbone::synthesized(cfg.clone(), 91).unwrap();
+            let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
+            let file = Arc::new(GgufFile::parse(bytes).unwrap());
+            let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg)
+                .unwrap_or_else(|e| panic!("bind {dtype:?}: {e}"));
+            assert_eq!(mh.out_norm_gamma().len(), cfg.temporal.d_model);
+            assert_eq!(mh.n_audio_tables(), cfg.n_q_in);
+            assert_eq!(mh.text_card(), cfg.text_card);
+        }
+    }
+
+    #[test]
+    fn mapped_head_weights_text_row_matches_resident_bitwise() {
+        // Per-token widen+accumulate must reproduce the resident text_emb
+        // row-sum contract byte-for-byte, on both F32 and BF16 storage.
+        for dtype in [GgmlType::F32, GgmlType::BF16] {
+            let cfg = MoshiConfig::tiny_for_tests();
+            let src = MoshiBackbone::synthesized(cfg.clone(), 123).unwrap();
+            let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
+            let file = Arc::new(GgufFile::parse(bytes).unwrap());
+            let resident = MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap();
+            let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg).unwrap();
+
+            let d = cfg.temporal.d_model;
+            for tok in 0..cfg.text_card as u32 + 1 {
+                // Resident: read the row and add.
+                let row_res = &resident.text_emb[tok as usize * d..(tok as usize + 1) * d];
+                let mut acc_res = vec![0.5f32; d];
+                for (dst, src) in acc_res.iter_mut().zip(row_res) {
+                    *dst += *src;
+                }
+                // Mapped: widen + accumulate straight from the mapping.
+                let mut acc_map = vec![0.5f32; d];
+                mh.embed_text_into(tok, &mut acc_map).expect("map text");
+                assert_eq!(
+                    acc_res, acc_map,
+                    "dtype {dtype:?} tok {tok}: mapped text row differs"
+                );
+            }
+            // Zero-sentinel is a no-op (matches resident embed_step branch).
+            let mut acc_zero = vec![0.25f32; d];
+            let baseline = acc_zero.clone();
+            mh.embed_text_into(MOSHI_ZERO_TOKEN, &mut acc_zero)
+                .expect("zero");
+            assert_eq!(acc_zero, baseline, "zero token must not touch dst");
+        }
+    }
+
+    #[test]
+    fn mapped_head_weights_audio_row_matches_resident_bitwise() {
+        // Per-channel audio row widen+accumulate matches resident audio_emb.
+        for dtype in [GgmlType::F32, GgmlType::BF16] {
+            let cfg = MoshiConfig::tiny_for_tests();
+            let src = MoshiBackbone::synthesized(cfg.clone(), 456).unwrap();
+            let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
+            let file = Arc::new(GgufFile::parse(bytes).unwrap());
+            let resident = MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap();
+            let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg).unwrap();
+
+            let d = cfg.temporal.d_model;
+            let rows = cfg.audio_card + 1;
+            for k in 0..cfg.n_q_in {
+                for tok in 0..rows as u32 {
+                    let base = (k * rows + tok as usize) * d;
+                    let row_res = &resident.audio_emb[base..base + d];
+                    let mut acc_res = vec![0.1f32; d];
+                    for (dst, src) in acc_res.iter_mut().zip(row_res) {
+                        *dst += *src;
+                    }
+                    let mut acc_map = vec![0.1f32; d];
+                    mh.embed_audio_into(k, tok, &mut acc_map).expect("map aud");
+                    assert_eq!(
+                        acc_res, acc_map,
+                        "dtype {dtype:?} chan {k} tok {tok}: mapped audio row differs"
+                    );
+                }
+                // Zero-sentinel no-op on every channel.
+                let mut acc_zero = vec![0.7f32; d];
+                let baseline = acc_zero.clone();
+                mh.embed_audio_into(k, MOSHI_ZERO_TOKEN, &mut acc_zero)
+                    .expect("zero");
+                assert_eq!(acc_zero, baseline);
+            }
+        }
+    }
+
+    #[test]
+    fn mapped_head_weights_text_logits_matches_resident_bitwise() {
+        // Chunked GEMV over text_linear must be BIT-identical to the
+        // resident head's gemv_f32 call: each row's inner accumulation
+        // order is untouched, so the chunked walk is byte-equal.
+        for dtype in [GgmlType::F32, GgmlType::BF16] {
+            let cfg = MoshiConfig::tiny_for_tests();
+            let src = MoshiBackbone::synthesized(cfg.clone(), 789).unwrap();
+            let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
+            let file = Arc::new(GgufFile::parse(bytes).unwrap());
+            let resident_bb = MoshiBackbone::new(
+                cfg.clone(),
+                MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap(),
+            )
+            .unwrap();
+            let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg).unwrap();
+
+            let d = cfg.temporal.d_model;
+            // Deterministic non-trivial hidden.
+            let hidden: Vec<f32> = (0..d).map(|i| (i as f32).sin() * 0.3 - 0.2).collect();
+            let mut out_res = vec![0.0f32; cfg.text_card];
+            resident_bb.text_logits_into(&hidden, &mut out_res).unwrap();
+            let mut out_map = vec![0.0f32; cfg.text_card];
+            let compute =
+                crate::compute::Compute::for_backend(vokra_core::BackendKind::Cpu, MOSHI_HOT_OPS)
+                    .unwrap();
+            mh.text_logits_into(&hidden, &mut out_map, &compute)
+                .expect("map logits");
+            assert_eq!(
+                out_res, out_map,
+                "dtype {dtype:?}: chunked GEMV differs from resident"
+            );
+        }
+    }
+
+    #[test]
+    fn mapped_head_weights_bind_rejects_missing_and_wrong_shape() {
+        // A missing text_emb / audio_emb / text_linear tensor is a loud
+        // ModelLoad naming it (FR-EX-08 — never a silent skip / stub).
+        use vokra_core::gguf::GgufBuilder;
+        let cfg = MoshiConfig::tiny_for_tests();
+        // Empty GGUF: bind must fail naming the first missing tensor.
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "moshi");
+        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
+        let err = MappedHeadWeights::bind(file, &cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("text_emb.weight"),
+            "names missing tensor: {err}"
+        );
+    }
+
+    #[test]
+    fn mapped_head_weights_bind_rejects_unsupported_dtype() {
+        // An F16 head tensor: bind must refuse loudly (mapped path serves
+        // F32 / BF16 only, mirrors MappedTemporalBlocks::bind).
+        use vokra_core::gguf::GgufBuilder;
+        let cfg = MoshiConfig::tiny_for_tests();
+        let src = MoshiBackbone::synthesized(cfg.clone(), 3).unwrap();
+        let d = cfg.temporal.d_model;
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "moshi");
+        // Poison text_emb as F16 (payload len must match F16 byte width).
+        let n = (cfg.text_card + 1) * d;
+        b.add_tensor(
+            "text_emb.weight",
+            GgmlType::F16,
+            vec![(cfg.text_card + 1) as u64, d as u64],
+            vec![0u8; n * 2],
+        )
+        .unwrap();
+        // Rest as F32 (irrelevant — bind rejects on dtype before proceeding).
+        let full = packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32);
+        let full_file = GgufFile::parse(full).unwrap();
+        for t in full_file.tensors() {
+            if t.name == "text_emb.weight" {
+                continue;
+            }
+            b.add_tensor(
+                &t.name,
+                t.dtype,
+                t.dimensions.clone(),
+                full_file.tensor_bytes(t).to_vec(),
+            )
+            .unwrap();
+        }
+        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
+        let err = MappedHeadWeights::bind(file, &cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("F16"), "names the dtype: {msg}");
+        assert!(
+            msg.contains("from_gguf_with_policy"),
+            "points at the resident loader: {msg}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // MoshiBackbone::new_mapped_full — the fully mapped-lazy load
+    // (head + blocks). The forward on this backbone must reproduce the
+    // resident forward BIT-identically (same widen formula, same GEMV
+    // accumulation order — see MappedHeadWeights docs).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn fully_mapped_backbone_matches_resident_bitwise() {
+        // Full end-to-end contract: a MoshiBackbone built through the
+        // fully mapped-lazy path (mapped_heads + mapped_blocks) must
+        // return the exact same hidden state AND text logits as the
+        // resident MoshiBackbone::new for every step, over both F32 and
+        // BF16 stored payloads.
+        for dtype in [GgmlType::F32, GgmlType::BF16] {
+            let cfg = MoshiConfig::tiny_for_tests();
+            let src = MoshiBackbone::synthesized(cfg.clone(), 214).unwrap();
+            let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
+            let file = Arc::new(GgufFile::parse(bytes).unwrap());
+            let resident = MoshiBackbone::new(
+                cfg.clone(),
+                MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap(),
+            )
+            .unwrap();
+            let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg).expect("mapped heads");
+            let mb = MappedTemporalBlocks::bind(Arc::clone(&file), &cfg).expect("mapped blocks");
+            let full_mapped =
+                MoshiBackbone::new_mapped_full(cfg.clone(), mh, mb).expect("fully mapped");
+            assert!(full_mapped.is_mapped());
+            assert!(full_mapped.is_head_mapped());
+
+            let d = cfg.temporal.d_model;
+            let mut s_res = MoshiBackboneState::new(&cfg).unwrap();
+            let mut s_map = MoshiBackboneState::new(&cfg).unwrap();
+            let mut h_res = vec![0.0f32; d];
+            let mut h_map = vec![0.0f32; d];
+            let mut l_res = vec![0.0f32; cfg.text_card];
+            let mut l_map = vec![0.0f32; cfg.text_card];
+            for i in 0..5u32 {
+                let tokens = step_tokens(&cfg, i * 11 + 4);
+                resident.step_into(&mut s_res, &tokens, &mut h_res).unwrap();
+                full_mapped
+                    .step_into(&mut s_map, &tokens, &mut h_map)
+                    .unwrap();
+                assert_eq!(
+                    h_res, h_map,
+                    "dtype {dtype:?} step {i}: fully mapped hidden diverged"
+                );
+                resident.text_logits_into(&h_res, &mut l_res).unwrap();
+                full_mapped.text_logits_into(&h_map, &mut l_map).unwrap();
+                assert_eq!(
+                    l_res, l_map,
+                    "dtype {dtype:?} step {i}: fully mapped text logits diverged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fully_mapped_backbone_rejects_layer_count_mismatch() {
+        // Layer-count mismatch between mapped_blocks and config is loud.
+        let cfg = MoshiConfig::tiny_for_tests();
+        let mut cfg2 = cfg.clone();
+        cfg2.temporal.n_layer = cfg.temporal.n_layer + 1;
+        let src = MoshiBackbone::synthesized(cfg.clone(), 42).unwrap();
+        let bytes = packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32);
+        let file = Arc::new(GgufFile::parse(bytes).unwrap());
+        let mh = MappedHeadWeights::bind(Arc::clone(&file), &cfg).unwrap();
+        let mb = MappedTemporalBlocks::bind(Arc::clone(&file), &cfg).unwrap();
+        // mapped_blocks was bound for cfg (fewer layers) but we pass cfg2.
+        let err = MoshiBackbone::new_mapped_full(cfg2, mh, mb).unwrap_err();
+        assert!(
+            err.to_string().contains("layers"),
+            "names the layer mismatch: {err}"
         );
     }
 }

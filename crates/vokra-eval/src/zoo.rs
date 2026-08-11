@@ -68,7 +68,7 @@ impl ZooTask {
         })
     }
 
-    /// Stable lowercase identifier (round-trips [`Self::parse`]).
+    /// Stable lowercase identifier (round-trips `Self::parse`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -124,7 +124,7 @@ impl QualityMetric {
         })
     }
 
-    /// Stable identifier (round-trips [`Self::parse`]).
+    /// Stable identifier (round-trips `Self::parse`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -177,7 +177,7 @@ impl ZooMosDomain {
         }
     }
 
-    /// Stable identifier (round-trips [`Self::parse`]).
+    /// Stable identifier (round-trips `Self::parse`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

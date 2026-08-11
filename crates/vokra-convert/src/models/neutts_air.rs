@@ -11,7 +11,7 @@
 //! vocab_size=217652) fine-tuned to emit NeuCodec audio tokens
 //! after text tokens — the LM half of an on-device instant-voice-
 //! clone TTS pipeline whose audio-token side is decoded by the
-//! sibling [`super::neucodec::NeucodecVariant::Base`]
+//! sibling `super::neucodec::NeucodecVariant::Base`
 //! (`neuphonic/neucodec`) codec that already ships in the Vokra
 //! catalog. Output: a Vokra GGUF carrying every float tensor
 //! plus the `vokra.model.*` / `vokra.provenance.*` metadata
@@ -31,7 +31,7 @@
 //!   conditioned on text + a short reference audio prompt for
 //!   instant voice cloning). Complements the existing Kokoro /
 //!   piper-plus / CosyVoice2 / CSM TTS stack; sibling audio
-//!   codec is [`super::neucodec`] (already published as
+//!   codec is `super::neucodec` (already published as
 //!   `vokra/neucodec`).
 //! - **Base model**: Qwen2 0.5B (with vocab extended from 151,936
 //!   to 217,652 to carry the NeuCodec audio-token space) —
@@ -183,10 +183,10 @@ const PROVENANCE_SOURCE_NOTE: &str = "neuphonic/neutts-air (Qwen2 0.5B LLM backb
 /// Outcome of a NeuTTS Air conversion.
 ///
 /// Mirrors the field set on the sibling BF16-pass-through converters
-/// ([`super::bicodec::BicodecReport`],
-/// [`super::neucodec::NeucodecReport`],
-/// [`super::focalcodec::FocalcodecReport`],
-/// [`super::miocodec::MioCodecReport`]) — the `read` counter lets the
+/// (`super::bicodec::BicodecReport`,
+/// `super::neucodec::NeucodecReport`,
+/// `super::focalcodec::FocalcodecReport`,
+/// `super::miocodec::MioCodecReport`) — the `read` counter lets the
 /// caller distinguish a zero-tensor safetensors file from a zero-write
 /// outcome caused by every tensor being quantized (defensive — the
 /// safetensors reader rejects unknown dtypes at parse time today, so
@@ -221,7 +221,7 @@ pub struct NeuTtsAirReport {
 /// `input` is the upstream `model.safetensors` path; the emitted GGUF
 /// is written to `output`. `license` overrides the raw SPDX string
 /// stamped into `vokra.provenance.license` — the default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`), matching the Neuphonic
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`), matching the Neuphonic
 /// weight card at `huggingface.co/neuphonic/neutts-air`. Pass
 /// `Some(other_spdx)` when the immediate redistribution source has
 /// re-tagged the artifact (mirror of the neucodec / bicodec /

@@ -3,7 +3,7 @@
 //! # Tensor naming contract (M0-06-T04, shared with M0-03)
 //!
 //! GGUF tensor names are the **upstream Hugging Face names verbatim** (the
-//! converter's [`gguf_tensor_name`] is the identity map). This module looks up
+//! converter's `gguf_tensor_name` is the identity map). This module looks up
 //! weights by those names:
 //!
 //! - encoder: `model.encoder.conv{1,2}.{weight,bias}`,

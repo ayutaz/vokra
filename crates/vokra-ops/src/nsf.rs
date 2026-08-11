@@ -31,7 +31,7 @@
 //!
 //! No RNG crate, no BLAS, no `serde`. The SplitMix64 + Marsaglia-polar
 //! Gaussian sampler is <30 lines and only needs `std`. See
-//! [`splitmix64`] / [`next_gaussian_std`].
+//! `splitmix64` / `next_gaussian_std`.
 //!
 //! # Vs. upstream layout
 //!

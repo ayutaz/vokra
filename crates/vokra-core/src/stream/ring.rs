@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 ///
 /// Two `u64` words are enough to encode every M1 [`StreamEvent`](super::event::StreamEvent)
 /// (a tagged pair of a `u32` index/id and a `u32`/`f32` value); the codec lives
-/// in [`super::event`]. `RawEvent` is `Copy`, so a push/pop moves 16 bytes with
+/// in `super::event`. `RawEvent` is `Copy`, so a push/pop moves 16 bytes with
 /// no allocation and no `Drop`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawEvent {

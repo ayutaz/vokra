@@ -331,7 +331,7 @@ impl PiperPlusTts {
     ///
     /// `reference_pcm` is mono PCM at `sample_rate`; it is resampled to the CAM++
     /// encoder's 16 kHz when needed, converted to a Kaldi fbank
-    /// ([`kaldi_fbank`]), and run through the native `encoder`. The returned
+    /// ([`kaldi_fbank()`]), and run through the native `encoder`. The returned
     /// `Vec<f32>` (length [`speaker_embedding_dim`](Self::speaker_embedding_dim))
     /// is dropped straight into [`SynthesisRequest::speaker_embedding`] /
     /// [`synthesize_phonemes`](Self::synthesize_phonemes). The encoder is passed
@@ -398,7 +398,7 @@ impl PiperPlusTts {
     ///
     /// # Errors
     ///
-    /// [`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument)
+    /// [`VokraError::InvalidArgument`]
     /// if a phoneme / language id is out of range, or `prosody_features` is
     /// present with a length other than `3 · phoneme_ids.len()`.
     // The explicit low-level primitive takes the model's natural conditioning

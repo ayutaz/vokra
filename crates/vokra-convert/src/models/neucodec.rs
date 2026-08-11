@@ -91,7 +91,7 @@
 //! `convert_file_with_slug` (BigVGan / Focalcodec pattern). The
 //! module-level `#[allow(dead_code)]` below is temporary and removed
 //! once a caller starts using the newly-exposed `pub const`
-//! [`DEFAULT_LICENSE_SPDX`] / [`CATEGORY`] / [`KEY_NEUCODEC_VARIANT`]
+//! `DEFAULT_LICENSE_SPDX` / [`CATEGORY`] / [`KEY_NEUCODEC_VARIANT`]
 //! items.
 
 // Skeleton-only allowance: the public API (`convert_neucodec_file`,
@@ -147,8 +147,8 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 /// `vokra.neucodec.variant`: `"base"` / `"distill"`. Consumers pick a
 /// specific NeuCodec release without parsing free-text
-/// `vokra.model.name` (mirrors [`super::bigvgan`] +
-/// [`super::focalcodec`] discriminators).
+/// `vokra.model.name` (mirrors `super::bigvgan` +
+/// `super::focalcodec` discriminators).
 pub const KEY_NEUCODEC_VARIANT: &str = "vokra.neucodec.variant";
 
 /// Upstream HF repository slug (`org/name`) for the canonical
@@ -226,8 +226,8 @@ impl NeucodecVariant {
 /// Outcome of a Neucodec conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::focalcodec::FocalcodecReport`],
-/// [`super::wespeaker::WespeakerReport`]) adapted to the
+/// (`super::focalcodec::FocalcodecReport`,
+/// `super::wespeaker::WespeakerReport`) adapted to the
 /// file-oriented `convert_neucodec_variant_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NeucodecReport {
@@ -250,7 +250,7 @@ pub struct NeucodecReport {
     /// Which Neucodec variant was written (`None` only in the
     /// pre-variant `Default::default()` slot; every path through
     /// [`convert_neucodec_variant_file`] sets it — mirror of
-    /// [`super::focalcodec::FocalcodecReport::variant`]).
+    /// `super::focalcodec::FocalcodecReport::variant`).
     pub variant: Option<NeucodecVariant>,
 }
 

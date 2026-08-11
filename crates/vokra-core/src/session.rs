@@ -82,7 +82,7 @@ pub struct Session {
 }
 
 /// `Session` is [`Clone`] via cheap atomic `Arc` bumps (FR-API-03): the clone
-/// shares the same immutable [`SessionInner`] (and its stream counters) and the
+/// shares the same immutable `SessionInner` (and its stream counters) and the
 /// same engine trait objects, so it is the Rust-level mechanism behind the C ABI
 /// atomic ref count (`vokra_session_retain`). A model stays alive until the last
 /// clone is dropped.

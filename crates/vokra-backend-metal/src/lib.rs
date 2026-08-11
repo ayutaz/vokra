@@ -30,7 +30,7 @@
 //!   crate.** The Objective-C runtime (`objc_msgSend` / `objc_getClass` /
 //!   `sel_registerName`) and Metal / Foundation frameworks are declared inline
 //!   in `unsafe extern` blocks and linked with
-//!   `#[link(name = "…", kind = "framework")]` ([`sys`]). The root `Cargo.lock`
+//!   `#[link(name = "…", kind = "framework")]` (`sys`). The root `Cargo.lock`
 //!   therefore keeps only `vokra-*` crates (`scripts/check-zero-deps.sh`).
 //! - **(c) target-gated, no feature flag needed** (NFR-PT-01): all FFI is
 //!   `#[cfg(any(target_os = "macos", target_os = "ios"))]`. Because there is no
@@ -38,10 +38,10 @@
 //!   `cudarc`); `cfg(target_os)` alone keeps Metal / Foundation links out of
 //!   Linux / Windows / WASM builds entirely. On those targets [`MetalBackend`]
 //!   exists but [`MetalBackend::new`] / [`vokra_metal_probe`] return an explicit
-//!   [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+//!   [`vokra_core::VokraError::BackendUnavailable`].
 //! - **(d) no silent CPU fallback** (FR-EX-08 / NFR-RL-06, the WP's core red
-//!   line): an uncovered op is [`VokraError::UnsupportedOp`]; a missing device
-//!   is [`VokraError::BackendUnavailable`]. Running on the CPU instead is the
+//!   line): an uncovered op is [`vokra_core::VokraError::UnsupportedOp`]; a missing device
+//!   is [`vokra_core::VokraError::BackendUnavailable`]. Running on the CPU instead is the
 //!   caller's *explicit* backend choice (`Session` wiring is a later ticket),
 //!   never decided inside this backend.
 //! - **(e) FP32 kernel, no MPS default precision** (NFR-QL-01): the GEMM is a
@@ -60,11 +60,11 @@
 //! The Objective-C / Metal FFI needs `unsafe`, so this crate opts out of the
 //! workspace-wide `unsafe_code = "deny"` at its root (below). Public APIs stay
 //! safe: shapes are validated at the boundary
-//! ([`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument) on
+//! ([`vokra_core::VokraError::InvalidArgument`] on
 //! a mismatch), device / compile failures are `Result` errors (never a panic
 //! across the boundary), and **every `unsafe` block carries a `// SAFETY:`
 //! comment** (enforced by `clippy::undocumented_unsafe_blocks`). Each
-//! `objc_msgSend` transmute names the selector and its true signature ([`sys`]).
+//! `objc_msgSend` transmute names the selector and its true signature (`sys`).
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the
 // crate-level "Unsafe policy" docs above (M0-02-T03). The Metal backend joins

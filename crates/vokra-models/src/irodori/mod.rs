@@ -7,7 +7,7 @@
 //! continuous DACVAE latents with a **Rectified-Flow Diffusion Transformer
 //! (RF-DiT)** over a 32-dim continuous latent stream and reconstructs 48
 //! kHz PCM via the paired `Aratako/Semantic-DACVAE-Japanese-32dim` codec
-//! (a variant of the Meta [`facebookresearch/dacvae`] DAC-VAE, Apache 2.0).
+//! (a variant of the Meta `facebookresearch/dacvae` DAC-VAE, Apache 2.0).
 //! The architecture and training design largely follow **Echo-TTS**
 //! (Darefsky 2025), and Aratako's repository ships the training + inference
 //! Python code under MIT (`gh api /repos/Aratako/Irodori-TTS/license` →
@@ -61,7 +61,7 @@
 //! Irodori-TTS decodes to PCM via **Semantic-DACVAE-Japanese-32dim**
 //! (`huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim`), a
 //! `dacvae.DACVAE` variant of the Meta open-source
-//! [`facebookresearch/dacvae`] codec (Apache 2.0). Two axes are pinned by
+//! `facebookresearch/dacvae` codec (Apache 2.0). Two axes are pinned by
 //! the release: **`latent_dim = 32`** (matches the RF-DiT latent stream)
 //! and **`sample_rate = 48_000`** (48 kHz PCM out, per the base model
 //! card at `huggingface.co/Aratako/Irodori-TTS-500M-v3`); the exact

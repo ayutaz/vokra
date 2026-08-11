@@ -22,7 +22,7 @@
 //! - **(c) No JIT** (NFR-RL-05, iOS W^X): dispatch swaps *function pointers*
 //!   to statically compiled kernels (FR-EX-06 "llama.cpp/OpenBLAS 方式"); no
 //!   runtime code generation or `PROT_EXEC` allocation exists in this crate.
-//! - **(d) Scalar fallback** for x86-64 without AVX2 ([`kernels::scalar`]) is
+//! - **(d) Scalar fallback** for x86-64 without AVX2 (`kernels::scalar`) is
 //!   a portable Rust path reused as the SIMD differential oracle — **not** a
 //!   preview of a future SSE2-optimised tier (that is M1+).
 //!
@@ -37,17 +37,17 @@
 //!   x86-64 baseline (`x86-64-v1`, i.e. SSE2 — every x86-64 CPU since 2003)
 //!   and the AArch64 baseline (NEON). All above-baseline code (AVX2 + FMA3)
 //!   lives **only** inside the per-function
-//!   `#[target_feature(enable = "avx2,fma")]` cores in [`kernels::avx2`],
+//!   `#[target_feature(enable = "avx2,fma")]` cores in `kernels::avx2`,
 //!   reached only after [`CpuFeatures::detect`] confirms the feature. It is
 //!   therefore a load-bearing rule for NFR-PT-02 (2010-era CPU support) that
 //!   release builds **never raise the x86-64 baseline** — no
 //!   `-Ctarget-cpu=native` / `x86-64-v2+`, no `-Ctarget-feature=+avx2`, in
 //!   `.cargo/config.toml`, `RUSTFLAGS`, or `CARGO_ENCODED_RUSTFLAGS`. Raising
-//!   it would let the *scalar fallback* and even [`features`]'s own detection
+//!   it would let the *scalar fallback* and even `features`'s own detection
 //!   code emit AVX2 and `SIGILL` on a pre-AVX2 CPU, defeating the whole
 //!   dispatch design.
 //! - **(2) No JIT, W^X-clean (NFR-RL-05).** Dispatch only swaps *function
-//!   pointers* to statically compiled kernels ([`dispatch`]); there is no
+//!   pointers* to statically compiled kernels (`dispatch`); there is no
 //!   runtime code generation, no `PROT_EXEC` allocation, and no
 //!   `__clear_cache`. This is what lets a single signed binary run under
 //!   iOS / hardened-runtime W^X.
@@ -69,7 +69,7 @@
 //! SIMD intrinsics require `unsafe`, so this crate opts out of the
 //! workspace-wide `unsafe_code = "deny"`. Public APIs stay safe: every kernel
 //! wrapper in [`kernels`] validates shapes at the boundary and returns
-//! [`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument) on
+//! [`VokraError::InvalidArgument`] on
 //! a mismatch. SIMD `unsafe fn`s are reached only after
 //! [`CpuFeatures::detect`] confirms the feature (the dispatch invariant), and
 //! every `unsafe` block carries a `// SAFETY:` comment (enforced by
@@ -119,7 +119,7 @@ pub mod fused_logmel_test_probe {
     };
 }
 
-/// NEON companion of [`fused_logmel_test_probe`] (M2-04-T06). Exposes the
+/// NEON companion of `fused_logmel_test_probe` (M2-04-T06). Exposes the
 /// `pub(crate)` NEON kernel + its scalar oracle to the AArch64 integration
 /// test in `tests/fused_logmel_isa_parity_neon.rs`. Not part of the crate's
 /// public API.

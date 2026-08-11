@@ -34,7 +34,7 @@
 //!   plumbing, 17-channel summed embedding, text sample → depformer →
 //!   own codes, warmup `None` while `offset <= max_delay`;
 //! - [`MoshiDuplexSession`] — mic → AEC (M4-03) → Mimi encode → step →
-//!   Mimi decode → speaker, with barge-in ([`DuplexInterruptHandle`]
+//!   Mimi decode → speaker, with barge-in (`DuplexInterruptHandle`
 //!   semantics) and the far-end reference queue fed at pull time.
 //!
 //! The PCM ends ride the **shared Mimi neural chain** (`crate::mimi`,
@@ -59,8 +59,8 @@ pub mod frame;
 pub mod tokenizer;
 
 pub use backbone::{
-    MOSHI_FROM_GGUF_DEFAULT_SEED, MOSHI_ZERO_TOKEN, MappedTemporalBlocks, MoshiBackbone,
-    MoshiBackboneState, MoshiBackboneWeights,
+    MOSHI_FROM_GGUF_DEFAULT_SEED, MOSHI_ZERO_TOKEN, MappedHeadWeights, MappedTemporalBlocks,
+    MoshiBackbone, MoshiBackboneState, MoshiBackboneWeights,
 };
 pub use depth::{MoshiDepthLayer, MoshiDepthState, MoshiDepthTransformer, MoshiDepthWeights};
 pub use duplex::MoshiDuplexSession;

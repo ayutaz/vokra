@@ -160,9 +160,9 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_
 /// Outcome of a sber-gigaam-multilingual conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::nkf_aec::NkfAecReport`],
-/// [`super::ecapa_tdnn::EcapaTdnnReport`],
-/// [`super::speaker_3d::Speaker3dReport`]) — adds `read` tracking
+/// (`super::nkf_aec::NkfAecReport`,
+/// `super::ecapa_tdnn::EcapaTdnnReport`,
+/// `super::speaker_3d::Speaker3dReport`) — adds `read` tracking
 /// every tensor the safetensors reader surfaced so the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
@@ -202,7 +202,7 @@ pub struct SberGigaamMultilingualReport {
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`) — the upstream
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`) — the upstream
 /// GitHub release ships MIT.
 ///
 /// # Errors

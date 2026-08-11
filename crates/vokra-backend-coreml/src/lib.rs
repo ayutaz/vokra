@@ -34,7 +34,7 @@
 //!   line, inherited): **no `objc` / `objc2` / `objc2-core-ml` /
 //!   `core-foundation` binding crate.** The Objective-C runtime and CoreML /
 //!   Foundation frameworks are declared inline in `unsafe extern` blocks and
-//!   linked with `#[link(name = "…", kind = "framework")]` ([`sys`]). The root
+//!   linked with `#[link(name = "…", kind = "framework")]` (`sys`). The root
 //!   `Cargo.lock` keeps only `vokra-*` crates (`scripts/check-zero-deps.sh`),
 //!   and `deny.toml` bans the ObjC/CoreML binding-crate families (M5-01-T08).
 //! - **(c) target-gated, feature-flagged off by default** (NFR-PT-01): all FFI
@@ -43,10 +43,10 @@
 //!   symmetric with `metal` / `cuda` / `vulkan`). On non-Apple targets
 //!   [`CoreMlBackend`] exists but [`CoreMlBackend::new`] / [`vokra_coreml_probe`]
 //!   return an explicit
-//!   [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+//!   [`vokra_core::VokraError::BackendUnavailable`].
 //! - **(d) no silent CPU fallback** (FR-EX-08 / NFR-RL-06): an uncovered op is
-//!   [`VokraError::UnsupportedOp`]; a missing ANE / device is
-//!   [`VokraError::BackendUnavailable`]. Running on the CPU instead is the
+//!   [`vokra_core::VokraError::UnsupportedOp`]; a missing ANE / device is
+//!   [`vokra_core::VokraError::BackendUnavailable`]. Running on the CPU instead is the
 //!   caller's *explicit* [`BackendKind::Cpu`](vokra_core::BackendKind) choice,
 //!   never decided inside this backend.
 //! - **(e) delegate, not op-partitioning** (FR-BE-06 × the `Backend` trait's
@@ -67,7 +67,7 @@
 //! on the workspace's unsafe-boundary allow list. Public APIs stay safe:
 //! device / availability failures are `Result` errors (never a panic across the
 //! boundary), and **every `unsafe` block carries a `// SAFETY:` comment** naming
-//! the selector and its true signature ([`sys`]).
+//! the selector and its true signature (`sys`).
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the
 // crate-level "Unsafe policy" docs above (mirrors vokra-backend-metal).

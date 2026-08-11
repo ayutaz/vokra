@@ -9,7 +9,7 @@
 //! # Host-f32-first, device-ready
 //!
 //! The MVP canonical form is host-resident row-major `f32`
-//! ([`Storage::Host`]). The [`Storage`] enum keeps room to add on-device
+//! (`Storage::Host`). The `Storage` enum keeps room to add on-device
 //! residency later (a `Device` variant holding an opaque handle) **without
 //! breaking this type's public API or the [`Backend`](crate::Backend) trait**:
 //! [`as_f32`](Tensor::as_f32) is already fallible so a future device tensor can

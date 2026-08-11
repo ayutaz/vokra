@@ -20,19 +20,23 @@ Vokra のソースツリーを読む・拡張する人のための見取り図�
 
 ### 1.1 runtime グラフ
 
-`crates/` 配下に 14 crate があります。すべてが first-party の `vokra-*`
+`crates/` 配下に 20 crate があります。すべてが first-party の `vokra-*`
 crate であり、それが zero-dependency 不変条件（`NFR-DS-02`）を成立させて
 います。
 
 | Crate | 役割 |
 |---|---|
 | `vokra-core` <!-- anchor: crates/vokra-core/src/lib.rs --> | IR と実行エンジン。audio graph descriptor（`FR-EX-01`）、グラフ評価器、各バックエンドが実装する `Backend` trait、GGUF ローダー、タスクレベルの engine trait を持つ。**`unsafe` を一切含まない。** |
+| `vokra-math` <!-- anchor: crates/vokra-math/src/lib.rs --> | 共有スカラー `f32` 超越関数プリミティブ（`exp` / `tanh` / `sqrt` / `sin` / `cos` / `log` / `log1p`）。純粋な `core` 演算のみで `libm` を使わず、`unsafe` もなく、ターゲット間で決定的（WP-07 が M5-03-T06 + WP-06 モジュールから抽出）。`core` にしか依存しないため `vokra-core` と同じ「依存なし」層に位置付け、`vokra-ops` / `vokra-bert` / `vokra-models::sbv2` が CPU カーネル層を上向きに引きずらずに `vokra-backend-cpu` のスカラー経路と同じスカラー実装を共有できる。 |
 | `vokra-ops` <!-- anchor: crates/vokra-ops/src/lib.rs --> | 音声オペレータ。STFT / iSTFT / mel filterbank / MFCC / DCT ほか audio dialect（`FR-OP-*`）と、CPU 側 FFT lowering — C ライブラリの binding ではなく pocketfft アルゴリズムの Rust 再実装。 |
+| `vokra-bert` <!-- anchor: crates/vokra-bert/src/lib.rs --> | clean-room の BERT 系エンコーダ（DeBERTa v2 / DeBERTa v3 / plain BERT-base）＋ `SbertTokenizer`（SentencePiece）＋ `BertWordpieceTokenizer`（Devlin 2018）＋ `BertEncoder` trait。Style-Bert-VITS2 v2 統合が上に乗るエンコーダであり、WP-14 で追加された `hfl/chinese-roberta-wwm-ext-large` 用 plain-BERT コンバータの runtime 側でもある。 |
 | `vokra-backend-cpu` <!-- anchor: crates/vokra-backend-cpu/src/lib.rs --> | 第一級の CPU バックエンド（`FR-BE-01`）。f32 の compute kernel と、実行ホストの CPU に応じて実装を選ぶ単一バイナリ runtime ISA dispatch。 |
 | `vokra-backend-metal` <!-- anchor: crates/vokra-backend-metal/src/lib.rs --> | macOS / iOS の GPU バックエンド。**手書きの生 Objective-C runtime + Metal FFI** で実装し、`metal` / `objc2` binding crate は使わない。 |
 | `vokra-backend-cuda` <!-- anchor: crates/vokra-backend-cuda/src/lib.rs --> | NVIDIA GPU バックエンド。CUDA Driver API + NVRTC を **実行時に `dlopen` / `LoadLibrary` でロード**する。`cudarc` / `cust` / `rustacuda` は使わず、CUDA ライブラリを同梱もリンクもしない — 利用者のシステムインストールを実行時に検出する（配布物を NVIDIA の再配布条項から切り離すための構成）。 |
 | `vokra-backend-vulkan` <!-- anchor: crates/vokra-backend-vulkan/src/lib.rs --> | Android / Linux（および非 NVIDIA デスクトップ）の GPU バックエンド。生 Vulkan FFI を同じく `dlopen` でロードし、SPIR-V シェーダは事前コンパイル済み。`ash` / `vulkano` / `erupt` は使わない。 |
 | `vokra-backend-webgpu` <!-- anchor: crates/vokra-backend-webgpu/src/lib.rs --> | ブラウザ向けバックエンド（`FR-BE-05`）。WebGPU API への手書き WASM extern-import shim。`wgpu` / `wasm-bindgen` は使わない — instantiate 時の import object 解決が WASM における `dlopen` 相当。 |
+| `vokra-backend-coreml` <!-- anchor: crates/vokra-backend-coreml/src/lib.rs --> | Apple ANE delegate スキャフォールド（M5-01、macOS / iOS、opt-in `coreml` feature）。生 Objective-C runtime + CoreML FFI で binding crate は使わない。`cfg(target_os = "macos" / "ios")` で target ゲート、default build は `BackendUnavailable` スタブのみ。op 実行経路は T02 model-supply ADR 批准後に land。 |
+| `vokra-backend-qnn` <!-- anchor: crates/vokra-backend-qnn/src/lib.rs --> | Qualcomm Hexagon NPU delegate スキャフォールド（M5-02、Android / Linux / Windows-on-ARM、opt-in `qnn` feature）。生 QNN（Qualcomm AI Engine Direct）FFI を **`dlopen` で実行時ロード** — binding crate 不使用、SDK も同梱しない（Qualcomm EULA install モデル、CUDA と同構成）。**NNAPI ではない**（`FR-BE-07`）: NNAPI は Android 15 で deprecated 後、恒久非対応。 |
 | `vokra-models` <!-- anchor: crates/vokra-models/src/lib.rs --> | native なモデル実装群。whisper.cpp 型で Rust に再実装し、モデルの *定義* をここに置いて上流からは **checkpoint のみ**を取り込む。piper-plus TTS の推論本体もここにある。 |
 | `vokra-piper-plus` <!-- anchor: crates/vokra-piper-plus/src/lib.rs --> | piper-plus の **G2P 流用ブリッジ**と voice model 変換補助 — それだけ。推論本体（MB-iSTFT-VITS2）は `vokra-models` に native 実装されており、かつての「piper-plus を wrap する」方針は依頼者決定で廃止された。 |
 | `vokra-convert` <!-- anchor: crates/vokra-convert/src/lib.rs --> | オフラインの checkpoint → GGUF 変換器（`FR-TL-01`）。**ONNX / protobuf の取り扱いが存在してよい唯一の場所**（下記 red line R1）。 |
@@ -40,6 +44,8 @@ crate であり、それが zero-dependency 不変条件（`NFR-DS-02`）を成�
 | `vokra-capi` <!-- anchor: crates/vokra-capi/src/lib.rs --> | C ABI 面（`IF-01`、`BR-04`）。公開成果物は `extern "C"` シンボル群で、生成ヘッダは `include/vokra.h`。Unity / Godot / Swift / Kotlin / Python / JS はすべてこの上に乗る。 |
 | `vokra-cli` <!-- anchor: crates/vokra-cli/src/main.rs --> | 総合コマンドラインツール（`FR-TL-02`）。`run` / `convert` / `bench`。**binary crate** であり、`src/lib.rs` を持たない唯一の crate。引数パースは手書き。 |
 | `vokra-eval` <!-- anchor: crates/vokra-eval/src/lib.rs --> | 評価メトリクス（`FR-OP-93`、`FR-TL-03`）。mel loss / WER / CER を再利用可能なライブラリ + CLI として提供。 |
+| `vokra-vad-micro` <!-- anchor: crates/vokra-vad-micro/src/lib.rs --> | IoT Tier 3（Cortex-M55 / thumbv8m、`NFR-PT-03`、M5-03）向け Silero VAD v5 forward の `#![no_std] + alloc` サブセット。`vokra-models::silero_vad` と同じソースからコンパイルされるため、両者は **構築上ビット完全一致**（std 版はこの crate を re-export）。MCU 組み込み側が安定した crate 名を参照できるよう `publish = true`。 |
+| `vokra-kws-micro` <!-- anchor: crates/vokra-kws-micro/src/lib.rs --> | `vokra-vad-micro` の姉妹 crate。同じ M5-03 トポロジーで `#![no_std] + alloc` の KWS（microWakeWord 型）スキャフォールド。スキャフォールドのみで `KwsMicro::detect()` は常に `KwsEvent::Idle` を返す。決して起動しない骨組みを「wake する」ものとして出荷しないため `publish = false`。 |
 
 さらに 2 つの workspace member はテスト専用です:
 
@@ -55,16 +61,21 @@ dev-dependency を除いた通常依存のみを示します。グラフは非�
 `vokra-core` が根 — workspace 内にこれより上流のものはありません。
 
 ```
-vokra-core            （依存なし = 根）
-  ├── vokra-ops
-  ├── vokra-mmap
-  ├── vokra-piper-plus
-  ├── vokra-backend-cpu
+vokra-core            （依存なし = 根、vokra-math と同層）
+vokra-math            （依存なし = 純粋な `core` 演算、WP-07）
+  ├── vokra-ops                              → core, math
+  ├── vokra-mmap                             → core
+  ├── vokra-piper-plus                       → core
+  ├── vokra-bert                             → core, mmap, math
+  ├── vokra-backend-cpu                      → core, math
   ├── vokra-backend-{metal,cuda,vulkan,webgpu}
+  ├── vokra-backend-{coreml,qnn}             → core（opt-in `coreml` / `qnn` feature）
+  ├── vokra-vad-micro                        → core（no_std サブセット、M5-03）
+  ├── vokra-kws-micro                        → core（no_std サブセット、M5-03）
   ├── vokra-eval        → core, ops, backend-cpu
   ├── vokra-convert     → core, ops, mmap
-  ├── vokra-models      → core, ops, backend-cpu, piper-plus, mmap,
-  │                       backend-{metal,cuda,vulkan,webgpu}（optional feature）
+  ├── vokra-models      → core, ops, math, backend-cpu, piper-plus, mmap,
+  │                       backend-{metal,cuda,vulkan,webgpu,coreml,qnn}（optional feature）
   ├── vokra-capi        → core, models, ops, mmap
   └── vokra-cli         → core, models, ops, convert, mmap
 ```
@@ -100,7 +111,7 @@ runtime からは trait 境界越しに到達し、runtime グラフにリンク
 workspace は safe-by-default です。workspace レベルで
 `unsafe_code = "deny"` を設定し、すべての `unsafe` ブロックに `// SAFETY:`
 コメントを要求します（clippy が強制）。安全な Rust では満たせない理由を持つ
-**9 crate** だけがローカルに opt-out します（`NFR-RL-07`）:
+**11 crate** だけがローカルに opt-out します（`NFR-RL-07`）:
 
 | Crate | `unsafe` を要する理由 |
 |---|---|
@@ -110,12 +121,17 @@ workspace は safe-by-default です。workspace レベルで
 | `vokra-backend-cuda` | CUDA Driver API + NVRTC FFI |
 | `vokra-backend-vulkan` | Vulkan FFI |
 | `vokra-backend-webgpu` | WASM extern-import shim |
+| `vokra-backend-coreml` | Objective-C runtime + CoreML framework FFI（Apple ANE） |
+| `vokra-backend-qnn` | QNN（Qualcomm AI Engine Direct）FFI（Hexagon HTP、`dlopen` ロード） |
 | `vokra-capi` | C ABI 境界そのもの |
 | `vokra-mmap` | POSIX `mmap` / Win32 file mapping |
 | `vokra-wasm-harness` | `(ptr, len)` の WASM ABI 境界 |
 
-`vokra-core` はこのリストに **入っていません**し、今後も入れません。公開 API
-境界は、この 9 crate を含めどの crate でも安全に保ちます。
+`vokra-core` はこのリストに **入っていません**し、今後も入れません。
+`vokra-math` / `vokra-vad-micro` / `vokra-kws-micro` もこのリストに入りません
+— これらの forward は安全な `core` 演算と安全な slice indexing のみで書かれて
+おり、crate レベルの `#![allow(unsafe_code)]` を持ちません。公開 API 境界は、
+この 11 crate を含めどの crate でも安全に保ちます。
 
 ---
 

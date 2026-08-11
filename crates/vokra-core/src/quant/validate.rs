@@ -14,7 +14,7 @@
 //!    `MinDtypeRegistry::lookup(...) -> None` contract).
 //! 2. When the op is registered, walk every scheme the policy could resolve
 //!    to for this op — the default plus every rule's scheme — since we don't
-//!    carry per-op tensor names in [`ops_in_use`], the safe superset over the
+//!    carry per-op tensor names in `ops_in_use`, the safe superset over the
 //!    policy's scheme table is what T09 checks. If **any** of those schemes
 //!    reports an [`ActivationDtype`](crate::quant::scheme::ActivationDtype)
 //!    that fails [`MinDtype::is_satisfied_by`], raise
@@ -23,7 +23,7 @@
 //!    suppresses the error when *both* `policy.hifigan_int8_opt_in() == true`
 //!    *and* a calibration reference is attached — the calibration presence is
 //!    guaranteed by construction via
-//!    [`QuantPolicy::with_hifigan_int8_opt_in`], and [`Self::validate_self`]
+//!    [`QuantPolicy::with_hifigan_int8_opt_in`], and [`QuantPolicy::validate_self`]
 //!    catches manufactured corruption. Vocos / BigVGAN
 //!    ([`DowngradePolicy::Forbidden`]) are rejected regardless of any flag.
 //!

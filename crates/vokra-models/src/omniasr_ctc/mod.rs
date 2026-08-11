@@ -21,7 +21,7 @@
 //!   Registry source:
 //!   `github.com/facebookresearch/omnilingual-asr/blob/main/src/omnilingual_asr/models/wav2vec2_asr/config.py`
 //!   (arch `1b`) walks
-//!   [`Wav2Vec2AsrConfig`] "base_10h" (fairseq2)
+//!   `Wav2Vec2AsrConfig` "base_10h" (fairseq2)
 //!   → replaces `encoder_config` with wav2vec 2.0 arch "1b"
 //!   (`src/omnilingual_asr/models/wav2vec2_ssl/config.py`) →
 //!   which walks fairseq2 "large_lv60k" → sets

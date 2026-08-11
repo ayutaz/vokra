@@ -19,9 +19,9 @@
 //! shared across both modes plus a built-in **punctuation +
 //! capitalization** post-processor. Distinct from:
 //!
-//! - [`super::parakeet`] (Parakeet-TDT-0.6B-v3, offline TDT decoder
+//! - `super::parakeet` (Parakeet-TDT-0.6B-v3, offline TDT decoder
 //!   only, arch tag `parakeet-tdt`).
-//! - [`super::parakeet_ctc`] (Parakeet-CTC-1.1B, streaming CTC head
+//! - `super::parakeet_ctc` (Parakeet-CTC-1.1B, streaming CTC head
 //!   only, arch tag `parakeet-ctc`).
 //!
 //! Silently sharing an arch tag with either sibling would mis-route the
@@ -151,8 +151,8 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of a Parakeet-Unified conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::neucodec::NeucodecReport`],
-/// [`super::parakeet_ctc::ParakeetCtcReport`]) — adds `read` tracking
+/// (`super::neucodec::NeucodecReport`,
+/// `super::parakeet_ctc::ParakeetCtcReport`) — adds `read` tracking
 /// every tensor the safetensors reader surfaced so the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
@@ -193,7 +193,7 @@ pub struct ParakeetUnifiedReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE`] (`"apache-2.0"`, `Permissive`) per the
+/// `DEFAULT_LICENSE` (`"apache-2.0"`, `Permissive`) per the
 /// coverage-audit ticket; a caller who obtained the weight under the
 /// NVIDIA Parakeet family's CC-BY-4.0 precedent passes
 /// `Some("cc-by-4.0")` to stamp Attribution Required correctly.

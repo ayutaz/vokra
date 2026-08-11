@@ -57,4 +57,11 @@ onnxruntime with a non-zero prosody buffer
 Japanese and English are exact; `zh` currently falls back to a passthrough
 phonemizer (no bundled loanword dict here).
 
+**SBV2 v2 ZH G2P route (2026-08-09 owner decision, WP-21 doc sweep 2026-08-10)**:
+`vokra-models/src/sbv2` reuses this bridge for its own ZH G2P — the owner
+approved "ZH G2P = piper-plus reuse" as the route to fill `SbV2Phonemizer`'s
+`Language::ZH` gap (currently `NotImplemented`, fail-closed). The passthrough
+above is what SBV2 will inherit for `zh` until a real pinyin/loanword dict
+is added here; wiring lands in a later SBV2 WP, not WP-21.
+
 [`piper-plus-g2p`]: https://github.com/ayutaz/piper-plus/tree/main/src/rust/piper-plus-g2p

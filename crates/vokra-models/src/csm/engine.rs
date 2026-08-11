@@ -14,7 +14,7 @@
 //! The upstream tokenizes each segment's text with the speaker id folded
 //! into the text string (generator.py `_tokenize_text_segment(text,
 //! speaker)`). The exact prefix format was **not transcribed** by the T02
-//! fetch; [`turn_text`] uses `"[{speaker}]{text}"` as the (提案) fixture
+//! fetch; `turn_text` uses `"[{speaker}]{text}"` as the (提案) fixture
 //! format and the T29 tokenizer hand-off pins the real one (the real
 //! tokenizer's `encode` is a `NotImplemented` stub until then anyway, so
 //! no real-checkpoint behaviour depends on this placeholder).
@@ -27,7 +27,7 @@
 //! against the GGUF's shape config (the documented honest bridge —
 //! `LlmBackbone::from_gguf` precedent) and the GGUF tokenizer's `encode`
 //! stays `NotImplemented`; fixture flows inject
-//! [`FixtureByteTokenizer`](super::tokenizer::FixtureByteTokenizer) by
+//! [`FixtureByteTokenizer`] by
 //! name. A `0`-placeholder GGUF (scaffold converter) is rejected loudly at
 //! load.
 

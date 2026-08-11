@@ -90,7 +90,7 @@ use vokra_core::{Result, VokraError};
 /// returns a differently-shaped state is an error (surfaced as
 /// [`VokraError::InvalidArgument`] on the offending step).
 ///
-/// This is deliberately *not* [`vokra_ops::dispatch::OpValue`]: the sampler
+/// This is deliberately *not* [`crate::dispatch::OpValue`]: the sampler
 /// is a runtime function that lives outside the `OpKind` dispatch table
 /// (FR-EX-10 — see crate rustdoc), so it uses its own state container to
 /// keep the two API surfaces decoupled.

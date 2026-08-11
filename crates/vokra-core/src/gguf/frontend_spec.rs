@@ -2,8 +2,8 @@
 //! its bit-exact inspection against the runtime front-end (FR-LD-03, M1-03).
 //!
 //! [`FrontendSpec`] has one field per key defined in [`super::chunks`]; it can
-//! be written into a [`GgufBuilder`](super::GgufBuilder) and read back out of a
-//! [`GgufFile`](super::GgufFile).
+//! be written into a [`GgufBuilder`] and read back out of a
+//! [`GgufFile`].
 //!
 //! # Inspection (M1-03)
 //!

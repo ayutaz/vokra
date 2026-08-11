@@ -900,7 +900,7 @@ impl CudaDeviceTensor<'_> {
 /// fixed **cross**-attention encoder K/V is uploaded once with
 /// [`CudaContext::upload`] instead; it needs no reserve/append.
 ///
-/// Holds two [`CudaDeviceTensor`]s, so it borrows the context like every other
+/// Holds two `CudaDeviceTensor`s, so it borrows the context like every other
 /// device handle and cannot outlive it (`cuMemFree` needs the creating context).
 pub struct CudaKvCache<'ctx> {
     /// Key rows `[cap_rows, width]`, filled `[0, len)` from row 0 up.
@@ -2081,7 +2081,7 @@ impl CudaContext {
 
     /// Fused MLP `fc2(gelu(fc1(x)))` on the GPU with the two `[t, ffn]`
     /// intermediates **resident on the device** — the Phase-5 readback-
-    /// elimination slice, mirroring [`vokra_backend_metal`]'s `mlp_f32`.
+    /// elimination slice, mirroring `vokra_backend_metal`'s `mlp_f32`.
     ///
     /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, optional
     /// bias `[ffn]`); `fc2` maps `ffn → d` (`fc2_w` is `[ffn, d]`, optional bias
@@ -2267,7 +2267,7 @@ impl CudaContext {
 
     /// Fused **non-causal** multi-head attention on the GPU with every
     /// intermediate **resident on the device** — the Phase-5 attention
-    /// readback-elimination slice, mirroring [`vokra_backend_metal`]'s
+    /// readback-elimination slice, mirroring `vokra_backend_metal`'s
     /// `attn_f32` (the sibling of [`Self::mlp_f32`]).
     ///
     /// Computes `out = out_proj( concat_h softmax(scale · qₕ·kₕᵀ) · vₕ )` for
@@ -3154,7 +3154,7 @@ impl CudaContext {
     }
 
     /// Uploads `data` into a fresh device-resident buffer (H2D once). The returned
-    /// [`CudaDeviceTensor`] borrows the context, so it cannot outlive it.
+    /// `CudaDeviceTensor` borrows the context, so it cannot outlive it.
     ///
     /// # Errors
     ///
@@ -3820,14 +3820,14 @@ impl CudaContext {
     }
 
     /// Device-in/out fused attention that **unconditionally** dispatches the
-    /// FA v2 fused causal kernel ([`Self::launch_flash_attn_v2`]) — the public
+    /// FA v2 fused causal kernel (`Self::launch_flash_attn_v2`) — the public
     /// wrapper the primitive parity test needs to exercise the FA v2 code path
     /// directly.
     ///
     /// Byte-for-byte equivalent to
     /// [`Self::attn_dev`] on the shapes the FA v2 kernel supports
     /// (`d_head == 64`), but takes the FA v2 path regardless of `t_q`:
-    /// [`Self::launch_attn_chain`]'s internal `FA_V2_MIN_TQ = 16` gate
+    /// `Self::launch_attn_chain`'s internal `FA_V2_MIN_TQ = 16` gate
     /// (reserved for the decoder-step fast path where the fusion cost would
     /// dominate on `t_q == 1`) is **bypassed** here — the whole point of the
     /// wrapper is to route through `launch_flash_attn_v2` so a caller
@@ -4010,12 +4010,12 @@ impl CudaContext {
     }
 
     /// M4-07-T12: device-in/out fused attention that **unconditionally**
-    /// dispatches the FA v3 fused kernel ([`Self::launch_flash_attn_v3`]) —
+    /// dispatches the FA v3 fused kernel (`Self::launch_flash_attn_v3`) —
     /// the testing / diagnostic wrapper the FA v3 primitive-parity tests use,
     /// exactly symmetric with [`Self::flash_attn_dev`] (FA v2). Bypasses the
     /// runtime `FA_V3_MIN_TQ = 64` gate so any `t_q >= 1` shape can be
     /// exercised; **never** the runtime path — sessions and `attn_dev`
-    /// funnel through the gated [`Self::launch_attn_chain`].
+    /// funnel through the gated `Self::launch_attn_chain`.
     ///
     /// On a non-Hopper device (or any config where the lazy slot resolved to
     /// `Disabled`) this returns the slot's **explicit**
@@ -4890,12 +4890,12 @@ struct DevDecoderLayer {
 ///
 /// # `Send`, thread-affine at use
 ///
-/// The session **owns** its [`CudaContext`] and holds only [`OwnedDeviceBuf`]
+/// The session **owns** its [`CudaContext`] and holds only `OwnedDeviceBuf`
 /// device buffers (a raw `CUdeviceptr` + a copy of `cuMemFree`; no
 /// `CudaDeviceTensor<'ctx>`, so no self-referential lifetime). Even though the
 /// `CudaContext` handles (`CUcontext`, `CUstream`, `CUmodule`, `CUfunction` —
 /// each `*mut c_void`) are `!Send` at the Rust type level, moving the whole
-/// session across threads is safe: an [`OwnedDeviceBuf`]'s `ptr` is a `u64` and
+/// session across threads is safe: an `OwnedDeviceBuf`'s `ptr` is a `u64` and
 /// its `free_fn` is a Copy fn pointer (both `Send`), and no CUDA state is held
 /// mid-flight between calls — every launch is enqueued and awaited inside a
 /// single [`Self::step`] call. Callers moving a session between threads must

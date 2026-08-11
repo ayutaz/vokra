@@ -255,6 +255,16 @@ jobs:
           fi
       - name: Policy e2e (M2-08, converter → runtime → 5% mel-loss gate)
         run: cargo test -p vokra-cli --test policy_e2e
+      # Audit 2026-08-10 (Rank 5): the M2-04-T09/T10 fusion pattern matchers
+      # (Conv1dSnakePattern + UpsampleSnakeResidualPattern in
+      # crates/vokra-core/src/ir/fusion/patterns/snake.rs) live under
+      # `#[cfg(all(test, feature = "fusion-snake-stub"))]`. Without this
+      # step, snake.rs compiles to ZERO cases in the required suite — a
+      # silent fabricated-green. Runs only in the fusion=0 cell (this is
+      # a pattern-matcher lint, not a runtime fusion switch).
+      - name: Fusion snake stub pattern tests (M2-04-T09/T10, feature fusion-snake-stub)
+        if: matrix.fusion == '0'
+        run: cargo test -p vokra-core --features fusion-snake-stub --lib ir::fusion::patterns::snake
 
   # Aggregator job that fans in on the parity matrix so branch protection
   # can require a single `parity` check context instead of the per-matrix-

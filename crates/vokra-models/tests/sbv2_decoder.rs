@@ -19,7 +19,7 @@
 //! converter.
 
 use vokra_models::sbv2::SbV2Decoder;
-use vokra_ops::attrs::HifiGanAttrs;
+use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
     HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer, UpsampleStageWeights,
 };
@@ -42,6 +42,11 @@ fn jp_extra_attrs() -> HifiGanAttrs {
         resblock_dilation_sizes: vec![vec![1]],
         sample_rate: 44_100,
         leaky_relu_slope: 0.1,
+        // Fixture builds V2-shape single-conv layers (no c2). Real
+        // SBV2 v2 ckpt uses V1 (ResBlock1) — see the from_gguf loader
+        // in sbv2/mod.rs. This test only exercises SbV2Decoder wrapper
+        // plumbing, so V2 keeps the minimal-fixture invariants.
+        res_block_type: ResBlockType::V2,
     }
 }
 
@@ -59,6 +64,7 @@ fn jp_extra_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
         mrf_stage_weights: Vec::new(),
         conv_post_weight: Vec::new(),
         conv_post_bias: Vec::new(),
+        cond: None,
         conv_post_kernel,
     };
     // Initial conv1d: [initial_channel, n_mels, k].
@@ -122,6 +128,8 @@ fn jp_extra_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
                     ResBlockLayer {
                         weight,
                         bias,
+                        weight_c2: None,
+                        bias_c2: None,
                         dilation: *dilation,
                         kernel,
                         channels: out_ch,

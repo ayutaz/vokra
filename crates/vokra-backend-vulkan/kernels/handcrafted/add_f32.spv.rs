@@ -14,11 +14,11 @@
 //!   the same dispatch**, plus the smallest possible arithmetic op
 //!   (`OpFAdd`).
 //!
-//! Together the two kernels are enough to route [`OpKind::Copy`] and
-//! [`OpKind::Add`] through the Vulkan graph executor (M3-02-T24 / T26) with
+//! Together the two kernels are enough to route [`vokra_core::OpKind::Copy`] and
+//! [`vokra_core::OpKind::Add`] through the Vulkan graph executor (M3-02-T24 / T26) with
 //! real GPU-observed outputs. Everything else — GEMM, GEMV, softmax, layer
 //! norm, GELU, conv1d, transpose, gather — remains an explicit
-//! [`VokraError::UnsupportedOp`] on the Vulkan backend until T14〜T22
+//! [`vokra_core::VokraError::UnsupportedOp`] on the Vulkan backend until T14〜T22
 //! `glslc`-produced blobs land (ADR M3-02-spirv-generation §5 caps
 //! hand-authored kernels at these two).
 //!

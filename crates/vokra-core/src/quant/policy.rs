@@ -4,8 +4,8 @@
 //! The public shape is deliberately narrow:
 //!
 //! - [`QuantPolicy`] is a value type built via a chainable builder
-//!   ([`QuantPolicy::new`], [`Self::with_rule`],
-//!   [`Self::with_hifigan_int8_opt_in`]). No serde, no config parser
+//!   ([`QuantPolicy::new`], [`QuantPolicy::with_rule`],
+//!   [`QuantPolicy::with_hifigan_int8_opt_in`]). No serde, no config parser
 //!   (NFR-DS-02) — policies are Rust literals in application code, or
 //!   read from the `vokra.quant.*` GGUF chunk (T05, separate WP).
 //! - Rules are ordered and evaluated first-match-wins by
@@ -14,7 +14,7 @@
 //!   (Exact > Prefix > Suffix > Glob) at equal priority.
 //! - HiFi-GAN INT8 (T10): the `opt_in` bool and the [`CalibrationRef`] are
 //!   *private* and settable only together via
-//!   [`Self::with_hifigan_int8_opt_in`], so the "opt-in without calibration"
+//!   [`QuantPolicy::with_hifigan_int8_opt_in`], so the "opt-in without calibration"
 //!   state is unrepresentable. Vocos / BigVGAN (registry
 //!   `DowngradePolicy::Forbidden`) are rejected regardless of this flag —
 //!   that's a validate-time concern (T09).
@@ -69,7 +69,7 @@ impl LayerPattern {
     }
 
     /// Canonical kind tag used by the `vokra.quant.rule.{i}.pattern_kind`
-    /// chunk key (T05). Round-trips with [`Self::from_kind_and_pattern`].
+    /// chunk key (T05). Round-trips with `Self::from_kind_and_pattern`.
     pub fn kind_str(&self) -> &'static str {
         match self {
             Self::Exact(_) => "exact",

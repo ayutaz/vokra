@@ -92,12 +92,20 @@ CONST vokra-core::quant::registry::KOKORO_ISTFT_HEAD_OP|pub const KOKORO_ISTFT_H
 CONST vokra-core::quant::registry::SNAKE_ACTIVATION_OP|pub const SNAKE_ACTIVATION_OP: &str = "snake_activation";
 CONST vokra-core::quant::registry::VOCOS_HEAD_OP|pub const VOCOS_HEAD_OP: &str = "vocos_head";
 CONST vokra-core::quant::verify::DEGRADATION_THRESHOLD|pub const DEGRADATION_THRESHOLD: f64 = 0.05;
+CONST vokra-core::rng::normal_kernel::SCALE|pub const SCALE: f32 = 4.6566127342e-10;
+CONST vokra-core::rng::philox_round::PHILOX_M0|pub const PHILOX_M0: u32 = 0xD251_1F53;
+CONST vokra-core::rng::philox_round::PHILOX_M1|pub const PHILOX_M1: u32 = 0xCD9E_8D57;
+CONST vokra-core::rng::philox_round::PHILOX_ROUNDS|pub const PHILOX_ROUNDS: usize = 10;
+CONST vokra-core::rng::philox_round::PHILOX_W0|pub const PHILOX_W0: u32 = 0x9E37_79B9;
+CONST vokra-core::rng::philox_round::PHILOX_W1|pub const PHILOX_W1: u32 = 0xBB67_AE85;
 CONST vokra-core::session::IN_MEMORY_MODEL_PATH|pub const IN_MEMORY_MODEL_PATH: &str = "<in-memory>";
 CONST vokra-ops::hifigan::SPECTRAL_CHECK_THRESHOLD|pub const SPECTRAL_CHECK_THRESHOLD: f32 = 0.05;
 CONST vokra-ops::resample::DEFAULT_QUALITY|pub const DEFAULT_QUALITY: u8 = 5;
 CONST vokra-ops::rnnoise::BARK_BAND_EDGES|pub const BARK_BAND_EDGES: [u16; 23] = [
 CONST vokra-ops::rnnoise::FRAME_HOP|pub const FRAME_HOP: usize = 240;
 CONST vokra-ops::rnnoise::FRAME_SIZE|pub const FRAME_SIZE: usize = 480;
+CONST vokra-ops::rnnoise::MAX_LAG_SAMPLES|pub const MAX_LAG_SAMPLES: usize = 700;
+CONST vokra-ops::rnnoise::MIN_LAG_SAMPLES|pub const MIN_LAG_SAMPLES: usize = 96; // 48 kHz / 96 = 500 Hz (upper F0)
 CONST vokra-ops::rnnoise::N_BARK_BANDS|pub const N_BARK_BANDS: usize = 22;
 CONST vokra-ops::rnnoise::N_FEATURES|pub const N_FEATURES: usize = 42;
 CONST vokra-ops::rnnoise::N_PITCH_BANDS|pub const N_PITCH_BANDS: usize = 6;
@@ -136,6 +144,7 @@ ENUM vokra-core::ir::graph::MelScale|pub enum MelScale {
 ENUM vokra-core::ir::graph::Normalization|pub enum Normalization {
 ENUM vokra-core::ir::graph::OpKind|pub enum OpKind {
 ENUM vokra-core::ir::graph::PadMode|pub enum PadMode {
+ENUM vokra-core::ir::graph::ResBlockType|pub enum ResBlockType {
 ENUM vokra-core::ir::graph::WindowSymmetry|pub enum WindowSymmetry {
 ENUM vokra-core::ir::graph::Window|pub enum Window {
 ENUM vokra-core::ir::tensor::DType|pub enum DType {
@@ -376,6 +385,8 @@ FN vokra-core::engines::with_prosody_features|pub fn with_prosody_features(mut s
 FN vokra-core::engines::with_reply_speaker|pub fn with_reply_speaker(mut self, speaker: u32) -> Self {
 FN vokra-core::engines::with_seed|pub fn with_seed(mut self, seed: u64) -> Self {
 FN vokra-core::engines::with_speaker_embedding|pub fn with_speaker_embedding(mut self, embedding: impl Into<Vec<f32>>) -> Self {
+FN vokra-core::engines::with_speaker_id|pub fn with_speaker_id(mut self, speaker_id: u32) -> Self {
+FN vokra-core::engines::with_style_vec|pub fn with_style_vec(mut self, style: impl Into<Vec<f32>>) -> Self {
 FN vokra-core::gguf::chunks::is_vokra_key|pub fn is_vokra_key(key: &str) -> bool {
 FN vokra-core::gguf::frontend_spec::check_against|pub fn check_against(
 FN vokra-core::gguf::frontend_spec::diff|pub fn diff(&self, runtime: &FrontendSpec) -> Vec<FieldMismatch> {
@@ -429,6 +440,7 @@ FN vokra-core::gguf::writer::add_tensor|pub fn add_tensor(
 FN vokra-core::gguf::writer::add_u32|pub fn add_u32(&mut self, key: &str, value: u32) -> &mut Self {
 FN vokra-core::gguf::writer::begin|pub fn begin(
 FN vokra-core::gguf::writer::finish|pub fn finish(mut self) -> Result<W, GgufError> {
+FN vokra-core::gguf::writer::has_tensor|pub fn has_tensor(&self, name: &str) -> bool {
 FN vokra-core::gguf::writer::metadata_count|pub fn metadata_count(&self) -> usize {
 FN vokra-core::gguf::writer::new|pub fn new() -> Self {
 FN vokra-core::gguf::writer::remaining|pub fn remaining(&self) -> usize {
@@ -561,11 +573,27 @@ FN vokra-core::quant::scheme::weight_dtype|pub fn weight_dtype(&self) -> WeightD
 FN vokra-core::quant::validate::validate_policy_against_model|pub fn validate_policy_against_model(
 FN vokra-core::quant::verify::from_mel_loss|pub fn from_mel_loss(mel_loss_ref: f64, mel_loss_quant: f64, threshold: f64) -> Self {
 FN vokra-core::quant::verify::verify_hifigan_int8|pub fn verify_hifigan_int8(
+FN vokra-core::rng::mt19937::new|pub fn new(seed: u64) -> Self {
+FN vokra-core::rng::mt19937::next_u32|pub fn next_u32(&mut self) -> u32 {
+FN vokra-core::rng::mt19937::random64|pub fn random64(&mut self) -> u64 {
 FN vokra-core::rng::new|pub const fn new(seed: u64) -> Self {
 FN vokra-core::rng::next_gaussian|pub fn next_gaussian(&mut self) -> f32 {
 FN vokra-core::rng::next_signed_f32|pub fn next_signed_f32(&mut self) -> f32 {
 FN vokra-core::rng::next_u64|pub fn next_u64(&mut self) -> u64 {
 FN vokra-core::rng::next_unit_f32|pub fn next_unit_f32(&mut self) -> f32 {
+FN vokra-core::rng::normal_kernel::new|pub fn new(seed: u64) -> Self {
+FN vokra-core::rng::normal_kernel::next_f32|pub fn next_f32(&mut self) -> f32 {
+FN vokra-core::rng::normal_kernel::philox_randn_sample|pub fn philox_randn_sample(block: [u32; 4]) -> f32 {
+FN vokra-core::rng::normal_kernel::torch_randn_f32|pub fn torch_randn_f32(seed: u64, out: &mut [f32]) {
+FN vokra-core::rng::normal_kernel::u32_to_uniform_f32_pytorch|pub fn u32_to_uniform_f32_pytorch(v: u32) -> f32 {
+FN vokra-core::rng::philox_round::philox4x32_10|pub fn philox4x32_10(ctr: [u32; 4], key: [u32; 2]) -> [u32; 4] {
+FN vokra-core::rng::philox_state::new|pub const fn new(key: [u32; 2], counter: u128) -> Self {
+FN vokra-core::rng::philox_state::next_block|pub fn next_block(&mut self) -> [u32; 4] {
+FN vokra-core::rng::philox_state::seek|pub fn seek(&mut self, counter: u128) {
+FN vokra-core::rng::seed_init::from_manual_seed|pub const fn from_manual_seed(seed: u64) -> Self {
+FN vokra-core::rng::seed_init::into_philox_state|pub fn into_philox_state(self) -> PhiloxState {
+FN vokra-core::rng::seed_init::next_block|pub fn next_block(&mut self) -> [u32; 4] {
+FN vokra-core::rng::seed_init::with_offset|pub const fn with_offset(seed: u64, offset: u64) -> Self {
 FN vokra-core::runtime::run_graph|pub fn run_graph(
 FN vokra-core::runtime::tensor::as_f32|pub fn as_f32(&self) -> Result<&[f32]> {
 FN vokra-core::runtime::tensor::host_f32|pub fn host_f32(shape: Vec<usize>, data: Vec<f32>) -> Result<Self> {
@@ -767,6 +795,7 @@ FN vokra-ops::hifigan::check|pub fn check(&self, fp32: &[f32], int8: &[f32]) -> 
 FN vokra-ops::hifigan::delta|pub fn delta(&self) -> f32 {
 FN vokra-ops::hifigan::fp16|pub fn fp16() -> Self {
 FN vokra-ops::hifigan::fp32|pub fn fp32() -> Self {
+FN vokra-ops::hifigan::hifigan_generator_conditioned|pub fn hifigan_generator_conditioned(
 FN vokra-ops::hifigan::hifigan_generator|pub fn hifigan_generator(
 FN vokra-ops::hifigan::is_passed|pub fn is_passed(&self) -> bool {
 FN vokra-ops::hifigan::new|pub fn new() -> Self {
@@ -1124,6 +1153,10 @@ STRUCT vokra-core::quant::verify::DegradationReport|pub struct DegradationReport
 STRUCT vokra-core::rng::GaussianSplitMix64|pub struct GaussianSplitMix64 {
 STRUCT vokra-core::rng::SplitMix64|pub struct SplitMix64 {
 STRUCT vokra-core::rng::Xorshift64Star|pub struct Xorshift64Star {
+STRUCT vokra-core::rng::mt19937::TorchMt19937Engine|pub struct TorchMt19937Engine {
+STRUCT vokra-core::rng::normal_kernel::TorchRandnStream|pub struct TorchRandnStream {
+STRUCT vokra-core::rng::philox_state::PhiloxState|pub struct PhiloxState {
+STRUCT vokra-core::rng::seed_init::TorchPhiloxState|pub struct TorchPhiloxState {
 STRUCT vokra-core::runtime::tensor::Tensor|pub struct Tensor {
 STRUCT vokra-core::safetensors::SafeTensorInfo|pub struct SafeTensorInfo {
 STRUCT vokra-core::safetensors::SafetensorsFileReader|pub struct SafetensorsFileReader {
@@ -1194,6 +1227,7 @@ STRUCT vokra-ops::fsq_codec::FsqOutProj|pub struct FsqOutProj {
 STRUCT vokra-ops::fsq_codec::WavTokenizerVqAttrs|pub struct WavTokenizerVqAttrs {
 STRUCT vokra-ops::fsq_codec::Xcodec2FsqAttrs|pub struct Xcodec2FsqAttrs {
 STRUCT vokra-ops::hifigan::CalibrationTable|pub struct CalibrationTable {
+STRUCT vokra-ops::hifigan::GinCondition|pub struct GinCondition {
 STRUCT vokra-ops::hifigan::HifiGanCalibrator|pub struct HifiGanCalibrator {
 STRUCT vokra-ops::hifigan::HifiGanConfig|pub struct HifiGanConfig {
 STRUCT vokra-ops::hifigan::HifiGanSpectralChecker|pub struct HifiGanSpectralChecker {
@@ -1276,11 +1310,13 @@ TRAIT vokra-core::engines::S2sDuplexEngine|pub trait S2sDuplexEngine: Send + Syn
 TRAIT vokra-core::engines::S2sDuplexHandle|pub trait S2sDuplexHandle {
 TRAIT vokra-core::engines::S2sEngine|pub trait S2sEngine: Send + Sync {
 TRAIT vokra-core::engines::TtsEngine|pub trait TtsEngine: Send + Sync {
+TRAIT vokra-core::engines::TtsStreamHandle|pub trait TtsStreamHandle {
 TRAIT vokra-core::engines::VadEngine|pub trait VadEngine: Send + Sync {
 TRAIT vokra-core::engines::VadStreamHandle|pub trait VadStreamHandle {
 TRAIT vokra-core::gguf::reader::AsBytes|pub trait AsBytes: Send + Sync {
 TRAIT vokra-core::kv_quant::KvQuantBlock|pub trait KvQuantBlock: Copy + Sized + 'static {
 TRAIT vokra-core::kv_quant::gpu_ops::KvQuantDequantGemvOps|pub trait KvQuantDequantGemvOps {
+TRAIT vokra-core::rng::NormalSource|pub trait NormalSource {
 TRAIT vokra-core::stream::event::EventSink|pub trait EventSink {
 TRAIT vokra-core::stream::step::StreamStep|pub trait StreamStep: Send {
 TRAIT vokra-ops::prosody::ApplyProsody|pub trait ApplyProsody {
@@ -1326,7 +1362,7 @@ USE vokra-core::gguf::writer::{GgufBuilder, GgufStreamWriter, GgufTensorDecl}|pu
 USE vokra-core::gguf::{FieldMismatch, FrontendPolicy, FrontendSpec, GgufBuilder}|pub use gguf::{FieldMismatch, FrontendPolicy, FrontendSpec, GgufBuilder};
 USE vokra-core::gguf::{GgmlType, GgufError, GgufFile, GgufTensorInfo}|pub use gguf::{GgmlType, GgufError, GgufFile, GgufTensorInfo};
 USE vokra-core::ir::fusion::FusedOp|pub use fusion::FusedOp;
-USE vokra-core::ir::graph::{AudioGraph, GraphBuilder, Node, OpKind}|pub use graph::{AudioGraph, GraphBuilder, Node, OpKind};
+USE vokra-core::ir::graph::{AudioGraph, GraphBuilder, HifiGanAttrs, Node, OpKind, ResBlockType}|pub use graph::{AudioGraph, GraphBuilder, HifiGanAttrs, Node, OpKind, ResBlockType};
 USE vokra-core::ir::tensor::{DType, Dim, TensorDesc, TensorId}|pub use tensor::{DType, Dim, TensorDesc, TensorId};
 USE vokra-core::ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId}|pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 USE vokra-core::kv_quant::dequant_gemm::{ dense_gemv_f32, dequant_gemv_scalar, max_relative_error, pack_matrix_to_bytes, quant_gemv_round_trip, }|pub use dequant_gemm::{ dense_gemv_f32, dequant_gemv_scalar, max_relative_error, pack_matrix_to_bytes, quant_gemv_round_trip, };
@@ -1347,6 +1383,11 @@ USE vokra-core::quant::scheme::{ActivationDtype, QuantScheme, WeightDtype}|pub u
 USE vokra-core::quant::validate::validate_policy_against_model|pub use validate::validate_policy_against_model;
 USE vokra-core::quant::verify::{DEGRADATION_THRESHOLD, DegradationReport, verify_hifigan_int8}|pub use verify::{DEGRADATION_THRESHOLD, DegradationReport, verify_hifigan_int8};
 USE vokra-core::rng::SplitMix64|pub use rng::SplitMix64;
+USE vokra-core::rng::mt19937::TorchMt19937Engine|pub use mt19937::TorchMt19937Engine;
+USE vokra-core::rng::normal_kernel::{ SCALE, TorchRandnStream, philox_randn_sample, torch_randn_f32, u32_to_uniform_f32_pytorch, }|pub use normal_kernel::{ SCALE, TorchRandnStream, philox_randn_sample, torch_randn_f32, u32_to_uniform_f32_pytorch, };
+USE vokra-core::rng::philox_round::{PHILOX_M0, PHILOX_M1, PHILOX_ROUNDS, PHILOX_W0, PHILOX_W1, philox4x32_10}|pub use philox_round::{PHILOX_M0, PHILOX_M1, PHILOX_ROUNDS, PHILOX_W0, PHILOX_W1, philox4x32_10};
+USE vokra-core::rng::philox_state::PhiloxState|pub use philox_state::PhiloxState;
+USE vokra-core::rng::seed_init::TorchPhiloxState|pub use seed_init::TorchPhiloxState;
 USE vokra-core::runtime::tensor::Tensor|pub use tensor::Tensor;
 USE vokra-core::runtime::{Tensor, run_graph}|pub use runtime::{Tensor, run_graph};
 USE vokra-core::safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile}|pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};
@@ -1359,7 +1400,7 @@ USE vokra-core::stream::{ EventPoller, EventSink, InterruptHandle, RawEvent, Rin
 USE vokra-core::tasks::{Asr, DialogTurn, S2s, SynthesizedAudio, Transcription, Tts}|pub use tasks::{Asr, DialogTurn, S2s, SynthesizedAudio, Transcription, Tts};
 USE vokra-ops::aec::{Aec, AecAttrs, AecStatus}|pub use aec::{Aec, AecAttrs, AecStatus};
 USE vokra-ops::agc::{AgcAttrs, AgcState, agc}|pub use agc::{AgcAttrs, AgcState, agc};
-USE vokra-ops::attrs::vokra_core::ir::graph::{ DctAttrs, DurationUnit, HifiGanAttrs, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs, LengthConditioningMode, MelAttrs, MelNorm, MelScale, MfccAttrs, Normalization, PadMode, StftAttrs, Window, WindowSymmetry, }|pub use vokra_core::ir::graph::{ DctAttrs, DurationUnit, HifiGanAttrs, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs, LengthConditioningMode, MelAttrs, MelNorm, MelScale, MfccAttrs, Normalization, PadMode, StftAttrs, Window, WindowSymmetry, };
+USE vokra-ops::attrs::vokra_core::ir::graph::{ DctAttrs, DurationUnit, HifiGanAttrs, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs, LengthConditioningMode, MelAttrs, MelNorm, MelScale, MfccAttrs, Normalization, PadMode, ResBlockType, StftAttrs, Window, WindowSymmetry, }|pub use vokra_core::ir::graph::{ DctAttrs, DurationUnit, HifiGanAttrs, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs, LengthConditioningMode, MelAttrs, MelNorm, MelScale, MfccAttrs, Normalization, PadMode, ResBlockType, StftAttrs, Window, WindowSymmetry, };
 USE vokra-ops::bigvgan_generator::{ AmpBlock1, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights, SnakeBeta, SnakeKind, }|pub use bigvgan_generator::{ AmpBlock1, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights, SnakeBeta, SnakeKind, };
 USE vokra-ops::clustering::{AgglomerativeClustering, DistanceMetric, LinkageMethod}|pub use clustering::{AgglomerativeClustering, DistanceMetric, LinkageMethod};
 USE vokra-ops::ctc_decode::{CtcBeamAttrs, CtcHypothesis, ctc_decode_beam, ctc_decode_greedy}|pub use ctc_decode::{CtcBeamAttrs, CtcHypothesis, ctc_decode_beam, ctc_decode_greedy};
@@ -1378,7 +1419,7 @@ USE vokra-ops::frontend::{mel_attrs_from_spec, stft_attrs_from_spec}|pub use fro
 USE vokra-ops::fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, }|pub use fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, };
 USE vokra-ops::fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, wavtokenizer_vq_decode, xcodec2_fsq_decode, }|pub use fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, wavtokenizer_vq_decode, xcodec2_fsq_decode, };
 USE vokra-ops::fused_logmel::fused_log_mel_scalar|pub use fused_logmel::fused_log_mel_scalar;
-USE vokra-ops::hifigan::{ CalibrationStrategy, CalibrationTable, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, }|pub use hifigan::{ CalibrationStrategy, CalibrationTable, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, };
+USE vokra-ops::hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, }|pub use hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, };
 USE vokra-ops::hpf::{HpfAttrs, HpfState, hpf}|pub use hpf::{HpfAttrs, HpfState, hpf};
 USE vokra-ops::istft::istft|pub use istft::istft;
 USE vokra-ops::istft_streaming::{IstftStreamingState, istft_streaming_oneshot}|pub use istft_streaming::{IstftStreamingState, istft_streaming_oneshot};

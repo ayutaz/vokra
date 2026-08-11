@@ -222,28 +222,33 @@ class MatrixShape(unittest.TestCase):
             f"unexpected variant set: {variants}",
         )
 
-    def test_mini_3b_entry_is_deferred_with_annotation(self):
-        # Empirical measurement 2026-08-05 (PR #24 CI run 31021205977 /
-        # job 92358110460) proved mini-3b-2507 (8.7 GB BF16) OOMs on
-        # ubuntu-latest (7 GB RAM), even with the MappedLazy streaming
-        # port. The workflow header's earlier "fits ubuntu-latest with
-        # MappedLazy" hypothesis was disproved by that run's SIGTERM
-        # (exit 143) at ~40 s of conversion, so mini-3b now mirrors the
-        # `enabled: false` posture small-24b-2507 already carried — a
-        # fabricated-pass-preventing skip with a variant-specific
-        # STEP_SUMMARY annotation naming the empirical evidence. The
-        # entry itself stays in the matrix (identity fields still
-        # asserted below) so this oracle can pin the deferral shape;
-        # only the runnability flag flips.
+    def test_mini_3b_entry_is_enabled_via_streaming_path(self):
+        # 2026-08-06 (PR #27): re-enabled after PR #24's empirical OOM
+        # (SIGTERM exit 143 at ~40 s of conversion on ubuntu-latest 7 GB
+        # RAM, CI run 31021205977 / job 92358110460) was root-caused as
+        # a CLI dispatch bug rather than a genuine ubuntu-latest capacity
+        # ceiling: the workflow YAML claimed `--config` would route to
+        # `convert_voxtral_file_streaming` but the CLI arm was calling
+        # `convert_voxtral_file_quantized` (in-memory, ~27 GB peak with
+        # eager shard read + `.to_vec()` + `to_bytes()` concat) instead.
+        # PR #27 commit `4bca8e0` fixes the CLI dispatch to actually
+        # thread to streaming when `--quantize` is absent — peak drops to
+        # `max(shard_header) + max(tensor_payload)` ≒ 800 MB, well within
+        # ubuntu-latest's 7 GB. small-24b-2507 remains `enabled: false`
+        # because 48 GB BF16 (11 shards) genuinely exceeds every
+        # GitHub-hosted runner class (vast.ai runbook = standing owner
+        # path). If mini-3b ever OOMs again on ubuntu-latest, that is a
+        # regression in the streaming path — investigate `voxtral.rs`
+        # `convert_shards_streaming` before flipping this oracle back.
         mini = [e for e in self.include if e.get("variant") == "mini-3b-2507"]
         self.assertEqual(len(mini), 1, "mini-3b-2507 entry missing or duplicated")
         entry = mini[0]
         self.assertEqual(
             entry.get("enabled"),
-            False,
-            "mini-3b-2507 must be `enabled: false` (~8.7 GB BF16 OOMs "
-            "ubuntu-latest 7 GB RAM — see empirical measurement in "
-            "workflow header, PR #24 CI run 31021205977)",
+            True,
+            "mini-3b-2507 must be `enabled: true` (streaming path in PR #27 "
+            "makes ~8.7 GB BF16 fit ubuntu-latest 7 GB RAM at ~800 MB peak — "
+            "see PR #27 commit 4bca8e0 rationale)",
         )
         self.assertEqual(entry.get("hf_repo"), "mistralai/Voxtral-Mini-3B-2507")
         self.assertEqual(entry.get("cli_model"), "voxtral")

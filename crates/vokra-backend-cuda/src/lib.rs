@@ -29,7 +29,7 @@
 //! - **(a) zero external dependencies, raw runtime FFI** (NFR-DS-02, the M2-03
 //!   red line): **no `cudarc` / `cust` / `rustacuda` binding crate.** The CUDA
 //!   Driver API and NVRTC are loaded at **runtime** with dlopen / LoadLibrary
-//!   and each symbol `transmute`d to its exact C signature ([`sys`]). The root
+//!   and each symbol `transmute`d to its exact C signature (`sys`). The root
 //!   `Cargo.lock` therefore keeps only `vokra-*` crates
 //!   (`scripts/check-zero-deps.sh`). This is a deliberate departure from the
 //!   original M2-03 plan of using `cudarc` behind a `cuda` feature: the raw-FFI
@@ -38,18 +38,18 @@
 //!   Vokra bundles/statically-links **no** `cudart` / `cudnn` / `cublas` / the
 //!   driver. The developer installs CUDA system-wide; the runtime detects it via
 //!   `dlopen("libcuda.so.1")` / `LoadLibrary("nvcuda.dll")`. A missing library
-//!   is a runtime [`VokraError::BackendUnavailable`], not a build error — which
+//!   is a runtime [`vokra_core::VokraError::BackendUnavailable`], not a build error — which
 //!   is also why this crate **compiles on a CUDA-less host** (the whole
 //!   all-target build stays intact, NFR-PT-01).
 //! - **(c) dlopen-gated, not feature-gated inside this crate** (NFR-PT-01): the
 //!   FFI compiles on every `cfg(any(unix, windows))` target and is a runtime
 //!   no-op elsewhere (WASM), where [`CudaBackend::new`] / [`vokra_cuda_probe`]
-//!   return an explicit [`VokraError::BackendUnavailable`]. `vokra-models` still
+//!   return an explicit [`vokra_core::VokraError::BackendUnavailable`]. `vokra-models` still
 //!   gates *its* optional dependency on this crate behind a `cuda` feature so
 //!   Linux/Windows/WASM default builds never even name it.
 //! - **(d) no silent CPU fallback** (FR-EX-08 / NFR-RL-06, the WP's core red
-//!   line): an uncovered op is [`VokraError::UnsupportedOp`]; a missing driver /
-//!   device is [`VokraError::BackendUnavailable`]. Running on the CPU instead is
+//!   line): an uncovered op is [`vokra_core::VokraError::UnsupportedOp`]; a missing driver /
+//!   device is [`vokra_core::VokraError::BackendUnavailable`]. Running on the CPU instead is
 //!   the caller's *explicit* backend choice, never decided inside this backend.
 //! - **(e) FP32 kernel, no Tensor-Core fast path** (NFR-QL-01): the GEMM is a
 //!   hand-written CUDA C `float` kernel; there is no implicit TF32/FP16 path
@@ -65,11 +65,11 @@
 //! The CUDA / NVRTC FFI needs `unsafe`, so this crate opts out of the
 //! workspace-wide `unsafe_code = "deny"` at its root (below). Public APIs stay
 //! safe: shapes are validated at the boundary
-//! ([`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument) on
+//! ([`vokra_core::VokraError::InvalidArgument`] on
 //! a mismatch), driver / compile failures are `Result` errors (never a panic
 //! across the boundary), and **every `unsafe` block carries a `// SAFETY:`
 //! comment** (enforced by `clippy::undocumented_unsafe_blocks`). Each `dlsym`
-//! `transmute` names the symbol and its true signature ([`sys`]).
+//! `transmute` names the symbol and its true signature (`sys`).
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the
 // crate-level "Unsafe policy" docs above (M0-02-T03). The CUDA backend joins

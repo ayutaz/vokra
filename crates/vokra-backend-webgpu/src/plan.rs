@@ -17,7 +17,7 @@
 //! Storage buffers bind at indices `0..n_storage_buffers` in plan order with
 //! the **output always last**; the packed uniform binds at index
 //! `n_storage_buffers`. `wgsl.rs`'s structural test pins the WGSL side of
-//! this contract; [`tests::plans_match_manifest_arity`] pins the plan side.
+//! this contract; `tests::plans_match_manifest_arity` pins the plan side.
 //!
 //! # Uniform layout
 //!

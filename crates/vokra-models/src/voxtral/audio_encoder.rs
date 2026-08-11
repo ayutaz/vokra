@@ -19,7 +19,7 @@
 //! Attention details mirrored from `VoxtralAttention` (== `WhisperAttention`):
 //! `k_proj` has **no bias** (line 113), q/v/out do; the query is scaled by
 //! `head_dim^-0.5` **before** the score matmul (line 138) — exactly what
-//! [`super::super::whisper::nn::attention_from_kv_into`] does, so the block
+//! `super::super::whisper::nn::attention_from_kv_into` does, so the block
 //! math is driven through the *same* audited Whisper building blocks (one
 //! implementation, two models).
 //!

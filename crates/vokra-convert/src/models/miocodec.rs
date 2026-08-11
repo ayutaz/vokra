@@ -141,9 +141,9 @@ const PROVENANCE_SOURCE_NOTE: &str = "Aratako/MioCodec-25Hz-44.1kHz-v2 (JA-focus
 /// Outcome of a MioCodec conversion.
 ///
 /// Mirrors the field set on the sibling BF16-pass-through converters
-/// ([`super::bicodec::BicodecReport`],
-/// [`super::neucodec::NeucodecReport`],
-/// [`super::focalcodec::FocalcodecReport`]) — the `read` counter lets
+/// (`super::bicodec::BicodecReport`,
+/// `super::neucodec::NeucodecReport`,
+/// `super::focalcodec::FocalcodecReport`) — the `read` counter lets
 /// the caller distinguish a zero-tensor safetensors file from a
 /// zero-write outcome caused by every tensor being quantized
 /// (defensive — the safetensors reader rejects unknown dtypes at
@@ -175,7 +175,7 @@ pub struct MioCodecReport {
 /// `input` is the upstream `model.safetensors` path; the emitted GGUF
 /// is written to `output`. `license` overrides the raw SPDX string
 /// stamped into `vokra.provenance.license` — the default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`), matching the Aratako weight
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`), matching the Aratako weight
 /// card at `huggingface.co/Aratako/MioCodec-25Hz-44.1kHz-v2`. Pass
 /// `Some(other_spdx)` when the immediate redistribution source has
 /// re-tagged the artifact (mirror of the neucodec / bicodec /

@@ -81,7 +81,7 @@ pub const KV_QUANT_BLOCK_SIZE: usize = 32;
 
 /// Runtime KV cache quantization mode (FR-QT-05).
 ///
-/// Selected by the `Session` builder via [`SessionBuilder::with_kv_quant`]. The
+/// Selected by the `Session` builder via [`crate::SessionBuilder::with_kv_quant`]. The
 /// default across every builder is [`Self::Fp32`] (no quantization) so
 /// existing call sites keep bit-identical behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -207,7 +207,7 @@ impl QuantKind {
 ///
 /// **Not** a replacement for [`KvElement`](crate::KvElement) — the FP32 path
 /// keeps its `KvElement` trait unchanged, and the quantized path lives in a
-/// parallel type ([`QuantizedPagedKvCache`]). Splitting the traits keeps every
+/// parallel type ([`crate::cache::paged_quant::QuantizedPagedKvCache`]). Splitting the traits keeps every
 /// existing consumer of `PagedKvCache<f32>` unaffected (M3-03 backward
 /// compatibility, ADR M3-03 §D3).
 pub trait KvQuantBlock: Copy + Sized + 'static {

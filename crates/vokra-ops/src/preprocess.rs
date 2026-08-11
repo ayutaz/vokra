@@ -2,7 +2,7 @@
 //!
 //! Two one-pass time-domain filters that sit ahead of framing / STFT, plus the
 //! [`apply_frontend`] chain that drives them from a
-//! [`FrontendSpec`](vokra_core::FrontendSpec):
+//! [`FrontendSpec`]:
 //!
 //! - [`dc_offset_remove`] — subtracts the per-utterance mean (`vokra.frontend.
 //!   dc_offset_removal`). Removing DC before framing keeps the STFT bin-0 from

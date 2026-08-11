@@ -10,7 +10,7 @@
 //! KWS decides which wake-word fired inside the voiced region).
 //!
 //! Every member implements
-//! [`vokra_core::engines::KwsEngine`](vokra_core::engines::KwsEngine)
+//! [`vokra_core::engines::KwsEngine`]
 //! so it can be injected into a `Session` without `vokra-core` knowing
 //! any model specifics — mirror of the VAD / ASR / TTS families.
 //!

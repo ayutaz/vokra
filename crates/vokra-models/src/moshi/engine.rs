@@ -89,10 +89,22 @@ enum WeightResidency {
     /// Every weight widened to resident f32 up front (~30 GiB at the
     /// full-7B shape) — the in-memory bytes path.
     Resident,
-    /// Temporal blocks stay in the GGUF mapping and widen one layer at a
-    /// time per forward (bit-identical values; bounded footprint) — the
-    /// `from_path` mmap path.
-    MappedLazy,
+    /// Fully bounded-memory (2026-08-09 / Wave 7 Part C, Voxtral
+    /// `MappedHeads` pattern — 12e574e): **both** the temporal blocks
+    /// and the head store (`text_emb` / `audio_emb` / `text_linear`)
+    /// stay in the mapping. `out_norm.alpha` is widened once at bind and
+    /// cached. Bit-identical to `Resident` — per-row / per-chunk widen
+    /// preserves the byte formula and each row's inner accumulation
+    /// order (see `MappedHeadWeights` / `MappedTemporalBlocks` docs).
+    ///
+    /// The historical `MappedLazy` variant (head resident + blocks
+    /// mapped) is superseded by this one — the resident-head footprint
+    /// (~1.3 GiB at 7B shape) is unnecessary now that the head store
+    /// serves per-row / chunked-GEMV reads directly out of the mapping.
+    /// Direct callers can still construct that intermediate posture via
+    /// `MoshiBackbone::new_mapped` — the `WeightResidency` enum only
+    /// governs `MoshiEngine::from_gguf_file`'s dispatch.
+    MappedLazyFull,
 }
 
 /// The Moshi engine (module docs).
@@ -287,8 +299,13 @@ impl MoshiEngine {
         // `VokraError::Io` through the shared From impl — the same error
         // class the old `fs::read` path surfaced (no error-type regression
         // for missing-file callers); parse errors become `ModelLoad`.
+        //
+        // 2026-08-09 (Wave 7 Part C): promoted to `MappedLazyFull` — the
+        // head store now stays in the mapping too (Voxtral pattern), so
+        // the resident footprint drops ~1.3 GiB at the full-7B shape
+        // (bit-identical to `MappedLazy` — `MappedHeadWeights` docs).
         let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
-        Self::from_gguf_file(file, policy, WeightResidency::MappedLazy)
+        Self::from_gguf_file(file, policy, WeightResidency::MappedLazyFull)
     }
 
     /// The shared load body: gate order (arch → M2-13 license →
@@ -325,11 +342,19 @@ impl MoshiEngine {
                 let backbone = super::backbone::MoshiBackboneWeights::from_gguf(&file, &cfg)?;
                 MoshiModel::new(cfg.clone(), backbone, depth)?
             }
-            WeightResidency::MappedLazy => {
-                let head = super::backbone::MoshiBackboneWeights::head_from_gguf(&file, &cfg)?;
+            WeightResidency::MappedLazyFull => {
+                // 2026-08-09 / Wave 7 Part C — head store + blocks both
+                // mapped-lazy. Bit-identical to Resident (per-row /
+                // per-chunk widen preserves the byte formula —
+                // MappedHeadWeights docs).
+                let mapped_heads =
+                    super::backbone::MappedHeadWeights::bind(Arc::clone(&file), &cfg)?;
                 let mapped = super::backbone::MappedTemporalBlocks::bind(Arc::clone(&file), &cfg)?;
-                let backbone =
-                    super::backbone::MoshiBackbone::new_mapped(cfg.clone(), head, mapped)?;
+                let backbone = super::backbone::MoshiBackbone::new_mapped_full(
+                    cfg.clone(),
+                    mapped_heads,
+                    mapped,
+                )?;
                 let depth_t = super::depth::MoshiDepthTransformer::new(cfg.clone(), depth)?;
                 MoshiModel::from_parts(backbone, depth_t)?
             }
@@ -477,7 +502,7 @@ impl MoshiEngine {
     /// standalone Mimi GGUF produced by `vokra-cli convert --model mimi`
     /// from the kyutai tokenizer checkpoint replaces the synthesized codec
     /// bridge on **both** ends (mic encode + model-frame decode), clipped
-    /// to `dep_q` codebooks ([`Self::bind_real_mimi`]).
+    /// to `dep_q` codebooks (`Self::bind_real_mimi`).
     ///
     /// Runs under the fail-closed strict compliance policy; use
     /// [`Self::with_mimi_gguf_with_policy`] to supply another. The side-car
@@ -647,6 +672,24 @@ impl MoshiEngine {
         &self.model
     }
 
+    /// Whether the temporal-backbone blocks are mapped-lazy (`from_path`
+    /// load) rather than resident f32 — observability for the M4 cc-06
+    /// invariant.
+    #[must_use]
+    pub fn backbone_is_mapped(&self) -> bool {
+        self.model.backbone().is_mapped()
+    }
+
+    /// Whether the head weights (`text_emb` / `audio_emb` / `text_linear`)
+    /// are mapped-lazy — the 2026-08-09 / Wave 7 Part C extension of the
+    /// bounded-memory load path. `true` on `from_path` (post-2026-08-09)
+    /// / `from_path_with_policy` loads, `false` on `from_gguf_with_policy`
+    /// / synthesized fixtures.
+    #[must_use]
+    pub fn backbone_is_head_mapped(&self) -> bool {
+        self.model.backbone().is_head_mapped()
+    }
+
     pub(super) fn encoder(&self) -> &MimiEncoder {
         &self.encoder
     }
@@ -693,7 +736,7 @@ impl MoshiEngine {
     }
 
     /// Opens an **owning** duplex session (the facade / C ABI shape —
-    /// `'static`, movable across threads). See [`Self::duplex_front_for`]
+    /// `'static`, movable across threads). See `Self::duplex_front_for`
     /// for the AEC posture rules.
     ///
     /// # Errors

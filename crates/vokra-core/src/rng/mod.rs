@@ -9,11 +9,96 @@
 //!   behind piper-plus's synthesis noise, with a [`GaussianSplitMix64`]
 //!   Box–Muller wrapper for Gaussian draws;
 //! - [`Xorshift64Star`] — the xorshift64\* generator (Vigna 2016) the model
-//!   test suites use to pick pseudo-random chunk boundaries / spline params.
+//!   test suites use to pick pseudo-random chunk boundaries / spline params;
+//! - [`TorchMt19937Engine`] + (std-only) [`TorchRandnStream`] /
+//!   [`torch_randn_f32`] — the Mersenne Twister MT19937 engine bit-exactly
+//!   matching `aten/src/ATen/core/MT19937RNGEngine.h::mt19937_engine`
+//!   (torch source, BSD-3-Clause), plus the `at::normal_distribution<double>`
+//!   Box-Muller pair from `ATen/core/DistributionsHelper.h:187-198`, so
+//!   `torch.manual_seed(N); torch.randn(K, device='cpu')` bytes reproduce
+//!   in-workspace for models whose CPU flow noise must be byte-diffed
+//!   against a real PyTorch reference. **Scope caveat**: the pair is
+//!   correct against `torch.randn(K)` for `K < 16` or non-contiguous
+//!   tensors; contiguous `K >= 16` dispatches to torch's SIMD `normal_fill`
+//!   with a *different* formula and no pair caching (see
+//!   [`mt19937`] module doc);
+//! - [`philox4x32_10`] + [`PhiloxState`] + [`TorchPhiloxState`] +
+//!   [`philox_randn_sample`] — the Philox4x32-10 counter-based PRNG (Salmon
+//!   et al., SC'11), audited against Random123 v1.14 KAT vectors and useful
+//!   as a primitive for a future CUDA `curandStatePhilox4_32_10_t` parity
+//!   path (which has its own subsequence/offset packing). **This block does
+//!   NOT reproduce `torch.randn` on any real torch backend as-is** — the
+//!   `PhiloxRNGEngine.h::randn` function it mirrors carries an upstream
+//!   disclaimer (torch source lines 39-41) that it is "not used anywhere
+//!   except for tests in cpu_generator_test.cpp". Kept only for the
+//!   KAT-audited primitives, not as a torch-parity claim.
 //!
-//! Both are trivially reproducible (fixed seed ⇒ fixed sequence) and are **not**
+//! All are trivially reproducible (fixed seed ⇒ fixed sequence) and are **not**
 //! cryptographically secure; they exist purely for reproducible test / synthesis
 //! noise, never for anything security-sensitive.
+//!
+//! # `NormalSource` — the RNG-agnostic Gaussian boundary
+//!
+//! Consumers that draw standard normals should accept `impl NormalSource`
+//! rather than a concrete RNG type: [`GaussianSplitMix64`] impls it (the
+//! pre-existing synthetic path) and [`TorchRandnStream`] impls it (the new
+//! torch-parity path), so a single call site can be switched between the
+//! two by picking the RNG constructor. See `SbV2SDP::sample` for the first
+//! generic use-site.
+
+mod mt19937;
+mod normal_kernel;
+mod philox_round;
+mod philox_state;
+mod seed_init;
+pub use mt19937::TorchMt19937Engine;
+pub use normal_kernel::{
+    SCALE, TorchRandnStream, philox_randn_sample, torch_randn_f32, u32_to_uniform_f32_pytorch,
+};
+pub use philox_round::{PHILOX_M0, PHILOX_M1, PHILOX_ROUNDS, PHILOX_W0, PHILOX_W1, philox4x32_10};
+pub use philox_state::PhiloxState;
+pub use seed_init::TorchPhiloxState;
+
+/// Trait for a source of standard-normal (mean 0, variance 1) `f32` deviates.
+///
+/// The RNG-agnostic boundary between the synthetic [`GaussianSplitMix64`]
+/// (pre-existing) and the torch-parity `TorchRandnStream` (added in Step 7).
+/// A call site that fills a noise buffer as `for v in &mut z { *v =
+/// rng.next_normal() * scale; }` can be constructed with either RNG without
+/// touching the fill loop — the constructor picks the algorithm.
+///
+/// Implementers must be **deterministic** given the RNG's own state: the
+/// same seed / offset must produce the same sequence of `next_normal()`
+/// outputs, so a fixture-diff test can be reproduced bit-for-bit.
+pub trait NormalSource {
+    /// Returns the next standard-normal (mean 0, variance 1) deviate and
+    /// advances the internal state.
+    fn next_normal(&mut self) -> f32;
+
+    /// Fills `out` with `out.len()` standard-normal `f32` samples.
+    ///
+    /// The default implementation is `for v in out { *v = self.next_normal(); }`
+    /// — a per-sample streaming fill, which is what
+    /// [`GaussianSplitMix64`] (synthetic, backward-compat) wants: the
+    /// stream is one call per sample regardless of buffer size.
+    ///
+    /// Override on impls whose torch-parity depends on buffer size:
+    /// [`TorchRandnStream`] overrides this to dispatch to torch's
+    /// `normal_fill` fast path when `out.len() >= 16` (see
+    /// [`torch_randn_f32`]'s doc for the dispatch that must be
+    /// preserved), because torch itself takes a different byte path
+    /// at the same size threshold and per-sample streaming does not
+    /// reproduce those bytes.
+    ///
+    /// # Deterministic
+    ///
+    /// Same RNG state on entry → same bytes in `out` on exit.
+    fn fill(&mut self, out: &mut [f32]) {
+        for v in out {
+            *v = self.next_normal();
+        }
+    }
+}
 
 /// The splitmix64 generator (Steele, Lea & Flood, *Fast Splittable Pseudorandom
 /// Number Generators*, 2014).
@@ -90,6 +175,15 @@ impl GaussianSplitMix64 {
         let theta = 2.0 * std::f32::consts::PI * u2;
         self.spare = Some(r * theta.sin());
         r * theta.cos()
+    }
+}
+
+/// [`GaussianSplitMix64`] impls the RNG-agnostic [`NormalSource`] boundary
+/// so any consumer written against the trait (e.g. `SbV2SDP::sample`) can
+/// keep using the pre-existing synthetic RNG unchanged.
+impl NormalSource for GaussianSplitMix64 {
+    fn next_normal(&mut self) -> f32 {
+        self.next_gaussian()
     }
 }
 

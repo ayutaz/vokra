@@ -9,11 +9,11 @@
 //!   `mfcc` / `dct` with explicit attributes (window / hop / n_fft / pad /
 //!   normalization / causal / `real_input` RFFT — FR-OP-01/03) and the CPU FFT
 //!   lowering (a from-scratch Rust reimplementation of the pocketfft algorithm,
-//!   BSD-3 — FR-OP-05). See [`fft`], [`window`], [`stft`], [`istft`], [`mel`],
-//!   [`dct`], [`mfcc`] and the [`dispatch`] bridge to the IR;
+//!   BSD-3 — FR-OP-05). See [`fft`], [`window`], [`stft()`], [`istft()`], [`mel`],
+//!   [`dct()`], [`mfcc()`] and the [`dispatch()`] bridge to the IR;
 //! - **M0-05**: LSTM family needed by the Silero VAD subgraph;
 //! - **M0-06**: attention / decoder family needed by Whisper;
-//! - **M1-06** (landed): front-end preprocessing — [`resample`] (a native
+//! - **M1-06** (landed): front-end preprocessing — [`resample()`] (a native
 //!   Kaiser-windowed-sinc converter, GPL-free by construction) and the
 //!   `frontend_spec`-driven [`dc_offset_remove`] / [`pre_emphasis`] chain
 //!   ([`apply_frontend`]);
@@ -23,7 +23,7 @@
 //!   data-driven; the bit-exact *inspection* of the chunk lives in `vokra-core`;
 //! - **M0-08** (landed): the Kaldi fbank front-end the CAM++ speaker encoder
 //!   needs — the [`window::povey`] window, the [`mel`] Kaldi mel-domain ramp
-//!   (`MelInterp::Mel`), and [`kaldi_fbank`] (snip-edges framing, per-frame
+//!   (`MelInterp::Mel`), and [`kaldi_fbank()`] (snip-edges framing, per-frame
 //!   DC/pre-emphasis, power spectrum, log, CMN);
 //! - later WPs: vocoder chains, flow-matching samplers, codec decode, and
 //!   the rest of the audio dialect (CLAUDE.md "音声特化オペレータ").
@@ -359,9 +359,10 @@ pub use fsmn_vad::{
 pub use fused_logmel::fused_log_mel_scalar;
 // ---- M3-07 hifigan_generator re-exports ---------------------------------
 pub use hifigan::{
-    CalibrationStrategy, CalibrationTable, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision,
-    HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
+    CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig,
+    HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
     SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator,
+    hifigan_generator_conditioned,
 };
 // -------------------------------------------------------------------------
 pub use istft::istft;

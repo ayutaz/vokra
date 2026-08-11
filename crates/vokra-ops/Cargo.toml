@@ -15,6 +15,13 @@ categories.workspace = true
 
 [dependencies]
 vokra-core.workspace = true
+# WP-08 (2026-08-10): SBV2 hot-path libm swap — route the terminal
+# HiFi-GAN `tanh` head through `vokra_math::tanh` for cross-plat
+# bit-identity within Vokra (owner scope decision 2026-08-09, SBV2
+# hot-path only, `docs/adr/sbv2-libm-strategy.md` §3.2.1). First-party
+# `vokra-*` crate; root `Cargo.lock` still lists only `vokra-*`
+# packages (NFR-DS-02 preserved).
+vokra-math.workspace = true
 
 # M2-04-T07: log-mel fused-vs-unfused parity harness (see
 # `tests/fused_logmel_parity.rs`). Workspace-internal only (no third-party
@@ -24,6 +31,15 @@ vokra-core.workspace = true
 # `./scripts/check-zero-deps.sh` audits the release lock.
 [dev-dependencies]
 vokra-models = { path = "../vokra-models" }
+# WP-07 wiring pin (tests/vokra_math_shared_primitives.rs): prove that
+# `vokra-ops` — and by extension every non-backend first-party crate — can
+# call the shared scalar transcendentals in `vokra-math` WITHOUT depending
+# on `vokra-backend-cpu`. Dev-only edge: this dependency exists solely to
+# link the smoke test; production code inside `vokra-ops` picks up the
+# same crate through its own future runtime edge as the SBV2 hot-path
+# migration lands. First-party `vokra-*` crate, so the root `Cargo.lock`
+# continues to list only `vokra-*` packages (NFR-DS-02).
+vokra-math.workspace = true
 
 # M0-04-T19: FFT / RFFT / STFT micro-benchmarks. `harness = false` uses a plain
 # `fn main()` binary (std timing) instead of the unstable libtest `#[bench]`

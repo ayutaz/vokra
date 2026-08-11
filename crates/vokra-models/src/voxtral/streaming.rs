@@ -24,7 +24,7 @@
 //! therefore stays empty until finalize, at which point the caller sees
 //! the whole utterance's greedy tokens in one hit — same tokens they would
 //! have gotten from the non-streaming
-//! [`crate::voxtral::VoxtralAsr::transcribe`] path on the concatenated PCM.
+//! `crate::voxtral::VoxtralAsr::transcribe` path on the concatenated PCM.
 //! Bit-identical over the same PCM (FR-EX-08 spirit — the streaming façade
 //! must not silently change output vs the offline API).
 //!
@@ -36,7 +36,7 @@
 //! # DecodeSession seam (parity with Whisper Metal/Cuda)
 //!
 //! The decoder step in this foundation is a CPU-side loop, gated so a future
-//! [`VoxtralDecodeSession`] can be swapped in exactly the way
+//! `VoxtralDecodeSession` can be swapped in exactly the way
 //! `crate::whisper::DecoderState::device_session` already is (see
 //! `crates/vokra-models/src/whisper/decoder.rs:88`). Concretely: the driver
 //! consults [`StreamingConfig::allow_device_session`] and — when the target
@@ -358,7 +358,7 @@ impl<'m> StreamingAsr<'m> {
     /// of BOS.
     ///
     /// This docstring previously claimed the output equalled
-    /// [`crate::voxtral::VoxtralAsr::transcribe`]'s. That was already
+    /// `crate::voxtral::VoxtralAsr::transcribe`'s. That was already
     /// untrue for any GGUF carrying an audio adapter (the offline path
     /// runs the encoder + soft prefix), and the P2 cc-05/07 follow-up
     /// widened the gap by moving the offline default onto the trained
@@ -367,7 +367,7 @@ impl<'m> StreamingAsr<'m> {
     ///
     /// Wiring the encoder + adapter + prompt layout into the streaming
     /// façade is the follow-up; until then, callers who need real
-    /// transcription must use [`crate::voxtral::VoxtralAsr::transcribe`]
+    /// transcription must use `crate::voxtral::VoxtralAsr::transcribe`
     /// on the concatenated PCM.
     pub fn finalize_transcript(&mut self) -> Result<StreamingChunk> {
         if self.finalized {

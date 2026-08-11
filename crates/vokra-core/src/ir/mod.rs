@@ -11,5 +11,5 @@ pub mod graph;
 pub mod tensor;
 
 pub use fusion::FusedOp;
-pub use graph::{AudioGraph, GraphBuilder, Node, OpKind};
+pub use graph::{AudioGraph, GraphBuilder, HifiGanAttrs, Node, OpKind, ResBlockType};
 pub use tensor::{DType, Dim, TensorDesc, TensorId};

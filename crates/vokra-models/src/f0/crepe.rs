@@ -22,11 +22,11 @@
 //!   / medium / large / full — the upstream size knob), plus the shared
 //!   `hop` / `fmin` / `fmax` metadata every sibling F0 extractor
 //!   ([`super::rmvpe`], [`super::fcpe`]) also carries.
-//! - [`CrepeWeights::from_gguf`] binds all 6 conv blocks + the final Dense
+//! - `CrepeWeights::from_gguf` binds all 6 conv blocks + the final Dense
 //!   classifier from tensors emitted by `crates/vokra-convert/src/models/crepe.rs`,
 //!   folding the Keras `BatchNormalization` to a per-channel affine at load
 //!   (`scale = γ/√(σ² + ε)`, `shift = β − μ·scale`) — the same offline fold
-//!   posture as [`crate::speaker::weights`] and the DAC / UTMOS out-projections.
+//!   posture as `crate::speaker::weights` and the DAC / UTMOS out-projections.
 //! - [`CREPE::extract`] runs the real forward: 512-sample zero-pad ("center"
 //!   frames), per-frame mean/std normalization, 6 × (Conv2D → BN → ReLU →
 //!   MaxPool), Permute + Flatten, Dense(360) + sigmoid, then local-average
@@ -125,7 +125,7 @@ pub enum CapacityFactor {
 }
 
 impl CapacityFactor {
-    /// Integer multiplier applied to [`FILTER_MULT`] per block.
+    /// Integer multiplier applied to `FILTER_MULT` per block.
     pub const fn multiplier(self) -> usize {
         match self {
             Self::Tiny => 4,
@@ -148,7 +148,7 @@ impl CapacityFactor {
         }
     }
 
-    /// Canonical string tag (round-trip with [`Self::from_tag`]).
+    /// Canonical string tag (round-trip with `Self::from_tag`).
     pub const fn as_tag(self) -> &'static str {
         match self {
             Self::Tiny => "tiny",
@@ -295,7 +295,7 @@ impl CREPE {
     /// - `vokra.f0.crepe.fmax` (f32, default `1100.0` Hz)
     ///
     /// Weight tensors, if present, are bound and BN-folded (see
-    /// [`CrepeWeights::from_gguf`]); an artifact carrying only the four
+    /// `CrepeWeights::from_gguf`); an artifact carrying only the four
     /// metadata keys but no weights loads with `weights = None` and
     /// [`extract`](Self::extract) will emit an honest UNIMPLEMENTED frame track
     /// (`hz = 0.0`, `voiced = false`, `confidence = 0.0`) preserving the

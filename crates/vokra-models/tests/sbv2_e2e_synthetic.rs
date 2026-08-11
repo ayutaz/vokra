@@ -19,7 +19,7 @@
 //! the loop by re-affirming Task 27's exact contract still holds
 //! unperturbed.
 
-use vokra_models::sbv2::{Language, SbV2Model, SbV2SynthRequest};
+use vokra_models::sbv2::{Language, RngMode, SbV2Model, SbV2SynthRequest};
 
 /// Shared e2e-scale request builder, varying only `text`/`language` — see
 /// `SbV2Model::synthetic_for_test_e2e`'s doc for why `noise_scale_w: 0.0`
@@ -33,11 +33,19 @@ fn e2e_request(text: &str, language: Language) -> SbV2SynthRequest {
         text: text.to_string(),
         language,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4], // matches synthetic_for_test_e2e's d_style (4)
         speed: 1.0,
         noise_scale: 0.0,
         noise_scale_w: 0.0, // load-bearing — see this file's module doc
         seed: 42,
+        // Legacy RNG so this synthetic-only test's byte-frozen expectations
+        // (the > 44_100 sample count derived from a fixed duration of 40 at
+        // every phoneme) hold. RNG choice is orthogonal here because
+        // `noise_scale_w = 0.0` short-circuits the SDP fill loop anyway,
+        // but pin explicitly so an unrelated `noise_scale_w` change would
+        // not flip this test onto the torch-parity stream.
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
     }
 }
 
@@ -119,11 +127,16 @@ fn synthetic_for_test_e2e_does_not_perturb_original_factory() {
         text: "あいう".to_string(),
         language: Language::JA,
         speaker_id: 0,
+        speaker_embedding: None, // Blocker 3: legacy synthetic lookup path
         style_vec: vec![0.0; 4],
         speed: 1.0,
         noise_scale: 0.0,
         noise_scale_w: 0.0,
         seed: 42,
+        // Byte-frozen "3 * 2 * 2 = 12 samples" contract; noise_scale_w
+        // = 0.0 short-circuits the RNG, so RNG choice is a formality
+        // here. Legacy for symmetry with the module's other tests.
+        rng_mode: RngMode::GaussianSplitMix64Legacy,
     };
 
     let audio = model.synthesize(&req).expect("synthesize should succeed");

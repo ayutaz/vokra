@@ -15,7 +15,7 @@ use crate::runtime::Tensor;
 ///
 /// All backends guarantee the *same* op coverage. An op a backend cannot
 /// execute is an **explicit error**
-/// ([`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp)); silent
+/// ([`VokraError::UnsupportedOp`]); silent
 /// CPU fallback is never the default, and Vokra does not adopt ONNX
 /// Runtime's execution-provider graph partitioning.
 pub trait Backend {
@@ -31,9 +31,9 @@ pub trait Backend {
     /// Validates that this backend covers every op in `graph`.
     ///
     /// This is the **coverage-check** entry point: it returns
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) for an
+    /// [`VokraError::UnsupportedOp`] for an
     /// op the backend cannot run (FR-EX-08) and otherwise reports
-    /// [`VokraError::NotImplemented`](crate::VokraError::NotImplemented) — it
+    /// [`VokraError::NotImplemented`] — it
     /// carries no tensor data and never computes a result.
     ///
     /// Data-carrying execution is [`run_graph`](crate::run_graph), which drives
@@ -47,8 +47,8 @@ pub trait Backend {
     /// This is the per-op compute surface the graph evaluator
     /// [`run_graph`](crate::run_graph) drives (one call per node, in
     /// topological order). A backend derives each output's shape from the op
-    /// semantics and the inputs; [`run_graph`] checks that shape against the
-    /// declared [`TensorDesc`](crate::TensorDesc), so a backend only computes.
+    /// semantics and the inputs; [`crate::run_graph`] checks that shape against the
+    /// declared [`crate::TensorDesc`], so a backend only computes.
     ///
     /// # Contract (FR-EX-08, permanent)
     ///
@@ -89,7 +89,7 @@ pub enum BackendKind {
     /// `vokra-backend-metal` (M2-01); the imperative model hot path reaches it
     /// through the `vokra-models` `Compute` dispatcher. Selecting it for a model
     /// whose op set the Metal backend does not yet cover is an explicit
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) — never a
+    /// [`VokraError::UnsupportedOp`] — never a
     /// silent CPU fall back (FR-EX-08).
     Metal,
     /// CUDA backend (Windows / Linux NVIDIA GPUs, FR-BE-03). Implemented in
@@ -98,8 +98,8 @@ pub enum BackendKind {
     /// — NVIDIA EULA install model, FR-BE-08). Reached through the `vokra-models`
     /// `Compute` dispatcher behind its `cuda` feature. A missing driver/GPU or an
     /// op the CUDA backend does not yet cover is an explicit
-    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable) /
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) — never a
+    /// [`VokraError::BackendUnavailable`] /
+    /// [`VokraError::UnsupportedOp`] — never a
     /// silent CPU fall back (FR-EX-08 / NFR-RL-06).
     Cuda,
     /// Vulkan backend (Android / Linux / non-NVIDIA Windows GPUs, FR-BE-04).
@@ -110,9 +110,9 @@ pub enum BackendKind {
     /// `Compute` dispatcher behind its `vulkan` feature. Foundation slice
     /// (M3-02-T01〜T13 landed): SPIR-V kernels for GEMM / GEMV / softmax / … land
     /// in M3-02-T14 onwards, so every hot op is currently reported as
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) — never a
+    /// [`VokraError::UnsupportedOp`] — never a
     /// silent CPU fall back (FR-EX-08 / NFR-RL-06). A missing loader / device is
-    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable).
+    /// [`VokraError::BackendUnavailable`].
     ///
     /// **NNAPI is permanently unsupported** — Vokra's Android GPU path is
     /// Vulkan-only from day one (FR-BE-07 / CLAUDE.md design constraint 8).
@@ -130,9 +130,9 @@ pub enum BackendKind {
     ///
     /// A missing WebGPU adapter (`navigator.gpu` absent / `requestAdapter`
     /// null — non-WebGPU browsers or environments) is an explicit
-    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable);
+    /// [`VokraError::BackendUnavailable`];
     /// an op the WebGPU backend does not cover is an explicit
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) —
+    /// [`VokraError::UnsupportedOp`] —
     /// never a silent CPU fall back (FR-EX-08 / NFR-RL-06). Running on the
     /// WASM CPU (SIMD128) path instead is the caller's *explicit*
     /// [`BackendKind::Cpu`] choice.
@@ -151,10 +151,10 @@ pub enum BackendKind {
     /// **Scaffold status (M5-01):** the op-execution path lands after the
     /// model-supply ADR (M5-01-T02) is ratified, so every hot op is currently
     /// reported as
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp). A host
+    /// [`VokraError::UnsupportedOp`]. A host
     /// with no reachable Apple Neural Engine (an Intel Mac, or any non-Apple
     /// target where the backend is compiled out) is an explicit
-    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable)
+    /// [`VokraError::BackendUnavailable`]
     /// — never a silent CPU fall back (FR-EX-08 / NFR-RL-06).
     ///
     /// A **C-level** selector for this delegate is intentionally *not* exported
@@ -182,10 +182,10 @@ pub enum BackendKind {
     /// **Scaffold status (M5-02):** the op-execution path (QNN graph
     /// construction) lands in the SDK-gated re-issue wave, so every hot op is
     /// currently reported as
-    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp). A host
+    /// [`VokraError::UnsupportedOp`]. A host
     /// with no reachable QNN runtime (no SDK installed, or any non-Android /
     /// -Linux / -Windows target where the backend is compiled out) is an explicit
-    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable)
+    /// [`VokraError::BackendUnavailable`]
     /// — never a silent CPU fall back (FR-EX-08 / NFR-RL-06).
     ///
     /// A **C-level** selector for this delegate is intentionally *not* exported

@@ -228,6 +228,278 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-10 — 1.0.0-rc.1-dev (WP-23: `TtsEngine` trait extension + `SynthesisRequest::style_vec` / `speaker_id` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the WP-23 `TtsEngine` extension
+(SBV2 `style_vec` + multi-speaker `speaker_id` threading; streaming
+placeholder). The C ABI (`include/vokra.h`, 33 fn + 11 typedef) is
+**untouched** — the trait, the new struct fields, and the new placeholder
+trait are all Rust-surface-only, not cbindgen-exported
+(`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: the pre-WP-23 SBV2 `TtsEngine` adapter (`vokra-models::sbv2`)
+hard-coded `SbV2SynthRequest::speaker_id = 0` and `style_vec = vec![0.0;
+d_style()]`, silently discarding any caller-supplied speaker choice or
+style conditioning that came in through the cross-engine
+[`SynthesisRequest`] shape. WP-23 lifts both into the unified request
+and lets a caller advertise capability up-front so a mixed-engine
+pipeline (piper-plus + SBV2 + Kokoro + ...) never has to know which
+engine reads which optional field.
+
+**Backward compatibility**: `SynthesisRequest` is already
+`#[non_exhaustive]` (external crates cannot use struct-literal
+construction), so adding two `Option<..>` fields with `None` defaults
+in `SynthesisRequest::new` and a matching builder for each is a purely
+additive change. The `TtsEngine` trait's three new methods all have
+defaults (`false` / `false` / `Err(UnsupportedOp)`) so every existing
+implementor (piper-plus, Kokoro, CosyVoice2, ...) keeps compiling
+without a source edit.
+
+**Files touched**:
+- `crates/vokra-core/src/engines.rs` — `SynthesisRequest` gains
+  `style_vec: Option<Vec<f32>>` + `speaker_id: Option<u32>`, matching
+  `with_style_vec` / `with_speaker_id` builders, and `SynthesisRequest::new`
+  updated to default both to `None`. `TtsEngine` gains three defaulted
+  methods (`supports_style_vec` = `false`, `supports_multi_speaker` =
+  `false`, `synthesize_stream` = loud `VokraError::UnsupportedOp`). New
+  placeholder trait `TtsStreamHandle` (methods `next_pcm_chunk`,
+  `sample_rate`) pins the incremental-streaming *shape* for a later WP.
+- `crates/vokra-models/src/sbv2/mod.rs` — `<SbV2Model as TtsEngine>::synthesize`
+  now threads `request.style_vec` / `request.speaker_id`. Both capability
+  probes override to `true`. New `#[doc(hidden)] pub fn
+  synthetic_for_test_with_nonzero_style() -> Self` for a WP-23 threading
+  test that observes `None` vs `Some(nonzero)` PCM difference.
+- `crates/vokra-models/tests/sbv2_tts_engine_extension.rs` (new) — 5 tests
+  covering both PCM-difference paths + loud-error paths + capability
+  advertisement.
+- `crates/vokra-core/src/engines.rs` (unit tests) — 4 trait-level tests
+  using a spy `TtsEngine`.
+
+**Downstream `TtsEngine` implementors** (piper-plus / Kokoro /
+CosyVoice2) compile untouched.
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-core` and
+`vokra-models`; root `Cargo.lock` unchanged.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. Snapshot
+rotation is the M5-13/IF-01 freeze owner's action. All items are
+additive (existing signatures unchanged; `SynthesisRequest` is already
+`#[non_exhaustive]` for future-safe growth), Breaking? = no.
+
+**Snapshot regenerated 2026-08-10** to close the advisory gate
+(`abi-surface (advisory)` was red because the new `with_speaker_id` /
+`with_style_vec` builders + `TtsStreamHandle` trait were missing from
+the v1.0-rc snapshot). Regenerated via
+`bash scripts/rust-public-api-list.sh --update-snapshot`; delta = 3
+entries under `vokra-core::engines::` matching this WP verbatim.
+`abi-diff.sh --gate` is still non-firing (v1.0-rc pre-release policy;
+IF-01 semver freeze is M5-13/v1.0 GA).
+
+### 2026-08-10 — 1.0.0-rc.1-dev (SBV2 v2 ZH branch: WP-07 `vokra-math` + WP-13a/14/16/18/19 — Rust surface only, advisory)
+
+Grouped additive **Rust public API** entry covering the 2026-08-10 wave
+that landed the SBV2 v2 Chinese (`language_id = 2`) branch and the
+first-party scalar transcendental crate it — plus `vokra-ops`,
+`vokra-bert` and `vokra-models::sbv2` — was extracted for. C ABI
+(`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
+across all six WPs (`scripts/gen-c-abi.sh --check` = no diff); no
+`vokra.*` GGUF chunk was renamed or removed, though WP-14 adds new
+optional `vokra.bert_base.*` hparam keys + a `vokra.bert.wordpiece.*`
+tokenizer side-car chunk (both additive, existing SBV2 v2 3-file
+loader path unaffected).
+
+| WP / area                                | New export(s) / behaviour change                                                                                                                                                            | Kind    | Rationale                                                                                                                                                | Breaking? |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| WP-07 (new crate `vokra-math`)           | 7 new top-level `pub fn` for `f32`: `exp`, `tanh`, `sqrt`, `sin`, `cos`, `log`, `log1p`                                                                                                     | Added   | Extracts the scalar transcendental primitives that `vokra-backend-cpu`'s scalar path already used so `vokra-ops`, `vokra-bert` and `vokra-models::sbv2` can reach them without pulling the whole CPU-kernel tier upward (WP-05 owner decision, `docs/adr/sbv2-libm-strategy.md`). `core`-only, no `libm`. Follows the M5-03 `vokra-vad-micro` precedent for first-party leaf-crate additions. | no        |
+| WP-14 (`vokra-convert`)                  | `convert_bert_base_file(input, output, license, tokenizer_bytes, do_lower_case) -> Result<BertBaseReport, ConvertError>`; `pub struct BertBaseReport`; `ModelKind::BertBase` variant + slug + `convert_file` dispatch | Added   | Plain-BERT (`BertForMaskedLM`) converter for `hfl/chinese-roberta-wwm-ext-large` (Apache-2.0). Emits `bert_base.*` tensor names + `vokra.bert_base.*` hparam chunk + optional `vokra.bert.wordpiece.*` tokenizer side-car. First consumer = SBV2 v2 ZH branch; the `--tokenizer` + `do_lower_case` axes also cover future English WordPiece checkpoints. | no        |
+| WP-16 (`vokra-bert`)                     | `pub struct BertBaseEncoder` (+ `impl BertEncoder for BertBaseEncoder` in `lib.rs`, `from_gguf` constructor, `forward(ids, segments)`, `d_model()`)                                       | Added   | Clean-room plain-BERT encoder (Devlin 2018) sitting on WP-14's GGUF schema. The runtime side of the WP-14 converter; consumed by WP-19.                | no        |
+| WP-18 (`vokra-models::sbv2::g2p`)        | `Language::ZH` enum variant (language_id = 2); `SbV2Phonemizer::with_zh_g2p(zh_g2p: Box<dyn Phonemizer>, zh_mapping: HashMap<i64, (u16, u8)>) -> Self` builder                              | Added   | SBV2 v2 gains ZH via piper-plus 8-language G2P reuse; this WP lands only the vokra-models-side trait boundary + delegation. `phonemize(_, Language::ZH)` fail-closes with `NotImplemented` when no ZH G2P is wired (FR-EX-08 — no synthetic char-map that could mask absence). | no        |
+| WP-19 (`vokra-models::sbv2`)             | `SbV2Model::from_gguf_with_zh_bert(main, bert_ja, bert_en, bert_zh) -> Result<Self>` additive 4-file loader; `SbV2BertContainer` gains `zh: Option<BertBaseEncoder>` + `zh_tokenizer: Option<BertWordpieceTokenizer>` fields (both default `None`) | Added   | Wires WP-16 + WP-17 into the SBV2 v2 language-id-2 slot without changing the pre-WP-19 3-file `from_gguf(main, bert_ja, bert_en)` signature — every existing call site keeps compiling and behaving identically. `d_bert` consistency guard extended to the ZH branch. | no        |
+| WP-13a (`vokra-models::sbv2`, behaviour) | `<SbV2Model as TtsEngine>::synthesize` — pre-Blocker-3 orphan rejection block that returned `VokraError::InvalidArgument` on `SynthesisRequest::speaker_embedding = Some(_)` is **removed** | Fixed   | The Blocker-3 refactor (commits `0351a3a` / `2a50088` / `70bd8a7`, speaker conditioning moved into the pipeline) landed the test + rustdoc contract but accidentally left the adapter's upstream rejection block intact. WP-13a removes the orphan; the loud-error contract is now correctly enforced by the inherent `SbV2Model::synthesize` (which raises `InvalidArgument` when `.with_external_speaker_projection` has not been wired). No signature change. | no        |
+
+**Companion WPs recorded in prose only (no Rust surface change, out-of-scope
+per L44)**: WP-08/10/11/12 (`sbv2/libm`) — replace direct `f32::exp` /
+`f32::tanh` / etc. call sites in `vokra-ops::hifigan`, `vokra-bert::deberta_v2`,
+`vokra-models::sbv2` with the newly-extracted `vokra_math::*` primitives, so
+the same reproducible-across-hosts scalar path is used everywhere. The
+`vokra-math` dependency edge is additive to each `Cargo.toml`; behaviour is
+bit-identical to WP-07's own tests.
+
+**Zero-dep** (NFR-DS-02): `vokra-math` is a first-party leaf crate with
+`core`-only dependencies; root `Cargo.lock` gains no external entries.
+The new `[dependencies]` edges from `vokra-ops`, `vokra-bert`, and
+`vokra-models` into `vokra-math` are all `vokra-*` → `vokra-*`, so the
+`vokra-*`-only invariant holds.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. The
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot needs a
+subsequent regenerate (`bash scripts/rust-public-api-list.sh
+--update-snapshot`) to close the `abi-surface (advisory)` job — same
+posture as the WP-23 companion above.
+
+### 2026-08-10 — 1.0.0-rc.1-dev (SBV2 v2 Blocker 3 close-out + Blocker 2c Wave 1 spline primitive — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the two SBV2 v2 blocker
+close-outs that landed on `feat/sbv2-voxtral-real-verify-2026-08-06`
+on 2026-08-10, alongside the WP-23 and SBV2 v2 ZH branch entries above.
+The C ABI (`include/vokra.h`, 33 fn + 11 typedef baseline) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff). Follows the
+SBV2 v2 ZH branch and X-Codec-2 precedents for new pub modules /
+accessors in `vokra-models`: **advisory Rust-surface entry**,
+`scripts/check-abi-changelog.sh` does not gate on it (no C symbol
+changed).
+
+| Commit    | Area                                       | New export(s) / behaviour change                                                                                                                                                                                                                                                                                       | Kind  | Rationale                                                                                                                                                                                                                                                                    | Breaking? |
+| --------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `1a90e0d` | `vokra-models::sbv2` (Blocker 3 close-out) | `pub fn SbV2Model::speaker_projection(&self) -> Option<&ExternalSpeakerProjection>` accessor                                                                                                                                                                                                                          | Added | Companion to the pre-existing (WP-13a era) `ExternalSpeakerProjection` type + `with_external_speaker_projection` builder + `speaker_projection: Option<..>` field. Lets callers / tests observe whether external-speaker wiring has been attached without reaching into private state. | no        |
+| `f1b7815` | `vokra-models::sbv2::spline` (new mod)     | `pub mod spline` at `crates/vokra-models/src/sbv2/mod.rs:83`, exposing `pub struct SplineParams<'a>` (bin-edge / knot-height / knot-slope descriptor) + `pub fn rational_quadratic_spline_forward(x: f32, p: SplineParams<'_>) -> f32` + `pub fn rational_quadratic_spline_inverse(y: f32, p: SplineParams<'_>) -> f32` | Added | Rational-quadratic spline math primitive that the SBV2 SDP flow-body forward / inverse pair need. Kept as a small `pub mod` so downstream tests (and the `#[ignore]`d `sdp_body_matches_torch_ref` scaffold) can exercise the math primitive in isolation.                | no        |
+
+**Blocker 2c residual behaviour anchors** (commits `5027b2b` /
+`879ba8e` / `c8e2777`): no Rust surface change worth flagging
+separately, but preserved here as behavioural anchors for the SDP
+flow-body parity gate:
+
+- `5027b2b` — `spline.rs`'s internal `.sqrt()` sites route through
+  `vokra_math::sqrt` (the WP-07 first-party scalar transcendental
+  crate) so the spline math is bit-exact across every host without
+  a `libm` intrusion into `vokra-models`'s dependency graph.
+- `879ba8e` — SBV2 `from_gguf` gains a defensive loud-fail check for
+  `sbv2.sdp.flows.<even>.*` unread tensors (FR-EX-08 — a mis-shaped
+  converter can no longer silently drop even-indexed flow layers).
+- `c8e2777` — `#[ignore]`d `sdp_body_matches_torch_ref` scaffold
+  parked on the owner fixture wait; the gate flips on when
+  `tests/fixtures/sbv2/sdp-body-torch-ref.bin` lands.
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-models`; root
+`Cargo.lock` unchanged.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. Snapshot
+rotation is the M5-13/IF-01 freeze owner's action; regenerating
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` via
+`bash scripts/rust-public-api-list.sh --update-snapshot` will pick up
+both the `speaker_projection` accessor and the new `spline::*` re-exports.
+
+### 2026-08-09 — 1.0.0-rc.1-dev (WP-17: `BertWordpieceTokenizer` clean-room in `vokra-bert` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the WP-17 clean-room WordPiece
+tokenizer (Devlin 2018 + Wu 2016 primary sources). C ABI
+(`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
+(`scripts/gen-c-abi.sh --check` = no diff); the new
+`vokra.bert.wordpiece.*` GGUF side-car chunk is additive and gated on
+the caller passing `--tokenizer <vocab.txt>` to WP-14's
+`convert_bert_base_file` (default = tokenizer chunk not emitted).
+
+| Crate / area                    | Symbol                                                                                                                                                                                                                          | Kind  | Rationale                                                                                                                                                                                                                                 | Breaking? |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `vokra-bert::wordpiece`         | `pub struct BertWordpieceTokenizer { … }` (with `from_gguf`, `encode`, `decode`, `vocab_size`, `cls_id`, `sep_id`, `pad_id`, `unk_id` methods); `pub enum OovPolicy` (variants `Strict`, `MapToUnk`)                            | Added | Runtime tokenizer for `hfl/chinese-roberta-wwm-ext-large` (SBV2 v2 ZH branch) and for future English `google-bert/bert-base-*` checkpoints. Feeds `BertBaseEncoder::forward` (WP-16) with the same tokenization the upstream `BertTokenizer` produces. | no        |
+
+**Zero-dep** (NFR-DS-02): entirely inside `vokra-bert`; no new external
+crate. `OovPolicy::Strict` (the default) enforces FR-EX-08 by returning
+a loud error on unknown pieces instead of silently substituting `[UNK]`.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry. Snapshot
+rotation is the M5-13/IF-01 freeze owner's action.
+
+### 2026-08-09 — 1.0.0-rc.1-dev (Wave 3 HGAN-05 speaker conditioning + Wave 6 packed-cache exports — Rust surface only)
+
+Additive **Rust public API** changes only — C ABI (`include/vokra.h`) untouched
+(baseline 33 fn / 11 typedefs unchanged; `scripts/check-abi-changelog.sh`
+green), no `vokra.*` GGUF key added or renamed. Captures the SBV2 v2 waves
+that landed 2026-08-09 (72-gap audit-plan execution, Waves 1-8).
+
+The `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is regenerated
+(net +38 lines) to match. The full-surface additions grouped by wave:
+
+| Wave / area                    | New export(s)                                                                                                     | Kind  | Rationale                                                                        | Breaking? |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------- | --------- |
+| Wave 3 HGAN-05 (vokra-ops)     | `GinCondition`, `hifigan_generator_conditioned`                                                                   | Added | Real HiFi-GAN `dec.cond(g)` speaker conditioning path (SBV2/CosyVoice2/BigVGAN)  | no        |
+| Wave 2 HGAN-01 (vokra-core)    | `ir::graph::ResBlockType` enum                                                                                    | Added | ResBlock1 vs ResBlock2 topology switch — SBV2 needs V1's convs2 chain            | no        |
+| Wave 4 (vokra-core)            | `gguf::writer::has_tensor`                                                                                         | Added | Converter needs to check-then-emit optional-slot fabricated zeros                | no        |
+| Wave 7B LOUD-PARTIAL (vokra-ops) | `rnnoise::MIN_LAG_SAMPLES`, `rnnoise::MAX_LAG_SAMPLES`                                                          | Added | Real autocorrelation-based pitch analysis exposes its search bounds              | no        |
+
+Plus the `vokra_core::rng::*` re-exports the 2026-08-08 entry already
+records; regenerating the snapshot captures them under `USE` rows too.
+Snapshot generated via `scripts/rust-public-api-list.sh --update-snapshot`
+per the tool's own README.
+
+### 2026-08-08 — 1.0.0-rc.1-dev (Philox4x32-10 + MT19937 + torch.randn parity primitives added to `vokra_core::rng` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the PR #27 RNG plumbing that gives
+`SbV2SDP::sample` a byte-exact `torch.randn(..., device='cpu')` parity path.
+The C ABI (`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
+(`scripts/gen-c-abi.sh --check` = no diff). Follows the SBV2 / FSMN-VAD
+precedent for internal-only Rust-surface additions: advisory changelog entry,
+`scripts/check-abi-changelog.sh` does not gate on it (no C symbol changed).
+
+**Module reshuffle** (structural, no behaviour change): `crates/vokra-core/src/rng.rs`
+→ `crates/vokra-core/src/rng/mod.rs` with children `mt19937.rs`,
+`normal_kernel.rs`, `philox_round.rs`, `philox_state.rs`, `seed_init.rs`.
+Pre-existing exports (`SplitMix64`, `GaussianSplitMix64`, `Xorshift64Star`,
+`NormalSource`) stay at the same public paths — the `pub use` re-exports at
+the crate root are byte-exact against the flat-file layout.
+
+**New public exports** (all re-exported through `vokra_core::rng::*`, so
+consumers see them at the same crate path they'd use for the pre-existing
+generators):
+
+| Symbol | Path | Kind | Origin |
+|---|---|---|---|
+| `philox4x32_10` | `mt19937::` — via `philox_round` | Added | Steps 1-2 (Random123 KAT-audited) |
+| `PHILOX_M0` / `PHILOX_M1` / `PHILOX_W0` / `PHILOX_W1` / `PHILOX_ROUNDS` | `philox_round::` | Added | Steps 1-2 (KAT constants) |
+| `PhiloxState` | `philox_state::` | Added | Step 3 (128-bit counter, O(1) seek) |
+| `TorchPhiloxState` | `seed_init::` | Added | Step 4 (PyTorch-compatible seed init) |
+| `SCALE` / `u32_to_uniform_f32_pytorch` | `normal_kernel::` | Added | Step 5 (bit-exact `PhiloxRNGEngine.h` bridge) |
+| `philox_randn_sample` | `normal_kernel::` | Added | Steps 6-7 (Box-Muller of one Philox block, internal primitive) |
+| `TorchRandnStream` | `normal_kernel::` | Added | Steps 6-7 (streaming source for `torch.randn(K<16)`) |
+| `torch_randn_f32` | `normal_kernel::` | Added | Steps 6-7 (top-level dispatcher, mirrors ATen `normal_kernel`) |
+| `TorchMt19937Engine` | `mt19937::` | Added | MT19937 rewrite (bit-exact `at::mt19937_engine`) |
+
+**Motivation**: real CPU `torch.randn` uses `at::mt19937_engine` +
+`at::normal_distribution<double>` (BSD-3-Clause), NOT `PhiloxRNGEngine.h::randn`
+(the earlier "Philox is torch.randn" claim was traced by bisect
+`wf_20fa0933-53d` to be wrong; upstream's own header disclaims that path).
+The MT19937 rewrite (commit `b28f35e`) makes `TorchRandnStream::next_f32`
+byte-exact against `torch.manual_seed(N); torch.randn(K)` for `K < 16` and
+for non-contiguous tensors; `torch_randn_f32` adds the `K >= 16`
+`normal_fill` scalar fast-path port (contiguous slice, in-place uniform fill
++ 16-wide `normal_fill_16` blocks + tail-recompute). See
+`crates/vokra-core/src/rng/normal_kernel.rs` §"Historical note" +
+`crates/vokra-core/src/rng/mt19937.rs` for the derivation.
+
+**Interop caveat**: the Philox primitives (`philox4x32_10`, `PhiloxState`,
+`TorchPhiloxState`, `philox_randn_sample`, `u32_to_uniform_f32_pytorch`)
+are kept as **internal, KAT-audited primitives** — they do NOT reproduce
+`torch.randn` on any real torch backend. Documented in
+`normal_kernel.rs` §"`SCALE` / `u32_to_uniform_f32_pytorch` — legacy
+pipeline glue" and `philox_randn_sample`'s "Not a torch.randn parity path"
+section. Kept because a future CUDA `curandStatePhilox4_32_10_t` parity
+path can build on the same block function once subsequence/offset packing
+is settled.
+
+**Files touched**:
+- `crates/vokra-core/src/rng/mod.rs` (was `rng.rs`) — `pub use` re-exports
+  + `NormalSource` trait boundary.
+- `crates/vokra-core/src/rng/{mt19937,normal_kernel,philox_round,philox_state,seed_init}.rs` — new.
+- `crates/vokra-core/tests/rng_{philox_kat,philox_randn,philox_state,torch_randn_cpu_parity,torch_randn_e2e,torch_seed,uniform_transform,module_layout}.rs` — new integration tests + KAT anchors.
+- `crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed*.f32.bin` +
+  `torch_philox_seed*.u32.bin` — pinned byte anchors regenerated on M1
+  aarch64 via `tools/parity/torch_philox_dump.py`.
+
+**Zero-dep** (NFR-DS-02): all edits inside `vokra-core` (std + core only,
+no new external crates); root `Cargo.lock` unchanged.
+
+**Related**: PR27-RNG-CROSS-ARCH audit gap — the `torch_randn_seed_42_k_100`
+and `torch_randn_seed_12345_k_1000` fixture tests now apply per-arch
+1-ULP tolerance for the `K >= 16` fast path, since Rust's `f32::ln` /
+`f32::cos` / `f32::sin` lower to target-dependent LLVM intrinsics. See
+`docs/adr/sbv2-libm-strategy.md` for the "bit-exact within Vokra on all
+platforms" contract vs the "match torch bit-exact on every host"
+impossibility ADR.
+
 ### 2026-08-03 — 1.0.0-rc.1-dev (GGUF `MAX_TENSOR_DIMS` raised 4 → 8 for multimodal Conv3d weights — Rust surface only, advisory)
 
 Additive **Rust public API** + **GGUF wire semantics** entry: the loader
@@ -1231,6 +1503,40 @@ shape break. These are `vokra-core::m5_residual_ops` `&'static str` constants �
 | `wespeaker_speaker_encode`   | FR-OP-80 | CAM++ already covers speaker embedding                       |
 | `titanet_speaker_encode`     | FR-OP-80 | CAM++ covers it; TitaNet NVIDIA NC restriction unconfirmed   |
 | `diarize`                    | FR-OP-82 | trigger + license (pyannote HF-gated) double blocker         |
+
+### 2026-08-09 — 1.0.0-rc.1-dev (Wave 7 Part C: Moshi head mapped-lazy, MOSHI-16GB-STRATEGY residual)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched (baseline 33 fn / 11 typedefs unchanged; `scripts/check-abi-changelog.sh`
+green), and **no `vokra.*` GGUF key was added or renamed**. Extends the
+cc-06 (2026-07-19) mapped-lazy load path with the Voxtral `MappedHeads`
+pattern (12e574e): `MoshiEngine::from_path` / `from_path_with_policy` now
+serve head reads (`text_emb` / `audio_emb` / `text_linear`) straight out of
+the mapping too, saving ~1.3 GiB additional resident footprint at the
+full-7B shape (projected ~10 GB peak on 16 GB hosts, from cc-06's 11.43 GB
+measurement — actual measurement is owner scope). Bit-identical to the
+resident path — per-row / per-chunk widen preserves the byte formula and
+each row's inner accumulation order (pinned by
+`fully_mapped_backbone_matches_resident_bitwise` + the existing
+`converted_gguf_loads_under_strict_policy_..._end_to_end` bit-identity
+assertion on dialog turn text + PCM).
+
+| Crate / area   | Symbol                                        | Kind  | Signature                                                                                              | Rationale                                                                                                     | Breaking? | PR    |
+| -------------- | --------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-models::moshi` | `MappedHeadWeights` (struct + `bind` / `embed_text_into` / `embed_audio_into` / `text_logits_into` / `out_norm_gamma` / `n_audio_tables` / `text_card`) | Added | bounded-memory head store: `text_emb`, `emb.{k}.weight`, `text_linear` descriptors kept mapped; `out_norm.alpha` widened once at bind and cached; per-row widen+accumulate for embeddings; chunked GEMV (`MOSHI_HEAD_CHUNK_ROWS = 128`) for the text head — all bit-identical to the resident path | full-7B on 16 GB machines, ~1.3 GiB additional headroom vs cc-06 | no | (TBD) |
+| `vokra-models::moshi` | `MoshiBackbone::new_mapped_full` / `MoshiBackbone::is_head_mapped` | Added | fully bounded-memory backbone constructor (head + blocks both mapped); observability accessor | wires `MappedHeadWeights` into the backbone dispatch (embed_step / text_logits_into / forward_impl.out_norm) | no | (TBD) |
+| `vokra-models::moshi` | `MoshiEngine::backbone_is_mapped` / `MoshiEngine::backbone_is_head_mapped` | Added | observability accessors — regression guards for `from_path`'s bounded-memory contract | test / operator visibility into the load posture | no | (TBD) |
+
+Notes:
+- `WeightResidency::MappedLazy` (private enum) was replaced by
+  `WeightResidency::MappedLazyFull` — no public API change, and direct
+  callers can still construct the intermediate "head resident + blocks
+  mapped" posture via `MoshiBackbone::new_mapped` (which `parity_moshi.rs`
+  Stage C exercises directly).
+- Audit `MOSHI-16GB-STRATEGY` was substantially resolved by cc-06
+  (measured peak 11.43 GB on M1 16 GB, 2026-07-19). This Wave 7 Part C
+  entry lands the natural Voxtral-pattern extension so future audits find
+  the head store mapped-lazy, not just the blocks.
 
 ### 2026-07-19 — 1.0.0-rc.1-dev (cc-06: Moshi full-7B streaming convert + mmap load)
 

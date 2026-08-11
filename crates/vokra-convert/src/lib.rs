@@ -46,6 +46,7 @@ mod models;
 mod onnx;
 mod quantize;
 mod safetensors;
+pub mod spm_proto;
 
 use std::fmt;
 use std::path::Path;
@@ -275,7 +276,7 @@ pub enum ModelKind {
     /// `n_ctx`) ride as `0`-placeholder sentinels pending the `.nemo`
     /// tarball's `model_config.yaml` extraction. CC-BY 4.0 weight
     /// (`AttributionRequired` via the `canary-` family prefix walk in
-    /// [`vokra_core::compliance::license_class`]). Every F32 / F16 /
+    /// `vokra_core::compliance::license_class`). Every F32 / F16 /
     /// BF16 tensor passes through verbatim (mirror of the Canary /
     /// qwen3_tts / vibevoice / voxcpm2 BF16 pass-through pattern).
     /// Reuses the shared `canary::CanaryEncoderConfig` (FastConformer
@@ -342,8 +343,8 @@ pub enum ModelKind {
     /// up an NC weight in production. Publish requires
     /// `publish-one.sh --allow-noncommercial`.
     ///
-    /// **Reuse posture**: the converter reuses [`models::whisper`] via
-    /// the [`WhisperVariant::CrisperWhisper`] arm — every architectural
+    /// **Reuse posture**: the converter reuses `models::whisper` via
+    /// the `WhisperVariant::CrisperWhisper` arm — every architectural
     /// axis (tensor topology, `vokra.whisper.*` hparam chunk, front-end
     /// spec, alignment-head table, detokenizer) is byte-identical to the
     /// vanilla Whisper path; only the `vokra.model.arch` stamp
@@ -409,8 +410,8 @@ pub enum ModelKind {
     /// with-bias + GELU FFN topology, not Llama's RMSNorm + SwiGLU);
     /// sample rate swaps from 24 kHz to **32 kHz**; text-token vocabulary
     /// swaps from 2454 (multilingual) / 704 (English-only) to **50 276**
-    /// (GPT-2 base 50 257 + 19 paralinguistic tags [angry]/[fear]/
-    /// [surprised]/[whispering]/[cough]/[laugh]/[chuckle]/… from
+    /// (GPT-2 base 50 257 + 19 paralinguistic tags `[angry]`/`[fear]`/
+    /// `[surprised]`/`[whispering]`/`[cough]`/`[laugh]`/`[chuckle]`/… from
     /// `added_tokens.json`); speech-token vocabulary shrinks 8194 → 6563;
     /// max text/speech tokens shrink 2048 → 402 / 4096 → 604 for
     /// low-latency serving; the speech-token-to-mel decoder is distilled
@@ -531,7 +532,7 @@ pub enum ModelKind {
     /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/raw/main/config.json`
     /// fetched 2026-07-30 (CLAUDE.md「ハルシネーション厳禁」). The upstream
     /// release is BF16 (~3.83 GB / 1 916 676 352 params BF16). Convert
-    /// with [`convert_qwen3_tts_1_7b_customvoice_file`] — the converter
+    /// with `convert_qwen3_tts_1_7b_customvoice_file` — the converter
     /// dispatches through the shared `models::qwen3_tts::convert_variant`
     /// path with `Qwen3TtsVariant::_1_7B_CustomVoice`.
     Qwen3TtsCustomVoice17B,
@@ -547,7 +548,7 @@ pub enum ModelKind {
     /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/raw/main/config.json`
     /// fetched 2026-07-30 (CLAUDE.md「ハルシネーション厳禁」). The upstream
     /// release is BF16 (~3.83 GB / 1 916 676 352 params BF16). Convert
-    /// with [`convert_qwen3_tts_1_7b_voicedesign_file`] — the converter
+    /// with `convert_qwen3_tts_1_7b_voicedesign_file` — the converter
     /// dispatches through the shared `models::qwen3_tts::convert_variant`
     /// path with `Qwen3TtsVariant::_1_7B_VoiceDesign`.
     Qwen3TtsVoiceDesign17B,
@@ -819,7 +820,7 @@ pub enum ModelKind {
     /// disclosure** — a usage agreement, NOT a standard SPDX permissive
     /// license. The Vokra registry
     /// (`vokra-core::LicenseClass::from_id("styletts2")` /
-    /// `"styletts-2"`) resolves to [`LicenseClass::Unknown`], which fails
+    /// `"styletts-2"`) resolves to [`vokra_core::LicenseClass::Unknown`], which fails
     /// closed under M2-13. The provenance stamp defaults to `unknown`;
     /// `docs/license-audit.md` §3.1 StyleTTS 2 sign-off is
     /// `☑ Rejected 2026-07-23 yousan` (weight redistribution declined).
@@ -871,6 +872,24 @@ pub enum ModelKind {
     /// Convert with [`convert_deberta_v3_file`] with a safetensors
     /// checkpoint.
     DebertaV3,
+    /// **hfl/chinese-roberta-wwm-ext-large** plain-BERT checkpoint
+    /// (WP-14, 2026-08-10). `BertForMaskedLM` Chinese BERT-large from
+    /// HFL (whole-word masking, 21,128-piece WordPiece vocab, 1024
+    /// hidden, 24 layers, 16 heads). **Apache-2.0** upstream weight
+    /// (owner-side sign-off queued at `docs/license-audit.md` §3.1;
+    /// primary source verified 2026-08-10 via HF cardData). Wired into
+    /// the SBV2 v2 `language_id = 2` (ZH) BERT slot at runtime via
+    /// [`SbV2Model::from_gguf_with_zh_bert`](https://docs.rs/vokra-models).
+    /// Arch-different from [`Self::DebertaV2`] / [`Self::DebertaV3`]:
+    /// post-norm, standard attention, no disentangled position path,
+    /// no per-layer `wq_pos` / `wk_pos` / `pos_embed` duplication —
+    /// see [`crate::models::bert_base`] for the rename table and
+    /// [`crate::models::bert_base::convert_bert_base_file`] for the
+    /// vocab-txt `--tokenizer` side-car channel. F32 / F16 / BF16
+    /// tensors pass through verbatim under the `bert_base.*` names
+    /// [`BertBaseEncoder::from_gguf`](https://docs.rs/vokra-bert)
+    /// reads.
+    BertBase,
     /// Style-Bert-VITS2 v2 (SBV2) official checkpoint (SBV2 v2 plan Task 25,
     /// 2026-07-26): a `litagin02/style_bert_vits2`-family safetensors
     /// checkpoint for the multilingual (JA + EN) base model
@@ -897,7 +916,7 @@ pub enum ModelKind {
     /// head over a 128-mel spectrogram at 16 kHz PCM in. MIT weight +
     /// code (upstream `Dream-High/RMVPE` + `yxlllc/RMVPE` LICENSE both
     /// = MIT, fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」)
-    /// → [`LicenseClass::Permissive`]. Every F32 / F16 / BF16 tensor
+    /// → [`vokra_core::LicenseClass::Permissive`]. Every F32 / F16 / BF16 tensor
     /// passes through verbatim under upstream state_dict names; the
     /// `vokra.rmvpe.*` chunk group carries the primary-source hparams
     /// (hop=160, sr=16000, n_mels=128, win_length=1024, n_fft=2048,
@@ -1186,7 +1205,7 @@ pub enum ModelKind {
     /// from musicgen / audioldm2 / jasco / ace_step / bs_roformer.
     /// Convert with `convert_stable_audio_open_small_file` — the raw
     /// SPDX string is NOT SPDX-registered so the converter hard-maps
-    /// to [`LicenseClass::NonCommercial`] per the CPML precedent in
+    /// to [`vokra_core::LicenseClass::NonCommercial`] per the CPML precedent in
     /// `xtts_v2.rs`. Publish requires `--allow-noncommercial`.
     StableAudioOpenSmall,
     /// **Meta JASCO 400M Chords+Drums**
@@ -1407,7 +1426,7 @@ pub enum ModelKind {
     /// `.bin` (torch pickle) → safetensors bridge lives offline in
     /// `tools/parity/bin_to_safetensors.py`; this converter accepts
     /// safetensors only. Convert with
-    /// [`convert_pyannote_segmentation_file`].
+    /// `convert_pyannote_segmentation_file`.
     PyannoteSegmentation,
     /// **pyannote/speaker-diarization-3.1** pipeline orchestration
     /// (Bredin, CNRS — 2026-08-01 Wave 5, `docs/license-audit.md`
@@ -1429,7 +1448,7 @@ pub enum ModelKind {
     /// dispatch (`crates/vokra-models/src/pyannote/pipeline.rs`) is
     /// a separate WP — this variant only stamps orchestration
     /// metadata. Convert with
-    /// [`convert_pyannote_speaker_diarization_3_1_file`].
+    /// `convert_pyannote_speaker_diarization_3_1_file`.
     PyannoteSpeakerDiarization31,
     // ---------------------------------------------------------------------------
     // TIER 1+2 audio-gap implementation (2026-07-30 ultracode `wf_022575ce-077`)
@@ -1455,7 +1474,7 @@ pub enum ModelKind {
     /// 2026-07-30). Provenance = **apache-2.0** (Permissive) per both
     /// HF model cards' `cardData.license` (CC-verified via HF API
     /// 2026-07-30). The `--model qwen3-asr-0.6b` / `-1.7b` slug picks
-    /// the [`models::qwen3_asr::Variant`]; the bare `qwen3-asr` slug
+    /// the `models::qwen3_asr::Variant`; the bare `qwen3-asr` slug
     /// routes to the 1.7B (flagship) default.
     Qwen3Asr,
     /// **wav2vec 2.0 CTC** family safetensors checkpoint (SoTA plan
@@ -1488,7 +1507,7 @@ pub enum ModelKind {
     /// `wav2vec2-large-xlsr-53` / `wav2vec2-large-xlsr-53-japanese` /
     /// `wav2vec2-large-xlsr-53-chinese-zh-cn` /
     /// `wav2vec2-xlsr-53-espeak-cv-ft` slugs pick the
-    /// [`models::wav2vec2_ctc::Variant`]; the bare `wav2vec2` slug
+    /// `models::wav2vec2_ctc::Variant`; the bare `wav2vec2` slug
     /// routes to `base-960h` (the smallest / most widely-used release).
     Wav2Vec2Ctc,
     /// **data2vec-audio** (`facebook/data2vec-audio-base-960h`,
@@ -1511,7 +1530,7 @@ pub enum ModelKind {
     /// (apache-2.0 per HF `cardData.license` CC-verified 2026-08-02).
     /// The `--model data2vec-audio-base` / `data2vec-audio-base-960h`
     /// slugs pick this arm; convert dispatch routes it through
-    /// [`models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant`]
+    /// `models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant`
     /// with the sibling `Variant::Data2vecAudioBase960h` (correct
     /// provenance stamp on top of the shared topology axes).
     Data2vecAudioBase,
@@ -1522,7 +1541,7 @@ pub enum ModelKind {
     /// CTC adapters (~2000 sibling files in the repo); base tensor path
     /// reuses the [`Self::Wav2Vec2Ctc`] converter (parent workflow
     /// REUSE HINT) via a dedicated
-    /// [`models::wav2vec2_ctc::Variant::Mms1bAll`] arm.
+    /// `models::wav2vec2_ctc::Variant::Mms1bAll` arm.
     ///
     /// **Placeholder axes** — the parent workflow's SIZE NOTE (4.00 GB
     /// checkpoint) forbids downloading `config.json` for
@@ -1556,8 +1575,8 @@ pub enum ModelKind {
     /// Provenance = **apache-2.0** (Permissive). Ships **~17 GB BF16**
     /// across 4 safetensors shards, so **vast.ai is required** (memory
     /// `[[feedback-large-models-on-vast-ai]]`). Convert with
-    /// [`convert_moss_tts_file`] (variant selector
-    /// [`models::moss_tts::MossTtsVariant::Delay`]).
+    /// `convert_moss_tts_file` (variant selector
+    /// `models::moss_tts::MossTtsVariant::Delay`).
     MossTts,
     /// OpenMOSS Team **MOSS-TTS-v1.5** sibling of [`Self::MossTts`]
     /// (`OpenMOSS-Team/MOSS-TTS-v1.5`, apache-2.0, added 2026-07-30).
@@ -1620,9 +1639,9 @@ pub enum ModelKind {
     /// `[[feedback-large-models-on-vast-ai]]`). Provenance =
     /// **apache-2.0** (Permissive).
     ///
-    /// **Reuses the [`models::moss_tts`] converter** per the parent
+    /// **Reuses the `models::moss_tts` converter** per the parent
     /// workflow's REUSE HINT rather than a fresh `models/*.rs` module,
-    /// dispatching through the new [`models::moss_tts::MossTtsVariant::AudioInstruct4b`]
+    /// dispatching through the new `models::moss_tts::MossTtsVariant::AudioInstruct4b`
     /// arm. That arm inherits the sibling **Local** (Qwen3-flavour 2.5B)
     /// axes as a **placeholder** while the code-only task discipline
     /// forbids downloading `configuration_moss_audio.py` for primary-source
@@ -1644,10 +1663,10 @@ pub enum ModelKind {
     /// `[[feedback-large-models-on-vast-ai]]`). Provenance =
     /// **apache-2.0** (Permissive).
     ///
-    /// **Reuses the [`models::moss_tts`] converter** per the parent
+    /// **Reuses the `models::moss_tts` converter** per the parent
     /// workflow's REUSE HINT (mirroring the sibling 4B arm) rather
     /// than a fresh `models/*.rs` module, dispatching through the new
-    /// [`models::moss_tts::MossTtsVariant::AudioInstruct8b`] arm. That
+    /// `models::moss_tts::MossTtsVariant::AudioInstruct8b` arm. That
     /// arm inherits the sibling **Local** (Qwen3-flavour 2.5B) axes as
     /// a **placeholder** while the code-only task discipline forbids
     /// downloading `configuration_moss_audio.py` for primary-source
@@ -1661,7 +1680,7 @@ pub enum ModelKind {
     /// **MeloTTS-English** (`myshell-ai/MeloTTS-English`, MIT).
     /// Implementer C wave 2026-07-30. VITS2-family multilingual TTS
     /// with a modified duration predictor. Category = `tts`. See
-    /// [`convert_melotts_file`] + [`crate::models::melotts::MeloVariant`]
+    /// `convert_melotts_file` + `crate::models::melotts::MeloVariant`
     /// — one converter serves the 3 language variants; each pins its
     /// language-specific axes (`n_symbols` / `num_tones` /
     /// `num_languages` / `n_speakers_active`) as compile-time constants.
@@ -1689,7 +1708,7 @@ pub enum ModelKind {
     /// TTS head (12-layer encoder / 6-layer decoder × 12 heads × 768
     /// hidden × 3072 FFN) + speech-decoder prenet / postnet + 512-d
     /// speaker x-vector conditioning. Category = `tts`. See
-    /// [`convert_speecht5_file`].
+    /// `convert_speecht5_file`.
     ///
     /// The sibling `microsoft/speecht5_vc` (voice-conversion) is
     /// deliberately out of scope — voice-cloning targets are
@@ -1700,8 +1719,8 @@ pub enum ModelKind {
     /// Decoder-only Parler LM (24-layer × 1024d MHA over 9 DAC
     /// codebooks) + T5 text encoder (24-layer × 1024d × 16h × 2816
     /// FFN) conditioned on a natural-language voice description.
-    /// Category = `tts`. See [`convert_parler_file`] +
-    /// [`crate::models::parler::ParlerVariant`] — one converter serves
+    /// Category = `tts`. See `convert_parler_file` +
+    /// `crate::models::parler::ParlerVariant` — one converter serves
     /// both the multilingual base and the Indic fine-tune (they share
     /// the tensor topology).
     ParlerTtsMiniMultilingual,
@@ -1720,9 +1739,9 @@ pub enum ModelKind {
     /// multilingual's 90714. Every T5 / decoder / audio-encoder hparam
     /// is unchanged. Primary source verified 2026-08-01 from
     /// `huggingface.co/parler-tts/parler-tts-mini-v1/raw/main/config.json`
-    /// — CLAUDE.md「ハルシネーション厳禁」. See [`convert_parler_file`]
-    /// + [`crate::models::parler::ParlerVariant::MiniV1English`] — the
-    /// single [`crate::models::parler::convert_parler_file`] converter
+    /// — CLAUDE.md「ハルシネーション厳禁」. See `convert_parler_file`
+    /// + `crate::models::parler::ParlerVariant::MiniV1English` — the
+    /// single `crate::models::parler::convert_parler_file` converter
     /// dispatches the three variants; only `vocab_size` differs on this
     /// arm. Category = `tts`. ~3.5 GB single safetensors (M1 iMac 16 GB
     /// でローカル変換 safe per memory
@@ -1738,22 +1757,22 @@ pub enum ModelKind {
     /// slot-position embedding, NOT RoPE) over external
     /// `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` codec (16 quantizers ×
     /// 1024 vocab @ 48 kHz). Category = `tts`. See
-    /// [`convert_vieneu_file`].
+    /// `convert_vieneu_file`.
     VieNeuTts,
     /// **Bark (Suno)** family (`suno/bark` + `suno/bark-small`, MIT).
     /// Implementer C wave 2026-07-30. Hierarchical AR LM TTS in 3
     /// transformer stages (semantic → coarse EnCodec → fine EnCodec)
     /// over an external `facebook/encodec_24khz` vocoder
     /// (CC-BY-NC 4.0 — the M2-13 codec-side gate fires there, not on
-    /// the Bark GGUF). Category = `tts`. See [`convert_bark_file`] +
-    /// [`crate::models::bark::BarkVariant`] — one variant per
+    /// the Bark GGUF). Category = `tts`. See `convert_bark_file` +
+    /// `crate::models::bark::BarkVariant` — one variant per
     /// per-stage `num_layers` (small=12, full=24).
     Bark,
     /// **Bark-small** (`suno/bark-small`, MIT) explicit variant.
     /// Implementer C wave 2026-07-30. Distinct dispatch arm from
     /// [`Self::Bark`] so the CLI slug + verify-time introspection
     /// surface the exact release. Runs the same
-    /// [`convert_bark_file`] with [`crate::models::bark::BarkVariant::Small`].
+    /// `convert_bark_file` with `crate::models::bark::BarkVariant::Small`.
     BarkSmall,
     /// SpeechBrain **tts-hifigan-libritts-22050Hz** vocoder checkpoint
     /// (SoTA plan Phase D1, 2026-07-30). Category = `vocoder`. HiFi-GAN
@@ -1803,7 +1822,7 @@ pub enum ModelKind {
     /// 2026-07-30). Category = `vocoder`. AMPBlock1 with Snake or
     /// SnakeBeta plus transposed-conv upsample vocoder
     /// (arXiv:2206.04658). Four variants share this single
-    /// [`ModelKind`], distinguished by a [`bigvgan::BigVGanVariant`]
+    /// [`ModelKind`], distinguished by a `bigvgan::BigVGanVariant`
     /// discriminator emitted under `vokra.bigvgan.variant`:
     /// `v2_22khz_80band_256x` (D2), `v2_44khz_128band_512x` (D3),
     /// `v2_24khz_100band_256x` (D4), `base_v1_24khz_100band` (D5,
@@ -1838,7 +1857,7 @@ pub enum ModelKind {
     /// because FocalCodec is neither RVQ nor FSQ nor SoundStream
     /// family. All three variants collapse into this single ModelKind;
     /// [`convert_file_with_slug`] picks the correct
-    /// [`models::focalcodec::FocalcodecVariant`] from the raw `--model`
+    /// `models::focalcodec::FocalcodecVariant` from the raw `--model`
     /// slug (mirror of [`Self::BigVGan`]). Provenance = **apache-2.0**
     /// for every variant (Permissive — verified 2026-07-30 /
     /// 2026-07-31 via HF API cardData; base `microsoft/wavlm-large`
@@ -1848,7 +1867,7 @@ pub enum ModelKind {
     /// Category = `enhancement`. TIGER = Time-frequency Interleaved
     /// Gain Extraction from a Restructured net — dialog / narration /
     /// SFX cinematic source separation trained on the DnR benchmark.
-    /// Shares the [`models::tiger::ARCH`] tag `tiger_separator` +
+    /// Shares the `models::tiger::ARCH` tag `tiger_separator` +
     /// converter with the `TigerSpeech` sibling; the two differ only
     /// in training data + `vokra.tiger.variant` / `vokra.model.name` /
     /// `vokra.provenance.upstream_hf` stamps. Every F32 / F16 / BF16
@@ -1862,7 +1881,7 @@ pub enum ModelKind {
     /// — same architecture as [`Self::TigerSeparator`], different
     /// training data + head count. Both variants route to
     /// `models::tiger::convert_tiger_file` with distinct
-    /// [`models::tiger::TigerVariant`] arguments. Provenance =
+    /// `models::tiger::TigerVariant` arguments. Provenance =
     /// **apache-2.0** (Permissive).
     TigerSpeech,
     /// **JacobLinCool/MP-SENet-DNS** (Implementer E TIER 1, 2026-07-30).
@@ -1880,7 +1899,7 @@ pub enum ModelKind {
     /// STFT enhancement network, arXiv:2305.13686 lineage). This is a
     /// distinct [`ModelKind`] arm so §3.1 sign-off + publish-side
     /// provenance stamp can be tracked per HF repo — the underlying
-    /// converter is [`models::mp_senet::convert_mp_senet_file`], shared
+    /// converter is `models::mp_senet::convert_mp_senet_file`, shared
     /// verbatim with the sibling arm (the safetensors surface + arch
     /// tag are identical; only the `vokra.provenance.upstream_hf` slug
     /// and the sign-off row diverge). Every F32 / F16 / BF16 tensor
@@ -1901,7 +1920,7 @@ pub enum ModelKind {
     /// separation task — distinct from the enhancement-category
     /// SepFormer siblings). SepFormer = Transformer-based dual-path
     /// separator (Subakan et al. 2021). Shares the
-    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// the `SepformerWham16kEnh` / `SepformerWhamr16k` siblings; the
     /// three differ only in training data + head count +
     /// `vokra.sepformer.variant` / `vokra.model.category` /
@@ -1913,14 +1932,14 @@ pub enum ModelKind {
     /// **speechbrain/sepformer-wham16k-enhancement** (Implementer E
     /// TIER 1, 2026-07-30). Category = `enhancement`. Single-speaker
     /// speech enhancement on WHAM! 16 kHz. Shares the
-    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// [`Self::SepFormer`] / [`Self::SepformerWhamr16k`]. Provenance =
     /// **apache-2.0** (Permissive).
     SepformerWham16kEnh,
     /// **speechbrain/sepformer-whamr16k** (Implementer E TIER 1,
     /// 2026-07-30). Category = `enhancement`. Joint dereverb +
     /// denoise on WHAMR! 16 kHz. Shares the
-    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`]. Provenance
     /// = **apache-2.0** (Permissive).
     SepformerWhamr16k,
@@ -1929,7 +1948,7 @@ pub enum ModelKind {
     /// separation — same head as [`Self::SepFormer`], differs only in
     /// the training corpus: LibriMix is a LibriSpeech-derived
     /// CC-BY-4.0 mixture set, WSJ0-2mix is proprietary WSJ0-derived).
-    /// Shares the [`models::sepformer::ARCH`] tag `sepformer` +
+    /// Shares the `models::sepformer::ARCH` tag `sepformer` +
     /// converter with [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`]
     /// / [`Self::SepformerWhamr16k`]; the distinct ModelKind ensures
     /// the artifact does NOT silently inherit the Wsj02mix sibling's
@@ -1949,7 +1968,7 @@ pub enum ModelKind {
     /// SepFormer topology as every sibling here; the sole difference
     /// is the masker output head branches into **3 parallel speaker
     /// streams instead of 2**). Shares the
-    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`] /
     /// [`Self::SepformerWhamr16k`] / [`Self::SepformerLibri2Mix`] /
     /// [`Self::SepformerWhamr8k`]; the distinct ModelKind ensures the
@@ -1974,7 +1993,7 @@ pub enum ModelKind {
     /// masker head, only the sample rate differs (WHAMR paper Chen et
     /// al. 2022 originally released the 8 kHz variant; the 16 kHz
     /// sibling was published later for wider-band inputs). Shares the
-    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`] /
     /// [`Self::SepformerWhamr16k`] / [`Self::SepformerLibri2Mix`]; the
     /// distinct ModelKind ensures the artifact does NOT silently
@@ -1990,7 +2009,7 @@ pub enum ModelKind {
     /// 2026-08-01). Category = `enhancement`. Single-speaker speech
     /// enhancement trained on the **Microsoft DNS-4** (Deep Noise
     /// Suppression Challenge 4) corpus at 16 kHz. Shares the
-    /// [`models::sepformer::ARCH`] tag `sepformer` + converter with
+    /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`] /
     /// [`Self::SepformerWhamr16k`] / [`Self::SepformerLibri2Mix`] /
     /// [`Self::SepformerLibri3Mix`] / [`Self::SepformerWhamr8k`]; the
@@ -2084,7 +2103,7 @@ pub enum ModelKind {
     /// F wave, 2026-07-30). Category = `classification`. 107-language
     /// identification (Valk & Alumäe 2021 arXiv:2011.12998) with
     /// ECAPA-TDNN backbone. BF16 pass-through skeleton — shares the
-    /// [`models::speechbrain_lang_id`] file with the CommonLanguage
+    /// `models::speechbrain_lang_id` file with the CommonLanguage
     /// sibling ([`Self::LangIdCommonLanguage`]); both variants share
     /// the ECAPA-TDNN topology and differ only in the head vocab (a
     /// shape-derivable hparam). Provenance = **apache-2.0**
@@ -2220,7 +2239,7 @@ pub enum ModelKind {
     /// **mit** for both variants (Permissive — verified 2026-08-01 via
     /// HF cardData API `license: mit`). Two variants collapse into
     /// this single ModelKind; [`convert_file_with_slug`] picks the
-    /// correct [`models::vocos::VocosVariant`] from the raw `--model`
+    /// correct `models::vocos::VocosVariant` from the raw `--model`
     /// slug (mirror of [`Self::Focalcodec`] / [`Self::BigVGan`]).
     /// **CLAUDE.md 設計判断 §Vocos**: INT8-fragile (「INT8 崩壊」→
     /// fp16 必須) — the converter never emits INT8 (K-quant is
@@ -2251,7 +2270,7 @@ pub enum ModelKind {
     /// / [`Self::MossTtsLocal`] LLM). Category = `codec`. Wave 3 codec
     /// add, 2026-08-01. Two variants collapse into this single
     /// ModelKind; [`convert_file_with_slug`] picks the correct
-    /// [`models::moss_audio_tokenizer::MossAudioTokenizerVariant`]
+    /// `models::moss_audio_tokenizer::MossAudioTokenizerVariant`
     /// from the raw `--model` slug (mirror of [`Self::Snac`] and
     /// [`Self::Focalcodec`] slug dispatch). Full variant is
     /// `OpenMOSS-Team/MOSS-Audio-Tokenizer` (~1.77B F32 params, 6.6 GB
@@ -2346,7 +2365,7 @@ pub enum ModelKind {
     /// what distinguishes it from plain RVQ / FSQ codecs. Silently
     /// sharing an arch with `mimi` / `dac` / `snac` would mis-route
     /// to a codec-only decode path that has no semantic fusion input.
-    /// SoundStream generator (n_filters=32, D=256, ratios=[8,5,4,2] →
+    /// SoundStream generator (n_filters=32, D=256, ratios=`[8,5,4,2]` →
     /// 640x downsample, sample_rate=16000, bins=1024,
     /// target_bandwidths=[0.5,1,1.5,2,4,6] kbps) — this is an RVQ
     /// codec, NOT FSQ. Upstream repo bundles three weight groups plus
@@ -2420,7 +2439,7 @@ pub enum ModelKind {
     /// topology is byte-identical to sibling [`Self::MusicGenMedium`];
     /// only the conditioning frontend + projection differ, so the
     /// converter reuses the medium BF16 pass-through arm via the
-    /// shared [`models::musicgen_medium::convert_musicgen_family_file`]
+    /// shared `models::musicgen_medium::convert_musicgen_family_file`
     /// helper (a wrapper `convert_musicgen_melody_file` flips only the
     /// `vokra.model.name` + `vokra.provenance.{model_id,source,
     /// upstream_hf}` stamps to the melody spellings). Category =
@@ -2629,7 +2648,7 @@ pub enum ModelKind {
     /// unchanged from sibling [`Self::AudioLdm2`], only model dims +
     /// optional variant-specific heads differ. Reuses the base BF16
     /// pass-through arm via the shared
-    /// [`models::audioldm2::convert_audioldm2_family_file`] helper (a
+    /// `models::audioldm2::convert_audioldm2_family_file` helper (a
     /// wrapper `convert_audioldm2_large_file` flips only the
     /// `vokra.model.name` + `vokra.provenance.{model_id,source,
     /// upstream_hf}` chunks to the large spellings) — no new
@@ -2683,7 +2702,7 @@ pub enum ModelKind {
     ///
     /// **License posture — weight provenance unclear (fail-closed default)**:
     /// weight redistribution default is
-    /// [`LicenseClass::RedistributionForbidden`]. The architecture / reference
+    /// [`vokra_core::LicenseClass::RedistributionForbidden`]. The architecture / reference
     /// code is MIT (`github.com/lucidrains/BS-RoFormer`, Phil Wang's
     /// clean-room implementation), but the paper's authors released no
     /// reference weights — every checkpoint in the wild is a downstream
@@ -2731,7 +2750,7 @@ pub enum ModelKind {
     /// frontend) = local convert safe on M1 iMac 16 GB (well below
     /// the vast.ai ≥8 GB cutoff per memory
     /// `[[feedback-large-models-on-vast-ai]]`). Convert with
-    /// [`models::openwakeword::convert_openwakeword_file`] — the
+    /// `models::openwakeword::convert_openwakeword_file` — the
     /// converter takes no side-car config today (single-input
     /// [`convert_file`] path). Runtime port deferred (safetensors →
     /// GGUF bridge only; the audio-dialect `kws` op consumes the
@@ -2796,7 +2815,7 @@ pub enum ModelKind {
     /// spectrogram branch joined by cross-domain self-attention,
     /// **4-source music separation** (drums / bass / other / vocals —
     /// MUSDB18 stem taxonomy). **Distinct from siblings
-    /// [`Self::SepformerWsj02mix`] et al. and [`Self::TigerSeparator`]** —
+    /// `Self::SepformerWsj02mix` et al. and [`Self::TigerSeparator`]** —
     /// SepFormer is waveform-only dual-path Transformer for speech
     /// mixtures, TIGER is a time-frequency dual-branch dialog/effects/music
     /// separator; HT-Demucs is a hybrid waveform+spectrogram U-Net +
@@ -3204,6 +3223,18 @@ impl ModelKind {
                 Some(Self::DebertaV2)
             }
             "deberta-v3" | "deberta_v3" | "microsoft/deberta-v3-large" => Some(Self::DebertaV3),
+            // WP-14 (2026-08-10): plain BERT (`hfl/chinese-roberta-wwm-ext-large`,
+            // Apache-2.0). Accept the canonical arch tag, the underscore
+            // variant, and the real HF release id. First consumer is the
+            // SBV2 v2 ZH branch (`SbV2Model::from_gguf_with_zh_bert`);
+            // future English WordPiece checkpoints
+            // (`google-bert/bert-base-uncased`, ...) also route here — the
+            // converter's `--tokenizer` + `do_lower_case` axes serve both.
+            "bert-base"
+            | "bert_base"
+            | "chinese-roberta-wwm-ext-large"
+            | "chinese_roberta_wwm_ext_large"
+            | "hfl/chinese-roberta-wwm-ext-large" => Some(Self::BertBase),
             // Style-Bert-VITS2 v2 (SBV2 v2 plan Task 25, 2026-07-26). Accept
             // the canonical arch spelling, the design doc's SKU id, and the
             // common project-name spellings (with/without hyphen, with/
@@ -3628,7 +3659,7 @@ impl ModelKind {
             // LV60 corpus, distinct upstream release from XLSR-53.
             //
             // Slug-only routes to the existing
-            // [`models::wav2vec2_ctc::Variant::LargeXlsr53Base`] arm
+            // `models::wav2vec2_ctc::Variant::LargeXlsr53Base` arm
             // below because that variant already pins the correct large
             // topology axes (24L / 1024h / 16h / 4096ffn +
             // `feat_extract_norm=layer` + `do_stable_layer_norm=true`)
@@ -3664,7 +3695,7 @@ impl ModelKind {
             // XLSR-53 base), so this cannot be routed slug-only through
             // an existing arm without stamping a demonstrably wrong
             // vocab_size and mis-representing has_ctc_head — a
-            // dedicated [`models::wav2vec2_ctc::Variant::LargeXlsr53EspeakCvFt`]
+            // dedicated `models::wav2vec2_ctc::Variant::LargeXlsr53EspeakCvFt`
             // arm carries the correct axes. The phoneme `vocab.json`
             // itself will be embedded as `vokra.tokenizer.model` U8
             // array (Whisper 手法, `include_bytes!` at compile time)
@@ -3700,7 +3731,7 @@ impl ModelKind {
             // et al. 2023 (arXiv:2305.13516) — 1B wav2vec 2.0 backbone
             // + 1000+ per-language CTC adapters. Base tensor path
             // reuses the [`Self::Wav2Vec2Ctc`] converter via a
-            // dedicated [`models::wav2vec2_ctc::Variant::Mms1bAll`]
+            // dedicated `models::wav2vec2_ctc::Variant::Mms1bAll`
             // arm (parent workflow REUSE HINT); the placeholder-axis
             // guardrail (distinct `name` + `upstream_hf`) lets a
             // future `Wav2Vec2CtcWeights::from_gguf` reader detect
@@ -3742,7 +3773,7 @@ impl ModelKind {
             // tts variants (custom `configuration_moss_audio.py` +
             // `trust_remote_code=True`). Reuses the sibling MossTts
             // converter per the parent workflow's REUSE HINT via the
-            // new [`models::moss_tts::MossTtsVariant::AudioInstruct4b`]
+            // new `models::moss_tts::MossTtsVariant::AudioInstruct4b`
             // arm — see [`Self::MossAudio4bInstruct`] doc for the
             // placeholder-axis + faithful-provenance split.
             "moss-audio-4b-instruct"
@@ -3758,7 +3789,7 @@ impl ModelKind {
             // architecture (4 shards ~9.05 GB BF16 — vast.ai required).
             // Reuses the sibling MossTts converter per the parent
             // workflow's REUSE HINT via the new
-            // [`models::moss_tts::MossTtsVariant::AudioInstruct8b`]
+            // `models::moss_tts::MossTtsVariant::AudioInstruct8b`
             // arm — see [`Self::MossAudio8bInstruct`] doc for the
             // placeholder-axis + faithful-provenance split.
             "moss-audio-8b-instruct"
@@ -4512,6 +4543,7 @@ impl ModelKind {
             Self::StyleTts2 => "styletts2",
             Self::DebertaV2 => "deberta-v2",
             Self::DebertaV3 => "deberta-v3",
+            Self::BertBase => "bert-base",
             Self::SbV2 => "sbv2",
             Self::XCodec2 => "xcodec2",
             // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
@@ -4726,7 +4758,7 @@ pub enum ConvertError {
     Gguf(String),
     /// A command-line / usage problem.
     Usage(String),
-    /// A [`QuantPolicy`](models::whisper) rule resolved to a K-quant target for
+    /// A `QuantPolicy` rule resolved to a K-quant target for
     /// a tensor that cannot be K-quantized (rank < 2 or element count not a
     /// whole number of `QK_K` super-blocks). Emitted instead of silently
     /// widening the tensor's dtype (FR-EX-08, M2-08 T06).
@@ -5959,7 +5991,14 @@ pub fn convert_file_licensed(
             // `ku-nlp/deberta-v2-large-japanese-char-wwm`). Tensor-to-schema
             // mapping (Task 30) is deferred; every tensor is emitted verbatim
             // so the mapping can be validated once a real checkpoint arrives.
-            let report = convert_deberta_v2_file(input, output, license)?;
+            // Blocker 5 (2026-08-06): tokenizer side-car is a
+            // vokra-cli-front-end concern (mirror of the Voxtral
+            // `--tokenizer` boundary). The plain `convert_file_licensed`
+            // dispatch path here has no side-car parameter to forward,
+            // so pass `None` and let the CLI's own
+            // `convert_deberta_v2_file(..., Some(bytes))` route stamp the
+            // tokenizer when the flag is supplied.
+            let report = convert_deberta_v2_file(input, output, license, None)?;
             let notes = vec![format!(
                 "deberta-v2: {} float weights written verbatim, {} non-float skipped",
                 report.written, report.skipped_non_float,
@@ -5968,6 +6007,33 @@ pub fn convert_file_licensed(
                 model: ModelKind::DebertaV2,
                 tensor_count: report.written,
                 metadata_count: 0, // Populated by convert_deberta_v2_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::BertBase => {
+            // WP-14 (2026-08-10): plain BERT
+            // (`hfl/chinese-roberta-wwm-ext-large`, apache-2.0) →
+            // `bert_base.*` GGUF names + `vokra.bert_base.*` hparam
+            // chunk group + optional `vokra.bert.wordpiece.*` tokenizer
+            // side-car. The generic dispatch path has no `--tokenizer`
+            // parameter to forward, so tokenizer emission is left off
+            // here — the CLI's own `--tokenizer` flag routes directly
+            // to `convert_bert_base_file(_, _, _, Some(bytes), _)`
+            // (mirror of the deberta-v2 / deberta-v3 vocab-txt / spm.json
+            // gates). `do_lower_case = false` is the ZH-first-consumer
+            // default; English WordPiece checkpoints pass through
+            // the direct-call path with `do_lower_case = true`.
+            let report = convert_bert_base_file(input, output, license, None, false)?;
+            let notes = vec![format!(
+                "bert-base: {} float weights renamed + written verbatim, {} unmapped skipped, \
+                 {} non-float skipped",
+                report.written, report.skipped_unmapped, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BertBase,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_bert_base_file's builder
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -5984,7 +6050,9 @@ pub fn convert_file_licensed(
             // from v2's `ku-nlp` JA upstream). Tensor-to-schema mapping
             // (Task 30) is deferred; every tensor is emitted verbatim so
             // the mapping can be validated once a real checkpoint arrives.
-            let report = convert_deberta_v3_file(input, output, license)?;
+            // Blocker 5 (2026-08-06): see the v2 arm above — tokenizer
+            // side-car flows through the CLI `--tokenizer` route only.
+            let report = convert_deberta_v3_file(input, output, license, None)?;
             let notes = vec![format!(
                 "deberta-v3: {} float weights written verbatim, {} non-float skipped",
                 report.written, report.skipped_non_float,
@@ -9236,7 +9304,7 @@ pub fn convert_file_quantized(
 
 /// The named quantization presets accepted by `--policy-preset` (M2-08 T06).
 ///
-/// Presets map to a [`QuantPolicy`](models::whisper) with the shape documented
+/// Presets map to a `QuantPolicy` with the shape documented
 /// in `docs/design/quantization-policy.md`:
 ///
 /// - [`PolicyPreset::VocoderSafe`] — default whole-model widen to `F16`
@@ -9318,7 +9386,7 @@ pub fn convert_file_with_policy(
 /// piper-plus voices are distributed as an FP16 ONNX graph plus a `config.json`
 /// (phoneme table, sample rate, inference defaults), so unlike the single-input
 /// [`convert_file`] models this one takes both. See
-/// [`models::piper_plus`](crate) for the naming / metadata contract.
+/// `models::piper_plus` for the naming / metadata contract.
 pub fn convert_piper_plus_file(
     onnx: &Path,
     config: &Path,
@@ -9410,7 +9478,7 @@ pub fn convert_silero_file(
 /// legacy round-trip contract.
 ///
 /// The accepted `config.json` schema is documented on
-/// [`models::kokoro`](crate) — briefly: at least one of `{vocab: {symbol:id},
+/// `models::kokoro` — briefly: at least one of `{vocab: {symbol:id},
 /// phoneme_symbols: [str], symbols: [str]}` plus at least one of `{voices:
 /// [str], voice_names: [str]}` must be present; first-match wins per family.
 pub fn convert_kokoro_file(
@@ -9902,7 +9970,7 @@ pub fn convert_moshi_file(
 }
 
 /// Voxtral (Mistral) side-car hparams supplied by the caller (M3-10-T04). Same
-/// shape as the module-private [`models::voxtral::VoxtralConfig`], re-exported
+/// shape as the module-private `models::voxtral::VoxtralConfig`, re-exported
 /// here so external callers can build one without pulling in the private
 /// module.
 // M4-20 T12/T17: DeepFilterNet3 `denoise` offline GGUF path (real checkpoint
@@ -10080,6 +10148,7 @@ pub use models::xy_tokenizer::{XyTokenizerReport, convert_xy_tokenizer_file};
 // and thus dead code — because `mod models` itself is private, same
 // reasoning as the `speaker_3d` re-export above). Not yet routed through
 // `ModelKind` / `convert_file` dispatch — that wiring is Task 12's job.
+pub use models::bert_base::{BertBaseReport, convert_bert_base_file};
 pub use models::deberta_v2::{ConvertReport, convert_deberta_v2_file};
 pub use models::deberta_v3::convert_deberta_v3_file;
 // `sbv2::ConvertReport` is re-exported under an alias, not the bare name:
@@ -10124,7 +10193,7 @@ pub use models::voxtral::AdapterSpec;
 
 /// Parses an upstream HuggingFace-style Voxtral `config.json` into a
 /// [`VoxtralConfig`] (the `vokra-cli convert --model voxtral --config` path).
-/// See [`models::voxtral::parse_hf_config`] for the accepted schema; a JSON
+/// See `models::voxtral::parse_hf_config` for the accepted schema; a JSON
 /// with no recognized Voxtral hparams is a hard error (FR-EX-08).
 pub fn parse_voxtral_hf_config(bytes: &[u8]) -> Result<VoxtralConfig, ConvertError> {
     models::voxtral::parse_hf_config(bytes)
@@ -10135,7 +10204,7 @@ pub fn parse_voxtral_hf_config(bytes: &[u8]) -> Result<VoxtralConfig, ConvertErr
 ///
 /// Same semantics as [`read_voxtral_checkpoint`] but returns paths only, so
 /// callers who go through the streaming reader
-/// ([`models::voxtral::convert_shards_streaming`]) can defer the file open
+/// (`models::voxtral::convert_shards_streaming`) can defer the file open
 /// until after the header parse (and thus never mmap or read the whole
 /// checkpoint at once). See [`convert_voxtral_file_streaming`] for the
 /// user-facing path (M5 gap A-3, 2026-07-29).
@@ -10380,7 +10449,7 @@ pub fn convert_voxtral_file_quantized(
 /// # Accepted schema
 ///
 /// See [`AdapterSpec`] and the module docs on
-/// [`models::voxtral::parse_adapter_config`](self) for the JSON schema.
+/// `models::voxtral::parse_adapter_config` for the JSON schema.
 ///
 /// The shape-only [`convert_file`] path and the tokenizer-only
 /// [`convert_voxtral_file`] path stay adapter-less; the runtime then treats
@@ -11393,7 +11462,7 @@ pub fn convert_kotoba_whisper_file(
 /// full converter is impractical because the checkpoint no longer fits in this
 /// host's RAM. The input is opened via [`vokra_mmap`] so tensor bytes are
 /// fault-in-only, and every payload is streamed straight into a new file via
-/// [`GgufStreamWriter`] — peak footprint stays at roughly one tensor plus
+/// [`vokra_core::gguf::GgufStreamWriter`] — peak footprint stays at roughly one tensor plus
 /// mapped-page cost, not the whole file.
 ///
 /// `license` is the raw SPDX id (class re-derived from it); `model_id` and

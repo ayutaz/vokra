@@ -1,0 +1,47 @@
+[package]
+name = "vokra-math"
+description = "Shared scalar f32 transcendental primitives (exp/tanh/sqrt/sin/cos/log/log1p) for Vokra — pure `core` arithmetic, no `libm`, no `unsafe`, deterministic across targets (WP-07 extraction of the M5-03-T06 + WP-06 module)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# WP-07: the shared home for the scalar f32 transcendental primitives. The
+# implementations began as
+# `crates/vokra-backend-cpu/src/kernels/scalar_transcendental.rs` (Wave 1 for
+# `exp`/`tanh`/`sqrt`, M5-03-T06) extended in WP-06 with `sin`/`cos`/`log`/
+# `log1p` for the Style-Bert-VITS2 v2 hot path. Sibling non-backend crates
+# (`vokra-ops::hifigan`, `vokra-bert::deberta_v2`, and future SBV2 kernels)
+# need the same primitives WITHOUT taking a dependency on `vokra-backend-cpu`
+# (that would flip the graph inside-out and pull the full CPU kernel tier —
+# AVX-512, dotprod / i8mm, K-quants, thread pool — into every op crate).
+# Extracting them here keeps the graph correct (math on the bottom, kernels
+# and ops on top).
+#
+# ZERO external dependencies (NFR-DS-02) — not even `vokra-core`: every
+# function uses only `core` arithmetic (see the module docs in `src/lib.rs`).
+# The self-contained scalar implementations mean NO `libm` (deny.toml bans
+# it) and NO Cephes / SLEEF / Pommier coefficients (license hygiene). The
+# root Cargo.lock stays `vokra-*` only, and this crate contributes zero
+# `[[package]]` entries beyond its own name.
+[dependencies]
+
+# `std` (default-ON) does NOT change what this crate compiles — every
+# function uses only `core` — but the flag is preserved so the crate can be
+# consumed under `--no-default-features` on `#![no_std]` targets (Cortex-M55
+# Tier 3 / NFR-PT-03, the same audience `vokra-vad-micro` serves). No
+# external dependency is added by either mode, so the zero-dep invariant
+# (NFR-DS-02) and the root Cargo.lock are unaffected.
+[features]
+default = ["std"]
+std = []
+
+[lints]
+workspace = true

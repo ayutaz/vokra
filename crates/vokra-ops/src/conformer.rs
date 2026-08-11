@@ -43,7 +43,7 @@
 //!   DepthwiseConv1d(d, d, k) → LayerNorm → Swish → Conv1d(d, d, k=1)`
 //!   (upstream `conformer_modules.py:177-243`; the norm defaults to
 //!   BatchNorm upstream but LayerNorm is a supported option
-//!   [`norm_type='layer_norm'`] and we take it here to avoid running-stat
+//!   (`norm_type='layer_norm'`) and we take it here to avoid running-stat
 //!   plumbing at inference time — every current consumer's config exposes
 //!   this switch).
 //! - Self-attention: standard multi-head, with an optional RoPE overlay on
@@ -128,7 +128,7 @@ impl ConvSubsampleKind {
 
     /// Input width of the subsample projection — `in_dim` for [`Linear`]
     /// and `in_dim * factor` for the stacking variants. Used by
-    /// [`ConformerSubsampleWeights::validate`] to check the flattened
+    /// `ConformerSubsampleWeights::validate` to check the flattened
     /// weight length.
     ///
     /// [`Linear`]: ConvSubsampleKind::Linear
@@ -203,7 +203,7 @@ impl ConformerConfig {
 // ---------------------------------------------------------------------------
 
 /// Weights for the subsampling stem — variant-shaped, so
-/// [`Self::validate`] gates the layout on the enum tag.
+/// `Self::validate` gates the layout on the enum tag.
 #[derive(Debug, Clone)]
 pub struct ConformerSubsampleWeights {
     /// Row-major `[d_model, projection_in_dim]` linear weight —

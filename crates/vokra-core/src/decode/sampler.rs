@@ -1,7 +1,7 @@
 //! Stochastic token sampler (temperature / top-k / top-p / repetition penalty)
 //! over a model-independent [`LogitsSource`].
 //!
-//! Like [`beam_search`](super::beam_search), sampling is a **host-side runtime
+//! Like [`super::beam_search()`], sampling is a **host-side runtime
 //! function** (FR-OP-40 family), never a graph op: it drives any model through
 //! the [`LogitsSource`] abstraction and knows nothing model-specific. It is the
 //! sampled counterpart to greedy / beam decoding — the path a caller picks when

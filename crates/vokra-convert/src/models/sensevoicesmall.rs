@@ -172,10 +172,10 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_h
 /// Outcome of a SenseVoiceSmall conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::reazonspeech_nemo_v2::ReazonspeechNemoV2Report`],
-/// [`super::neucodec::NeucodecReport`],
-/// [`super::ecapa_tdnn::EcapaTdnnReport`],
-/// [`super::speaker_3d::Speaker3dReport`]) — the invariant
+/// (`super::reazonspeech_nemo_v2::ReazonspeechNemoV2Report`,
+/// `super::neucodec::NeucodecReport`,
+/// `super::ecapa_tdnn::EcapaTdnnReport`,
+/// `super::speaker_3d::Speaker3dReport`) — the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +213,7 @@ pub struct SenseVoiceSmallReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"FunASR_MODEL_LICENSE"`) which resolves
+/// `DEFAULT_LICENSE_SPDX` (`"FunASR_MODEL_LICENSE"`) which resolves
 /// to [`LicenseClass::Unknown`] (fail-closed) — a caller who has read
 /// the primary-source license and made a compliance judgement may
 /// supply a canonical SPDX id (e.g. `"apache-2.0"`) to reclassify.

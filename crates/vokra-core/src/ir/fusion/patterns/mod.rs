@@ -1,6 +1,6 @@
 //! Fusion pattern registry (M2-04-T04+).
 //!
-//! Each submodule declares one [`FusionPattern`](super::FusionPattern)
+//! Each submodule declares one `FusionPattern`
 //! implementation. Patterns are individually testable against synthetic
 //! [`AudioGraph`](crate::ir::AudioGraph) inputs — none of them require an
 //! in-tree consumer model to exercise their matcher plumbing.
@@ -21,7 +21,7 @@
 //! `fusion-snake-stub` cargo feature (default OFF); the marker types
 //! ([`snake::Conv1dSnakePattern`] / [`snake::UpsampleSnakeResidualPattern`])
 //! are always visible so the follow-up PR can hang the real
-//! [`super::FusionPattern`] impls off them without churning the module
+//! `super::FusionPattern` impls off them without churning the module
 //! surface.
 
 pub mod logmel;

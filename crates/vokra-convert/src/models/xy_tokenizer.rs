@@ -76,7 +76,7 @@ const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 
 /// Outcome of an XY_Tokenizer conversion.
 ///
-/// Mirrors the [`super::qwen3_tts::Qwen3TtsReport`] counter shape
+/// Mirrors the `super::qwen3_tts::Qwen3TtsReport` counter shape
 /// (`written` / `skipped_non_float` / `bf16_passthrough`) plus an
 /// additive `read` field so the invariant
 /// `report.read == report.written + report.skipped_non_float` holds for

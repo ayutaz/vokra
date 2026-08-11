@@ -31,7 +31,7 @@ pub const ENV_ISA_OVERRIDE: &str = "VOKRA_CPU_ISA";
 ///
 /// This selects between behaviourally identical implementations (the same
 /// results within FP32 rounding); it is *not* the cross-backend op-coverage
-/// concept of FR-EX-08. See [`crate::dispatch`].
+/// concept of FR-EX-08. See `crate::dispatch`.
 ///
 /// # `#[non_exhaustive]` semver contract (M4-17-T04, `docs/handoff/m4-12.md` §(e)-2)
 ///
@@ -94,7 +94,7 @@ pub enum IsaPath {
     /// base the transcendental kernels delegate to (ADR M4-17 §(b)-4).
     Avx512,
     /// x86-64 AVX-512 VNNI INT8 tier (`vpdpbusd`, Cascade Lake 2019+ — the
-    /// server INT8 main path, FR-BE-01). Its f32 [`crate::dispatch`] table
+    /// server INT8 main path, FR-BE-01). Its f32 `crate::dispatch` table
     /// delegates to the [`IsaPath::Avx512`] kernels (the gate includes the
     /// full f32 bundle); the INT8 dot-product itself is a separate dispatch
     /// surface (`kernels::kquant_gemv_i8*`, ADR M4-17 §(b)-2).
@@ -197,7 +197,7 @@ pub struct CpuFeatures {
     /// (SpacemiT K1 / Banana Pi BPI-F3).
     pub rvv_v: bool,
     /// RISC-V Zvfh (FP16 vector arithmetic), an RVV 1.0 optional extension.
-    /// Gates the [`crate::kernels::rvv`] fp16 GEMM opt-in path (M3-13-T09).
+    /// Gates the `crate::kernels::rvv` fp16 GEMM opt-in path (M3-13-T09).
     pub rvv_zvfh: bool,
     /// RISC-V ZvfBFmin (BF16 minimum subset), an RVV 1.0 optional extension.
     /// Probed but no BF16 kernel is wired in M3 — reserved for M4+.

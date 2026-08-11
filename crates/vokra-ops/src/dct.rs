@@ -10,7 +10,7 @@
 //! - [`Normalization::Forward`] — `Backward` scaled by `1/N`.
 //!
 //! Only DCT-II is implemented; it is the type the MFCC path
-//! ([`crate::mfcc`]) needs. Other DCT types are added if a model requires them.
+//! ([`crate::mfcc()`]) needs. Other DCT types are added if a model requires them.
 
 use vokra_core::ir::graph::{DctAttrs, Normalization};
 

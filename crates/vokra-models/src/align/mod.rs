@@ -35,7 +35,7 @@
 //!
 //! Charsiu now runs a **real** wav2vec 2.0 CTC forward end-to-end:
 //! raw-waveform 7-layer strided Conv1D stem
-//! ([`vokra_ops::waveform_frontend`]) → feature projection (LayerNorm +
+//! ([`vokra_ops::waveform_frontend()`]) → feature projection (LayerNorm +
 //! Linear) → n_layer pre-norm Transformer encoder blocks (MHA + GELU FFN)
 //! → final LayerNorm → CTC head → log-softmax → [`ctc_segmentation`] for
 //! the Viterbi walk. Real weights arrive via [`charsiu::Charsiu::new`]

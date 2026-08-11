@@ -5,7 +5,7 @@
 //! token given this prefix" — by running the decoder over the full prefix. It is
 //! the primitive both the [`Sampler`](vokra_core::decode::Sampler) and beam
 //! search consume; [`WhisperBeamScorer`] is a **thin adapter** layering the
-//! `log_softmax` that [`beam_search`](vokra_core::decode::beam_search) wants on
+//! `log_softmax` that [`beam_search()`](vokra_core::decode::beam_search()) wants on
 //! top of it.
 //!
 //! # Per-beam KV cache (M0: recompute)
@@ -64,7 +64,7 @@ const MAX_KV_SNAPSHOTS: usize = 40;
 /// The M0 posture recomputed the whole prefix from a reset cache on every
 /// query — O(len²) token-forwards per hypothesis over a beam decode. The
 /// source now keeps a small cache of `(committed tokens → self-KV snapshot)`
-/// pairs ([`DecoderState::selfkv_snapshot`], the Voxtral
+/// pairs (`DecoderState::selfkv_snapshot`, the Voxtral
 /// `TextDecoderKvSnapshot` branch-primitive pattern): a query whose tokens
 /// extend a cached entry by exactly one token restores that snapshot and
 /// steps ONLY the new token. Restoring a byte-identical KV cache and
@@ -212,11 +212,11 @@ impl BeamScorer for WhisperBeamScorer<'_> {
 
     /// Word-level timestamps via Whisper cross-attention DTW (M4-20,
     /// FR-OP-40). Returns `Ok(None)` when the model carries no alignment-head
-    /// blob (`vokra.whisper.alignment_heads`) — [`beam_search`] then raises the
+    /// blob (`vokra.whisper.alignment_heads`) — `beam_search` then raises the
     /// explicit FR-EX-08 error (never a silent no-op, ADR M4-20 §D-3).
     ///
     /// When a tokenizer was attached
-    /// ([`with_tokenizer`](WhisperBeamScorer::with_tokenizer)), the per-token
+    /// (`with_tokenizer`), the per-token
     /// alignment is merged into per-**word** timings
     /// ([`WhisperTokenizer::word_token_lens`] +
     /// [`words_from_alignment`]); without one it stays per-token.

@@ -144,8 +144,8 @@ const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// `vokra.snac.variant`: `"24khz"` / `"44khz"`. Consumers pick a
 /// specific frame-rate + RVQ-depth head without parsing free-text
-/// `vokra.model.name` (mirrors [`super::focalcodec`] +
-/// [`super::bigvgan`] discriminators).
+/// `vokra.model.name` (mirrors `super::focalcodec` +
+/// `super::bigvgan` discriminators).
 pub const KEY_SNAC_VARIANT: &str = "vokra.snac.variant";
 
 /// Which SNAC release the caller is converting. Selects the model
@@ -237,9 +237,9 @@ impl SnacVariant {
 /// Outcome of a SNAC conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::focalcodec::FocalcodecReport`],
-/// [`super::bigvgan::BigVGanReport`],
-/// [`super::wespeaker::WespeakerReport`]) adapted to the
+/// (`super::focalcodec::FocalcodecReport`,
+/// `super::bigvgan::BigVGanReport`,
+/// `super::wespeaker::WespeakerReport`) adapted to the
 /// variant-taking `convert_snac_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SnacReport {
@@ -285,7 +285,7 @@ pub struct SnacReport {
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`) — both
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`) — both
 /// upstream SNAC HF releases ship MIT.
 ///
 /// # Errors

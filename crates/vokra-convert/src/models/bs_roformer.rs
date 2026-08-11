@@ -53,7 +53,7 @@
 //!   uniform license clause covers the family.
 //!
 //! The `RedistributionForbidden` default is the sibling
-//! [`super::vits_ja`] pattern applied to a different failure mode:
+//! `super::vits_ja` pattern applied to a different failure mode:
 //! `vits_ja` refuses to redistribute because the training corpus
 //! forbids it (JSUT / JVS terms); `bs_roformer` refuses because a
 //! converter cannot know which checkpoint the caller has and thus
@@ -219,9 +219,9 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of a BS-Roformer conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::musicgen_large::MusicGenLargeReport`],
-/// [`super::xcodec2::XCodec2Report`],
-/// [`super::vits_ja::VitsJaReport`]) adapted to the file-oriented
+/// (`super::musicgen_large::MusicGenLargeReport`,
+/// `super::xcodec2::XCodec2Report`,
+/// `super::vits_ja::VitsJaReport`) adapted to the file-oriented
 /// `convert_bs_roformer_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BsRoformerReport {
@@ -269,7 +269,7 @@ pub struct BsRoformerReport {
 /// [`LicenseClass::from_license_str`]). The default is
 /// [`LicenseClass::RedistributionForbidden`] with the SPDX marker
 /// `"weight-provenance-unclear"` — the fail-closed publish default
-/// (sibling [`super::vits_ja`] uses `"corpus-restricted"` for a
+/// (sibling `super::vits_ja` uses `"corpus-restricted"` for a
 /// different failure mode; here the specific failure is that a
 /// converter cannot know which SPDX id applies to the caller's
 /// checkpoint). A caller who knows the specific SPDX id for their

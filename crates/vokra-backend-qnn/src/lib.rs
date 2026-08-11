@@ -53,7 +53,7 @@
 //! - **(b) zero external dependencies, raw runtime FFI** (NFR-DS-02, the M2-03
 //!   red line, inherited): **no `qnn-sys` / `hexagon` / equivalent binding
 //!   crate.** The QNN library is loaded at **runtime** with dlopen /
-//!   LoadLibrary and each symbol resolved by name ([`sys`]) — the Qualcomm EULA
+//!   LoadLibrary and each symbol resolved by name (`sys`) — the Qualcomm EULA
 //!   "install model" (the developer installs the SDK/runtime; Vokra bundles and
 //!   links nothing, exactly like the NVIDIA CUDA install model in
 //!   `third_party/NVIDIA-EULA.md` → `third_party/QUALCOMM-QNN-NOTES.md`). The
@@ -74,8 +74,8 @@
 //!   dependency on this crate behind its own `qnn` feature (forwarding
 //!   `vokra-backend-qnn/qnn`) so default builds never even name it.
 //! - **(e) no silent CPU fallback** (FR-EX-08 / NFR-RL-06): an uncovered op is
-//!   [`VokraError::UnsupportedOp`]; a missing library / symbol / device is
-//!   [`VokraError::BackendUnavailable`]. Running on the CPU instead is the
+//!   [`vokra_core::VokraError::UnsupportedOp`]; a missing library / symbol / device is
+//!   [`vokra_core::VokraError::BackendUnavailable`]. Running on the CPU instead is the
 //!   caller's *explicit* [`BackendKind::Cpu`](vokra_core::BackendKind) choice.
 //! - **(f) delegate, not op-partitioning** (FR-BE-06 × the `Backend` trait's
 //!   permanent "same op coverage, no ONNX-Runtime EP partitioning" rule): the
@@ -95,7 +95,7 @@
 //! vokra-capi / vokra-mmap on the workspace unsafe-boundary allow list. Public
 //! APIs stay safe: library / symbol failures are `Result` errors (never a panic
 //! across the boundary), and **every `unsafe` block carries a `// SAFETY:`
-//! comment** naming the symbol and its true signature ([`sys`]).
+//! comment** naming the symbol and its true signature (`sys`).
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the
 // crate-level "Unsafe policy" docs above (mirrors vokra-backend-cuda /

@@ -227,7 +227,7 @@ impl QuantPageAllocator {
 ///   Q8_0}`. FP32 is rejected — the caller must go through
 ///   [`super::paged::PagedKvCache`] for FP32.
 /// - `n_head * d_head` **must** be a multiple of
-///   [`KV_QUANT_BLOCK_SIZE`](crate::kv_quant::KV_QUANT_BLOCK_SIZE) (32) at
+///   [`crate::kv_quant::KV_QUANT_BLOCK_SIZE`] (32) at
 ///   construction; otherwise a block boundary would land inside a head, which
 ///   we refuse to silently pad.
 /// - `append_step` and `read_step` operate in the FP32 domain — the caller

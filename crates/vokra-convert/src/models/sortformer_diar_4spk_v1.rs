@@ -154,8 +154,8 @@ const UPSTREAM_SOURCE: &str =
 /// Outcome of a Sortformer conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::xcodec2::XCodec2Report`], [`super::neucodec::NeucodecReport`],
-/// [`super::parakeet_unified::ParakeetUnifiedReport`]) — every counter
+/// (`super::xcodec2::XCodec2Report`, `super::neucodec::NeucodecReport`,
+/// `super::parakeet_unified::ParakeetUnifiedReport`) — every counter
 /// is additive so the invariant `read == written + skipped_non_float`
 /// is auditable at the report level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +199,7 @@ pub struct SortformerDiar4spkV1Report {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-4.0"`, `NonCommercial`) per the
+/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-4.0"`, `NonCommercial`) per the
 /// primary source (the HF model-card front-matter). A caller who
 /// legitimately holds the weight under a distinct SPDX id passes
 /// `Some(spdx)` to swap the class; the source parenthetical is

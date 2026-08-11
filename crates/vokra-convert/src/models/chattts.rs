@@ -94,7 +94,7 @@ pub struct ChatTtsReport {
 /// Vokra-native GGUF at `output`, returning a [`ChatTtsReport`].
 ///
 /// `license` optionally overrides the stamped weight license (raw SPDX
-/// string). The default is [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-4.0"`)
+/// string). The default is `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-4.0"`)
 /// which resolves to [`LicenseClass::NonCommercial`] (T4 fail-closed).
 ///
 /// # Errors

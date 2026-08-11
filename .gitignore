@@ -126,6 +126,13 @@ integrations/vokra-godot/pkg/
 # tickets / SDD progress). This section lists the internal ones explicitly so
 # tracked handoff files remain unaffected.
 /docs/handoff/sbv2-v2-phase1.md
+# WP-14 (2026-08-10): ZH BERT publish runbook — task-by-task publish
+# instructions (converter invocation, upload command, owner sign-off
+# flip location). Internal PM artefact; the corresponding audit row
+# (docs/license-audit.md §3.1 for hfl/chinese-roberta-wwm-ext-large) is
+# tracked and public. Convention aligned with the batch-7 handoff-doc
+# gitignore pattern above.
+/docs/handoff/zh-bert-publish-2026-08-10.md
 
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)
@@ -156,6 +163,13 @@ integrations/vokra-godot/pkg/
 tests/fixtures/sbv2/*.gguf
 tests/fixtures/sbv2/*.safetensors
 tests/fixtures/sbv2/reference_dump/
+
+# Spurious duplicates: sbv2_dump_reference.py が uv-managed で CWD=tools/parity
+# の状態で走ると `tests/fixtures/sbv2/...` を tools/parity 起点の相対パスに
+# 書いてしまうことがある (canonical は repo-root/tests/fixtures/sbv2/、
+# tools/parity 直下の tests/ ツリーは副産物)。fixtures と reference_dump
+# 双方が同 pattern で発生し得るのでディレクトリ丸ごと無視する。
+tools/parity/tests/
 
 # Secrets — never commit (HF token etc.)
 .env

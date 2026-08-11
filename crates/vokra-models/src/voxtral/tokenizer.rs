@@ -24,36 +24,36 @@
 //! - a **compact-vocab** parser that recognises the same little-endian binary
 //!   layout Whisper's `WhisperTokenizer::from_bytes` uses so the parity
 //!   dumper's output can be embedded verbatim (T19+); the format is
-//!   documented under [`Self::parse_compact_vocab`];
-//! - a [`Self::decode`] path that renders token ids to UTF-8, dropping
+//!   documented under `VoxtralTokenizer::parse_compact_vocab`;
+//! - a [`VoxtralTokenizer::decode`] path that renders token ids to UTF-8, dropping
 //!   special tokens (byte-join first, then UTF-8-decode once with
 //!   [`String::from_utf8_lossy`] — matches transformers' `errors="replace"`
 //!   posture, no panic on a lone continuation byte);
-//! - a [`Self::detect_sentencepiece_proto`] heuristic that fingerprints the
+//! - a [`VoxtralTokenizer::detect_sentencepiece_proto`] heuristic that fingerprints the
 //!   raw bytes as a SentencePiece proto (magic bytes at offset 0); callers
-//!   with a native proto reader can consume [`Self::raw_bytes`] directly.
+//!   with a native proto reader can consume [`VoxtralTokenizer::raw_bytes`] directly.
 //!
 //! # What this file does NOT do
 //!
 //! - It does not parse the full SentencePiece proto3 schema (that requires a
 //!   proto reader — a follow-up ticket, out-of-scope for M3-10-T06 which
 //!   only needs the byte-blob load path + a decode surface). Callers today
-//!   can either (a) use [`Self::from_bytes`] with a compact-vocab dump the
+//!   can either (a) use [`VoxtralTokenizer::from_bytes`] with a compact-vocab dump the
 //!   converter produces (T19+ parity fixture pipeline), or (b) consume
-//!   [`Self::raw_bytes`] and drive an external parser.
+//!   [`VoxtralTokenizer::raw_bytes`] and drive an external parser.
 //! - It does not implement **general text encoding** (arbitrary text → token
 //!   ids): that would require the full tekken regex pre-tokenizer (Unicode
 //!   property classes) on top of the BPE merge. What it DOES implement (P2
 //!   cc-05/07 follow-up) is the narrow encode surface the runtime
 //!   transcription prompt needs:
-//!   - [`Self::token_id_of_special`] — exact-name lookup of a special token
+//!   - [`VoxtralTokenizer::token_id_of_special`] — exact-name lookup of a special token
 //!     (the compact vocab stores special-token names verbatim, e.g.
 //!     `[INST]`, `[BEGIN_AUDIO]`, `[TRANSCRIBE]`);
-//!   - [`Self::encode_piece`] — tiktoken-style byte-pair encoding of ONE
+//!   - [`VoxtralTokenizer::encode_piece`] — tiktoken-style byte-pair encoding of ONE
 //!     pre-split regex piece (whole-piece shortcut, then lowest-rank-first
 //!     adjacent merges; the compact vocab's id order IS the tekken rank
 //!     order, so ids double as merge ranks);
-//!   - [`Self::transcription_prompt`] — the trained Voxtral
+//!   - [`VoxtralTokenizer::transcription_prompt`] — the trained Voxtral
 //!     transcription-request wrapper built from the two primitives above.
 
 use std::collections::HashMap;
@@ -131,7 +131,7 @@ pub struct TranscriptionPrompt {
 impl VoxtralTokenizer {
     /// Loads the tokenizer bytes from a GGUF file's [`KEY_TOKENIZER_MODEL`]
     /// chunk. The bytes may be either a compact-vocab dump (parseable via
-    /// [`Self::parse_compact_vocab`]) or a raw SentencePiece proto
+    /// `Self::parse_compact_vocab`) or a raw SentencePiece proto
     /// (accessible via [`Self::raw_bytes`]).
     ///
     /// The loader is deliberately lenient about the format: it recognises the

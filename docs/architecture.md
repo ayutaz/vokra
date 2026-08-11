@@ -21,19 +21,23 @@ two test-only crates; `integrations/` is deliberately excluded.
 
 ### 1.1 The runtime graph
 
-Fourteen crates live under `crates/`. Every one of them is a first-party
+Twenty crates live under `crates/`. Every one of them is a first-party
 `vokra-*` crate — that is what makes the zero-dependency invariant
 (`NFR-DS-02`) achievable at all.
 
 | Crate | Role |
 |---|---|
 | `vokra-core` <!-- anchor: crates/vokra-core/src/lib.rs --> | The IR and the execution engine. Holds the audio-graph descriptor (`FR-EX-01`), the graph evaluator, the `Backend` trait every backend implements, the GGUF loader and the task-level engine traits. Contains **no `unsafe`**. |
+| `vokra-math` <!-- anchor: crates/vokra-math/src/lib.rs --> | Shared scalar `f32` transcendental primitives (`exp`, `tanh`, `sqrt`, `sin`, `cos`, `log`, `log1p`) — pure `core` arithmetic, no `libm`, no `unsafe`, deterministic across targets (WP-07 extraction of the M5-03-T06 + WP-06 module). Sits on the "no dependencies" tier alongside `vokra-core` (its only dep is `core`) so that `vokra-ops`, `vokra-bert` and `vokra-models::sbv2` can share the same scalar path used by `vokra-backend-cpu`'s scalar kernels without pulling the whole CPU-kernel tier upward. |
 | `vokra-ops` <!-- anchor: crates/vokra-ops/src/lib.rs --> | The speech operators: STFT / iSTFT / mel filterbank / MFCC / DCT and the rest of the audio dialect (`FR-OP-*`), plus the CPU FFT lowering — a from-scratch Rust reimplementation of the pocketfft algorithm rather than a bound C library. |
+| `vokra-bert` <!-- anchor: crates/vokra-bert/src/lib.rs --> | Clean-room BERT-family encoders (DeBERTa v2 / DeBERTa v3 / plain BERT-base) + `SbertTokenizer` (SentencePiece) + `BertWordpieceTokenizer` (Devlin 2018) + the `BertEncoder` trait. The encoder Vokra's Style-Bert-VITS2 v2 integration sits on top of; also the runtime side of WP-14's plain-BERT converter for `hfl/chinese-roberta-wwm-ext-large`. |
 | `vokra-backend-cpu` <!-- anchor: crates/vokra-backend-cpu/src/lib.rs --> | The first-class CPU backend (`FR-BE-01`): f32 compute kernels plus the single-binary runtime ISA dispatch that picks an implementation for the host CPU. |
 | `vokra-backend-metal` <!-- anchor: crates/vokra-backend-metal/src/lib.rs --> | macOS / iOS GPU backend over **hand-written raw Objective-C runtime + Metal FFI**. No `metal` / `objc2` binding crate. |
 | `vokra-backend-cuda` <!-- anchor: crates/vokra-backend-cuda/src/lib.rs --> | NVIDIA GPU backend over the CUDA Driver API + NVRTC, loaded at **runtime via `dlopen` / `LoadLibrary`**. No `cudarc` / `cust` / `rustacuda`, and no CUDA library is bundled or linked — the user's system installation is discovered at run time (this is what keeps distribution clear of NVIDIA's redistribution terms). |
 | `vokra-backend-vulkan` <!-- anchor: crates/vokra-backend-vulkan/src/lib.rs --> | Android / Linux (and non-NVIDIA desktop) GPU backend over raw Vulkan FFI, also `dlopen`-loaded, with pre-compiled SPIR-V shaders. No `ash` / `vulkano` / `erupt`. |
 | `vokra-backend-webgpu` <!-- anchor: crates/vokra-backend-webgpu/src/lib.rs --> | Browser backend (`FR-BE-05`) over a hand-written WASM extern-import shim onto the WebGPU API. No `wgpu` / `wasm-bindgen`: import-object resolution at instantiate time is the WASM equivalent of `dlopen`. |
+| `vokra-backend-coreml` <!-- anchor: crates/vokra-backend-coreml/src/lib.rs --> | Apple ANE delegate scaffold (M5-01, macOS / iOS, `coreml` opt-in feature): raw Objective-C runtime + CoreML FFI, no binding crate. Target-gated `cfg(target_os = "macos" / "ios")`; default build is `BackendUnavailable` stubs. The op-execution path lands after the T02 model-supply ADR is ratified. |
+| `vokra-backend-qnn` <!-- anchor: crates/vokra-backend-qnn/src/lib.rs --> | Qualcomm Hexagon NPU delegate scaffold (M5-02, Android / Linux / Windows-on-ARM, `qnn` opt-in feature): raw QNN (Qualcomm AI Engine Direct) FFI loaded at **runtime via `dlopen`** — no binding crate, no bundled SDK (Qualcomm EULA install model, mirror of CUDA). This is **not NNAPI** (`FR-BE-07`): NNAPI is permanently unsupported after its Android 15 deprecation. |
 | `vokra-models` <!-- anchor: crates/vokra-models/src/lib.rs --> | The native model implementations. Models are re-implemented in Rust whisper.cpp-style: the model *definition* lives here and only upstream **checkpoints** are consumed. This is also where the piper-plus TTS inference core lives. |
 | `vokra-piper-plus` <!-- anchor: crates/vokra-piper-plus/src/lib.rs --> | The piper-plus **G2P reuse bridge** and voice-model conversion helpers — and only that. The inference core (MB-iSTFT-VITS2) is natively implemented in `vokra-models`; the earlier "wrap piper-plus" positioning was abolished by maintainer decision. |
 | `vokra-convert` <!-- anchor: crates/vokra-convert/src/lib.rs --> | The offline checkpoint → GGUF converter (`FR-TL-01`). **The only place ONNX / protobuf handling is allowed to exist** — see red line R1 below. |
@@ -41,6 +45,8 @@ Fourteen crates live under `crates/`. Every one of them is a first-party
 | `vokra-capi` <!-- anchor: crates/vokra-capi/src/lib.rs --> | The C ABI surface (`IF-01`, `BR-04`). Its public product is a set of `extern "C"` symbols; the generated header is `include/vokra.h`. Everything Unity, Godot, Swift, Kotlin, Python and JS use sits on this. |
 | `vokra-cli` <!-- anchor: crates/vokra-cli/src/main.rs --> | The umbrella command-line tool (`FR-TL-02`): `run`, `convert`, `bench`. **A binary crate** — it is the one crate with no `src/lib.rs`. Argument parsing is hand-written. |
 | `vokra-eval` <!-- anchor: crates/vokra-eval/src/lib.rs --> | Evaluation metrics (`FR-OP-93`, `FR-TL-03`) — mel loss, WER, CER — as a reusable library plus a CLI. |
+| `vokra-vad-micro` <!-- anchor: crates/vokra-vad-micro/src/lib.rs --> | The `#![no_std] + alloc` subset of Silero VAD v5 for IoT Tier 3 (Cortex-M55 / thumbv8m, `NFR-PT-03`, M5-03). Shares its forward with `vokra-models::silero_vad` **bit-identically by construction** (same source; the std wrapper re-exports this crate). `publish = true` is intentional so downstream MCU embedders can list a stable crate name. |
+| `vokra-kws-micro` <!-- anchor: crates/vokra-kws-micro/src/lib.rs --> | Sister crate to `vokra-vad-micro`: `#![no_std] + alloc` KWS (microWakeWord-style) scaffold on the same M5-03 topology. Scaffold only — `KwsMicro::detect()` returns `KwsEvent::Idle` unconditionally, and the crate carries `publish = false` so a skeleton that never wakes is not released as if it detected wakewords. |
 
 Two further workspace members are test-only:
 
@@ -56,16 +62,21 @@ Normal (non-dev) dependencies only. The graph is acyclic and `vokra-core`
 is the root — nothing in the workspace is upstream of it.
 
 ```
-vokra-core            (no dependencies — the root)
-  ├── vokra-ops
-  ├── vokra-mmap
-  ├── vokra-piper-plus
-  ├── vokra-backend-cpu
+vokra-core            (no dependencies — the root, alongside vokra-math)
+vokra-math            (no dependencies — pure `core` arithmetic, WP-07)
+  ├── vokra-ops                              → core, math
+  ├── vokra-mmap                             → core
+  ├── vokra-piper-plus                       → core
+  ├── vokra-bert                             → core, mmap, math
+  ├── vokra-backend-cpu                      → core, math
   ├── vokra-backend-{metal,cuda,vulkan,webgpu}
+  ├── vokra-backend-{coreml,qnn}             → core (opt-in `coreml` / `qnn` features)
+  ├── vokra-vad-micro                        → core (no_std subset, M5-03)
+  ├── vokra-kws-micro                        → core (no_std subset, M5-03)
   ├── vokra-eval        → core, ops, backend-cpu
   ├── vokra-convert     → core, ops, mmap
-  ├── vokra-models      → core, ops, backend-cpu, piper-plus, mmap,
-  │                       backend-{metal,cuda,vulkan,webgpu} (optional features)
+  ├── vokra-models      → core, ops, math, backend-cpu, piper-plus, mmap,
+  │                       backend-{metal,cuda,vulkan,webgpu,coreml,qnn} (optional features)
   ├── vokra-capi        → core, models, ops, mmap
   └── vokra-cli         → core, models, ops, convert, mmap
 ```
@@ -101,7 +112,7 @@ the root lockfile and is a hard gate both locally and in CI.
 
 The workspace is safe-by-default: `unsafe_code = "deny"` is set at the
 workspace level, and every `unsafe` block must carry a `// SAFETY:` comment
-(enforced by clippy). Exactly **nine** crates opt out locally, each for a
+(enforced by clippy). Exactly **eleven** crates opt out locally, each for a
 reason that cannot be met in safe Rust (`NFR-RL-07`):
 
 | Crate | Why it needs `unsafe` |
@@ -112,12 +123,17 @@ reason that cannot be met in safe Rust (`NFR-RL-07`):
 | `vokra-backend-cuda` | CUDA Driver API + NVRTC FFI |
 | `vokra-backend-vulkan` | Vulkan FFI |
 | `vokra-backend-webgpu` | WASM extern-import shim |
+| `vokra-backend-coreml` | Objective-C runtime + CoreML framework FFI (Apple ANE) |
+| `vokra-backend-qnn` | QNN (Qualcomm AI Engine Direct) FFI (Hexagon HTP, `dlopen`-loaded) |
 | `vokra-capi` | The C ABI boundary itself |
 | `vokra-mmap` | POSIX `mmap` / Win32 file mapping |
 | `vokra-wasm-harness` | The `(ptr, len)` WASM ABI boundary |
 
-`vokra-core` is **not** on this list and must stay off it. Public API
-boundaries remain safe in every crate, including these nine.
+`vokra-core` is **not** on this list and must stay off it. `vokra-math`,
+`vokra-vad-micro` and `vokra-kws-micro` are also not on this list — they
+carry no crate-level `#![allow(unsafe_code)]` because their forwards use
+only safe `core` arithmetic and safe slice indexing. Public API
+boundaries remain safe in every crate, including these eleven.
 
 ---
 

@@ -107,7 +107,7 @@ pub struct Speaker3dReport {
 ///   (`speaker_3d`), name, category (`speaker`), upstream HF repo, and
 ///   weight license.
 /// - `license` = `None` uses the canonical `apache-2.0`
-///   ([`DEFAULT_LICENSE_SPDX`]). Passing `Some(spdx)` overrides both
+///   (`DEFAULT_LICENSE_SPDX`). Passing `Some(spdx)` overrides both
 ///   the raw SPDX string and the re-derived [`LicenseClass`], keeping
 ///   the GGUF the single source of truth the model card is generated
 ///   from (no card / artifact drift — mirrors the

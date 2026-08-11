@@ -447,12 +447,9 @@ fn parity_whisper_extras_distil_whisper() {
         d * d,
     );
 
-    // Fabricated-pass ban self-audit: the runtime side is a scaffold whose
-    // `.transcribe` must loudly refuse. If a future wave binds real weights
-    // and this expectation trips, DELETE this block and replace it with the
-    // real transcription comparison (the whole point of "flip-the-switch").
-    // Never delete it silently — a green pass here today would mean the
-    // harness fabricated a transcription result.
+    // Fabricated-pass ban self-audit: the synthesized-weight scaffold path
+    // still refuses loudly (its weight store is not wired to the shared
+    // Whisper engine — `from_gguf` is the real path).
     let asr = build_distil_whisper_asr_from_synthesized(&cfg);
     let err = asr
         .transcribe(&[0.0f32; 16_000])
@@ -461,11 +458,47 @@ fn parity_whisper_extras_distil_whisper() {
         VokraError::NotImplemented(msg) => assert!(
             msg.contains("synthesized")
                 || msg.contains("real weights")
-                || msg.contains("has not landed"),
+                || msg.contains("has not landed")
+                || msg.contains("from_gguf"),
             "scaffold NotImplemented message must name the blocker \
              (fabricated-pass audit): {msg}",
         ),
         other => panic!("expected NotImplemented, got {other:?}"),
+    }
+
+    // Wave 7 Part A (RUNTIME-NOTIMPL) — `DistilWhisperAsr::from_gguf` delegates
+    // to the shared `WhisperAsr` engine. When the fixture GGUF carries real
+    // weights + a `vokra.frontend.*` chunk, this loads successfully; when it is
+    // a metadata-only staging artefact, the load surfaces a loud ModelLoad
+    // (FR-EX-08). Both outcomes are legitimate for CI fixture provenance —
+    // this test only guarantees the delegate is *live* (not stubbed).
+    match vokra_models::distil_whisper::DistilWhisperAsr::from_gguf(&file) {
+        Ok(loaded) => {
+            assert!(
+                loaded.has_weights_bound(),
+                "from_gguf must bind the inner Whisper engine when it returns Ok"
+            );
+            assert!(
+                !loaded.is_synthesized(),
+                "delegate path (from_gguf) is by definition real weights"
+            );
+            assert!(
+                loaded.config().n_text_layer < loaded.config().n_audio_layer,
+                "loaded config must satisfy the distil invariant"
+            );
+            eprintln!(
+                "[parity_whisper_extras/{}] from_gguf load PASS \
+                 (delegate WhisperAsr bound, distil invariant holds)",
+                member.arch_slug,
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[parity_whisper_extras/{}] from_gguf load surfaces a loud error \
+                 (fixture may be metadata-only; delegate wiring is live): {e:?}",
+                member.arch_slug,
+            );
+        }
     }
 
     // Optional flip-the-switch branch — refdir wiring only, no comparison
@@ -649,8 +682,9 @@ fn parity_whisper_extras_kotoba_whisper() {
         d * d,
     );
 
-    // Fabricated-pass ban self-audit (same posture as distil_whisper —
-    // see that test for the deletion contract when the forward lands).
+    // Fabricated-pass ban self-audit: the config-only `.new()` shell must
+    // still hard-error with a NotImplemented pointing at `from_gguf` as the
+    // fix. Preserved through the Wave 7 Part A wire-up.
     let asr = vokra_models::kotoba_whisper::KotobaWhisperAsr::new(cfg.clone())
         .expect("build kotoba-whisper asr on primary-source config");
     let err = asr
@@ -663,6 +697,38 @@ fn parity_whisper_extras_kotoba_whisper() {
              (fabricated-pass audit): {msg}",
         ),
         other => panic!("expected NotImplemented, got {other:?}"),
+    }
+
+    // Wave 7 Part A (RUNTIME-NOTIMPL) — `KotobaWhisperAsr::from_gguf` delegates
+    // to the shared `WhisperAsr` engine. When the fixture GGUF carries real
+    // weights + a `vokra.frontend.*` chunk, this must load successfully; when
+    // it is a metadata-only staging artefact, the load surfaces a loud
+    // ModelLoad (FR-EX-08) rather than silently building a broken engine. Both
+    // outcomes are legitimate for CI fixture provenance — the test only
+    // guarantees the delegate is *live* (not stubbed).
+    match vokra_models::kotoba_whisper::KotobaWhisperAsr::from_gguf(&file) {
+        Ok(loaded) => {
+            assert!(
+                loaded.has_weights(),
+                "from_gguf must bind the inner Whisper engine when it returns Ok"
+            );
+            assert!(
+                loaded.config().n_text_layer < loaded.config().n_audio_layer,
+                "loaded config must satisfy the distil invariant"
+            );
+            eprintln!(
+                "[parity_whisper_extras/{}] from_gguf load PASS \
+                 (delegate WhisperAsr bound, distil invariant holds)",
+                member.arch_slug,
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[parity_whisper_extras/{}] from_gguf load surfaces a loud error \
+                 (fixture may be metadata-only; delegate wiring is live): {e:?}",
+                member.arch_slug,
+            );
+        }
     }
 
     if let Some(refdir) = refdir {

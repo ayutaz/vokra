@@ -2,55 +2,110 @@
   "$schema": "vokra-perf-baseline-v1",
   "wp": "M4-07",
   "adr": "docs/adr/M4-07-fa-v3-hopper.md",
-  "ticket_ids": ["M4-07-T14", "M4-07-T18"],
+  "ticket_ids": ["M4-07-T14", "M4-07-T17", "M4-07-T18"],
   "model": "whisper-large-v3",
   "audio": "tests/fixtures/audio/jfk-30s.wav",
   "backend": "cuda",
-  "hardware": "H100 (SM 9.0) — TBD exact SKU (owner T18: PCIe / SXM / NVL and VRAM)",
-  "driver": "TBD (owner T18)",
-  "cuda": "TBD (owner T18)",
-  "median_rtf": "TBD (owner T18)",
-  "measured_at": "TBD (owner T18)",
-  "measurement_source": "TBD (owner T18: tools/parity/cuda_rtf_variance.sh --fa-mode {decomposed|v2|v3}, N=10 each, ONE host)",
+  "hardware": "H100 PCIe (SM 9.0, 80 GB VRAM) — vast.ai offer #31427212, container host 6f11f5642828",
+  "driver": "550.163.01",
+  "cuda": "12.4.1-devel-ubuntu22.04",
+  "median_rtf": 0.913262,
+  "measured_at": "2026-08-10T11:41:52Z to 2026-08-10T11:47:05Z (FA v3 mode; sibling runs bracket 11:30:03Z-11:41:22Z)",
+  "measurement_source": "tools/parity/cuda_rtf_variance.sh --iters 10, run on the same host in the same session across three --fa-mode values",
   "measurement_source_doc": "docs/m4-07-hopper-bench-handover.md",
   "gate_status": "reference",
   "gate_status_note": "H100 is a REFERENCE measurement surface only — the formal RTF gate (median > baseline * 1.05 || median > 0.10) stays on the RTX 4090 baseline (docs/perf/cuda-large-v3-baseline.json, M2-14 self-hosted runner + M3-01 5% regression). H100 numbers must NEVER be merged into that file: mixing hardware generations breaks the regression judgment (M4-07 spec T14).",
   "e2e_rtf_by_fa_mode": {
     "decomposed": {
-      "median_rtf": "TBD (owner T18)",
-      "mean_rtf": "TBD (owner T18)",
-      "cv": "TBD (owner T18)",
-      "jsonl": "TBD (owner T18: docs/bench-baselines/vast-<date>-h100/rtf-h100-decomposed.jsonl)"
+      "median_rtf": 0.965622,
+      "mean_rtf": 0.966009,
+      "cv": 0.001002,
+      "min_rtf": 0.964697,
+      "max_rtf": 0.967977,
+      "p95_rtf": 0.967977,
+      "stddev": 0.000968,
+      "jsonl": "docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-decomposed.jsonl",
+      "report": "docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-decomposed.report.md"
     },
     "v2": {
-      "median_rtf": "TBD (owner T18)",
-      "mean_rtf": "TBD (owner T18)",
-      "cv": "TBD (owner T18)",
-      "jsonl": "TBD (owner T18: docs/bench-baselines/vast-<date>-h100/rtf-h100-fa-v2.jsonl)"
+      "median_rtf": 0.965551,
+      "mean_rtf": 0.965814,
+      "cv": 0.002126,
+      "min_rtf": 0.962893,
+      "max_rtf": 0.970406,
+      "p95_rtf": 0.970406,
+      "stddev": 0.002053,
+      "jsonl": "docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-fa-v2.jsonl",
+      "report": "docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-fa-v2.report.md",
+      "note": "FA v2 gate does not fire at decoder-step t_q = 1 by design (FA_V2_MIN_TQ = 16). e2e RTF matches decomposed within noise (mean delta 0.00019, well inside the 0.0021 CV band) = honest inheritance of the RTX 4090 honest-negative on this specific workload."
     },
     "v3": {
-      "median_rtf": "TBD (owner T18)",
-      "mean_rtf": "TBD (owner T18)",
-      "cv": "TBD (owner T18)",
-      "jsonl": "TBD (owner T18: docs/bench-baselines/vast-<date>-h100/rtf-h100-fa-v3.jsonl)",
-      "note": "--fa-mode v3 sets VOKRA_CUDA_FA_V3_ENCODER=1 so the encoder self-attention (t_q = 1500, the FA v3 battleground) is exposed e2e; the decoder steady state (t_q = 1) stays below FA_V3_MIN_TQ = 64 by design (FA v2 honest-negative inheritance)."
+      "median_rtf": 0.913262,
+      "mean_rtf": 0.913127,
+      "cv": 0.002321,
+      "min_rtf": 0.909163,
+      "max_rtf": 0.915753,
+      "p95_rtf": 0.915753,
+      "stddev": 0.002119,
+      "jsonl": "docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-fa-v3.jsonl",
+      "report": "docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-fa-v3.report.md",
+      "note": "--fa-mode v3 sets VOKRA_CUDA_FA_V3_ENCODER=1 so the encoder self-attention (t_q = 1500, the FA v3 battleground) is exposed e2e; the decoder steady state (t_q = 1) stays below FA_V3_MIN_TQ = 64 by design (FA v2 honest-negative inheritance). Empirical e2e speedup vs decomposed = 5.8% median, 5.5% mean — the encoder-only FA v3 route measurably moves e2e even under decoder-dominated Whisper decoding, a documented positive on Hopper."
     }
   },
+  "e2e_speedup_summary": {
+    "fa_v3_vs_decomposed_e2e_median": 1.0574,
+    "fa_v3_vs_decomposed_e2e_mean": 1.0579,
+    "fa_v3_vs_fa_v2_e2e_median": 1.0573,
+    "fa_v3_vs_fa_v2_e2e_mean": 1.0577,
+    "decomposed_vs_fa_v2_e2e_median": 1.0001,
+    "note": "Speedups computed as ratio of RTF numerators (baseline_rtf / target_rtf) — a ratio > 1 means the target runs faster (RTF closer to 0). The FA v2 honest-negative continues on H100 (FA v2 kernel gate does not fire at t_q = 1, so v2 e2e converges to decomposed). FA v3 is the first mode that moves the encoder-side e2e number measurably on this workload."
+  },
   "kernel_level_comparison": {
-    "workload": "flash_attn_v3_dev vs flash_attn_dev vs decomposed attn chain, d_head=64, n_head=4, causal + non-causal, t_q = t_kv in {64, 448, 1500}",
-    "fa_v3_vs_decomposed_speedup": "TBD (owner T18)",
-    "fa_v3_vs_fa_v2_speedup": "TBD (owner T18)",
-    "reference_expectation_note": "The research §10 '2-3x on Hopper' figure applies to THIS kernel-level face only — it is a reference figure, NOT an acceptance criterion (milestones §8 M4-07 row), and it must not be compared against the e2e RTF face above. An honest below-2x (or negative) result still closes the WP by being recorded."
+    "workload": "flash_attn_v3_dev vs flash_attn_dev vs decomposed attn chain, d_head=64, n_head=4, causal + non-causal, t_q = t_kv in {1, 17, 63, 64, 65, 96, 448, 1500}",
+    "fa_v3_vs_decomposed_speedup": "TBD (owner T18-b, §4 kernel-level micro measurement — not executed in this session; e2e §3 is sufficient for WP close per §7 checklist)",
+    "fa_v3_vs_fa_v2_speedup": "TBD (owner T18-b)",
+    "reference_expectation_note": "The research §10 '2-3x on Hopper' figure applies to THIS kernel-level face only — it is a reference figure, NOT an acceptance criterion (milestones §8 M4-07 row), and it must not be compared against the e2e RTF face above. An honest below-2x (or negative) result still closes the WP by being recorded. The e2e-side positive above already closes the WP-close condition."
   },
   "parity_recorded_max_abs_delta": {
-    "causal": "TBD (owner T17: eprintln output of flash_attn_v3_causal_vs_decomposed_f32)",
-    "non_causal": "TBD (owner T17)",
+    "causal": 1.206e-2,
+    "non_causal": 1.026e-2,
     "atol_preregistered": 0.02,
-    "atol_note": "FA_V3_PARITY_ATOL = 0.02 is the tf32 architectural-bound pre-registration (fa_v3.rs rustdoc + ADR M4-07 (d)). Measured > 0.02 => hand back to CC (no quiet atol bump); measured comfortably <= 0.01 => tighten to the FA v2 value in a follow-up."
+    "atol_note": "FA_V3_PARITY_ATOL = 0.02 is the tf32 architectural-bound pre-registration (fa_v3.rs rustdoc + ADR M4-07 (d)). Measured causal max |Δ| = 1.206e-2 (60% of atol), non-causal max |Δ| = 1.026e-2 (51% of atol). Both comfortably inside the pre-registered bound = confirmed. Follow-up (M4-07-T18): consider tightening atol to 0.015 after a second independent H100 session confirms the bound holds under different driver / CUDA versions.",
+    "sweep_shapes": "t_q in {1, 17, 63, 64, 65, 96, 448, 1500}, t_kv = t_q, q_offset = 0 for causal",
+    "measured_via": "cargo test --release -p vokra-backend-cuda --test parity_kernels_cuda flash_attn_v3 -- --nocapture"
+  },
+  "nvrtc_feasibility_findings": {
+    "compute_90a_snippet_compile": {
+      "status": "PASS",
+      "ptx_bytes": 4225,
+      "wgmma_mma_async_present": true
+    },
+    "compute_89_snippet_compile": {
+      "status": "PASS (unexpectedly — NVRTC accepted wgmma under compute_89, PTX 4224 B)",
+      "ptx_bytes": 4224,
+      "finding": "The arch check is deferred to module load; the SM>=9.0 lazy-compile gate is the load-time firewall. Documented in `docs/adr/M4-07-fa-v3-hopper.md` §(b) pending block by this run."
+    },
+    "full_program_compute_90a": {
+      "status": "PASS",
+      "ptx_bytes": 69917
+    },
+    "measured_via": "cargo test --release -p vokra-backend-cuda --test fa_v3_nvrtc_feasibility -- --nocapture"
+  },
+  "session_metadata": {
+    "instance_id": 47364027,
+    "offer_id": 31427212,
+    "hourly_price_usd": 1.7347,
+    "session_duration_minutes_approx": 60,
+    "session_cost_usd_approx": 1.73,
+    "destroyed_at": "2026-08-10T11:48Z (approx, after scp back)",
+    "provisioning": "tools/parity/provision-h100.sh --self-test + direct cargo build --release -p vokra-cli -p vokra-backend-cuda (the script's `crates/vokra-cli` sanity check misfires on the glob-based workspace; the build itself is unaffected)",
+    "workspace_git_ref": "feat/sbv2-voxtral-real-verify-2026-08-06 @ 3f76abf"
   },
   "notes": [
-    "Scaffolded by M4-07-T14 with explicit TBD placeholders — fabricated values are forbidden; the owner fills every TBD from the T17/T18 H100 run.",
-    "Dashboard registration (X-06 nightly results surface) of the FA v2 comparison row is the WP-close trigger (milestones §8 M4-07 completion condition, second half).",
-    "FA_V3_MIN_TQ = 64 calibration and the per-path parity atol confirmation are follow-ups fed by this file's measurements."
+    "M4-07 T17 completion condition (FA v3 enabled on Hopper + parity 3 face green) SATISFIED: NVRTC feasibility 4/4 pass, FA v3 parity 3/3 pass with worst |Δ| ≤ 1.206e-2 < atol 0.02.",
+    "M4-07 T18 completion condition (dashboard registration of the FA v2 comparison row) is the WP-close trigger. This file's `e2e_speedup_summary.fa_v3_vs_fa_v2_e2e_median = 1.0573` is the row content; the dashboard land itself is X-06 nightly integration work.",
+    "H100 e2e FA v3 is empirically positive (5.7% median e2e speedup vs FA v2). This is the first mode to move the number measurably on this Whisper large-v3 workload — earlier RTX 4090 sessions saw FA v2 honest-negative (docs/bench-baselines/vast-2026-07-10/rtf-fa-v2.jsonl).",
+    "FA_V3_MIN_TQ = 64 calibration remains a follow-up: the encoder route (t_q = 1500) is the current lift; the decoder route (t_q = 1) stays gated off intentionally.",
+    "Dashboard registration and second-session bound confirmation are the two remaining owner follow-ups; both are recorded here for continuity."
   ]
 }

@@ -158,7 +158,7 @@ pub struct HtdemucsMultiReport {
 /// covers both without a variant enum.
 ///
 /// `license` optionally overrides the stamped weight license (raw SPDX
-/// string). The default is [`DEFAULT_LICENSE_SPDX`] (`"mit"`,
+/// string). The default is `DEFAULT_LICENSE_SPDX` (`"mit"`,
 /// `Permissive`).
 ///
 /// # Errors

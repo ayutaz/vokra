@@ -33,7 +33,7 @@ use vokra_core::{FrontendSpec, Result, VokraError};
 /// # Errors
 ///
 /// [`VokraError::InvalidArgument`] if `window_type` or `pad_mode` is unknown, or
-/// if `window_type` is `"kaiser"` (not representable — see [`window_from_str`]).
+/// if `window_type` is `"kaiser"` (not representable — see `window_from_str`).
 pub fn stft_attrs_from_spec(spec: &FrontendSpec) -> Result<StftAttrs> {
     Ok(StftAttrs {
         n_fft: spec.n_fft as usize,

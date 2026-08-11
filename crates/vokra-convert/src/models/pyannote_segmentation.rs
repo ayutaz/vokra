@@ -199,7 +199,7 @@ pub struct PyannoteSegmentationReport {
 /// future runtime binder (`crates/vokra-models/src/pyannote/`) can
 /// bring the graph up without a side-car config lookup.
 ///
-/// `license` overrides [`DEFAULT_LICENSE`] (`"mit"`) — the same
+/// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
 /// mechanism `lib.rs::convert_file_licensed` uses when the
 /// implementation is clean-room but the redistributed checkpoint
 /// carries a different SPDX.

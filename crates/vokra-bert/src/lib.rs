@@ -20,7 +20,8 @@
 
 #![deny(unsafe_code)]
 
-/// Uniform BERT encoder trait — implemented by both DeBERTa v2 and v3.
+/// Uniform BERT encoder trait — implemented by DeBERTa v2, DeBERTa v3,
+/// and plain BERT ([`bert_base::BertBaseEncoder`]).
 ///
 /// `forward(ids)` returns hidden states as a flat `[seq_len × d_model]` Vec.
 /// Callers know `seq_len = ids.len()`, so `d_model()` is exposed for the
@@ -48,9 +49,26 @@ impl BertEncoder for deberta_v3::DebertaV3Encoder {
     }
 }
 
+/// Plain BERT encoder implements the uniform trait too — `forward(ids)`
+/// runs with `token_type_ids = None` (single-segment). Consumers that
+/// need multi-segment input call `bert_base::BertBaseEncoder::forward`
+/// directly (WP-19 SBV2 wiring will do that).
+impl BertEncoder for bert_base::BertBaseEncoder {
+    fn forward(&self, ids: &[u32]) -> Vec<f32> {
+        bert_base::BertBaseEncoder::forward(self, ids, None)
+    }
+    fn d_model(&self) -> usize {
+        // Fully-qualified to avoid method-name shadowing between the
+        // inherent `BertBaseEncoder::d_model` and this trait method.
+        bert_base::BertBaseEncoder::d_model(self)
+    }
+}
+
+pub mod bert_base;
 pub mod deberta_v2;
 pub mod deberta_v3;
 pub mod tokenizer;
+pub mod wordpiece;
 
 #[cfg(test)]
 mod tests {

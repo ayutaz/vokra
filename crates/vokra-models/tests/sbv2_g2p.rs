@@ -20,9 +20,25 @@
 //! unknown text / wrong language / a text that WOULD match the synthetic
 //! char mapping but isn't in the fixture — proving the fixture path never
 //! falls through).
+//!
+//! # M6 refactor note (2026-08-06)
+//!
+//! `word_boundaries` on [`PhonemizeResult`] is retained even though
+//! [`SbV2TextEncoder::forward`](vokra_models::sbv2::SbV2TextEncoder::forward)
+//! no longer consumes it (the SBV2 v2 real checkpoint has a
+//! `language_embed [3, d_model]` table instead of the design-doc-guessed
+//! `wb_embed [2, d_model]` table — see `SbV2TextEncoder`'s design
+//! correction). The G2P layer still emits per-phoneme word-boundary flags
+//! because they are honest linguistic output of the G2P stage (a future
+//! BERT-tokenize helper or a downstream consumer may still want them),
+//! and dropping them would silently change the
+//! [`PhonemizeFixture`]-driven parity fixture format (`word_boundaries.bin`
+//! is already documented in `tests/parity_sbv2_real.rs`'s manifest
+//! schema). The tests below therefore still exercise the word-boundary
+//! output shape.
 
 use vokra_core::VokraError;
-use vokra_models::sbv2::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
+use vokra_models::sbv2::{Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 
 #[test]
 fn ja_phonemize_produces_ids() {
@@ -39,6 +55,44 @@ fn en_phonemize_zero_tones() {
     let p = SbV2Phonemizer::synthetic_for_test();
     let r = p.phonemize("hello world", Language::EN).expect("phonemize");
     assert!(r.tones.iter().all(|&t| t == 0), "EN tones must be all zero");
+}
+
+/// M6 refactor (2026-08-06): `Language::ZH` selects the SBV2 v2 real
+/// checkpoint's `enc_p.language_emb.weight` row 2, but no in-crate ZH G2P
+/// is wired — [`SbV2Phonemizer::phonemize`] must therefore return a loud
+/// [`VokraError::NotImplemented`] on the char-mapping / real-piper paths,
+/// never a silent JA fallback (FR-EX-08). The fixture path is unaffected
+/// (a caller with pre-computed ZH phoneme ids can still hit
+/// `language_id = 2` code paths via [`PhonemizeFixture`]).
+#[test]
+fn zh_phonemize_fails_loudly_without_fixture() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    match p.phonemize("你好", Language::ZH) {
+        Ok(res) => panic!(
+            "ZH without a fixture must fail loudly (FR-EX-08), not silently fall back to \
+             JA/EN char mapping; got {res:?}"
+        ),
+        Err(VokraError::NotImplemented(msg)) => {
+            assert!(
+                msg.contains("ZH"),
+                "error must name the offending language, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::NotImplemented, got {other:?}"),
+    }
+}
+
+/// M6 refactor: `Language::language_id` pins the tentative row-ordering
+/// convention (`JA = 0, EN = 1, ZH = 2`) that
+/// [`SbV2TextEncoder::forward`](vokra_models::sbv2::SbV2TextEncoder::forward)
+/// consumes. Pinning it here (a plain enum-value equality check) catches
+/// an accidental permutation that would otherwise only manifest as a
+/// parity mismatch on a real checkpoint.
+#[test]
+fn language_id_row_ordering_is_stable() {
+    assert_eq!(Language::JA.language_id(), 0);
+    assert_eq!(Language::EN.language_id(), 1);
+    assert_eq!(Language::ZH.language_id(), 2);
 }
 
 /// Regression: EN word-boundary flags must align to each word start,
@@ -69,10 +123,12 @@ fn en_phonemize_multiword_word_boundaries_aligned() {
 /// id-sequence form (`crates/vokra-piper-plus/src/phonemizer.rs`), parsed to
 /// `[3, 4]` and framed by the table to `[BOS=1, 3, PAD=0, 4, PAD=0, EOS=2]`
 /// (6 ids). With an *empty* `en_mapping`, every one of those 6 piper ids
-/// falls back to `sbv2_default_phoneme_id` (0) — the documented mapping
-/// fallback, not a silent no-op (FR-EX-08); the empty map is this test's
-/// deliberate input, matching the brief's "空 mapping = 全 phoneme が
-/// default id にfallback" note.
+/// would fall back to `sbv2_default_phoneme_id` (0) — the WP-14 OovPolicy
+/// setter is explicitly flipped to [`OovPolicy::Lenient`] here so the
+/// routing assertion below (6 default ids came back) survives WP-14's new
+/// strict-by-default behavior. The `wp14_strict_default_oov_piper_id_ja_returns_loud_error`
+/// test below covers the reverse case (Strict + empty mapping is a loud
+/// error).
 #[test]
 fn wired_with_passthrough_phonemizer() {
     use vokra_piper_plus::{PassthroughPhonemizer, PhonemeTable};
@@ -96,9 +152,13 @@ fn wired_with_passthrough_phonemizer() {
     let p = SbV2Phonemizer::from_piper_g2p(
         ja,
         en,
-        std::collections::HashMap::new(), // ja mapping (empty = all default)
-        std::collections::HashMap::new(), // en mapping (empty = all default)
-    );
+        std::collections::HashMap::new(), // ja mapping (empty = all default under Lenient)
+        std::collections::HashMap::new(), // en mapping (empty = all default under Lenient)
+    )
+    // WP-14: opt in to the pre-WP-14 silent-fallback behavior so this
+    // routing test can assert the "6 default ids came back" post-condition.
+    // The strict-default gate is covered separately below.
+    .with_oov_policy(OovPolicy::Lenient);
 
     let r = p.phonemize("3 4", Language::EN).expect("ok");
 
@@ -279,4 +339,355 @@ fn fixture_insert_overwrites_and_returns_prior_value() {
         got.phoneme_ids, second.phoneme_ids,
         "phonemize must reflect the latest inserted value"
     );
+}
+
+// ---------------------------------------------------------------------------
+// WP-14: OovPolicy — strict-by-default OOV loud-fail (FR-EX-08)
+// ---------------------------------------------------------------------------
+//
+// Before WP-14 the 4 OOV lookup sites in `g2p.rs`
+// (`phonemize_{ja,en}_via_piper` + `phonemize_{ja,en}_char_mapping`) fell back
+// silently to `sbv2_default_phoneme_id` (tone `0`) — a byte-valid but
+// wrong-audio replacement that FR-EX-08 forbids. WP-14 threads
+// [`OovPolicy`] through the phonemizer and defaults every construction path
+// to [`OovPolicy::Strict`], so an unmapped input aborts with
+// [`VokraError::InvalidArgument`] naming the offending char (or piper id)
+// and its position — the legacy silent fallback is available only under an
+// explicit opt-in via [`SbV2Phonemizer::with_oov_policy`].
+
+/// WP-14 (RED→GREEN): `synthetic_for_test` defaults to
+/// [`OovPolicy::Strict`], so a JA char absent from its hiragana map is a
+/// loud [`VokraError::InvalidArgument`] naming the offending char and its
+/// position — not a silent `Ok` with the default id.
+#[test]
+fn wp14_strict_default_oov_char_ja_returns_loud_error() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    // Kanji '漢' is not in synthetic_for_test's hiragana JA map — the pre-WP-14
+    // path would silently return the default id.
+    match p.phonemize("あ漢い", Language::JA) {
+        Ok(res) => {
+            panic!("OOV JA char must fail loudly under OovPolicy::Strict (FR-EX-08), got {res:?}")
+        }
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains('漢'),
+                "error must name the offending char, got: {msg}"
+            );
+            assert!(
+                msg.contains("position"),
+                "error must name the offending position for actionability, got: {msg}"
+            );
+            // The error must point at index 1 (the kanji sits between 'あ' and 'い').
+            assert!(
+                msg.contains(" 1"),
+                "error must include position 1 (kanji sits between あ and い), got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// WP-14: same as the JA test above but for the EN char-mapping path
+/// (`phonemize_en_char_mapping`) — proves the Strict-default gate is wired
+/// on both language paths, not just JA.
+#[test]
+fn wp14_strict_default_oov_char_en_returns_loud_error() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    // '@' is not in synthetic_for_test's "abcdefghijklmnopqrstuvwxyz " map.
+    match p.phonemize("h@llo", Language::EN) {
+        Ok(res) => {
+            panic!("OOV EN char must fail loudly under OovPolicy::Strict (FR-EX-08), got {res:?}")
+        }
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains('@'),
+                "error must name the offending char, got: {msg}"
+            );
+            assert!(
+                msg.contains("position"),
+                "error must name the offending position, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// WP-14: the piper-plus real-G2P path (`phonemize_ja_via_piper`) is also
+/// Strict by default — an unmapped piper id is a loud error naming the
+/// piper id (not the source char, which the piper→SBV2 boundary does not
+/// carry) and the frame position.
+#[test]
+fn wp14_strict_default_oov_piper_id_ja_returns_loud_error() {
+    use vokra_piper_plus::{PassthroughPhonemizer, PhonemeTable};
+
+    let symbols = vec![
+        "_".to_owned(),
+        "^".to_owned(),
+        "$".to_owned(),
+        "a".to_owned(),
+        "i".to_owned(),
+    ];
+    let table = PhonemeTable::from_symbols(&symbols).expect("valid table");
+    let ja = Box::new(PassthroughPhonemizer::new(table.clone()));
+    let en = Box::new(PassthroughPhonemizer::new(table));
+    let p = SbV2Phonemizer::from_piper_g2p(
+        ja,
+        en,
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+    );
+    match p.phonemize("3 4", Language::JA) {
+        Ok(res) => panic!(
+            "empty ja_mapping must NOT silently fall back under OovPolicy::Strict; got {res:?}"
+        ),
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("piper"),
+                "error must name the piper-plus boundary for actionability, got: {msg}"
+            );
+            assert!(
+                msg.contains("position"),
+                "error must name the offending position, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// WP-14: `with_oov_policy(OovPolicy::Lenient)` explicitly reinstates the
+/// pre-WP-14 silent-fallback behavior — the char-mapping path returns
+/// `sbv2_default_phoneme_id` (tone `0`) for every OOV input, no error.
+/// This is the opt-in escape hatch fixtures and throwaway experiments need
+/// (never the default per FR-EX-08 — see [`wp14_default_policy_is_strict`]).
+#[test]
+fn wp14_lenient_opt_in_falls_back_silently() {
+    let p = SbV2Phonemizer::synthetic_for_test().with_oov_policy(OovPolicy::Lenient);
+    let r = p
+        .phonemize("漢", Language::JA)
+        .expect("lenient must not error on OOV");
+    assert_eq!(r.phoneme_ids, vec![0u16], "OOV char maps to the default id");
+    assert_eq!(r.tones, vec![0u8], "OOV char maps to tone 0");
+    assert_eq!(r.bert_input_text, "漢");
+}
+
+/// WP-14: regression guard — a full JA sentence whose every char IS in
+/// `synthetic_for_test`'s hiragana map still succeeds under Strict. Guards
+/// against the OOV gate accidentally rejecting all inputs (an obvious
+/// implementation-inversion bug).
+#[test]
+fn wp14_strict_in_vocab_ja_sentence_still_succeeds() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    // "こんにちは" is fully present in synthetic_for_test's map (its final
+    // slots literally spell "...わをんこんにちは").
+    let r = p
+        .phonemize("こんにちは", Language::JA)
+        .expect("fully in-vocab input must succeed under Strict");
+    assert_eq!(r.phoneme_ids.len(), 5);
+    assert_eq!(r.tones.len(), 5);
+    assert_eq!(r.word_boundaries.len(), 5);
+    // No id may be 0 — that would only happen via the silent fallback path
+    // (which we just proved is loud in Strict mode).
+    assert!(
+        r.phoneme_ids.iter().all(|&id| id != 0),
+        "no id may be the default fallback under a fully in-vocab input, got {:?}",
+        r.phoneme_ids
+    );
+}
+
+/// WP-14: regression guard for the EN path — same shape as the JA test
+/// above, using `synthetic_for_test`'s "abcdefghijklmnopqrstuvwxyz " map.
+#[test]
+fn wp14_strict_in_vocab_en_sentence_still_succeeds() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    let r = p
+        .phonemize("hello world", Language::EN)
+        .expect("fully in-vocab EN input must succeed under Strict");
+    // 10 non-space chars → 10 phoneme ids (space is consumed by
+    // phonemize_en_char_mapping without pushing an entry).
+    assert_eq!(r.phoneme_ids.len(), 10);
+    assert!(
+        r.phoneme_ids.iter().all(|&id| id != 0),
+        "no id may be the fallback under a fully in-vocab input, got {:?}",
+        r.phoneme_ids
+    );
+}
+
+/// WP-14: [`OovPolicy`]'s `Default` impl must be `Strict` — this is the
+/// FR-EX-08 fail-closed contract, and a drift here would silently flip
+/// every future constructor that reads the default.
+#[test]
+fn wp14_default_policy_is_strict() {
+    assert_eq!(OovPolicy::default(), OovPolicy::Strict);
+}
+
+// ---------------------------------------------------------------------------
+// WP-18: SbV2Phonemizer ZH path — piper-plus 8-language G2P reuse boundary
+// ---------------------------------------------------------------------------
+//
+// Owner decision 2026-08-09: SBV2 v2's ZH input reuses piper-plus's own
+// 8-language phonemizer via the excluded-workspace
+// `integrations/vokra-piper-g2p` crate (which itself carries `piper-plus-g2p`
+// — currently a passthrough for ZH per that crate's own doc; a real ZH G2P
+// dict is a piper-plus-side upgrade). This WP lands only the trait boundary
+// + delegation inside `vokra-models`; WP-19 wires the concrete bridge.
+//
+// The tests below cover: (a) fail-closed default (no `with_zh_g2p` call =>
+// loud NotImplemented, never a silent char-mapping fallback like JA/EN
+// have — ZH has no synthetic char map on purpose), (b) positive round-trip
+// when a real piper-plus `Phonemizer` is injected via `with_zh_g2p`
+// (PassthroughPhonemizer stand-in, same routing pattern the
+// `wired_with_passthrough_phonemizer` test above uses for JA/EN), and (c)
+// the fixture path already keys on `(Language, text)` so adding
+// `Language::ZH` extends fixture coverage automatically — one positive-hit
+// test plus one loud-miss test suffices for parity with the JA/EN fixture
+// coverage above.
+
+/// WP-18: a `synthetic_for_test`-built phonemizer has no ZH G2P wired, so
+/// `phonemize(_, Language::ZH)` must fail loudly with
+/// [`VokraError::NotImplemented`] rather than silently falling through to
+/// (say) an empty char-map that would return `phoneme_ids = []` — the same
+/// FR-EX-08 refusal the `UnwiredPhonemizer` in `mod.rs` documents at load
+/// time, applied here at the G2P dispatch surface. JA/EN have a synthetic
+/// char-map fallback because their tests need one; ZH deliberately does not
+/// (owner decision 2026-08-09 defers a synthetic ZH char-map — the real
+/// piper-plus G2P is currently a passthrough for ZH, so any tiny in-crate
+/// char-map would be indistinguishable from a real-but-degraded G2P and
+/// mask its absence).
+#[test]
+fn zh_without_wired_g2p_returns_not_implemented() {
+    let p = SbV2Phonemizer::synthetic_for_test();
+    match p.phonemize("你好", Language::ZH) {
+        Ok(res) => panic!(
+            "ZH without a wired G2P must fail loudly (FR-EX-08), not silently succeed with \
+             {res:?}"
+        ),
+        Err(VokraError::NotImplemented(msg)) => {
+            assert!(
+                msg.contains("ZH") || msg.contains("Chinese") || msg.contains("Language::ZH"),
+                "error must name the missing ZH G2P path for actionability, got: {msg}"
+            );
+            assert!(
+                msg.contains("with_zh_g2p") || msg.contains("from_piper_g2p"),
+                "error must point the caller at the constructor(s) that wire a ZH G2P, got: \
+                 {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::NotImplemented, got {other:?}"),
+    }
+}
+
+/// WP-18: `with_zh_g2p` (builder-style setter) wires a real piper-plus
+/// `Phonemizer` for the ZH path, and `phonemize(_, Language::ZH)` then
+/// routes through it. Uses `PassthroughPhonemizer` as a stand-in (same
+/// pattern as the JA/EN `wired_with_passthrough_phonemizer` test) — this is
+/// a *routing* test, not a G2P-quality test.
+///
+/// With an empty `zh_mapping`, every one of the framed piper ids falls
+/// back to `sbv2_default_phoneme_id` (0), and ZH tones default to 0 as
+/// well (Mandarin has 5 lexical tones 0-4, but the empty mapping's second
+/// coordinate is unspecified so it takes the same `(default_id, 0)`
+/// fallback — see the parallel `wired_with_passthrough_phonemizer` test's
+/// docstring for the exact framed-id enumeration).
+#[test]
+fn zh_phonemize_via_wired_g2p_produces_ids() {
+    use vokra_piper_plus::{PassthroughPhonemizer, PhonemeTable};
+
+    let symbols = vec![
+        "_".to_owned(),
+        "^".to_owned(),
+        "$".to_owned(),
+        "a".to_owned(),
+        "i".to_owned(),
+    ];
+    let table = PhonemeTable::from_symbols(&symbols).expect("valid table");
+    let zh: Box<dyn vokra_piper_plus::Phonemizer> = Box::new(PassthroughPhonemizer::new(table));
+
+    // Build a minimal JA/EN-wired base then attach ZH — proves `with_zh_g2p`
+    // is composable with `from_piper_g2p` (the production wiring: WP-19
+    // will call these two in this exact order).
+    let ja_symbols = vec![
+        "_".to_owned(),
+        "^".to_owned(),
+        "$".to_owned(),
+        "a".to_owned(),
+    ];
+    let ja_table = PhonemeTable::from_symbols(&ja_symbols).expect("valid table");
+    let ja: Box<dyn vokra_piper_plus::Phonemizer> =
+        Box::new(PassthroughPhonemizer::new(ja_table.clone()));
+    let en: Box<dyn vokra_piper_plus::Phonemizer> = Box::new(PassthroughPhonemizer::new(ja_table));
+    let p = SbV2Phonemizer::from_piper_g2p(
+        ja,
+        en,
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+    )
+    .with_zh_g2p(zh, std::collections::HashMap::new());
+
+    // `"3 4"` — same raw-id-sequence form the JA/EN routing test uses. Framed
+    // by `PassthroughPhonemizer` into `[BOS=1, 3, PAD=0, 4, PAD=0, EOS=2]`.
+    let r = p.phonemize("3 4", Language::ZH).expect("ok");
+    assert_eq!(
+        r.phoneme_ids,
+        vec![0u16; 6],
+        "empty zh_mapping -> every piper id falls back to the default"
+    );
+    assert_eq!(
+        r.tones,
+        vec![0u8; 6],
+        "unmapped piper ids default to tone 0 (the (id, tone) fallback pair)"
+    );
+    assert_eq!(
+        r.word_boundaries,
+        vec![true, false, false, false, false, false],
+        "conservative rule: only the first emitted phoneme starts a word"
+    );
+    assert_eq!(r.bert_input_text, "3 4");
+}
+
+/// WP-18: the fixture path already keys on `(Language, text)`, so
+/// `Language::ZH` extends fixture coverage without any code change beyond
+/// the enum variant itself — this test pins the resulting behavior so a
+/// future refactor that (say) key-normalized language couldn't silently
+/// break the ZH lookup.
+#[test]
+fn from_fixture_returns_precomputed_result_for_zh() {
+    let mut fixture = PhonemizeFixture::new();
+    let stored = distinctive_result("你好");
+    fixture.insert(Language::ZH, "你好", stored.clone());
+
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    let got = phonemizer
+        .phonemize("你好", Language::ZH)
+        .expect("fixture hit must succeed");
+
+    assert_eq!(got.phoneme_ids, stored.phoneme_ids);
+    assert_eq!(got.tones, stored.tones);
+    assert_eq!(got.word_boundaries, stored.word_boundaries);
+    assert_eq!(got.bert_input_text, stored.bert_input_text);
+}
+
+/// WP-18: a fixture entry stored under `Language::JA` does not silently
+/// satisfy a `Language::ZH` lookup — same compound-key discipline the
+/// JA-vs-EN `from_fixture_errors_loudly_on_wrong_language` test locks in,
+/// extended to prove the ZH variant is a distinct hash-key too (not a
+/// silent alias).
+#[test]
+fn from_fixture_errors_loudly_on_zh_when_stored_under_ja() {
+    let mut fixture = PhonemizeFixture::new();
+    fixture.insert(Language::JA, "你好", distinctive_result("你好"));
+
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    match phonemizer.phonemize("你好", Language::ZH) {
+        Ok(res) => panic!(
+            "same text but wrong language must fail loudly (FR-EX-08), not silently succeed \
+             with {res:?}"
+        ),
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("ZH"),
+                "error must name the requested language, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
 }

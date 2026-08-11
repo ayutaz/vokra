@@ -34,7 +34,7 @@
 //!
 //! | need | provided by |
 //! |------|-------------|
-//! | STFT, mel filter bank | `vokra-ops` (M0-04): [`vokra_ops::stft`], [`vokra_ops::mel_filterbank`] |
+//! | STFT, mel filter bank | `vokra-ops` (M0-04): [`vokra_ops::stft()`], [`vokra_ops::mel_filterbank`] |
 //! | matmul / linear (bias) | `vokra-backend-cpu` (M0-08) `gemm_f32` |
 //! | softmax, layer-norm | `vokra-backend-cpu` `softmax_f32`, `layer_norm_f32` |
 //! | exact (erf) GELU | `vokra-backend-cpu` `gelu_f32` |
@@ -43,7 +43,7 @@
 //! | embedding lookup, transpose, head split | plain indexing in [`nn`] / [`decoder`] (memory-bound, intentionally not kernels — M0-08 boundary note) |
 //! | log-mel post-processing (log10 / clamp / range) | [`mel`] (Whisper-specific, not a general op) |
 //! | causal / cross attention, KV cache, logits head | assembled here from the above |
-//! | beam search | [`vokra_core::decode::beam_search`] (host-side, FR-OP-40) |
+//! | beam search | [`vokra_core::decode::beam_search()`] (host-side, FR-OP-40) |
 //!
 //! The Whisper-specific `k_proj`-has-no-bias detail and the tied logits head
 //! are handled in [`weights`] / [`decoder`], not as new ops.
@@ -134,9 +134,9 @@ impl WhisperModel {
     ///
     /// # Errors
     ///
-    /// [`VokraError::ModelLoad`] if a hyperparameter key or a weight tensor is
+    /// [`vokra_core::VokraError::ModelLoad`] if a hyperparameter key or a weight tensor is
     /// missing, mistyped or mis-shaped, or the `vokra.frontend.*` chunk is
-    /// absent; [`VokraError::FrontendMismatch`](vokra_core::VokraError) if the
+    /// absent; [`vokra_core::VokraError::FrontendMismatch`] if the
     /// declared front-end differs from the runtime's.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         Self::from_gguf_with(file, WhisperLoadOptions::default())

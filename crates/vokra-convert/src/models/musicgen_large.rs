@@ -139,7 +139,7 @@ use crate::safetensors::SafetensorsFile;
 ///
 /// The arch tag matches the AudioCraft `MusicGen` class name (Copet et al.
 /// 2023 arXiv:2306.05284). Byte-identical to the sibling
-/// [`super::musicgen_medium::ARCH`] — the topology is identical across
+/// `super::musicgen_medium::ARCH` — the topology is identical across
 /// the MusicGen family (`-small` / `-medium` / `-large` / `-melody` /
 /// `-stereo-*`), only the model dims + optional melody-conditioning head
 /// differ (the same arch-shared / name-distinct posture snac / vocos /
@@ -159,7 +159,7 @@ pub const ARCH: &str = "musicgen";
 ///
 /// The variant-specific spelling mirrors the wavtokenizer /
 /// chatterbox_turbo / musicgen_medium pattern (variant-in-name) —
-/// distinct from the sibling [`super::musicgen_medium::NAME`]
+/// distinct from the sibling `super::musicgen_medium::NAME`
 /// (`"musicgen-medium"`) so a future `musicgen-small` /
 /// `musicgen-melody` / `musicgen-stereo-*` lands as a distinct `NAME`
 /// under the shared [`ARCH`] tag.
@@ -208,10 +208,10 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of a MusicGen-Large conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::musicgen_medium::MusicGenMediumReport`],
-/// [`super::xcodec2::XCodec2Report`],
-/// [`super::wavtokenizer::WavtokenizerReport`],
-/// [`super::neucodec::NeucodecReport`]) adapted to the file-oriented
+/// (`super::musicgen_medium::MusicGenMediumReport`,
+/// `super::xcodec2::XCodec2Report`,
+/// `super::wavtokenizer::WavtokenizerReport`,
+/// `super::neucodec::NeucodecReport`) adapted to the file-oriented
 /// `convert_musicgen_large_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MusicGenLargeReport {
@@ -260,7 +260,7 @@ pub struct MusicGenLargeReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"cc-by-nc-4.0"`, `NonCommercial`) — the
+/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-4.0"`, `NonCommercial`) — the
 /// upstream HF release ships CC-BY-NC 4.0 per Meta AudioCraft weight
 /// policy.
 ///

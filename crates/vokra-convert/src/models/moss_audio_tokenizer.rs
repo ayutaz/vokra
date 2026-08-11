@@ -191,8 +191,8 @@ const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// `vokra.moss_audio_tokenizer.variant`: `"full"` / `"nano"`.
 /// Consumers pick a specific scale without parsing free-text
-/// `vokra.model.name` (mirrors [`super::snac`] +
-/// [`super::focalcodec`] discriminators).
+/// `vokra.model.name` (mirrors `super::snac` +
+/// `super::focalcodec` discriminators).
 pub const KEY_VARIANT: &str = "vokra.moss_audio_tokenizer.variant";
 
 /// Which MOSS-Audio-Tokenizer release the caller is converting.
@@ -283,9 +283,9 @@ impl MossAudioTokenizerVariant {
 /// Outcome of a MOSS-Audio-Tokenizer conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::snac::SnacReport`],
-/// [`super::neucodec::NeucodecReport`],
-/// [`super::focalcodec::FocalcodecReport`]) adapted to the
+/// (`super::snac::SnacReport`,
+/// `super::neucodec::NeucodecReport`,
+/// `super::focalcodec::FocalcodecReport`) adapted to the
 /// variant-taking `convert_moss_audio_tokenizer_variant_file`
 /// surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -337,7 +337,7 @@ pub struct MossAudioTokenizerReport {
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — both
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — both
 /// upstream MOSS-Audio-Tokenizer releases ship apache-2.0 end-to-end.
 ///
 /// # Errors
@@ -369,8 +369,8 @@ pub fn convert_moss_audio_tokenizer_file(
 
 /// Variant-taking entry — the explicit form used by
 /// `convert_file_with_slug` for per-slug dispatch (mirror of
-/// [`super::snac::convert_snac_file`] +
-/// [`super::focalcodec::convert_focalcodec_file`]).
+/// `super::snac::convert_snac_file` +
+/// `super::focalcodec::convert_focalcodec_file`).
 ///
 /// See [`convert_moss_audio_tokenizer_file`] for the semantics.
 pub fn convert_moss_audio_tokenizer_variant_file(

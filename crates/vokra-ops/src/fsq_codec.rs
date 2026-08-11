@@ -318,7 +318,7 @@ impl Xcodec2FsqAttrs {
     /// Effective vocabulary size = `Π levels` (65536 for the released
     /// X-Codec 2). Explicit error on an empty tuple, a level < 2, or a
     /// product that overflows `usize` (FR-EX-08 — no silent wrap). Thin
-    /// wrapper over [`effective_vocab_of`] (shared with the
+    /// wrapper over `effective_vocab_of` (shared with the
     /// [`fsq_index_to_grid_codes`] validation path).
     pub fn effective_vocab(&self) -> Result<usize> {
         effective_vocab_of(&self.levels)

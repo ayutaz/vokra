@@ -179,7 +179,7 @@ impl AgglomerativeClustering {
     ///
     /// Panics (via `debug_assert!` / `assert!`) if `embeddings` contains
     /// rows of inconsistent length — this is a caller-invariant violation
-    /// (the same row-shape rule that [`crate::dct`] and [`crate::mel`]
+    /// (the same row-shape rule that [`crate::dct()`] and [`crate::mel`]
     /// panic on): a speaker encoder always emits a fixed-dimension
     /// embedding, so a length mismatch is a wiring bug, not runtime data.
     ///

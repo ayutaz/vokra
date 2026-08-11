@@ -287,8 +287,8 @@ const PROJ_MAX_POS: u32 = 2048;
 /// Outcome of an IBM Granite Speech conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::canary_qwen::CanaryQwenReport`],
-/// [`super::speecht5_hifigan::Speecht5HifiganReport`]) adapted to the
+/// (`super::canary_qwen::CanaryQwenReport`,
+/// `super::speecht5_hifigan::Speecht5HifiganReport`) adapted to the
 /// file-oriented `convert_granite_speech_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct GraniteSpeechReport {
@@ -329,7 +329,7 @@ pub struct GraniteSpeechReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — the
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the
 /// upstream HF release ships apache-2.0 end-to-end.
 ///
 /// # Sharded input contract

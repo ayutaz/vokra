@@ -384,6 +384,52 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "sbv2-v2-jp-extra-base": [
         "sbv2-v2-jp-extra-base (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`)"
     ],
+    # 2026-08-06 wave — SBV2 v2 3-SKU bundle completion. The SBV2 base row
+    # above ships AGPL-3.0 (Copyleft T3); this pair completes the trio by
+    # opening the publish path for the two DeBERTa embedding lookups the
+    # SBV2 v2 pipeline pins:
+    #   * `deberta-v2-large-japanese-char-wwm` = the JA BERT (cc-by-sa-4.0,
+    #     Copyleft T3 — sign-off row 316 flipped Rejected → Commercial on
+    #     2026-08-06 with the 2026-08-06 owner delegation "ライセンス判断は
+    #     CC に委任"; publishes via `publish-one.sh --acknowledge-copyleft
+    #     --license-spdx cc-by-sa-4.0`, gates 6a–6e as documented in that
+    #     script's header comment).
+    #   * `deberta-v3-large` = the EN BERT (MIT Permissive — sign-off row
+    #     317 already signed 2026-07-27 yousan; publishes via
+    #     `publish-one.sh --license-spdx mit`, no Copyleft gates fire).
+    # Both slugs follow the existing mirror-publish naming convention (no
+    # `-mirror` suffix, matching `vokra/whisper-*` / `vokra/kokoro-82m` /
+    # `vokra/mimi`). The row heading string below matches
+    # `docs/license-audit.md` §3.1 row 316 / 317 headings byte-for-byte
+    # (with the `**...**` markdown bolding stripped, since
+    # check-converter-signoff.sh does substring matching).
+    "deberta-v2-large-japanese-char-wwm": [
+        "deberta-v2-large-japanese-char-wwm (`ku-nlp/deberta-v2-large-japanese-char-wwm`)"
+    ],
+    "deberta-v3-large": ["deberta-v3-large (`microsoft/deberta-v3-large`)"],
+    # 2026-08-10 wave (WP-14) — ZH branch of the SBV2 v2 3-language BERT
+    # bundle. Completes the trio started by rows 316 (JA, cc-by-sa-4.0
+    # Copyleft T3) and 317 (EN, mit Permissive T1) with `hfl/chinese-
+    # roberta-wwm-ext-large` (Apache-2.0 Permissive T1, `BertForMaskedLM`
+    # / plain BERT arch-different from DeBERTa). Publishes via
+    # `publish-one.sh chinese-roberta-wwm-ext-large --push` (no
+    # `--acknowledge-copyleft` — Apache-2.0 fires the standard NOTICE-only
+    # gate the T1 permissive path already carries). The runbook lives at
+    # `docs/handoff/zh-bert-publish-2026-08-10.md` (gitignore-local). The
+    # row heading below matches the audit's own row heading for this
+    # entry byte-for-byte (with the `**...**` markdown bolding stripped,
+    # per this file's substring-matching convention).
+    #
+    # Sign-off status (owner-visible): the audit row is intentionally
+    # BLANK per the 2026-08-09 owner directive「モデルは公開しない = 公開時に判断」;
+    # publishing is fail-closed at the `check-catalog-reality.sh` §3.1
+    # gate until the owner flips ☐ → ☑ Commercial. Listing the row here
+    # keeps the check-converter-signoff.sh coverage gate green so the
+    # converter itself does not spuriously flag as "missing map"; the
+    # eventual approval is a separate audit-side edit.
+    "chinese-roberta-wwm-ext-large": [
+        "chinese-roberta-wwm-ext-large (`hfl/chinese-roberta-wwm-ext-large`)"
+    ],
     # 2026-07-31 wave — HF-audio gap audit follow-up publishes.
     "focalcodec-25hz": ["FocalCodec 25Hz (`lucadellalib/focalcodec_25hz`)"],
     "focalcodec-12-5hz": ["FocalCodec 12.5Hz (`lucadellalib/focalcodec_12_5hz`)"],
@@ -1177,6 +1223,16 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "deberta-v2-large-japanese-char-wwm (`ku-nlp/deberta-v2-large-japanese-char-wwm`)"
     ],
     "deberta_v3": ["deberta-v3-large (`microsoft/deberta-v3-large`)"],
+    # 2026-08-10 wave (WP-14) — plain BERT converter for the SBV2 v2 ZH
+    # branch. Arch-different from DeBERTa v2/v3 (post-norm, standard
+    # attention, no `wq_pos`/`wk_pos`/`pos_embed` duplication) so it
+    # ships as its own converter file. First consumer is
+    # `hfl/chinese-roberta-wwm-ext-large` (Apache-2.0); future English
+    # WordPiece checkpoints (`bert-base-uncased`, ...) would map to
+    # additional rows added here.
+    "bert_base": [
+        "chinese-roberta-wwm-ext-large (`hfl/chinese-roberta-wwm-ext-large`)"
+    ],
     "fsmn_vad": [
         "fsmn-vad (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`)",
         "FSMN-VAD (`funasr/fsmn-vad`)",

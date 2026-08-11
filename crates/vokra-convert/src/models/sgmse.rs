@@ -116,8 +116,8 @@ const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 /// Outcome of an SGMSE conversion. Mirrors the sibling BF16 pass-through
-/// converters' counter shape ([`super::metricgan_plus::MetricganPlusReport`],
-/// [`super::mp_senet::MpSenetReport`]).
+/// converters' counter shape (`super::metricgan_plus::MetricganPlusReport`,
+/// `super::mp_senet::MpSenetReport`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SgmseReport {
     /// Total tensors surfaced by the safetensors reader.
@@ -147,7 +147,7 @@ pub struct SgmseReport {
 ///
 /// `license` optionally overrides the default `apache-2.0` provenance
 /// stamp (same override pattern as
-/// [`super::metricgan_plus::convert_metricgan_plus_file`]).
+/// `super::metricgan_plus::convert_metricgan_plus_file`).
 ///
 /// # Errors
 ///

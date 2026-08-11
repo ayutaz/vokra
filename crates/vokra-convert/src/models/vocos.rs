@@ -240,9 +240,9 @@ impl VocosVariant {
 /// Outcome of a Vocos conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::speecht5_hifigan::Speecht5HifiganReport`],
-/// [`super::bigvgan::BigVGanReport`],
-/// [`super::focalcodec::FocalcodecReport`]) adapted to the
+/// (`super::speecht5_hifigan::Speecht5HifiganReport`,
+/// `super::bigvgan::BigVGanReport`,
+/// `super::focalcodec::FocalcodecReport`) adapted to the
 /// file-oriented `convert_vocos_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct VocosReport {
@@ -279,7 +279,7 @@ pub struct VocosReport {
 /// `license` optionally overrides the stamped weight license (raw
 /// SPDX string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`) — every upstream
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`) — every upstream
 /// Vocos HF release ships MIT (verified 2026-08-01 via HF API
 /// cardData; the upstream `github.com/charactr-platform/vocos`
 /// LICENSE is also standard MIT).

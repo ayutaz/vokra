@@ -126,8 +126,8 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_
 /// Outcome of an NKF-AEC conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::ecapa_tdnn::EcapaTdnnReport`],
-/// [`super::speaker_3d::Speaker3dReport`]) — adds `read` tracking every
+/// (`super::ecapa_tdnn::EcapaTdnnReport`,
+/// `super::speaker_3d::Speaker3dReport`) — adds `read` tracking every
 /// tensor the safetensors reader surfaced so the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
@@ -165,7 +165,7 @@ pub struct NkfAecReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`) — the upstream
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`) — the upstream
 /// GitHub release ships MIT with `Copyright (c) 2022 Fei Jiang`.
 ///
 /// # Errors

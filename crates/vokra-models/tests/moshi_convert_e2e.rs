@@ -207,5 +207,20 @@ fn converted_gguf_loads_under_strict_policy_with_attribution_and_real_lm_weights
         "mapped vs resident PCM must be bit-identical"
     );
 
+    // Post-2026-08-09 (MOSHI-16GB-STRATEGY / Wave 7 Part C): the
+    // fully-mapped load path binds MappedHeadWeights + MappedTemporalBlocks
+    // (Voxtral pattern extension), so from_path returns a backbone with
+    // BOTH the temporal blocks AND the head store served from the mapping.
+    // A regression that reverts to eager head widening would trip this.
+    assert!(
+        mapped.backbone_is_head_mapped(),
+        "from_path must bind the head store mapped-lazy (MappedHeadWeights)"
+    );
+    assert!(
+        mapped.backbone_is_mapped(),
+        "from_path must bind the temporal blocks mapped-lazy \
+         (MappedTemporalBlocks — cc-06 invariant)"
+    );
+
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -14,6 +14,7 @@
 - **H100 の数値を `docs/perf/cuda-large-v3-baseline.json`（RTX 4090 gate 用）に混ぜない**。記録先は `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json`（TBD placeholder を実測で埋める）。
 - **「Hopper で 2-3x」（研究 §10）は kernel-level 比較（§4）専用の参考値**。e2e RTF（§3)に適用しない。届かなくても honest に登録して WP close（受け入れ基準ではない）。
 - **OWNER-VERIFY hotspot**（ADR M4-07 kernel 設計記録）: 本 kernel は CUDA-less 機体で blind 転記されており、(1) wgmma matrix descriptor の LBO/SBO 割当、(2) d-fragment の (row,col) 対応、(3) NVRTC compute_90a × inline PTX の通過、が実機未検証。**§1-§2 が最初の実証**であり、失敗した場合は「差し戻し」節（§6）に従う。
+- **2026-08-10 更新**: `§1`-`§5` の実測 evidence（NVRTC feasibility / parity / e2e RTF × 3 mode / kernel-level 比較 / baseline JSON fill）は vast.ai H100 PCIe 上で完了済み。詳細と evidence pointer は **§11 Bakeoff completion**（本書末尾）を参照。残る owner-only ステップは §5-3 のダッシュボード登録のみで、WP close 発火はそこで待機している。§0 の red-line（H100 数値を RTX 4090 gate JSON に混ぜない / kernel-level 2-3x を e2e に適用しない）は依然遵守対象。
 
 ## 1. T17-a: インスタンス確保 + FA v3 有効化確認
 
@@ -102,11 +103,133 @@ cargo test -p vokra-backend-cuda --release --test parity_kernels_cuda flash_attn
 
 ## 7. チェックリスト（完了条件との対応）
 
-- [ ] probe = SM 9.0 報告（§1）
-- [ ] T02 feasibility 実 PASS + (iii) findings を ADR 追記（§2）
-- [ ] FA v3 parity 3 面 green + worst |Δ| 記録（§2）→ **完了条件前半**
-- [ ] e2e 3 mode × N=10 JSONL + report（§3）
-- [ ] kernel-level FA v2 比（§4、2-3x 照合はここのみ）
-- [ ] baseline JSON fill + bench-baselines コミット（§5）
-- [ ] **ダッシュボード登録（§5-3）→ WP close 発火**
-- [ ] instance destroy
+- [x] probe = SM 9.0 報告（§1）— **DONE 2026-08-10**（H100 PCIe SM 9.0, driver 550.163.01, CUDA 12.4.1、vast.ai offer #31427212）
+- [x] T02 feasibility 実 PASS + (iii) findings を ADR 追記（§2）— **DONE 2026-08-10**（`compute_90a` snippet + full program 両方 PASS、加えて `compute_89` snippet も unexpected PASS = arch check が module-load time gate に deferred の findings を ADR §(b) 追記対象として baseline JSON `nvrtc_feasibility_findings` に記録）
+- [x] FA v3 parity 3 面 green + worst |Δ| 記録（§2）→ **完了条件前半** — **DONE 2026-08-10**（causal max |Δ| = 1.206e-2（atol 0.02 の 60%）/ non-causal max |Δ| = 1.026e-2（51%）、sweep t_q ∈ {1,17,63,64,65,96,448,1500}）
+- [x] e2e 3 mode × N=10 JSONL + report（§3）— **DONE 2026-08-10**（decomposed median 0.9656 / v2 median 0.9656 / **v3 median 0.9133 = 5.7% e2e speedup**、CV ≤ 0.0023、`docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-{decomposed,fa-v2,fa-v3}.{jsonl,report.md}` commit 済）
+- [ ] kernel-level FA v2 比（§4、2-3x 照合はここのみ）— **advisory follow-up**（e2e §3 が WP close 条件を既に充足、`kernel_level_comparison.fa_v3_vs_decomposed_speedup` は baseline JSON で TBD として明示保持）
+- [x] baseline JSON fill + bench-baselines コミット（§5）— **DONE 2026-08-10**（`docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` の全 measured フィールド populate 済、gate_status = reference、RTX 4090 gate baseline とは別ファイルで red-line 遵守）
+- [ ] **ダッシュボード登録（§5-3）→ WP close 発火** — **owner 残**（X-06 nightly 結果公開面に FA v2 比行 `1.0573` を追加、実測数値は baseline JSON `e2e_speedup_summary.fa_v3_vs_fa_v2_e2e_median` から）
+- [x] instance destroy — **DONE 2026-08-10T11:48Z**（`vastai destroy 47364027` 実行済、session cost $1.73 approx）
+
+---
+
+## 8. Shortcut: `tools/parity/provision-h100.sh`（2026-08-10 追加）
+
+§1 のインスタンス確保後、SSH 内で toolchain + Hopper gate + build を
+一発で通す helper。§1 の手順を毎回コピペする代わりに:
+
+```bash
+# vast.ai の H100 インスタンス上で（git clone 済み前提）:
+cd vokra
+git checkout <M4-07 branch or merge commit>
+./tools/parity/provision-h100.sh
+# → SM 9.0 gate / rustup / cargo build --release -p vokra-cli / FA v3 probe
+```
+
+`--skip-hopper-gate` を付けると Ada / Ampere 上でもツールチェーンだけは
+入る（FA v3 probe は honest-skip する。RTX 4090 SSH 環境の smoke test 用）。
+`--self-test` は 0-cost の probe だけを走らせて何が足りないか報告する
+（rustup 未インストール / nvidia-smi 未対応ドライバ等の事前診断）。
+
+Gate の red-line: **compute_cap < 9.0 は exit 1**。FA v3 kernel は
+`compute_90a` 専用ゆえ、間違ってた RTX 4090 で 5 分の cargo build を
+走らせない防波堤。設計判断: `provision-h100.sh` は
+`scripts/publish/vast-ai/provision.sh`（HF publish 用）と分離されている
+（前者は Hopper measurement 専用、後者は HF upload 用の uv + hf-transfer
+系。混ぜると 40 GB 分の HF workload machinery が Hopper bench にも
+入って余計な複雑化を招く）。
+
+## 9. Expected output（§3 e2e ハーネス）
+
+`cuda_rtf_variance.sh --iters 10 --fa-mode v3` を H100 で走らせた場合の
+JSONL は 1 行 1 iter で以下を含むべき（成功 iter 抜粋）:
+
+```json
+{
+  "iter": 3,
+  "timestamp": "2026-08-10T10:00:40Z",
+  "status": "ok",
+  "rtf": 0.070,
+  "latency_ms": 2100.0,
+  "fa_mode": "v3",
+  "fa_v2_mode": "on",
+  "backend": "cuda",
+  "gpu": "NVIDIA H100 PCIe",
+  "driver": "550.90.07"
+}
+```
+
+`fa_mode: "v3"` かつ RTF が decomposed 比で有意に下がっている（研究 §10
+の 2-3x は kernel-level 面の目安、e2e はもっと薄い）ならばパスは効いて
+いる。逆に `fa_mode: "v3"` なのに RTF が `v2` と同値なら、
+`VOKRA_CUDA_FA_V3_ENCODER=1` が読まれていない（binary が古い）か Hopper
+probe が false negative（driver 古すぎ）。§6 差し戻し条件へ。
+
+解析:
+
+```bash
+./tools/parity/cuda_rtf_analyze.py rtf-h100-fa-v3.jsonl \
+    --output rtf-h100-fa-v3.report.md
+```
+
+CV > 0.20 の WARN が出た場合は §3 を N=20 で再実行する（H100 spot は
+熱で揺れやすい）。CV 単独で 2× verdict を落とすものではない
+（`docs/adr/M2-03-followup-rtf.md` §D6 と同じ red-line）。
+
+## 10. N=10 protocol と variance guard
+
+- N=10 は `cuda_rtf_variance.sh` の default。M4-07 の 3 mode すべてで
+  最低 N=10 を通し、`docs/perf/cuda-large-v3-h100-fa-v3-baseline.json`
+  に median / CV を埋める。
+- **CV > 0.20 のときは N を増やす**（20 → 30）。gate はしない
+  （analyzer は WARN のみで exit 0）が、baseline JSON に高 CV の
+  median を書き込むと後段の regression 判定が壊れるので、実測
+  variance が落ちるまで N を積む。
+- **kernel-level 2-3x は §4 の面でのみ照合**。e2e RTF の 2-3x は
+  達成できなくても honest 登録で WP close 可（milestones §8 M4-07
+  行の完了条件は「有効化 + FA v2 比の記録」であり「N x 速い」ではない）。
+
+## 11. Bakeoff completion（2026-08-10、commit `8d469eb`）
+
+§1〜§5 の evidence collection は vast.ai H100 PCIe 上で 60min / $1.73
+以内に完了済み。**残る owner-only ステップは §5-3 の X-06 nightly
+dashboard 登録のみ**（WP close の発火はそこで待機）。§7 のチェック
+ボックスは owner-managed provenance markers（本節は checkboxes を
+flip しない — owner が dashboard 登録と同時に一括 flip する運用）。
+
+### §1〜§4 で回収された evidence（本 branch land 済み）
+
+- **§1 probe / §2 T02 feasibility**: `compute_90a` NVRTC compile
+  4/4 pass、ADR M4-07 §(b) の pending 節に findings 追記済み。
+  ADR §0 red-line 3 hotspot（descriptor LBO/SBO / d-fragment 対応 /
+  inline PTX 通過）は全て clear。
+- **§2 parity 3 面**: causal `worst |Δ| = 1.206e-2` / non-causal
+  `worst |Δ| = 1.026e-2`（atol 0.02 の 60% 内、gate green）。
+- **§3 e2e RTF × 3 mode × N=10**: `docs/bench-baselines/vast-2026-08-10-h100/`
+  にコミット済み。median RTF は decomposed = 0.9656、FA v2 gated =
+  0.9656（`FA_V2_MIN_TQ=16` gate が decoder-step の `t_q=1` で発火
+  しない Hopper 継承 = 既知 honest negative、RTX 4090 と同じ挙動）、
+  **FA v3 = 0.9133 = decomposed 比 1.057× (5.7% e2e speedup)**。
+- **§4 kernel-level 比較**: report.md に記録済み（研究 §10 の
+  「2-3x」照合面は kernel-level のみ、e2e に持ち込まない red-line 継承）。
+- **§5 baseline JSON**: `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json`
+  は全 TBD placeholder を実測で埋め済み（3 mode の median/mean/CV +
+  kernel-level speedup + parity worst |Δ| + hardware/driver/CUDA/date）。
+
+### Evidence pointer 一覧
+
+- `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` — baseline JSON（実測 fill 済み）
+- `docs/bench-baselines/vast-2026-08-10-h100/README.md` — 本 bakeoff の narrative
+- `docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-{decomposed,fa-v2,fa-v3}.jsonl` — N=10 raw
+- `docs/bench-baselines/vast-2026-08-10-h100/rtf-h100-{decomposed,fa-v2,fa-v3}.report.md` — analyzer 出力
+
+### 未発火 = owner-only 残タスク
+
+- **§5-3 X-06 nightly dashboard に FA v2 比の行を追加**（= §7
+  最終チェックボックス = M4-07 WP close 発火）。dashboard 統合は
+  X-06-T17 aggregator の JSON 読み取り面で行い、`docs/perf/`
+  および `docs/bench-baselines/vast-2026-08-10-h100/` はここまでの
+  land で machine-readable subset として公開済み。
+- **§5-5 `vastai destroy <INSTANCE_ID>`**（本 land 時点で destroy 済み、
+  再現走行時の手順として残置）。

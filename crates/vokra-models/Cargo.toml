@@ -25,6 +25,14 @@ all-features = true
 [dependencies]
 vokra-core.workspace = true
 vokra-ops.workspace = true
+# WP-11 / WP-12 (2026-08-10): SBV2 hot-path libm swap — route SBV2 text
+# encoder + flow + SDP transcendentals (softmax exp, LayerNorm/attention
+# sqrt, flow prior exp, SDP exp) through `vokra_math::*` for cross-plat
+# bit-identity within Vokra (owner scope decision 2026-08-09,
+# `docs/adr/sbv2-libm-strategy.md` §3.2.1). First-party `vokra-*` crate;
+# root `Cargo.lock` still lists only `vokra-*` packages (NFR-DS-02
+# preserved).
+vokra-math.workspace = true
 # M5-03 (案1): the no_std(+alloc) Silero VAD forward core. `silero_vad` is now a
 # std veneer (VadEngine impl + streaming handle + WAV reader + file `open`) over
 # this crate, which holds the shared numeric forward so the Cortex-M55 Tier-3

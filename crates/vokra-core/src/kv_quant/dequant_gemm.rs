@@ -25,10 +25,10 @@
 //! - The scalar dequant → FP32 → dot product must produce bit-identical
 //!   output against a `dequant_slice → dense_gemv_f32` two-stage sequence
 //!   (the trivial reference); this is pinned by
-//!   [`tests::two_stage_bit_identical_to_fused_scalar`].
+//!   `tests::two_stage_bit_identical_to_fused_scalar`.
 //! - Bound vs an FP32-baseline GEMV: at most `n_blocks_per_row * amax * atol`
 //!   where `atol` is the per-format `d / 2` bound. See
-//!   [`tests::q8_0_gemv_within_bound_vs_fp32`].
+//!   `tests::q8_0_gemv_within_bound_vs_fp32`.
 
 use super::{BlockQ4_0, BlockQ5_0, BlockQ8_0, KV_QUANT_BLOCK_SIZE, KvQuant};
 

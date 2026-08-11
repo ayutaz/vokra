@@ -146,9 +146,9 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_h
 /// Outcome of a ReazonSpeech-NeMo-v2 conversion.
 ///
 /// Mirrors the sibling BF16-passthrough converters' counter shape
-/// ([`super::neucodec::NeucodecReport`],
-/// [`super::ecapa_tdnn::EcapaTdnnReport`],
-/// [`super::speaker_3d::Speaker3dReport`]) — the invariant
+/// (`super::neucodec::NeucodecReport`,
+/// `super::ecapa_tdnn::EcapaTdnnReport`,
+/// `super::speaker_3d::Speaker3dReport`) — the invariant
 /// `read == written + skipped_non_float` is auditable at the report
 /// level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +186,7 @@ pub struct ReazonspeechNemoV2Report {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`) — the upstream
+/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the upstream
 /// HF release ships apache-2.0.
 ///
 /// # Errors

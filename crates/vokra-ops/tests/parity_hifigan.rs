@@ -27,7 +27,7 @@
 //! approach — see `docs/adr/M3-06-mimi-rvq.md` §D5.
 
 use vokra_core::VokraError;
-use vokra_core::ir::graph::HifiGanAttrs;
+use vokra_core::ir::graph::{HifiGanAttrs, ResBlockType};
 use vokra_ops::{
     CalibrationTable, HifiGanConfig, HifiGanPrecision, HifiGanWeights, MrfBranchWeights,
     ResBlockLayer, UpsampleStageWeights, hifigan_generator,
@@ -48,6 +48,9 @@ fn parity_attrs() -> HifiGanAttrs {
         resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5]],
         sample_rate: 24_000,
         leaky_relu_slope: 0.1,
+        // parity_weights below builds V2-shape single-conv layers (no c2).
+        // Post-Wave-2 the res_block_type field is the sole selector.
+        res_block_type: ResBlockType::V2,
     }
 }
 
@@ -64,6 +67,7 @@ fn parity_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
         mrf_stage_weights: Vec::new(),
         conv_post_weight: Vec::new(),
         conv_post_bias: Vec::new(),
+        cond: None,
         conv_post_kernel,
     };
     // Initial conv1d: [initial_channel, n_mels, k].
@@ -124,6 +128,8 @@ fn parity_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
                     ResBlockLayer {
                         weight,
                         bias,
+                        weight_c2: None,
+                        bias_c2: None,
                         dilation: *dilation,
                         kernel,
                         channels: out_ch,
@@ -310,5 +316,448 @@ fn int8_gate_with_both_proofs_but_kernel_unimplemented_errors_unsupported() {
     assert!(
         matches!(err, VokraError::UnsupportedOp(_)),
         "expected UnsupportedOp (INT8 kernel deferred to consumer WP), got: {err}"
+    );
+}
+
+// ---- HGAN-03: pre-conv_post leaky_relu slope is 0.01, not attrs.slope 0.1 -----
+//
+// Reference `tools/parity/vendor/vits/models.Generator.forward` at
+// `decoder.py:97` explicitly calls plain `F.leaky_relu(x)` (default slope
+// 0.01) **without** the `LRELU_SLOPE=0.1` argument that its in-loop calls
+// use. In-loop calls stay at `attrs.leaky_relu_slope` (0.1); the final
+// pre-conv_post activation must be hard-pinned to 0.01 regardless of what
+// `attrs.leaky_relu_slope` is set to.
+//
+// # Oracle
+//
+// We engineer a scenario where the ONLY leaky_relu that fires with any
+// negative input is the FINAL (pre-conv_post) one. Under those conditions:
+//
+//   * Post-fix: final leaky is hard-coded 0.01. Two runs with different
+//     `attrs.leaky_relu_slope` values (that both leave the in-loop path
+//     as identity) produce IDENTICAL output.
+//   * Pre-fix: final leaky uses `attrs.leaky_relu_slope`. Two runs with
+//     different `attrs.leaky_relu_slope` produce DIFFERENT output.
+//
+// # Engineering the "in-loop is identity" invariant
+//
+// The in-loop leaky_relu is identity iff its input is ≥ 0 at every
+// stage. We chain fully-positive tensors:
+//   * Mel input: all-positive (parity_mel_positive_only).
+//   * conv_pre weights + bias: all-positive.
+//   * transposed_conv weights + bias: all-positive.
+//   * mrf branches: crafted so `x + branch(x)` stays positive at each
+//     branch step (positive weights + identity residual keeps `h` ≥ 0).
+//
+// Then we craft the mrf branch weights of the LAST stage such that its
+// output is dominated by a negative-weight last conv → mrf output has
+// some strictly-negative cells → the final leaky_relu fires with a
+// slope-dependent contribution.
+//
+// # Fixture-specific caveat
+//
+// The engineering above is fragile: any weight-signage tweak will break
+// the "in-loop is identity" invariant. This test is documentation +
+// tripwire, not an architectural pin — the ADR / rustdoc on
+// `hifigan_generator` is the true statement of intent.
+#[test]
+fn hgan_03_pre_conv_post_leaky_slope_ignores_attrs_slope() {
+    // Attrs: 1 upsample stage, 1 mrf branch of 1 layer, dilation 1.
+    // Minimal shape → maximal control over signage.
+    let attrs = HifiGanAttrs {
+        n_mels: 2,
+        initial_channel: 4,
+        upsample_rates: vec![2],
+        upsample_kernel_sizes: vec![4],
+        resblock_kernel_sizes: vec![3],
+        resblock_dilation_sizes: vec![vec![1]],
+        sample_rate: 8_000,
+        leaky_relu_slope: 0.1,
+        res_block_type: ResBlockType::V2,
+    };
+
+    let conv_pre_kernel = 3;
+    let conv_post_kernel = 3;
+    let n_frames = 3;
+    // All-positive mel input.
+    let mel: Vec<f32> = (0..attrs.n_mels * n_frames)
+        .map(|i| 0.3 + (i as f32) * 0.01)
+        .collect();
+
+    let out_ch = 3; // last stage out_ch (before conv_post)
+    // conv_pre: [initial_channel, n_mels, kernel] — all positive.
+    let conv_pre_weight = vec![0.1_f32; attrs.initial_channel * attrs.n_mels * conv_pre_kernel];
+    let conv_pre_bias = vec![0.01_f32; attrs.initial_channel];
+
+    // transposed conv1d: [in_ch, out_ch, kernel] — all positive.
+    let up_weight = vec![0.05_f32; attrs.initial_channel * out_ch * attrs.upsample_kernel_sizes[0]];
+    let up_bias = vec![0.05_f32; out_ch];
+
+    // MRF branch: single layer, kernel 3, dilation 1. Choose weights so
+    // that `branch_out = conv1d(lrelu(up_out))` produces STRICTLY-NEGATIVE
+    // values in some positions AND `up_out + branch_out` (the residual
+    // after mrf_branch_forward's inner add) can be negative too. Because
+    // this is the LAST stage, the branch output value becomes `h`.
+    //
+    // Use large-magnitude negative weights + zero bias so the conv output
+    // is a signed weighted-sum of positive `up_out` values.
+    let mut branch_weight = Vec::new();
+    for _ in 0..(out_ch * out_ch * attrs.resblock_kernel_sizes[0]) {
+        branch_weight.push(-2.0);
+    }
+    let branch_bias = vec![0.0_f32; out_ch];
+
+    let weights = HifiGanWeights {
+        conv_pre_weight,
+        conv_pre_bias,
+        conv_pre_kernel,
+        upsample_weights: vec![UpsampleStageWeights {
+            weight: up_weight,
+            bias: up_bias,
+            in_ch: attrs.initial_channel,
+            out_ch,
+            kernel: attrs.upsample_kernel_sizes[0],
+            stride: attrs.upsample_rates[0],
+        }],
+        mrf_stage_weights: vec![vec![MrfBranchWeights {
+            layers: vec![ResBlockLayer {
+                weight: branch_weight,
+                bias: branch_bias,
+                weight_c2: None,
+                bias_c2: None,
+                dilation: 1,
+                kernel: attrs.resblock_kernel_sizes[0],
+                channels: out_ch,
+            }],
+        }]],
+        conv_post_weight: vec![0.1_f32; out_ch * conv_post_kernel],
+        conv_post_bias: vec![0.0_f32],
+        conv_post_kernel,
+        cond: None,
+    };
+
+    let out_a =
+        hifigan_generator(&mel, n_frames, &weights, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+    // Second run with a very different attrs.leaky_relu_slope. Under the
+    // fixed code, this should have NO effect at all (the ONLY leaky_relu
+    // that fires on this fixture is the final pre-conv_post one, and it
+    // is hard-coded 0.01 independent of attrs). Under the pre-fix code,
+    // the final activation flips from slope=0.1 to slope=0.5 → output
+    // differs at positions where pre-conv_post h < 0.
+    let mut attrs_b = attrs.clone();
+    attrs_b.leaky_relu_slope = 0.5;
+    let out_b =
+        hifigan_generator(&mel, n_frames, &weights, &attrs_b, &HifiGanConfig::fp32()).unwrap();
+
+    let max_delta = out_a
+        .iter()
+        .zip(out_b.iter())
+        .map(|(&a, &b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+
+    // Sanity: this fixture must actually exercise a non-trivial signal
+    // (otherwise the negative test above is vacuously true). Assert
+    // at least one output cell is meaningfully non-zero.
+    let max_abs_a = out_a.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+    assert!(
+        max_abs_a > 1e-3,
+        "fixture degenerate: |out_a|_∞ = {max_abs_a} — signal too small to observe leaky slope \
+         effect. Adjust test weights."
+    );
+
+    // Under the FIXED code: identical outputs. Under the pre-fix code:
+    // clearly divergent (in-loop is identity here by construction, so
+    // the ONLY leaky_relu that changed is the final one).
+    assert!(
+        max_delta < 1e-8,
+        "HGAN-03: pre-conv_post leaky_relu must be pinned at slope=0.01 (independent of \
+         attrs.leaky_relu_slope). Under this fixture the in-loop leaky_relu is identity by \
+         construction (all in-loop inputs ≥ 0), so ANY delta between attrs.slope=0.1 and \
+         attrs.slope=0.5 runs comes from the final activation. Observed max|Δ| = {max_delta} \
+         (must be ≤ 1e-8 post-fix; pre-fix would be ≫ 0)."
+    );
+}
+
+// ---- HGAN-04: conv_post_bias may be absent (upstream sets bias=False) --------
+//
+// VITS/SBV2 HiFi-GAN `conv_post` per `tools/parity/vendor/vits/models.py`
+// (`Conv1d(ch, 1, 7, 1, padding=3, bias=False)`) has NO bias — the
+// upstream ships nothing. Vokra pre-fix required `conv_post_bias.len()
+// == 1` unconditionally, forcing SBV2 (+ any bias-less-conv_post
+// upstream) converters to fabricate a zero placeholder. Post-fix an
+// empty `conv_post_bias` (length 0) is a valid "no bias" schema.
+//
+// Observationally the zero-placeholder path adds `+ 0.0` per sample, so
+// bit-parity with the post-fix `bias == []` path is expected — the
+// change is a schema relaxation, not an arithmetic change. The tests
+// pin (a) the shape-validation acceptance of `len == 0` and (b)
+// bit-identical output between the two shapes.
+#[test]
+fn hgan_04_conv_post_bias_absent_is_accepted_and_bit_identical_to_zero_bias() {
+    let attrs = parity_attrs();
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+
+    // Baseline: with explicit zero bias (existing schema).
+    let mut w_zero_bias = parity_weights(&attrs);
+    assert_eq!(w_zero_bias.conv_post_bias, vec![0.0_f32]);
+    let out_zero_bias =
+        hifigan_generator(&mel, n_frames, &w_zero_bias, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+    // Post-fix: with no bias tensor at all (upstream shape).
+    w_zero_bias.conv_post_bias = Vec::new();
+    let out_absent_bias =
+        hifigan_generator(&mel, n_frames, &w_zero_bias, &attrs, &HifiGanConfig::fp32()).unwrap();
+
+    assert_eq!(out_zero_bias.len(), out_absent_bias.len());
+    // Bit-identical: `+ 0.0` vs no-add differ only by floating-point
+    // identity — and `x + 0.0 == x` for finite `x`.
+    let max_delta = out_zero_bias
+        .iter()
+        .zip(out_absent_bias.iter())
+        .map(|(&a, &b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_delta == 0.0,
+        "HGAN-04: `conv_post_bias == []` (upstream shape) must produce bit-identical output \
+         to `conv_post_bias == [0.0]` (Vokra pre-fix placeholder shape). Observed \
+         max|Δ| = {max_delta}"
+    );
+}
+
+// ---- HGAN-05: gin conditioning path ------------------------------------------
+//
+// Upstream reference (`tools/parity/vendor/vits/models.py`
+// `Generator.forward`):
+//
+// ```python
+// x = self.conv_pre(x)
+// if g is not None:
+//     x = x + self.cond(g)  # broadcast-add per-time-step
+// ```
+//
+// where `self.cond = Conv1d(gin_channels, upsample_initial_channel, 1)`.
+// Pre-HGAN-05 Vokra had no `cond` slot in HifiGanWeights and
+// hifigan_generator ignored the speaker vector entirely — multi-speaker
+// SBV2 collapsed to a single average voice.
+//
+// # Oracle
+//
+// * `weights.cond = None` + `g = None`: unconditioned path,
+//   byte-identical to pre-HGAN-05 output.
+// * `weights.cond = Some(cond)` + `g = Some(zeros)`: cond output is
+//   `bias` (broadcast), still perturbs the pipeline (non-zero bias)
+//   → output differs from unconditioned path.
+// * `weights.cond = Some(cond)` + `g = Some(distinctive)`: different
+//   from `g = Some(zeros)` — the cond linear map is actually consumed.
+// * `weights.cond = None` + `g = Some(_)`: FR-EX-08 loud error.
+// * `weights.cond = Some(_)` + `g = None`: FR-EX-08 loud error.
+// * `weights.cond = Some(_)` + `g.len() != gin_channels`: loud error.
+use vokra_ops::{GinCondition, hifigan_generator_conditioned};
+
+fn cond_weights(attrs: &HifiGanAttrs, gin_channels: usize) -> HifiGanWeights {
+    let mut w = parity_weights(attrs);
+    // Non-zero cond weight bank so g!=0 observably differs from g=0.
+    let mut weight = Vec::with_capacity(attrs.initial_channel * gin_channels);
+    for c in 0..attrs.initial_channel {
+        for i in 0..gin_channels {
+            weight.push(((c + i) as f32 * 0.041).sin() * 0.02);
+        }
+    }
+    // Non-zero bias so g=0 still contributes (cond(0) = bias).
+    let bias: Vec<f32> = (0..attrs.initial_channel)
+        .map(|c| (c as f32 * 0.03).cos() * 0.01)
+        .collect();
+    w.cond = Some(GinCondition {
+        weight,
+        bias,
+        gin_channels,
+    });
+    w
+}
+
+#[test]
+fn hgan_05_unconditioned_output_matches_pre_fix_when_cond_is_none() {
+    // Regression: `hifigan_generator` (unconditioned wrapper) must
+    // produce identical bytes to `hifigan_generator_conditioned(..,
+    // None)` — pre-HGAN-05 callers see no observable change.
+    let attrs = parity_attrs();
+    let weights = parity_weights(&attrs);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let out_default =
+        hifigan_generator(&mel, n_frames, &weights, &attrs, &HifiGanConfig::fp32()).unwrap();
+    let out_explicit_none = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &weights,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        out_default, out_explicit_none,
+        "HGAN-05: hifigan_generator (unconditioned) must be byte-identical to \
+         hifigan_generator_conditioned(.., None). Any drift here breaks pre-HGAN-05 callers."
+    );
+}
+
+#[test]
+fn hgan_05_g_zero_with_cond_bias_still_perturbs_output() {
+    // cond(zeros) = bias (bias-only contribution). Output must
+    // differ from the unconditioned path because bias is non-zero
+    // for every initial_channel and is broadcast-added to every
+    // time step.
+    let attrs = parity_attrs();
+    let gin_channels = 4;
+    let cond_w = cond_weights(&attrs, gin_channels);
+    let uncond_w = parity_weights(&attrs);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let out_uncond =
+        hifigan_generator(&mel, n_frames, &uncond_w, &attrs, &HifiGanConfig::fp32()).unwrap();
+    let g_zero = vec![0.0_f32; gin_channels];
+    let out_cond_zero_g = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_zero),
+    )
+    .unwrap();
+    let max_delta = out_uncond
+        .iter()
+        .zip(out_cond_zero_g.iter())
+        .map(|(&a, &b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_delta > 0.0,
+        "HGAN-05: cond(g=zeros) contributes cond.bias × T time steps — output must differ \
+         from unconditioned. Observed max|Δ| = {max_delta}"
+    );
+}
+
+#[test]
+fn hgan_05_g_nonzero_differs_from_g_zero() {
+    // Distinctive non-zero g must produce distinct output from g=0
+    // — the linear map `cond(g) = W·g + b` is consumed.
+    let attrs = parity_attrs();
+    let gin_channels = 4;
+    let cond_w = cond_weights(&attrs, gin_channels);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let g_zero = vec![0.0_f32; gin_channels];
+    let g_distinctive = vec![0.7_f32, -0.3, 0.5, 0.1];
+    let out_g_zero = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_zero),
+    )
+    .unwrap();
+    let out_g_distinctive = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_distinctive),
+    )
+    .unwrap();
+    assert_ne!(
+        out_g_zero, out_g_distinctive,
+        "HGAN-05: cond(g_nonzero) ≠ cond(g_zero) — the linear map must be consumed"
+    );
+}
+
+#[test]
+fn hgan_05_g_with_no_cond_layer_errors_loudly() {
+    // FR-EX-08: caller supplied `g` but weights.cond is None →
+    // loud InvalidArgument (not silent discard).
+    let attrs = parity_attrs();
+    let weights = parity_weights(&attrs); // cond: None
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let g = vec![0.0_f32; 4];
+    let err = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &weights,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for g-without-cond-layer, got: {err}"
+    );
+}
+
+#[test]
+fn hgan_05_cond_layer_with_no_g_errors_loudly() {
+    // FR-EX-08 mirror: cond layer loaded but caller forgot g →
+    // loud InvalidArgument.
+    let attrs = parity_attrs();
+    let cond_w = cond_weights(&attrs, 4);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let err = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for cond-layer-without-g, got: {err}"
+    );
+}
+
+#[test]
+fn hgan_05_g_length_mismatch_errors_loudly() {
+    // Shape check: g.len() must equal cond.gin_channels.
+    let attrs = parity_attrs();
+    let cond_w = cond_weights(&attrs, 4);
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let g_wrong = vec![0.0_f32; 3]; // gin_channels = 4
+    let err = hifigan_generator_conditioned(
+        &mel,
+        n_frames,
+        &cond_w,
+        &attrs,
+        &HifiGanConfig::fp32(),
+        Some(&g_wrong),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for g-length-mismatch, got: {err}"
+    );
+}
+
+#[test]
+fn hgan_04_conv_post_bias_wrong_length_still_rejected() {
+    // Regression guard: len != 0 and len != 1 must still hard-error
+    // (schema mismatch). Pre-fix accepted only len == 1; post-fix
+    // accepts {len == 0, len == 1}; any other length is a shape bug.
+    let attrs = parity_attrs();
+    let mut w = parity_weights(&attrs);
+    w.conv_post_bias = vec![0.0_f32; 3]; // wrong length
+    let n_frames = 6;
+    let mel = parity_mel(attrs.n_mels, n_frames);
+    let err = hifigan_generator(&mel, n_frames, &w, &attrs, &HifiGanConfig::fp32()).unwrap_err();
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "expected InvalidArgument for wrong-length conv_post_bias, got: {err}"
     );
 }

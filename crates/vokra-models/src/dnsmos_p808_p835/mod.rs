@@ -27,8 +27,8 @@
 //!
 //! - **Real**: config + mel front-end + polyfit + score-shell + variants
 //!   inventory + FR-EX-08 loud-fails.
-//! - **Loud-partial**: [`Dnsmos::score_p808`] / [`score_p835`] /
-//!   [`score_all`] and the [`MosScorerEngine::score`] impl all return
+//! - **Loud-partial**: [`Dnsmos::score_p808`] / `Dnsmos::score_p835` /
+//!   `Dnsmos::score_all` and the [`MosScorerEngine::score`] impl all return
 //!   [`VokraError::UnsupportedOp`] naming (a) the future GGUF metadata
 //!   chunk `vokra.dnsmos.{p808,p835}.topology` that will pin the CNN
 //!   op-token sequence, and (b) the sidecar to extend
@@ -43,7 +43,7 @@
 //! switch by (i) extending the sidecar to emit
 //! `vokra.dnsmos.{variant}.topology` as a u32 op-token array, and (ii)
 //! wiring the future `cnn_forward` (routed through
-//! [`cnn_forward_loud_partial`] today) against that token stream.
+//! `cnn_forward_loud_partial` today) against that token stream.
 //!
 //! # `vokra.dnsmos.*` chunk group (read here)
 //!
@@ -111,7 +111,7 @@ pub const KEY_DNSMOS_P808_CKPT: &str = "vokra.dnsmos.p808.checkpoint";
 pub const KEY_DNSMOS_P835_CKPT: &str = "vokra.dnsmos.p835.checkpoint";
 /// GGUF metadata key: P.808 CNN op-token sequence (future `Array<u32>` —
 /// currently absent; presence flips the CNN forward out of loud-partial
-/// via [`cnn_forward_loud_partial`]).
+/// via `cnn_forward_loud_partial`).
 pub const KEY_DNSMOS_P808_TOPOLOGY: &str = "vokra.dnsmos.p808.topology";
 /// GGUF metadata key: P.835 CNN op-token sequence (future `Array<u32>` —
 /// same role as [`KEY_DNSMOS_P808_TOPOLOGY`] for the P.835 variant).
@@ -260,7 +260,7 @@ fn read_string_array(gguf: &GgufFile, key: &str) -> Result<Vec<String>> {
 /// A single bound sub-model (weight-tensor names + counts). Weights are
 /// referenced by name only until the CNN forward wires — the current
 /// binder does not preload every tensor into RAM because the forward is
-/// loud-partial (see [`cnn_forward_loud_partial`]), and the follow-up
+/// loud-partial (see `cnn_forward_loud_partial`), and the follow-up
 /// wave that lights up the CNN forward will decide the caching shape
 /// based on the topology metadata.
 #[derive(Debug, Clone)]

@@ -9,7 +9,7 @@
 //! # `*_into`: caller-owned buffers, zero hot-path malloc (FR-EX-05, M1-04)
 //!
 //! Each block op has an **`_into`** form that writes into a caller-owned buffer
-//! (a `super::scratch` field, or the nested [`AttnScratch`]): after the first
+//! (a `super::scratch` field, or the nested `AttnScratch`): after the first
 //! sizing it does no heap allocation, so the autoregressive decode loop is
 //! malloc-free (proven by the capacity-stability oracle in the `super::decoder`
 //! tests). The two **allocating** wrappers kept here — `project_kv` and

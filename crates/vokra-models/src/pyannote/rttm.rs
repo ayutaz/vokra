@@ -44,7 +44,7 @@
 //! # Zero-dependency invariant (NFR-DS-02)
 //!
 //! Uses only [`std::fmt`] — no external crate. The output buffer is a
-//! single `String`; no other allocations occur (see [`write_rttm`]).
+//! single `String`; no other allocations occur (see `write_rttm`).
 //!
 //! # No silent fallback (FR-EX-08)
 //!

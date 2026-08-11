@@ -82,6 +82,35 @@ const GGUF_ENV: &str = "VOKRA_RMVPE_REAL_GGUF";
 #[allow(dead_code)] // Consumed once `extract_real` returns real frames.
 const ARGMAX_MATCH_RATE_MIN: f32 = 0.99;
 
+/// FIXTURE-FREE: primary-source constants pin. Every hparam in
+/// [`RmvpeConfig::default`] is transcribed verbatim from the upstream
+/// RMVPE README (github.com/yxlllc/RMVPE, fetched 2026-07-30 per
+/// CLAUDE.md "ハルシネーション厳禁") — a silent drift in any of these
+/// would misalign the mel front-end / 360-class head against every
+/// upstream checkpoint.
+#[test]
+fn rmvpe_config_default_constants_match_primary_source() {
+    let c = RmvpeConfig::default();
+    assert_eq!(c.hop, 160, "upstream RMVPE hop = 10 ms at 16 kHz");
+    assert_eq!(c.sample_rate, 16_000, "upstream RMVPE is trained at 16 kHz");
+    assert_eq!(c.n_mels, 128, "upstream RMVPE n_mels = 128");
+    assert_eq!(c.n_fft, 2048, "upstream RMVPE n_fft = 2048");
+    assert_eq!(c.win_length, 1024, "upstream RMVPE win_length = 1024");
+    assert_eq!(c.n_class, 360, "upstream RMVPE head = 360 pitch classes");
+    assert!(
+        (c.cents_per_class - 20.0).abs() < f32::EPSILON,
+        "upstream RMVPE grid = 20 cents / class (12 classes / semitone)"
+    );
+    // Class-0 anchor ≈ C1 (32.703 Hz) — pinning to a small window
+    // rather than a bit-exact float to survive the f32-vs-primary-
+    // source-decimal-string round-trip.
+    assert!(
+        (c.base_hz - 32.703).abs() < 0.01,
+        "upstream RMVPE class-0 anchor ≈ C1 = 32.703 Hz, got {}",
+        c.base_hz
+    );
+}
+
 /// FIXTURE-FREE: the 360-class → Hz decoding primitive is a pure
 /// function and independently unit-testable. This pins the log-Hz grid
 /// math against an analytic reference for a set of representative

@@ -154,7 +154,7 @@ pub struct Mossformer2Ss16kReport {
 /// gate (FR-CP-03).
 ///
 /// `license` optionally overrides the stamped weight license. The
-/// default is [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`).
+/// default is `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`).
 ///
 /// # Errors
 ///

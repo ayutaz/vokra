@@ -90,7 +90,7 @@
 //!   `aux_channels = 513` (posterior-encoder input width, `n_fft/2 + 1`
 //!   for the JA 22.05 kHz recipe's `n_fft = 1024`), `sampling_rate = 22050`
 //!   (JSUT / JVS default; the full-band `train_full_band_vits.yaml`
-//!   variant reshapes both, see [`VitsJaConfig::espnet_ja_full_band_22khz`]
+//!   variant reshapes both, see [`VitsJaConfig::espnet_ja_full_band_44khz`]
 //!   note).
 //!
 //! # Distinct from piper-plus (MB-iSTFT-VITS2)
@@ -113,7 +113,7 @@
 //!   `upsample_kernel_sizes`, `resblock_kernel_sizes`,
 //!   `resblock_dilation_sizes`, `sample_rate`, `leaky_relu_slope`)
 //!   is exposed via [`VitsJaConfig::to_hifigan_attrs`] — a well-formed
-//!   config produces a validated [`vokra_ops::HifiGanAttrs`] without
+//!   config produces a validated [`vokra_core::ir::graph::HifiGanAttrs`] without
 //!   any conversion round-trip.
 //! - **Text encoder / SDP / flow**: shared internally with
 //!   [`crate::piper_plus`] via the JA-family Conformer-block topology
@@ -135,9 +135,9 @@
 //!   loudly (FR-EX-08) on zeroed axes, non-even `head_dim`, mismatched
 //!   upsample slice lengths, and non-positive dropout / eps.
 //! - [`VitsJaConfig::to_hifigan_attrs`] — bridge to the shared
-//!   [`vokra_ops::HifiGanAttrs`] the [`vokra_ops::hifigan_generator`]
+//!   [`vokra_core::ir::graph::HifiGanAttrs`] the [`vokra_ops::hifigan_generator`]
 //!   primitive consumes; produces a struct that passes
-//!   [`vokra_ops::HifiGanAttrs::validate_shape`] by construction.
+//!   [`vokra_core::ir::graph::HifiGanAttrs`]'s `validate_shape` by construction.
 //! - [`VitsJaWeights`] — deterministic zero-initialised
 //!   scaffold ([`VitsJaWeights::synthesized`]); the real safetensors
 //!   walk is a follow-up wave.
@@ -388,7 +388,7 @@ impl VitsJaSdpConfig {
 /// terminates the plain VITS pipeline. Every field is transcribed
 /// **verbatim** from `train_vits.yaml`. The runtime consumes this via
 /// [`VitsJaConfig::to_hifigan_attrs`], which produces a
-/// [`vokra_ops::HifiGanAttrs`] that the shared
+/// [`vokra_core::ir::graph::HifiGanAttrs`] that the shared
 /// [`vokra_ops::hifigan_generator`] primitive drives.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VitsJaDecoderConfig {
@@ -396,7 +396,7 @@ pub struct VitsJaDecoderConfig {
     /// (a symmetric HiFi-GAN pre / post pair), **7**.
     pub kernel_size: u32,
     /// `decoder_channels` — initial-channel width (`initial_channel`
-    /// in [`vokra_ops::HifiGanAttrs`]), **512**.
+    /// in [`vokra_core::ir::graph::HifiGanAttrs`]), **512**.
     pub initial_channel: u32,
     /// `decoder_upsample_scales` — per-stage transposed-conv strides,
     /// **[8, 8, 2, 2]** on the JA 22.05 kHz recipe. The product is the
@@ -828,7 +828,7 @@ impl VitsJaConfig {
     }
 
     /// Bridges the decoder axes to the shared
-    /// [`vokra_ops::HifiGanAttrs`] struct the
+    /// [`vokra_core::ir::graph::HifiGanAttrs`] struct the
     /// [`vokra_ops::hifigan_generator`] primitive consumes.
     ///
     /// Guaranteed to produce a [`HifiGanAttrs`] that passes
@@ -864,6 +864,14 @@ impl VitsJaConfig {
                 .collect(),
             sample_rate: self.sample_rate,
             leaky_relu_slope: VITS_JA_LEAKY_RELU_SLOPE,
+            // Canonical VITS/MB-iSTFT-VITS2 preset ships with
+            // `resblock='1'` (ResBlock1) — see
+            // `tools/parity/vendor/vits/modules.py`. The real weight
+            // path is a scaffold today (no `convs2` tensor emission yet
+            // for VITS JA) but declaring the topology honestly here
+            // means when the loader lands it must supply c2 or fail
+            // loudly per `mrf_branch_forward`'s FR-EX-08 gate.
+            res_block_type: vokra_core::ir::ResBlockType::V1,
         };
         // Redundant with `validate_for_forward` on paper, but the two
         // validators enforce their own contracts — running both here

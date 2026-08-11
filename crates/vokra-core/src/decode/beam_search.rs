@@ -104,7 +104,7 @@ pub struct BeamSearchConfig {
     /// — a hard mask, not a soft discount. `0` disables blocking (default).
     ///
     /// Ported verbatim from
-    /// [`vokra_models::voxtral::beam_search::BeamConfig::no_repeat_ngram_size`]
+    /// `vokra_models::voxtral::beam_search::BeamConfig::no_repeat_ngram_size`
     /// so both search primitives share the same semantics.
     pub no_repeat_ngram_size: usize,
 }

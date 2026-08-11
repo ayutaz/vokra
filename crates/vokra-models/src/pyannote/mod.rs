@@ -326,7 +326,7 @@ pub struct PyanNetWeights {
 impl PyanNetWeights {
     /// Scans `gguf` for all recognized PyanNet `state_dict` tensors and
     /// dequantizes each to f32. Refuses to bind if no tensor matches
-    /// any [`REQUIRED_TENSOR_PREFIXES`] entry (FR-EX-08).
+    /// any `REQUIRED_TENSOR_PREFIXES` entry (FR-EX-08).
     ///
     /// # Errors
     ///
@@ -635,7 +635,7 @@ impl PyanNet {
     /// 1. Be openable by the standard GGUF reader — errors surface as
     ///    [`VokraError::Io`] / [`VokraError::ModelLoad`].
     /// 2. Carry at least one recognized PyanNet state_dict tensor
-    ///    ([`REQUIRED_TENSOR_PREFIXES`]) — otherwise
+    ///    (`REQUIRED_TENSOR_PREFIXES`) — otherwise
     ///    [`PyanNetWeights::from_gguf`] refuses the bind (FR-EX-08).
     /// 3. Pass the load-time shape gate
     ///    ([`PyanNetWeights::verify_core_shapes`]) — a GGUF that
@@ -730,7 +730,7 @@ impl PyanNet {
     /// - The BiLSTM stack + Linear stack + Classifier + Softmax are
     ///   implemented as scalar reference code following the PyTorch
     ///   `nn.LSTM` gate layout (`weight_ih_l0` = `[4·H, I]`, gate
-    ///   order `i | f | g | o`). See [`bilstm::BiLstmLayer`] for the
+    ///   order `i | f | g | o`). See `bilstm::BiLstmLayer` for the
     ///   reduction-ordering rationale that mirrors Kokoro's
     ///   `BiLstm1d`.
     /// - `segment` runs the real forward **only** when the env var

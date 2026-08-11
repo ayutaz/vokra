@@ -42,14 +42,14 @@
 //! Two-block `ComplexDense → ComplexPReLU → ComplexGRU →
 //! ComplexDense → ComplexPReLU → ComplexDense` with **fixed** widths:
 //!
-//! - `fc_in`  — [`ComplexDense`]`(in = 2L+1 = 9, out = fc_dim = 18)`
-//! - `prelu_1` — [`ComplexPReLU`]
-//! - `complex_gru` — [`ComplexGru`]`(input_size = fc_dim = 18,
+//! - `fc_in`  — `ComplexDense``(in = 2L+1 = 9, out = fc_dim = 18)`
+//! - `prelu_1` — `ComplexPReLU`
+//! - `complex_gru` — `ComplexGru``(input_size = fc_dim = 18,
 //!                                  hidden_size = rnn_dim = 18,
 //!                                  layers = 1)`
-//! - `fc_out.0` — [`ComplexDense`]`(in = rnn_dim = 18, out = fc_dim = 18)`
-//! - `prelu_2` — [`ComplexPReLU`]
-//! - `fc_out.2` — [`ComplexDense`]`(in = fc_dim = 18, out = L = 4)`
+//! - `fc_out.0` — `ComplexDense``(in = rnn_dim = 18, out = fc_dim = 18)`
+//! - `prelu_2` — `ComplexPReLU`
+//! - `fc_out.2` — `ComplexDense``(in = fc_dim = 18, out = L = 4)`
 //!
 //! Every `Complex*` primitive is a pair of real primitives (see the
 //! `ComplexGru` / `ComplexDense` / `ComplexPReLU` doc comments) — 22
@@ -908,7 +908,7 @@ impl AecEngine for NkfAec {
 /// Upstream `nkf.py` runs the whole utterance under
 /// `torch.stft(center=True)` + one-shot iSTFT — a batch operation. This
 /// binder instead advances the STFT **per new frame** under `center=False`
-/// semantics (see [`Self::drain`]), which is the streaming-safe shape:
+/// semantics (see `Self::drain`), which is the streaming-safe shape:
 /// each new frame's Kalman step fires **exactly once** (fixing the
 /// re-STFT / re-step latent in a block-based drain that recomputes the
 /// pending buffer's STFT every push), and no hop-sized push can be
@@ -922,7 +922,7 @@ impl AecEngine for NkfAec {
 /// parity harness (`crates/vokra-models/tests/parity_nkf_aec.rs`)
 /// bounds this at `atol=1e-3`; whole-utterance vs hop-chunked
 /// consistency is bit-identical past the warmup (see
-/// [`tests::whole_utterance_equals_hop_chunked_stream_within_tolerance`]).
+/// `tests::whole_utterance_equals_hop_chunked_stream_within_tolerance`).
 pub struct NkfAecStream {
     pub(crate) cfg: NkfAecConfig,
     pub(crate) weights: Arc<NkfAecWeights>,

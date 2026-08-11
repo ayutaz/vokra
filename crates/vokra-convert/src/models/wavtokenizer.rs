@@ -170,9 +170,9 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Outcome of a WavTokenizer conversion.
 ///
 /// Mirrors the sibling BF16-pass-through converters' counter shape
-/// ([`super::neucodec::NeucodecReport`],
-/// [`super::xcodec2::XCodec2Report`],
-/// [`super::speecht5_hifigan::Speecht5HifiganReport`]) adapted to the
+/// (`super::neucodec::NeucodecReport`,
+/// `super::xcodec2::XCodec2Report`,
+/// `super::speecht5_hifigan::Speecht5HifiganReport`) adapted to the
 /// file-oriented `convert_wavtokenizer_file` surface.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WavtokenizerReport {
@@ -211,7 +211,7 @@ pub struct WavtokenizerReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// [`DEFAULT_LICENSE_SPDX`] (`"mit"`, `Permissive`) — the upstream HF
+/// `DEFAULT_LICENSE_SPDX` (`"mit"`, `Permissive`) — the upstream HF
 /// release ships MIT end-to-end.
 ///
 /// # Errors

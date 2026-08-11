@@ -35,7 +35,7 @@
 //! out of an actual SBV2 JP-Extra checkpoint.
 
 use vokra_ops::attrs::HifiGanAttrs;
-use vokra_ops::hifigan::{HifiGanConfig, HifiGanWeights, hifigan_generator};
+use vokra_ops::hifigan::{HifiGanConfig, HifiGanWeights, hifigan_generator_conditioned};
 
 /// Thin wrapper over [`hifigan_generator`]: owns a pre-trained HiFi-GAN
 /// weight / shape / precision bundle and exposes one
@@ -144,6 +144,35 @@ impl SbV2Decoder {
     /// `Vec<f32>`-return convention (e.g.
     /// [`SbV2Flow::inverse`](super::flow::SbV2Flow::inverse)).
     pub fn generate(&self, mel_hidden: &[f32], mel_seq_len: usize) -> Vec<f32> {
+        // Unconditioned convenience wrapper — pre-HGAN-05 default
+        // path. See `generate_conditioned` for the speaker-conditioned
+        // (multi-speaker SBV2 v2) variant.
+        self.generate_conditioned(mel_hidden, mel_seq_len, None)
+    }
+
+    /// HGAN-05-GIN-COND (2026-08-09): generate PCM with optional
+    /// per-utterance conditioning vector `g`.
+    ///
+    /// When `g` is `Some(vec)` **and** `self.weights.cond` is
+    /// `Some(_)`, the upstream `dec.cond` broadcast-add fires after
+    /// `conv_pre` (see `hifigan_generator_conditioned`'s doc for the
+    /// contract table). When `g` is `None`, this is byte-identical to
+    /// [`generate`](Self::generate) (unconditioned path).
+    ///
+    /// # Panics
+    ///
+    /// Panics (via `debug_assert!`) if `mel_hidden` mis-shapes.
+    /// Panics (via `.expect`) if the runtime function returns an
+    /// `InvalidArgument` — under construction-time validation this
+    /// only happens if a caller misuses this API by passing `g` in
+    /// contradiction to the loaded `weights.cond` (see
+    /// `hifigan_generator_conditioned`'s FR-EX-08 mismatch arms).
+    pub fn generate_conditioned(
+        &self,
+        mel_hidden: &[f32],
+        mel_seq_len: usize,
+        g: Option<&[f32]>,
+    ) -> Vec<f32> {
         debug_assert_eq!(
             mel_hidden.len(),
             mel_seq_len * self.attrs.n_mels,
@@ -152,15 +181,31 @@ impl SbV2Decoder {
             mel_seq_len,
             mel_hidden.len()
         );
-        hifigan_generator(
+        hifigan_generator_conditioned(
             mel_hidden,
             mel_seq_len,
             &self.weights,
             &self.attrs,
             &self.config,
+            g,
         )
         .expect(
             "SbV2Decoder::generate: hifigan_generator failed on a validated attrs/config bundle",
         )
+    }
+
+    /// Returns `true` when this decoder carries a `cond` (speaker
+    /// conditioning) layer — the multi-speaker generator path.
+    /// Callers use this to decide whether to pass `g` to
+    /// [`generate_conditioned`](Self::generate_conditioned).
+    pub fn has_gin_condition(&self) -> bool {
+        self.weights.cond.is_some()
+    }
+
+    /// Returns the `gin_channels` count this decoder's `cond` layer
+    /// was trained against, or `0` if there is no cond layer.
+    /// Used by callers to size / slice / pad their `g` vector.
+    pub fn gin_channels(&self) -> usize {
+        self.weights.cond.as_ref().map_or(0, |c| c.gin_channels)
     }
 }

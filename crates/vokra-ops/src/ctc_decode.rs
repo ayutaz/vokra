@@ -10,7 +10,7 @@
 //! anti-pattern, FR-OP-40) and would freeze `beam_width`, `lm_alpha`,
 //! `beam_beta` and the hotword list into the model at conversion time —
 //! precisely the axes callers change most often. This mirrors the
-//! [`beam_search`](vokra_core::decode::beam_search) posture (FR-OP-40) and
+//! [`vokra_core::decode::beam_search()`] posture (FR-OP-40) and
 //! the [`flow_sample`](crate::flow_sampler) posture (FR-EX-10). The reserved
 //! `OpKind` identifier for a future graph-side embedding lives in
 //! [`vokra_core::m5_residual_ops::CTC_DECODE_OP`] and is deliberately
@@ -83,8 +83,8 @@
 //! [nemo-beam]: https://raw.githubusercontent.com/NVIDIA/NeMo/main/nemo/collections/asr/parts/submodules/ctc_beam_decoding.py
 //! [graves-2006]: https://www.cs.toronto.edu/~graves/icml_2006.pdf
 //! [hannun-2014]: https://arxiv.org/abs/1408.2873
-//! [`length_conditioning`]: crate::length_conditioning
-//! [`beam_search`]: vokra_core::decode::beam_search
+//! [`length_conditioning`]: crate::length_conditioning()
+//! [`beam_search`]: vokra_core::decode::beam_search()
 
 use std::collections::HashMap;
 

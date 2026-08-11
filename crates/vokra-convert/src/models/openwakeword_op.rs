@@ -165,7 +165,7 @@ pub struct OpenwakewordOpReport {
 /// gate (FR-CP-03).
 ///
 /// `license` optionally overrides the stamped weight license. The
-/// default is [`DEFAULT_LICENSE_SPDX`] (`"apache-2.0"`, `Permissive`)
+/// default is `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`)
 /// — callers redistributing the upstream CC-BY-NC-SA-4.0 official
 /// weights MUST override to `--license cc-by-nc-sa-4.0` which flips
 /// the publish gate to NonCommercialShareAlike (fail-closed for

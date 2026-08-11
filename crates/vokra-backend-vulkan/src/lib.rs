@@ -43,7 +43,7 @@
 //!   M3-02 red line): **no `ash` / `vulkano` / `erupt` / `gpu-alloc` binding
 //!   crate.** The Vulkan loader is loaded at **runtime** with dlopen /
 //!   LoadLibrary and each symbol `transmute`d to its exact C signature
-//!   ([`sys`]). The root `Cargo.lock` therefore keeps only `vokra-*` crates
+//!   (`sys`). The root `Cargo.lock` therefore keeps only `vokra-*` crates
 //!   (`scripts/check-zero-deps.sh`).
 //! - **(c) Android GPU path is Vulkan only; NNAPI is permanently
 //!   unsupported** (FR-BE-07, project design constraint 8, README §4 (2)):
@@ -96,7 +96,7 @@
 //! `unsafe` block carries a `// SAFETY:` comment** (enforced by
 //! `clippy::undocumented_unsafe_blocks`). Each `dlsym` /
 //! `vkGetInstanceProcAddr` `transmute` pairs the C symbol name with the
-//! exact `Fn*` alias declared in [`sys`].
+//! exact `Fn*` alias declared in `sys`.
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the
 // crate-level "Unsafe policy" docs above (M0-02-T03). The Vulkan backend joins

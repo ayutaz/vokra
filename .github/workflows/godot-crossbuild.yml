@@ -205,6 +205,19 @@ jobs:
         shell: bash
         run: bash scripts/build-godot-gdextension.sh
 
+      # Audit 2026-08-10 (Rank 6): vokra-godot ships 130 inline tests across
+      # 8696 LOC (Godot 4.3+ ClassCreationInfo3 / PropertyInfo / CallError
+      # layout asserts + Variant marshalling + trampoline demo_scaffold.rs +
+      # excluded workspace). None of them ran anywhere until this step —
+      # crossbuild-only artifacts silently drifted from tested behavior.
+      # Runs on the native ubuntu-latest x86_64 arm only; layout asserts
+      # are compile-time (same on any host triple) and running them once
+      # is enough — cross-targets remain build-only.
+      - name: Run vokra-godot tests (host-native only, layout + trampoline asserts)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: cargo test --manifest-path integrations/vokra-godot/Cargo.toml
+
       # Explicit staging check — an empty pkg/lib/<triple>/ would mean the
       # cargo build silently produced no cdylib (e.g. wrong crate type).
       # FR-EX-08: fail loudly instead of uploading an empty artifact.

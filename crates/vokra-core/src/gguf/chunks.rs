@@ -169,7 +169,7 @@ pub const KEY_SILERO_VERSION: &str = "vokra.silero.version";
 
 /// `vokra.schema.version` — Vokra GGUF **schema** generation (`UINT32`).
 ///
-/// Hand-bumped ([`SCHEMA_VERSION`]) whenever a converter starts emitting a
+/// Hand-bumped ([`crate::gguf::SCHEMA_VERSION`]) whenever a converter starts emitting a
 /// metadata or tensor group that loaders may rely on. Its whole purpose is to
 /// make a **stale artifact** — a GGUF produced by an older converter, missing a
 /// group newer code expects — visible at load instead of degrading quietly.
@@ -235,4 +235,142 @@ pub const KEY_GENERAL_ALIGNMENT: &str = "general.alignment";
 /// Returns `true` if `key` lies in the `vokra.*` namespace.
 pub fn is_vokra_key(key: &str) -> bool {
     key.starts_with(VOKRA_PREFIX)
+}
+
+// Audit 2026-08-10 (Rank 14, test-coverage-audit workflow): every KEY_*
+// string constant in this module is part of the on-disk `vokra.*` wire
+// contract. A silent rename would compile clean but break every previously
+// published Vokra GGUF (readers look up by string literal). None had a
+// direct test — coverage was purely incidental via converter round-trips.
+// This module pins each constant against its documented literal and asserts
+// the `vokra.` prefix invariant so a rename cannot pass CI unnoticed.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_contract_model_keys() {
+        assert_eq!(KEY_MODEL_ARCH, "vokra.model.arch");
+        assert_eq!(KEY_MODEL_NAME, "vokra.model.name");
+    }
+
+    #[test]
+    fn wire_contract_frontend_keys() {
+        assert_eq!(KEY_FRONTEND_N_FFT, "vokra.frontend.n_fft");
+        assert_eq!(KEY_FRONTEND_HOP, "vokra.frontend.hop");
+        assert_eq!(KEY_FRONTEND_WIN_LENGTH, "vokra.frontend.win_length");
+        assert_eq!(KEY_FRONTEND_WINDOW_TYPE, "vokra.frontend.window_type");
+        assert_eq!(KEY_FRONTEND_MEL_NORM, "vokra.frontend.mel_norm");
+        assert_eq!(KEY_FRONTEND_HTK_MODE, "vokra.frontend.htk_mode");
+        assert_eq!(KEY_FRONTEND_FMIN, "vokra.frontend.fmin");
+        assert_eq!(KEY_FRONTEND_FMAX, "vokra.frontend.fmax");
+        assert_eq!(KEY_FRONTEND_N_MELS, "vokra.frontend.n_mels");
+        assert_eq!(KEY_FRONTEND_PAD_MODE, "vokra.frontend.pad_mode");
+        assert_eq!(
+            KEY_FRONTEND_DC_OFFSET_REMOVAL,
+            "vokra.frontend.dc_offset_removal",
+        );
+        assert_eq!(KEY_FRONTEND_PRE_EMPHASIS, "vokra.frontend.pre_emphasis");
+        assert_eq!(KEY_FRONTEND_SAMPLE_RATE, "vokra.frontend.sample_rate");
+    }
+
+    #[test]
+    fn wire_contract_provenance_keys() {
+        assert_eq!(
+            KEY_PROVENANCE_WEIGHT_LICENSE,
+            "vokra.provenance.weight_license",
+        );
+        assert_eq!(KEY_PROVENANCE_LICENSE, "vokra.provenance.license");
+        assert_eq!(KEY_PROVENANCE_MODEL_ID, "vokra.provenance.model_id");
+        assert_eq!(KEY_PROVENANCE_SOURCE, "vokra.provenance.source");
+        assert_eq!(KEY_PROVENANCE_ATTRIBUTION, "vokra.provenance.attribution",);
+    }
+
+    #[test]
+    fn wire_contract_schema_and_quant_keys() {
+        assert_eq!(KEY_SILERO_VERSION, "vokra.silero.version");
+        assert_eq!(KEY_SCHEMA_VERSION, "vokra.schema.version");
+        assert_eq!(KEY_SCHEMA_PRODUCER, "vokra.schema.producer");
+        assert_eq!(KEY_QUANT_DEFAULT_SCHEME, "vokra.quant.default_scheme");
+        assert_eq!(KEY_QUANT_RULE_COUNT, "vokra.quant.rule_count");
+        assert_eq!(
+            KEY_QUANT_HIFIGAN_INT8_OPT_IN,
+            "vokra.quant.hifigan_int8_opt_in",
+        );
+        assert_eq!(
+            KEY_QUANT_HIFIGAN_INT8_CALIBRATION_REF,
+            "vokra.quant.hifigan_int8_calibration_ref",
+        );
+        assert_eq!(
+            KEY_QUANT_MIN_DTYPE_ENFORCED,
+            "vokra.quant.min_dtype_enforced",
+        );
+    }
+
+    #[test]
+    fn general_alignment_key_is_upstream_ggml_not_vokra() {
+        // `general.alignment` is the upstream ggml spec key (not `vokra.*`).
+        // is_vokra_key MUST reject it — otherwise a Vokra reader would
+        // treat every ggml alignment header as a Vokra-owned key.
+        assert_eq!(KEY_GENERAL_ALIGNMENT, "general.alignment");
+        assert!(!is_vokra_key(KEY_GENERAL_ALIGNMENT));
+    }
+
+    #[test]
+    fn is_vokra_key_positive_and_negative() {
+        // Positive: every KEY_* const under the vokra.* namespace must
+        // match. Sampling a few is enough — the wire-contract pins above
+        // catch drift on the literals themselves.
+        assert!(is_vokra_key(KEY_FRONTEND_N_FFT));
+        assert!(is_vokra_key(KEY_PROVENANCE_LICENSE));
+        assert!(is_vokra_key(KEY_SCHEMA_VERSION));
+        // Negative: unrelated / llama.cpp-owned keys must NOT match.
+        assert!(!is_vokra_key("general.name"));
+        assert!(!is_vokra_key("general.architecture"));
+        assert!(!is_vokra_key("llama.attention.head_count"));
+        assert!(!is_vokra_key(""));
+    }
+
+    #[test]
+    fn every_vokra_key_starts_with_vokra_prefix() {
+        // Cross-check: the wire-contract tests pin literal values, and
+        // this test asserts the prefix invariant on all of them. If a new
+        // `vokra.*` key is added without a wire-contract pin, is_vokra_key
+        // should still say true; if a `general.*` key is added, it must
+        // fail here so the reviewer notices.
+        let vokra_keys: [&str; 26] = [
+            KEY_MODEL_ARCH,
+            KEY_MODEL_NAME,
+            KEY_FRONTEND_N_FFT,
+            KEY_FRONTEND_HOP,
+            KEY_FRONTEND_WIN_LENGTH,
+            KEY_FRONTEND_WINDOW_TYPE,
+            KEY_FRONTEND_MEL_NORM,
+            KEY_FRONTEND_HTK_MODE,
+            KEY_FRONTEND_FMIN,
+            KEY_FRONTEND_FMAX,
+            KEY_FRONTEND_N_MELS,
+            KEY_FRONTEND_PAD_MODE,
+            KEY_FRONTEND_DC_OFFSET_REMOVAL,
+            KEY_FRONTEND_PRE_EMPHASIS,
+            KEY_FRONTEND_SAMPLE_RATE,
+            KEY_PROVENANCE_WEIGHT_LICENSE,
+            KEY_PROVENANCE_LICENSE,
+            KEY_PROVENANCE_MODEL_ID,
+            KEY_PROVENANCE_SOURCE,
+            KEY_PROVENANCE_ATTRIBUTION,
+            KEY_SILERO_VERSION,
+            KEY_SCHEMA_VERSION,
+            KEY_SCHEMA_PRODUCER,
+            KEY_QUANT_DEFAULT_SCHEME,
+            KEY_QUANT_RULE_COUNT,
+            KEY_QUANT_HIFIGAN_INT8_OPT_IN,
+        ];
+        for key in vokra_keys {
+            assert!(
+                is_vokra_key(key),
+                "vokra.* key {key:?} did not pass is_vokra_key",
+            );
+        }
+    }
 }

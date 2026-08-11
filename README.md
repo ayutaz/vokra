@@ -2,210 +2,250 @@
 
 **English** | [日本語](README.ja.md)
 
-**Vokra** is an inference runtime specialized for speech AI — TTS, ASR,
+**Vokra** is a Rust inference runtime specialized for speech AI — TTS, ASR,
 speech-to-speech, voice conversion, speaker identification, and VAD — built
-in Rust as an alternative to ONNX / ONNX Runtime for speech workloads.
+as an alternative to ONNX / ONNX Runtime for speech workloads.
+
+General-purpose runtimes chronically underserve speech models: STFT/iSTFT and
+streaming state, vocoder numerics, neural codec (RVQ/FSQ) decoding,
+flow-matching samplers, beam search / CTC / RNN-T decoding, VAD, and speaker
+embeddings all end up as fragile graph exports or host-side glue. Vokra makes
+them first-class native operators instead.
 
 - **Pronunciation**: "vo-krah" (English) / 「ヴォクラ」 (Japanese)
-- **License**: [Apache-2.0](LICENSE)
-- **Status**: **pre-release, under active development** — v0.5 (M2) and v0.9
-  (M3) are merged to `main`; v1.0-rc (M4) feature work is complete on the
-  development branch (owner verification pending). The only tagged release is
-  `v0.1.0`; APIs, file formats, and model coverage are unstable and incomplete.
+- **License**: [Apache-2.0](LICENSE) — no GPL/LGPL anywhere in the dependency
+  closure.
+- **Repository**: <https://github.com/ayutaz/vokra>
+- **Model hub**: <https://huggingface.co/vokra>
 
-## What Vokra is
+> APIs, file formats, and the model roster are pre-1.0 and may change in
+> breaking ways. A stable C ABI will accompany the first stable release.
 
-General-purpose runtimes chronically underserve speech models: STFT/iSTFT
-and streaming state, vocoder numerics, neural codec (RVQ/FSQ) decoding,
-flow-matching samplers, beam search / CTC / RNN-T decoding, VAD, and
-speaker embeddings all end up as fragile graph exports or host-side glue.
-Vokra makes them first-class native operators instead.
+## Table of contents
 
-Key design points:
+- [Key features](#key-features)
+- [Supported models](#supported-models)
+- [Supported platforms and backends](#supported-platforms-and-backends)
+- [Getting started](#getting-started)
+- [Using the C ABI](#using-the-c-abi)
+- [Architecture overview](#architecture-overview)
+- [Bindings and integrations](#bindings-and-integrations)
+- [Model publications](#model-publications)
+- [piper-plus integration](#piper-plus-integration)
+- [Documentation](#documentation)
+- [Related projects](#related-projects)
+- [Contributing](#contributing)
+- [Legal and compliance](#legal-and-compliance)
+- [License](#license)
 
-- **Rust core, C ABI** (generated with cbindgen) for Unity / Godot / other
-  engine and language bindings; Apache-2.0 with no GPL/LGPL dependencies.
-- **Direct weight loading** from GGUF (with `vokra.*` audio metadata
-  chunks) and safetensors. **The runtime never loads ONNX graphs** — ONNX
-  models are handled by an offline conversion tool only, so the runtime
-  carries no onnx/protobuf dependency.
-- **Speech-first operator set**: STFT/iSTFT (explicit window/hop/norm/RFFT
-  attributes), mel filterbank, resampling, vocoder chains, flow-matching
-  samplers, codec decode, beam search / CTC / RNN-T, streaming KV cache,
-  VAD, speech enhancement (AEC/denoise), speaker embedding, and F0
-  extraction. A weight-license compliance gate keeps CC-BY-NC weights out of
-  the default path unless a research flag is set (audio watermarking is
-  designed but not yet enabled).
-- **CPU as a first-class backend** (x86-64 SSE2 baseline through
-  AVX2/AVX-512/AMX, ARM64 NEON through SVE/SME, with runtime dispatch),
-  then staged GPU/NPU acceleration: Metal, CUDA, Vulkan, WebGPU, CoreML,
-  QNN. **Metal and CUDA backends are already implemented and validated on
-  real hardware** (see Status); GPU support uses hand-written zero-dependency
-  FFI (no `metal-rs` / `cudarc` / binding crates) and never silently falls
-  back to CPU — an op a backend does not cover is an explicit error.
-- **All platforms are in scope**: Windows / macOS / Linux / Android / iOS /
-  Web, plus x86-64 and ARM64 servers. The roadmap staggers *when* each
-  backend gets official acceleration, not *whether* a platform is
-  supported.
+## Key features
 
-## Status and design documents
+- **Native re-implementation of speech models** (whisper.cpp-style): model
+  code lives in Rust and consumes upstream `safetensors` / `GGUF`
+  checkpoints directly. The runtime never loads ONNX graphs, so it carries
+  no `onnx` / `protobuf` / `abseil` transitive dependencies.
+- **Zero external dependency invariant**: the root `Cargo.lock` contains
+  only first-party `vokra-*` crates. GPU/NPU backends use hand-written FFI
+  (no `metal-rs`, no `cudarc`, no `ash`, no `wgpu`) and are strictly opt-in
+  via Cargo features, so the default build stays first-party-only.
+  Enforced in CI by [`scripts/check-zero-deps.sh`](scripts/check-zero-deps.sh).
+- **Speech-first operator set**: STFT / iSTFT with explicit window / hop /
+  normalization / RFFT attributes, mel filterbank, polyphase resampling,
+  vocoder chains (HiFi-GAN, BigVGAN, HiFTNet, Vocos-style iSTFT heads),
+  flow-matching samplers with configurable CFG modes and schedules, neural
+  codec decoders (DAC, Mimi, WavTokenizer, X-Codec 2), beam search / CTC /
+  RNN-T decoding, streaming KV cache (paged, 3D `[time, stream, codebook]`),
+  VAD, speech enhancement (AEC / AGC / HPF / loudness-norm / DeepFilterNet3),
+  speaker embedding, F0 extraction, and objective quality metrics.
+- **CPU as a first-class backend** with runtime ISA dispatch — x86-64 SSE2
+  baseline through AVX2, AVX-512F/DQ/BW/VL, AVX-512 VNNI/BF16, AVX-VNNI
+  256-bit, and AMX; ARM64 NEON through fp16 arithmetic, dotprod (SDOT/UDOT),
+  i8mm, and bf16; RVV 1.0 baseline. Includes K-quants (Q4_K / Q5_K / Q6_K)
+  and a per-layer, config-driven quantization policy with a minimum-dtype
+  registry that refuses INT8 for numerically fragile vocoders.
+- **No silent fallback**: an operator a backend does not implement is an
+  explicit, loud error. GPU backends never silently drop to CPU. Vokra
+  prefers a hard error over a wrong answer.
+- **GGUF with speech metadata**: model files are GGUF augmented with
+  `vokra.*` chunks (`vokra.frontend.*`, `vokra.whisper.*`, `vokra.piper.*`,
+  `vokra.provenance.*`, `vokra.quant.*`, `vokra.schema.*`) so the front-end
+  spec, quantization policy, and licensing provenance travel with the
+  weights and are bit-exactly reproducible.
+- **Cross-platform distribution**: single library, single C ABI header,
+  static or dynamic linking; iOS XCFramework and Swift Package; Unity UPM
+  package; Godot GDExtension; Python `ctypes` wheels; HTTP compatibility
+  server exposing OpenAI Whisper, vLLM, piper-plus, and Wyoming Protocol
+  endpoints.
+- **Safe-by-default Rust**: `unsafe_code = "deny"` is set workspace-wide;
+  `unsafe` is allowed only in backend and FFI crates and requires
+  `// SAFETY:` justifications enforced by
+  `clippy::undocumented_unsafe_blocks = "deny"`.
+- **License hygiene by construction**: a compliance gate refuses
+  non-commercially licensed weights (F5-TTS, Fish-Speech, EnCodec,
+  X-Codec 2) on the default path unless the caller opts in via an explicit
+  research flag / `--allow-noncommercial`.
 
-The v0.1 spike and v0.1 MVP are complete; **v0.5** (Metal / CUDA GPU backends)
-and **v0.9** (CUDA-complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0) are merged to
-`main`, and **v1.0-rc** (M4: WebGPU/WASM, Sesame CSM-1B, Moshi, all-platform
-support) feature work is complete on the development branch. Nothing is ready
-for production use yet, but the following are implemented and validated:
+## Supported models
 
-- **CPU speech stack**: Silero VAD, Whisper (base…large-v3, with an embedded
-  detokenizer for correct transcription), and piper-plus native TTS with the
-  real 8-language G2P and a native CAM++ speaker encoder for zero-shot voice
-  cloning. All are numerically parity-checked against reference runtimes
-  (onnxruntime / PyTorch) to FP32 `atol = 0.01`. **Real-checkpoint
-  validation** (Apple M1, vs onnxruntime 1.19.2 CPU, same downloaded
-  weights): Whisper base/small/medium/turbo transcripts are
-  **byte-identical to ONNX Runtime** (identical WER); piper output is
-  near-bit-exact (mel-L1 ≈ 0.003); Mimi/DAC/WavTokenizer codec parity all
-  pass; DeepFilterNet3 denoising matches upstream to an SI-SNR gap of
-  2.0e-7 dB (see
-  [`docs/bench-baselines/m1-real-weight-eval-2026-07-16/`](docs/bench-baselines/m1-real-weight-eval-2026-07-16/)).
-- **CPU speed** (rig-scoped: Apple M1, 8 threads, vs onnxruntime 1.19.2
-  CPU on the same machine and weights; methodology + raw logs in
-  [`docs/bench-baselines/m5-14-final-2026-07-18/`](docs/bench-baselines/m5-14-final-2026-07-18/)):
-  after the packed-GEMM/vectorization wave, **Whisper base runs ~2.5×
-  faster than ONNX Runtime, whisper-turbo ~2.7× faster, and Silero VAD
-  ~2.3× faster**; whisper-medium/small land within 1.17–1.24× of ORT and
-  piper within ~2.2×. Every optimization is bit-identical by construction
-  (no parity tolerance was changed).
-- **GPU backends** (`vokra-backend-metal`, `vokra-backend-cuda`): a
-  data-carrying graph evaluator plus a per-model dispatch seam. **Whisper
-  runs end-to-end on both Metal (validated on Apple M1) and CUDA (validated
-  on an RTX 4090)** with greedy output matching the CPU path exactly. GPU
-  intermediates stay device-resident across the whole Whisper encoder (all
-  pre-norm blocks fused into one submission) and across each autoregressive
-  decoder step (fused causal attention with an on-device KV cache), cutting
-  host↔device readback to a small constant. With that, **Whisper large-v3
-  reaches RTF < 0.15 on an RTX 4090** (measured 0.081-0.115 on 30 s of audio
-  depending on individual GPU / runtime conditions; several× the CPU path).
-  Both backends are hand-written FFI with zero external crates and are
-  exercised in CI.
-- **Tooling**: `vokra-cli` (`run` / `convert` / `bench`, with
-  `bench --backend cpu|metal|cuda` for GPU RTF), an offline `vokra-convert`,
-  a `vokra-eval` metrics crate, and true zero-copy `mmap` GGUF loading.
-- **Distribution**: an iOS **XCFramework + Swift Package** (arm64 device +
-  Simulator slices, static-linked, `DllImport("__Internal")` compatible), a
-  **Unity UPM package** (`com.vokra.unity`, IL2CPP-safe callbacks + Android
-  `persistentDataPath` helper), and **Python bindings** (pure `ctypes`, no
-  `pyo3`, published as PyPI wheels via `cibuildwheel`). See
-  [`bindings/`](bindings) and [`Package.swift`](Package.swift).
-- **Server**: [`integrations/vokra-server`](integrations/vokra-server) is an
-  isolated workspace (own `Cargo.lock`) exposing four HTTP compatibility
-  layers — **OpenAI Whisper** (`/v1/audio/transcriptions`, faster-whisper
-  drop-in), **vLLM** (`/v1/completions`, `/v1/chat/completions`), **piper-plus
-  HTTP** (`/api/tts`), and **Wyoming Protocol** (Home Assistant Voice
-  backend). Kept out of the root workspace so the core's zero-dependency
-  invariant stays intact.
-- **Graph fusion**: a log-mel front-end fusion (STFT + magnitude + mel + log
-  collapsed into a single kernel) with AVX2 / NEON specializations, wired
-  through the `mel-frontend` `vokra-cli bench` task and gated by a 5%
-  regression check in CI.
-- **Quantization policy**: per-layer, config-driven quantization
-  (`W4A16Q4K` / `W8A8Int8` / `FP16` / `FP32`) with a minimum-dtype registry
-  that refuses INT8 for the ops that need FP16 (Vocos / BigVGAN), applied
-  during `vokra-convert` and baked into a `vokra.quant.*` GGUF chunk.
-- **Compliance gate**: a research-flag enforcement layer that refuses
-  CC-BY-NC / CC-BY-NC-SA weights (F5-TTS / Fish-Speech / EnCodec) unless the
-  caller opts in — from the same `vokra.provenance.*` chunk the compliance
-  API surfaces.
-- **Model hub**: [`huggingface.co/vokra`](https://huggingface.co/vokra) —
-  **16 converted GGUFs live** as of 2026-07-23. Every artifact carries a
-  matching model card generated from its own metadata, a `LICENSE`, a
-  `NOTICE` (attribution-required cases), and a `SOURCE.md` with the
-  upstream URL and re-conversion recipe. The publication path
-  (`scripts/publish/*.sh`) is a five-tier gate that fails closed on
-  contractual bans (VOICEVOX / CSJ / JSUT-JVS), on artifacts that cannot
-  state their own licence, and on blank owner sign-off; a
-  `restamp_provenance` low-memory rewrite lets an 8.7 GB checkpoint
-  publish on a 16 GB host without vast.ai (peak footprint measured at
-  6.4 MB). Currently live: **whisper-{base,small,medium,turbo}** (matched
-  to each source repo's licence, apache-2.0 / mit), **kokoro-82m** and
-  **kokoro-82m-stacked** (54 voices + 178 phoneme symbols),
-  **piper-plus-css10-ja-6lang** and **piper-plus-mera-multilingual**,
-  **silero-vad-v5**, **campplus-speaker-encoder**, **dac-24khz**, **mimi**
-  (CC-BY-4.0 with Kyutai attribution in-card), **deepfilternet3**,
-  **utmos22-strong**, **moshiko-7b-bf16** (15 GB, with an unmissable
-  "not real-time on this runtime" warning), and **voxtral-mini-3b-2507**
-  (8.7 GB).
+Vokra ships native implementations of the models below. Weight loading and
+tokenization are built into the runtime; converters producing the GGUF
+files live in the `vokra-convert` crate.
 
-Everything above holds Vokra's **zero-external-dependency** invariant: the
-resolved dependency graph contains only first-party `vokra-*` crates,
-enforced in CI.
+**ASR**
+- Whisper — `base`, `small`, `medium`, `large-v3`, `turbo`
+- Voxtral — `Mini-3B`, `Small-24B` (streaming loader for large variants)
+- Canary-Qwen-2.5B (FastConformer + Qwen decoder)
+- omniASR-CTC — 300M and 7B variants
+- Charsiu (wav2vec2 CTC)
+- Kyutai STT
+- Zipformer / E-Branchformer / Hybrid CTC-Attention decoders
 
-Public reference documents (Japanese):
+**TTS**
+- piper-plus (native MB-iSTFT-VITS2, 8-language G2P: JA / EN / ZH / ES / FR
+  / PT / SV / KO)
+- Kokoro-82M
+- CosyVoice2 (FSQ tokens + Qwen2.5-0.5B AR + chunk-aware CFM → mel → HiFTNet)
+- Style-Bert-VITS2 v2 — multilingual (JA / EN / ZH) with per-language
+  conditioning encoders: DeBERTa v2 (JA), DeBERTa v3 (EN), and
+  Chinese-RoBERTa-wwm-ext (ZH)
+- VoxCPM-0.5B and VoxCPM2-2B
+- Qwen3-TTS 1.7B
+- Fun-CosyVoice3-0.5B
 
-- [docs/license-audit.md](docs/license-audit.md) — model / dependency
-  license audit
-- [docs/legal-compliance.md](docs/legal-compliance.md) — EU AI Act, SB 942,
-  ELVIS Act, C2PA compliance
+**Speech-to-speech (full-duplex)**
+- Sesame CSM-1B
+- Moshi (Helium + Mimi codec)
 
-Detailed requirement / deliverable / milestone planning is maintained
-privately by the maintainer; the roadmap summary below reflects it.
+**VAD**
+- Silero VAD v5 (default) and v6.2.1
+- FSMN-VAD
 
-## Roadmap
+**Speaker embedding / verification**
+- CAM++ (192-d, zero-shot voice cloning input)
+- TitaNet-L
+- ECAPA-TDNN
 
-Durations are engineering estimates under a Claude Code-driven
-implementation model; any calendar dates derived from them are **rough
-indications only** ("目安"), not commitments.
+**F0 / pitch**
+- RMVPE (front-end + decoder; internal U-Net + GRU forward is a
+  loud-partial, awaiting real-checkpoint verification)
+- FCPE (real Conformer forward)
+- CREPE (real 6-block CNN, 5 model sizes)
 
-| Phase | Estimated duration | Focus |
+**Neural codecs**
+- DAC (24 kHz), Mimi, WavTokenizer, X-Codec 2 (research-only, CC-BY-NC-4.0)
+
+**Speech enhancement**
+- DeepFilterNet3, AEC, AGC, HPF, loudness normalization
+
+**Objective quality**
+- UTMOS22-strong
+
+See [`docs/license-audit.md`](docs/license-audit.md) for the licensing
+audit and [`docs/legal-compliance.md`](docs/legal-compliance.md) for the
+distribution rules that follow from it.
+
+## Supported platforms and backends
+
+Every platform below is in scope for the single library and single C ABI.
+Backend acceleration is enabled with Cargo features so the default build
+stays zero-dependency.
+
+| Backend | Cargo feature | Notes |
 |---|---|---|
-| v0.1 spike | 1.5-2 months | Rust scaffold, GGUF loader + `vokra.*` metadata, STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU backend (AVX2/NEON), C ABI, Unity demo, public repo + CI gates — **done** |
-| v0.1 MVP | 1.5-2.5 months | K-quant loader, engine, streaming, resample, `vokra-cli` / `vokra-eval`, real 8-language G2P wiring, native CAM++ zero-shot cloning, `vokra-mmap` — **done** |
-| v0.5 | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, whole-encoder and per-decoder-step device residency (large-v3 RTF < 0.15 on RTX 4090, measured 0.081-0.115), Kokoro-82M, `vokra-server` (4 HTTP compatibility APIs), `bench --backend` — **done** (merged to `main`) |
-| v0.9 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline — **done** (merged to `main`) |
-| **v1.0-rc** (current) | 4-5 months | WebGPU/WASM (**landed**: browser Whisper base over a raw WebGPU import shim + WASM SIMD128 2-artifact CPU path, npm package CD — see [docs/tutorials/web.md](docs/tutorials/web.md)), Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support — **feature-complete on the development branch** (owner verification pending) |
-| v1.0 GA | 8+ months | CoreML (ANE) / QNN delegates, MCU tier re-evaluation, commercial GA, C ABI freeze (semver compliance from v1.0) |
+| CPU (default) | — | x86-64 SSE2 → AVX2 → AVX-512F/DQ/BW/VL → AVX-512 VNNI/BF16 → AVX-VNNI 256 → AMX; ARM64 NEON → fp16 → dotprod → i8mm → bf16; RVV 1.0 |
+| Metal (macOS / iOS) | `metal` | Hand-written raw `objc` + Metal FFI, MSL compute kernels |
+| CUDA (Windows / Linux) | `cuda` | Driver API + NVRTC loaded via `dlopen` / `LoadLibrary` — no CUDA library is bundled, per NVIDIA EULA |
+| Vulkan (Android / Linux / Windows) | `vulkan` | dlopen + pre-compiled SPIR-V, subgroup and cooperative matrix path with a fallback |
+| WebGPU / WASM (browsers) | `webgpu`, target `wasm32-unknown-unknown` | wasm extern-import shim, no `wgpu` / `wasm-bindgen` dependency |
+| CoreML (Apple ANE) | `coreml` | Opt-in delegate scaffold |
+| QNN (Qualcomm Hexagon) | `qnn` | Opt-in delegate scaffold |
 
-Cumulative estimate to v1.0 GA: **20-25 months**. Version labels were
-re-assigned on 2026-07-14: the scope formerly planned through v2.0 now
-ships as v1.0 (the former v1.0 / v1.5 phases are now v0.9 / v1.0-rc).
-v1.0-rc is a semver prerelease; the C ABI freezes at the v1.0 GA tag.
-The v0.1 spike was extended from 1-1.5 months to 1.5-2 months when the
-piper-plus native TTS implementation was added to its scope (decision of
-2026-07-02).
+**Operating systems**: Windows, macOS, Linux, Android, iOS, and modern web
+browsers (via WebGPU / WASM SIMD128 + threads).
 
-## piper-plus integration (native TTS)
+**Explicitly not supported**: NNAPI (deprecated by Google in Android 15,
+October 2024); Piper `OHF-Voice/piper1-gpl` (GPL-3.0 with an eSpeak-NG
+GPL-3.0 transitive dependency — the only Piper-family integration Vokra
+supports is the owner's MIT-licensed [`piper-plus`](https://github.com/ayutaz/piper-plus)
+fork).
 
-[piper-plus](https://github.com/ayutaz/piper-plus) is an MIT-licensed Piper
-fork by the project owner (8-language G2P without eSpeak-NG, MB-iSTFT-VITS2
-decoder). Vokra integrates it as the standard TTS layer and as **Vokra's
-first natively implemented TTS model** (decided 2026-07-02):
+## Getting started
 
-- The MB-iSTFT-VITS2 inference stack (text encoder / duration predictor /
-  flow / MB-iSTFT decoder) is reimplemented natively in Rust. The earlier
-  plan to wrap the existing ONNX-based implementation was dropped.
-- **The end-to-end inference path contains no onnxruntime.** Voice models
-  are converted offline to GGUF; the runtime loads only GGUF.
-- G2P (text preprocessing, 8 languages: JA/EN/ZH/ES/FR/PT/SV/KO) is reused
-  from piper-plus for the time being; a Rust port will be re-evaluated
-  later.
+### Prerequisites
+
+- Rust toolchain (edition 2024). MSRV is `1.85`; some AVX-512 intrinsics in
+  `vokra-backend-cpu` require `1.89`. Install from <https://rustup.rs>.
+- A C compiler (only if you plan to link against the C ABI).
+
+### Build the CLI
+
+```sh
+git clone https://github.com/ayutaz/vokra.git
+cd vokra
+cargo build --release -p vokra-cli
+# The binary is at target/release/vokra-cli
+```
+
+### Download a model
+
+Every published model card on <https://huggingface.co/vokra> lists the exact
+`.gguf` file to fetch. For example, to grab a Whisper base checkpoint:
+
+```sh
+# Any of: curl / wget / huggingface-cli — the file is a plain GGUF blob.
+huggingface-cli download vokra/whisper-base whisper-base.gguf --local-dir .
+```
+
+### Transcribe audio
+
+```sh
+target/release/vokra-cli run whisper-base.gguf --input audio.wav
+```
+
+### Run inference on a GPU backend
+
+Enable the relevant Cargo feature at build time:
+
+```sh
+# macOS / iOS
+cargo build --release -p vokra-cli --features metal
+target/release/vokra-cli run whisper-base.gguf --input audio.wav --backend metal
+
+# Linux / Windows with a discrete NVIDIA GPU (requires a developer-installed CUDA)
+cargo build --release -p vokra-cli --features cuda
+target/release/vokra-cli run whisper-base.gguf --input audio.wav --backend cuda
+```
+
+### Convert an upstream checkpoint
+
+```sh
+target/release/vokra-cli convert --model whisper \
+  --input path/to/upstream/checkpoint --output whisper-base.gguf
+```
+
+More detail — including a per-backend guide, a per-tutorial walkthrough
+(CLI, Android, iOS, Godot, Unity, Python, server, web), and a migration
+guide from onnxruntime / whisper.cpp — is in [`docs/`](docs).
 
 ## Using the C ABI
 
 Vokra exposes a single C header, [`include/vokra.h`](include/vokra.h)
-(cbindgen-generated; regenerate with `scripts/gen-c-abi.sh`). Building the
-`vokra-capi` crate produces the shared and static libraries:
+(generated with cbindgen; regenerate with
+[`scripts/gen-c-abi.sh`](scripts/gen-c-abi.sh)). Building the `vokra-capi`
+crate produces the shared and static libraries:
 
 ```sh
 cargo build -p vokra-capi --release
 # -> target/release/libvokra.dylib | libvokra.so | vokra.dll  (+ libvokra.a)
 ```
 
-A session is created from a GGUF model; the architecture is detected from the
-file's `vokra.model.arch` metadata and the matching task is wired
-automatically (Whisper → ASR, Silero VAD → VAD stream, piper-plus → TTS). All
-functions return a `vokra_status_t` (`VOKRA_OK` is 0); on error, a per-thread
-message is available from `vokra_last_error()`. Vokra-allocated outputs are
-released with their matching `vokra_*_free` / `vokra_*_destroy` function.
+A session is created from a GGUF model; the architecture is detected from
+the file's `vokra.model.arch` metadata and the matching task is wired
+automatically (Whisper → ASR, Silero VAD → VAD stream, piper-plus → TTS).
+All functions return a `vokra_status_t` (`VOKRA_OK` is `0`); on error a
+per-thread message is available from `vokra_last_error()`. Vokra-allocated
+outputs are released with their matching `vokra_*_free` / `vokra_*_destroy`
+function.
 
 ```c
 #include "vokra.h"
@@ -231,59 +271,204 @@ cc app.c -I include -L target/release -lvokra -Wl,-rpath,target/release -o app
 ```
 
 Runnable end-to-end examples (ASR / TTS / VAD) live in
-[`tests/capi/`](tests/capi); `scripts/run-capi-smoke.sh` builds and runs them.
-The M0 (v0.1 spike) ABI is **not** stable — it may change in breaking ways
-until the v1.0 semver commitment.
+[`tests/capi/`](tests/capi); `scripts/run-capi-smoke.sh` builds and runs
+them.
 
-## Planned model support
+## Architecture overview
 
-The official model zoo distributes **Apache-2.0 / MIT weights only**. See
-[docs/license-audit.md](docs/license-audit.md) for the full audit.
+**Native re-implementation.** Every supported model is a Rust module —
+tokenizer, tensor layout, forward pass, decoder loop, and streaming state
+included — that consumes an upstream `safetensors` or Vokra-flavoured
+`GGUF` file. This side-steps the chronic fragility of `torch.onnx.export`
+for speech models, keeps the runtime free of `onnx` / `protobuf` /
+`abseil`, and makes bug reports actionable (a single Rust file, not a graph
+export).
 
-| Model | Task | License (code / weights) | Commercial use | Planned |
-|---|---|---|---|---|
-| Silero VAD v5 | VAD | MIT / MIT | Yes | v0.1 MVP |
-| Whisper base/small/medium/large-v3/turbo | ASR | MIT / MIT | Yes | v0.1 MVP (base), v0.5 (large-v3), v1.0-rc (small/medium/turbo) |
-| piper-plus | TTS | MIT / MIT | Yes | v0.1 spike (native implementation) |
-| Kokoro-82M | TTS | Apache-2.0 / Apache-2.0 | Yes | v0.5 |
-| CosyVoice2 | TTS / S2S | Apache-2.0 / Apache-2.0 | Yes | v0.9 |
-| Voxtral (Mistral) | ASR / S2S | Apache-2.0 / Apache-2.0 | Yes | v0.9 |
-| Sesame CSM-1B | S2S | Apache-2.0 / Apache-2.0 | Yes | v1.0-rc |
-| Moshi (Helium + Mimi) | S2S | Apache-2.0 / CC-BY 4.0 (attribution required) | Yes, with credit | v1.0-rc |
-| F5-TTS | TTS | MIT / **CC-BY-NC 4.0** | **No (non-commercial weights)** | Engine support only; weights excluded from the official zoo, behind a research flag |
-| Fish-Speech v1.4/v1.5 | TTS | Apache-2.0 / **CC-BY-NC-SA 4.0** | **No (non-commercial weights)** | Engine support only; weights excluded, research flag |
-| RVC v2 / GPT-SoVITS | VC | MIT / unclear | Restricted (training-data concerns) | Separate repository `vokra-voiceclone-experimental` |
-| Bark (Suno) | TTS | MIT / MIT (voice-cloning retraining prohibited by Suno policy) | Restricted | post-v1.0 GA (under consideration, research flag) |
-| StyleTTS 2 | TTS | MIT / unclear (audit pending) | Restricted | post-v1.0 GA (after audit) |
-| Matcha-TTS | TTS | MIT / MIT | Yes | post-v1.0 GA |
+**Zero external dependency.** The root workspace `Cargo.lock` resolves to
+first-party `vokra-*` crates only. This invariant is checked by
+`scripts/check-zero-deps.sh` on every CI run. Anything that would break it
+— an 8-language G2P port, a Godot GDExtension, an HTTP server, an ONNX
+converter — lives in an isolated sub-workspace under `integrations/` with
+its own `Cargo.lock`.
 
-Notes:
+**Hand-written FFI, EULA-compliant CUDA.** GPU and NPU backends do not
+depend on binding crates. Metal uses raw `objc` runtime calls plus MSL
+compute kernels; CUDA loads the NVIDIA Driver API and NVRTC through
+`dlopen` / `LoadLibrary` at runtime against a developer-installed CUDA
+(nothing is bundled, which keeps the distribution compatible with the
+NVIDIA CUDA / cuDNN EULA — see [`NOTICE`](NOTICE)); Vulkan pre-compiles
+SPIR-V and loads the loader through `dlopen`; WebGPU speaks to the browser
+through a small wasm extern-import shim.
 
-- **F5-TTS and Fish-Speech weights are CC-BY-NC(-SA) licensed and are not
-  included in any official Vokra distribution.** The engine can run them
-  for research via an explicit research flag.
-- Voice cloning (RVC v2, GPT-SoVITS, speaker cloning) is fully separated
-  into the `vokra-voiceclone-experimental` repository for legal reasons
-  (ELVIS Act / NO FAKES Act); speaker embedding for zero-shot TTS stays in
-  core.
-- Piper (OHF-Voice/piper1-gpl) is **not** supported (GPL-3.0 + eSpeak-NG
-  GPL-3.0); piper-plus is the only Piper-family integration.
+**GGUF plus `vokra.*` metadata.** Weight files are standard GGUF with a set
+of Vokra-owned chunks (`vokra.frontend.*` for STFT / mel spec,
+`vokra.<arch>.*` for per-model hyperparameters, `vokra.quant.*` for
+quantization policy, `vokra.provenance.*` for licensing provenance,
+`vokra.schema.version` / `vokra.schema.producer` for producer identity).
+Because the front-end spec travels with the weights, the runtime rejects a
+checkpoint whose spec does not bit-exactly match what the model was trained
+against — no silent librosa-vs-torchaudio Mel-filter drift.
 
-## Community
+**Compute seams and a graph executor.** Each model reaches the backends
+through a small `Compute` seam (per-backend `Cpu` / `Metal` / `Cuda` /
+`Vulkan` arms for the GEMM hot path). Longer-lived pipelines — the pre-norm
+encoder stack, autoregressive decoder steps with a device-resident KV cache,
+codec chains — are represented as a data-carrying graph so intermediates
+stay device-resident and host↔device readback stays at a small constant per
+step.
 
-- **First step**: [docs/good-first-tasks.md](docs/good-first-tasks.md) —
-  self-contained starting points, each with a file:line anchor or a
-  reproduction command, acceptance criteria you can check yourself, and a
-  rough size.
-- **Questions & discussion**: open a
-  [GitHub issue](https://github.com/ayutaz/vokra/issues).
-- **Issues / pull requests**: see [CONTRIBUTING.md](CONTRIBUTING.md). All
-  changes go through PRs with CI quality gates.
+**Loud errors, never wrong answers.** If a backend does not implement an
+operator, the call fails with an explicit `VokraError::UnsupportedOp`.
+Vokra never silently reroutes to a different backend or dtype.
+
+## Bindings and integrations
+
+- **iOS** — XCFramework + Swift Package
+  ([`Package.swift`](Package.swift), built by
+  [`scripts/build-ios.sh`](scripts/build-ios.sh)): arm64 device and
+  Simulator slices, static-linked, `DllImport("__Internal")`-compatible.
+- **Unity** — UPM package `com.vokra.unity` under
+  [`bindings/unity/`](bindings/unity), built by
+  [`scripts/build-unity-plugin.sh`](scripts/build-unity-plugin.sh):
+  IL2CPP-safe callback marshalling, Android `persistentDataPath` helper,
+  and a non-NVIDIA-bundle scanner (`check-unity-package-no-nvidia.sh`) so
+  distributions cannot accidentally ship CUDA libraries.
+- **Godot** — GDExtension under
+  [`integrations/vokra-godot/`](integrations/vokra-godot), built by
+  [`scripts/build-godot-gdextension.sh`](scripts/build-godot-gdextension.sh):
+  five-target cross-build matrix (macOS Intel + Apple Silicon, Linux x64,
+  Windows MSVC, Android arm64) with an AssetLib-shaped release layout.
+- **Python** — pure `ctypes` (no `pyo3`) under
+  [`bindings/python/`](bindings/python), published as PyPI wheels via
+  `cibuildwheel`.
+- **HTTP server** — [`integrations/vokra-server`](integrations/vokra-server):
+  an isolated workspace exposing four compatibility APIs so existing
+  clients drop in unchanged: **OpenAI Whisper**
+  (`/v1/audio/transcriptions`), **vLLM** (`/v1/completions`,
+  `/v1/chat/completions`), **piper-plus HTTP** (`/api/tts`), and
+  **Wyoming Protocol** for Home Assistant Voice backends.
+
+## Model publications
+
+Ready-to-run GGUF conversions are published under the
+[`vokra`](https://huggingface.co/vokra) organization on Hugging Face. Every
+published artifact carries:
+
+- A model card generated from its own metadata.
+- A `LICENSE` containing the upstream license text (fetched at publish
+  time by [`scripts/publish/fetch_license.sh`](scripts/publish/fetch_license.sh)).
+- A `NOTICE` when the upstream requires attribution (for example, Mimi is
+  CC-BY-4.0 and requires crediting Kyutai).
+- A `SOURCE.md` with the upstream URL and the re-conversion recipe.
+
+Every publish goes through
+[`scripts/publish/publish-one.sh`](scripts/publish/publish-one.sh), which
+is a five-tier gate designed to fail closed:
+
+1. **Catalog reality** — refuses artifacts that are not on the tracked
+   catalog (no accidental publishes of unreviewed models).
+2. **Redistributability** — refuses corpora with contractual non-
+   redistribution clauses (VOICEVOX, CSJ, JSUT, JVS).
+3. **Provenance stamp presence** — requires `vokra.schema.version` and
+   `vokra.schema.producer` chunks so consumers can identify the producer.
+4. **Owner sign-off** — requires the corresponding row in
+   [`docs/license-audit.md`](docs/license-audit.md) §3.1 to be signed off,
+   with a source-of-truth link.
+5. **Non-commercial opt-in** — requires an explicit `--allow-noncommercial`
+   flag for the research-only tier (for example, X-Codec 2 under
+   CC-BY-NC-4.0).
+
+Combined with a low-memory `restamp_provenance` rewrite path, this makes
+publishing multi-gigabyte checkpoints from modest hardware routine.
+
+## piper-plus integration
+
+[piper-plus](https://github.com/ayutaz/piper-plus) is an MIT-licensed
+Piper fork by the project owner (8-language G2P without eSpeak-NG,
+MB-iSTFT-VITS2 decoder, CUDA / CoreML / DirectML support, Unity binding).
+Vokra integrates it as the standard TTS layer and as its first natively
+implemented TTS model:
+
+- The MB-iSTFT-VITS2 inference stack — text encoder, duration predictor,
+  flow, MB-iSTFT decoder — is re-implemented natively in Rust. There is no
+  wrap of the upstream ONNX-based implementation and there is no
+  `onnxruntime` on Vokra's end-to-end inference path.
+- Voice models are converted offline to GGUF; the runtime loads only GGUF.
+- The 8-language G2P (JA / EN / ZH / ES / FR / PT / SV / KO) is reused
+  from piper-plus for the time being; a Rust port is a follow-up item.
+
+## Documentation
+
+All user-facing documentation lives under [`docs/`](docs). Every top-level
+document has both an English (`.md`) and a Japanese (`.ja.md`) version.
+
+| Document | What it covers |
+|---|---|
+| [`docs/getting-started.md`](docs/getting-started.md) | Five-minute quickstart |
+| [`docs/architecture.md`](docs/architecture.md) | Internal architecture, crate layout, graph executor |
+| [`docs/api-reference.md`](docs/api-reference.md) | C ABI + CLI reference |
+| [`docs/backend-guide.md`](docs/backend-guide.md) | CPU / Metal / CUDA / Vulkan / WebGPU / CoreML / QNN guide |
+| [`docs/tutorials/`](docs/tutorials) | Per-platform tutorials: CLI, Android, iOS, Godot, Unity, Python, server, web |
+| [`docs/migration-guide.md`](docs/migration-guide.md) | Migrating from onnxruntime / whisper.cpp / piper |
+| [`docs/license-audit.md`](docs/license-audit.md) | Model and dependency license audit |
+| [`docs/legal-compliance.md`](docs/legal-compliance.md) | EU AI Act Article 50, SB 942, ELVIS Act, C2PA |
+| [`docs/good-first-tasks.md`](docs/good-first-tasks.md) | Contributor entry points |
+| [`docs/abi-changelog.md`](docs/abi-changelog.md) | C ABI change log |
+| [`NOTICE`](NOTICE) | Attribution requirements and bundling policies |
+
+## Related projects
+
+- **[piper-plus](https://github.com/ayutaz/piper-plus)** — the MIT Piper
+  fork by the project owner that Vokra integrates as its standard TTS
+  layer (see above).
+
+## Contributing
+
+Contributions are welcome. Please open an issue before opening a large
+pull request so scope and approach can be aligned early.
+
+- **Where to start**:
+  [`docs/good-first-tasks.md`](docs/good-first-tasks.md) — self-contained
+  tasks with file:line anchors or reproduction commands, acceptance
+  criteria you can check yourself, and a rough size.
+- **Questions and discussion**: open an
+  [issue on GitHub](https://github.com/ayutaz/vokra/issues).
+- **Pull requests**: read [`CONTRIBUTING.md`](CONTRIBUTING.md). All
+  changes go through pull requests with CI quality gates covering build,
+  tests, formatting, clippy `-D warnings`, the zero-dependency invariant,
+  the C ABI change log, and license auditing.
+
+## Legal and compliance
+
+- **EU AI Act Article 50** and **California SB 942**: TTS and voice-
+  conversion outputs are considered synthetic audio and require
+  disclosure. Vokra provides AudioSeal watermarking and C2PA manifest
+  support (via `c2pa-rs`) as building blocks; disclosure obligations of
+  the deployer are documented in
+  [`docs/legal-compliance.md`](docs/legal-compliance.md).
+- **Voice-cloning separation**: RVC v2, GPT-SoVITS, and other voice-
+  conversion "trigger" models are deliberately **not** in this
+  repository. They are split into a separate
+  `vokra-voiceclone-experimental` project because of Tennessee's ELVIS Act
+  (2024-07-01) and the federal NO FAKES Act. Speaker embedding for
+  zero-shot TTS (feature extraction only, no conversion) stays in core.
+- **NVIDIA CUDA / cuDNN EULA**: Vokra does not bundle any NVIDIA library.
+  The CUDA backend `dlopen`s the developer-installed system CUDA at
+  runtime. Recorded in [`NOTICE`](NOTICE) and
+  [`docs/license-audit.md`](docs/license-audit.md).
+- **Non-commercial weights**: F5-TTS (CC-BY-NC-4.0), Fish-Speech
+  (CC-BY-NC-SA-4.0), EnCodec (CC-BY-NC-4.0), and X-Codec 2 (CC-BY-NC-4.0)
+  are not included in the default model zoo. The engine can run them
+  behind an explicit research flag / `--allow-noncommercial`.
+- **Piper (`OHF-Voice/piper1-gpl`) is not supported** (GPL-3.0 with an
+  eSpeak-NG GPL-3.0 transitive dependency). The only Piper-family
+  integration Vokra supports is [piper-plus](https://github.com/ayutaz/piper-plus).
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Vokra is licensed under the [Apache License, Version 2.0](LICENSE).
 
-Additional licensing and distribution notices — the BigVGAN scratch
-reimplementation policy and the NVIDIA runtime non-bundling policy — are
-recorded in [NOTICE](NOTICE).
+Additional licensing and distribution notices — including per-model
+attribution obligations (for example, Mimi under CC-BY-4.0), the BigVGAN
+attribution, and the NVIDIA runtime non-bundling policy — are recorded in
+[`NOTICE`](NOTICE).

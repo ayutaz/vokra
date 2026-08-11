@@ -60,7 +60,10 @@ use std::path::Path;
 
 use vokra_core::VokraError;
 use vokra_core::engines::KwsEngine;
-use vokra_models::kws::openwakeword::OpenwakewordSession;
+use vokra_models::kws::openwakeword::{
+    BoundClassifier, EmbeddingExtractor, OpenwakewordSession, classify_embedding,
+};
+use vokra_ops::OpenwakewordClassifierWeights;
 
 /// Env var the owner sets to point the gated harness at a real
 /// openWakeWord GGUF. Absent = skip cleanly (never a fabricated pass).
@@ -78,6 +81,79 @@ const REFERENCE_JSON_ENV: &str = "VOKRA_OPENWAKEWORD_REFERENCE_JSON";
 /// extractor lights up — see the module docs).
 #[allow(dead_code)]
 const PROB_ATOL: f32 = 1e-4;
+
+/// FIXTURE-FREE: the per-wake-word MLP classifier is a real primitive
+/// unit-testable independent of a real GGUF. Pins the classifier
+/// output shape and sigmoid range for a hand-constructed embedding so
+/// the classifier half never silently regresses regardless of the
+/// (owner-blocked) Google `speech_embedding` extractor status.
+#[test]
+fn openwakeword_classify_embedding_sigmoid_range_and_shape() {
+    // Two toy wake-words with tiny MLPs (embedding_dim=4, hidden_dim=3).
+    // The weights are non-zero so a silent all-zero regression would
+    // land at sigmoid(bias) rather than sigmoid(0) — makes the range
+    // check catch a silent-zero forward.
+    let make_bc = |name: &str, bias0: f32, bias1: f32| BoundClassifier {
+        name: name.to_owned(),
+        weights: OpenwakewordClassifierWeights {
+            embedding_dim: 4,
+            hidden_dim: 3,
+            linear1_weight: vec![
+                0.1, 0.2, -0.1, 0.05, // row 0
+                -0.05, 0.1, 0.2, -0.1, // row 1
+                0.15, -0.1, 0.1, 0.05, // row 2
+            ],
+            linear1_bias: vec![bias0, -0.02, 0.03],
+            linear2_weight: vec![0.5, -0.3, 0.4],
+            linear2_bias: vec![bias1],
+        },
+    };
+    let classifiers = [
+        make_bc("alexa", 0.1, -0.05),
+        make_bc("hey_jarvis", -0.05, 0.02),
+    ];
+    let embedding = vec![0.3f32, -0.2, 0.5, -0.1];
+    let out = classify_embedding(&classifiers, &embedding).expect("classify");
+    assert_eq!(out.len(), 2, "two wake-words → two output tuples");
+    for (i, (name, prob)) in out.iter().enumerate() {
+        assert_eq!(name, &classifiers[i].name);
+        assert!(
+            (0.0..=1.0).contains(prob) && prob.is_finite(),
+            "wake-word `{name}` prob {prob} must be a sigmoid output in [0,1]"
+        );
+    }
+}
+
+/// FIXTURE-FREE: the loud-partial `EmbeddingExtractor::forward`
+/// contract must surface a `VokraError::UnsupportedOp` naming both the
+/// env-gate and the parity-harness recipe so an owner reading the
+/// error knows exactly where to flip the switch. This pins the
+/// FR-EX-08 honest-pending posture even without a real GGUF fixture.
+#[test]
+fn openwakeword_embedding_extractor_is_loud_partial() {
+    let ext = EmbeddingExtractor {
+        has_real_embedding_weights: false,
+        embedding_dim: 96,
+    };
+    // The melspec window shape doesn't matter — the loud-partial gate
+    // fires before any tensor arithmetic runs.
+    let mel = vec![0.0f32; 76 * 32];
+    let err = ext
+        .forward(&mel)
+        .expect_err("loud-partial extractor must not return Ok");
+    let msg = match err {
+        VokraError::UnsupportedOp(m) => m,
+        other => panic!("expected UnsupportedOp, got {other:?}"),
+    };
+    assert!(
+        msg.contains(GGUF_ENV),
+        "loud-partial message must name the env-gate `{GGUF_ENV}`: {msg}"
+    );
+    assert!(
+        msg.contains("parity_openwakeword"),
+        "loud-partial message must name the parity harness: {msg}"
+    );
+}
 
 /// GATED: opens a real openWakeWord GGUF and verifies the load path is
 /// a genuine bind (real config parse, real per-wake-word classifier
