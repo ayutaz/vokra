@@ -60,8 +60,13 @@ This dumper has two modes:
 * **Real dump** (``--do-dump``): runs the design-doc §7 forward pipeline
   end-to-end (G2P -> ``SbV2TextEncoder`` -> DeBERTa-bridge -> SDP -> flow
   -> HiFi-GAN) and writes 11 ``reference_dump/*.bin`` files + 4 fixture
-  side files (phoneme_ids/tones/word_boundaries/language_id) +
-  a fully-resolved ``reference_dump.manifest.json`` to ``--output-dir``.
+  side files (phoneme_ids/tones/word_boundaries/language_id) + N
+  per-layer acoustic-flow intermediate files
+  (``flow_layer_<i>_output.bin``, Wave 3 / Task 15 — ``N`` is the real
+  checkpoint's acoustic-flow depth discovered at runtime, typically 4;
+  see ``run_flow``'s docstring for the execution-order indexing
+  convention) + a fully-resolved ``reference_dump.manifest.json`` to
+  ``--output-dir``.
   Files are raw little-endian f32, matching every other ``*_dump*.py``
   sibling's ``arr.tobytes()`` convention (*not* ``numpy.save``'s ``.npy``
   format, which ``parity_sbv2_real.rs``'s ``read_f32_bin`` does not
@@ -71,10 +76,16 @@ This dumper has two modes:
   2. ``transformers`` missing -> actionable ``pip install transformers``
      (Apache-2.0 — this project's authorized DeBERTa reference).
   3. Vendor import failure (``from vendor.vits import text_encoder / coupling
-     / flow / decoder``) -> actionable message pointing at
-     ``tools/parity/vendor/vits/README.md`` and its sha256/upstream-URL
-     trail. Task 4 vendored 8 supporting modules — this gate only fires
-     on a corrupted vendor tree.
+     / flow / decoder`` **or** ``from vendor.vits2 import attentions /
+     models``) -> actionable message pointing at
+     ``tools/parity/vendor/vits/README.md`` (Task 4, jaywalnut310/vits)
+     or ``tools/parity/vendor/vits2/README.md`` (Task 1-2,
+     p0p4k/vits2_pytorch, Blocker 2b) respectively, and their
+     sha256/upstream-URL trail. Task 4 vendored 8 supporting modules,
+     Task 1-2 vendored 2 (``attentions.py`` / ``models.py``) — this gate
+     only fires on a corrupted vendor tree. (``vendor.vits2`` is a
+     clean-room cross-reference only — see ``run_flow``'s docstring for
+     why it does not build the real per-checkpoint flow.)
   4. Any missing state_dict tensor (`_load_tensor` FR-EX-08 message
      naming exact candidate keys tried) or unpopulated G2P row
      (`MinimalG2P` NotImplementedError). Nothing is stubbed or
@@ -173,7 +184,22 @@ input the reference forward pass consumes.
         {"name": "phoneme_embed", "path": "reference_dump/phoneme_embed.bin",
          "shape": [T_text, 192], "dtype": "float32"},
         ... (11 total, see table above)
-      ]
+      ],
+      "flow_layers": {                                # Task 15 addition (Wave 3)
+        "flow_layer_0_output": {
+          "path": "reference_dump/flow_layer_0_output.bin",
+          "shape": [T_mel, 192], "dtype": "float32", "atol": 0.01
+        },
+        ... (N total, N = the real checkpoint's acoustic-flow depth,
+             typically 4 — see ``run_flow``'s docstring for the
+             execution-order indexing convention and why the LAST entry
+             is byte-identical to ``z_latent``. ``atol`` here is a
+             human-auditable scaffold value, redundant with — not a
+             substitute for — the authoritative Rust
+             ``sbv2::parity::PER_TENSOR_ATOL`` constant Wave 3 / Task 17
+             calibrates; nothing in the Rust harness parses this JSON
+             field today.)
+      }
     }
 
 ``phonemize_fixture`` (Task 7, extended M6) is the fixture bypass that
@@ -236,6 +262,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import random
 import sys
 from pathlib import Path
 
@@ -378,9 +406,39 @@ PHONEMIZE_FIXTURE_SCHEMA: "list[dict]" = [
     {"name": "language_id", "dtype": "uint8", "count_template": 1},  # M6: static count 1
 ]
 
+# Task 15 (SBV2 v2 Blocker 2b/2c/3 plan, Wave 3) addition: per-layer
+# acoustic-flow intermediates. These sit ALONGSIDE `tensors[]` and
+# `phonemize_fixture` under their own manifest key `flow_layers` (a dict,
+# like `phonemize_fixture` — NOT appended into `tensors[]`, which stays a
+# plain list so the design-doc §10 "11 dumped tensors" contract stays
+# intact, matching the same reasoning `PHONEMIZE_FIXTURE_SCHEMA`'s own
+# comment above gives for its own side-file group).
+#
+# `FLOW_LAYER_COUNT_DEFAULT` is ONLY the schema-preview placeholder count
+# (`run_preview`, no real checkpoint available) — the real dump path
+# (`run_flow`, called from `run_pipeline_body`) always uses the actual
+# count discovered from the loaded checkpoint's `flow.*` state_dict at
+# runtime (`build_flow`'s own `n_flows_seen` walk), never this constant.
+# `4` matches the VITS2 paper's (arXiv:2307.16430) and this project's own
+# `SDP_N_FLOWS` sibling constant's conventional flow depth — a
+# *coincidence* worth naming explicitly: `SDP_N_FLOWS` counts the
+# Stochastic Duration Predictor's own internal flow (a different module),
+# not this acoustic normalizing flow: the two happen to typically share
+# the value 4 in this architecture family, they are not definitionally
+# the same constant.
+FLOW_LAYER_COUNT_DEFAULT = 4
+
+# Task 17 (Wave 3) per-tensor atol calibration scaffold default — mirrors
+# Rust `ATOL_DEFAULT` (`crates/vokra-models/src/sbv2/parity.rs`, `0.01`).
+# See `build_manifest`'s `flow_layers` block below for why this JSON
+# value is a human-auditable record, not itself an enforced bound.
+ATOL_SCAFFOLD_DEFAULT = 0.01
+
 
 def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | None" = None,
-                   phonemize_counts: "dict[str, int] | None" = None) -> dict:
+                   phonemize_counts: "dict[str, int] | None" = None,
+                   flow_layer_count: "int | None" = None,
+                   flow_layer_shape: "list | None" = None) -> dict:
     """Builds the ``reference_dump.manifest.json`` contents.
 
     ``tensor_shapes``, when given, maps a subset of the 11 tensor names to
@@ -397,6 +455,17 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
     the former, always `1` for the latter). When ``None``, each falls back
     to [`PHONEMIZE_FIXTURE_SCHEMA`]'s symbolic ``"T_text"`` (or the
     literal integer `1` for ``language_id``) placeholder.
+
+    ``flow_layer_count`` / ``flow_layer_shape`` (Task 15, Wave 3) describe
+    the per-layer acoustic-flow intermediates ``run_flow`` dumps —
+    ``flow_layer_count`` real tensors, each ``flow_layer_shape``-shaped
+    (always ``[T_mel, D_MODEL]``, an affine-coupling flow is channel- and
+    time-preserving, so every layer's output shares the SAME shape as
+    ``z_latent`` itself). Both fall back to the schema-preview placeholders
+    [`FLOW_LAYER_COUNT_DEFAULT`] / ``["T_mel", D_MODEL]`` when ``None`` —
+    the real dump path passes the checkpoint-derived count/shape
+    ``run_flow`` actually produced (never hard-coded), matching the same
+    real-vs-symbolic pattern the two params above already use.
 
     Everything else in the manifest (``checkpoint.*``, ``request.*``) is
     fully resolvable from ``args`` alone, real forward pass or not.
@@ -424,6 +493,27 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
             "path": f"reference_dump/{name}.bin",
             "count": count,
             "dtype": spec["dtype"],
+        }
+
+    # Task 15 (Wave 3): per-layer acoustic-flow intermediates. Sibling key
+    # to `tensors`/`phonemize_fixture`, NOT appended into `tensors[]` — see
+    # this module's `FLOW_LAYER_COUNT_DEFAULT` comment for why. `atol` is a
+    # human-auditable Task 17 calibration scaffold (see that constant's
+    # own doc comment for why it is not itself Rust's enforced bound).
+    n_flow_layers = (
+        flow_layer_count if flow_layer_count is not None else FLOW_LAYER_COUNT_DEFAULT
+    )
+    resolved_flow_layer_shape = (
+        list(flow_layer_shape) if flow_layer_shape is not None else ["T_mel", D_MODEL]
+    )
+    flow_layers = {}
+    for i in range(n_flow_layers):
+        name = f"flow_layer_{i}_output"
+        flow_layers[name] = {
+            "path": f"reference_dump/{name}.bin",
+            "shape": resolved_flow_layer_shape,
+            "dtype": TENSOR_DTYPE,
+            "atol": ATOL_SCAFFOLD_DEFAULT,
         }
 
     # Match `run_pipeline_body`'s effective_style_dim logic: honor
@@ -459,6 +549,12 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
         # reader for the consuming shape.
         "phonemize_fixture": phonemize_fixture,
         "tensors": tensors,
+        # Task 15 (Wave 3): per-layer acoustic-flow intermediates, dumped
+        # by `run_flow` alongside (not instead of) the aggregate
+        # `z_latent` tensor above. See `FLOW_LAYER_COUNT_DEFAULT`'s and
+        # `run_flow`'s docstrings for the execution-order indexing
+        # convention.
+        "flow_layers": flow_layers,
     }
 
 
@@ -650,11 +746,56 @@ def prepare_torch(args: argparse.Namespace, torch):
     doc §10: `sdp_sample` is compared with an atol that assumes both
     sides used identical seeds, otherwise it degenerates to
     noise-vs-noise) + CPU-only device (a `.bin` dump should not vary by
-    CUDA driver/cuDNN benchmarking heuristic)."""
+    CUDA driver/cuDNN benchmarking heuristic).
+
+    Wave 3 (Task 15, per-tensor atol calibration prep) strengthens this
+    beyond the pre-existing `torch.manual_seed` alone. `sdp_sample` and
+    `run_flow`'s prior-noise draw already re-seed locally right before
+    their own `torch.randn`/`.normal_()` calls (see those call sites'
+    own RNG-parity comments) — this function's job is everything
+    *upstream* of that: `nn.Module.__init__`'s Kaiming inits and any op
+    that could otherwise pick a non-deterministic reduction order on
+    this machine. That matters for Wave 3's "is a stage's drift a real
+    bug or just noise?" triage — a reference dump that is not
+    reproducible against ITSELF makes any atol calibrated against it
+    meaningless. `torch.use_deterministic_algorithms(True, warn_only=False)`
+    is intentionally strict (not `warn_only=True`): a silent fallback to
+    a non-deterministic op would defeat the entire point of a byte-
+    reproducible reference fixture (the same FR-EX-08 / NFR-QL-04
+    "never silently approximate" posture this file's module doc already
+    applies elsewhere), so a genuinely non-deterministic CPU op should
+    surface as a loud `RuntimeError` at the call site that hits it,
+    not as silent divergence discovered only after atol calibration.
+    """
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=False)
+    except AttributeError:
+        # Pre-dates this API (torch < 1.8) — not expected for any torch
+        # version this project targets (see tools/parity/pyproject.toml's
+        # `torch` pin), but kept defensive rather than assuming a floor.
+        # manual_seed below still applies; only the strict-enforcement
+        # half of Wave 3's reproducibility story is unavailable here.
+        print(
+            f"{LOG_PREFIX} torch.use_deterministic_algorithms unavailable "
+            f"on this torch build ({getattr(torch, '__version__', '?')}) "
+            "— continuing with manual_seed-only determinism."
+        )
     torch.manual_seed(args.seed)
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
     torch.set_grad_enabled(False)
+
+    # numpy is a real (non-stdlib) dependency — imported locally here,
+    # matching write_f32_bin/write_u16_bin/write_u8_bin's own established
+    # per-function `import numpy as np` convention rather than a
+    # module-level import (schema-preview / --help must still work with
+    # neither numpy nor torch installed).
+    import numpy as _np
+
+    _np.random.seed(args.seed)
+    random.seed(args.seed)
+
     return torch.device("cpu")
 
 
@@ -1585,9 +1726,11 @@ def build_flow(state_dict: dict, torch):
     return flow
 
 
-def run_flow(flow, mel_hidden, x_mask_mel, g, noise_scale: float, torch, seed: int):
+def run_flow(flow, mel_hidden, x_mask_mel, g, noise_scale: float, torch, seed: int,
+             dump_dir: "Path | None" = None):
     """Step 12b. `mel_hidden`: [T_mel, D_MODEL] (prior mean). Returns
-    `z_latent`: [T_mel, D_MODEL].
+    `(z_latent, n_flow_layers_dumped)` — `z_latent`: [T_mel, D_MODEL],
+    `n_flow_layers_dumped`: the real per-layer count discovered below.
 
     VITS inference: sample `z_p ~ N(mel_hidden, noise_scale * I)`, then
     pass through `flow.reverse` to invert to `z`.
@@ -1600,7 +1743,64 @@ def run_flow(flow, mel_hidden, x_mask_mel, g, noise_scale: float, torch, seed: i
     the non-contig view forces torch's `normal_kernel` off the AVX2 fast path
     onto the scalar `at::normal_distribution<double>` path that Rust's port
     bit-matches.
+
+    Wave 3 (Task 15) per-layer instrumentation: the pre-Task-15 body ended
+    with a single `flow(z_p, x_mask_mel, g=g, reverse=True)` call. Below,
+    that call is replaced by a manual unrolling of
+    `Sbv2TransformerCouplingBlock.forward`'s own `reverse=True` body
+    (`for layer in reversed(self.flows): x = layer(x, x_mask, g=g,
+    reverse=True)`, `tools/parity/vendor/vits/sbv2_flow.py`) — calling
+    each sub-module's `.forward` directly through `nn.Module.__call__` is
+    numerically IDENTICAL to calling the block itself (neither
+    `Sbv2TransformerCouplingLayer` nor `Flip` registers forward/backward
+    hooks, so there is no dispatch difference); this is the same call
+    sequence with a dump inserted after every
+    `Sbv2TransformerCouplingLayer` step, not a reimplementation, so
+    `z_latent` is bit-identical to what the single-shot call used to
+    produce (verified by inspection, not re-run — Task 15 does not
+    execute this script; Task 16 regenerates fixtures against it).
+
+    When `dump_dir` is given, each `Sbv2TransformerCouplingLayer` step's
+    output is written to `<dump_dir>/flow_layer_<i>_output.bin` (raw
+    little-endian f32, same `[T_mel, D_MODEL]` on-disk convention as
+    `z_latent.bin` — `write_f32_bin` applies the identical
+    `.squeeze(0).transpose(0, 1)` reshape). `<i>` counts EXECUTION order
+    during this reverse traversal: `i=0` is the FIRST coupling layer
+    applied (the LAST-*constructed* one, since `reversed(self.flows)`
+    walks construction order backwards), `i=n_flows-1` the last. For this
+    block's even `[layer, Flip] * n_flows` interleaving, the very last op
+    in the whole reverse traversal is always a coupling layer
+    (construction index 0) — never a trailing `Flip` — so
+    `flow_layer_<n_flows-1>_output.bin` ends up BYTE-IDENTICAL to
+    `z_latent.bin`. That is an architectural fact of this interleaving,
+    not a bug: kept as an honest per-layer trace point rather than
+    special-cased away, so a future diff tool doesn't need to know this
+    quirk to be correct — it can just diff every file uniformly.
+    `n_flow_layers_dumped` (this function's 2nd return value) is the real
+    count discovered from `flow.flows` at runtime — never hard-coded —
+    so `run_pipeline_body`'s `build_manifest` call can't silently
+    under/over-count against a checkpoint whose acoustic-flow depth
+    differs from the common `4`.
+
+    `tools/parity/vendor/vits2` (`p0p4k/vits2_pytorch`, Blocker 2b
+    vendoring, Task 1-2) is DELIBERATELY NOT used to build or replay this
+    flow, despite being the plan's namesake vendor tree: its
+    `TransformerCouplingLayer.enc` is `modules.WN` (WaveNet), which does
+    NOT match the real SBV2 v2 base checkpoint's attention-based
+    `flow.flows.<i>.enc.attn_layers.*` tensor names — the same layout
+    mismatch `vendor/vits/sbv2_flow.py`'s own Blocker 8 header already
+    documents for jaywalnut310/vits's `ResidualCouplingBlock` (verified
+    2026-08-06 by safetensors introspection of the real checkpoint, per
+    that file's header). `Sbv2TransformerCouplingLayer` below (whose
+    `enc` sub-tree IS the checkpoint's attention-based encoder) remains
+    the sole real-checkpoint-loading path; `vendor.vits2` stays available
+    as a clean-room cross-reference (imported and sanity-gated in
+    `run_dump`, already read by Task 12's SBV2-SPK-EMB-LINEAR-DECISION
+    ADR investigation) for future numerical comparison work, not a
+    drop-in replacement here.
     """
+    from vendor.vits.sbv2_flow import Sbv2TransformerCouplingLayer
+
     # Rearrange to VITS-convention [B, D, T].
     z_p = mel_hidden.transpose(0, 1).unsqueeze(0)  # [1, D, T_mel]
     if noise_scale != 0.0:
@@ -1616,8 +1816,25 @@ def run_flow(flow, mel_hidden, x_mask_mel, g, noise_scale: float, torch, seed: i
         )
         noise.normal_(0, 1)
         z_p = z_p + noise * noise_scale
-    z = flow(z_p, x_mask_mel, g=g, reverse=True)
-    return z.squeeze(0).transpose(0, 1)  # [T_mel, D_MODEL]
+
+    # Manual unrolling of `Sbv2TransformerCouplingBlock.forward(reverse=True)`
+    # — see docstring above for why this is numerically identical to the
+    # single `flow(z_p, x_mask_mel, g=g, reverse=True)` call it replaces.
+    x = z_p
+    n_flow_layers_dumped = 0
+    for sub_layer in reversed(flow.flows):
+        x = sub_layer(x, x_mask_mel, g=g, reverse=True)
+        if isinstance(sub_layer, Sbv2TransformerCouplingLayer):
+            if dump_dir is not None:
+                write_f32_bin(
+                    dump_dir / f"flow_layer_{n_flow_layers_dumped}_output.bin",
+                    x.squeeze(0).transpose(0, 1),  # [T_mel, D_MODEL]
+                    torch,
+                )
+            n_flow_layers_dumped += 1
+    z = x
+
+    return z.squeeze(0).transpose(0, 1), n_flow_layers_dumped  # [T_mel, D_MODEL], int
 
 
 def build_generator(state_dict: dict, torch):
@@ -1961,10 +2178,23 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     x_mask_mel = torch.ones(1, 1, t_mel)
     print(f"{LOG_PREFIX} mel_hidden {tuple(mel_hidden.shape)} (T_mel={t_mel})")
 
-    # ---- Step 12: flow reverse ----
+    # `dump_dir` is hoisted ahead of Step 12 (was previously first defined
+    # at Step 14) so Step 12's per-layer flow instrumentation (Task 15,
+    # Wave 3) can write `flow_layer_<i>_output.bin` files as the flow
+    # itself runs, not only in a final batch at the end.
+    dump_dir = args.output_dir / "reference_dump"
+    dump_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Step 12: flow reverse (Task 15, Wave 3: per-layer intermediates) ----
     flow = build_flow(state_dict, torch)
-    z_latent = run_flow(flow, mel_hidden, x_mask_mel, g_cond, args.noise_scale, torch, args.seed)
-    print(f"{LOG_PREFIX} z_latent {tuple(z_latent.shape)}")
+    z_latent, n_flow_layers_dumped = run_flow(
+        flow, mel_hidden, x_mask_mel, g_cond, args.noise_scale, torch, args.seed,
+        dump_dir=dump_dir,
+    )
+    print(
+        f"{LOG_PREFIX} z_latent {tuple(z_latent.shape)} "
+        f"({n_flow_layers_dumped} flow_layer_*_output.bin written)"
+    )
 
     # ---- Step 13: HiFi-GAN ----
     gen = build_generator(state_dict, torch)
@@ -1973,8 +2203,7 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     print(f"{LOG_PREFIX} waveform {tuple(waveform.shape)} ({samples} samples @ {SAMPLE_RATE} Hz)")
 
     # ---- Step 14: write all bin files ----
-    dump_dir = args.output_dir / "reference_dump"
-    dump_dir.mkdir(parents=True, exist_ok=True)
+    # (`dump_dir` was hoisted ahead of Step 12 above.)
     write_f32_bin(dump_dir / "phoneme_embed.bin",   phoneme_embed,   torch)
     write_f32_bin(dump_dir / "text_hidden.bin",     text_hidden,     torch)
     write_f32_bin(dump_dir / "bert_hidden_ja.bin",  bert_ja,         torch)
@@ -2021,13 +2250,21 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
             "word_boundaries": t_text,
             "language_id":     1,   # M6 addition: per-utterance u8 scalar
         },
+        # Task 15 (Wave 3): real per-layer flow-intermediate count/shape,
+        # discovered by `run_flow` above — never hard-coded, mirrors how
+        # `tensor_shapes`/`phonemize_counts` above are always real values
+        # here (schema-preview's symbolic fallback only applies in
+        # `run_preview`, which never reaches this real-dump function).
+        flow_layer_count=n_flow_layers_dumped,
+        flow_layer_shape=[t_mel, D_MODEL],
     )
     manifest_path = args.output_dir / "reference_dump.manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=False)
 
     print(
-        f"{LOG_PREFIX} OK: wrote 11 tensor .bin + 4 fixture .bin + manifest "
+        f"{LOG_PREFIX} OK: wrote 11 tensor .bin + 4 fixture .bin + "
+        f"{n_flow_layers_dumped} flow_layer_*_output.bin + manifest "
         f"to {args.output_dir}"
     )
     return 0
@@ -2101,15 +2338,51 @@ def run_dump(args: argparse.Namespace) -> int:
         )
     print(f"{LOG_PREFIX} vendor.vits import OK (Task 4 vendoring at pinned commit).")
 
+    # p0p4k/vits2_pytorch (MIT) — Blocker 2b clean-room vendor (Task 1-2,
+    # tools/parity/vendor/vits2/), a SEPARATE vendor tree from vendor.vits
+    # above (same sys.path insert already covers it — both are direct
+    # children of this script's own directory). NOT used to build the
+    # real per-checkpoint flow: see `run_flow`'s docstring for why (its
+    # `TransformerCouplingLayer.enc` is WN-based, layout-incompatible
+    # with the real SBV2 v2 base checkpoint's attention-based
+    # `flow.flows.<i>.enc.attn_layers.*` tensor names). Imported here —
+    # at the same dependency-gate tier as vendor.vits, tier 3 in this
+    # file's module doc — only so a corrupted/missing vendor/vits2 tree
+    # fails loud (FR-EX-08) up front, rather than as a bare unguarded
+    # import deep inside `run_flow` the first time Task 16 actually
+    # exercises this path.
+    try:
+        from vendor.vits2 import attentions as vits2_attentions
+        from vendor.vits2 import models as vits2_models
+    except ImportError as exc:
+        sys.exit(
+            f"{LOG_PREFIX} p0p4k/vits2_pytorch (MIT) vendor import failed "
+            f"({exc}). Task 1-2 (SBV2 v2 Blocker 2b/2c/3 plan) vendored "
+            "attentions.py + models.py into tools/parity/vendor/vits2/ — "
+            "see that directory's README for the sha256 verification "
+            "recipe and pinned commit. Same failure modes as the "
+            "vendor.vits gate above (torch API drift / missing "
+            "transitive dep / vendored-file corruption)."
+        )
+    if not hasattr(vits2_attentions, "Encoder") or not hasattr(vits2_models, "TransformerCouplingLayer"):
+        sys.exit(
+            f"{LOG_PREFIX} vendor/vits2/{{attentions,models}}.py imported but "
+            "missing an expected class (Encoder / TransformerCouplingLayer) "
+            "— vendor tree looks corrupted. Re-run the sha256 verification "
+            "in tools/parity/vendor/vits2/README.md."
+        )
+    print(f"{LOG_PREFIX} vendor.vits2 import OK (Task 1-2 vendoring, Blocker 2b).")
+
     # ------------------------------------------------------------------
-    # All 4 dependency tiers have passed (torch / transformers /
-    # vendor.vits import / this dumper's own architectural body). Hand
-    # off to the pipeline body, which drives all 15 steps documented in
-    # `run_pipeline_body`'s docstring. On success, writes 11 tensor
-    # .bin + 4 fixture .bin (phoneme_ids/tones/word_boundaries + M6
-    # language_id) + reference_dump.manifest.json to `args.output_dir`.
-    # On failure, raises loudly — NEVER silently returns 0 or writes a
-    # partial fixture (FR-EX-08).
+    # All dependency tiers have passed (torch / transformers /
+    # vendor.vits + vendor.vits2 import / this dumper's own architectural
+    # body). Hand off to the pipeline body, which drives all 15 steps
+    # documented in `run_pipeline_body`'s docstring. On success, writes
+    # 11 tensor .bin + 4 fixture .bin (phoneme_ids/tones/word_boundaries
+    # + M6 language_id) + N flow_layer_<i>_output.bin (Task 15, Wave 3) +
+    # reference_dump.manifest.json to `args.output_dir`. On failure,
+    # raises loudly — NEVER silently returns 0 or writes a partial
+    # fixture (FR-EX-08).
     # ------------------------------------------------------------------
     return run_pipeline_body(args, torch, transformers)
 
