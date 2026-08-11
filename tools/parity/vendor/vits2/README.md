@@ -25,7 +25,7 @@ depend on it (aligned with `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
 
 | Target file    | Contains                                      | Upstream source                                                             | Feeds parity reference for |
 |----------------|-----------------------------------------------|-----------------------------------------------------------------------------|----------------------------|
-| commons.py     | 15 utility functions (subsequent_mask, fused_add_tanh_sigmoid_multiply, convert_pad_shape, etc) | `p0p4k/vits2_pytorch/commons.py` @ 1f4f379 | shared signal processing |
+| commons.py     | utility helpers (subsequent_mask, fused_add_tanh_sigmoid_multiply, convert_pad_shape, etc) | `p0p4k/vits2_pytorch/commons.py` @ 1f4f379 | shared signal processing |
 | modules.py     | LayerNorm, WN (WaveNet encoder), Flip (flow reversal) | `p0p4k/vits2_pytorch/modules.py` @ 1f4f379 (inference subset only) | encoder/flow primitives |
 | attentions.py  | MultiHeadAttention (rel-pos), Encoder, FFN (only these 3)    | `p0p4k/vits2_pytorch/attentions.py` @ 1f4f379 (inference subset)                              | Blocker 2b flow attention  |
 | models.py      | TransformerCouplingLayer, TransformerCouplingBlock (transformer flows only) | `p0p4k/vits2_pytorch/models.py` @ 1f4f379 (inference subset) | Blocker 2b flow coupling   |

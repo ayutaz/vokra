@@ -10,18 +10,6 @@ and `sbv2.flow.layer.<i>.enc.<j>.ffn.*` tensor groups (SBV2 v2
 Blocker 2b).
 """
 
-"""Vendored from p0p4k/vits2_pytorch@1f4f3790568180f8dec4419d5cad5d0877b034bb/attentions.py.
-
-MIT License. See sibling LICENSE.
-
-Contains: MultiHeadAttention (relative-position embedding), Encoder,
-FFN. Extracted verbatim with imports adapted for vendoring context.
-
-Feeds Vokra parity reference for `sbv2.flow.layer.<i>.enc.<j>.attn.*`
-and `sbv2.flow.layer.<i>.enc.<j>.ffn.*` tensor groups (SBV2 v2
-Blocker 2b).
-"""
-
 try:
     from . import commons
     from . import modules
