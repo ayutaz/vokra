@@ -2,6 +2,7 @@
 //! Clean-room impl per Kudo & Richardson 2018.
 
 use vokra_bert::tokenizer::SbertTokenizer;
+use vokra_core::gguf::{value::GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType};
 
 /// A synthetic tiny vocab: ids 0..=6 map to characters,
 /// letting us assert encode is deterministic without needing a real .model file.
@@ -102,4 +103,141 @@ fn sentencepiece_encode_with_special_tokens_wraps_existing_encode() {
     let ids = tok.encode_with_special_tokens("hello world");
     // Existing SentencePiece Viterbi: [4, 5, 6], with CLS/SEP wrap: [2, 4, 5, 6, 3]
     assert_eq!(ids, vec![2, 4, 5, 6, 3]);
+}
+
+// ============================================================================
+// SPM (SentencePiece) scheme verification tests — Task 7 synthetic roundtrip
+// ============================================================================
+
+/// Helper: build a GGUF with SPM-style tokenizer metadata (pieces, scores, control ids).
+/// This mirrors what the deberta-v3 converter writes to GGUF.
+fn build_spm_test_gguf(
+    pieces: &[&str],
+    scores: &[f32],
+    unk_id: u32,
+    bos_id: u32,
+    eos_id: u32,
+) -> GgufFile {
+    let mut builder = GgufBuilder::new();
+
+    // Stamp the scheme as "unigram" (SentencePiece Unigram variant)
+    builder.add_string("vokra.bert.tokenizer.scheme", "unigram");
+
+    // Pieces array
+    builder.add_metadata(
+        "vokra.bert.tokenizer.pieces",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: pieces
+                .iter()
+                .map(|p| GgufMetadataValue::String((*p).to_owned()))
+                .collect(),
+        }),
+    );
+
+    // Scores array
+    builder.add_metadata(
+        "vokra.bert.tokenizer.scores",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::F32,
+            values: scores.iter().map(|s| GgufMetadataValue::F32(*s)).collect(),
+        }),
+    );
+
+    // Control ids
+    builder.add_u32("vokra.bert.tokenizer.unk_id", unk_id);
+    builder.add_u32("vokra.bert.tokenizer.bos_id", bos_id);
+    builder.add_u32("vokra.bert.tokenizer.eos_id", eos_id);
+
+    // Tokenizer kind — stamp it as SentencePiece (not char-split)
+    builder.add_string("vokra.bert.tokenizer.kind", "sentencepiece-unigram");
+
+    let bytes = builder.to_bytes().expect("build GGUF");
+    GgufFile::parse(bytes).expect("parse GGUF")
+}
+
+/// Task 7: Synthetic SPM-scheme GGUF roundtrip verification.
+/// Creates a minimal SentencePiece vocab (5 pieces), writes it to GGUF
+/// with scheme="sentencepiece-unigram", and verifies from_gguf loads it
+/// correctly with the expected control ids and kind dispatch.
+#[test]
+fn spm_scheme_synthetic_vocab_roundtrip_via_gguf() {
+    // Build a tiny vocab: <unk>, <s>, </s>, plus two dummy pieces
+    let pieces = vec!["<unk>", "<s>", "</s>", "▁hello", "▁world"];
+    let scores = vec![0.0_f32, 0.0, 0.0, -1.0, -1.5];
+    let unk_id = 0u32;
+    let bos_id = 1u32;
+    let eos_id = 2u32;
+
+    let gguf = build_spm_test_gguf(&pieces, &scores, unk_id, bos_id, eos_id);
+
+    // Load via from_gguf with the expected metadata prefix
+    let tok = SbertTokenizer::from_gguf(&gguf, "vokra.bert.tokenizer")
+        .expect("from_gguf should load SPM scheme GGUF");
+
+    // Verify control ids
+    assert_eq!(tok.unk_id(), unk_id, "unk_id should match metadata");
+    assert_eq!(tok.bos_id(), bos_id, "bos_id should match metadata");
+    assert_eq!(tok.eos_id(), eos_id, "eos_id should match metadata");
+
+    // Encode a test string to verify the pieces are accessible
+    // "hello world" -> prepend ▁ -> "▁hello world" -> match ▁hello + ▁world (or parts)
+    let ids = tok.encode("hello world");
+    // We expect pieces 3 and 4 (▁hello, ▁world) to be matched.
+    // The viterbi will match ▁hello=3 + ▁world=4 (greedy longest-match)
+    assert_eq!(ids, vec![3, 4], "encode should match expected pieces");
+
+    // Decode back
+    let decoded = tok.decode(&ids);
+    assert_eq!(decoded, "hello world", "decode should round-trip");
+}
+
+/// Verify that missing scheme key defaults to Unigram (backward compat)
+/// but still loads SentencePiece pieces correctly.
+#[test]
+fn spm_scheme_absent_defaults_to_unigram() {
+    let mut builder = GgufBuilder::new();
+
+    let pieces = vec!["<unk>", "<s>", "</s>", "▁hi"];
+    let scores = vec![0.0_f32, 0.0, 0.0, -1.0];
+    let unk_id = 0u32;
+    let bos_id = 1u32;
+    let eos_id = 2u32;
+
+    // Deliberately omit the .scheme key to test backward compatibility
+    // (no `builder.add_string("vokra.bert.tokenizer.scheme", ...)`)
+
+    builder.add_metadata(
+        "vokra.bert.tokenizer.pieces",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: pieces
+                .iter()
+                .map(|p| GgufMetadataValue::String((*p).to_owned()))
+                .collect(),
+        }),
+    );
+
+    builder.add_metadata(
+        "vokra.bert.tokenizer.scores",
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::F32,
+            values: scores.iter().map(|s| GgufMetadataValue::F32(*s)).collect(),
+        }),
+    );
+
+    builder.add_u32("vokra.bert.tokenizer.unk_id", unk_id);
+    builder.add_u32("vokra.bert.tokenizer.bos_id", bos_id);
+    builder.add_u32("vokra.bert.tokenizer.eos_id", eos_id);
+
+    let bytes = builder.to_bytes().expect("build GGUF");
+    let gguf = GgufFile::parse(bytes).expect("parse GGUF");
+
+    let tok = SbertTokenizer::from_gguf(&gguf, "vokra.bert.tokenizer")
+        .expect("from_gguf should load legacy GGUF without .scheme key");
+
+    // Should still work as Unigram (default)
+    let ids = tok.encode("hi");
+    // ▁hi matches piece 3 directly
+    assert_eq!(ids, vec![3]);
 }
