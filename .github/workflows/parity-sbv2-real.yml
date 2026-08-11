@@ -115,6 +115,7 @@ on:
       - 'tools/parity/sbv2_dump_reference.py'
       - 'tools/parity/sbv2_prepare_checkpoint.py'
       - 'tools/parity/vendor/vits/**'
+      - 'tools/parity/vendor/vits2/**'
 
 permissions:
   contents: read
