@@ -14,8 +14,6 @@ try:
 except ImportError:
     import commons
 
-from commons import init_weights, get_padding
-
 import copy
 import math
 import numpy as np

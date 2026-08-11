@@ -25,10 +25,10 @@ depend on it (aligned with `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
 
 | Target file    | Contains                                      | Upstream source                                                             | Feeds parity reference for |
 |----------------|-----------------------------------------------|-----------------------------------------------------------------------------|----------------------------|
-| commons.py     | subsequent_mask, fused_add_tanh_sigmoid_multiply, convert_pad_shape | `p0p4k/vits2_pytorch/commons.py` @ 1f4f379 | audio processing utilities |
-| modules.py     | WN (WaveNet encoder), Flip (coupling reversal) | `p0p4k/vits2_pytorch/modules.py` @ 1f4f379 | inference-only classes |
-| attentions.py  | MultiHeadAttention (rel-pos), Encoder, FFN    | `p0p4k/vits2_pytorch/attentions.py` @ 1f4f379                              | Blocker 2b flow attention  |
-| models.py      | TransformerCouplingLayer, TransformerCouplingBlock | `p0p4k/vits2_pytorch/models.py` @ 1f4f379, classes only (no train utils) | Blocker 2b flow coupling   |
+| commons.py     | 15 utility functions (subsequent_mask, fused_add_tanh_sigmoid_multiply, convert_pad_shape, etc) | `p0p4k/vits2_pytorch/commons.py` @ 1f4f379 | shared signal processing |
+| modules.py     | LayerNorm, WN (WaveNet encoder), Flip (flow reversal) | `p0p4k/vits2_pytorch/modules.py` @ 1f4f379 (inference subset only) | encoder/flow primitives |
+| attentions.py  | MultiHeadAttention (rel-pos), Encoder, FFN (only these 3)    | `p0p4k/vits2_pytorch/attentions.py` @ 1f4f379 (inference subset)                              | Blocker 2b flow attention  |
+| models.py      | TransformerCouplingLayer, TransformerCouplingBlock (transformer flows only) | `p0p4k/vits2_pytorch/models.py` @ 1f4f379 (inference subset) | Blocker 2b flow coupling   |
 
 ## Per-file sha256 (verify with `shasum -a 256 <file>`)
 
@@ -36,8 +36,8 @@ depend on it (aligned with `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
 |---------------|--------------------------------------------------------------------|
 | LICENSE       | 3d8165162cef96f686f02146ac2e4ae80db5797296a99c658befa424ee64727b |
 | commons.py    | 633d0a7e7f721a9c61321fb208d7ee7722fa1de0126a2c44410045e639da97de |
-| modules.py    | 28c7442ad39a91a28f07b388ec05b18b0bfad463ae1e05a6bf1c9569cca57611 |
-| attentions.py | 891973c7bea578e606b6381f7db93821e711d6c11aebfc91ad6627a153eed8a1 |
+| modules.py    | 220ca1025179acdec01487432b46db717d464b838f1472bd4a5480694f9e2027 |
+| attentions.py | 0ad32aefb7416ddb8e2fb42fb2c81739130b340965731780a929bda5af7117e0 |
 | models.py     | b67f5ca0a27b7ebf8b4f7a72f80440d08c77ea60bc116474821368ae311dae56 |
 
 ## Clean-room contract
