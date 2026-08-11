@@ -993,6 +993,7 @@ fn diff_intermediates_against_manifest(
 ///   (see `parity-utmos.yml` for the CI-side conversion recipe, or
 ///   `tests/parity/utmos/README.md` for the local recipe). Required when
 ///   `ENABLE=1`; unset with `ENABLE=1` is a loud panic (broken opt-in).
+///
 /// Environment variable name for opting in to UTMOS quality gate (WP-24).
 pub const ENV_UTMOS_ENABLE: &str = "VOKRA_SBV2_UTMOS_ENABLE";
 
