@@ -467,3 +467,159 @@ fn atol_values_are_pinned_against_baseline_drift() {
         );
     }
 }
+
+/// Wave 3 T17 (2026-08-11) snapshot: pins the current state where the
+/// per-layer acoustic-flow tensors (`flow_layer_0_output` ..
+/// `flow_layer_3_output`) that Task 15's dumper extension writes into
+/// `reference_dump.manifest.json`'s `flow_layers` **sibling** object
+/// (populated for real by Task 16's regeneration) are structurally
+/// present in the committed fixture set but are NOT consumed by any
+/// Rust parity assertion:
+///
+/// - `parity_sbv2_real.rs`'s `diff_intermediates_against_manifest` /
+///   `try_find_tensor` / `find_tensor` all resolve names against the
+///   manifest's `tensors[]` array only — `flow_layers` is a different
+///   top-level key that no reader in that file ever looks up.
+/// - `SbV2Intermediates::to_dumper_map` (`crates/vokra-models/src/sbv2/
+///   mod.rs`) emits exactly the ~10 fields captured by
+///   `SbV2Model::synthesize_with_intermediates`; there is no
+///   `flow_layer_<i>_output` entry for it to emit, because the flow
+///   stage only ever surfaces its OVERALL output (as `z_latent`), not a
+///   per-`TransformerCouplingLayer` snapshot.
+/// - [`atol_calibration_for`] has no match arm for any
+///   `"flow_layer_<i>_output"` name, so it returns `None` — this crate's
+///   "unpinned" sentinel, distinct from
+///   [`AtolCalibration::UnmeasuredDefault`] (which means "tracked, and
+///   deliberately falls through to `ATOL_DEFAULT`"). `None` means "not
+///   part of the tracked contract at all".
+///
+/// # Why T17 pins this instead of wiring it
+///
+/// The Wave 3 plan brief
+/// (`.superpowers/sdd/2026-08-11-sbv2-v2-blockers-2b-2c-3/task-17-brief.md`)
+/// assumed a Wave 0/2 fail trace would drive per-stage atol calibration
+/// (classify each FAIL as architectural-bound / implementation-bug /
+/// reference-bug, per its Step 1). By the time T17 ran, both the T6
+/// baseline and T16's dumper-extended regeneration measured **12/12
+/// `parity_sbv2_real` stages PASS** at the existing `PER_TENSOR_ATOL`
+/// overrides (all inherited unchanged from `main`, calibrated in an
+/// earlier PR) — there was no failing stage left to classify or
+/// recalibrate. `docs/adr/sbv2-spk-emb-linear-decision.md` §6 anticipated
+/// exactly this outcome ("Wave 3 T17: `parity_sbv2_real` should continue
+/// passing 12/12 stages with the ADR in place (no atol changes
+/// required)").
+///
+/// Wiring `flow_layer_<i>_output` into the assertion set is real
+/// production work, not atol calibration: it needs (a) a new
+/// `SbV2Intermediates` field (or a parallel per-layer buffer) capturing
+/// each `TransformerCouplingLayer`'s output inside `SbV2Flow::inverse`'s
+/// loop, (b) a `to_dumper_map` extension to expose it, and (c) a
+/// `parity_sbv2_real.rs` reader for the `flow_layers` sibling object —
+/// none of which fits T17's "for each FAILING stage, calibrate/fix"
+/// scope, and the owner ruling that landed T7-T11 as verification-only
+/// tests applies here too: this is a Wave-4 follow-up, not a T17
+/// deliverable. Blocker 2b (the reason Task 15 taught the dumper to emit
+/// these tensors at all) is about the VITS2 per-layer flow reference
+/// **existing** for a future diagnostic, not about today's harness
+/// asserting on it.
+///
+/// If a future change wires `flow_layer_<i>_output` into
+/// `SbV2Intermediates` + `diff_intermediates_against_manifest`, this
+/// test's premise breaks by construction (assertion 2 or 3 below will
+/// fail) — the wiring PR should update or remove this test to reflect
+/// the newly-covered state, not treat the break as a regression to
+/// silence.
+#[test]
+fn flow_layers_are_structurally_ready_but_functionally_inert() {
+    let manifest_path = fixtures_dir().join("reference_dump.manifest.json");
+    let bytes = std::fs::read(&manifest_path).unwrap_or_else(|e| {
+        panic!(
+            "{}: cannot read committed manifest schema anchor: {e}",
+            manifest_path.display()
+        )
+    });
+    let manifest = json::parse(&bytes)
+        .unwrap_or_else(|e| panic!("{}: JSON parse error: {e}", manifest_path.display()));
+
+    // 1. `flow_layers` is a manifest key SIBLING to `tensors` (Task
+    //    15/16) — present with exactly 4 entries (one per
+    //    `TransformerCouplingLayer`, `n_flow_layers` in the base SBV2 v2
+    //    checkpoint).
+    let flow_layers = manifest
+        .get("flow_layers")
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: `flow_layers` key missing — regenerate via \
+                 `tools/parity/sbv2_dump_reference.py` (Task 15/16). This test pins the \
+                 dumper's per-layer flow output as present-but-unread; the key must exist \
+                 for the \"unread\" half of that claim to mean anything.",
+                manifest_path.display()
+            )
+        })
+        .as_object()
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: `flow_layers` is not a JSON object",
+                manifest_path.display()
+            )
+        });
+    assert_eq!(
+        flow_layers.len(),
+        4,
+        "expected exactly 4 `flow_layers` entries, found {} — if `n_flow_layers` changed \
+         for the fixture checkpoint, update this pin's expected count",
+        flow_layers.len()
+    );
+    for i in 0..4 {
+        let key = format!("flow_layer_{i}_output");
+        assert!(
+            flow_layers.iter().any(|(k, _)| k == &key),
+            "manifest `flow_layers` is missing entry `{key}`"
+        );
+    }
+
+    // 2. The manifest's `tensors[]` array — the ONLY collection
+    //    `find_tensor` / `try_find_tensor` in `parity_sbv2_real.rs` ever
+    //    resolve a name against — excludes all 4 flow-layer names. This
+    //    proves the harness cannot accidentally pick them up through the
+    //    normal per-tensor lookup path.
+    let tensors = manifest
+        .get("tensors")
+        .and_then(JsonValue::as_array)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: `tensors` key missing or not an array",
+                manifest_path.display()
+            )
+        });
+    for i in 0..4 {
+        let key = format!("flow_layer_{i}_output");
+        let present_in_tensors = tensors
+            .iter()
+            .any(|t| t.get("name").and_then(JsonValue::as_str) == Some(key.as_str()));
+        assert!(
+            !present_in_tensors,
+            "`{key}` unexpectedly appeared in manifest `tensors[]` — if a wiring change \
+             moved it there intentionally, this test's \"functionally inert\" premise is \
+             now stale and the test should be updated or removed, not left red"
+        );
+    }
+
+    // 3. `atol_calibration_for` has no match arm for any flow-layer
+    //    name — the Rust-side half of "functionally inert": no code
+    //    path currently treats these names as part of the calibrated
+    //    contract at all (contrast with `AtolCalibration::UnmeasuredDefault`,
+    //    which every REAL manifest `tensors[]` entry without an
+    //    override carries).
+    for i in 0..4 {
+        let name = format!("flow_layer_{i}_output");
+        let cal = atol_calibration_for(&name);
+        assert!(
+            cal.is_none(),
+            "atol_calibration_for(\"{name}\") = {cal:?}, expected None (unwired) — a wiring \
+             change added a match arm for this name, so `flow_layer_<i>_output` is no \
+             longer \"functionally inert\"; update this test's premise (and its doc), don't \
+             just patch the assertion"
+        );
+    }
+}
