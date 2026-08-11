@@ -32,9 +32,9 @@ depend on it (aligned with `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
 
 | file          | sha256                                                             |
 |---------------|--------------------------------------------------------------------|
-| LICENSE       | <fill after Task 2>                                                |
-| attentions.py | <fill after Task 2>                                                |
-| models.py     | <fill after Task 2>                                                |
+| LICENSE       | 3d8165162cef96f686f02146ac2e4ae80db5797296a99c658befa424ee64727b |
+| attentions.py | 3197fb36ef9b6b551f24f5fd6ca069b9121fa2f4a5ff08eb0c953ab1b43ec446 |
+| models.py     | c0abb71b812ce639cfbd7192ba0ad16e419b3d1b85728098aeb3bd0a50665b09 |
 
 ## Clean-room contract
 
