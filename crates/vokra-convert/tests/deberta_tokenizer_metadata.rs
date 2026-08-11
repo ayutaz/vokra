@@ -342,8 +342,13 @@ fn deberta_v3_missing_spm_model_leaves_metadata_unwritten() {
     convert_deberta_v3_file(&input, &output, None, None).expect("convert without tokenizer");
     let g = GgufFile::parse(std::fs::read(&output).unwrap()).expect("parse");
 
+    // Metadata group must not be stamped (backward compat with pre-
+    // Blocker-5 GGUFs — the runtime SbertTokenizer::from_gguf then
+    // loud-errors on the missing `.pieces` key, which is the correct
+    // outcome per FR-EX-08).
     assert!(g.get("vokra.bert.tokenizer.scheme").is_none());
     assert!(g.get("vokra.bert.tokenizer.pieces").is_none());
+    assert!(g.get("vokra.bert.tokenizer.scores").is_none());
 }
 
 #[test]
