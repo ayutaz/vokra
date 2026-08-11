@@ -266,5 +266,43 @@
       ],
       "dtype": "float32"
     }
-  ]
+  ],
+  "flow_layers": {
+    "flow_layer_0_output": {
+      "path": "reference_dump/flow_layer_0_output.bin",
+      "shape": [
+        53,
+        192
+      ],
+      "dtype": "float32",
+      "atol": 0.01
+    },
+    "flow_layer_1_output": {
+      "path": "reference_dump/flow_layer_1_output.bin",
+      "shape": [
+        53,
+        192
+      ],
+      "dtype": "float32",
+      "atol": 0.01
+    },
+    "flow_layer_2_output": {
+      "path": "reference_dump/flow_layer_2_output.bin",
+      "shape": [
+        53,
+        192
+      ],
+      "dtype": "float32",
+      "atol": 0.01
+    },
+    "flow_layer_3_output": {
+      "path": "reference_dump/flow_layer_3_output.bin",
+      "shape": [
+        53,
+        192
+      ],
+      "dtype": "float32",
+      "atol": 0.01
+    }
+  }
 }
