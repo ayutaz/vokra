@@ -37,8 +37,25 @@ depend on it (aligned with `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
 | LICENSE       | 3d8165162cef96f686f02146ac2e4ae80db5797296a99c658befa424ee64727b |
 | commons.py    | 633d0a7e7f721a9c61321fb208d7ee7722fa1de0126a2c44410045e639da97de |
 | modules.py    | 220ca1025179acdec01487432b46db717d464b838f1472bd4a5480694f9e2027 |
-| attentions.py | 0ad32aefb7416ddb8e2fb42fb2c81739130b340965731780a929bda5af7117e0 |
+| attentions.py | f57e452fef656b5e5bfd608ba9970a0cc6e6fc509aacb4eda21d5b8b18f1a2a6 |
 | models.py     | b67f5ca0a27b7ebf8b4f7a72f80440d08c77ea60bc116474821368ae311dae56 |
+
+## Verify integrity
+
+Run from repo root:
+
+```bash
+cd tools/parity/vendor/vits2 && shasum -a 256 -c <(cat <<'EOF'
+3d8165162cef96f686f02146ac2e4ae80db5797296a99c658befa424ee64727b  LICENSE
+633d0a7e7f721a9c61321fb208d7ee7722fa1de0126a2c44410045e639da97de  commons.py
+220ca1025179acdec01487432b46db717d464b838f1472bd4a5480694f9e2027  modules.py
+f57e452fef656b5e5bfd608ba9970a0cc6e6fc509aacb4eda21d5b8b18f1a2a6  attentions.py
+b67f5ca0a27b7ebf8b4f7a72f80440d08c77ea60bc116474821368ae311dae56  models.py
+EOF
+)
+```
+
+Expected: `LICENSE: OK / commons.py: OK / modules.py: OK / attentions.py: OK / models.py: OK`. Any mismatch means the vendored file has drifted from its pinned upstream — investigate before proceeding.
 
 ## Clean-room contract
 
