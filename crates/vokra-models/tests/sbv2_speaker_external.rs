@@ -314,3 +314,59 @@ fn tts_engine_synthesize_still_rejects_prosody_features() {
         Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
     }
 }
+
+/// ADR regression test for sbv2-spk-emb-linear-decision decision (c):
+/// "inference no-op" — The projected output of `ExternalSpeakerProjection`
+/// must be discarded at synthesize step 5. This test verifies the ADR by
+/// comparing intermediates for two different external embeddings:
+/// `text_hidden` and `bert_bridge_out` must be IDENTICAL across both,
+/// proving the projection output is truly not used in their computation.
+///
+/// If this test fails, either:
+/// 1. The code has drifted from ADR (c) inference no-op; or
+/// 2. The ADR needs revision (in which case update this test + ADR doc).
+///
+/// This regression test MUST NOT be relaxed without a corresponding ADR
+/// update documenting why the inference behavior changed.
+#[test]
+fn projection_output_is_discarded_per_adr_c() {
+    const D_SPEAKER: usize = 6;
+    const D_MODEL: usize = 8;
+    let proj = synthetic_external_projection(D_SPEAKER, D_MODEL);
+    let model = SbV2Model::synthetic_for_test().with_external_speaker_projection(proj);
+
+    // Request A: embedding vector [1.0, 1.0, ..., 1.0]
+    let mut req_a = base_request("あいう", Language::JA);
+    req_a.speaker_embedding = Some(vec![1.0_f32; D_SPEAKER]);
+
+    // Request B: embedding vector [0.5, 0.5, ..., 0.5]
+    // (Different from A to ensure the projection would produce different output
+    // if it were actually used)
+    let mut req_b = base_request("あいう", Language::JA);
+    req_b.speaker_embedding = Some(vec![0.5_f32; D_SPEAKER]);
+
+    // Synthesize both and extract intermediates.
+    let (_pcm_a, inter_a) = model
+        .synthesize_with_intermediates(&req_a)
+        .expect("synthesize_with_intermediates A must succeed");
+    let (_pcm_b, inter_b) = model
+        .synthesize_with_intermediates(&req_b)
+        .expect("synthesize_with_intermediates B must succeed");
+
+    // text_hidden is computed in synthesize step 3 (text encoder), which is
+    // upstream of the external speaker projection (step 4).
+    // Per ADR (c), the projection output is discarded, so different external
+    // embeddings must NOT affect text_hidden.
+    assert_eq!(
+        inter_a.text_hidden, inter_b.text_hidden,
+        "text_hidden must be identical for different external embeddings per ADR (c) inference no-op"
+    );
+
+    // bert_bridge_out is computed from text_hidden and bert_hidden (step 5),
+    // before the speaker contribution. The projection is discarded, so this
+    // must also be identical.
+    assert_eq!(
+        inter_a.bert_bridge_out, inter_b.bert_bridge_out,
+        "bert_bridge_out must be identical for different external embeddings per ADR (c) inference no-op"
+    );
+}
