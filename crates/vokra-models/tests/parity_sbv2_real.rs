@@ -26,6 +26,22 @@
 //! only "not run" gate, matching the sibling `sbv2_gguf_loader.rs`'s
 //! `from_gguf_loads_real_sbv2_weights` real-fixture test's own convention).
 //!
+//! **WP-06 update (Wave 0 Task 6, 2026-08-11)**: the fixtures named above
+//! have since landed for real (`tests/fixtures/sbv2/*.gguf` +
+//! `reference_dump.manifest.json` + `reference_dump/*.bin`, all committed),
+//! so the `#[ignore]` attribute this section describes has been REMOVED —
+//! the test now runs by default under plain `cargo test`, same as any
+//! other test in this file. The historical "gated behind --ignored" text
+//! above is preserved (append-never-delete, Kokoro `PROSODY_F0_ATOL`
+//! precedent) since it documents why the test was originally written
+//! ignored; it no longer describes the current state.
+//! `require_fixture`'s loud-panic behavior on a genuinely missing fixture
+//! is unchanged — see [`StageResult`] below for how a NUMERIC parity miss
+//! (fixture present, diff exceeds atol) is now reported instead: every
+//! stage's outcome is collected into ONE aggregated report and asserted
+//! once at the end of the test, rather than each stage panicking the
+//! whole run on the first miss.
+//!
 //! # The manifest contract (this file's schema — Task 34 must match)
 //!
 //! `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §10 specifies that
@@ -622,153 +638,349 @@ fn calibration_marker(name: &str) -> &'static str {
     }
 }
 
-/// WP-01 (2026-08-09): iterates every intermediate tensor from
-/// [`SbV2Intermediates::to_dumper_map`] and diffs it against the
-/// corresponding `reference_dump/<name>.bin` fixture named in the
-/// manifest.
+/// WP-06 (Wave 0 Task 6, 2026-08-11): one row of the all-stage aggregated
+/// parity report this test builds. Every named parity gate — the ~10
+/// [`SbV2Intermediates::to_dumper_map`] tensors (via
+/// [`diff_intermediates_against_manifest`]), and the waveform length-band,
+/// max|Δ|/RMS checks, and mel-loss aggregator (all three in the caller,
+/// [`parity_sbv2_real_waveform_matches_reference_dump`]) — becomes exactly
+/// one `StageResult`, collected into a single `Vec` and asserted ONCE at
+/// the very end of the test instead of via N separate early-exit
+/// `assert!`s.
 ///
-/// Contract:
-/// - Every dumper-map entry MUST have a matching manifest `tensors[]`
-///   entry (finding it goes through [`find_tensor`], which panics
-///   loudly on a miss — the harness expects the two to stay in sync,
-///   drift is a real fixture bug, not a soft-skip).
-/// - Every fixture's `.bin` byte length MUST match the manifest's
-///   declared shape product AND the intermediate's own element count.
-///   Both mismatches panic loudly.
-/// - The per-element `max_abs_diff` MUST be `<= tolerance_for(name)`.
-///   Emits `[parity_sbv2_real] <name>: max |Δ| = ... <= atol ... <status>`
-///   to stderr for each tensor, so a CI viewer sees the full 11-row
-///   report even when every row passes (mirrors the Kokoro parity CI's
-///   per-tensor summary format).
+/// This matters because a real-fixture run's first purpose is
+/// *diagnostic*: which of the ~13 pipeline stages diverge, and by how
+/// much? A test that panics on stage 3 of 13 hides stages 4-13 from the
+/// very same run that could have reported them, forcing an
+/// iterate-fix-rerun cycle to discover each subsequent failure one at a
+/// time. See `docs/handoff/sbv2-parity-baseline-2026-08-11.md` for the
+/// first real trace this produced.
+///
+/// A `StageResult` is always constructed — never a panic path — even a
+/// "structural" failure (missing fixture file, shape mismatch, non-f32-
+/// aligned payload) becomes a `FAIL` row with `max_abs_diff` / `rms_diff`
+/// = `NaN` and [`Self::note`] set, explaining why no numeric diff was
+/// possible, rather than aborting the whole harness before later stages
+/// run. `NaN` is a deliberate sentinel: `NaN <= atol` is always `false`
+/// (IEEE 754), so `passed` is correctly `false` without a special case,
+/// and the downstream `tools/parity/sbv2_atol_summary_from_log.py` parser
+/// gracefully warns-and-skips a `max_diff` it cannot parse as a float
+/// rather than mis-recording a fabricated number `sbv2_atol_updater.py`
+/// might otherwise propose as a real bound.
+struct StageResult {
+    stage: &'static str,
+    atol_expected: f32,
+    max_abs_diff: f32,
+    rms_diff: f32,
+    passed: bool,
+    /// Calibration marker (`[Measured]` / `[EstimatedPreFixture]` / ...)
+    /// from [`calibration_marker`], or `"[N/A]"` for a pseudo-stage that
+    /// has no manifest tensor of its own (currently only
+    /// `waveform_length_band`).
+    marker: &'static str,
+    /// `Some(reason)` only for a structural failure (see the type doc) —
+    /// `None` means the stage got as far as computing a real numeric
+    /// diff, whether or not it passed its atol.
+    note: Option<String>,
+}
+
+impl StageResult {
+    /// Gates only on `max_abs_diff <= atol_expected` — the convention
+    /// every intermediate tensor, the waveform length-band check, and
+    /// mel_loss use (module doc: "Intermediate tensors use a simpler
+    /// per-tensor `max_abs_diff` gate"). `rms_diff` is still recorded for
+    /// the summary line but does not affect `passed`.
+    fn numeric(
+        stage: &'static str,
+        max_abs_diff: f32,
+        rms_diff: f32,
+        atol_expected: f32,
+        marker: &'static str,
+    ) -> Self {
+        Self {
+            stage,
+            atol_expected,
+            max_abs_diff,
+            rms_diff,
+            passed: max_abs_diff <= atol_expected,
+            marker,
+            note: None,
+        }
+    }
+
+    /// Gates on BOTH `max_abs_diff <= atol_expected` AND `rms_diff <=
+    /// atol_expected` — the convention the pre-WP-06 waveform block used
+    /// (two separate `assert!`s against the same `tolerance_for("waveform")`
+    /// ceiling). Only the `"waveform"` stage uses this constructor.
+    fn numeric_dual_gate(
+        stage: &'static str,
+        max_abs_diff: f32,
+        rms_diff: f32,
+        atol_expected: f32,
+        marker: &'static str,
+    ) -> Self {
+        Self {
+            stage,
+            atol_expected,
+            max_abs_diff,
+            rms_diff,
+            passed: max_abs_diff <= atol_expected && rms_diff <= atol_expected,
+            marker,
+            note: None,
+        }
+    }
+
+    /// A stage that could not even be diffed — see the type doc's `NaN`
+    /// sentinel rationale. Always `passed == false`.
+    fn structural_failure(
+        stage: &'static str,
+        atol_expected: f32,
+        marker: &'static str,
+        reason: String,
+    ) -> Self {
+        Self {
+            stage,
+            atol_expected,
+            max_abs_diff: f32::NAN,
+            rms_diff: f32::NAN,
+            passed: false,
+            marker,
+            note: Some(reason),
+        }
+    }
+
+    /// Emits both the CI-parser-stable `[parity_sbv2_real] <name>: ...`
+    /// row (format UNCHANGED from the pre-WP-06 shape — see
+    /// `tools/parity/sbv2_atol_summary_from_log.py`'s `ROW_RE`, which
+    /// `sbv2_atol_updater.py` consumes downstream) and a second,
+    /// human-readable `[PASS/FAIL] stage — ...` summary line carrying the
+    /// `rms_diff` the machine-parseable row does not.
+    fn emit(&self) {
+        let verdict = if self.passed { "PASS" } else { "FAIL" };
+        let note_suffix = self
+            .note
+            .as_ref()
+            .map(|n| format!(" NOTE: {n}"))
+            .unwrap_or_default();
+        eprintln!(
+            "[parity_sbv2_real] {}: max |Δ| = {:.6e} atol {} verdict {verdict} {}{note_suffix}",
+            self.stage, self.max_abs_diff, self.atol_expected, self.marker,
+        );
+        eprintln!(
+            "  [{verdict}] {} — max_abs={:.6e} atol={:.6e} rms={:.6e}",
+            self.stage, self.max_abs_diff, self.atol_expected, self.rms_diff,
+        );
+    }
+}
+
+/// Non-panicking twin of [`find_tensor`] for
+/// [`diff_intermediates_against_manifest`]'s aggregated loop: `Ok` mirrors
+/// `find_tensor`'s return exactly; `Err(reason)` describes what went
+/// wrong so the caller can record a [`StageResult::structural_failure`]
+/// and move on to the NEXT stage instead of aborting the whole harness.
+/// The harness-wide preconditions (manifest itself missing, checkpoint
+/// GGUFs missing) stay on [`find_tensor`] / [`require_fixture`]'s
+/// hard-panic path — only the PER-TENSOR lookups inside the aggregated
+/// loop below need a fallible variant, so one drifted manifest entry
+/// doesn't hide the other ~9 tensors' results.
+fn try_find_tensor<'v>(manifest: &'v JsonValue, name: &str) -> Result<(&'v str, Vec<u64>), String> {
+    let tensors = manifest
+        .get("tensors")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "manifest `tensors` is missing or not a JSON array".to_string())?;
+    let entry = tensors
+        .iter()
+        .find(|t| t.get("name").and_then(JsonValue::as_str) == Some(name))
+        .ok_or_else(|| format!("no `tensors[]` entry named `{name}` in the manifest"))?;
+    let path = entry
+        .get("path")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| format!("tensors[name={name}] has no string `path`"))?;
+    let shape_arr = entry
+        .get("shape")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| format!("tensors[name={name}].shape is not a JSON array"))?;
+    let mut shape = Vec::with_capacity(shape_arr.len());
+    for elem in shape_arr {
+        let v = elem.as_u64().ok_or_else(|| {
+            format!("tensors[name={name}].shape element is not a non-negative integer")
+        })?;
+        shape.push(v);
+    }
+    Ok((path, shape))
+}
+
+/// WP-01 (2026-08-09) / WP-06 (2026-08-11, all-stage aggregation): iterates
+/// every intermediate tensor from [`SbV2Intermediates::to_dumper_map`] and
+/// diffs it against the corresponding `reference_dump/<name>.bin` fixture
+/// named in the manifest, returning ONE [`StageResult`] per tensor rather
+/// than panicking.
+///
+/// Contract (unchanged from WP-01 — only the control flow changed, per
+/// [`StageResult`]'s doc):
+/// - Every dumper-map entry SHOULD have a matching manifest `tensors[]`
+///   entry; a miss is now recorded as a [`StageResult::structural_failure`]
+///   row rather than a panic, so the OTHER tensors still get diffed in
+///   the same run (the harness expects the two to stay in sync — drift
+///   is a real fixture bug, not a soft-skip; it is simply no longer a
+///   whole-run-aborting one).
+/// - Every fixture's `.bin` byte length SHOULD match the manifest's
+///   declared shape product AND the intermediate's own element count. A
+///   mismatch is likewise a structural-failure row, not a panic.
+/// - The per-element `max_abs_diff` MUST be `<= tolerance_for(name)` for
+///   `passed` to be `true` — this numeric verdict is unchanged from
+///   WP-01; only WHEN the caller learns about a `false` verdict changed
+///   (deferred to the caller's single end-of-run assert instead of an
+///   in-function panic).
+///
+/// Emits `[parity_sbv2_real] <name>: max |Δ| = ... atol ... verdict ...`
+/// to stderr for each tensor (format UNCHANGED — CI-parser-stable), PLUS
+/// a second `[PASS/FAIL] <name> — max_abs=... atol=... rms=...` line per
+/// [`StageResult::emit`].
 ///
 /// The `waveform` diff stays outside this loop — its length is
 /// discretely dependent on SDP durations and needs the tolerance-based
-/// length-band + max-diff + RMS-on-overlap gate (see the caller).
-/// Every OTHER manifest tensor's shape is pinned exactly by the
-/// manifest schema.
+/// length-band + max-diff + RMS-on-overlap gate (see the caller, which
+/// appends its own [`StageResult`]s to this function's return value).
+/// Every OTHER manifest tensor's shape is pinned exactly by the manifest
+/// schema.
 fn diff_intermediates_against_manifest(
     manifest: &JsonValue,
     intermediates: &SbV2Intermediates,
     dir: &Path,
-    ctx: &str,
-) {
-    // WP-02 (2026-08-09): collect every tensor's max|Δ| BEFORE asserting.
-    // The pre-WP-02 shape (assert! in-loop, eprintln! post-assert) meant a
-    // failing tensor never emitted its diagnostic line, so
-    // `.github/workflows/parity-sbv2-real.yml`'s downstream atol-summary
-    // step could only see PASSING tensor rows — an owner reviewing the
-    // artifact would have to guess whether "no line for bert_hidden_ja"
-    // meant "not run" or "failed silently". The two-phase shape here
-    // emits ALL 10 rows first (mirroring the Kokoro parity CI's per-tensor
-    // summary), then asserts once at the end so a failing tensor is loud
-    // AND still leaves the workflow parser a full row set to feed into
-    // `tools/parity/sbv2_atol_updater.py`.
-    struct Row {
-        name: &'static str,
-        max_diff: f32,
-        atol: f32,
-        marker: &'static str,
-        verdict: &'static str,
-    }
-    let mut rows: Vec<Row> = Vec::new();
+) -> Vec<StageResult> {
+    let mut results: Vec<StageResult> = Vec::new();
     for (name, rust_bytes) in intermediates.to_dumper_map() {
-        let (rel, shape) = find_tensor(manifest, name, ctx);
+        let marker = calibration_marker(name);
+        let atol = tolerance_for(name);
+
+        let (rel, shape) = match try_find_tensor(manifest, name) {
+            Ok(v) => v,
+            Err(reason) => {
+                let row = StageResult::structural_failure(name, atol, marker, reason);
+                row.emit();
+                results.push(row);
+                continue;
+            }
+        };
         let ref_path = dir.join(rel);
-        require_fixture(
-            &ref_path,
-            &format!("tensors[name={name}].path (Task 30 dump)"),
-        );
-        let reference = read_f32_bin(&ref_path);
+        if !ref_path.exists() {
+            let row = StageResult::structural_failure(
+                name,
+                atol,
+                marker,
+                format!(
+                    "missing fixture: {} (tensors[name={name}].path, Task 30 dump)",
+                    ref_path.display()
+                ),
+            );
+            row.emit();
+            results.push(row);
+            continue;
+        }
+        let bytes = match std::fs::read(&ref_path) {
+            Ok(b) => b,
+            Err(e) => {
+                let row = StageResult::structural_failure(
+                    name,
+                    atol,
+                    marker,
+                    format!("{}: {e}", ref_path.display()),
+                );
+                row.emit();
+                results.push(row);
+                continue;
+            }
+        };
+        if bytes.len() % 4 != 0 {
+            let row = StageResult::structural_failure(
+                name,
+                atol,
+                marker,
+                format!(
+                    "{}: byte length {} is not a multiple of 4 (not f32-aligned)",
+                    ref_path.display(),
+                    bytes.len()
+                ),
+            );
+            row.emit();
+            results.push(row);
+            continue;
+        }
+        let reference: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+
         let declared_len: u64 = shape.iter().product();
-        assert_eq!(
-            reference.len() as u64,
-            declared_len,
-            "{}: byte length ({} f32 elements) disagrees with the manifest's declared \
-             `shape` {shape:?} — Task 34/30's dumper produced an inconsistent fixture",
-            ref_path.display(),
-            reference.len(),
-        );
+        if reference.len() as u64 != declared_len {
+            let row = StageResult::structural_failure(
+                name,
+                atol,
+                marker,
+                format!(
+                    "{}: byte length ({} f32 elements) disagrees with the manifest's \
+                     declared `shape` {shape:?} — Task 34/30's dumper produced an \
+                     inconsistent fixture",
+                    ref_path.display(),
+                    reference.len()
+                ),
+            );
+            row.emit();
+            results.push(row);
+            continue;
+        }
 
         // `to_dumper_map`'s `Vec<u8>` payload is little-endian f32 (its
-        // `f32_bytes` helper). Rebuild the f32 slice here to diff against
-        // the reference. A length mismatch is a real bug — the Rust
-        // pipeline emitted a different tensor shape than the Python
-        // dumper — so panic loudly, not soft-skip (FR-EX-08). This kind
-        // of failure is a fixture / pipeline inconsistency that cannot
-        // be papered over by a bigger atol, so it stays in-loop as a
-        // hard early exit (unlike the numeric max|Δ| gate below, which
-        // the two-phase pattern defers to the end).
-        assert_eq!(
-            rust_bytes.len() % 4,
-            0,
-            "SbV2Intermediates::to_dumper_map(`{name}`) payload {} bytes is not \
-             f32-aligned — Wave-4 INTERMEDIATE-ACCESSORS contract violation",
-            rust_bytes.len(),
-        );
+        // `f32_bytes` helper). A misalignment here is an internal
+        // Wave-4 INTERMEDIATE-ACCESSORS contract violation, not a
+        // fixture problem — still recorded as a structural failure
+        // rather than a panic so sibling tensors keep getting checked.
+        if rust_bytes.len() % 4 != 0 {
+            let row = StageResult::structural_failure(
+                name,
+                atol,
+                marker,
+                format!(
+                    "SbV2Intermediates::to_dumper_map(`{name}`) payload {} bytes is not \
+                     f32-aligned — Wave-4 INTERMEDIATE-ACCESSORS contract violation",
+                    rust_bytes.len()
+                ),
+            );
+            row.emit();
+            results.push(row);
+            continue;
+        }
         let rust: Vec<f32> = rust_bytes
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        assert_eq!(
-            rust.len(),
-            reference.len(),
-            "{}: Rust `{name}` len {} != reference len {} — shape mismatch is a real \
-             pipeline bug, not a numeric drift (the manifest fixes each intermediate's \
-             shape exactly; unlike waveform, no discrete-step ±1 flip applies)",
-            ref_path.display(),
-            rust.len(),
-            reference.len(),
-        );
-
-        let atol = tolerance_for(name);
-        let diff = max_abs_diff(&rust, &reference);
-        let marker = calibration_marker(name);
-        let verdict = if diff <= atol { "PASS" } else { "FAIL" };
-        // Emit the diagnostic line BEFORE deferring the assertion so the
-        // workflow's downstream atol-summary parser (regex against
-        // `[parity_sbv2_real] ...`) sees a row for every tensor even
-        // when one fails. Format is stable: workflow parser depends on
-        // this exact prefix.
-        eprintln!(
-            "[parity_sbv2_real] {name}: max |Δ| = {diff:.6e} atol {atol} verdict {verdict} \
-             {marker}"
-        );
-        rows.push(Row {
-            name,
-            max_diff: diff,
-            atol,
-            marker,
-            verdict,
-        });
-    }
-
-    // Two-phase gate: fail LOUDLY once at the end, naming EVERY failing
-    // tensor at once. Under the pre-WP-02 in-loop assert, an owner
-    // reviewing a red CI run saw one failure and had to iterate. Now the
-    // first CI cycle produces the complete "here are all 3 tensors that
-    // exceeded their atol" list, so the empirical-measurement cycle can
-    // batch-propose in one pass.
-    let failures: Vec<&Row> = rows.iter().filter(|r| r.verdict == "FAIL").collect();
-    if !failures.is_empty() {
-        let names: Vec<String> = failures
-            .iter()
-            .map(|r| {
+        if rust.len() != reference.len() {
+            let row = StageResult::structural_failure(
+                name,
+                atol,
+                marker,
                 format!(
-                    "{} (max |Δ| = {:.3e} > atol {} {})",
-                    r.name, r.max_diff, r.atol, r.marker
-                )
-            })
-            .collect();
-        panic!(
-            "[parity_sbv2_real] {} of {} intermediate tensors exceeded their atol: {}. \
-             See `docs/adr/sbv2-parity-atol.md` §5 for the empirical-measurement cycle \
-             and `tools/parity/sbv2_atol_updater.py` (WP-02, 2026-08-09) for the atol \
-             proposal from the workflow's atol-summary artifact.",
-            failures.len(),
-            rows.len(),
-            names.join(", "),
-        );
+                    "Rust `{name}` len {} != reference len {} — shape mismatch is a real \
+                     pipeline bug, not a numeric drift (the manifest fixes each \
+                     intermediate's shape exactly; unlike waveform, no discrete-step ±1 \
+                     flip applies)",
+                    rust.len(),
+                    reference.len()
+                ),
+            );
+            row.emit();
+            results.push(row);
+            continue;
+        }
+
+        let diff = max_abs_diff(&rust, &reference);
+        let rms = rms_diff_over_prefix(&rust, &reference);
+        let row = StageResult::numeric(name, diff, rms, atol, marker);
+        row.emit();
+        results.push(row);
     }
+    results
 }
 
 /// WP-24 UTMOS opt-in env vars, parsed once via [`UtmosGateSettings::resolve`]
@@ -955,8 +1167,14 @@ fn utmos_gate(rust_wave: &[f32], reference_wave: &[f32], sbv2_sample_rate: u32) 
 /// `SbV2Intermediates::to_dumper_map`, and how the G2P bypass wires
 /// `SbV2Model::from_gguf_with_phonemizer` +
 /// `SbV2Phonemizer::from_fixture` together.
+///
+/// WP-06 (Wave 0 Task 6, 2026-08-11): no longer `#[ignore]`d — the
+/// `tests/fixtures/sbv2/` fixture set landed for real, so this test now
+/// runs under plain `cargo test` like any other. Every parity stage
+/// (intermediates + waveform + mel_loss) is collected into one
+/// `Vec<StageResult>` and asserted ONCE at the end, so a single run
+/// reports every stage's PASS/FAIL — see [`StageResult`]'s doc.
 #[test]
-#[ignore = "Task 34 real fixture: tests/fixtures/sbv2/{reference_dump.manifest.json,*.gguf,reference_dump/*.bin}"]
 fn parity_sbv2_real_waveform_matches_reference_dump() {
     let dir = fixtures_dir();
 
@@ -1057,12 +1275,15 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
         .synthesize_with_intermediates(&req)
         .unwrap_or_else(|e| panic!("SbV2Model::synthesize_with_intermediates: {e}"));
 
-    // Diff every intermediate tensor against its manifest fixture.
-    // The waveform assertion below stays separate — its length is
-    // discretely dependent on SDP durations and needs the
-    // tolerance-based length-band + RMS-on-overlap gate (see the
-    // PR27-WAVEFORM-TOLERANCE block).
-    diff_intermediates_against_manifest(&manifest, &intermediates, &dir, &ctx);
+    // WP-06 (Wave 0 Task 6, 2026-08-11): every stage from here on is
+    // collected into ONE `Vec<StageResult>` and asserted ONCE at the very
+    // end of this test, instead of via N separate early-exit `assert!`s —
+    // see `StageResult`'s doc for why. `results` starts with the ~10
+    // intermediate-tensor rows; the waveform + mel_loss checks below
+    // append their own rows to the SAME vec before the single final
+    // assert further down.
+    let mut results: Vec<StageResult> =
+        diff_intermediates_against_manifest(&manifest, &intermediates, &dir);
 
     let (waveform_rel, waveform_shape) = find_tensor(&manifest, "waveform", &ctx);
     let waveform_path = dir.join(waveform_rel);
@@ -1097,25 +1318,38 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     // amplification catalog (CEIL infinite, RQS sqrt unbounded, coupling
     // exp exponential, Box-Muller ~1 ULP per pair) and §4.4 for the
     // "MUST be tolerance-based" ruling this test implements.
+    //
+    // WP-06: this used to be a standalone `assert!` (early-exit on a
+    // length-band miss, before max_abs_diff/RMS/mel_loss even ran). It is
+    // now a `StageResult` like every other stage — `(len_ratio - 1.0).abs()
+    // <= LENGTH_BAND_FRACTION` is the exact same boundary as the old
+    // `(1.0-frac..=1.0+frac).contains(&len_ratio)` range check, just
+    // expressed as a distance-from-1.0 so it fits the `max_abs_diff <=
+    // atol_expected` shape every other row uses.
     const LENGTH_BAND_FRACTION: f32 = 0.10; // ±10% ≈ ±1 CEIL flip / phoneme worst-case
     let rust_len = audio.samples.len() as f32;
     let ref_len = reference.len() as f32;
     let len_ratio = rust_len / ref_len;
-    assert!(
-        (1.0 - LENGTH_BAND_FRACTION..=1.0 + LENGTH_BAND_FRACTION).contains(&len_ratio),
-        "waveform length outside the ±{}% band: Rust `synthesize` produced {} \
-         samples, the reference dump has {} (ratio = {:.4}). SbV2SDP's terminal \
-         `ceil()` accepts ±1 CEIL flip per phoneme as an architectural bound \
-         (see docs/adr/sbv2-libm-strategy.md §2.2), but a delta of this size \
-         indicates either duration-computation drift, wrong `hop_length`, or \
-         wrong `manifest.request` reproduction. If SBV2-BUG4 (text_encoder \
-         emits hidden ~35× too large) is still un-landed, expect large-value \
-         durations to make this fire — that is the intended loud-failure.",
-        LENGTH_BAND_FRACTION * 100.0,
+    let length_band_row = StageResult::numeric(
+        "waveform_length_band",
+        (len_ratio - 1.0).abs(),
+        0.0, // no separate RMS concept for a length-ratio check
+        LENGTH_BAND_FRACTION,
+        "[N/A]",
+    );
+    length_band_row.emit();
+    eprintln!(
+        "[parity_sbv2_real] waveform_length_band detail: rust={} samples ref={} samples \
+         (ratio {len_ratio:.4}). SbV2SDP's terminal `ceil()` accepts ±1 CEIL flip per \
+         phoneme as an architectural bound (see docs/adr/sbv2-libm-strategy.md §2.2); a \
+         miss this large usually means duration-computation drift, wrong `hop_length`, \
+         or wrong `manifest.request` reproduction. If SBV2-BUG4 (text_encoder emits \
+         hidden ~35× too large) is still un-landed, expect large-value durations to \
+         make this fire.",
         audio.samples.len(),
         reference.len(),
-        len_ratio,
     );
+    results.push(length_band_row);
 
     // Signal comparison: max |Δ| on the overlapping prefix. Truncating to
     // `min(rust.len, ref.len)` is honest because up to `hop_length` trailing
@@ -1123,19 +1357,17 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     // (the CEIL step producing 1 extra frame of a zero-input decoder
     // pushes on ~hop_length samples of near-silence), not audible signal
     // delta that a per-sample comparison would meaningfully measure.
+    //
+    // WP-06: max_abs_diff AND RMS-on-overlap (below) used to be two
+    // separate early-exit `assert!`s against the same
+    // `tolerance_for("waveform")` ceiling. They are now ONE
+    // `StageResult::numeric_dual_gate` row — `passed` requires BOTH
+    // `<= atol`, exactly like the two assertions it replaces.
     let overlap_len = audio.samples.len().min(reference.len());
     let rust_prefix = &audio.samples[..overlap_len];
     let ref_prefix = &reference[..overlap_len];
     let atol = tolerance_for("waveform");
     let diff = max_abs_diff(rust_prefix, ref_prefix);
-    assert!(
-        diff <= atol,
-        "waveform max |Δ| = {diff} exceeds atol {atol} (sbv2::parity::tolerance_for(\"waveform\")) \
-         over the overlapping prefix [0..{}] samples (rust={} ref={})",
-        overlap_len,
-        audio.samples.len(),
-        reference.len(),
-    );
 
     // RMS-on-overlap as a second signal-quality gate. Same tolerance
     // ceiling (Kokoro-precedent 6.84e-3 × 1.5 ≈ 0.01 default), but RMS
@@ -1145,64 +1377,114 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     // divergence, and RMS catches high-fraction low-magnitude drift that
     // max_abs_diff would miss).
     let rms = rms_diff_over_prefix(rust_prefix, ref_prefix);
-    assert!(
-        rms <= atol,
-        "waveform RMS |Δ| = {rms} exceeds atol {atol} on overlapping prefix \
-         [0..{}] samples — max_abs_diff was {:.3e} which passed, but RMS \
-         indicates sustained low-level divergence across the whole prefix. \
-         See docs/adr/sbv2-libm-strategy.md §2 for the residual model.",
-        overlap_len,
-        diff,
-    );
-
-    eprintln!(
-        "[parity_sbv2_real] waveform parity OK: rust={} samples ref={} samples \
-         (ratio {:.4}, band ±{}%), overlap {} samples: max |Δ| = {diff:.3e}, \
-         RMS |Δ| = {rms:.3e} <= atol {atol}",
-        audio.samples.len(),
-        reference.len(),
-        len_ratio,
-        LENGTH_BAND_FRACTION * 100.0,
-        overlap_len,
-    );
+    let waveform_row =
+        StageResult::numeric_dual_gate("waveform", diff, rms, atol, calibration_marker("waveform"));
+    waveform_row.emit();
+    if waveform_row.passed {
+        eprintln!(
+            "[parity_sbv2_real] waveform parity OK: rust={} samples ref={} samples \
+             (ratio {:.4}, band ±{}%), overlap {} samples: max |Δ| = {diff:.3e}, \
+             RMS |Δ| = {rms:.3e} <= atol {atol}",
+            audio.samples.len(),
+            reference.len(),
+            len_ratio,
+            LENGTH_BAND_FRACTION * 100.0,
+            overlap_len,
+        );
+    }
+    results.push(waveform_row);
 
     // WP-04: mel_loss aggregator — a tighter architectural bound than raw
     // waveform atol. `log(|X|^2 · mel_fb)` compresses the same
     // ~130M-transcendental cross-platform delta by two-three orders of
     // magnitude (ADR `docs/adr/sbv2-libm-strategy.md` §2.2), so a real
     // parity regression that stays under the (loose) waveform floor still
-    // shows up here. Run AFTER the waveform check so both sides get to
-    // emit their per-metric diagnostic on a partial pass.
-    let mel_loss = mel_loss_rms(
+    // shows up here.
+    //
+    // WP-06: an error from `mel_loss_rms` itself (e.g. a degenerate
+    // waveform too short for one STFT frame) is now a structural-failure
+    // row rather than an immediate panic, so it does not hide whatever
+    // the intermediate-tensor and waveform rows above already reported.
+    let mel_loss_row = match mel_loss_rms(
         &audio.samples,
         &reference,
         SBV2_MEL_SR,
         SBV2_MEL_N_FFT,
         SBV2_MEL_HOP,
         SBV2_MEL_N_MELS,
-    )
-    .unwrap_or_else(|e| panic!("mel_loss_rms(rust, reference): {e}"));
+    ) {
+        Ok(mel_loss) => {
+            let row = StageResult::numeric(
+                "mel_loss",
+                mel_loss as f32,
+                0.0, // mel_loss is itself an RMS aggregate; no secondary metric
+                MEL_LOSS_ATOL,
+                calibration_marker("mel_loss"),
+            );
+            row.emit();
+            if row.passed {
+                eprintln!(
+                    "[parity_sbv2_real] mel_loss parity OK: rms = {mel_loss:.3e} <= \
+                     atol {MEL_LOSS_ATOL} (n_fft={SBV2_MEL_N_FFT}, hop={SBV2_MEL_HOP}, \
+                     n_mels={SBV2_MEL_N_MELS}, sr={SBV2_MEL_SR})"
+                );
+            }
+            row
+        }
+        Err(e) => {
+            let row = StageResult::structural_failure(
+                "mel_loss",
+                MEL_LOSS_ATOL,
+                calibration_marker("mel_loss"),
+                format!("mel_loss_rms(rust, reference): {e}"),
+            );
+            row.emit();
+            row
+        }
+    };
+    results.push(mel_loss_row);
+
+    // WP-06: the ONE end-of-run assertion every stage above feeds. Lists
+    // every failing stage at once (numeric misses AND structural
+    // failures), mirroring `diff_intermediates_against_manifest`'s
+    // pre-WP-06 per-function panic message but now spanning the WHOLE
+    // pipeline (intermediates + waveform + mel_loss) instead of just the
+    // ~10 intermediate tensors.
+    let failed: Vec<&StageResult> = results.iter().filter(|r| !r.passed).collect();
     assert!(
-        mel_loss <= MEL_LOSS_ATOL as f64,
-        "mel_loss RMS = {mel_loss} exceeds MEL_LOSS_ATOL {} \
-         (sbv2::parity::MEL_LOSS_ATOL, WP-04 EstimatedPreFixture — see docstring \
-         for derivation; a genuine regression means widening this needs an ADR + \
-         updated derivation, not silent loosening)",
-        MEL_LOSS_ATOL
-    );
-    eprintln!(
-        "[parity_sbv2_real] mel_loss parity OK: rms = {mel_loss:.3e} <= \
-         atol {} (n_fft={SBV2_MEL_N_FFT}, hop={SBV2_MEL_HOP}, n_mels={SBV2_MEL_N_MELS}, \
-         sr={SBV2_MEL_SR})",
-        MEL_LOSS_ATOL,
+        failed.is_empty(),
+        "{} of {} stages exceeded per-tensor atol (or failed structurally) — see the \
+         per-stage [parity_sbv2_real] / [PASS/FAIL] lines above for the full report. \
+         Failing stages: {}. See `docs/adr/sbv2-parity-atol.md` §5 for the \
+         empirical-measurement cycle and `tools/parity/sbv2_atol_updater.py` (WP-02, \
+         2026-08-09) for the atol proposal from the workflow's atol-summary artifact.",
+        failed.len(),
+        results.len(),
+        failed
+            .iter()
+            .map(|r| {
+                let extra = r
+                    .note
+                    .as_deref()
+                    .map(|n| format!(" [{n}]"))
+                    .unwrap_or_default();
+                format!(
+                    "{} (max |Δ| = {:.3e} > atol {}{extra})",
+                    r.stage, r.max_abs_diff, r.atol_expected
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
     );
 
     // WP-24: tail-position UTMOS quality gate. Fail-closed opt-in — see
     // the module doc's "WP-24: UTMOS quality gate" section for the
     // fixture recipe and CI wiring, and `utmos_gate` for the panic /
-    // skip semantics. Runs AFTER the raw-waveform assertion above so a
-    // failing UTMOS score always points at a real perceptual regression
-    // rather than an incidental sample-level noise floor drift.
+    // skip semantics. Runs AFTER every aggregated stage above has
+    // passed (the final `assert!` above returns normally only when
+    // `failed` is empty) so a failing UTMOS score always points at a
+    // real perceptual regression rather than an incidental sample-level
+    // noise floor drift.
     utmos_gate(&audio.samples, &reference, audio.sample_rate);
 }
 
