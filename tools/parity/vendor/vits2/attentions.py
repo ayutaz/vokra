@@ -3,13 +3,21 @@
 MIT License. See sibling LICENSE.
 
 Contains: MultiHeadAttention (relative-position embedding), Encoder,
-FFN. Extracted with inline copies of required helpers from commons.py
-and modules.py (LayerNorm).
+FFN. Extracted verbatim with imports adapted for vendoring context.
 
 Feeds Vokra parity reference for `sbv2.flow.layer.<i>.enc.<j>.attn.*`
 and `sbv2.flow.layer.<i>.enc.<j>.ffn.*` tensor groups (SBV2 v2
 Blocker 2b).
 """
+
+try:
+    from . import commons
+    from . import modules
+    from .modules import LayerNorm
+except ImportError:
+    import commons
+    import modules
+    from modules import LayerNorm
 
 import copy
 import math
@@ -19,43 +27,6 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm, weight_norm
 
-
-# Vendored from commons.py (helper functions)
-def subsequent_mask(length):
-    mask = torch.tril(torch.ones(length, length)).unsqueeze(0).unsqueeze(0)
-    return mask
-
-
-@torch.jit.script
-def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
-    n_channels_int = n_channels[0]
-    in_act = input_a + input_b
-    t_act = torch.tanh(in_act[:, :n_channels_int, :])
-    s_act = torch.sigmoid(in_act[:, n_channels_int:, :])
-    acts = t_act * s_act
-    return acts
-
-
-def convert_pad_shape(pad_shape):
-    l = pad_shape[::-1]
-    pad_shape = [item for sublist in l for item in sublist]
-    return pad_shape
-
-
-# Vendored from modules.py (LayerNorm class)
-class LayerNorm(nn.Module):
-    def __init__(self, channels, eps=1e-5):
-        super().__init__()
-        self.channels = channels
-        self.eps = eps
-
-        self.gamma = nn.Parameter(torch.ones(channels))
-        self.beta = nn.Parameter(torch.zeros(channels))
-
-    def forward(self, x):
-        x = x.transpose(1, -1)
-        x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
-        return x.transpose(1, -1)
 
 
 class Encoder(nn.Module):  # backward compatible vits2 encoder
@@ -691,4 +662,3 @@ class FFT(nn.Module):
             x = self.norm_layers_1[i](x + y)
         x = x * x_mask
         return x
-
