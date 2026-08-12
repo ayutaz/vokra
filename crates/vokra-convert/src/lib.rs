@@ -2970,6 +2970,26 @@ pub enum ModelKind {
     /// `tensorflow/models`), so default SPDX = `apache-2.0`. Convert
     /// with `convert_yamnet_file`.
     Yamnet,
+    /// **MERT-v1-330M** (`m-a-p/MERT-v1-330M`, cc-by-nc-4.0 default,
+    /// music-understanding wave 2026-08-13) — Music undERstanding
+    /// model with large-scale self-supervised Training
+    /// (HuBERT-derived Conv1D + 24-layer Transformer, ~330M params,
+    /// 24 kHz mono waveform in, RVQ-VAE reconstruction target + CQT
+    /// teacher). Li et al. 2023 arXiv:2306.00107 = MIREX-benchmark
+    /// SoTA for music tagging / similarity / cover-song ID.
+    /// Category = `music-embedding` (sibling of `muq` / `dasheng`).
+    /// Distinct arch tag `mert` because the HuBERT-derived encoder +
+    /// music-specific reconstruction heads differ from Dasheng
+    /// (MAE ConvNeXt/ViT) and MuQ (Mel-RVQ + BEATs teacher) —
+    /// silently sharing an arch tag would misroute the runtime
+    /// dispatch and try to bind an MPM decoder over a MAE checkpoint
+    /// (FR-EX-08). Scale = **local safe** (~0.3 GB, well below
+    /// vast.ai threshold). License default = `cc-by-nc-4.0` = **T4
+    /// tier (NonCommercial)** per X-Codec 2 (2026-07-28) / MusicGen
+    /// family (2026-08-01) precedent — publish requires
+    /// `publish-one.sh --allow-noncommercial`. Convert with
+    /// `convert_mert_file`.
+    Mert,
 }
 
 impl ModelKind {
@@ -3512,6 +3532,15 @@ impl ModelKind {
             | "google-yamnet"
             | "google/yamnet"
             | "thelou1s/yamnet" => Some(Self::Yamnet),
+            // Music-understanding wave (2026-08-13). MERT-v1-330M — Music
+            // undERstanding model, HuBERT-derived Conv1D + 24-layer
+            // Transformer, ~330M params. cc-by-nc-4.0 default (NonCommercial).
+            "mert"
+            | "mert-v1-330m"
+            | "mert-v1"
+            | "mert-330m"
+            | "m-a-p/mert-v1-330m"
+            | "m-a-p/MERT-v1-330M" => Some(Self::Mert),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4624,6 +4653,9 @@ impl ModelKind {
             // Music-understanding wave (2026-08-13). YAMNet canonical CLI slug
             // matches the shared arch tag stamped in `vokra.model.arch`.
             Self::Yamnet => "yamnet",
+            // Music-understanding wave (2026-08-13). MERT canonical CLI slug
+            // matches the shared arch tag stamped in `vokra.model.arch`.
+            Self::Mert => "mert",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -6839,6 +6871,29 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Yamnet,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // MERT-v1-330M — Music undERstanding self-supervised encoder.
+        // HuBERT-derived Conv1D + 24-layer Transformer, ~330M params.
+        // cc-by-nc-4.0 default (NonCommercial, T4 tier — publish requires
+        // `--allow-noncommercial`). Sibling of `muq` / `dasheng` under
+        // `music-embedding` category with a distinct arch tag so silent
+        // runtime dispatch cannot misroute an MPM checkpoint through a
+        // MAE loader (FR-EX-08).
+        ModelKind::Mert => {
+            let report = models::mert::convert_mert_file(input, output, license)?;
+            let notes = vec![format!(
+                "mert: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — publish requires \
+                 `publish-one.sh --allow-noncommercial` per X-Codec 2 T4 precedent)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Mert,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10174,6 +10229,11 @@ pub use models::utmosv2::{Utmosv2Report, convert_utmosv2_file};
 // direct callers who prefer `convert_yamnet_file` over the
 // `ModelKind::Yamnet` slug dispatch.
 pub use models::yamnet::{YamnetReport, convert_yamnet_file};
+// Music-understanding wave (2026-08-13): MERT — Music undERstanding
+// self-supervised encoder (HuBERT-derived Conv1D + 24-layer Transformer,
+// ~330M params, cc-by-nc-4.0 default). Standalone file-based entry
+// point mirrors the yamnet / musicgen_medium re-export pattern.
+pub use models::mert::{MertReport, convert_mert_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -11791,6 +11851,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model yamnet` must round-trip through as_arg → from_arg
             // so a dropped alias fails loudly here.
             Yamnet,
+            // Music-understanding wave (2026-08-13): MERT — canonical
+            // `--model mert` must round-trip through as_arg → from_arg
+            // so a dropped alias fails loudly here.
+            Mert,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12440,6 +12504,18 @@ mod modelkind_alias_and_roundtrip_tests {
                     "google-yamnet",
                     "google/yamnet",
                     "thelou1s/yamnet",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): MERT.
+            (
+                ModelKind::Mert,
+                &[
+                    "mert",
+                    "mert-v1-330m",
+                    "mert-v1",
+                    "mert-330m",
+                    "m-a-p/mert-v1-330m",
+                    "m-a-p/MERT-v1-330M",
                 ],
             ),
         ];

@@ -2605,6 +2605,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // here since the verify surface is a uniform arch/name/category/
         // upstream/license triple readback.
         | ModelKind::Yamnet
+        // Music-understanding wave (2026-08-13): MERT — Music undERstanding
+        // self-supervised encoder (HuBERT-derived Conv1D + 24-layer
+        // Transformer, ~330M params, cc-by-nc-4.0 default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = m-a-p/MERT-v1-330M`.
+        | ModelKind::Mert
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

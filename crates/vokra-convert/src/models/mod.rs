@@ -950,5 +950,6 @@ pub mod utmosv2;
 // parity + runtime binder deferred to owner sign-off (`docs/license-audit.md`
 // §3.1). §3.1 sign-off blank fail-closed at land time (no CC pre-fill per
 // memory [[feedback-license-signoff-primary-source]]).
+pub mod mert;
 pub mod yamnet;
 // ---------------------------------------------------------------------------
