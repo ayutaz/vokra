@@ -1720,12 +1720,24 @@ SBV2 v2 functionality was landed in earlier branches.
   not regress after the speaker-projection no-op inference consolidation
   (SBV2-SPK-EMB-LINEAR-DECISION ADR resolution, T13 comment-only update).
 - **Flow-layer readiness verification** (T17, `crates/vokra-models/tests/sbv2_parity_atol_calibration.rs`):
-  `flow_layers_are_structurally_ready_but_functionally_inert` scaffold gate
-  that halts if the SDP flow body tries to forward during a WIP state (FR-EX-08 — no silent failures).
+  `flow_layers_are_structurally_ready_but_functionally_inert` pins three
+  structural properties of the dumper's per-layer flow output: the
+  manifest's `flow_layers` sibling key is present with exactly 4 entries
+  (one per `TransformerCouplingLayer`), those 4 entry names are absent
+  from the manifest's `tensors[]` array (the only collection the harness's
+  per-tensor lookup ever resolves against), and `atol_calibration_for` has
+  no match arm for any of them (still unwired). This is a "present but
+  unread" pin, not a gate on the SDP flow body's forward pass.
 - **UTMOS gate environment resolution** (T19, `crates/vokra-models/tests/parity_sbv2_real.rs`):
-  new `utmos_gate_opt_in_env_resolution` test confirming that the env-based
-  opt-in gate (`VOKRA_UTMOS_ENABLE=1`) correctly toggles the snapshot fixture
-  gate behavior.
+  new `utmos_gate_settings` module containing one sequential test,
+  `utmos_gate_settings_env_resolution_matrix`, pinning all three
+  `UtmosGateSettings::resolve()` outcomes: `VOKRA_SBV2_UTMOS_ENABLE` unset
+  → `Disabled` (silent skip); `VOKRA_SBV2_UTMOS_ENABLE=1` with
+  `VOKRA_SBV2_UTMOS_GGUF` unset → loud panic (FR-EX-08); both set →
+  `Enabled` with the exact `VOKRA_SBV2_UTMOS_GGUF` path. The three
+  scenarios run inline in one test body (rather than as three separate
+  `#[test]` fns) so the shared env-var mutations can't race under
+  parallel test execution.
 
 **Code edits** (comment/test-refactor only):
 
@@ -1751,7 +1763,7 @@ SBV2 v2 functionality was landed in earlier branches.
 - `.github/workflows/parity-sbv2-real.yml` (T20) — advisory workflow wiring
   the end-to-end SBV2 v2 parity CI; not required, weekly + manual dispatch.
 - Manifest.json refreshed with `flow_layers` sibling key (T16).
-- `tools/parity/sbv2_v2_bundle_prepare_checkpoint.py` (T4) — offlinne converter
+- `tools/parity/sbv2_v2_bundle_prepare_checkpoint.py` (T4) — offline converter
   helper; not reflected in C or Rust public API.
 - `tools/parity/sbv2_dump_reference.py` extended for per-layer flow (T15).
 
