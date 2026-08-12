@@ -3143,6 +3143,35 @@ pub enum ModelKind {
     /// The code SPDX would be `mit` but is not what a weight-provenance
     /// stamp records. Convert with `convert_atst_file`.
     Atst,
+    /// **MAEST** (`mtg-upf/discogs-maest-30s-pw-129e`, **cc-by-nc-sa-
+    /// 4.0**, SSL audio-encoder wave 2026-08-13) — "Music
+    /// **A**udio **E**fficient **S**pectrogram **T**ransformer"
+    /// (Alonso-Jiménez et al. 2023, arXiv:2309.16418). Discogs-
+    /// pretrained self-supervised music-tagger built on **Audio
+    /// Spectrogram Transformer** (AST) backbone (HF `config`:
+    /// `model_type: audio-spectrogram-transformer`, `architectures:
+    /// ["ASTForAudioClassification"]`); ~87M F32 parameters
+    /// (safetensors 86,858,128 params per HF API 2026-08-13).
+    /// The 30s-pw-129e variant is 30-second patch-wise pretrained
+    /// for 129 epochs on the MTG Discogs4All music-tagger dataset.
+    /// Category = `music-embedding` (sibling of `mert` / `muq`;
+    /// downstream music-tagging heads consume the encoder's
+    /// hidden states). Distinct arch tag `maest` from every sibling
+    /// music-embedding model — MAEST is AST-backbone (patch-wise
+    /// Transformer over log-mel) with a Discogs-tagger SSL
+    /// pretraining objective, distinct from MERT (HuBERT-derived
+    /// MPM) and MuQ (Mel-RVQ + BEATs teacher) — silently sharing an
+    /// arch tag would misroute the runtime dispatch (FR-EX-08).
+    /// Scale = **local safe** (~0.15 GB). License default =
+    /// `cc-by-nc-sa-4.0` = **T4 tier NonCommercialShareAlike**
+    /// (HF cardData primary source `license: cc-by-nc-sa-4.0` per
+    /// task input 2026-08-13 + HF tag `license:cc-by-nc-sa-4.0`).
+    /// **Publish path**: T4 + SA cascade — `publish-one.sh
+    /// --allow-noncommercial` gate + share-alike obligation on any
+    /// downstream distribution (`fetch_license.sh --spdx
+    /// cc-by-nc-sa-4.0` canonical LICENSE 実文書同梱).
+    /// Convert with `convert_maest_file`.
+    Maest,
 }
 
 impl ModelKind {
@@ -3755,6 +3784,16 @@ impl ModelKind {
             | "audio-westlakeu/audiossl-atst"
             | "audiossl-atst"
             | "audiossl/atst" => Some(Self::Atst),
+            // SSL audio-encoder wave (2026-08-13). MAEST — Music AEST
+            // (Discogs-pretrained AST self-supervised music-tagger),
+            // ~87M F32 params 30s-pw-129e. cc-by-nc-sa-4.0 default
+            // (T4 tier NonCommercialShareAlike; T4 + SA cascade).
+            "maest"
+            | "maest-30s"
+            | "maest-30s-pw-129e"
+            | "discogs-maest"
+            | "discogs-maest-30s-pw-129e"
+            | "mtg-upf/discogs-maest-30s-pw-129e" => Some(Self::Maest),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4891,6 +4930,11 @@ impl ModelKind {
             // SSL audio-encoder wave (2026-08-13). ATST canonical CLI slug
             // matches the publish repo tail token and shared arch tag.
             Self::Atst => "atst-base",
+            // SSL audio-encoder wave (2026-08-13). MAEST canonical CLI slug
+            // = variant-prefixed short name (`maest-30s-pw-129e` mirrors
+            // the upstream HF release slug for the 30s / patch-wise / 129
+            // epochs pretraining point).
+            Self::Maest => "maest-30s-pw-129e",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -7282,6 +7326,28 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Atst,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // MAEST — Music AEST (Discogs-pretrained AST SSL music-tagger,
+        // ~87M F32 params 30s-pw-129e). cc-by-nc-sa-4.0 default (T4 tier
+        // NonCommercialShareAlike; T4 + SA cascade — publish-one.sh
+        // --allow-noncommercial required + share-alike obligation).
+        ModelKind::Maest => {
+            let report = models::maest::convert_maest_file(input, output, license)?;
+            let notes = vec![format!(
+                "maest: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (cc-by-nc-sa-4.0 default, NonCommercialShareAlike; T4 tier + SA cascade \
+                 = publish-one.sh --allow-noncommercial required + share-alike obligation; \
+                 Discogs-pretrained AST SSL music-tagger, ~87M F32 params 30s-pw-129e, upstream \
+                 mtg-upf/discogs-maest-30s-pw-129e HF cardData primary source)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Maest,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10662,6 +10728,13 @@ pub use models::eat::{EatReport, convert_eat_file};
 // AttributionRequired). Standalone file-based entry point mirrors
 // the eat / beats re-export pattern.
 pub use models::atst::{AtstReport, convert_atst_file};
+// SSL audio-encoder wave (2026-08-13): MAEST — Music AEST
+// (Discogs-pretrained AST self-supervised music-tagger, ~87M F32
+// params 30s-pw-129e, cc-by-nc-sa-4.0 default = T4 tier
+// NonCommercialShareAlike). Standalone file-based entry point
+// mirrors the mert / muq re-export pattern (HF-hosted music-
+// embedding sibling posture).
+pub use models::maest::{MaestReport, convert_maest_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -12311,6 +12384,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model atst-base` must round-trip through as_arg →
             // from_arg so a dropped alias fails loudly here.
             Atst,
+            // SSL audio-encoder wave (2026-08-13): MAEST — canonical
+            // `--model maest-30s-pw-129e` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            Maest,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -13046,6 +13123,18 @@ mod modelkind_alias_and_roundtrip_tests {
                     "audio-westlakeu/audiossl-atst",
                     "audiossl-atst",
                     "audiossl/atst",
+                ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): MAEST.
+            (
+                ModelKind::Maest,
+                &[
+                    "maest",
+                    "maest-30s",
+                    "maest-30s-pw-129e",
+                    "discogs-maest",
+                    "discogs-maest-30s-pw-129e",
+                    "mtg-upf/discogs-maest-30s-pw-129e",
                 ],
             ),
         ];

@@ -2630,6 +2630,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // 3-head posteriorgram output, apache-2.0 default). HF-hosted,
         // stamps `vokra.provenance.upstream_hf = spotify/basic-pitch`.
         | ModelKind::BasicPitch
+        // SSL audio-encoder wave (2026-08-13): MAEST — Music AEST
+        // (Discogs-pretrained AST SSL music-tagger, ~87M F32 params
+        // 30s-pw-129e, cc-by-nc-sa-4.0 default). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = mtg-upf/discogs-maest-30s-pw-129e`.
+        | ModelKind::Maest
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
