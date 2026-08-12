@@ -1,10 +1,11 @@
 # SBV2 v2 Blocker 2b/2c/3/5 Verification Wave — Owner Handoff
 
 Tracked / public. Honest summary of what landed on
-`feat/sbv2-v2-blockers-2b-2c-3-2026-08-11` (21 tasks, Wave 0–4) vs what the
+`feat/sbv2-v2-blockers-2b-2c-3-2026-08-11` (23 tasks, Wave 0–4) vs what the
 plan intended, plus one CI-workflow finding from this wave's own T20 that
-needs an owner decision before the "initial `workflow_dispatch`" step in
-any prior handoff's task list can do anything useful.
+was found and then resolved within the same branch — see the "Update
+(2026-08-12, T23 close-out)" note right below for the current state
+before reading the rest of this doc.
 
 - **Date**: 2026-08-11
 - **Branch**: `feat/sbv2-v2-blockers-2b-2c-3-2026-08-11`
@@ -16,6 +17,32 @@ any prior handoff's task list can do anything useful.
 - **Design spec**: `docs/superpowers/specs/2026-08-11-sbv2-v2-blockers-2b-2c-3-design.md` (gitignore local)
 - **SDD ledger**: `.superpowers/sdd/2026-08-11-sbv2-v2-blockers-2b-2c-3/progress.md` (21/21 tasks complete, review-clean or approved-with-concerns on every task)
 - **Prior handoffs this wave builds on**: `docs/handoff/sbv2-v2-phase1.md` (Phase 1, 43 tasks), `docs/handoff/sbv2-sdp-debug-2026-08-08.md`, `docs/handoff/sbv2-bug4-resolved-2026-08-09.md`
+
+> **Update (2026-08-12, T23 close-out)**: the "CI workflow — what changed,
+> and what needs a decision" finding below (and the matching "Owner /
+> next-wave tasks" item 2 and "Non-goals" bullet) is **resolved** as of
+> this update. Between T22 (this doc, HEAD `3d0fd18`) and T23 (final
+> verify), **the owner ruled option (a)** from that section (SDD ledger:
+> "Task 20 REGRESSION FIX (2026-08-12, owner ruled A = revert)"): commit `aaf83ed`
+> reverts T20's replacement workflow (`43ca0d5`) outright, restoring
+> `main`'s pre-existing 727-line pipeline with its already-open sidecar
+> gate; commit `c0e6259` then re-adds the one genuinely new trigger the
+> branch needs (`tools/parity/vendor/vits2/**` in the PR path filter,
+> since that vendor directory postdates the workflow `main` already had).
+> **No further owner decision on the CI workflow is needed** — the
+> real download/convert/dump/parity pipeline is back, unchanged from
+> `main` except for that one added path-filter line. The section below is
+> kept as-written (T22's own investigation) because it explains *why*
+> option (a) was the right call; treat every "needs a decision" /
+> "not repaired by this task" phrasing in it as **historical**, not
+> current. Current branch stats at T23 close-out: **HEAD `f46cd40`**,
+> **28 commits** ahead of `main` (`git rev-list --count main..HEAD`),
+> **24 files changed, +3,315 / −252 lines** (`git diff --stat main..HEAD`)
+> — the delta from T22's snapshot above is exactly the revert + two
+> small fixups (path-filter re-add, and a T23 clippy doc-comment fix in
+> `parity_sbv2_real.rs`, both content-neutral). `parity_sbv2_real` was
+> re-verified at `f46cd40` and is still **12/12 stages PASS**, byte-identical
+> to every prior run recorded in this doc.
 
 ## Executive summary
 
@@ -197,6 +224,11 @@ doc, or `docs/adr/sbv2-parity-atol.md` §5–§6, for the promotion procedure).
 
 ## CI workflow — what changed, and what needs a decision
 
+> **Resolved 2026-08-12 (T23), see the update note at the top of this
+> doc.** Option (a) below was chosen: `aaf83ed` reverted T20's workflow
+> replacement, `c0e6259` re-added the one needed new path-filter line.
+> The rest of this section is preserved as T22's original investigation.
+
 T20 replaced `.github/workflows/parity-sbv2-real.yml` (**+129 / −654
 lines** on that one file — this was a rewrite of an existing file, not a
 new addition, despite the ledger template describing it as "add"). Two
@@ -251,14 +283,14 @@ rather than finishing something already in flight.
 
 ## Owner / next-wave tasks
 
-1. **PR review + merge** — branch is 24 commits off `main` (`0937ef8`,
+1. **PR review + merge** — branch is 28 commits off `main` (`0937ef8`,
    PR #27 tip); no conflicts expected with concurrent work.
-2. **CI workflow decision** — see "CI workflow" section above before
-   dispatching. Whichever direction is chosen, the three per-checkpoint
-   `.gguf.sha256` sidecars are already real (committed 2026-08-09,
-   predating this branch) — no new fixture-provisioning infrastructure is
-   needed to restore the old pipeline's behavior, only a decision on
-   whether to.
+2. ~~**CI workflow decision**~~ — **resolved 2026-08-12 (T23)**, see the
+   update note at the top of this doc. `aaf83ed` + `c0e6259` already
+   restored the pre-existing pipeline; nothing left to decide here. The
+   three per-checkpoint `.gguf.sha256` sidecars remain real (committed
+   2026-08-09, predating this branch), so `workflow_dispatch` is ready to
+   run for real today.
 3. **§3.1 license sign-off — already complete, no action needed.** Rows
    315 (`sbv2-v2-jp-extra-base`, AGPL-3.0 → Copyleft, signed 2026-07-28),
    316 (`deberta-v2-large-japanese-char-wwm`, CC-BY-SA-4.0 → Copyleft
@@ -344,8 +376,11 @@ rather than finishing something already in flight.
 - CLI-level real G2P wiring (piper-plus or otherwise) for
   `vokra-cli run <sbv2.gguf>` — item 5 above, explicitly out of scope for
   this wave, not fixed here.
-- Fixing the T20 CI workflow gate — reported above, not repaired by this
-  task (Task 22 is documentation only).
+- ~~Fixing the T20 CI workflow gate~~ — was out of scope for Task 22
+  (documentation only) but **was fixed** before T23 close-out via the
+  `aaf83ed` revert + `c0e6259` fixup; see the update note at the top of
+  this doc. Listed here only to avoid re-opening a question that is
+  already settled.
 
 ## References
 
