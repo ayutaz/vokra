@@ -3103,6 +3103,24 @@ pub enum ModelKind {
     /// tags** ge no first-party Microsoft HF org release exists as
     /// of 2026-08-13. Convert with `convert_beats_file`.
     Beats,
+    /// **EAT** (`cwx-worst-one/EAT`, mit default, SSL audio-encoder
+    /// wave 2026-08-13) — "Effective Audio Transformer", an
+    /// utterance-level SSL audio encoder with efficient inverse
+    /// block masking (Chen et al. 2024, arXiv:2401.03497). ~86M
+    /// parameters base variant (~350 MB). Trained via MAE-style
+    /// masked reconstruction on AudioSet-2M; targets audio tagging
+    /// / general audio-embedding downstream. Category =
+    /// `audio-embedding` (sibling of `dasheng` / `beats` — future
+    /// SSL wave siblings `atst` / `m2d` land in later commits).
+    /// Distinct arch tag `eat` because the utterance-level
+    /// Transformer + inverse-block-masking topology is a distinct
+    /// axis from every sibling SSL encoder (FR-EX-08 boundary).
+    /// Scale = **local safe** (~0.35 GB). License default = `mit` =
+    /// **T1 tier Permissive** (GitHub API
+    /// `/repos/cwx-worst-one/EAT/license` returns
+    /// `spdx_id: MIT` per task input 2026-08-13). No HF mirror.
+    /// Convert with `convert_eat_file`.
+    Eat,
 }
 
 impl ModelKind {
@@ -3697,6 +3715,13 @@ impl ModelKind {
             | "microsoft/beats"
             | "microsoft-beats"
             | "unilm-beats" => Some(Self::Beats),
+            // SSL audio-encoder wave (2026-08-13). EAT — Effective Audio
+            // Transformer, utterance-level Transformer + inverse block
+            // masking SSL, ~86M params base. mit default (T1 Permissive).
+            "eat"
+            | "eat-base"
+            | "cwx-worst-one/eat"
+            | "cwx-worst-one-eat" => Some(Self::Eat),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4827,6 +4852,9 @@ impl ModelKind {
             // = variant-prefixed short name (`beats-iter3-plus-as2m` mirrors
             // the primary-source checkpoint name from the unilm README).
             Self::Beats => "beats-iter3-plus-as2m",
+            // SSL audio-encoder wave (2026-08-13). EAT canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::Eat => "eat-base",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -7176,6 +7204,26 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Beats,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // EAT — Effective Audio Transformer, utterance-level SSL encoder
+        // with inverse block masking, ~86M params base. mit default
+        // (T1 Permissive; GitHub API returns spdx_id: MIT).
+        ModelKind::Eat => {
+            let report = models::eat::convert_eat_file(input, output, license)?;
+            let notes = vec![format!(
+                "eat: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (mit default, Permissive; utterance-level Transformer + inverse block \
+                 masking SSL, ~86M params base, upstream github.com/cwx-worst-one/EAT — no HF \
+                 mirror)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Eat,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10545,6 +10593,11 @@ pub use models::basic_pitch::{BasicPitchReport, convert_basic_pitch_file};
 // encoder wave (siblings EAT / ATST / MAEST / M2D land in
 // subsequent commits).
 pub use models::beats::{BeatsReport, convert_beats_file};
+// SSL audio-encoder wave (2026-08-13): EAT — Effective Audio
+// Transformer, utterance-level SSL encoder with inverse block
+// masking (~86M params base, mit default). Standalone file-based
+// entry point mirrors the beats re-export pattern.
+pub use models::eat::{EatReport, convert_eat_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -12186,6 +12239,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model beats-iter3-plus-as2m` must round-trip through
             // as_arg → from_arg so a dropped alias fails loudly here.
             Beats,
+            // SSL audio-encoder wave (2026-08-13): EAT — canonical
+            // `--model eat-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Eat,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12905,6 +12962,11 @@ mod modelkind_alias_and_roundtrip_tests {
                     "microsoft-beats",
                     "unilm-beats",
                 ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): EAT.
+            (
+                ModelKind::Eat,
+                &["eat", "eat-base", "cwx-worst-one/eat", "cwx-worst-one-eat"],
             ),
         ];
         for (kind, aliases) in cases {

@@ -969,4 +969,5 @@ pub mod yamnet;
 // time (no CC pre-fill per memory
 // [[feedback-license-signoff-primary-source]]).
 pub mod beats;
+pub mod eat;
 // ---------------------------------------------------------------------------

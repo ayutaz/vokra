@@ -1029,6 +1029,7 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # byte-for-byte. §3.1 sign-off blank fail-closed at land time (no
     # CC pre-fill per memory [[feedback-license-signoff-primary-source]]).
     "beats-iter3-plus-as2m": ["BEATs (`microsoft/unilm/tree/master/beats`)"],
+    "eat-base": ["EAT (`cwx-worst-one/EAT`)"],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
     "titanet-l": ["TitaNet (NVIDIA NeMo)"],
     "titanet-large": ["TitaNet (NVIDIA NeMo)"],
@@ -1537,6 +1538,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # pass-through skeleton converters land one per commit. Row headings
     # match `docs/license-audit.md` §3.1 byte-for-byte.
     "beats": ["BEATs (`microsoft/unilm/tree/master/beats`)"],
+    "eat": ["EAT (`cwx-worst-one/EAT`)"],
     # -----------------------------------------------------------------------
     # 2026-08-06 batch: 23-converter signoff backfill (PR #24 coverage-audit
     # 2026-08-03 + M5 gap wave 1 + KWS + Denoise/MOS/AEC binder wave).

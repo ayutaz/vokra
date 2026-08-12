@@ -2795,9 +2795,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // facebook_denoiser precedent. Reading the wrong key would
         // print `<none>` for the URL and hide the actual upstream in
         // the verify output, which is exactly what FR-EX-08 forbids
-        // for provenance. Siblings EAT / ATST / M2D land in later
-        // commits and join this arm.
-        | ModelKind::Beats => {
+        // for provenance. Siblings ATST / M2D land in later commits
+        // and join this arm.
+        | ModelKind::Beats
+        // SSL audio-encoder wave (2026-08-13): EAT — no HF mirror as
+        // of 2026-08-13, stamps
+        // `vokra.provenance.upstream_url = github.com/cwx-worst-one/EAT`
+        // per the sibling-BEATs precedent.
+        | ModelKind::Eat => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())
