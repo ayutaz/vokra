@@ -49,6 +49,7 @@
 use std::path::PathBuf;
 
 use vokra_bert::deberta_v3::DebertaV3Encoder;
+use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_core::gguf::GgufFile;
 
 fn env_paths() -> Option<(PathBuf, PathBuf)> {
@@ -232,5 +233,66 @@ fn deberta_v3_real_weight_final_hidden_parity() {
          green-chasing anti-pattern",
         delta,
         FINAL_HIDDEN_ATOL,
+    );
+}
+
+/// Real DeBERTa v3 tokenizer metadata + SbertTokenizer::from_gguf round-trip.
+/// Env-gated: runs only when VOKRA_DEBERTA_V3_GGUF points to the real
+/// checkpoint (produced by vokra-cli convert --model deberta-v3 over the
+/// real `microsoft/deberta-v3-large` checkpoint).
+///
+/// This test verifies:
+/// 1. The tokenizer.pieces array has > 100,000 entries (DeBERTa v3 has ~128k)
+/// 2. SbertTokenizer::from_gguf succeeds (metadata is well-formed)
+/// 3. Encoding a simple test string produces non-empty token ids
+#[test]
+fn deberta_v3_real_tokenizer_metadata_loads() {
+    let gguf_path = match std::env::var_os("VOKRA_DEBERTA_V3_GGUF") {
+        Some(p) => PathBuf::from(p),
+        None => {
+            eprintln!(
+                "SKIP: VOKRA_DEBERTA_V3_GGUF unset (set to real deberta-v3-large GGUF to run)"
+            );
+            return;
+        }
+    };
+
+    if !gguf_path.is_file() {
+        eprintln!("SKIP: VOKRA_DEBERTA_V3_GGUF={gguf_path:?} is not a file");
+        return;
+    }
+
+    let gguf = GgufFile::parse(std::fs::read(&gguf_path).expect("read gguf")).expect("parse gguf");
+
+    // Verify tokenizer.pieces metadata exists and has > 100,000 pieces
+    let pieces_metadata = gguf
+        .get("vokra.bert.tokenizer.pieces")
+        .and_then(|v| v.as_array())
+        .expect("missing or non-array vokra.bert.tokenizer.pieces metadata");
+    let piece_count = pieces_metadata.values.len();
+    assert!(
+        piece_count > 100_000,
+        "deberta-v3-large should have > 100k pieces (got {})",
+        piece_count
+    );
+
+    // Verify SbertTokenizer::from_gguf succeeds
+    let tokenizer =
+        SbertTokenizer::from_gguf(&gguf, "vokra.bert.tokenizer").expect("load tokenizer");
+
+    // Verify encoding a simple string produces non-empty ids
+    let test_string = "Hello world";
+    let ids = tokenizer.encode(test_string);
+    assert!(
+        !ids.is_empty(),
+        "encoding '{}' should produce non-empty token list",
+        test_string
+    );
+
+    println!(
+        "deberta_v3_real: pieces={} encode('{}')={} ids",
+        piece_count,
+        test_string,
+        ids.len(),
     );
 }

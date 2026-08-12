@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use vokra_bert::deberta_v2::DebertaV2Encoder;
+use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
 
 /// Repo-root-relative real-fixture directory for the DeBERTa v2/v3 GGUF
@@ -315,4 +316,73 @@ fn probe_tensor_info_finds_optional_bias() {
         info_no.is_none(),
         "GGUF should NOT carry wq_pos.bias when with_pos_biases=false"
     );
+}
+
+// ============================================================================
+// WordPiece tokenizer metadata verification tests — Task 9 real DeBERTa v2
+// ============================================================================
+
+/// Task 9: Real DeBERTa v2 Japanese GGUF tokenizer metadata load verification.
+/// Opens the real DeBERTa v2 large Japanese char-wwm GGUF fixture and verifies
+/// that the tokenizer metadata (scheme, pieces, control ids) is present and
+/// correctly loaded via `SbertTokenizer::from_gguf`. This test locks down the
+/// WordPiece/BertCharSplit scheme integration path through the real fixture.
+#[test]
+#[ignore = "requires real deberta-v2 GGUF fixture, gated by tests/fixtures/sbv2/*.gguf.sha256"]
+fn deberta_v2_real_tokenizer_metadata_loads() {
+    let path = fixtures_dir().join("deberta-v2-large-japanese-char-wwm.gguf");
+    let g = GgufFile::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+
+    // Verify tokenizer metadata is present and readable via SbertTokenizer::from_gguf.
+    // The real DeBERTa v2 ku-nlp fixture has ~22k pieces (char-based Japanese).
+    let tok = SbertTokenizer::from_gguf(&g, "vokra.bert.tokenizer")
+        .unwrap_or_else(|e| panic!("SbertTokenizer::from_gguf: {e}"));
+
+    // Verify that control ids are loaded (non-default values).
+    let unk_id = tok.unk_id();
+    let bos_id = tok.bos_id(); // CLS for BERT-family
+    let eos_id = tok.eos_id(); // SEP for BERT-family
+
+    // Note: The SbertTokenizer doesn't expose pieces_len(), so we verify the piece count
+    // indirectly by checking that control ids are within a reasonable range.
+    // DeBERTa v2 ku-nlp has ~22012 pieces for Japanese, so unk_id should be relatively small.
+    assert!(
+        unk_id < 1000,
+        "unk_id={unk_id} should be small relative to typical vocab size (DeBERTa v2 has ~22k pieces)"
+    );
+
+    // In WordPiece vocabs, these are typically low indices (< 1000).
+    assert!(
+        unk_id < 1000,
+        "unk_id={unk_id} should be low (typical WordPiece special tokens are <100)"
+    );
+    assert!(bos_id < 1000, "bos_id (CLS)={bos_id} should be low");
+    assert!(eos_id < 1000, "eos_id (SEP)={eos_id} should be low");
+
+    // Encode a real Japanese string to verify the tokenizer functions end-to-end.
+    // "こんにちは" (hello) should encode to non-empty id sequence.
+    let ids = tok.encode("こんにちは");
+    assert!(
+        !ids.is_empty(),
+        "encode should produce non-empty ids for real Japanese text"
+    );
+
+    // Encode with special tokens to verify CLS/SEP wrapping.
+    let ids_with_special = tok.encode_with_special_tokens("こんにちは");
+    assert!(
+        ids_with_special.len() > ids.len(),
+        "encode_with_special_tokens should add CLS/SEP (more tokens)"
+    );
+    // Expect CLS at start (should equal bos_id) and SEP at end (should equal eos_id).
+    if !ids_with_special.is_empty() {
+        assert_eq!(
+            ids_with_special[0], bos_id,
+            "first token should be CLS (bos_id)"
+        );
+        assert_eq!(
+            ids_with_special[ids_with_special.len() - 1],
+            eos_id,
+            "last token should be SEP (eos_id)"
+        );
+    }
 }

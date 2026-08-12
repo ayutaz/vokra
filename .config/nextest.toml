@@ -48,7 +48,13 @@
 ##     見込み (release 10.88s × ~15x unoptimized penalty)。実 CPU 演算 = hang
 ##     ではなく正当な heavy test。release build の parity CI で担保可能。
 ##   * validate_and_forward_large_lv60k_layerall = layer-all traversal も同水準。
-default-filter = "not (package(vokra-backend-metal) + package(vokra-backend-cuda) + package(vokra-backend-vulkan) + package(vokra-backend-webgpu) + package(vokra-backend-coreml) + package(vokra-backend-qnn) + package(vokra-wasm-harness) + package(vokra-parity) + package(vokra-eval)) - test(/^waveform_frontend::tests::forward_wav2vec2_base_16khz/) - test(/^waveform_frontend::tests::forward_zero_input_zero_weights/) - test(/^waveform_frontend::tests::validate_and_forward_large_lv60k/)"
+##   * parity_sbv2_real_waveform_matches_reference_dump = SBV2 v2 full-pipeline
+##     forward (text encoder + 2 BERT + SDP + flow + HiFi-GAN decoder + waveform
+##     comparison against reference bin, real 3-checkpoint fixture). Release
+##     wall = 48s; dev-profile 予想 300s+ (unoptimized ×5-10)。CI 側
+##     parity-sbv2-real.yml が real-weight full leg を担保。追加 2026-08-12
+##     push #1 実測 = pre-push nextest が 135s で SIGTERM kill。
+default-filter = "not (package(vokra-backend-metal) + package(vokra-backend-cuda) + package(vokra-backend-vulkan) + package(vokra-backend-webgpu) + package(vokra-backend-coreml) + package(vokra-backend-qnn) + package(vokra-wasm-harness) + package(vokra-parity) + package(vokra-eval)) - test(/^waveform_frontend::tests::forward_wav2vec2_base_16khz/) - test(/^waveform_frontend::tests::forward_zero_input_zero_weights/) - test(/^waveform_frontend::tests::validate_and_forward_large_lv60k/) - test(/^parity_sbv2_real_waveform_matches_reference_dump/)"
 
 ## Fail fast: 1 本失敗したら stop (local iteration では詳細より速報優先)
 fail-fast = true
