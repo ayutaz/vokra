@@ -8,7 +8,7 @@
 # own `Cargo.lock`, fully isolated from the root graph.
 #
 # What it does: text --(piper-plus-g2p)--> phoneme ids + prosody + lid -->
-# Vokra's native piper-plus TTS (`synthesize_full`) --> WAV. The runtime crates
+# Vokra's native piper-plus TTS (`synthesize_pseudo_streaming`) --> WAV. The runtime crates
 # it depends on (vokra-models / vokra-piper-plus / vokra-core) stay zero-dep;
 # the third-party G2P is confined to this isolated crate and injected across the
 # `vokra_piper_plus::Phonemizer` trait boundary.

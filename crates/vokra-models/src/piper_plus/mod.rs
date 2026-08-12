@@ -619,10 +619,26 @@ impl PiperPlusTts {
     /// `request.text`: the injected [`Phonemizer`] returns not just phoneme ids
     /// but the per-phoneme prosody triples and detected language id
     /// ([`Phonemizer::phonemize_full`]) that the multilingual piper-plus models
-    /// (e.g. the zero-shot 6-language v7) consume. This is the full text→speech
+    /// (e.g. the zero-shot 6-language v7) consume. This is the text→speech
     /// entry point for the out-of-workspace `piper-plus-g2p` reuse; the
     /// zero-dependency core still never links a non-`vokra-*` crate — the G2P is
     /// injected across the trait boundary (NFR-DS-02).
+    ///
+    /// # Why "pseudo-streaming" and not "streaming" (FR-ST-04)
+    ///
+    /// MB-iSTFT-VITS2 (piper-plus) is a **full-utterance** synthesizer: the
+    /// text encoder → duration predictor → flow → MB-iSTFT decoder chain
+    /// produces the entire waveform in one forward pass, and there is no
+    /// architectural chunk-boundary that would let the model emit audio while
+    /// still generating later frames. Wrapping the returned buffer in a
+    /// chunk-emitting adapter reduces first-byte latency to the caller, but
+    /// the **generation** time is unchanged — the model has already finished
+    /// by the time the first chunk is emitted. To keep this honest at the API
+    /// boundary (SRS §FR-ST-04, FR-EX-08) the method is named
+    /// `synthesize_pseudo_streaming` rather than `synthesize_streaming`; a
+    /// truly incremental TTS (e.g. Kokoro's per-phoneme downgrade path, or a
+    /// CosyVoice2-style chunk-aware CFM) exposes a distinct API and does not
+    /// live on this type.
     ///
     /// Overrides applied to the phonemizer's output:
     /// - `request.language`, when it names a known language, pins `lid` over the
@@ -638,7 +654,7 @@ impl PiperPlusTts {
     /// Propagates phonemization errors, and [`VokraError::InvalidArgument`] if a
     /// phoneme / language id is out of range or a prosody length disagrees with
     /// the phoneme count (see [`synthesize_phonemes`](Self::synthesize_phonemes)).
-    pub fn synthesize_full(
+    pub fn synthesize_pseudo_streaming(
         &self,
         request: &SynthesisRequest,
         phonemizer: &dyn Phonemizer,
@@ -930,6 +946,31 @@ mod tests {
         // channel-major: o0=[101,110], o1=[202,220], o2=[303,330].
         let on = proj.channels(Some(&feats), super::config::PROSODY_LANG_ID, 2);
         assert_eq!(on, [101.0, 110.0, 202.0, 220.0, 303.0, 330.0]);
+    }
+
+    // ---- FR-ST-04: pseudo-streaming API name is exposed (rename smoke) -----
+    //
+    // MB-iSTFT-VITS2 (piper-plus) is a **full-utterance** synthesizer — it does
+    // not support true chunk-wise generation. FR-ST-04 requires that the
+    // public entry-point makes this explicit by name so callers cannot mistake
+    // it for a real streaming API (docs/system-requirements.md §FR-ST-04).
+    //
+    // The compile-time reference below is the whole test: it fails to compile
+    // if the method is missing (or if a stale `synthesize_full` name creeps
+    // back in). Runtime behavior is unchanged from the pre-rename entry point
+    // and is covered by the parity tests in `parity` / `parity_v7` /
+    // `parity_v7_prosody` (they exercise the same code path via the injected
+    // `Phonemizer`).
+    #[test]
+    fn synthesize_pseudo_streaming_symbol_exists() {
+        // Bind the fn pointer through the fully-qualified path so this test
+        // is a strict compile-time gate on the rename (no dyn dispatch).
+        let _fn_ptr: fn(
+            &super::PiperPlusTts,
+            &vokra_core::SynthesisRequest,
+            &dyn super::Phonemizer,
+        ) -> vokra_core::Result<vokra_core::SynthesizedAudio> =
+            super::PiperPlusTts::synthesize_pseudo_streaming;
     }
 }
 

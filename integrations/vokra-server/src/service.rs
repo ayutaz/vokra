@@ -864,7 +864,7 @@ pub struct InferenceService {
     /// Silero VAD v5 — optional Wyoming chunk-boundary helper.
     #[allow(dead_code)] // consumed by T15 (Wyoming ASR chunk framing).
     vad: Option<Arc<SileroVadV5>>,
-    /// The phonemizer driving `PiperPlusTts::synthesize_full`. Injected as
+    /// The phonemizer driving `PiperPlusTts::synthesize_pseudo_streaming`. Injected as
     /// a trait object so the real 8-language `piper-plus-g2p` (out-of-
     /// workspace, `integrations/vokra-piper-g2p`) can be swapped in
     /// without T04 depending on that crate.
@@ -991,16 +991,13 @@ impl InferenceService {
             // the `real_gguf_slots` voxtral leg has always skipped for want of
             // >= 10 GiB free. Mapping the file and binding the decoder blocks
             // lazily keeps values bit-identical while the blocks stay in the map.
-            let engine = match map_gguf("voxtral", path)
-                .and_then(|f| {
-                    VoxtralAsr::from_gguf_mapped(f).map_err(|source| {
-                        ServiceError::ModelLoadFailed {
-                            slot: "voxtral",
-                            path: path.clone(),
-                            source,
-                        }
-                    })
-                }) {
+            let engine = match map_gguf("voxtral", path).and_then(|f| {
+                VoxtralAsr::from_gguf_mapped(f).map_err(|source| ServiceError::ModelLoadFailed {
+                    slot: "voxtral",
+                    path: path.clone(),
+                    source,
+                })
+            }) {
                 Ok(engine) => engine,
                 Err(mapped_err) => {
                     // A quantized GGUF cannot be addressed per element, so the
@@ -1551,9 +1548,10 @@ impl SynthesizeService for InferenceService {
             model_names::PIPER_PLUS | model_names::TTS_1 => {
                 // cc-18 (2026-07-19 M4-residual audit): a `language` the voice
                 // does not support must be an explicit error at the service
-                // boundary. The engine's `synthesize_full` maps an unknown
-                // code to `None` and silently falls back to the phonemizer's
-                // detected language (crates/vokra-models/src/piper_plus/mod.rs
+                // boundary. The engine's `synthesize_pseudo_streaming` maps an
+                // unknown code to `None` and silently falls back to the
+                // phonemizer's detected language
+                // (crates/vokra-models/src/piper_plus/mod.rs
                 // `language_id(..).unwrap_or(utt.lid)`) — honest surfaces
                 // must reject BEFORE that fallback (FR-EX-08). The supported
                 // set comes from the voice GGUF's own
@@ -1572,7 +1570,7 @@ impl SynthesizeService for InferenceService {
                     }
                 }
                 self.tts_piper
-                    .synthesize_full(request, self.phonemizer.as_ref())
+                    .synthesize_pseudo_streaming(request, self.phonemizer.as_ref())
                     .map_err(ServiceError::Inference)
             }
             model_names::KOKORO => {
@@ -1741,10 +1739,7 @@ pub const AUDIO_WAV_CONTENT_TYPE: &str = "audio/wav";
 /// faulted in lazily instead of copied into an owned buffer. Use this for slots
 /// whose model can bind weights straight out of the mapping; [`open_gguf`]
 /// remains correct for slots that widen everything anyway.
-fn map_gguf(
-    slot: &'static str,
-    path: &Path,
-) -> Result<std::sync::Arc<GgufFile>, ServiceError> {
+fn map_gguf(slot: &'static str, path: &Path) -> Result<std::sync::Arc<GgufFile>, ServiceError> {
     vokra_mmap::open_gguf(path)
         .map(std::sync::Arc::new)
         .map_err(|e| ServiceError::ModelLoadFailed {
@@ -2791,7 +2786,7 @@ mod registry {
 // with a fake `InferenceService`-shaped double so the routing / WAV
 // framing / error taxonomy is guarded without carrying a piper voice
 // GGUF into this excluded workspace. The build path with a real
-// `PiperPlusTts::synthesize_full` is exercised at T13 (integration test
+// `PiperPlusTts::synthesize_pseudo_streaming` is exercised at T13 (integration test
 // hitting the real HTTP handler once GGUF fixtures land).
 // ---------------------------------------------------------------------------
 
