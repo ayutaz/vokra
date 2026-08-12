@@ -2597,6 +2597,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // upstream/license triple readback and the artifact is
         // HF-hosted (upstream_hf stamped, not upstream_url).
         | ModelKind::Sgmse
+        // Music-understanding wave (2026-08-13, post-audit CC-gap): YAMNet
+        // — Google Research 521-class AudioSet audio-event classifier
+        // (MobileNetV1 depthwise-separable Conv2D backbone, ~15 MB edge
+        // model, apache-2.0 default). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = thelou1s/yamnet` — grouped
+        // here since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback.
+        | ModelKind::Yamnet
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

@@ -2954,6 +2954,22 @@ pub enum ModelKind {
     /// binder (4-subgraph forward + T2U dispatch + vocoder chain)
     /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
     SeamlessM4tV2Large,
+    /// **YAMNet** (`thelou1s/yamnet`, apache-2.0 default,
+    /// music-understanding wave 2026-08-13) — Google Research's
+    /// MobileNetV1 audio-event classifier (521-class AudioSet, ~15 MB
+    /// edge model, 16 kHz mono log-mel input at 96 mel bins × 0.96 s
+    /// frames). Category = `audio-tagging` (sibling of `panns` / `ast`
+    /// / `clap`). Distinct arch tag `yamnet` because the MobileNetV1
+    /// depthwise-separable Conv2D backbone differs from residual Cnn14
+    /// (PANNs), patch-embed Transformer (AST), and contrastive
+    /// text-audio (CLAP) — silently sharing would misroute the runtime
+    /// dispatch (FR-EX-08). Scale = **local safe** (~15 MB, well below
+    /// vast.ai threshold, memory `[[feedback-large-models-on-vast-ai]]`).
+    /// Upstream HF mirror carries no `license:` tag as of 2026-08-13;
+    /// reference implementation is Apache-2.0 (Google Research
+    /// `tensorflow/models`), so default SPDX = `apache-2.0`. Convert
+    /// with `convert_yamnet_file`.
+    Yamnet,
 }
 
 impl ModelKind {
@@ -3489,6 +3505,13 @@ impl ModelKind {
             | "audioseal"
             | "audio-seal"
             | "facebook/audioseal" => Some(Self::AudiosealRealWeight),
+            // Music-understanding wave (2026-08-13). YAMNet — Google Research
+            // 521-class AudioSet audio-event classifier (MobileNetV1 backbone,
+            // ~15 MB edge model). apache-2.0 default (Permissive).
+            "yamnet"
+            | "google-yamnet"
+            | "google/yamnet"
+            | "thelou1s/yamnet" => Some(Self::Yamnet),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4598,6 +4621,9 @@ impl ModelKind {
             Self::Mossformer2Ss16k => "mossformer2-ss-16k",
             Self::TenVad => "ten-vad",
             Self::AudiosealRealWeight => "audioseal-real-weight",
+            // Music-understanding wave (2026-08-13). YAMNet canonical CLI slug
+            // matches the shared arch tag stamped in `vokra.model.arch`.
+            Self::Yamnet => "yamnet",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -6789,6 +6815,30 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::AudiosealRealWeight,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Music-understanding wave (2026-08-13) ===
+        // YAMNet — Google Research MobileNetV1 audio-event classifier
+        // (521-class AudioSet, ~15 MB edge model). apache-2.0 default
+        // (Permissive). Sibling of `panns` / `ast` / `clap` under
+        // `audio-tagging` category with a distinct arch tag so silent
+        // runtime dispatch cannot misroute a depthwise-separable
+        // checkpoint through a residual Cnn14 loader (FR-EX-08).
+        ModelKind::Yamnet => {
+            let report = models::yamnet::convert_yamnet_file(input, output, license)?;
+            let notes = vec![format!(
+                "yamnet: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (apache-2.0 default, Permissive; upstream HF mirror carries no license \
+                 tag as of 2026-08-13 — reference impl `github.com/tensorflow/models/tree/master/\
+                 research/audioset/yamnet` is Google Research Apache-2.0)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Yamnet,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10117,6 +10167,13 @@ pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_
 pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
 pub use models::torchaudio_squim::{TorchaudioSquimReport, convert_torchaudio_squim_file};
 pub use models::utmosv2::{Utmosv2Report, convert_utmosv2_file};
+// Music-understanding wave (2026-08-13): YAMNet — Google Research
+// 521-class AudioSet audio-event classifier (MobileNetV1 backbone,
+// ~15 MB edge model, apache-2.0 default). Standalone file-based entry
+// point mirrors the utmosv2 / musicgen_medium re-export pattern for
+// direct callers who prefer `convert_yamnet_file` over the
+// `ModelKind::Yamnet` slug dispatch.
+pub use models::yamnet::{YamnetReport, convert_yamnet_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -11730,6 +11787,10 @@ mod modelkind_alias_and_roundtrip_tests {
             Mossformer2Ss16k,
             TenVad,
             AudiosealRealWeight,
+            // Music-understanding wave (2026-08-13): YAMNet — canonical
+            // `--model yamnet` must round-trip through as_arg → from_arg
+            // so a dropped alias fails loudly here.
+            Yamnet,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12369,6 +12430,16 @@ mod modelkind_alias_and_roundtrip_tests {
                     "neu-tts-air",
                     "neu_tts_air",
                     "neuphonic/neutts-air",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): YAMNet.
+            (
+                ModelKind::Yamnet,
+                &[
+                    "yamnet",
+                    "google-yamnet",
+                    "google/yamnet",
+                    "thelou1s/yamnet",
                 ],
             ),
         ];

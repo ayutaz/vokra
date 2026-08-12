@@ -941,3 +941,14 @@ pub mod ten_vad;
 pub mod torchaudio_squim;
 pub mod utmosv2;
 // ---------------------------------------------------------------------------
+// Music-understanding wave (2026-08-13, post-audit CC-gap): 6 audio-tagging /
+// music-embedding / pitch-detection converters. All local-safe (<2 GB) per
+// memory [[feedback-large-models-on-vast-ai]] threshold. BF16 pass-through
+// skeletons mirror of the utmosv2 / nkf_aec / musicgen_medium contract; each
+// declares a distinct arch tag so silent runtime dispatch cannot misroute an
+// MobileNetV1 checkpoint through a Cnn14 loader (FR-EX-08). Real-weight
+// parity + runtime binder deferred to owner sign-off (`docs/license-audit.md`
+// §3.1). §3.1 sign-off blank fail-closed at land time (no CC pre-fill per
+// memory [[feedback-license-signoff-primary-source]]).
+pub mod yamnet;
+// ---------------------------------------------------------------------------
