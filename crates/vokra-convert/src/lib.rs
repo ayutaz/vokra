@@ -3172,6 +3172,32 @@ pub enum ModelKind {
     /// cc-by-nc-sa-4.0` canonical LICENSE 実文書同梱).
     /// Convert with `convert_maest_file`.
     Maest,
+    /// **M2D** (`nttcslab/m2d`, **unknown default**, SSL audio-
+    /// encoder wave 2026-08-13) — "Masked Modeling Duo", Niizumi
+    /// et al. 2023 arXiv:2210.14648 + 2024 sibling papers. NTT
+    /// Communication Science Laboratories dual-branch SSL audio
+    /// encoder that jointly predicts masked patches from a target
+    /// online branch AND its predictive representation. ~86M
+    /// parameter class base variant (~200 MB). Category =
+    /// `audio-embedding` (sibling of `dasheng` / `beats` / `eat` /
+    /// `atst`). Distinct arch tag `m2d` because the masked-
+    /// modeling-**duo** (dual online + target branch, joint prediction
+    /// of masked patches and their online-branch representation)
+    /// topology is a distinct axis from every sibling SSL encoder
+    /// (single-branch MAE = Dasheng / EAT, teacher-student patchout
+    /// = ATST, iterative tokenizer = BEATs). Silently sharing would
+    /// misroute the runtime dispatch (FR-EX-08). Scale = **local
+    /// safe** (~0.2 GB). License default = `unknown` = **fail-
+    /// closed** ([`vokra_core::LicenseClass::Unknown`], M2-13 runtime
+    /// gate refuses to load without a research flag) — upstream
+    /// `github.com/nttcslab/m2d` LICENSE is a **PDF file**
+    /// (`LICENSE.pdf`) that GitHub license API returns as
+    /// `spdx_id: NOASSERTION` (non-machine-readable primary source),
+    /// and no HF mirror exists as of 2026-08-13. Owner must
+    /// download `LICENSE.pdf`, read it, complete primary-source
+    /// confirmation, then override via `--license <spdx>` at the
+    /// outer boundary. Convert with `convert_m2d_file`.
+    M2d,
 }
 
 impl ModelKind {
@@ -3794,6 +3820,15 @@ impl ModelKind {
             | "discogs-maest"
             | "discogs-maest-30s-pw-129e"
             | "mtg-upf/discogs-maest-30s-pw-129e" => Some(Self::Maest),
+            // SSL audio-encoder wave (2026-08-13). M2D — Masked Modeling
+            // Duo, dual online + target branch joint prediction, ~86M
+            // params base. unknown default (fail-closed;
+            // upstream LICENSE.pdf non-machine-readable, HF NA).
+            "m2d"
+            | "m2d-base"
+            | "m2d-eat"
+            | "nttcslab/m2d"
+            | "nttcslab-m2d" => Some(Self::M2d),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4935,6 +4970,9 @@ impl ModelKind {
             // the upstream HF release slug for the 30s / patch-wise / 129
             // epochs pretraining point).
             Self::Maest => "maest-30s-pw-129e",
+            // SSL audio-encoder wave (2026-08-13). M2D canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::M2d => "m2d-base",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -7348,6 +7386,30 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Maest,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // M2D — Masked Modeling Duo, NTT CS Lab dual-branch SSL audio
+        // encoder, ~86M params base. unknown default (fail-closed) —
+        // upstream LICENSE is a PDF file, GitHub API returns
+        // spdx_id: NOASSERTION, no HF mirror. Owner ADR / primary source
+        // download required before publish.
+        ModelKind::M2d => {
+            let report = models::m2d::convert_m2d_file(input, output, license)?;
+            let notes = vec![format!(
+                "m2d: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (unknown default, LicenseClass::Unknown fail-closed — upstream \
+                 github.com/nttcslab/m2d LICENSE is a PDF file, GitHub API returns \
+                 spdx_id: NOASSERTION as of 2026-08-13, no HF mirror; owner must download \
+                 LICENSE.pdf and override via --license <spdx>; dual-branch masked-modeling-duo \
+                 SSL audio encoder, ~86M params base, Niizumi et al. arXiv:2210.14648)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::M2d,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10735,6 +10797,11 @@ pub use models::atst::{AtstReport, convert_atst_file};
 // mirrors the mert / muq re-export pattern (HF-hosted music-
 // embedding sibling posture).
 pub use models::maest::{MaestReport, convert_maest_file};
+// SSL audio-encoder wave (2026-08-13): M2D — Masked Modeling Duo
+// (dual online + target branch SSL audio encoder, ~86M params base,
+// unknown default = fail-closed). Standalone file-based entry
+// point mirrors the atst / beats / eat re-export pattern.
+pub use models::m2d::{M2dReport, convert_m2d_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -12388,6 +12455,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model maest-30s-pw-129e` must round-trip through
             // as_arg → from_arg so a dropped alias fails loudly here.
             Maest,
+            // SSL audio-encoder wave (2026-08-13): M2D — canonical
+            // `--model m2d-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            M2d,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -13136,6 +13207,11 @@ mod modelkind_alias_and_roundtrip_tests {
                     "discogs-maest-30s-pw-129e",
                     "mtg-upf/discogs-maest-30s-pw-129e",
                 ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): M2D.
+            (
+                ModelKind::M2d,
+                &["m2d", "m2d-base", "m2d-eat", "nttcslab/m2d", "nttcslab-m2d"],
             ),
         ];
         for (kind, aliases) in cases {

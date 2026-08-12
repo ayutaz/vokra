@@ -1034,6 +1034,7 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "ATST (`Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst`)"
     ],
     "maest-30s-pw-129e": ["MAEST (`mtg-upf/discogs-maest-30s-pw-129e`)"],
+    "m2d-base": ["M2D (`nttcslab/m2d`)"],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
     "titanet-l": ["TitaNet (NVIDIA NeMo)"],
     "titanet-large": ["TitaNet (NVIDIA NeMo)"],
@@ -1547,6 +1548,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "ATST (`Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst`)"
     ],
     "maest": ["MAEST (`mtg-upf/discogs-maest-30s-pw-129e`)"],
+    "m2d": ["M2D (`nttcslab/m2d`)"],
     # -----------------------------------------------------------------------
     # 2026-08-06 batch: 23-converter signoff backfill (PR #24 coverage-audit
     # 2026-08-03 + M5 gap wave 1 + KWS + Denoise/MOS/AEC binder wave).

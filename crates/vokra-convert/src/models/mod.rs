@@ -971,5 +971,6 @@ pub mod yamnet;
 pub mod atst;
 pub mod beats;
 pub mod eat;
+pub mod m2d;
 pub mod maest;
 // ---------------------------------------------------------------------------

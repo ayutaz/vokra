@@ -2800,8 +2800,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // facebook_denoiser precedent. Reading the wrong key would
         // print `<none>` for the URL and hide the actual upstream in
         // the verify output, which is exactly what FR-EX-08 forbids
-        // for provenance. Sibling M2D lands in a later commit and
-        // joins this arm.
+        // for provenance.
         | ModelKind::Beats
         // SSL audio-encoder wave (2026-08-13): EAT — no HF mirror as
         // of 2026-08-13, stamps
@@ -2813,7 +2812,12 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // `vokra.provenance.upstream_url = github.com/Audio-WestlakeU/
         // audiossl/tree/main/audiossl/methods/atst` per the
         // sibling-BEATs precedent.
-        | ModelKind::Atst => {
+        | ModelKind::Atst
+        // SSL audio-encoder wave (2026-08-13): M2D — no HF mirror as
+        // of 2026-08-13, upstream LICENSE.pdf non-machine-readable.
+        // Stamps `vokra.provenance.upstream_url =
+        // github.com/nttcslab/m2d` per the sibling-BEATs precedent.
+        | ModelKind::M2d => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())
