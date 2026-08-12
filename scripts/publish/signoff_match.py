@@ -1019,6 +1019,7 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # cell via primary-source confirmation before publish is unblocked.
     "yamnet": ["YAMNet (`thelou1s/yamnet`)"],
     "mert": ["MERT (`m-a-p/MERT-v1-330M`)"],
+    "muq": ["MuQ (`OpenMuQ/MuQ-large-msd-iter`)"],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
     "titanet-l": ["TitaNet (NVIDIA NeMo)"],
     "titanet-large": ["TitaNet (NVIDIA NeMo)"],
@@ -1519,6 +1520,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # `docs/license-audit.md` §3.1 byte-for-byte.
     "yamnet": ["YAMNet (`thelou1s/yamnet`)"],
     "mert": ["MERT (`m-a-p/MERT-v1-330M`)"],
+    "muq": ["MuQ (`OpenMuQ/MuQ-large-msd-iter`)"],
     # -----------------------------------------------------------------------
     # 2026-08-06 batch: 23-converter signoff backfill (PR #24 coverage-audit
     # 2026-08-03 + M5 gap wave 1 + KWS + Denoise/MOS/AEC binder wave).

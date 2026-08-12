@@ -2610,6 +2610,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // Transformer, ~330M params, cc-by-nc-4.0 default). HF-hosted,
         // stamps `vokra.provenance.upstream_hf = m-a-p/MERT-v1-330M`.
         | ModelKind::Mert
+        // Music-understanding wave (2026-08-13): MuQ — Mel-RVQ + BEATs
+        // teacher self-supervised music encoder (~500M params, license
+        // unknown fail-closed default). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = OpenMuQ/MuQ-large-msd-iter`.
+        | ModelKind::Muq
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

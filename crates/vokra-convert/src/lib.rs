@@ -2990,6 +2990,27 @@ pub enum ModelKind {
     /// `publish-one.sh --allow-noncommercial`. Convert with
     /// `convert_mert_file`.
     Mert,
+    /// **MuQ** (`OpenMuQ/MuQ-large-msd-iter`, license unknown default,
+    /// music-understanding wave 2026-08-13) — Self-supervised music
+    /// representation learner using **Mel-Residual Vector
+    /// Quantization** targets and a **BEATs** acoustic teacher
+    /// (Zhu et al. 2025 arXiv:2501.01108). Trained on the Million
+    /// Song Dataset with iterative refinement, ~500M params.
+    /// Positioned as a direct MERT alternative for music-tagging /
+    /// genre / MIR downstream tasks. Category = `music-embedding`
+    /// (sibling of `mert` / `dasheng`). Distinct arch tag `muq`
+    /// because the Mel-RVQ + BEATs-teacher training target is a
+    /// distinct topology from MERT (HuBERT-derived) and Dasheng
+    /// (MAE ConvNeXt/ViT) — silently sharing an arch tag would
+    /// misroute the runtime dispatch (FR-EX-08). Scale = **local
+    /// safe** (~0.5 GB, well below vast.ai threshold). License
+    /// default = `unknown` = **fail-closed** ([`vokra_core::LicenseClass::Unknown`],
+    /// M2-13 runtime gate refuses to load without a research flag).
+    /// Upstream HF cardData carries no `license:` tag as of
+    /// 2026-08-13 — owner must complete primary-source
+    /// confirmation before publish is unblocked. Convert with
+    /// `convert_muq_file`.
+    Muq,
 }
 
 impl ModelKind {
@@ -3541,6 +3562,14 @@ impl ModelKind {
             | "mert-330m"
             | "m-a-p/mert-v1-330m"
             | "m-a-p/MERT-v1-330M" => Some(Self::Mert),
+            // Music-understanding wave (2026-08-13). MuQ — Self-supervised
+            // music representation learner with Mel-RVQ + BEATs teacher.
+            // License unknown (fail-closed default).
+            "muq"
+            | "muq-large-msd-iter"
+            | "muq-large"
+            | "openmuq/muq-large-msd-iter"
+            | "OpenMuQ/MuQ-large-msd-iter" => Some(Self::Muq),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4656,6 +4685,8 @@ impl ModelKind {
             // Music-understanding wave (2026-08-13). MERT canonical CLI slug
             // matches the shared arch tag stamped in `vokra.model.arch`.
             Self::Mert => "mert",
+            // Music-understanding wave (2026-08-13). MuQ canonical CLI slug.
+            Self::Muq => "muq",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -6894,6 +6925,28 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Mert,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // MuQ — Self-supervised music representation learner with Mel-RVQ
+        // + BEATs teacher (MERT alternative). License unknown default =
+        // fail-closed; runtime M2-13 gate refuses to load without a
+        // research flag or explicit --license SPDX override.
+        ModelKind::Muq => {
+            let report = models::muq::convert_muq_file(input, output, license)?;
+            let notes = vec![format!(
+                "muq: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (unknown default, LicenseClass::Unknown fail-closed — upstream \
+                 `OpenMuQ/MuQ-large-msd-iter` HF cardData carries no `license:` tag as of \
+                 2026-08-13; owner must complete primary-source LICENSE confirmation before \
+                 publish is unblocked)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Muq,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10234,6 +10287,11 @@ pub use models::yamnet::{YamnetReport, convert_yamnet_file};
 // ~330M params, cc-by-nc-4.0 default). Standalone file-based entry
 // point mirrors the yamnet / musicgen_medium re-export pattern.
 pub use models::mert::{MertReport, convert_mert_file};
+// Music-understanding wave (2026-08-13): MuQ — Self-supervised music
+// representation learner (Mel-RVQ + BEATs teacher, MERT alternative,
+// ~500M params, license unknown default). Standalone file-based entry
+// point mirrors the mert / yamnet re-export pattern.
+pub use models::muq::{MuqReport, convert_muq_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -11855,6 +11913,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model mert` must round-trip through as_arg → from_arg
             // so a dropped alias fails loudly here.
             Mert,
+            // Music-understanding wave (2026-08-13): MuQ — canonical
+            // `--model muq` must round-trip through as_arg → from_arg
+            // so a dropped alias fails loudly here.
+            Muq,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12516,6 +12578,17 @@ mod modelkind_alias_and_roundtrip_tests {
                     "mert-330m",
                     "m-a-p/mert-v1-330m",
                     "m-a-p/MERT-v1-330M",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): MuQ.
+            (
+                ModelKind::Muq,
+                &[
+                    "muq",
+                    "muq-large-msd-iter",
+                    "muq-large",
+                    "openmuq/muq-large-msd-iter",
+                    "OpenMuQ/MuQ-large-msd-iter",
                 ],
             ),
         ];
