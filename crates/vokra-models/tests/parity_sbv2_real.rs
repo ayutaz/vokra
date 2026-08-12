@@ -1185,7 +1185,28 @@ fn utmos_gate(rust_wave: &[f32], reference_wave: &[f32], sbv2_sample_rate: u32) 
 fn parity_sbv2_real_waveform_matches_reference_dump() {
     let dir = fixtures_dir();
 
+    // Fixture-absent → clean skip (Whisper JFK / parity-kokoro pattern).
+    // The 3 `.gguf` checkpoints (~2.5 GB) and 15 `reference_dump/*.bin` files
+    // are gitignored — a CI runner that hasn't provisioned them via the
+    // `parity-sbv2-real.yml` workflow (or a fresh dev clone without local
+    // fixtures) must SKIP loudly, not panic. `require_fixture`'s panic below
+    // is reserved for the partial-fixture case (main GGUF present but
+    // reference_dump/*.bin missing = corruption / mid-provisioning), where a
+    // loud error is genuinely needed. This early skip is explicit and named
+    // (FR-EX-08 — no fabricated pass, no silent skip).
     let manifest_path = dir.join("reference_dump.manifest.json");
+    let main_gguf = dir.join("sbv2-v2-multilingual-base.gguf");
+    if !manifest_path.exists() || !main_gguf.exists() {
+        eprintln!(
+            "[parity_sbv2_real] SKIP: fixtures absent at {}. Populate via \
+             `parity-sbv2-real.yml` workflow or manual `tests/fixtures/sbv2/README.md` \
+             recipe (SBV2 v2 base + DeBERTa v2/v3 GGUFs + Python reference dump). \
+             This is an FR-EX-08 explicit skip, not a fabricated pass.",
+            dir.display()
+        );
+        return;
+    }
+
     require_fixture(&manifest_path, "reference_dump.manifest.json (Task 34)");
     let manifest_bytes = std::fs::read(&manifest_path)
         .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
