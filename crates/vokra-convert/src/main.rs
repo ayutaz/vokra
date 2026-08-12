@@ -2615,6 +2615,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // unknown fail-closed default). HF-hosted, stamps
         // `vokra.provenance.upstream_hf = OpenMuQ/MuQ-large-msd-iter`.
         | ModelKind::Muq
+        // Music-understanding wave (2026-08-13): Dasheng — Universal audio
+        // encoder (speech + music + environmental, MAE ViT/ConvNeXt
+        // backbone, ~86M params base, apache-2.0 default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = mispeech/dasheng-base`.
+        | ModelKind::Dasheng
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

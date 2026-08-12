@@ -3011,6 +3011,26 @@ pub enum ModelKind {
     /// confirmation before publish is unblocked. Convert with
     /// `convert_muq_file`.
     Muq,
+    /// **Dasheng** (`mispeech/dasheng-base`, apache-2.0 default,
+    /// music-understanding wave 2026-08-13) — "Deep Audio-Signal
+    /// Holistic Embeddings", Xiaomi mispeech group's universal audio
+    /// encoder trained via masked autoencoding on ~272 000 hours
+    /// across speech, music, and environmental audio (Dinkel et al.
+    /// 2024 arXiv:2406.06992 Interspeech 2024). Unlike MERT / MuQ
+    /// (music-only) or wav2vec2 / HuBERT (speech-only), Dasheng
+    /// targets all three domains from a single ViT/ConvNeXt backbone
+    /// (~86M params base, ~340 MB single safetensors). Category =
+    /// `audio-embedding` (superset of `music-embedding` — universal
+    /// encoder consumed by speech AND music downstream heads).
+    /// Distinct arch tag `dasheng` because the masked-autoencoder
+    /// ViT/ConvNeXt backbone spans speech + music + environmental
+    /// audio uniformly, unlike the music-only siblings (`mert` /
+    /// `muq`) — silently sharing would misroute the runtime dispatch
+    /// (FR-EX-08). Scale = **local safe** (~0.4 GB, well below
+    /// vast.ai threshold). License default = `apache-2.0` = **T1
+    /// tier Permissive** (HF cardData primary source per task
+    /// input). Convert with `convert_dasheng_file`.
+    Dasheng,
 }
 
 impl ModelKind {
@@ -3570,6 +3590,13 @@ impl ModelKind {
             | "muq-large"
             | "openmuq/muq-large-msd-iter"
             | "OpenMuQ/MuQ-large-msd-iter" => Some(Self::Muq),
+            // Music-understanding wave (2026-08-13). Dasheng — Universal
+            // audio encoder (speech + music + environmental), MAE
+            // ViT/ConvNeXt backbone, ~86M params base. apache-2.0 default.
+            "dasheng"
+            | "dasheng-base"
+            | "mispeech/dasheng-base"
+            | "mispeech-dasheng-base" => Some(Self::Dasheng),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4687,6 +4714,9 @@ impl ModelKind {
             Self::Mert => "mert",
             // Music-understanding wave (2026-08-13). MuQ canonical CLI slug.
             Self::Muq => "muq",
+            // Music-understanding wave (2026-08-13). Dasheng canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::Dasheng => "dasheng-base",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -6947,6 +6977,27 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Muq,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // Dasheng — Universal audio encoder (speech + music + environmental)
+        // trained via masked autoencoding on ~272 000 hours. Superset of
+        // `music-embedding` category (`audio-embedding`) with distinct arch
+        // tag from music-only siblings (`mert` / `muq`) so runtime dispatch
+        // cannot misroute across scope boundaries (FR-EX-08).
+        ModelKind::Dasheng => {
+            let report = models::dasheng::convert_dasheng_file(input, output, license)?;
+            let notes = vec![format!(
+                "dasheng: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (apache-2.0 default, Permissive; universal audio encoder = speech + \
+                 music + environmental in a single MAE ViT/ConvNeXt backbone, ~86M params base)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Dasheng,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10292,6 +10343,11 @@ pub use models::mert::{MertReport, convert_mert_file};
 // ~500M params, license unknown default). Standalone file-based entry
 // point mirrors the mert / yamnet re-export pattern.
 pub use models::muq::{MuqReport, convert_muq_file};
+// Music-understanding wave (2026-08-13): Dasheng — Universal audio
+// encoder (speech + music + environmental, MAE ViT/ConvNeXt backbone,
+// ~86M params base, apache-2.0 default). Standalone file-based entry
+// point mirrors the muq / mert / yamnet re-export pattern.
+pub use models::dasheng::{DashengReport, convert_dasheng_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -11917,6 +11973,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model muq` must round-trip through as_arg → from_arg
             // so a dropped alias fails loudly here.
             Muq,
+            // Music-understanding wave (2026-08-13): Dasheng — canonical
+            // `--model dasheng-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Dasheng,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12589,6 +12649,16 @@ mod modelkind_alias_and_roundtrip_tests {
                     "muq-large",
                     "openmuq/muq-large-msd-iter",
                     "OpenMuQ/MuQ-large-msd-iter",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): Dasheng.
+            (
+                ModelKind::Dasheng,
+                &[
+                    "dasheng",
+                    "dasheng-base",
+                    "mispeech/dasheng-base",
+                    "mispeech-dasheng-base",
                 ],
             ),
         ];

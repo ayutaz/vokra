@@ -1020,6 +1020,7 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "yamnet": ["YAMNet (`thelou1s/yamnet`)"],
     "mert": ["MERT (`m-a-p/MERT-v1-330M`)"],
     "muq": ["MuQ (`OpenMuQ/MuQ-large-msd-iter`)"],
+    "dasheng-base": ["Dasheng (`mispeech/dasheng-base`)"],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
     "titanet-l": ["TitaNet (NVIDIA NeMo)"],
     "titanet-large": ["TitaNet (NVIDIA NeMo)"],
@@ -1521,6 +1522,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "yamnet": ["YAMNet (`thelou1s/yamnet`)"],
     "mert": ["MERT (`m-a-p/MERT-v1-330M`)"],
     "muq": ["MuQ (`OpenMuQ/MuQ-large-msd-iter`)"],
+    "dasheng": ["Dasheng (`mispeech/dasheng-base`)"],
     # -----------------------------------------------------------------------
     # 2026-08-06 batch: 23-converter signoff backfill (PR #24 coverage-audit
     # 2026-08-03 + M5 gap wave 1 + KWS + Denoise/MOS/AEC binder wave).
