@@ -2620,6 +2620,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // backbone, ~86M params base, apache-2.0 default). HF-hosted,
         // stamps `vokra.provenance.upstream_hf = mispeech/dasheng-base`.
         | ModelKind::Dasheng
+        // Music-understanding wave (2026-08-13): PANNs Cnn14 — 527-class
+        // AudioSet audio-tagging backbone (VGG-flavour 14-layer 2D-CNN,
+        // ~80M params, license unknown fail-closed default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = nicofarr/panns_Cnn14`.
+        | ModelKind::Panns
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

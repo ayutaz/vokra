@@ -953,5 +953,6 @@ pub mod utmosv2;
 pub mod dasheng;
 pub mod mert;
 pub mod muq;
+pub mod panns;
 pub mod yamnet;
 // ---------------------------------------------------------------------------

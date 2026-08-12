@@ -3031,6 +3031,28 @@ pub enum ModelKind {
     /// tier Permissive** (HF cardData primary source per task
     /// input). Convert with `convert_dasheng_file`.
     Dasheng,
+    /// **PANNs Cnn14** (`nicofarr/panns_Cnn14`, license unknown
+    /// default, music-understanding wave 2026-08-13) — Pretrained
+    /// Audio Neural Networks Cnn14 checkpoint (Kong et al. 2020
+    /// arXiv:1912.10211). VGG-style 14-layer 2D-CNN over 64-mel
+    /// log-spectrogram, trained on AudioSet for a **527-class**
+    /// ontology output (~80M params). Widely used as a music-tagging
+    /// / sound-event-detection backbone; produces frame-level
+    /// embeddings (2048-d) or clip-level 527-way probabilities.
+    /// Category = `audio-tagging` (sibling of `yamnet` / `ast` /
+    /// `clap`). Distinct arch tag `panns` from `yamnet` because the
+    /// residual Cnn14 backbone is a distinct topology from
+    /// MobileNetV1 depthwise-separable — silently sharing would
+    /// misroute the runtime dispatch (FR-EX-08). Scale = **local
+    /// safe** (~0.35 GB, well below vast.ai threshold). License
+    /// default = `unknown` = **fail-closed** — HF mirror
+    /// `nicofarr/panns_Cnn14` carries no cardData `license:` tag
+    /// as of 2026-08-13; the upstream reference
+    /// `qiuqiangkong/audioset_tagging_cnn` is MIT but the mirror
+    /// LICENSE is un-verified. Owner must complete primary-source
+    /// confirmation before publish is unblocked. Convert with
+    /// `convert_panns_file`.
+    Panns,
 }
 
 impl ModelKind {
@@ -3597,6 +3619,15 @@ impl ModelKind {
             | "dasheng-base"
             | "mispeech/dasheng-base"
             | "mispeech-dasheng-base" => Some(Self::Dasheng),
+            // Music-understanding wave (2026-08-13). PANNs Cnn14 — 527-class
+            // AudioSet audio-tagging backbone (VGG-flavour 14-layer 2D-CNN,
+            // ~80M params). License unknown (fail-closed default).
+            "panns"
+            | "panns-cnn14"
+            | "panns_cnn14"
+            | "cnn14"
+            | "nicofarr/panns_cnn14"
+            | "nicofarr/panns_Cnn14" => Some(Self::Panns),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4717,6 +4748,9 @@ impl ModelKind {
             // Music-understanding wave (2026-08-13). Dasheng canonical CLI slug
             // matches the publish repo tail token and shared arch tag.
             Self::Dasheng => "dasheng-base",
+            // Music-understanding wave (2026-08-13). PANNs canonical CLI slug
+            // = variant-prefixed short name.
+            Self::Panns => "panns-cnn14",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -6998,6 +7032,28 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Dasheng,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // PANNs Cnn14 — 527-class AudioSet audio-tagging backbone (VGG-flavour
+        // 14-layer 2D-CNN, ~80M params). License unknown default (mirror
+        // repo does not declare a `license:` tag; upstream reference is MIT
+        // but the mirror LICENSE is un-verified). Fail-closed under M2-13.
+        ModelKind::Panns => {
+            let report = models::panns::convert_panns_file(input, output, license)?;
+            let notes = vec![format!(
+                "panns-cnn14: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (unknown default, LicenseClass::Unknown fail-closed — HF \
+                 mirror `nicofarr/panns_Cnn14` cardData carries no `license:` tag as of \
+                 2026-08-13; upstream reference `qiuqiangkong/audioset_tagging_cnn` is MIT \
+                 but the mirror LICENSE is un-verified)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Panns,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10348,6 +10404,11 @@ pub use models::muq::{MuqReport, convert_muq_file};
 // ~86M params base, apache-2.0 default). Standalone file-based entry
 // point mirrors the muq / mert / yamnet re-export pattern.
 pub use models::dasheng::{DashengReport, convert_dasheng_file};
+// Music-understanding wave (2026-08-13): PANNs Cnn14 — 527-class
+// AudioSet audio-tagging backbone (VGG-flavour 14-layer 2D-CNN, ~80M
+// params, license unknown default). Standalone file-based entry
+// point mirrors the dasheng / muq / mert / yamnet re-export pattern.
+pub use models::panns::{PannsReport, convert_panns_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -11977,6 +12038,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model dasheng-base` must round-trip through as_arg →
             // from_arg so a dropped alias fails loudly here.
             Dasheng,
+            // Music-understanding wave (2026-08-13): PANNs — canonical
+            // `--model panns-cnn14` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Panns,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12659,6 +12724,18 @@ mod modelkind_alias_and_roundtrip_tests {
                     "dasheng-base",
                     "mispeech/dasheng-base",
                     "mispeech-dasheng-base",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): PANNs.
+            (
+                ModelKind::Panns,
+                &[
+                    "panns",
+                    "panns-cnn14",
+                    "panns_cnn14",
+                    "cnn14",
+                    "nicofarr/panns_cnn14",
+                    "nicofarr/panns_Cnn14",
                 ],
             ),
         ];
