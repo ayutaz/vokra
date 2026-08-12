@@ -200,6 +200,18 @@ pub mod openwakeword;
 // `scripts/compliance/check-encodec-exclusion.sh` release-side script).
 pub mod mimi_rvq;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE dispatch primitive (2026-08-13) ---------------
+// Top-k expert routing + capacity-factor gating for Mixture-of-Experts
+// audio-LLMs (`qwen3-omni-30b-a3b-moe`, `zonos2-8b-moe`, plus the
+// future Kimi-Audio-A28B family — see
+// docs/tickets/coverage-audit-2026-08-03/IMPL-PLAN.md §2.3). Runtime
+// function, NOT an `OpKind` variant (same posture as `flow_sampler` /
+// `mimi_rvq` — ADR M3-06 §D-b): the heterogeneous inputs (router
+// logits, per-expert weight bundles, dispatch plan) do not fit the
+// `OpValue` dispatch surface. Localised re-export block for clean
+// parallel-wave rebases.
+pub mod moe_dispatch;
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 1-2 NSF (HiFTNet source-filter core) ---------------
 // Neural Source Filter (SineGen + SourceModuleHnNSF) — verbatim port of the
 // upstream CosyVoice implementation (`cosyvoice/hifigan/generator.py` L163-
@@ -379,6 +391,9 @@ pub use mimi_rvq::{
     CodebookTable, MimiDecoder, MimiRvqAttrs, codebook_lookup, mimi_paged_dims, mimi_rvq_decode,
     mimi_rvq_decode_paged, mimi_rvq_read_summed, mimi_rvq_read_summed_range,
 };
+// -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE dispatch primitive (2026-08-13) ---------------
+pub use moe_dispatch::{MoeAssignment, MoeDispatchAttrs, MoeDispatchPlan, moe_dispatch};
 // -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 pub use prosody::{ApplyProsody, ProsodyControl};
