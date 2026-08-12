@@ -2625,6 +2625,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // ~80M params, license unknown fail-closed default). HF-hosted,
         // stamps `vokra.provenance.upstream_hf = nicofarr/panns_Cnn14`.
         | ModelKind::Panns
+        // Music-understanding wave (2026-08-13): Basic-Pitch — Spotify
+        // polyphonic audio-to-MIDI pitch-detection (~6 MB CNN over CQT,
+        // 3-head posteriorgram output, apache-2.0 default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = spotify/basic-pitch`.
+        | ModelKind::BasicPitch
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

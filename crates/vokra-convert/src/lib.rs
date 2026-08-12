@@ -3053,6 +3053,28 @@ pub enum ModelKind {
     /// confirmation before publish is unblocked. Convert with
     /// `convert_panns_file`.
     Panns,
+    /// **Basic-Pitch** (`spotify/basic-pitch`, apache-2.0 default,
+    /// music-understanding wave 2026-08-13) — Spotify Research's
+    /// polyphonic audio-to-MIDI pitch-detection model (Bittner et al.
+    /// 2022 ICASSP "A Lightweight Instrument-Agnostic Model for
+    /// Polyphonic Note Transcription"). ~6 MB CNN over CQT input
+    /// producing 3-head posteriorgram output (frame-level note
+    /// activation + note onset detection + contour multi-pitch F0),
+    /// post-processed into MIDI notes. Instrument-agnostic, covers
+    /// polyphonic music (piano / guitar / vocals) at 22.05 kHz mono.
+    /// Category = `pitch-transcription` — **distinct from the
+    /// monophonic `f0` category** owned by `crepe` / `fcpe` /
+    /// `rmvpe` because Basic-Pitch outputs polyphonic MIDI notes,
+    /// not a single-voice F0 contour. Distinct arch tag
+    /// `basic-pitch` from every sibling F0 extractor because the
+    /// 3-head polyphonic posteriorgram output is a distinct topology
+    /// from single-head monophonic pitch grid (FR-EX-08). Scale =
+    /// **smallest of the batch** (~6 MB, well below vast.ai
+    /// threshold). License default = `apache-2.0` = **T1 tier
+    /// Permissive** (HF cardData primary source per task input +
+    /// Apache-2.0 reference GitHub repo). Convert with
+    /// `convert_basic_pitch_file`.
+    BasicPitch,
 }
 
 impl ModelKind {
@@ -3628,6 +3650,14 @@ impl ModelKind {
             | "cnn14"
             | "nicofarr/panns_cnn14"
             | "nicofarr/panns_Cnn14" => Some(Self::Panns),
+            // Music-understanding wave (2026-08-13). Basic-Pitch — Spotify
+            // polyphonic audio-to-MIDI pitch-detection (~6 MB CNN over CQT
+            // with 3-head posteriorgram). apache-2.0 default (Permissive).
+            "basic-pitch"
+            | "basic_pitch"
+            | "basicpitch"
+            | "spotify/basic-pitch"
+            | "spotify-basic-pitch" => Some(Self::BasicPitch),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4751,6 +4781,9 @@ impl ModelKind {
             // Music-understanding wave (2026-08-13). PANNs canonical CLI slug
             // = variant-prefixed short name.
             Self::Panns => "panns-cnn14",
+            // Music-understanding wave (2026-08-13). Basic-Pitch canonical CLI
+            // slug matches the publish repo tail token and shared arch tag.
+            Self::BasicPitch => "basic-pitch",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -7054,6 +7087,28 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Panns,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // Basic-Pitch — Spotify polyphonic audio-to-MIDI pitch-detection.
+        // 3-head posteriorgram output (frame / onset / contour) → distinct
+        // arch tag from monophonic F0 siblings (`crepe` / `fcpe` / `rmvpe`),
+        // distinct category `pitch-transcription` from their `f0`. Smallest
+        // of the music-understanding wave (~6 MB).
+        ModelKind::BasicPitch => {
+            let report = models::basic_pitch::convert_basic_pitch_file(input, output, license)?;
+            let notes = vec![format!(
+                "basic-pitch: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (apache-2.0 default, Permissive; polyphonic audio-to-MIDI, \
+                 3-head posteriorgram output, ~6 MB CNN — smallest of the music-understanding \
+                 wave)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BasicPitch,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10409,6 +10464,12 @@ pub use models::dasheng::{DashengReport, convert_dasheng_file};
 // params, license unknown default). Standalone file-based entry
 // point mirrors the dasheng / muq / mert / yamnet re-export pattern.
 pub use models::panns::{PannsReport, convert_panns_file};
+// Music-understanding wave (2026-08-13): Basic-Pitch — Spotify
+// polyphonic audio-to-MIDI pitch-detection (~6 MB CNN over CQT with
+// 3-head posteriorgram output, apache-2.0 default). Standalone
+// file-based entry point mirrors the panns / dasheng / muq / mert /
+// yamnet re-export pattern.
+pub use models::basic_pitch::{BasicPitchReport, convert_basic_pitch_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -12042,6 +12103,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model panns-cnn14` must round-trip through as_arg →
             // from_arg so a dropped alias fails loudly here.
             Panns,
+            // Music-understanding wave (2026-08-13): Basic-Pitch — canonical
+            // `--model basic-pitch` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            BasicPitch,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12736,6 +12801,17 @@ mod modelkind_alias_and_roundtrip_tests {
                     "cnn14",
                     "nicofarr/panns_cnn14",
                     "nicofarr/panns_Cnn14",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): Basic-Pitch.
+            (
+                ModelKind::BasicPitch,
+                &[
+                    "basic-pitch",
+                    "basic_pitch",
+                    "basicpitch",
+                    "spotify/basic-pitch",
+                    "spotify-basic-pitch",
                 ],
             ),
         ];
