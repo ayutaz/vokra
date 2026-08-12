@@ -212,6 +212,15 @@ pub mod mimi_rvq;
 // parallel-wave rebases.
 pub mod moe_dispatch;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE expert GEMM primitive (2026-08-13) ------------
+// Per-expert weight reduction that consumes a plan from `moe_dispatch`
+// and folds each expert's contribution back into the per-token output.
+// Split from `moe_dispatch` so the routing decision is independently
+// testable and so a later SIMD / GPU / Metal kernel can replace this
+// inner loop without redoing the softmax + top-k math. Runtime
+// function, NOT an `OpKind` variant (same posture as `moe_dispatch`).
+pub mod moe_expert_gemm;
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 1-2 NSF (HiFTNet source-filter core) ---------------
 // Neural Source Filter (SineGen + SourceModuleHnNSF) — verbatim port of the
 // upstream CosyVoice implementation (`cosyvoice/hifigan/generator.py` L163-
@@ -394,6 +403,9 @@ pub use mimi_rvq::{
 // -------------------------------------------------------------------------
 // ---- SoTA plan Wave C MoE dispatch primitive (2026-08-13) ---------------
 pub use moe_dispatch::{MoeAssignment, MoeDispatchAttrs, MoeDispatchPlan, moe_dispatch};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE expert GEMM primitive (2026-08-13) ------------
+pub use moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm};
 // -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 pub use prosody::{ApplyProsody, ProsodyControl};
