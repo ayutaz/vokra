@@ -1030,6 +1030,9 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # CC pre-fill per memory [[feedback-license-signoff-primary-source]]).
     "beats-iter3-plus-as2m": ["BEATs (`microsoft/unilm/tree/master/beats`)"],
     "eat-base": ["EAT (`cwx-worst-one/EAT`)"],
+    "atst-base": [
+        "ATST (`Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst`)"
+    ],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
     "titanet-l": ["TitaNet (NVIDIA NeMo)"],
     "titanet-large": ["TitaNet (NVIDIA NeMo)"],
@@ -1539,6 +1542,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # match `docs/license-audit.md` §3.1 byte-for-byte.
     "beats": ["BEATs (`microsoft/unilm/tree/master/beats`)"],
     "eat": ["EAT (`cwx-worst-one/EAT`)"],
+    "atst": [
+        "ATST (`Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst`)"
+    ],
     # -----------------------------------------------------------------------
     # 2026-08-06 batch: 23-converter signoff backfill (PR #24 coverage-audit
     # 2026-08-03 + M5 gap wave 1 + KWS + Denoise/MOS/AEC binder wave).

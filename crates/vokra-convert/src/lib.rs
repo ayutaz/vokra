@@ -3121,6 +3121,28 @@ pub enum ModelKind {
     /// `spdx_id: MIT` per task input 2026-08-13). No HF mirror.
     /// Convert with `convert_eat_file`.
     Eat,
+    /// **ATST** (`Audio-WestlakeU/audiossl/tree/main/audiossl/
+    /// methods/atst`, **cc-by-4.0 default**, SSL audio-encoder wave
+    /// 2026-08-13) — "Audio Teacher-Student Transformer", Li et al.
+    /// 2022 INTERSPEECH arXiv:2204.12076 (+ 2023 TASLP frame-level
+    /// extension arXiv:2306.04186). Teacher-student patchout SSL
+    /// audio encoder over log-mel spectrogram. ~86M parameter
+    /// class (~200 MB base checkpoint). Category = `audio-embedding`
+    /// (sibling of `dasheng` / `beats` / `eat` — future SSL wave
+    /// sibling `m2d` lands in a later commit). Distinct arch tag
+    /// `atst` because the teacher-student patchout (BYOL-style EMA
+    /// teacher + student patch dropout) topology is a distinct
+    /// axis from every sibling SSL encoder (FR-EX-08). Scale =
+    /// **local safe** (~0.2 GB). **License default = `cc-by-4.0`
+    /// (weight-only)** — the upstream README explicitly separates
+    /// code (MIT) from pretrained checkpoints:
+    /// > "The pretrained checkpoints hyper-linked in this repo are
+    /// > licensed under CC BY 4.0."
+    /// so the weight redistribution posture is `AttributionRequired`
+    /// (BY 4.0 attribution required on any downstream distribution).
+    /// The code SPDX would be `mit` but is not what a weight-provenance
+    /// stamp records. Convert with `convert_atst_file`.
+    Atst,
 }
 
 impl ModelKind {
@@ -3722,6 +3744,17 @@ impl ModelKind {
             | "eat-base"
             | "cwx-worst-one/eat"
             | "cwx-worst-one-eat" => Some(Self::Eat),
+            // SSL audio-encoder wave (2026-08-13). ATST — Audio
+            // Teacher-Student Transformer, BYOL-style EMA teacher +
+            // student patch dropout, ~86M params base. cc-by-4.0 weight
+            // default (AttributionRequired; code MIT umbrella but that
+            // is not what a weight-provenance stamp records).
+            "atst"
+            | "atst-base"
+            | "atst-frame"
+            | "audio-westlakeu/audiossl-atst"
+            | "audiossl-atst"
+            | "audiossl/atst" => Some(Self::Atst),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4855,6 +4888,9 @@ impl ModelKind {
             // SSL audio-encoder wave (2026-08-13). EAT canonical CLI slug
             // matches the publish repo tail token and shared arch tag.
             Self::Eat => "eat-base",
+            // SSL audio-encoder wave (2026-08-13). ATST canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::Atst => "atst-base",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -7224,6 +7260,28 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Eat,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // ATST — Audio Teacher-Student Transformer, BYOL-style EMA teacher
+        // + student patch dropout, ~86M params base. cc-by-4.0 weight
+        // default (AttributionRequired) — upstream README explicitly
+        // separates code (MIT) from pretrained checkpoints (CC-BY-4.0).
+        ModelKind::Atst => {
+            let report = models::atst::convert_atst_file(input, output, license)?;
+            let notes = vec![format!(
+                "atst: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (cc-by-4.0 weight default, AttributionRequired — upstream README declares \
+                 code MIT / pretrained checkpoints CC-BY-4.0 explicitly, weight-provenance stamp \
+                 tracks the weight tier; ~86M params base, upstream Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst \
+                 — no HF mirror)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Atst,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10598,6 +10656,12 @@ pub use models::beats::{BeatsReport, convert_beats_file};
 // masking (~86M params base, mit default). Standalone file-based
 // entry point mirrors the beats re-export pattern.
 pub use models::eat::{EatReport, convert_eat_file};
+// SSL audio-encoder wave (2026-08-13): ATST — Audio Teacher-Student
+// Transformer, BYOL-style EMA teacher + student patch dropout SSL
+// audio encoder (~86M params base, cc-by-4.0 weight default =
+// AttributionRequired). Standalone file-based entry point mirrors
+// the eat / beats re-export pattern.
+pub use models::atst::{AtstReport, convert_atst_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -12243,6 +12307,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model eat-base` must round-trip through as_arg →
             // from_arg so a dropped alias fails loudly here.
             Eat,
+            // SSL audio-encoder wave (2026-08-13): ATST — canonical
+            // `--model atst-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Atst,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12967,6 +13035,18 @@ mod modelkind_alias_and_roundtrip_tests {
             (
                 ModelKind::Eat,
                 &["eat", "eat-base", "cwx-worst-one/eat", "cwx-worst-one-eat"],
+            ),
+            // SSL audio-encoder wave (2026-08-13): ATST.
+            (
+                ModelKind::Atst,
+                &[
+                    "atst",
+                    "atst-base",
+                    "atst-frame",
+                    "audio-westlakeu/audiossl-atst",
+                    "audiossl-atst",
+                    "audiossl/atst",
+                ],
             ),
         ];
         for (kind, aliases) in cases {

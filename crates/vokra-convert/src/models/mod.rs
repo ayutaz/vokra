@@ -968,6 +968,7 @@ pub mod yamnet;
 // (`docs/license-audit.md` §3.1). §3.1 sign-off blank fail-closed at land
 // time (no CC pre-fill per memory
 // [[feedback-license-signoff-primary-source]]).
+pub mod atst;
 pub mod beats;
 pub mod eat;
 // ---------------------------------------------------------------------------
