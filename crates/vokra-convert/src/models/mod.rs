@@ -957,3 +957,16 @@ pub mod muq;
 pub mod panns;
 pub mod yamnet;
 // ---------------------------------------------------------------------------
+// SSL audio-encoder wave (2026-08-13, post-audit CC-gap): 5 self-supervised
+// audio-encoder converters land one per commit (BEATs → EAT → ATST → MAEST →
+// M2D). All local-safe (<2 GB) per memory
+// [[feedback-large-models-on-vast-ai]] threshold. BF16 pass-through skeletons
+// mirror the music-understanding wave contract; each declares a distinct arch
+// tag so silent runtime dispatch cannot misroute e.g. a BEATs iterative-
+// tokenizer checkpoint through an EAT utterance-level loader (FR-EX-08).
+// Real-weight parity + runtime binder deferred to owner sign-off
+// (`docs/license-audit.md` §3.1). §3.1 sign-off blank fail-closed at land
+// time (no CC pre-fill per memory
+// [[feedback-license-signoff-primary-source]]).
+pub mod beats;
+// ---------------------------------------------------------------------------

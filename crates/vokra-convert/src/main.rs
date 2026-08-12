@@ -2787,7 +2787,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // `vokra.provenance.upstream_url` per the NKF-AEC / RNNoise /
         // NSNet2 / facebook_denoiser precedent.
         | ModelKind::TorchaudioSquim
-        | ModelKind::TenVad => {
+        | ModelKind::TenVad
+        // SSL audio-encoder wave (2026-08-13): BEATs — no first-party
+        // HF mirror as of 2026-08-13, stamps
+        // `vokra.provenance.upstream_url = github.com/microsoft/unilm/
+        // tree/master/beats` per the NKF-AEC / RNNoise / NSNet2 /
+        // facebook_denoiser precedent. Reading the wrong key would
+        // print `<none>` for the URL and hide the actual upstream in
+        // the verify output, which is exactly what FR-EX-08 forbids
+        // for provenance. Siblings EAT / ATST / M2D land in later
+        // commits and join this arm.
+        | ModelKind::Beats => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

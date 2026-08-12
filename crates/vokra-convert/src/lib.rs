@@ -3075,6 +3075,34 @@ pub enum ModelKind {
     /// Apache-2.0 reference GitHub repo). Convert with
     /// `convert_basic_pitch_file`.
     BasicPitch,
+    /// **BEATs** (`microsoft/unilm/tree/master/beats`, mit default,
+    /// SSL audio-encoder wave 2026-08-13) — "Bidirectional Encoder
+    /// representation from Audio Transformers", Chen et al. 2023
+    /// ICML arXiv:2212.09058. Foundational self-supervised audio
+    /// encoder trained via **iterative acoustic tokenizer + mask
+    /// acoustic modeling**; the iter3_plus checkpoint is the third
+    /// refinement round (~90M params, ~340 MB `.pt`). Serves as
+    /// (a) a general audio-embedding backbone for downstream
+    /// tagging / classification, and (b) the **acoustic teacher**
+    /// for other SSL releases (notably MuQ). Category =
+    /// `audio-embedding` (sibling of `dasheng` — future siblings
+    /// `eat` / `atst` / `m2d` land in later commits of this same
+    /// SSL wave). Distinct arch tag `beats` because the iterative
+    /// tokenizer + MAM training target is a distinct topology from
+    /// sibling SSL encoders (`dasheng` = MAE ViT/ConvNeXt, `mert` =
+    /// HuBERT-derived) — silently sharing would misroute the
+    /// runtime dispatch and try to bind e.g. a MAE decoder over
+    /// an iterative-tokenizer checkpoint (FR-EX-08). Scale =
+    /// **local safe** (~0.34 GB, well below vast.ai threshold,
+    /// memory `[[feedback-large-models-on-vast-ai]]`). License
+    /// default = `mit` = **T1 tier Permissive** (upstream
+    /// `microsoft/unilm` root LICENSE `spdx_id: MIT` via GitHub
+    /// API `/repos/microsoft/unilm/license` per task input
+    /// 2026-08-13; the `beats/` subdirectory inherits the root
+    /// umbrella). **HF community mirrors do not carry `license:`
+    /// tags** ge no first-party Microsoft HF org release exists as
+    /// of 2026-08-13. Convert with `convert_beats_file`.
+    Beats,
 }
 
 impl ModelKind {
@@ -3658,6 +3686,17 @@ impl ModelKind {
             | "basicpitch"
             | "spotify/basic-pitch"
             | "spotify-basic-pitch" => Some(Self::BasicPitch),
+            // SSL audio-encoder wave (2026-08-13). BEATs — foundational
+            // self-supervised audio encoder with iterative acoustic
+            // tokenizer + mask acoustic modeling, ~90M params
+            // iter3_plus_AS2M. mit default (T1 Permissive).
+            "beats"
+            | "beats-iter3"
+            | "beats-iter3-plus"
+            | "beats-iter3-plus-as2m"
+            | "microsoft/beats"
+            | "microsoft-beats"
+            | "unilm-beats" => Some(Self::Beats),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -4784,6 +4823,10 @@ impl ModelKind {
             // Music-understanding wave (2026-08-13). Basic-Pitch canonical CLI
             // slug matches the publish repo tail token and shared arch tag.
             Self::BasicPitch => "basic-pitch",
+            // SSL audio-encoder wave (2026-08-13). BEATs canonical CLI slug
+            // = variant-prefixed short name (`beats-iter3-plus-as2m` mirrors
+            // the primary-source checkpoint name from the unilm README).
+            Self::Beats => "beats-iter3-plus-as2m",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -7109,6 +7152,30 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::BasicPitch,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // BEATs — foundational SSL audio encoder with iterative acoustic
+        // tokenizer + mask acoustic modeling, ~90M params iter3_plus_AS2M.
+        // mit default (T1 Permissive; upstream `microsoft/unilm` root
+        // LICENSE `spdx_id: MIT` via GitHub API per task input 2026-08-13).
+        // Also serves as the acoustic teacher for MuQ (which explicitly
+        // names BEATs as its teacher).
+        ModelKind::Beats => {
+            let report = models::beats::convert_beats_file(input, output, license)?;
+            let notes = vec![format!(
+                "beats: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (mit default, Permissive; foundational SSL audio encoder with iterative \
+                 acoustic tokenizer + mask acoustic modeling, ~90M params iter3_plus_AS2M, upstream \
+                 microsoft/unilm/tree/master/beats — no first-party HF mirror, community mirrors \
+                 carry no license: tag as of 2026-08-13)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Beats,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10470,6 +10537,14 @@ pub use models::panns::{PannsReport, convert_panns_file};
 // file-based entry point mirrors the panns / dasheng / muq / mert /
 // yamnet re-export pattern.
 pub use models::basic_pitch::{BasicPitchReport, convert_basic_pitch_file};
+// SSL audio-encoder wave (2026-08-13): BEATs — foundational
+// self-supervised audio encoder with iterative acoustic tokenizer +
+// mask acoustic modeling (~90M params iter3_plus_AS2M, mit default).
+// Standalone file-based entry point mirrors the dasheng / mert /
+// muq / yamnet re-export pattern. First member of the SSL audio-
+// encoder wave (siblings EAT / ATST / MAEST / M2D land in
+// subsequent commits).
+pub use models::beats::{BeatsReport, convert_beats_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
@@ -12107,6 +12182,10 @@ mod modelkind_alias_and_roundtrip_tests {
             // `--model basic-pitch` must round-trip through as_arg →
             // from_arg so a dropped alias fails loudly here.
             BasicPitch,
+            // SSL audio-encoder wave (2026-08-13): BEATs — canonical
+            // `--model beats-iter3-plus-as2m` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            Beats,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -12812,6 +12891,19 @@ mod modelkind_alias_and_roundtrip_tests {
                     "basicpitch",
                     "spotify/basic-pitch",
                     "spotify-basic-pitch",
+                ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): BEATs.
+            (
+                ModelKind::Beats,
+                &[
+                    "beats",
+                    "beats-iter3",
+                    "beats-iter3-plus",
+                    "beats-iter3-plus-as2m",
+                    "microsoft/beats",
+                    "microsoft-beats",
+                    "unilm-beats",
                 ],
             ),
         ];
