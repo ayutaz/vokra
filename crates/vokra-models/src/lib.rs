@@ -200,6 +200,20 @@ pub mod kotoba_whisper;
 // a follow-up wave (T29-equivalent). Weights: CC-BY 4.0
 // (AttributionRequired — FR-MD-09 attribution surface).
 pub mod kyutai_stt;
+// post-audit CC-gap 2026-08-13 Wave D: Meta AudioCraft MAGNeT runtime
+// binder (**SCAFFOLD** — CPU-only, loud-partial forward per RMVPE /
+// DNSMOS / openwakeword precedent). Consumes the two converter modules
+// `magnet_small_10secs` (500 M params, 10 s horizon) +
+// `magnet_medium_30secs` (1.5 B params, 30 s horizon). The runtime
+// primitives `magnet_masked_decode` + `span_masking_scheduler` (the
+// **FR-OP-85 anchor**) are deferred to a follow-up wave — see
+// `docs/adr/M5-magnet-masked-ar-op.md` (Status: **Proposed**) for the
+// proposed signatures and owner ratification queue; the codec decode
+// integration (bundled 32 kHz EnCodec, FR-OP-32 CC-BY-NC-4.0
+// distribution restriction) is owner-driven per the ADR §D-5. Weights:
+// CC-BY-NC-4.0 (T4 tier — `--allow-noncommercial` required to publish;
+// M2-13 compliance gate refuses commercial-mode load).
+pub mod magnet;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet TDT-0.6B-v3 — English
 // streaming ASR built on a FastConformer encoder (8× subsampling,
 // 24-layer / d_model=1024 / MHA) + a 2-layer 640-d RNN-T prediction

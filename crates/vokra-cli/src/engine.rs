@@ -175,6 +175,18 @@ const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
 /// SBV2 / Style-Bert-VITS2 v2 (Task 38) — matches
 /// `vokra-convert::models::sbv2::ARCH` (`crates/vokra-convert/src/models/sbv2.rs`).
 const ARCH_SBV2: &str = "sbv2";
+/// MAGNeT Small 10 secs (post-audit CC-gap 2026-08-13 Wave D) — matches
+/// [`vokra_models::magnet::ARCH_SMALL`]. Dispatch here is a **scaffold
+/// stop-gap**: the runtime forward is loud-partial pending
+/// `docs/adr/M5-magnet-masked-ar-op.md` (Status: Proposed) ratification,
+/// combined with `magnet_masked_decode` / `span_masking_scheduler` op
+/// landing (FR-OP-85 anchor).
+const ARCH_MAGNET_SMALL: &str = "magnet_small_10secs";
+/// MAGNeT Medium 30 secs (post-audit CC-gap 2026-08-13 Wave D) —
+/// matches [`vokra_models::magnet::ARCH_MEDIUM`]. Same scaffold posture
+/// as [`ARCH_MAGNET_SMALL`]; the loud reject at load time makes the
+/// deferred state visible so no run silently produces empty output.
+const ARCH_MAGNET_MEDIUM: &str = "magnet_medium_30secs";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -420,11 +432,44 @@ pub(crate) fn load_session_with_backend_and_mimi(
             let engine = engine.with_echo_path(EchoPath::BypassRecordedInput);
             Ok((session.with_s2s_engine(Arc::new(engine)), ModelTask::S2s))
         }
+        ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
+            // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
+            // runtime shell exists in `vokra-models::magnet` (config
+            // deserialisation + weight catalogue + validation) but the
+            // two runtime primitives that drive MAGNeT's non-autoregressive
+            // masked-LM decoding loop (`magnet_masked_decode` +
+            // `span_masking_scheduler` — the FR-OP-85 anchor) are
+            // deferred to a follow-up wave per
+            // `docs/adr/M5-magnet-masked-ar-op.md` (Status: **Proposed**).
+            // Rejecting at load time — rather than injecting a bare
+            // session that then errors on the first `forward` call —
+            // makes the deferred state visible upfront (FR-EX-08: no
+            // silent stub, no misleading task-available signal).
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{arch}` (MAGNeT \
+                     runtime forward is a scaffold; ADR ratification + real weight \
+                     testing required before hints are honored — see \
+                     docs/adr/M5-magnet-masked-ar-op.md)"
+                ));
+            }
+            Err(format!(
+                "arch `{arch}` runtime forward is a SCAFFOLD — the MAGNeT model \
+                 shell + weight catalogue exist in vokra-models::magnet but the \
+                 `magnet_masked_decode` + `span_masking_scheduler` ops (FR-OP-85 \
+                 anchor) are not yet landed in vokra-ops. See \
+                 docs/adr/M5-magnet-masked-ar-op.md (Status: Proposed) — ADR \
+                 ratification + real weight testing required before this GGUF \
+                 can be executed. The GGUF loaded and validated correctly; the \
+                 refusal here is the loud FR-EX-08 gate, not a converter bug."
+            ))
+        }
         other => Err(format!(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
              `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
-             `{ARCH_KOKORO}` / `{ARCH_SBV2}`)"
+             `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MAGNET_SMALL}` / \
+             `{ARCH_MAGNET_MEDIUM}`)"
         )),
     }
 }
@@ -636,6 +681,85 @@ mod tests {
         assert!(
             err.contains("--mimi is only supported on arch `moshi`"),
             "got: {err}"
+        );
+    }
+
+    /// A `magnet_small_10secs` arch GGUF is loud-rejected at load time
+    /// with a scaffold message naming the ADR — the runtime forward is
+    /// deferred, so the CLI never pretends a working task exists
+    /// (FR-EX-08). Mirror of the RMVPE / DNSMOS loud-partial posture.
+    #[test]
+    fn load_session_rejects_magnet_small_arch_with_scaffold_message() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", ARCH_MAGNET_SMALL);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-magnet-small-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("magnet small arch must be loud-rejected as scaffold");
+        assert!(
+            err.contains("SCAFFOLD"),
+            "message must self-identify as scaffold: {err}"
+        );
+        assert!(
+            err.contains("docs/adr/M5-magnet-masked-ar-op.md"),
+            "message must name the ADR to ratify: {err}"
+        );
+        assert!(
+            err.contains("magnet_masked_decode") && err.contains("span_masking_scheduler"),
+            "message must name the deferred ops: {err}"
+        );
+        assert!(err.contains("FR-OP-85"), "message must cite anchor: {err}");
+    }
+
+    /// Same loud-reject contract for `magnet_medium_30secs` — the two
+    /// variants share the FR-EX-08 gate.
+    #[test]
+    fn load_session_rejects_magnet_medium_arch_with_scaffold_message() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", ARCH_MAGNET_MEDIUM);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-magnet-medium-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("magnet medium arch must be loud-rejected as scaffold");
+        assert!(err.contains("SCAFFOLD"), "must self-identify: {err}");
+        assert!(
+            err.contains(ARCH_MAGNET_MEDIUM),
+            "must name the arch: {err}"
+        );
+    }
+
+    /// Task hints are rejected on the magnet arch too — same FR-EX-08
+    /// rule as every other arch that returns a bare / rejected session.
+    #[test]
+    fn load_session_rejects_hint_on_magnet_arch() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", ARCH_MAGNET_SMALL);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-magnet-hint-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            Some(TaskHint::MelFrontend),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("hint on magnet arch must be rejected");
+        assert!(
+            err.contains("MAGNeT runtime forward is a scaffold"),
+            "hint reject must cite the same scaffold rationale: {err}"
         );
     }
 
