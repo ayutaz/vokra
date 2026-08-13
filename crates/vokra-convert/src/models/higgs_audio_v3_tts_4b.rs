@@ -20,7 +20,17 @@
 //!
 //! # License
 //!
-//! - SPDX: **apache-2.0** ([`vokra_core::LicenseClass::Permissive`]).
+//! - SPDX: **LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial**
+//!   ([`vokra_core::LicenseClass::RedistributionForbidden`]) — CC
+//!   2026-08-13 primary-source curl (see
+//!   `docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md` §0.1-0.2)
+//!   found the actual upstream license is a bespoke BosonAI research
+//!   & non-commercial agreement that explicitly forbids redistribution,
+//!   hosting, and TTS product embedding (§II-A(c)). The prior
+//!   audit-ticket default `apache-2.0` was a pre-primary-source
+//!   estimate and has been rescinded; the artifact is now stamped
+//!   with the actual R&NC LicenseRef so `publish-one.sh` gate 2
+//!   refuses redistribution by construction.
 //! - Category: **tts** — the model is a TTS release (the audit ticket
 //!   groups it as `tts/multilingual`; the shorter `tts` variant is used
 //!   here so runtime dispatch and model-card grouping stay uniform with
@@ -143,10 +153,23 @@ pub const CATEGORY: &str = "tts";
 /// free-text `vokra.provenance.source` blob.
 pub const UPSTREAM_HF: &str = "bosonai/higgs-audio-v3-tts-4b";
 
-/// Default upstream weight licence (SPDX). Apache-2.0 per the audit
-/// ticket's Publish gate `redistributable` entry (owner primary-source
-/// verification pending per §Owner critical path (1)).
-pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
+/// Default upstream weight licence (SPDX-style LicenseRef, not a
+/// registered SPDX identifier). CC 2026-08-13 primary-source curl
+/// verification (see `docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md`
+/// §0.1-0.2) found HF cardData `license: other` +
+/// `license_name: boson-higgs-tts-3-research-and-non-commercial-license`
+/// and the actual LICENSE file titled "BOSON HIGGS TTS 3 RESEARCH AND
+/// NON-COMMERCIAL LICENSE AGREEMENT" (Last Updated 2026-07-08), with
+/// §II-A(c) explicitly forbidding redistribution / hosting / TTS product
+/// embedding. This maps to `LicenseClass::RedistributionForbidden` (per
+/// the slug hardmap in
+/// `crates/vokra-core/src/compliance/license_class.rs`). The prior
+/// audit-ticket default `"apache-2.0"` was a pre-primary-source
+/// estimate and has been rescinded; the stamped weight license in the
+/// GGUF now reflects the actual upstream terms so downstream tooling
+/// (`publish-one.sh` gate 2 / `signoff_match.py`) refuses redistribution
+/// by construction.
+pub const DEFAULT_LICENSE_SPDX: &str = "LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial";
 
 // Raw string keys not covered by `crate::gguf::chunks` — kept as
 // converter-side constants (the cross-crate constant duplication
@@ -209,12 +232,16 @@ pub struct HiggsAudioV3Tts4bReport {
 /// `license` optionally overrides the stamped weight license (raw SPDX
 /// string; the [`LicenseClass`] is re-derived via
 /// [`LicenseClass::from_license_str`]). The default is
-/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the
-/// upstream release is Apache-2.0 per the audit ticket. A downstream
-/// repackager may pass e.g. `Some("apache-2.0")` verbatim to make the
-/// stamp explicit even without a licence change (mirror of the
-/// `magpietts_v2602` / `firered_asr_aed_l` / `wespeaker` /
-/// `emotion2vec` / `frcrn` override convention).
+/// `DEFAULT_LICENSE_SPDX` (`"LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial"`,
+/// `RedistributionForbidden`) — the actual upstream license per CC
+/// 2026-08-13 primary-source curl verification is a bespoke BosonAI
+/// research & non-commercial agreement (see
+/// `docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md` §0.1-0.2).
+/// A downstream repackager who has separately negotiated a commercial
+/// redistribution license with BosonAI may pass e.g. `Some("apache-2.0")`
+/// verbatim to make the (new) license stamp explicit (mirror of the
+/// `magpietts_v2602` / `firered_asr_aed_l` / `wespeaker` / `emotion2vec`
+/// / `frcrn` override convention).
 ///
 /// # Errors
 ///
@@ -257,16 +284,27 @@ pub fn convert_higgs_audio_v3_tts_4b_file(
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
 
     // Self-describing redistribution: the artifact carries its own
-    // licence. Default = apache-2.0 (upstream
-    // `bosonai/higgs-audio-v3-tts-4b` Apache-2.0 per the audit
-    // ticket's Publish gate — owner primary-source verification
-    // pending). The optional `license` argument overrides via the
-    // same restated-source convention as the sibling converters
-    // (`magpietts_v2602` / `firered_asr_aed_l` / `wespeaker` /
-    // `frcrn` / `emotion2vec` / `speaker_3d`).
+    // licence. Default = BOSON HIGGS TTS 3 RESEARCH AND NON-COMMERCIAL
+    // LICENSE (SPDX-style LicenseRef, not a registered SPDX id) per
+    // CC 2026-08-13 primary-source curl verification
+    // (`docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md` §0.1-0.2).
+    // The optional `license` argument overrides via the same
+    // restated-source convention as the sibling converters
+    // (`magpietts_v2602` / `firered_asr_aed_l` / `wespeaker` / `frcrn` /
+    // `emotion2vec` / `speaker_3d`). The default resolves to
+    // `LicenseClass::RedistributionForbidden` via the
+    // `higgs-audio-v3-tts-4b` slug hardmap in
+    // `crates/vokra-core/src/compliance/license_class.rs` (the same
+    // fail-closed pattern `vits-ja` / `bs-roformer` use); explicit
+    // pin here matches that hardmap so the stamped chunk is stable
+    // whether a caller supplies `license = None` or the SPDX-style
+    // LicenseRef verbatim.
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
+        _ => (
+            DEFAULT_LICENSE_SPDX.to_owned(),
+            LicenseClass::RedistributionForbidden,
+        ),
     };
     vokra_core::stamp_provenance(
         &mut b,
@@ -372,7 +410,10 @@ mod tests {
         assert_eq!(NAME, "higgs-audio-v3-tts-4b");
         assert_eq!(CATEGORY, "tts");
         assert_eq!(UPSTREAM_HF, "bosonai/higgs-audio-v3-tts-4b");
-        assert_eq!(DEFAULT_LICENSE_SPDX, "apache-2.0");
+        assert_eq!(
+            DEFAULT_LICENSE_SPDX,
+            "LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial"
+        );
         // Sibling TTS arch tags — silently sharing would mis-route
         // runtime dispatch. Assert distinctness on the closest sibling
         // families this converter groups next to in the tree.
@@ -574,7 +615,7 @@ mod tests {
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
+            Some(LicenseClass::RedistributionForbidden.as_str())
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_MODEL_ID)
@@ -664,7 +705,7 @@ mod tests {
             file.get(chunks::KEY_PROVENANCE_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(DEFAULT_LICENSE_SPDX),
-            "empty override string must fall through to apache-2.0 default"
+            "empty override string must fall through to the R&NC default"
         );
     }
 

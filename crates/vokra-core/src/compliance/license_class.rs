@@ -987,6 +987,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "melband-roformer"
         | "melband_roformer"
         | "chenmozhijin/bsroformer-gguf" => LicenseClass::RedistributionForbidden,
+        // BosonAI Higgs-Audio v3 TTS 4B — CC 2026-08-13 primary-source
+        // curl verification found the upstream license is a bespoke
+        // `LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial`
+        // (SPDX-style LicenseRef, not a registered SPDX id) with §II-A(c)
+        // explicitly forbidding redistribution / hosting / TTS product
+        // embedding. Prior audit-ticket default `apache-2.0` was a
+        // pre-primary-source estimate; the slug hardmap here plus the
+        // converter's `DEFAULT_LICENSE_SPDX` rescission
+        // (`crates/vokra-convert/src/models/higgs_audio_v3_tts_4b.rs`)
+        // form the two-side fix so `publish-one.sh` gate 2 refuses by
+        // construction (mirror of `vits-ja` / `bs-roformer` posture).
+        // See `docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md`
+        // §0.1-0.2 for the CC-verified LICENSE clause quotes.
+        "higgs-audio-v3-tts-4b"
+        | "higgs_audio_v3_tts_4b"
+        | "bosonai/higgs-audio-v3-tts-4b" => LicenseClass::RedistributionForbidden,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         //
         // X-Codec 2 (`x-codec-2` / `xcodec2`, SoTA plan Phase 5 codec)
