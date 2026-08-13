@@ -46,6 +46,14 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+// M5-03b Phase 1: the log-mel front-end (features) plus the self-contained
+// `log10` it needs. Both modules are `#![no_std]`-clean (only `core` +
+// `alloc` + crate-local `scalar`). The `KwsMicro::detect()` scaffold below
+// does NOT yet consume `features` — that wiring is Phase 2 (later wave).
+// See [ADR M5-03b](../../docs/adr/M5-03b-kws-micro-no-std.md).
+pub mod features;
+mod scalar;
+
 /// A registered keyword the detector should listen for.
 ///
 /// Held as an owned `String` (via [`alloc`]) so the caller does not need a
