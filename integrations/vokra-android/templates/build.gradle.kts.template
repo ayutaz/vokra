@@ -1,0 +1,126 @@
+/*
+ * build.gradle.kts — template for an Android app / library module consuming
+ * the Vokra Android JNI binding.
+ *
+ * ADR reference: docs/adr/M4-kotlin-binding-jni-vs-jna.md (Proposed, raw JNI
+ * branch B). This template assumes the raw-JNI baseline; switch to the
+ * JNA dependency block at the bottom of this file if the owner approves
+ * ADR §7 branch (A).
+ *
+ * Rename the file to `build.gradle.kts` in your real project (do NOT
+ * commit the `.template` suffix); the JVM cargo build integration below
+ * uses `cargo-ndk` (https://github.com/bbqsrc/cargo-ndk) — install it
+ * once with:
+ *
+ *   cargo install cargo-ndk --locked
+ *   rustup target add aarch64-linux-android armv7-linux-androideabi \
+ *                     x86_64-linux-android i686-linux-android
+ *
+ * See ../README.md §Build steps for the full build recipe.
+ */
+
+plugins {
+    id("com.android.application")            // or "com.android.library" for an AAR
+    kotlin("android")
+}
+
+android {
+    namespace = "com.example.vokraconsumer"  // rename to your package
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.example.vokraconsumer"
+        minSdk = 24                          // JNI 1.6 + f32 SIMD on Cortex-A55+ (2017+)
+        targetSdk = 34
+        versionCode = 1
+        versionName = "0.1.0"
+
+        // ABI filter — see README.md §ABI selection. Ship arm64-v8a for the
+        // 2020+ Android market; add armeabi-v7a for older devices; add
+        // x86_64 for emulator support. Every ABI you enable multiplies the
+        // APK size by roughly (libvokra_android.so per that ABI) — arm64-v8a
+        // alone gives you 99%+ market coverage in 2026.
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+            // abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        }
+    }
+
+    // sourceSets: point Android at the prebuilt cargo-ndk output. The
+    // `cargo ndk -o src/main/jniLibs build --release` command (see
+    // ../README.md) writes into `<abi>/libvokra_android.so`, which is
+    // exactly where AGP expects native libraries.
+    sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+
+    packagingOptions {
+        // Debug symbol stripping — the `.so` is already stripped by the
+        // release Cargo profile (Cargo.toml: strip = true), but Gradle
+        // may re-strip.
+        jniLibs {
+            keepDebugSymbols += listOf()
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+dependencies {
+    // Vokra Kotlin sources live next to `libvokra_android.so`. Copy the
+    // whole `kotlin/com/vokra/` folder into your `src/main/java/com/vokra/`
+    // (or make Gradle include it as an extra source directory). No JVM
+    // dependencies — the raw-JNI branch (B) uses only System.loadLibrary +
+    // `external fun`.
+
+    // Standard AndroidX bits used by any modern app.
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+
+    // -----------------------------------------------------------------------
+    // Optional branch (A) JNA path — swap in ONLY if ADR §7 approves JNA. In
+    // that case, delete the raw-JNI kotlin/com/vokra/*.kt sources and use the
+    // (planned, not yet in this scaffold) `com.vokra.jna.VokraSession` port
+    // that declares a `Library` interface against `libvokra.so` directly.
+    // -----------------------------------------------------------------------
+    // implementation("net.java.dev.jna:jna:5.14.0@aar")
+}
+
+// -----------------------------------------------------------------------
+// cargo-ndk task wiring — build the Rust cdylib whenever Gradle assembles.
+// Adjust `cargoManifestDir` to the actual relative path from your Gradle
+// project to the `integrations/vokra-android/` directory in a Vokra checkout.
+// -----------------------------------------------------------------------
+val cargoManifestDir = "../../../vokra/integrations/vokra-android"
+
+tasks.register<Exec>("cargoNdkBuildRelease") {
+    workingDir = file(cargoManifestDir)
+    commandLine(
+        "cargo", "ndk",
+        "-t", "arm64-v8a",
+        // "-t", "armeabi-v7a",   // enable if you keep 32-bit devices
+        "-o", "${project.projectDir}/src/main/jniLibs",
+        "build", "--release",
+    )
+    // Fail the Gradle build if cargo-ndk exits non-zero — no silent fallback.
+    isIgnoreExitValue = false
+}
+
+tasks.matching { it.name.startsWith("assemble") }.configureEach {
+    dependsOn("cargoNdkBuildRelease")
+}
