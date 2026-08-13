@@ -1004,3 +1004,23 @@ pub mod eat;
 pub mod m2d;
 pub mod maest;
 // ---------------------------------------------------------------------------
+// Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+// `feat/post-audit-cc-gap-2026-08-13` Wave D remaining): fills the last three
+// Meta AudioCraft music-generation catalog rows that were flagged by the
+// coverage-audit-2026-08-03 audit but not landed in the 2026-08-04 T4 batch.
+// All three are T4 tier (Research-only, CC-BY-NC-4.0) per the MusicGen family
+// / X-Codec-2 / jasco_400m_chords_drums precedent — LicenseClass::NonCommercial
+// default fail-closed, publish requires `--allow-noncommercial`, runtime M2-13
+// gate refuses commercial-mode load. Each converter is a distinct file with a
+// distinct arch tag to prevent FR-EX-08 silent runtime dispatch mis-route
+// (MAGNeT non-autoregressive masked-LM decoding is a different code path from
+// MusicGen AR-over-EnCodec; MelodyFlow DiT is a different code path from both).
+// Sibling files land one per WF phase: WF6 = magnet_small_10secs (this land),
+// WF7 = magnet_medium_30secs, WF8 = melodyflow_t24_30secs.
+// Real-weight parity + runtime binder (magnet_masked_decode /
+// span_masking_scheduler / DiT flow-sampler forward) is deferred per RMVPE /
+// Charsiu / MOSS-Audio-Tokenizer / MioCodec loud-partial precedent — the
+// converter code stamps the upstream tensors verbatim so a future owner
+// wave can flip the switch after §3.1 sign-off + real weight download.
+pub mod magnet_small_10secs;
+// ---------------------------------------------------------------------------

@@ -1,0 +1,26 @@
+[project]
+name = "magnet-small-10secs-prep"
+version = "0.1.0"
+description = "Offline sidecar: facebook/magnet-small-10secs upstream checkpoint → flat safetensors (torch pickle bridge + dedup + int/f64/bool strip). Bridges the upstream Meta AudioCraft release (~2 GB, 500M params = non-autoregressive masked-LM transformer + audiocraft-bundled EnCodec 32 kHz codec + T5-base text encoder) to the Rust converter (crates/vokra-convert/src/models/magnet_small_10secs.rs), which consumes single-file safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
+requires-python = ">=3.12"
+dependencies = [
+    # torch: unwraps the audiocraft-published .th torch pickle bundle
+    #        (or a mirror-hosted safetensors) via `torch.load` + explicit
+    #        pickle_module gate, plus data-pointer tracking for the
+    #        shared-storage dedup pass (memory
+    #        `[[reference-safetensors-shared-tensor-dedup]]`) that
+    #        `safetensors.torch.save_file` demands. Range mirrors the
+    #        sibling `firered_asr_llm_l/pyproject.toml`.
+    "torch>=2.0",
+    # safetensors: canonical Python writer for the flat output the Rust
+    #        converter consumes.
+    "safetensors>=0.4",
+    # huggingface-hub: convenience for the download path the README
+    #        documents (`hf download facebook/magnet-small-10secs
+    #        --local-dir ...`). No vast.ai pin here — local convert
+    #        (~2 GB) fits comfortably on M1 iMac 16 GB per memory
+    #        `[[feedback-large-models-on-vast-ai]]`, so the lift-shift
+    #        pin `<0.30` from the sibling vast.ai runbook is not
+    #        required.
+    "huggingface-hub>=0.26",
+]

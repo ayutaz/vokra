@@ -1021,6 +1021,22 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "jasco-400m-chords-drums": [
         "Meta JASCO 400M Chords+Drums (`facebook/jasco-chords-drums-400M`)"
     ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+    # `feat/post-audit-cc-gap-2026-08-13` Wave D remaining): Meta MAGNeT
+    # Small 10secs (`facebook/magnet-small-10secs`, cc-by-nc-4.0). Non-
+    # autoregressive masked-LM parallel decoding for 10-second music
+    # generation (~500M params ~2 GB, Ziv et al. 2024 arXiv:2401.04577).
+    # T4 tier (Research-only, non-commercial) — inherits the X-Codec 2 /
+    # MusicGen family / jasco_400m_chords_drums T4 precedent workflow
+    # (`LicenseClass::NonCommercial` + `--allow-noncommercial` gate +
+    # `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE fetch).
+    # Local-safe convert on M1 iMac 16 GB per memory
+    # `[[feedback-large-models-on-vast-ai]]` (~2 GB, below 8 GB threshold —
+    # no vast.ai handoff). Row heading matches `docs/license-audit.md`
+    # §3.1 byte-for-byte.
+    "magnet-small-10secs": [
+        "Meta MAGNeT Small 10secs (`facebook/magnet-small-10secs`)"
+    ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 T1 (Permissive) rows all ☑ Commercial 2026-08-04
     # yousan. publish-one.sh maps `--repo <slug>` to APPROVED against
@@ -1542,6 +1558,14 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "jasco_400m_chords_drums": [
         "Meta JASCO 400M Chords+Drums (`facebook/jasco-chords-drums-400M`)"
+    ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining):
+    # magnet_small_10secs — sibling of jasco_400m_chords_drums with a
+    # distinct arch tag (non-autoregressive masked-LM vs joint audio-
+    # symbolic conditioning). Row heading matches `docs/license-audit.md`
+    # §3.1 byte-for-byte.
+    "magnet_small_10secs": [
+        "Meta MAGNeT Small 10secs (`facebook/magnet-small-10secs`)"
     ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 BF16 pass-through skeleton converters, all T1
