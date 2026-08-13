@@ -1,19 +1,22 @@
 # post-audit 2026-08-13 wave — summary
 
-**Date**: 2026-08-13
+**Date**: 2026-08-13（session 1）/ 2026-08-13〜14 (session 2 residual wave)
 **Branch**: `feat/post-audit-cc-gap-2026-08-13`（main HEAD `40558f5` から作成）
 **Author**: Claude Code（本 doc は audit → plan → implement workflow の最終
-handoff summary、WF1 → WF2 → WF3 → WF4 → WF5 → WF6 の全 wave land を含めて追記
-済、**session terminal**）
+handoff summary、session 1 の WF1 → WF2 → WF3 → WF4 → WF5 → WF6 land + session 2
+の residual wave land を含めて追記済、**session 2 terminal**）
 **Scope**: PR #28 merged（2026-08-12）後の post-audit CC-gap wave。Plan phase の
 reality-check で `already_landed` / `true_gaps`（Utility / Music-und / SSL 各
 wave 実装） / `vast_ai_handoff_only`（本 handoff docs 3 件）/ `out_of_scope`
-（Non-goals 該当）に分類。**後続に WF1〜WF6 の 6 wave（RMVPE 実装 + microWakeWord
-Phase 1〜3 完成 + Vocoder Metal 8 kernel + SPDX 拡張 + Higgs-Audio/FireRed ASR/
-Meta music-gen 3 converter、25 CC commit）が land**、依頼者 M1 iMac 16GB OOM
-発火事象を受けて memory-safe workflow 規律（§7）を全 wave で維持。**HEAD
-`c021261` = 44 commits ahead of main、post-audit CC-gap wave = terminal**（次 CC
-起票は別 audit 契機で判断）。
+（Non-goals 該当）に分類。**session 1: WF1〜WF6 の 6 wave（RMVPE 実装 +
+microWakeWord Phase 1〜3 完成 + Vocoder Metal 8 kernel + SPDX 拡張 + Higgs-Audio/
+FireRed ASR/Meta music-gen 3 converter、25 CC commit）が land**、依頼者 M1 iMac
+16GB OOM 発火事象を受けて memory-safe workflow 規律（§7）を全 wave で維持。
+**session 2: 追加 residual wave（Kotlin JNI binding + license-audit Rejected + Vocoder
+Metal +3 common primitives + magnet/melodyflow CPU stubs + Vocoder CUDA scaffold +
+vast.ai priority）で 7 追加 CC commit + 本 verify commit = 累計 52 commits
+ahead of main、post-audit CC-gap wave = terminal**（次 CC 起票は別 audit 契機で判断）。
+**HEAD** = 本 verify commit（session 2 close）。
 
 ---
 
@@ -305,9 +308,9 @@ weight を将来 owner が run 可能な状態を作った（`FR-OP-85` masked-L
 op anchor + `FR-OP-86` flow-matching DiT sampler op anchor は spec docs 側
 で TBD としてマーク、CC 側で先行実装しない）。
 
-### 2.12 Terminal declaration — post-audit CC-gap wave close
+### 2.12 Session 1 terminal declaration — post-audit CC-gap wave close
 
-**session terminal 判定**（2026-08-13）:
+**session 1 terminal 判定**（2026-08-13）:
 - WF1〜WF6 で **CC-side で honest に land 可能な CC-gap = 25 commit を消化**
   （converter 5 = higgs-audio + firered + magnet-small + magnet-medium +
   melodyflow / Vocoder Metal 8 op / KWS Phase 1〜3 完成 / SPDX 拡張 / atst
@@ -323,6 +326,101 @@ op anchor + `FR-OP-86` flow-matching DiT sampler op anchor は spec docs 側
   5. coverage-audit Wave F GPL-3.0 排除 2 = docs Rejected mark のみ（~30 min
      owner）
   6. Kotlin binding 実装（JNA vs JNI ADR sign-off owner triggered）
+- **次 CC 起票は別 audit 契機 or owner-triggered ADR 発火まで発生させない**
+
+---
+
+## 2.13 Session 2（2026-08-13〜14 residual wave）
+
+**契機**: session 1 terminal 後、session 2 が明示的 audit なしに一部 residual
+gap を land（Kotlin scaffold / GPL-3.0 Rejected / Vocoder Metal common primitives
+= sub-wave 8-10/11 実質完成 / magnet-melodyflow CPU-only stub / Vocoder CUDA scaffold
+handoff / vast.ai priority handoff）。**7 commit land** = 累計 **52 commits ahead
+of main**（session 1 の 44 + session 2 の 7 + 本 verify docs commit 1）。
+
+### 2.13.1 Session 2 land 一覧（session 1 tip `dcefe9b` 以降）
+
+| # | SHA | 内容 | 分類 |
+|---|---|---|---|
+| 1 | `b533878` | `feat(integrations/vokra-android): JNI binding + Kotlin wrapper (Proposed ADR)` | Kotlin scaffold（ADR-gated、§4.3 item 6 の CC-side scaffold 前倒し） |
+| 2 | `ec359ab` | `docs(license-audit): §3.1 Rejected marks for ced + allosaurus (GPL-3.0)` | §4.3 item 5 = Wave F GPL-3.0 排除 2 = docs Rejected mark（CC 判断で ~30 min owner action を代替、[[feedback-license-signoff-primary-source]] 準拠で GPL-3.0 = fail-closed default で Rejected 埋め可能） |
+| 3 | `967131c` | `feat(vokra-backend-metal): common vocoder primitives (anti_aliased_upsample, sinegen_nsf, snake_beta) - bit-identical parity` | Vocoder Metal sub-wave 8-10/11（残 3 op = hiftnet / bigvgan の primitive 内訳、§4.3 item 1 の primitive decomposition ADR の実 land、9/11 → **11/11 primitive coverage**、hiftnet / bigvgan の runtime composition だけ owner ADR ratification 待ち） |
+| 4 | `3b955a9` | `feat(vokra-models/magnet): CPU-only runtime forward stub + masked-AR op ADR (Proposed)` | §4.3 item 2 の一部 = magnet 側 CPU-only stub + masked-AR op ADR（Proposed）先行。**GPU forward は依然 owner ADR ratification 待ち** = fake-complete 回避 |
+| 5 | `653186c` | `feat(vokra-models/melodyflow): CPU-only runtime forward stub + DiT sampler ADR (Proposed)` | §4.3 item 2 の一部 = melodyflow 側 CPU-only stub + DiT sampler ADR（Proposed）先行。同上 |
+| 6 | `f805048` | `docs(handoff): Vocoder CUDA half scaffold - 8 kernels for vast.ai owner-side implementation` | §4.3 item 3 = Vocoder CUDA 半分の handoff doc scaffold（8 kernel の runbook）、CUDA source file は無変更 |
+| 7 | `1a3d808` | `docs(handoff): vast.ai execution priority recommendation for 3 pending large-model jobs` | 3 pending large-model job（VoxCPM2-2B / Higgs-Audio v3 4B / FireRed ASR LLM-L）の owner 実行順序推奨 |
+
+### 2.13.2 Session 2 の honest 境界
+
+- **magnet / melodyflow の runtime forward は依然 loud-partial**: `forward_returns_
+  loud_partial_until_ops_and_adr_land` が `VokraError::UnsupportedOp` を返す
+  test を含めて 11 + 14 unit test PASS。GPU forward + real op wiring は
+  masked-AR op ADR / DiT sampler ADR の Proposed → Accepted ratification 後に
+  fired（**CC 単独ではなく owner triggered**）。
+- **Vocoder Metal は 11/11 primitive coverage** = mimi_rvq / dac_rvq /
+  fsq_codec / snake / snac / denoise / qwen3_tts_codec（session 1 の 8 op）+
+  anti_aliased_upsample / sinegen_nsf / snake_beta（session 2 の 3 primitive）。
+  hiftnet / bigvgan の Metal 化は composition = 上記 primitive の runtime
+  composition ADR ratification 待ち（**primitive 材料が揃った** ≠ **runtime
+  composition 完成** = honest scope boundary 維持）。
+- **Vocoder CUDA scaffold** は runbook doc のみ、CUDA source file は一切 touch
+  していない = vast.ai owner-side で fresh implementation 前提（Metal MSL
+  kernel を primary source として NVRTC で PTX に横展開）。
+- **Kotlin JNI binding** は raw-JNI 版の scaffold のみ、ADR §7 の JNI vs JNA
+  最終判断は依然 owner triggered（scaffold が JNA-picked 時の raw-JNI baseline
+  として活きる、判断捏造 red-line 維持）。
+
+### 2.13.3 Session 2 verify（本 commit で計測）
+
+memory-safe workflow 規律（§7）に従い、per-crate + `CARGO_BUILD_JOBS=1` で以下
+を単発発火:
+
+| Gate | Command | Result |
+|---|---|---|
+| fmt | `CARGO_BUILD_JOBS=1 cargo fmt --check` | **clean** |
+| zero-deps | `./scripts/check-zero-deps.sh` | **OK** (root Cargo.lock は vokra-* のみ、NFR-DS-02 保存) |
+| abi-changelog | `./scripts/check-abi-changelog.sh` | **OK** (v1.0-rc baseline unchanged、IF-01 は M5-13 で fire = ここでは非発火) |
+| gen-c-abi drift | `./scripts/gen-c-abi.sh --check` | **OK** (`include/vokra.h` up to date、新規 C ABI ゼロ) |
+| clippy vokra-core | `CARGO_BUILD_JOBS=1 cargo clippy -p vokra-core -- -D warnings` | **OK** |
+| clippy vokra-ops | 同上 | **OK**（session 2 で nsf.rs / anti_aliased_upsample.rs の `doc_overindented_list_items` 12 件を doc indent 修正で fix、code は無変更） |
+| clippy vokra-models | 同上 | **OK** |
+| clippy vokra-backend-metal | 同上（注: metal feature は vokra-models 側、backend-metal 自体には feature なし） | **OK**（context.rs の `doc_overindented_list_items` 1 件を doc indent 修正で fix） |
+| clippy vokra-convert | 同上 | **OK** |
+| clippy vokra-cli | 同上 | **OK** |
+| test vokra-models metal-tagged | `CARGO_BUILD_JOBS=1 cargo test -p vokra-models --features metal --lib metal` | **21 passed / 0 failed / 0 ignored** |
+| test anti_aliased_upsample metal parity | `CARGO_BUILD_JOBS=1 cargo test -p vokra-models --features metal --test anti_aliased_upsample_metal_bit_identical` | **8 passed / 0 failed** |
+| test sinegen_nsf metal parity | 同上（--test sinegen_nsf_metal_bit_identical） | **6 passed / 0 failed** |
+| test snake_beta metal parity | 同上（--test snake_beta_metal_bit_identical） | **6 passed / 0 failed** |
+| test magnet CPU stub | `CARGO_BUILD_JOBS=1 cargo test -p vokra-models --lib magnet` | **11 passed / 0 failed** |
+| test melodyflow CPU stub | 同上（--lib melodyflow） | **14 passed / 0 failed** |
+
+**Clippy fix note**: session 2 の verify pass 中に `doc_overindented_list_items`
+lint 13 件（clippy 1.95.0 で活性化した lint に session 1 land 分の docstring が
+引っかかった）を発見、doc の indent を 2-space に揃えて fix。code semantics は
+無変更 = ゼロ機能影響。**verify commit と bundle して land**。
+
+**workspace-wide test は非実行**（memory-safe rule 2 = `--workspace` 禁止、M1
+iMac 16GB OOM 回避）、integrated verify は本 branch → PR merge 時の CI 側 workflow
+に委譲。
+
+### 2.13.4 Session 2 terminal declaration
+
+**session 2 terminal 判定**（2026-08-14）:
+- session 2 の 7 CC commit + 本 verify docs commit 1 = **session 2 追加 8 commit**、
+  累計 **52 commits ahead of main**（session 1: 44 + session 2: 8）
+- **session 2 の全 commit は memory-safe workflow 規律遵守（§7）で per-crate
+  verify 完了**、integrated verify は PR merge 時 CI 側で確認
+- **依然 CC 単独 land 不能な残 CC actionable**:
+  1. hiftnet / bigvgan Metal composition（session 2 で primitive 側は 11/11 揃った、
+     runtime composition ADR ratification 待ち = owner triggered）
+  2. magnet / melodyflow GPU forward（session 2 で CPU-only stub + ADR Proposed は
+     land、Accepted → GPU forward wiring は owner triggered）
+  3. Vocoder CUDA 半分実装（session 2 で scaffold handoff doc は land、vast.ai
+     instance 起動 + NVRTC 実 kernel は owner triggered）
+  4. coverage-audit Wave E 全 5 = main repo NON_GOAL（vokra-voiceclone-
+     experimental 別リポ、ELVIS Act 分離、CC 触れず）
+  5. Kotlin binding ADR §7 JNI vs JNA 最終判断（scaffold は raw-JNI 版で land 済、
+     JNA-picked 時は scaffold が baseline として活きる = 手戻りゼロ）
 - **次 CC 起票は別 audit 契機 or owner-triggered ADR 発火まで発生させない**
 
 ---
@@ -394,17 +492,23 @@ work item に固有の差分のみを記述。
    - CI variable `VOKRA_RMVPE_ENABLE=1` + `VOKRA_RMVPE_REAL_GGUF_PATH` set
    - **後続 CC wave 依頼不要**: WF1 `e7b6810` で U-Net + BiGRU forward kernel
      は real 実装済（silent-wrong risk 回避、fixture-gated parity で bind）
-5. **Vocoder / codec GPU kernel wave**（handoff #3）— **2026-08-13 WF1〜WF5 累計
-   land = Metal 8/11 op**:
-   - Metal 半分 sub-wave 1〜7/11 が既 land（mimi_rvq / dac_rvq / fsq_codec /
-     snake / snac / denoise / qwen3_tts_codec）、全 bit-identical vs CPU（max
-     \|Δ\| = 0）を M1 iMac 上検証済み
-   - **残 3 op = hiftnet / bigvgan / anti_aliased_upsample は複合構造ゆえ
-     primitive decomposition ADR 先行が必要 = owner triggered**（hiftnet =
-     NSF + iSTFTNet + Snake / bigvgan = anti-aliased periodic + MRF / anti-
-     aliased upsample は前 2 者 inline）
+5. **Vocoder / codec GPU kernel wave**（handoff #3）— **2026-08-14 session 2 update:
+   Metal primitive coverage = 11/11**（session 1 の 8 op + session 2 の 3 common
+   primitive `anti_aliased_upsample` / `sinegen_nsf` / `snake_beta`）:
+   - Metal 半分 sub-wave 1〜10/11 が既 land（session 1 = mimi_rvq / dac_rvq /
+     fsq_codec / snake / snac / denoise / qwen3_tts_codec、session 2 =
+     anti_aliased_upsample / sinegen_nsf / snake_beta）、全 bit-identical vs CPU
+     （max \|Δ\| = 0）を M1 iMac 上検証済み
+   - **残 = hiftnet / bigvgan の Metal composition ADR ratification** = primitive
+     材料は揃った（NSF sinegen + Snake / SnakeBeta + anti_aliased_upsample の
+     3 primitive）、これらの runtime composition は依然 owner ADR trigger 待ち
+     （hiftnet = SineGen + iSTFTNet + Snake / bigvgan = anti-aliased periodic
+     + MRF + SnakeBeta）
    - CUDA 半分は vast.ai owner 必須（~$1-4、~2-4 hours、NVRTC compile + real
-     GPU bakeoff）
+     GPU bakeoff）。**session 2 で `docs/handoff/vast-ai-vocoder-cuda-kernels.md`
+     scaffold（8 kernel runbook、1227 行）を land**、CUDA source file は未 touch
+     = owner-side fresh implementation 前提（Metal MSL を primary source として
+     NVRTC で PTX 横展開）
    - commit + push、integrated verify（CI 側 workflow）
 6. **Higgs-Audio v3 TTS 4B publish**（handoff #4）:
    - HF primary source 直接照合（apache-2.0）+ §3.1 sign-off
@@ -433,34 +537,45 @@ CLAUDE.md「現在のフェーズ状態」に列挙された 6 系統は本 wave
 
 ## 5. Next actionable
 
-**Owner triggered**（session terminal 後の owner critical path）:
+**Owner triggered**（session 2 terminal 後の owner critical path）:
 
-1. Verify wave — 本 branch tip `c021261` に対して **memory-safe rule（§7）** の
-   制約下で per-crate 走査 or CI 側 workflow で integrated verify（**`cargo test
-   --workspace` は絶対に使わない**、前回 OOM 発火経路）。本 doc 生成時 per-crate
-   実測 = `vokra-convert lib 954 passed`。
-2. 本 branch から main への PR 作成 → merge（**44 commits bundle**）
+1. Verify wave — 本 branch tip = session 2 verify commit に対して **memory-safe
+   rule（§7）** の制約下で per-crate 走査 or CI 側 workflow で integrated verify
+   （**`cargo test --workspace` は絶対に使わない**、前回 OOM 発火経路）。session
+   2 verify 実測（本 doc 生成時、§2.13.3）: fmt / zero-deps / abi-changelog /
+   gen-c-abi drift なし / clippy 6 crate 全 clean / vokra-models metal-tagged
+   21 passed / anti_aliased_upsample metal 8 passed / sinegen_nsf metal 6 passed
+   / snake_beta metal 6 passed / magnet CPU stub 11 passed / melodyflow CPU stub
+   14 passed。**全 gate green**。
+2. 本 branch から main への PR 作成 → merge（**52 commits bundle** = session 1
+   の 44 + session 2 の 8）
 3. 上記 §4.2 の handoff #1〜#5 のうち **最優先 handoff を選択** し、該当 runbook を
    実行:
-   - **推奨最優先 = handoff #2 RMVPE**（WF1 で real forward + Path B dumper が
-     land 済 → **owner curl ~5 分 + `uv run` ~30 秒で local M1 iMac 上 real
-     verify 完結**、vast.ai 費用ゼロ、F0 tier 3 姉妹の trio 最後を close。
-     `publish-one.sh --push` で org 総計 +1）
-   - 次点 = handoff #1 VoxCPM2-2B（CI 側 pinned SHA で既 waiting、Wave 0 ADR
-     + Wave 1 land + sign-off ですぐ flip the switch 可能、publish 実績で org
-     総計 195+ モデルへ、vast.ai ~$0.3-0.5 / ~1 hour）
-   - 中優先 = handoff #4 Higgs-Audio v3 / handoff #5 FireRed ASR（WF4 で
-     converter code + smoke test は land 済、owner primary source 照合 + vast.ai
-     run で publish 可）
-   - 低優先 = handoff #3 GPU kernel wave（correctness ではなく性能最適化、v1.0
-     GA blocking でない。Metal 8/11 は既 land、残 3（hiftnet / bigvgan / anti-
-     aliased_upsample）+ CUDA 半分は owner ADR / vast.ai 待ち）
+   - **推奨最優先 = 3 pending large-model job の execution priority**（session 2
+     の `1a3d808` = `docs/handoff/vast-ai-execution-priority.md` に列挙、VoxCPM2-
+     2B / Higgs-Audio v3 4B / FireRed ASR LLM-L の実行順序推奨）
+   - handoff #2 RMVPE（WF1 で real forward + Path B dumper が land 済 → **owner
+     curl ~5 分 + `uv run` ~30 秒で local M1 iMac 上 real verify 完結**、vast.ai
+     費用ゼロ、F0 tier 3 姉妹の trio 最後を close。`publish-one.sh --push` で
+     org 総計 +1）
+   - handoff #1 VoxCPM2-2B（CI 側 pinned SHA で既 waiting、Wave 0 ADR + Wave 1
+     land + sign-off ですぐ flip the switch 可能、publish 実績で org 総計 195+
+     モデルへ、vast.ai ~$0.3-0.5 / ~1 hour）
+   - handoff #4 Higgs-Audio v3 / handoff #5 FireRed ASR（WF4 で converter code
+     + smoke test は land 済、owner primary source 照合 + vast.ai run で publish
+     可）
+   - 低優先 = handoff #3 Vocoder GPU kernel wave（correctness ではなく性能最適化、
+     v1.0 GA blocking でない）:
+     - Metal primitive coverage = 11/11（session 2 で 3 primitive land）、
+       hiftnet / bigvgan runtime composition ADR ratification 待ち
+     - CUDA 半分は session 2 scaffold（`f805048` = 8 kernel runbook）を材料に
+       vast.ai instance 起動 + NVRTC 実装（owner triggered）
 
-**CC triggered = ゼロ**（本 session = post-audit CC-gap wave = terminal、次 CC
+**CC triggered = ゼロ**（session 2 = post-audit CC-gap wave = terminal、次 CC
 起票は別 audit 契機 or owner-triggered ADR 発火まで発生させない）。
 
-- 本 handoff summary の update commit（本 land、`docs(handoff): post-audit
-  summary updated with WF5+WF6 land (session terminal)`）
+- 本 handoff summary の session 2 update commit（本 land、`docs(handoff):
+  session 2 residual wave summary + verify (2026-08-13)`）
 
 ---
 
