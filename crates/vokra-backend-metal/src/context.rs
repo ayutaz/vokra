@@ -1051,6 +1051,112 @@ kernel void vokra_xcodec2_fsq_decode_f32(
     }
 }
 
+// ---- Vocoder Metal wave WF5 snac_decode (2026-08-13) ------------------------
+//
+// Semantics identical to `vokra_ops::snac_decode::SnacDecoder::decode` (the
+// upstream `ResidualVectorQuantize.from_codes` algorithm, `hubertsiuzdak/snac
+// /blob/main/snac/vq.py` L61-71):
+//
+//     For each stage s in 0..3:
+//       z_p_s = codebooks[s].row(codes[s][t_stage])                # embed lookup
+//       z_q_s = W_s @ z_p_s + b_s                                   # WNConv1d(codebook_dim → d_model)
+//       z_q_s = repeat_interleave(z_q_s, stride=strides[s], dim=-1) # temporal upsample
+//       z_q  += z_q_s                                                # residual sum
+//
+// SNAC is a **hierarchical / multi-scale** residual VQ: unlike Mimi / DAC where
+// every quantizer shares the same time axis, SNAC's `k`th stage runs at frame
+// rate `base / vq_strides[k]`. The 24 kHz variant used by Orpheus and Maya1
+// has `vq_strides = [4, 2, 1]` giving per-stage rates ~12 / 23 / 47 Hz.
+//
+// * `codes`         — u32 codebook indices, concatenated across the 3 stages:
+//                     `codes[stage_offsets[s] + t_stage]` for stage `s`,
+//                     stage frame `t_stage in 0..codes[s].len()`. Every stage
+//                     must satisfy `codes[s].len() * strides[s] == t_expanded`
+//                     (host-validated, FR-EX-08).
+// * `codebooks`     — [3, codebook_size, codebook_dim] row-major FP32; stage
+//                     `s` starts at `s * codebook_size * codebook_dim`. The
+//                     three stages share `codebook_size` and `codebook_dim`
+//                     (validated on the host).
+// * `proj_weights`  — [3, d_model, codebook_dim] row-major FP32; stage `s`'s
+//                     W row `o` starts at `s * d_model * codebook_dim + o *
+//                     codebook_dim`.
+// * `proj_biases`   — [3, d_model] row-major FP32; stage `s`'s bias for
+//                     output `o` at `s * d_model + o`.
+// * `out`           — [t_expanded, d_model] row-major FP32.
+//
+// For each output element `(t_out, d_out)` and each stage `s`, look up the
+// stage frame `t_stage = t_out / strides[s]`, then compute `W_s @ low_s + b_s`
+// for that stage and accumulate into the FP32 output. The temporal upsample
+// (`repeat_interleave(stride)`) is baked into `t_stage = t_out / stride` so
+// contiguous output timesteps within one stage frame share the same projected
+// row — bit-identical to the CPU fold's `t_start..t_start + stride` inner
+// loop.
+//
+// FP32 accumulator throughout (the "BF16 mantissa loss is the real problem"
+// audio-dialect rule; CLAUDE.md). MSL fast-math may re-associate the inner
+// `Σ_c W[o, c] · low[c]` dot product, so the parity bound is FP32 GEMV-scale
+// rather than bit-for-bit — the same 5e-4 budget the sibling mimi_rvq /
+// dac_rvq / fsq_codec / snake_activation kernels use.
+//
+// Host-side per-index bound check on `codes[..]` (FR-EX-08 — the kernel does
+// no per-element bound check; the caller validates upstream of the dispatch).
+//
+// Grid: `(d_model, t_expanded)` — same 2D launch pattern as the sibling
+// mimi_rvq / dac_rvq kernels for a consistent codec-family launch geometry.
+// Threadgroup 16x16 (the `grid_2d` default); the ragged tail is guarded
+// against both bounds.
+//
+// The 3-stage loop is unrolled by fixing `const uint N_STAGES = 3` (SNAC's
+// architecture pins exactly three quantizers; upstream `snac/vq.py` L15-25).
+struct SnacDecodeDims {
+    uint d_model;
+    uint codebook_dim;
+    uint codebook_size;
+    uint t_expanded;
+    // Per-stage temporal strides (SNAC 24 kHz canonical = [4, 2, 1]).
+    uint strides[3];
+    // Start of each stage in the flat `codes` buffer. `codes[stage_offsets[s]
+    // + t_stage]` for stage `s`. stage_offsets[0] is always 0; stage_offsets[1]
+    // = len(codes[0]); stage_offsets[2] = len(codes[0]) + len(codes[1]).
+    uint stage_offsets[3];
+};
+
+kernel void vokra_snac_decode_f32(
+    device const uint*         codes         [[buffer(0)]],
+    device const float*        codebooks     [[buffer(1)]],
+    device const float*        proj_weights  [[buffer(2)]],
+    device const float*        proj_biases   [[buffer(3)]],
+    device float*              out           [[buffer(4)]],
+    constant SnacDecodeDims&   d             [[buffer(5)]],
+    uint2                      gid           [[thread_position_in_grid]])
+{
+    const uint t_out = gid.y;
+    const uint d_out = gid.x;
+    if (t_out >= d.t_expanded || d_out >= d.d_model) {
+        return;
+    }
+    const uint cb_stride = d.codebook_size * d.codebook_dim;
+    const uint w_stride  = d.d_model * d.codebook_dim;
+    // FP32 accumulator — matches `SnacDecoder::decode`'s outer stage fold in
+    // left-to-right stage order. MSL fast-math may re-associate the inner
+    // GEMV over `codebook_dim`, so the parity bound is FP32 GEMV-scale
+    // rather than bit-for-bit.
+    float acc = 0.0f;
+    for (uint s = 0; s < 3u; ++s) {
+        const uint stride_s = d.strides[s];
+        const uint t_stage  = t_out / stride_s;
+        const uint idx      = codes[d.stage_offsets[s] + t_stage];
+        const uint low_off  = s * cb_stride + idx * d.codebook_dim;
+        const uint w_off    = s * w_stride + d_out * d.codebook_dim;
+        float y = proj_biases[s * d.d_model + d_out];
+        for (uint c = 0; c < d.codebook_dim; ++c) {
+            y += proj_weights[w_off + c] * codebooks[low_off + c];
+        }
+        acc += y;
+    }
+    out[t_out * d.d_model + d_out] = acc;
+}
+
 // ---- Vocoder Metal wave WF2 snake activation (2026-08-13) -------------------
 //
 // Semantics identical to `vokra_ops::snake::snake_activation_f32` (the
@@ -1360,6 +1466,35 @@ struct Xcodec2FsqDims {
 struct SnakeActivationDims {
     channels: u32,
     time: u32,
+}
+
+/// Vocoder Metal wave WF5 snac_decode dims (`setBytes:` index 5). Field
+/// order / `u32` widths mirror the MSL `struct SnacDecodeDims`.
+///
+/// - `d_model` — output feature width per timestep (SNAC 24 kHz canonical =
+///   768 — the shared decoder input dim for Orpheus / Maya1's model config).
+/// - `codebook_dim` — factorized codebook row width (SNAC 24 kHz canonical =
+///   8, mirror of DAC's factorization).
+/// - `codebook_size` — entries per codebook (SNAC 24 kHz canonical = 4096;
+///   equal across the three stages by construction).
+/// - `t_expanded` — number of output timesteps (`codes[s].len() *
+///   strides[s]`, same for every stage — the "co-aligned base frames"
+///   invariant `SnacDecoder::check_and_measure` enforces).
+/// - `strides` — per-stage temporal strides `[u32; 3]` (SNAC 24 kHz canonical
+///   = `[4, 2, 1]` giving per-stage rates ~12 / 23 / 47 Hz).
+/// - `stage_offsets` — start of each stage in the flat `codes` buffer, so
+///   stage `s`'s frame `t_stage` is `codes[stage_offsets[s] + t_stage]`. By
+///   construction `stage_offsets[0] = 0`; `stage_offsets[1] = len(codes[0])`;
+///   `stage_offsets[2] = len(codes[0]) + len(codes[1])`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SnacDecodeDims {
+    d_model: u32,
+    codebook_dim: u32,
+    codebook_size: u32,
+    t_expanded: u32,
+    strides: [u32; 3],
+    stage_offsets: [u32; 3],
 }
 
 /// Scalar shape of one fused-MLP pass chain, shared by the host-in/out
@@ -1679,6 +1814,18 @@ pub struct MetalContext {
     /// is a **distinct** two-vector closed form and would land its own
     /// pipeline separately.
     snake_activation_pipeline: Id,
+    /// Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode
+    /// (`vokra_snac_decode_f32`), the GPU implementation of
+    /// `vokra_ops::snac_decode::SnacDecoder::decode` (upstream
+    /// `hubertsiuzdak/snac`, MIT / Apache-2.0). **Distinct from every RVQ
+    /// pipeline**: SNAC's multi-scale structure (each stage runs at
+    /// `base / vq_strides[s]`) is baked into the kernel via a
+    /// `t_stage = t_out / strides[s]` lookup per stage, which no other RVQ /
+    /// FSQ codec kernel does. Reuses the [`DacRvqDims`] factorized shape
+    /// (per-stage `WNConv1d(codebook_dim → d_model)` + bias) but folds
+    /// `repeat_interleave(stride)` into the temporal indexing instead of the
+    /// per-output copy loop the CPU fold does.
+    snac_decode_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1834,6 +1981,14 @@ impl MetalContext {
         // SAFETY: as above.
         let snake_activation_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_snake_activation_f32") }?;
+        // Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode; shares
+        // the same library. Distinct kernel from the RVQ / FSQ family because
+        // SNAC's multi-scale structure requires a per-stage
+        // `t_stage = t_out / strides[s]` lookup that no other codec kernel
+        // needs.
+        // SAFETY: as above.
+        let snac_decode_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_snac_decode_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -1864,6 +2019,7 @@ impl MetalContext {
             wavtokenizer_vq_gather_pipeline: wavtokenizer_vq_gather_pipeline.into_raw(),
             xcodec2_fsq_decode_pipeline: xcodec2_fsq_decode_pipeline.into_raw(),
             snake_activation_pipeline: snake_activation_pipeline.into_raw(),
+            snac_decode_pipeline: snac_decode_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -2788,6 +2944,292 @@ impl MetalContext {
             "snake_activation",
         )?;
         read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave WF5: SNAC 3-stage hierarchical RVQ decode —
+    /// per-stage gather + factorized projection + temporal upsample + FP32
+    /// residual sum on the GPU.
+    ///
+    /// Returns a fresh `[t_expanded × d_model]` row-major `Vec<f32>` where
+    /// `out[t, :] = Σ_s (W_s @ codebooks[s].row(codes[s][t / strides[s]]) +
+    /// b_s)` — the exact contract of
+    /// `vokra_ops::snac_decode::SnacDecoder::decode` (upstream
+    /// `ResidualVectorQuantize.from_codes` at `hubertsiuzdak/snac/blob/main
+    /// /snac/vq.py` L61-71). Heap-returning (not `out: &mut [f32]`) for the
+    /// same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`] / the DAC / FSQ family — this is a
+    /// codec-side chunk op, not a per-token hot path.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes_flat` — `[Σ codes[s].len()]` row-major `u32` codebook indices
+    ///   concatenated across the 3 stages. Stage `s`'s frame `t_stage`
+    ///   is `codes_flat[stage_offsets[s] + t_stage]`. Every entry must
+    ///   satisfy `idx < codebook_size` — the caller validates on the host
+    ///   before dispatch (FR-EX-08 — the MSL kernel has no per-element
+    ///   bound check, so silent OOB reads are the failure mode we prevent
+    ///   by delegating to explicit host-side validation).
+    /// - `stage_offsets` — `[3]` start of each stage in `codes_flat`. By
+    ///   construction `stage_offsets[0] = 0`; `stage_offsets[1] =
+    ///   len(codes[0])`; `stage_offsets[2] = len(codes[0]) + len(codes[1])`.
+    /// - `strides` — `[3]` per-stage temporal strides. Every entry must be
+    ///   `> 0` (upstream `SnacDecoder::new` rejects `stride = 0` because it
+    ///   would divide the base frame rate by zero — FR-EX-08).
+    /// - `codebooks_flat` — `[3 × codebook_size × codebook_dim]` row-major
+    ///   FP32; stage `s` starts at `s * codebook_size * codebook_dim`.
+    /// - `proj_weights_flat` — `[3 × d_model × codebook_dim]` row-major
+    ///   FP32; stage `s`'s W row `o` starts at `s * d_model * codebook_dim
+    ///   + o * codebook_dim`.
+    /// - `proj_biases_flat` — `[3 × d_model]` row-major FP32; stage `s`'s
+    ///   bias for output `o` at `s * d_model + o`.
+    /// - `codebook_size` / `codebook_dim` / `d_model` — decode shape,
+    ///   shared across the three stages by construction. All must be `> 0`
+    ///   (an empty `t_expanded` short-circuits at the caller with an empty
+    ///   `Vec<f32>`; every other zero axis is an explicit
+    ///   `InvalidArgument`).
+    /// - `t_expanded` — number of output timesteps (== `codes[s].len() *
+    ///   strides[s]` for every stage — the "co-aligned base frames"
+    ///   invariant `SnacDecoder::check_and_measure` enforces).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults which permit re-association of the inner
+    /// `Σ_c W[o, c] · low[c]` GEMV, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` (the same FP32 GEMV-scale bound used by the sibling
+    /// [`Self::mimi_rvq_gather_fold_f32`] /
+    /// [`Self::dac_rvq_gather_project_fold_f32`] / the FSQ family) — not
+    /// bit-for-bit equality. The temporal-upsample step
+    /// (`t_stage = t_out / stride`) is exact integer division and adds no
+    /// numeric slack.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `codebook_size` / `codebook_dim` / `d_model`, a zero stride, or any
+    ///   overflow in the size / offset math.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to SNAC's 3-stage factorized shape
+    pub fn snac_decode_f32(
+        &self,
+        codes_flat: &[u32],
+        stage_offsets: [u32; 3],
+        strides: [u32; 3],
+        codebooks_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        t_expanded: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= t_expanded`
+        // and `d >= d_model` but assumes every buffer has the expected
+        // element count, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the vokra_ops::snac_decode shape checks.
+        if codebook_size == 0 || codebook_dim == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: codebook_size / codebook_dim / d_model must all be > 0, got \
+                 codebook_size={codebook_size} codebook_dim={codebook_dim} d_model={d_model}"
+            )));
+        }
+        for (s, &stride) in strides.iter().enumerate() {
+            if stride == 0 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: strides[{s}] = 0 (would divide base frame rate by zero; \
+                     FR-EX-08 catches it upstream)"
+                )));
+            }
+        }
+        // Codebook / projection buffer size checks (per-stage sizes multiplied
+        // by 3 stages).
+        let per_stage_cb = codebook_size.checked_mul(codebook_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "snac_decode_f32: codebook_size * codebook_dim overflows usize \
+                         (codebook_size={codebook_size} codebook_dim={codebook_dim})"
+            ))
+        })?;
+        let expected_cb = per_stage_cb.checked_mul(3).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "snac_decode_f32: 3 * codebook_size * codebook_dim overflows usize".to_owned(),
+            )
+        })?;
+        if codebooks_flat.len() != expected_cb {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: codebooks_flat.len() {} != 3 * codebook_size * codebook_dim \
+                 {expected_cb}",
+                codebooks_flat.len()
+            )));
+        }
+        let per_stage_w = d_model.checked_mul(codebook_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "snac_decode_f32: d_model * codebook_dim overflows usize \
+                 (d_model={d_model} codebook_dim={codebook_dim})"
+            ))
+        })?;
+        let expected_w = per_stage_w.checked_mul(3).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "snac_decode_f32: 3 * d_model * codebook_dim overflows usize".to_owned(),
+            )
+        })?;
+        if proj_weights_flat.len() != expected_w {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: proj_weights_flat.len() {} != 3 * d_model * codebook_dim \
+                 {expected_w}",
+                proj_weights_flat.len()
+            )));
+        }
+        let expected_b = d_model.checked_mul(3).ok_or_else(|| {
+            VokraError::InvalidArgument("snac_decode_f32: 3 * d_model overflows usize".to_owned())
+        })?;
+        if proj_biases_flat.len() != expected_b {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: proj_biases_flat.len() {} != 3 * d_model {expected_b}",
+                proj_biases_flat.len()
+            )));
+        }
+        // Per-stage code count check: `codes[s].len() * strides[s]` must
+        // equal `t_expanded` for every stage (SnacDecoder::check_and_measure
+        // invariant). We reconstruct `codes[s].len()` from
+        // `stage_offsets` + `codes_flat.len()`.
+        let stage_lens: [usize; 3] = [
+            (stage_offsets[1] as usize)
+                .checked_sub(stage_offsets[0] as usize)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "snac_decode_f32: stage_offsets[1] {} < stage_offsets[0] {}",
+                        stage_offsets[1], stage_offsets[0]
+                    ))
+                })?,
+            (stage_offsets[2] as usize)
+                .checked_sub(stage_offsets[1] as usize)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "snac_decode_f32: stage_offsets[2] {} < stage_offsets[1] {}",
+                        stage_offsets[2], stage_offsets[1]
+                    ))
+                })?,
+            codes_flat
+                .len()
+                .checked_sub(stage_offsets[2] as usize)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "snac_decode_f32: codes_flat.len() {} < stage_offsets[2] {}",
+                        codes_flat.len(),
+                        stage_offsets[2]
+                    ))
+                })?,
+        ];
+        for (s, &len) in stage_lens.iter().enumerate() {
+            let expanded = len.checked_mul(strides[s] as usize).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage {s} codes.len() ({len}) * strides[{s}] ({}) \
+                     overflows usize",
+                    strides[s]
+                ))
+            })?;
+            if expanded != t_expanded {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage {s} expands to T={expanded}, but t_expanded={t_expanded} \
+                     (SNAC's co-aligned base frames invariant — every stage must expand to the \
+                     same T)"
+                )));
+            }
+        }
+        // Per-index bound check — the MSL kernel does NOT range-check
+        // `codes[..]`. Cheap: O(Σ codes[s].len()) unpredictable branches,
+        // dwarfed by the GPU dispatch.
+        for (i, &idx) in codes_flat.iter().enumerate() {
+            if (idx as usize) >= codebook_size {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: codes_flat[{i}] = {idx} >= codebook_size {codebook_size} \
+                     (no silent clamp — FR-EX-08)"
+                )));
+            }
+        }
+        // Empty output → return an empty Vec, mirroring
+        // `SnacDecoder::decode` (zero-`t_expanded` decode is well-defined
+        // and returns an empty `Vec`; every other empty axis is a shape
+        // error above).
+        if t_expanded == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_snac_decode(
+            codes_flat,
+            stage_offsets,
+            strides,
+            codebooks_flat,
+            proj_weights_flat,
+            proj_biases_flat,
+            codebook_size,
+            codebook_dim,
+            d_model,
+            t_expanded,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to SNAC's 3-stage factorized shape
+    fn run_snac_decode(
+        &self,
+        codes_flat: &[u32],
+        stage_offsets: [u32; 3],
+        strides: [u32; 3],
+        codebooks_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        t_expanded: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes_flat` is a valid read-only slice of `u32`; reinterpret
+        // its backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow scope
+        // of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                codes_flat.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(codes_flat),
+            )
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let cb_buf = self.new_buffer_from_slice(codebooks_flat)?;
+        let w_buf = self.new_buffer_from_slice(proj_weights_flat)?;
+        let b_buf = self.new_buffer_from_slice(proj_biases_flat)?;
+        let out_len = t_expanded * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = SnacDecodeDims {
+            d_model: d_model as u32,
+            codebook_dim: codebook_dim as u32,
+            codebook_size: codebook_size as u32,
+            t_expanded: t_expanded as u32,
+            strides,
+            stage_offsets,
+        };
+        // One thread per (d_model column, t_expanded row) — same launch
+        // geometry as the sibling mimi_rvq / dac_rvq kernels for a
+        // consistent codec-family shape. The kernel guards the ragged tail
+        // against both bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, t_expanded);
+        self.dispatch_compute(
+            self.snac_decode_pipeline,
+            &[&codes_buf, &cb_buf, &w_buf, &b_buf, &out_buf],
+            (&dims as *const SnacDecodeDims).cast::<c_void>(),
+            size_of::<SnacDecodeDims>(),
+            grid,
+            tg,
+            "snac_decode",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
     }
 
     /// M3-06 T14: Mimi RVQ codec decode — gather + FP32 fold on the GPU.
@@ -5480,6 +5922,7 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.snac_decode_pipeline);
             release(self.snake_activation_pipeline);
             release(self.xcodec2_fsq_decode_pipeline);
             release(self.wavtokenizer_vq_gather_pipeline);

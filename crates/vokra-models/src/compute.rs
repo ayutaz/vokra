@@ -56,9 +56,9 @@ use vokra_core::{Backend, DecoderLayerView, PrenormLayer, Result, VokraError};
 // `Compute::mimi_rvq_f32` / `dac_rvq_f32` / `encodec_rvq_f32` /
 // `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` below.
 use vokra_ops::{
-    CodebookTable, DacOutProj, DacRvqAttrs, EncodecRvqAttrs, FsqOutProj, MimiRvqAttrs,
-    WavTokenizerVqAttrs, Xcodec2FsqAttrs, dac_rvq_decode, encodec_rvq_decode, mimi_rvq_decode,
-    wavtokenizer_vq_decode, xcodec2_fsq_decode,
+    CodebookTable, DacOutProj, DacRvqAttrs, EncodecRvqAttrs, FsqOutProj, MimiRvqAttrs, SnacConfig,
+    SnacDecoder, SnacWeights, WavTokenizerVqAttrs, Xcodec2FsqAttrs, dac_rvq_decode,
+    encodec_rvq_decode, mimi_rvq_decode, wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 
 /// A backend-dispatched hot op — the operators the imperative models route
@@ -171,6 +171,29 @@ pub enum HotOp {
     /// that lists it against those backends fails the coverage gate
     /// (never a silent CPU fall back).
     SnakeActivation,
+    /// SNAC 3-stage hierarchical residual VQ codec decode
+    /// (`vokra_ops::snac_decode::SnacDecoder::decode`) — the Vocoder wave
+    /// WF5 op consumed by Orpheus / Maya1 (upstream `hubertsiuzdak/snac`,
+    /// MIT / Apache-2.0). **Distinct from every RVQ / FSQ variant**: SNAC's
+    /// multi-scale structure runs each stage at `base / vq_strides[s]`
+    /// (SNAC 24 kHz canonical `[4, 2, 1]` → ~12 / 23 / 47 Hz per stage),
+    /// which no other codec op does — the per-stage
+    /// `t_stage = t_out / strides[s]` lookup is baked into the kernel. The
+    /// per-quantizer projection reuses the DAC factorized shape
+    /// ([`DacOutProj`]).
+    ///
+    /// **Vocoder Metal wave WF5 (2026-08-13):** the Metal arm is wired via
+    /// `vokra_snac_decode_f32` (3-stage gather + factorized projection +
+    /// temporal upsample + FP32 residual sum, semantics equal to
+    /// `SnacDecoder::decode` within FP32 fast-math tolerance, host-side
+    /// per-index bound check upstream — FR-EX-08). The CUDA arm remains an
+    /// explicit [`VokraError::UnsupportedOp`] (deferred to the vast.ai
+    /// owner track). `covered_by_metal` returns `true`; `covered_by_cuda` /
+    /// `covered_by_vulkan` / `covered_by_webgpu` / `covered_by_coreml` /
+    /// `covered_by_qnn` return `false` — any model that lists it against
+    /// those backends fails the coverage gate (never a silent CPU fall
+    /// back).
+    SnacDecode,
 }
 
 impl HotOp {
@@ -206,10 +229,11 @@ impl HotOp {
         // (2026-08-13) added the FSQ family (`WavTokenizerVq` via
         // `vokra_wavtokenizer_vq_gather_f32`, `Xcodec2Fsq` via
         // `vokra_xcodec2_fsq_decode_f32`). Vocoder Metal wave WF2 (2026-08-13)
-        // added `SnakeActivation` via `vokra_snake_activation_f32`. Any
-        // model listing the still-deferred sibling (`EncodecRvq`) continues
-        // to fail the Metal coverage gate — no silent CPU fall back
-        // (FR-EX-08).
+        // added `SnakeActivation` via `vokra_snake_activation_f32`; Vocoder
+        // Metal wave WF5 (2026-08-13) added `SnacDecode` via
+        // `vokra_snac_decode_f32`. Any model listing the still-deferred
+        // sibling (`EncodecRvq`) continues to fail the Metal coverage gate —
+        // no silent CPU fall back (FR-EX-08).
         matches!(
             self,
             HotOp::Gemm
@@ -223,6 +247,7 @@ impl HotOp {
                 | HotOp::WavTokenizerVq
                 | HotOp::Xcodec2Fsq
                 | HotOp::SnakeActivation
+                | HotOp::SnacDecode
         )
     }
 
@@ -1561,6 +1586,248 @@ impl Compute {
         }
     }
 
+    /// SNAC 3-stage hierarchical residual VQ codec decode — the Vocoder
+    /// wave WF5 op wired into the imperative `Compute` seam (upstream
+    /// `hubertsiuzdak/snac`, MIT / Apache-2.0).
+    ///
+    /// Given `[3]` per-stage `codes` vectors of `u32` codebook indices, the
+    /// SNAC [`SnacConfig`] (holds per-stage temporal strides) and the
+    /// [`SnacWeights`] bundle (3 factorized [`CodebookTable`]s and 3
+    /// [`DacOutProj`]s), returns a fresh `[t_expanded × d_model]` row-major
+    /// `Vec<f32>`: `out[t, :] = Σ_s (W_s @ codebooks[s].row(codes[s][t /
+    /// strides[s]]) + b_s)` in FP32. Heap-returning for the same
+    /// heterogeneous-signature reason as [`Compute::mimi_rvq_f32`] (chunk
+    /// granularity, not per-token hot path).
+    ///
+    /// # Multi-scale distinction (why this is not `dac_rvq_f32`)
+    ///
+    /// Unlike Mimi / DAC where every quantizer shares the same time axis,
+    /// SNAC's `k`th stage runs at frame rate `base / vq_strides[k]`. The
+    /// per-stage `t_stage = t_out / strides[s]` lookup upsamples via
+    /// `repeat_interleave(stride)` semantics (upstream
+    /// `ResidualVectorQuantize.from_codes`, `snac/vq.py` L61-71). The
+    /// factorized-projection shape (per-stage `WNConv1d(codebook_dim →
+    /// d_model)` + bias) is shared with DAC, so this method reuses
+    /// [`CodebookTable`] + [`DacOutProj`] rather than introducing new
+    /// weight types.
+    ///
+    /// # CPU-only through this seam today (Metal wired; CUDA / Vulkan /
+    /// WebGPU / CoreML / QNN return `UnsupportedOp`)
+    ///
+    /// **Vocoder Metal wave WF5 (2026-08-13):** the Metal arm dispatches
+    /// to [`vokra_backend_metal::MetalContext::snac_decode_f32`]
+    /// (`vokra_snac_decode_f32` MSL kernel — semantics equal to
+    /// `SnacDecoder::decode` within the FP32 GEMV-scale bound
+    /// `atol ≤ 5e-4`). The CPU arm builds a [`SnacDecoder`] and calls
+    /// `decode` — bit-for-bit reproduces a direct
+    /// `SnacDecoder::new(config, weights).decode(codes)` call. Every other
+    /// GPU arm returns an explicit [`VokraError::UnsupportedOp`] — never a
+    /// silent CPU fall back (FR-EX-08). The coverage gate on
+    /// [`Compute::for_backend`] additionally rejects any model that lists
+    /// [`HotOp::SnacDecode`] against those backends.
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`SnacDecoder::new`] / [`SnacDecoder::decode`] raise (stride 0,
+    ///   codebook / projection shape mismatch, cross-stage `T` mis-
+    ///   alignment, `codes[i][t] >= codebook_size`; never a silent
+    ///   0-clamp — FR-EX-08).
+    /// - Metal arm: same host-side shape validation before dispatch, plus
+    ///   any [`VokraError::BackendUnavailable`] from the underlying command
+    ///   buffer.
+    /// - CUDA / Vulkan / WebGPU / CoreML / QNN arms: explicit
+    ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
+    pub fn snac_decode_f32(
+        &self,
+        codes: &[Vec<u32>; 3],
+        config: SnacConfig,
+        codebooks: &[CodebookTable; 3],
+        out_projs: &[DacOutProj; 3],
+    ) -> Result<Vec<f32>> {
+        match &self.be {
+            Be::Cpu => {
+                // Build a decoder inline and call decode. Bit-for-bit
+                // reproduces a direct `SnacDecoder::new(config, weights).
+                // decode(codes)` call — the CPU arm is a thin adapter, no
+                // algorithmic changes. Chunk-granularity so building the
+                // decoder per call is negligible next to the FP32 fold.
+                let weights = SnacWeights {
+                    codebooks: [
+                        codebooks[0].clone(),
+                        codebooks[1].clone(),
+                        codebooks[2].clone(),
+                    ],
+                    out_projs: [
+                        out_projs[0].clone(),
+                        out_projs[1].clone(),
+                        out_projs[2].clone(),
+                    ],
+                };
+                let decoder = SnacDecoder::new(config, weights)?;
+                decoder.decode(codes)
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => {
+                // Explicit shape + index validation on the host. The MSL
+                // kernel guards `t >= t_expanded` and `d >= d_model` but has
+                // no per-element bound check on `codes[..]`; silent OOB reads
+                // inside the gather + factorized projection are the failure
+                // mode we prevent by mirroring the CPU-arm shape checks in
+                // `vokra_ops::snac_decode::SnacDecoder::new` /
+                // `SnacDecoder::decode` (FR-EX-08 — never a silent GPU OOB or
+                // CPU fall back).
+                let strides = config.vq_strides;
+                for (s, &stride) in strides.iter().enumerate() {
+                    if stride == 0 {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "snac_decode_f32 metal: config.vq_strides[{s}] = 0 (stride 0 would \
+                             divide the base frame rate by zero — FR-EX-08)"
+                        )));
+                    }
+                }
+                // Every stage must share codebook_size / codebook_dim /
+                // d_model (SnacDecoder::new invariant). Derive the common
+                // shape from stage 0 and validate the other two.
+                let codebook_size = codebooks[0].codebook_size;
+                let codebook_dim = codebooks[0].d_model;
+                let d_model = out_projs[0].d_model;
+                if codebook_size == 0 || codebook_dim == 0 || d_model == 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "snac_decode_f32 metal: axes must be > 0, got codebook_size={codebook_size} \
+                         codebook_dim={codebook_dim} d_model={d_model}"
+                    )));
+                }
+                for (s, cb) in codebooks.iter().enumerate() {
+                    if cb.codebook_size != codebook_size || cb.d_model != codebook_dim {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "snac_decode_f32 metal: codebooks[{s}] shape [{},{}] != [{},{}] \
+                             (all stages must share the same codebook architecture)",
+                            cb.codebook_size, cb.d_model, codebook_size, codebook_dim
+                        )));
+                    }
+                }
+                for (s, p) in out_projs.iter().enumerate() {
+                    if p.d_model != d_model || p.codebook_dim != codebook_dim {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "snac_decode_f32 metal: out_projs[{s}] shape [{},{}] != [{},{}] \
+                             (all stages must project into the same d_model)",
+                            p.d_model, p.codebook_dim, d_model, codebook_dim
+                        )));
+                    }
+                }
+                // Cross-stage T alignment: `codes[s].len() * strides[s]` must
+                // equal the same T for every stage (SNAC's co-aligned base
+                // frames invariant). This mirrors
+                // `SnacDecoder::check_and_measure`.
+                let mut common: Option<usize> = None;
+                for (s, stage_codes) in codes.iter().enumerate() {
+                    let expanded = stage_codes
+                        .len()
+                        .checked_mul(strides[s] as usize)
+                        .ok_or_else(|| {
+                            VokraError::InvalidArgument(format!(
+                                "snac_decode_f32 metal: codes[{s}].len() ({}) * strides[{s}] ({}) \
+                                 overflows usize",
+                                stage_codes.len(),
+                                strides[s]
+                            ))
+                        })?;
+                    match common {
+                        Some(prev) if prev != expanded => {
+                            return Err(VokraError::InvalidArgument(format!(
+                                "snac_decode_f32 metal: stage {s} expands to T={expanded}, but \
+                                 earlier stages expand to T={prev} (codes[i].len() * strides[i] \
+                                 must be the same for every stage — SNAC's multi-scale RVQ \
+                                 requires co-aligned base frames)"
+                            )));
+                        }
+                        Some(_) => {}
+                        None => common = Some(expanded),
+                    }
+                }
+                let t_expanded = common.unwrap_or(0);
+                if t_expanded == 0 {
+                    return Ok(Vec::new());
+                }
+                // Per-index bound check — the MSL kernel does NOT range-check
+                // `codes[..]`. Cheap: O(Σ codes[s].len()) unpredictable
+                // branches, dwarfed by the GPU dispatch.
+                for (s, stage_codes) in codes.iter().enumerate() {
+                    for (t_stage, &idx) in stage_codes.iter().enumerate() {
+                        if (idx as usize) >= codebook_size {
+                            return Err(VokraError::InvalidArgument(format!(
+                                "snac_decode_f32 metal: codes[{s}][{t_stage}] = {idx} >= \
+                                 codebook_size {codebook_size} (no silent clamp — FR-EX-08)"
+                            )));
+                        }
+                    }
+                }
+                // Flatten codes / codebooks / projection weights / biases into
+                // the row-major buffers the MSL kernel's stride math expects.
+                // Chunk granularity — allocating a few Vecs here is negligible
+                // next to the GPU dispatch (matches the heap-returning shape).
+                let total_codes: usize = codes.iter().map(std::vec::Vec::len).sum();
+                let mut codes_flat: Vec<u32> = Vec::with_capacity(total_codes);
+                let mut stage_offsets: [u32; 3] = [0, 0, 0];
+                let mut running: usize = 0;
+                for (s, stage_codes) in codes.iter().enumerate() {
+                    stage_offsets[s] = u32::try_from(running).map_err(|_| {
+                        VokraError::InvalidArgument(format!(
+                            "snac_decode_f32 metal: stage_offsets[{s}] {running} overflows u32"
+                        ))
+                    })?;
+                    codes_flat.extend_from_slice(stage_codes);
+                    running = running.checked_add(stage_codes.len()).ok_or_else(|| {
+                        VokraError::InvalidArgument(format!(
+                            "snac_decode_f32 metal: cumulative codes length overflow at stage {s}"
+                        ))
+                    })?;
+                }
+                let mut codebooks_flat: Vec<f32> =
+                    Vec::with_capacity(3 * codebook_size * codebook_dim);
+                for cb in codebooks {
+                    codebooks_flat.extend_from_slice(&cb.data);
+                }
+                let mut proj_weights_flat: Vec<f32> =
+                    Vec::with_capacity(3 * d_model * codebook_dim);
+                let mut proj_biases_flat: Vec<f32> = Vec::with_capacity(3 * d_model);
+                for p in out_projs {
+                    proj_weights_flat.extend_from_slice(&p.weight);
+                    proj_biases_flat.extend_from_slice(&p.bias);
+                }
+                ctx.snac_decode_f32(
+                    &codes_flat,
+                    stage_offsets,
+                    strides,
+                    &codebooks_flat,
+                    &proj_weights_flat,
+                    &proj_biases_flat,
+                    codebook_size,
+                    codebook_dim,
+                    d_model,
+                    t_expanded,
+                )
+            }
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "snac_decode_f32 has no wired CUDA NVRTC kernel; the Vocoder wave WF5 CUDA arm \
+                 is deferred to the vast.ai owner track. Select BackendKind::Cpu (which builds a \
+                 SnacDecoder inline and calls decode), or wait for the CUDA kernel — Vokra does \
+                 not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "snac_decode_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six Whisper \
+                 hot ops only; the Vocoder wave WF5 GPU arms are deferred like Metal/CUDA/Vulkan). \
+                 Select BackendKind::Cpu — Vokra does not silently run the op on the CPU \
+                 (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Fused MLP `fc2(gelu(fc1(x)))` — the Phase-5 device-residency slice.
     ///
     /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, bias
@@ -2811,7 +3078,9 @@ mod tests {
         // WF2 (2026-08-13, MSL kernels `vokra_wavtokenizer_vq_gather_f32` /
         // `vokra_xcodec2_fsq_decode_f32`); SnakeActivation is covered as of
         // the Vocoder Metal wave WF2 (2026-08-13, MSL kernel
-        // `vokra_snake_activation_f32`). Only EncodecRvq stays deferred.
+        // `vokra_snake_activation_f32`); SnacDecode is covered as of the
+        // Vocoder Metal wave WF5 (2026-08-13, MSL kernel
+        // `vokra_snac_decode_f32`). Only EncodecRvq stays deferred.
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -2824,6 +3093,7 @@ mod tests {
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
+            HotOp::SnacDecode,
         ] {
             assert!(
                 op.covered_by_metal(),
@@ -2832,8 +3102,12 @@ mod tests {
         }
 
         // Same deferred posture for the remaining M4-04 RVQ sibling (lock-step
-        // with the Metal arm of `encodec_rvq_f32`).
-        for op in [HotOp::EncodecRvq] {
+        // with the Metal arm of `encodec_rvq_f32`). Single-element scope
+        // rather than a `for op in [..]` loop (clippy::single_element_loop)
+        // — the list may grow again if a sibling regresses to deferred, at
+        // which point restoring the loop is the right shape.
+        {
+            let op = HotOp::EncodecRvq;
             assert!(
                 !op.covered_by_metal(),
                 "{op:?} unexpectedly Metal-covered — the M4-04 GPU kernel is deferred; \
@@ -2883,6 +3157,15 @@ mod tests {
                 eprintln!("no Metal device; SnakeActivation covered path is device-gated");
             }
             Err(e) => panic!("unexpected error for a Metal-covered SnakeActivation request: {e}"),
+        }
+        // SnacDecode (Vocoder Metal wave WF5, 2026-08-13) is now a covered
+        // request: same device-gated posture as the sibling codec ops above.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::SnacDecode]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; SnacDecode covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered SnacDecode request: {e}"),
         }
 
         // Whisper's full set is therefore a covered request: it either builds
@@ -2941,15 +3224,17 @@ mod tests {
              test.",
         );
         // Same deferred posture for the M4-04 RVQ siblings, the M4-16 FSQ
-        // family, and the Vocoder wave WF2 SnakeActivation (lock-step with
-        // the CUDA arms of `dac_rvq_f32` / `encodec_rvq_f32` /
-        // `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` / `snake_activation_f32`).
+        // family, the Vocoder wave WF2 SnakeActivation, and the Vocoder wave
+        // WF5 SnacDecode (lock-step with the CUDA arms of `dac_rvq_f32` /
+        // `encodec_rvq_f32` / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` /
+        // `snake_activation_f32` / `snac_decode_f32`).
         for op in [
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
+            HotOp::SnacDecode,
         ] {
             assert!(
                 !op.covered_by_cuda(),
@@ -3020,6 +3305,7 @@ mod tests {
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
+            HotOp::SnacDecode,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -3044,6 +3330,7 @@ mod tests {
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
+            HotOp::SnacDecode,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -3082,6 +3369,7 @@ mod tests {
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
+            HotOp::SnacDecode,
         ] {
             assert!(
                 !op.covered_by_coreml(),
@@ -3137,6 +3425,7 @@ mod tests {
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
+            HotOp::SnacDecode,
         ] {
             assert!(
                 !op.covered_by_qnn(),
@@ -3301,6 +3590,7 @@ mod tests {
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::SnakeActivation,
+            HotOp::SnacDecode,
         ] {
             assert!(
                 !op.covered_by_webgpu(),
