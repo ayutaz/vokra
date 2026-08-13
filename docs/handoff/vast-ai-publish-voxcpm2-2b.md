@@ -316,6 +316,11 @@ Owner が下記を全て満たすと **flip the switch で発火**（新規 work
   iMac 16 GB で peak footprint 6.4 MB 実測）。VoxCPM2-2B の 4.96 GB は Voxtral
   より小さいゆえ同手法で余裕を持って再刻印可能 = vast.ai 再起動不要。
 
+## See also
+
+- **Priority ordering (2026-08-14)**: `docs/handoff/vast-ai-execution-priority.md`
+  — 本 job は **Priority 1** (最初に実行)、local first 試行推奨
+
 ## 関連
 
 - 総論: `docs/handoff/vast-ai-large-model-publish.md`

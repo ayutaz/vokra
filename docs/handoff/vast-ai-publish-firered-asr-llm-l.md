@@ -545,6 +545,12 @@ Runtime forward 実装 (future wave) 後の flip-the-switch は:
 - **task 指示の "safetensors 経路" 前提との差分**: §0.2 / §4.0 参照。upstream
   は `.pth.tar` ゆえ owner side bridge が事前 dependency
 
+## See also
+
+- **Priority ordering (2026-08-14)**: `docs/handoff/vast-ai-execution-priority.md`
+  — 本 job は **Priority 2** (bridge PR land + training data audit 後に vast.ai、
+  Priority 1 と wall-clock 並行で owner が bridge PR 準備を推奨)
+
 ## 関連
 
 - 総論: `docs/handoff/vast-ai-large-model-publish.md`

@@ -403,6 +403,12 @@ Runtime forward 実装 (future wave) 後の flip-the-switch は:
 - **task 指示の "Apache-2.0" 記述との差分**: §0 参照。primary source 照合を優先、
   audit ticket / task 指示は参考、fail-closed default が正しく機能した
 
+## See also
+
+- **Priority ordering (2026-08-14)**: `docs/handoff/vast-ai-execution-priority.md`
+  — 本 job は **Priority 3** (Boson 契約なければ skip 推奨、gate 2 refuse で
+  vast.ai 借りても無駄)
+
 ## 関連
 
 - 総論: `docs/handoff/vast-ai-large-model-publish.md`
