@@ -52,6 +52,15 @@ use alloc::vec::Vec;
 // does NOT yet consume `features` — that wiring is Phase 3 (later wave).
 // See [ADR M5-03b](../../docs/adr/M5-03b-kws-micro-no-std.md).
 pub mod features;
+// M5-03b Phase 2: the scalar INT8 op kernels (`conv2d_int8`,
+// `depthwise_conv2d_int8`, `fully_connected_int8`, `sigmoid_int8`,
+// `softmax_int8`) the microWakeWord MC-MobileNet forward will drive.
+// Sibling to `vokra_vad_micro::math` — a `#![no_std]`-clean numeric core
+// with no `unsafe`, no SIMD intrinsics, and no `libm`. The Cortex-M55
+// Helium (MVE) fast path is deferred per M5-03 ADR. `KwsMicro::detect()`
+// does NOT yet consume it; wiring happens in Phase 3 next to the GGUF
+// loader below.
+pub mod kernels;
 // M5-03b Phase 2: the runtime *loader* for microWakeWord GGUFs produced by
 // `tools/parity/microwakeword/prepare_checkpoint.py`. Reads the
 // `vokra.kws.*` metadata contract + every dense F32 tensor via
