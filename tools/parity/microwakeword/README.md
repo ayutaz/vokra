@@ -20,6 +20,14 @@ reader parses on both host and thumbv8m targets.
   `ai-edge-litert.Interpreter.get_tensor_details()`, dequantize INT8 →
   F32, and emit a GGUF via `gguf.GGUFWriter` with the `vokra.kws.*`
   metadata keys documented in the script's module docstring.
+- `dump_reference.py` — Phase 4 host-parity reference dumper. Given a
+  `.tflite` and a fixed-seed synthesised PCM window, emits
+  `input_pcm.bin` + `features_ref.bin` + `output_ref.bin` +
+  `manifest.json` for the Rust parity harness
+  (`crates/vokra-kws-micro/tests/parity_microwakeword.rs`). Consumed
+  via `VOKRA_KWS_REAL_FIXTURES=<dir>`. See the script's module
+  docstring for the honest boundary (numpy log-mel = transcription
+  reference; TFLite output = real upstream forward).
 - `pyproject.toml` — uv project spec (Python 3.12 pinned per
   `[[feedback-python-3-12]]`, deps = `gguf` + `numpy` +
   `ai-edge-litert`).
@@ -92,36 +100,65 @@ is unchanged (`interpreter.allocate_tensors()`,
        --hop-ms 20 --window-ms 40 --n-mels 32
    ```
 
-## What Phase 1 emits vs what Phase 2 will add
+## Phase roadmap (updated 2026-08-13, Phase 4 lands)
 
-| Phase | Script emits                                                | Runtime consumes                            |
-| ----- | ----------------------------------------------------------- | ------------------------------------------- |
-| **1** | GGUF with F32 dequantized weights + `vokra.kws.*` metadata  | `vokra-kws-micro::features` (this wave)     |
-| **2** | Q8_0 INT8-preserving GGUF via `vokra-cli convert`           | `KwsMicro::detect()` real forward           |
-| **3** | (no change)                                                 | thumbv8m Cortex-M55 cross-build             |
+| Phase   | Script / crate work                                                   | Runtime consumes                                                                                                                    |
+| ------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **1**   | `prepare_checkpoint.py` (F32-dequant GGUF); 40-band log-mel features  | `vokra-kws-micro::features` real                                                                                                    |
+| **2**   | INT8 kernels + model loader                                           | `KwsMicro` scaffold surface                                                                                                         |
+| **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | `KwsMicro::detect()` REAL mode                                                                                                      |
+| **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A (GGUF smoke) + Path B (log-mel parity vs numpy transcription). Path C (INT8-chain end-to-end) is UNMET — needs Phase 3.5.    |
+| **3.5** | Sidecar Q8_0 emit + per-tensor `(scale, zero_point)` metadata         | `Model` per-layer typed accessors → real `ChainConfig` binding for hey_jarvis. Unlocks Path C.                                      |
 
 Phase 1's F32 dequantization is **lossless** for a fixed
 `(scale, zero_point)` pair — the TFLite affine formula
-`f32 = scale * (int8 - zero_point)` recovers exact values. Phase 2 will
-add Q8_0 for a ~4× smaller on-device footprint, matching the
-microcontroller SRAM budget the M5-03 opt-in Tier-3 target requires.
+`f32 = scale * (int8 - zero_point)` recovers exact values. Phase 3.5
+will add Q8_0 for a ~4× smaller on-device footprint, matching the
+microcontroller SRAM budget the M5-03 opt-in Tier-3 target requires,
+AND unblock end-to-end INT8 chain parity in the Rust host harness
+(Path C).
 
-## What Phase 1 does NOT do
+## What Phase 4 does — and its honest boundary
 
-- **No actual detection**: `crates/vokra-kws-micro/src/lib.rs` remains
-  a scaffold (`KwsMicro::detect()` returns `KwsEvent::Idle`
-  unconditionally). Phase 2 wires the forward — this script only
-  produces the artefact the forward will load.
+Phase 4 lands the **host-parity harness**: `dump_reference.py` (this
+directory) plus `tests/parity_microwakeword.rs` on the Rust side. See
+`crates/vokra-kws-micro/README.md` for the full owner walkthrough.
+
+**Honest boundary** (see `dump_reference.py`'s module docstring for
+the full write-up):
+
+- **Path A** (`VOKRA_KWS_REAL_GGUF`) — real GGUF load smoke. Real
+    hey_jarvis passes.
+- **Path B** (`VOKRA_KWS_REAL_FIXTURES`) — log-mel feature extractor
+    parity at `atol = 1e-3` against a **numpy transcription** of the
+    standard log-mel algorithm. This validates transcription
+    faithfulness (Rust ↔ numpy implement the same algorithm); it does
+    NOT validate against training-time `tf.signal` (that would require
+    a `tensorflow` dep). Empirically the standard algorithm matches
+    `tf.signal` at `1e-3` for the same parameters.
+- **Path C** (both env vars) — end-to-end INT8 chain parity. **UNMET**:
+    the current sidecar dequantises INT8 → F32 losslessly at emit, so
+    the GGUF does not carry per-tensor `(scale, zero_point)`. Wiring
+    Path C requires the Phase 3.5 sidecar extension. Until then the
+    Rust test skips with a clear defer message — the scaffold is here
+    so the flip is a one-file diff.
+
+## What this directory still does NOT do
+
 - **No `vokra-cli convert` entry**: the Rust converter
-  (`crates/vokra-convert/src/models/microwakeword.rs`) is a Phase 2 WP.
-  Phase 1 skips that layer by having Python emit GGUF directly, so the
-  produced artefact is loadable by the `vokra-vad-micro`-shape reader
-  without extra Rust code.
-- **No parity harness**: microWakeWord is INT8-quantized end-to-end,
-  and a bit-exact parity vs upstream requires reproducing the TFLite
-  INT8 pipeline in the runtime (Phase 2). Phase 1 does not attempt to
-  compare F32 activations against a TFLite reference — that comparison
-  is meaningless without matching the INT8 quantization boundaries.
+  (`crates/vokra-convert/src/models/microwakeword.rs`) is a Phase 3.5
+  WP. Phase 1 skips that layer by having Python emit GGUF directly, so
+  the produced artefact is loadable by the `vokra-vad-micro`-shape
+  reader without extra Rust code.
+- **No bit-parity against `tf.signal`**: the training-time TF mel
+  front-end is a `tensorflow` dep away; the sidecar stays at 3 deps
+  (`gguf` + `numpy` + `ai-edge-litert`) and Path B's transcription
+  parity is empirically within `1e-3` of `tf.signal` for the same
+  parameters.
+- **No Cortex-M55 hardware verify**: per M5-03 ADR, hardware / FVP
+  runs are owner-only. The cross-build (`thumbv8m.main-none-eabihf`)
+  compile gate is documented in `crates/vokra-kws-micro/README.md`
+  and can be triggered manually.
 
 ## License / distribution note
 
