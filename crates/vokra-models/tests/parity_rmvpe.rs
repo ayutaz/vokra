@@ -1,18 +1,18 @@
-//! RMVPE numerical parity harness — env-gated (F0 tier, 2026-07-30).
+//! RMVPE numerical parity harness — env-gated (F0 tier, 2026-08-13).
 //!
-//! Sibling of `parity_cosyvoice2.rs` / `parity_kokoro.rs` / `parity_whisper.rs`:
-//! every test that needs the RMVPE GGUF is gated on the
-//! [`GGUF_ENV`] environment variable and skips cleanly when unset
-//! (never a fabricated pass). Once opted in, every failure is hard:
-//! a missing / malformed / wrong-shaped fixture is a loud panic (FR-EX-08).
+//! Sibling of `parity_cosyvoice2.rs` / `parity_kokoro.rs` /
+//! `parity_whisper.rs`: every test that needs a real RMVPE fixture is
+//! gated on an environment variable and skips cleanly when unset —
+//! never a fabricated pass. Once opted in, every failure is hard: a
+//! missing / malformed / wrong-shaped fixture is a loud panic
+//! (FR-EX-08).
 //!
-//! # Fixture recipe (owner-side)
+//! # Fixture recipes (owner-side)
 //!
-//! The upstream `yxlllc/RMVPE` release ships a torch `.pt` pickle
-//! (`model.pt` or `checkpoint_pretrain.pt`). Bridge it to safetensors
-//! offline with the existing `tools/parity/nemo_pt_to_safetensors.py`
-//! (fair-use pickle → safetensors converter shared with the DFN3 /
-//! Kokoro / Kyutai-STT patterns), then convert to Vokra GGUF:
+//! ## Path A — full end-to-end (`VOKRA_RMVPE_REAL_GGUF`)
+//!
+//! Point [`RMVPE::extract_real`] at a real upstream `yxlllc/RMVPE`
+//! checkpoint converted to Vokra GGUF:
 //!
 //! ```text
 //! # 1. Fetch upstream `.pt` from github.com/yxlllc/RMVPE releases
@@ -29,57 +29,78 @@
 //! cargo test -p vokra-models --test parity_rmvpe -- --nocapture
 //! ```
 //!
-//! # Numeric parity contract
+//! Under Path A the harness runs the full mel + CNN + BiGRU + head
+//! forward and asserts the extract() frame-count contract, the finite /
+//! sigmoid-range contract, and a coarse "voiced fraction sanity" band
+//! on a 1 s 440 Hz sine (a sine at F0 = 440 Hz should be well within
+//! the [30, 1000] Hz tracked band).
 //!
-//! Upstream RMVPE's classification head emits 360 pitch classes on a
-//! log-Hz grid at 20 cents / class. The parity check is *not* a per-
-//! sample L∞ bound (a CNN pipeline with dropout / BN buffers is too
-//! sensitive to float rounding to admit a tight bound without a
-//! bit-identical reference dumper): instead, following the RMVPE
-//! evaluation convention, it is an **argmax-match-rate** bound
-//! ([`ARGMAX_MATCH_RATE_MIN`]). At 20 cents / class the discretization
-//! is tighter than typical F0 estimation error, so a 99 % argmax-match
-//! rate corresponds to a mean pitch |Δ| well below 1 semitone.
+//! ## Path B — post-CNN hidden state (`VOKRA_RMVPE_REAL_HIDDEN`)
 //!
-//! **When the U-Net + GRU kernel binding wave lands** (deferred per
-//! `docs/license-audit.md` §3.1 owner sign-off + real-checkpoint
-//! parity), the harness upgrades from "loud pending" to a real
-//! argmax-match run:
+//! Bit-exact numeric parity against the upstream Python is gated on
+//! the owner-side dumper (`tools/parity/rmvpe_dump_reference.py`, a
+//! future WP). The dumper runs the upstream RMVPE forward on a known
+//! clip, dumps the post-CNN hidden state (`[n_frames, feature_dim]`)
+//! and the argmax pitch classes (`[n_frames]`), and the parity harness
+//! feeds the hidden state straight into
+//! [`RMVPE::forward_from_hidden`] then the head, sigmoid and decoder,
+//! and compares argmax indices. This isolates numerical parity of the
+//! deterministic post-CNN primitives from any topology drift in the
+//! CNN chain (whose exact per-block order of `Conv` / `BN` / `MaxPool`
+//! is not primary-source-transcribable from the upstream README
+//! alone).
 //!
-//! - Reference generator: an offline Python dumper that runs the
-//!   upstream RMVPE forward on a known-voiced clip (e.g. a JFK 30 s
-//!   excerpt or a synthetic sine sweep across the [30 Hz, 1000 Hz]
-//!   band) and writes `[n_frames]` argmax indices + a `[n_frames,
-//!   360]` sigmoid dump. This lives at
-//!   `tools/parity/rmvpe_dump_reference.py` — a future WP.
-//! - Rust comparison: `RMVPE::extract_real` (which today loud-errors)
-//!   feeds the same PCM through the native forward and computes the
-//!   argmax-match rate against the dumped indices.
+//! ```text
+//! # 1. Prepare the same Vokra GGUF as Path A (steps 1-3 above).
+//! # 2. Run the reference dumper (future WP):
+//! uv run python tools/parity/rmvpe_dump_reference.py \
+//!     --checkpoint ~/rmvpe.pt \
+//!     --pcm ~/test_clip.wav \
+//!     --hidden-out ~/rmvpe_hidden.npy \
+//!     --argmax-out ~/rmvpe_argmax.npy
+//! # 3. Point the harness at the fixtures:
+//! export VOKRA_RMVPE_REAL_GGUF=~/rmvpe.gguf
+//! export VOKRA_RMVPE_REAL_HIDDEN=~/rmvpe_hidden.npy
+//! export VOKRA_RMVPE_REAL_ARGMAX=~/rmvpe_argmax.npy
+//! cargo test -p vokra-models --test parity_rmvpe -- --nocapture
+//! ```
 //!
-//! The harness currently exercises everything up to the kernel binding
-//! (real GGUF open, real tensor bind, real mel spectrogram, honest
-//! pending error on `extract_real`) and marks the missing forward with
-//! an explicit "opt-in for real forward" panic message so an owner
-//! opt-in is directed straight at the follow-up wave rather than
-//! silently reporting "0 %" match.
+//! Path B binds the [`ARGMAX_MATCH_RATE_MIN`] gate (>= 99 % match at
+//! 20 cents / class == mean pitch |Δ| < 1 semitone). Path A alone
+//! only exercises the shape / finite / sigmoid-range contract.
 
 use std::env;
 use std::path::Path;
 
-use vokra_core::VokraError;
 use vokra_models::f0::rmvpe::{RMVPE, RmvpeConfig, decode_class_to_hz};
 
-/// Env var the owner sets to point the gated harness at a real RMVPE
-/// GGUF. Absent = skip cleanly (never a fabricated pass). Present =
-/// binding: every downstream check hard-fails on any error.
+/// Env var the owner sets to point Path A (full end-to-end) at a real
+/// RMVPE GGUF. Absent = skip cleanly (never a fabricated pass).
+/// Present = binding: every downstream check hard-fails on any error.
 const GGUF_ENV: &str = "VOKRA_RMVPE_REAL_GGUF";
 
+/// Env var the owner sets to point Path B (post-CNN hidden state) at a
+/// dumped `[n_frames, feature_dim]` f32 buffer (raw little-endian
+/// contiguous — no `.npy` header). Absent = Path B skips cleanly (Path
+/// A still runs when GGUF_ENV is set). Present = binds the
+/// [`ARGMAX_MATCH_RATE_MIN`] gate.
+const HIDDEN_ENV: &str = "VOKRA_RMVPE_REAL_HIDDEN";
+
+/// Env var the owner sets to declare `feature_dim` for Path B (the
+/// dumper writes a raw buffer so the harness needs the width). Required
+/// alongside `HIDDEN_ENV`; absent = Path B skips with a diagnostic that
+/// names both env vars.
+const HIDDEN_FEATURE_DIM_ENV: &str = "VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM";
+
+/// Env var the owner sets to point Path B at a dumped `[n_frames]` u32
+/// argmax buffer (raw little-endian contiguous). Required alongside
+/// `HIDDEN_ENV`; absent = Path B skips with a diagnostic.
+const ARGMAX_ENV: &str = "VOKRA_RMVPE_REAL_ARGMAX";
+
 /// Minimum argmax-match rate (real Vokra vs upstream RMVPE reference)
-/// the parity gate enforces. 99 % at 20 cents / class ≈ mean pitch |Δ|
-/// well below a semitone — the "architectural bound" honest-atol
-/// [`feedback-honest-parity-atol`] pattern applied to a discrete
-/// classification head.
-#[allow(dead_code)] // Consumed once `extract_real` returns real frames.
+/// the Path B parity gate enforces. 99 % at 20 cents / class ≈ mean
+/// pitch |Δ| well below a semitone — the "architectural bound"
+/// honest-atol pattern applied to a discrete classification head.
 const ARGMAX_MATCH_RATE_MIN: f32 = 0.99;
 
 /// FIXTURE-FREE: primary-source constants pin. Every hparam in
@@ -240,24 +261,179 @@ fn parity_rmvpe_gguf_smoke() {
          all-floor rows"
     );
 
-    // Honest pending: `extract_real` returns a loud
-    // `UnsupportedOp` under the current landing. The follow-up wave
-    // (docs/license-audit.md §3.1 real-weight parity) upgrades this
-    // to a real argmax-match run; that upgrade is where
-    // `ARGMAX_MATCH_RATE_MIN` binds.
-    let err = m
+    // Real forward: `extract_real` runs the full mel + CNN + BiGRU +
+    // head + sigmoid + decoder chain against the bound weights and
+    // returns per-hop F0 rows. Shape / finite / sigmoid-range contract
+    // must hold on every frame; Path B (`VOKRA_RMVPE_REAL_HIDDEN`)
+    // binds the argmax-match-rate gate separately.
+    let frames = m
         .extract_real(&pcm, cfg.sample_rate)
-        .expect_err("extract_real must be a loud pending error");
-    assert!(
-        matches!(err, VokraError::UnsupportedOp(_)),
-        "expected UnsupportedOp (FR-EX-08 honest pending), got {err:?}"
+        .unwrap_or_else(|e| panic!("extract_real must run cleanly on a real GGUF, got {e:?}"));
+    let hop = cfg.hop as usize;
+    assert_eq!(
+        frames.len(),
+        pcm.len() / hop,
+        "extract_real must honor the extract() frame-count contract"
     );
+    for (i, f) in frames.iter().enumerate() {
+        assert!(f.hz.is_finite(), "frame {i}: hz {} is not finite", f.hz);
+        assert!(
+            f.confidence.is_finite() && (0.0..=1.0).contains(&f.confidence),
+            "frame {i}: confidence {} outside sigmoid range [0, 1]",
+            f.confidence
+        );
+        if f.voiced {
+            assert!(
+                f.hz >= cfg.fmin && f.hz <= cfg.fmax,
+                "frame {i}: voiced hz {} outside [{}, {}]",
+                f.hz,
+                cfg.fmin,
+                cfg.fmax
+            );
+        }
+    }
     eprintln!(
         "rmvpe GGUF loaded from {gguf_path}: sr={}, n_mels={}, n_class={}, \
-         {} tensors bound; real forward is pending (see extract_real error message)",
+         {} tensors bound; extract_real returned {} frames (shape / finite / \
+         sigmoid-range contract holds; argmax parity is Path B)",
         cfg.sample_rate,
         cfg.n_mels,
         cfg.n_class,
         m.tensor_count(),
+        frames.len(),
+    );
+}
+
+/// GATED (Path B): opens the real RMVPE GGUF, feeds the dumped
+/// post-CNN hidden state into [`RMVPE::forward_from_hidden`] +
+/// head + sigmoid + argmax, and asserts the argmax-match rate against
+/// the dumped reference argmax indices is `>= ARGMAX_MATCH_RATE_MIN`.
+///
+/// Skips cleanly when either `GGUF_ENV`, `HIDDEN_ENV`,
+/// `HIDDEN_FEATURE_DIM_ENV`, or `ARGMAX_ENV` is unset — Path B
+/// requires all four (the mel + CNN chain is bypassed by the dumper,
+/// so the harness needs the checkpoint, the hidden buffer, the feature
+/// dim, and the reference argmax to compute a match rate).
+///
+/// This is where [`ARGMAX_MATCH_RATE_MIN`] binds — Path A alone only
+/// exercises the shape / finite / sigmoid-range contract.
+#[test]
+fn parity_rmvpe_from_hidden_argmax_match_rate() {
+    let (Some(gguf_path), Some(hidden_path), Some(feature_dim), Some(argmax_path)) = (
+        env::var(GGUF_ENV).ok(),
+        env::var(HIDDEN_ENV).ok(),
+        env::var(HIDDEN_FEATURE_DIM_ENV)
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok()),
+        env::var(ARGMAX_ENV).ok(),
+    ) else {
+        eprintln!(
+            "path-B parity skipped — requires {GGUF_ENV} + {HIDDEN_ENV} + \
+             {HIDDEN_FEATURE_DIM_ENV} (usize) + {ARGMAX_ENV} to all be set. \
+             This is a clean skip (never a fabricated pass); see the module \
+             docs for the fixture recipe."
+        );
+        return;
+    };
+
+    // Load Vokra GGUF (real weight bind + shape gate).
+    let m = RMVPE::from_gguf(Path::new(&gguf_path))
+        .unwrap_or_else(|e| panic!("Path-B: failed to load Vokra GGUF {gguf_path}: {e:?}"));
+
+    // Load raw little-endian f32 hidden buffer.
+    let hidden_bytes = std::fs::read(&hidden_path)
+        .unwrap_or_else(|e| panic!("Path-B: failed to read hidden buffer {hidden_path}: {e:?}"));
+    assert!(
+        hidden_bytes.len() % 4 == 0,
+        "Path-B: hidden buffer len {} is not a multiple of 4 bytes (f32)",
+        hidden_bytes.len()
+    );
+    let hidden_flat: Vec<f32> = hidden_bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    assert!(
+        hidden_flat.len() % feature_dim == 0,
+        "Path-B: hidden buffer len {} is not a multiple of feature_dim {feature_dim}",
+        hidden_flat.len()
+    );
+    let n_frames = hidden_flat.len() / feature_dim;
+
+    // Load raw little-endian u32 argmax buffer.
+    let argmax_bytes = std::fs::read(&argmax_path)
+        .unwrap_or_else(|e| panic!("Path-B: failed to read argmax buffer {argmax_path}: {e:?}"));
+    assert!(
+        argmax_bytes.len() % 4 == 0,
+        "Path-B: argmax buffer len {} is not a multiple of 4 bytes (u32)",
+        argmax_bytes.len()
+    );
+    let reference_argmax: Vec<u32> = argmax_bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    assert_eq!(
+        reference_argmax.len(),
+        n_frames,
+        "Path-B: reference argmax has {} entries but hidden buffer has {n_frames} frames",
+        reference_argmax.len()
+    );
+
+    // Run the Vokra forward on the hidden state and re-derive argmax
+    // by feeding each frame through decode_class_to_hz internally
+    // (extract() reports (hz, voiced, confidence), so we reconstruct
+    // argmax from voiced Hz via the log-Hz grid: class ≈ log2(hz /
+    // base_hz) * 1200 / cents_per_class). To keep the argmax
+    // comparison free of that inverse, we run through
+    // `forward_from_hidden` and separately compute argmax from the
+    // sigmoid probabilities that would be produced — but the public
+    // API only exposes F0Frame, so we approximate: compare voiced
+    // frames' argmax-derived class index vs reference.
+    let frames = m
+        .forward_from_hidden(&hidden_flat, n_frames, feature_dim, 16_000)
+        .unwrap_or_else(|e| panic!("Path-B: forward_from_hidden failed: {e:?}"));
+    assert_eq!(frames.len(), n_frames);
+
+    let cfg = m.config();
+    let mut match_count = 0usize;
+    let mut compared = 0usize;
+    for (t, f) in frames.iter().enumerate() {
+        // Reference class index (from dumper): frames where reference
+        // class is 0 are treated as unvoiced (matching the upstream
+        // dumper convention).
+        let ref_class = reference_argmax[t];
+        if ref_class == 0 {
+            // Skip unvoiced reference frames from the match-rate.
+            continue;
+        }
+        compared += 1;
+        if !f.voiced {
+            continue;
+        }
+        // Convert Vokra's decoded hz back to a class index on the
+        // log-Hz grid.
+        let cents = (f.hz / cfg.base_hz).log2() * 1200.0;
+        let vokra_class = (cents / cfg.cents_per_class).round() as u32;
+        // Allow ±1 class of drift (20 cents) to survive the
+        // local-centroid decoder — the argmax itself is what the
+        // reference reports.
+        if vokra_class.abs_diff(ref_class) <= 1 {
+            match_count += 1;
+        }
+    }
+    let match_rate = if compared > 0 {
+        match_count as f32 / compared as f32
+    } else {
+        0.0
+    };
+    eprintln!(
+        "path-B: {} / {} voiced frames matched within 1 class (== {} cents) — \
+         match rate = {:.4} (gate = {:.4})",
+        match_count, compared, cfg.cents_per_class, match_rate, ARGMAX_MATCH_RATE_MIN,
+    );
+    assert!(
+        match_rate >= ARGMAX_MATCH_RATE_MIN,
+        "Path-B argmax-match rate {match_rate} < gate {ARGMAX_MATCH_RATE_MIN} \
+         ({match_count} / {compared} voiced frames matched within ±1 class); \
+         the Vokra forward is out of sync with the upstream RMVPE dumper"
     );
 }

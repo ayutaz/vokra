@@ -228,6 +228,111 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-13 — 1.0.0-rc.1-dev (RMVPE Wave 2: real U-Net + BiGRU forward + `forward_from_hidden` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the RMVPE Wave 2 landing that
+resolves the loud-partial `extract_real` stub on
+`vokra_models::f0::rmvpe::RMVPE`. The C ABI (`include/vokra.h`, 33 fn
++ 11 typedef, v1.0-rc baseline) is **untouched** — every change is
+Rust-surface, not cbindgen-exported (`scripts/gen-c-abi.sh --check` =
+no diff).
+
+**Motivation**: `RMVPE::extract_real` had returned a loud
+`VokraError::UnsupportedOp` "kernel binding pending" stub since
+2026-07-30, alongside a real weight loader + rank-shape gate + real
+mel front-end + `decode_class_to_hz` primitive. The stub was honest
+(FR-EX-08 loud-partial posture) but blocked downstream VC / TTS
+consumers from wiring the API surface end-to-end against a real
+checkpoint. This wave binds the missing CNN + BiGRU + head + sigmoid
++ decoder chain against the already-bound weights, so a real GGUF
+converts straight through to a per-hop F0 track without the loud
+stub. Bit-exact numeric parity against the upstream `yxlllc/RMVPE`
+Python remains gated on the owner-side dumper wave (see below).
+
+**Backward compatibility**: `extract_real` still returns
+`Result<Vec<F0Frame>, VokraError>` — the signature is unchanged; only
+the error surface is narrowed (never returns `UnsupportedOp` under
+this landing; a mis-composed weight set is a
+`VokraError::ModelLoad`). Every prior caller that did
+`.expect_err("must be unsupported")` must update to
+`.expect("must run cleanly on a real GGUF")` — search for
+`extract_real_is_loud_pending_error` / `expect_err(_, ..., UnsupportedOp)`
+against RMVPE. Existing `RMVPE::extract` placeholder is preserved
+verbatim.
+
+**Files touched**:
+- `crates/vokra-models/src/f0/rmvpe.rs`
+  — New public methods:
+    - `RMVPE::forward_from_hidden(hidden, n_frames, feature_dim, sample_rate)`
+      — env-gated alternate entry point for the parity harness to feed
+      a dumped post-CNN hidden state directly (bypasses mel + CNN).
+  — Rewritten (previously stub):
+    - `RMVPE::extract_real(pcm, sample_rate)` — real forward through
+      `mel_spectrogram` + discoverable U-Net encoder / decoder blocks
+      + bidirectional PyTorch-native GRU + Linear (or Conv1d/Conv2d
+      with kernel=1) head + sigmoid + `decode_class_to_hz` per frame.
+  — New private forward primitives (file-scope, no `vokra-ops`
+    dependency to preserve NFR-DS-02 at the RMVPE seam):
+    `conv2d_pad_same`, `batchnorm2d_apply`, `maxpool2d_2x2`,
+    `conv_transpose2d_stride2`, `leaky_relu_inplace`,
+    `sigmoid_inplace`, `linear_forward`, `gru_cell_step`,
+    `collapse_nchw_to_frames`, `head_shape`.
+  — New private weight-discovery helpers on `RmvpeWeights`:
+    `encoder_block(i)`, `decoder_block(i)`, `discover_gru_shape()`,
+    `apply_bigru(...)`, `head_shape_and_slices()`. All return
+    `RmvpeBlock<'_>` / `RmvpeHead<'_>` view structs.
+  — `RMVPE::weights` field's `#[allow(dead_code)]` removed (the
+    forward now consumes it).
+- `crates/vokra-models/tests/parity_rmvpe.rs`
+  — `parity_rmvpe_gguf_smoke` (env-gated) upgraded from "expect
+    UnsupportedOp" to "assert real frames + shape / finite /
+    sigmoid-range contract".
+  — New env-gated `parity_rmvpe_from_hidden_argmax_match_rate` —
+    Path B parity harness feeding `VOKRA_RMVPE_REAL_HIDDEN` +
+    `VOKRA_RMVPE_REAL_ARGMAX` + `VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM`
+    against the argmax-match-rate ≥ 99 % gate.
+- Unit tests in `f0::rmvpe::tests`:
+  — Removed `extract_real_is_loud_pending_error` (superseded).
+  — Added `extract_real_refuses_gguf_missing_required_tensors`
+    (FR-EX-08 loud-error contract).
+  — Added `extract_real_returns_real_frames_with_synthetic_weights`
+    (positive smoke on a self-consistent no-CNN fixture).
+  — Added `forward_from_hidden_returns_real_frames_with_synthetic_weights`
+    (positive smoke on the hidden-driven path).
+  — Added `forward_from_hidden_refuses_wrong_length` (FR-EX-08 length
+    check).
+
+**Zero-dep** (NFR-DS-02): every forward primitive is inline
+(`crates/vokra-models/src/f0/rmvpe.rs` file scope). No new
+dependencies, no vokra-ops seam changes; root `Cargo.lock` unchanged.
+
+**No new C ABI surface** — RMVPE is a Rust-only model surface (the
+consumer is `vokra_models::VoiceClonePipeline` in
+`vokra-voiceclone-experimental`, which is out-of-tree per the ELVIS
+Act separation). `include/vokra.h` byte-for-byte unchanged;
+`docs/abi/vokra.h.v1.0-rc-baseline.symbols` untouched.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry.
+`abi-diff.sh --gate` is still non-firing (v1.0-rc pre-release policy;
+IF-01 semver freeze is M5-13/v1.0 GA).
+
+**Parity gate — env-gated, owner action**: bit-exact numeric parity
+against the upstream `yxlllc/RMVPE` Python is gated on the owner-side
+dumper wave (`tools/parity/rmvpe_dump_reference.py`, future WP). Two
+env vars gate the harness:
+
+- `VOKRA_RMVPE_REAL_GGUF` — Path A (full end-to-end shape / finite /
+  sigmoid-range contract).
+- `VOKRA_RMVPE_REAL_HIDDEN` + `VOKRA_RMVPE_REAL_ARGMAX` +
+  `VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM` — Path B (argmax-match-rate
+  ≥ 99 % against dumped reference indices, isolates numerical parity
+  from CNN topology drift).
+
+Absent either env var, the harness skips cleanly — never a fabricated
+pass. See `crates/vokra-models/tests/parity_rmvpe.rs` for both fixture
+recipes.
+
 ### 2026-08-10 — 1.0.0-rc.1-dev (WP-23: `TtsEngine` trait extension + `SynthesisRequest::style_vec` / `speaker_id` — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the WP-23 `TtsEngine` extension
