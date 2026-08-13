@@ -1879,7 +1879,7 @@ struct SinegenDeterministicDims {
 /// - `channels` — number of channels in `x` / `out` (channel-outer layout).
 /// - `time_in`  — number of input timesteps.
 /// - `time_out` — number of output timesteps (== `time_in * ratio`, kept
-///                explicitly to avoid recomputing per thread).
+///   explicitly to avoid recomputing per thread).
 /// - `ratio`    — integer upsample factor.
 /// - `taps`     — number of filter taps (== `kernel.len()`).
 #[repr(C)]

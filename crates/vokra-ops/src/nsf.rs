@@ -496,14 +496,14 @@ fn next_gaussian_std(state: &mut u64) -> f32 {
 /// - `f0`               — length-`T` FP32 fundamental frequency per sample.
 /// - `samp_rate`        — audio sample rate (Hz); must be `> 0`.
 /// - `harmonic_num`     — number of harmonics beyond the fundamental
-///                        (`H`); output channels = `H + 1`.
+///   (`H`); output channels = `H + 1`.
 /// - `sine_amp`         — sinusoid amplitude scale (upstream `sine_amp`,
-///                        default 0.1).
+///   default 0.1).
 /// - `voiced_threshold` — F0 threshold above which a frame is treated as
-///                        voiced (upstream `voiced_threshold`, default 0).
+///   voiced (upstream `voiced_threshold`, default 0).
 /// - `out`              — output buffer of length `T * (H + 1)`
-///                        (row-major, time-outer / harmonic-inner —
-///                        upstream `sine_wavs.transpose(1, 2)`).
+///   (row-major, time-outer / harmonic-inner —
+///   upstream `sine_wavs.transpose(1, 2)`).
 ///
 /// # Errors
 ///

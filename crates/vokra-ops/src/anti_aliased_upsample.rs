@@ -44,12 +44,12 @@
 //!
 //! - `x`      — `[channels, time_in]` row-major FP32 (channel-outer).
 //! - `kernel` — `[taps]` FP32; every entry may be zero (a length-`taps` all-
-//!              zero kernel produces an all-zero output). The kernel is
-//!              conceptually **causal**: `kernel[0]` multiplies `x[c, t]`,
-//!              `kernel[1]` multiplies `x[c, t-1]`, and so on. Callers that
-//!              want a symmetric zero-phase kernel should pre-shift the
-//!              output on the host (or pre-pad the input) — the op is
-//!              deliberately narrow and does not embed a phase convention.
+//!   zero kernel produces an all-zero output). The kernel is
+//!   conceptually **causal**: `kernel[0]` multiplies `x[c, t]`,
+//!   `kernel[1]` multiplies `x[c, t-1]`, and so on. Callers that
+//!   want a symmetric zero-phase kernel should pre-shift the
+//!   output on the host (or pre-pad the input) — the op is
+//!   deliberately narrow and does not embed a phase convention.
 //! - `out`    — `[channels, time_in * ratio]` row-major FP32 (channel-outer).
 //!
 //! `kernel.len()` does NOT have to be a multiple of `ratio`; when it is not, the
@@ -86,7 +86,7 @@ use vokra_core::{Result, VokraError};
 ///
 /// - `x`         — `[channels, time_in]` row-major FP32 input.
 /// - `kernel`    — `[taps]` FP32 causal low-pass filter taps
-///                 (pre-designed on the host).
+///   (pre-designed on the host).
 /// - `ratio`     — integer upsample factor (`>= 1`).
 /// - `channels`  — number of channels in `x` / `out`.
 /// - `time_in`   — number of input timesteps.
