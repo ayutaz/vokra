@@ -1277,6 +1277,100 @@ kernel void vokra_denoise_apply_mask_f32(
     out_re[idx] = spec_re[idx] * g;
     out_im[idx] = spec_im[idx] * g;
 }
+
+// ---- Vocoder Metal wave WF5 qwen3_tts_codec RVQ decode ---------------------
+//
+// Semantics identical to `vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode`
+// (the Qwen3-TTS-12Hz codec's per-quantizer summed feature decode step
+// consumed by every released Qwen3-TTS-12Hz voice —
+// `Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-{Base,CustomVoice,VoiceDesign}`,
+// Apache-2.0). Given `[time, num_quantizers]` row-major `u32` codes and the
+// per-quantizer codebook tables, the primitive gathers the corresponding
+// codebook rows and FP32-sums them into `out[t, :]`:
+//
+//     out[t, d] = Σ_q tables[q].row(codes[t, q])[d]
+//
+// # Semantic vs acoustic vocab split (why two table buffers)
+//
+// Qwen3-TTS-Codec is a hybrid semantic + acoustic RVQ: the first
+// `num_semantic_quantizers` quantizers use a **larger** `semantic_codebook_size`
+// vocab (canonical 4096); the remaining acoustic quantizers use
+// `codebook_size` (canonical 2048). Every codebook still emits the same
+// `codebook_dim`-wide row (canonical 512), so the FP32 fold is
+// well-defined — but the per-quantizer stride differs between the two
+// families. Rather than fake a shared vocab (which would either waste memory
+// or silently clamp the semantic index; both violate FR-EX-08 / the module
+// docs' "no silent clamp" rule), the kernel takes TWO flat table buffers:
+//
+//   * `semantic_tables` — `[num_semantic_quantizers, semantic_codebook_size,
+//     codebook_dim]` row-major FP32; quantizer `q < num_semantic_quantizers`
+//     starts at `q * semantic_codebook_size * codebook_dim`.
+//   * `acoustic_tables` — `[num_acoustic_quantizers, codebook_size,
+//     codebook_dim]` row-major FP32; quantizer `q >= num_semantic_quantizers`
+//     is `q - num_semantic_quantizers` within this buffer.
+//
+// The host guards `codes[t, q] < per_quantizer_vocab(q)` before dispatch
+// (FR-EX-08 — the kernel does no per-element bound check, so silent OOB reads
+// would be the failure mode). An empty semantic (or acoustic) side is legal —
+// the dispatch allocates a zeroed 4-byte placeholder via
+// `newBufferWithLength:` in that case (Metal requires a non-null buffer
+// binding at every declared `[[buffer(N)]]` slot even when the kernel never
+// reads through it).
+//
+// # FP32 accumulator (audio-dialect rule)
+//
+// The residual sum is FP32-accumulated even if a future variant stores
+// codebook tables in FP16 / BF16 — same rule as mimi_rvq / dac_rvq (audio-
+// dialect: "BF16 mantissa loss is the real problem", CLAUDE.md).
+//
+// Grid: `(codebook_dim, time)` — same 2D launch as mimi_rvq / dac_rvq; the
+// shader guards the ragged tail against both bounds. Threadgroup 16x16 (the
+// `grid_2d` default), sized for the canonical Qwen3-TTS
+// [codebook_dim=512, time≈37 (3 s at 12.5 Hz)] envelope and small enough to
+// not waste threads on the tiny parity fixtures.
+struct Qwen3TtsCodecDims {
+    uint num_quantizers;
+    uint num_semantic_quantizers;
+    uint semantic_codebook_size;
+    uint codebook_size;
+    uint codebook_dim;
+    uint time;
+};
+
+kernel void vokra_qwen3_tts_codec_decode_f32(
+    device const uint*                 codes            [[buffer(0)]],
+    device const float*                semantic_tables  [[buffer(1)]],
+    device const float*                acoustic_tables  [[buffer(2)]],
+    device float*                      out              [[buffer(3)]],
+    constant Qwen3TtsCodecDims&        d                [[buffer(4)]],
+    uint2                              gid              [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.codebook_dim) {
+        return;
+    }
+    const uint code_base     = t * d.num_quantizers;
+    const uint sem_cb_stride = d.semantic_codebook_size * d.codebook_dim;
+    const uint ac_cb_stride  = d.codebook_size          * d.codebook_dim;
+    // FP32 accumulator — matches `qwen3_tts_codec_decode`'s `out[..]` FP32
+    // fold order over quantizers (bit-identical when the same operands are
+    // added in the same sequence; MSL fast-math may re-associate, so the
+    // parity bound is FP32 GEMV-scale rather than a bit-for-bit assertion).
+    float acc = 0.0f;
+    for (uint q = 0; q < d.num_quantizers; ++q) {
+        const uint idx = codes[code_base + q];
+        if (q < d.num_semantic_quantizers) {
+            const uint off = q * sem_cb_stride + idx * d.codebook_dim + delem;
+            acc += semantic_tables[off];
+        } else {
+            const uint ac_q = q - d.num_semantic_quantizers;
+            const uint off  = ac_q * ac_cb_stride + idx * d.codebook_dim + delem;
+            acc += acoustic_tables[off];
+        }
+    }
+    out[t * d.codebook_dim + delem] = acc;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -1571,6 +1665,33 @@ struct SnacDecodeDims {
     t_expanded: u32,
     strides: [u32; 3],
     stage_offsets: [u32; 3],
+}
+
+/// Vocoder Metal wave WF5 qwen3_tts_codec dims (`setBytes:` index 4). Field
+/// order / `u32` widths mirror the MSL `struct Qwen3TtsCodecDims`.
+///
+/// - `num_quantizers` — total quantizers (Qwen3-TTS-12Hz canonical = 16).
+/// - `num_semantic_quantizers` — number of semantic-vocab quantizers at the
+///   head of the RVQ stack (Qwen3-TTS-12Hz canonical = 1). Quantizers
+///   `[0, num_semantic_quantizers)` read from `semantic_tables` with vocab
+///   `semantic_codebook_size`; the rest read from `acoustic_tables` with
+///   vocab `codebook_size`.
+/// - `semantic_codebook_size` — entries per semantic codebook (Qwen3-TTS-12Hz
+///   canonical = 4096).
+/// - `codebook_size` — entries per acoustic codebook (Qwen3-TTS-12Hz canonical
+///   = 2048).
+/// - `codebook_dim` — feature width per codebook entry (= the codec latent
+///   width, Qwen3-TTS-12Hz canonical = 512).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Qwen3TtsCodecDims {
+    num_quantizers: u32,
+    num_semantic_quantizers: u32,
+    semantic_codebook_size: u32,
+    codebook_size: u32,
+    codebook_dim: u32,
+    time: u32,
 }
 
 /// Scalar shape of one fused-MLP pass chain, shared by the host-in/out
@@ -1914,6 +2035,19 @@ pub struct MetalContext {
     /// a discriminating negative control, but logs the measured max |Δ|
     /// (0 in practice) so any future drift is immediately visible.
     denoise_apply_mask_pipeline: Id,
+    /// Vocoder Metal wave WF5 Qwen3-TTS-Codec RVQ decode
+    /// (`vokra_qwen3_tts_codec_decode_f32`), the GPU implementation of
+    /// `vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode`. **Distinct from
+    /// every other RVQ pipeline**: Qwen3-TTS-Codec is a **hybrid semantic +
+    /// acoustic RVQ** where the first `num_semantic_quantizers` quantizers use
+    /// a larger `semantic_codebook_size` vocab (canonical 4096) than the
+    /// remaining acoustic quantizers use `codebook_size` (canonical 2048).
+    /// The kernel takes TWO flat table buffers (semantic + acoustic) so
+    /// per-quantizer strides differ correctly — a silent shared-vocab clamp
+    /// would violate FR-EX-08 and the CPU op's "no silent clamp" rule. FP32
+    /// accumulator throughout (audio-dialect rule); host-side per-index bound
+    /// check upstream of the dispatch.
+    qwen3_tts_codec_decode_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -2084,6 +2218,14 @@ impl MetalContext {
         // SAFETY: as above.
         let denoise_apply_mask_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_denoise_apply_mask_f32") }?;
+        // Vocoder Metal wave WF5 Qwen3-TTS-Codec RVQ decode; shares the same
+        // library. Distinct kernel from the RVQ / FSQ family because Qwen3-
+        // TTS-Codec is a **hybrid semantic + acoustic RVQ** (two flat table
+        // buffers with different per-quantizer strides) — a shared-vocab
+        // clamp would violate FR-EX-08 / the CPU op's "no silent clamp" rule.
+        // SAFETY: as above.
+        let qwen3_tts_codec_decode_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_qwen3_tts_codec_decode_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -2116,6 +2258,7 @@ impl MetalContext {
             snake_activation_pipeline: snake_activation_pipeline.into_raw(),
             snac_decode_pipeline: snac_decode_pipeline.into_raw(),
             denoise_apply_mask_pipeline: denoise_apply_mask_pipeline.into_raw(),
+            qwen3_tts_codec_decode_pipeline: qwen3_tts_codec_decode_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -3439,6 +3582,256 @@ impl MetalContext {
         )?;
         read_back(&out_re_buf, out_re)?;
         read_back(&out_im_buf, out_im)
+    }
+
+    /// Vocoder Metal wave WF5: Qwen3-TTS-Codec RVQ decode — gather (semantic +
+    /// acoustic) + FP32 fold on the GPU.
+    ///
+    /// Returns a fresh `[time × codebook_dim]` row-major `Vec<f32>` where
+    /// `out[t, d] = Σ_q tables[q].row(codes[t, q])[d]` — the exact contract of
+    /// `vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode`. Heap-returning
+    /// for the same chunk-granularity reason as `mimi_rvq_gather_fold_f32` /
+    /// `dac_rvq_gather_project_fold_f32` (this is a codec-side chunk op, not
+    /// a per-token hot path).
+    ///
+    /// # Semantic vs acoustic vocab split
+    ///
+    /// Qwen3-TTS-Codec is a hybrid semantic + acoustic RVQ: the first
+    /// `num_semantic_quantizers` quantizers read from `semantic_tables_flat`
+    /// with vocab `semantic_codebook_size` (canonical 4096); the remaining
+    /// acoustic quantizers read from `acoustic_tables_flat` with vocab
+    /// `codebook_size` (canonical 2048). Every codebook still emits the same
+    /// `codebook_dim`-wide row (canonical 512), so the FP32 fold is
+    /// well-defined. Rather than fake a shared vocab (which would either
+    /// waste memory or silently clamp the semantic index; both violate
+    /// FR-EX-08 / the CPU op's "no silent clamp" rule) the kernel takes TWO
+    /// flat table buffers.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time × num_quantizers]` row-major `u32` codebook indices.
+    ///   Every entry must satisfy `idx < per_quantizer_vocab(q)` — the caller
+    ///   validates on the host before dispatch (FR-EX-08 — the MSL kernel has
+    ///   no per-element bound check, so silent OOB reads are the failure mode
+    ///   we prevent by delegating to explicit host-side validation, mirror of
+    ///   the mimi_rvq contract).
+    /// - `semantic_tables_flat` — `[num_semantic_quantizers × semantic_codebook_size × codebook_dim]`
+    ///   row-major FP32; quantizer `q < num_semantic_quantizers` starts at
+    ///   `q * semantic_codebook_size * codebook_dim` (the caller concatenates
+    ///   the per-codebook `CodebookTable::data` slices verbatim, matching the
+    ///   MSL kernel's stride math). If `num_semantic_quantizers == 0` an
+    ///   empty slice is legal — the dispatch allocates a zeroed 4-byte
+    ///   placeholder via `newBufferWithLength:` (never a
+    ///   `newBufferWithBytes:` on a dangling empty-slice pointer, which would
+    ///   SIGSEGV) and the kernel never reads it because the loop skips the
+    ///   semantic branch entirely.
+    /// - `acoustic_tables_flat` — `[(num_quantizers - num_semantic_quantizers) × codebook_size × codebook_dim]`
+    ///   row-major FP32; the acoustic quantizer `q_ac = q - num_semantic_quantizers`
+    ///   starts at `q_ac * codebook_size * codebook_dim`. Symmetric empty-side
+    ///   treatment when `num_semantic_quantizers == num_quantizers`.
+    /// - `num_quantizers` / `num_semantic_quantizers` / `semantic_codebook_size`
+    ///   / `codebook_size` / `codebook_dim` / `time` — decode shape. All must
+    ///   be non-zero except `num_semantic_quantizers` (which may be 0 or up
+    ///   to `num_quantizers`) and `time` (which short-circuits at the caller
+    ///   with an empty `Vec<f32>`).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults which permit re-association, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` (the same FP32 GEMV-scale bound used by
+    /// [`Self::mimi_rvq_gather_fold_f32`] — see
+    /// `tests/qwen3_tts_codec_metal_bit_identical.rs`), not bit-for-bit
+    /// equality.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `num_quantizers` / `semantic_codebook_size` / `codebook_size` /
+    ///   `codebook_dim`, `num_semantic_quantizers > num_quantizers`, or any of
+    ///   the `num_quantizers * ...` / `time * num_quantizers` overflows.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to Qwen3-TTS-Codec's hybrid-vocab shape
+    pub fn qwen3_tts_codec_decode_f32(
+        &self,
+        codes: &[u32],
+        semantic_tables_flat: &[f32],
+        acoustic_tables_flat: &[f32],
+        num_quantizers: usize,
+        num_semantic_quantizers: usize,
+        semantic_codebook_size: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `delem >= codebook_dim` but assumes every buffer has the expected
+        // element count, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the vokra_ops::qwen3_tts_codec shape
+        // checks.
+        if num_quantizers == 0
+            || semantic_codebook_size == 0
+            || codebook_size == 0
+            || codebook_dim == 0
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: num_quantizers / semantic_codebook_size / \
+                 codebook_size / codebook_dim must all be > 0, got num_quantizers={num_quantizers} \
+                 semantic_codebook_size={semantic_codebook_size} codebook_size={codebook_size} \
+                 codebook_dim={codebook_dim}"
+            )));
+        }
+        if num_semantic_quantizers > num_quantizers {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: num_semantic_quantizers {num_semantic_quantizers} > \
+                 num_quantizers {num_quantizers}"
+            )));
+        }
+        let num_acoustic_quantizers = num_quantizers - num_semantic_quantizers;
+        let expected_semantic = num_semantic_quantizers
+            .checked_mul(semantic_codebook_size)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "qwen3_tts_codec_decode_f32: num_semantic_quantizers * \
+                     semantic_codebook_size * codebook_dim overflows usize \
+                     (num_semantic_quantizers={num_semantic_quantizers} \
+                     semantic_codebook_size={semantic_codebook_size} \
+                     codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if semantic_tables_flat.len() != expected_semantic {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: semantic_tables_flat.len() {} != \
+                 num_semantic_quantizers * semantic_codebook_size * codebook_dim \
+                 {expected_semantic}",
+                semantic_tables_flat.len()
+            )));
+        }
+        let expected_acoustic = num_acoustic_quantizers
+            .checked_mul(codebook_size)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "qwen3_tts_codec_decode_f32: num_acoustic_quantizers * codebook_size * \
+                     codebook_dim overflows usize \
+                     (num_acoustic_quantizers={num_acoustic_quantizers} \
+                     codebook_size={codebook_size} codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if acoustic_tables_flat.len() != expected_acoustic {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: acoustic_tables_flat.len() {} != \
+                 num_acoustic_quantizers * codebook_size * codebook_dim {expected_acoustic}",
+                acoustic_tables_flat.len()
+            )));
+        }
+        let expected_codes = time.checked_mul(num_quantizers).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: time ({time}) * num_quantizers ({num_quantizers}) \
+                 overflows usize"
+            ))
+        })?;
+        if codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: codes.len() {} != time * num_quantizers \
+                 {expected_codes}",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `qwen3_tts_codec_decode`
+        // (a zero-`time` decode is well-defined; every other empty axis is a
+        // shape error above).
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_qwen3_tts_codec_decode(
+            codes,
+            semantic_tables_flat,
+            acoustic_tables_flat,
+            num_quantizers,
+            num_semantic_quantizers,
+            semantic_codebook_size,
+            codebook_size,
+            codebook_dim,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to Qwen3-TTS-Codec's hybrid-vocab shape
+    fn run_qwen3_tts_codec_decode(
+        &self,
+        codes: &[u32],
+        semantic_tables_flat: &[f32],
+        acoustic_tables_flat: &[f32],
+        num_quantizers: usize,
+        num_semantic_quantizers: usize,
+        semantic_codebook_size: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        // Empty semantic / acoustic side: `new_buffer_from_slice` would ask
+        // Metal to copy 4 bytes from an empty slice's dangling pointer
+        // (SIGSEGV on macOS), so we allocate a zeroed 4-byte placeholder via
+        // `new_buffer_output(1)` instead. The kernel never reads the
+        // corresponding buffer because the loop's `q <
+        // num_semantic_quantizers` branch is dead when
+        // `num_semantic_quantizers == 0` (and symmetric for the acoustic
+        // side when `num_acoustic_quantizers == 0`) — the placeholder is
+        // there only to satisfy Metal's non-null buffer binding requirement.
+        let semantic_buf = if semantic_tables_flat.is_empty() {
+            self.new_buffer_output(1)?
+        } else {
+            self.new_buffer_from_slice(semantic_tables_flat)?
+        };
+        let acoustic_buf = if acoustic_tables_flat.is_empty() {
+            self.new_buffer_output(1)?
+        } else {
+            self.new_buffer_from_slice(acoustic_tables_flat)?
+        };
+        let out_len = time * codebook_dim;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = Qwen3TtsCodecDims {
+            num_quantizers: num_quantizers as u32,
+            num_semantic_quantizers: num_semantic_quantizers as u32,
+            semantic_codebook_size: semantic_codebook_size as u32,
+            codebook_size: codebook_size as u32,
+            codebook_dim: codebook_dim as u32,
+            time: time as u32,
+        };
+        // One thread per (codebook_dim column, timestep row) — same
+        // `(codebook_dim, time)` 2D dispatch as mimi_rvq / dac_rvq. The
+        // kernel guards the ragged tail against both bounds so `grid_2d`'s
+        // round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(codebook_dim, time);
+        self.dispatch_compute(
+            self.qwen3_tts_codec_decode_pipeline,
+            &[&codes_buf, &semantic_buf, &acoustic_buf, &out_buf],
+            (&dims as *const Qwen3TtsCodecDims).cast::<c_void>(),
+            size_of::<Qwen3TtsCodecDims>(),
+            grid,
+            tg,
+            "qwen3_tts_codec_decode",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
     }
 
     /// M3-06 T14: Mimi RVQ codec decode — gather + FP32 fold on the GPU.
@@ -6131,6 +6524,7 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.qwen3_tts_codec_decode_pipeline);
             release(self.denoise_apply_mask_pipeline);
             release(self.snac_decode_pipeline);
             release(self.snake_activation_pipeline);

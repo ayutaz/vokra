@@ -56,9 +56,10 @@ use vokra_core::{Backend, DecoderLayerView, PrenormLayer, Result, VokraError};
 // `Compute::mimi_rvq_f32` / `dac_rvq_f32` / `encodec_rvq_f32` /
 // `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` below.
 use vokra_ops::{
-    CodebookTable, DacOutProj, DacRvqAttrs, EncodecRvqAttrs, FsqOutProj, MimiRvqAttrs, SnacConfig,
-    SnacDecoder, SnacWeights, WavTokenizerVqAttrs, Xcodec2FsqAttrs, dac_rvq_decode,
-    encodec_rvq_decode, mimi_rvq_decode, wavtokenizer_vq_decode, xcodec2_fsq_decode,
+    CodebookTable, DacOutProj, DacRvqAttrs, EncodecRvqAttrs, FsqOutProj, MimiRvqAttrs,
+    Qwen3TtsCodecConfig, SnacConfig, SnacDecoder, SnacWeights, WavTokenizerVqAttrs,
+    Xcodec2FsqAttrs, dac_rvq_decode, encodec_rvq_decode, mimi_rvq_decode, qwen3_tts_codec_decode,
+    wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 
 /// A backend-dispatched hot op — the operators the imperative models route
@@ -226,6 +227,33 @@ pub enum HotOp {
     /// those backends fails the coverage gate (never a silent CPU fall
     /// back).
     DenoiseApplyMask,
+    /// Qwen3-TTS-Codec RVQ decode
+    /// (`vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode`) — the per-
+    /// quantizer summed feature decode step consumed by every released
+    /// Qwen3-TTS-12Hz voice (`Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-{Base,
+    /// CustomVoice,VoiceDesign}`, Apache-2.0). **Distinct from every other
+    /// RVQ variant**: Qwen3-TTS-Codec is a **hybrid semantic + acoustic RVQ**
+    /// where the first `num_semantic_quantizers` quantizers use a larger
+    /// `semantic_codebook_size` vocab (canonical 4096) than the remaining
+    /// acoustic quantizers use `codebook_size` (canonical 2048). The
+    /// [`Compute::qwen3_tts_codec_f32`] method mirrors the CPU op's
+    /// heap-returning shape (per-quantizer `Vec<u32>` streams +
+    /// `Vec<CodebookTable>` → `Vec<f32>`), which is why the op is a runtime
+    /// function in `vokra-ops` rather than an [`vokra_core::OpKind`] variant
+    /// (module docs in `vokra_ops::qwen3_tts_codec`).
+    ///
+    /// **Vocoder Metal wave WF5 (2026-08-13):** the Metal arm is wired via
+    /// `vokra_qwen3_tts_codec_decode_f32` (semantic + acoustic gather + FP32
+    /// fold, semantics equal to `qwen3_tts_codec_decode` within FP32
+    /// fast-math tolerance, host-side per-index bound check upstream —
+    /// FR-EX-08). The CUDA arm remains an explicit
+    /// [`VokraError::UnsupportedOp`] (deferred to the vast.ai owner track).
+    /// `covered_by_metal` returns `true`; `covered_by_cuda` /
+    /// `covered_by_vulkan` / `covered_by_webgpu` / `covered_by_coreml` /
+    /// `covered_by_qnn` return `false` — any model that lists it against
+    /// those backends fails the coverage gate (never a silent CPU fall
+    /// back).
+    Qwen3TtsCodec,
 }
 
 impl HotOp {
@@ -282,6 +310,7 @@ impl HotOp {
                 | HotOp::SnakeActivation
                 | HotOp::SnacDecode
                 | HotOp::DenoiseApplyMask
+                | HotOp::Qwen3TtsCodec
         )
     }
 
@@ -1963,6 +1992,238 @@ impl Compute {
         }
     }
 
+    /// Qwen3-TTS-Codec RVQ decode — the Vocoder wave WF5 op consumed by every
+    /// released Qwen3-TTS-12Hz voice (`Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-{Base,
+    /// CustomVoice,VoiceDesign}`, Apache-2.0), wired into the imperative
+    /// `Compute` seam (mirror of [`Compute::mimi_rvq_f32`], plus the semantic
+    /// vs acoustic per-quantizer vocab split).
+    ///
+    /// Given per-quantizer `u32` code streams (one `Vec<u32>` per quantizer),
+    /// one [`CodebookTable`] per quantizer (semantic first, then acoustic),
+    /// and the codec [`Qwen3TtsCodecConfig`], returns a fresh
+    /// `[time × codebook_dim]` row-major `Vec<f32>`:
+    /// `out[t, :] = Σ_q tables[q].row(codes[q][t])` in FP32 (see
+    /// [`vokra_ops::qwen3_tts_codec_decode`]). Heap-returning for the same
+    /// heterogeneous-signature reason as `mimi_rvq_f32` (chunk granularity,
+    /// not per-token hot path).
+    ///
+    /// # Semantic vs acoustic vocab split (why this is not `mimi_rvq_f32`)
+    ///
+    /// Qwen3-TTS-Codec is a **hybrid semantic + acoustic RVQ**: the first
+    /// `config.num_semantic_quantizers` quantizers use a **larger**
+    /// `config.semantic_codebook_size` vocab (canonical 4096) than the
+    /// remaining acoustic quantizers use `config.codebook_size` (canonical
+    /// 2048). Every codebook still emits the same `config.codebook_dim`-wide
+    /// row (canonical 512). Mimi's uniform `MimiRvqAttrs` cannot express this
+    /// asymmetry without silently clamping the semantic index (which would
+    /// violate FR-EX-08 / the CPU op's "no silent clamp" rule); this method
+    /// takes the CPU op's config verbatim.
+    ///
+    /// # CPU-only through this seam today (Metal wired; CUDA / Vulkan /
+    /// WebGPU / CoreML / QNN return `UnsupportedOp`)
+    ///
+    /// **Vocoder Metal wave WF5 (2026-08-13):** the Metal arm dispatches to
+    /// [`vokra_backend_metal::MetalContext::qwen3_tts_codec_decode_f32`]
+    /// (`vokra_qwen3_tts_codec_decode_f32` MSL kernel — semantics equal to
+    /// `qwen3_tts_codec_decode` within the FP32 GEMV-scale bound
+    /// `atol ≤ 5e-4`). The CPU arm delegates verbatim to
+    /// [`vokra_ops::qwen3_tts_codec_decode`] (bit-for-bit vs a direct kernel
+    /// call). Every other GPU arm returns an explicit
+    /// [`VokraError::UnsupportedOp`] — never a silent CPU fall back
+    /// (FR-EX-08). The coverage gate on [`Compute::for_backend`] additionally
+    /// rejects any model that lists [`HotOp::Qwen3TtsCodec`] against those
+    /// backends.
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`vokra_ops::qwen3_tts_codec_decode`] raises (config axis
+    ///   validation, wrong number of codebook tables, per-quantizer shape
+    ///   mismatch — semantic entries must use `semantic_codebook_size` and
+    ///   acoustic entries must use `codebook_size` — wrong number of code
+    ///   streams, inner-length mismatch, per-index out-of-range; never a
+    ///   silent clamp — FR-EX-08).
+    /// - Metal arm: same host-side shape validation before dispatch, plus
+    ///   any [`VokraError::BackendUnavailable`] from the underlying command
+    ///   buffer.
+    /// - CUDA / Vulkan / WebGPU / CoreML / QNN arms: explicit
+    ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
+    pub fn qwen3_tts_codec_f32(
+        &self,
+        codes: &[Vec<u32>],
+        codebook_tables: &[CodebookTable],
+        config: &Qwen3TtsCodecConfig,
+    ) -> Result<Vec<f32>> {
+        match &self.be {
+            Be::Cpu => qwen3_tts_codec_decode(codes, codebook_tables, config),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => {
+                // Explicit shape + index validation on the host. The MSL
+                // kernel guards `t >= time` and `delem >= codebook_dim` but
+                // has no per-element bound check on `codes[..]`; silent OOB
+                // reads inside the semantic / acoustic gather are the failure
+                // mode we prevent by mirroring the CPU-arm shape checks in
+                // `vokra_ops::qwen3_tts_codec::check_weights_shape` /
+                // `check_codes_shape` (FR-EX-08 — never a silent GPU OOB or
+                // CPU fall back).
+                if config.num_quantizers == 0
+                    || config.semantic_codebook_size == 0
+                    || config.codebook_size == 0
+                    || config.codebook_dim == 0
+                {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "qwen3_tts_codec_f32 metal: config axes must be > 0, got \
+                         num_quantizers={} semantic_codebook_size={} codebook_size={} \
+                         codebook_dim={}",
+                        config.num_quantizers,
+                        config.semantic_codebook_size,
+                        config.codebook_size,
+                        config.codebook_dim,
+                    )));
+                }
+                if config.num_semantic_quantizers > config.num_quantizers {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "qwen3_tts_codec_f32 metal: config.num_semantic_quantizers {} > \
+                         num_quantizers {}",
+                        config.num_semantic_quantizers, config.num_quantizers,
+                    )));
+                }
+                if codebook_tables.len() != config.num_quantizers {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "qwen3_tts_codec_f32 metal: codebook_tables.len() {} != \
+                         config.num_quantizers {}",
+                        codebook_tables.len(),
+                        config.num_quantizers
+                    )));
+                }
+                // Per-quantizer shape check — semantic entries carry the
+                // semantic vocab, acoustic entries carry the acoustic vocab,
+                // every table emits `codebook_dim`-wide rows. Mirrors
+                // `vokra_ops::qwen3_tts_codec::check_weights_shape`.
+                for (q, tbl) in codebook_tables.iter().enumerate() {
+                    let (expected_vocab, role) = if q < config.num_semantic_quantizers {
+                        (config.semantic_codebook_size, "semantic")
+                    } else {
+                        (config.codebook_size, "acoustic")
+                    };
+                    if tbl.codebook_size != expected_vocab {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "qwen3_tts_codec_f32 metal: codebook_tables[{q}] ({role}) \
+                             codebook_size {} != expected {expected_vocab}",
+                            tbl.codebook_size,
+                        )));
+                    }
+                    if tbl.d_model != config.codebook_dim {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "qwen3_tts_codec_f32 metal: codebook_tables[{q}] ({role}) d_model {} \
+                             != config.codebook_dim {}",
+                            tbl.d_model, config.codebook_dim,
+                        )));
+                    }
+                }
+                // Codes: `codes.len() == num_quantizers`; every inner stream
+                // shares the same time axis. Mirrors
+                // `vokra_ops::qwen3_tts_codec::check_codes_shape`.
+                if codes.len() != config.num_quantizers {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "qwen3_tts_codec_f32 metal: codes.len() {} != config.num_quantizers {}",
+                        codes.len(),
+                        config.num_quantizers
+                    )));
+                }
+                let time = if codes.is_empty() { 0 } else { codes[0].len() };
+                for (q, stream) in codes.iter().enumerate().skip(1) {
+                    if stream.len() != time {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "qwen3_tts_codec_f32 metal: codes[{q}].len() {} != codes[0].len() \
+                             {time} (per-quantizer streams must share the same time axis)",
+                            stream.len(),
+                        )));
+                    }
+                }
+                if time == 0 {
+                    return Ok(Vec::new());
+                }
+                // Per-index bound check — semantic quantizers must obey the
+                // larger `semantic_codebook_size`; acoustic quantizers must
+                // obey `codebook_size`. The MSL kernel does NOT range-check
+                // `codes[..]`, so a stray index would be a silent OOB gather
+                // (FR-EX-08). Cheap: O(time * num_quantizers) unpredictable
+                // branches, dwarfed by the FP32 fold on the GPU.
+                for (q, stream) in codes.iter().enumerate() {
+                    let vocab = if q < config.num_semantic_quantizers {
+                        config.semantic_codebook_size
+                    } else {
+                        config.codebook_size
+                    };
+                    for (t, &idx) in stream.iter().enumerate() {
+                        if (idx as usize) >= vocab {
+                            return Err(VokraError::InvalidArgument(format!(
+                                "qwen3_tts_codec_f32 metal: codes[{q}][{t}] = {idx} >= per-\
+                                 quantizer vocab {vocab} (no silent clamp — FR-EX-08)"
+                            )));
+                        }
+                    }
+                }
+                // Flatten [num_quantizers][time] → [time × num_quantizers]
+                // row-major (the MSL kernel's `codes[t * num_quantizers + q]`
+                // stride math). Chunk granularity — allocating one Vec here
+                // is negligible next to the GPU dispatch.
+                let mut codes_flat: Vec<u32> = Vec::with_capacity(time * config.num_quantizers);
+                for t in 0..time {
+                    for stream in codes {
+                        codes_flat.push(stream[t]);
+                    }
+                }
+                // Split codebook_tables into semantic + acoustic flat buffers
+                // matching the kernel's two-buffer layout.
+                let mut semantic_tables_flat: Vec<f32> = Vec::with_capacity(
+                    config.num_semantic_quantizers
+                        * config.semantic_codebook_size
+                        * config.codebook_dim,
+                );
+                let num_acoustic = config.num_quantizers - config.num_semantic_quantizers;
+                let mut acoustic_tables_flat: Vec<f32> =
+                    Vec::with_capacity(num_acoustic * config.codebook_size * config.codebook_dim);
+                for (q, tbl) in codebook_tables.iter().enumerate() {
+                    if q < config.num_semantic_quantizers {
+                        semantic_tables_flat.extend_from_slice(&tbl.data);
+                    } else {
+                        acoustic_tables_flat.extend_from_slice(&tbl.data);
+                    }
+                }
+                ctx.qwen3_tts_codec_decode_f32(
+                    &codes_flat,
+                    &semantic_tables_flat,
+                    &acoustic_tables_flat,
+                    config.num_quantizers,
+                    config.num_semantic_quantizers,
+                    config.semantic_codebook_size,
+                    config.codebook_size,
+                    config.codebook_dim,
+                    time,
+                )
+            }
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "qwen3_tts_codec_f32 has no wired CUDA NVRTC kernel; the Vocoder wave WF5 CUDA \
+                 arm is deferred to the vast.ai owner track. Select BackendKind::Cpu (which \
+                 delegates to vokra_ops::qwen3_tts_codec_decode), or wait for the CUDA kernel — \
+                 Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "qwen3_tts_codec_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six \
+                 Whisper hot ops only; the Vocoder wave WF5 GPU arms are deferred like \
+                 Metal/CUDA/Vulkan). Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::qwen3_tts_codec_decode) — Vokra does not silently run the op on the \
+                 CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Fused MLP `fc2(gelu(fc1(x)))` — the Phase-5 device-residency slice.
     ///
     /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, bias
@@ -3231,6 +3492,7 @@ mod tests {
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
         ] {
             assert!(
                 op.covered_by_metal(),
@@ -3314,6 +3576,15 @@ mod tests {
             }
             Err(e) => panic!("unexpected error for a Metal-covered DenoiseApplyMask request: {e}"),
         }
+        // Qwen3TtsCodec (Vocoder Metal wave WF5, 2026-08-13) is now a covered
+        // request: same device-gated posture as the sibling codec ops above.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::Qwen3TtsCodec]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; Qwen3TtsCodec covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered Qwen3TtsCodec request: {e}"),
+        }
 
         // Whisper's full set is therefore a covered request: it either builds
         // (device present) or fails with an explicit device error — never a
@@ -3384,6 +3655,7 @@ mod tests {
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
         ] {
             assert!(
                 !op.covered_by_cuda(),
@@ -3456,6 +3728,7 @@ mod tests {
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -3482,6 +3755,7 @@ mod tests {
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -3522,6 +3796,7 @@ mod tests {
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
         ] {
             assert!(
                 !op.covered_by_coreml(),
@@ -3579,6 +3854,7 @@ mod tests {
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
         ] {
             assert!(
                 !op.covered_by_qnn(),
@@ -3745,6 +4021,7 @@ mod tests {
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
         ] {
             assert!(
                 !op.covered_by_webgpu(),
