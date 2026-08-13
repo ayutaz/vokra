@@ -67,6 +67,16 @@ pub mod hpf;
 pub mod loudness_norm;
 // -------------------------------------------------------------------------
 pub mod attrs;
+// ---- Vocoder Metal wave — polyphase anti-aliased upsample primitive ------
+// The multiply-add core of BigVGAN's `UpSample1d` (`alias_free_activation
+// .torch.act`) and every HiFTNet-family alias-free activation chain. Consumes
+// a caller-supplied Kaiser-window filter kernel (the design step lives on
+// the host — see module docs), so the runtime op signature is narrow (three
+// tensor inputs + one scalar ratio), a good fit for a GPU dispatch. Runtime
+// function, NOT an OpKind variant (same posture as `snake_activation_f32` /
+// `snake_beta_f32` / `sinegen_deterministic_f32` — see the localized re-
+// export block below).
+pub mod anti_aliased_upsample;
 // ---- SoTA plan Phase 3 BigVGAN vocoder (TTS bigvgan_generator primitive) ---
 // Anti-aliased periodic-activation vocoder — verbatim port of upstream
 // NVIDIA/BigVGAN (MIT, Copyright (c) 2024 NVIDIA CORPORATION). AMPBlock1 +
@@ -443,6 +453,15 @@ pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
 // -------------------------------------------------------------------------
 // ---- Vocoder Metal wave WF2 snake activation re-exports (2026-08-13) ----
 pub use snake::snake_activation_f32;
+// ---- Vocoder Metal wave — common vocoder primitives re-exports ----------
+// Stateless out-of-place free functions that mirror the shape the
+// `vokra_models::compute::Compute` seam dispatches through (mirroring the
+// silu / gelu / softmax family — read inputs, write out). Consumed by the
+// BigVGAN / HiFTNet / Kokoro-82M vocoder lineage. Each has its own module
+// with rationale + upstream refs.
+pub use anti_aliased_upsample::anti_aliased_upsample_f32;
+pub use nsf::sinegen_deterministic_f32;
+pub use snake::snake_beta_f32;
 // -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend re-exports -----------

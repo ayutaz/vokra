@@ -1217,6 +1217,217 @@ kernel void vokra_snake_activation_f32(
     out[idx] = v + inv_a * s * s;
 }
 
+// ---- Vocoder Metal wave common vocoder primitive: snake_beta ---------------
+//
+// Semantics identical to `vokra_ops::snake_beta_f32` — the two-vector
+// SnakeBeta closed form consumed by the BigVGAN family (upstream
+// `activations.py:62-114`, MIT / NVIDIA):
+//
+//     out[c, t] = x[c, t] + (1 / (beta[c] + eps)) * sin(alpha[c] * x[c, t])^2
+//
+// with `eps = 1.0e-9f` (upstream `no_div_by_zero`, matching the sibling
+// snake_activation kernel).
+//
+// Distinct from `vokra_snake_activation_f32` because SnakeBeta separates
+// frequency (`alpha`) from magnitude (`beta`) — the plain-Snake kernel
+// couples both to a single per-channel alpha and would silently squash the
+// beta axis. Kept as its own MSL kernel so the coverage seam can dispatch
+// SnakeBeta directly (BigVGAN's terminal activation + every AMP block that
+// asks for SnakeBeta).
+//
+// * `x`     — [channels, time] row-major FP32 (channel-outer).
+// * `alpha` — [channels] FP32 per-channel frequency scale (already effective;
+//             the `alpha_logscale = true` case pre-exponentiates on the host,
+//             mirroring the CPU free function's contract).
+// * `beta`  — [channels] FP32 per-channel magnitude scale (same convention).
+// * `out`   — [channels, time] row-major FP32.
+//
+// Trivially element-wise (no reduction, no gather) — CPU and GPU agree
+// within the FP32 `sin` transcendental gap. The parity bound is
+// `atol ≤ 5e-4` (same sibling codec-family / snake_activation envelope).
+//
+// Grid: `(time, channels)` 2-D dispatch — same 16×16 threadgroup shape as
+// the sibling snake_activation kernel. `time` on the fast axis (grid.x)
+// matches the row-major stride and keeps adjacent threads reading adjacent
+// floats. The ragged tail is guarded against both bounds.
+struct SnakeBetaDims {
+    uint channels;
+    uint time;
+};
+
+kernel void vokra_snake_beta_f32(
+    device const float*        x     [[buffer(0)]],
+    device const float*        alpha [[buffer(1)]],
+    device const float*        beta  [[buffer(2)]],
+    device float*              out   [[buffer(3)]],
+    constant SnakeBetaDims&    d     [[buffer(4)]],
+    uint2                      gid   [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t >= d.time) {
+        return;
+    }
+    const float a     = alpha[c];
+    const float b     = beta[c];
+    const float inv_b = 1.0f / (b + 1.0e-9f);
+    const uint  idx   = c * d.time + t;
+    const float v     = x[idx];
+    const float s     = sin(a * v);
+    out[idx] = v + inv_b * s * s;
+}
+
+// ---- Vocoder Metal wave common vocoder primitive: sinegen_deterministic ----
+//
+// Semantics identical to `vokra_ops::sinegen_deterministic_f32` — the
+// deterministic-only path of `vokra_ops::nsf::SineGen::forward` (upstream
+// CosyVoice `cosyvoice/hifigan/generator.py:200-214`, `NsfEntropy::
+// Deterministic`). Under that mode the per-harmonic phase and Gaussian
+// noise both collapse to zero, and the CPU forward reduces to (for
+// `i ∈ [0, harmonic_num]`, `j ∈ [0, T)`):
+//
+//     cs_i(j) = cs_i(j-1) + f0[j] * (i+1) / samp_rate       (per-harmonic cumsum)
+//     theta   = 2π * (cs_i(j) - floor(cs_i(j)))              (cs mod 1)
+//     sine    = sine_amp * sin(theta)
+//     uv      = f0[j] > voiced_threshold ? 1.0 : 0.0
+//     out[j * (H+1) + i] = sine * uv                         (transposed layout)
+//
+// # Per-harmonic sequential cumsum → one thread per harmonic
+//
+// The cumsum is a sequential dependency across time (`cs_i(j)` depends on
+// `cs_i(j-1)`), so we can only parallelise across harmonics. The kernel
+// launches ONE thread per harmonic (grid.x = harmonic_num + 1, grid.y = 1);
+// each thread walks the full time axis in-kernel, accumulating its own cs
+// in a private register. Every write is to the transposed layout directly
+// (`out[j * h1 + i] = sine * uv`), so no scratch buffer is needed and no
+// follow-up transpose pass is dispatched.
+//
+// The `cs += f0[j] * harmonic_gain` accumulation matches the CPU forward's
+// per-harmonic reduction order exactly, so under MSL fast-math the only
+// bit-level source of divergence is `sin(theta)` — well inside the
+// `atol ≤ 5e-4` codec-family bound for finite inputs.
+//
+// * `f0`               — [T] FP32 fundamental frequency per sample.
+// * `out`              — [T * (H+1)] FP32 row-major (time-outer / harmonic-
+//                        inner, upstream `sine_wavs.transpose(1, 2)`).
+// * `samp_rate`        — audio sample rate (Hz).
+// * `harmonic_num`     — number of harmonics beyond the fundamental.
+// * `sine_amp`         — sinusoid amplitude scale.
+// * `voiced_threshold` — F0 threshold above which a frame is voiced.
+// * `t`                — number of input timesteps (== f0.len()).
+//
+// Grid: `(H+1, 1)` 1-D dispatch. Threadgroup 256; the kernel's `i >= h1`
+// guard covers the ragged tail (H+1 is typically ~1-10, far below 256, so
+// most threads in the block early-return — that is acceptable for a
+// once-per-utterance vocoder-front op).
+struct SinegenDeterministicDims {
+    uint t;
+    uint h1;                 // harmonic_num + 1
+    float samp_rate_f;
+    float sine_amp;
+    float voiced_threshold;
+};
+
+kernel void vokra_sinegen_deterministic_f32(
+    device const float*                  f0    [[buffer(0)]],
+    device float*                        out   [[buffer(1)]],
+    constant SinegenDeterministicDims&   d     [[buffer(2)]],
+    uint                                 gid   [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.h1) {
+        return;
+    }
+    const float harmonic_gain = (float(i) + 1.0f) / d.samp_rate_f;
+    const float two_pi = 6.28318530717958647692f;
+    float cs = 0.0f;
+    for (uint j = 0; j < d.t; ++j) {
+        const float f0_j = f0[j];
+        cs += f0_j * harmonic_gain;
+        const float modded = cs - floor(cs);
+        const float theta  = two_pi * modded;
+        const float sine   = d.sine_amp * sin(theta);
+        const float uv     = (f0_j > d.voiced_threshold) ? 1.0f : 0.0f;
+        // Transposed layout: (j, i) → out[j * h1 + i].
+        out[j * d.h1 + i] = sine * uv;
+    }
+}
+
+// ---- Vocoder Metal wave common vocoder primitive: anti_aliased_upsample ---
+//
+// Semantics identical to `vokra_ops::anti_aliased_upsample_f32` — polyphase
+// decomposition of "upsample by `ratio` then convolve with a causal FIR
+// low-pass". The Kaiser-window filter design lives on the host (see the
+// vokra-ops module docstring); this kernel consumes the already-designed
+// `kernel` taps and does the per-timestep multiply-add.
+//
+//     out[c, t_out] = Σ_j kernel[j * ratio + r] * x[c, t - j]
+//
+// with `t = t_out / ratio`, `r = t_out % ratio` (polyphase branch), and the
+// sum running over every `j >= 0` where `t - j >= 0` and
+// `j * ratio + r < taps` (the `k_idx >= taps { break; }` guard on the CPU
+// side, transliterated into a bounded C-style `for` loop here).
+//
+// # No reduction across taps → FMA divergence is bounded
+//
+// Under MSL fast-math the compiler may fuse `acc += x * k` to `fma`. The
+// CPU op runs the same reduction in strict left-fold FP32 order (no FMA in
+// rustc for a plain `+= x * k` pattern), so there is a fused-vs-unfused
+// gap of ~1 ULP per tap. For a typical Kaiser kernel of length 12-64 taps
+// the accumulated divergence stays well inside the parity bound
+// `atol ≤ 1e-4`.
+//
+// * `x`      — [channels, time_in] row-major FP32.
+// * `kernel` — [taps] causal FIR taps (kernel[0] multiplies x[c, t],
+//              kernel[1] multiplies x[c, t-1], …).
+// * `out`    — [channels, time_in * ratio] row-major FP32.
+//
+// Grid: `(time_in * ratio, channels)` 2-D dispatch — same 16×16
+// threadgroup shape as the sibling snake / codec kernels. The ragged tail
+// is guarded against both bounds.
+struct AntiAliasedUpsampleDims {
+    uint channels;
+    uint time_in;
+    uint time_out;   // == time_in * ratio
+    uint ratio;
+    uint taps;       // == kernel.len()
+};
+
+kernel void vokra_anti_aliased_upsample_f32(
+    device const float*                  x      [[buffer(0)]],
+    device const float*                  kernel_ [[buffer(1)]],
+    device float*                        out    [[buffer(2)]],
+    constant AntiAliasedUpsampleDims&    d      [[buffer(3)]],
+    uint2                                gid    [[thread_position_in_grid]])
+{
+    const uint t_out = gid.x;
+    const uint c     = gid.y;
+    if (c >= d.channels || t_out >= d.time_out) {
+        return;
+    }
+    const uint t = t_out / d.ratio;
+    const uint r = t_out % d.ratio;
+    const uint x_row_off   = c * d.time_in;
+    const uint out_row_off = c * d.time_out;
+    float acc = 0.0f;
+    // Bounded per-branch tap walk: `k_idx = j * ratio + r`; break as soon
+    // as either `k_idx >= taps` or `j > t` (which would step past the
+    // input's causal end). `j` cannot overflow because both `t` and
+    // `taps / ratio` are bounded by the CPU host-side length check.
+    for (uint j = 0u; ; ++j) {
+        const uint k_idx = j * d.ratio + r;
+        if (k_idx >= d.taps) {
+            break;
+        }
+        if (j > t) {
+            break;
+        }
+        const uint src = t - j;
+        acc += x[x_row_off + src] * kernel_[k_idx];
+    }
+    out[out_row_off + t_out] = acc;
+}
+
 // ---- Vocoder Metal wave WF5 denoise spectral-gate primitive (2026-08-13) ----
 //
 // Semantics identical to `vokra_ops::denoise::denoise_apply_mask_f32` — the
@@ -1623,6 +1834,64 @@ struct SnakeActivationDims {
     time: u32,
 }
 
+/// Vocoder Metal wave common vocoder primitive: SnakeBeta dims
+/// (`setBytes:` index 4). Field order / `u32` widths mirror the MSL
+/// `struct SnakeBetaDims`. Semantically identical to
+/// [`SnakeActivationDims`] but a distinct type so the wrong-op dispatch
+/// (a callsite that binds a snake_beta buffer set to the snake_activation
+/// pipeline) is a Rust-side type error.
+///
+/// - `channels` — number of channels (== `alpha.len() == beta.len()`).
+/// - `time`     — number of frames per channel in this call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SnakeBetaDims {
+    channels: u32,
+    time: u32,
+}
+
+/// Vocoder Metal wave common vocoder primitive: SineGen deterministic dims
+/// (`setBytes:` index 2). Field order / widths mirror the MSL
+/// `struct SinegenDeterministicDims`.
+///
+/// - `t`                — number of input timesteps (== `f0.len()`).
+/// - `h1`               — harmonics + fundamental (== `harmonic_num + 1`).
+/// - `samp_rate_f`      — audio sample rate as FP32 (`samp_rate as f32`).
+/// - `sine_amp`         — sinusoid amplitude scale.
+/// - `voiced_threshold` — F0 threshold above which a frame is voiced.
+///
+/// FP32 fields keep the arithmetic in the same precision the CPU op runs
+/// (BF16 mantissa loss is the audio-dialect rule of thumb — CLAUDE.md).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SinegenDeterministicDims {
+    t: u32,
+    h1: u32,
+    samp_rate_f: f32,
+    sine_amp: f32,
+    voiced_threshold: f32,
+}
+
+/// Vocoder Metal wave common vocoder primitive: anti_aliased_upsample dims
+/// (`setBytes:` index 3). Field order / `u32` widths mirror the MSL
+/// `struct AntiAliasedUpsampleDims`.
+///
+/// - `channels` — number of channels in `x` / `out` (channel-outer layout).
+/// - `time_in`  — number of input timesteps.
+/// - `time_out` — number of output timesteps (== `time_in * ratio`, kept
+///                explicitly to avoid recomputing per thread).
+/// - `ratio`    — integer upsample factor.
+/// - `taps`     — number of filter taps (== `kernel.len()`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AntiAliasedUpsampleDims {
+    channels: u32,
+    time_in: u32,
+    time_out: u32,
+    ratio: u32,
+    taps: u32,
+}
+
 /// Vocoder Metal wave WF5 denoise spectral-gate dims (`setBytes:` index 5).
 /// Field order / `u32` widths mirror the MSL `struct DenoiseApplyMaskDims`.
 ///
@@ -2011,6 +2280,34 @@ pub struct MetalContext {
     /// is a **distinct** two-vector closed form and would land its own
     /// pipeline separately.
     snake_activation_pipeline: Id,
+    /// Vocoder Metal wave common vocoder primitive: SnakeBeta
+    /// (`vokra_snake_beta_f32`), the GPU implementation of
+    /// [`vokra_ops::snake_beta_f32`]. Per-channel two-vector closed-form
+    /// periodic activation `y = x + (1/(β+ε))·sin(α·x)²` consumed by the
+    /// BigVGAN family (upstream `activations.py:62-114`, MIT). Distinct
+    /// pipeline from [`Self::snake_activation_pipeline`] because SnakeBeta
+    /// separates frequency (α) from magnitude (β) — a shared pipeline
+    /// would silently squash one of the two axes.
+    snake_beta_pipeline: Id,
+    /// Vocoder Metal wave common vocoder primitive: SineGen deterministic
+    /// (`vokra_sinegen_deterministic_f32`), the GPU implementation of
+    /// [`vokra_ops::sinegen_deterministic_f32`]. Deterministic-only path
+    /// (zero phase, zero noise) of `SineGen::forward` from upstream
+    /// CosyVoice `generator.py:200-214`. Consumed by every HiFTNet-family
+    /// vocoder (CosyVoice2/3, Chatterbox family). One thread per harmonic
+    /// walking the full time axis sequentially; grid launches
+    /// `(H+1, 1)` threadgroups.
+    sinegen_deterministic_pipeline: Id,
+    /// Vocoder Metal wave common vocoder primitive: polyphase anti-aliased
+    /// upsample (`vokra_anti_aliased_upsample_f32`), the GPU implementation
+    /// of [`vokra_ops::anti_aliased_upsample_f32`]. Multiply-add core of
+    /// BigVGAN's `UpSample1d` (upstream `alias_free_activation.torch.act`,
+    /// MIT). Consumes a caller-supplied Kaiser-window filter kernel; the
+    /// Kaiser design lives on the host (once per model load), keeping the
+    /// runtime op signature narrow. Ordinary FIR reduction — the FMA-vs-
+    /// non-FMA gap between MSL fast-math and the CPU strict-left-fold is
+    /// well inside the parity bound `atol ≤ 1e-4`.
+    anti_aliased_upsample_pipeline: Id,
     /// Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode
     /// (`vokra_snac_decode_f32`), the GPU implementation of
     /// `vokra_ops::snac_decode::SnacDecoder::decode` (upstream
@@ -2203,6 +2500,19 @@ impl MetalContext {
         // SAFETY: as above.
         let snake_activation_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_snake_activation_f32") }?;
+        // Vocoder Metal wave common vocoder primitives (2026-08-14):
+        // SnakeBeta / SineGen deterministic / anti-aliased upsample. All
+        // three share the same library as the sibling snake_activation /
+        // codec kernels.
+        // SAFETY: as above.
+        let snake_beta_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_snake_beta_f32") }?;
+        // SAFETY: as above.
+        let sinegen_deterministic_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_sinegen_deterministic_f32") }?;
+        // SAFETY: as above.
+        let anti_aliased_upsample_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_anti_aliased_upsample_f32") }?;
         // Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode; shares
         // the same library. Distinct kernel from the RVQ / FSQ family because
         // SNAC's multi-scale structure requires a per-stage
@@ -2256,6 +2566,9 @@ impl MetalContext {
             wavtokenizer_vq_gather_pipeline: wavtokenizer_vq_gather_pipeline.into_raw(),
             xcodec2_fsq_decode_pipeline: xcodec2_fsq_decode_pipeline.into_raw(),
             snake_activation_pipeline: snake_activation_pipeline.into_raw(),
+            snake_beta_pipeline: snake_beta_pipeline.into_raw(),
+            sinegen_deterministic_pipeline: sinegen_deterministic_pipeline.into_raw(),
+            anti_aliased_upsample_pipeline: anti_aliased_upsample_pipeline.into_raw(),
             snac_decode_pipeline: snac_decode_pipeline.into_raw(),
             denoise_apply_mask_pipeline: denoise_apply_mask_pipeline.into_raw(),
             qwen3_tts_codec_decode_pipeline: qwen3_tts_codec_decode_pipeline.into_raw(),
@@ -3181,6 +3494,292 @@ impl MetalContext {
             grid,
             tg,
             "snake_activation",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave common vocoder primitive: SnakeBeta activation
+    /// (`vokra_snake_beta_f32`) — the per-channel two-vector closed-form
+    /// periodic activation on the GPU.
+    ///
+    /// Applies `out[c, t] = x[c, t] + (1 / (beta[c] + ε)) · sin(alpha[c] ·
+    /// x[c, t])²` for a `[channels, time]` row-major FP32 tensor (channel-
+    /// outer). `alpha` and `beta` are length-`channels`; `x` and `out` are
+    /// both length `channels · time`. The exact contract of
+    /// [`vokra_ops::snake_beta_f32`], which itself matches
+    /// [`vokra_ops::bigvgan_generator::SnakeBeta::forward_in_place`] under
+    /// `alpha_logscale = false` (same eps, same primitives, trivial per-
+    /// element).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults, and the intrinsic `sin` may differ from Rust's `f32::sin`
+    /// in the low bits. The CPU vs GPU bound is `atol ≤ 5e-4` (same
+    /// codec-family bound as the sibling snake_activation kernel).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on `alpha.len() != channels`,
+    ///   `beta.len() != channels`, `x.len() != channels * time`,
+    ///   `out.len() != channels * time`, or a `channels * time` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn snake_beta_f32(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let expected = checked_mul(channels, time, "snake_beta channels*time")?;
+        expect_len("snake_beta alpha", alpha.len(), channels)?;
+        expect_len("snake_beta beta", beta.len(), channels)?;
+        expect_len("snake_beta x", x.len(), expected)?;
+        expect_len("snake_beta out", out.len(), expected)?;
+        if channels == 0 || time == 0 {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_snake_beta(x, alpha, beta, channels, time, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to the two-vector SnakeBeta shape
+    fn run_snake_beta(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let alpha_buf = self.new_buffer_from_slice(alpha)?;
+        let beta_buf = self.new_buffer_from_slice(beta)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SnakeBetaDims {
+            channels: channels as u32,
+            time: time as u32,
+        };
+        let (grid, tg) = grid_2d(time, channels);
+        self.dispatch_compute(
+            self.snake_beta_pipeline,
+            &[&x_buf, &alpha_buf, &beta_buf, &out_buf],
+            (&dims as *const SnakeBetaDims).cast::<c_void>(),
+            size_of::<SnakeBetaDims>(),
+            grid,
+            tg,
+            "snake_beta",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave common vocoder primitive: SineGen deterministic
+    /// forward (`vokra_sinegen_deterministic_f32`) — the F0-driven multi-
+    /// harmonic sinusoid source of HiFTNet-family vocoders, on the GPU.
+    ///
+    /// Writes `t * (harmonic_num + 1)` FP32 samples to `out`, matching the
+    /// deterministic path of [`vokra_ops::nsf::SineGen::forward`]
+    /// bit-for-bit modulo the MSL `sin` transcendental gap
+    /// (`atol ≤ 5e-4`). Output layout is `[T, H+1]` row-major
+    /// (time-outer / harmonic-inner — upstream
+    /// `sine_wavs.transpose(1, 2)`).
+    ///
+    /// # Parameters
+    ///
+    /// - `f0`               — length-`t` FP32 fundamental frequency per sample.
+    /// - `samp_rate`        — audio sample rate (Hz); `> 0`.
+    /// - `harmonic_num`     — number of harmonics beyond the fundamental.
+    /// - `sine_amp`         — sinusoid amplitude scale.
+    /// - `voiced_threshold` — F0 threshold above which a frame is voiced.
+    /// - `out`              — output buffer of length `t * (harmonic_num + 1)`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on empty `f0`, `samp_rate == 0`, or
+    ///   `out.len() != t * (harmonic_num + 1)`.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn sinegen_deterministic_f32(
+        &self,
+        f0: &[f32],
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let t = f0.len();
+        if t == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_f32: empty f0 sequence".to_owned(),
+            ));
+        }
+        if samp_rate == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_f32: samp_rate must be > 0".to_owned(),
+            ));
+        }
+        let h1 = harmonic_num as usize + 1;
+        let expected = checked_mul(t, h1, "sinegen_deterministic t*(H+1)")?;
+        expect_len("sinegen_deterministic out", out.len(), expected)?;
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_sinegen_deterministic(
+            f0,
+            samp_rate,
+            harmonic_num,
+            sine_amp,
+            voiced_threshold,
+            out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_sinegen_deterministic(
+        &self,
+        f0: &[f32],
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let f0_buf = self.new_buffer_from_slice(f0)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let h1 = harmonic_num + 1;
+        let dims = SinegenDeterministicDims {
+            t: f0.len() as u32,
+            h1,
+            samp_rate_f: samp_rate as f32,
+            sine_amp,
+            voiced_threshold,
+        };
+        // 1-D launch: one thread per harmonic. `grid_1d` uses TG=256, so a
+        // typical H+1 = 1..10 vocoder produces a single threadgroup with a
+        // very short active prefix (the kernel guards `i >= h1` for the tail).
+        let (grid, tg) = grid_1d(h1 as usize);
+        self.dispatch_compute(
+            self.sinegen_deterministic_pipeline,
+            &[&f0_buf, &out_buf],
+            (&dims as *const SinegenDeterministicDims).cast::<c_void>(),
+            size_of::<SinegenDeterministicDims>(),
+            grid,
+            tg,
+            "sinegen_deterministic",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave common vocoder primitive: polyphase anti-aliased
+    /// upsample (`vokra_anti_aliased_upsample_f32`) — the multiply-add core
+    /// of BigVGAN's `UpSample1d` and every HiFTNet-family alias-free
+    /// activation chain, on the GPU.
+    ///
+    /// Writes `channels * time_in * ratio` FP32 samples to `out`, matching
+    /// [`vokra_ops::anti_aliased_upsample_f32`] within `atol ≤ 1e-4` (the
+    /// FMA-vs-non-FMA gap between MSL fast-math and the CPU strict-left-fold
+    /// FIR accumulator; see the module docstring).
+    ///
+    /// # Parameters
+    ///
+    /// - `x`         — `[channels, time_in]` row-major FP32 input.
+    /// - `kernel`    — `[taps]` FP32 causal low-pass filter taps.
+    /// - `ratio`     — integer upsample factor (`>= 1`).
+    /// - `channels`  — number of channels in `x` / `out`.
+    /// - `time_in`   — number of input timesteps.
+    /// - `out`       — `[channels, time_in * ratio]` row-major FP32 output.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on `ratio == 0`, empty `kernel`,
+    ///   `x.len() != channels * time_in`, `out.len() != channels * time_in
+    ///   * ratio`, or a dimension overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to the polyphase upsample shape
+    pub fn anti_aliased_upsample_f32(
+        &self,
+        x: &[f32],
+        kernel: &[f32],
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        if ratio == 0 {
+            return Err(VokraError::InvalidArgument(
+                "anti_aliased_upsample_f32: ratio must be >= 1".to_owned(),
+            ));
+        }
+        if kernel.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "anti_aliased_upsample_f32: kernel must not be empty".to_owned(),
+            ));
+        }
+        let expected_x = checked_mul(channels, time_in, "anti_aliased_upsample channels*time_in")?;
+        let time_out = checked_mul(time_in, ratio, "anti_aliased_upsample time_in*ratio")?;
+        let expected_out = checked_mul(
+            channels,
+            time_out,
+            "anti_aliased_upsample channels*(time_in*ratio)",
+        )?;
+        expect_len("anti_aliased_upsample x", x.len(), expected_x)?;
+        expect_len("anti_aliased_upsample out", out.len(), expected_out)?;
+        if channels == 0 || time_in == 0 {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_anti_aliased_upsample(x, kernel, ratio, channels, time_in, time_out, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to the polyphase upsample shape
+    fn run_anti_aliased_upsample(
+        &self,
+        x: &[f32],
+        kernel: &[f32],
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        time_out: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let kernel_buf = self.new_buffer_from_slice(kernel)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = AntiAliasedUpsampleDims {
+            channels: channels as u32,
+            time_in: time_in as u32,
+            time_out: time_out as u32,
+            ratio: ratio as u32,
+            taps: kernel.len() as u32,
+        };
+        // 2-D launch: one thread per (t_out, c). `time_out` on the fast axis
+        // (grid.x) matches the row-major stride and keeps adjacent threads
+        // reading adjacent output floats. The kernel guards the ragged tail
+        // against both bounds.
+        let (grid, tg) = grid_2d(time_out, channels);
+        self.dispatch_compute(
+            self.anti_aliased_upsample_pipeline,
+            &[&x_buf, &kernel_buf, &out_buf],
+            (&dims as *const AntiAliasedUpsampleDims).cast::<c_void>(),
+            size_of::<AntiAliasedUpsampleDims>(),
+            grid,
+            tg,
+            "anti_aliased_upsample",
         )?;
         read_back(&out_buf, out)
     }
@@ -6527,6 +7126,12 @@ impl Drop for MetalContext {
             release(self.qwen3_tts_codec_decode_pipeline);
             release(self.denoise_apply_mask_pipeline);
             release(self.snac_decode_pipeline);
+            // Vocoder Metal wave common vocoder primitives — released after
+            // the WF5 codec siblings and before the WF2 snake_activation so
+            // the LIFO order matches the construction order in `build`.
+            release(self.anti_aliased_upsample_pipeline);
+            release(self.sinegen_deterministic_pipeline);
+            release(self.snake_beta_pipeline);
             release(self.snake_activation_pipeline);
             release(self.xcodec2_fsq_decode_pipeline);
             release(self.wavtokenizer_vq_gather_pipeline);

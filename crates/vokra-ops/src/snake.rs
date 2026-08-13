@@ -266,3 +266,279 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// SnakeBeta free function (Vocoder Metal wave — GPU-dispatch adapter)
+// ---------------------------------------------------------------------------
+//
+// The stateful [`crate::bigvgan_generator::SnakeBeta`] type carries an owned
+// `alpha` / `beta` and an `alpha_logscale` bool that the CPU forward
+// exponentiates on the fly. This module exposes a **stateless out-of-place**
+// free function [`snake_beta_f32`] that mirrors the shape of
+// [`snake_activation_f32`] above so a GPU dispatch (Metal / CUDA / etc.) can
+// route through the same seam pattern as the plain-Snake variant. The
+// `alpha_logscale = true` case is expected to have `exp(alpha_raw)` /
+// `exp(beta_raw)` applied on the host side by the converter or by the caller
+// — the free function consumes the **already-effective** vectors so there is
+// no branch in the hot path (same convention as [`snake_activation_f32`]).
+
+/// SnakeBeta activation — out-of-place, stateless.
+///
+/// Applies `y[c, t] = x[c, t] + (1 / (beta[c] + eps)) · sin(alpha[c] · x[c, t])²`
+/// with `eps = 1e-9` per element of a `[channels, time]` row-major (channel-
+/// outer) FP32 tensor. `alpha` and `beta` are length-`channels`; `x` and
+/// `out` are both length `channels · time`.
+///
+/// # Semantics vs. [`snake_activation_f32`]
+///
+/// The plain-Snake closed form ties frequency and magnitude to a single
+/// per-channel `alpha` (`(1 / (α + eps)) · sin(α · x)²`). SnakeBeta separates
+/// the two: `alpha` still scales the sinusoid argument (frequency), but
+/// `beta` now scales the reciprocal in front of the squared sine
+/// (magnitude). Two per-channel weight vectors → distinct op signature, so
+/// the GPU seam gets its own dispatch method.
+///
+/// # `alpha_logscale`
+///
+/// - `alpha_logscale = true` (upstream `bigvgan_generator::SnakeBeta` with
+///   `snake_logscale = true`) is an upstream-side transformation
+///   (`alpha_eff = exp(alpha_raw)`, `beta_eff = exp(beta_raw)`) applied
+///   before the same core formula. The converter can pre-exponentiate stored
+///   log-scale weights and hand this function the already-effective vectors;
+///   no branch in the hot path.
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] on:
+/// - `alpha.len() != channels`;
+/// - `beta.len() != channels`;
+/// - `x.len() != channels * time`;
+/// - `out.len() != channels * time`;
+/// - `channels * time` overflows `usize` (only reachable on impossibly large
+///   shapes on 32-bit hosts; still a loud error, not a silent truncation).
+///
+/// `channels == 0` or `time == 0` is a no-op (the buffers are already
+/// empty — verified by the length checks above — and no work is dispatched).
+pub fn snake_beta_f32(
+    x: &[f32],
+    alpha: &[f32],
+    beta: &[f32],
+    channels: usize,
+    time: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    let expected = channels.checked_mul(time).ok_or_else(|| {
+        VokraError::InvalidArgument(format!(
+            "snake_beta_f32: channels ({channels}) * time ({time}) overflows usize"
+        ))
+    })?;
+    if alpha.len() != channels {
+        return Err(VokraError::InvalidArgument(format!(
+            "snake_beta_f32: alpha.len() ({}) != channels ({channels})",
+            alpha.len()
+        )));
+    }
+    if beta.len() != channels {
+        return Err(VokraError::InvalidArgument(format!(
+            "snake_beta_f32: beta.len() ({}) != channels ({channels})",
+            beta.len()
+        )));
+    }
+    if x.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "snake_beta_f32: x.len() ({}) != channels * time ({expected})",
+            x.len()
+        )));
+    }
+    if out.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "snake_beta_f32: out.len() ({}) != channels * time ({expected})",
+            out.len()
+        )));
+    }
+    if channels == 0 || time == 0 {
+        return Ok(());
+    }
+    for c in 0..channels {
+        let a = alpha[c];
+        let b = beta[c];
+        let inv_b = 1.0 / (b + EPS_SNAKE);
+        let row_start = c * time;
+        let row_in = &x[row_start..row_start + time];
+        let row_out = &mut out[row_start..row_start + time];
+        for (dst, &v) in row_out.iter_mut().zip(row_in.iter()) {
+            let s = (a * v).sin();
+            *dst = v + inv_b * s * s;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod snake_beta_tests {
+    use super::*;
+    use crate::bigvgan_generator::SnakeBeta;
+
+    /// Bit-for-bit vs `bigvgan_generator::SnakeBeta::forward_in_place(..., alpha_logscale=false)`
+    /// on a small deterministic input — same closed form, same eps, same
+    /// reduction order (trivially per-element), so the two must agree exactly.
+    #[test]
+    fn snake_beta_matches_bigvgan_snake_beta_no_logscale_bit_identical() {
+        let channels = 4;
+        let time = 7;
+        let alpha: Vec<f32> = (0..channels).map(|c| 0.3 + c as f32 * 0.17).collect();
+        let beta: Vec<f32> = (0..channels).map(|c| 0.5 + c as f32 * 0.11).collect();
+        let x: Vec<f32> = (0..channels * time)
+            .map(|i| ((i as f32) * 0.11).sin() * 1.7)
+            .collect();
+
+        let mut got = vec![0.0f32; channels * time];
+        snake_beta_f32(&x, &alpha, &beta, channels, time, &mut got).unwrap();
+
+        let sb = SnakeBeta::new(alpha.clone(), beta.clone(), false).unwrap();
+        let mut expected = x.clone();
+        sb.forward_in_place(&mut expected, channels, time).unwrap();
+
+        for (i, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                e.to_bits(),
+                "index {i}: snake_beta_f32 = {g} vs bigvgan_generator::SnakeBeta = {e} (bit pattern must match)"
+            );
+        }
+    }
+
+    /// `snake_beta(0) = 0` regardless of α, β (deterministic identity at origin).
+    #[test]
+    fn snake_beta_zero_input_is_zero_regardless_of_alpha_beta() {
+        let channels = 3;
+        let time = 5;
+        let alpha = vec![0.7f32, 1.3, 2.1];
+        let beta = vec![0.5f32, 0.9, 1.5];
+        let x = vec![0.0f32; channels * time];
+        let mut out = vec![f32::NAN; channels * time];
+        snake_beta_f32(&x, &alpha, &beta, channels, time, &mut out).unwrap();
+        assert!(
+            out.iter().all(|&v| v == 0.0),
+            "expected all zeros, got {out:?}"
+        );
+    }
+
+    /// α = β = 1 gives the closed form `x + sin(x)^2 / (1 + eps)` — identical
+    /// to the plain-Snake case with α = 1. This pins the reciprocal target
+    /// (β, not α) — swapping α ↔ β in the formula would still pass α=β=1 but
+    /// break the β = 2 test below.
+    #[test]
+    fn snake_beta_alpha_beta_one_matches_snake_alpha_one() {
+        let inputs = [-2.0f32, -0.5, 0.0, 0.5, 1.7];
+        let mut got = vec![0.0f32; inputs.len()];
+        snake_beta_f32(&inputs, &[1.0], &[1.0], 1, inputs.len(), &mut got).unwrap();
+        for (i, &x0) in inputs.iter().enumerate() {
+            let s = x0.sin();
+            let expected = x0 + s * s / (1.0 + EPS_SNAKE);
+            assert!(
+                (got[i] - expected).abs() < 1e-6,
+                "snake_beta(α=1, β=1, x={x0}) = {} but expected {}",
+                got[i],
+                expected
+            );
+        }
+    }
+
+    /// β = 2 (≠ α) discriminates SnakeBeta from Snake and pins the reciprocal
+    /// target to β (not α): a variant that computed `1 / (α + eps)` would
+    /// produce a distinctly different magnitude and fail here.
+    #[test]
+    fn snake_beta_beta_two_scales_reciprocal_not_alpha() {
+        let inputs = [-1.5f32, -0.3, 0.0, 0.4, 1.2];
+        let alpha = 1.0f32;
+        let beta = 2.0f32;
+        let mut got = vec![0.0f32; inputs.len()];
+        snake_beta_f32(&inputs, &[alpha], &[beta], 1, inputs.len(), &mut got).unwrap();
+        for (i, &x0) in inputs.iter().enumerate() {
+            let s = (alpha * x0).sin();
+            let expected_beta_reciprocal = x0 + s * s / (beta + EPS_SNAKE);
+            // Sibling alpha-reciprocal alternative — must NOT match at β ≠ α:
+            let alt_alpha_reciprocal = x0 + s * s / (alpha + EPS_SNAKE);
+            assert!(
+                (got[i] - expected_beta_reciprocal).abs() < 1e-6,
+                "snake_beta(α=1, β=2, x={x0}) = {} but expected {} \
+                 (β-reciprocal form)",
+                got[i],
+                expected_beta_reciprocal,
+            );
+            // At x = 0 both reciprocals collapse to 0 — skip that slot for
+            // the discriminating check.
+            if x0 != 0.0 {
+                assert!(
+                    (got[i] - alt_alpha_reciprocal).abs() > 1e-6,
+                    "snake_beta(α=1, β=2, x={x0}) accidentally matches the \
+                     α-reciprocal form ({alt_alpha_reciprocal}) — β vs α \
+                     swapped in the reciprocal?"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn snake_beta_rejects_wrong_alpha_length() {
+        let x = vec![0.0f32; 3 * 4];
+        let beta = vec![1.0f32; 3];
+        let mut out = vec![0.0f32; 3 * 4];
+        let err = snake_beta_f32(&x, &[1.0, 1.0], &beta, 3, 4, &mut out).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("alpha.len()"), "{msg}");
+    }
+
+    #[test]
+    fn snake_beta_rejects_wrong_beta_length() {
+        let x = vec![0.0f32; 3 * 4];
+        let alpha = vec![1.0f32; 3];
+        let mut out = vec![0.0f32; 3 * 4];
+        let err = snake_beta_f32(&x, &alpha, &[1.0, 1.0], 3, 4, &mut out).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("beta.len()"), "{msg}");
+    }
+
+    #[test]
+    fn snake_beta_rejects_wrong_x_length() {
+        let x = vec![0.0f32; 3 * 4 - 1];
+        let alpha = vec![1.0f32; 3];
+        let beta = vec![1.0f32; 3];
+        let mut out = vec![0.0f32; 3 * 4];
+        let err = snake_beta_f32(&x, &alpha, &beta, 3, 4, &mut out).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("x.len()"), "{msg}");
+    }
+
+    #[test]
+    fn snake_beta_rejects_wrong_out_length() {
+        let x = vec![0.0f32; 3 * 4];
+        let alpha = vec![1.0f32; 3];
+        let beta = vec![1.0f32; 3];
+        let mut out = vec![0.0f32; 3 * 4 + 1];
+        let err = snake_beta_f32(&x, &alpha, &beta, 3, 4, &mut out).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("out.len()"), "{msg}");
+    }
+
+    #[test]
+    fn snake_beta_empty_channels_or_time_is_noop() {
+        // channels = 0
+        let mut out: Vec<f32> = Vec::new();
+        snake_beta_f32(&[], &[], &[], 0, 5, &mut out).unwrap();
+        assert!(out.is_empty());
+        // time = 0
+        let mut out: Vec<f32> = Vec::new();
+        snake_beta_f32(
+            &[],
+            &[1.0f32, 2.0, 3.0],
+            &[1.0f32, 1.0, 1.0],
+            3,
+            0,
+            &mut out,
+        )
+        .unwrap();
+        assert!(out.is_empty());
+    }
+}

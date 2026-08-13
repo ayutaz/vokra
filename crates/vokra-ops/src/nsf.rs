@@ -440,6 +440,134 @@ fn next_gaussian_std(state: &mut u64) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// SineGen deterministic free function (Vocoder Metal wave — GPU-dispatch
+// adapter)
+// ---------------------------------------------------------------------------
+//
+// The stateful [`SineGen`] type above owns a [`SineGenConfig`] and produces a
+// three-tuple `(sine_waves, uv, noise)` under two entropy modes. This module
+// also exposes a **stateless out-of-place** free function
+// [`sinegen_deterministic_f32`] that mirrors the shape of the sibling
+// [`crate::snake_activation_f32`] / [`crate::snake_beta_f32`] entry points so
+// a GPU dispatch (Metal / CUDA / etc.) can route through the same seam
+// pattern.
+//
+// # Deterministic-only
+//
+// The GPU adapter targets [`NsfEntropy::Deterministic`] alone — zero per-
+// harmonic phase, zero noise. Under that mode the CPU forward's `noise`
+// output is identically zero, the per-harmonic `phase_vec` is zero, and the
+// three-tuple collapses to:
+//
+// ```text
+// out[t, i] = sine_amp * sin(2π * (cumsum_{j <= t} (f0[j] * (i+1) / sr)) mod 1) * uv[t]
+// uv[t]    = if f0[t] > voiced_threshold { 1.0 } else { 0.0 }
+// ```
+//
+// where `i ∈ [0, harmonic_num]` and the output layout is `[T × (H+1)]`
+// row-major (upstream `sine_wavs.transpose(1, 2)`). The [`NsfEntropy::Seeded`]
+// mode carries a per-harmonic phase draw and a Gaussian noise stream that
+// live on the host RNG; those are not part of this deterministic slice, and
+// wiring them onto the GPU would require pushing SplitMix64 state through
+// device memory (a separate follow-up if a consumer needs the seeded path
+// on the GPU — none does today).
+//
+// # Bit-identical to `SineGen::forward(_, Deterministic)`
+//
+// The reduction order (outer harmonic, inner time-sequential cumsum) matches
+// the CPU forward exactly. The `cs += f0[j] * harmonic_gain` accumulation
+// keeps the same per-harmonic reduction the CPU walks, so the GPU kernel
+// need only lift the two loops onto device threads (`one thread per
+// harmonic`, walking time sequentially in-kernel). `.floor()`, subtract,
+// multiply-by-`2π`, `.sin()` and the final uv-mask/multiply are element-
+// wise. A GPU port matching this shape is bit-identical modulo the MSL
+// `sin` transcendental gap (well inside the `atol ≤ 5e-4` codec-family
+// bound; see the parity test for a discriminating negative control).
+
+/// SineGen deterministic-only forward — out-of-place, stateless.
+///
+/// Writes `T × (H+1)` row-major FP32 samples to `out`, matching
+/// `SineGen::forward(f0, NsfEntropy::Deterministic).sine_waves` bit-for-bit
+/// (same eps-free per-harmonic reduction order, same primitives, same
+/// transposed layout).
+///
+/// # Parameters
+///
+/// - `f0`               — length-`T` FP32 fundamental frequency per sample.
+/// - `samp_rate`        — audio sample rate (Hz); must be `> 0`.
+/// - `harmonic_num`     — number of harmonics beyond the fundamental
+///                        (`H`); output channels = `H + 1`.
+/// - `sine_amp`         — sinusoid amplitude scale (upstream `sine_amp`,
+///                        default 0.1).
+/// - `voiced_threshold` — F0 threshold above which a frame is treated as
+///                        voiced (upstream `voiced_threshold`, default 0).
+/// - `out`              — output buffer of length `T * (H + 1)`
+///                        (row-major, time-outer / harmonic-inner —
+///                        upstream `sine_wavs.transpose(1, 2)`).
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] on:
+/// - `f0` empty (`T = 0`) — mirrors [`SineGen::forward`];
+/// - `samp_rate == 0` — mirrors [`SineGen::forward`];
+/// - `T * (H+1)` overflows `usize`;
+/// - `out.len() != T * (H+1)`.
+pub fn sinegen_deterministic_f32(
+    f0: &[f32],
+    samp_rate: u32,
+    harmonic_num: u32,
+    sine_amp: f32,
+    voiced_threshold: f32,
+    out: &mut [f32],
+) -> Result<()> {
+    let t = f0.len();
+    if t == 0 {
+        return Err(VokraError::InvalidArgument(
+            "sinegen_deterministic_f32: empty f0 sequence".to_owned(),
+        ));
+    }
+    if samp_rate == 0 {
+        return Err(VokraError::InvalidArgument(
+            "sinegen_deterministic_f32: samp_rate must be > 0".to_owned(),
+        ));
+    }
+    let h1 = harmonic_num as usize + 1;
+    let expected = t.checked_mul(h1).ok_or_else(|| {
+        VokraError::InvalidArgument(format!(
+            "sinegen_deterministic_f32: T ({t}) * (H+1) ({h1}) overflows usize"
+        ))
+    })?;
+    if out.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "sinegen_deterministic_f32: out.len() ({}) != T * (H+1) ({expected})",
+            out.len(),
+        )));
+    }
+    let samp_rate_f = samp_rate as f32;
+    let two_pi = 2.0 * core::f32::consts::PI;
+    // Per-harmonic outer loop matches [`SineGen::forward`]'s pre-transpose
+    // walk (`for i in 0..h1 { for j in 0..t { cs += f0[j] * harmonic_gain; ... } }`).
+    // Write directly into the transposed layout — `out[j * h1 + i]` — so we
+    // do not need a scratch buffer or a follow-up transpose pass. The
+    // cumsum is per-harmonic (each `i` has its own accumulator); FP32
+    // rounding order is identical to the CPU forward.
+    for i in 0..h1 {
+        let harmonic_gain = (i as f32 + 1.0) / samp_rate_f;
+        let mut cs = 0.0f32;
+        for (j, &f0_j) in f0.iter().enumerate() {
+            cs += f0_j * harmonic_gain;
+            let modded = cs - cs.floor();
+            let theta = two_pi * modded;
+            let sine = sine_amp * theta.sin();
+            let uv = if f0_j > voiced_threshold { 1.0 } else { 0.0 };
+            // Transposed layout: (t, i) → out[j*h1 + i].
+            out[j * h1 + i] = sine * uv;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1102,5 +1230,125 @@ mod tests {
             (variance - 1.0).abs() < 0.05,
             "variance drift: got {variance}, expected ~1.0 (tol 0.05)"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // sinegen_deterministic_f32 (GPU-adapter free function)
+    // -------------------------------------------------------------------
+
+    /// Bit-for-bit vs `SineGen::forward(_, Deterministic).sine_waves` on a
+    /// small deterministic input — same per-harmonic reduction order, same
+    /// eps-free cumsum-then-mod-1, same `f32::sin` primitive, same transpose,
+    /// so the two must agree exactly.
+    #[test]
+    fn sinegen_deterministic_matches_sine_gen_forward_bit_identical() {
+        let cfg = SineGenConfig {
+            samp_rate: 22_050,
+            harmonic_num: 3,
+            sine_amp: 0.1,
+            noise_std: 0.003,
+            voiced_threshold: 0.0,
+        };
+        let sine = SineGen::new(cfg);
+        let f0: Vec<f32> = (0..32)
+            .map(|j| 100.0 + (j as f32 * 0.31).sin() * 25.0)
+            .collect();
+        let expected = sine.forward(&f0, NsfEntropy::Deterministic).unwrap();
+
+        let mut got = vec![0.0f32; f0.len() * cfg.out_channels()];
+        sinegen_deterministic_f32(
+            &f0,
+            cfg.samp_rate,
+            cfg.harmonic_num,
+            cfg.sine_amp,
+            cfg.voiced_threshold,
+            &mut got,
+        )
+        .unwrap();
+
+        assert_eq!(got.len(), expected.sine_waves.len(), "layout mismatch");
+        for (i, (&g, &e)) in got.iter().zip(expected.sine_waves.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                e.to_bits(),
+                "index {i}: sinegen_deterministic_f32 = {g} vs \
+                 SineGen::forward(_, Deterministic).sine_waves = {e} \
+                 (bit pattern must match)"
+            );
+        }
+    }
+
+    /// Zero F0 → uv = 0 → all-zero output regardless of α, sample rate.
+    #[test]
+    fn sinegen_deterministic_zero_f0_is_all_zeros() {
+        let t = 16;
+        let harmonic_num = 3;
+        let h1 = harmonic_num as usize + 1;
+        let mut out = vec![f32::NAN; t * h1];
+        sinegen_deterministic_f32(&vec![0.0f32; t], 22_050, harmonic_num, 0.1, 0.0, &mut out)
+            .unwrap();
+        assert!(out.iter().all(|&v| v == 0.0), "expected all zeros");
+    }
+
+    /// Constant 100 Hz F0 with just the fundamental (H = 0) reduces to a
+    /// pure sinusoid at `f0/samp_rate` cycles per sample (see the sibling
+    /// `sine_gen_constant_100hz_first_channel_is_sinusoid_at_the_right_freq`
+    /// pin). Hand-computes the first sample.
+    #[test]
+    fn sinegen_deterministic_constant_100hz_first_sample_matches_hand_computed() {
+        let t = 100;
+        let harmonic_num = 0; // H+1 = 1
+        let f0 = vec![100.0f32; t];
+        let mut out = vec![0.0f32; t];
+        sinegen_deterministic_f32(&f0, 22_050, harmonic_num, 0.1, 0.0, &mut out).unwrap();
+        let expected0 = 0.1 * (2.0 * core::f32::consts::PI * (100.0f32 / 22_050.0)).sin();
+        assert!(
+            (out[0] - expected0).abs() < 1e-6,
+            "sample[0] = {} but expected {}",
+            out[0],
+            expected0
+        );
+        assert!(out.iter().all(|s| s.is_finite()));
+    }
+
+    /// `voiced_threshold` masks low F0. Values `>` threshold are voiced;
+    /// values `<=` threshold produce uv = 0 → zero output at that slot.
+    #[test]
+    fn sinegen_deterministic_voiced_threshold_masks_low_f0() {
+        let harmonic_num = 0;
+        let mut f0 = vec![10.0f32; 4];
+        f0.extend(vec![100.0f32; 4]);
+        let mut out = vec![0.0f32; f0.len()];
+        sinegen_deterministic_f32(&f0, 22_050, harmonic_num, 0.1, 50.0, &mut out).unwrap();
+        for &v in &out[..4] {
+            assert_eq!(v, 0.0, "below threshold must produce zero");
+        }
+        // Above-threshold slots are non-zero at F0 = 100 Hz (sin != 0 there).
+        assert!(out[4..].iter().any(|&v| v != 0.0));
+    }
+
+    #[test]
+    fn sinegen_deterministic_rejects_empty_f0() {
+        let mut out: Vec<f32> = Vec::new();
+        let err = sinegen_deterministic_f32(&[], 22_050, 0, 0.1, 0.0, &mut out).unwrap_err();
+        assert!(err.to_string().contains("empty f0"), "{err}");
+    }
+
+    #[test]
+    fn sinegen_deterministic_rejects_zero_samp_rate() {
+        let mut out = vec![0.0f32; 4];
+        let err =
+            sinegen_deterministic_f32(&vec![100.0f32; 4], 0, 0, 0.1, 0.0, &mut out).unwrap_err();
+        assert!(err.to_string().contains("samp_rate must be > 0"), "{err}");
+    }
+
+    #[test]
+    fn sinegen_deterministic_rejects_wrong_out_length() {
+        let f0 = vec![100.0f32; 4];
+        let harmonic_num = 2; // H+1 = 3 → expected 12
+        let mut out = vec![0.0f32; 4 * 3 - 1];
+        let err =
+            sinegen_deterministic_f32(&f0, 22_050, harmonic_num, 0.1, 0.0, &mut out).unwrap_err();
+        assert!(err.to_string().contains("out.len()"), "{err}");
     }
 }

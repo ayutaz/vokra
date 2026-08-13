@@ -254,6 +254,70 @@ pub enum HotOp {
     /// those backends fails the coverage gate (never a silent CPU fall
     /// back).
     Qwen3TtsCodec,
+    /// SnakeBeta activation (`vokra_ops::snake_beta_f32`) — the per-channel
+    /// two-vector closed-form periodic activation
+    /// `y = x + (1/(β+ε))·sin(α·x)²` consumed by the BigVGAN family
+    /// (upstream `activations.py:62-114`, MIT / NVIDIA). Distinct from
+    /// [`HotOp::SnakeActivation`] (single-vector `α`-only variant), the
+    /// stateful [`vokra_ops::bigvgan_generator::SnakeBeta`] type is the CPU
+    /// forward that BigVGAN's terminal `activation_post` and every AMP
+    /// block that selects [`vokra_ops::bigvgan_generator::SnakeKind::SnakeBeta`]
+    /// dispatch through; the [`vokra_ops::snake_beta_f32`] free function is
+    /// the stateless out-of-place adapter this seam routes through so a GPU
+    /// dispatch (Metal / CUDA / etc.) can go through the same shape as the
+    /// sibling snake_activation seam.
+    ///
+    /// **Vocoder Metal wave (2026-08-14):** the Metal arm is wired via
+    /// `vokra_snake_beta_f32` (element-wise MSL kernel, semantics equal to
+    /// [`vokra_ops::snake_beta_f32`] within the FP32 transcendental gap,
+    /// host-side shape validation upstream — FR-EX-08). The CUDA arm
+    /// remains an explicit [`VokraError::UnsupportedOp`] (deferred to the
+    /// vast.ai owner track). `covered_by_metal` returns `true`;
+    /// `covered_by_cuda` / `covered_by_vulkan` / `covered_by_webgpu` /
+    /// `covered_by_coreml` / `covered_by_qnn` return `false`.
+    SnakeBeta,
+    /// SineGen deterministic forward (`vokra_ops::sinegen_deterministic_f32`)
+    /// — the F0-driven multi-harmonic sinusoid source of every HiFTNet-family
+    /// vocoder (upstream CosyVoice `cosyvoice/hifigan/generator.py:200-214`,
+    /// `SineGen.forward` under `NsfEntropy::Deterministic`). Consumed by
+    /// CosyVoice2, CosyVoice3, the Chatterbox family, and every other
+    /// vocoder that wires the M4-05 `SourceModuleHnNSF` chain (which
+    /// currently only exposes the deterministic path from the GPU — the
+    /// seeded variant carries per-harmonic phase + Gaussian noise host-side
+    /// draws that no consumer needs on the GPU today; a follow-up if one
+    /// materialises).
+    ///
+    /// **Vocoder Metal wave (2026-08-14):** the Metal arm is wired via
+    /// `vokra_sinegen_deterministic_f32` (one thread per harmonic walking
+    /// the full time axis sequentially — same per-harmonic reduction order
+    /// as the CPU forward, semantics equal to
+    /// [`vokra_ops::sinegen_deterministic_f32`] within the FP32
+    /// transcendental gap, host-side shape validation upstream —
+    /// FR-EX-08). The CUDA arm remains an explicit
+    /// [`VokraError::UnsupportedOp`] (deferred to the vast.ai owner track).
+    /// `covered_by_metal` returns `true`; `covered_by_cuda` /
+    /// `covered_by_vulkan` / `covered_by_webgpu` / `covered_by_coreml` /
+    /// `covered_by_qnn` return `false`.
+    SinegenDeterministic,
+    /// Polyphase anti-aliased upsample (`vokra_ops::anti_aliased_upsample_f32`)
+    /// — the multiply-add core of BigVGAN's `UpSample1d` (upstream
+    /// `alias_free_activation.torch.act`, MIT) and every HiFTNet-family
+    /// alias-free activation chain. Consumes a caller-supplied Kaiser-window
+    /// filter kernel (the design step lives on the host — see the vokra-ops
+    /// module docs), so the runtime op signature is narrow (three tensor
+    /// inputs + one scalar `ratio`), a good fit for a GPU dispatch.
+    ///
+    /// **Vocoder Metal wave (2026-08-14):** the Metal arm is wired via
+    /// `vokra_anti_aliased_upsample_f32` (2-D dispatch, one thread per
+    /// `(t_out, c)`, semantics equal to
+    /// [`vokra_ops::anti_aliased_upsample_f32`] within the FMA-vs-non-FMA
+    /// gap `atol ≤ 1e-4`, host-side shape validation upstream — FR-EX-08).
+    /// The CUDA arm remains an explicit [`VokraError::UnsupportedOp`]
+    /// (deferred to the vast.ai owner track). `covered_by_metal` returns
+    /// `true`; `covered_by_cuda` / `covered_by_vulkan` /
+    /// `covered_by_webgpu` / `covered_by_coreml` / `covered_by_qnn` return
+    /// `false`.
+    AntiAliasedUpsample,
 }
 
 impl HotOp {
@@ -311,6 +375,16 @@ impl HotOp {
                 | HotOp::SnacDecode
                 | HotOp::DenoiseApplyMask
                 | HotOp::Qwen3TtsCodec
+                // Vocoder Metal wave common vocoder primitives (2026-08-14):
+                // SnakeBeta / SineGen deterministic / anti-aliased upsample.
+                // Every one is a stateless out-of-place free function with a
+                // matching MSL kernel (`vokra_snake_beta_f32` /
+                // `vokra_sinegen_deterministic_f32` /
+                // `vokra_anti_aliased_upsample_f32`), so listing any of them
+                // in a Metal `required` set builds against the wired kernel.
+                | HotOp::SnakeBeta
+                | HotOp::SinegenDeterministic
+                | HotOp::AntiAliasedUpsample
         )
     }
 
@@ -1644,6 +1718,258 @@ impl Compute {
                  Metal/CUDA/Vulkan). Select BackendKind::Cpu (which delegates to \
                  vokra_ops::snake_activation_f32) — Vokra does not silently run the op on the \
                  CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// SnakeBeta activation (Ziyin et al. 2020 + Lee et al. 2023 BigVGAN) —
+    /// the per-channel **two-vector** closed-form periodic activation shared
+    /// by the BigVGAN family, wired into the imperative `Compute` seam.
+    ///
+    /// Applies `out[c, t] = x[c, t] + (1 / (beta[c] + ε)) · sin(alpha[c] ·
+    /// x[c, t])²` for a `[channels, time]` row-major FP32 tensor (channel-
+    /// outer). `alpha` and `beta` are length-`channels`; `x` and `out` are
+    /// both length `channels · time`. Delegates on the CPU arm to
+    /// [`vokra_ops::snake_beta_f32`] (which is bit-identical to
+    /// [`vokra_ops::bigvgan_generator::SnakeBeta::forward_in_place`] under
+    /// `alpha_logscale = false` — same eps, same primitives, trivial per-
+    /// element).
+    ///
+    /// # Distinct from [`Compute::snake_activation_f32`]
+    ///
+    /// The plain-Snake closed form ties frequency and magnitude to a single
+    /// per-channel `alpha`. SnakeBeta separates the two: `alpha` scales the
+    /// sinusoid argument (frequency), `beta` scales the reciprocal in front
+    /// of the squared sine (magnitude). Two per-channel weight vectors →
+    /// distinct op shape, distinct MSL kernel, distinct HotOp variant.
+    ///
+    /// # `alpha_logscale` and the stateful `SnakeBeta`
+    ///
+    /// `alpha_logscale = true` (upstream `bigvgan_generator::SnakeBeta` with
+    /// `snake_logscale = true`) is an upstream-side transformation
+    /// (`alpha_eff = exp(alpha_raw)`, `beta_eff = exp(beta_raw)`); the
+    /// caller passes the already-effective vectors to this method (same
+    /// contract as [`Compute::snake_activation_f32`]).
+    ///
+    /// # CPU + Metal wired; CUDA / Vulkan / WebGPU / CoreML / QNN return `UnsupportedOp`
+    ///
+    /// **Vocoder Metal wave (2026-08-14):** the Metal arm dispatches to
+    /// [`vokra_backend_metal::MetalContext::snake_beta_f32`]
+    /// (`vokra_snake_beta_f32` MSL kernel — semantics equal to the CPU free
+    /// function within the FP32 transcendental gap, `atol ≤ 5e-4`). Every
+    /// other GPU arm returns an explicit [`VokraError::UnsupportedOp`]
+    /// until the corresponding kernel lands — never a silent CPU fall back
+    /// (FR-EX-08). The coverage gate on [`Compute::for_backend`]
+    /// additionally rejects any model that lists [`HotOp::SnakeBeta`]
+    /// against those backends.
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`vokra_ops::snake_beta_f32`] raises (wrong `alpha.len()` /
+    ///   `beta.len()` / `x.len()` / `out.len()`, or `channels * time`
+    ///   overflow — never a silent shape clamp, FR-EX-08).
+    /// - Metal arm: same host-side shape validation before dispatch, plus
+    ///   any [`VokraError::BackendUnavailable`] from the underlying command
+    ///   buffer.
+    /// - CUDA / Vulkan / WebGPU / CoreML / QNN arms: explicit
+    ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
+    pub fn snake_beta_f32(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => vokra_ops::snake_beta_f32(x, alpha, beta, channels, time, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.snake_beta_f32(x, alpha, beta, channels, time, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "snake_beta_f32 has no wired CUDA NVRTC kernel; the Vocoder wave CUDA arm is \
+                 deferred to the vast.ai owner track. Select BackendKind::Cpu (which delegates \
+                 to vokra_ops::snake_beta_f32), or wait for the CUDA kernel — Vokra does not \
+                 silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "snake_beta_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six Whisper \
+                 hot ops only; the Vocoder wave GPU arms are deferred like Metal/CUDA/Vulkan). \
+                 Select BackendKind::Cpu (which delegates to vokra_ops::snake_beta_f32) — Vokra \
+                 does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// SineGen deterministic forward — the F0-driven multi-harmonic
+    /// sinusoid source of HiFTNet-family vocoders (upstream CosyVoice
+    /// `cosyvoice/hifigan/generator.py:200-214`, `SineGen.forward` under
+    /// `NsfEntropy::Deterministic`), wired into the imperative `Compute`
+    /// seam.
+    ///
+    /// Writes `f0.len() * (harmonic_num + 1)` FP32 samples to `out`,
+    /// matching the deterministic path of
+    /// [`vokra_ops::nsf::SineGen::forward`] bit-for-bit modulo the FP32
+    /// transcendental gap. Output layout is `[T, H+1]` row-major
+    /// (time-outer / harmonic-inner — upstream
+    /// `sine_wavs.transpose(1, 2)`). Delegates on the CPU arm to
+    /// [`vokra_ops::sinegen_deterministic_f32`].
+    ///
+    /// # Deterministic-only (no seeded path on the GPU)
+    ///
+    /// The `SineGen::forward` seeded mode carries a per-harmonic phase draw
+    /// and a Gaussian noise stream that live on the host RNG; the GPU seam
+    /// only exposes the deterministic slice. A caller that needs the
+    /// seeded mode on the GPU would have to push a SplitMix64 state
+    /// through device memory (a separate follow-up if a consumer needs it
+    /// — none does today).
+    ///
+    /// # CPU + Metal wired; CUDA / Vulkan / WebGPU / CoreML / QNN return `UnsupportedOp`
+    ///
+    /// **Vocoder Metal wave (2026-08-14):** the Metal arm dispatches to
+    /// [`vokra_backend_metal::MetalContext::sinegen_deterministic_f32`]
+    /// (`vokra_sinegen_deterministic_f32` MSL kernel — one thread per
+    /// harmonic walking the full time axis sequentially, same per-harmonic
+    /// reduction order as the CPU forward, `atol ≤ 5e-4`). Every other GPU
+    /// arm returns an explicit [`VokraError::UnsupportedOp`] — never a
+    /// silent CPU fall back (FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`vokra_ops::sinegen_deterministic_f32`] raises (empty `f0`,
+    ///   `samp_rate == 0`, wrong `out.len()`).
+    /// - Metal arm: same host-side shape validation before dispatch, plus
+    ///   any [`VokraError::BackendUnavailable`] from the underlying command
+    ///   buffer.
+    /// - CUDA / Vulkan / WebGPU / CoreML / QNN arms: explicit
+    ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
+    pub fn sinegen_deterministic_f32(
+        &self,
+        f0: &[f32],
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => vokra_ops::sinegen_deterministic_f32(
+                f0,
+                samp_rate,
+                harmonic_num,
+                sine_amp,
+                voiced_threshold,
+                out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.sinegen_deterministic_f32(
+                f0,
+                samp_rate,
+                harmonic_num,
+                sine_amp,
+                voiced_threshold,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "sinegen_deterministic_f32 has no wired CUDA NVRTC kernel; the Vocoder wave \
+                 CUDA arm is deferred to the vast.ai owner track. Select BackendKind::Cpu \
+                 (which delegates to vokra_ops::sinegen_deterministic_f32), or wait for the \
+                 CUDA kernel — Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "sinegen_deterministic_f32 has no wired WebGPU WGSL kernel (M4-01 covers the \
+                 six Whisper hot ops only; the Vocoder wave GPU arms are deferred like \
+                 Metal/CUDA/Vulkan). Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::sinegen_deterministic_f32) — Vokra does not silently run the op on \
+                 the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Polyphase anti-aliased upsample — the multiply-add core of BigVGAN's
+    /// `UpSample1d` (upstream `alias_free_activation.torch.act`, MIT) and
+    /// every HiFTNet-family alias-free activation chain, wired into the
+    /// imperative `Compute` seam.
+    ///
+    /// Writes `channels * time_in * ratio` FP32 samples to `out`, matching
+    /// [`vokra_ops::anti_aliased_upsample_f32`] within `atol ≤ 1e-4` (the
+    /// FMA-vs-non-FMA gap between MSL fast-math and the CPU strict-left-fold
+    /// FIR accumulator). Delegates on the CPU arm to
+    /// [`vokra_ops::anti_aliased_upsample_f32`].
+    ///
+    /// # Kaiser design lives on the host
+    ///
+    /// The audit's attribute list — `cutoff`, `filter_kernel`, `periodicity`
+    /// — is Kaiser-window design metadata: given a target low-pass
+    /// `cutoff` (in units of the Nyquist rate) and a `periodicity` / kernel
+    /// length, a Kaiser window sinc produces the `filter_kernel` taps. The
+    /// design step is **host-side, once per model load** (matches upstream
+    /// BigVGAN's `UpSample1d.__init__`); this method consumes the already-
+    /// designed taps and does the per-timestep multiply-add.
+    ///
+    /// # CPU + Metal wired; CUDA / Vulkan / WebGPU / CoreML / QNN return `UnsupportedOp`
+    ///
+    /// **Vocoder Metal wave (2026-08-14):** the Metal arm dispatches to
+    /// [`vokra_backend_metal::MetalContext::anti_aliased_upsample_f32`]
+    /// (`vokra_anti_aliased_upsample_f32` MSL kernel — 2-D dispatch, one
+    /// thread per `(t_out, c)`, `atol ≤ 1e-4`). Every other GPU arm returns
+    /// an explicit [`VokraError::UnsupportedOp`] — never a silent CPU fall
+    /// back (FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`vokra_ops::anti_aliased_upsample_f32`] raises (`ratio == 0`,
+    ///   empty `kernel`, wrong `x.len()` / `out.len()`).
+    /// - Metal arm: same host-side shape validation before dispatch, plus
+    ///   any [`VokraError::BackendUnavailable`] from the underlying command
+    ///   buffer.
+    /// - CUDA / Vulkan / WebGPU / CoreML / QNN arms: explicit
+    ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
+    #[allow(clippy::too_many_arguments)] // intrinsic to the polyphase upsample shape
+    pub fn anti_aliased_upsample_f32(
+        &self,
+        x: &[f32],
+        kernel: &[f32],
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => {
+                vokra_ops::anti_aliased_upsample_f32(x, kernel, ratio, channels, time_in, out)
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => {
+                ctx.anti_aliased_upsample_f32(x, kernel, ratio, channels, time_in, out)
+            }
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "anti_aliased_upsample_f32 has no wired CUDA NVRTC kernel; the Vocoder wave \
+                 CUDA arm is deferred to the vast.ai owner track. Select BackendKind::Cpu \
+                 (which delegates to vokra_ops::anti_aliased_upsample_f32), or wait for the \
+                 CUDA kernel — Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "anti_aliased_upsample_f32 has no wired WebGPU WGSL kernel (M4-01 covers the \
+                 six Whisper hot ops only; the Vocoder wave GPU arms are deferred like \
+                 Metal/CUDA/Vulkan). Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::anti_aliased_upsample_f32) — Vokra does not silently run the op on \
+                 the CPU (FR-EX-08)."
                     .to_owned(),
             )),
         }
@@ -3493,6 +3819,14 @@ mod tests {
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
             HotOp::Qwen3TtsCodec,
+            // Vocoder Metal wave common vocoder primitives (2026-08-14):
+            // SnakeBeta / SineGen deterministic / anti-aliased upsample —
+            // all three have wired MSL kernels via the sibling snake_activation
+            // path (`vokra_snake_beta_f32` / `vokra_sinegen_deterministic_f32`
+            // / `vokra_anti_aliased_upsample_f32`).
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
         ] {
             assert!(
                 op.covered_by_metal(),
@@ -3585,6 +3919,22 @@ mod tests {
             }
             Err(e) => panic!("unexpected error for a Metal-covered Qwen3TtsCodec request: {e}"),
         }
+        // Vocoder Metal wave common vocoder primitives (2026-08-14): each
+        // is a covered request with the same device-gated posture as the
+        // sibling codec / snake_activation ops above.
+        for op in [
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
+        ] {
+            match Compute::for_backend(BackendKind::Metal, &[op]) {
+                Ok(c) => assert_eq!(c.backend_name(), "metal"),
+                Err(VokraError::BackendUnavailable(_)) => {
+                    eprintln!("no Metal device; {op:?} covered path is device-gated");
+                }
+                Err(e) => panic!("unexpected error for a Metal-covered {op:?} request: {e}"),
+            }
+        }
 
         // Whisper's full set is therefore a covered request: it either builds
         // (device present) or fails with an explicit device error — never a
@@ -3656,6 +4006,12 @@ mod tests {
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
             HotOp::Qwen3TtsCodec,
+            // Vocoder Metal wave common vocoder primitives (2026-08-14) — CUDA
+            // NVRTC kernels are deferred to the vast.ai owner track (same
+            // posture as the sibling snake_activation / codec CUDA arms).
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
         ] {
             assert!(
                 !op.covered_by_cuda(),
@@ -3729,6 +4085,10 @@ mod tests {
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
             HotOp::Qwen3TtsCodec,
+            // Vocoder Metal wave common vocoder primitives (2026-08-14).
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -3756,6 +4116,10 @@ mod tests {
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
             HotOp::Qwen3TtsCodec,
+            // Vocoder Metal wave common vocoder primitives (2026-08-14).
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -3797,6 +4161,10 @@ mod tests {
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
             HotOp::Qwen3TtsCodec,
+            // Vocoder Metal wave common vocoder primitives (2026-08-14).
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
         ] {
             assert!(
                 !op.covered_by_coreml(),
@@ -3855,6 +4223,10 @@ mod tests {
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
             HotOp::Qwen3TtsCodec,
+            // Vocoder Metal wave common vocoder primitives (2026-08-14).
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
         ] {
             assert!(
                 !op.covered_by_qnn(),
@@ -4022,6 +4394,10 @@ mod tests {
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
             HotOp::Qwen3TtsCodec,
+            // Vocoder Metal wave common vocoder primitives (2026-08-14).
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
         ] {
             assert!(
                 !op.covered_by_webgpu(),
