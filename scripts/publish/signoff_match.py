@@ -972,6 +972,17 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "owsm-v4-medium-1b": ["ESPnet OWSM v4 Medium 1B (`espnet/owsm_v4_medium_1B`)"],
     "parakeet-tdt-1.1b": ["NVIDIA Parakeet-TDT-1.1B (`nvidia/parakeet-tdt-1.1b`)"],
     "firered-asr-aed-l": ["FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # BosonAI Higgs-Audio v3 TTS 4B. Owner primary-source verification
+    # pending (HF card `license: apache-2.0` + BosonAI GitHub LICENSE +
+    # training-corpus commercial audit) — the §3.1 row exists with
+    # blank sign-off (fail-closed default). publish-one.sh refuses via
+    # the upload gate 4 until owner marks ☑ Commercial. Real weights
+    # fetch + convert runs on vast.ai (~8 GB threshold) per memory
+    # `[[feedback-large-models-on-vast-ai]]`.
+    "higgs-audio-v3-tts-4b": [
+        "BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`)"
+    ],
     "sortformer-diar-4spk-v1": [
         "NVIDIA Sortformer diar 4spk v1 (`nvidia/diar_sortformer_4spk-v1`)"
     ],
@@ -1569,6 +1580,13 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"
     ],
     "hibiki": ["Hibiki-2B (`kyutai/hibiki-2b-pytorch-bf16`)"],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # BosonAI Higgs-Audio v3 TTS 4B — converter stem `higgs_audio_v3_tts_4b`
+    # (snake_case, matches file basename), §3.1 row heading verbatim as
+    # emitted at license-audit.md L~480.
+    "higgs_audio_v3_tts_4b": [
+        "BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`)"
+    ],
     "magpietts_v2602": ["MagpieTTS v2602 (`nvidia/magpietts-v2602`)"],
     "moonshine_base": ["Moonshine-Base (`UsefulSensors/moonshine-base`)"],
     "moonshine_tiny": ["Moonshine-Tiny (`UsefulSensors/moonshine-tiny`)"],

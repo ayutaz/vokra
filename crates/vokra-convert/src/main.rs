@@ -2526,6 +2526,13 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // vokra.model.{arch,name,category} + vokra.provenance.{upstream_hf,
         // license,weight_license}, so verify() surfaces the same 5-slot line.
         | ModelKind::Hibiki
+        // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+        // 2026-08-13): BosonAI Higgs-Audio v3 TTS 4B — same BF16
+        // pass-through skeleton contract as sibling wave-B models
+        // (vokra.model.{arch,name,category} + vokra.provenance.
+        // {upstream_hf,license,weight_license}), verifies through the
+        // same shared 5-slot line.
+        | ModelKind::HiggsAudioV3Tts4b
         | ModelKind::SberGigaamV3
         | ModelKind::SberGigaamMultilingual
         | ModelKind::ReazonspeechNemoV2

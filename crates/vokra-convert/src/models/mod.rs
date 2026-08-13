@@ -280,6 +280,18 @@ pub mod frcrn;
 pub mod canary_1b_flash;
 pub mod firered_asr_aed_l;
 pub mod hibiki;
+// coverage-audit 2026-08-03 Wave B fast-track (post-audit, 2026-08-13):
+// BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`,
+// apache-2.0, ~8 GB BF16). Multilingual TTS (100+ languages) with
+// emotion inline tags ([happy]/[sad]/...). SGLang sampler on the LM
+// decoder side → Vokra runtime substitutes its Sampler primitive at
+// runtime binder time (this converter stamps weights + provenance
+// only). Every F32 / F16 / BF16 tensor passes through verbatim
+// following the magpietts_v2602 / firered_asr_aed_l pattern. vast.ai
+// required per memory `[[feedback-large-models-on-vast-ai]]` (>2 GB
+// CC-workflow threshold). Real-weight parity + native runtime binder
+// deferred to owner (`docs/license-audit.md` §3.1 sign-off).
+pub mod higgs_audio_v3_tts_4b;
 pub mod magpietts_v2602;
 pub mod nemotron_speech_streaming_v2603;
 pub mod owsm_v4_medium_1b;

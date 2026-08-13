@@ -1127,6 +1127,22 @@ pub enum ModelKind {
     /// a Moshi loader onto a Hibiki checkpoint. Convert with
     /// `convert_hibiki_file`.
     Hibiki,
+    /// BosonAI **Higgs-Audio v3 TTS 4B** (`bosonai/higgs-audio-v3-tts-4b`,
+    /// Apache-2.0, ~8 GB BF16) — 100+ language multilingual zero-shot
+    /// TTS with emotion inline tags (`[happy]` / `[sad]` / ...). LM
+    /// backbone (4B) + speaker embedding + audio codec decoder;
+    /// upstream reference uses SGLang sampler on the LM decoder side,
+    /// Vokra runtime substitutes its `sampler.rs` primitive at
+    /// runtime-binder time (voxtral / cosyvoice2 / canary_qwen
+    /// precedent — this converter is byte-identical to
+    /// `magpietts_v2602` in stamping posture). Distinct arch tag
+    /// `higgs_audio_v3_tts_4b` from every sibling TTS module.
+    /// **vast.ai required** per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (>2 GB threshold; ~8 GB
+    /// weights are fetched + converted on a rented GPU box, not on
+    /// the M1 iMac 16 GB machine). Convert with
+    /// `convert_higgs_audio_v3_tts_4b_file`.
+    HiggsAudioV3Tts4b,
     /// Sber **GigaAM v3** (MIT, ~500 MB–1.2 GB) — Russian SoTA ASR,
     /// Conformer + CTC/RNN-T seam. Convert with `convert_sber_gigaam_v3_file`.
     SberGigaamV3,
@@ -3590,6 +3606,16 @@ impl ModelKind {
             "hibiki" | "hibiki-2b" | "hibiki_2b" | "kyutai/hibiki-2b-pytorch-bf16" => {
                 Some(Self::Hibiki)
             }
+            // coverage-audit 2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): BosonAI Higgs-Audio v3 TTS 4B. Accept the
+            // canonical arch tag, the hyphen / underscore variants, and
+            // the raw HF release id.
+            "higgs-audio-v3"
+            | "higgs-audio-v3-tts-4b"
+            | "higgs_audio_v3_tts_4b"
+            | "higgs-audio-v3-tts"
+            | "higgs_audio_v3"
+            | "bosonai/higgs-audio-v3-tts-4b" => Some(Self::HiggsAudioV3Tts4b),
             "sber-gigaam-v3"
             | "sber_gigaam_v3"
             | "gigaam-v3"
@@ -4913,6 +4939,7 @@ impl ModelKind {
             Self::Frcrn => "frcrn",
             // coverage-audit 2026-08-03 Wave B fast-track (13 variants).
             Self::Hibiki => "hibiki-2b",
+            Self::HiggsAudioV3Tts4b => "higgs-audio-v3-tts-4b",
             Self::SberGigaamV3 => "sber-gigaam-v3",
             Self::SberGigaamMultilingual => "sber-gigaam-multilingual",
             Self::ReazonspeechNemoV2 => "reazonspeech-nemo-v2",
@@ -6755,6 +6782,23 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Hibiki,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::HiggsAudioV3Tts4b => {
+            let report = models::higgs_audio_v3_tts_4b::convert_higgs_audio_v3_tts_4b_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "higgs-audio-v3-tts-4b: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::HiggsAudioV3Tts4b,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10675,6 +10719,13 @@ pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
 pub use models::canary_1b_flash::{Canary1bFlashReport, convert_canary_1b_flash_file};
 pub use models::firered_asr_aed_l::{FireredAsrAedLReport, convert_firered_asr_aed_l_file};
 pub use models::hibiki::{HibikiReport, convert_hibiki_file};
+// coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+// BosonAI Higgs-Audio v3 TTS 4B — public re-export for downstream
+// callers that reach past the `ModelKind::HiggsAudioV3Tts4b` dispatch
+// (mirror of the sibling BF16 pass-through public API surface).
+pub use models::higgs_audio_v3_tts_4b::{
+    HiggsAudioV3Tts4bReport, convert_higgs_audio_v3_tts_4b_file,
+};
 pub use models::magpietts_v2602::{MagpiettsV2602Report, convert_magpietts_v2602_file};
 pub use models::nemotron_speech_streaming_v2603::{
     NemotronSpeechStreamingV2603Report, convert_nemotron_speech_streaming_v2603_file,
@@ -12388,6 +12439,11 @@ mod modelkind_alias_and_roundtrip_tests {
             Frcrn,
             // Coverage-audit 2026-08-03 Wave B fast-track (13 variants).
             Hibiki,
+            // post-audit 2026-08-13 wave-B fast-track add — BosonAI
+            // Higgs-Audio v3 TTS 4B — canonical `--model
+            // higgs-audio-v3-tts-4b` must round-trip through
+            // `as_arg → from_arg` so a dropped alias fails loudly here.
+            HiggsAudioV3Tts4b,
             SberGigaamV3,
             SberGigaamMultilingual,
             ReazonspeechNemoV2,
@@ -12851,6 +12907,22 @@ mod modelkind_alias_and_roundtrip_tests {
                     "hibiki-2b",
                     "hibiki_2b",
                     "kyutai/hibiki-2b-pytorch-bf16",
+                ],
+            ),
+            (
+                // post-audit 2026-08-13 wave-B fast-track add: BosonAI
+                // Higgs-Audio v3 TTS 4B — every canonical spelling routed
+                // through the CLI must resolve to HiggsAudioV3Tts4b, and
+                // the round-trip `as_arg` back to the canonical string
+                // is asserted by the enum-list pin below.
+                ModelKind::HiggsAudioV3Tts4b,
+                &[
+                    "higgs-audio-v3",
+                    "higgs-audio-v3-tts-4b",
+                    "higgs_audio_v3_tts_4b",
+                    "higgs-audio-v3-tts",
+                    "higgs_audio_v3",
+                    "bosonai/higgs-audio-v3-tts-4b",
                 ],
             ),
             (
