@@ -895,6 +895,161 @@ kernel void vokra_dac_rvq_gather_project_fold_f32(
     }
     out[t * d.d_model + delem] = acc;
 }
+
+// ---- M4-16 wavtokenizer_vq single-codebook gather --------------------------
+//
+// Semantics identical to `vokra_ops::fsq_codec::wavtokenizer_vq_decode` — the
+// FSQ family's single-stage large-vocab lookup (FR-OP-31, *separate subgraph
+// from the RVQ family* — module docs in `vokra_ops::fsq_codec`):
+//
+//     out[t, d] = codebook_table[codes[t]].row[d]
+//
+// * `codes` — [time] u32 codebook indices (one code per timestep — the RVQ
+//             family's [time, n_codebooks] layout does NOT apply here; the
+//             signature-level distinction that the CPU op takes a *singular*
+//             `&CodebookTable` mirrors here as a single flat table buffer).
+// * `table` — [vocab_size, d_model] row-major FP32 codebook.
+// * `out`   — [time, d_model] row-major FP32.
+//
+// Pure gather — no residual sum, no per-dim decompose, no arithmetic (upstream
+// decodes via a raw `F.embedding` lookup — module docs). CPU vs GPU is
+// bit-identical (no fold to re-associate), so the parity test is tight; the
+// atol budget is kept in sync with the sibling mimi/dac kernels for
+// consistency (both would trivially pass at atol=0).
+//
+// Host-side per-index bound check on `codes[..]` (FR-EX-08 — the kernel does
+// no per-element bound check; the caller validates upstream of the dispatch).
+//
+// Grid: `(d_model, time)` — same 2D launch pattern as mimi_rvq / dac_rvq for a
+// consistent launch geometry across the codec family; threadgroup 16x16 (the
+// `grid_2d` default), which is small enough not to waste threads on the tiny
+// parity fixtures and big enough to keep the canonical WavTokenizer shape
+// (vocab_size=4096, d_model=512) memory-bound-optimal.
+struct WavTokenizerVqDims {
+    uint vocab_size;
+    uint d_model;
+    uint time;
+};
+
+kernel void vokra_wavtokenizer_vq_gather_f32(
+    device const uint*              codes  [[buffer(0)]],
+    device const float*             table  [[buffer(1)]],
+    device float*                   out    [[buffer(2)]],
+    constant WavTokenizerVqDims&    d      [[buffer(3)]],
+    uint2                           gid    [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+    const uint idx = codes[t];
+    out[t * d.d_model + delem] = table[idx * d.d_model + delem];
+}
+
+// ---- M4-16 xcodec2_fsq grid-decompose + optional GEMV ----------------------
+//
+// Semantics identical to `vokra_ops::fsq_codec::xcodec2_fsq_decode` — the FSQ
+// family's grid-based decode (FR-OP-31 single-stage GEMV bound; no codebook
+// tensor, implicit per-dimension grid + one out-projection GEMV per timestep):
+//
+//   For each timestep t:
+//     rem = codes[t]
+//     for k in 0..n_dims:
+//       level_index[k] = rem % levels[k]
+//       rem            = rem / levels[k]
+//       half_width[k]  = levels[k] / 2                     (integer division)
+//       grid[k]        = (level_index[k] − half_width[k]) / half_width[k]
+//     out[t, o] = has_projection
+//                 ? proj_bias[o] + Σ_k proj_weight[o, k] · grid[k]
+//                 : grid[o]                                (Identity requires
+//                                                          d_model == n_dims)
+//
+// * `codes`       — [time] u32 FSQ indices, each < Π levels.
+// * `levels`      — [n_dims] u32 mixed-radix bases (each ≥ 2 — validated on
+//                   the host; the kernel assumes this so `half_width ≥ 1`,
+//                   preventing a divide-by-zero in the grid formula).
+// * `proj_weight` — [d_model, n_dims] row-major FP32, or a dummy [0.0] buffer
+//                   when `has_projection == 0`.
+// * `proj_bias`   — [d_model] FP32, or a dummy [0.0] buffer when
+//                   `has_projection == 0`.
+// * `out`         — [time, d_model] row-major FP32.
+//
+// FP32 accumulator throughout (the "BF16 mantissa loss is the real problem"
+// audio-dialect rule; CLAUDE.md). MSL fast-math may re-associate the inner
+// `Σ_k proj_weight[o, k] · grid[k]` GEMV, so the parity bound is FP32
+// GEMV-scale rather than bit-for-bit — the same 5e-4 budget the sibling
+// mimi_rvq / dac_rvq kernels use.
+//
+// Grid: `(d_model, time)` — same 2D launch pattern as mimi_rvq / dac_rvq for a
+// consistent codec-family launch geometry. Each thread recomputes the whole
+// `grid[0..n_dims]` (cheap: n_dims = 8 on the released X-Codec 2) rather than
+// staging it through threadgroup memory — the FSQ decode is single-stage
+// GEMV bound (module docs), the n_dims scan is O(n_dims) and cache-friendly
+// on the register file. Identity path (`has_projection == 0`) walks the same
+// scan and takes the value at `k == delem` (mixed-radix decompose can't be
+// short-circuited before dim `delem` — the `rem` state carries forward).
+struct Xcodec2FsqDims {
+    uint d_model;         // output width (= FsqOutProj::d_model, or = n_dims for Identity)
+    uint n_dims;          // len(levels) (= X-Codec 2's 8)
+    uint time;
+    uint has_projection;  // 0 = Identity (d_model == n_dims), 1 = GEMV
+};
+
+kernel void vokra_xcodec2_fsq_decode_f32(
+    device const uint*          codes        [[buffer(0)]],
+    device const uint*          levels       [[buffer(1)]],
+    device const float*         proj_weight  [[buffer(2)]],
+    device const float*         proj_bias    [[buffer(3)]],
+    device float*               out          [[buffer(4)]],
+    constant Xcodec2FsqDims&    d            [[buffer(5)]],
+    uint2                       gid          [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+
+    if (d.has_projection != 0u) {
+        // GEMV path: decompose `codes[t]` onto the grid and do a single
+        // Linear(n_dims → d_model)+bias dot product per output column.
+        uint rem = codes[t];
+        float acc = proj_bias[delem];
+        const uint w_base = delem * d.n_dims;
+        for (uint k = 0; k < d.n_dims; ++k) {
+            const uint level = levels[k];
+            const uint level_index = rem % level;
+            rem /= level;
+            const uint half_width = level / 2u;  // >= 1: host validates level >= 2
+            const float grid_val =
+                (float)((int)level_index - (int)half_width) / (float)half_width;
+            acc += proj_weight[w_base + k] * grid_val;
+        }
+        out[t * d.d_model + delem] = acc;
+    } else {
+        // Identity path (d_model == n_dims): each thread walks the mixed-
+        // radix decompose from dim 0 up to `delem` (the `rem` state carries
+        // forward — dim `delem`'s level_index depends on rem after dividing
+        // by every earlier level). Cost is O(delem+1) integer ops per thread;
+        // for the released X-Codec 2 Identity case is unreachable
+        // (`requires_projection = true`; d_model=2048 != n_dims=8), so this
+        // path exists for the small parity fixtures and callers whose codebook
+        // dim equals the FSQ n_dims.
+        uint rem = codes[t];
+        for (uint k = 0; k <= delem; ++k) {
+            const uint level = levels[k];
+            const uint level_index = rem % level;
+            if (k == delem) {
+                const uint half_width = level / 2u;
+                out[t * d.d_model + delem] =
+                    (float)((int)level_index - (int)half_width) / (float)half_width;
+                return;
+            }
+            rem /= level;
+        }
+    }
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -1095,6 +1250,42 @@ struct DacRvqDims {
     codebook_dim: u32,
     d_model: u32,
     time: u32,
+}
+
+/// M4-16 wavtokenizer_vq single-codebook gather dims (`setBytes:` index 3).
+/// Field order / `u32` widths mirror the MSL `struct WavTokenizerVqDims`.
+///
+/// - `vocab_size` — number of codebook entries (released WavTokenizer = 4096;
+///   FR-OP-31 "65k+ vocab embedding" scale pinned by the vokra-ops synthetic
+///   test in `fsq_codec::tests::wavtokenizer_65k_plus_vocab_path_is_exact`).
+/// - `d_model` — embedding width per entry (released WavTokenizer = 512).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WavTokenizerVqDims {
+    vocab_size: u32,
+    d_model: u32,
+    time: u32,
+}
+
+/// M4-16 xcodec2_fsq grid-decompose + optional GEMV dims (`setBytes:` index 5).
+/// Field order / `u32` widths mirror the MSL `struct Xcodec2FsqDims`.
+///
+/// - `d_model` — output width (canonical released X-Codec 2 = 2048; for the
+///   Identity path this must equal `n_dims`).
+/// - `n_dims` — `len(levels)` (canonical = 8; the mixed-radix decompose
+///   walks `levels[0..n_dims]` per timestep).
+/// - `time` — number of timesteps in this decode chunk.
+/// - `has_projection` — 0 = Identity (`d_model == n_dims`, copy grid to out),
+///   1 = GEMV (Linear `n_dims → d_model` + bias per timestep). Canonical
+///   released X-Codec 2 is `has_projection = 1`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Xcodec2FsqDims {
+    d_model: u32,
+    n_dims: u32,
+    time: u32,
+    has_projection: u32,
 }
 
 /// Scalar shape of one fused-MLP pass chain, shared by the host-in/out
@@ -1384,6 +1575,25 @@ pub struct MetalContext {
     /// second GEMV pass per timestep. See `vokra_ops::dac_rvq` module docs for
     /// the factorization rationale.
     dac_rvq_gather_project_fold_pipeline: Id,
+    /// M4-16 wavtokenizer_vq single-codebook gather
+    /// (`vokra_wavtokenizer_vq_gather_f32`), the GPU implementation of
+    /// `vokra_ops::wavtokenizer_vq_decode`. **Distinct from every RVQ
+    /// pipeline**: the FSQ family is deliberately a *separate subgraph* from
+    /// the RVQ family (FR-OP-31 — module docs on `vokra_ops::fsq_codec`); the
+    /// signature-level distinction that the CPU op takes a *singular*
+    /// `&CodebookTable` (not a slice) is mirrored on the GPU by a dedicated
+    /// pipeline that expects a single flat table buffer. Pure gather — no
+    /// residual fold, no per-dim decompose.
+    wavtokenizer_vq_gather_pipeline: Id,
+    /// M4-16 xcodec2_fsq grid-decompose + optional GEMV
+    /// (`vokra_xcodec2_fsq_decode_f32`), the GPU implementation of
+    /// `vokra_ops::xcodec2_fsq_decode`. FSQ-family sibling of
+    /// [`Self::wavtokenizer_vq_gather_pipeline`]. Handles both the
+    /// `requires_projection = true` (canonical released X-Codec 2: Linear
+    /// n_dims → d_model + bias) and the `requires_projection = false`
+    /// (Identity, d_model == n_dims) paths through a `has_projection` flag
+    /// in the dims struct.
+    xcodec2_fsq_decode_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1524,6 +1734,17 @@ impl MetalContext {
         // SAFETY: as above.
         let dac_rvq_gather_project_fold_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_dac_rvq_gather_project_fold_f32") }?;
+        // M4-16 FSQ family: single-codebook gather + grid-decompose GEMV; both
+        // share the same library. Separate pipelines because the FSQ family
+        // is a deliberately-separate subgraph from the RVQ family (FR-OP-31 —
+        // no cross-family kernel reuse, matching the CPU op's singular
+        // `&CodebookTable` signature).
+        // SAFETY: as above.
+        let wavtokenizer_vq_gather_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_wavtokenizer_vq_gather_f32") }?;
+        // SAFETY: as above.
+        let xcodec2_fsq_decode_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_xcodec2_fsq_decode_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -1551,6 +1772,8 @@ impl MetalContext {
             swiglu_pipeline: swiglu_pipeline.into_raw(),
             mimi_rvq_gather_fold_pipeline: mimi_rvq_gather_fold_pipeline.into_raw(),
             dac_rvq_gather_project_fold_pipeline: dac_rvq_gather_project_fold_pipeline.into_raw(),
+            wavtokenizer_vq_gather_pipeline: wavtokenizer_vq_gather_pipeline.into_raw(),
+            xcodec2_fsq_decode_pipeline: xcodec2_fsq_decode_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -2746,6 +2969,375 @@ impl MetalContext {
             grid,
             tg,
             "dac_rvq_gather_project_fold",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// M4-16: WavTokenizer single-codebook VQ decode — pure gather on the GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where
+    /// `out[t, :] = table.row(codes[t])` — the exact contract of
+    /// `vokra_ops::wavtokenizer_vq_decode`. Heap-returning (not
+    /// `out: &mut [f32]`) for the same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`] — this is a codec-side chunk op, not
+    /// a per-token hot path.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time]` row-major `u32` codebook indices (single-stage —
+    ///   one code per timestep; the RVQ family's `[time, n_codebooks]`
+    ///   layout does NOT apply here). Every entry must satisfy
+    ///   `idx < vocab_size` — the caller validates on the host before
+    ///   dispatch (FR-EX-08 — the MSL kernel has no per-element bound check,
+    ///   so silent OOB reads are the failure mode we prevent by delegating to
+    ///   explicit host-side validation).
+    /// - `table_flat` — `[vocab_size × d_model]` row-major FP32 codebook (the
+    ///   caller passes `CodebookTable::data` verbatim — the flat layout
+    ///   matches the MSL kernel's `idx * d_model + delem` stride math).
+    /// - `vocab_size` — number of codebook entries (released WavTokenizer =
+    ///   4096; the op is shape-generic and handles the FR-OP-31 "65k+ vocab"
+    ///   scale pinned by the vokra-ops synthetic test).
+    /// - `d_model` — embedding width per entry (released WavTokenizer = 512).
+    /// - `time` — number of timesteps in this decode chunk.
+    ///
+    /// # Numerics
+    ///
+    /// Pure gather — no arithmetic, no fold. CPU and GPU are bit-identical
+    /// (no re-association possible in a raw row copy), so the parity bound is
+    /// trivially tight. The parity test asserts the same 5e-4 budget as the
+    /// sibling mimi_rvq / dac_rvq kernels for a consistent codec-family
+    /// bound.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `vocab_size` / `d_model`, or a `vocab_size * d_model` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn wavtokenizer_vq_gather_f32(
+        &self,
+        codes: &[u32],
+        table_flat: &[f32],
+        vocab_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `d >= d_model` but assumes the buffers have the expected element
+        // counts, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the vokra_ops::wavtokenizer_vq shape
+        // checks.
+        if vocab_size == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: vocab_size / d_model must both be > 0, got \
+                 vocab_size={vocab_size} d_model={d_model}"
+            )));
+        }
+        let expected_table = vocab_size.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: vocab_size * d_model overflows usize \
+                 (vocab_size={vocab_size} d_model={d_model})"
+            ))
+        })?;
+        if table_flat.len() != expected_table {
+            return Err(VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: table_flat.len() {} != vocab_size * d_model \
+                 {expected_table}",
+                table_flat.len()
+            )));
+        }
+        if codes.len() != time {
+            return Err(VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: codes.len() {} != time {time} (single codebook — \
+                 one code per timestep; the [time, n_codebooks] layout is the RVQ family's)",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `wavtokenizer_vq_decode`.
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_wavtokenizer_vq_gather(codes, table_flat, vocab_size, d_model, time);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_wavtokenizer_vq_gather(
+        &self,
+        codes: &[u32],
+        table_flat: &[f32],
+        vocab_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let table_buf = self.new_buffer_from_slice(table_flat)?;
+        let out_len = time * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = WavTokenizerVqDims {
+            vocab_size: vocab_size as u32,
+            d_model: d_model as u32,
+            time: time as u32,
+        };
+        // One thread per (d_model column, timestep row). The kernel guards the
+        // ragged tail against both bounds so `grid_2d`'s round-up-to-16 is
+        // safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.wavtokenizer_vq_gather_pipeline,
+            &[&codes_buf, &table_buf, &out_buf],
+            (&dims as *const WavTokenizerVqDims).cast::<c_void>(),
+            size_of::<WavTokenizerVqDims>(),
+            grid,
+            tg,
+            "wavtokenizer_vq_gather",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// M4-16: X-Codec 2 FSQ decode — grid decompose + optional GEMV on the
+    /// GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where per
+    /// timestep the index is decomposed onto the implicit per-dimension grid
+    /// and (when `proj_weight.is_some()`) projected by one GEMV `out[t, :] =
+    /// W @ grid + b` — the exact contract of `vokra_ops::xcodec2_fsq_decode`.
+    /// Heap-returning for the same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`].
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time]` row-major `u32` FSQ indices. Every entry must
+    ///   satisfy `idx < Π levels` — the caller validates on the host before
+    ///   dispatch (FR-EX-08 — the MSL kernel has no per-element bound check).
+    /// - `levels` — `[n_dims]` `u32` mixed-radix bases (each ≥ 2 — the
+    ///   caller validates this so the kernel's `half_width = levels[k] / 2`
+    ///   is `≥ 1`, preventing a divide-by-zero in the grid formula).
+    /// - `proj_weight` — `Some([d_model × n_dims])` row-major FP32 out-
+    ///   projection weight, or `None` for the Identity path (which requires
+    ///   `d_model == n_dims`).
+    /// - `proj_bias` — `Some([d_model])` FP32 bias (must be `Some` iff
+    ///   `proj_weight.is_some()`), or `None` for Identity.
+    /// - `d_model` — output width per timestep (canonical released X-Codec 2
+    ///   = 2048; must equal `n_dims` when `proj_weight.is_none()`).
+    /// - `n_dims` — `len(levels)` (canonical = 8).
+    /// - `time` — number of timesteps in this decode chunk.
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator throughout (audio-dialect rule — no FP16/BF16 fold);
+    /// MSL is compiled with fast-math defaults which permit re-association of
+    /// the inner `Σ_k W[o, k] · grid[k]` GEMV, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` — the same FP32 GEMV-scale bound used by
+    /// [`Self::mimi_rvq_gather_fold_f32`] / [`Self::dac_rvq_gather_project_fold_f32`].
+    /// The Identity path is bit-identical (pure grid decompose, no fold).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `d_model` / `n_dims`, `proj_weight.is_some() != proj_bias.is_some()`,
+    ///   the Identity path with `d_model != n_dims`, or a
+    ///   `d_model * n_dims` / `time * d_model` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to FSQ's optional-projection shape
+    pub fn xcodec2_fsq_decode_f32(
+        &self,
+        codes: &[u32],
+        levels: &[u32],
+        proj_weight: Option<&[f32]>,
+        proj_bias: Option<&[f32]>,
+        d_model: usize,
+        n_dims: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. Mirrors the vokra_ops::xcodec2_fsq shape
+        // checks (FR-EX-08 — no silent OOB or CPU fall back).
+        if d_model == 0 || n_dims == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: d_model / n_dims must both be > 0, got \
+                 d_model={d_model} n_dims={n_dims}"
+            )));
+        }
+        if levels.len() != n_dims {
+            return Err(VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: levels.len() {} != n_dims {n_dims}",
+                levels.len()
+            )));
+        }
+        // Match host-side validation to CPU: `proj_weight.is_some() ==
+        // proj_bias.is_some()` and shape agrees with attrs.
+        match (proj_weight, proj_bias) {
+            (Some(w), Some(b)) => {
+                let expected_w = d_model.checked_mul(n_dims).ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: d_model * n_dims overflows usize \
+                         (d_model={d_model} n_dims={n_dims})"
+                    ))
+                })?;
+                if w.len() != expected_w {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: proj_weight.len() {} != d_model * n_dims \
+                         {expected_w}",
+                        w.len()
+                    )));
+                }
+                if b.len() != d_model {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: proj_bias.len() {} != d_model {d_model}",
+                        b.len()
+                    )));
+                }
+            }
+            (None, None) => {
+                // Identity path: d_model must equal n_dims (upstream
+                // `requires_projection = false` invariant).
+                if d_model != n_dims {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: Identity path (proj_weight = None) requires \
+                         d_model == n_dims, got d_model={d_model} n_dims={n_dims}"
+                    )));
+                }
+            }
+            _ => {
+                return Err(VokraError::InvalidArgument(
+                    "xcodec2_fsq_decode_f32: proj_weight and proj_bias must both be Some or \
+                     both None (partial projection is not a valid X-Codec 2 shape)"
+                        .to_owned(),
+                ));
+            }
+        }
+        // Per-level validation: each level ≥ 2 (host contract for the MSL
+        // kernel's `half_width = levels[k] / 2` ≥ 1; else divide-by-zero).
+        for (k, &level) in levels.iter().enumerate() {
+            if level < 2 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "xcodec2_fsq_decode_f32: levels[{k}] = {level} < 2 (half_width would be 0 \
+                     — divide-by-zero in the grid formula; FR-EX-08 catches it upstream)"
+                )));
+            }
+        }
+        if codes.len() != time {
+            return Err(VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: codes.len() {} != time {time} (single-stage — one code \
+                 per timestep; the [time, n_codebooks] layout is the RVQ family's)",
+                codes.len()
+            )));
+        }
+        // Effective vocab = Π levels — per-code bound check. Overflow of the
+        // product is an explicit error (FR-EX-08 — no silent wrap).
+        let mut vocab: usize = 1;
+        for (k, &level) in levels.iter().enumerate() {
+            vocab = vocab.checked_mul(level as usize).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "xcodec2_fsq_decode_f32: Π levels overflows usize at levels[{k}] = {level}"
+                ))
+            })?;
+        }
+        for (t, &idx) in codes.iter().enumerate() {
+            if (idx as usize) >= vocab {
+                return Err(VokraError::InvalidArgument(format!(
+                    "xcodec2_fsq_decode_f32: codes[{t}] = {idx} >= Π levels {vocab} (no silent \
+                     clamp — FR-EX-08)"
+                )));
+            }
+        }
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_xcodec2_fsq_decode(
+            codes,
+            levels,
+            proj_weight,
+            proj_bias,
+            d_model,
+            n_dims,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to FSQ's optional-projection shape
+    fn run_xcodec2_fsq_decode(
+        &self,
+        codes: &[u32],
+        levels: &[u32],
+        proj_weight: Option<&[f32]>,
+        proj_bias: Option<&[f32]>,
+        d_model: usize,
+        n_dims: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice for the byte-oriented shared
+        // MTLBuffer upload. `u32` alignment is stricter than `u8`, so the
+        // pointer cast is well-defined, and the borrow scope of `codes_bytes`
+        // is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        // Same trick for `levels: &[u32]`.
+        // SAFETY: same rationale as `codes_bytes` above.
+        let levels_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                levels.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(levels),
+            )
+        };
+        let levels_buf = self.new_buffer_from_bytes(levels_bytes)?;
+        // Bind a `[0.0]` dummy buffer when the projection is absent (same
+        // convention as `conv1d_f32`'s optional bias — MSL requires all
+        // bindings to be non-nil, so a dummy stand-in is uploaded but never
+        // read because the kernel's `has_projection == 0` arm doesn't touch
+        // `proj_weight` / `proj_bias`).
+        let dummy = [0.0f32];
+        let w_buf = self.new_buffer_from_slice(proj_weight.unwrap_or(&dummy))?;
+        let b_buf = self.new_buffer_from_slice(proj_bias.unwrap_or(&dummy))?;
+        let out_len = time.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: time ({time}) * d_model ({d_model}) overflows usize"
+            ))
+        })?;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = Xcodec2FsqDims {
+            d_model: d_model as u32,
+            n_dims: n_dims as u32,
+            time: time as u32,
+            has_projection: u32::from(proj_weight.is_some()),
+        };
+        // One thread per (d_model column, timestep row) — same launch geometry
+        // as the sibling mimi_rvq / dac_rvq kernels for a consistent codec-
+        // family shape. The kernel guards the ragged tail against both bounds
+        // so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.xcodec2_fsq_decode_pipeline,
+            &[&codes_buf, &levels_buf, &w_buf, &b_buf, &out_buf],
+            (&dims as *const Xcodec2FsqDims).cast::<c_void>(),
+            size_of::<Xcodec2FsqDims>(),
+            grid,
+            tg,
+            "xcodec2_fsq_decode",
         )?;
         let mut out = vec![0.0_f32; out_len];
         read_back(&out_buf, &mut out)?;
@@ -4704,6 +5296,8 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.xcodec2_fsq_decode_pipeline);
+            release(self.wavtokenizer_vq_gather_pipeline);
             release(self.dac_rvq_gather_project_fold_pipeline);
             release(self.mimi_rvq_gather_fold_pipeline);
             release(self.swiglu_pipeline);
