@@ -763,6 +763,65 @@ kernel void vokra_swiglu_f32(
     const float sig = 1.0f / (1.0f + exp(-g));
     out[i] = (g * sig) * up[i];
 }
+
+// ---- M3-06 T14 mimi_rvq gather + FP32 fold ----------------------------------
+//
+// Semantics identical to `vokra_ops::mimi_rvq::rvq_fold_core` (the shape-
+// generic core behind `mimi_rvq_decode`):
+//
+//     out[t, d] = Σ_cb tables[cb].row(codes[t, cb])[d]
+//
+// * `codes`       — [time, n_codebooks] row-major u32 codebook indices.
+// * `tables`      — [n_codebooks, codebook_size, d_model] row-major FP32,
+//                   codebook `cb` starts at `cb * codebook_size * d_model`.
+// * `out`         — [time, d_model] row-major FP32.
+//
+// Naive layout per the module docs on `vokra_ops::mimi_rvq`: one thread per
+// output element `(t, d)`, each iterating over `n_codebooks` gather-and-add
+// steps. FP32 accumulator throughout — the "BF16 mantissa loss is the real
+// problem" note in CLAUDE.md applies to every codec-side fold. Index bound
+// checks are done on the host before dispatch (FR-EX-08 — the kernel itself
+// has no per-element bound check, so silent OOB reads would be the failure
+// mode without host-side validation).
+//
+// Grid: `(d_model, time)` — same 2D launch as the GEMM kernel; the shader
+// guards the ragged tail against both bounds. Threadgroup 16x16 (the
+// `grid_2d` default), which is sized for the canonical Mimi
+// [d_model=512, time≈750] envelope and small enough to not waste threads on
+// the tiny [d_model=5, time=3] parity fixtures.
+struct MimiRvqDims {
+    uint n_codebooks;
+    uint codebook_size;
+    uint d_model;
+    uint time;
+};
+
+kernel void vokra_mimi_rvq_gather_fold_f32(
+    device const uint*      codes  [[buffer(0)]],
+    device const float*     tables [[buffer(1)]],
+    device float*           out    [[buffer(2)]],
+    constant MimiRvqDims&   d      [[buffer(3)]],
+    uint2                   gid    [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+    const uint code_base = t * d.n_codebooks;
+    const uint cb_stride = d.codebook_size * d.d_model;
+    // FP32 accumulator — matches `rvq_fold_core`'s `out[..]` FP32 fold order
+    // (bit-identical when the same operands are added in the same sequence;
+    // MSL fast-math may re-associate, so the parity bound is FP32 GEMV-scale
+    // rather than a bit-for-bit assertion).
+    float acc = 0.0f;
+    for (uint cb = 0; cb < d.n_codebooks; ++cb) {
+        const uint idx       = codes[code_base + cb];
+        const uint table_off = cb * cb_stride + idx * d.d_model + delem;
+        acc += tables[table_off];
+    }
+    out[t * d.d_model + delem] = acc;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -925,6 +984,22 @@ struct SiluDims {
 #[derive(Clone, Copy)]
 struct SwigluDims {
     n: u32,
+}
+
+/// M3-06 T14 mimi_rvq gather + FP32 fold dims (`setBytes:` index 3). Field
+/// order / `u32` widths mirror the MSL `struct MimiRvqDims`.
+///
+/// - `n_codebooks` — number of codebooks (Mimi canonical = 8).
+/// - `codebook_size` — entries per codebook (Mimi canonical = 2048).
+/// - `d_model` — feature dim per codebook entry (Mimi canonical = 512).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MimiRvqDims {
+    n_codebooks: u32,
+    codebook_size: u32,
+    d_model: u32,
+    time: u32,
 }
 
 /// Scalar shape of one fused-MLP pass chain, shared by the host-in/out
@@ -1199,6 +1274,12 @@ pub struct MetalContext {
     rope_adjacent_pipeline: Id,
     silu_pipeline: Id,
     swiglu_pipeline: Id,
+    /// M3-06 T14 mimi_rvq gather + FP32 fold (`vokra_mimi_rvq_gather_fold_f32`),
+    /// the GPU implementation of `vokra_ops::mimi_rvq::rvq_fold_core`. Also the
+    /// current M4-04 GPU seam target for DAC / EnCodec siblings after their
+    /// respective factorized-projection / plain-fold arms are wired (each will
+    /// land its own kernel or reuse this one — coverage flags stay per-op).
+    mimi_rvq_gather_fold_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1329,6 +1410,10 @@ impl MetalContext {
         let silu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_silu_f32") }?;
         // SAFETY: as above.
         let swiglu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_swiglu_f32") }?;
+        // M3-06 T14 mimi_rvq gather + FP32 fold; shares the same library.
+        // SAFETY: as above.
+        let mimi_rvq_gather_fold_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_mimi_rvq_gather_fold_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -1354,6 +1439,7 @@ impl MetalContext {
             rope_adjacent_pipeline: rope_adjacent_pipeline.into_raw(),
             silu_pipeline: silu_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
+            mimi_rvq_gather_fold_pipeline: mimi_rvq_gather_fold_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -2184,6 +2270,163 @@ impl MetalContext {
             "swiglu",
         )?;
         read_back(&out_buf, out)
+    }
+
+    /// M3-06 T14: Mimi RVQ codec decode — gather + FP32 fold on the GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where
+    /// `out[t, d] = Σ_cb tables[cb].row(codes[t, cb])[d]` — the exact
+    /// contract of `vokra_ops::mimi_rvq::rvq_fold_core` (the shape-generic
+    /// core behind `mimi_rvq_decode`). Heap-returning (not `out: &mut [f32]`)
+    /// for the same reason `Compute::mimi_rvq_f32` is heap-returning — this
+    /// is a chunk-granularity op, not a per-token hot path.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time × n_codebooks]` row-major `u32` codebook indices.
+    ///   Every entry must satisfy `idx < codebook_size` — the caller
+    ///   validates on the host before dispatch (FR-EX-08 — the MSL kernel has
+    ///   no per-element bound check, so silent OOB reads are the failure
+    ///   mode we prevent by delegating to explicit host-side validation).
+    /// - `tables_flat` — `[n_codebooks × codebook_size × d_model]` row-major
+    ///   FP32; codebook `cb` starts at `cb * codebook_size * d_model` (the
+    ///   caller concatenates the per-codebook `CodebookTable::data` slices
+    ///   verbatim, no re-layout — matches the MSL kernel's stride math).
+    /// - `n_codebooks` / `codebook_size` / `d_model` / `time` — decode
+    ///   shape. All must be non-zero (an empty `time` short-circuits at the
+    ///   caller with an empty `Vec<f32>`; we still refuse
+    ///   `n_codebooks = 0` / `codebook_size = 0` / `d_model = 0` here as an
+    ///   explicit `InvalidArgument`).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults which permit re-association, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` (the M4-05 CSM / Moshi Metal parity band, mirrored
+    /// here — see `tests/mimi_rvq_metal_bit_identical.rs`), not a
+    /// bit-for-bit equality. The gather-only ordering with unit weights keeps
+    /// max |Δ| well inside that bound on the canonical Mimi shape
+    /// (n_codebooks=8, codebook_size=2048, d_model=512).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `n_codebooks` / `codebook_size` / `d_model`, or a
+    ///   `time * n_codebooks` / `n_codebooks * codebook_size * d_model`
+    ///   overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn mimi_rvq_gather_fold_f32(
+        &self,
+        codes: &[u32],
+        tables_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `d >= d_model` but assumes the buffers have the expected element
+        // counts, so a wrong-shape upload would be an OOB read (silent —
+        // FR-EX-08 forbids). Mirror the vokra_ops::mimi_rvq shape checks.
+        if n_codebooks == 0 || codebook_size == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: n_codebooks / codebook_size / d_model \
+                 must all be > 0, got n_codebooks={n_codebooks} \
+                 codebook_size={codebook_size} d_model={d_model}"
+            )));
+        }
+        let expected_tables = n_codebooks
+            .checked_mul(codebook_size)
+            .and_then(|v| v.checked_mul(d_model))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "mimi_rvq_gather_fold_f32: n_codebooks * codebook_size * d_model overflows \
+                     usize (n_codebooks={n_codebooks} codebook_size={codebook_size} d_model={d_model})"
+                ))
+            })?;
+        if tables_flat.len() != expected_tables {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: tables_flat.len() {} != n_codebooks * codebook_size * \
+                 d_model {expected_tables}",
+                tables_flat.len()
+            )));
+        }
+        let expected_codes = time.checked_mul(n_codebooks).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: time ({time}) * n_codebooks ({n_codebooks}) \
+                 overflows usize"
+            ))
+        })?;
+        if codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: codes.len() {} != time * n_codebooks {expected_codes}",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `mimi_rvq_decode`
+        // (a zero-`time` decode is well-defined; every other empty axis is a
+        // shape error above).
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_mimi_rvq_gather_fold(
+            codes,
+            tables_flat,
+            n_codebooks,
+            codebook_size,
+            d_model,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_mimi_rvq_gather_fold(
+        &self,
+        codes: &[u32],
+        tables_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let tables_buf = self.new_buffer_from_slice(tables_flat)?;
+        let out_len = time * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = MimiRvqDims {
+            n_codebooks: n_codebooks as u32,
+            codebook_size: codebook_size as u32,
+            d_model: d_model as u32,
+            time: time as u32,
+        };
+        // One thread per (d_model column, timestep row). The kernel guards the
+        // ragged tail against both bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.mimi_rvq_gather_fold_pipeline,
+            &[&codes_buf, &tables_buf, &out_buf],
+            (&dims as *const MimiRvqDims).cast::<c_void>(),
+            size_of::<MimiRvqDims>(),
+            grid,
+            tg,
+            "mimi_rvq_gather_fold",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
     }
 
     /// 1-D convolution (`input` is `in_ch × in_len`, `weight` is
@@ -4138,6 +4381,7 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.mimi_rvq_gather_fold_pipeline);
             release(self.swiglu_pipeline);
             release(self.silu_pipeline);
             release(self.rope_adjacent_pipeline);

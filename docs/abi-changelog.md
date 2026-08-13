@@ -228,6 +228,110 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-13 — 1.0.0-rc.1-dev (M3-06 T14: `mimi_rvq` Metal MSL kernel + `Compute::mimi_rvq_f32` Metal arm wired — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M3-06 T14 landing that flips
+`HotOp::MimiRvq.covered_by_metal()` from `false` to `true` and swaps the
+Metal arm of `Compute::mimi_rvq_f32` from an explicit
+`VokraError::UnsupportedOp` to a real MSL kernel dispatch. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is
+**untouched** — every change is Rust-surface, not cbindgen-exported
+(`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: `mimi_rvq_decode` — the shape-generic FP32 gather + fold
+behind the Mimi (Kyutai) RVQ codec decode (and the M3-06 FR-OP-30
+op family — the still-deferred DAC / EnCodec siblings will reuse the
+same kernel shape once their per-quantizer projections are wired) — had
+no GPU implementation. The M3-06 T14 MSL kernel
+(`vokra_mimi_rvq_gather_fold_f32`) closes that gap for Metal; the CUDA
+half (M3-06 T15 NVRTC kernel) stays owner-track on vast.ai and remains a
+loud `UnsupportedOp` as before. FR-EX-08 no-silent-fallback posture is
+preserved by validating shape + per-index bounds on the host **before**
+dispatch (the MSL kernel itself has no per-element bound check; a stray
+index would be a silent OOB gather without the host-side guard).
+
+**Backward compatibility**: The public signature of
+`Compute::mimi_rvq_f32` is unchanged. Every prior caller that did
+`.expect_err("must be UnsupportedOp on Metal")` on a valid input must
+update — the Metal arm now returns `Ok(Vec<f32>)` when Metal is
+available and the input passes validation. Invalid inputs (shape
+mismatch, out-of-range codebook index, wrong table count / shape) are
+still explicit `VokraError::InvalidArgument`; the only removed error
+surface is the deferred-kernel `UnsupportedOp`.
+
+**Files touched**:
+- `crates/vokra-backend-metal/src/context.rs`
+  — New MSL kernel in `KERNELS_MSL`: `vokra_mimi_rvq_gather_fold_f32`
+    (naive gather + FP32 fold; grid `(d_model, time)` 2-D dispatch with
+    16×16 threadgroups; ragged-tail guard). Mirrors
+    `vokra_ops::mimi_rvq::rvq_fold_core` semantics.
+  — New `#[repr(C)] struct MimiRvqDims { n_codebooks, codebook_size,
+    d_model, time: u32 }` block for `setBytes:` at index 3.
+  — New `MetalContext` field: `mimi_rvq_gather_fold_pipeline: Id`,
+    compiled at `build`, released in `Drop` (LIFO order).
+  — New public method `MetalContext::mimi_rvq_gather_fold_f32(codes,
+    tables_flat, n_codebooks, codebook_size, d_model, time) ->
+    Result<Vec<f32>>` (heap-returning to match `Compute::mimi_rvq_f32`).
+  — New private helper `MetalContext::run_mimi_rvq_gather_fold` (mirror
+    of `run_dequant_gemv`).
+- `crates/vokra-models/src/compute.rs`
+  — `HotOp::covered_by_metal` flipped: MimiRvq is now Metal-covered;
+    DAC / EnCodec RVQ and FSQ siblings stay deferred (docstring +
+    lock-step test updated).
+  — `Compute::mimi_rvq_f32` Metal arm: was
+    `Err(VokraError::UnsupportedOp)`, now validates shape + per-index
+    bounds on the host, flattens `[n_codebooks][codebook_size, d_model]`
+    into one FP32 buffer, then delegates to
+    `MetalContext::mimi_rvq_gather_fold_f32`.
+  — `metal_coverage_is_consistent` test: MimiRvq moved into the
+    positive-cover list; removed the "MimiRvq must be uncovered"
+    assertion; kept the still-deferred DAC / EnCodec / FSQ negative
+    assertions.
+  — Renamed `metal_mimi_rvq_arm_is_unsupported_no_silent_fallback` →
+    `metal_mimi_rvq_arm_runs_kernel_and_rejects_oob_index`. New body
+    verifies (a) trivial (1,1,1) FP32 fold matches CPU, (b) OOB code
+    index → `InvalidArgument` (FR-EX-08), (c) shape mismatch →
+    `InvalidArgument`.
+  — `metal_mimi_rvq_off_metal_is_backend_unavailable` docstring updated
+    (behavior unchanged: off-feature Metal is still
+    `BackendUnavailable`).
+- `crates/vokra-ops/src/mimi_rvq.rs`
+  — Module docs updated: the "GPU seam" section now records the Metal
+    landing (kernel name, atol bound, FR-EX-08 host-side validation) and
+    narrows the still-deferred backend list to CUDA / Vulkan / WebGPU.
+- `crates/vokra-models/tests/mimi_rvq_metal_bit_identical.rs` (NEW)
+  — Off-feature band: `Compute::for_backend(Metal, [MimiRvq])` is
+    `BackendUnavailable`.
+  — Metal band (Apple + `--features metal`): tiny-shape CPU vs Metal
+    parity (atol ≤ 5e-4, plus `mimi_rvq_decode` bit-identical anchor on
+    CPU); canonical-shape (n_codebooks = 8, codebook_size = 32,
+    d_model = 64) parity with a **negative control** (a 0.1 codebook
+    perturbation moves CPU output past 5e-4, proving the bound is not
+    vacuous); OOB code → `InvalidArgument`; wrong table count / shape →
+    `InvalidArgument`; empty `time = 0` → empty `Vec<f32>`. Each Metal
+    test clean-skips on hosts without a Metal device (prints a reason —
+    never a fabricated pass).
+
+**GGUF metadata**: none added (this is a runtime kernel wire; the
+existing `vokra.mimi.n_codebooks` / `vokra.mimi.codebook_size` /
+`vokra.mimi.d_model` chunks that M3-09 will emit stay untouched).
+
+**Semver impact (0.9.x window)**: minor, additive. No public function
+signature changed. The `HotOp::MimiRvq` variant is `#[non_exhaustive]`
+in intent; downstream `match` arms that already handle the
+still-deferred DAC / EnCodec / FSQ variants continue to compile.
+
+**Verify (2026-08-13)**: `cargo check -p vokra-backend-metal` clean;
+`cargo check -p vokra-models --features metal` clean; `cargo test -p
+vokra-models --features metal mimi_rvq` — see PR body / commit message
+for the atol max on this M1 iMac. `scripts/check-zero-deps.sh`
+unaffected (no new external crate). `scripts/gen-c-abi.sh --check` no
+diff (Rust surface only).
+
+**Landing checkpoint**: One CC-wave landing (Vocoder Metal 先鋒 = P2
+sub-wave 1/11). The DAC / EnCodec RVQ kernels + M3-06 T15 CUDA NVRTC
+kernel remain follow-up waves.
+
 ### 2026-08-13 — 1.0.0-rc.1-dev (RMVPE Wave 2: real U-Net + BiGRU forward + `forward_from_hidden` — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the RMVPE Wave 2 landing that

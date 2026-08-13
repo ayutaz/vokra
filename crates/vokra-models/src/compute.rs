@@ -152,20 +152,26 @@ impl HotOp {
     /// `metal_coverage_is_consistent` test pins the two together. As of Phase 4
     /// (M2-01 T09-T13) the whole Whisper hot-op set (GEMM / GEMV / softmax /
     /// layer_norm / GELU / conv1d) has a `MetalContext` kernel, so the whole
-    /// Whisper forward runs on the GPU through this seam. [`HotOp::MimiRvq`]
-    /// remains uncovered on Metal — the M3-06 T14 MSL kernel is deferred to
-    /// the M3-09 mimi_bridge upgrade past stub, and until it lands the Metal
-    /// arm of [`Compute::mimi_rvq_f32`] returns an explicit
-    /// [`VokraError::UnsupportedOp`] (never a silent CPU fall back, FR-EX-08).
-    /// (The *graph* backend `MetalBackend::supports` / `eval_op` is a separate
-    /// path and still covers only `MatMul` — the two coverage surfaces are
-    /// intentionally independent.)
+    /// Whisper forward runs on the GPU through this seam. **M3-06 T14 (2026-
+    /// 08-13)**: [`HotOp::MimiRvq`] is now covered on Metal too — the
+    /// `vokra_mimi_rvq_gather_fold_f32` MSL kernel implements the shape-generic
+    /// FP32 gather + fold behind [`Compute::mimi_rvq_f32`] (bit-identical
+    /// semantics to `vokra_ops::mimi_rvq::rvq_fold_core`, host-side per-index
+    /// bound check upstream of the dispatch — FR-EX-08). The M4-04 RVQ
+    /// siblings ([`HotOp::DacRvq`] / [`HotOp::EncodecRvq`]) and the M4-16 FSQ
+    /// family stay deferred (their per-quantizer projections / FSQ decoders
+    /// need distinct kernels; each lands its own coverage flip). CUDA sibling
+    /// (M3-06 T15 NVRTC kernel) is on the vast.ai owner track and remains
+    /// uncovered here. (The *graph* backend `MetalBackend::supports` /
+    /// `eval_op` is a separate path and still covers only `MatMul` — the two
+    /// coverage surfaces are intentionally independent.)
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     fn covered_by_metal(self) -> bool {
-        // Phase 4 wired the six Whisper hot ops; MimiRvq is deferred to the
-        // M3-06 T14 MSL kernel (M3-09 follow-up). Any model listing MimiRvq
-        // in its required set therefore fails `for_backend(Metal, …)` with a
-        // coverage `UnsupportedOp` (FR-EX-08 — no silent CPU fall back).
+        // Phase 4 wired the six Whisper hot ops; M3-06 T14 (2026-08-13) added
+        // MimiRvq via `vokra_mimi_rvq_gather_fold_f32`. Any model listing the
+        // still-deferred RVQ siblings (`DacRvq` / `EncodecRvq`) or the FSQ
+        // family (`WavTokenizerVq` / `Xcodec2Fsq`) continues to fail the
+        // Metal coverage gate — no silent CPU fall back (FR-EX-08).
         matches!(
             self,
             HotOp::Gemm
@@ -174,6 +180,7 @@ impl HotOp {
                 | HotOp::LayerNorm
                 | HotOp::Gelu
                 | HotOp::Conv1d
+                | HotOp::MimiRvq
         )
     }
 
@@ -855,13 +862,83 @@ impl Compute {
         match &self.be {
             Be::Cpu => mimi_rvq_decode(codes, time, codebook_tables, attrs),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(VokraError::UnsupportedOp(
-                "mimi_rvq_f32 has no wired Metal MSL kernel; the M3-06 T14 GPU arm is deferred to \
-                 the M3-09 mimi_bridge upgrade past stub. Select BackendKind::Cpu (which \
-                 delegates to vokra_ops::mimi_rvq_decode), or wait for the Metal kernel — \
-                 Vokra does not silently run the op on the CPU (FR-EX-08)."
-                    .to_owned(),
-            )),
+            Be::Metal(ctx) => {
+                // Explicit shape + index validation on the host. The MSL kernel
+                // guards `t >= time` and `d >= d_model` but has no per-element
+                // bound check on `codes[..]`; silent OOB reads inside the
+                // gather + fold are the failure mode we prevent by mirroring
+                // the shape checks that `vokra_ops::mimi_rvq::check_tables_shape`
+                // / `check_codes_shape` / `CodebookTable::row` do on the CPU
+                // arm (FR-EX-08 — never a silent GPU OOB or CPU fall back).
+                if attrs.n_codebooks == 0 || attrs.codebook_size == 0 || attrs.d_model == 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "mimi_rvq_f32 metal: attrs must have every axis > 0, got n_codebooks={} \
+                         codebook_size={} d_model={}",
+                        attrs.n_codebooks, attrs.codebook_size, attrs.d_model,
+                    )));
+                }
+                if codebook_tables.len() != attrs.n_codebooks {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "mimi_rvq_f32 metal: codebook_tables.len() {} != attrs.n_codebooks {}",
+                        codebook_tables.len(),
+                        attrs.n_codebooks
+                    )));
+                }
+                for (i, t) in codebook_tables.iter().enumerate() {
+                    if t.codebook_size != attrs.codebook_size || t.d_model != attrs.d_model {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "mimi_rvq_f32 metal: codebook_tables[{i}] shape [{},{}] != attrs [{},{}]",
+                            t.codebook_size, t.d_model, attrs.codebook_size, attrs.d_model
+                        )));
+                    }
+                }
+                let expected_codes = time.checked_mul(attrs.n_codebooks).ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "mimi_rvq_f32 metal: time ({time}) * n_codebooks ({}) overflows usize",
+                        attrs.n_codebooks
+                    ))
+                })?;
+                if codes.len() != expected_codes {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "mimi_rvq_f32 metal: codes.len() {} != time * n_codebooks {expected_codes}",
+                        codes.len()
+                    )));
+                }
+                // Per-index bound check — the MSL kernel does NOT range-check
+                // `codes[..]`, so a stray index would be a silent OOB gather
+                // (FR-EX-08). Cheap: O(time * n_codebooks) unpredictable
+                // branches, dwarfed by the FP32 fold on the GPU.
+                for &idx in codes {
+                    if (idx as usize) >= attrs.codebook_size {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "mimi_rvq_f32 metal: codes contains index {idx} >= codebook_size {}",
+                            attrs.codebook_size
+                        )));
+                    }
+                }
+                if time == 0 {
+                    return Ok(Vec::new());
+                }
+                // Flatten [n_codebooks][codebook_size, d_model] into one
+                // row-major buffer of `n_codebooks * codebook_size * d_model`
+                // FP32s. This is the layout the MSL kernel's stride math
+                // (`cb * cb_stride + idx * d_model + delem`) expects. Chunk
+                // granularity — allocating one Vec here is negligible next
+                // to the GPU dispatch (matches the heap-returning shape).
+                let mut tables_flat =
+                    Vec::with_capacity(attrs.n_codebooks * attrs.codebook_size * attrs.d_model);
+                for tbl in codebook_tables {
+                    tables_flat.extend_from_slice(&tbl.data);
+                }
+                ctx.mimi_rvq_gather_fold_f32(
+                    codes,
+                    &tables_flat,
+                    attrs.n_codebooks,
+                    attrs.codebook_size,
+                    attrs.d_model,
+                    time,
+                )
+            }
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => Err(VokraError::UnsupportedOp(
                 "mimi_rvq_f32 has no wired CUDA NVRTC kernel; the M3-06 T15 GPU arm is deferred \
@@ -2100,14 +2177,22 @@ mod tests {
         ));
     }
 
-    /// On a Metal build the `mimi_rvq_f32` Metal arm is an explicit
-    /// `UnsupportedOp` — no silent CPU fall back for the deferred M3-06 T14
-    /// MSL kernel (FR-EX-08). A consumer that bypasses the `for_backend`
-    /// coverage gate (e.g. by requesting an empty required set) still hits
-    /// this belt-and-braces defence at the method level.
+    /// M3-06 T14 (2026-08-13): the Metal arm of `mimi_rvq_f32` now dispatches
+    /// to `vokra_mimi_rvq_gather_fold_f32` (a real MSL kernel — no
+    /// `UnsupportedOp`). This smoke verifies two things at the seam level:
+    ///
+    /// 1. **A trivial (1,1,1) shape returns the expected FP32 fold** (bit-
+    ///    identical to the CPU arm on this shape — there is nothing to
+    ///    re-associate over `n_codebooks = 1`).
+    /// 2. **FR-EX-08 host-side validation still fires**: an out-of-range code
+    ///    is rejected with `InvalidArgument` before dispatch, so the MSL
+    ///    kernel never silently reads OOB from the `tables` buffer.
+    ///
+    /// The full CPU-vs-Metal parity test lives in
+    /// `tests/mimi_rvq_metal_bit_identical.rs`.
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
-    fn metal_mimi_rvq_arm_is_unsupported_no_silent_fallback() {
+    fn metal_mimi_rvq_arm_runs_kernel_and_rejects_oob_index() {
         // Build a Metal `Compute` with an empty required set (which the
         // coverage gate accepts). If the Metal device is absent this skips
         // — we cannot exercise the arm at all off a device.
@@ -2121,29 +2206,48 @@ mod tests {
         };
         assert_eq!(compute.backend_name(), "metal");
 
-        // Any inputs are fine — the arm returns early with UnsupportedOp
-        // before touching the codes / tables (the M3-06 T14 kernel is
-        // deferred to the M3-09 mimi_bridge upgrade past stub).
+        // (1) Trivial (1,1,1) shape: one codebook, one row [3.5], time = 1,
+        // code = 0 → out = [3.5]. n_codebooks = 1 means no re-association is
+        // possible, so the CPU and Metal folds are bit-identical.
         let attrs = MimiRvqAttrs {
             n_codebooks: 1,
             codebook_size: 1,
             d_model: 1,
         };
-        let tables = vec![CodebookTable::new(1, 1, vec![0.0]).unwrap()];
-        let err = compute
+        let tables = vec![CodebookTable::new(1, 1, vec![3.5]).unwrap()];
+        let out = compute
             .mimi_rvq_f32(&[0u32], 1, &tables, &attrs)
-            .expect_err("Metal arm of mimi_rvq_f32 must be UnsupportedOp");
+            .expect("Metal arm of mimi_rvq_f32 must run cleanly post M3-06 T14");
+        assert_eq!(out, vec![3.5_f32]);
+
+        // (2) FR-EX-08 host-side OOB index: codebook_size = 1, so idx = 1 is
+        // OOB. The Metal arm's host-side per-index check must reject with
+        // `InvalidArgument` — never a silent GPU OOB read.
+        let oob_err = compute
+            .mimi_rvq_f32(&[1u32], 1, &tables, &attrs)
+            .expect_err("OOB code index must be an explicit InvalidArgument (FR-EX-08)");
         assert!(
-            matches!(err, VokraError::UnsupportedOp(_)),
-            "expected UnsupportedOp, got {err:?}",
+            matches!(oob_err, VokraError::InvalidArgument(_)),
+            "expected InvalidArgument for OOB code, got {oob_err:?}",
+        );
+
+        // (3) FR-EX-08 shape mismatch: codes.len() != time * n_codebooks.
+        let shape_err = compute
+            .mimi_rvq_f32(&[0u32, 0u32], 1, &tables, &attrs)
+            .expect_err("codes.len() mismatch must be an explicit InvalidArgument (FR-EX-08)");
+        assert!(
+            matches!(shape_err, VokraError::InvalidArgument(_)),
+            "expected InvalidArgument for shape mismatch, got {shape_err:?}",
         );
     }
 
-    /// Off the Metal build (or off Apple), the coverage gate blocks
-    /// `for_backend(Metal, [MimiRvq])` at the `BackendUnavailable` layer
-    /// (Metal is not compiled in), so the `UnsupportedOp` from the coverage
-    /// gate on Metal builds and the `BackendUnavailable` on non-Metal builds
-    /// are both explicit — never a silent CPU substitute (FR-EX-08).
+    /// Off the Metal build (or off Apple), `for_backend(Metal, [MimiRvq])`
+    /// is a `BackendUnavailable` at the coverage layer (Metal is not
+    /// compiled in), so a request for the Metal-covered MimiRvq path on a
+    /// non-Metal build still fails explicitly — never a silent CPU substitute
+    /// (FR-EX-08). Post M3-06 T14 (2026-08-13) the Metal build side is a
+    /// device probe (see `metal_mimi_rvq_arm_runs_kernel_and_rejects_oob_index`);
+    /// off the Metal build this belt-and-braces `BackendUnavailable` holds.
     #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
     #[test]
     fn metal_mimi_rvq_off_metal_is_backend_unavailable() {
@@ -2305,7 +2409,9 @@ mod tests {
     fn metal_coverage_is_consistent() {
         // Every Whisper hot op is covered (this pins `covered_by_metal` to the
         // wired Metal method arms — all now dispatch to a `MetalContext`
-        // kernel).
+        // kernel). MimiRvq is covered as of M3-06 T14 (2026-08-13, MSL kernel
+        // `vokra_mimi_rvq_gather_fold_f32`); DAC / EnCodec RVQ and FSQ siblings
+        // stay deferred.
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -2313,6 +2419,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::MimiRvq,
         ] {
             assert!(
                 op.covered_by_metal(),
@@ -2320,15 +2427,6 @@ mod tests {
             );
         }
 
-        // MimiRvq is NOT covered on Metal (M3-06 T14 MSL kernel deferred to
-        // M3-09 mimi_bridge follow-up). This is the honest state — if the
-        // kernel has just landed, flip `HotOp::covered_by_metal` for MimiRvq
-        // and update the negative assertion below.
-        assert!(
-            !HotOp::MimiRvq.covered_by_metal(),
-            "HotOp::MimiRvq unexpectedly Metal-covered — the M3-06 T14 MSL kernel is deferred; if \
-             it has just landed, flip `HotOp::covered_by_metal` for MimiRvq and update this test.",
-        );
         // Same deferred posture for the M4-04 RVQ siblings and the M4-16 FSQ
         // family (lock-step with the Metal arms of `dac_rvq_f32` /
         // `encodec_rvq_f32` / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32`).
@@ -2348,13 +2446,16 @@ mod tests {
                 Err(VokraError::UnsupportedOp(_) | VokraError::BackendUnavailable(_)),
             ));
         }
-        // A request that lists MimiRvq therefore fails the Metal coverage
-        // gate with an explicit `UnsupportedOp` — never a silent CPU fall
-        // back (FR-EX-08).
-        assert!(matches!(
-            Compute::for_backend(BackendKind::Metal, &[HotOp::MimiRvq]),
-            Err(VokraError::UnsupportedOp(_)),
-        ));
+        // A request that lists MimiRvq is now a covered request post M3-06
+        // T14: it either builds (device present) or reports an explicit
+        // device unavailability (no silent CPU fall back, FR-EX-08).
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::MimiRvq]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; MimiRvq covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered MimiRvq request: {e}"),
+        }
 
         // Whisper's full set is therefore a covered request: it either builds
         // (device present) or fails with an explicit device error — never a
