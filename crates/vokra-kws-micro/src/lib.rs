@@ -49,9 +49,16 @@ use alloc::vec::Vec;
 // M5-03b Phase 1: the log-mel front-end (features) plus the self-contained
 // `log10` it needs. Both modules are `#![no_std]`-clean (only `core` +
 // `alloc` + crate-local `scalar`). The `KwsMicro::detect()` scaffold below
-// does NOT yet consume `features` — that wiring is Phase 2 (later wave).
+// does NOT yet consume `features` — that wiring is Phase 3 (later wave).
 // See [ADR M5-03b](../../docs/adr/M5-03b-kws-micro-no-std.md).
 pub mod features;
+// M5-03b Phase 2: the runtime *loader* for microWakeWord GGUFs produced by
+// `tools/parity/microwakeword/prepare_checkpoint.py`. Reads the
+// `vokra.kws.*` metadata contract + every dense F32 tensor via
+// `vokra_core::gguf::GgufFile` (no_std-clean under `default-features =
+// false`). `KwsMicro::detect()` still does NOT consume it; wiring happens
+// in Phase 3 alongside the INT8 kernel chain.
+pub mod model;
 mod scalar;
 
 /// A registered keyword the detector should listen for.
