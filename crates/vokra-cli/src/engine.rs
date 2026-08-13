@@ -187,6 +187,16 @@ const ARCH_MAGNET_SMALL: &str = "magnet_small_10secs";
 /// as [`ARCH_MAGNET_SMALL`]; the loud reject at load time makes the
 /// deferred state visible so no run silently produces empty output.
 const ARCH_MAGNET_MEDIUM: &str = "magnet_medium_30secs";
+/// MelodyFlow T24 30secs (post-audit CC-gap 2026-08-13 Wave D remaining
+/// WF8) — matches [`vokra_models::melodyflow::ARCH`]. Dispatch here is a
+/// **scaffold stop-gap**: the runtime forward is loud-partial pending
+/// `docs/adr/M5-melodyflow-dit-sampler.md` (Status: Proposed) ratification,
+/// combined with `flow_editing_inversion` / `t24_transformer` op landing
+/// (FR-OP-86 anchor). The regeneration ODE integrator already exists
+/// (reused `vokra_ops::flow_sampler::flow_sample` from M3-05) — only the
+/// reverse-ODE editing inversion driver + the DiT block stack need to
+/// land before this reject can flip to a bare session dispatch.
+const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -464,12 +474,55 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  refusal here is the loud FR-EX-08 gate, not a converter bug."
             ))
         }
+        ARCH_MELODYFLOW_T24_30SECS => {
+            // post-audit CC-gap 2026-08-13 Wave D remaining WF8 scaffold
+            // stop-gap. The runtime shell exists in
+            // `vokra-models::melodyflow` (config deserialisation + weight
+            // catalogue + validation) but the two runtime primitives that
+            // drive MelodyFlow's DiT flow-matching editing pipeline
+            // (`flow_editing_inversion` + `t24_transformer` — the FR-OP-86
+            // anchor) are deferred to a follow-up wave per
+            // `docs/adr/M5-melodyflow-dit-sampler.md` (Status:
+            // **Proposed**). The regeneration ODE integrator already
+            // exists (reused `vokra_ops::flow_sampler::flow_sample` from
+            // M3-05 — `Schedule::Linear` + `OdeSolver::Euler` +
+            // `CfgMode::DualForward` matches Le Lan et al. 2024 Algorithm
+            // 1), so only the reverse-ODE editing inversion driver + the
+            // DiT block stack need to land before this reject can flip
+            // to a bare session dispatch. Rejecting at load time — rather
+            // than injecting a bare session that then errors on the first
+            // `forward` call — makes the deferred state visible upfront
+            // (FR-EX-08: no silent stub, no misleading task-available
+            // signal). Mirror of the sibling MAGNeT scaffold arm above.
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{arch}` (MelodyFlow \
+                     runtime forward is a scaffold; ADR ratification + real weight \
+                     testing required before hints are honored — see \
+                     docs/adr/M5-melodyflow-dit-sampler.md)"
+                ));
+            }
+            Err(format!(
+                "arch `{arch}` runtime forward is a SCAFFOLD — the MelodyFlow model \
+                 shell + weight catalogue exist in vokra-models::melodyflow but the \
+                 `flow_editing_inversion` + `t24_transformer` ops (FR-OP-86 anchor) \
+                 are not yet landed in vokra-ops (the M3-05 flow_sampler seam is \
+                 already reused for the regeneration ODE integrator — only the \
+                 reverse-ODE editing inversion driver + the DiT block stack are \
+                 missing). See docs/adr/M5-melodyflow-dit-sampler.md (Status: \
+                 Proposed) — ADR ratification + real weight testing required before \
+                 this GGUF can be executed. The bundled 48 kHz RVQ codec decode \
+                 integration is a separate owner-driven path per that ADR §D-5. The \
+                 GGUF loaded and validated correctly; the refusal here is the loud \
+                 FR-EX-08 gate, not a converter bug."
+            ))
+        }
         other => Err(format!(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
              `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
              `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MAGNET_SMALL}` / \
-             `{ARCH_MAGNET_MEDIUM}`)"
+             `{ARCH_MAGNET_MEDIUM}` / `{ARCH_MELODYFLOW_T24_30SECS}`)"
         )),
     }
 }
@@ -737,6 +790,72 @@ mod tests {
         assert!(
             err.contains(ARCH_MAGNET_MEDIUM),
             "must name the arch: {err}"
+        );
+    }
+
+    /// A `melodyflow_t24_30secs` arch GGUF is loud-rejected at load
+    /// time with a scaffold message naming the ADR — the runtime
+    /// forward is deferred, so the CLI never pretends a working task
+    /// exists (FR-EX-08). Mirror of the sibling MAGNeT loud-partial
+    /// posture.
+    #[test]
+    fn load_session_rejects_melodyflow_arch_with_scaffold_message() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", ARCH_MELODYFLOW_T24_30SECS);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-melodyflow-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("melodyflow arch must be loud-rejected as scaffold");
+        assert!(
+            err.contains("SCAFFOLD"),
+            "message must self-identify as scaffold: {err}"
+        );
+        assert!(
+            err.contains("docs/adr/M5-melodyflow-dit-sampler.md"),
+            "message must name the ADR to ratify: {err}"
+        );
+        assert!(
+            err.contains("flow_editing_inversion") && err.contains("t24_transformer"),
+            "message must name the deferred ops: {err}"
+        );
+        assert!(err.contains("FR-OP-86"), "message must cite anchor: {err}");
+        assert!(
+            err.contains("flow_sampler"),
+            "message must name the reused M3-05 seam so an owner knows only the \
+             two new ops are missing: {err}"
+        );
+    }
+
+    /// Task hints are rejected on the melodyflow arch too — same
+    /// FR-EX-08 rule as every other arch that returns a bare / rejected
+    /// session. Mirror of the sibling magnet arch hint reject.
+    #[test]
+    fn load_session_rejects_hint_on_melodyflow_arch() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", ARCH_MELODYFLOW_T24_30SECS);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-melodyflow-hint-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            Some(TaskHint::MelFrontend),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("hint on melodyflow arch must be rejected");
+        assert!(
+            err.contains("MelodyFlow runtime forward is a scaffold"),
+            "hint reject must cite the same scaffold rationale: {err}"
         );
     }
 

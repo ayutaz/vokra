@@ -214,6 +214,29 @@ pub mod kyutai_stt;
 // CC-BY-NC-4.0 (T4 tier — `--allow-noncommercial` required to publish;
 // M2-13 compliance gate refuses commercial-mode load).
 pub mod magnet;
+// post-audit CC-gap 2026-08-13 Wave D remaining WF8: Meta AudioCraft
+// MelodyFlow T24 30secs runtime binder (**SCAFFOLD** — CPU-only,
+// loud-partial forward per RMVPE / DNSMOS / openwakeword / sibling
+// MAGNeT precedent). Consumes the converter module
+// `melodyflow_t24_30secs` (~1 B params, DiT flow-matching editing
+// backbone at 48 kHz with 24 default solver steps, Le Lan et al. 2024
+// arXiv:2407.03648). The regeneration ODE integrator reuses
+// `vokra_ops::flow_sampler::flow_sample` from M3-05 unchanged
+// (`Schedule::Linear` + `OdeSolver::Euler` + `CfgMode::DualForward`
+// matches Le Lan et al. Algorithm 1). The two runtime primitives
+// still needed — `flow_editing_inversion` (reverse-ODE walk that maps
+// ground-truth audio latent → noise latent under source text) and
+// `t24_transformer` (the 24-layer DiT block stack with
+// timestep-conditioned adaLN and dual text + audio prefix
+// cross-attention) — are the **FR-OP-86 anchor** and are deferred to
+// a follow-up wave per `docs/adr/M5-melodyflow-dit-sampler.md`
+// (Status: **Proposed**) for the proposed signatures and owner
+// ratification queue; the codec decode integration (bundled 48 kHz
+// RVQ codec, FR-OP-32 CC-BY-NC-4.0 distribution restriction) is
+// owner-driven per the ADR §D-5. Weights: CC-BY-NC-4.0 (T4 tier —
+// `--allow-noncommercial` required to publish; M2-13 compliance gate
+// refuses commercial-mode load).
+pub mod melodyflow;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet TDT-0.6B-v3 — English
 // streaming ASR built on a FastConformer encoder (8× subsampling,
 // 24-layer / d_model=1024 / MHA) + a 2-layer 640-d RNN-T prediction
