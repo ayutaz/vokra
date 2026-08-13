@@ -973,6 +973,23 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "parakeet-tdt-1.1b": ["NVIDIA Parakeet-TDT-1.1B (`nvidia/parakeet-tdt-1.1b`)"],
     "firered-asr-aed-l": ["FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"],
     # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # FireRedTeam/FireRedASR-LLM-L — Conformer + audio-to-text adapter +
+    # Qwen2 LM decoder Chinese ASR (~16.6 GB BF16, 8.3B params, AISHELL-1
+    # SoTA). Distinct HF publish target from the sibling
+    # `firered-asr-aed-l` (Whisper-topology AED) because the LLM release
+    # is a different arch (Conformer + Qwen2 LM decoder) with a different
+    # tensor manifest. Owner primary-source verification pending (HF card
+    # `license: apache-2.0` + FireRedTeam GitHub LICENSE + Chinese ASR
+    # training-corpus commercial audit — WenetSpeech / KeSpeech 混成疑義)
+    # — the §3.1 row exists with blank sign-off (fail-closed default).
+    # publish-one.sh refuses via the upload gate 4 until owner marks ☑
+    # Commercial. Real weights fetch + convert runs on vast.ai (~16.6 GB
+    # threshold, well above the 2 GB CC-workflow local-convert limit)
+    # per memory `[[feedback-large-models-on-vast-ai]]`.
+    "firered-asr-llm-l": [
+        "FireRedTeam FireRedASR-LLM-L (`FireRedTeam/FireRedASR-LLM-L`)"
+    ],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
     # BosonAI Higgs-Audio v3 TTS 4B. Owner primary-source verification
     # pending (HF card `license: apache-2.0` + BosonAI GitHub LICENSE +
     # training-corpus commercial audit) — the §3.1 row exists with
@@ -1578,6 +1595,15 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "canary_1b_flash": ["NVIDIA Canary-1B-Flash (`nvidia/canary-1b-flash`)"],
     "firered_asr_aed_l": [
         "FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"
+    ],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # FireRedTeam/FireRedASR-LLM-L — converter stem `firered_asr_llm_l`
+    # (snake_case, matches file basename), §3.1 row heading verbatim.
+    # Sibling of firered_asr_aed_l but distinct converter file / arch tag
+    # / dispatch — silently sharing would mis-route runtime dispatch
+    # (Conformer + Qwen2 LM decoder vs Whisper-topology AED).
+    "firered_asr_llm_l": [
+        "FireRedTeam FireRedASR-LLM-L (`FireRedTeam/FireRedASR-LLM-L`)"
     ],
     "hibiki": ["Hibiki-2B (`kyutai/hibiki-2b-pytorch-bf16`)"],
     # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):

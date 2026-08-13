@@ -1,0 +1,27 @@
+[project]
+name = "firered-asr-llm-l-prep"
+version = "0.1.0"
+description = "Offline sidecar: FireRedTeam/FireRedASR-LLM-L sharded safetensors → flat safetensors (dedup + int/f64/bool strip). Bridges the upstream sharded HF release (~16.6 GB BF16, 8.3B params = Conformer + audio-text adapter + Qwen2 LM decoder Chinese ASR) to the Rust converter (crates/vokra-convert/src/models/firered_asr_llm_l.rs), which consumes safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
+requires-python = ">=3.12"
+dependencies = [
+    # torch: unwraps the sharded safetensors state dict via `safetensors.torch.load_file`
+    #        (or the plain `.load` low-level reader), plus data-pointer tracking for
+    #        the shared-storage dedup pass (memory `[[reference-safetensors-shared-tensor-dedup]]`)
+    #        that `safetensors.torch.save_file` demands. Range mirrors the parent
+    #        workspace (tools/parity/pyproject.toml) and the sibling
+    #        `higgs_audio_v3_tts_4b/pyproject.toml`.
+    "torch>=2.0",
+    # safetensors: canonical Python reader / writer for the upstream sharded
+    #        release (`model-00001-of-000NN.safetensors` + `model.safetensors.index.json`)
+    #        and the flat output the Rust converter consumes.
+    "safetensors>=0.4",
+    # huggingface-hub: convenience for the download path the README documents
+    #        (`hf download FireRedTeam/FireRedASR-LLM-L --local-dir ...`).
+    #        vast.ai runbook `docs/handoff/vast-ai-large-model-publish.md` pins
+    #        `<0.30` when running on vast.ai due to the xet-token routing 404
+    #        documented in `[[reference-huggingface-hub-lt-030-vast-ai]]`; local
+    #        M1 iMac has no such constraint (but the actual convert for a
+    #        ~16.6 GB release runs on vast.ai per
+    #        `[[feedback-large-models-on-vast-ai]]`, so the pin is expected).
+    "huggingface-hub>=0.26",
+]

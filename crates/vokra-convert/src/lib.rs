@@ -1176,6 +1176,20 @@ pub enum ModelKind {
     /// SoTA ASR, AED (Whisper-like encoder-decoder). Convert with
     /// `convert_firered_asr_aed_l_file`.
     FireredAsrAedL,
+    /// FireRedTeam **FireRedASR-LLM-L** (Apache-2.0, ~16.6 GB BF16 =
+    /// 8.3B params) — Chinese SoTA ASR (AISHELL-1) with **Conformer
+    /// encoder + audio-to-text adapter + Qwen2 LM decoder**. Same
+    /// "encoder + adapter + LLM decoder" mold as sibling
+    /// [`ModelKind::CanaryQwen`] (Canary FastConformer + Voxtral-style
+    /// Qwen decoder) — reuses the shared `vokra_ops::qwen2` primitives
+    /// (voxtral / kyutai_stt / canary_qwen precedent) once the runtime
+    /// binder lands. Distinct arch tag from the sibling FireRedTeam
+    /// AED release ([`ModelKind::FireredAsrAedL`], Whisper-topology).
+    /// Convert with `convert_firered_asr_llm_l_file`. vast.ai required
+    /// for the actual weight fetch + convert per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (>2 GB CC-workflow
+    /// threshold).
+    FireredAsrLlmL,
     /// NVIDIA **Sortformer diar 4spk v1** (CC-BY-4.0, ~1 GB) — e2e
     /// speaker diarization with arrival-order sort loss. Convert with
     /// `convert_sortformer_diar_4spk_v1_file`.
@@ -3668,6 +3682,23 @@ impl ModelKind {
             | "fireredteam/firered_asr_aed_l"
             | "fireredteam/fireredasr-aed-l"
             | "FireRedTeam/FireRedASR-AED-L" => Some(Self::FireredAsrAedL),
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): FireRedASR-LLM-L is the FireRedTeam LLM-based
+            // sibling of FireRedASR-AED-L (Whisper-topology). Distinct
+            // arch tag / model / dispatch path (Conformer + audio-text
+            // adapter + Qwen2 LM decoder vs Whisper-topology AED) — the
+            // AED / LLM aliases MUST NOT collide (silently sharing
+            // would mis-route the runtime dispatch).
+            "firered-asr-llm-l"
+            | "firered_asr_llm_l"
+            | "fireredasr-llm-l"
+            | "fireredasr_llm_l"
+            | "firered-asr-llm"
+            | "firered_asr_llm"
+            | "fireredteam/firered-asr-llm-l"
+            | "fireredteam/firered_asr_llm_l"
+            | "fireredteam/fireredasr-llm-l"
+            | "FireRedTeam/FireRedASR-LLM-L" => Some(Self::FireredAsrLlmL),
             "sortformer-diar-4spk-v1"
             | "sortformer_diar_4spk_v1"
             | "nvidia/diar_sortformer_4spk-v1" => Some(Self::SortformerDiar4spkV1),
@@ -4949,6 +4980,7 @@ impl ModelKind {
             Self::OwsmV4Medium1b => "owsm-v4-medium-1b",
             Self::ParakeetTdt11b => "parakeet-tdt-1.1b",
             Self::FireredAsrAedL => "firered-asr-aed-l",
+            Self::FireredAsrLlmL => "firered-asr-llm-l",
             Self::SortformerDiar4spkV1 => "sortformer-diar-4spk-v1",
             Self::SenseVoiceSmall => "sensevoicesmall",
             Self::WhisperMedusaV1 => "whisper-medusa-v1",
@@ -6945,6 +6977,31 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::FireredAsrAedL,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::FireredAsrLlmL => {
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): BF16 pass-through skeleton for
+            // FireRedTeam/FireRedASR-LLM-L (Conformer + audio-text
+            // adapter + Qwen2 LM decoder, ~16.6 GB BF16, Apache-2.0).
+            // Real convert runs on vast.ai per memory
+            // `[[feedback-large-models-on-vast-ai]]`; the sharded
+            // safetensors input is merged offline by
+            // `tools/parity/firered_asr_llm_l/prepare_checkpoint.py`
+            // (uv-managed Python 3.12) before it reaches this arm.
+            let report =
+                models::firered_asr_llm_l::convert_firered_asr_llm_l_file(input, output, license)?;
+            let notes = vec![format!(
+                "firered-asr-llm-l: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::FireredAsrLlmL,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -10718,6 +10775,13 @@ pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
 // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
 pub use models::canary_1b_flash::{Canary1bFlashReport, convert_canary_1b_flash_file};
 pub use models::firered_asr_aed_l::{FireredAsrAedLReport, convert_firered_asr_aed_l_file};
+// coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+// FireRedTeam/FireRedASR-LLM-L — public re-export for downstream callers
+// that reach past the `ModelKind::FireredAsrLlmL` dispatch (mirror of
+// the sibling BF16 pass-through public API surface). vast.ai required
+// for the actual weight fetch + convert per memory
+// `[[feedback-large-models-on-vast-ai]]`.
+pub use models::firered_asr_llm_l::{FireredAsrLlmLReport, convert_firered_asr_llm_l_file};
 pub use models::hibiki::{HibikiReport, convert_hibiki_file};
 // coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
 // BosonAI Higgs-Audio v3 TTS 4B — public re-export for downstream
@@ -12453,6 +12517,13 @@ mod modelkind_alias_and_roundtrip_tests {
             OwsmV4Medium1b,
             ParakeetTdt11b,
             FireredAsrAedL,
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): canonical `--model firered-asr-llm-l` must
+            // round-trip through as_arg → from_arg so a dropped alias
+            // fails loudly here. Distinct from sibling
+            // FireredAsrAedL (Whisper-topology AED) — the LLM release
+            // is Conformer + audio-text adapter + Qwen2 LM decoder.
+            FireredAsrLlmL,
             SortformerDiar4spkV1,
             SenseVoiceSmall,
             WhisperMedusaV1,
@@ -12999,6 +13070,23 @@ mod modelkind_alias_and_roundtrip_tests {
                     "firered-asr-aed-l",
                     "firered_asr_aed_l",
                     "fireredteam/fireredasr-aed-l",
+                ],
+            ),
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): every FireRedASR-LLM-L alias spelling must
+            // dispatch to `ModelKind::FireredAsrLlmL`, NOT to the
+            // sibling `FireredAsrAedL`. A silent mis-dispatch across
+            // the two would map the wrong loader onto a caller's ckpt
+            // (Whisper-topology vs Conformer + Qwen2 LM decoder) and
+            // silently produce a wrong-shape GGUF at the runtime side.
+            (
+                ModelKind::FireredAsrLlmL,
+                &[
+                    "firered-asr-llm-l",
+                    "firered_asr_llm_l",
+                    "fireredasr-llm-l",
+                    "fireredteam/fireredasr-llm-l",
+                    "FireRedTeam/FireRedASR-LLM-L",
                 ],
             ),
             (

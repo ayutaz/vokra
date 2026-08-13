@@ -279,6 +279,24 @@ pub mod frcrn;
 // sign-off + real checkpoint fetch).
 pub mod canary_1b_flash;
 pub mod firered_asr_aed_l;
+// coverage-audit 2026-08-03 Wave B fast-track (post-audit, 2026-08-13):
+// FireRedTeam/FireRedASR-LLM-L (`FireRedTeam/FireRedASR-LLM-L`,
+// apache-2.0, ~16.6 GB BF16 = 8.3B params). Chinese ASR with Conformer
+// encoder + audio-to-text adapter + Qwen2 LM decoder = AISHELL-1 SoTA.
+// Same "encoder + adapter + LLM decoder" mold as sibling canary_qwen
+// (Canary FastConformer + Voxtral-style Qwen decoder) — reuses the
+// shared vokra_ops::qwen2 primitives (voxtral / kyutai_stt /
+// canary_qwen precedent) once the runtime binder lands. Distinct arch
+// tag `firered_asr_llm_l` from the FireRedTeam AED sibling
+// (`firered_asr_aed_l`, Whisper-topology) because the LLM release
+// swaps the AED decoder for a Qwen2 LLM decoder — silently sharing
+// would mis-route the runtime dispatch (an AED Whisper loader would
+// try to interpret a Qwen2 LM decoder checkpoint). Every F32 / F16 /
+// BF16 tensor passes through verbatim following the wave-B uniform
+// posture. vast.ai required per memory `[[feedback-large-models-on-vast-ai]]`
+// (>2 GB CC-workflow threshold). Real-weight parity + native runtime
+// binder deferred to owner (`docs/license-audit.md` §3.1 sign-off).
+pub mod firered_asr_llm_l;
 pub mod hibiki;
 // coverage-audit 2026-08-03 Wave B fast-track (post-audit, 2026-08-13):
 // BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`,

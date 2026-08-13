@@ -2542,6 +2542,16 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::OwsmV4Medium1b
         | ModelKind::ParakeetTdt11b
         | ModelKind::FireredAsrAedL
+        // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+        // 2026-08-13): FireRedTeam/FireRedASR-LLM-L — same BF16
+        // pass-through skeleton contract (vokra.model.{arch,name,
+        // category} + vokra.provenance.{upstream_hf,license,
+        // weight_license}) as sibling wave-B models, verifies through
+        // the same shared 5-slot line. Distinct arch tag from the
+        // sibling FireredAsrAedL (Whisper-topology AED) because the
+        // LLM release is Conformer + audio-text adapter + Qwen2 LM
+        // decoder.
+        | ModelKind::FireredAsrLlmL
         | ModelKind::SortformerDiar4spkV1
         | ModelKind::SenseVoiceSmall
         | ModelKind::WhisperMedusaV1
