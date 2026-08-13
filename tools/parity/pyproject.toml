@@ -27,4 +27,5 @@ crepe = [
 [tool.uv.workspace]
 members = [
     "microwakeword",
+    "rmvpe",
 ]
