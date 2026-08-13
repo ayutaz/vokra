@@ -1629,6 +1629,50 @@ CONVERTER_NO_SIGNOFF_ROW: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+def _split_markdown_row(line: str) -> list[str]:
+    """Split a markdown table row on UNESCAPED pipes only.
+
+    Standard markdown table syntax lets a cell embed a literal `|` via
+    `\\|`. A naive `str.split("|")` would treat that escaped pipe as a
+    separator and shift every downstream field by one. This helper walks
+    the string character-by-character and honours the escape, so a cell
+    whose text contains `\\|` reads as one field.
+
+    Escape semantics (mirrors CommonMark's table extension):
+      - `\\|`  -> literal `|` inside the current cell
+      - `\\\\` -> literal `\\` inside the current cell (so `\\\\|` = `\\` +
+        separator, matching common markdown renderers)
+      - a trailing `\\` at end-of-line is passed through verbatim so
+        malformed input still round-trips.
+    """
+    fields: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        c = line[i]
+        if c == "\\" and i + 1 < n:
+            nxt = line[i + 1]
+            if nxt == "|" or nxt == "\\":
+                buf.append(nxt)
+                i += 2
+                continue
+            # Unknown escape — keep backslash so downstream diffs stay
+            # honest ("\\x" round-trips as "\\x", not "x").
+            buf.append(c)
+            i += 1
+            continue
+        if c == "|":
+            fields.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    fields.append("".join(buf))
+    return fields
+
+
 def parse_signoff_rows(audit_path: Path) -> dict[str, bool]:
     """Parse the §3.1 sign-off table into `{row_name: approved_bool}`.
 
@@ -1652,7 +1696,17 @@ def parse_signoff_rows(audit_path: Path) -> dict[str, bool]:
         # `**` after stripping.
         if not line.startswith("|"):
             continue
-        f = line.split("|")
+        # Split on UNESCAPED pipes only. Standard markdown table syntax
+        # allows `\|` inside a cell to embed a literal pipe (needed when a
+        # cell quotes upstream LICENSE text that itself uses `|` as a
+        # delimiter — e.g. the ATST row at line 477 quotes the audiossl
+        # LICENSE `... licenses/by/4.0/ \| audiossl is licenced under MIT
+        # Licence.`). A naive `str.split("|")` would count the embedded
+        # pipe as a separator, shift `approver`/`decision` indices by one,
+        # and silently drop the row from this dict — causing
+        # check-converter-signoff.sh to report a spurious NO_ROW even
+        # though the row is present and blank.
+        f = _split_markdown_row(line)
         if len(f) < 7:
             continue
         first = f[1].strip()
@@ -1946,6 +2000,54 @@ def _cli_self_test() -> int:
                 "check_converter_coverage: unknown_stem was not flagged as missing"
             )
 
+    # Escaped-pipe parser regression: the ATST row in the real audit quotes
+    # an upstream LICENSE body that itself contains `|`. Before the parser
+    # honoured `\|` as an escape, the row silently dropped from
+    # parse_signoff_rows and check-converter-signoff.sh reported a spurious
+    # NO_ROW for atst.rs. Lock the semantics in with a synthetic fixture so
+    # a future refactor that reverts to `str.split("|")` fails HERE, not
+    # once someone next runs the shell wrapper.
+    split_cases = [
+        # (input, expected fields)
+        ("|a|b|c|", ["", "a", "b", "c", ""]),
+        # Embedded escaped pipe stays inside the middle cell.
+        ("|a|has \\| pipe|c|", ["", "a", "has | pipe", "c", ""]),
+        # Multiple escapes in one cell.
+        ("|foo\\|bar\\|baz|end|", ["", "foo|bar|baz", "end", ""]),
+    ]
+    for inp, want in split_cases:
+        got = _split_markdown_row(inp)
+        if got != want:
+            failures.append(
+                f"_split_markdown_row({inp!r}): want {want!r}, got {got!r}"
+            )
+
+    # End-to-end: a synthetic sign-off row whose notes column embeds `\|`
+    # must still appear in parse_signoff_rows.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit = Path(tmp) / "audit.md"
+        audit.write_text(
+            "| Model | Weight License | Notes | Owner sign-off | Approval | Reason |\n"
+            "|---|---|---|---|---|---|\n"
+            "| **Escaped-Pipe-Model** | CC-BY-4.0 | quotes upstream "
+            "'foo \\| bar' | 2026-01-01 yousan "
+            "| ☑ Commercial / ☐ Research-only / ☐ Rejected | fixture |\n",
+            encoding="utf-8",
+        )
+        parsed = parse_signoff_rows(audit)
+        if "Escaped-Pipe-Model" not in parsed:
+            failures.append(
+                "parse_signoff_rows: row with escaped \\| in notes column "
+                "was silently dropped (rows found: "
+                f"{sorted(parsed)!r})"
+            )
+        elif parsed["Escaped-Pipe-Model"] is not True:
+            failures.append(
+                "parse_signoff_rows: row with escaped \\| in notes column "
+                "was parsed but its approval state was wrong "
+                f"(got {parsed['Escaped-Pipe-Model']!r}, want True)"
+            )
+
     if failures:
         print("signoff_match self-test: FAIL")
         for f in failures:
@@ -1953,7 +2055,7 @@ def _cli_self_test() -> int:
         return 1
     print(
         f"signoff_match self-test: OK ({len(cases) + 1} approval cases "
-        f"+ 1 converter case)"
+        f"+ 1 converter case + {len(split_cases) + 1} escaped-pipe cases)"
     )
     return 0
 
