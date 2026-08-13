@@ -194,6 +194,38 @@ pub enum HotOp {
     /// those backends fails the coverage gate (never a silent CPU fall
     /// back).
     SnacDecode,
+    /// Denoise spectral-gate primitive
+    /// (`vokra_ops::denoise::denoise_apply_mask_f32`) — element-wise complex
+    /// × real gain multiply, the "spectral gate + phase preservation" step
+    /// every mask-based denoiser ends in. Extracted from the
+    /// [`vokra_ops::denoise::DenoiseModel::enhance_inner`] output-stage
+    /// loop (denoise.rs L1852-1870) so a per-freq-per-time mask denoiser
+    /// (GTCRN / RNNoise) can call it directly, and the mask apply can
+    /// move to a GPU dispatch while the rest of the front-end runs on
+    /// the host.
+    ///
+    /// # Not the whole DenoiseModel
+    ///
+    /// This variant is the mask-apply primitive alone, not the whole
+    /// DFN3 network (which lives in `DenoiseModel::enhance`).
+    /// [`DenoiseModel::enhance`] still uses its fused inline loop for
+    /// the CPU-only path it has always taken; this primitive is what
+    /// downstream consumers wire when they want a GPU dispatch for that
+    /// inner loop.
+    ///
+    /// **Vocoder Metal wave WF5 (2026-08-13):** the Metal arm is wired
+    /// via `vokra_denoise_apply_mask_f32` (element-wise MSL kernel,
+    /// bit-for-bit identical to `vokra_ops::denoise_apply_mask_f32` —
+    /// pure real × complex multiply has no reduction, no transcendental,
+    /// no FMA opportunity). Host-side shape validation upstream of the
+    /// dispatch (FR-EX-08). The CUDA arm remains an explicit
+    /// [`VokraError::UnsupportedOp`] (deferred to the vast.ai owner
+    /// track). `covered_by_metal` returns `true`; `covered_by_cuda` /
+    /// `covered_by_vulkan` / `covered_by_webgpu` / `covered_by_coreml` /
+    /// `covered_by_qnn` return `false` — any model that lists it against
+    /// those backends fails the coverage gate (never a silent CPU fall
+    /// back).
+    DenoiseApplyMask,
 }
 
 impl HotOp {
@@ -231,7 +263,8 @@ impl HotOp {
         // `vokra_xcodec2_fsq_decode_f32`). Vocoder Metal wave WF2 (2026-08-13)
         // added `SnakeActivation` via `vokra_snake_activation_f32`; Vocoder
         // Metal wave WF5 (2026-08-13) added `SnacDecode` via
-        // `vokra_snac_decode_f32`. Any model listing the still-deferred
+        // `vokra_snac_decode_f32` and `DenoiseApplyMask` via
+        // `vokra_denoise_apply_mask_f32`. Any model listing the still-deferred
         // sibling (`EncodecRvq`) continues to fail the Metal coverage gate —
         // no silent CPU fall back (FR-EX-08).
         matches!(
@@ -248,6 +281,7 @@ impl HotOp {
                 | HotOp::Xcodec2Fsq
                 | HotOp::SnakeActivation
                 | HotOp::SnacDecode
+                | HotOp::DenoiseApplyMask
         )
     }
 
@@ -1828,6 +1862,107 @@ impl Compute {
         }
     }
 
+    /// Denoise spectral-gate primitive — element-wise complex × real gain
+    /// multiply for a `[n_frames, n_bins]` row-major FP32 complex spectrogram
+    /// (Vocoder Metal wave WF5, 2026-08-13). The "spectral gate + phase
+    /// preservation" step every mask-based denoiser (DFN3, GTCRN, RNNoise)
+    /// ends in, wired into the imperative `Compute` seam so the mask apply
+    /// can move to a GPU dispatch while the rest of the front-end runs on
+    /// the host.
+    ///
+    /// Applies `out_re[t, f] = spec_re[t, f] · gain[t, f]` and
+    /// `out_im[t, f] = spec_im[t, f] · gain[t, f]` for every `(t, f)`
+    /// position. Delegates on the CPU arm to
+    /// [`vokra_ops::denoise_apply_mask_f32`] (bit-identical to the
+    /// [`vokra_ops::denoise::DenoiseModel::enhance_inner`] output-stage
+    /// inline loop when the caller pre-expands the ERB mask through
+    /// `erb_inv_fb`).
+    ///
+    /// # Phase preservation, no silent numeric drift
+    ///
+    /// `re · g` and `im · g` with the same real scalar `g` leaves phase
+    /// `atan2(im, re)` bit-identically unchanged; only magnitude
+    /// `sqrt(re² + im²)` is scaled. Multiplication is IEEE-754
+    /// correctly-rounded; there is no reduction, no transcendental, no FMA
+    /// opportunity in a single `re * g`, so CPU and GPU produce
+    /// **bit-for-bit identical** outputs on every finite input. The parity
+    /// harness (`tests/denoise_metal_bit_identical.rs`) still enforces the
+    /// sibling `atol ≤ 5e-4` codec-family bound to keep a discriminating
+    /// negative control, but the achieved max |Δ| = 0 is logged.
+    ///
+    /// # Not the whole DenoiseModel
+    ///
+    /// The full DFN3 network (STFT → ERB features → DfNet → mask +
+    /// deep-filter → iSTFT) lives in
+    /// [`vokra_ops::denoise::DenoiseModel::enhance`], which still runs the
+    /// fused inline loop for the CPU-only path it has always taken. This
+    /// seam is the **primitive** for the mask-apply step alone, so a
+    /// per-freq-per-time mask denoiser (GTCRN / RNNoise) or a future GPU
+    /// port of DFN3's output stage can dispatch through it.
+    ///
+    /// # CPU-only through this seam today (Metal wired; CUDA / Vulkan /
+    /// WebGPU / CoreML / QNN return `UnsupportedOp`)
+    ///
+    /// **Vocoder Metal wave WF5 (2026-08-13):** the Metal arm dispatches to
+    /// [`vokra_backend_metal::MetalContext::denoise_apply_mask_f32`]
+    /// (`vokra_denoise_apply_mask_f32` MSL kernel). Every other GPU arm
+    /// returns an explicit [`VokraError::UnsupportedOp`] until the
+    /// corresponding kernel lands — never a silent CPU fall back
+    /// (FR-EX-08). The coverage gate on [`Compute::for_backend`]
+    /// additionally rejects any model that lists [`HotOp::DenoiseApplyMask`]
+    /// against those backends.
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`vokra_ops::denoise_apply_mask_f32`] raises (wrong `spec_re.len()`
+    ///   / `spec_im.len()` / `gain.len()` / `out_re.len()` / `out_im.len()`,
+    ///   or `n_frames * n_bins` overflow — never a silent shape clamp,
+    ///   FR-EX-08).
+    /// - Metal arm: same host-side shape validation before dispatch, plus
+    ///   any [`VokraError::BackendUnavailable`] from the underlying command
+    ///   buffer.
+    /// - CUDA / Vulkan / WebGPU / CoreML / QNN arms: explicit
+    ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
+    #[allow(clippy::too_many_arguments)] // intrinsic to the two-output complex-multiply shape
+    pub fn denoise_apply_mask_f32(
+        &self,
+        spec_re: &[f32],
+        spec_im: &[f32],
+        gain: &[f32],
+        n_frames: usize,
+        n_bins: usize,
+        out_re: &mut [f32],
+        out_im: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => vokra_ops::denoise_apply_mask_f32(
+                spec_re, spec_im, gain, n_frames, n_bins, out_re, out_im,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => {
+                ctx.denoise_apply_mask_f32(spec_re, spec_im, gain, n_frames, n_bins, out_re, out_im)
+            }
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "denoise_apply_mask_f32 has no wired CUDA NVRTC kernel; the Vocoder wave WF5 CUDA \
+                 arm is deferred to the vast.ai owner track. Select BackendKind::Cpu (which \
+                 delegates to vokra_ops::denoise_apply_mask_f32), or wait for the CUDA kernel — \
+                 Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "denoise_apply_mask_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six \
+                 Whisper hot ops only; the Vocoder wave WF5 GPU arms are deferred like \
+                 Metal/CUDA/Vulkan). Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::denoise_apply_mask_f32) — Vokra does not silently run the op on the \
+                 CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Fused MLP `fc2(gelu(fc1(x)))` — the Phase-5 device-residency slice.
     ///
     /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, bias
@@ -3078,9 +3213,10 @@ mod tests {
         // WF2 (2026-08-13, MSL kernels `vokra_wavtokenizer_vq_gather_f32` /
         // `vokra_xcodec2_fsq_decode_f32`); SnakeActivation is covered as of
         // the Vocoder Metal wave WF2 (2026-08-13, MSL kernel
-        // `vokra_snake_activation_f32`); SnacDecode is covered as of the
-        // Vocoder Metal wave WF5 (2026-08-13, MSL kernel
-        // `vokra_snac_decode_f32`). Only EncodecRvq stays deferred.
+        // `vokra_snake_activation_f32`); SnacDecode and DenoiseApplyMask are
+        // covered as of the Vocoder Metal wave WF5 (2026-08-13, MSL kernels
+        // `vokra_snac_decode_f32` / `vokra_denoise_apply_mask_f32`). Only
+        // EncodecRvq stays deferred.
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -3094,6 +3230,7 @@ mod tests {
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
         ] {
             assert!(
                 op.covered_by_metal(),
@@ -3167,6 +3304,16 @@ mod tests {
             }
             Err(e) => panic!("unexpected error for a Metal-covered SnacDecode request: {e}"),
         }
+        // DenoiseApplyMask (Vocoder Metal wave WF5, 2026-08-13) is now a
+        // covered request: same device-gated posture as the sibling codec
+        // ops above.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::DenoiseApplyMask]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; DenoiseApplyMask covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered DenoiseApplyMask request: {e}"),
+        }
 
         // Whisper's full set is therefore a covered request: it either builds
         // (device present) or fails with an explicit device error — never a
@@ -3225,9 +3372,10 @@ mod tests {
         );
         // Same deferred posture for the M4-04 RVQ siblings, the M4-16 FSQ
         // family, the Vocoder wave WF2 SnakeActivation, and the Vocoder wave
-        // WF5 SnacDecode (lock-step with the CUDA arms of `dac_rvq_f32` /
-        // `encodec_rvq_f32` / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` /
-        // `snake_activation_f32` / `snac_decode_f32`).
+        // WF5 SnacDecode / DenoiseApplyMask (lock-step with the CUDA arms of
+        // `dac_rvq_f32` / `encodec_rvq_f32` / `wavtokenizer_vq_f32` /
+        // `xcodec2_fsq_f32` / `snake_activation_f32` / `snac_decode_f32` /
+        // `denoise_apply_mask_f32`).
         for op in [
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -3235,6 +3383,7 @@ mod tests {
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
         ] {
             assert!(
                 !op.covered_by_cuda(),
@@ -3306,6 +3455,7 @@ mod tests {
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -3331,6 +3481,7 @@ mod tests {
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -3370,6 +3521,7 @@ mod tests {
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
         ] {
             assert!(
                 !op.covered_by_coreml(),
@@ -3426,6 +3578,7 @@ mod tests {
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
         ] {
             assert!(
                 !op.covered_by_qnn(),
@@ -3591,6 +3744,7 @@ mod tests {
             HotOp::EncodecRvq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
         ] {
             assert!(
                 !op.covered_by_webgpu(),

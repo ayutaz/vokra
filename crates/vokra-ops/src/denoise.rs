@@ -1951,6 +1951,394 @@ pub fn denoise(noisy: &[f32], model: &DenoiseModel) -> Result<Vec<f32>> {
     model.enhance(noisy)
 }
 
+// ---- Vocoder Metal wave WF5 spectral-gate primitive (2026-08-13) ----------
+//
+// Element-wise complex × real-gain multiply — the "spectral gate + phase
+// preservation" step every mask-based denoiser ends in. Exposed as a
+// stateless out-of-place free function that the
+// `vokra_models::compute::Compute` seam dispatches through (mirroring
+// `snake_activation_f32` / the codec-family gather ops), so a GPU dispatch
+// (Metal today; CUDA / Vulkan / WebGPU deferred) can replace this inner loop
+// without touching either denoiser's front-end.
+//
+// The [`DenoiseModel::enhance_inner`] output stage already does exactly this
+// arithmetic inline for the DFN3 ERB mask (denoise.rs L1852-1870 —
+// `spec_m = spec · gains` after `gains = m @ erb_inv_fb`); this function
+// is the primitive extracted from that loop, generalized to accept the
+// already-per-position gain that GTCRN / RNNoise / any per-freq-per-time
+// mask trainer emits directly. It does NOT expand an ERB mask through
+// `erb_inv_fb` — the caller materializes `gain[t, f]` (either directly, or
+// by pre-computing `m @ erb_inv_fb` per frame) and passes it here.
+//
+// # Phase preservation, no math discretion
+//
+// `re' = re · g` and `im' = im · g` with the SAME real scalar `g` leaves
+// the phase `θ = atan2(im, re)` bit-identically unchanged; only the
+// magnitude `|z| = sqrt(re² + im²)` is scaled by `g`. There is no
+// reduction, no transcendental, no re-association latitude — the CPU and
+// GPU forms are IEEE-754 correctly-rounded on every finite input, so the
+// parity between them is expected to be **bit-for-bit** (max |Δ| = 0) on
+// all backends. The parity harness still allows the sibling
+// `atol ≤ 5e-4` codec-family bound so it is discriminating rather than
+// vacuous (negative control), but the achieved max |Δ| = 0 is logged so
+// any future backend that drifts is immediately visible.
+
+/// Apply a real-valued per-position gain to a complex spectrogram
+/// (phase-preserving spectral gate).
+///
+/// Semantics: `out_re[i] = spec_re[i] · gain[i]`,
+/// `out_im[i] = spec_im[i] · gain[i]` for every `i in 0..n_frames * n_bins`.
+/// Row-major `[n_frames, n_bins]` layout, `n_bins` on the inner stride;
+/// every buffer must have length `n_frames · n_bins`.
+///
+/// Phase preservation follows from multiplying `re` and `im` by the same
+/// real scalar: `atan2(im · g, re · g) = atan2(im, re)` for every `g ≥ 0`
+/// (and `atan2(-im, -re) = atan2(im, re) ± π` for `g < 0`, i.e. a global
+/// phase flip only — never per-bin phase distortion). Any per-bin mask
+/// trainer (GTCRN / RNNoise per-band sigmoid, DFN3 ERB mask expanded
+/// through `erb_inv_fb`) that emits per-position real gains can call this
+/// primitive directly.
+///
+/// # Not the whole DFN3 denoiser
+///
+/// The full DFN3 network (STFT → ERB features → DfNet → mask + deep-filter
+/// → iSTFT) lives in [`DenoiseModel::enhance`]. This function is the
+/// **primitive** for the "apply mask" step alone — the inner loop of the
+/// output stage. It exists as a standalone free function so the mask apply
+/// can be moved to a GPU dispatch (Metal today; CUDA / Vulkan / WebGPU
+/// deferred) while the rest of DFN3 runs on the host. DFN3's own
+/// [`DenoiseModel::enhance`] path is unchanged (still uses the fused inline
+/// loop that folds gain expansion into the multiply, for the CPU-only path
+/// it has always taken).
+///
+/// # No silent CPU fallback (FR-EX-08)
+///
+/// Every shape mismatch raises [`VokraError::InvalidArgument`]; a wrong
+/// `spec_re.len()` / `spec_im.len()` / `gain.len()` / `out_re.len()` /
+/// `out_im.len()` is loud, not silently clamped. `n_frames == 0` or
+/// `n_bins == 0` is accepted as a no-op (the buffers are already empty per
+/// the length checks above).
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] on:
+/// - `n_frames * n_bins` overflows `usize` (only reachable on impossibly
+///   large shapes; still a loud error, not a silent truncation);
+/// - any of `spec_re.len()`, `spec_im.len()`, `gain.len()`, `out_re.len()`,
+///   `out_im.len()` != `n_frames * n_bins`.
+pub fn denoise_apply_mask_f32(
+    spec_re: &[f32],
+    spec_im: &[f32],
+    gain: &[f32],
+    n_frames: usize,
+    n_bins: usize,
+    out_re: &mut [f32],
+    out_im: &mut [f32],
+) -> Result<()> {
+    let expected = n_frames.checked_mul(n_bins).ok_or_else(|| {
+        VokraError::InvalidArgument(format!(
+            "denoise_apply_mask_f32: n_frames ({n_frames}) * n_bins ({n_bins}) overflows usize"
+        ))
+    })?;
+    if spec_re.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "denoise_apply_mask_f32: spec_re.len() ({}) != n_frames * n_bins ({expected})",
+            spec_re.len()
+        )));
+    }
+    if spec_im.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "denoise_apply_mask_f32: spec_im.len() ({}) != n_frames * n_bins ({expected})",
+            spec_im.len()
+        )));
+    }
+    if gain.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "denoise_apply_mask_f32: gain.len() ({}) != n_frames * n_bins ({expected})",
+            gain.len()
+        )));
+    }
+    if out_re.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "denoise_apply_mask_f32: out_re.len() ({}) != n_frames * n_bins ({expected})",
+            out_re.len()
+        )));
+    }
+    if out_im.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "denoise_apply_mask_f32: out_im.len() ({}) != n_frames * n_bins ({expected})",
+            out_im.len()
+        )));
+    }
+    if expected == 0 {
+        return Ok(());
+    }
+    // Trivial per-element: multiply real and imaginary by the same real
+    // scalar, in the same lockstep order the DFN3 inline loop uses (index
+    // walks along the row-major flattening, no reduction). No `unsafe`,
+    // no SIMD dispatch here — the intrinsic case for this primitive is
+    // the GPU dispatch, and the CPU arm just needs to be honest and
+    // correct.
+    for (i, &g) in gain.iter().enumerate() {
+        out_re[i] = spec_re[i] * g;
+        out_im[i] = spec_im[i] * g;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod apply_mask_tests {
+    use super::denoise_apply_mask_f32;
+
+    /// The primitive reproduces the DFN3 inline output-stage loop
+    /// (`DenoiseModel::enhance_inner`, `denoise.rs` L1862-1870) bit-for-bit
+    /// when the caller pre-expands `gains = m @ erb_inv_fb` to per-position
+    /// `[T · F]`. Verifies the extraction is a straight port and not a
+    /// re-derivation.
+    #[test]
+    fn matches_dfn3_output_stage_bit_identical() {
+        let n_frames = 4;
+        let n_bins = 7;
+        let spec_re: Vec<f32> = (0..n_frames * n_bins)
+            .map(|i| ((i as f32) * 0.13).sin() * 2.1)
+            .collect();
+        let spec_im: Vec<f32> = (0..n_frames * n_bins)
+            .map(|i| ((i as f32) * 0.19).cos() * 1.7)
+            .collect();
+        // Deterministic per-position gain (would come from the ERB mask
+        // expanded through erb_inv_fb, or from a direct per-bin sigmoid).
+        let gain: Vec<f32> = (0..n_frames * n_bins)
+            .map(|i| 0.1 + ((i as f32) * 0.07).sin().abs() * 0.9)
+            .collect();
+
+        // Bit-for-bit vs the inline output-stage loop the DFN3 model runs.
+        let mut ref_re = vec![0.0f32; n_frames * n_bins];
+        let mut ref_im = vec![0.0f32; n_frames * n_bins];
+        for t in 0..n_frames {
+            let row = t * n_bins..(t + 1) * n_bins;
+            for (((or, oi), (&sr, &si)), &g) in ref_re[row.clone()]
+                .iter_mut()
+                .zip(&mut ref_im[row.clone()])
+                .zip(spec_re[row.clone()].iter().zip(&spec_im[row.clone()]))
+                .zip(&gain[row])
+            {
+                *or = sr * g;
+                *oi = si * g;
+            }
+        }
+
+        let mut got_re = vec![0.0f32; n_frames * n_bins];
+        let mut got_im = vec![0.0f32; n_frames * n_bins];
+        denoise_apply_mask_f32(
+            &spec_re,
+            &spec_im,
+            &gain,
+            n_frames,
+            n_bins,
+            &mut got_re,
+            &mut got_im,
+        )
+        .unwrap();
+
+        for (i, (&g, &r)) in got_re.iter().zip(ref_re.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                r.to_bits(),
+                "re index {i}: denoise_apply_mask_f32 = {g} vs DFN3 inline = {r} (must be bit-identical)"
+            );
+        }
+        for (i, (&g, &r)) in got_im.iter().zip(ref_im.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                r.to_bits(),
+                "im index {i}: denoise_apply_mask_f32 = {g} vs DFN3 inline = {r} (must be bit-identical)"
+            );
+        }
+    }
+
+    /// `gain = 1` is the identity: output equals input bit-for-bit
+    /// (single mul by 1.0 is IEEE-754 identity on every finite input).
+    #[test]
+    fn gain_one_is_identity() {
+        let n_frames = 3;
+        let n_bins = 5;
+        let spec_re: Vec<f32> = (0..15).map(|i| (i as f32) * 0.31 - 2.0).collect();
+        let spec_im: Vec<f32> = (0..15).map(|i| ((i as f32) - 7.0) * 0.17).collect();
+        let gain = vec![1.0f32; 15];
+        let mut out_re = vec![f32::NAN; 15];
+        let mut out_im = vec![f32::NAN; 15];
+        denoise_apply_mask_f32(
+            &spec_re,
+            &spec_im,
+            &gain,
+            n_frames,
+            n_bins,
+            &mut out_re,
+            &mut out_im,
+        )
+        .unwrap();
+        for i in 0..15 {
+            assert_eq!(out_re[i].to_bits(), spec_re[i].to_bits(), "re index {i}");
+            assert_eq!(out_im[i].to_bits(), spec_im[i].to_bits(), "im index {i}");
+        }
+    }
+
+    /// `gain = 0` produces silence with zero re/im (the mask fully
+    /// suppresses that bin). Every position becomes `0.0f32` exactly.
+    #[test]
+    fn gain_zero_is_silence() {
+        let n_frames = 2;
+        let n_bins = 3;
+        let spec_re = vec![1.5f32, -2.3, 0.7, 3.1, -0.4, 1.9];
+        let spec_im = vec![-1.1f32, 0.5, 2.2, -0.8, 1.6, -3.4];
+        let gain = vec![0.0f32; 6];
+        let mut out_re = vec![f32::NAN; 6];
+        let mut out_im = vec![f32::NAN; 6];
+        denoise_apply_mask_f32(
+            &spec_re,
+            &spec_im,
+            &gain,
+            n_frames,
+            n_bins,
+            &mut out_re,
+            &mut out_im,
+        )
+        .unwrap();
+        assert!(out_re.iter().all(|&v| v == 0.0));
+        assert!(out_im.iter().all(|&v| v == 0.0));
+    }
+
+    /// Phase (atan2(im, re)) is bit-identically preserved when gain is
+    /// strictly positive — the whole point of scaling re and im by the
+    /// same real. Uses a positive gain and checks atan2 is unchanged
+    /// within the atan2 ULP.
+    #[test]
+    fn positive_gain_preserves_phase() {
+        // Positions with mixed re/im signs so atan2 lives in every
+        // quadrant.
+        let spec_re = vec![1.0f32, -1.0, -1.0, 1.0];
+        let spec_im = vec![1.0f32, 1.0, -1.0, -1.0];
+        let gain = vec![0.3f32, 0.7, 1.5, 2.2];
+        let mut out_re = vec![0.0f32; 4];
+        let mut out_im = vec![0.0f32; 4];
+        denoise_apply_mask_f32(&spec_re, &spec_im, &gain, 1, 4, &mut out_re, &mut out_im).unwrap();
+        for i in 0..4 {
+            let before = spec_im[i].atan2(spec_re[i]);
+            let after = out_im[i].atan2(out_re[i]);
+            assert!(
+                (before - after).abs() <= 1e-6,
+                "index {i}: phase drifted from {before} to {after} (positive gain must preserve phase)"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_spec_re_length() {
+        let mut out_re = vec![0.0f32; 12];
+        let mut out_im = vec![0.0f32; 12];
+        let err = denoise_apply_mask_f32(
+            &[0.0f32; 11], // one short
+            &[0.0f32; 12],
+            &[1.0f32; 12],
+            3,
+            4,
+            &mut out_re,
+            &mut out_im,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("spec_re.len()"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_wrong_spec_im_length() {
+        let mut out_re = vec![0.0f32; 12];
+        let mut out_im = vec![0.0f32; 12];
+        let err = denoise_apply_mask_f32(
+            &[0.0f32; 12],
+            &[0.0f32; 13], // one too many
+            &[1.0f32; 12],
+            3,
+            4,
+            &mut out_re,
+            &mut out_im,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("spec_im.len()"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_wrong_gain_length() {
+        let mut out_re = vec![0.0f32; 12];
+        let mut out_im = vec![0.0f32; 12];
+        let err = denoise_apply_mask_f32(
+            &[0.0f32; 12],
+            &[0.0f32; 12],
+            &[1.0f32; 11], // one short
+            3,
+            4,
+            &mut out_re,
+            &mut out_im,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("gain.len()"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_wrong_out_re_length() {
+        let mut out_re = vec![0.0f32; 11]; // one short
+        let mut out_im = vec![0.0f32; 12];
+        let err = denoise_apply_mask_f32(
+            &[0.0f32; 12],
+            &[0.0f32; 12],
+            &[1.0f32; 12],
+            3,
+            4,
+            &mut out_re,
+            &mut out_im,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("out_re.len()"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_wrong_out_im_length() {
+        let mut out_re = vec![0.0f32; 12];
+        let mut out_im = vec![0.0f32; 13]; // one too many
+        let err = denoise_apply_mask_f32(
+            &[0.0f32; 12],
+            &[0.0f32; 12],
+            &[1.0f32; 12],
+            3,
+            4,
+            &mut out_re,
+            &mut out_im,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("out_im.len()"), "{msg}");
+    }
+
+    /// `n_frames = 0` or `n_bins = 0` is a well-defined no-op (buffers
+    /// already empty per the length checks). Neither branch panics.
+    #[test]
+    fn empty_shape_is_noop() {
+        let mut out_re: Vec<f32> = Vec::new();
+        let mut out_im: Vec<f32> = Vec::new();
+        // n_frames = 0
+        denoise_apply_mask_f32(&[], &[], &[], 0, 5, &mut out_re, &mut out_im).unwrap();
+        assert!(out_re.is_empty());
+        assert!(out_im.is_empty());
+        // n_bins = 0
+        denoise_apply_mask_f32(&[], &[], &[], 3, 0, &mut out_re, &mut out_im).unwrap();
+        assert!(out_re.is_empty());
+        assert!(out_im.is_empty());
+    }
+}
+
 // ---- GGUF binding (M4-20 T12/T17): `vokra.denoise.*` ----------------------
 //
 // Config keys are u32 / f32 under the `vokra.denoise.*` namespace; every

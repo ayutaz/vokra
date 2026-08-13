@@ -354,7 +354,7 @@ pub use dac_rvq::{
 // ---- M4-20 (c) speech-enhancement re-exports ----------------------------
 pub use agc::{AgcAttrs, AgcState, agc};
 pub use denoise::{
-    DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise,
+    DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise, denoise_apply_mask_f32,
     denoise_skipped_checkpoint_tensors, denoise_synthesized_tensors, denoise_tensor_manifest,
 };
 pub use hpf::{HpfAttrs, HpfState, hpf};

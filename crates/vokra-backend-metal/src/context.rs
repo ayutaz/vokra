@@ -1216,6 +1216,67 @@ kernel void vokra_snake_activation_f32(
     const float s     = sin(a * v);
     out[idx] = v + inv_a * s * s;
 }
+
+// ---- Vocoder Metal wave WF5 denoise spectral-gate primitive (2026-08-13) ----
+//
+// Semantics identical to `vokra_ops::denoise::denoise_apply_mask_f32` — the
+// element-wise complex × real-gain multiply extracted from the
+// [`DenoiseModel::enhance_inner`] output-stage loop (denoise.rs L1852-1870).
+// GTCRN / RNNoise / any per-freq-per-time mask trainer that emits per-position
+// real gains can dispatch through this kernel; DFN3 pre-expands its ERB mask
+// through `erb_inv_fb` to per-position gains upstream of the call.
+//
+//     out_re[t, f] = spec_re[t, f] * gain[t, f]
+//     out_im[t, f] = spec_im[t, f] * gain[t, f]
+//
+// * `spec_re` / `spec_im` — [n_frames, n_bins] row-major FP32 (bins on the
+//                           inner stride — the layout `Spectrogram { re, im }`
+//                           uses in vokra_ops::denoise).
+// * `gain`               — [n_frames, n_bins] row-major FP32 per-position
+//                           real gain (already expanded from whatever mask
+//                           the upstream front-end produced).
+// * `out_re` / `out_im`  — [n_frames, n_bins] row-major FP32 outputs.
+//
+// Phase preservation is exact (`atan2(im · g, re · g) = atan2(im, re)` for
+// every finite g ≥ 0, and a global π flip for g < 0 — never a per-bin phase
+// distortion). Multiplication is IEEE-754 correctly-rounded on every finite
+// input; there is no reduction, no transcendental, no FMA opportunity, so
+// CPU and GPU produce **bit-for-bit identical** FP32 outputs. The parity
+// harness allows the sibling `atol ≤ 5e-4` codec-family bound to keep a
+// discriminating negative control while logging the actual max |Δ| (0 in
+// practice — any future drift immediately visible).
+//
+// Precision: FP32 throughout (BF16 mantissa loss is the real problem —
+// CLAUDE.md audio-dialect rule; denoise is FP32 by construction upstream too).
+//
+// Grid: `(n_bins, n_frames)` 2-D dispatch — same 16×16 threadgroup shape as
+// the sibling snake_activation / codec kernels. `n_bins` on the fast axis
+// (grid.x) matches the row-major stride and keeps adjacent threads reading
+// adjacent floats. The ragged tail is guarded against both bounds.
+struct DenoiseApplyMaskDims {
+    uint n_bins;
+    uint n_frames;
+};
+
+kernel void vokra_denoise_apply_mask_f32(
+    device const float*                spec_re [[buffer(0)]],
+    device const float*                spec_im [[buffer(1)]],
+    device const float*                gain    [[buffer(2)]],
+    device float*                      out_re  [[buffer(3)]],
+    device float*                      out_im  [[buffer(4)]],
+    constant DenoiseApplyMaskDims&     d       [[buffer(5)]],
+    uint2                              gid     [[thread_position_in_grid]])
+{
+    const uint f = gid.x;
+    const uint t = gid.y;
+    if (f >= d.n_bins || t >= d.n_frames) {
+        return;
+    }
+    const uint  idx = t * d.n_bins + f;
+    const float g   = gain[idx];
+    out_re[idx] = spec_re[idx] * g;
+    out_im[idx] = spec_im[idx] * g;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -1466,6 +1527,21 @@ struct Xcodec2FsqDims {
 struct SnakeActivationDims {
     channels: u32,
     time: u32,
+}
+
+/// Vocoder Metal wave WF5 denoise spectral-gate dims (`setBytes:` index 5).
+/// Field order / `u32` widths mirror the MSL `struct DenoiseApplyMaskDims`.
+///
+/// - `n_bins`   — number of frequency bins per frame (STFT `n_fft/2 + 1`).
+///   For DFN3 24 kHz canonical this is 481 (`n_fft = 960`), for GTCRN 16 kHz
+///   canonical 257 (`n_fft = 512`).
+/// - `n_frames` — number of time frames in this decode chunk (the
+///   [`vokra_ops::denoise::Spectrogram::frames`] axis).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DenoiseApplyMaskDims {
+    n_bins: u32,
+    n_frames: u32,
 }
 
 /// Vocoder Metal wave WF5 snac_decode dims (`setBytes:` index 5). Field
@@ -1826,6 +1902,18 @@ pub struct MetalContext {
     /// `repeat_interleave(stride)` into the temporal indexing instead of the
     /// per-output copy loop the CPU fold does.
     snac_decode_pipeline: Id,
+    /// Vocoder Metal wave WF5 denoise spectral-gate primitive
+    /// (`vokra_denoise_apply_mask_f32`), the GPU implementation of
+    /// [`vokra_ops::denoise_apply_mask_f32`]. Element-wise complex × real
+    /// gain multiply extracted from the [`DenoiseModel::enhance_inner`]
+    /// output-stage loop; the primitive shared with any per-freq-per-time
+    /// mask trainer (GTCRN / RNNoise). Trivially per-element (no reduction,
+    /// no transcendental, no FMA opportunity), so CPU vs GPU is
+    /// bit-for-bit identical on every finite input — the parity harness
+    /// still enforces the sibling `atol ≤ 5e-4` codec-family bound to keep
+    /// a discriminating negative control, but logs the measured max |Δ|
+    /// (0 in practice) so any future drift is immediately visible.
+    denoise_apply_mask_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1989,6 +2077,13 @@ impl MetalContext {
         // SAFETY: as above.
         let snac_decode_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_snac_decode_f32") }?;
+        // Vocoder Metal wave WF5 denoise spectral-gate primitive; shares the
+        // same library. Element-wise complex × real gain multiply — the
+        // primitive extracted from `DenoiseModel::enhance_inner`'s output
+        // stage, shared with any per-freq-per-time mask denoiser.
+        // SAFETY: as above.
+        let denoise_apply_mask_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_denoise_apply_mask_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -2020,6 +2115,7 @@ impl MetalContext {
             xcodec2_fsq_decode_pipeline: xcodec2_fsq_decode_pipeline.into_raw(),
             snake_activation_pipeline: snake_activation_pipeline.into_raw(),
             snac_decode_pipeline: snac_decode_pipeline.into_raw(),
+            denoise_apply_mask_pipeline: denoise_apply_mask_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -3230,6 +3326,119 @@ impl MetalContext {
         let mut out = vec![0.0_f32; out_len];
         read_back(&out_buf, &mut out)?;
         Ok(out)
+    }
+
+    /// Vocoder Metal wave WF5: denoise spectral-gate primitive
+    /// (`vokra_denoise_apply_mask_f32`) — element-wise complex × real gain
+    /// multiply on the GPU (phase-preserving spectral gate).
+    ///
+    /// Applies `out_re[t, f] = spec_re[t, f] · gain[t, f]` and
+    /// `out_im[t, f] = spec_im[t, f] · gain[t, f]` for a `[n_frames, n_bins]`
+    /// row-major FP32 complex spectrogram (bins on the inner stride — the
+    /// layout `Spectrogram { re, im }` uses in `vokra_ops::denoise`). The
+    /// exact contract of [`vokra_ops::denoise_apply_mask_f32`], which itself
+    /// reproduces the [`vokra_ops::denoise::DenoiseModel::enhance_inner`]
+    /// output-stage loop (denoise.rs L1852-1870) when the caller
+    /// pre-expands the ERB mask through `erb_inv_fb` to per-position gains.
+    ///
+    /// # Numerics
+    ///
+    /// FP32 throughout on both sides. Multiplication is IEEE-754
+    /// correctly-rounded on every finite input; there is no reduction, no
+    /// transcendental, and no FMA opportunity (a single `re * g` cannot be
+    /// fused with anything), so CPU and GPU produce **bit-for-bit identical**
+    /// outputs. The sibling `atol ≤ 5e-4` codec-family bound in the parity
+    /// harness keeps a discriminating negative control while the measured
+    /// max |Δ| is logged (0 in practice — any future drift becomes visible).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on any of `spec_re.len()`,
+    ///   `spec_im.len()`, `gain.len()`, `out_re.len()`, `out_im.len()` !=
+    ///   `n_frames * n_bins`, or an overflow in `n_frames * n_bins`. Mirrors
+    ///   the CPU [`vokra_ops::denoise_apply_mask_f32`] guards; the MSL
+    ///   kernel guards the ragged grid tail but assumes the buffers have
+    ///   the expected element counts, so a wrong-shape upload would be a
+    ///   silent OOB (FR-EX-08 forbids).
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to the two-output complex-multiply shape
+    pub fn denoise_apply_mask_f32(
+        &self,
+        spec_re: &[f32],
+        spec_im: &[f32],
+        gain: &[f32],
+        n_frames: usize,
+        n_bins: usize,
+        out_re: &mut [f32],
+        out_im: &mut [f32],
+    ) -> Result<()> {
+        // Mirror the CPU op's shape guards on the host side. The MSL kernel
+        // guards `f >= n_bins` and `t >= n_frames` but assumes the buffers
+        // have the expected element counts, so a wrong-shape upload would be
+        // an OOB read — FR-EX-08 forbids silent OOB.
+        let expected = checked_mul(n_frames, n_bins, "denoise_apply_mask n_frames*n_bins")?;
+        expect_len("denoise_apply_mask spec_re", spec_re.len(), expected)?;
+        expect_len("denoise_apply_mask spec_im", spec_im.len(), expected)?;
+        expect_len("denoise_apply_mask gain", gain.len(), expected)?;
+        expect_len("denoise_apply_mask out_re", out_re.len(), expected)?;
+        expect_len("denoise_apply_mask out_im", out_im.len(), expected)?;
+        if n_frames == 0 || n_bins == 0 {
+            // Nothing to write — mirrors the CPU no-op path; every buffer
+            // is already empty per the length checks above.
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r =
+            self.run_denoise_apply_mask(spec_re, spec_im, gain, n_frames, n_bins, out_re, out_im);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to the two-output complex-multiply shape
+    fn run_denoise_apply_mask(
+        &self,
+        spec_re: &[f32],
+        spec_im: &[f32],
+        gain: &[f32],
+        n_frames: usize,
+        n_bins: usize,
+        out_re: &mut [f32],
+        out_im: &mut [f32],
+    ) -> Result<()> {
+        let spec_re_buf = self.new_buffer_from_slice(spec_re)?;
+        let spec_im_buf = self.new_buffer_from_slice(spec_im)?;
+        let gain_buf = self.new_buffer_from_slice(gain)?;
+        let out_re_buf = self.new_buffer_output(out_re.len())?;
+        let out_im_buf = self.new_buffer_output(out_im.len())?;
+        let dims = DenoiseApplyMaskDims {
+            n_bins: n_bins as u32,
+            n_frames: n_frames as u32,
+        };
+        // One thread per (bin, frame). `n_bins` on the fast axis (grid.x)
+        // matches the row-major stride and keeps adjacent threads reading
+        // adjacent floats. The kernel guards the ragged tail against both
+        // bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(n_bins, n_frames);
+        self.dispatch_compute(
+            self.denoise_apply_mask_pipeline,
+            &[
+                &spec_re_buf,
+                &spec_im_buf,
+                &gain_buf,
+                &out_re_buf,
+                &out_im_buf,
+            ],
+            (&dims as *const DenoiseApplyMaskDims).cast::<c_void>(),
+            size_of::<DenoiseApplyMaskDims>(),
+            grid,
+            tg,
+            "denoise_apply_mask",
+        )?;
+        read_back(&out_re_buf, out_re)?;
+        read_back(&out_im_buf, out_im)
     }
 
     /// M3-06 T14: Mimi RVQ codec decode — gather + FP32 fold on the GPU.
@@ -5922,6 +6131,7 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.denoise_apply_mask_pipeline);
             release(self.snac_decode_pipeline);
             release(self.snake_activation_pipeline);
             release(self.xcodec2_fsq_decode_pipeline);
