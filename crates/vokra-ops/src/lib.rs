@@ -269,6 +269,19 @@ pub mod rnnt_decode;
 // by Orpheus and Maya1 (upstream `hubertsiuzdak/snac`, MIT / Apache-2.0).
 pub mod snac_decode;
 // -------------------------------------------------------------------------
+// ---- Vocoder Metal wave WF2 snake activation primitive (2026-08-13) -----
+// Snake activation (Ziyin et al. 2020; upstream `activations.py`) — the
+// per-channel periodic activation `y = x + (1/(α+ε))·sin(α·x)²` used by the
+// BigVGAN / HiFTNet / Kokoro-82M vocoder lineage. Exposes a stateless
+// out-of-place free function `snake_activation_f32` that the
+// `vokra_models::compute::Compute` seam dispatches through (CPU / Metal /
+// deferred CUDA), mirroring the silu / gelu / softmax family. The stateful
+// [`hiftnet::Snake`] (with optional `alpha_logscale`) and
+// [`bigvgan_generator::SnakeBeta`] (two-vector variant) stay as-is and are
+// unrelated to this module — this is a narrower, lower-level entry for a
+// GPU dispatch.
+pub mod snake;
+// -------------------------------------------------------------------------
 pub mod stft;
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend (raw-waveform 7-layer
 // strided conv stem, FR-OP-40) — the mel-free ASR input path wav2vec 2.0 /
@@ -427,6 +440,9 @@ pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 3 snac_decode re-exports ---------------------------
 pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
+// -------------------------------------------------------------------------
+// ---- Vocoder Metal wave WF2 snake activation re-exports (2026-08-13) ----
+pub use snake::snake_activation_f32;
 // -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend re-exports -----------

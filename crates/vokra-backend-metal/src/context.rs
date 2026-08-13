@@ -1050,6 +1050,66 @@ kernel void vokra_xcodec2_fsq_decode_f32(
         }
     }
 }
+
+// ---- Vocoder Metal wave WF2 snake activation (2026-08-13) -------------------
+//
+// Semantics identical to `vokra_ops::snake::snake_activation_f32` (the
+// stateless out-of-place free function that mirrors
+// `vokra_ops::hiftnet::Snake::forward_in_place` under `alpha_logscale = false`
+// and the private `kokoro::nn::snake_activation` helper in vokra-models):
+//
+//     out[c, t] = x[c, t] + (1 / (alpha[c] + eps)) * sin(alpha[c] * x[c, t])^2
+//
+// with `eps = 1.0e-9f` (upstream `no_div_by_zero` — `activations.py:97` and
+// every downstream port: HiFTNet, BigVGAN, Kokoro-82M).
+//
+// * `x`     — [channels, time] row-major FP32 (channel-outer).
+// * `alpha` — [channels] FP32 per-channel scale (already the "effective" α;
+//             the `alpha_logscale = true` case is expected to have the
+//             `exp(alpha_raw)` applied on the host by the converter, matching
+//             the way the CPU free function is called — no in-kernel branch).
+// * `out`   — [channels, time] row-major FP32.
+//
+// Trivially element-wise (no reduction, no gather) — CPU and GPU agree
+// bit-for-bit when the MSL fast-math `sin` matches the host `f32::sin` for
+// the tested inputs. The parity bound is `atol ≤ 5e-4` to match the sibling
+// codec-family bound (`mimi_rvq`, `dac_rvq`, `fsq_codec`); a transcendental
+// re-implementation gap between MSL's `sin` and Rust's `f32::sin` would
+// still fall well inside 5e-4 for finite inputs.
+//
+// Precision: FP32 throughout (BF16 mantissa loss is the real problem —
+// CLAUDE.md audio-dialect activation attribute rule of thumb). The kernel
+// takes an FP32 `alpha` and an FP32 `x`; the intermediate `sin(a*v)` and the
+// `inv_a * s * s` term are computed in FP32.
+//
+// Grid: `(time, channels)` 2-D dispatch — same 16x16 threadgroup shape as
+// the codec kernels. `time` on the fast axis (grid.x) matches the row-major
+// stride and keeps adjacent threads reading adjacent floats. The ragged
+// tail is guarded against both bounds.
+struct SnakeActivationDims {
+    uint channels;
+    uint time;
+};
+
+kernel void vokra_snake_activation_f32(
+    device const float*                x     [[buffer(0)]],
+    device const float*                alpha [[buffer(1)]],
+    device float*                      out   [[buffer(2)]],
+    constant SnakeActivationDims&      d     [[buffer(3)]],
+    uint2                              gid   [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t >= d.time) {
+        return;
+    }
+    const float a     = alpha[c];
+    const float inv_a = 1.0f / (a + 1.0e-9f);
+    const uint  idx   = c * d.time + t;
+    const float v     = x[idx];
+    const float s     = sin(a * v);
+    out[idx] = v + inv_a * s * s;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -1286,6 +1346,20 @@ struct Xcodec2FsqDims {
     n_dims: u32,
     time: u32,
     has_projection: u32,
+}
+
+/// Vocoder Metal wave WF2 snake activation dims (`setBytes:` index 3). Field
+/// order / `u32` widths mirror the MSL `struct SnakeActivationDims`.
+///
+/// - `channels` — number of channels (== `alpha.len()`; Kokoro-82M decoder =
+///   512 for the terminal decoder Snake, BigVGAN AMP blocks vary
+///   32〜1024).
+/// - `time` — number of frames per channel in this call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SnakeActivationDims {
+    channels: u32,
+    time: u32,
 }
 
 /// Scalar shape of one fused-MLP pass chain, shared by the host-in/out
@@ -1594,6 +1668,17 @@ pub struct MetalContext {
     /// (Identity, d_model == n_dims) paths through a `has_projection` flag
     /// in the dims struct.
     xcodec2_fsq_decode_pipeline: Id,
+    /// Vocoder Metal wave WF2 snake activation
+    /// (`vokra_snake_activation_f32`), the GPU implementation of
+    /// [`vokra_ops::snake_activation_f32`]. Per-channel closed-form periodic
+    /// activation `y = x + (1/(α+ε))·sin(α·x)²` shared by the BigVGAN /
+    /// HiFTNet / Kokoro-82M vocoder lineage. Trivially element-wise (no
+    /// gather, no fold), so CPU vs GPU is bit-identical for finite inputs
+    /// within the FP32 transcendental gap (atol ≤ 5e-4 — the same
+    /// codec-family bound). SnakeBeta ([`vokra_ops::bigvgan_generator::SnakeBeta`])
+    /// is a **distinct** two-vector closed form and would land its own
+    /// pipeline separately.
+    snake_activation_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1745,6 +1830,10 @@ impl MetalContext {
         // SAFETY: as above.
         let xcodec2_fsq_decode_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_xcodec2_fsq_decode_f32") }?;
+        // Vocoder Metal wave WF2 snake activation; shares the same library.
+        // SAFETY: as above.
+        let snake_activation_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_snake_activation_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -1774,6 +1863,7 @@ impl MetalContext {
             dac_rvq_gather_project_fold_pipeline: dac_rvq_gather_project_fold_pipeline.into_raw(),
             wavtokenizer_vq_gather_pipeline: wavtokenizer_vq_gather_pipeline.into_raw(),
             xcodec2_fsq_decode_pipeline: xcodec2_fsq_decode_pipeline.into_raw(),
+            snake_activation_pipeline: snake_activation_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -2602,6 +2692,100 @@ impl MetalContext {
             grid,
             tg,
             "swiglu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave WF2: Snake activation
+    /// (`vokra_snake_activation_f32`) — per-channel closed-form periodic
+    /// activation on the GPU.
+    ///
+    /// Applies `out[c, t] = x[c, t] + (1 / (alpha[c] + ε)) · sin(alpha[c] ·
+    /// x[c, t])²` for a `[channels, time]` row-major FP32 tensor (channel-
+    /// outer). `alpha` is length-`channels`; `x` and `out` are both length
+    /// `channels · time`. The exact contract of
+    /// [`vokra_ops::snake_activation_f32`], which itself is bit-identical to
+    /// [`vokra_ops::hiftnet::Snake::forward_in_place`] under
+    /// `alpha_logscale = false` and the private `kokoro::nn::snake_activation`
+    /// helper in vokra-models (same eps, same primitives, same reduction
+    /// order — trivial per-element, no reduction).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults, and the intrinsic `sin` may differ from Rust's `f32::sin`
+    /// in the low bits. The CPU vs GPU bound is `atol ≤ 5e-4` (the same
+    /// codec-family bound used by [`Self::mimi_rvq_gather_fold_f32`] /
+    /// [`Self::dac_rvq_gather_project_fold_f32`] / the FSQ family) — not a
+    /// bit-for-bit equality, because that would over-constrain the
+    /// transcendental. In practice max |Δ| stays well inside 5e-4 for
+    /// finite inputs (see `tests/snake_activation_metal_bit_identical.rs`).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on `alpha.len() != channels`,
+    ///   `x.len() != channels * time`, `out.len() != channels * time`, or a
+    ///   `channels * time` overflow. Mirrors the CPU
+    ///   [`vokra_ops::snake_activation_f32`] guards.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn snake_activation_f32(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        // Mirror the CPU op's shape guards on the host side (the MSL kernel
+        // guards `c >= channels` and `t >= time` but assumes the buffers
+        // have the expected element counts, so a wrong-shape upload would be
+        // an OOB read — FR-EX-08 forbids silent OOB).
+        let expected = checked_mul(channels, time, "snake_activation channels*time")?;
+        expect_len("snake_activation alpha", alpha.len(), channels)?;
+        expect_len("snake_activation x", x.len(), expected)?;
+        expect_len("snake_activation out", out.len(), expected)?;
+        if channels == 0 || time == 0 {
+            // Nothing to write — mirrors the CPU no-op path; both buffers
+            // are already empty per the length checks above.
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_snake_activation(x, alpha, channels, time, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_snake_activation(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let alpha_buf = self.new_buffer_from_slice(alpha)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SnakeActivationDims {
+            channels: channels as u32,
+            time: time as u32,
+        };
+        // One thread per (t, c). `time` on the fast axis (grid.x) matches the
+        // row-major stride and keeps adjacent threads reading adjacent
+        // floats. The kernel guards the ragged tail against both bounds so
+        // `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(time, channels);
+        self.dispatch_compute(
+            self.snake_activation_pipeline,
+            &[&x_buf, &alpha_buf, &out_buf],
+            (&dims as *const SnakeActivationDims).cast::<c_void>(),
+            size_of::<SnakeActivationDims>(),
+            grid,
+            tg,
+            "snake_activation",
         )?;
         read_back(&out_buf, out)
     }
@@ -5296,6 +5480,7 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.snake_activation_pipeline);
             release(self.xcodec2_fsq_decode_pipeline);
             release(self.wavtokenizer_vq_gather_pipeline);
             release(self.dac_rvq_gather_project_fold_pipeline);

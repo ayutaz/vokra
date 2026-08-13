@@ -152,6 +152,25 @@ pub enum HotOp {
     /// `covered_by_metal` returns `true`; `covered_by_cuda` /
     /// `covered_by_vulkan` / `covered_by_webgpu` return `false`.
     Xcodec2Fsq,
+    /// Snake activation (`vokra_ops::snake_activation_f32`) — the per-channel
+    /// closed-form periodic activation `y = x + (1/(α+ε))·sin(α·x)²` shared
+    /// by the BigVGAN / HiFTNet / Kokoro-82M vocoder lineage. Consumed by
+    /// the M2-07 Kokoro decoder (private `kokoro::nn::snake_activation`
+    /// helper — unchanged) and every future vocoder that wants a GPU
+    /// dispatch for the plain-Snake variant (the two-vector SnakeBeta stays
+    /// on its own [`vokra_ops::bigvgan_generator::SnakeBeta`] path).
+    ///
+    /// **Vocoder Metal wave WF2 (2026-08-13):** the Metal arm is wired via
+    /// `vokra_snake_activation_f32` (element-wise MSL kernel, semantics
+    /// equal to `vokra_ops::snake_activation_f32` within the FP32
+    /// transcendental gap, host-side shape validation upstream — FR-EX-08).
+    /// The CUDA arm remains an explicit [`VokraError::UnsupportedOp`]
+    /// (deferred to the vast.ai owner track). `covered_by_metal` returns
+    /// `true`; `covered_by_cuda` / `covered_by_vulkan` / `covered_by_webgpu`
+    /// / `covered_by_coreml` / `covered_by_qnn` return `false` — any model
+    /// that lists it against those backends fails the coverage gate
+    /// (never a silent CPU fall back).
+    SnakeActivation,
 }
 
 impl HotOp {
@@ -186,9 +205,11 @@ impl HotOp {
         // added DacRvq via `vokra_dac_rvq_gather_project_fold_f32`; M4-16 WF2
         // (2026-08-13) added the FSQ family (`WavTokenizerVq` via
         // `vokra_wavtokenizer_vq_gather_f32`, `Xcodec2Fsq` via
-        // `vokra_xcodec2_fsq_decode_f32`). Any model listing the still-
-        // deferred sibling (`EncodecRvq`) continues to fail the Metal
-        // coverage gate — no silent CPU fall back (FR-EX-08).
+        // `vokra_xcodec2_fsq_decode_f32`). Vocoder Metal wave WF2 (2026-08-13)
+        // added `SnakeActivation` via `vokra_snake_activation_f32`. Any
+        // model listing the still-deferred sibling (`EncodecRvq`) continues
+        // to fail the Metal coverage gate — no silent CPU fall back
+        // (FR-EX-08).
         matches!(
             self,
             HotOp::Gemm
@@ -201,6 +222,7 @@ impl HotOp {
                 | HotOp::DacRvq
                 | HotOp::WavTokenizerVq
                 | HotOp::Xcodec2Fsq
+                | HotOp::SnakeActivation
         )
     }
 
@@ -1459,6 +1481,86 @@ impl Compute {
         }
     }
 
+    /// Snake activation (Ziyin et al. 2020) — the per-channel closed-form
+    /// periodic activation shared by the BigVGAN / HiFTNet / Kokoro-82M
+    /// vocoder lineage, wired into the imperative `Compute` seam.
+    ///
+    /// Applies `out[c, t] = x[c, t] + (1 / (alpha[c] + ε)) · sin(alpha[c] ·
+    /// x[c, t])²` for a `[channels, time]` row-major FP32 tensor (channel-
+    /// outer). `alpha` is length-`channels`; `x` and `out` are both length
+    /// `channels · time`. Delegates on the CPU arm to
+    /// [`vokra_ops::snake_activation_f32`] (which is bit-identical to
+    /// [`vokra_ops::hiftnet::Snake::forward_in_place`] under
+    /// `alpha_logscale = false` and the private
+    /// `vokra_models::kokoro::nn::snake_activation` helper — same eps, same
+    /// primitives, trivial reduction).
+    ///
+    /// # `alpha_logscale` and `SnakeBeta` are NOT this op
+    ///
+    /// - `alpha_logscale = true` is an upstream-side transformation
+    ///   (`alpha_eff = exp(alpha_raw)`) applied by the converter or the
+    ///   stateful [`vokra_ops::hiftnet::Snake`]; the caller passes the
+    ///   already-effective vector to this method.
+    /// - `SnakeBeta` (`y = x + (1/(β+ε))·sin(α·x)²`, two per-channel
+    ///   vectors) is a different closed form and is provided by
+    ///   [`vokra_ops::bigvgan_generator::SnakeBeta`] — not through this seam.
+    ///
+    /// # CPU-only through this seam today (Metal wired; CUDA / Vulkan /
+    /// WebGPU / CoreML / QNN return `UnsupportedOp`)
+    ///
+    /// **Vocoder Metal wave WF2 (2026-08-13):** the Metal arm dispatches to
+    /// [`vokra_backend_metal::MetalContext::snake_activation_f32`]
+    /// (`vokra_snake_activation_f32` MSL kernel — semantics equal to the CPU
+    /// free function within the FP32 transcendental gap, `atol ≤ 5e-4`).
+    /// Every other GPU arm returns an explicit
+    /// [`VokraError::UnsupportedOp`] until the corresponding kernel lands —
+    /// never a silent CPU fall back (FR-EX-08). The coverage gate on
+    /// [`Compute::for_backend`] additionally rejects any model that lists
+    /// [`HotOp::SnakeActivation`] against those backends.
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`vokra_ops::snake_activation_f32`] raises (wrong `alpha.len()` /
+    ///   `x.len()` / `out.len()`, or `channels * time` overflow — never a
+    ///   silent shape clamp, FR-EX-08).
+    /// - Metal arm: same host-side shape validation before dispatch, plus
+    ///   any [`VokraError::BackendUnavailable`] from the underlying command
+    ///   buffer.
+    /// - CUDA / Vulkan / WebGPU / CoreML / QNN arms: explicit
+    ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
+    pub fn snake_activation_f32(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => vokra_ops::snake_activation_f32(x, alpha, channels, time, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.snake_activation_f32(x, alpha, channels, time, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "snake_activation_f32 has no wired CUDA NVRTC kernel; the Vocoder wave CUDA \
+                 arm is deferred to the vast.ai owner track. Select BackendKind::Cpu (which \
+                 delegates to vokra_ops::snake_activation_f32), or wait for the CUDA kernel — \
+                 Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "snake_activation_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six \
+                 Whisper hot ops only; the Vocoder wave GPU arms are deferred like \
+                 Metal/CUDA/Vulkan). Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::snake_activation_f32) — Vokra does not silently run the op on the \
+                 CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Fused MLP `fc2(gelu(fc1(x)))` — the Phase-5 device-residency slice.
     ///
     /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, bias
@@ -2276,14 +2378,17 @@ mod tests {
         assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 
-    /// On a Metal build the `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` Metal
-    /// arms are explicit `UnsupportedOp` — the M4-16 GPU kernels are deferred
-    /// (single-stage GEMV bound: the future kernels reuse the M2-01 gemv /
-    /// gather kernels), and a consumer that bypasses the coverage gate still
-    /// hits the method-level defence (FR-EX-08, mirror of the RVQ tests).
+    /// On a Metal build both FSQ-family Metal arms are wired
+    /// (`wavtokenizer_vq_f32` and `xcodec2_fsq_f32`, commit `a7a05e8` MSL
+    /// kernels `vokra_wavtokenizer_vq_gather_f32` and
+    /// `vokra_xcodec2_fsq_decode_f32`) — the trivial (1,1,1) shapes must
+    /// therefore return `Ok`. This test confirms both arms stay in
+    /// lock-step with their [`HotOp::covered_by_metal`] flags (FR-EX-08,
+    /// mirror of the RVQ tests). Failing HERE (rather than at `Err`) means
+    /// the sibling wave's Metal arm regressed to a stale `UnsupportedOp`.
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
-    fn metal_fsq_family_arms_are_unsupported_no_silent_fallback() {
+    fn metal_fsq_family_arms_track_coverage_no_silent_fallback() {
         let compute = match Compute::for_backend(BackendKind::Metal, &[]) {
             Ok(c) => c,
             Err(VokraError::BackendUnavailable(_)) => {
@@ -2297,19 +2402,25 @@ mod tests {
             d_model: 1,
         };
         let table = CodebookTable::new(1, 1, vec![0.0]).unwrap();
-        assert!(matches!(
-            compute.wavtokenizer_vq_f32(&[0u32], 1, &table, &wt_attrs),
-            Err(VokraError::UnsupportedOp(_))
-        ));
+        let wt_out = compute
+            .wavtokenizer_vq_f32(&[0u32], 1, &table, &wt_attrs)
+            .expect(
+                "WavTokenizerVq Metal arm is wired (Vocoder wave WF2 sibling, 2026-08-13) — \
+                 must succeed",
+            );
+        assert_eq!(wt_out.len(), 1);
 
         let fsq_attrs = Xcodec2FsqAttrs {
             levels: vec![2],
             d_model: 1,
         };
-        assert!(matches!(
-            compute.xcodec2_fsq_f32(&[0u32], 1, None, &fsq_attrs),
-            Err(VokraError::UnsupportedOp(_))
-        ));
+        let fsq_out = compute
+            .xcodec2_fsq_f32(&[0u32], 1, None, &fsq_attrs)
+            .expect(
+                "Xcodec2Fsq Metal arm is wired (Vocoder wave WF2 sibling, 2026-08-13) — \
+                 must succeed",
+            );
+        assert_eq!(fsq_out.len(), 1);
     }
 
     /// On a CUDA build the `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` CUDA
@@ -2367,13 +2478,18 @@ mod tests {
         }
     }
 
-    /// On a Metal build the `dac_rvq_f32` / `encodec_rvq_f32` Metal arms are
-    /// explicit `UnsupportedOp` — the M4-04 GPU kernels are deferred, and a
-    /// consumer that bypasses the coverage gate still hits the method-level
-    /// defence (FR-EX-08, mirror of the mimi test above).
+    /// On a Metal build the `encodec_rvq_f32` Metal arm is still an explicit
+    /// `UnsupportedOp` — the M4-04 EnCodec GPU kernel stays deferred (Meta
+    /// EnCodec's pretrained weights are on the FR-OP-32 permanent-exclusion
+    /// list, so its Metal arm was never wired). The `dac_rvq_f32` Metal arm
+    /// is now wired (commit `f9f6e40`, MSL kernel
+    /// `vokra_dac_rvq_gather_project_fold_f32`), so its trivial (1,1,1)
+    /// shape should return an `Ok` fold — this test confirms both siblings
+    /// stay in lock-step with their [`HotOp::covered_by_metal`] flags
+    /// (FR-EX-08, mirror of the mimi test above).
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
-    fn metal_dac_and_encodec_rvq_arms_are_unsupported_no_silent_fallback() {
+    fn metal_dac_and_encodec_rvq_arms_track_coverage_no_silent_fallback() {
         let compute = match Compute::for_backend(BackendKind::Metal, &[]) {
             Ok(c) => c,
             Err(VokraError::BackendUnavailable(_)) => {
@@ -2382,6 +2498,11 @@ mod tests {
             }
             Err(e) => panic!("unexpected Metal for_backend error: {e}"),
         };
+        // DAC is Metal-covered (Vocoder wave WF2 sibling, 2026-08-13). The
+        // trivial (1,1,1) shape yields `Ok(vec![0.0])` on the CPU arm, so
+        // the Metal arm must succeed (bit-identical on this shape — nothing
+        // to re-associate). Failing HERE (rather than at `Err`) means the
+        // sibling wave's Metal arm regressed to a stale `UnsupportedOp`.
         let dac_attrs = DacRvqAttrs {
             n_codebooks: 1,
             codebook_size: 1,
@@ -2390,21 +2511,27 @@ mod tests {
         };
         let dac_tables = vec![CodebookTable::new(1, 1, vec![0.0]).unwrap()];
         let dac_projs = vec![DacOutProj::new(1, 1, vec![0.0], vec![0.0]).unwrap()];
-        assert!(matches!(
-            compute.dac_rvq_f32(&[0u32], 1, &dac_tables, &dac_projs, &dac_attrs),
-            Err(VokraError::UnsupportedOp(_))
-        ));
+        let dac_out = compute
+            .dac_rvq_f32(&[0u32], 1, &dac_tables, &dac_projs, &dac_attrs)
+            .expect("DAC Metal arm is wired (Vocoder wave WF2, 2026-08-13) — must succeed");
+        assert_eq!(dac_out.len(), 1);
 
+        // EnCodec Metal arm stays deferred (FR-OP-32 permanent weight
+        // exclusion — the Metal kernel would never have real callers).
         let enc_attrs = EncodecRvqAttrs {
             n_codebooks: 1,
             codebook_size: 1,
             d_model: 1,
         };
         let enc_tables = vec![CodebookTable::new(1, 1, vec![0.0]).unwrap()];
-        assert!(matches!(
-            compute.encodec_rvq_f32(&[0u32], 1, &enc_tables, &enc_attrs),
-            Err(VokraError::UnsupportedOp(_))
-        ));
+        assert!(
+            matches!(
+                compute.encodec_rvq_f32(&[0u32], 1, &enc_tables, &enc_attrs),
+                Err(VokraError::UnsupportedOp(_)),
+            ),
+            "EnCodec Metal arm must stay `UnsupportedOp` (FR-OP-32 permanent weight exclusion — \
+             never a silent CPU fall back, FR-EX-08)",
+        );
     }
 
     /// On a CUDA build the `dac_rvq_f32` / `encodec_rvq_f32` CUDA arms are
@@ -2682,7 +2809,9 @@ mod tests {
         // (2026-08-13, MSL kernel `vokra_dac_rvq_gather_project_fold_f32`);
         // the FSQ family (WavTokenizerVq / Xcodec2Fsq) is covered as of M4-16
         // WF2 (2026-08-13, MSL kernels `vokra_wavtokenizer_vq_gather_f32` /
-        // `vokra_xcodec2_fsq_decode_f32`). Only EncodecRvq stays deferred.
+        // `vokra_xcodec2_fsq_decode_f32`); SnakeActivation is covered as of
+        // the Vocoder Metal wave WF2 (2026-08-13, MSL kernel
+        // `vokra_snake_activation_f32`). Only EncodecRvq stays deferred.
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -2694,6 +2823,7 @@ mod tests {
             HotOp::DacRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
+            HotOp::SnakeActivation,
         ] {
             assert!(
                 op.covered_by_metal(),
@@ -2743,6 +2873,16 @@ mod tests {
                 }
                 Err(e) => panic!("unexpected error for a Metal-covered {op:?} request: {e}"),
             }
+        }
+        // SnakeActivation (Vocoder Metal wave WF2, 2026-08-13) is now a
+        // covered request: same device-gated posture as MimiRvq / DacRvq /
+        // the FSQ family above.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::SnakeActivation]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; SnakeActivation covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered SnakeActivation request: {e}"),
         }
 
         // Whisper's full set is therefore a covered request: it either builds
@@ -2800,19 +2940,22 @@ mod tests {
              if it has just landed, flip `HotOp::covered_by_cuda` for MimiRvq and update this \
              test.",
         );
-        // Same deferred posture for the M4-04 RVQ siblings and the M4-16 FSQ
-        // family (lock-step with the CUDA arms of `dac_rvq_f32` /
-        // `encodec_rvq_f32` / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32`).
+        // Same deferred posture for the M4-04 RVQ siblings, the M4-16 FSQ
+        // family, and the Vocoder wave WF2 SnakeActivation (lock-step with
+        // the CUDA arms of `dac_rvq_f32` / `encodec_rvq_f32` /
+        // `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` / `snake_activation_f32`).
         for op in [
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
+            HotOp::SnakeActivation,
         ] {
             assert!(
                 !op.covered_by_cuda(),
-                "{op:?} unexpectedly CUDA-covered — the M4-04/M4-16 GPU kernels are deferred; \
-                 if one has just landed, flip `HotOp::covered_by_cuda` and update this test.",
+                "{op:?} unexpectedly CUDA-covered — the M4-04/M4-16/Vocoder GPU kernels are \
+                 deferred; if one has just landed, flip `HotOp::covered_by_cuda` and update this \
+                 test.",
             );
             assert!(matches!(
                 Compute::for_backend(BackendKind::Cuda, &[op]),
@@ -2876,6 +3019,7 @@ mod tests {
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
+            HotOp::SnakeActivation,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -2899,6 +3043,7 @@ mod tests {
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
+            HotOp::SnakeActivation,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -2936,6 +3081,7 @@ mod tests {
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
+            HotOp::SnakeActivation,
         ] {
             assert!(
                 !op.covered_by_coreml(),
@@ -2990,6 +3136,7 @@ mod tests {
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
+            HotOp::SnakeActivation,
         ] {
             assert!(
                 !op.covered_by_qnn(),
@@ -3149,11 +3296,17 @@ mod tests {
                 "{op:?} unexpectedly NOT WebGPU-covered"
             );
         }
-        for op in [HotOp::MimiRvq, HotOp::DacRvq, HotOp::EncodecRvq] {
+        for op in [
+            HotOp::MimiRvq,
+            HotOp::DacRvq,
+            HotOp::EncodecRvq,
+            HotOp::SnakeActivation,
+        ] {
             assert!(
                 !op.covered_by_webgpu(),
-                "{op:?} unexpectedly WebGPU-covered — the RVQ GPU kernels are deferred; if one \
-                 has just landed, flip `HotOp::covered_by_webgpu` and update this test.",
+                "{op:?} unexpectedly WebGPU-covered — the RVQ / Vocoder GPU kernels are \
+                 deferred; if one has just landed, flip `HotOp::covered_by_webgpu` and update \
+                 this test.",
             );
             assert!(matches!(
                 Compute::for_backend(BackendKind::WebGpu, &[op]),
