@@ -2658,6 +2658,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // cc-by-nc-4.0 default = T4 fail-closed). HF-hosted, stamps
         // `vokra.provenance.upstream_hf = facebook/magnet-small-10secs`.
         | ModelKind::MagnetSmall10secs
+        // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+        // remaining WF7): MAGNeT Medium 30secs — Meta AudioCraft
+        // non-autoregressive masked-LM 30-second music generator sibling
+        // of `MagnetSmall10secs` (~1.5B params ~5.7 GB = wider hidden +
+        // more layers than small + 30 sec span matching MusicGen family
+        // max, cc-by-nc-4.0 default = T4 fail-closed). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = facebook/magnet-medium-30secs`.
+        | ModelKind::MagnetMedium30secs
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

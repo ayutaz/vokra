@@ -3247,6 +3247,35 @@ pub enum ModelKind {
     /// ops) deferred to a follow-up wave (owner ADR judgement, RMVPE
     /// loud-partial precedent).
     MagnetSmall10secs,
+    /// **Meta MAGNeT Medium 30secs** (`facebook/magnet-medium-30secs`,
+    /// **cc-by-nc-4.0**, post-audit CC-gap Wave D remaining WF7
+    /// 2026-08-13) — Meta AudioCraft's Masked Audio Generation using a
+    /// Single Non-Autoregressive Transformer, **1.5B parameter medium**
+    /// variant that emits **30-second music clips** via parallel
+    /// masked-LM decoding (Ziv et al. 2024 arXiv:2401.04577). Sibling
+    /// of `MagnetSmall10secs` (500 M / 10 sec) — same non-autoregressive
+    /// masked-LM decoding op path, but distinct hparams (wider hidden /
+    /// more layers / 30 sec max span matching MusicGen family's max
+    /// horizon). Category = `music`, distinct arch tag
+    /// `magnet_medium_30secs` from BOTH sibling `magnet_small_10secs`
+    /// (silently sharing would let the runtime binder load small hparams
+    /// into medium weights) AND sibling MusicGen AR family
+    /// (`musicgen_small` / `musicgen_medium` / `musicgen_large` — AR
+    /// over EnCodec token-by-token generation, entirely different
+    /// decoder loop) / `audiogen_medium` / `audioldm2` /
+    /// `stable_audio_open_small` / `jasco_400m_chords_drums` /
+    /// `ace_step` / `bs_roformer` (silent share = FR-EX-08 mis-route
+    /// at coarser topology). Convert with
+    /// `convert_magnet_medium_30secs_file` — publish requires
+    /// `--allow-noncommercial` per MusicGen family / sibling small T4
+    /// precedent. Scale ~5.7 GB (1.5B LM + bundled EnCodec 32 kHz +
+    /// T5-base text encoder) = **local-safe** on M1 iMac 16 GB per
+    /// memory `[[feedback-large-models-on-vast-ai]]` (below 8 GB owner
+    /// cutoff). Runtime binder (`magnet_masked_decode` +
+    /// `span_masking_scheduler` ops, FR-OP-85 anchor) deferred to a
+    /// follow-up wave (owner ADR judgement, sibling small / RMVPE /
+    /// Charsiu loud-partial precedent).
+    MagnetMedium30secs,
 }
 
 impl ModelKind {
@@ -4932,6 +4961,22 @@ impl ModelKind {
             | "magnet-small-10s"
             | "magnet-small"
             | "facebook/magnet-small-10secs" => Some(Self::MagnetSmall10secs),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs
+            // (`facebook/magnet-medium-30secs`, cc-by-nc-4.0, 1.5B
+            // parameter non-autoregressive masked-LM decoding for
+            // 30-second music generation — sibling of magnet-small-10secs
+            // with wider hidden / more layers / longer span). Accept the
+            // canonical + underscore + short-slug + upstream HF slug
+            // variants; the bare `"magnet"` alias is intentionally NOT
+            // claimed here so future variant additions or a family-level
+            // dispatch alias can either claim it or add their own
+            // variant-specific alias — same posture as sibling small.
+            "magnet-medium-30secs"
+            | "magnet_medium_30secs"
+            | "magnet-medium-30s"
+            | "magnet-medium"
+            | "facebook/magnet-medium-30secs" => Some(Self::MagnetMedium30secs),
             _ => None,
         }
     }
@@ -5192,6 +5237,10 @@ impl ModelKind {
             Self::SeamlessM4tV2Large => "seamless-m4t-v2-large",
             // Meta music-gen post-audit CC-gap wave (2026-08-13).
             Self::MagnetSmall10secs => "magnet-small-10secs",
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs — 1.5B / 30 sec
+            // medium sibling of magnet-small-10secs.
+            Self::MagnetMedium30secs => "magnet-medium-30secs",
         }
     }
 }
@@ -9241,6 +9290,48 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === MagnetMedium30secs (Meta music-gen post-audit CC-gap Wave D remaining WF7 2026-08-13) ===
+        ModelKind::MagnetMedium30secs => {
+            // Meta AudioCraft MAGNeT Medium 30secs (facebook/magnet-medium-30secs,
+            // cc-by-nc-4.0). ~1.5B params ~5.7 GB (LM + bundled EnCodec 32 kHz +
+            // T5-base text encoder). Non-autoregressive masked-LM parallel decoding
+            // for 30-second music generation (Ziv et al. 2024 arXiv:2401.04577),
+            // ~7x faster than AR baselines. Distinct arch tag
+            // `magnet_medium_30secs` from BOTH sibling `magnet_small_10secs` (same
+            // op path but different hparams — silently sharing would let the
+            // runtime binder load small hparams into medium weights) AND sibling
+            // MusicGen AR family (musicgen_small / musicgen_medium /
+            // musicgen_large) — FR-EX-08 silent share = wrong-decoder mis-route
+            // (masked_decode vs AR token-by-token). BF16 pass-through skeleton
+            // mirror of sibling `magnet_small_10secs` / jasco_400m_chords_drums /
+            // musicgen_medium / audiogen_medium. Default license cc-by-nc-4.0 +
+            // NonCommercial (X-Codec 2 / MusicGen family / sibling small T4
+            // precedent). Scale ~5.7 GB = **local-safe** on M1 iMac 16 GB per
+            // memory `[[feedback-large-models-on-vast-ai]]` (below 8 GB owner
+            // cutoff), no vast.ai handoff needed. Runtime binder
+            // (`magnet_masked_decode` + `span_masking_scheduler` ops) deferred to
+            // a follow-up wave per sibling small / RMVPE / Charsiu /
+            // MOSS-Audio-Tokenizer / MioCodec loud-partial precedent.
+            let report = models::magnet_medium_30secs::convert_magnet_medium_30secs_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "magnet-medium-30secs: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — \
+                 publish requires --allow-noncommercial per MusicGen family / sibling small \
+                 T4 precedent; runtime binder for magnet_masked_decode + span_masking_scheduler \
+                 deferred to owner ADR judgement — loud-partial per sibling small / RMVPE / \
+                 Charsiu precedent)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === Snac (2026-08-01 Wave 3) ===
         ModelKind::Snac => {
             // 2026-08-01 Wave 3: SNAC — Multi-Scale Neural Audio
@@ -11068,6 +11159,17 @@ pub use models::bs_roformer::{BsRoformerReport, convert_bs_roformer_file};
 // `[[feedback-large-models-on-vast-ai]]`.
 pub use models::magnet_small_10secs::{MagnetSmall10secsReport, convert_magnet_small_10secs_file};
 
+// Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining WF7):
+// Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`, cc-by-nc-4.0) —
+// public re-export for downstream callers that reach past the
+// `ModelKind::MagnetMedium30secs` dispatch (mirror of the sibling
+// magnet_small_10secs / jasco_400m_chords_drums BF16 pass-through public
+// API surface). Local-safe convert (~5.7 GB, below 8 GB threshold) on
+// M1 iMac per memory `[[feedback-large-models-on-vast-ai]]`.
+pub use models::magnet_medium_30secs::{
+    MagnetMedium30secsReport, convert_magnet_medium_30secs_file,
+};
+
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
 /// constructing an [`AdapterSpec`] directly and attaching it to a
@@ -12676,6 +12778,15 @@ mod modelkind_alias_and_roundtrip_tests {
             // (silent share would mis-route runtime dispatch = masked-LM
             // parallel decoding vs AR token-by-token generation).
             MagnetSmall10secs,
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs — canonical
+            // `--model magnet-medium-30secs` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            // Distinct from sibling `magnet_small_10secs` (same op path
+            // but different hparams = wider hidden / more layers / longer
+            // span) AND sibling MusicGen AR family (silent share = coarser
+            // FR-EX-08 mis-route to token-by-token AR path).
+            MagnetMedium30secs,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -13478,6 +13589,24 @@ mod modelkind_alias_and_roundtrip_tests {
                     "magnet-small-10s",
                     "magnet-small",
                     "facebook/magnet-small-10secs",
+                ],
+            ),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs — canonical
+            // `--model magnet-medium-30secs` must round-trip. Distinct
+            // from sibling `magnet_small_10secs` (different HF slug +
+            // different hparams for the 30 sec horizon) and distinct
+            // from sibling MusicGen AR family (silent share would
+            // mis-route runtime dispatch = masked-LM parallel decoding
+            // vs AR token-by-token generation).
+            (
+                ModelKind::MagnetMedium30secs,
+                &[
+                    "magnet-medium-30secs",
+                    "magnet_medium_30secs",
+                    "magnet-medium-30s",
+                    "magnet-medium",
+                    "facebook/magnet-medium-30secs",
                 ],
             ),
         ];

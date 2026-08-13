@@ -1015,12 +1015,24 @@ pub mod maest;
 // distinct arch tag to prevent FR-EX-08 silent runtime dispatch mis-route
 // (MAGNeT non-autoregressive masked-LM decoding is a different code path from
 // MusicGen AR-over-EnCodec; MelodyFlow DiT is a different code path from both).
-// Sibling files land one per WF phase: WF6 = magnet_small_10secs (this land),
-// WF7 = magnet_medium_30secs, WF8 = melodyflow_t24_30secs.
+// Sibling files land one per WF phase: WF6 = magnet_small_10secs (2026-08-13
+// WF6 landed), WF7 = magnet_medium_30secs (this land, 2026-08-13 WF7),
+// WF8 = melodyflow_t24_30secs.
 // Real-weight parity + runtime binder (magnet_masked_decode /
 // span_masking_scheduler / DiT flow-sampler forward) is deferred per RMVPE /
 // Charsiu / MOSS-Audio-Tokenizer / MioCodec loud-partial precedent — the
 // converter code stamps the upstream tensors verbatim so a future owner
 // wave can flip the switch after §3.1 sign-off + real weight download.
 pub mod magnet_small_10secs;
+// WF7 (2026-08-13, this land): MAGNeT Medium 30secs — 1.5 B parameter
+// medium variant of MAGNeT with the 30 sec generation slot (matching
+// MusicGen family's max horizon). Same non-autoregressive masked-LM
+// decoding op path as `magnet_small_10secs`, but distinct arch tag
+// `magnet_medium_30secs` so the runtime binder does not silently load
+// small hparams into medium weights (different hidden width / layer
+// count / max span). BF16 pass-through skeleton mirror of sibling
+// small. Local-safe convert (~5.7 GB) on M1 iMac 16 GB per memory
+// `[[feedback-large-models-on-vast-ai]]` (below 8 GB threshold — sibling
+// small was ~2 GB, medium sits below the 8 GB owner cutoff).
+pub mod magnet_medium_30secs;
 // ---------------------------------------------------------------------------

@@ -1037,6 +1037,24 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "magnet-small-10secs": [
         "Meta MAGNeT Small 10secs (`facebook/magnet-small-10secs`)"
     ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+    # `feat/post-audit-cc-gap-2026-08-13` Wave D remaining WF7): Meta MAGNeT
+    # Medium 30secs (`facebook/magnet-medium-30secs`, cc-by-nc-4.0). 1.5B
+    # parameter non-autoregressive masked-LM parallel decoding for 30-second
+    # music generation (~5.7 GB bundle = LM + bundled EnCodec 32 kHz +
+    # T5-base text encoder, Ziv et al. 2024 arXiv:2401.04577). T4 tier
+    # (Research-only, non-commercial) — inherits the X-Codec 2 / MusicGen
+    # family / jasco_400m_chords_drums / sibling magnet_small_10secs T4
+    # precedent workflow (`LicenseClass::NonCommercial` +
+    # `--allow-noncommercial` gate + `fetch_license.sh --spdx cc-by-nc-4.0`
+    # canonical LICENSE fetch). Local-safe convert on M1 iMac 16 GB per
+    # memory `[[feedback-large-models-on-vast-ai]]` (below the 8 GB owner
+    # cutoff — sibling small was ~2 GB, medium sits well within the local
+    # window and needs no vast.ai handoff). Row heading matches
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "magnet-medium-30secs": [
+        "Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`)"
+    ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 T1 (Permissive) rows all ☑ Commercial 2026-08-04
     # yousan. publish-one.sh maps `--repo <slug>` to APPROVED against
@@ -1566,6 +1584,14 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # §3.1 byte-for-byte.
     "magnet_small_10secs": [
         "Meta MAGNeT Small 10secs (`facebook/magnet-small-10secs`)"
+    ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining WF7):
+    # magnet_medium_30secs — sibling of magnet_small_10secs with wider hidden /
+    # more layers / 30 sec span. Same masked-LM op path but distinct arch tag
+    # so the runtime binder cannot silently load small hparams into medium
+    # weights. Row heading matches `docs/license-audit.md` §3.1 byte-for-byte.
+    "magnet_medium_30secs": [
+        "Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`)"
     ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 BF16 pass-through skeleton converters, all T1
