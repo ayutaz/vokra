@@ -822,6 +822,79 @@ kernel void vokra_mimi_rvq_gather_fold_f32(
     }
     out[t * d.d_model + delem] = acc;
 }
+
+// ---- M4-04 dac_rvq gather + factorized projection + FP32 fold ---------------
+//
+// Semantics identical to `vokra_ops::dac_rvq::dac_rvq_decode` (the DAC
+// factorized RVQ decode: each quantizer owns a low-dim codebook plus a per-
+// quantizer 1x1 projection with bias applied *before* the residual sum):
+//
+//     out[t, d] = Σ_cb (
+//         proj_biases[cb, d]
+//       + Σ_c proj_weights[cb, d, c] * low_tables[cb, codes[t, cb], c]
+//     )
+//
+// * `codes`         — [time, n_codebooks] row-major u32 codebook indices.
+// * `low_tables`    — [n_codebooks, codebook_size, codebook_dim] row-major FP32;
+//                     codebook `cb` starts at `cb * codebook_size *
+//                     codebook_dim`.
+// * `proj_weights`  — [n_codebooks, d_model, codebook_dim] row-major FP32;
+//                     quantizer `cb`'s W row `d` starts at
+//                     `cb * d_model * codebook_dim + d * codebook_dim`.
+// * `proj_biases`   — [n_codebooks, d_model] row-major FP32; quantizer `cb`'s
+//                     bias for output `d` at `cb * d_model + d`.
+// * `out`           — [time, d_model] row-major FP32.
+//
+// Same naive one-thread-per-output-element layout as `mimi_rvq`, extended with
+// the per-quantizer GEMV + bias fold. Host-side range checks on `codes[..]`
+// (FR-EX-08 — the kernel does no per-element bound check). FP32 accumulator
+// throughout — the "BF16 mantissa loss is the real problem" audio-dialect rule
+// applies (CLAUDE.md).
+//
+// Grid: `(d_model, time)` — same 2D launch as mimi_rvq. Threadgroup 16x16 (the
+// `grid_2d` default). The ragged tail is guarded against both bounds.
+struct DacRvqDims {
+    uint n_codebooks;
+    uint codebook_size;
+    uint codebook_dim;
+    uint d_model;
+    uint time;
+};
+
+kernel void vokra_dac_rvq_gather_project_fold_f32(
+    device const uint*      codes        [[buffer(0)]],
+    device const float*     low_tables   [[buffer(1)]],
+    device const float*     proj_weights [[buffer(2)]],
+    device const float*     proj_biases  [[buffer(3)]],
+    device float*           out          [[buffer(4)]],
+    constant DacRvqDims&    d            [[buffer(5)]],
+    uint2                   gid          [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+    const uint code_base   = t * d.n_codebooks;
+    const uint low_stride  = d.codebook_size * d.codebook_dim;
+    const uint w_stride    = d.d_model * d.codebook_dim;
+    // FP32 accumulator — matches `vokra_ops::dac_rvq::dac_rvq_decode`'s
+    // `out[..]` FP32 fold order over quantizers. MSL fast-math may re-associate
+    // the inner (W · low) dot product, so the parity bound is FP32 GEMV-scale
+    // rather than bit-for-bit.
+    float acc = 0.0f;
+    for (uint cb = 0; cb < d.n_codebooks; ++cb) {
+        const uint idx     = codes[code_base + cb];
+        const uint low_off = cb * low_stride + idx * d.codebook_dim;
+        const uint w_off   = cb * w_stride + delem * d.codebook_dim;
+        float y = proj_biases[cb * d.d_model + delem];
+        for (uint c = 0; c < d.codebook_dim; ++c) {
+            y += proj_weights[w_off + c] * low_tables[low_off + c];
+        }
+        acc += y;
+    }
+    out[t * d.d_model + delem] = acc;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -998,6 +1071,28 @@ struct SwigluDims {
 struct MimiRvqDims {
     n_codebooks: u32,
     codebook_size: u32,
+    d_model: u32,
+    time: u32,
+}
+
+/// M4-04 dac_rvq gather + factorized projection + FP32 fold dims (`setBytes:`
+/// index 5). Field order / `u32` widths mirror the MSL `struct DacRvqDims`.
+///
+/// The extra `codebook_dim` axis vs [`MimiRvqDims`] is the DAC factorized
+/// design (module docs `vokra_ops::dac_rvq`): codebook rows live in the
+/// low-dim space and are projected up to `d_model` per quantizer.
+///
+/// - `n_codebooks` — number of quantizers (DAC 24 kHz canonical = 32).
+/// - `codebook_size` — entries per codebook (DAC canonical = 1024).
+/// - `codebook_dim` — factorized codebook row width (DAC canonical = 8).
+/// - `d_model` — output feature dim per timestep (DAC 24 kHz canonical = 1024).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DacRvqDims {
+    n_codebooks: u32,
+    codebook_size: u32,
+    codebook_dim: u32,
     d_model: u32,
     time: u32,
 }
@@ -1280,6 +1375,15 @@ pub struct MetalContext {
     /// respective factorized-projection / plain-fold arms are wired (each will
     /// land its own kernel or reuse this one — coverage flags stay per-op).
     mimi_rvq_gather_fold_pipeline: Id,
+    /// M4-04 dac_rvq gather + factorized projection + FP32 fold
+    /// (`vokra_dac_rvq_gather_project_fold_f32`), the GPU implementation of
+    /// `vokra_ops::dac_rvq::dac_rvq_decode`. Distinct from
+    /// [`Self::mimi_rvq_gather_fold_pipeline`] because DAC's per-quantizer
+    /// factorized projection (W · low + b) folds into the same kernel as the
+    /// gather — a plain gather-only reuse of the Mimi pipeline would need a
+    /// second GEMV pass per timestep. See `vokra_ops::dac_rvq` module docs for
+    /// the factorization rationale.
+    dac_rvq_gather_project_fold_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1414,6 +1518,12 @@ impl MetalContext {
         // SAFETY: as above.
         let mimi_rvq_gather_fold_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_mimi_rvq_gather_fold_f32") }?;
+        // M4-04 dac_rvq gather + factorized projection + FP32 fold; shares the
+        // same library. Distinct kernel because DAC folds W · low + b per
+        // quantizer into the gather (see `KERNELS_MSL` module docs).
+        // SAFETY: as above.
+        let dac_rvq_gather_project_fold_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_dac_rvq_gather_project_fold_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -1440,6 +1550,7 @@ impl MetalContext {
             silu_pipeline: silu_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
             mimi_rvq_gather_fold_pipeline: mimi_rvq_gather_fold_pipeline.into_raw(),
+            dac_rvq_gather_project_fold_pipeline: dac_rvq_gather_project_fold_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -2423,6 +2534,218 @@ impl MetalContext {
             grid,
             tg,
             "mimi_rvq_gather_fold",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// M4-04: DAC (Descript) factorized RVQ decode — gather + per-quantizer
+    /// projection + FP32 fold on the GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where
+    /// `out[t, :] = Σ_cb (W_cb @ codebook_cb[codes[t, cb]] + b_cb)` — the exact
+    /// contract of `vokra_ops::dac_rvq::dac_rvq_decode`. Heap-returning for
+    /// the same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`] (this is a codec-side chunk op, not
+    /// a per-token hot path).
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time × n_codebooks]` row-major `u32` codebook indices.
+    ///   Every entry must satisfy `idx < codebook_size` — the caller validates
+    ///   on the host before dispatch (FR-EX-08 — the MSL kernel has no per-
+    ///   element bound check, so silent OOB reads are the failure mode we
+    ///   prevent by delegating to explicit host-side validation, mirror of
+    ///   the mimi_rvq contract).
+    /// - `low_tables_flat` — `[n_codebooks × codebook_size × codebook_dim]`
+    ///   row-major FP32; codebook `cb` starts at
+    ///   `cb * codebook_size * codebook_dim` (the caller concatenates the
+    ///   per-codebook `CodebookTable::data` slices verbatim, matching the MSL
+    ///   kernel's stride math).
+    /// - `proj_weights_flat` — `[n_codebooks × d_model × codebook_dim]`
+    ///   row-major FP32; quantizer `cb`'s weight `W_cb[d, :]` at
+    ///   `cb * d_model * codebook_dim + d * codebook_dim` (concat of the
+    ///   per-quantizer `DacOutProj::weight` slices verbatim).
+    /// - `proj_biases_flat` — `[n_codebooks × d_model]` row-major FP32;
+    ///   quantizer `cb`'s bias `b_cb[d]` at `cb * d_model + d` (concat of the
+    ///   per-quantizer `DacOutProj::bias` slices verbatim).
+    /// - `n_codebooks` / `codebook_size` / `codebook_dim` / `d_model` /
+    ///   `time` — decode shape. All must be non-zero (an empty `time` short-
+    ///   circuits at the caller with an empty `Vec<f32>`; we still refuse
+    ///   any other zero axis here as an explicit `InvalidArgument`).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math defaults
+    /// which permit re-association, so the CPU vs GPU bound is `atol ≤ 5e-4`
+    /// (the same FP32 GEMV-scale bound used by
+    /// [`Self::mimi_rvq_gather_fold_f32`] — see
+    /// `tests/dac_rvq_metal_bit_identical.rs`), not bit-for-bit equality.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `n_codebooks` / `codebook_size` / `codebook_dim` / `d_model`, or a
+    ///   `time * n_codebooks` /
+    ///   `n_codebooks * codebook_size * codebook_dim` /
+    ///   `n_codebooks * d_model * codebook_dim` /
+    ///   `n_codebooks * d_model` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to DAC's factorized-RVQ shape
+    pub fn dac_rvq_gather_project_fold_f32(
+        &self,
+        codes: &[u32],
+        low_tables_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `d >= d_model` but assumes every buffer has the expected element
+        // count, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the vokra_ops::dac_rvq shape checks.
+        if n_codebooks == 0 || codebook_size == 0 || codebook_dim == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: n_codebooks / codebook_size / codebook_dim / \
+                 d_model must all be > 0, got n_codebooks={n_codebooks} \
+                 codebook_size={codebook_size} codebook_dim={codebook_dim} d_model={d_model}"
+            )));
+        }
+        let expected_low = n_codebooks
+            .checked_mul(codebook_size)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "dac_rvq_gather_project_fold_f32: n_codebooks * codebook_size * codebook_dim \
+                     overflows usize (n_codebooks={n_codebooks} codebook_size={codebook_size} \
+                     codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if low_tables_flat.len() != expected_low {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: low_tables_flat.len() {} != n_codebooks * \
+                 codebook_size * codebook_dim {expected_low}",
+                low_tables_flat.len()
+            )));
+        }
+        let expected_w = n_codebooks
+            .checked_mul(d_model)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "dac_rvq_gather_project_fold_f32: n_codebooks * d_model * codebook_dim \
+                     overflows usize (n_codebooks={n_codebooks} d_model={d_model} \
+                     codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if proj_weights_flat.len() != expected_w {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: proj_weights_flat.len() {} != n_codebooks * \
+                 d_model * codebook_dim {expected_w}",
+                proj_weights_flat.len()
+            )));
+        }
+        let expected_b = n_codebooks.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: n_codebooks * d_model overflows usize \
+                 (n_codebooks={n_codebooks} d_model={d_model})"
+            ))
+        })?;
+        if proj_biases_flat.len() != expected_b {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: proj_biases_flat.len() {} != n_codebooks * \
+                 d_model {expected_b}",
+                proj_biases_flat.len()
+            )));
+        }
+        let expected_codes = time.checked_mul(n_codebooks).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: time ({time}) * n_codebooks ({n_codebooks}) \
+                 overflows usize"
+            ))
+        })?;
+        if codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: codes.len() {} != time * n_codebooks \
+                 {expected_codes}",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `dac_rvq_decode`
+        // (a zero-`time` decode is well-defined; every other empty axis is a
+        // shape error above).
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_dac_rvq_gather_project_fold(
+            codes,
+            low_tables_flat,
+            proj_weights_flat,
+            proj_biases_flat,
+            n_codebooks,
+            codebook_size,
+            codebook_dim,
+            d_model,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to DAC's factorized-RVQ shape
+    fn run_dac_rvq_gather_project_fold(
+        &self,
+        codes: &[u32],
+        low_tables_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let low_buf = self.new_buffer_from_slice(low_tables_flat)?;
+        let w_buf = self.new_buffer_from_slice(proj_weights_flat)?;
+        let b_buf = self.new_buffer_from_slice(proj_biases_flat)?;
+        let out_len = time * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = DacRvqDims {
+            n_codebooks: n_codebooks as u32,
+            codebook_size: codebook_size as u32,
+            codebook_dim: codebook_dim as u32,
+            d_model: d_model as u32,
+            time: time as u32,
+        };
+        // One thread per (d_model column, timestep row). The kernel guards the
+        // ragged tail against both bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.dac_rvq_gather_project_fold_pipeline,
+            &[&codes_buf, &low_buf, &w_buf, &b_buf, &out_buf],
+            (&dims as *const DacRvqDims).cast::<c_void>(),
+            size_of::<DacRvqDims>(),
+            grid,
+            tg,
+            "dac_rvq_gather_project_fold",
         )?;
         let mut out = vec![0.0_f32; out_len];
         read_back(&out_buf, &mut out)?;
@@ -4381,6 +4704,7 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.dac_rvq_gather_project_fold_pipeline);
             release(self.mimi_rvq_gather_fold_pipeline);
             release(self.swiglu_pipeline);
             release(self.silu_pipeline);

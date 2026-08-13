@@ -157,21 +157,27 @@ impl HotOp {
     /// `vokra_mimi_rvq_gather_fold_f32` MSL kernel implements the shape-generic
     /// FP32 gather + fold behind [`Compute::mimi_rvq_f32`] (bit-identical
     /// semantics to `vokra_ops::mimi_rvq::rvq_fold_core`, host-side per-index
-    /// bound check upstream of the dispatch — FR-EX-08). The M4-04 RVQ
-    /// siblings ([`HotOp::DacRvq`] / [`HotOp::EncodecRvq`]) and the M4-16 FSQ
-    /// family stay deferred (their per-quantizer projections / FSQ decoders
-    /// need distinct kernels; each lands its own coverage flip). CUDA sibling
-    /// (M3-06 T15 NVRTC kernel) is on the vast.ai owner track and remains
-    /// uncovered here. (The *graph* backend `MetalBackend::supports` /
-    /// `eval_op` is a separate path and still covers only `MatMul` — the two
-    /// coverage surfaces are intentionally independent.)
+    /// bound check upstream of the dispatch — FR-EX-08). **M4-04 (WF2, 2026-
+    /// 08-13)**: [`HotOp::DacRvq`] is now covered on Metal too — the
+    /// `vokra_dac_rvq_gather_project_fold_f32` MSL kernel implements the
+    /// factorized gather + per-quantizer projection + FP32 fold behind
+    /// [`Compute::dac_rvq_f32`] (semantics equal to
+    /// `vokra_ops::dac_rvq::dac_rvq_decode` within FP32 fast-math tolerance,
+    /// host-side per-index bound check upstream — FR-EX-08). [`HotOp::EncodecRvq`]
+    /// and the M4-16 FSQ family stay deferred (each lands its own kernel /
+    /// coverage flip). CUDA sibling (M3-06 T15 NVRTC kernel) is on the vast.ai
+    /// owner track and remains uncovered here. (The *graph* backend
+    /// `MetalBackend::supports` / `eval_op` is a separate path and still
+    /// covers only `MatMul` — the two coverage surfaces are intentionally
+    /// independent.)
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     fn covered_by_metal(self) -> bool {
         // Phase 4 wired the six Whisper hot ops; M3-06 T14 (2026-08-13) added
-        // MimiRvq via `vokra_mimi_rvq_gather_fold_f32`. Any model listing the
-        // still-deferred RVQ siblings (`DacRvq` / `EncodecRvq`) or the FSQ
-        // family (`WavTokenizerVq` / `Xcodec2Fsq`) continues to fail the
-        // Metal coverage gate — no silent CPU fall back (FR-EX-08).
+        // MimiRvq via `vokra_mimi_rvq_gather_fold_f32`; M4-04 WF2 (2026-08-13)
+        // added DacRvq via `vokra_dac_rvq_gather_project_fold_f32`. Any model
+        // listing the still-deferred siblings (`EncodecRvq`) or the FSQ family
+        // (`WavTokenizerVq` / `Xcodec2Fsq`) continues to fail the Metal
+        // coverage gate — no silent CPU fall back (FR-EX-08).
         matches!(
             self,
             HotOp::Gemm
@@ -181,6 +187,7 @@ impl HotOp {
                 | HotOp::Gelu
                 | HotOp::Conv1d
                 | HotOp::MimiRvq
+                | HotOp::DacRvq
         )
     }
 
@@ -995,13 +1002,117 @@ impl Compute {
         match &self.be {
             Be::Cpu => dac_rvq_decode(codes, time, codebook_tables, out_projs, attrs),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(VokraError::UnsupportedOp(
-                "dac_rvq_f32 has no wired Metal MSL kernel; the M4-04 GPU arm is deferred (naive \
-                 gather + GEMV + fold layout, same follow-up as mimi_rvq). Select \
-                 BackendKind::Cpu (which delegates to vokra_ops::dac_rvq_decode) — Vokra does \
-                 not silently run the op on the CPU (FR-EX-08)."
-                    .to_owned(),
-            )),
+            Be::Metal(ctx) => {
+                // Explicit shape + index validation on the host. The MSL kernel
+                // guards `t >= time` and `d >= d_model` but has no per-element
+                // bound check on `codes[..]`; silent OOB reads inside the
+                // factorized-projection fold are the failure mode we prevent
+                // by mirroring the CPU-arm shape checks in `vokra_ops::dac_rvq`
+                // (FR-EX-08 — never a silent GPU OOB or CPU fall back).
+                if attrs.n_codebooks == 0
+                    || attrs.codebook_size == 0
+                    || attrs.codebook_dim == 0
+                    || attrs.d_model == 0
+                {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "dac_rvq_f32 metal: attrs must have every axis > 0, got n_codebooks={} \
+                         codebook_size={} codebook_dim={} d_model={}",
+                        attrs.n_codebooks, attrs.codebook_size, attrs.codebook_dim, attrs.d_model,
+                    )));
+                }
+                if codebook_tables.len() != attrs.n_codebooks {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "dac_rvq_f32 metal: codebook_tables.len() {} != attrs.n_codebooks {}",
+                        codebook_tables.len(),
+                        attrs.n_codebooks
+                    )));
+                }
+                for (i, t) in codebook_tables.iter().enumerate() {
+                    // DAC's `CodebookTable::d_model` field holds the row
+                    // width, which for the low-dim factorized table must be
+                    // `attrs.codebook_dim` — NOT `attrs.d_model` (mirror of
+                    // `vokra_ops::dac_rvq::check_shapes`).
+                    if t.codebook_size != attrs.codebook_size || t.d_model != attrs.codebook_dim {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "dac_rvq_f32 metal: codebook_tables[{i}] shape [{},{}] != attrs \
+                             [{},{}] (row width must be the factorized codebook_dim)",
+                            t.codebook_size, t.d_model, attrs.codebook_size, attrs.codebook_dim
+                        )));
+                    }
+                }
+                if out_projs.len() != attrs.n_codebooks {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "dac_rvq_f32 metal: out_projs.len() {} != attrs.n_codebooks {}",
+                        out_projs.len(),
+                        attrs.n_codebooks
+                    )));
+                }
+                for (i, p) in out_projs.iter().enumerate() {
+                    if p.d_model != attrs.d_model || p.codebook_dim != attrs.codebook_dim {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "dac_rvq_f32 metal: out_projs[{i}] shape [{},{}] != attrs [{},{}]",
+                            p.d_model, p.codebook_dim, attrs.d_model, attrs.codebook_dim
+                        )));
+                    }
+                }
+                let expected_codes = time.checked_mul(attrs.n_codebooks).ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "dac_rvq_f32 metal: time ({time}) * n_codebooks ({}) overflows usize",
+                        attrs.n_codebooks
+                    ))
+                })?;
+                if codes.len() != expected_codes {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "dac_rvq_f32 metal: codes.len() {} != time * n_codebooks {expected_codes}",
+                        codes.len()
+                    )));
+                }
+                // Per-index bound check — the MSL kernel does NOT range-check
+                // `codes[..]`, so a stray index would be a silent OOB gather
+                // (FR-EX-08). Cheap: O(time * n_codebooks) unpredictable
+                // branches, dwarfed by the GPU dispatch.
+                for &idx in codes {
+                    if (idx as usize) >= attrs.codebook_size {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "dac_rvq_f32 metal: codes contains index {idx} >= codebook_size {}",
+                            attrs.codebook_size
+                        )));
+                    }
+                }
+                if time == 0 {
+                    return Ok(Vec::new());
+                }
+                // Flatten the three per-quantizer arrays into contiguous
+                // buffers matching the MSL kernel's stride math. Chunk
+                // granularity — three Vec allocations here are negligible next
+                // to the GPU dispatch.
+                let mut low_tables_flat = Vec::with_capacity(
+                    attrs.n_codebooks * attrs.codebook_size * attrs.codebook_dim,
+                );
+                for tbl in codebook_tables {
+                    low_tables_flat.extend_from_slice(&tbl.data);
+                }
+                let mut proj_weights_flat =
+                    Vec::with_capacity(attrs.n_codebooks * attrs.d_model * attrs.codebook_dim);
+                for p in out_projs {
+                    proj_weights_flat.extend_from_slice(&p.weight);
+                }
+                let mut proj_biases_flat = Vec::with_capacity(attrs.n_codebooks * attrs.d_model);
+                for p in out_projs {
+                    proj_biases_flat.extend_from_slice(&p.bias);
+                }
+                ctx.dac_rvq_gather_project_fold_f32(
+                    codes,
+                    &low_tables_flat,
+                    &proj_weights_flat,
+                    &proj_biases_flat,
+                    attrs.n_codebooks,
+                    attrs.codebook_size,
+                    attrs.codebook_dim,
+                    attrs.d_model,
+                    time,
+                )
+            }
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => Err(VokraError::UnsupportedOp(
                 "dac_rvq_f32 has no wired CUDA NVRTC kernel; the M4-04 GPU arm is deferred (naive \
@@ -2410,8 +2521,9 @@ mod tests {
         // Every Whisper hot op is covered (this pins `covered_by_metal` to the
         // wired Metal method arms — all now dispatch to a `MetalContext`
         // kernel). MimiRvq is covered as of M3-06 T14 (2026-08-13, MSL kernel
-        // `vokra_mimi_rvq_gather_fold_f32`); DAC / EnCodec RVQ and FSQ siblings
-        // stay deferred.
+        // `vokra_mimi_rvq_gather_fold_f32`); DacRvq is covered as of M4-04 WF2
+        // (2026-08-13, MSL kernel `vokra_dac_rvq_gather_project_fold_f32`).
+        // EnCodec RVQ and FSQ siblings stay deferred.
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -2420,6 +2532,7 @@ mod tests {
             HotOp::Gelu,
             HotOp::Conv1d,
             HotOp::MimiRvq,
+            HotOp::DacRvq,
         ] {
             assert!(
                 op.covered_by_metal(),
@@ -2427,15 +2540,10 @@ mod tests {
             );
         }
 
-        // Same deferred posture for the M4-04 RVQ siblings and the M4-16 FSQ
-        // family (lock-step with the Metal arms of `dac_rvq_f32` /
-        // `encodec_rvq_f32` / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32`).
-        for op in [
-            HotOp::DacRvq,
-            HotOp::EncodecRvq,
-            HotOp::WavTokenizerVq,
-            HotOp::Xcodec2Fsq,
-        ] {
+        // Same deferred posture for the remaining M4-04 RVQ sibling and the
+        // M4-16 FSQ family (lock-step with the Metal arms of `encodec_rvq_f32`
+        // / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32`).
+        for op in [HotOp::EncodecRvq, HotOp::WavTokenizerVq, HotOp::Xcodec2Fsq] {
             assert!(
                 !op.covered_by_metal(),
                 "{op:?} unexpectedly Metal-covered — the M4-04/M4-16 GPU kernels are deferred; \
@@ -2455,6 +2563,15 @@ mod tests {
                 eprintln!("no Metal device; MimiRvq covered path is device-gated");
             }
             Err(e) => panic!("unexpected error for a Metal-covered MimiRvq request: {e}"),
+        }
+        // A request that lists DacRvq is now a covered request post M4-04
+        // WF2: same posture as MimiRvq above.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::DacRvq]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; DacRvq covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered DacRvq request: {e}"),
         }
 
         // Whisper's full set is therefore a covered request: it either builds
