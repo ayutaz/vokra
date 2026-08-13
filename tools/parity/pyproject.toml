@@ -23,3 +23,8 @@ dependencies = [
 crepe = [
     "tensorflow>=2.20.0",
 ]
+
+[tool.uv.workspace]
+members = [
+    "microwakeword",
+]
