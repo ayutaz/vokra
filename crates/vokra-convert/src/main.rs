@@ -2666,6 +2666,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // max, cc-by-nc-4.0 default = T4 fail-closed). HF-hosted, stamps
         // `vokra.provenance.upstream_hf = facebook/magnet-medium-30secs`.
         | ModelKind::MagnetMedium30secs
+        // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+        // remaining WF8): MelodyFlow T24 30secs — Meta AudioCraft
+        // flow-matching music **editing** model (DiT backbone, 24
+        // timesteps, 30 sec / 48 kHz, ~1 B params ~4.0 GB bundle =
+        // flow-matching transformer + 48 kHz RVQ codec + T5-base text
+        // encoder, cc-by-nc-4.0 default = T4 fail-closed). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = facebook/melodyflow-t24-30secs`.
+        | ModelKind::MelodyflowT2430secs
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")

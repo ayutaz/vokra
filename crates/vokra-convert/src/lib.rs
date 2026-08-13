@@ -3276,6 +3276,43 @@ pub enum ModelKind {
     /// follow-up wave (owner ADR judgement, sibling small / RMVPE /
     /// Charsiu loud-partial precedent).
     MagnetMedium30secs,
+    /// **Meta MelodyFlow T24 30secs** (`facebook/melodyflow-t24-30secs`,
+    /// **cc-by-nc-4.0**, post-audit CC-gap Wave D remaining WF8
+    /// 2026-08-13) — Meta AudioCraft's flow-matching music **editing**
+    /// model, **1 B parameter DiT-style backbone** with **24 timesteps**
+    /// and a **30 second** max horizon at **48 kHz** (Le Lan et al. 2024
+    /// arXiv:2407.03648). Primary use-case = **text-conditioned music
+    /// editing** (an existing audio clip is inverted through the ODE,
+    /// then regenerated under a new text prompt) — a distinct code path
+    /// from text-to-music sibling releases. Category = `music`, distinct
+    /// arch tag `melodyflow_t24_30secs` from every sibling music-gen
+    /// family: `magnet_small_10secs` / `magnet_medium_30secs`
+    /// (non-autoregressive masked-LM), `musicgen_small` /
+    /// `musicgen_medium` / `musicgen_large` / `audiogen_medium`
+    /// (AR-over-EnCodec), `jasco_400m_chords_drums` (flow-matching but
+    /// with joint audio-symbolic chord/drum conditioning stack rather
+    /// than dual text + audio editing prefix), `audioldm2` (score-based
+    /// latent diffusion), `stable_audio_open_small` (DiT + VAE),
+    /// `ace_step`, `yue_bundle`, or `bs_roformer` (music-source
+    /// separation) — silent share = FR-EX-08 mis-route (MelodyFlow's
+    /// flow-matching editing stack with ODE inversion for existing-audio
+    /// editing is a distinct topology). Convert with
+    /// `convert_melodyflow_t24_30secs_file` — publish requires
+    /// `--allow-noncommercial` per MusicGen family / sibling MAGNeT /
+    /// JASCO T4 precedent. Scale ~1 B params ~4.0 GB bundle
+    /// (flow-matching transformer + 48 kHz RVQ codec + T5-base text
+    /// encoder) — **vast.ai-flagged per phase task** to stay
+    /// conservative at the CC / owner cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (~4 GB sits below the 8 GB
+    /// local ceiling but the phase task pins vast.ai as the owner path
+    /// for weights ≥ 2 GB). Runtime binder (`flow_editing_inversion` +
+    /// `t24_transformer` ops, FR-OP-86 anchor) reuses
+    /// `vokra_ops::flow_sampler` from M3-05 for the ODE integrator, but
+    /// the editing-specific inversion path and the 48 kHz RVQ codec
+    /// bundle need explicit ADR judgement — deferred to a follow-up
+    /// wave (owner ADR judgement, sibling MAGNeT / RMVPE / Charsiu
+    /// loud-partial precedent).
+    MelodyflowT2430secs,
 }
 
 impl ModelKind {
@@ -4977,6 +5014,26 @@ impl ModelKind {
             | "magnet-medium-30s"
             | "magnet-medium"
             | "facebook/magnet-medium-30secs" => Some(Self::MagnetMedium30secs),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs
+            // (`facebook/melodyflow-t24-30secs`, cc-by-nc-4.0) — 1 B
+            // flow-matching music **editing** model (DiT backbone, 24
+            // timesteps, 30 sec / 48 kHz, Le Lan et al. 2024
+            // arXiv:2407.03648). Accept the canonical + underscore +
+            // short-slug + bare-family + upstream HF slug variants; the
+            // bare `"melodyflow"` alias IS claimed here because there
+            // is currently exactly one MelodyFlow release in the
+            // catalog (T24 30secs). A future sibling
+            // (`melodyflow-t12-30secs` / `melodyflow-t48-30secs`) that
+            // wants to claim the bare `"melodyflow"` alias for a
+            // family-level dispatch would need to reroute this entry
+            // to a variant-specific alias explicitly (an ADR moment).
+            "melodyflow-t24-30secs"
+            | "melodyflow_t24_30secs"
+            | "melodyflow-t24-30s"
+            | "melodyflow-t24"
+            | "melodyflow"
+            | "facebook/melodyflow-t24-30secs" => Some(Self::MelodyflowT2430secs),
             _ => None,
         }
     }
@@ -5241,6 +5298,14 @@ impl ModelKind {
             // remaining WF7): Meta MAGNeT Medium 30secs — 1.5B / 30 sec
             // medium sibling of magnet-small-10secs.
             Self::MagnetMedium30secs => "magnet-medium-30secs",
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs — 1 B DiT
+            // flow-matching music **editing** model (24 timesteps, 30
+            // sec / 48 kHz). Distinct from every sibling music-gen
+            // family; the bare `melodyflow` alias in `from_arg` maps
+            // here today because this is the only MelodyFlow release
+            // in the catalog.
+            Self::MelodyflowT2430secs => "melodyflow-t24-30secs",
         }
     }
 }
@@ -9332,6 +9397,56 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === MelodyflowT2430secs (Meta music-gen post-audit CC-gap Wave D remaining WF8 2026-08-13) ===
+        ModelKind::MelodyflowT2430secs => {
+            // Meta AudioCraft MelodyFlow T24 30secs (facebook/melodyflow-t24-30secs,
+            // cc-by-nc-4.0). ~1 B params ~4.0 GB bundle (flow-matching transformer +
+            // 48 kHz RVQ codec + T5-base text encoder). DiT-style backbone with 24
+            // timesteps, 30 sec max horizon, 48 kHz sample rate — text-conditioned
+            // music **editing** (existing audio inverted through the ODE then
+            // regenerated under a new text prompt, Le Lan et al. 2024
+            // arXiv:2407.03648). Distinct arch tag `melodyflow_t24_30secs` from
+            // every sibling music-gen family (magnet_small_10secs /
+            // magnet_medium_30secs / musicgen_small / musicgen_medium /
+            // musicgen_large / audiogen_medium / jasco_400m_chords_drums /
+            // audioldm2 / stable_audio_open_small / ace_step / bs_roformer) —
+            // FR-EX-08 silent share = wrong-sampler / wrong-conditioning
+            // mis-route (flow-matching ODE integrator vs masked-LM decoder vs
+            // AR token-by-token). BF16 pass-through skeleton mirror of sibling
+            // magnet_medium_30secs / magnet_small_10secs / jasco_400m_chords_drums.
+            // Default license cc-by-nc-4.0 + NonCommercial (X-Codec 2 / MusicGen
+            // family / sibling MAGNeT / JASCO T4 precedent). Scale ~4.0 GB is
+            // **vast.ai-flagged per phase task** to stay conservative at the
+            // CC / owner cutoff per memory `[[feedback-large-models-on-vast-ai]]`
+            // (~4 GB sits below the 8 GB local ceiling but the phase task pins
+            // vast.ai as the owner path for weights ≥ 2 GB). Runtime binder
+            // (`flow_editing_inversion` + `t24_transformer` ops, FR-OP-86 anchor)
+            // reuses `vokra_ops::flow_sampler` from M3-05 for the ODE integrator
+            // but the editing-specific inversion path and the 48 kHz RVQ codec
+            // bundle need explicit ADR judgement — deferred to a follow-up wave
+            // per sibling MAGNeT / RMVPE / Charsiu / MOSS-Audio-Tokenizer /
+            // MioCodec loud-partial precedent.
+            let report = models::melodyflow_t24_30secs::convert_melodyflow_t24_30secs_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "melodyflow-t24-30secs: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — \
+                 publish requires --allow-noncommercial per MusicGen family / sibling MAGNeT / \
+                 JASCO T4 precedent; runtime binder for flow_editing_inversion + \
+                 t24_transformer (FR-OP-86 anchor, reuses vokra_ops::flow_sampler from M3-05) \
+                 deferred to owner ADR judgement — loud-partial per sibling MAGNeT / RMVPE / \
+                 Charsiu precedent; weights ≥ 2 GB per phase task = vast.ai handoff for owner)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === Snac (2026-08-01 Wave 3) ===
         ModelKind::Snac => {
             // 2026-08-01 Wave 3: SNAC — Multi-Scale Neural Audio
@@ -11170,6 +11285,19 @@ pub use models::magnet_medium_30secs::{
     MagnetMedium30secsReport, convert_magnet_medium_30secs_file,
 };
 
+// Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining WF8):
+// Meta MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`, cc-by-nc-4.0)
+// — public re-export for downstream callers that reach past the
+// `ModelKind::MelodyflowT2430secs` dispatch (mirror of the sibling
+// magnet_medium_30secs / magnet_small_10secs / jasco_400m_chords_drums BF16
+// pass-through public API surface). Scale ~4.0 GB bundle (~1 B flow-matching
+// transformer + 48 kHz RVQ codec + T5-base text encoder) is vast.ai-flagged
+// per phase task to stay conservative at the CC / owner cutoff per memory
+// `[[feedback-large-models-on-vast-ai]]`.
+pub use models::melodyflow_t24_30secs::{
+    MelodyflowT2430secsReport, convert_melodyflow_t24_30secs_file,
+};
+
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
 /// constructing an [`AdapterSpec`] directly and attaching it to a
@@ -12787,6 +12915,15 @@ mod modelkind_alias_and_roundtrip_tests {
             // span) AND sibling MusicGen AR family (silent share = coarser
             // FR-EX-08 mis-route to token-by-token AR path).
             MagnetMedium30secs,
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs — canonical
+            // `--model melodyflow-t24-30secs` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            // Distinct from every sibling music-gen family — flow-matching
+            // ODE integrator with editing-specific inversion path vs
+            // MAGNeT masked-LM decoding vs MusicGen AR token-by-token vs
+            // JASCO joint symbolic conditioning stack.
+            MelodyflowT2430secs,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -13607,6 +13744,28 @@ mod modelkind_alias_and_roundtrip_tests {
                     "magnet-medium-30s",
                     "magnet-medium",
                     "facebook/magnet-medium-30secs",
+                ],
+            ),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs — canonical
+            // `--model melodyflow-t24-30secs` must round-trip. Distinct
+            // from every sibling music-gen family (MAGNeT masked-LM,
+            // MusicGen AR, JASCO joint-symbolic, AudioLDM2 latent
+            // diffusion, Stable Audio Open, ACE-Step, BS-RoFormer) —
+            // silent share = FR-EX-08 wrong-sampler / wrong-conditioning
+            // mis-route. The bare `melodyflow` alias in `from_arg` maps
+            // here today because this is the only MelodyFlow release in
+            // the catalog; a future T12 / T48 sibling would need an ADR
+            // to route the bare alias to a family-level dispatch.
+            (
+                ModelKind::MelodyflowT2430secs,
+                &[
+                    "melodyflow-t24-30secs",
+                    "melodyflow_t24_30secs",
+                    "melodyflow-t24-30s",
+                    "melodyflow-t24",
+                    "melodyflow",
+                    "facebook/melodyflow-t24-30secs",
                 ],
             ),
         ];

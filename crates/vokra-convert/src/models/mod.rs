@@ -1035,4 +1035,28 @@ pub mod magnet_small_10secs;
 // `[[feedback-large-models-on-vast-ai]]` (below 8 GB threshold — sibling
 // small was ~2 GB, medium sits below the 8 GB owner cutoff).
 pub mod magnet_medium_30secs;
+// WF8 (2026-08-13, this land): MelodyFlow T24 30secs — Meta AudioCraft
+// flow-matching music **editing** model (Le Lan et al. 2024
+// arXiv:2407.03648). DiT-style backbone with 24 timesteps, 30 sec max
+// horizon at 48 kHz, dual text + audio prefix conditioning for the
+// editing use-case (an existing clip is inverted through the ODE, then
+// regenerated under a new text prompt). Distinct arch tag
+// `melodyflow_t24_30secs` from every sibling in the Meta music-gen
+// catalog — MAGNeT (non-autoregressive masked-LM), MusicGen
+// (AR-over-EnCodec), JASCO (flow-matching but with joint symbolic
+// chord/drum conditioning stack rather than dual text + audio editing
+// prefix). BF16 pass-through skeleton mirror of sibling
+// `magnet_medium_30secs` / `magnet_small_10secs` /
+// `jasco_400m_chords_drums`. **Vast.ai handoff per phase task**:
+// weight ≥ 2 GB (~4.0 GB bundle = 1 B flow-matching transformer + 48 kHz
+// RVQ codec + T5-base text encoder) is at the CC / owner cutoff per
+// memory `[[feedback-large-models-on-vast-ai]]`; the phase task tags
+// this land as vast.ai-required to be conservative even though ~4 GB
+// sits below the 8 GB local ceiling for other models. The FR-OP-86
+// runtime binder anchor (`flow_editing_inversion` + `t24_transformer`
+// ops) reuses `vokra_ops::flow_sampler` from M3-05 for the ODE
+// integrator, but the editing-specific inversion path and the 48 kHz
+// RVQ codec bundle need explicit ADR judgement — same loud-partial
+// posture as sibling MAGNeT / RMVPE / Charsiu.
+pub mod melodyflow_t24_30secs;
 // ---------------------------------------------------------------------------

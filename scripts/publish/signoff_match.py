@@ -1055,6 +1055,28 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "magnet-medium-30secs": [
         "Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`)"
     ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+    # `feat/post-audit-cc-gap-2026-08-13` Wave D remaining WF8): Meta
+    # MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`,
+    # cc-by-nc-4.0). 1 B parameter flow-matching music **editing** model
+    # (DiT-style backbone with 24 timesteps, 30 sec max horizon at 48 kHz,
+    # dual text + audio prefix conditioning for the editing use-case —
+    # ~4.0 GB bundle = flow-matching transformer + 48 kHz RVQ codec +
+    # T5-base text encoder, Le Lan et al. 2024 arXiv:2407.03648). T4 tier
+    # (Research-only, non-commercial) — inherits the X-Codec 2 / MusicGen
+    # family / jasco_400m_chords_drums / sibling `magnet_small_10secs` /
+    # `magnet_medium_30secs` T4 precedent workflow
+    # (`LicenseClass::NonCommercial` + `--allow-noncommercial` gate +
+    # `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE fetch).
+    # **Vast.ai-flagged per phase task** to stay conservative at the CC /
+    # owner cutoff per memory `[[feedback-large-models-on-vast-ai]]`
+    # (~4 GB sits below the 8 GB local ceiling but the phase task pins
+    # vast.ai as the owner path for weights ≥ 2 GB — Voxtral-Small-24B
+    # forced-shutdown precedent). Row heading matches
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "melodyflow-t24-30secs": [
+        "Meta MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`)"
+    ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 T1 (Permissive) rows all ☑ Commercial 2026-08-04
     # yousan. publish-one.sh maps `--repo <slug>` to APPROVED against
@@ -1592,6 +1614,19 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # weights. Row heading matches `docs/license-audit.md` §3.1 byte-for-byte.
     "magnet_medium_30secs": [
         "Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`)"
+    ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining
+    # WF8): melodyflow_t24_30secs — Meta AudioCraft flow-matching music
+    # editing (DiT backbone, 24 timesteps, 30 sec / 48 kHz) with a
+    # distinct arch tag from every sibling music-gen family (MAGNeT
+    # masked-LM, MusicGen AR, JASCO joint-symbolic, AudioLDM2 latent
+    # diffusion, Stable Audio Open DiT, ACE-Step, BS-RoFormer). Same op
+    # family (flow-matching / DiT / M3-05 flow_sampler ODE integrator)
+    # as JASCO but different conditioning stack (dual text + audio prefix
+    # for editing vs joint audio-symbolic chord/drum). Row heading matches
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "melodyflow_t24_30secs": [
+        "Meta MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`)"
     ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 BF16 pass-through skeleton converters, all T1
