@@ -524,6 +524,13 @@ pub mod snac;
 // / analysis" gap.
 pub mod beat_this;
 pub mod bigvgan;
+// Wave 3 2026-08-14 audit follow-up: MT3 audio→MIDI transcriber
+// (Magenta, Apache-2.0 code; weight LicenseClass::Unknown fail-closed
+// pending owner spec-review of gs://mt3/checkpoints/). T5-small
+// encoder-decoder scaffold + MidiEvent enum, transcribe loud-partial
+// pending T5 relative_attention_bias primitive + MIDI event codec
+// Rust port.
+pub mod mt3;
 pub mod vocos;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};

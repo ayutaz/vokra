@@ -1064,4 +1064,13 @@ pub mod melodyflow_t24_30secs;
 // beat / downbeat tracker (CPJKU, ISMIR 2024, MIT). Adds first music-
 // understanding MIR primitive to the catalog per 2026-08-14 audit.
 pub mod beat_this;
+// Wave 3 2026-08-14 audit follow-up: MT3 = Magenta Multi-Task Multitrack
+// Music Transcription (Gardner et al. ICLR 2022, arXiv:2111.03017).
+// T5-small encoder-decoder ~60M params, log-mel input → MIDI event
+// token stream (multi-track). First `audio → MIDI` real transcription
+// primitive (music-understanding gap per 2026-08-14 audit). Code =
+// Apache-2.0; weights on gs://mt3/checkpoints/ have no per-bucket
+// LICENSE and no HF mirror → converter hard-maps LicenseClass::Unknown
+// (fail-closed).
+pub mod mt3;
 // ---------------------------------------------------------------------------
