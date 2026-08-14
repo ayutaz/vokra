@@ -546,6 +546,66 @@ pub mod redimnet;
 // merging port pending; §3.1 sign-off row 449 = ☑ Research-only
 // 2026-08-04 yousan, X-Codec-2 T4 precedent).
 pub mod sortformer_diar_4spk_v1;
+// Wave 5 2026-08-14 audit follow-up: Meta HT-Demucs music source
+// separation runtime binder (loud-partial per sortformer / mt3 /
+// redimnet precedent — hybrid waveform-branch U-Net + spectrogram-
+// branch U-Net + BiLSTM + Transformer bottleneck + cross-domain
+// attention + stem-sum path deferred to follow-up wave. STFT/iSTFT
+// primitives exist; BiLSTM extraction from silero_vad::model into
+// vokra_ops::lstm is a follow-up. `facebook/demucs` MIT — first
+// music-source-separation Permissive land after BS-Roformer
+// Rejected).
+pub mod demucs;
+// Wave 5 2026-08-14 audit follow-up (music generation — first runtime
+// binder): musicgen = Meta MusicGen family runtime binder (small 300M
+// + medium 1.5B, CC-BY-NC-4.0 T4). Autoregressive transformer LM over
+// EnCodec RVQ tokens (4 codebooks, 50 Hz frame rate, 32 kHz output)
+// conditioned on frozen T5-base text encoder with delay pattern across
+// codebooks. Real config / variant / from_gguf / weight-license
+// surfacing; generate loud-partial pending T5 text-encoder forward +
+// AR LM with 4-codebook delay-pattern + text-conditioned cross-
+// attention (EnCodec RVQ decode primitive exists via
+// vokra_ops::encodec_rvq_decode). Primary sources:
+// huggingface.co/facebook/musicgen-{small,medium} +
+// github.com/facebookresearch/audiocraft (MIT code) + arXiv:2306.05284
+// (Copet et al. 2023). §3.1 row 399 = ☑ Research-only 2026-08-01
+// yousan (X-Codec-2 T4 precedent). Loud-partial pattern per Wave 2-4
+// precedent (vocos / bigvgan / snac / mt3 / kyutai_stt / parakeet_ctc
+// / redimnet / sortformer).
+pub mod musicgen;
+// Wave 5 2026-08-14 audit follow-up (separation-runtime binder — LIB.RS
+// RULE append at end with Wave 5 comment marker): Conv-TasNet
+// (Luo & Mesgarani 2019, arXiv:1809.07454) — Convolutional Time-domain
+// Speech Separation loud-partial runtime binder for the `conv_tasnet`
+// converter arch. Real arch check + tensor-manifest non-emptiness gate
+// + primary-source-transcribed ConvTasnetConfig (12-axis Asteroid
+// Libri1Mix `enhsingle_16k` hold — the converter does NOT yet stamp
+// `vokra.conv_tasnet.*` so a follow-up wave lands the strict axis read
+// alongside the encoder-masker-decoder walk); separate() loud-partial
+// pending Asteroid Python 1D Conv encoder + TCN masker + 1D
+// ConvTranspose decoder composition
+// (github.com/asteroid-team/asteroid). Speech-separation Copyleft
+// (CC-BY-SA-4.0 T3 tier — §3.1 sign-off row `conv-tasnet-libri1mix`
+// already ☑ Commercial by owner 2026-08-02 yousan) sibling to the
+// music-source-separation `demucs` (MIT Permissive) landed just above.
+pub mod conv_tasnet;
+// Wave 5 2026-08-14 audit follow-up (separation-runtime binder — LIB.RS
+// RULE append at end with Wave 5 comment marker): SpeechBrain SepFormer
+// family (Subakan et al. 2021 / arXiv:2010.13154 §3, apache-2.0) — 7
+// variants (wsj02mix / libri2mix / libri3mix / wham16k-enhancement /
+// whamr16k / whamr8k / dns4-16k-enhancement) share the `sepformer`
+// converter arch + this runtime binder. Real `from_gguf` (arch check +
+// variant tag round-trip + n_out variant/stamp cross-check + non-empty
+// tensor gate + weight-license class surfacing); `separate()` loud-
+// partial pending dual-path Transformer masker composition (encoder +
+// IntraTransformer + InterTransformer + `n_out`-way head + decoder)
+// per `github.com/speechbrain/speechbrain/blob/develop/speechbrain/
+// lobes/models/dual_path.py` + `resepformer.py` + arXiv:2010.13154.
+// Sibling to the music-source-separation `demucs` (MIT Permissive) and
+// the speech-source-separation `conv_tasnet` (CC-BY-SA-4.0 Copyleft T3)
+// landed just above — §3.1 sign-off rows 364-370 all ☑ Commercial
+// (2026-07-30 / 2026-08-01 yousan) per HF cardData apache-2.0.
+pub mod sepformer;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
