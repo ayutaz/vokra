@@ -285,6 +285,10 @@ impl AsrEngine for WhisperAsr {
         let ids = self.transcribe_tokens(pcm)?;
         Ok(Transcription::new(self.render_ids(&ids)?))
     }
+
+    fn backend(&self) -> BackendKind {
+        self.backend_kind
+    }
 }
 
 #[cfg(test)]

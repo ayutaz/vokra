@@ -17,6 +17,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::backend::BackendKind;
 use crate::error::{Result, VokraError};
 use crate::tasks::{DialogTurn, SynthesizedAudio, Transcription};
 
@@ -25,6 +26,19 @@ use crate::tasks::{DialogTurn, SynthesizedAudio, Transcription};
 pub trait AsrEngine: Send + Sync {
     /// Transcribes mono `f32` PCM (typically 16 kHz) to text.
     fn transcribe(&self, pcm: &[f32]) -> Result<Transcription>;
+
+    /// The backend this engine actually dispatches on.
+    ///
+    /// Exists so a caller can verify that the backend it selected reached the
+    /// engine. Backends produce bit-identical output by design, so no
+    /// observable-output check can distinguish them — this accessor is the
+    /// only way a test can catch a selection that was silently dropped on the
+    /// way in (the failure the 2026-08-14 C ABI review found by mutation).
+    ///
+    /// There is deliberately **no default implementation**: a defaulted
+    /// `Cpu` would let a new engine report the CPU while running elsewhere,
+    /// which is exactly the lie this accessor exists to prevent.
+    fn backend(&self) -> BackendKind;
 }
 
 /// A speech-to-speech dialog engine (implemented natively in
@@ -350,6 +364,45 @@ pub trait TtsStreamHandle {
 pub trait VadEngine: Send + Sync {
     /// Opens a fresh streaming handle with zero-initialised recurrent state.
     fn open_stream(&self) -> Box<dyn VadStreamHandle + Send>;
+}
+
+/// A **speaker-embedding** engine (`speaker_encode`, FR-OP-80 — implemented
+/// natively in `vokra-models`, e.g. CAM++ / 3D-Speaker = M0-08).
+///
+/// Turns a reference utterance into a fixed-length speaker embedding: the
+/// input zero-shot TTS voices condition on, and the operand speaker
+/// verification (FR-OP-81) compares. Speaker embedding is deliberately
+/// **core** functionality — CLAUDE.md design note 8 keeps voice
+/// *cloning* (RVC / GPT-SoVITS) in the separate
+/// `vokra-voiceclone-experimental` repository under the ELVIS Act split, while
+/// embedding stays here because it only extracts a feature vector and
+/// synthesizes no audio.
+///
+/// The engine takes **PCM**, not filterbank features: the front-end
+/// (Kaldi fbank + CMN) is model-specific and no host binding (C# / GDScript /
+/// Swift) can reasonably compute it. Injected with
+/// [`Session::with_speaker_engine`](crate::Session::with_speaker_engine);
+/// the facade entry is [`Session::speaker`](crate::Session::speaker), and the
+/// C ABI surface is `vokra_speaker_embed`.
+pub trait SpeakerEngine: Send + Sync {
+    /// Embeds one mono `f32` reference utterance.
+    ///
+    /// Returns the raw (non-L2-normalized) embedding; its length is the
+    /// model's embedding dimension (192 for CAM++), so callers must read the
+    /// returned length rather than assume one.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] when `sample_rate` does not match the
+    /// model's trained front-end rate, or when the clip is shorter than one
+    /// analysis frame. The engine never silently resamples (FR-EX-08).
+    fn embed(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>>;
+
+    /// The backend this engine actually dispatches on.
+    ///
+    /// See [`AsrEngine::backend`] for why this is not defaulted and why an
+    /// output comparison cannot replace it.
+    fn backend(&self) -> BackendKind;
 }
 
 /// An **acoustic echo cancellation** engine (neural side of the audio

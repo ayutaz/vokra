@@ -106,6 +106,20 @@ jobs:
         run: cargo clippy -p vokra-models -p vokra-cli --features ${{ matrix.feature }} --all-targets -- -D warnings
       - name: Test (--features ${{ matrix.feature }})
         run: cargo test -p vokra-models --features ${{ matrix.feature }}
+      # 2026-08-14 (C ABI backend selector): vokra-capi's GPU arms only compile
+      # when vokra-capi itself carries the feature, so without this leg every
+      # CI configuration short-circuits on `ensure_backend_available` and the
+      # three `reject_cpu_only_backend` guards in `inject_engine` are dead code
+      # — the review that landed this surface deleted one and no CI job
+      # noticed. The committed Silero fixture makes the refusal path (available
+      # GPU + CPU-only arch => UNSUPPORTED_OP) run here for real; the real-GGUF
+      # legs stay in nightly-full-parity.yml. vokra-capi has no coreml / qnn
+      # feature, so this is restricted to the GPU arms.
+      - name: C ABI backend selector (--features ${{ matrix.feature }})
+        if: matrix.feature == 'metal' || matrix.feature == 'cuda'
+        run: |
+          cargo clippy -p vokra-capi --features ${{ matrix.feature }} --all-targets -- -D warnings
+          cargo test -p vokra-capi --features ${{ matrix.feature }}
       # M3-01-T22: also run vokra-backend-cuda's own probe/coverage/parity tests
       # on the CUDA arm (the crate has no `cuda` feature of its own — see
       # `Cargo.toml` — so it compiles unconditionally and its device-gated tests
