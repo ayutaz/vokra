@@ -513,6 +513,18 @@ pub mod pyannote;
 // variant / config / license paths are real).
 pub mod hifigan;
 pub mod snac;
+// Wave 2 2026-08-14 audit follow-up (vocoder recovery + music-und):
+// vocos = standalone vocos runtime binder (loud-partial — ConvNeXt V2
+// backbone missing from vokra-ops; iSTFT head available via
+// `vokra_ops::istft`, Kokoro precedent).
+// bigvgan = standalone binder for the 4 nvidia/bigvgan_* variants;
+// decode delegates to existing `vokra_ops::bigvgan_generator`.
+// beat_this = CPJKU Transformer beat/downbeat tracker (MIT, ISMIR
+// 2024) — first MIR primitive per 2026-08-14 audit "music evaluation
+// / analysis" gap.
+pub mod beat_this;
+pub mod bigvgan;
+pub mod vocos;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
