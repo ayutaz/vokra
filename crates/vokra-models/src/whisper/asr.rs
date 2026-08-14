@@ -138,7 +138,7 @@ impl WhisperAsr {
     pub fn transcribe_tokens_beam(
         &self,
         pcm: &[f32],
-        config: &BeamSearchConfig,
+        config: &BeamSearchConfig<'_>,
     ) -> Result<Vec<u32>> {
         let hyps = self.transcribe_tokens_beam_nbest(pcm, config)?;
         hyps.into_iter().next().map(|h| h.tokens).ok_or_else(|| {
@@ -176,7 +176,7 @@ impl WhisperAsr {
     pub fn transcribe_tokens_beam_nbest(
         &self,
         pcm: &[f32],
-        config: &BeamSearchConfig,
+        config: &BeamSearchConfig<'_>,
     ) -> Result<Vec<BeamHypothesis>> {
         // Metal is rejected here (Whisper op set uncovered until Phase 4); the
         // scorer's per-step decoder runs on the CPU backend as before.

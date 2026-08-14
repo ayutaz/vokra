@@ -29,6 +29,59 @@
 use crate::decode::word_timing::WordTiming;
 use crate::error::{Result, VokraError};
 
+/// Optional shallow-fusion LM (FR-OP-41 / FR-OP-42): given the current token
+/// prefix and a candidate next token, returns an `f32` **log-probability
+/// contribution** the beam search folds into that candidate's per-step score
+/// (multiplied by [`LmFusionConfig::weight`]) before the beam-level top-K
+/// truncation. Same posture as the per-op LM callbacks in
+/// [`vokra_ops::ctc_decode::CtcLmScoreFn`] and
+/// [`vokra_ops::hybrid_ctc_attention::LmScoreFn`] — a plain trait so the
+/// concrete LM (n-gram back-off, LSTM, transformer-LM, ...) is a call-site
+/// choice, not a search-side dependency.
+///
+/// `score` takes `&self`, mirroring the read-only nature of an LM lookup;
+/// stateful LMs place their mutable cache behind interior mutability
+/// (`RefCell` / `Mutex`) and stay `LmScorer + ?Sync`.
+pub trait LmScorer {
+    /// Log-probability contribution for extending `context` (the FULL token
+    /// prefix so far — search prefix + generated tokens) with `next`.
+    fn score(&self, context: &[u32], next: u32) -> f32;
+}
+
+/// Shallow-fusion binding: an LM plus its scalar weight `α`. The search adds
+/// `α · lm.score(prefix, tok)` to every per-candidate acoustic score BEFORE
+/// the beam-level `truncate(beam_width)`, so an LM-boosted hypothesis may
+/// survive a step it would otherwise be pruned in.
+///
+/// `weight == 0.0` short-circuits the LM call (mirrors
+/// [`vokra_ops::hybrid_ctc_attention`] line 231) — so a caller who wires a
+/// scorer whose `score` returns `-inf` for OOV entries never trips
+/// `0.0 * -inf = NaN`. This is what makes the "weight = 0.0 is bit-identical
+/// to lm_fusion = None" invariant hold.
+pub struct LmFusionConfig<'a> {
+    /// The scoring LM.
+    pub lm: &'a dyn LmScorer,
+    /// Shallow-fusion weight (`α`). `0.0` disables the LM without a call.
+    pub weight: f32,
+}
+
+impl<'a> Clone for LmFusionConfig<'a> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a> Copy for LmFusionConfig<'a> {}
+
+impl<'a> std::fmt::Debug for LmFusionConfig<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LmFusionConfig")
+            .field("lm", &"<dyn LmScorer>")
+            .field("weight", &self.weight)
+            .finish()
+    }
+}
+
 /// Scores next tokens for the beam search (model-independent interface).
 pub trait BeamScorer {
     /// Returns the **log-probabilities** over the whole vocabulary for the
@@ -74,8 +127,14 @@ pub trait BeamScorer {
 }
 
 /// Beam-search attributes (FR-OP-40) plus an operational length cap.
+///
+/// The `'a` lifetime is threaded through [`Self::lm_fusion`] so the shallow-
+/// fusion LM can be a borrowed reference (typically to a `NgramLm` or an
+/// LSTM cell owned by the caller). Callers that do not enable LM fusion
+/// ignore the lifetime — `BeamSearchConfig::greedy(N)` / `::new(w, N)` seed
+/// `lm_fusion: None`, elision handles the `'a` at every existing call site.
 #[derive(Debug, Clone)]
-pub struct BeamSearchConfig {
+pub struct BeamSearchConfig<'a> {
     /// Number of hypotheses kept per step (`beam_width = 1` == greedy).
     pub beam_width: usize,
     /// Length-penalty exponent `α` (HF `length_penalty`): a completed
@@ -107,11 +166,24 @@ pub struct BeamSearchConfig {
     /// `vokra_models::voxtral::beam_search::BeamConfig::no_repeat_ngram_size`
     /// so both search primitives share the same semantics.
     pub no_repeat_ngram_size: usize,
+    /// Optional shallow-fusion LM (FR-OP-41 / FR-OP-42). When `Some`, the
+    /// search adds `lm_fusion.weight · lm_fusion.lm.score(prefix, tok)` to
+    /// every per-candidate acoustic score BEFORE the beam-level
+    /// `truncate(beam_width)`, so an LM-boosted hypothesis may survive a
+    /// step it would otherwise be pruned in.
+    ///
+    /// `None` (default) is bit-identical to omitting the field: the search
+    /// takes the pre-LM code path. `Some { weight: 0.0, .. }` is also
+    /// bit-identical to `None` — the scorer is never consulted, so a scorer
+    /// that returns `-inf` for OOV entries does not trip `0.0 * -inf = NaN`
+    /// (mirrors the [`vokra_ops::hybrid_ctc_attention`] `lm_weight == 0.0`
+    /// short-circuit).
+    pub lm_fusion: Option<LmFusionConfig<'a>>,
 }
 
-impl BeamSearchConfig {
+impl<'a> BeamSearchConfig<'a> {
     /// A greedy-equivalent config: `beam_width = 1`, no normalization, one
-    /// result, no timestamps, no n-gram blocking.
+    /// result, no timestamps, no n-gram blocking, no LM fusion.
     pub fn greedy(max_new_tokens: usize) -> Self {
         Self {
             beam_width: 1,
@@ -121,11 +193,12 @@ impl BeamSearchConfig {
             word_timestamps: false,
             max_new_tokens,
             no_repeat_ngram_size: 0,
+            lm_fusion: None,
         }
     }
 
     /// A standard beam config of the given width (one best result), no n-gram
-    /// blocking.
+    /// blocking, no LM fusion.
     pub fn new(beam_width: usize, max_new_tokens: usize) -> Self {
         Self {
             beam_width,
@@ -135,6 +208,7 @@ impl BeamSearchConfig {
             word_timestamps: false,
             max_new_tokens,
             no_repeat_ngram_size: 0,
+            lm_fusion: None,
         }
     }
 }
@@ -169,11 +243,11 @@ pub struct BeamHypothesis {
 /// - [`VokraError::UnsupportedOp`] if `word_timestamps` is set but the
 ///   [`BeamScorer`] supplies no alignment (FR-EX-08, M4-20);
 /// - any error surfaced by the [`BeamScorer`].
-pub fn beam_search(
+pub fn beam_search<'a>(
     scorer: &mut dyn BeamScorer,
     prefix: &[u32],
     eot: u32,
-    config: &BeamSearchConfig,
+    config: &BeamSearchConfig<'a>,
 ) -> Result<Vec<BeamHypothesis>> {
     if prefix.is_empty() {
         return Err(VokraError::InvalidArgument(
@@ -251,10 +325,22 @@ pub fn beam_search(
                 }
                 let mut tokens = hyp.tokens.clone();
                 tokens.push(tok);
-                candidates.push(Hyp {
-                    tokens,
-                    score: hyp.score + delta,
-                });
+                // Fold LM shallow fusion into the per-candidate score BEFORE
+                // the beam-level `truncate(beam_width)` below, so an LM-
+                // boosted candidate may survive a step it would otherwise be
+                // pruned in. `weight == 0.0` (or `lm_fusion == None`) is a
+                // short-circuit — the LM is never called and the arithmetic
+                // is bit-identical to `hyp.score + delta` (guards a scorer
+                // whose `score` returns `-inf` from tripping
+                // `0.0 * -inf = NaN`; mirrors the
+                // `vokra_ops::hybrid_ctc_attention` line 231 pattern).
+                let mut score = hyp.score + delta;
+                if let Some(lf) = &config.lm_fusion
+                    && lf.weight != 0.0
+                {
+                    score += lf.lm.score(&hyp.tokens, tok) * lf.weight;
+                }
+                candidates.push(Hyp { tokens, score });
             }
         }
 
@@ -1002,5 +1088,213 @@ mod tests {
         let a = beam_search(&mut s1, &[0], EOT, &cfg_omitted).unwrap();
         let b = beam_search(&mut s2, &[0], EOT, &cfg_explicit_zero).unwrap();
         assert_eq!(a, b, "n=0 must be bit-identical to omitting the field");
+    }
+
+    // ---------- LM shallow fusion (FR-OP-41 / FR-OP-42) -------------------
+    //
+    // Mirrors the semantics wired through
+    // `vokra_ops::hybrid_ctc_attention::HybridCtcAttentionAttrs::lm_score_fn`
+    // + `lm_weight` — the LM contribution is added to a candidate's score
+    // BEFORE the beam-level `truncate(beam_width)`, and `weight == 0.0`
+    // short-circuits the LM call so a scorer returning `-inf` never trips
+    // `0.0 * -inf = NaN` (the invariant that makes the "weight = 0.0 is
+    // bit-identical to lm_fusion = None" test hold).
+
+    /// LM scorer that returns `-inf` for every query — used to prove
+    /// the short-circuit fires when `weight = 0.0` (a would-be
+    /// `0.0 * -inf = NaN` corruption is prevented).
+    struct NegInfLm;
+    impl LmScorer for NegInfLm {
+        fn score(&self, _context: &[u32], _next: u32) -> f32 {
+            f32::NEG_INFINITY
+        }
+    }
+
+    /// LM scorer that returns `boost` for `target` and `0.0` for everything
+    /// else — the "small stateless model that likes exactly one token" used
+    /// to prove positive-weight fusion changes ranking.
+    struct SingleTokenBoostLm {
+        target: u32,
+        boost: f32,
+    }
+    impl LmScorer for SingleTokenBoostLm {
+        fn score(&self, _context: &[u32], next: u32) -> f32 {
+            if next == self.target { self.boost } else { 0.0 }
+        }
+    }
+
+    #[test]
+    fn lm_fusion_none_is_bit_identical_to_omitted() {
+        // Regression: adding the field with a default of `None` MUST NOT
+        // change any pre-LM-fusion output. Two configs — one goes through
+        // the `::new` field default, one sets `lm_fusion = None` explicitly
+        // — must produce byte-for-byte the same n-best list. Guards against
+        // a stray `if config.lm_fusion.is_some()` mis-branch that would
+        // take the LM path for a `None` too.
+        let mut s1 = scorer();
+        let mut s2 = scorer();
+        let mut cfg_omitted = BeamSearchConfig::new(3, 8);
+        cfg_omitted.n_best = 3;
+        let mut cfg_explicit_none = cfg_omitted.clone();
+        cfg_explicit_none.lm_fusion = None;
+        let a = beam_search(&mut s1, &[0], EOT, &cfg_omitted).unwrap();
+        let b = beam_search(&mut s2, &[0], EOT, &cfg_explicit_none).unwrap();
+        assert_eq!(
+            a, b,
+            "lm_fusion = None must be bit-identical to omitting the field"
+        );
+    }
+
+    #[test]
+    fn lm_fusion_weight_zero_is_bit_identical_to_none() {
+        // Regression: `Some { lm, weight: 0.0 }` must be bit-identical to
+        // `None` — the LM is never consulted, so a scorer whose `score`
+        // returns `-inf` (which `0.0 * -inf = NaN` would corrupt) does not
+        // affect the result. This is what makes the `lm_weight == 0.0`
+        // short-circuit load-bearing rather than cosmetic.
+        //
+        // Comparison uses `to_bits()` equality per field — a `+0.0` vs
+        // `-0.0` drift would surface here too.
+        let neg_inf = NegInfLm;
+        let mut cfg_none = BeamSearchConfig::new(3, 8);
+        cfg_none.n_best = 3;
+        let mut cfg_weight_zero = cfg_none.clone();
+        cfg_weight_zero.lm_fusion = Some(LmFusionConfig {
+            lm: &neg_inf,
+            weight: 0.0,
+        });
+
+        let mut s1 = scorer();
+        let mut s2 = scorer();
+        let a = beam_search(&mut s1, &[0], EOT, &cfg_none).unwrap();
+        let b = beam_search(&mut s2, &[0], EOT, &cfg_weight_zero).unwrap();
+        assert_eq!(a.len(), b.len(), "n-best length mismatch");
+        for (i, (ha, hb)) in a.iter().zip(&b).enumerate() {
+            assert_eq!(ha.tokens, hb.tokens, "hyp {i} token drift");
+            assert_eq!(
+                ha.score.to_bits(),
+                hb.score.to_bits(),
+                "hyp {i} score bit drift (weight=0 must short-circuit LM call)"
+            );
+            assert_eq!(
+                ha.normalized_score.to_bits(),
+                hb.normalized_score.to_bits(),
+                "hyp {i} normalized_score bit drift"
+            );
+        }
+    }
+
+    #[test]
+    fn lm_fusion_positive_weight_reranks_toward_lm() {
+        // Baseline beam (width = 2, so per-beam `top_k(2)` puts BOTH token 1
+        // and token 2 in the candidate pool — LM can promote either) from
+        // prefix [0] with the default scorer picks the acoustic winner
+        // `[0, 1, 3]` at rank 1 (top-2 keeps [0,1,3] score -0.617 and
+        // [0,2,3] score -0.970; length-normalized top-1 = [0,1,3]).
+        //
+        // With a heavy LM boost on token 2 (weight = 1.0, boost = 10.0),
+        // the fused score at step 1 for extending [0] → 2 is
+        // `ln(0.399) + 10 = 9.081`, way above extending → 1 (`ln(0.6) =
+        // -0.511`). [0, 2, 3] rises to rank 1.
+        //
+        // NOTE: beam_width = 1 (`::greedy`) does NOT exercise this — per-beam
+        // `top_k(1)` picks only the acoustic winner, so LM never sees the
+        // second-place token as a candidate. width >= 2 is required to
+        // demonstrate reranking, matching how a real caller wires the LM.
+        let baseline = beam_search(&mut scorer(), &[0], EOT, &BeamSearchConfig::new(2, 8)).unwrap();
+        assert_eq!(
+            baseline[0].tokens,
+            vec![0u32, 1, 3],
+            "acoustic-only baseline picks token 1 at rank 1"
+        );
+
+        let boost = SingleTokenBoostLm {
+            target: 2,
+            boost: 10.0,
+        };
+        let mut cfg = BeamSearchConfig::new(2, 8);
+        cfg.lm_fusion = Some(LmFusionConfig {
+            lm: &boost,
+            weight: 1.0,
+        });
+        let biased = beam_search(&mut scorer(), &[0], EOT, &cfg).unwrap();
+        assert!(
+            biased[0].tokens.contains(&2u32),
+            "LM boost on token 2 must rerank the top-1 hypothesis to contain it, got {:?}",
+            biased[0].tokens
+        );
+    }
+
+    #[test]
+    fn lm_added_before_top_k_can_promote_survivor() {
+        // Proves LM fusion applies BEFORE the beam-level `truncate(beam_width)`,
+        // not after — an LM-boosted candidate survives a pruning decision it
+        // would otherwise lose.
+        //
+        // Setup — with `beam_width = 2` and `max_new_tokens = 2` on the
+        // module scorer:
+        //   step 1: prefix [0] → top-K=2 gives candidates [0, 1] (score
+        //           ln(0.6) = -0.511) and [0, 2] (score ln(0.399) = -0.919).
+        //           No pruning (2 candidates <= beam_width). Both active.
+        //   step 2: expands each → 4 candidates.
+        //     baseline (no LM):
+        //       [0, 1, 3] = ln(0.6)+ln(0.9)   = -0.617   (EOT — completed)
+        //       [0, 2, 3] = ln(0.399)+ln(0.95) = -0.970  (EOT — completed)
+        //       [0, 1, 2] = ln(0.6)+ln(0.098) = -2.834
+        //       [0, 2, 1] = ln(0.399)+ln(0.02) = -4.831
+        //       top-2 → [[0,1,3], [0,2,3]]. Both complete.
+        //     with LM boosting token 1 by +10, weight = 1.0:
+        //       Step-1 LM contribution: +10 for extending [0]→1, +0 for →2.
+        //         [0, 1] carries score ln(0.6)+10 = 9.489 into step 2.
+        //         [0, 2] carries score ln(0.399)+0 = -0.919 into step 2.
+        //       Step-2 candidates (LM adds boost when extending →1):
+        //         [0, 1, 3] = 9.489 + ln(0.9)  + 0  = 9.384   (EOT)
+        //         [0, 1, 2] = 9.489 + ln(0.098)+ 0  = 7.166
+        //         [0, 2, 1] = -0.919 + ln(0.02)+ 10 = 5.169
+        //         [0, 2, 3] = -0.919 + ln(0.95)+ 0  = -0.970  (EOT)
+        //       top-2 → [[0,1,3], [0,1,2]]. [0,2,3] PRUNED even though
+        //       under the acoustic-only ranking it would survive.
+        //
+        // The observable proof: baseline contains [0,2,3] as a top-2
+        // result; the LM-fused search does NOT — [0,2,3] was pruned by the
+        // step-2 beam truncate under the LM-inflated ranking. If LM were
+        // applied AFTER the truncate, [0,2,3] would still be a candidate
+        // (it survives the acoustic ranking) and would still appear in
+        // the final n-best.
+
+        let mut cfg = BeamSearchConfig::new(2, 2);
+        cfg.n_best = 2;
+        // α = 0 so ranking uses raw score (isolate the LM effect from the
+        // length-normalization arithmetic — [0,1,3] and [0,2,3] have the
+        // same length so it would not flip the ranking, but keeping α at
+        // the default 1.0 needlessly muddies the trace).
+        cfg.length_normalization = 0.0;
+
+        let baseline = beam_search(&mut scorer(), &[0], EOT, &cfg).unwrap();
+        let baseline_tokens: Vec<Vec<u32>> = baseline.iter().map(|h| h.tokens.clone()).collect();
+        assert!(
+            baseline_tokens.contains(&vec![0u32, 2, 3]),
+            "acoustic-only baseline MUST include [0,2,3] for this test to be meaningful \
+             (proves the pruning boundary sits where LM would move it), got {baseline_tokens:?}",
+        );
+
+        let boost = SingleTokenBoostLm {
+            target: 1,
+            boost: 10.0,
+        };
+        let mut cfg_lm = cfg.clone();
+        cfg_lm.lm_fusion = Some(LmFusionConfig {
+            lm: &boost,
+            weight: 1.0,
+        });
+        let with_lm = beam_search(&mut scorer(), &[0], EOT, &cfg_lm).unwrap();
+        let with_lm_tokens: Vec<Vec<u32>> = with_lm.iter().map(|h| h.tokens.clone()).collect();
+        assert!(
+            !with_lm_tokens.contains(&vec![0u32, 2, 3]),
+            "with LM boost on token 1, [0,2,3] MUST be pruned by the step-2 beam \
+             truncate — the LM-inflated ranking demotes it out of the top-{}. If \
+             this fires, LM is being applied AFTER truncate, not before. Got {with_lm_tokens:?}",
+            cfg_lm.beam_width,
+        );
     }
 }

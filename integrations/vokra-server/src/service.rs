@@ -1460,7 +1460,7 @@ fn whisper_beam_config(
     n: usize,
     req: &TranscribeBeamRequest,
     model: &str,
-) -> Result<BeamSearchConfig, ServiceError> {
+) -> Result<BeamSearchConfig<'static>, ServiceError> {
     // length_penalty defaults to 1.0 to match `BeamSearchConfig::new` (HF
     // length_penalty), NOT the Voxtral default of 0.6 — the two engines use
     // different ranking primitives.

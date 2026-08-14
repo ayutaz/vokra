@@ -186,6 +186,11 @@ pub mod istft;
 pub mod istft_streaming;
 pub mod kaldi_fbank;
 pub mod length_conditioning;
+// Wave 1 2026-08-14 audit follow-up: shallow-fusion n-gram LM for
+// CTC / RNN-T / attention decoders (FR-OP-41 / FR-OP-42). Consumed via
+// `vokra_core::decode::LmScorer` trait; the fusion arithmetic lives one
+// indirection above in `vokra_core::decode::BeamSearchConfig::lm_fusion`.
+pub mod lm_fusion;
 pub mod mel;
 pub mod mfcc;
 // ---- SoTA plan KWS binder (openwakeword classifier MLP, 2026-08-05) -----

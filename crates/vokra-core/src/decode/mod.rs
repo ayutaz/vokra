@@ -50,7 +50,9 @@ pub mod wfst;
 
 use crate::error::Result;
 
-pub use beam_search::{BeamHypothesis, BeamScorer, BeamSearchConfig, beam_search};
+pub use beam_search::{
+    BeamHypothesis, BeamScorer, BeamSearchConfig, LmFusionConfig, LmScorer, beam_search,
+};
 pub use cfg::{CfgMode, apply_cfg, apply_cfg_inplace};
 pub use sampler::{Sampler, SamplerConfig, argmax, sample_sequence};
 pub use stepper::{DecodeStepper, TOKEN_FLAG_EOT};
