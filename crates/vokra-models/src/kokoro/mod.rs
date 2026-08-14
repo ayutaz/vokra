@@ -48,6 +48,7 @@ use vokra_core::{
     BackendKind, CompliancePolicy, Result, SynthesisRequest, SynthesizedAudio, TtsEngine,
     VokraError, check_weight_license,
 };
+use vokra_ops::ProsodyControl;
 
 use crate::compute::HotOp;
 
@@ -286,6 +287,80 @@ impl KokoroTts {
         noise_scale: f32,
         length_scale: f32,
     ) -> Result<SynthesizedAudio> {
+        // Thin delegate to the prosody-aware entry point with `prosody = None`.
+        // Routing every synthesis through a single code path guarantees that
+        // the pre-M3-17 output is bit-identical to a `prosody = None` call
+        // (or an explicit identity [`ProsodyControl`]) by construction —
+        // there is no shadow pipeline that could drift.
+        self.synthesize_phonemes_with_prosody(
+            phoneme_ids,
+            voice,
+            style_override,
+            noise_scale,
+            length_scale,
+            None,
+        )
+    }
+
+    /// Prosody-aware variant of [`Self::synthesize_phonemes`] — the M3-17
+    /// unified prosody-control API wired into Kokoro.
+    ///
+    /// The pipeline is identical to [`Self::synthesize_phonemes`]; only the
+    /// `prosody` axis differs:
+    ///
+    /// - `prosody = None` OR an identity [`ProsodyControl`] — bit-identical
+    ///   to the plain [`Self::synthesize_phonemes`] entry (both routes
+    ///   evaluate `effective_length_scale = length_scale` and skip the F0
+    ///   scaling branch).
+    /// - `prosody = Some(ctrl)` with numeric axes — Kokoro honours them
+    ///   NATIVELY through its existing pipeline knobs, so no adapter trait
+    ///   folding is invented (M3-17 red-line, CLAUDE.md hallucination ban):
+    ///     * `pitch_shift` (semitones) becomes a multiplicative F0 factor
+    ///       `2^(semitones / 12)` applied post-predictor, pre-decoder to
+    ///       [`crate::kokoro::prosody::ProsodyOutput::f0`]. Energy `n` and
+    ///       durations are untouched — pitch axis only.
+    ///     * `speed_scale` (`0.5..=2.0`) is folded into `length_scale` as
+    ///       `length_scale / speed_scale` — Kokoro's `length_scale` is the
+    ///       reciprocal of upstream `speed` (§Scales above), so a
+    ///       caller-side `speed = 2.0` request shortens the output by half.
+    /// - `prosody = Some(ctrl)` with a TEXT axis — rejected LOUDLY with a
+    ///   named blocker (FR-EX-08, never a silent drop):
+    ///     * `pause_ms` — Kokoro's `duration_proj` has no phoneme-level
+    ///       pause semantic (it yields one integer count per phoneme; there
+    ///       is no side channel for a caller pause).
+    ///     * `instruction` — Kokoro consumes phoneme ids only; per M3-17
+    ///       the instruction-folding [`vokra_ops::ApplyProsody`] adapter is
+    ///       CosyVoice2-only in v0.9.
+    ///
+    /// Kokoro deliberately does NOT implement [`vokra_ops::ApplyProsody`];
+    /// that trait is for instruction-folding adapters (CosyVoice2 in v0.9,
+    /// M3-17 rustdoc). Kokoro consumes the numeric axes directly through
+    /// this method — no [`vokra_ops::ProsodyControl::instruction`] is ever
+    /// produced or consumed here.
+    ///
+    /// # Errors
+    ///
+    /// In addition to every error [`Self::synthesize_phonemes`] can
+    /// surface, [`VokraError::InvalidArgument`] on any of the loud
+    /// rejections listed above (non-finite `pitch_shift`, non-finite or
+    /// out-of-range `speed_scale`, non-`None` `pause_ms`, non-`None`
+    /// `instruction`).
+    pub fn synthesize_phonemes_with_prosody(
+        &self,
+        phoneme_ids: &[i64],
+        voice: Option<&str>,
+        style_override: Option<&[f32]>,
+        noise_scale: f32,
+        length_scale: f32,
+        prosody: Option<&ProsodyControl>,
+    ) -> Result<SynthesizedAudio> {
+        // Resolve prosody up front so downstream sees only the effective
+        // `(length_scale, pitch_factor)` pair. This is where the loud
+        // rejections (un-honoured axes / out-of-range values) surface —
+        // before any tensor work runs (FR-EX-08).
+        let (effective_length_scale, pitch_factor) =
+            resolve_prosody_for_kokoro(length_scale, prosody)?;
+
         // Reserved — the stochastic SineGen dither is deterministically
         // neutralized (generator.rs §Determinism). Consumed here so the
         // parameter is not silently dropped.
@@ -383,14 +458,32 @@ impl KokoroTts {
         // 4) Prosody predictor (upstream path): durations via
         //    `round(sigmoid.sum · length_scale).clamp(min=1)` + F0/N contours
         //    at 2·t_frames (`model.py:105-115`). Style: the PROSODY half.
-        let pros = self
-            .prosody
-            .forward_upstream(&d_en_ch, style_prosody, t_in, length_scale)?;
+        //    `effective_length_scale` folds any `ProsodyControl::speed_scale`
+        //    request into the caller-supplied `length_scale` (identity path
+        //    yields `effective == length_scale` exactly, so pre-M3-17 output
+        //    is bit-identical).
+        let mut pros =
+            self.prosody
+                .forward_upstream(&d_en_ch, style_prosody, t_in, effective_length_scale)?;
         let t_frames: usize = pros.durations.iter().sum();
         if t_frames == 0 {
             return Err(VokraError::InvalidArgument(
                 "kokoro TTS: prosody predicted zero total frames".to_owned(),
             ));
+        }
+
+        // 4b) Apply the pitch-shift request to the F0 contour before the
+        //     decoder consumes it (M3-17 numeric axis). Energy `n` and
+        //     durations are untouched — pitch axis only. The equality vs
+        //     exact `1.0` guards a genuine no-op: `resolve_prosody_for_kokoro`
+        //     returns `1.0` bit-exact on identity / `None` paths and on
+        //     `pitch_shift = 0.0` (`2f32.powf(0.0) == 1.0`), so the
+        //     bit-identical guarantee for those callers is preserved by
+        //     construction.
+        if pitch_factor != 1.0 {
+            for f in pros.f0.iter_mut() {
+                *f *= pitch_factor;
+            }
         }
 
         // 5) Length regulation of t_en → asr [hidden, t_frames]
@@ -876,6 +969,95 @@ fn split_ref_s(style: &[f32], style_dim: usize) -> (&[f32], &[f32]) {
     } else {
         (style, style)
     }
+}
+
+/// Resolves a Kokoro `(effective_length_scale, pitch_factor)` pair from the
+/// caller's base `length_scale` and an optional [`ProsodyControl`] request.
+///
+/// This is the single seam that decides which prosody axes Kokoro can honour
+/// and which are refused loudly (FR-EX-08 — never a silent drop):
+///
+/// - `None` OR identity control → `(base_length_scale, 1.0)` EXACTLY, so the
+///   default path is bit-identical to a pre-M3-17 synthesis (by construction).
+/// - `pitch_shift = Some(semitones)` → `pitch_factor = 2^(semitones / 12)`
+///   (standard semitone → ratio conversion; `powf(0.0) = 1.0` bit-exact so a
+///   `Some(0.0)` still hits the identity F0 path).
+/// - `speed_scale = Some(s)` with `0.5 ≤ s ≤ 2.0` → `effective_length_scale =
+///   base_length_scale / s`. Kokoro's `length_scale` is the reciprocal of
+///   upstream `speed` (see [`KokoroTts::synthesize_phonemes`] §Scales), so a
+///   caller-side `speed = 2.0` maps to `length_scale = base / 2.0` and
+///   shortens the output by half.
+/// - `pause_ms = Some(_)` → refused (Kokoro's `duration_proj` has no
+///   phoneme-level pause semantic).
+/// - `instruction = Some(_)` → refused (Kokoro has no text-instruction
+///   consumer; per M3-17 the instruction folding is CosyVoice2-only).
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] on any of:
+/// - `pitch_shift` non-finite (NaN / ±∞);
+/// - `speed_scale` non-finite or outside `[0.5, 2.0]`;
+/// - `pause_ms` set;
+/// - `instruction` set.
+fn resolve_prosody_for_kokoro(
+    base_length_scale: f32,
+    prosody: Option<&ProsodyControl>,
+) -> Result<(f32, f32)> {
+    let Some(ctrl) = prosody else {
+        return Ok((base_length_scale, 1.0));
+    };
+    if ctrl.is_identity() {
+        return Ok((base_length_scale, 1.0));
+    }
+    // Text axes: Kokoro cannot honour these; refuse loudly.
+    if ctrl.pause_ms.is_some() {
+        return Err(VokraError::InvalidArgument(
+            "kokoro TTS: ProsodyControl.pause_ms is not honoured — Kokoro's \
+             duration predictor has no phoneme-level pause semantic \
+             (FR-EX-08). Insert silence at the phoneme-id level, or leave \
+             pause_ms = None."
+                .to_owned(),
+        ));
+    }
+    if ctrl.instruction.is_some() {
+        return Err(VokraError::InvalidArgument(
+            "kokoro TTS: ProsodyControl.instruction is not honoured — Kokoro \
+             consumes phoneme ids only; per M3-17 the instruction folding is \
+             CosyVoice2-only. Leave instruction = None."
+                .to_owned(),
+        ));
+    }
+    // Numeric axes: honoured natively.
+    let pitch_factor = if let Some(semitones) = ctrl.pitch_shift {
+        if !semitones.is_finite() {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: ProsodyControl.pitch_shift must be finite (got {semitones})"
+            )));
+        }
+        2f32.powf(semitones / 12.0)
+    } else {
+        1.0
+    };
+    let effective_length_scale = if let Some(speed) = ctrl.speed_scale {
+        if !speed.is_finite() {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: ProsodyControl.speed_scale must be finite (got {speed})"
+            )));
+        }
+        if !(0.5..=2.0).contains(&speed) {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: ProsodyControl.speed_scale {speed} outside supported \
+                 range [0.5, 2.0]"
+            )));
+        }
+        // Kokoro's `length_scale` = 1 / upstream `speed`
+        // (`synthesize_phonemes_with_prosody` §Scales), so a caller-side
+        // `speed = 2.0` maps to `length_scale = base / 2.0`.
+        base_length_scale / speed
+    } else {
+        base_length_scale
+    };
+    Ok((effective_length_scale, pitch_factor))
 }
 
 impl TtsEngine for KokoroTts {
@@ -1588,5 +1770,344 @@ mod tests {
             store.tensor_shaped("w", &[2]),
             Err(VokraError::InvalidArgument(_))
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_prosody_for_kokoro (M3-17 wiring) — pure-unit, no fixture
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_prosody_none_passthrough_is_bit_identical() {
+        // The bit-identical guarantee for pre-M3-17 callers relies on this
+        // path returning the base `length_scale` unchanged and `pitch_factor`
+        // exactly 1.0 (both used as `==` guards downstream).
+        let (ls, pf) = resolve_prosody_for_kokoro(1.0, None).expect("None passthrough");
+        assert_eq!(ls, 1.0);
+        assert_eq!(pf, 1.0);
+        let (ls2, pf2) = resolve_prosody_for_kokoro(0.75, None).expect("None passthrough");
+        assert_eq!(ls2, 0.75);
+        assert_eq!(pf2, 1.0);
+    }
+
+    #[test]
+    fn resolve_prosody_identity_control_is_bit_identical() {
+        // Identity `ProsodyControl` and explicit `None` must both preserve
+        // the base `length_scale` exactly.
+        let identity = ProsodyControl::identity();
+        let (ls, pf) =
+            resolve_prosody_for_kokoro(1.25, Some(&identity)).expect("identity passthrough");
+        assert_eq!(ls, 1.25);
+        assert_eq!(pf, 1.0);
+        // default() is the same observable value as identity() per M3-17
+        // rustdoc — pin that too.
+        let default = ProsodyControl::default();
+        let (ls_d, pf_d) =
+            resolve_prosody_for_kokoro(1.25, Some(&default)).expect("default passthrough");
+        assert_eq!(ls_d, 1.25);
+        assert_eq!(pf_d, 1.0);
+    }
+
+    #[test]
+    fn resolve_prosody_zero_semitones_is_identity_bit_exact() {
+        // `2f32.powf(0.0)` is 1.0 exactly, so a `pitch_shift = Some(0.0)`
+        // request must not trigger the F0 scaling branch. Pin the bit-exact
+        // 1.0 here so any future rewrite that loses this property fails.
+        let ctrl = ProsodyControl::default().with_pitch_shift(0.0);
+        let (ls, pf) = resolve_prosody_for_kokoro(1.0, Some(&ctrl)).expect("zero semitones ok");
+        assert_eq!(ls, 1.0);
+        assert_eq!(pf, 1.0);
+    }
+
+    #[test]
+    fn resolve_prosody_unit_speed_is_identity_bit_exact() {
+        // `base / 1.0 == base` bit-exact — pin it so the identity contract
+        // survives future refactors.
+        let ctrl = ProsodyControl::default().with_speed_scale(1.0);
+        let (ls, pf) = resolve_prosody_for_kokoro(0.5, Some(&ctrl)).expect("unit speed ok");
+        assert_eq!(ls, 0.5);
+        assert_eq!(pf, 1.0);
+    }
+
+    #[test]
+    fn resolve_prosody_speed_inverts_into_length_scale() {
+        // `length_scale = base / speed`. Base 1.0 chosen so results are
+        // exact powers of two (division by 2 / 0.5 is bit-exact in f32).
+        let fast = ProsodyControl::default().with_speed_scale(2.0);
+        let (ls, pf) = resolve_prosody_for_kokoro(1.0, Some(&fast)).expect("speed 2.0 ok");
+        assert_eq!(ls, 0.5);
+        assert_eq!(pf, 1.0);
+        let slow = ProsodyControl::default().with_speed_scale(0.5);
+        let (ls_s, pf_s) = resolve_prosody_for_kokoro(1.0, Some(&slow)).expect("speed 0.5 ok");
+        assert_eq!(ls_s, 2.0);
+        assert_eq!(pf_s, 1.0);
+    }
+
+    #[test]
+    fn resolve_prosody_twelve_semitones_yields_two() {
+        // One octave up = factor 2. `2f32.powf(1.0)` is close to but not
+        // guaranteed to be bit-exact 2.0 across libm impls, so use a small
+        // absolute tolerance for the pitch factor. length_scale unchanged.
+        let ctrl = ProsodyControl::default().with_pitch_shift(12.0);
+        let (ls, pf) = resolve_prosody_for_kokoro(1.0, Some(&ctrl)).expect("12 semitones ok");
+        assert_eq!(ls, 1.0);
+        assert!(
+            (pf - 2.0).abs() < 1e-6,
+            "12 semitones must yield pitch factor ≈ 2.0 (got {pf})"
+        );
+        // One octave down = factor 0.5.
+        let ctrl_dn = ProsodyControl::default().with_pitch_shift(-12.0);
+        let (_, pf_dn) = resolve_prosody_for_kokoro(1.0, Some(&ctrl_dn)).expect("-12 semitones ok");
+        assert!(
+            (pf_dn - 0.5).abs() < 1e-6,
+            "-12 semitones must yield pitch factor ≈ 0.5 (got {pf_dn})"
+        );
+    }
+
+    #[test]
+    fn resolve_prosody_rejects_pause_ms() {
+        // Kokoro cannot honour a per-caller pause — reject loudly rather
+        // than silently ignore (FR-EX-08).
+        let ctrl = ProsodyControl::default().with_pause_ms(200);
+        match resolve_prosody_for_kokoro(1.0, Some(&ctrl)) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("pause_ms"),
+                    "error must name the un-honoured axis; got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_prosody_rejects_instruction() {
+        // Kokoro consumes phoneme ids only — no text-instruction path exists
+        // (per M3-17: instruction folding is CosyVoice2-only).
+        let ctrl = ProsodyControl::default().with_instruction("speak calmly");
+        match resolve_prosody_for_kokoro(1.0, Some(&ctrl)) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("instruction"),
+                    "error must name the un-honoured axis; got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_prosody_rejects_out_of_range_speed() {
+        // Below the supported floor.
+        let too_slow = ProsodyControl::default().with_speed_scale(0.4);
+        assert!(matches!(
+            resolve_prosody_for_kokoro(1.0, Some(&too_slow)),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Above the supported ceiling.
+        let too_fast = ProsodyControl::default().with_speed_scale(2.5);
+        assert!(matches!(
+            resolve_prosody_for_kokoro(1.0, Some(&too_fast)),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // 0.5 and 2.0 are the inclusive bounds — must NOT be rejected.
+        let low_bound = ProsodyControl::default().with_speed_scale(0.5);
+        assert!(resolve_prosody_for_kokoro(1.0, Some(&low_bound)).is_ok());
+        let high_bound = ProsodyControl::default().with_speed_scale(2.0);
+        assert!(resolve_prosody_for_kokoro(1.0, Some(&high_bound)).is_ok());
+    }
+
+    #[test]
+    fn resolve_prosody_rejects_non_finite_pitch() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let ctrl = ProsodyControl::default().with_pitch_shift(bad);
+            match resolve_prosody_for_kokoro(1.0, Some(&ctrl)) {
+                Err(VokraError::InvalidArgument(msg)) => {
+                    assert!(
+                        msg.contains("pitch_shift"),
+                        "error must name pitch_shift for {bad}; got: {msg}"
+                    );
+                }
+                other => panic!("expected InvalidArgument for {bad}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_prosody_rejects_non_finite_speed() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let ctrl = ProsodyControl::default().with_speed_scale(bad);
+            assert!(
+                matches!(
+                    resolve_prosody_for_kokoro(1.0, Some(&ctrl)),
+                    Err(VokraError::InvalidArgument(_))
+                ),
+                "speed_scale {bad} must be rejected"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Real-checkpoint gated integration tests (VOKRA_KOKORO_GGUF)
+    // -----------------------------------------------------------------------
+
+    /// The M3-17 bit-identical contract on a REAL voice: the plain
+    /// `synthesize_phonemes` entry, an explicit `None` prosody, and an
+    /// identity `ProsodyControl` must all produce byte-equal PCM. Skipped
+    /// cleanly when `VOKRA_KOKORO_GGUF` is unset.
+    #[test]
+    fn prosody_none_and_identity_bit_identical_pcm_on_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::prosody_none_and_identity_bit_identical_pcm_on_real_gguf_gated] \
+                 SKIP: set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path).unwrap_or_else(|e| {
+            panic!(
+                "load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}. Convert via \
+                 `vokra-cli convert --model kokoro-82m ...` first."
+            )
+        });
+        let style = vec![0.0f32; tts.config().style_dim];
+        let ids = [0i64, 1, 2, 3];
+        let plain = tts
+            .synthesize_phonemes(&ids, None, Some(&style), 0.0, 1.0)
+            .expect("plain synthesize");
+        let explicit_none = tts
+            .synthesize_phonemes_with_prosody(&ids, None, Some(&style), 0.0, 1.0, None)
+            .expect("explicit None prosody");
+        let identity = ProsodyControl::identity();
+        let identity_out = tts
+            .synthesize_phonemes_with_prosody(&ids, None, Some(&style), 0.0, 1.0, Some(&identity))
+            .expect("identity ProsodyControl");
+        assert_eq!(
+            plain.samples, explicit_none.samples,
+            "plain and explicit-None prosody must produce bit-identical PCM \
+             (single code path guarantees this by construction)"
+        );
+        assert_eq!(
+            plain.samples, identity_out.samples,
+            "plain and identity ProsodyControl must produce bit-identical PCM \
+             (identity is passthrough per M3-17 contract)"
+        );
+        assert_eq!(plain.sample_rate, identity_out.sample_rate);
+    }
+
+    /// A caller-side `speed_scale = 1.5` must shorten the frame count vs
+    /// the neutral baseline. Skipped when the env var is unset.
+    #[test]
+    fn prosody_speed_1_5_shortens_frame_count_on_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::prosody_speed_1_5_shortens_frame_count_on_real_gguf_gated] \
+                 SKIP: set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path)
+            .unwrap_or_else(|e| panic!("load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}"));
+        let style = vec![0.0f32; tts.config().style_dim];
+        // 8 in-range ids so the sigmoid-sum is comfortably above 1 for
+        // every phoneme; the sped-up call must still round to fewer frames.
+        let ids = [1i64, 2, 3, 4, 5, 6, 7, 8];
+        let baseline = tts
+            .synthesize_phonemes(&ids, None, Some(&style), 0.0, 1.0)
+            .expect("baseline synthesize");
+        let sped_up = tts
+            .synthesize_phonemes_with_prosody(
+                &ids,
+                None,
+                Some(&style),
+                0.0,
+                1.0,
+                Some(&ProsodyControl::default().with_speed_scale(1.5)),
+            )
+            .expect("sped-up synthesize");
+        assert!(
+            sped_up.samples.len() < baseline.samples.len(),
+            "speed_scale = 1.5 must shorten the output (baseline len {}, sped-up len {})",
+            baseline.samples.len(),
+            sped_up.samples.len()
+        );
+        assert_eq!(sped_up.sample_rate, baseline.sample_rate);
+    }
+
+    /// A caller-side `pitch_shift` must alter the PCM output. Frame count is
+    /// preserved (pitch axis touches F0 only, never durations). Skipped when
+    /// the env var is unset.
+    #[test]
+    fn prosody_pitch_shift_alters_pcm_on_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::prosody_pitch_shift_alters_pcm_on_real_gguf_gated] \
+                 SKIP: set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path)
+            .unwrap_or_else(|e| panic!("load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}"));
+        let style = vec![0.0f32; tts.config().style_dim];
+        let ids = [1i64, 2, 3, 4, 5, 6, 7, 8];
+        let neutral = tts
+            .synthesize_phonemes(&ids, None, Some(&style), 0.0, 1.0)
+            .expect("neutral synthesize");
+        let pitched = tts
+            .synthesize_phonemes_with_prosody(
+                &ids,
+                None,
+                Some(&style),
+                0.0,
+                1.0,
+                // 4 semitones ≈ major third; well within any perceptual band
+                // but a decisive enough factor that non-linear decoder output
+                // must diverge from the neutral baseline.
+                Some(&ProsodyControl::default().with_pitch_shift(4.0)),
+            )
+            .expect("pitched synthesize");
+        assert_eq!(
+            pitched.samples.len(),
+            neutral.samples.len(),
+            "pitch_shift must not alter frame count (pitch axis touches F0 only)"
+        );
+        assert_ne!(
+            pitched.samples, neutral.samples,
+            "pitch_shift must alter PCM (F0 scaling must reach the decoder output)"
+        );
+        assert_eq!(pitched.sample_rate, neutral.sample_rate);
+    }
+
+    /// Un-honoured axes must be refused loudly at the entry point too — not
+    /// just inside the resolver — so the error surfaces before any tensor
+    /// work runs. This test doesn't need a real GGUF because it exercises
+    /// the resolver's error path at the entry, but we still need a loaded
+    /// `KokoroTts` to call it; use the same gate as the other integration
+    /// tests so it skips cleanly on hosts without the fixture.
+    #[test]
+    fn synthesize_with_prosody_rejects_pause_ms_on_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::synthesize_with_prosody_rejects_pause_ms_on_real_gguf_gated] \
+                 SKIP: set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path)
+            .unwrap_or_else(|e| panic!("load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}"));
+        let style = vec![0.0f32; tts.config().style_dim];
+        let ids = [0i64, 1, 2, 3];
+        let ctrl = ProsodyControl::default().with_pause_ms(200);
+        match tts.synthesize_phonemes_with_prosody(&ids, None, Some(&style), 0.0, 1.0, Some(&ctrl))
+        {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("pause_ms"),
+                    "entry-point rejection must name the un-honoured axis; got: {msg}"
+                );
+            }
+            other => {
+                panic!("un-honoured pause_ms must be rejected loudly at the entry, got: {other:?}")
+            }
+        }
     }
 }
