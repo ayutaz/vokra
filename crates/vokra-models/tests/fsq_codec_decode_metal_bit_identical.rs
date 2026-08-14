@@ -59,8 +59,9 @@ mod off_feature {
     #[test]
     fn for_backend_metal_fsq_family_off_feature_is_backend_unavailable() {
         for op in [HotOp::WavTokenizerVq, HotOp::Xcodec2Fsq] {
-            let err = Compute::for_backend(BackendKind::Metal, &[op])
-                .expect_err("off-feature Metal must fail explicitly, not silently CPU-substitute");
+            let Err(err) = Compute::for_backend(BackendKind::Metal, &[op]) else {
+                panic!("off-feature Metal must fail explicitly, not silently CPU-substitute");
+            };
             assert!(
                 matches!(err, VokraError::BackendUnavailable(_)),
                 "expected BackendUnavailable off the metal feature for {op:?}, got {err:?}",

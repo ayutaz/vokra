@@ -49,8 +49,9 @@ mod off_feature {
     /// at the `for_backend` entry — never a silent CPU substitute (FR-EX-08).
     #[test]
     fn for_backend_metal_dac_rvq_off_feature_is_backend_unavailable() {
-        let err = Compute::for_backend(BackendKind::Metal, &[HotOp::DacRvq])
-            .expect_err("off-feature Metal must fail explicitly, not silently CPU-substitute");
+        let Err(err) = Compute::for_backend(BackendKind::Metal, &[HotOp::DacRvq]) else {
+            panic!("off-feature Metal must fail explicitly, not silently CPU-substitute");
+        };
         assert!(
             matches!(err, VokraError::BackendUnavailable(_)),
             "expected BackendUnavailable off the metal feature, got {err:?}",

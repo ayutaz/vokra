@@ -68,8 +68,9 @@ mod off_feature {
     /// substitute (FR-EX-08).
     #[test]
     fn for_backend_metal_denoise_apply_mask_off_feature_is_backend_unavailable() {
-        let err = Compute::for_backend(BackendKind::Metal, &[HotOp::DenoiseApplyMask])
-            .expect_err("off-feature Metal must fail explicitly, not silently CPU-substitute");
+        let Err(err) = Compute::for_backend(BackendKind::Metal, &[HotOp::DenoiseApplyMask]) else {
+            panic!("off-feature Metal must fail explicitly, not silently CPU-substitute");
+        };
         assert!(
             matches!(err, VokraError::BackendUnavailable(_)),
             "expected BackendUnavailable off the metal feature, got {err:?}",
