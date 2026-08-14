@@ -99,8 +99,9 @@
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches
 //! ONNX.
 
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{Result, VokraError};
+use vokra_core::{LicenseClass, Result, VokraError};
 
 pub use crate::canary::{CanaryEncoderBlockWeights, CanaryEncoderConfig, CanarySubsampleWeights};
 pub use crate::voxtral::config::TextDecoderConfig as CanaryQwenDecoderConfig;
@@ -122,6 +123,107 @@ pub const EXPECTED_ARCH: &str = "canary-qwen";
 /// Canary's FastConformer front-end (the model card documents 16 kHz
 /// mono WAV / FLAC input).
 pub const CANARY_QWEN_SAMPLE_RATE: u32 = 16_000;
+
+// ---------------------------------------------------------------------------
+// vokra.canary_qwen.* GGUF metadata keys — mirror of
+// `crates/vokra-convert/src/models/canary_qwen.rs` (the cross-crate string
+// handshake documented in that converter). Duplicated here rather than
+// depending on `vokra-convert` because `vokra-models` sits below the
+// converter in the crate graph; the two constants must move together and
+// the [`crate::canary_qwen::tests::gguf_keys_match_converter_wire_names`]
+// pin catches a rename in either half at test time.
+// ---------------------------------------------------------------------------
+
+/// `vokra.canary_qwen.sample_rate` — PCM sample rate stamped by the
+/// converter (16 000 Hz for the canonical Canary-Qwen-2.5B release).
+pub const GGUF_KEY_SAMPLE_RATE: &str = "vokra.canary_qwen.sample_rate";
+
+// Encoder (FastConformer — Canary-1B-v2 family axes).
+/// `vokra.canary_qwen.arch.encoder.n_layer` — FastConformer layer count.
+pub const GGUF_KEY_ENC_N_LAYER: &str = "vokra.canary_qwen.arch.encoder.n_layer";
+/// `vokra.canary_qwen.arch.encoder.d_model` — encoder hidden width.
+pub const GGUF_KEY_ENC_D_MODEL: &str = "vokra.canary_qwen.arch.encoder.d_model";
+/// `vokra.canary_qwen.arch.encoder.n_head` — encoder attention Q-head count.
+pub const GGUF_KEY_ENC_N_HEAD: &str = "vokra.canary_qwen.arch.encoder.n_head";
+/// `vokra.canary_qwen.arch.encoder.n_head_kv` — encoder KV-head count
+/// (MHA on Canary encoder, no GQA broadcast).
+pub const GGUF_KEY_ENC_N_HEAD_KV: &str = "vokra.canary_qwen.arch.encoder.n_head_kv";
+/// `vokra.canary_qwen.arch.encoder.ffn_dim` — encoder FFN inner width.
+pub const GGUF_KEY_ENC_FFN_DIM: &str = "vokra.canary_qwen.arch.encoder.ffn_dim";
+/// `vokra.canary_qwen.arch.encoder.conv_kernel_size` — FastConformer
+/// depthwise conv kernel size (odd, symmetric same-padding).
+pub const GGUF_KEY_ENC_CONV_KERNEL: &str = "vokra.canary_qwen.arch.encoder.conv_kernel_size";
+/// `vokra.canary_qwen.arch.encoder.in_dim` — log-mel bin count on input.
+pub const GGUF_KEY_ENC_IN_DIM: &str = "vokra.canary_qwen.arch.encoder.in_dim";
+/// `vokra.canary_qwen.arch.encoder.subsampling_factor` — subsample stem
+/// stride product (8× for FastConformer).
+pub const GGUF_KEY_ENC_SUBSAMPLING_FACTOR: &str =
+    "vokra.canary_qwen.arch.encoder.subsampling_factor";
+/// `vokra.canary_qwen.arch.encoder.max_position_embeddings` — upper
+/// bound on the subsampled sequence length (rel-pos index).
+pub const GGUF_KEY_ENC_MAX_POS: &str = "vokra.canary_qwen.arch.encoder.max_position_embeddings";
+/// `vokra.canary_qwen.arch.encoder.attention_bias` — Q/K/V/out
+/// projections carry biases (u32 0/1 for GGUF portability, decoded to
+/// bool at binder time).
+pub const GGUF_KEY_ENC_ATTN_BIAS: &str = "vokra.canary_qwen.arch.encoder.attention_bias";
+
+// Decoder (Qwen LLM — canonical Qwen-family axes).
+/// `vokra.canary_qwen.arch.decoder.n_layer` — Qwen LM layer count
+/// (0-placeholder in the canonical converter output pending .nemo
+/// config extraction).
+pub const GGUF_KEY_DEC_N_LAYER: &str = "vokra.canary_qwen.arch.decoder.n_layer";
+/// `vokra.canary_qwen.arch.decoder.hidden_dim` — Qwen LM residual width
+/// (0-placeholder pending .nemo config extraction).
+pub const GGUF_KEY_DEC_HIDDEN_DIM: &str = "vokra.canary_qwen.arch.decoder.hidden_dim";
+/// `vokra.canary_qwen.arch.decoder.n_head_q` — Qwen LM Q-head count
+/// (Qwen family default 16).
+pub const GGUF_KEY_DEC_N_HEAD_Q: &str = "vokra.canary_qwen.arch.decoder.n_head_q";
+/// `vokra.canary_qwen.arch.decoder.n_head_kv` — Qwen LM KV-head count
+/// (Qwen family default 8 — GQA group ratio 2).
+pub const GGUF_KEY_DEC_N_HEAD_KV: &str = "vokra.canary_qwen.arch.decoder.n_head_kv";
+/// `vokra.canary_qwen.arch.decoder.head_dim` — Qwen LM per-head width
+/// (Qwen family default 128).
+pub const GGUF_KEY_DEC_HEAD_DIM: &str = "vokra.canary_qwen.arch.decoder.head_dim";
+/// `vokra.canary_qwen.arch.decoder.ffn_dim` — Qwen LM SwiGLU inner width
+/// (0-placeholder pending .nemo config extraction).
+pub const GGUF_KEY_DEC_FFN_DIM: &str = "vokra.canary_qwen.arch.decoder.ffn_dim";
+/// `vokra.canary_qwen.arch.decoder.vocab_size` — Qwen LM SentencePiece
+/// vocabulary size (0-placeholder pending .nemo config extraction).
+pub const GGUF_KEY_DEC_VOCAB_SIZE: &str = "vokra.canary_qwen.arch.decoder.vocab_size";
+/// `vokra.canary_qwen.arch.decoder.n_ctx` — Qwen LM context window
+/// (0-placeholder pending .nemo config extraction).
+pub const GGUF_KEY_DEC_N_CTX: &str = "vokra.canary_qwen.arch.decoder.n_ctx";
+/// `vokra.canary_qwen.arch.decoder.rope_base` — RoPE θ base (Qwen
+/// family default 1_000_000.0, `FLOAT32`).
+pub const GGUF_KEY_DEC_ROPE_BASE: &str = "vokra.canary_qwen.arch.decoder.rope_base";
+/// `vokra.canary_qwen.arch.decoder.rms_norm_eps` — RMSNorm ε (Qwen
+/// family default 1e-6, `FLOAT32`).
+pub const GGUF_KEY_DEC_RMS_NORM_EPS: &str = "vokra.canary_qwen.arch.decoder.rms_norm_eps";
+
+// Cross-attention / soft-prompt bridge.
+/// `vokra.canary_qwen.arch.cross_attn.hidden_dim` — encoder-out width
+/// the LM soft-prompt bridge projects from (equals `encoder.d_model` on
+/// the canonical release).
+pub const GGUF_KEY_CROSS_ATTN_HIDDEN_DIM: &str = "vokra.canary_qwen.arch.cross_attn.hidden_dim";
+
+// ---------------------------------------------------------------------------
+// Primary source anchors — cited in the loud-partial transcribe error so
+// a reader diagnosing the gap has explicit anchors to walk (redimnet /
+// sortformer / RMVPE / pyannote loud-partial-message precedent —
+// CLAUDE.md 教訓 (a): "loud-partial は fake-complete より honest").
+// ---------------------------------------------------------------------------
+
+/// HuggingFace model-card anchor — the ultimate authority on model id,
+/// license, and .nemo distribution format.
+const PRIMARY_SOURCE_HF_CARD: &str = "https://huggingface.co/nvidia/canary-qwen-2.5b";
+/// Canary family reference config — the shared FastConformer-Transformer
+/// AED YAML the runtime encoder axes are transcribed from. Used by every
+/// Canary variant (Canary-1B-v2, Canary-Qwen-2.5B, ...).
+const PRIMARY_SOURCE_FAMILY_YAML: &str = "github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/\
+     speech_multitask/fast-conformer_aed.yaml";
+/// arXiv paper anchor — the FastConformer paper (Rekesh et al., 2023),
+/// authoritative for the encoder topology every Canary variant reuses.
+const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2305.05084";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -329,6 +431,126 @@ impl CanaryQwenConfig {
         }
         Ok(())
     }
+
+    /// Reads the full 20-axis `vokra.canary_qwen.*` chunk group from
+    /// `file`. Encoder axes not stamped by the converter
+    /// (`subsampling_conv_kernel_size` / `subsampling_conv_stride` /
+    /// `subsampling_conv_channels` / `convolution_bias` / `scale_input`)
+    /// inherit the shared Canary family constants — same primary-source
+    /// posture as the transcribed encoder axes in
+    /// [`Self::canary_qwen_2_5b`] (family constants come from
+    /// `fast-conformer_aed.yaml`, the primary-source YAML every Canary
+    /// variant reuses; they are stable across the family and the
+    /// canary_qwen converter does not stamp them because they never
+    /// diverge in-family).
+    ///
+    /// # Loud-partial posture
+    ///
+    /// This reader **does not** call [`Self::validate_for_forward`]. The
+    /// canonical converter output carries `0`-placeholder decoder dims
+    /// (`n_layer` / `hidden_dim` / `ffn_dim` / `vocab_size` / `n_ctx`)
+    /// pending `.nemo` config extraction; a strict validate would reject
+    /// them and prevent the loud-partial [`CanaryQwenAsr::transcribe`]
+    /// arm from firing with a specific error message. The validator is
+    /// still callable by consumers that bind real dims later.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] naming the missing key when any of
+    ///   the 20 mandatory `vokra.canary_qwen.*` chunks is absent or of
+    ///   the wrong dtype.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let family_encoder = crate::canary::CanaryConfig::canary_1b_v2().encoder;
+        let encoder = CanaryEncoderConfig {
+            n_layer: req_u32(file, GGUF_KEY_ENC_N_LAYER)? as usize,
+            d_model: req_u32(file, GGUF_KEY_ENC_D_MODEL)? as usize,
+            n_head: req_u32(file, GGUF_KEY_ENC_N_HEAD)? as usize,
+            n_head_kv: req_u32(file, GGUF_KEY_ENC_N_HEAD_KV)? as usize,
+            ffn_dim: req_u32(file, GGUF_KEY_ENC_FFN_DIM)? as usize,
+            conv_kernel_size: req_u32(file, GGUF_KEY_ENC_CONV_KERNEL)? as usize,
+            in_dim: req_u32(file, GGUF_KEY_ENC_IN_DIM)? as usize,
+            subsampling_factor: req_u32(file, GGUF_KEY_ENC_SUBSAMPLING_FACTOR)? as usize,
+            max_position_embeddings: req_u32(file, GGUF_KEY_ENC_MAX_POS)? as usize,
+            attention_bias: req_u32(file, GGUF_KEY_ENC_ATTN_BIAS)? != 0,
+            // Family constants — the converter does not stamp these
+            // because they never diverge in-family. Primary-source anchor
+            // is `fast-conformer_aed.yaml` (same as the transcribed axes
+            // in `canary_qwen_2_5b`).
+            ..family_encoder
+        };
+
+        let decoder = CanaryQwenDecoderConfig {
+            n_layer: req_u32(file, GGUF_KEY_DEC_N_LAYER)? as usize,
+            hidden_dim: req_u32(file, GGUF_KEY_DEC_HIDDEN_DIM)? as usize,
+            n_head_q: req_u32(file, GGUF_KEY_DEC_N_HEAD_Q)? as usize,
+            n_head_kv: req_u32(file, GGUF_KEY_DEC_N_HEAD_KV)? as usize,
+            head_dim: req_u32(file, GGUF_KEY_DEC_HEAD_DIM)? as usize,
+            ffn_dim: req_u32(file, GGUF_KEY_DEC_FFN_DIM)? as usize,
+            vocab_size: req_u32(file, GGUF_KEY_DEC_VOCAB_SIZE)? as usize,
+            n_ctx: req_u32(file, GGUF_KEY_DEC_N_CTX)? as usize,
+            rope_base: req_f32(file, GGUF_KEY_DEC_ROPE_BASE)?,
+            rms_norm_eps: req_f32(file, GGUF_KEY_DEC_RMS_NORM_EPS)?,
+        };
+
+        Ok(Self {
+            encoder,
+            decoder,
+            cross_attn_hidden_dim: req_u32(file, GGUF_KEY_CROSS_ATTN_HIDDEN_DIM)?,
+            sample_rate: req_u32(file, GGUF_KEY_SAMPLE_RATE)?,
+        })
+    }
+}
+
+/// Reads a mandatory `u32`-range integer from `file`. Widens any
+/// `U8`/`U16`/`U32`/`U64` payload as long as it fits in `u32`; a
+/// signed / float / string / missing value fails loud.
+fn req_u32(file: &GgufFile, key: &str) -> Result<u32> {
+    let value = file.get(key).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "canary_qwen: GGUF is missing required u32 chunk `{key}` — the upstream \
+             Canary-Qwen-2.5B `.nemo` release is converted through `vokra-cli convert \
+             --model canary_qwen`, which stamps the full `vokra.canary_qwen.*` chunk \
+             group. This binder refuses to fabricate axes from primary-source constants \
+             (FR-EX-08 — no silent partial bind). Re-run the converter against a \
+             prepared safetensors checkpoint. Primary source: {source}.",
+            source = PRIMARY_SOURCE_HF_CARD
+        ))
+    })?;
+    value
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "canary_qwen: metadata key `{key}` is not a u32-range unsigned integer \
+                 (got {value:?}) — the converter always stamps u32 for encoder / \
+                 decoder axis counts; a divergent dtype indicates a corrupted or \
+                 hand-assembled GGUF (FR-EX-08)."
+            ))
+        })
+}
+
+/// Reads a mandatory `f32` from `file`. Accepts `F32`/`F64` payloads
+/// (`F64` narrows to `f32`); anything else fails loud.
+#[allow(clippy::cast_possible_truncation)]
+fn req_f32(file: &GgufFile, key: &str) -> Result<f32> {
+    let value = file.get(key).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "canary_qwen: GGUF is missing required f32 chunk `{key}` — the upstream \
+             Canary-Qwen-2.5B `.nemo` release is converted through `vokra-cli convert \
+             --model canary_qwen`, which stamps `rope_base` / `rms_norm_eps` from the \
+             canonical Qwen-family constants. This binder refuses to fabricate them \
+             (FR-EX-08). Re-run the converter against a prepared safetensors \
+             checkpoint. Primary source: {source}.",
+            source = PRIMARY_SOURCE_HF_CARD
+        ))
+    })?;
+    value.as_f64().map(|f| f as f32).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "canary_qwen: metadata key `{key}` is not a float (got {value:?}) — the \
+             converter always stamps F32 for `rope_base` / `rms_norm_eps`; a divergent \
+             dtype indicates a corrupted or hand-assembled GGUF (FR-EX-08)."
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +614,16 @@ pub struct CanaryQwenWeights {
     /// upstream checkpoint. Real-checkpoint bindings set this to
     /// `false`.
     pub is_synthesized: bool,
+    /// Diagnostic list of tensors discovered on disk by
+    /// [`Self::from_gguf`], indexed by upstream `state_dict` name with
+    /// their GGUF-side dims. Empty when the weights come from
+    /// [`Self::synthesized`] (the synthesized path populates the typed
+    /// slots above directly). Used by the load-time non-emptiness gate
+    /// and by the future full real-weight binding wave (T29-equivalent
+    /// `.nemo` extraction), which will walk this list to fill the typed
+    /// slot vectors. Mirrors the `ReDimNetWeights` / `Mt3Weights` /
+    /// `SortformerWeights` loud-partial-diagnostic posture.
+    tensors: Vec<(String, Vec<usize>)>,
 }
 
 impl CanaryQwenWeights {
@@ -494,7 +726,78 @@ impl CanaryQwenWeights {
             decoder_final_norm,
             lm_head,
             is_synthesized: true,
+            tensors: Vec::new(),
         })
+    }
+
+    /// Scans `file` for Canary-Qwen state_dict tensors and returns a
+    /// weight store that carries only the diagnostic tensor manifest
+    /// (typed weight slots are left empty). Refuses to bind if `file`
+    /// carries zero tensors (FR-EX-08 — an all-zero forward is never
+    /// what the caller wants).
+    ///
+    /// # Loud-partial posture
+    ///
+    /// Under the current landing the typed weight slots
+    /// (`subsample` / `encoder_blocks` / `decoder_blocks` / ...) stay
+    /// empty because the canonical converter output carries
+    /// `0`-placeholder decoder dims (`n_layer` / `hidden_dim` /
+    /// `ffn_dim` / `vocab_size` / `n_ctx`) pending `.nemo` extraction
+    /// — walking upstream tensor names into typed slots against
+    /// placeholder shapes would fabricate the layout. The follow-up
+    /// wave (T29-equivalent) fills the placeholder dims from the
+    /// `.nemo` config and then walks the tensor manifest into the
+    /// typed slots. Callers observe the diagnostic tensor count via
+    /// [`Self::tensor_count`].
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when `file` carries zero tensors.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let mut tensors: Vec<(String, Vec<usize>)> = Vec::new();
+        for info in file.tensors() {
+            let dims: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
+            tensors.push((info.name.clone(), dims));
+        }
+        if tensors.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "canary_qwen: GGUF carries zero tensors — refusing to bind an all-zero \
+                 forward (FR-EX-08). Re-run `vokra-cli convert --model canary_qwen` \
+                 against a prepared safetensors checkpoint (the `.nemo` tarball's \
+                 PyTorch checkpoint is typically BF16 and passes through the converter \
+                 verbatim). Primary source: https://huggingface.co/nvidia/canary-qwen-2.5b."
+                    .to_owned(),
+            ));
+        }
+
+        // Empty typed slots — the real forward path is deferred pending
+        // `.nemo` extraction (T29-equivalent). See the rustdoc above +
+        // the module doc for the loud-partial posture.
+        Ok(Self {
+            subsample: CanarySubsampleWeights {
+                linear_w: Vec::new(),
+                linear_b: Vec::new(),
+            },
+            encoder_blocks: Vec::new(),
+            encoder_final_norm: Vec::new(),
+            enc_to_lm_proj: Vec::new(),
+            enc_to_lm_proj_bias: Vec::new(),
+            lm_token_embed: Vec::new(),
+            decoder_blocks: Vec::new(),
+            decoder_final_norm: Vec::new(),
+            lm_head: Vec::new(),
+            is_synthesized: false,
+            tensors,
+        })
+    }
+
+    /// Number of tensors discovered on disk by [`Self::from_gguf`]. `0`
+    /// for a [`Self::synthesized`] weight store. Purely a diagnostic
+    /// accessor — the real-weight binding wave uses it to size its
+    /// expectations.
+    #[must_use]
+    pub fn tensor_count(&self) -> usize {
+        self.tensors.len()
     }
 }
 
@@ -528,6 +831,7 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 pub struct CanaryQwenAsr {
     cfg: CanaryQwenConfig,
     weights: CanaryQwenWeights,
+    weight_license: LicenseClass,
 }
 
 impl CanaryQwenAsr {
@@ -658,7 +962,104 @@ impl CanaryQwenAsr {
             )));
         }
 
-        Ok(Self { cfg, weights })
+        Ok(Self {
+            cfg,
+            weights,
+            // `new()` does not read a stamped weight-license; the
+            // upstream compliance is caller-responsibility here (the
+            // caller synthesized weights). `from_gguf` populates this
+            // from the GGUF provenance chunk.
+            weight_license: LicenseClass::Unknown,
+        })
+    }
+
+    /// Binds a Canary-Qwen GGUF: validates arch, reads the strict 20-axis
+    /// `vokra.canary_qwen.*` chunk group, discovers the tensor manifest,
+    /// and surfaces the stamped weight-license class for compliance
+    /// gate cross-checks.
+    ///
+    /// # Loud-partial posture
+    ///
+    /// This binder deliberately **does not** call
+    /// [`CanaryQwenConfig::validate_for_forward`] and **does not**
+    /// route through [`Self::new`]'s shape cross-check. The canonical
+    /// converter output carries `0`-placeholder decoder dims pending
+    /// `.nemo` config extraction, and the typed weight slots (subsample /
+    /// encoder_blocks / ...) stay empty on this path. The runtime fires
+    /// [`VokraError::NotImplemented`] on [`Self::transcribe`] naming
+    /// the primary source, the `.nemo` extraction blocker, and the four
+    /// Voxtral-style soft-prompt wiring pieces still owed (log-mel front
+    /// end → FastConformer encoder → `enc_to_lm_proj` soft-prompt bridge
+    /// → Voxtral-style Qwen decoder session). Same posture as
+    /// `ReDimNet::from_gguf` / `SortformerDiar::from_gguf` / `Mt3::from_gguf`
+    /// (CLAUDE.md 教訓 (a) — "loud-partial は fake-complete より
+    /// honest").
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent
+    ///   or not `"canary-qwen"` (a base `"canary"` GGUF handed here by
+    ///   mistake would silently mis-route Canary-1B-v2's Transformer
+    ///   AED decoder loader against the Qwen LLM decoder tensor
+    ///   manifest — the two topologies are distinct).
+    /// - [`VokraError::ModelLoad`] when any of the 20 mandatory
+    ///   `vokra.canary_qwen.*` chunks is absent (see
+    ///   [`CanaryQwenConfig::from_gguf`]).
+    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
+    ///   (see [`CanaryQwenWeights::from_gguf`]).
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        // 1. Arch check first so a mis-typed model surfaces a specific
+        //    message rather than a downstream "missing key" trail.
+        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+            Some(a) if a == EXPECTED_ARCH => {}
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "canary_qwen: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
+                     (was this GGUF produced by `vokra-cli convert --model canary_qwen`? \
+                     Note that base `canary` GGUFs carry the Canary-1B-v2 **Transformer \
+                     AED** decoder tensor manifest — an 8-layer decoder with cross-attn \
+                     to the encoder — whereas `canary-qwen` carries the **Qwen LLM** \
+                     decoder tensor manifest — GQA + RoPE + SwiGLU + RMSNorm consuming \
+                     the encoder-out as a soft-prompt prefix like Voxtral. Silently \
+                     sharing the arch tag would mis-route runtime dispatch — FR-EX-08)"
+                )));
+            }
+            None => {
+                return Err(VokraError::ModelLoad(
+                    "canary_qwen: GGUF is missing `vokra.model.arch` (converter did not \
+                     stamp it — this is not a Vokra-native canary_qwen GGUF). Primary \
+                     source: https://huggingface.co/nvidia/canary-qwen-2.5b."
+                        .to_owned(),
+                ));
+            }
+        }
+
+        // 2. Strict topology axes from the `vokra.canary_qwen.*` chunk
+        //    group. Deliberately NOT validate_for_forward'd — the
+        //    canonical converter output carries 0-placeholder decoder
+        //    dims.
+        let cfg = CanaryQwenConfig::from_gguf(file)?;
+
+        // 3. Load the tensor manifest with the non-emptiness gate. Typed
+        //    weight slots stay empty on this loud-partial path.
+        let weights = CanaryQwenWeights::from_gguf(file)?;
+
+        // 4. Provenance surfacing — read the stamped weight-license
+        //    class. The canary_qwen converter stamps
+        //    `AttributionRequired` (CC-BY 4.0). A GGUF missing the
+        //    stamp reads back as [`LicenseClass::Unknown`] (fail-closed
+        //    at the compliance gate).
+        let weight_license = file
+            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+            .and_then(|v| v.as_str())
+            .and_then(LicenseClass::from_class_str)
+            .unwrap_or(LicenseClass::Unknown);
+
+        Ok(Self {
+            cfg,
+            weights,
+            weight_license,
+        })
     }
 
     /// The resolved configuration.
@@ -673,6 +1074,27 @@ impl CanaryQwenAsr {
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
         self.weights.is_synthesized
+    }
+
+    /// The stamped weight-license class surfaced from the GGUF's
+    /// `vokra.provenance.weight_license` chunk. The canary_qwen
+    /// converter stamps [`LicenseClass::AttributionRequired`] (CC-BY
+    /// 4.0). A GGUF missing the stamp reads back as
+    /// [`LicenseClass::Unknown`] (fail-closed).
+    #[inline]
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
+    }
+
+    /// Number of tensors discovered on disk by [`Self::from_gguf`]. `0`
+    /// for a [`Self::new`] / [`CanaryQwenWeights::synthesized`] handle.
+    /// Purely a diagnostic accessor — the real-weight binding wave uses
+    /// it to size its expectations.
+    #[inline]
+    #[must_use]
+    pub fn tensor_count(&self) -> usize {
+        self.weights.tensor_count()
     }
 
     /// Transcribes a mono `f32` PCM slice at [`Self::config`]'s sample
@@ -712,6 +1134,58 @@ impl CanaryQwenAsr {
                  CSM / Moshi pattern).",
             ));
         }
+        // Loud-partial arm: real weights are bound from a GGUF (via
+        // `from_gguf`) but the decoder placeholder dims mark that the
+        // `.nemo` extraction has not landed yet, so the typed weight
+        // slots stay empty. Fire a distinct NotImplemented naming the
+        // primary source + the four wiring pieces still owed (FR-EX-08
+        // — no silent fabricated forward on placeholder dims).
+        let d = &self.cfg.decoder;
+        if d.n_layer == 0
+            || d.hidden_dim == 0
+            || d.ffn_dim == 0
+            || d.vocab_size == 0
+            || d.n_ctx == 0
+        {
+            return Err(VokraError::UnsupportedOp(format!(
+                "canary_qwen transcribe: real weights are bound but the decoder \
+                 placeholder dims are still 0 pending .nemo config extraction \
+                 (decoder.n_layer={n_layer}, hidden_dim={hidden_dim}, \
+                 ffn_dim={ffn_dim}, vocab_size={vocab_size}, n_ctx={n_ctx}); the \
+                 typed weight slots (subsample / encoder_blocks / decoder_blocks / \
+                 lm_head) are empty on the loud-partial from_gguf path. Four \
+                 Voxtral-style soft-prompt-prefix wiring pieces are owed: \
+                 (i) 128-bin log-mel front-end (STFT + mel filterbank) — reuse \
+                 `vokra_ops::waveform_frontend`; \
+                 (ii) FastConformer encoder — reuse `vokra_ops::conformer` (shared \
+                 with Canary-1B-v2); \
+                 (iii) `enc_to_lm_proj` soft-prompt bridge from `encoder.d_model` \
+                 to `decoder.hidden_dim`; \
+                 (iv) Voxtral-style Qwen decoder session — reuse \
+                 `crate::voxtral::text_decoder` with GQA + RoPE + SwiGLU + RMSNorm, \
+                 fed the encoder-out as a soft-prompt prefix, plus \
+                 `vokra_ops::beam_search` with blank_id / bos / eos taken from \
+                 the .nemo tokenizer manifest. Bind real Canary-Qwen-2.5B weights \
+                 (T29-equivalent .nemo extraction) — primary source: {hf}. \
+                 Reference: FastConformer paper — {paper}; family YAML — {yaml}. \
+                 Loud-partial (CLAUDE.md 教訓 (a) — 'loud-partial は fake-complete \
+                 より honest') — no silent fabricated transcript on placeholder \
+                 dims (FR-EX-08). Tensors discovered on disk: {tensor_count}.",
+                n_layer = d.n_layer,
+                hidden_dim = d.hidden_dim,
+                ffn_dim = d.ffn_dim,
+                vocab_size = d.vocab_size,
+                n_ctx = d.n_ctx,
+                hf = PRIMARY_SOURCE_HF_CARD,
+                paper = PRIMARY_SOURCE_PAPER,
+                yaml = PRIMARY_SOURCE_FAMILY_YAML,
+                tensor_count = self.weights.tensor_count(),
+            )));
+        }
+        // Bind unused `pcm` argument so a `#[warn(unused_variables)]`
+        // change does not silently mask the loud-partial fire path;
+        // the future real implementation consumes it.
+        let _ = pcm;
         Err(VokraError::NotImplemented(
             "canary_qwen transcribe: real weights are bound but the log-mel front-end \
              (STFT + mel filterbank) -> FastConformer encoder (vokra_ops::conformer, \
@@ -1034,5 +1508,492 @@ mod tests {
             }
             other => panic!("expected NotImplemented, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Loud-partial from_gguf tests (redimnet / sortformer / mt3 precedent —
+    // CLAUDE.md 教訓 (a): "loud-partial は fake-complete より honest").
+    // -----------------------------------------------------------------------
+
+    use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
+
+    /// Builds a minimal Canary-Qwen GGUF carrying the arch tag + the
+    /// full 20-axis `vokra.canary_qwen.*` chunk group (mirroring
+    /// `crates/vokra-convert/src/models/canary_qwen.rs`'s stamped
+    /// constants) + optionally one representative tensor + optional
+    /// weight-license class stamp.
+    fn canary_qwen_gguf(add_tensor: bool, license_class: Option<LicenseClass>) -> GgufFile {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, "canary-qwen-2.5b");
+        // Encoder axes — mirror of the canary_qwen converter's transcribed
+        // Canary-1B-v2 FastConformer defaults.
+        b.add_u32(GGUF_KEY_ENC_N_LAYER, 32);
+        b.add_u32(GGUF_KEY_ENC_D_MODEL, 1024);
+        b.add_u32(GGUF_KEY_ENC_N_HEAD, 8);
+        b.add_u32(GGUF_KEY_ENC_N_HEAD_KV, 8);
+        b.add_u32(GGUF_KEY_ENC_FFN_DIM, 4096);
+        b.add_u32(GGUF_KEY_ENC_CONV_KERNEL, 9);
+        b.add_u32(GGUF_KEY_ENC_IN_DIM, 128);
+        b.add_u32(GGUF_KEY_ENC_SUBSAMPLING_FACTOR, 8);
+        b.add_u32(GGUF_KEY_ENC_MAX_POS, 5000);
+        b.add_u32(GGUF_KEY_ENC_ATTN_BIAS, 1);
+        // Decoder axes — canonical Qwen-family constants + 0-placeholder
+        // dims pending `.nemo` extraction (mirror of the canary_qwen
+        // converter's transcribed constants).
+        b.add_u32(GGUF_KEY_DEC_N_LAYER, 0);
+        b.add_u32(GGUF_KEY_DEC_HIDDEN_DIM, 0);
+        b.add_u32(GGUF_KEY_DEC_N_HEAD_Q, 16);
+        b.add_u32(GGUF_KEY_DEC_N_HEAD_KV, 8);
+        b.add_u32(GGUF_KEY_DEC_HEAD_DIM, 128);
+        b.add_u32(GGUF_KEY_DEC_FFN_DIM, 0);
+        b.add_u32(GGUF_KEY_DEC_VOCAB_SIZE, 0);
+        b.add_u32(GGUF_KEY_DEC_N_CTX, 0);
+        b.add_f32(GGUF_KEY_DEC_ROPE_BASE, 1_000_000.0);
+        b.add_f32(GGUF_KEY_DEC_RMS_NORM_EPS, 1e-6);
+        // Cross-attention hidden dim = encoder d_model.
+        b.add_u32(GGUF_KEY_CROSS_ATTN_HIDDEN_DIM, 1024);
+        // Sample rate.
+        b.add_u32(GGUF_KEY_SAMPLE_RATE, 16_000);
+        // Provenance stamp — canary_qwen converter stamps
+        // AttributionRequired (CC-BY 4.0).
+        if let Some(cls) = license_class {
+            b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
+        }
+        if add_tensor {
+            // One representative BF16 tensor so the non-emptiness gate
+            // passes. Name mirrors the Qwen LM decoder q_proj slot the
+            // future real binding would walk.
+            b.add_tensor(
+                "decoder.model.layers.0.self_attn.q_proj.weight",
+                GgmlType::BF16,
+                vec![4, 4],
+                vec![0u8; 4 * 4 * 2],
+            )
+            .expect("add_tensor");
+        }
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    /// Pins the arch-tag distinctness. A `canary` GGUF handed to the
+    /// `canary_qwen` binder by mistake must fail loud with a specific
+    /// message rather than silently mis-routing Canary-1B-v2's
+    /// Transformer AED decoder loader against the Qwen LLM decoder
+    /// tensor manifest (FR-EX-08).
+    #[test]
+    fn from_gguf_rejects_wrong_arch() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "canary");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = CanaryQwenAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on wrong arch");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("`canary`") && m.contains("`canary-qwen`"),
+                    "message must name both the got + expected arch tags, got `{m}`"
+                );
+                assert!(
+                    m.contains("Transformer AED") && m.contains("Qwen LLM"),
+                    "message must disambiguate the two decoder topologies so a \
+                     reader diagnosing the mis-route knows why the arch tags are \
+                     distinct, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// A GGUF that never stamped `vokra.model.arch` at all must fail
+    /// loud too (not silently pass through to the chunk-group reader).
+    #[test]
+    fn from_gguf_rejects_missing_arch() {
+        let b = GgufBuilder::new();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = CanaryQwenAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing arch");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("missing `vokra.model.arch`"),
+                    "message must name the missing arch chunk: {m}"
+                );
+                assert!(
+                    m.contains("canary-qwen-2.5b"),
+                    "message must cite the primary source anchor: {m}"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// The strict encoder-side chunk reader — dropping any of the 10
+    /// stamped encoder axes fails with a `ModelLoad` naming the exact
+    /// key (no primary-source fallback that would fabricate axes,
+    /// FR-EX-08). Uses `n_layer` as a representative case.
+    #[test]
+    fn from_gguf_rejects_missing_encoder_chunk() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        // deliberately omit GGUF_KEY_ENC_N_LAYER
+        b.add_u32(GGUF_KEY_ENC_D_MODEL, 1024);
+        b.add_u32(GGUF_KEY_ENC_N_HEAD, 8);
+        b.add_u32(GGUF_KEY_ENC_N_HEAD_KV, 8);
+        b.add_u32(GGUF_KEY_ENC_FFN_DIM, 4096);
+        b.add_u32(GGUF_KEY_ENC_CONV_KERNEL, 9);
+        b.add_u32(GGUF_KEY_ENC_IN_DIM, 128);
+        b.add_u32(GGUF_KEY_ENC_SUBSAMPLING_FACTOR, 8);
+        b.add_u32(GGUF_KEY_ENC_MAX_POS, 5000);
+        b.add_u32(GGUF_KEY_ENC_ATTN_BIAS, 1);
+        b.add_u32(GGUF_KEY_DEC_N_LAYER, 0);
+        b.add_u32(GGUF_KEY_DEC_HIDDEN_DIM, 0);
+        b.add_u32(GGUF_KEY_DEC_N_HEAD_Q, 16);
+        b.add_u32(GGUF_KEY_DEC_N_HEAD_KV, 8);
+        b.add_u32(GGUF_KEY_DEC_HEAD_DIM, 128);
+        b.add_u32(GGUF_KEY_DEC_FFN_DIM, 0);
+        b.add_u32(GGUF_KEY_DEC_VOCAB_SIZE, 0);
+        b.add_u32(GGUF_KEY_DEC_N_CTX, 0);
+        b.add_f32(GGUF_KEY_DEC_ROPE_BASE, 1_000_000.0);
+        b.add_f32(GGUF_KEY_DEC_RMS_NORM_EPS, 1e-6);
+        b.add_u32(GGUF_KEY_CROSS_ATTN_HIDDEN_DIM, 1024);
+        b.add_u32(GGUF_KEY_SAMPLE_RATE, 16_000);
+        b.add_tensor(
+            "decoder.model.layers.0.self_attn.q_proj.weight",
+            GgmlType::F32,
+            vec![4, 4],
+            vec![0u8; 16 * 4],
+        )
+        .expect("add_tensor");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = CanaryQwenAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing encoder chunk");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains(GGUF_KEY_ENC_N_LAYER),
+                    "message must name the missing key exactly, got `{m}`"
+                );
+                assert!(
+                    m.contains("FR-EX-08") || m.contains("silent partial bind"),
+                    "message should cite the FR-EX-08 no-silent-fabrication clause: `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// The strict decoder-side f32 reader — dropping `rope_base` (a
+    /// stamped f32 axis) must fail loud with a `ModelLoad` naming the
+    /// exact key (verifies the f32 code path, complementing the u32
+    /// coverage above).
+    #[test]
+    fn from_gguf_rejects_missing_decoder_rope_base() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        // Full encoder chunk group.
+        b.add_u32(GGUF_KEY_ENC_N_LAYER, 32);
+        b.add_u32(GGUF_KEY_ENC_D_MODEL, 1024);
+        b.add_u32(GGUF_KEY_ENC_N_HEAD, 8);
+        b.add_u32(GGUF_KEY_ENC_N_HEAD_KV, 8);
+        b.add_u32(GGUF_KEY_ENC_FFN_DIM, 4096);
+        b.add_u32(GGUF_KEY_ENC_CONV_KERNEL, 9);
+        b.add_u32(GGUF_KEY_ENC_IN_DIM, 128);
+        b.add_u32(GGUF_KEY_ENC_SUBSAMPLING_FACTOR, 8);
+        b.add_u32(GGUF_KEY_ENC_MAX_POS, 5000);
+        b.add_u32(GGUF_KEY_ENC_ATTN_BIAS, 1);
+        b.add_u32(GGUF_KEY_DEC_N_LAYER, 0);
+        b.add_u32(GGUF_KEY_DEC_HIDDEN_DIM, 0);
+        b.add_u32(GGUF_KEY_DEC_N_HEAD_Q, 16);
+        b.add_u32(GGUF_KEY_DEC_N_HEAD_KV, 8);
+        b.add_u32(GGUF_KEY_DEC_HEAD_DIM, 128);
+        b.add_u32(GGUF_KEY_DEC_FFN_DIM, 0);
+        b.add_u32(GGUF_KEY_DEC_VOCAB_SIZE, 0);
+        b.add_u32(GGUF_KEY_DEC_N_CTX, 0);
+        // deliberately omit GGUF_KEY_DEC_ROPE_BASE
+        b.add_f32(GGUF_KEY_DEC_RMS_NORM_EPS, 1e-6);
+        b.add_u32(GGUF_KEY_CROSS_ATTN_HIDDEN_DIM, 1024);
+        b.add_u32(GGUF_KEY_SAMPLE_RATE, 16_000);
+        b.add_tensor(
+            "decoder.model.layers.0.self_attn.q_proj.weight",
+            GgmlType::F32,
+            vec![4, 4],
+            vec![0u8; 16 * 4],
+        )
+        .expect("add_tensor");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = CanaryQwenAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing decoder rope_base");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains(GGUF_KEY_DEC_ROPE_BASE),
+                    "message must name the missing f32 key exactly, got `{m}`"
+                );
+                assert!(
+                    m.contains("rope_base") || m.contains("rms_norm_eps"),
+                    "message should reference the Qwen-family f32 constants context: `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// The non-emptiness gate on the tensor manifest — a chunk-group
+    /// GGUF that carries zero tensors must fail loud rather than
+    /// silently binding an all-zero forward (FR-EX-08).
+    #[test]
+    fn from_gguf_rejects_zero_tensors() {
+        let file = canary_qwen_gguf(false, Some(LicenseClass::AttributionRequired));
+        let Err(err) = CanaryQwenAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on empty tensor manifest");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("zero tensors"),
+                    "message must name the empty-manifest blocker: `{m}`"
+                );
+                assert!(
+                    m.contains("FR-EX-08"),
+                    "message must cite the FR-EX-08 clause: `{m}`"
+                );
+                assert!(
+                    m.contains("canary-qwen-2.5b"),
+                    "message must cite the primary source anchor: `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// End-to-end round-trip: a canonical canary_qwen GGUF binds through
+    /// `CanaryQwenAsr::from_gguf`, echoes the stamped config axes
+    /// verbatim (encoder = Canary-1B-v2 real values; decoder = Qwen
+    /// family constants + 0-placeholders), surfaces the stamped
+    /// weight-license class, and reports the tensor count. The
+    /// downstream `transcribe` call fires the loud-partial arm because
+    /// the decoder placeholder dims are still 0.
+    #[test]
+    fn from_gguf_binds_converter_output_verbatim() {
+        let file = canary_qwen_gguf(true, Some(LicenseClass::AttributionRequired));
+        let asr = CanaryQwenAsr::from_gguf(&file).expect("valid GGUF must bind");
+        // Encoder axes round-trip.
+        assert_eq!(asr.config().encoder.n_layer, 32);
+        assert_eq!(asr.config().encoder.d_model, 1024);
+        assert_eq!(asr.config().encoder.n_head, 8);
+        assert_eq!(asr.config().encoder.n_head_kv, 8);
+        assert_eq!(asr.config().encoder.ffn_dim, 4096);
+        assert_eq!(asr.config().encoder.conv_kernel_size, 9);
+        assert_eq!(asr.config().encoder.in_dim, 128);
+        assert_eq!(asr.config().encoder.subsampling_factor, 8);
+        assert_eq!(asr.config().encoder.max_position_embeddings, 5000);
+        assert!(
+            asr.config().encoder.attention_bias,
+            "encoder.attention_bias u32 flag must decode to true"
+        );
+        // Decoder axes round-trip — 0-placeholders preserved because
+        // the loud-partial from_gguf skips validate_for_forward.
+        assert_eq!(asr.config().decoder.n_layer, 0);
+        assert_eq!(asr.config().decoder.hidden_dim, 0);
+        assert_eq!(asr.config().decoder.n_head_q, 16);
+        assert_eq!(asr.config().decoder.n_head_kv, 8);
+        assert_eq!(asr.config().decoder.head_dim, 128);
+        assert_eq!(asr.config().decoder.ffn_dim, 0);
+        assert_eq!(asr.config().decoder.vocab_size, 0);
+        assert_eq!(asr.config().decoder.n_ctx, 0);
+        assert!((asr.config().decoder.rope_base - 1_000_000.0).abs() < 1.0);
+        assert!((asr.config().decoder.rms_norm_eps - 1e-6).abs() < 1e-9);
+        // Cross-attention hidden dim = encoder d_model.
+        assert_eq!(asr.config().cross_attn_hidden_dim, 1024);
+        assert_eq!(asr.config().sample_rate, 16_000);
+        // Weight-license surface (canary_qwen converter stamps
+        // AttributionRequired per CC-BY 4.0).
+        assert_eq!(asr.weight_license(), LicenseClass::AttributionRequired);
+        // Non-empty tensor manifest.
+        assert!(asr.tensor_count() >= 1);
+        // Real weights posture: from_gguf is not the synthesized path.
+        assert!(!asr.is_synthesized());
+    }
+
+    /// Verify the loud-partial transcribe arm fires with the correct
+    /// primary-source URLs and names all four Voxtral-style wiring
+    /// pieces still owed. The message must be actionable enough that
+    /// the follow-up wave has exactly four things to walk.
+    #[test]
+    fn transcribe_loud_partial_names_primary_source_and_forward_wiring() {
+        let file = canary_qwen_gguf(true, Some(LicenseClass::AttributionRequired));
+        let asr = CanaryQwenAsr::from_gguf(&file).expect("valid GGUF must bind");
+        let pcm = vec![0.0f32; 16_000]; // 1 second at 16 kHz — legitimate PCM shape
+        let Err(err) = asr.transcribe(&pcm) else {
+            panic!("transcribe must fire loud-partial arm on placeholder decoder dims");
+        };
+        match err {
+            // UnsupportedOp is used for the placeholder-dims arm because it
+            // carries `String`; `NotImplemented` is `&'static str` and cannot
+            // format the per-call decoder axes. Both variants are honest
+            // loud-partials per CLAUDE.md 教訓 (a).
+            VokraError::UnsupportedOp(msg) => {
+                // Primary source URL.
+                assert!(
+                    msg.contains("huggingface.co/nvidia/canary-qwen-2.5b"),
+                    "message must cite the HF primary source URL: `{msg}`"
+                );
+                // .nemo extraction as concrete blocker.
+                assert!(
+                    msg.contains(".nemo"),
+                    "message must name the .nemo extraction blocker: `{msg}`"
+                );
+                // FastConformer paper anchor (arXiv reference).
+                assert!(
+                    msg.contains("arxiv.org"),
+                    "message must cite an arXiv reference: `{msg}`"
+                );
+                // All four Voxtral-style soft-prompt-prefix wiring pieces.
+                assert!(
+                    msg.contains("log-mel"),
+                    "wiring piece (i): 128-bin log-mel front-end: `{msg}`"
+                );
+                assert!(
+                    msg.contains("FastConformer") && msg.contains("conformer"),
+                    "wiring piece (ii): FastConformer encoder: `{msg}`"
+                );
+                assert!(
+                    msg.contains("soft-prompt") && msg.contains("enc_to_lm_proj"),
+                    "wiring piece (iii): enc_to_lm_proj soft-prompt bridge: `{msg}`"
+                );
+                assert!(
+                    msg.contains("Qwen") && msg.contains("Voxtral"),
+                    "wiring piece (iv): Voxtral-style Qwen decoder session: `{msg}`"
+                );
+                // FR-EX-08 clause + honest-partial rationale.
+                assert!(
+                    msg.contains("FR-EX-08"),
+                    "message must cite the FR-EX-08 no-silent-fabricated-forward clause: `{msg}`"
+                );
+                assert!(
+                    msg.contains("loud-partial") || msg.contains("教訓"),
+                    "message should cite the CLAUDE.md 教訓 (a) honesty rationale: `{msg}`"
+                );
+                // Every decoder placeholder axis echoed so the reader
+                // sees exactly why the arm fired.
+                assert!(
+                    msg.contains("decoder.n_layer=0"),
+                    "placeholder axis must be echoed: `{msg}`"
+                );
+                assert!(
+                    msg.contains("hidden_dim=0"),
+                    "placeholder axis must be echoed: `{msg}`"
+                );
+                assert!(
+                    msg.contains("vocab_size=0"),
+                    "placeholder axis must be echoed: `{msg}`"
+                );
+            }
+            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
+        }
+    }
+
+    /// Missing provenance stamp defaults to `LicenseClass::Unknown`
+    /// (fail-closed at the compliance gate) rather than silently
+    /// assuming a permissive class. Complements the round-trip test
+    /// above which stamps `AttributionRequired` explicitly.
+    #[test]
+    fn from_gguf_missing_provenance_defaults_to_unknown() {
+        let file = canary_qwen_gguf(true, None);
+        let asr = CanaryQwenAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            asr.weight_license(),
+            LicenseClass::Unknown,
+            "missing provenance stamp must fail-closed to Unknown at the compliance gate"
+        );
+    }
+
+    /// Cross-crate string handshake pin: the runtime GGUF key constants
+    /// must match the wire names the converter stamps. A rename in
+    /// either half would land here in the same commit or fail this
+    /// test (mirror of `arch_string_matches_runtime_constant` in the
+    /// converter tests).
+    #[test]
+    fn gguf_keys_match_converter_wire_names() {
+        assert_eq!(GGUF_KEY_SAMPLE_RATE, "vokra.canary_qwen.sample_rate");
+        assert_eq!(
+            GGUF_KEY_ENC_N_LAYER,
+            "vokra.canary_qwen.arch.encoder.n_layer"
+        );
+        assert_eq!(
+            GGUF_KEY_ENC_D_MODEL,
+            "vokra.canary_qwen.arch.encoder.d_model"
+        );
+        assert_eq!(GGUF_KEY_ENC_N_HEAD, "vokra.canary_qwen.arch.encoder.n_head");
+        assert_eq!(
+            GGUF_KEY_ENC_N_HEAD_KV,
+            "vokra.canary_qwen.arch.encoder.n_head_kv"
+        );
+        assert_eq!(
+            GGUF_KEY_ENC_FFN_DIM,
+            "vokra.canary_qwen.arch.encoder.ffn_dim"
+        );
+        assert_eq!(
+            GGUF_KEY_ENC_CONV_KERNEL,
+            "vokra.canary_qwen.arch.encoder.conv_kernel_size"
+        );
+        assert_eq!(GGUF_KEY_ENC_IN_DIM, "vokra.canary_qwen.arch.encoder.in_dim");
+        assert_eq!(
+            GGUF_KEY_ENC_SUBSAMPLING_FACTOR,
+            "vokra.canary_qwen.arch.encoder.subsampling_factor"
+        );
+        assert_eq!(
+            GGUF_KEY_ENC_MAX_POS,
+            "vokra.canary_qwen.arch.encoder.max_position_embeddings"
+        );
+        assert_eq!(
+            GGUF_KEY_ENC_ATTN_BIAS,
+            "vokra.canary_qwen.arch.encoder.attention_bias"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_N_LAYER,
+            "vokra.canary_qwen.arch.decoder.n_layer"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_HIDDEN_DIM,
+            "vokra.canary_qwen.arch.decoder.hidden_dim"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_N_HEAD_Q,
+            "vokra.canary_qwen.arch.decoder.n_head_q"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_N_HEAD_KV,
+            "vokra.canary_qwen.arch.decoder.n_head_kv"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_HEAD_DIM,
+            "vokra.canary_qwen.arch.decoder.head_dim"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_FFN_DIM,
+            "vokra.canary_qwen.arch.decoder.ffn_dim"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_VOCAB_SIZE,
+            "vokra.canary_qwen.arch.decoder.vocab_size"
+        );
+        assert_eq!(GGUF_KEY_DEC_N_CTX, "vokra.canary_qwen.arch.decoder.n_ctx");
+        assert_eq!(
+            GGUF_KEY_DEC_ROPE_BASE,
+            "vokra.canary_qwen.arch.decoder.rope_base"
+        );
+        assert_eq!(
+            GGUF_KEY_DEC_RMS_NORM_EPS,
+            "vokra.canary_qwen.arch.decoder.rms_norm_eps"
+        );
+        assert_eq!(
+            GGUF_KEY_CROSS_ATTN_HIDDEN_DIM,
+            "vokra.canary_qwen.arch.cross_attn.hidden_dim"
+        );
     }
 }

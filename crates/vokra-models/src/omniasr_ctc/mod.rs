@@ -123,8 +123,9 @@
 //! `vokra-models/src/omniasr_ctc/` (whisper.cpp 型, CLAUDE.md 設計判断 4).
 //! This module never touches ONNX.
 
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{Result, VokraError};
+use vokra_core::{LicenseClass, Result, VokraError};
 
 /// `vokra.model.arch` an omniASR-CTC GGUF must carry. Written by
 /// `vokra-convert::models::omniasr_ctc::ARCH`; the compliance registry
@@ -149,6 +150,51 @@ pub const OMNIASR_CTC_SAMPLE_RATE: u32 = 16_000;
 /// stem. Pinned as a constant so the weight-store shape gate cannot
 /// silently accept a mismatched checkpoint (FR-EX-08).
 pub const OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS: usize = 7;
+
+// ---------------------------------------------------------------------------
+// `vokra.omniasr_ctc.*` chunk-key mirrors — duplicated verbatim from the
+// converter (`crates/vokra-convert/src/models/omniasr_ctc.rs`) so
+// `vokra-models` does not gain a dependency edge onto `vokra-convert`.
+// This is the same layered-convention rule the sibling BF16 pass-through
+// binders (`pyannote` / `snac` / `parakeet_ctc`) use.
+//
+// Booleans (`feature_extractor_bias`, `feature_extractor_layer_norm_convs`,
+// `layer_norm_features`, `use_conformer`) are stamped by the converter as
+// `u32` via `u32::from(bool)` (0 / 1); the read side inverts with `!= 0`.
+// ---------------------------------------------------------------------------
+
+const KEY_SAMPLE_RATE: &str = "vokra.omniasr_ctc.sample_rate";
+
+// Encoder (wav2vec 2.0)
+const KEY_ENC_MODEL_DIM: &str = "vokra.omniasr_ctc.arch.encoder.model_dim";
+const KEY_ENC_N_LAYER: &str = "vokra.omniasr_ctc.arch.encoder.num_encoder_layers";
+const KEY_ENC_N_HEAD: &str = "vokra.omniasr_ctc.arch.encoder.num_encoder_attn_heads";
+const KEY_ENC_FFN_INNER: &str = "vokra.omniasr_ctc.arch.encoder.ffn_inner_dim";
+const KEY_ENC_FEATURE_DIM: &str = "vokra.omniasr_ctc.arch.encoder.feature_dim";
+const KEY_ENC_MAX_SEQ_LEN: &str = "vokra.omniasr_ctc.arch.encoder.max_seq_len";
+const KEY_ENC_FEATURE_BIAS: &str = "vokra.omniasr_ctc.arch.encoder.feature_extractor_bias";
+const KEY_ENC_FEATURE_LN_CONVS: &str =
+    "vokra.omniasr_ctc.arch.encoder.feature_extractor_layer_norm_convs";
+const KEY_ENC_LN_FEATURES: &str = "vokra.omniasr_ctc.arch.encoder.layer_norm_features";
+const KEY_ENC_POS_KERNEL: &str = "vokra.omniasr_ctc.arch.encoder.pos_conv_kernel_size";
+const KEY_ENC_POS_GROUPS: &str = "vokra.omniasr_ctc.arch.encoder.num_pos_conv_groups";
+const KEY_ENC_POS_DEPTH: &str = "vokra.omniasr_ctc.arch.encoder.pos_encoder_depth";
+const KEY_ENC_USE_CONFORMER: &str = "vokra.omniasr_ctc.arch.encoder.use_conformer";
+
+// Feature extractor stem (7 layers — the fairseq2 wav2vec 2.0 default,
+// pinned as a fixed count). Rides as `count + N × (out_dim, kernel,
+// stride)` — the CSM / Dia array pattern for GGUF portability.
+const KEY_ENC_FEATURE_LAYERS: &str = "vokra.omniasr_ctc.arch.encoder.feature_extractor_layer_count";
+const KEY_ENC_FEATURE_OUT_PREFIX: &str =
+    "vokra.omniasr_ctc.arch.encoder.feature_extractor_out_dim.";
+const KEY_ENC_FEATURE_KERNEL_PREFIX: &str =
+    "vokra.omniasr_ctc.arch.encoder.feature_extractor_kernel.";
+const KEY_ENC_FEATURE_STRIDE_PREFIX: &str =
+    "vokra.omniasr_ctc.arch.encoder.feature_extractor_stride.";
+
+// CTC head
+const KEY_HEAD_VOCAB_SIZE: &str = "vokra.omniasr_ctc.head.target_vocab_size";
+const KEY_HEAD_BLANK_ID: &str = "vokra.omniasr_ctc.head.blank_id";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -832,6 +878,105 @@ impl OmniasrCtcConfig {
         }
         Ok(())
     }
+
+    /// Reads the strict `vokra.omniasr_ctc.*` chunk group from `gguf`
+    /// and assembles the resolved config.
+    ///
+    /// Every mandatory u32 hparam is required — a converter that fails
+    /// to stamp any one is a converter bug, not a runtime silent-default
+    /// (FR-EX-08). The 7-layer feature-extractor stem descriptor is
+    /// walked via `count + N × (out_dim, kernel, stride)` and
+    /// cross-checked against [`OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS`]
+    /// (loud reject on mismatch — a shape-only silent 8-layer variant
+    /// cannot slip in).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when any mandatory `vokra.omniasr_ctc.*`
+    ///   u32 chunk is absent.
+    /// - [`VokraError::ModelLoad`] when
+    ///   `vokra.omniasr_ctc.arch.encoder.feature_extractor_layer_count`
+    ///   does not equal [`OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS`].
+    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        fn req_u32(gguf: &GgufFile, key: &str) -> Result<u32> {
+            gguf.get(key)
+                .and_then(vokra_core::gguf::GgufMetadataValue::as_u64)
+                .map(|v| v as u32)
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "omniasr-ctc: GGUF is missing required u32 chunk `{key}` — the \
+                         upstream `facebook/omniASR-CTC-1B` fairseq2 registry walk \
+                         (fetched 2026-07-24) transcribes every wav2vec 2.0 axis; a \
+                         converter that fails to stamp one is a converter bug, not a \
+                         runtime silent-default (FR-EX-08). Re-run `vokra-cli convert \
+                         --model omniasr-ctc` against a `facebook/omniASR-CTC-1B` \
+                         safetensors — primary source: \
+                         https://huggingface.co/facebook/omniASR-CTC-1B."
+                    ))
+                })
+        }
+
+        // Read the fixed-count feature-extractor stem descriptor first —
+        // a `count` mismatch is a loud reject before we even try to walk
+        // the per-layer prefix keys.
+        let feature_layer_count = req_u32(gguf, KEY_ENC_FEATURE_LAYERS)? as usize;
+        if feature_layer_count != OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS {
+            return Err(VokraError::ModelLoad(format!(
+                "omniasr-ctc: GGUF chunk `{KEY_ENC_FEATURE_LAYERS}`={feature_layer_count} \
+                 does not equal the fairseq2 wav2vec 2.0 fixed 7-layer stem \
+                 (OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS={OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS}) — \
+                 the \"1b\" arch does not override the default stem, so every \
+                 omniASR size shares the same 7-layer count. A GGUF with a \
+                 different count was produced by a converter that broke the \
+                 pinned-count invariant (FR-EX-08)."
+            )));
+        }
+        let mut feature_extractor_layer_descs = [OmniasrCtcConvLayerDesc {
+            out_dim: 0,
+            kernel: 0,
+            stride: 0,
+        };
+            OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS];
+        for i in 0..OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS {
+            let out_key = format!("{KEY_ENC_FEATURE_OUT_PREFIX}{i}");
+            let kernel_key = format!("{KEY_ENC_FEATURE_KERNEL_PREFIX}{i}");
+            let stride_key = format!("{KEY_ENC_FEATURE_STRIDE_PREFIX}{i}");
+            feature_extractor_layer_descs[i] = OmniasrCtcConvLayerDesc {
+                out_dim: req_u32(gguf, &out_key)? as usize,
+                kernel: req_u32(gguf, &kernel_key)? as usize,
+                stride: req_u32(gguf, &stride_key)? as usize,
+            };
+        }
+
+        Ok(Self {
+            encoder: OmniasrCtcEncoderConfig {
+                model_dim: req_u32(gguf, KEY_ENC_MODEL_DIM)? as usize,
+                num_encoder_layers: req_u32(gguf, KEY_ENC_N_LAYER)? as usize,
+                num_encoder_attn_heads: req_u32(gguf, KEY_ENC_N_HEAD)? as usize,
+                ffn_inner_dim: req_u32(gguf, KEY_ENC_FFN_INNER)? as usize,
+                feature_dim: req_u32(gguf, KEY_ENC_FEATURE_DIM)? as usize,
+                feature_extractor_layer_descs,
+                feature_extractor_bias: req_u32(gguf, KEY_ENC_FEATURE_BIAS)? != 0,
+                feature_extractor_layer_norm_convs: req_u32(gguf, KEY_ENC_FEATURE_LN_CONVS)? != 0,
+                layer_norm_features: req_u32(gguf, KEY_ENC_LN_FEATURES)? != 0,
+                pos_conv_kernel_size: req_u32(gguf, KEY_ENC_POS_KERNEL)? as usize,
+                num_pos_conv_groups: req_u32(gguf, KEY_ENC_POS_GROUPS)? as usize,
+                pos_encoder_depth: req_u32(gguf, KEY_ENC_POS_DEPTH)? as usize,
+                use_conformer: req_u32(gguf, KEY_ENC_USE_CONFORMER)? != 0,
+                max_seq_len: req_u32(gguf, KEY_ENC_MAX_SEQ_LEN)? as usize,
+            },
+            head: OmniasrCtcHeadConfig {
+                target_vocab_size: req_u32(gguf, KEY_HEAD_VOCAB_SIZE)? as usize,
+                blank_id: req_u32(gguf, KEY_HEAD_BLANK_ID)?,
+                // `final_dropout_p` is not stamped by the converter
+                // (train-time only; inference forward is dropout-free).
+                // Default to 0.0 — the validator accepts any finite
+                // value and this is the inference-path value.
+                final_dropout_p: 0.0,
+            },
+            sample_rate: req_u32(gguf, KEY_SAMPLE_RATE)?,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,10 +1259,28 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// bound (see the module docstring) it returns
 /// [`VokraError::NotImplemented`] with a message naming the blocker
 /// (FR-EX-08 — never a silent zero-fill or empty transcript).
+///
+/// # Weight license surfacing
+///
+/// The `weight_license` field carries the compliance class surfaced
+/// from the GGUF's `vokra.provenance.weight_license` chunk (populated
+/// by [`Self::from_gguf`]) or defaults to [`LicenseClass::Permissive`]
+/// under [`Self::new`] (the Apache-2.0 class that is the only
+/// legitimate class for real omniASR-CTC weights per the compliance
+/// registry — `vokra_core::compliance::license_class` maps
+/// `omniasr-ctc` / `omniasr-ctc-1b` / `omniasr-ctc-300m` /
+/// `omniasr-ctc-3b` / `omniasr-ctc-7b` to
+/// [`LicenseClass::Permissive`] via the `omniasr-ctc-` family prefix
+/// walk). Differs from Parakeet-CTC (CC-BY 4.0 =
+/// [`LicenseClass::AttributionRequired`]) — omniASR carries no
+/// runtime-side attribution obligation. The M2-13 outer compliance
+/// gate does the strict enforcement; this handle simply surfaces the
+/// class so callers can cross-check.
 #[derive(Debug, Clone)]
 pub struct OmniasrCtcAsr {
     cfg: OmniasrCtcConfig,
     weights: OmniasrCtcWeights,
+    weight_license: LicenseClass,
 }
 
 impl OmniasrCtcAsr {
@@ -1377,7 +1540,19 @@ impl OmniasrCtcAsr {
             )));
         }
 
-        Ok(Self { cfg, weights })
+        Ok(Self {
+            cfg,
+            weights,
+            // Default weight-license class under `new()` mirrors the
+            // compliance registry (`vokra_core::compliance::license_class`
+            // maps every `omniasr-ctc-*` slug to Apache-2.0 =
+            // Permissive via the `omniasr-ctc-` family prefix walk).
+            // Distinct from Parakeet-CTC's default (AttributionRequired
+            // = CC-BY 4.0) — omniASR has no runtime-side attribution
+            // obligation. `from_gguf` overrides with whatever the
+            // provenance chunk carries (or `Unknown` if absent).
+            weight_license: LicenseClass::Permissive,
+        })
     }
 
     /// The resolved configuration.
@@ -1392,6 +1567,132 @@ impl OmniasrCtcAsr {
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
         self.weights.is_synthesized
+    }
+
+    /// The stamped weight-license class surfaced from the GGUF's
+    /// `vokra.provenance.weight_license` chunk. For real omniASR-CTC
+    /// checkpoints the compliance registry
+    /// (`vokra_core::compliance::license_class`) maps every
+    /// `omniasr-ctc-*` slug to [`LicenseClass::Permissive`]
+    /// (Apache-2.0) via the `omniasr-ctc-` family prefix walk. A GGUF
+    /// missing the stamp reads back as [`LicenseClass::Unknown`]
+    /// (fail-closed at the outer M2-13 gate); a GGUF stamped with any
+    /// non-Permissive class surfaces that class here so the outer
+    /// gate can enforce (M2-13 refuses commercial dispatch on
+    /// mismatches).
+    #[inline]
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
+    }
+
+    /// Binds an omniASR-CTC GGUF: validates arch, reads the strict
+    /// `vokra.omniasr_ctc.*` topology chunk group, builds a
+    /// deterministic synthesized weight fixture matching the resolved
+    /// config, and surfaces the stamped weight-license class for
+    /// compliance gate cross-checks.
+    ///
+    /// This binder is a *loud* validation step. Every failure is a
+    /// distinct [`VokraError::ModelLoad`] naming the missing / wrong
+    /// key so a reader diagnosing a mis-produced GGUF has exactly one
+    /// place to walk (FR-EX-08 — never a silent partial bind).
+    ///
+    /// # Loud-partial contract
+    ///
+    /// After this returns `Ok(_)`, the resulting engine is a
+    /// **synthesized-weight** handle — the shape / dtype / size flow is
+    /// exercised end-to-end (config chunk validation, weight-store
+    /// construction, PCM boundary check), but calling
+    /// [`Self::transcribe`] still returns [`VokraError::NotImplemented`]
+    /// naming the real-checkpoint tensor-name manifest binding
+    /// (T29-equivalent — the Moshi / CSM / Zonos / Kyutai STT /
+    /// Parakeet-CTC pattern) as the follow-up wave's anchor. The
+    /// missing pieces are (a) the HF safetensors → fairseq2 state-dict
+    /// → [`OmniasrCtcWeights`] tensor-name mapping, and (b) the
+    /// wav2vec 2.0 encoder body (no shared op yet — a follow-up wave
+    /// decides between extracting `vokra_ops::wav2vec2_encoder` or
+    /// keeping the encoder inline). The CTC decoding primitive
+    /// ([`vokra_ops::ctc_decode`]) with `blank_id = 0` already exists;
+    /// SentencePiece detokenize is model-specific (not a shared op).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or
+    ///   not `"omniasr-ctc"` (a `parakeet-ctc` GGUF handed to us by
+    ///   mistake fails with a hint pointing at the FastConformer
+    ///   sibling `parakeet_ctc::ParakeetCtcAsr::from_gguf`, matching
+    ///   the sibling-arch disambiguation pattern used by
+    ///   `Mt3::from_gguf` / `Snac::from_gguf` /
+    ///   `ParakeetCtcAsr::from_gguf`).
+    /// - [`VokraError::ModelLoad`] when any `vokra.omniasr_ctc.*` chunk
+    ///   is absent ([`OmniasrCtcConfig::from_gguf`] is strict).
+    /// - [`VokraError::InvalidArgument`] from
+    ///   [`OmniasrCtcConfig::validate_for_forward`] +
+    ///   [`OmniasrCtcAsr::new`] shape gates.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        // 1. Arch check — always first so a mis-typed model handed here
+        //    fails with a specific message instead of a downstream
+        //    "vokra.omniasr_ctc.arch.encoder.model_dim missing".
+        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+            Some(a) if a == EXPECTED_ARCH => {}
+            Some("parakeet-ctc") | Some("parakeet-ctc-1.1b") | Some("parakeet-ctc-1_1b") => {
+                return Err(VokraError::ModelLoad(format!(
+                    "omniasr-ctc: GGUF arch is a FastConformer or Parakeet-CTC \
+                     variant (log-mel input + 8× FastConformer subsampling + \
+                     CTC head with blank at vocab tail), expected \
+                     `{EXPECTED_ARCH}` (wav2vec 2.0 waveform input + 7-layer \
+                     Conv1D feature extractor + plain Transformer encoder + \
+                     CTC head with blank at index 0). These are different \
+                     topologies — Parakeet-CTC has num_mel_bins=80 on the \
+                     input and a FastConformer body that the wav2vec 2.0 \
+                     binder cannot dispatch. Route the GGUF through the \
+                     sibling `parakeet_ctc::ParakeetCtcAsr::from_gguf` binder \
+                     (`crates/vokra-models/src/parakeet_ctc/mod.rs`) instead."
+                )));
+            }
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "omniasr-ctc: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
+                     (was this GGUF produced by `vokra-cli convert --model omniasr-ctc`? \
+                     Sibling ASR arches — `whisper`, `voxtral`, `canary`, \
+                     `canary-qwen`, `parakeet-ctc`, `parakeet-tdt` — are \
+                     completely different topologies)"
+                )));
+            }
+            None => {
+                return Err(VokraError::ModelLoad(
+                    "omniasr-ctc: GGUF is missing `vokra.model.arch` (converter did \
+                     not stamp it — this is not a Vokra-native omniasr-ctc GGUF)"
+                        .to_owned(),
+                ));
+            }
+        }
+
+        // 2. Strict topology axes from the `vokra.omniasr_ctc.*` chunk
+        //    group.
+        let cfg = OmniasrCtcConfig::from_gguf(file)?;
+
+        // 3. Provenance surfacing — read the stamped weight-license class
+        //    for compliance gate cross-checks (defaults to `Unknown` if
+        //    absent, which is fail-closed at the outer M2-13 gate).
+        //    Matches the MT3 / SNAC / Parakeet-CTC precedent — surface
+        //    the class here, let the outer gate do the strict
+        //    enforcement.
+        let weight_license = file
+            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+            .and_then(|v| v.as_str())
+            .and_then(LicenseClass::from_class_str)
+            .unwrap_or(LicenseClass::Unknown);
+
+        // 4. Build synthesized weights against the freshly-read config
+        //    so the engine is constructible. `transcribe` still loud-
+        //    partials with the synthesized-weight blocker message —
+        //    binding real HF checkpoint tensor names is the follow-up
+        //    wave (T29-equivalent).
+        let weights = OmniasrCtcWeights::synthesized(&cfg, /* seed */ 0)?;
+        let mut asr = Self::new(cfg, weights)?;
+        asr.weight_license = weight_license;
+        Ok(asr)
     }
 
     /// Transcribes a mono `f32` PCM slice at [`Self::config`]'s sample
@@ -2219,5 +2520,316 @@ mod tests {
         // variants by definition.
         assert_eq!(b7.encoder.model_dim, 0);
         assert_eq!(b7.encoder.num_encoder_layers, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Wave 5: `from_gguf` loud-partial contract (real config validation,
+    // arch + provenance surface, license class round-trip, engine
+    // constructibility from GGUF, `transcribe` still loud-partials on the
+    // synthesized-weight blocker so a follow-up wave has exactly one place
+    // to walk — mirror of MT3 / SNAC / vocos / bigvgan / parakeet_ctc
+    // Wave 4 precedent).
+    // -----------------------------------------------------------------------
+
+    /// Builds a minimal omniASR-CTC GGUF carrying the arch tag + full
+    /// `vokra.omniasr_ctc.*` chunk group matching the passed config
+    /// (feature extractor stem walked as `count + 7 × (out_dim,
+    /// kernel, stride)`). `weight_license_class` is written under
+    /// `vokra.provenance.weight_license` (or omitted if `None`).
+    fn omniasr_ctc_gguf(
+        cfg: &OmniasrCtcConfig,
+        weight_license_class: Option<LicenseClass>,
+    ) -> vokra_core::gguf::GgufFile {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, "omniasr-ctc-1b");
+        // Chunk group — mirrors the converter (`write_hparams`).
+        b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        // Encoder
+        b.add_u32(KEY_ENC_MODEL_DIM, cfg.encoder.model_dim as u32);
+        b.add_u32(KEY_ENC_N_LAYER, cfg.encoder.num_encoder_layers as u32);
+        b.add_u32(KEY_ENC_N_HEAD, cfg.encoder.num_encoder_attn_heads as u32);
+        b.add_u32(KEY_ENC_FFN_INNER, cfg.encoder.ffn_inner_dim as u32);
+        b.add_u32(KEY_ENC_FEATURE_DIM, cfg.encoder.feature_dim as u32);
+        b.add_u32(KEY_ENC_MAX_SEQ_LEN, cfg.encoder.max_seq_len as u32);
+        b.add_u32(
+            KEY_ENC_FEATURE_BIAS,
+            u32::from(cfg.encoder.feature_extractor_bias),
+        );
+        b.add_u32(
+            KEY_ENC_FEATURE_LN_CONVS,
+            u32::from(cfg.encoder.feature_extractor_layer_norm_convs),
+        );
+        b.add_u32(
+            KEY_ENC_LN_FEATURES,
+            u32::from(cfg.encoder.layer_norm_features),
+        );
+        b.add_u32(KEY_ENC_POS_KERNEL, cfg.encoder.pos_conv_kernel_size as u32);
+        b.add_u32(KEY_ENC_POS_GROUPS, cfg.encoder.num_pos_conv_groups as u32);
+        b.add_u32(KEY_ENC_POS_DEPTH, cfg.encoder.pos_encoder_depth as u32);
+        b.add_u32(KEY_ENC_USE_CONFORMER, u32::from(cfg.encoder.use_conformer));
+        // Feature extractor stem — count + 7 × (out_dim, kernel, stride).
+        b.add_u32(
+            KEY_ENC_FEATURE_LAYERS,
+            OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS as u32,
+        );
+        for i in 0..OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS {
+            b.add_u32(
+                &format!("{KEY_ENC_FEATURE_OUT_PREFIX}{i}"),
+                cfg.encoder.feature_extractor_layer_descs[i].out_dim as u32,
+            );
+            b.add_u32(
+                &format!("{KEY_ENC_FEATURE_KERNEL_PREFIX}{i}"),
+                cfg.encoder.feature_extractor_layer_descs[i].kernel as u32,
+            );
+            b.add_u32(
+                &format!("{KEY_ENC_FEATURE_STRIDE_PREFIX}{i}"),
+                cfg.encoder.feature_extractor_layer_descs[i].stride as u32,
+            );
+        }
+        // Head
+        b.add_u32(KEY_HEAD_VOCAB_SIZE, cfg.head.target_vocab_size as u32);
+        b.add_u32(KEY_HEAD_BLANK_ID, cfg.head.blank_id);
+        if let Some(cls) = weight_license_class {
+            b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
+        }
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    /// A `whisper` / `voxtral` / `parakeet-ctc` GGUF handed to the
+    /// omniASR-CTC binder by mistake must fail loud with a specific
+    /// message rather than silently mis-binding (FR-EX-08). The
+    /// Parakeet-CTC case gets a dedicated hint pointing at the sibling
+    /// binder (very close ASR sibling — same CTC head shape but
+    /// different encoder body: FastConformer vs wav2vec 2.0).
+    #[test]
+    fn from_gguf_rejects_wrong_arch() {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        // Generic wrong arch — names both got + expected + sibling
+        // ASR arches.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "whisper");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = OmniasrCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on wrong arch");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("`whisper`") && m.contains("`omniasr-ctc`"),
+                    "message must name both got + expected arch tags, got `{m}`"
+                );
+                // Sibling ASR arches are enumerated in the hint so a
+                // reader has one place to walk.
+                assert!(
+                    m.contains("parakeet-ctc") || m.contains("voxtral"),
+                    "message must name sibling ASR arches for disambiguation, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+
+        // Parakeet-CTC sibling — dedicated hint pointing at the
+        // FastConformer binder so a reader diagnosing this mis-route
+        // has exactly one place to walk.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "parakeet-ctc");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = OmniasrCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on parakeet-ctc");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    (m.contains("FastConformer") || m.contains("Parakeet-CTC"))
+                        && m.contains("parakeet_ctc::ParakeetCtcAsr"),
+                    "message must name the FastConformer / Parakeet-CTC sibling + \
+                     point at the sibling binder, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// A GGUF that omits `vokra.model.arch` entirely fails loud
+    /// (converter did not stamp it — the GGUF is not Vokra-native).
+    #[test]
+    fn from_gguf_rejects_missing_arch() {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        // No arch chunk at all — but we need at least one metadata key
+        // to build a valid GGUF, so include a benign name.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_NAME, "unknown");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = OmniasrCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing arch");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("`vokra.model.arch`") && m.contains("did not stamp"),
+                    "message must name the missing arch key + fingerprint the converter, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// Every mandatory `vokra.omniasr_ctc.*` chunk is required — a
+    /// converter that fails to stamp any one is a converter bug, not a
+    /// runtime silent-default (FR-EX-08). The loud error names the
+    /// exact absent chunk key.
+    #[test]
+    fn from_gguf_rejects_missing_encoder_axis() {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        // Deliberately omit KEY_ENC_MODEL_DIM — every other encoder axis
+        // is stamped so the loud error must fire on `model_dim`.
+        b.add_u32(KEY_ENC_N_LAYER, cfg.encoder.num_encoder_layers as u32);
+        b.add_u32(KEY_ENC_N_HEAD, cfg.encoder.num_encoder_attn_heads as u32);
+        b.add_u32(KEY_ENC_FFN_INNER, cfg.encoder.ffn_inner_dim as u32);
+        b.add_u32(KEY_ENC_FEATURE_DIM, cfg.encoder.feature_dim as u32);
+        b.add_u32(KEY_ENC_MAX_SEQ_LEN, cfg.encoder.max_seq_len as u32);
+        b.add_u32(
+            KEY_ENC_FEATURE_BIAS,
+            u32::from(cfg.encoder.feature_extractor_bias),
+        );
+        b.add_u32(
+            KEY_ENC_FEATURE_LN_CONVS,
+            u32::from(cfg.encoder.feature_extractor_layer_norm_convs),
+        );
+        b.add_u32(
+            KEY_ENC_LN_FEATURES,
+            u32::from(cfg.encoder.layer_norm_features),
+        );
+        b.add_u32(KEY_ENC_POS_KERNEL, cfg.encoder.pos_conv_kernel_size as u32);
+        b.add_u32(KEY_ENC_POS_GROUPS, cfg.encoder.num_pos_conv_groups as u32);
+        b.add_u32(KEY_ENC_POS_DEPTH, cfg.encoder.pos_encoder_depth as u32);
+        b.add_u32(KEY_ENC_USE_CONFORMER, u32::from(cfg.encoder.use_conformer));
+        b.add_u32(
+            KEY_ENC_FEATURE_LAYERS,
+            OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS as u32,
+        );
+        for i in 0..OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS {
+            b.add_u32(
+                &format!("{KEY_ENC_FEATURE_OUT_PREFIX}{i}"),
+                cfg.encoder.feature_extractor_layer_descs[i].out_dim as u32,
+            );
+            b.add_u32(
+                &format!("{KEY_ENC_FEATURE_KERNEL_PREFIX}{i}"),
+                cfg.encoder.feature_extractor_layer_descs[i].kernel as u32,
+            );
+            b.add_u32(
+                &format!("{KEY_ENC_FEATURE_STRIDE_PREFIX}{i}"),
+                cfg.encoder.feature_extractor_layer_descs[i].stride as u32,
+            );
+        }
+        b.add_u32(KEY_HEAD_VOCAB_SIZE, cfg.head.target_vocab_size as u32);
+        b.add_u32(KEY_HEAD_BLANK_ID, cfg.head.blank_id);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        let Err(err) = OmniasrCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing encoder axis");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains(KEY_ENC_MODEL_DIM),
+                    "message must name the exact missing chunk key `{KEY_ENC_MODEL_DIM}`, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// The full omniASR-CTC-1B primary-source config round-trips: stamp
+    /// every chunk with the transcribed values, read them back with
+    /// `from_gguf`, assert every field of the resulting
+    /// `OmniasrCtcConfig` equals `omniasr_ctc_1b()`.
+    #[test]
+    fn from_gguf_reads_full_omniasr_ctc_1b_config() {
+        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        let file = omniasr_ctc_gguf(&cfg, None);
+        let round_trip = OmniasrCtcConfig::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            round_trip, cfg,
+            "every field of the resolved config must round-trip verbatim"
+        );
+    }
+
+    /// A GGUF carrying `vokra.provenance.weight_license = "permissive"`
+    /// (the Apache-2.0 class the omniASR-CTC converter stamps) surfaces
+    /// back through `Self::weight_license()` — the outer M2-13 gate can
+    /// then enforce.
+    #[test]
+    fn from_gguf_surfaces_stamped_permissive() {
+        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        let file = omniasr_ctc_gguf(&cfg, Some(LicenseClass::Permissive));
+        let asr = OmniasrCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            asr.weight_license(),
+            LicenseClass::Permissive,
+            "Apache-2.0 = Permissive must surface (distinct from Parakeet-CTC's \
+             CC-BY 4.0 = AttributionRequired default)"
+        );
+    }
+
+    /// A GGUF that omits `vokra.provenance.weight_license` reads back
+    /// as `LicenseClass::Unknown` (fail-closed at the outer M2-13 gate,
+    /// matching MT3 / SNAC / Parakeet-CTC precedent). Distinct from the
+    /// `Self::new` default of `Permissive` — `from_gguf` never assumes
+    /// the class, it only surfaces what the GGUF stamps.
+    #[test]
+    fn from_gguf_defaults_missing_provenance_to_unknown() {
+        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        let file = omniasr_ctc_gguf(&cfg, None);
+        let asr = OmniasrCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            asr.weight_license(),
+            LicenseClass::Unknown,
+            "missing provenance must default to Unknown (fail-closed at outer gate)"
+        );
+    }
+
+    /// After a full omniASR-CTC-1B GGUF round-trip, `transcribe` still
+    /// returns `NotImplemented` naming the synthesized-weight blocker
+    /// (loud-partial contract preserved — the follow-up wave binds real
+    /// HF checkpoint tensor names via `tools/parity/
+    /// omniasr_ctc_prepare_checkpoint.py`, T29-equivalent).
+    #[test]
+    fn from_gguf_engine_transcribe_is_loud_not_implemented() {
+        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        let file = omniasr_ctc_gguf(&cfg, Some(LicenseClass::Permissive));
+        let asr = OmniasrCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
+        // Round-tripped engine is still synthesized-weight; the primary
+        // NotImplemented path fires (not the "real weights bound but
+        // forward path not landed" path — because the follow-up wave
+        // will replace the synthesized weights with real ones and flip
+        // the message).
+        assert!(asr.is_synthesized(), "from_gguf builds synthesized weights");
+
+        // 1 second of 16 kHz mono silence — legitimate input shape, so
+        // the loud-partial gate fires (not the empty-pcm gate).
+        let pcm = vec![0.0f32; 16_000];
+        let err = asr.transcribe(&pcm).unwrap_err();
+        match err {
+            VokraError::NotImplemented(msg) => {
+                assert!(
+                    msg.contains("synthesized")
+                        && (msg.contains("facebook/omniASR-CTC-1B")
+                            || msg.contains("real omniASR-CTC-1B")),
+                    "message must name the synthesized-weight blocker + primary-source anchor: {msg}"
+                );
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
     }
 }
