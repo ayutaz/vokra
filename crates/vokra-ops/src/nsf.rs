@@ -1337,8 +1337,7 @@ mod tests {
     #[test]
     fn sinegen_deterministic_rejects_zero_samp_rate() {
         let mut out = vec![0.0f32; 4];
-        let err =
-            sinegen_deterministic_f32(&vec![100.0f32; 4], 0, 0, 0.1, 0.0, &mut out).unwrap_err();
+        let err = sinegen_deterministic_f32(&[100.0f32; 4], 0, 0, 0.1, 0.0, &mut out).unwrap_err();
         assert!(err.to_string().contains("samp_rate must be > 0"), "{err}");
     }
 

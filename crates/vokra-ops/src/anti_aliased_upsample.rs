@@ -258,7 +258,7 @@ mod tests {
         // out[3] (t=1, r=1) = k1 * b + k3 * a
         // out[4] (t=2, r=0) = k0 * c + k2 * b
         // out[5] (t=2, r=1) = k1 * c + k3 * b
-        let expected = vec![
+        let expected = [
             k[0] * x[0],
             k[1] * x[0],
             k[0] * x[1] + k[2] * x[0],
