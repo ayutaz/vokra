@@ -1073,4 +1073,15 @@ pub mod beat_this;
 // LICENSE and no HF mirror → converter hard-maps LicenseClass::Unknown
 // (fail-closed).
 pub mod mt3;
+// Wave 4 2026-08-14 audit follow-up (LIB.RS RULE — append at end
+// with Wave 4 comment marker): ReDimNet2 speaker encoder converter
+// (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM, apache-2.0). BF16
+// pass-through skeleton + `vokra.redimnet.*` topology chunk group;
+// runtime binder in `crates/vokra-models/src/redimnet/mod.rs` ships
+// as loud-partial (encode = UnsupportedOp) pending WeSpeaker Python
+// source transcription. Speaker-fleet extension over sibling
+// wespeaker (ResNet-34) / ecapa_tdnn / titanet / speaker_3d
+// (arXiv:2402.01049 "Reshape Dimensions Network for Speaker
+// Recognition").
+pub mod redimnet;
 // ---------------------------------------------------------------------------

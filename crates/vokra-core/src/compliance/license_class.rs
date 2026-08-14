@@ -777,6 +777,25 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
             LicenseClass::Permissive
         }
+        // Wave 4 2026-08-14 audit follow-up: ReDimNet2 speaker
+        // encoder (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`).
+        // HF cardData primary source declares `license: apache-2.0`
+        // (scout-time WebFetch, 2026-08-14). WeSpeaker-family
+        // sibling of `wespeaker-voxceleb-resnet34-LM` at line 777
+        // above (same Wespeaker/ HF org, VoxCeleb + Large-Margin
+        // fine-tune). arXiv:2402.01049 "Reshape Dimensions Network
+        // for Speaker Recognition". Belt-and-suspenders arm — the
+        // sibling `wespeaker` line above uses strict equality (no
+        // prefix walk), so id-lookup callers on the redimnet ids
+        // need an explicit registration to resolve without depending
+        // on the class-as-string stamp being present. Matches sibling
+        // `whisper-large-v3-turbo-german` /
+        // `speechbrain-spkrec-ecapa-voxceleb` id-registration pattern
+        // (Wave 8, 2026-08-01, lines 609-612).
+        "redimnet"
+        | "redimnet2"
+        | "wespeaker-voxceleb-redimnet2-b6-lm"
+        | "wespeaker/wespeaker-voxceleb-redimnet2-b6-lm" => LicenseClass::Permissive,
         "speaker-3d"
         | "speaker_3d"
         | "3d-speaker"

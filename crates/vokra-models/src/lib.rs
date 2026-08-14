@@ -532,6 +532,20 @@ pub mod bigvgan;
 // Rust port.
 pub mod mt3;
 pub mod vocos;
+// Wave 4 2026-08-14 audit follow-up (LIB.RS RULE — append at end
+// with Wave 4 comment marker): ReDimNet2 speaker encoder
+// (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM, apache-2.0). 2D
+// basic_resnet stem + 1D conv+att blocks + ASTP pooling scaffold,
+// encode loud-partial pending WeSpeaker Python source transcription
+// (wespeaker/models/redimnet2.py + redimnet.py + arXiv:2402.01049).
+pub mod redimnet;
+// Wave 4 2026-08-14 audit follow-up: NVIDIA Sortformer diar-4spk-v1
+// (CC-BY-NC-4.0 T4) — loud-partial runtime binder (FastConformer
+// primitive exists in vokra_ops; 18-layer plain Transformer + per-
+// frame 4-sigmoid head composition + tensor-name walk + region-
+// merging port pending; §3.1 sign-off row 449 = ☑ Research-only
+// 2026-08-04 yousan, X-Codec-2 T4 precedent).
+pub mod sortformer_diar_4spk_v1;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
