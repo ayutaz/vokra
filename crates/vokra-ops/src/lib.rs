@@ -349,6 +349,19 @@ pub mod ebranchformer;
 // parallel-wave rebases.
 pub mod hybrid_ctc_attention;
 // -------------------------------------------------------------------------
+// Wave 7 2026-08-14 audit follow-up: classical DSP F0 extractors (YIN —
+// de Cheveigné & Kawahara 2002 JASA; PyIN — Mauch & Dixon 2014 ICASSP).
+// Weight-free algorithm implementations sitting one level below the
+// neural F0 subgraphs in `vokra-models::f0` (RMVPE / FCPE / CREPE);
+// together they form the FR-OP-83 unified `f0_extract` API (landing WP
+// M5-16 — dormant per owner ADR 2026-07-22 until the M3-17 prosody /
+// voice-clone consumer arrives). Runtime functions, NOT `OpKind`
+// variants (same posture as `resample` / `agc` / `hpf` — ADR M4-20 §D-5).
+// Implemented from the paper spec — no code lifted from aubio (GPL-3.0)
+// or librosa (mirroring resample.rs's soxr/rubberband disclaimer,
+// NFR-LC-03/04).
+pub mod f0;
+// -------------------------------------------------------------------------
 
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
@@ -488,6 +501,11 @@ pub use vae_continuous::{
 // -------------------------------------------------------------------------
 // ---- Wave 4 2026-08-14 audit follow-up voice_ref re-exports -------------
 pub use voice_ref::{VoiceRef, VoiceRefSource};
+// -------------------------------------------------------------------------
+// ---- Wave 7 2026-08-14 audit follow-up classical DSP F0 re-exports ------
+// YIN / PyIN weight-free extractors. See the `pub mod f0` block above for
+// placement / red-line rationale.
+pub use f0::{pyin, yin};
 // -------------------------------------------------------------------------
 pub use vokra_core::Complex32;
 
