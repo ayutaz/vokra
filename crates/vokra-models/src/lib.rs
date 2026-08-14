@@ -1879,6 +1879,409 @@ pub mod gigaam;
 // → GGUF binder`, `vokra-convert → GGUF writer`).
 pub mod canary_1b_flash;
 
+// Wave C2 (2026-08-15) — runtime binder for the `eat` converter arch (EAT,
+// `cwx-worst-one/EAT`, MIT — a self-supervised audio encoder trained with a
+// bootstrap / self-distillation objective and inverse block masking over an
+// utterance-level Transformer, AudioSet-2M pre-training, ~86M params at the
+// `eat-base` size point, Chen et al. 2024 arXiv:2401.03497). LIB.RS RULE:
+// append at the END of the `pub mod` block with a Wave marker; do NOT
+// alphabetize — rustfmt has reordered these before and broken a commit.
+//
+// Closes a real read-side gap: the converter
+// (`crates/vokra-convert/src/models/eat.rs`, SSL audio-encoder wave
+// 2026-08-13) stamps `vokra.model.arch = "eat"` / `vokra.model.name =
+// "eat-base"` / `vokra.model.category = "audio-embedding"` /
+// `vokra.provenance.upstream_url = "github.com/cwx-worst-one/EAT"`, but a
+// workspace-wide grep proved NOTHING read that arch string back — a converted
+// checkpoint was unloadable. This module is that consumer.
+//
+// FEATURE EXTRACTOR, NOT AN END-TASK MODEL: EAT emits representations, not
+// labels. The upstream release ships its downstream task heads (AudioSet
+// tagging, ESC-50, SPC-2) as SEPARATE fine-tunes, so this binder exposes only
+// `Eat::encode` (per-patch hidden states) and `Eat::embed_utterance`
+// (utterance-level embedding). No classification head is invented, because the
+// pre-training checkpoint this converter targets does not contain one.
+//
+// WHY A SEPARATE ARCH TAG: EAT's utterance-level Transformer trained with
+// inverse block masking is a distinct topology axis from every sibling SSL
+// audio encoder — `beats` (iterative acoustic-tokenizer SSL), `dasheng`
+// (universal MAE), `atst` (teacher-student patchout), `m2d` (masked-modeling
+// duo), `mert` / `muq` (music-domain SSL), `ast` (supervised, not
+// self-supervised), `hubert` (masked cluster prediction over raw waveform).
+// Silently aliasing would let dispatch bind e.g. an MAE decoder over an
+// utterance-level checkpoint and produce shape-valid garbage instead of a loud
+// error, so the arch gate is strict (FR-EX-08).
+//
+// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
+// with BOTH tags named and the whole SSL-encoder neighbourhood enumerated; a
+// `vokra.model.category` cross-check where PRESENT-but-wrong fails loud while
+// absent is tolerated (hand-assembled fixtures); a tensor manifest over the
+// verbatim upstream state-dict names the converter passes through, with a
+// non-empty gate plus `require_tensor` / `require_tensor_dims` lookups that
+// NAME the missing tensor or BOTH the expected and actual dims; and
+// pure-observation structure discovery (`observed_block_count` /
+// `has_patch_embed` / `count_with_prefix`) derived from what is actually on
+// disk rather than from a transcribed constant.
+//
+// NO `vokra.eat.*` TOPOLOGY GROUP EXISTS: unlike `wavlm`, this converter
+// stamps NO axes at all, so hidden width / depth / head count / patch size /
+// mel-bin count are simply not known to the runtime — and this binder invents
+// NO defaults. `observed_block_count` returns `None` (meaning "unknown", never
+// "zero layers") for a checkpoint whose state_dict uses a prefix this repo has
+// not transcribed. A future converter revision that transcribes the upstream
+// config should add the group and this binder should grow a strict reader,
+// following `crate::wavlm`.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `encode` / `embed_utterance` return `VokraError::UnsupportedOp`
+// naming three blockers — (i) the log-mel FRONT-END SPEC: the mel primitives
+// DO exist (`vokra_ops::mel` / `kaldi_fbank` / `fused_logmel`) but the
+// converter stamps no `vokra.frontend.*` group, and CLAUDE.md requires that
+// spec to be bit-exact and metadata-stamped precisely because librosa /
+// torchaudio / TF filterbanks are not bit-identical; (ii) a 2-D PATCH
+// EMBEDDING (Conv2d patchifier) primitive, which `vokra-ops` does not expose
+// (its conv2d code is private to `denoise` / `conformer`); (iii) a ViT-style
+// pre-norm TRANSFORMER ENCODER block — `vokra-ops` ships `conformer` /
+// `ebranchformer` / `zipformer`, all ASR-specific, convolution-augmented and
+// CLS-less, so none substitutes. `embed_utterance` adds (iv) the utterance
+// read-out, whose CLS-token / pooled form and output width are stamped
+// nowhere. The message also reports the manifest facts actually observed on
+// disk. No fabricated hidden states or embeddings are ever emitted (FR-EX-08).
+//
+// LICENSING: upstream reports `spdx_id: MIT` via the GitHub license API
+// (converter task input 2026-08-13), so the converter stamps `mit` ->
+// `LicenseClass::Permissive`. This binder only SURFACES whatever class the
+// artifact carries and fail-closes to `Unknown` when the stamp is absent.
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH = "eat"` /
+// `NAME` / `CATEGORY` / `UPSTREAM_URL` / `DEFAULT_LICENSE_SPDX` (mirror of the
+// converter's constants, preserving the layered convention `vokra-ops →
+// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
+// binder`, `vokra-convert → GGUF writer`).
+pub mod eat;
+
+// Wave C2 (2026-08-15) — runtime binder for the `atst` converter arch (ATST,
+// "Audio Teacher-Student Transformer", `Audio-WestlakeU/audiossl/tree/main/
+// audiossl/methods/atst`, code MIT / **weight CC-BY-4.0**; a self-supervised
+// audio encoder trained with a BYOL-style EMA teacher + student-patchout
+// objective over a log-mel patch grid, ~86M params at the `atst-base` size
+// point). LIB.RS RULE: append at the END of the `pub mod` block with a Wave
+// marker; do NOT alphabetize — rustfmt has reordered these before and broken a
+// commit.
+//
+// Closes a real read-side gap: the converter
+// (`crates/vokra-convert/src/models/atst.rs`, SSL-encoder wave 2026-08-13) has
+// been stamping `vokra.model.arch = "atst"` / `vokra.model.name = "atst-base"`
+// / `vokra.model.category = "audio-embedding"` / `vokra.provenance.upstream_url`
+// (ATST is not on HuggingFace, so there is no `upstream_hf` counterpart), but a
+// workspace-wide grep proved NOTHING read that arch string back — a converted
+// checkpoint was unloadable. This module is that consumer.
+//
+// FEATURE EXTRACTOR, NOT AN END-TASK MODEL: the checkpoint carries NO task
+// head. Downstream sound-event-detection / audio-tagging / speaker heads are
+// trained separately by consumers, so this binder exposes hidden states
+// (`encode`) and the utterance-level pooled embedding (`embed`) and invents no
+// classifier and no class-label list.
+//
+// WHY A SEPARATE ARCH TAG: every sibling SSL audio/music-embedding encoder
+// differs in the pre-training objective that shapes the topology — `beats`
+// (iterative acoustic tokenizer + MAM), `eat` (utterance-level MAE + inverse
+// block masking), `dasheng` (universal MAE), `m2d` (masked modelling duo),
+// `maest` (AST backbone / Discogs tagger), `mert` (HuBERT-derived MPM), `muq`
+// (Mel-RVQ + BEATs teacher), `yamnet` (supervised CNN, not SSL) — and the
+// wav2vec2 lineage (`hubert` / `wav2vec2_ctc` / `wavlm_sv` / `emotion2vec`)
+// sits on a raw-waveform 1-D conv stem rather than a log-mel patch grid.
+// Binding any of them over an ATST payload does not crash, it silently
+// mis-reads, so the arch gate is strict (FR-EX-08).
+//
+// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
+// with BOTH tags named and the whole neighbourhood enumerated; a tensor
+// manifest over the verbatim upstream `state_dict` names the converter passes
+// through, with a non-empty gate plus `require_tensor` / `require_tensor_dims`
+// lookups that NAME the missing tensor or BOTH the expected and actual dims;
+// `name` / `category` / `upstream_url` metadata surfacing (`vokra.model.name`
+// is SURFACED, not gated — the frame-level `atst-frame` TASLP-2023 sibling
+// shares this arch under its own name); the BYOL duo diagnostic `AtstBranch` +
+// `branch_tensor_count`; weight-licence + FR-MD-09 attribution surfacing that
+// fail-closes to `LicenseClass::Unknown`; and the compliance-gated
+// `from_gguf_with_policy` / `from_path` entry points.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `encode` / `embed` return `VokraError::UnsupportedOp` naming four
+// blockers — (i) NO `vokra.atst.*` AXIS CHUNK GROUP: the converter is a
+// verbatim F32/F16/BF16 pass-through that stamps only `vokra.model.*` +
+// `vokra.provenance.*`, so embedding width, depth, head count, patch grid AND
+// every log-mel front-end axis are absent from the artifact and untranscribed
+// in-repo (upstream keeps them in the training argparse namespace inside the
+// `.ckpt`, which the no-pickle rule FR-LD-05 / NFR-DS-02 keeps out of this
+// runtime); (ii) NO ViT-STYLE ENCODER PRIMITIVE in `vokra-ops` — the log-mel
+// front-end genuinely exists (`vokra_ops::mel` / `fused_logmel` /
+// `kaldi_fbank`) but the 2-D patch embedding + plain pre-norm Transformer
+// encoder does not, and `conformer` / `ebranchformer` / `zipformer` are
+// conv-augmented ASR encoders over a 1-D frame sequence, not ViT patch
+// encoders over a 2-D mel plane; (iii) TEACHER/STUDENT BRANCH SELECTION IS
+// UNRESOLVED — a BYOL EMA checkpoint carries both branches and picking the
+// wrong one yields a shape-valid but numerically different embedding;
+// (iv) NO VERIFIED TENSOR-NAME MANIFEST. No fabricated hidden states or
+// embeddings are ever emitted (FR-EX-08).
+//
+// LICENSING: the upstream LICENSE file SPLITS the tiers — code `mit`,
+// pretrained checkpoints `cc-by-4.0` — and `vokra.provenance.weight_license`
+// tracks the WEIGHT, so the converter stamps `cc-by-4.0` ->
+// `AttributionRequired`. That is commercially permitted (loads under
+// `CompliancePolicy::strict`) but carries a display obligation, so
+// `Atst::attribution` surfaces the FR-MD-09 text rather than burying it. This
+// binder only SURFACES whatever class the artifact carries and fail-closes to
+// `Unknown`. `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign, and does
+// not treat a converter default as a sign-off).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH = "atst"` /
+// `NAME` / `CATEGORY` / `UPSTREAM_URL` / `DEFAULT_LICENSE_SPDX` (mirror of the
+// converter's constants, preserving the layered convention `vokra-ops →
+// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
+// binder`, `vokra-convert → GGUF writer`).
+pub mod atst;
+
+// Wave C2 (2026-08-15) — runtime binder for the `m2d` converter arch (M2D,
+// "Masked Modeling Duo", `nttcslab/m2d`, license Unknown / fail-closed — a
+// self-supervised general-audio encoder trained by a DUO of networks, an
+// `online` and a `target`, whose objective encourages BOTH to model the input
+// rather than only reconstructing masked patches; Niizumi et al., ICASSP 2023,
+// arXiv:2210.14648, plus the TASLP 2024 sound-event-detection / speech
+// extension; ~86M-parameter class base variant). LIB.RS RULE: append at the END
+// of the `pub mod` block with a Wave marker; do NOT alphabetize — rustfmt has
+// reordered these before and broken a commit.
+//
+// Closes a real read-side gap: the converter
+// (`crates/vokra-convert/src/models/m2d.rs`, SSL audio-encoder wave 2026-08-13)
+// stamps `vokra.model.arch = "m2d"` / `vokra.model.name = "m2d-base"` /
+// `vokra.model.category = "audio-embedding"` / `vokra.provenance.upstream_url =
+// "github.com/nttcslab/m2d"`, but a workspace-wide grep proved NOTHING read
+// that arch string back — a converted checkpoint was unloadable. This module is
+// that consumer.
+//
+// FEATURE EXTRACTOR, NOT AN END-TASK MODEL: the checkpoint carries an encoder,
+// not a classifier (upstream ships sound-event-detection / audio-tagging /
+// speaker heads separately, as fine-tuning recipes). The surface is therefore
+// `encode` (a `[num_frames, hidden_size]` hidden-state block) and `embed` (an
+// utterance-level pooled embedding). No classification head is invented.
+//
+// WHY A SEPARATE ARCH TAG: M2D's masked-modeling-DUO objective leaves TWO
+// parallel branches in the state dict, where every sibling SSL encoder
+// (`beats` iterative tokenizer / `eat` inverse block masking / `atst`
+// teacher-student patchout / `dasheng` single-branch MAE / `mert` / `muq`) has
+// one. A single-branch loader pointed at an M2D checkpoint does not crash — it
+// silently binds one branch and returns a plausible-but-wrong embedding, so the
+// arch gate is strict and its error enumerates the whole neighbourhood
+// (FR-EX-08).
+//
+// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
+// with BOTH tags named; a forward-compatible OPTIONAL `vokra.m2d.*` axis group
+// (the current converter stamps NONE of it, so a real artifact resolves to
+// `M2dConfigSource::ConverterSilent` — absence is normal, but a PRESENT key of
+// the wrong dtype fails loud rather than being silently ignored, and a
+// half-landed group is reported as `PartiallyStamped` rather than mistaken for
+// a silent converter); a tensor manifest over the verbatim upstream
+// `state_dict` names the converter passes through, with a non-empty gate plus
+// `require_tensor` / `require_tensor_dims` lookups that NAME the missing tensor
+// or BOTH the expected and actual dims; and weight-license surfacing that
+// fail-closes to `LicenseClass::Unknown`.
+//
+// DELIBERATELY NOT TRANSCRIBED: hidden size, layer count, head count, patch
+// geometry, mel-bin count, sample rate, pooling recipe, and WHICH duo branch
+// inference reads. M2D ships NO HuggingFace mirror as of 2026-08-13, hence no
+// `config.json`, and borrowing a sibling's ViT-Base numbers would be
+// fabrication across a different release (CLAUDE.md「ハルシネーション厳禁」).
+// Those axes are `Option`-typed and `M2dConfig::validate_for_forward` REFUSES
+// while they are unset. Branch selection is the sharpest case: both branches
+// are shape-compatible, so a guess has NO loud failure mode.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `encode` / `embed` return `VokraError::UnsupportedOp` naming five
+// blockers — (1) NO BRANCH SELECTION; (2) NO TENSOR-NAME MANIFEST (nothing
+// in-repo transcribes M2D's `state_dict` naming, so walking guessed names would
+// bind shape-valid garbage); (3) NO TOPOLOGY AXES; (4) NO PATCH-EMBEDDING
+// FRONT-END; (5) MISSING PRIMITIVE — no ViT-style Transformer encoder over 2-D
+// spectrogram patch tokens exists in `vokra-ops` (the encoders that do exist,
+// `vokra_ops::conformer` / `zipformer` / `ebranchformer`, are 1-D ASR encoders
+// with different token geometry). All three primary sources are cited in the
+// message. No fabricated hidden states or embeddings are ever emitted
+// (FR-EX-08).
+//
+// LICENSING: upstream's LICENSE is a PDF that GitHub's classifier cannot read
+// (`spdx_id: NOASSERTION`), so the converter default is `unknown` ->
+// `LicenseClass::Unknown` — `requires_research_flag() == true` and
+// `redistributable() == false`, i.e. fail-closed at the M2-13 gate and refused
+// at publish. Clearing that is an OWNER action (read `LICENSE.pdf`, confirm the
+// SPDX tier, re-convert with `--license <spdx>`); `docs/license-audit.md` §3.1
+// sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH = "m2d"` / `NAME`
+// / `CATEGORY` / `UPSTREAM_URL` / `DEFAULT_LICENSE_SPDX` (mirror of the
+// converter's constants, preserving the layered convention `vokra-ops → nothing
+// GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
+// `vokra-convert → GGUF writer`).
+pub mod m2d;
+
+// Wave C2 (2026-08-15) — runtime binder for the `w2v-bert-2` converter arch
+// (Meta / SeamlessM4T-v2 w2v-BERT 2.0 speech encoder, `facebook/w2v-bert-2.0`,
+// MIT, ~580M params). LIB.RS RULE: append at the END of the `pub mod` block
+// with a Wave marker; do NOT alphabetize — rustfmt has reordered these before
+// and broken a commit.
+//
+// Closes a real read-side gap: the converter
+// (`crates/vokra-convert/src/models/w2v_bert_2.rs`) stamps
+// `vokra.model.arch = "w2v-bert-2"` / `vokra.model.name = "w2v-bert-2.0"` /
+// `vokra.model.category = "asr"` /
+// `vokra.provenance.upstream_hf = "facebook/w2v-bert-2.0"`, but a
+// workspace-wide grep proved NOTHING read that arch string back — weights
+// converted and then nothing could load them. This module is that consumer.
+//
+// FEATURE EXTRACTOR, NOT AN END-TASK MODEL: upstream ships
+// `architectures: ["Wav2Vec2BertModel"]` — no task head — so the surface is
+// `encode` (a hidden-state sequence) plus the stem, and NO classification head
+// is invented on top of a checkpoint that does not contain one.
+//
+// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
+// with BOTH tags named and two confusable neighbourhoods enumerated — the SSL
+// siblings (`hubert` / `wav2vec2_ctc` / `wavlm_sv` / `emotion2vec`, all
+// vanilla-Transformer bodies where w2v-BERT alone has a CONFORMER body) and
+// the two composites that EMBED w2v-BERT as an internal subgraph (`unity-2`
+// SeamlessM4T-v2 speech encoder, `vieneu-tts` speaker encoder), whose
+// artifacts nest these tensors under a composite prefix; topology recovered
+// from the TENSOR SHAPES ON DISK rather than from metadata, because this
+// converter is a BF16 pass-through skeleton that stamps no
+// `vokra.w2v_bert_2.*` chunk group at all — including `num_attention_heads`,
+// recoverable only because `self_attn.distance_embedding.weight` is
+// `[num_positions, head_size]` (Q/K/V/out are all `[hidden, hidden]` and carry
+// no head geometry, so without that table the binder reports `None` instead of
+// guessing); a per-layer required-tensor sweep over the verbatim upstream
+// `state_dict` names that NAMES a missing tensor, deliberately NOT requiring
+// the three `conv_module` conv biases (upstream builds them `bias=False`) and
+// treating `distance_embedding` as optional (relative_key only); a contiguity
+// gate on the `encoder.layers.{i}` index range so a hole cannot silently
+// shorten the stack; and a genuinely REAL `feature_projection` forward
+// (`project_features` = LayerNorm(160) -> Linear(160, 1024)) pinned by a
+// hand-computed numeric unit test rather than by the implementation.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `encode` returns `VokraError::UnsupportedOp` naming four concrete
+// divergences between upstream `Wav2Vec2BertEncoderLayer` and the SHARED
+// `vokra_ops::conformer` primitive — which was read first per the wiring
+// brief, and which does cover the macaron layer skeleton exactly: (i)
+// `position_embeddings_type = "relative_key"` Shaw-style `distance_embedding`
+// attention bias vs a `PositionEncoding` exposing only `None` / `Rope` (that
+// module's own docstring records the relative path as omitted); (ii)
+// upstream's CAUSAL left-only depthwise padding `(kernel_size - 1, 0)` vs the
+// primitive's symmetric same-padding; (iii) upstream's bias-FREE conv module
+// vs `ConformerConvWeights` requiring three biases; (iv) upstream's
+// PRE-projection stem LayerNorm vs `StackingNorm`'s post-projection one.
+// Composing the stack with the primitive as-is would emit shape-valid but
+// numerically WRONG hidden states — precisely the silent misroute FR-EX-08
+// exists to prevent. Closing this is additive work on `vokra_ops::conformer`
+// (shared with the parakeet / canary fleet), which is why it is deliberately
+// NOT done from inside this binder. The four gaps are pinned as data in
+// `CONFORMER_PRIMITIVE_GAPS` so the message and the tests must move together.
+//
+// LICENSING: the converter stamps `mit` -> `Permissive` (T1 Commercial). This
+// binder only SURFACES whatever class the artifact carries and fail-closes to
+// `LicenseClass::Unknown`. `docs/license-audit.md` §3.1 sign-off stays BLANK
+// (owner-only per `[[feedback-license-signoff-primary-source]]`).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH = "w2v-bert-2"`
+// / `NAME` / `CATEGORY` / `UPSTREAM_HF` / `DEFAULT_LICENSE_SPDX` (mirror of
+// the converter's constants, preserving the layered convention `vokra-ops →
+// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
+// binder`, `vokra-convert → GGUF writer`).
+pub mod w2v_bert2;
+
+// Wave C2 (2026-08-15) — MAEST music-tagging SSL binder: the runtime consumer
+// for the `maest` converter arch ("Music Audio Efficient Spectrogram
+// Transformer", `mtg-upf/discogs-maest-30s-pw-129e`, **cc-by-nc-sa-4.0**;
+// Alonso-Jiménez et al. ISMIR 2023, arXiv:2309.16418; ~87M F32 params).
+// LIB.RS RULE: append at the END of the `pub mod` block with a Wave marker; do
+// NOT alphabetize — rustfmt has reordered these before and broken a commit.
+//
+// Closes a real read-side gap: the converter
+// (`crates/vokra-convert/src/models/maest.rs`, SSL audio-encoder wave
+// 2026-08-13) stamps `vokra.model.arch = "maest"` / `vokra.model.name =
+// "maest-30s-pw-129e"` / `vokra.model.category = "music-embedding"` /
+// `vokra.provenance.upstream_hf = "mtg-upf/discogs-maest-30s-pw-129e"`, but a
+// workspace-wide grep proved NOTHING read that arch string back — weights
+// converted and then nothing could load them. This module is that consumer.
+//
+// THE MUSIC-DOMAIN MEMBER OF THE SSL FLEET: where `atst` / `eat` / `m2d` /
+// `dasheng` are general-audio encoders that ship no task head, MAEST is
+// pretrained on the MTG Discogs4All MUSIC-tagger dataset and upstream's HF
+// `config` declares `architectures: ["ASTForAudioClassification"]` — i.e. the
+// release DOES carry a tagging head. The surface is therefore `encode`
+// (per-patch hidden states) + `embed` (pooled clip embedding) + `tag` (Discogs
+// tag logits).
+//
+// WHY A SEPARATE ARCH TAG: MAEST is built on the very same Audio Spectrogram
+// Transformer backbone as the sibling `ast` arch — but `ast` is SUPERVISED,
+// fine-tuned on AudioSet, general-audio, and carries a different taxonomy.
+// Backbone identity is not topology identity, and a silent bind between the two
+// would look plausible right up until the numbers and the label set are wrong
+// (FR-EX-08), so the arch gate is strict and its error enumerates the whole
+// neighbourhood including that pair.
+//
+// LABEL TAXONOMY — READ, NEVER GUESSED: the converter is a verbatim
+// F32/F16/BF16 pass-through that stamps NO label list and NO label count, so
+// this module contains NO taxonomy constant at all. `Maest::label_count` scans
+// the tensors actually on disk under `TAG_HEAD_PREFIX` and reports the head
+// projection's leading dim (`nn.Linear` weight is `[out_features,
+// in_features]`) — `None` for a bare-encoder export or an ambiguous layout,
+// never a fallback number. A unit test pins this by asserting two synthetic
+// artifacts with different head widths report different counts, which a
+// hardcoded taxonomy size could not satisfy (CLAUDE.md「ハルシネーション厳禁」).
+//
+// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
+// with BOTH tags named; a tensor manifest over the verbatim upstream
+// `state_dict` names the converter passes through, with a non-empty gate plus
+// `require_tensor` / `require_tensor_dims` lookups that NAME the missing tensor
+// or BOTH the expected and actual dims; tag-head discovery from disk; metadata
+// surfacing (`name` / `category` / `upstream_hf` / `model_id` / `source`); and
+// weight-license + FR-MD-09 attribution surfacing that fail-closes to
+// `LicenseClass::Unknown`.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `encode` / `embed` / `tag` return `VokraError::UnsupportedOp`
+// naming (i) NO `vokra.maest.*` AXIS CHUNK GROUP (embedding width, depth, head
+// count, patch grid and every log-mel front-end axis are absent from the
+// artifact and are not transcribed in-repo); (ii) NO ViT-STYLE ENCODER
+// PRIMITIVE — verified by listing `crates/vokra-ops/src/`: the log-mel
+// front-end genuinely exists (`vokra_ops::mel` / `fused_logmel` /
+// `kaldi_fbank`) but the 2-D patch embedding + plain pre-norm Transformer
+// encoder does not, and `vokra_ops::conformer` / `ebranchformer` / `zipformer`
+// are conv-augmented ASR encoders over a 1-D frame sequence, a different thing.
+// This is the SAME SHARED GAP the sibling `atst` / `eat` / `m2d` / `dasheng`
+// binders hit, and the message says so explicitly so the follow-up wave sees
+// ONE primitive to add rather than five unrelated model gaps; (iii) NO VERIFIED
+// TENSOR-NAME MANIFEST; and, for `tag` only, (iv) NO LABEL TAXONOMY. No
+// fabricated hidden states, embeddings or logits are ever emitted (FR-EX-08).
+//
+// LICENSING: the converter stamps `cc-by-nc-sa-4.0` ->
+// `LicenseClass::NonCommercialShareAlike` = T4 tier + ShareAlike cascade, whose
+// `requires_research_flag()` is true — so a correctly stamped artifact is
+// REFUSED under `CompliancePolicy::strict()` and loads only with an explicit
+// research opt-in. That refusal is the fail-closed default working as intended.
+// Three obligations cascade: non-commercial, share-alike on any downstream
+// distribution, and attribution. `docs/license-audit.md` §3.1 sign-off stays
+// BLANK (owner-only per `[[feedback-license-signoff-primary-source]]` — CC does
+// NOT sign).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH = "maest"` /
+// `NAME` / `CATEGORY` / `UPSTREAM_HF` / `DEFAULT_LICENSE_SPDX` (mirror of the
+// converter's constants, preserving the layered convention `vokra-ops → nothing
+// GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
+// `vokra-convert → GGUF writer`).
+pub mod maest;
+
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
 #[cfg(test)]
