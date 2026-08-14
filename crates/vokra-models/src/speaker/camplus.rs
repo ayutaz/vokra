@@ -32,7 +32,8 @@
 //! `unsafe_code = "deny"`).
 
 use vokra_core::gguf::GgufFile;
-use vokra_core::{BackendKind, Result, VokraError};
+use vokra_core::{BackendKind, Result, SpeakerEngine, VokraError};
+use vokra_ops::{KaldiFbankOpts, kaldi_fbank};
 
 use super::weights::{Bn, CamPlusWeights, Conv1dW, Conv2dW, ResBlockW};
 use crate::compute::{Compute, HotOp};
@@ -263,6 +264,42 @@ const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<SpeakerEncoder>();
 };
+
+/// The `speaker_encode` injection point (FR-OP-80): PCM in, embedding out.
+///
+/// [`SpeakerEncoder::embed`] takes a Kaldi **filterbank**, which no host
+/// binding (C# / GDScript / Swift) can reasonably compute, so the trait
+/// implementation owns the front-end: `pcm → kaldi_fbank(camplus preset) →
+/// embed`. That is the same chain the CLI's `run --model <campplus.gguf>` arm
+/// and [`PiperPlusTts::embed_reference`](crate::piper_plus::PiperPlusTts::embed_reference)
+/// run, so all three agree numerically.
+///
+/// Unlike `embed_reference` — whose caller has already declared an arbitrary
+/// reference clip and accepts a resample — this entry **rejects** any rate but
+/// the trained 16 kHz. It sits directly under the C ABI (`vokra_speaker_embed`)
+/// where a silent resample would change the embedding without the caller ever
+/// learning that it happened (FR-EX-08); the CLI speaker arm rejects for the
+/// same reason.
+impl SpeakerEngine for SpeakerEncoder {
+    fn embed(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
+        let opts = KaldiFbankOpts::camplus();
+        if sample_rate != opts.sample_rate {
+            return Err(VokraError::InvalidArgument(format!(
+                "CAM++ speaker embedding expects {} Hz mono PCM, got {sample_rate} Hz — \
+                 resample offline first (this front-end never resamples silently, FR-EX-08)",
+                opts.sample_rate
+            )));
+        }
+        let (fbank, frames) = kaldi_fbank(pcm, &opts)?;
+        // Fully qualified: the inherent `embed(fbank, t)` and this trait
+        // `embed(pcm, sample_rate)` share a name and an arity.
+        Ok(SpeakerEncoder::embed(self, &fbank, frames)?.to_vec())
+    }
+
+    fn backend(&self) -> BackendKind {
+        self.backend_kind
+    }
+}
 
 /// One D-TDNN dense layer → its 32-channel CAM output `[32, t]`.
 ///

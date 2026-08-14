@@ -12,6 +12,7 @@
 //! - S2S: **M4-05** (Sesame CSM-1B, v1.0-rc window) — the facade delegates
 //!   to the injected [`S2sEngine`](crate::engines::S2sEngine).
 
+use crate::backend::BackendKind;
 use crate::engines::{DialogRequest, SynthesisRequest};
 use crate::error::{Result, VokraError};
 use crate::session::Session;
@@ -30,6 +31,56 @@ impl Session {
     /// S2S (speech-to-speech) facade — FR-API-02: `session.s2s().dialog()`.
     pub fn s2s(&self) -> S2s<'_> {
         S2s { session: self }
+    }
+
+    /// Speaker-embedding facade — `session.speaker().embed()` (FR-OP-80).
+    pub fn speaker(&self) -> Speaker<'_> {
+        Speaker { session: self }
+    }
+}
+
+/// Speaker-embedding facade borrowed from a [`Session`] (FR-OP-80).
+///
+/// Delegates to the [`SpeakerEngine`](crate::engines::SpeakerEngine) injected
+/// via [`Session::with_speaker_engine`](crate::Session::with_speaker_engine)
+/// (CAM++ = M0-08). Without an injected engine every call returns
+/// [`VokraError::NotImplemented`], the same task-mismatch posture as
+/// [`Asr`] / [`Tts`] / [`S2s`].
+#[derive(Debug)]
+pub struct Speaker<'a> {
+    session: &'a Session,
+}
+
+impl Speaker<'_> {
+    /// Embeds one mono `f32` reference utterance sampled at `sample_rate` Hz.
+    ///
+    /// Returns the raw (non-L2-normalized) embedding; read its length rather
+    /// than assuming one, since it is the model's embedding dimension (192 for
+    /// CAM++). The engine rejects a rate its front-end was not trained on
+    /// instead of resampling behind the caller's back (FR-EX-08).
+    pub fn embed(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
+        match self.session.speaker_engine() {
+            Some(engine) => engine.embed(pcm, sample_rate),
+            None => Err(VokraError::NotImplemented(
+                "no speaker engine injected (CAM++ = M0-08)",
+            )),
+        }
+    }
+
+    /// The backend the injected speaker engine dispatches on.
+    ///
+    /// Lets a caller confirm that the backend it selected at load time
+    /// actually reached the engine — see
+    /// [`AsrEngine::backend`](crate::engines::AsrEngine::backend) for why an
+    /// output comparison cannot answer this.
+    pub fn backend(&self) -> BackendKind {
+        match self.session.speaker_engine() {
+            Some(engine) => engine.backend(),
+            // No engine means no dispatch at all; the session's own selection
+            // is the honest answer (it is what an engine would have been
+            // built with).
+            None => self.session.backend_kind(),
+        }
     }
 }
 
@@ -52,6 +103,20 @@ impl Asr<'_> {
             None => Err(VokraError::NotImplemented(
                 "no ASR engine injected (Whisper base = M0-06)",
             )),
+        }
+    }
+
+    /// The backend the injected ASR engine dispatches on.
+    ///
+    /// Lets a caller confirm that the backend it selected at load time
+    /// actually reached the engine — see
+    /// [`AsrEngine::backend`](crate::engines::AsrEngine::backend) for why an
+    /// output comparison cannot answer this. Without an injected engine it
+    /// reports the session's own selection.
+    pub fn backend(&self) -> BackendKind {
+        match self.session.asr_engine() {
+            Some(engine) => engine.backend(),
+            None => self.session.backend_kind(),
         }
     }
 }
@@ -317,6 +382,9 @@ mod tests {
         impl AsrEngine for DummyAsr {
             fn transcribe(&self, _pcm: &[f32]) -> Result<Transcription> {
                 Ok(Transcription::new("delegated"))
+            }
+            fn backend(&self) -> BackendKind {
+                BackendKind::Cpu
             }
         }
         struct DummyTts;

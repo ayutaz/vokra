@@ -23,10 +23,17 @@
  * freeze therefore never covers ISA-tier names. Future tiers (reserved:
  * AMX* / SME* / RvvZvfh* — see docs/abi-changelog.md "Reserved additions")
  * land as backward-compatible Rust variant additions without touching this
- * header. If a C-level backend/delegate selector is ever exported, it is an
- * M5 decision after the real-hardware NPU bakeoff (docs/handoff/m4-12.md
- * §(e)-3 / §(f)) and would be a NEW symbol, not a widening of an existing
- * one.
+ * header.
+ *
+ * RESERVED — NPU delegates (M5-01 CoreML/ANE, M5-02 QNN/Hexagon): the
+ * compute-backend selector IS exported (vokra_backend_t +
+ * vokra_session_options_t, 2026-08-14) as NEW symbols rather than as a
+ * widening of vokra_session_create_from_file. It deliberately carries the
+ * five compute backends only — the DELEGATE selector stays out until the
+ * real-hardware ANE/Hexagon bakeoff (docs/handoff/m4-12.md §(e)-3 / §(f)),
+ * so vokra_backend_t assigns no value to CoreML or QNN and no slot is held
+ * for them; appending = 5 / = 6 later is a backward-compatible additive
+ * change. NNAPI is never added (FR-BE-07).
  */
 
 #ifndef VOKRA_H
@@ -99,6 +106,31 @@ typedef enum vokra_event_kind_t {
     VOKRA_EVENT_TOKEN = 2,
 } vokra_event_kind_t;
 
+// The backend a session runs its hot ops on.
+//
+// Pass one of these to `vokra_session_options_set_backend`. The delegate
+// backends (Apple ANE via CoreML, Qualcomm Hexagon via QNN) are **not** in
+// this enum yet — they land as a separate symbol after the real-hardware
+// bakeoff (M5-01 / M5-02). NNAPI will never be added (FR-BE-07: Google
+// deprecated it in Android 15); Android GPU support is Vulkan.
+typedef enum vokra_backend_t {
+    // Portable CPU backend (SSE2/AVX2 on x86-64, NEON on ARM64). Always
+    // available — the baseline every build ships (FR-BE-01).
+    VOKRA_BACKEND_CPU = 0,
+    // Apple Metal (macOS / iOS). Requires a `metal`-featured build and a
+    // Metal device.
+    VOKRA_BACKEND_METAL = 1,
+    // NVIDIA CUDA (Windows / Linux). Requires a `cuda`-featured build; the
+    // driver and NVRTC are `dlopen`ed at run time (NVIDIA EULA install
+    // model — nothing is bundled).
+    VOKRA_BACKEND_CUDA = 2,
+    // Vulkan (Linux / Android / Windows). Requires a `vulkan`-featured build
+    // and a loadable `libvulkan`.
+    VOKRA_BACKEND_VULKAN = 3,
+    // Browser WebGPU (`wasm32` targets). Requires a `webgpu`-featured build.
+    VOKRA_BACKEND_WEBGPU = 4,
+} vokra_backend_t;
+
 // Opaque far-end writer handle: the producer half of the far-end queue.
 // Owned by the playback-callback thread. Opaque to C.
 typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t;
@@ -115,6 +147,20 @@ typedef struct vokra_s2s_duplex_t vokra_s2s_duplex_t;
 // `vokra_s2s_interrupt_handle`, released by
 // `vokra_s2s_interrupt_destroy`; firing it is `vokra_s2s_interrupt`.
 typedef struct vokra_s2s_interrupt_t vokra_s2s_interrupt_t;
+
+// Opaque session-construction options.
+//
+// Created by `vokra_session_options_create`, configured with the
+// `vokra_session_options_set_*` setters, consumed (by reference, never taken
+// over) by `vokra_session_create_from_file_with_options` /
+// `vokra_session_create_from_bytes_with_options`, and released with
+// `vokra_session_options_destroy`. Opaque to C: the layout is not part of the
+// ABI, so new knobs never break existing binaries.
+//
+// An options object is an independent, plain-old allocation with no shared
+// state; destroying one never affects another, and one object may configure
+// any number of sessions.
+typedef struct vokra_session_options_t vokra_session_options_t;
 
 // Opaque session handle: one loaded model bound to one backend, with the
 // matching native engine injected (ASR / TTS / VAD — see
@@ -310,6 +356,77 @@ void vokra_string_free(char *s);
 // threads. `vokra_last_error` itself never fails and never allocates
 // (ADR-0003 §3-b).
 const char *vokra_last_error(void);
+
+// Allocates a session-options object preset to the library defaults (CPU
+// backend), or returns `NULL` if the allocation fails.
+//
+// # Returns
+//
+// A handle to release with `vokra_session_options_destroy`, or `NULL`. Unlike
+// the status-returning functions this one has a single failure mode, so the
+// `NULL` check the caller writes anyway is the whole error contract and
+// `vokra_last_error()` is left untouched.
+struct vokra_session_options_t *vokra_session_options_create(void);
+
+// Frees an options object from `vokra_session_options_create`. `NULL` is a
+// no-op; using the handle afterwards is undefined behaviour.
+//
+// Options are copied into the session at creation time, so destroying an
+// options object never affects sessions already built from it, and the object
+// may be destroyed immediately after the create call returns.
+//
+// # Safety
+//
+// `opts` must be `NULL` or a handle from `vokra_session_options_create` that
+// has not already been destroyed.
+void vokra_session_options_destroy(struct vokra_session_options_t *opts);
+
+// Selects the backend a session built from these options will run on.
+//
+// # Parameters
+//
+// - `opts`: options handle from `vokra_session_options_create`.
+// - `backend`: a `vokra_backend_t` value (`VOKRA_BACKEND_CPU` = 0,
+//   `_METAL` = 1, `_CUDA` = 2, `_VULKAN` = 3, `_WEBGPU` = 4). Any other value
+//   is rejected.
+//
+// # Returns
+//
+// `VOKRA_OK`, or `VOKRA_ERROR_INVALID_ARGUMENT` for a NULL handle or an
+// unknown `backend` value. **A rejected call changes nothing** — the object
+// keeps the backend it had and stays usable.
+//
+// This setter deliberately does **not** check whether the selected backend
+// exists on this machine: it records an intent, and probing a GPU would make a
+// plain setter allocate a device. Availability is resolved when the session is
+// created (`VOKRA_ERROR_BACKEND_UNAVAILABLE`), and can be queried up front
+// with `vokra_backend_available`.
+//
+// # Safety
+//
+// `opts` must be a live handle from `vokra_session_options_create`, not used
+// concurrently from another thread.
+enum vokra_status_t vokra_session_options_set_backend(struct vokra_session_options_t *opts,
+                                                      int32_t backend);
+
+// Reports whether `backend` can actually be used by this build on this
+// machine.
+//
+// `true` means the backend is compiled into this binary **and** its device /
+// driver is present, so `vokra_session_create_*_with_options` will not reject
+// it with `VOKRA_ERROR_BACKEND_UNAVAILABLE`. It does not promise that every
+// model runs there: a backend that lacks a kernel some model needs still
+// fails loudly at inference with `VOKRA_ERROR_UNSUPPORTED_OP`, never by
+// falling back to the CPU (FR-EX-08).
+//
+// A query has no failure mode, so this returns a plain `bool`, leaves
+// `vokra_last_error()` untouched, and answers `false` — rather than erroring —
+// for a `backend` value outside `vokra_backend_t`.
+//
+// The probe genuinely opens the backend (a Metal device, the CUDA driver,
+// `libvulkan`) and closes it again, so it is far cheaper than loading a model
+// but is not free; cache the answer if you poll it in a UI loop.
+bool vokra_backend_available(int32_t backend);
 
 // Opens a full-duplex S2S session (Moshi = M4-06) on a session whose
 // model injected a duplex engine.
@@ -532,6 +649,79 @@ enum vokra_status_t vokra_session_create_from_bytes(const uint8_t *data,
                                                     size_t len,
                                                     struct vokra_session_t **out_session);
 
+// Loads a model from a GGUF file with explicit construction options — the
+// backend-selectable sibling of `vokra_session_create_from_file` (design §3.3).
+//
+// Identical in every respect except that the session runs on the backend the
+// options object selects. `vokra_session_create_from_file(path, out)` is
+// exactly this call with `opts = NULL`.
+//
+// # Parameters
+//
+// - `path_utf8`: NUL-terminated UTF-8 path to the `.gguf` model file.
+// - `opts`: options from `vokra_session_options_create`, or `NULL` for the
+//   defaults (CPU backend). Borrowed for the duration of the call only: the
+//   selections are copied into the session, so the options object may be
+//   destroyed — or reused for another session — as soon as this returns.
+// - `out_session`: on `VOKRA_OK`, receives a new session handle to be freed
+//   with `vokra_session_destroy`. Untouched on error.
+//
+// # Returns
+//
+// `VOKRA_OK`, or a non-zero status with the detail available from
+// `vokra_last_error()`:
+//
+// - `VOKRA_ERROR_BACKEND_UNAVAILABLE` — the selected backend is not compiled
+//   into this build, or its device / driver is missing. Query it beforehand
+//   with `vokra_backend_available`.
+// - `VOKRA_ERROR_UNSUPPORTED_OP` — the backend exists, but this model's engine
+//   has no path onto it. A session is **not** returned on the CPU instead
+//   (FR-EX-08: no silent fall back).
+// - the usual load failures (missing file, unparsable GGUF, unknown arch).
+//
+// # Safety
+//
+// `path_utf8` must be a valid NUL-terminated C string; `opts` must be `NULL`
+// or a live options handle; `out_session` must be a valid, writable
+// `vokra_session_t*` location.
+enum vokra_status_t vokra_session_create_from_file_with_options(const char *path_utf8,
+                                                                const struct vokra_session_options_t *opts,
+                                                                struct vokra_session_t **out_session);
+
+// Loads a model from an in-memory GGUF buffer with explicit construction
+// options — the backend-selectable sibling of
+// `vokra_session_create_from_bytes` (design §3.3).
+//
+// Identical in every respect except that the session runs on the backend the
+// options object selects. `vokra_session_create_from_bytes(data, len, out)` is
+// exactly this call with `opts = NULL`. This is the Unity WebGL model path
+// (ADR M4-02 §3) gaining backend selection.
+//
+// # Parameters
+//
+// - `data` / `len`: the GGUF bytes, copied before this call returns; `len`
+//   must be non-zero.
+// - `opts`: options from `vokra_session_options_create`, or `NULL` for the
+//   defaults (CPU backend). Borrowed for the duration of the call only.
+// - `out_session`: on `VOKRA_OK`, receives a new session handle to be freed
+//   with `vokra_session_destroy`. Untouched on error.
+//
+// # Returns
+//
+// As `vokra_session_create_from_file_with_options` (including
+// `VOKRA_ERROR_BACKEND_UNAVAILABLE` / `VOKRA_ERROR_UNSUPPORTED_OP` —
+// never a silent CPU fall back).
+//
+// # Safety
+//
+// `data` must point at `len` valid, initialised bytes for the duration of the
+// call; `opts` must be `NULL` or a live options handle; `out_session` must be
+// a valid, writable `vokra_session_t*` location.
+enum vokra_status_t vokra_session_create_from_bytes_with_options(const uint8_t *data,
+                                                                 size_t len,
+                                                                 const struct vokra_session_options_t *opts,
+                                                                 struct vokra_session_t **out_session);
+
 // Retains the session, producing an independent handle that shares the same
 // loaded model via an atomic ref count (FR-API-03).
 //
@@ -566,6 +756,99 @@ void vokra_session_destroy(struct vokra_session_t *session);
 // Returns the Vokra runtime version as a static NUL-terminated UTF-8 string
 // (the `vokra-capi` crate version). The pointer is static — never free it.
 const char *vokra_version(void);
+
+// Computes the speaker embedding of one mono reference utterance.
+//
+// The session must have been created from a speaker-encoder model (GGUF arch
+// `campplus`); any other model reports `VOKRA_ERROR_NOT_IMPLEMENTED`, the same
+// task-mismatch posture as `vokra_asr_transcribe` on a TTS voice.
+//
+// # Parameters
+//
+// - `session`: a session holding a speaker-encoder model.
+// - `pcm` / `num_samples`: mono `f32` samples in `[-1, 1]`. The clip must
+//   cover at least one analysis frame (25 ms at 16 kHz).
+// - `sample_rate`: sample rate of `pcm` in Hz. Must equal the rate the model's
+//   front-end was trained at (16000 for CAM++); a mismatch is rejected instead
+//   of resampled, because a silent resample would change the embedding without
+//   telling the caller (FR-EX-08).
+// - `out_embedding` / `out_capacity`: caller-owned destination array and its
+//   length **in floats**. May be `NULL` / `0` to query the size only.
+// - `out_written`: receives the embedding dimension — on success the number of
+//   floats written, and on a too-small buffer the number of floats required.
+//
+// # Returns
+//
+// `VOKRA_OK` when the embedding was written, or
+// `VOKRA_ERROR_INVALID_ARGUMENT` when `out_capacity` is too small — in which
+// case `*out_written` still holds the required size, so the two-call idiom is:
+//
+// ```c
+// size_t n = 0;
+// vokra_speaker_embed(s, pcm, len, 16000, NULL, 0, &n);   /* INVALID_ARGUMENT, n = 192 */
+// float *emb = malloc(n * sizeof(float));
+// vokra_speaker_embed(s, pcm, len, 16000, emb, n, &n);    /* VOKRA_OK */
+// ```
+//
+// Note that this differs from `vokra_s2s_text` / `vokra_model_attribution`,
+// which report a short buffer as `VOKRA_OK`. Those return optional text a
+// caller may legitimately skip; a truncated embedding is never useful, so it
+// is an error here. `*out_written` is the one output written on that error
+// path — every other failure leaves all outputs untouched.
+//
+// # Safety
+//
+// `session` must be a live session handle; `pcm` must point at `num_samples`
+// valid floats (or be `NULL` when `num_samples` is 0); `out_embedding` must be
+// `NULL` or point at `out_capacity` writable floats; `out_written` must be a
+// valid, writable `size_t` location.
+enum vokra_status_t vokra_speaker_embed(const struct vokra_session_t *session,
+                                        const float *pcm,
+                                        size_t num_samples,
+                                        int32_t sample_rate,
+                                        float *out_embedding,
+                                        size_t out_capacity,
+                                        size_t *out_written);
+
+// Compares two speaker embeddings (FR-OP-81).
+//
+// Takes no session: it is arithmetic on two vectors, so embeddings can be
+// stored (in a database, a save file) and matched later without a model
+// loaded. The inputs need not be L2-normalized — `vokra_speaker_embed`
+// output goes straight in.
+//
+// # Parameters
+//
+// - `a` / `a_len`, `b` / `b_len`: the two embeddings. They must be the same
+//   non-zero length, and neither may be all zeros (a zero vector has no
+//   direction).
+// - `threshold`: the accept/reject operating point, used **only** when
+//   `out_same_speaker` is non-`NULL`. It must be finite.
+// - `out_similarity`: receives the cosine similarity in `[-1, 1]` (1 = same
+//   direction). Required.
+// - `out_same_speaker`: optional. When non-`NULL`, receives
+//   `similarity >= threshold`. Pass `NULL` to get the similarity only —
+//   Vokra deliberately does not ship a default threshold (ADR M4-20 §D-4);
+//   take the operating point from your model's published EER.
+//
+// # Returns
+//
+// `VOKRA_OK`, or `VOKRA_ERROR_INVALID_ARGUMENT` for a NULL required pointer,
+// mismatched or empty lengths, a zero-norm embedding, or a non-finite
+// `threshold` when a decision was requested.
+//
+// # Safety
+//
+// `a` / `b` must point at `a_len` / `b_len` valid floats; `out_similarity`
+// must be a valid, writable `float` location; `out_same_speaker` must be
+// `NULL` or a valid, writable `bool` location.
+enum vokra_status_t vokra_speaker_verify(const float *a,
+                                         size_t a_len,
+                                         const float *b,
+                                         size_t b_len,
+                                         float threshold,
+                                         float *out_similarity,
+                                         bool *out_same_speaker);
 
 // Opens a VAD stream over a session (FR-API-01 / FR-ST-02).
 //

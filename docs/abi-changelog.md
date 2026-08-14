@@ -228,6 +228,176 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-14 — 1.0.0-rc.1-dev (C ABI: GPU backend selection + speaker embedding — 8 new functions, 2 new typedefs)
+
+The first **real C ABI addition** since the v1.0-rc baseline snapshot: the
+surface goes from **33 fn + 11 typedef to 41 fn + 13 typedef**. Every delta is
+`Added`; nothing is removed, renamed or re-signed, and the two existing
+constructors keep their exact behaviour. Design:
+`docs/superpowers/specs/2026-08-14-c-abi-backend-speaker-design.md` (Approved
+2026-08-14). The **rc-window prerelease ABI policy applies** — the IF-01 freeze
+still fires at M5-13 / v1.0 GA, so the v1.0-rc anchor is deliberately **not**
+rotated here.
+
+**Motivation**: two capabilities existed in Rust but were unreachable from C,
+i.e. unreachable from *every* binding (Unity / Godot / Python / Swift /
+Kotlin), and both had to land before the freeze made them impossible to add
+without a major bump.
+
+1. **Backend selection.** `crates/vokra-capi/src/session.rs` hard-coded
+   `BackendKind::Cpu`, and its own comment recorded that adding a selector
+   argument would be a breaking change — so the selector lands as *new*
+   symbols. Metal and CUDA are already hardware-verified (M2-01 / M2-03) but
+   could not be chosen from C.
+2. **Speaker embedding** (`speaker_encode` / `speaker_verify`, FR-OP-80 /
+   FR-OP-81). `SpeakerEncoder::embed` and `speaker_verify` had no C entry.
+   CLAUDE.md design note 8 keeps voice *cloning* in the separate
+   `vokra-voiceclone-experimental` repo under the ELVIS Act split while
+   speaker *embedding* stays in core; exposing it here is that decision's
+   consequence, and it is what makes zero-shot TTS usable from a binding.
+
+| Crate / area      | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| ----------------- | ------ | ---- | --------- | --------- | --------- | -- |
+| `include/vokra.h` | `vokra_backend_available` | Added | `bool vokra_backend_available(int32_t backend)` | Ask whether a backend is usable before selecting it; a query has no failure mode, so it returns `bool` and leaves `vokra_last_error()` alone (design §3.4) | no | (TBD) |
+| `include/vokra.h` | `vokra_backend_t` | Added | `typedef enum vokra_backend_t { VOKRA_BACKEND_CPU = 0, VOKRA_BACKEND_METAL = 1, VOKRA_BACKEND_CUDA = 2, VOKRA_BACKEND_VULKAN = 3, VOKRA_BACKEND_WEBGPU = 4, } vokra_backend_t` | The five compute backends. CoreML / QNN get **no value** — the delegate selector lands after the real-hardware NPU bakeoff (design D1, `docs/handoff/m4-12.md` §(e)-3); appending `= 5` / `= 6` later stays additive | no | (TBD) |
+| `include/vokra.h` | `vokra_session_create_from_bytes_with_options` | Added | `enum vokra_status_t vokra_session_create_from_bytes_with_options(const uint8_t *data, size_t len, const struct vokra_session_options_t *opts, struct vokra_session_t **out_session)` | Backend-selectable twin of `vokra_session_create_from_bytes`; `opts = NULL` reproduces it exactly (design §3.4) | no | (TBD) |
+| `include/vokra.h` | `vokra_session_create_from_file_with_options` | Added | `enum vokra_status_t vokra_session_create_from_file_with_options(const char *path_utf8, const struct vokra_session_options_t *opts, struct vokra_session_t **out_session)` | Backend-selectable twin of `vokra_session_create_from_file`; `opts = NULL` reproduces it exactly (design §3.4) | no | (TBD) |
+| `include/vokra.h` | `vokra_session_options_create` | Added | `struct vokra_session_options_t *vokra_session_options_create(void)` | Handle-returning constructor: the single failure mode is allocation, so `NULL` is the whole error contract (design §3.4) | no | (TBD) |
+| `include/vokra.h` | `vokra_session_options_destroy` | Added | `void vokra_session_options_destroy(struct vokra_session_options_t *opts)` | Destroy contract, `NULL` is a no-op (ADR-0003 §3-a) | no | (TBD) |
+| `include/vokra.h` | `vokra_session_options_set_backend` | Added | `enum vokra_status_t vokra_session_options_set_backend(struct vokra_session_options_t *opts, int32_t backend)` | Records the backend; an unknown value is `VOKRA_ERROR_INVALID_ARGUMENT` and leaves the object unchanged (design §5) | no | (TBD) |
+| `include/vokra.h` | `vokra_session_options_t` | Added | `typedef struct vokra_session_options_t vokra_session_options_t` | Opaque options object (design D2) — future knobs are one more setter, never an `_ex2` overload and never a struct layout pinned into the frozen surface | no | (TBD) |
+| `include/vokra.h` | `vokra_speaker_embed` | Added | `enum vokra_status_t vokra_speaker_embed(const struct vokra_session_t *session, const float *pcm, size_t num_samples, int32_t sample_rate, float *out_embedding, size_t out_capacity, size_t *out_written)` | `speaker_encode` (FR-OP-80): PCM in, embedding into a caller-owned buffer. Takes the waveform, not a filterbank, because no host binding can compute Kaldi fbank (design §3.4) | no | (TBD) |
+| `include/vokra.h` | `vokra_speaker_verify` | Added | `enum vokra_status_t vokra_speaker_verify(const float *a, size_t a_len, const float *b, size_t b_len, float threshold, float *out_similarity, bool *out_same_speaker)` | `speaker_verify` (FR-OP-81): takes no session, so stored embeddings can be matched later without a model loaded (design §3.4) | no | (TBD) |
+| `vokra-core`      | `SpeakerEngine` | Added | `pub trait SpeakerEngine: Send + Sync { fn embed(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>>; fn backend(&self) -> BackendKind; }` | Injection point behind `vokra_speaker_embed`, same shape as `AsrEngine` / `VadEngine` (design §4) | no | (TBD) |
+| `vokra-core`      | `AsrEngine::backend` | Changed | `fn backend(&self) -> BackendKind` (new **required** method) | Lets a caller verify the backend it selected actually reached the engine. Deliberately **not** defaulted: a defaulted `Cpu` would let a new engine report the CPU while dispatching elsewhere, which is the exact lie this accessor exists to prevent. Source-breaking for out-of-tree `impl AsrEngine` (none exist in-tree beyond the three updated here); pre-1.0 policy applies | no\* | (TBD) |
+| `vokra-core`      | `Session::with_speaker_engine` | Added | `pub fn with_speaker_engine(self, engine: Arc<dyn SpeakerEngine>) -> Self` | Attaches the speaker engine; sibling of `with_asr_engine` etc. | no | (TBD) |
+| `vokra-core`      | `Session::speaker` | Added | `pub fn speaker(&self) -> Speaker<'_>` | Task facade (`session.speaker().embed(...)`); the engine accessors are `pub(crate)`, so this is the public entry `vokra-capi` calls | no | (TBD) |
+| `vokra-core`      | `Speaker` | Added | `pub struct Speaker<'a>` (with `pub fn embed(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>>` and `pub fn backend(&self) -> BackendKind`) | Facade type, re-exported at the crate root beside `Asr` / `Tts` / `S2s` | no | (TBD) |
+| `vokra-core`      | `Asr::backend` | Added | `pub fn backend(&self) -> BackendKind` | Facade sibling of `Speaker::backend`; reports the session's own selection when no engine is injected | no | (TBD) |
+| `vokra-models`    | `impl SpeakerEngine for SpeakerEncoder` | Added | trait impl | Owns the PCM → `kaldi_fbank(camplus)` → `embed` chain so the C entry, the CLI speaker arm and `PiperPlusTts::embed_reference` agree numerically | no | (TBD) |
+| `vokra-models`    | `impl AsrEngine::backend for WhisperAsr` / `VoxtralAsr` | Added | trait method impl (returns the engine's own `backend_kind` / `backend` field) | Follows the new required method; no behaviour change | no | (TBD) |
+
+**Why the selector is `int32_t` and not `enum vokra_backend_t` in the
+prototypes**: C permits any `int` to travel through an `enum` parameter, but
+materialising an out-of-range discriminant as a Rust enum is undefined
+behaviour — and the contract requires exactly that case to return
+`VOKRA_ERROR_INVALID_ARGUMENT`, which is only definable if the value arrives
+as an integer. The named constants are still emitted (cbindgen `[export]
+include`), so C callers write `vokra_session_options_set_backend(opts,
+VOKRA_BACKEND_METAL)` unchanged and the implicit enum → int conversion does the
+rest. This is the one place the shipped header differs from the design's §3.3
+sketch, which wrote `enum vokra_backend_t backend`; §5's "unknown enum value →
+`INVALID_ARGUMENT`" row is the requirement that decided it.
+
+**No silent CPU fall back (FR-EX-08)**: a backend that is not compiled in, or
+whose device is absent, is rejected at session creation with
+`VOKRA_ERROR_BACKEND_UNAVAILABLE` (probed through
+`vokra_models::make_backend`, the same oracle `vokra_backend_available`
+answers with). A backend that *is* present but that the model's engine has no
+path onto is `VOKRA_ERROR_UNSUPPORTED_OP` — the Whisper ASR and CAM++ speaker
+arches bind `.with_backend(...)`, while Silero VAD, piper-plus TTS and Moshi do
+not and therefore refuse a non-CPU selection rather than running on the CPU
+behind the caller's back. That arch split is the same one `vokra-cli`'s
+`cpu_only_engine_label` guard enforces; keep the two in lock-step.
+
+**Backward compatibility**: `vokra_session_create_from_file` and
+`vokra_session_create_from_bytes` are unchanged in signature *and* in
+behaviour — both now call the shared builder with the same
+`BackendKind::Cpu` they always passed, and an integration test asserts the
+options path with an explicit CPU backend, and with `opts = NULL`, reproduces
+the legacy constructors' model output **bit-for-bit** over the committed
+Silero fixture. No existing symbol was touched, so binaries built against the
+previous header keep working.
+
+**Files touched**: `crates/vokra-capi/src/options.rs` (new),
+`crates/vokra-capi/src/speaker.rs` (new), `crates/vokra-capi/src/session.rs`,
+`crates/vokra-capi/src/ffi_guard.rs` (`guard_ptr` / `guard_bool` — the panic
+firewall for the handle-returning and `bool`-returning entries, which the
+status-typed `guard` cannot wrap), `crates/vokra-capi/src/lib.rs`,
+`crates/vokra-capi/Cargo.toml` (`metal` / `cuda` / `webgpu` pass-throughs, all
+first-party), `crates/vokra-capi/cbindgen.toml` (`[export] include` + banner),
+`crates/vokra-core/src/{engines,session,tasks,lib}.rs`,
+`crates/vokra-models/src/speaker/camplus.rs`, `include/vokra.h` (regenerated).
+Review follow-up additionally touched
+`crates/vokra-models/src/{whisper/asr.rs,voxtral/asr.rs}` (the new required
+`AsrEngine::backend`), `crates/vokra-capi/tests/c_abi_backend_options.rs`,
+`.github/workflows/ci-platform.yml` and
+`.github/workflows/nightly-full-parity.yml`.
+
+**Zero-dep** (NFR-DS-02): unchanged — every new dependency edge is
+`vokra-*`-internal (`vokra-capi` already depended on `vokra-models` and
+`vokra-ops`), and `scripts/check-zero-deps.sh` passes. The new `metal` / `cuda`
+/ `webgpu` features only forward to the existing `vokra-models` features and
+are off by default, so the CPU-only audit-trail build and the CPU + Vulkan-only
+build target keep excluding those backends from the dependency graph.
+
+**Review follow-up (same day)**: an adversarial pass over this diff ran
+mutations against the new tests and found three places where deleting
+production code left every test green. All three are closed here.
+
+1. **Nothing verified that a selected backend reached the engine.** Removing
+   `.with_backend(backend)` from both backend-honoring arms of `inject_engine`
+   passed the whole suite, including a Metal build with a real CAM++ GGUF.
+   Backends are bit-identical by design, so no output comparison can catch
+   this — hence the new required `AsrEngine::backend` / `SpeakerEngine::backend`
+   accessors and `build_session_threads_the_selected_backend_into_the_engine`,
+   which was re-run under the same mutation and now fails
+   (`left: Cpu, right: Metal`).
+2. **The GPU-feature build of `vokra-capi` had no CI job**, making the three
+   `reject_cpu_only_backend` guards unreachable in every configuration. Added
+   to `ci-platform.yml`'s `gpu-backends` job (metal / cuda arms only —
+   `vokra-capi` has no coreml / qnn feature).
+3. **The gated real-GGUF C ABI tests ran nowhere.** The `campplus` cell in
+   `nightly-full-parity.yml` only exercised `vokra-models`, so "the C ABI
+   returns the right embedding" was unverified. Added a `campplus-capi` leg
+   over the same GGUF.
+
+Two smaller fixes: `t3` accepted `VOKRA_OK` from an available GPU backend over
+a CPU-only arch — the very silent fall back it exists to forbid — and is now
+pinned to `UNSUPPORTED_OP` with a both-branches-were-taken assertion; and the
+`copy_nonoverlapping` in `vokra_speaker_embed` no longer rests on an
+unverified `embedding.len() > 0` premise (its `out_embedding` NULL check only
+runs when `out_capacity > 0`).
+
+`no*` in the table above = additive at the C ABI, source-affecting at the Rust
+API edge; the pre-1.0 prerelease policy (rename / remove allowed with a dated
+entry) covers it.
+
+**Closing the GPU-feature × real-model gap**: the mutation above is only caught
+where a GPU feature *and* a real model are both present, and no job had both.
+`nightly-full-parity.yml` cannot supply one — it resolves models from a
+runner-local path held in a repository variable, which is unset, and its
+`ubuntu-latest` runners have no such file, so every real-GGUF leg there
+(including the `campplus-capi` one added above) currently takes the honest-skip
+path. `gpu-backends` had the features but no model at all.
+
+So `gpu-backends` now fetches the models itself: the published, already
+converted GGUFs from **huggingface.co/vokra** (public, no token) —
+`campplus-speaker-encoder/campplus.gguf` (27.7 MB) and
+`whisper-base/whisper-base.gguf` (290.9 MB) — cached across runs and pinned by
+sha256 (the HF LFS oid), so an upstream change fails the job instead of quietly
+testing something else. Both files are **byte-identical to the ones the local
+mutation check ran against** (`c760971d…` / `7e774425…` verified on both
+sides), so the hand verification and the CI leg exercise the same weights. The
+test step also gained `--nocapture` so a skip states its reason in the log
+rather than passing silently.
+
+Two limits remain, both honest rather than hidden. Whether a hosted macOS
+runner exposes a usable Metal device is **not yet established** — no
+device-requiring test has run in CI, and the existing `camplus_metal_matches_cpu`
+leg has always short-circuited on the missing GGUF before reaching its device
+probe — so the first run of this job is what settles it; if the device is
+absent the wiring test skips and says so. And the `cuda` arm is `ubuntu-latest`
+with no GPU, so its GPU leg skips by construction; that arm's value is the
+feature build and the CPU-only-arch refusal path.
+
+**M5-13 relevance**: these ten C symbols are part of the surface IF-01 will
+freeze at v1.0 GA. They were added *before* the freeze precisely so they need
+not break it later. The v1.0-rc anchor
+(`docs/abi/vokra.h.v1.0-rc-baseline.symbols`) is intentionally left at 33 fn +
+11 typedef — rotating it is an owner action at the freeze, and this entry is
+what lets the gate accept the delta in the meantime.
+
 ### 2026-08-10 — 1.0.0-rc.1-dev (WP-23: `TtsEngine` trait extension + `SynthesisRequest::style_vec` / `speaker_id` — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the WP-23 `TtsEngine` extension

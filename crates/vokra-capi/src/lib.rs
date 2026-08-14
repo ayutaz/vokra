@@ -19,6 +19,13 @@
 //! - **Session** (`session`): `vokra_session_create_from_file` (arch-detected
 //!   engine injection), `vokra_session_retain` (atomic ref count, FR-API-03),
 //!   `vokra_session_destroy`, `vokra_version`.
+//! - **Options** (`options`): `vokra_backend_t` + the opaque
+//!   `vokra_session_options_t` (`_create` / `_destroy` / `_set_backend`), the
+//!   `vokra_session_create_*_with_options` constructors and
+//!   `vokra_backend_available` — GPU backend selection from C, with no silent
+//!   CPU fall back (FR-EX-08).
+//! - **Speaker** (`speaker`): `vokra_speaker_embed` (PCM → embedding, FR-OP-80)
+//!   and `vokra_speaker_verify` (cosine similarity, FR-OP-81).
 //! - **ASR** (`asr`): `vokra_asr_transcribe` + `vokra_string_free`.
 //! - **TTS** (`tts`): `vokra_tts_synthesize` (piper-plus native, no
 //!   onnxruntime) + `vokra_audio_free`.
@@ -57,7 +64,12 @@ mod asr;
 mod error;
 mod ffi_guard;
 mod handle;
+// 2026-08-14: vokra_backend_t + the opaque vokra_session_options_t that
+// carries it (GPU backend selection from C).
+mod options;
 mod s2s;
 mod session;
+// 2026-08-14: vokra_speaker_embed / vokra_speaker_verify (FR-OP-80 / FR-OP-81).
+mod speaker;
 mod stream;
 mod tts;
