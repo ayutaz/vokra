@@ -1084,4 +1084,44 @@ pub mod mt3;
 // (arXiv:2402.01049 "Reshape Dimensions Network for Speaker
 // Recognition").
 pub mod redimnet;
+// Wave 6 2026-08-14 audit follow-up (LIB.RS RULE — append at end
+// with Wave 6 comment marker): GTCRN converter (Xiaobin-Rong/gtcrn,
+// MIT — Rong et al. arXiv:2211.02063 "GTCRN: A Speech Enhancement
+// Model Requiring Ultralow Computational Resources"). ~23K
+// parameter STFT-domain enhancement model designed for embedded /
+// streaming applications: grouped 2D Conv encoder + PReLU +
+// SB-TF-LSTM (sub-band time-frequency LSTM) bottleneck + ERB
+// (equivalent rectangular bandwidth) frequency-band grouping +
+// grouped 2D Conv decoder. BF16 pass-through skeleton + full
+// 5-axis `vokra.gtcrn.*` topology chunk group
+// (sample_rate/n_fft/hop/n_bands/gru_hidden); runtime binder in
+// `crates/vokra-models/src/gtcrn/mod.rs` ships as loud-partial
+// (denoise = UnsupportedOp) pending grouped Conv2D + PReLU +
+// SB-TF-LSTM + ERB grouping primitives. Distinct arch tag `gtcrn`
+// from every sibling denoise / separator family (`denoise` (DFN3),
+// `rnnoise`, `nsnet2`, `dnsmos`, `metricgan_plus`, `mp_senet_dns`,
+// `sepformer`, `conv_tasnet`, `demucs`) — FR-EX-08 forbids silent
+// shape misroute across enhancement families. Denoise alternative
+// sibling to DFN3 / NSNet2 / RNNoise per the Wave 6 audit
+// follow-up.
+pub mod gtcrn;
+// ---------------------------------------------------------------------------
+// Wave 6 2026-08-14 audit follow-up (LIB.RS RULE — append at end with
+// Wave 6 comment marker): DTLN-AEC dual-signal LSTM neural AEC
+// (`breizhn/DTLN-aec`, MIT — Westhausen & Meyer INTERSPEECH 2021
+// arXiv:2010.15754). Category `aec`. Distinct arch tag `dtln_aec` from
+// sibling `nkf_aec` (per-bin neural Kalman filter): dual-signal LSTM
+// vs neural-Kalman-filter is a distinct topology axis, silently
+// sharing would mis-route runtime dispatch and try to interpret DTLN's
+// LSTM tensors as NKF-AEC's ComplexGRU tensors. Upstream ships
+// `.tflite` only (128 / 256 / 512-unit variants) — the sidecar
+// `tools/parity/dtln_aec_prepare_checkpoint.py` bridges to safetensors
+// offline (FR-LD-05: TFLite never enters runtime, NFR-DS-02 zero-dep).
+// BF16 pass-through skeleton mirror of nkf_aec / speaker_3d /
+// ecapa_tdnn; runtime binder in `crates/vokra-models/src/aec/dtln_aec/
+// mod.rs` ships as loud-partial (`process()` = UnsupportedOp naming
+// the generic LSTM primitive gap in vokra_ops) pending the primitive
+// landing. Real-weight parity + runtime forward deferred to owner
+// sign-off (`docs/license-audit.md` §3.1).
+pub mod dtln_aec;
 // ---------------------------------------------------------------------------

@@ -2933,6 +2933,42 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  license={license} bundle=[{bundle}] sample_rate={sr}"
             );
         }
+        // Wave 6 2026-08-14 audit follow-up: DTLN-AEC + GTCRN. Both
+        // ship with `vokra.provenance.upstream_url` (GitHub, not
+        // HuggingFace) same as sibling `NkfAec` / `Rnnoise` / `Nsnet2`
+        // fleet — dedicated arms keep the verify output honest instead
+        // of falling into a wildcard that would print `<none>` for the
+        // upstream URL.
+        ModelKind::DtlnAec | ModelKind::Gtcrn => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
     }
     Ok(())
 }

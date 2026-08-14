@@ -1048,6 +1048,37 @@ pub enum ModelKind {
     /// `docs/license-audit.md §3.1`. Provenance = **MIT**
     /// (Permissive — `Copyright (c) 2022 Fei Jiang`).
     NkfAec,
+    /// **DTLN-AEC** dual-signal LSTM neural AEC
+    /// (post-audit-cc-gap-2026-08-14 Wave 6 loud-partial land).
+    /// Category = `aec`. Distinct arch tag from [`Self::NkfAec`]
+    /// because DTLN's dual-signal LSTM topology (STFT-domain LSTM
+    /// mask + time-domain LSTM residual) has no shared shape with
+    /// NKF-AEC's per-bin neural Kalman filter — silently sharing
+    /// would mis-route runtime dispatch (an NKF-AEC loader would try
+    /// to interpret DTLN's LSTM tensors as ComplexGRU tensors, a
+    /// wrong-topology bug not a wrong-shape bug). Upstream
+    /// (`github.com/breizhn/DTLN-aec`, MIT, `Copyright (c) 2021 Nils
+    /// L. Westhausen` — Westhausen & Meyer INTERSPEECH 2021,
+    /// arXiv:2010.15754) ships THREE fixed-width variants
+    /// (`dtln_aec_128.tflite` / `dtln_aec_256.tflite` /
+    /// `dtln_aec_512.tflite`) as TensorFlow-Lite files ONLY (no `.h5`
+    /// / `.onnx`); callers pre-flatten the TFLite to safetensors
+    /// offline via `tools/parity/dtln_aec_prepare_checkpoint.py` (the
+    /// DFN3 / NKF-AEC / Kokoro pickle-bridge pattern — TFLite is a
+    /// Python-side tool that never enters the runtime, FR-LD-05,
+    /// NFR-DS-02 zero-dep). BF16 pass-through skeleton — every F32 /
+    /// F16 / BF16 tensor passes through verbatim under its upstream
+    /// tensor key; the variant is detected from the LSTM kernel
+    /// shape (second dim / 4) and stamped as
+    /// `vokra.dtln_aec.lstm_units` so the runtime loader recovers
+    /// hparams from metadata (never from tensor-shape probing at
+    /// load time). Runtime binder (`crates/vokra-models/src/aec/
+    /// dtln_aec/`) ships as loud-partial (`DtlnAec::process()`
+    /// returns `VokraError::UnsupportedOp` naming the generic LSTM
+    /// primitive gap in `vokra_ops` + the four wiring pieces still
+    /// owed) pending the primitive landing. Provenance = **MIT**
+    /// (Permissive — `Copyright (c) 2021 Nils L. Westhausen`).
+    DtlnAec,
     /// **Xiph RNNoise v0.2** weight blob (coverage-audit 2026-08-03
     /// Wave A ticket). Category = `denoise`. Real-time noise
     /// reduction — a compact GRU stack (`input_dense` 42→24 →
@@ -2954,6 +2985,64 @@ pub enum ModelKind {
     /// parity + a native `ConvTasNet::from_gguf` forward path are
     /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
     ConvTasnetLibri1mix,
+    /// **GTCRN** (`Xiaobin-Rong/gtcrn`, **MIT**) safetensors → GGUF
+    /// converter (Wave 6 2026-08-14 audit follow-up, denoise
+    /// alternative sibling to DFN3 / NSNet2 / RNNoise). Rong et al.
+    /// arXiv:2211.02063 "GTCRN: A Speech Enhancement Model Requiring
+    /// Ultralow Computational Resources" — a ~23K parameter
+    /// STFT-domain enhancement model designed for embedded / streaming
+    /// applications: grouped 2D Conv encoder + PReLU + SB-TF-LSTM
+    /// (sub-band time-frequency LSTM) bottleneck + ERB (equivalent
+    /// rectangular bandwidth) frequency-band grouping + grouped 2D
+    /// Conv decoder.
+    ///
+    /// **Distinct arch tag `gtcrn`** — sibling enhancement / separator
+    /// families (`denoise` (DFN3 ERB analysis/synthesis + CRN),
+    /// `rnnoise` (Xiph GRU + BFCC), `nsnet2` (Microsoft DNS baseline,
+    /// 2-layer GRU + 3-Linear mask over 257-bin STFT), `dnsmos`
+    /// (P.808/P.835 metric only), `metricgan_plus`, `mp_senet_dns`,
+    /// `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
+    /// `mossformer2_ss_16k`, `facebook_denoiser`) all have distinct
+    /// topologies from GTCRN's grouped Conv2D + SB-TF-LSTM + ERB
+    /// grouping stack. FR-EX-08 forbids silent shape misroute across
+    /// enhancement / separator families. In particular, GTCRN's ERB
+    /// grouping (efficiency-preserving frequency-axis pooler) is
+    /// **NOT compatible** with DeepFilterNet3's ERB analysis /
+    /// synthesis pair — the two ERB usages cannot be silently aliased.
+    /// Category `enhancement` (single-mask denoise head — mirrors the
+    /// sibling DFN3 / NSNet2 / RNNoise enhancement family posture).
+    ///
+    /// **License**: MIT per the upstream GitHub repo LICENSE
+    /// (`github.com/Xiaobin-Rong/gtcrn/blob/main/LICENSE`, per task
+    /// scout input 2026-08-14 — owner must primary-source confirm at
+    /// sign-off time). MIT = `LicenseClass::Permissive` T1 tier
+    /// (redistributable OK, no runtime-side attribution obligation).
+    /// GitHub-only upstream (no HF mirror as of 2026-08-14) — mirror
+    /// of NSNet2 / RNNoise / facebook_denoiser / NKF-AEC provenance
+    /// posture (`vokra.provenance.upstream_url` rather than
+    /// `upstream_hf`).
+    ///
+    /// **Upstream format**: PyTorch state dict (~90 KB F32, the
+    /// smallest converter footprint in the catalogue since GTCRN is
+    /// ~23K parameters). Owners run the standard
+    /// `nemo_pt_to_safetensors.py` prep step (uv-managed Python 3.12
+    /// sidecar) before pointing this converter at the resulting
+    /// `.safetensors` — pickle deserialization inside the Rust
+    /// runtime would violate the FR-LD-05 "no arbitrary code
+    /// execution at load" rule.
+    ///
+    /// Scale ~0.09 MB = local convert safe on M1 iMac (well below the
+    /// vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
+    /// skeleton mirror of `sepformer` / `conv_tasnet_libri1mix` /
+    /// `demucs_htdemucs`. Runtime binder `crates/vokra-models/src/
+    /// gtcrn/mod.rs` real `from_gguf` (strict 5-axis chunk group +
+    /// arch check + tensor non-emptiness gate + license class surface)
+    /// + `denoise()` loud-partial pending grouped Conv2D + PReLU +
+    /// SB-TF-LSTM + ERB grouping primitives per Wave 5 sepformer /
+    /// conv_tasnet / demucs loud-partial precedent. §3.1 sign-off
+    /// BLANK (fail-closed) — publish blocked until owner signs.
+    Gtcrn,
     /// **Seamless-M4T-v2-Large** (`facebook/seamless-m4t-v2-large`,
     /// **cc-by-nc-4.0**) safetensors (Wave residual, 2026-08-02). Meta
     /// SeamlessM4T v2 flagship 2.3B parameter unified any-to-any speech-
@@ -3664,6 +3753,14 @@ impl ModelKind {
             // spelling, and the canonical GitHub `<user>/<repo>`
             // release id (no HF mirror ships today).
             "nkf-aec" | "nkf_aec" | "fjiang9/nkf-aec" | "fjiang9/NKF-AEC" => Some(Self::NkfAec),
+            // Wave 6 2026-08-14 audit follow-up: DTLN-AEC. Accept the
+            // arch tag (underscore == the `vokra.model.arch` string the
+            // converter stamps), the CLI-friendly hyphenated spelling,
+            // and the canonical GitHub `<user>/<repo>` release id
+            // (no HF mirror ships today).
+            "dtln-aec" | "dtln_aec" | "breizhn/dtln-aec" | "breizhn/DTLN-aec" => {
+                Some(Self::DtlnAec)
+            }
             // Coverage-audit 2026-08-03 Wave A: Xiph RNNoise v0.2.
             // Accept the canonical short arch tag, the versioned publish
             // slug (matches `huggingface.co/vokra/rnnoise-v0.2`), and the
@@ -4963,6 +5060,20 @@ impl ModelKind {
             | "conv_tasnet_libri1mix_enhsingle_16k"
             | "joriscos/convtasnet_libri1mix_enhsingle_16k"
             | "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k" => Some(Self::ConvTasnetLibri1mix),
+            // GTCRN (Xiaobin-Rong/gtcrn, MIT — Wave 6 2026-08-14 audit
+            // follow-up, denoise alternative sibling to DFN3 / NSNet2 /
+            // RNNoise). Distinct arch tag `gtcrn` from every sibling
+            // enhancement / separator family — FR-EX-08 forbids silent
+            // shape misroute. Aliases cover the kebab-case + explicit
+            // 16k-suffix variants + the full upstream GitHub slug
+            // (case-insensitive lookup handled by whatever normalisation
+            // the caller applies before dispatch).
+            "gtcrn"
+            | "GTCRN"
+            | "gtcrn-16k"
+            | "gtcrn_16k"
+            | "Xiaobin-Rong/gtcrn"
+            | "xiaobin-rong/gtcrn" => Some(Self::Gtcrn),
             // Seamless-M4T-v2-Large (Wave residual, 2026-08-02,
             // `facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
             // any-to-any speech-and-text translation, unity-2 arch (4
@@ -5094,6 +5205,13 @@ impl ModelKind {
             Self::Bicodec => "bicodec",
             Self::Neucodec => "neucodec",
             Self::NkfAec => "nkf-aec",
+            // Wave 6 2026-08-14: DTLN-AEC — canonical CLI slug is the
+            // hyphenated form (mirror of nkf-aec posture, matches the
+            // future `huggingface.co/vokra/dtln-aec-{units128,units256,
+            // units512}` publish repos). The arch tag stamped in
+            // `vokra.model.arch` (`"dtln_aec"` — see
+            // `models::dtln_aec::ARCH`) is the underscore form.
+            Self::DtlnAec => "dtln-aec",
             // Coverage-audit 2026-08-03 Wave A: canonical CLI slug is
             // the versioned form (matches the `huggingface.co/vokra/
             // rnnoise-v0.2` publish repo). The arch tag stamped in
@@ -5291,6 +5409,12 @@ impl ModelKind {
             Self::UltravoxV05Llama321b => "ultravox-v0-5-llama-3-2-1b",
             Self::XttsV2 => "xtts-v2",
             Self::ConvTasnetLibri1mix => "conv-tasnet-libri1mix",
+            // GTCRN (Xiaobin-Rong/gtcrn, MIT — Wave 6 2026-08-14 audit
+            // follow-up, denoise alternative sibling to DFN3 / NSNet2 /
+            // RNNoise). Distinct arch tag `gtcrn` — single 16 kHz
+            // release, canonical slug `gtcrn` (no `-16k` suffix needed
+            // since there is only one variant).
+            Self::Gtcrn => "gtcrn",
             Self::SeamlessM4tV2Large => "seamless-m4t-v2-large",
             // Meta music-gen post-audit CC-gap wave (2026-08-13).
             Self::MagnetSmall10secs => "magnet-small-10secs",
@@ -6854,6 +6978,37 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::NkfAec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::DtlnAec => {
+            // Wave 6 2026-08-14 audit follow-up: pass every F32 / F16 /
+            // BF16 tensor through verbatim (the flattened safetensors
+            // from `tools/parity/dtln_aec_prepare_checkpoint.py` — the
+            // upstream ships .tflite only) and stamp `vokra.model.*`
+            // (arch = "dtln_aec", name = "dtln-aec", category = "aec") +
+            // `vokra.provenance.upstream_url = github.com/breizhn/DTLN-aec`
+            // (GitHub-only release, no HF mirror) +
+            // `vokra.dtln_aec.{lstm_units,n_fft,hop,block_len,sample_rate}`
+            // (variant width detected from LSTM kernel shape,
+            // fixed dims stamped unconditionally) + the standard
+            // `vokra.provenance.{weight_license,license,model_id,source}`
+            // chunk via `stamp_provenance`. Provenance = **MIT**
+            // (Permissive — `Copyright (c) 2021 Nils L. Westhausen`).
+            let report = models::dtln_aec::convert_dtln_aec_file(input, output, license)?;
+            let notes = vec![format!(
+                "dtln-aec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, variant = {}-unit LSTM",
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+                report.variant.lstm_units(),
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::DtlnAec,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -9281,6 +9436,50 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === Gtcrn (Wave 6 2026-08-14 audit follow-up, denoise alternative sibling) ===
+        ModelKind::Gtcrn => {
+            // GTCRN (Xiaobin-Rong/gtcrn, MIT). Rong et al.
+            // arXiv:2211.02063 "GTCRN: A Speech Enhancement Model
+            // Requiring Ultralow Computational Resources" — ~23K
+            // parameter STFT-domain enhancement model for embedded /
+            // streaming applications: grouped 2D Conv encoder + PReLU
+            // + SB-TF-LSTM (sub-band time-frequency LSTM) bottleneck +
+            // ERB (equivalent rectangular bandwidth) frequency-band
+            // grouping + grouped 2D Conv decoder.
+            //
+            // Distinct arch tag `gtcrn` from every sibling denoise /
+            // separator family (`denoise` (DFN3), `rnnoise`, `nsnet2`,
+            // `dnsmos`, `metricgan_plus`, `mp_senet_dns`, `sepformer`,
+            // `conv_tasnet`, `demucs`, `frcrn`, `mossformer2_ss_16k`,
+            // `facebook_denoiser`) — FR-EX-08 forbids silent shape
+            // misroute across enhancement / separator families.
+            //
+            // First entry on the MIT (Permissive T1 tier) denoise
+            // alternative arm from the Wave 6 audit follow-up.
+            // Runtime binder (`crates/vokra-models/src/gtcrn/mod.rs`)
+            // ships as loud-partial per Wave 5 sepformer /
+            // conv_tasnet / demucs precedent — `from_gguf` real,
+            // `denoise()` returns `UnsupportedOp` pending grouped
+            // Conv2D + PReLU + SB-TF-LSTM + ERB grouping primitives.
+            // Scale ~90 KB = local convert safe on M1 iMac.
+            let report = models::gtcrn::convert_gtcrn_file(input, output, license)?;
+            let notes = vec![format!(
+                "gtcrn: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive T1 tier — \
+                 redistributable OK, no runtime-side attribution obligation; \
+                 runtime binder loud-partial pending grouped Conv2D + PReLU + \
+                 SB-TF-LSTM + ERB grouping primitives; §3.1 sign-off BLANK \
+                 fail-closed until owner signs)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === SeamlessM4tV2Large (2026-08-02 Wave residual, unity-2 4-subgraph any-to-any) ===
         ModelKind::SeamlessM4tV2Large => {
             // Meta SeamlessM4T v2 (facebook/seamless-m4t-v2-large,
@@ -11022,6 +11221,11 @@ pub use models::titanet::{TitaNetReport, convert_titanet_file};
 // than `upstream_hf`. File-based entry mirroring the speaker_3d /
 // ecapa_tdnn re-export pattern.
 pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
+// Wave 6 2026-08-14 audit follow-up: breizhn/DTLN-aec (MIT). GitHub-only
+// release (no HF mirror) so provenance stamps `upstream_url` rather
+// than `upstream_hf`. File-based entry mirroring the nkf_aec /
+// speaker_3d / ecapa_tdnn re-export pattern.
+pub use models::dtln_aec::{DtlnAecReport, DtlnVariant, convert_dtln_aec_file};
 // coverage-audit-2026-08-03 Wave A: Xiph RNNoise v0.2 (BSD-3-Clause).
 // GitHub-only release (no HF mirror) so provenance stamps
 // `upstream_url` rather than `upstream_hf`. File-based entry mirroring

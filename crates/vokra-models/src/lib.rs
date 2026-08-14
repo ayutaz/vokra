@@ -606,6 +606,104 @@ pub mod conv_tasnet;
 // landed just above — §3.1 sign-off rows 364-370 all ☑ Commercial
 // (2026-07-30 / 2026-08-01 yousan) per HF cardData apache-2.0.
 pub mod sepformer;
+// Wave 6 2026-08-14 audit follow-up (denoise runtime binder — LIB.RS
+// RULE append at end with Wave 6 comment marker): GTCRN
+// (Xiaobin-Rong/gtcrn, MIT, ~23K params, arXiv:2211.02063) —
+// Groupwise Temporal Convolutional Recurrent Network speech
+// enhancement runtime binder for the `gtcrn` converter arch. Real
+// from_gguf (arch check + 5-axis vokra.gtcrn.* chunk-group +
+// non-empty tensor gate + weight-license class); `denoise()`
+// loud-partial pending grouped Conv2D + PReLU + SB-TF-LSTM +
+// ERB grouping primitives (Wave 3 blocker). §3.1 sign-off BLANK
+// (row added Wave 6, fail-closed). Denoise alternative sibling to
+// `denoise` (DFN3, ERB analysis/synthesis + CRN) / `nsnet2`
+// (Microsoft DNS baseline, 2-layer GRU + 3-Linear mask) / `rnnoise`
+// (Xiph GRU + BFCC) — arch tag `gtcrn` distinct from every sibling
+// per FR-EX-08. First entry on the ultra-lightweight streaming
+// enhancement arm from the Wave 6 audit follow-up.
+pub mod gtcrn;
+// Wave 6 2026-08-14 audit follow-up (music-generation runtime binder —
+// LIB.RS RULE append at end with Wave 6 comment marker): CVSSP
+// AudioLDM 2 family (`cvssp/audioldm2` base + `cvssp/audioldm2-large`
+// sibling, CC-BY-NC-SA-4.0 T4 tier NonCommercialShareAlike doubly
+// restrictive = NC gate + SA cascade both fail-closed at M2-13,
+// `docs/license-audit.md` §3.1 row 400 = ☑ Research-only 2026-08-01
+// yousan). Real `from_gguf` (arch check + `AudioLdm2Variant` Base/
+// Large discrimination via `vokra.model.name` + `AudioLdm2Config`
+// primary-source constant fallback for the yet-to-be-stamped
+// `vokra.audioldm2.*` chunk group + non-empty tensor gate + weight-
+// license class surfacing); `generate()` loud-partial pending T5-base
+// text encoder + CLAP text encoder + latent-diffusion U-Net + VAE
+// decoder + HiFi-GAN vocoder composition — `vokra_ops::flow_sampler`
+// (M3-05) already covers the DDIM / DPM++ ODE integrator so the
+// follow-up wave is composition + three greenfield forward bodies
+// (T5-base + CLAP + audio-VAE-decoder), not five greenfield kernels.
+// Primary sources: `huggingface.co/cvssp/audioldm2` +
+// `github.com/haoheliu/AudioLDM2` + Liu et al. 2024 ICML
+// `arXiv:2308.05734`. Distinct arch tag from every sibling music-
+// generation family (`musicgen` AR-over-EnCodec / `magnet_*`
+// non-autoregressive masked-LM / `melodyflow_t24_30secs` DiT
+// flow-matching / `audiogen_medium` AR / `jasco_400m_chords_drums`
+// AR / `stable_audio_open_small` different-conditioner LDM /
+// `ace_step` chunked-AR / `bs_roformer` source-separation) — silently
+// sharing arch would misroute the runtime dispatch to a wrong-shape
+// forward (FR-EX-08). Mirror of the RMVPE / pyannote / MusicGen /
+// Conv-TasNet loud-partial precedent (CLAUDE.md 教訓 (a) — 'loud-
+// partial は fake-complete より honest').
+pub mod audioldm2;
+// Wave 6 2026-08-14 audit follow-up (music-generation family — LIB.RS
+// RULE append at end with Wave 6 comment marker): audiogen = Meta
+// AudioCraft AudioGen-Medium runtime binder (`facebook/audiogen-medium`,
+// CC-BY-NC-4.0 T4). 1.5B autoregressive transformer LM over EnCodec RVQ
+// tokens (4 codebooks, 50 Hz, 32 kHz) conditioned on frozen T5-base text
+// encoder with delay pattern across codebooks — MusicGen sibling by
+// topology (Kreuk et al. 2023 arXiv:2209.15352), distinct by training
+// corpus (environmental sounds / SFX vs music) and by arch tag
+// `audiogen` (FR-EX-08 dispatch safety — audit follow-up 2026-08-14
+// retags the converter from the Wave 5 shared `musicgen` arch tag so a
+// future modality-specific head (SFX-only conditioning stack, stereo
+// output head, per-class embedding table) does not silent-mis-bind
+// against MusicGen's music-only runtime path). Real config / from_gguf
+// / weight-license surfacing; generate loud-partial pending T5 text-
+// encoder forward + AR LM with 4-codebook delay-pattern +
+// text-conditioned cross-attention (EnCodec RVQ decode primitive exists
+// via vokra_ops::encodec_rvq_decode — shared composition anchor with
+// MusicGen; a single follow-up wave unblocks both binders because
+// pieces (i) T5-base and (ii) AR-LM-with-delay-pattern are shared by
+// construction). §3.1 row 402 = ☑ Research-only 2026-08-01 yousan
+// (X-Codec-2 T4 precedent inheritance). Loud-partial pattern per Wave 5
+// musicgen precedent.
+pub mod audiogen;
+// Wave 6 2026-08-14 audit follow-up (music-generation runtime binder —
+// LIB.RS RULE append at end with Wave 6 comment marker): Meta AudioCraft
+// JASCO 400M Chords+Drums (`facebook/jasco-chords-drums-400M`,
+// CC-BY-NC-4.0 T4 tier). Flow-matching music generation with joint
+// text + chord + drum symbolic conditioning (Tal et al. 2024
+// arXiv:2406.10970 "Joint Audio and Symbolic Conditioning for
+// Temporally Controlled Text-to-Music Generation"). Real arch check +
+// `JascoVariant::Chords400mDrums` bound (1B Chords+Drums / 400M Melody
+// / 1B Melody sibling names emit "converter not yet in-tree" errors
+// naming the paper as the primary source) + per-variant primary-source
+// constant fallback config + tensor-manifest non-emptiness gate +
+// weight-license class surfacing + argument-validation ordering
+// (empty-symbolic-conditioning gate fires BEFORE loud-partial per
+// FR-EX-08 — JASCO's key contribution is joint symbolic conditioning,
+// silent fall-through to text-only would misrepresent the model);
+// `generate()` loud-partial pending (a) joint symbolic conditioning
+// encoder stack (frozen T5-base text encoder + JASCO chord encoder +
+// drum encoder), (b) AudioCraft flow-matching transformer stack with
+// joint conditioning cross-attention, and (c) the flow-matching sampler
+// + EnCodec RVQ decode composition — TWO primitives LANDED via M3-05
+// `vokra_ops::flow_sampler::flow_sample` + M4-04
+// `vokra_ops::encodec_rvq_decode`. Primary sources:
+// `huggingface.co/facebook/jasco-chords-drums-400M` +
+// `github.com/facebookresearch/audiocraft` + `arxiv.org/abs/2406.10970`.
+// §3.1 row 458 = ☑ Research-only 2026-08-04 yousan (X-Codec-2 T4
+// precedent + MusicGen family T4 precedent, `--allow-noncommercial`
+// publish path). Loud-partial pattern per Wave 2-5 precedent
+// (vocos / bigvgan / snac / mt3 / musicgen / magnet / melodyflow /
+// sortformer / audioldm2 / audiogen).
+pub mod jasco;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
