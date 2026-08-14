@@ -713,7 +713,8 @@ pub(crate) mod test_support {
     use crate::whisper::config::WhisperConfig;
     use crate::whisper::encoder::EncoderOutput;
     use crate::whisper::weights::{
-        Attention, DecoderLayer, DecoderWeights, EncoderWeights, LayerNorm, Linear, WhisperWeights,
+        Attention, DecoderLayer, DecoderWeights, EncoderLayer, EncoderWeights, LayerNorm, Linear,
+        WhisperWeights,
     };
 
     /// A tiny valid config with `n_layer` decoder blocks (`d_model = 2`,
@@ -826,6 +827,57 @@ pub(crate) mod test_support {
         Arc::new(WhisperModel::new_for_test(config, weights))
     }
 
+    /// A tiny **whisper-shape** loaded [`WhisperModel`] whose encoder can run
+    /// the full PCM → log-mel → conv1 → conv2 → attention-stack → LayerNorm
+    /// path, with configurable encoder / decoder layer counts.
+    ///
+    /// Unlike [`tiny_model`] / [`tiny_model_ctx`] — which set `n_audio_layer = 0`
+    /// and `n_audio_ctx = 4` because their decoder-focused tests inject a
+    /// pre-built [`EncoderOutput`] via [`tiny_encoder`] instead of running the
+    /// encoder — this helper hard-wires `n_audio_ctx = 1500` (the whisper
+    /// convention: log-mel N_FRAMES = 3000 → conv2 stride-2 output = 1500) so
+    /// [`WhisperModel::encode_pcm_with`] passes its output-length check. It also
+    /// widens `n_text_ctx` from `tiny_cfg`'s decoder-focused 8 up to 448 (the
+    /// distil-large-v3.5 upstream value) so a full greedy run bounded by
+    /// [`super::super::greedy::DEFAULT_MAX_NEW_TOKENS`] = 224 never overflows
+    /// the decoder KV reserve (`start_ids.len() + max_new = 1 + 224 = 225 < 448`).
+    ///
+    /// It is the fixture the distil-whisper `AsrEngine` trait tests consume via
+    /// [`super::super::super::distil_whisper::DistilWhisperAsr::from_whisper_asr_for_test`]
+    /// to exercise the trait dispatch end-to-end without a real GGUF.
+    ///
+    /// The distil invariant (`n_text_layer < n_audio_layer`) is up to the
+    /// caller: the helper itself does not enforce it — see the test-only
+    /// constructor above for why.
+    pub(crate) fn tiny_model_distil(
+        n_audio_layer: usize,
+        n_text_layer: usize,
+    ) -> Arc<WhisperModel> {
+        let mut config = tiny_cfg(n_text_layer);
+        config.n_audio_layer = n_audio_layer;
+        config.n_audio_ctx = 1500;
+        config.n_text_ctx = 448;
+        let d = config.d_model;
+        let ffn = config.ffn_dim;
+        let layers = (0..n_audio_layer)
+            .map(|_| tiny_encoder_layer(d, ffn))
+            .collect();
+        let weights = WhisperWeights {
+            encoder: EncoderWeights {
+                conv1_w: vec![0.0; d * config.n_mels * 3],
+                conv1_b: vec![0.0; d],
+                conv2_w: vec![0.0; d * d * 3],
+                conv2_b: vec![0.0; d],
+                pos_emb: vec![0.0; config.n_audio_ctx * d],
+                layers,
+                ln_post: unit_ln(d),
+            },
+            decoder: tiny_weights(&config),
+            quant_report: Default::default(),
+        };
+        Arc::new(WhisperModel::new_for_test(config, weights))
+    }
+
     /// Unit-scale / zero-shift LayerNorm of width `d`.
     fn unit_ln(d: usize) -> LayerNorm {
         LayerNorm {
@@ -857,6 +909,20 @@ pub(crate) mod test_support {
             k: lin(rect(d, d, -0.07), d, d, None),
             v: lin(rect(d, d, 0.05), d, d, Some(vec![0.02; d])),
             out: lin(rect(d, d, -0.04), d, d, Some(vec![0.0; d])),
+        }
+    }
+
+    /// One encoder block (pre-norm self-attention + MLP) with deterministic
+    /// weights; `ff` is the MLP inner width. Mirrors [`tiny_layer`]'s shape
+    /// choices so the encoder stack in [`tiny_model_distil`] behaves
+    /// deterministically without requiring the caller to seed anything.
+    fn tiny_encoder_layer(d: usize, ff: usize) -> EncoderLayer {
+        EncoderLayer {
+            attn_ln: unit_ln(d),
+            attn: tiny_attn(d),
+            mlp_ln: unit_ln(d),
+            fc1: lin(rect(d, ff, 0.06), d, ff, Some(vec![0.0; ff])),
+            fc2: lin(rect(ff, d, -0.05), ff, d, Some(vec![0.0; d])),
         }
     }
 

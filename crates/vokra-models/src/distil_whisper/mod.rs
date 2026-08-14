@@ -94,8 +94,10 @@
 //! pipeline is re-implemented natively via [`crate::whisper`]
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
 
+use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
+use vokra_core::tasks::Transcription;
 use vokra_core::{BackendKind, Result, VokraError};
 
 use crate::whisper::{WhisperAsr, WhisperTokenizer};
@@ -878,6 +880,76 @@ impl DistilWhisperAsr {
             )),
         }
     }
+
+    /// Test-only wrapper: build a Delegate-kind handle around an already-loaded
+    /// [`WhisperAsr`] **without** enforcing the [`Self::from_gguf`] distil
+    /// invariant (`n_text_layer < n_audio_layer`) or
+    /// [`DistilWhisperConfig::validate_for_forward`]. Tests that exercise the
+    /// [`AsrEngine`] trait dispatch (composition, empty-PCM early return) only
+    /// need a Delegate-kind handle whose `transcribe` funnels through the
+    /// shared Whisper engine — they do not exercise the mislabel-refusal path,
+    /// which has its own dedicated `from_gguf_rejects_non_distil_shape_via_delegate_chain`
+    /// coverage below.
+    ///
+    /// The config surfaced through [`Self::config`] mirrors the inner
+    /// Whisper config verbatim (same shape as [`Self::from_gguf`]); this keeps
+    /// [`Self::has_weights_bound`] `true` and [`Self::is_synthesized`] `false`
+    /// so the handle behaves indistinguishably from a real GGUF load to
+    /// downstream code that only reads the introspection surface.
+    ///
+    /// Not part of the public API (compiled only under `cfg(test)`).
+    #[cfg(test)]
+    pub(crate) fn from_whisper_asr_for_test(inner: WhisperAsr) -> Self {
+        let wc = inner.model().config();
+        let cfg = DistilWhisperConfig {
+            n_mels: wc.n_mels,
+            d_model: wc.d_model,
+            n_audio_ctx: wc.n_audio_ctx,
+            n_audio_head: wc.n_audio_head,
+            n_audio_layer: wc.n_audio_layer,
+            n_text_ctx: wc.n_text_ctx,
+            n_text_head: wc.n_text_head,
+            n_text_layer: wc.n_text_layer,
+            n_vocab: wc.n_vocab,
+            ffn_dim: wc.ffn_dim,
+            eot: wc.eot,
+            sot: wc.decoder_start_ids.first().copied().unwrap_or(50_258),
+            sample_rate: DISTIL_WHISPER_SAMPLE_RATE,
+        };
+        Self {
+            cfg,
+            kind: DistilWhisperAsrKind::Delegate(inner),
+        }
+    }
+}
+
+/// [`AsrEngine`] blanket wiring so a distil-whisper handle can be injected via
+/// [`vokra_core::Session::with_asr_engine`] and drive
+/// `session.asr().transcribe()` end-to-end.
+///
+/// Composition — verbatim the [`WhisperAsr`] pattern
+/// (`crates/vokra-models/src/whisper/asr.rs`):
+/// 1. call the inherent [`DistilWhisperAsr::transcribe`] to get raw token ids
+///    (delegate path → [`WhisperAsr::transcribe_tokens`] greedy;
+///    scaffold path → loud [`VokraError::NotImplemented`]),
+/// 2. render them through [`DistilWhisperAsr::render_ids`] (delegate path →
+///    [`WhisperAsr::render_ids`]; scaffold path → the bracketed-id fallback),
+/// 3. wrap the resulting `String` in a [`Transcription`].
+///
+/// Because the inherent method and this trait method share the receiver +
+/// argument shape, method resolution inside the trait body picks the inherent
+/// method first (return `Result<Vec<u32>>`), which is exactly the composition
+/// leg we want — no explicit qualification needed and no accidental recursion.
+///
+/// The empty-PCM guard fires inside the inherent [`DistilWhisperAsr::transcribe`]
+/// before either arm runs, so the trait method inherits the same
+/// [`VokraError::InvalidArgument`] early return on `pcm.is_empty()` (FR-EX-08 —
+/// never a silent empty transcription).
+impl AsrEngine for DistilWhisperAsr {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        let ids = self.transcribe(pcm)?;
+        Ok(Transcription::new(self.render_ids(&ids)?))
+    }
 }
 
 fn check_len(name: &str, got: usize, expected: usize) -> Result<()> {
@@ -1456,5 +1528,118 @@ mod tests {
                 "registry must map `{id}` to Permissive (MIT)"
             );
         }
+    }
+
+    // -------- AsrEngine trait dispatch tests (this task) --------
+    //
+    // These three tests prove the newly-added `impl AsrEngine for
+    // DistilWhisperAsr` (a) actually reaches the shared Whisper delegate on
+    // the delegate arm (not the scaffold NotImplemented arm), (b) honors the
+    // empty-PCM early return through the trait method, and (c) composes to
+    // the same text as the inherent `.transcribe(...)` → `.render_ids(...)`
+    // pipeline — i.e. the trait method is a straight greedy composition of
+    // the two inherent helpers, with no separate beam / sampling branch
+    // introduced.
+
+    // `WhisperAsr`, `AsrEngine`, `Transcription`, `VokraError` are all
+    // already in scope via `use super::*;` above (they are top-level
+    // `use`-imports in the parent module, which glob-import from the child
+    // brings in transitively — the same way every earlier test in this
+    // module references `VokraError` without re-importing). Only the
+    // crate-private test-support helper needs an explicit import here.
+    use crate::whisper::decoder::test_support::tiny_model_distil;
+
+    /// Builds a delegate-kind `DistilWhisperAsr` wrapping a whisper-shape
+    /// synthetic model (`n_audio_ctx = 1500` so the encoder passes its
+    /// output-length check; 2 encoder layers, 1 decoder layer to keep the
+    /// distil axis honest even though the test-only ctor bypasses the
+    /// invariant check).
+    fn delegate_asr() -> DistilWhisperAsr {
+        let model = tiny_model_distil(2, 1);
+        let inner = WhisperAsr::from_model_for_test(model);
+        DistilWhisperAsr::from_whisper_asr_for_test(inner)
+    }
+
+    /// (a) The `AsrEngine::transcribe` trait method reaches the shared
+    /// Whisper delegate (never the scaffold `NotImplemented` arm) and
+    /// returns a bounded `Transcription` — no panic / hang, text length
+    /// bounded by the greedy `DEFAULT_MAX_NEW_TOKENS = 224` cap × the
+    /// bracketed-fallback per-id width.
+    #[test]
+    fn asr_engine_transcribe_delegate_returns_finite_transcription() {
+        let asr = delegate_asr();
+        // 1024 mono samples: the WhisperAsr log-mel front-end zero-pads to
+        // its fixed 30 s window (N_FRAMES = 3000 frames) regardless, so any
+        // non-empty PCM exercises the full PCM → mel → encoder → decoder
+        // path.
+        let pcm = vec![0.0f32; 1024];
+        let out: Transcription = <DistilWhisperAsr as AsrEngine>::transcribe(&asr, &pcm)
+            .expect("delegate AsrEngine::transcribe must return Ok(Transcription)");
+        // Bounded (never NaN / infinite / DoS): greedy stops on eot within
+        // DEFAULT_MAX_NEW_TOKENS = 224 iterations, so the bracketed-ids
+        // render is at most a few KB even in the worst case.
+        assert!(
+            out.text.len() < 16 * 1024,
+            "transcription text must stay bounded; got {} bytes",
+            out.text.len()
+        );
+        // Not the loud NotImplemented scaffold shape (which returns Err,
+        // not Ok) — Ok here on the delegate arm proves the trait dispatch
+        // funnelled through the shared Whisper engine, not the scaffold's
+        // hard-refusal arm.
+    }
+
+    /// (b) The `AsrEngine::transcribe` trait method honors the empty-PCM
+    /// early return that the inherent method enforces, so a caller behind
+    /// `dyn AsrEngine` (e.g. `session.asr().transcribe(&[])`) sees the same
+    /// loud `InvalidArgument` — never a silent empty transcript (FR-EX-08).
+    #[test]
+    fn asr_engine_transcribe_rejects_empty_pcm() {
+        let asr = delegate_asr();
+        let err = <DistilWhisperAsr as AsrEngine>::transcribe(&asr, &[])
+            .expect_err("trait method must reject empty PCM via the inherent early return");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains("distil-whisper"),
+                    "error must name the model: {msg}"
+                );
+                assert!(msg.contains("empty"), "error must name the blocker: {msg}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// (c) The `AsrEngine::transcribe` trait method is exactly the
+    /// composition `Transcription::new(self.render_ids(&self.transcribe(pcm)?)?)`
+    /// — the transcript text is byte-identical to the manual pipeline, which
+    /// proves the trait method introduced no separate beam / sampling
+    /// branch and no post-processing beyond `render_ids`.
+    #[test]
+    fn asr_engine_transcribe_composes_with_inherent_transcribe() {
+        let asr = delegate_asr();
+        let pcm = vec![0.0f32; 1024];
+
+        // Trait method: single-call, returns Transcription.
+        let via_trait = <DistilWhisperAsr as AsrEngine>::transcribe(&asr, &pcm)
+            .expect("trait transcribe must succeed on the delegate path");
+
+        // Manual composition: inherent transcribe (Vec<u32>) → render_ids
+        // (String) → Transcription::new. WhisperAsr::transcribe_tokens is
+        // idempotent per-call (fresh KV cache, no RNG on greedy), so a
+        // second call over the same PCM reproduces the same ids
+        // deterministically.
+        let ids = asr
+            .transcribe(&pcm)
+            .expect("inherent transcribe must succeed on the delegate path");
+        let text = asr
+            .render_ids(&ids)
+            .expect("render_ids must succeed on the delegate path");
+        let via_inherent = Transcription::new(text);
+
+        assert_eq!(
+            via_trait.text, via_inherent.text,
+            "trait method must be a straight composition of inherent transcribe + render_ids",
+        );
     }
 }

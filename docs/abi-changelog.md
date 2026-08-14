@@ -228,6 +228,67 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-14 — 1.0.0-rc.1-dev (`AsrEngine` impl for `DistilWhisperAsr` — Rust surface only, advisory)
+
+Additive **Rust public API** entry that wires
+`vokra_models::distil_whisper::DistilWhisperAsr` into the
+[`vokra_core::engines::AsrEngine`] trait, so a distil-whisper handle can be
+injected via `vokra_core::Session::with_asr_engine` and drive
+`session.asr().transcribe()` end-to-end. The C ABI (`include/vokra.h`, 33 fn
++ 11 typedef, v1.0-rc baseline) is **untouched** — every change is
+Rust-surface, not cbindgen-exported (`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: `DistilWhisperAsr::from_gguf` had been landed as a Delegate-
+kind handle over the shared `WhisperAsr` load path (real weights, real
+greedy decode), but the type did not implement the `AsrEngine` trait, so
+`Session::with_asr_engine(distil).asr().transcribe(pcm)` would trip a
+`NotImplemented` from the facade instead of running the delegate. This
+wave adds the trait impl (verbatim the `WhisperAsr` composition pattern:
+inherent transcribe → `render_ids` → `Transcription::new`) so the same
+`session.asr()` surface every other ASR consumes also drives distil-whisper.
+
+**Backward compatibility**: Additive. The inherent
+`DistilWhisperAsr::transcribe(pcm) -> Result<Vec<u32>>` is unchanged and
+still wins method resolution when the receiver is a concrete
+`DistilWhisperAsr` (Rust prefers inherent methods with matching receiver +
+argument shape over trait methods, so callers of the inherent are
+unaffected). The trait method is reached via `dyn AsrEngine` dispatch or
+explicit UFCS (`<DistilWhisperAsr as AsrEngine>::transcribe(&asr, pcm)`).
+The empty-PCM `InvalidArgument` early return is honored by both entry
+points because the trait method delegates to the inherent one.
+
+**Files touched**:
+- `crates/vokra-models/src/distil_whisper/mod.rs`
+  — New top-level `use vokra_core::engines::AsrEngine;` and
+    `use vokra_core::tasks::Transcription;` imports.
+  — New `impl AsrEngine for DistilWhisperAsr { fn transcribe(&self,
+    pcm: &[f32]) -> Result<Transcription> { ... } }` (composition of the
+    two existing inherent helpers).
+  — New `#[cfg(test)] pub(crate) fn
+    DistilWhisperAsr::from_whisper_asr_for_test(WhisperAsr) -> Self`
+    (test-only constructor that wraps an already-loaded `WhisperAsr` into a
+    Delegate-kind handle without enforcing the distil invariant — required
+    for the trait-dispatch tests below; not exposed outside `#[cfg(test)]`
+    so production callers still go through `from_gguf`).
+  — Three new tests exercising the trait method end-to-end via the
+    Delegate arm: `asr_engine_transcribe_delegate_returns_finite_transcription`,
+    `asr_engine_transcribe_rejects_empty_pcm`,
+    `asr_engine_transcribe_composes_with_inherent_transcribe`.
+- `crates/vokra-models/src/whisper/decoder.rs`
+  — New `pub(crate) fn test_support::tiny_model_distil(n_audio_layer,
+    n_text_layer) -> Arc<WhisperModel>` and its private
+    `tiny_encoder_layer` helper. Whisper-shape (`n_audio_ctx = 1500`) so
+    the encoder path passes its post-conv2 length check; consumed by the
+    distil-whisper trait tests. Encoder-layer weights are deterministic
+    with the same `rect` / `tiny_attn` shape convention the decoder
+    `tiny_layer` uses. Adds `EncoderLayer` to the existing
+    `whisper::weights::{...}` import list.
+
+**Verification**: `scripts/gen-c-abi.sh --check` clean (no C ABI diff);
+zero-dep unchanged (root `Cargo.lock` still `vokra-*` only, NFR-DS-02);
+`use vokra_core::engines::AsrEngine` is an internal-crate trait import,
+not a new external dep.
+
 ### 2026-08-13 — 1.0.0-rc.1-dev (M3-06 T14: `mimi_rvq` Metal MSL kernel + `Compute::mimi_rvq_f32` Metal arm wired — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the M3-06 T14 landing that flips
