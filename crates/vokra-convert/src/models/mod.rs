@@ -1060,3 +1060,8 @@ pub mod magnet_medium_30secs;
 // posture as sibling MAGNeT / RMVPE / Charsiu.
 pub mod melodyflow_t24_30secs;
 // ---------------------------------------------------------------------------
+// Wave 2 2026-08-14 audit follow-up: beat_this = Transformer-based
+// beat / downbeat tracker (CPJKU, ISMIR 2024, MIT). Adds first music-
+// understanding MIR primitive to the catalog per 2026-08-14 audit.
+pub mod beat_this;
+// ---------------------------------------------------------------------------
