@@ -1307,6 +1307,230 @@ impl MultiChannelAec {
     }
 }
 
+/// Construction attributes of an [`Aec48khz`] full-band wrapper.
+///
+/// The rate is fixed at 48 000 Hz — the wrapper does not resample; a
+/// caller-side rate mismatch is out of scope (feed 48 kHz PCM or use the mono
+/// [`Aec`] with a matching [`AecAttrs::sample_rate`]).
+///
+/// The upstream frame-size / tail guidance carries over verbatim
+/// (speex_echo.h L73-74): `frame_size` "should correspond to 10-20 ms" —
+/// 480/960 samples at 48 kHz; `filter_length` (echo tail in samples) "should
+/// generally correspond to 100-500 ms" — 4800/24000 samples. The [`Default`]
+/// picks the 10 ms / 200 ms industry-standard framing (WebRTC AEC3 uses the
+/// same 10 ms hop), giving `M = filter_length / frame_size = 20` MDF blocks.
+///
+/// **CPU cost scales linearly with `filter_length`**: at the 200 ms default,
+/// one 10 ms 48 kHz frame does roughly 5× the FFT / spectral-multiply work of
+/// one 16 kHz 200 ms frame of the same physical tail — a direct consequence
+/// of running on the wider spectrum, not an implementation quirk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Aec48khzAttrs {
+    /// Samples per [`Aec48khz::process`] / [`Aec48khz::process_with_far`]
+    /// call. Same evenness / smoothness preconditions as [`AecAttrs::frame_size`]
+    /// (validation is bubbled up from [`Aec::new`] — no silent adjustment).
+    pub frame_size: usize,
+    /// Echo tail length in samples; internally rounded up to
+    /// `M = ceil(filter_length / frame_size)` MDF blocks by the underlying
+    /// [`Aec`] (see [`AecAttrs::filter_length`]).
+    pub filter_length: usize,
+}
+
+impl Default for Aec48khzAttrs {
+    /// `frame_size = 480` (10 ms at 48 kHz) and `filter_length = 9600` (200 ms
+    /// tail, `M = 20`) — the industry-standard AEC3 framing.
+    fn default() -> Self {
+        Self {
+            frame_size: 480,
+            filter_length: 9600,
+        }
+    }
+}
+
+/// Full-band (48 kHz) echo canceller — a thin delegator around a single
+/// [`Aec`] configured at `sample_rate = 48_000`.
+///
+/// # What ships here is a *single-band* 48 kHz canceller
+///
+/// Upstream SpeexDSP `mdf.c` supports 48 kHz verbatim via
+/// `SPEEX_ECHO_SET_SAMPLING_RATE` (L1241-1246: the notch radius jumps to
+/// `0.992` at rates `≥ 24 000`, everything else is rate-parametric). The
+/// per-frame code path is identical to the mono narrowband one — only the
+/// notch radius, adaptation constants (`beta0 = 2N/rate`,
+/// `beta_max = 0.5N/rate`, `spec_average = N/rate`) and the caller's frame
+/// / tail sizing change. That single-band path is what
+/// [`Aec48khz::process`] / [`Aec48khz::process_with_far`] deliver.
+///
+/// # What is deliberately *not* here (yet): true sub-band processing
+///
+/// "Full-band" in modern AEC parlance (Google WebRTC AEC3, Fraunhofer FDLP)
+/// usually means **sub-band processing**: split the wide-band signal into a
+/// low-band (0–8 kHz) and a high-band (8–24 kHz) via a QMF or two-channel
+/// PR-QMF analysis, run an AEC per band, then re-synthesize. That is a
+/// different algorithm — an FDAF pair with cross-band coupling — and it needs
+/// QMF analysis/synthesis primitives (Vaidyanathan, *Multirate Systems and
+/// Filter Banks*, 1993, Chapter 8) that do not exist in `vokra-ops` and are
+/// not part of the SpeexDSP AEC reference. WebRTC AEC3's implementation is at
+/// <https://webrtc.googlesource.com/src/+/refs/heads/main/modules/audio_processing/aec3/>
+/// (BSD-3-Clause). [`Aec48khz::process_with_far_subband`] is the reserved
+/// entry-point — it returns [`VokraError::UnsupportedOp`] until those
+/// primitives land (loud-partial per FR-EX-08, follow-up per ADR M4-03 §D-(a)
+/// on channel-decorrelation MC-AEC in the same spirit).
+///
+/// # Backward compatibility
+///
+/// The mono [`Aec`] / [`AecAttrs`] / [`AecStatus`] / [`MultiChannelAec`]
+/// surfaces are unchanged — this type is purely additive.
+///
+/// # Hot path
+///
+/// [`Aec48khz::process`] and [`Aec48khz::process_with_far`] are thin
+/// delegators to the underlying [`Aec`], which is already ZERO-ALLOC (mono
+/// module contract). The `UnsupportedOp` message on the sub-band path is
+/// built with `format!` — errors are off the hot path (matches the mono
+/// error-path convention).
+pub struct Aec48khz {
+    attrs: Aec48khzAttrs,
+    inner: Aec,
+}
+
+impl Aec48khz {
+    /// Builds a full-band canceller for `attrs` at 48 000 Hz.
+    ///
+    /// # Errors
+    ///
+    /// Every [`Aec::new`] precondition applies to `attrs.frame_size` /
+    /// `attrs.filter_length` (evenness, FFT Direct-path smoothness,
+    /// `filter_length >= frame_size`); the first failing one is bubbled up
+    /// verbatim as a [`VokraError::InvalidArgument`] — no silent adjustment
+    /// (FR-EX-08).
+    pub fn new(attrs: &Aec48khzAttrs) -> Result<Self> {
+        let base = AecAttrs {
+            sample_rate: 48_000,
+            frame_size: attrs.frame_size,
+            filter_length: attrs.filter_length,
+        };
+        let inner = Aec::new(&base)?;
+        Ok(Self {
+            attrs: *attrs,
+            inner,
+        })
+    }
+
+    /// Sample rate (constant `48_000`).
+    #[must_use]
+    #[allow(clippy::unused_self)]
+    pub fn sample_rate(&self) -> u32 {
+        48_000
+    }
+
+    /// Frame size (samples per [`process`](Self::process) call).
+    #[must_use]
+    pub fn frame_size(&self) -> usize {
+        self.inner.frame_size()
+    }
+
+    /// Number of MDF filter blocks `M` of the underlying [`Aec`].
+    #[must_use]
+    pub fn filter_blocks(&self) -> usize {
+        self.inner.filter_blocks()
+    }
+
+    /// Construction attributes.
+    #[must_use]
+    pub fn attrs(&self) -> &Aec48khzAttrs {
+        &self.attrs
+    }
+
+    /// Current leak estimate of the underlying [`Aec`] — see
+    /// [`Aec::leak_estimate`].
+    #[must_use]
+    pub fn leak_estimate(&self) -> f32 {
+        self.inner.leak_estimate()
+    }
+
+    /// Whether the underlying [`Aec`] considers itself past minimal
+    /// adaptation — see [`Aec::is_adapted`].
+    #[must_use]
+    pub fn is_adapted(&self) -> bool {
+        self.inner.is_adapted()
+    }
+
+    /// Resets the underlying [`Aec`] to its as-new state — see [`Aec::reset`].
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    /// Cancels the echo of one 48 kHz mic frame against a queue-driven
+    /// far-end window. Thin delegator to [`Aec::process`].
+    ///
+    /// # Errors
+    ///
+    /// Bubbled up from [`Aec::process`] (mic / out / rate validation).
+    pub fn process(
+        &mut self,
+        mic: &[f32],
+        mic_pos: u64,
+        reader: &mut AecRefReader,
+        out: &mut [f32],
+    ) -> Result<AecStatus> {
+        self.inner.process(mic, mic_pos, reader, out)
+    }
+
+    /// Queue-less 48 kHz cancel: thin delegator to [`Aec::process_with_far`].
+    ///
+    /// # Errors
+    ///
+    /// Bubbled up from [`Aec::process_with_far`] (mic / far / out length
+    /// validation — FR-EX-08).
+    pub fn process_with_far(
+        &mut self,
+        mic: &[f32],
+        far: &[f32],
+        out: &mut [f32],
+    ) -> Result<AecStatus> {
+        self.inner.process_with_far(mic, far, out)
+    }
+
+    /// **Loud-partial** entry-point for true sub-band (narrowband + high-band)
+    /// full-band AEC — returns [`VokraError::UnsupportedOp`] until the QMF
+    /// analysis / synthesis primitives land. See the type-level docs and the
+    /// module header for the follow-up plan.
+    ///
+    /// # References
+    ///
+    /// - WebRTC AEC3 (BSD-3-Clause):
+    ///   <https://webrtc.googlesource.com/src/+/refs/heads/main/modules/audio_processing/aec3/>
+    /// - SpeexDSP `mdf.c` (single-band 48 kHz path this wrapper *does*
+    ///   deliver): <https://github.com/xiph/speexdsp/blob/master/libspeexdsp/mdf.c>
+    /// - Vaidyanathan, *Multirate Systems and Filter Banks*, Prentice-Hall,
+    ///   1993 (QMF theory).
+    ///
+    /// # Errors
+    ///
+    /// Always [`VokraError::UnsupportedOp`] with a message that cites the
+    /// three primary sources above and states that the QMF primitives are
+    /// "not yet in vokra-ops" (loud-partial per FR-EX-08 / ADR M4-03 §D-(f)).
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn process_with_far_subband(
+        &mut self,
+        _mic: &[f32],
+        _far: &[f32],
+        _out: &mut [f32],
+    ) -> Result<AecStatus> {
+        Err(VokraError::UnsupportedOp(format!(
+            "aec: true sub-band (narrowband + high-band) full-band AEC requires QMF \
+             analysis / synthesis primitives that are not yet in vokra-ops; the \
+             48 kHz single-band path (Aec48khz::process_with_far, frame_size={}, \
+             filter_length={}) is upstream-native and shipping. Follow-up references: \
+             WebRTC AEC3 (https://webrtc.googlesource.com/src/+/refs/heads/main/modules/audio_processing/aec3/), \
+             SpeexDSP mdf.c (https://github.com/xiph/speexdsp/blob/master/libspeexdsp/mdf.c), \
+             Vaidyanathan Multirate Systems and Filter Banks 1993 ch. 8",
+            self.attrs.frame_size, self.attrs.filter_length
+        )))
+    }
+}
+
 /// Named internal time buffers (borrow-splitting helper for the FFT calls).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TimeBuf {
@@ -2141,6 +2365,311 @@ mod tests {
             MultiChannelAec::new(&attrs),
             Err(VokraError::InvalidArgument(_))
         ));
+    }
+
+    // ---- Aec48khz (full-band 48 kHz single-band wrapper) -----------------
+
+    /// Default attrs are the industry-standard 10 ms hop / 200 ms tail, and
+    /// construct successfully at 48 kHz (fixes both the numbers and the
+    /// FFT-Direct-path smoothness of `2 * 480 = 960 = 2^6 * 3 * 5`).
+    #[test]
+    fn aec48khz_default_attrs_are_industry_standard() {
+        let d = Aec48khzAttrs::default();
+        assert_eq!(d.frame_size, 480, "10 ms hop at 48 kHz");
+        assert_eq!(d.filter_length, 9600, "200 ms tail at 48 kHz");
+        let full = Aec48khz::new(&d).expect("48 kHz industry defaults must construct");
+        assert_eq!(full.sample_rate(), 48_000);
+        assert_eq!(full.frame_size(), 480);
+        // M = ceil(9600 / 480) = 20.
+        assert_eq!(full.filter_blocks(), 20);
+        // Newly-built canceller has not adapted.
+        assert!(!full.is_adapted());
+        // Leak estimate is 0.0 before the first adapted frame.
+        assert_eq!(full.leak_estimate(), 0.0);
+    }
+
+    /// T1: 48 kHz single-band ERLE — a far-end-only run with a fixed echo
+    /// path must reduce residual energy from early to late frames. This is
+    /// the same relative comparison the mono
+    /// [`far_end_only_residual_energy_decreases`] test uses, retargeted at
+    /// 48 kHz with a smaller test-scale tail (`M = 4`) so convergence is
+    /// visible within a bounded frame budget.
+    #[test]
+    fn aec48khz_far_end_only_residual_energy_decreases() {
+        // Test-scale attrs: same M=4 block count as the mono 16 kHz test, so
+        // the identification problem is the same shape at a proportional
+        // convergence cost.
+        let attrs = Aec48khzAttrs {
+            frame_size: 480,     // 10 ms hop
+            filter_length: 1920, // 40 ms tail, M = 4
+        };
+        let mut aec = Aec48khz::new(&attrs).unwrap();
+        assert_eq!(aec.filter_blocks(), 4);
+        let n = attrs.frame_size;
+        let frames = 240;
+        let far = noise(frames * n, 8000.0, 42);
+        let near = convolve(&far, &echo_path());
+
+        let mut out = vec![0.0f32; n];
+        let mut early = 0.0f64;
+        let mut late = 0.0f64;
+        for f in 0..frames {
+            let mic: Vec<f32> = near[f * n..(f + 1) * n]
+                .iter()
+                .map(|v| v / INT16_SCALE)
+                .collect();
+            let farf: Vec<f32> = far[f * n..(f + 1) * n]
+                .iter()
+                .map(|v| v / INT16_SCALE)
+                .collect();
+            let status = aec.process_with_far(&mic, &farf, &mut out).unwrap();
+            assert_ne!(
+                status,
+                AecStatus::Reset,
+                "guard must not fire on clean 48 kHz data"
+            );
+            let e = energy(&out);
+            if (20..60).contains(&f) {
+                early += e;
+            }
+            if (200..240).contains(&f) {
+                late += e;
+            }
+        }
+        assert!(
+            late < early,
+            "48 kHz single-band AEC must reduce residual: early {early:e} late {late:e}"
+        );
+        assert!(
+            late < 0.25 * early,
+            "expected clear 48 kHz reduction (got early {early:e} → late {late:e})"
+        );
+    }
+
+    /// T2: two independent [`Aec48khz`] instances fed decorrelated
+    /// (different-seed) streams must produce bit-different outputs — defends
+    /// against any hypothetical state leak through the wrapper's shared
+    /// helpers (which there are none of — `Aec48khz` composes rather than
+    /// inherits, but the test costs one memcmp).
+    #[test]
+    fn aec48khz_decorrelated_instances_produce_independent_outputs() {
+        let attrs = Aec48khzAttrs {
+            frame_size: 480,
+            filter_length: 1920,
+        };
+        let n = attrs.frame_size;
+        let frames = 30;
+
+        // Two decorrelated far-end streams (different seeds), each convolved
+        // with the same fixed echo path so the mic streams are plausible.
+        let far0_i16 = noise(frames * n, 6000.0, 11);
+        let far1_i16 = noise(frames * n, 6000.0, 22);
+        let mic0_i16 = convolve(&far0_i16, &echo_path());
+        let mic1_i16 = convolve(&far1_i16, &echo_path());
+        let to_unit = |v: &[f32]| -> Vec<f32> { v.iter().map(|s| s / INT16_SCALE).collect() };
+        let far0 = to_unit(&far0_i16);
+        let far1 = to_unit(&far1_i16);
+        let mic0 = to_unit(&mic0_i16);
+        let mic1 = to_unit(&mic1_i16);
+
+        let mut a0 = Aec48khz::new(&attrs).unwrap();
+        let mut a1 = Aec48khz::new(&attrs).unwrap();
+        let mut out0 = vec![0.0f32; frames * n];
+        let mut out1 = vec![0.0f32; frames * n];
+        for f in 0..frames {
+            let s = f * n;
+            let e = s + n;
+            a0.process_with_far(&mic0[s..e], &far0[s..e], &mut out0[s..e])
+                .unwrap();
+            a1.process_with_far(&mic1[s..e], &far1[s..e], &mut out1[s..e])
+                .unwrap();
+        }
+
+        let out0_bits: Vec<u32> = out0.iter().map(|v| v.to_bits()).collect();
+        let out1_bits: Vec<u32> = out1.iter().map(|v| v.to_bits()).collect();
+        assert_ne!(
+            out0_bits, out1_bits,
+            "decorrelated 48 kHz inputs must yield different outputs"
+        );
+
+        // And each instance's output equals a fresh reference fed the same
+        // stream — proves the wrapper does not touch shared state.
+        let mut ref0 = Aec48khz::new(&attrs).unwrap();
+        let mut ref1 = Aec48khz::new(&attrs).unwrap();
+        let mut ref_out0 = vec![0.0f32; frames * n];
+        let mut ref_out1 = vec![0.0f32; frames * n];
+        for f in 0..frames {
+            let s = f * n;
+            let e = s + n;
+            ref0.process_with_far(&mic0[s..e], &far0[s..e], &mut ref_out0[s..e])
+                .unwrap();
+            ref1.process_with_far(&mic1[s..e], &far1[s..e], &mut ref_out1[s..e])
+                .unwrap();
+        }
+        let ref0_bits: Vec<u32> = ref_out0.iter().map(|v| v.to_bits()).collect();
+        let ref1_bits: Vec<u32> = ref_out1.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(
+            out0_bits, ref0_bits,
+            "instance 0 must be bit-exact vs fresh"
+        );
+        assert_eq!(
+            out1_bits, ref1_bits,
+            "instance 1 must be bit-exact vs fresh"
+        );
+    }
+
+    /// T3: mic / far / out length mismatches bubble up as
+    /// [`VokraError::InvalidArgument`] (FR-EX-08 — no silent truncation or
+    /// zero-padding), including the FFT-Direct-path smoothness check that
+    /// [`Aec48khz::new`] inherits from [`Aec::new`].
+    #[test]
+    fn aec48khz_dimension_validation() {
+        let attrs = Aec48khzAttrs {
+            frame_size: 480,
+            filter_length: 1920,
+        };
+        let mut aec = Aec48khz::new(&attrs).unwrap();
+        let n = attrs.frame_size;
+        let mic = vec![0.0f32; n];
+        let far = vec![0.0f32; n];
+        let mut out = vec![0.0f32; n];
+
+        // Wrong mic length.
+        assert!(matches!(
+            aec.process_with_far(&mic[..n - 2], &far, &mut out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Wrong far length.
+        assert!(matches!(
+            aec.process_with_far(&mic, &far[..n - 2], &mut out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Wrong out length.
+        let mut short_out = vec![0.0f32; n - 2];
+        assert!(matches!(
+            aec.process_with_far(&mic, &far, &mut short_out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        // Constructor rejects sub-preconditions verbatim from `Aec::new`.
+        // Odd frame_size (mdf_inner_prod evenness gate).
+        assert!(matches!(
+            Aec48khz::new(&Aec48khzAttrs {
+                frame_size: 481,
+                filter_length: 1920,
+            }),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // filter_length < frame_size (need >= one filter block).
+        assert!(matches!(
+            Aec48khz::new(&Aec48khzAttrs {
+                frame_size: 480,
+                filter_length: 32,
+            }),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Zero frame_size.
+        assert!(matches!(
+            Aec48khz::new(&Aec48khzAttrs {
+                frame_size: 0,
+                filter_length: 1024,
+            }),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    /// T4: the sub-band entry-point is loud-partial per FR-EX-08 — it must
+    /// return [`VokraError::UnsupportedOp`] with a message that names the
+    /// three primary follow-up references (WebRTC AEC3, SpeexDSP mdf.c,
+    /// Vaidyanathan multirate filter banks) and calls out QMF as the missing
+    /// primitive, so callers grepping the message land on the follow-up plan.
+    #[test]
+    fn aec48khz_subband_variant_is_loud_partial_unsupported() {
+        let attrs = Aec48khzAttrs::default();
+        let mut aec = Aec48khz::new(&attrs).unwrap();
+        let n = attrs.frame_size;
+        let mic = vec![0.01f32; n];
+        let far = vec![0.02f32; n];
+        let mut out = vec![0.0f32; n];
+
+        let err = aec
+            .process_with_far_subband(&mic, &far, &mut out)
+            .expect_err("sub-band variant must be loud-partial UnsupportedOp");
+        let msg = match err {
+            VokraError::UnsupportedOp(m) => m,
+            other => panic!("expected UnsupportedOp, got {other:?}"),
+        };
+        assert!(
+            msg.contains("WebRTC AEC3"),
+            "message must cite WebRTC AEC3 reference; got: {msg}"
+        );
+        assert!(
+            msg.contains("mdf.c"),
+            "message must cite SpeexDSP mdf.c reference; got: {msg}"
+        );
+        assert!(
+            msg.contains("QMF"),
+            "message must name QMF as the missing primitive; got: {msg}"
+        );
+        assert!(
+            msg.contains("not yet in vokra-ops"),
+            "message must state the primitive is not yet in vokra-ops; got: {msg}"
+        );
+
+        // And crucially: calling the sub-band variant does NOT poison state —
+        // the single-band real path still works right after (loud-partial
+        // errors are side-effect-free). `process_with_far` only ever emits
+        // `Cancelled` or `Reset`; the guard must not fire on clean inputs.
+        let s = aec.process_with_far(&mic, &far, &mut out).unwrap();
+        assert_eq!(
+            s,
+            AecStatus::Cancelled,
+            "single-band 48 kHz path must still run after the loud-partial error"
+        );
+    }
+
+    /// [`Aec48khz::reset`] must reproduce a fresh instance bit-for-bit —
+    /// pairs with [`Aec::reset`]'s bit-exact contract, verified through the
+    /// wrapper.
+    #[test]
+    fn aec48khz_reset_reproduces_a_fresh_instance() {
+        let attrs = Aec48khzAttrs {
+            frame_size: 480,
+            filter_length: 1920,
+        };
+        let n = attrs.frame_size;
+        let frames = 20;
+        let far = noise(frames * n, 6000.0, 9);
+        let near = convolve(&far, &echo_path());
+        let run = |aec: &mut Aec48khz| -> Vec<u32> {
+            let mut bits = Vec::new();
+            let mut out = vec![0.0f32; n];
+            for f in 0..frames {
+                let mic: Vec<f32> = near[f * n..(f + 1) * n]
+                    .iter()
+                    .map(|v| v / INT16_SCALE)
+                    .collect();
+                let farf: Vec<f32> = far[f * n..(f + 1) * n]
+                    .iter()
+                    .map(|v| v / INT16_SCALE)
+                    .collect();
+                aec.process_with_far(&mic, &farf, &mut out).unwrap();
+                bits.extend(out.iter().map(|v| v.to_bits()));
+            }
+            bits
+        };
+
+        let mut fresh = Aec48khz::new(&attrs).unwrap();
+        let want = run(&mut fresh);
+
+        let mut reused = Aec48khz::new(&attrs).unwrap();
+        let _ = run(&mut reused); // dirty the state
+        reused.reset();
+        let got = run(&mut reused);
+        assert_eq!(
+            got, want,
+            "post-reset 48 kHz run must be bit-exact vs fresh"
+        );
     }
 
     /// Channel-count and per-channel length mismatches on `process_with_far`
