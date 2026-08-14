@@ -363,6 +363,28 @@ pub mod hybrid_ctc_attention;
 pub mod f0;
 // -------------------------------------------------------------------------
 
+// ---- Wave A (2026-08-15) WPE dereverberation ----------------------------
+// Weighted Prediction Error blind dereverberation — the first *executable*
+// dereverberation path in the tree.
+//
+// Placement vs the existing enhancement arm: DeepFilterNet3 / GTCRN /
+// RNNoise / NSNet2 all target additive noise, which is a different
+// degradation from late reverberation. `vokra-models::storm` (StoRM,
+// arXiv:2312.09386) does cover dereverberation, but it is a neural model
+// whose `enhance()` is currently a loud-partial (pending an NCSN++ v2 U-Net
+// score network + OUVE-SDE sampler) and whose §3.1 sign-off row is blank
+// and fail-closed, so it cannot run today. WPE is complementary rather than
+// redundant.
+//
+// Transcribed from the algorithm in `github.com/fgnt/nara_wpe` (MIT). Being
+// pure DSP it carries no weights, so unlike every neural entry on the
+// enhancement arm there is no checkpoint, no license class and no §3.1 row
+// to gate on — it is available unconditionally, like `resample`. Runtime
+// functions, NOT `OpKind` variants (same posture as `resample` / `agc` /
+// `hpf` — ADR M4-20 §D-5).
+pub mod wpe;
+// -------------------------------------------------------------------------
+
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
 // ---------------------------------------------------------------------------
@@ -506,6 +528,15 @@ pub use voice_ref::{VoiceRef, VoiceRefSource};
 // YIN / PyIN weight-free extractors. See the `pub mod f0` block above for
 // placement / red-line rationale.
 pub use f0::{pyin, yin};
+// -------------------------------------------------------------------------
+// ---- Wave A (2026-08-15) WPE dereverberation re-exports -----------------
+// See the `pub mod wpe` block above for placement / licence rationale.
+// Localised re-export block for clean parallel-wave rebases.
+//
+// The upstream-default constants (DEFAULT_TAPS / DEFAULT_DELAY / ...) are
+// deliberately NOT hoisted to the crate root: those names are generic enough
+// to collide with a future op's defaults. Reach them as `wpe::DEFAULT_TAPS`.
+pub use wpe::{StatisticsMode, WpeAttrs, wpe, wpe_dereverb_pcm, wpe_dereverb_pcm_multi, wpe_mono};
 // -------------------------------------------------------------------------
 pub use vokra_core::Complex32;
 

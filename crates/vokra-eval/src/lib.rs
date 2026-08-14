@@ -51,7 +51,8 @@ pub use gate::{
 };
 pub use manifest::{Manifest, Record};
 pub use metrics::{
-    AudioMosMetric, AudioRefMetric, Cer, Direction, MelLoss, Metric, TextMetric, Wer, edit_distance,
+    AudioMosMetric, AudioRefMetric, Cer, Direction, MeanRemoval, MelLoss, Metric, Sdr, SiSdr,
+    SiSnr, Stoi, TextMetric, Wer, edit_distance, sdr_db, si_sdr_db, si_snr_db, stoi,
 };
 pub use wav::{Wav, read_wav};
 pub use zoo::{GatedSpec, QualityMetric, ZooKind, ZooManifest, ZooModel, ZooMosDomain, ZooTask};

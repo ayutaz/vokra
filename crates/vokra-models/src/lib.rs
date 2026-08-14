@@ -1069,6 +1069,199 @@ pub mod speaker_3d_eres2net;
 // review; CC does NOT sign).
 pub mod sensevoicesmall_runtime;
 
+// Wave A (2026-08-15) — TorchAudio-SQUIM runtime binder (LIB.RS RULE: append
+// at the END of the `pub mod` block with a Wave marker; do NOT alphabetize —
+// rustfmt has reordered these before and broken a commit).
+//
+// Closes a real gap: `crates/vokra-convert/src/models/torchaudio_squim.rs`
+// produced a GGUF stamped `vokra.model.arch = "torchaudio_squim"` that NOTHING
+// in the workspace read, so every converted bundle was unloadable. This module
+// is that consumer.
+//
+// TorchAudio-SQUIM (`pytorch/audio`, code BSD-2-Clause; Kumar et al. 2023
+// ICASSP arXiv:2304.01448) ships TWO independently-trained bundles that answer
+// DIFFERENT questions, and they stay two separate entry points here rather
+// than being folded into one `score()`:
+//   * SQUIM **Objective** (`squim_objective_dns2020.pth`) — genuinely
+//     reference-FREE estimation of STOI + PESQ + SI-SDR from a degraded
+//     waveform alone;
+//   * SQUIM **Subjective** (`squim_subjective_bvcc_daps.pth`) — MOS estimation
+//     against a NON-MATCHING REFERENCE (an unrelated clean utterance), i.e.
+//     NOT reference-free in the same sense; it takes a second waveform.
+//
+// Complementary to (not a duplicate of) the `vokra-eval` SI-SNR / SI-SDR /
+// STOI metrics landing in this same wave: SQUIM *estimates* those quantities
+// with no reference, `vokra-eval` *computes* them from a paired clean
+// reference. On a corpus where a reference exists, the computed metric is the
+// ground truth this estimator's error is measured against.
+//
+// Real: strict `vokra.model.arch` verification (foreign GGUFs — including the
+// sibling `category="eval"` fleet `utmos` / `utmosv2` / `dnsmos` /
+// `nisqa_v2_weight` — are refused by name, FR-EX-08); bundle-prefix tensor
+// routing (`objective.` / `subjective.`, the contract
+// `tools/parity/torchaudio_squim_prepare_checkpoint.py` declares and the
+// DNSMOS `p808.` / `p835.` convention mirrors) with empty-manifest,
+// no-head and unroutable-tensor refusals that NAME the offender; optional
+// `vokra.squim.sample_rate` validation carrying an explicit `ConfigSource` so
+// a stamped 16 kHz is never confused with an assumed one; truthful partial-
+// bundle advertisement; empty-PCM rejection; fail-closed weight-license
+// surfacing.
+//
+// Loud-partial: `estimate_objective` / `estimate_subjective` each return
+// `UnsupportedOp` naming their OWN deferred stages — the objective head's
+// learnable 1-D encoder + DPRNN stack (which additionally needs a general
+// recurrent primitive `vokra-ops` does not expose; the only recurrent kernels
+// in the tree are the DFN3-specific GRU stack inside `vokra_ops::denoise`) +
+// three transformer metric heads; the subjective head's `wav2vec2_base` SSL
+// encoder (the shared wav2vec2-lineage gap with `emotion2vec` / `wavlm`) +
+// attentive pool + linear projector + the NMR pairing — plus the upstream file
+// to transcribe and the reserved `vokra.squim.{objective,subjective}.topology`
+// chunk to stamp. No score value is ever fabricated (FR-EX-08).
+//
+// Deliberately does NOT implement `vokra_core::engines::MosScorerEngine`:
+// `MosScore`'s fields are DNSMOS-shaped (`p808` / `sig` / `bak` / `ovrl`), each
+// naming a specific ITU-T protocol, and SQUIM's BVCC+DAPS MOS is none of them —
+// squatting `p808` would misrepresent which protocol produced the number, and
+// the trait signature has nowhere to put the required non-matching reference.
+//
+// §3.1 sign-off remains BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]`). Noted for the owner, not
+// decided here: the sidecar records the *code* as BSD-2-Clause but the
+// *weights* as CC-BY-4.0 (objective) and CC-BY-NC-4.0 (subjective), so a
+// bundle carrying the subjective head is NC-encumbered despite the stamped
+// `bsd-2-clause` — `Squim::has_subjective()` surfaces that for a publish gate.
+pub mod squim;
+
+// Wave A (2026-08-15) — UTMOSv2 runtime binder (LIB.RS RULE: append at the
+// END of the `pub mod` block with a Wave marker; do NOT alphabetize).
+//
+// Closes a write-only gap: `crates/vokra-convert/src/models/utmosv2.rs`
+// (landed 2026-08-04) can PRODUCE a `utmosv2` GGUF, but nothing in the
+// workspace read the `utmosv2` arch string back, so a converted checkpoint
+// could never be loaded — which blocks the NFR-QL-02 5% quality gate (an
+// M5 / v1.0 GA DoD item) that needs a loadable reference-free MOS
+// instrument. Upstream `sarulab-speech/UTMOSv2` is **MIT** per the
+// converter docstring's recorded verification against
+// `github.com/sarulab-speech/UTMOSv2/blob/main/LICENSE`
+// (`LicenseClass::Permissive`); this binder mirrors that recorded
+// verification rather than re-deriving it.
+//
+// **Real**: strict `vokra.model.arch == "utmosv2"` verification that
+// enumerates every sibling eval-family arch tag — `utmos`
+// (UTMOS22-strong on wav2vec2-BASE with a different head layout, runtime
+// skeleton in `vokra-eval::metrics::utmos`), `dnsmos` (ITU-T P.808 /
+// P.835 CNN emitting 1 or 3 scalars over a fixed 9.01 s window),
+// `nisqa_v2_weight`, `torchaudio_squim` — so a mis-routed GGUF fails with
+// a specific message instead of a downstream missing-tensor error
+// (FR-EX-08). Config parsed from EXACTLY the metadata the converter writes
+// (`vokra.model.name` / `vokra.model.category` /
+// `vokra.provenance.upstream_hf` + the `stamp_provenance` group), with a
+// fail-closed `LicenseClass::Unknown` when the class stamp is absent
+// (`[[feedback-license-signoff-primary-source]]`). Every emitted tensor is
+// bound with real per-tensor shape checks: dtype restricted to the
+// converter's F32 / F16 / BF16 pass-through arm (a K-quant means the file
+// was re-quantised AFTER conversion, which would silently shift the
+// calibration of the very instrument the quality gate trusts), rank >= 1,
+// no zero-extent dimension, payload length, no duplicate names, and at
+// least one rank >= 2 weight matrix (a Regressor head cannot exist without
+// a Linear weight). Plus the `require` / `require_shape` / `load_f32`
+// named-tensor accessors the follow-up forward wave binds against, and the
+// terminal ACR clamp `clamp_to_mos_range` (real today — it refuses a
+// non-finite regressor output rather than clamping NaN to a
+// plausible-looking MOS).
+//
+// **Loud-partial**: `Utmosv2::predict_mos` returns `UnsupportedOp` naming
+// the three deferred stages (spectrogram-domain branch / wav2vec2-large
+// SSL encoder + listener-domain conditioning / Regressor head fusion), the
+// concrete `vokra.utmosv2.*` axes the converter must start stamping, the
+// absent sidecar `tools/parity/utmosv2_prepare_checkpoint.py`, the
+// re-conversion command, and both primary sources
+// (`github.com/sarulab-speech/UTMOSv2`; Baba et al.,
+// `arxiv.org/abs/2409.09305`). The conversion contract is a verbatim float
+// pass-through that stamps NO topology axes, so the stack is not
+// primary-source-transcribable and would be silent-wrong if best-guessed;
+// a fabricated MOS would silently corrupt the NFR-QL-02 gate it feeds
+// (CLAUDE.md 教訓 (a) 「loud-partial は fake-complete より honest」).
+//
+// `vokra_core::engines::MosScorerEngine` is deliberately NOT implemented:
+// its `MosScore` payload is DNSMOS-shaped (p808 / sig / bak / ovrl) and
+// folding UTMOSv2's single utterance-level MOS into `p808` would attach an
+// ITU-T P.808 claim the model does not make. §3.1 sign-off stays BLANK
+// (owner-only).
+pub mod utmosv2;
+
+// Wave A (2026-08-15) — NISQA v2 runtime binder (LIB.RS RULE: append at the
+// END of the `pub mod` block with a Wave marker; do NOT alphabetize —
+// rustfmt has reordered these before and broken a commit).
+//
+// Closes a real gap: `crates/vokra-convert/src/models/nisqa_v2_weight.rs`
+// (landed coverage-audit-2026-08-03 Wave D T4) produced a GGUF stamped
+// `vokra.model.arch = "nisqa_v2_weight"` that NOTHING in the workspace read
+// back, so every converted checkpoint was unloadable. This module is that
+// consumer.
+//
+// NISQA v2 (`github.com/gabrielmittag/NISQA`; Mittag, Naderi, Chehadi,
+// Möller 2021, `arxiv.org/abs/2104.09494`) is a non-intrusive
+// MULTIDIMENSIONAL speech-quality predictor. Unlike the sibling
+// `dnsmos_p808_p835` binder it emits FIVE scores per forward — overall MOS
+// plus noisiness / discontinuity / coloration / loudness — surfaced as
+// `NisqaScore` rather than collapsed to a scalar, because those sub-scores
+// are the whole reason to run NISQA instead of DNSMOS. `HEAD_ORDER =
+// ["mos","noi","dis","col","loud"]` is pinned verbatim from the
+// `y_hat[:, i]` assignments in `nisqa/NISQA_lib.py`: the paper's prose
+// lists coloration BEFORE discontinuity, the opposite of the tensor
+// layout, so reading the prose order would silently swap two
+// plausible-looking scores.
+//
+// REAL: strict `vokra.model.arch` verification that refuses foreign GGUFs
+// loudly with the `category = "eval"` sibling fleet enumerated (`dnsmos`
+// P.808+P.835 CNN / `utmos` SaruLab wav2vec2 regression / `utmosv2` /
+// `torchaudio_squim` STOI-PESQ-SI-SDR + MOS); manifest-derived variant
+// discrimination (`pool_layers.` = upstream `class NISQA_DIM`, five cloned
+// attention-pooling heads, vs `pool.` = upstream `class NISQA`, one head)
+// with a per-clone presence gate so a missing head cannot silently shorten
+// the score vector; framewise-CNN presence gate; non-empty tensor gate;
+// the optional all-or-nothing `vokra.nisqa.*` front-end + topology groups
+// including the upstream odd-`seg_length` parity requirement; and
+// weight-license surfacing that fail-closes to `LicenseClass::Unknown`.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a) 「loud-partial は fake-complete より
+// honest」): `Nisqa::score` / `Nisqa::score_overall` return
+// `VokraError::UnsupportedOp` naming three concrete blockers — (i) the
+// MISSING PRIMITIVE `F.adaptive_max_pool2d`, which upstream `AdaptCNN`
+// calls three times and which `vokra-ops` does not provide in any form
+// (fixed-kernel pooling cannot reproduce it for a variable-length input);
+// (ii) the MISSING METADATA, i.e. the three adaptive-pool output sizes and
+// `td_sa_nhead`, which appear in NO weight tensor at all (`AdaptCNN` pool
+// extents are pure config, and `nn.MultiheadAttention` packs every head
+// into one `in_proj_weight`), plus the whole mel front-end; (iii) the
+// MISSING SIDECAR `tools/parity/nisqa_v2_weight_prepare_checkpoint.py`,
+// which the converter's docstring names but which has never been written.
+// No fabricated MOS is ever emitted (FR-EX-08).
+//
+// LICENSING: the upstream README states verbatim that the CODE is MIT but
+// that the released WEIGHTS (`nisqa.tar` / `nisqa_mos_only.tar` /
+// `nisqa_tts.tar`) are CC-BY-NC-SA-4.0 →
+// `LicenseClass::NonCommercialShareAlike` = **T4 / research-only**: never
+// publishable without `publish-one.sh --allow-noncommercial`, and the
+// share-alike obligation cascades to any derived GGUF. The converter's own
+// `DEFAULT_LICENSE_SPDX = "cc-by-nc-sa-4.0"` handling was cross-checked
+// against that primary source and is CORRECT — no discrepancy found.
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+//
+// `vokra_core::engines::MosScorerEngine` is deliberately NOT implemented,
+// for the same reason as `utmosv2` but in the opposite direction: its
+// `MosScore` payload is DNSMOS-shaped (p808 / sig / bak / ovrl) and has no
+// slot for coloration, discontinuity or loudness, so the impl would
+// silently drop three of the five dimensions this module exists to keep.
+// Cross-crate string handshake via duplicated
+// `pub const ARCH = "nisqa_v2_weight"` (mirror of the converter's ARCH
+// constant, preserving the layered convention `vokra-ops → nothing
+// GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
+// `vokra-convert → GGUF writer`).
+pub mod nisqa;
+
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
 #[cfg(test)]
