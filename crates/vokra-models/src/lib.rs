@@ -908,6 +908,166 @@ pub mod moonshine;
 // additional license-audit action needed this wave (row already
 // present).
 pub mod facebook_denoiser;
+// Wave 9 2026-08-14 audit follow-up (LIB.RS RULE append at end with
+// Wave 9 comment marker): Voila (`maitrix-org/Voila`, MIT, 2025) —
+// Maitrix's full-duplex speech-to-speech dialog family. Runtime binder
+// loud-partial per llama_omni2 / moshi / csm full-duplex S2S precedent:
+// real `from_gguf` (arch check + non-empty tensor gate + weight-license
+// class surfacing; converter does NOT stamp `vokra.voila.*` topology
+// chunks — variant discrimination across Voila-base / Voila-chat /
+// Voila-audio-alpha / Voila-autonomous-preview deferred to a follow-up
+// wave), `converse()` returns `UnsupportedOp` naming four pieces:
+// (i) full-duplex session manager (concurrent input / output streams,
+// barge-in / talk-over, ~195 ms end-to-end latency budget — mirror of
+// moshi / csm session code architecturally, but Voila's session
+// topology is distinct), (ii) Whisper-lineage speech encoder (raw PCM
+// -> semantic features), (iii) Voila LLM backbone forward (transformer
+// decoder producing speech tokens), (iv) speech decoder + vocoder head
+// (speech tokens -> output PCM; integrated with the LLM backbone,
+// plugs into the sibling hifigan / bigvgan / vocos vocoder-family
+// neighbourhood at the follow-up wave). Primary source:
+// github.com/maitrix-org/Voila. Distinct-arch discipline: sibling S2S
+// arches enumerated (`moshi` Kyutai full-duplex + Mimi CC-BY 4.0,
+// `csm` Sesame full-duplex + Mimi Apache 2.0, `llama_omni2` ICTNLP
+// streaming half-duplex + Qwen2.5 + Whisper Apache 2.0) — voila is a
+// FIRST full-duplex S2S with an integrated neural vocoder entry
+// distinct from moshi/csm Mimi-based codec approach; sharing arch with
+// any sibling would mis-route runtime dispatch (FR-EX-08). §3.1
+// sign-off row for `maitrix-org/Voila` (MIT) BLANK per fail-closed rule
+// (owner-side commercial-sign-off gate; feedback-license-signoff-
+// primary-source memory — CC MUST NOT sign, row addition is a follow-up
+// task for docs/license-audit.md).
+pub mod voila;
+// Wave 9 2026-08-14 audit follow-up (LIB.RS RULE append at end with
+// Wave 9 comment marker): **CLAP** (`laion/clap-htsat-fused`,
+// **Apache-2.0** — permissive, T1 tier redistributable) — LAION
+// Contrastive Language-Audio Pretraining (Wu et al. 2023 ICASSP
+// arXiv:2211.06687 "Large-scale Contrastive Language-Audio Pretraining
+// with Feature Fusion and Keyword-to-Caption Augmentation") runtime
+// binder for the `clap` converter arch (Wave 9, 2026-08-14, converter
+// side already landed at `crates/vokra-convert/src/models/clap.rs`,
+// TIER 1 F wave 2026-07-30). Real `from_gguf` (arch check + non-empty
+// tensor gate + weight-license class surfacing; the converter does
+// NOT stamp `vokra.clap.*` topology chunks — plain BF16 pass-through
+// per `wespeaker` / `neucodec` / `ecapa_tdnn` precedent, so this
+// binder mirrors the arch-only-gate posture rather than the strict
+// axis-array `wavlm_sv` / `storm` / `moonshine` posture);
+// `encode_audio()` returns `UnsupportedOp` naming (i) HTSAT audio
+// encoder walk (Hierarchical Token-Semantic Audio Transformer per
+// Chen et al. 2022 — a Swin-Transformer variant over log-mel
+// spectrogram patches with local/global feature fusion for the "fused"
+// variant per Wu et al. §3.2), (ii) RoBERTa text encoder walk (paired
+// text tower sharing the projection head, required at bind time so
+// future `encode_text(caption)` can produce a vector in the same
+// embedding space), (iii) shared projection head Linear(hidden, 512)
+// after mean pooling over the HTSAT time-frequency tokens producing
+// the final 512-dim paired language-audio embedding. Primary sources:
+// `github.com/LAION-AI/CLAP` + `arXiv:2211.06687` +
+// `huggingface.co/laion/clap-htsat-fused` (8.1M+ downloads at survey
+// time, one of the highest-download HF audio releases). Distinct-arch
+// discipline: sibling audio-embedding / classification / SSL-encoder
+// arches enumerated (`panns` fixed 527-way AudioSet head,
+// `emotion2vec` fixed 9-way emotion head, `wavlm_sv` XVector speaker
+// verification, `ecapa_tdnn` / `wespeaker` / `campplus` speaker
+// embedding, `audioldm2` audio generation, `musicgen` music
+// generation, `wav2vec2_ctc` CTC ASR) — CLAP's defining trait is a
+// two-tower contrastive paired language-audio embedding (Wu et al.
+// 2023 ICASSP) with no fixed downstream classifier head; sharing arch
+// with any sibling would mis-route runtime dispatch (FR-EX-08).
+// §3.1 sign-off ☑ Commercial 2026-07-30 yousan (docs/license-audit.md,
+// TIER 1 F wave 2026-07-30, apache-2.0 → Permissive T1 tier) — no
+// additional license-audit action needed this wave (row already
+// present). Cross-crate string handshake via duplicated
+// `pub const ARCH = "clap"` (mirror of the converter's ARCH constant,
+// preserving the layered convention `vokra-ops → nothing GGUF-aware`,
+// `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
+// `vokra-convert → GGUF writer`).
+pub mod clap;
+// Wave 9 2026-08-14 audit follow-up (LIB.RS RULE append at end with
+// Wave 9 comment marker): **3D-Speaker ERes2Net**
+// (`iic/speech_eres2net_sv_zh-cn_16k-common`, **Apache-2.0** — permissive,
+// T1 tier redistributable) — Alibaba DAMO's Enhanced Res2Net
+// speaker-verification encoder (Chen et al. 2023 arXiv:2305.12838 "An
+// Enhanced Res2Net with Local and Global Feature Fusion for Speaker
+// Verification") runtime binder for the `speaker_3d` converter arch
+// (Wave 9, 2026-08-14, converter already landed at
+// `crates/vokra-convert/src/models/speaker_3d.rs`). Loud-partial per the
+// emotion2vec / moonshine / panns / redimnet / wavlm / storm precedent
+// (CLAUDE.md 教訓 (a): "loud-partial は fake-complete より honest") —
+// real `from_gguf` (arch check + non-empty tensor gate + weight-license
+// class surfacing — the converter stamps `apache-2.0` verified
+// 2026-07-25 → `LicenseClass::Permissive`), `encode(fbank) ->
+// Result<Vec<f32>>` returns `UnsupportedOp` naming three deferred
+// pieces: (i) ERes2Net stem (initial 3x3 Conv2D + BN + ReLU followed by
+// four Res2NetBlock stages with local + global feature fusion —
+// upstream `speakerlab/models/eres2net/ERes2Net.py` in the 3D-Speaker
+// toolkit), (ii) Attentive Statistics Pooling head (temporal
+// attention-weighted mean + std concatenation, Chen et al. 2023
+// section 3.3), (iii) Linear embedding projection (Linear(embed_in,
+// EMBEDDING_DIM=192) + L2-normalize — the standard 192-d speaker
+// embedding shared with sibling CAM++ so downstream `spk_proj` /
+// cosine-similarity consumers see a compatible vector width). Primary
+// source: github.com/alibaba-damo-academy/3D-Speaker. Distinct-arch
+// discipline: sibling speaker-encoder arches enumerated (`campplus`
+// CAM++ densely-connected TDNN, `xvector` Kaldi 5-layer TDNN + stats
+// pool, `ecapa_tdnn` SpeechBrain SE-Res2Net + attentive stats pool,
+// `titanet-large` NVIDIA ContextNet + attentive stats pool, `wavlm_sv`
+// Microsoft WavLM base + XVector speaker head) — 3D-Speaker ERes2Net is
+// distinct on the Res2Net-stem-with-local-and-global-fusion + ASP head
+// axis; sharing arch with any sibling would mis-route runtime dispatch
+// (FR-EX-08). §3.1 sign-off row for
+// `iic/speech_eres2net_sv_zh-cn_16k-common` (Apache-2.0) BLANK per
+// fail-closed rule (owner-side commercial-sign-off gate; feedback-
+// license-signoff-primary-source memory — CC MUST NOT sign, row
+// addition is a follow-up task for docs/license-audit.md). Cross-crate
+// string handshake via duplicated `pub const ARCH = "speaker_3d"`
+// (mirror of the converter's ARCH constant, preserving the layered
+// convention `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF
+// reader`, `vokra-models → GGUF binder`, `vokra-convert → GGUF writer`).
+pub mod speaker_3d_eres2net;
+
+// Wave 9 2026-08-14 audit follow-up (LIB.RS RULE append at end with
+// Wave 9 comment marker): FunAudioLLM SenseVoiceSmall
+// (`FunAudioLLM/SenseVoiceSmall`, **FunASR MODEL_LICENSE** — a custom
+// upstream licence NOT in `LicenseClass::from_class_str`'s SPDX matcher,
+// so classifier returns `Unknown` fail-closed per
+// `[[feedback-license-signoff-primary-source]]`) — multi-task speech
+// understanding runtime binder (multilingual ASR + LID + SER + AED, 50
+// languages, ~15x lower latency than Whisper-Large per An et al. 2024
+// arXiv:2407.04051) for the `sensevoicesmall` converter arch (converter
+// side lives at `crates/vokra-convert/src/models/sensevoicesmall.rs`,
+// coverage-audit-2026-08-03 Wave B). Module name deliberately
+// `sensevoicesmall_runtime` per the task spec so the runtime-side
+// `pub mod sensevoicesmall_runtime;` here cannot clash with any
+// pre-existing crate-local `sensevoicesmall` symbol namespace inside
+// `vokra-models`. Real `from_gguf` (arch check + sibling-ASR-family
+// mis-route hint list + non-empty tensor gate + weight-license class
+// surfacing that correctly fail-closes to `Unknown` for the FunASR
+// MODEL_LICENSE default); `transcribe()` returns `UnsupportedOp`
+// naming (i) SAN-M (Modified Multi-Head Attention with a parallel
+// Memory-block Fully-Connected branch) enhanced Conformer encoder
+// walk — distinct from vanilla Conformer used by Parakeet /
+// Kotoba-Whisper / Reazonspeech-NeMo-v2, per An et al. 2024 §III-A +
+// `funasr/models/sanm/`, (ii) four per-task heads on the shared
+// encoder embedding in load-bearing tuple order [ASR, LID, SER, AED],
+// 50-language coverage per §IV / TableI. Primary sources: HF release
+// `huggingface.co/FunAudioLLM/SenseVoiceSmall`, reference code
+// `github.com/FunAudioLLM/SenseVoice`, paper
+// `arxiv.org/abs/2407.04051` — all three cited verbatim in the
+// loud-partial diagnostic so a follow-up wave has exactly three
+// anchors to walk. Distinct-arch discipline: sibling ASR-family arches
+// enumerated (`whisper` / `distil_whisper` / `kotoba_whisper` /
+// `moonshine` / `parakeet` / `parakeet_ctc` / `canary` /
+// `canary_qwen` / `omniasr_ctc` / `kyutai_stt` /
+// `reazonspeech_nemo_v2`) — SenseVoiceSmall is the FIRST multi-task
+// entry (ASR + LID + SER + AED) on the ASR family arm, sharing arch
+// with any sibling would mis-route runtime dispatch to a single-task
+// loader missing the LID / SER / AED heads (FR-EX-08). §3.1 sign-off
+// remains BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — the FunASR
+// MODEL_LICENSE is a custom upstream licence requiring primary-source
+// review; CC does NOT sign).
+pub mod sensevoicesmall_runtime;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
