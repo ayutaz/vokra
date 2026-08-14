@@ -19,7 +19,14 @@
 //! The port is the **float build** (`FLOATING_POINT`) of mdf.c at upstream
 //! commit `7a158783df74efe7c2d1c6ee8363c1e695c71226` (github.com/xiph/speexdsp,
 //! 2025-07-05), mono (`C = K = 1` — the M4-05/M4-06 full-duplex consumers are
-//! mono×mono; multichannel is a follow-up). All arithmetic — constants,
+//! mono×mono). The [`MultiChannelAec`] wrapper below spins up one mono
+//! [`Aec`] per channel pair for the per-channel-independent baseline (safe
+//! when cross-channel loudspeaker correlation is moderate); true multi-
+//! channel AEC with cross-channel decorrelation (Benesty, Morgan, Sondhi,
+//! *A better understanding and an improved solution to the specific problems
+//! of stereophonic acoustic echo cancellation*, IEEE TSP 46(4), 1998 —
+//! half-wave rectification, complementary comb filtering, or a joint MDF
+//! image of `C = K = 2`) remains a follow-up. All arithmetic — constants,
 //! accumulation grouping, `f64` promotions where C promotes to `double` — is
 //! transcribed from the upstream source, not invented (per-function citations
 //! inline). See `docs/adr/M4-03-aec-op.md` §D-(a).
@@ -1119,6 +1126,187 @@ impl Aec {
     // ZERO-ALLOC-END
 }
 
+/// Construction attributes of a [`MultiChannelAec`] wrapper.
+///
+/// The wrapper builds `channels` independent [`Aec`] instances (one per
+/// channel pair) that all share `base` attrs. See [`MultiChannelAec`] for
+/// the scope caveat (per-channel-independent baseline, not true MC-AEC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiChannelAecAttrs {
+    /// Per-channel [`Aec`] attrs shared across every instance (same
+    /// `sample_rate`, `frame_size`, `filter_length`).
+    pub base: AecAttrs,
+    /// Number of (near-end, far-end) channel pairs. Must be `>= 1`; the
+    /// wrapper accepts `channels == 1` as a degenerate case (identical
+    /// results to a bare [`Aec`], with one extra layer of dispatch — prefer
+    /// the mono API when only one channel is needed).
+    pub channels: usize,
+}
+
+/// Multi-channel echo canceller: `channels` independent [`Aec`] instances,
+/// one per (near-end, far-end) channel pair, adapted **channel-independently**
+/// (each instance sees only its own mic/far pair — the safe baseline).
+///
+/// # Scope caveat — this is *not* true multi-channel AEC
+///
+/// The rigorous reference for multi-channel AEC models cross-channel coupling:
+/// stereo (and 5.1 / 7.1) loudspeaker signals typically share energy across
+/// channels (a music-like TTS output is a canonical case), which makes the
+/// joint identification problem **non-unique** — see Benesty, Morgan, Sondhi,
+/// *A better understanding and an improved solution to the specific problems
+/// of stereophonic acoustic echo cancellation*, IEEE TSP 46(4), 1998.
+/// Implementations that ignore the coupling (per-channel independent AEC)
+/// still work in practice when the cross-channel correlation is moderate and
+/// each individual echo path is short — this wrapper is that safe baseline.
+/// True MC-AEC (with the non-uniqueness mitigation — half-wave rectification,
+/// complementary comb filtering, or a joint MDF `C = K = 2`) remains a
+/// follow-up (module header, ADR M4-03 §D-(a)).
+///
+/// # Queue-less surface only
+///
+/// Exposes only [`MultiChannelAec::process_with_far`] (caller-aligned mic /
+/// far / out arrays, one slice per channel). The queue-driven
+/// [`Aec::process`] surface is single-channel by construction
+/// ([`AecRefReader`](vokra_core::stream::AecRefReader) carries one channel of
+/// far-end); a multi-channel queue wrapper is a further follow-up.
+///
+/// # Hot path
+///
+/// The status vector is pre-allocated in [`MultiChannelAec::new`] and
+/// borrowed out of `self` by [`MultiChannelAec::process_with_far`], so the
+/// wrapper itself does not allocate per frame. Each per-channel
+/// [`Aec::process_with_far`] call is already ZERO-ALLOC (mono module
+/// contract), so the full multi-channel call is allocation-free too. The
+/// mono ZERO-ALLOC marker scan (`scripts/check-hot-path-allocs.sh`) does not
+/// cover this wrapper directly — see the mono `ZERO-ALLOC-BEGIN` region
+/// upstream for the M4-05/06 full-duplex hot path.
+pub struct MultiChannelAec {
+    attrs: MultiChannelAecAttrs,
+    /// One [`Aec`] per channel pair (channel-independent, safe baseline).
+    instances: Vec<Aec>,
+    /// Pre-allocated per-channel status vector, sized to `channels` in
+    /// [`new`](Self::new) so [`process_with_far`](Self::process_with_far)
+    /// does not allocate on the hot path.
+    status_scratch: Vec<AecStatus>,
+}
+
+impl MultiChannelAec {
+    /// Builds a wrapper of `attrs.channels` independent cancellers, each
+    /// constructed from `attrs.base` (see [`Aec::new`] for the same
+    /// preconditions).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] when `channels == 0`, or when any of
+    /// the underlying [`Aec::new`] preconditions is violated (rate /
+    /// frame-size / filter-length / FFT-Direct-path — the first failing
+    /// channel returns).
+    pub fn new(attrs: &MultiChannelAecAttrs) -> Result<Self> {
+        if attrs.channels == 0 {
+            return Err(VokraError::InvalidArgument(
+                "aec: MultiChannelAec channels must be >= 1".into(),
+            ));
+        }
+        let mut instances = Vec::with_capacity(attrs.channels);
+        for _ in 0..attrs.channels {
+            instances.push(Aec::new(&attrs.base)?);
+        }
+        let status_scratch = vec![AecStatus::Cancelled; attrs.channels];
+        Ok(Self {
+            attrs: *attrs,
+            instances,
+            status_scratch,
+        })
+    }
+
+    /// Number of channel pairs.
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        self.attrs.channels
+    }
+
+    /// Per-channel frame size (samples per
+    /// [`process_with_far`](Self::process_with_far) call, identical across
+    /// channels).
+    #[must_use]
+    pub fn frame_size(&self) -> usize {
+        self.attrs.base.frame_size
+    }
+
+    /// Number of MDF filter blocks `M` per channel (identical across
+    /// channels; every instance was constructed with the same `attrs.base`).
+    #[must_use]
+    pub fn filter_blocks(&self) -> usize {
+        self.instances[0].filter_blocks()
+    }
+
+    /// Construction attributes.
+    #[must_use]
+    pub fn attrs(&self) -> &MultiChannelAecAttrs {
+        &self.attrs
+    }
+
+    /// Resets every underlying canceller to its as-new state (per-instance
+    /// bit-exact reset, pinned by [`Aec`]'s
+    /// `reset_reproduces_a_fresh_instance` test).
+    pub fn reset(&mut self) {
+        for a in self.instances.iter_mut() {
+            a.reset();
+        }
+    }
+
+    /// Cancels one frame per channel: `mic[c]` and `far[c]` are the mic and
+    /// far-end frames of channel `c`, and `out[c]` receives the cancelled
+    /// output. Every channel runs [`Aec::process_with_far`] independently —
+    /// no cross-channel coupling (see the type-level scope caveat).
+    ///
+    /// Returns a per-channel [`AecStatus`] slice borrowed from internal
+    /// scratch (valid until the next `&mut self` call — clone with
+    /// [`<[AecStatus]>::to_vec`] if ownership is needed).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] when any of `mic.len()`, `far.len()`
+    /// or `out.len()` does not equal [`channels()`](Self::channels), or when
+    /// any per-channel slice length does not equal
+    /// [`frame_size()`](Self::frame_size) — the first failing channel
+    /// returns (FR-EX-08: no silent truncation, no silent zero-padding).
+    pub fn process_with_far(
+        &mut self,
+        mic: &[&[f32]],
+        far: &[&[f32]],
+        out: &mut [&mut [f32]],
+    ) -> Result<&[AecStatus]> {
+        let c = self.attrs.channels;
+        if mic.len() != c {
+            return Err(VokraError::InvalidArgument(format!(
+                "aec: MultiChannelAec mic channel count {} != channels {c}",
+                mic.len()
+            )));
+        }
+        if far.len() != c {
+            return Err(VokraError::InvalidArgument(format!(
+                "aec: MultiChannelAec far channel count {} != channels {c}",
+                far.len()
+            )));
+        }
+        if out.len() != c {
+            return Err(VokraError::InvalidArgument(format!(
+                "aec: MultiChannelAec out channel count {} != channels {c}",
+                out.len()
+            )));
+        }
+        // Dispatch per channel; per-channel slice length validation happens
+        // inside Aec::process_with_far (FR-EX-08 — the first failing channel
+        // returns and later channels are not processed for this frame).
+        for (ch, aec) in self.instances.iter_mut().enumerate() {
+            let s = aec.process_with_far(mic[ch], far[ch], out[ch])?;
+            self.status_scratch[ch] = s;
+        }
+        Ok(&self.status_scratch)
+    }
+}
+
 /// Named internal time buffers (borrow-splitting helper for the FFT calls).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TimeBuf {
@@ -1814,5 +2002,200 @@ mod tests {
             aec.process(&mic, f * n as u64, &mut rx, &mut out).unwrap();
         }
         assert_eq!(caps(&aec), before, "no scratch reallocation across frames");
+    }
+
+    // ---- MultiChannelAec (per-channel-independent baseline) ---------------
+
+    /// A 2-channel wrapper fed the *same* mic/far on both channels must
+    /// produce, bit-for-bit, the mono reference on each output channel — the
+    /// wrapper is a pure dispatch layer, not new math.
+    #[test]
+    fn multi_channel_identical_channels_match_mono() {
+        let base = attrs_16k();
+        let n = base.frame_size;
+        let far_i16 = noise(n, 6000.0, 42);
+        let mic_i16 = convolve(&far_i16, &echo_path());
+        let far: Vec<f32> = far_i16.iter().map(|v| v / INT16_SCALE).collect();
+        let mic: Vec<f32> = mic_i16.iter().map(|v| v / INT16_SCALE).collect();
+
+        // Mono reference: one fresh instance, one frame.
+        let mut mono = Aec::new(&base).unwrap();
+        let mut out_mono = vec![0.0f32; n];
+        let s_mono = mono.process_with_far(&mic, &far, &mut out_mono).unwrap();
+
+        // 2-channel wrapper: identical inputs on both channels.
+        let mc_attrs = MultiChannelAecAttrs { base, channels: 2 };
+        let mut mc = MultiChannelAec::new(&mc_attrs).unwrap();
+        assert_eq!(mc.channels(), 2);
+        assert_eq!(mc.frame_size(), n);
+        assert_eq!(mc.filter_blocks(), mono.filter_blocks());
+
+        let mut out0 = vec![0.0f32; n];
+        let mut out1 = vec![0.0f32; n];
+        let statuses = {
+            let mic_pairs: [&[f32]; 2] = [&mic, &mic];
+            let far_pairs: [&[f32]; 2] = [&far, &far];
+            let mut out_slots: [&mut [f32]; 2] = [&mut out0, &mut out1];
+            // Clone the returned slice to release the borrow of `mc`
+            // before we read out0/out1 (borrow-checker hygiene, not perf).
+            mc.process_with_far(&mic_pairs, &far_pairs, &mut out_slots)
+                .unwrap()
+                .to_vec()
+        };
+
+        let want_bits: Vec<u32> = out_mono.iter().map(|v| v.to_bits()).collect();
+        let got0_bits: Vec<u32> = out0.iter().map(|v| v.to_bits()).collect();
+        let got1_bits: Vec<u32> = out1.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(got0_bits, want_bits, "channel 0 must be bit-exact vs mono");
+        assert_eq!(got1_bits, want_bits, "channel 1 must be bit-exact vs mono");
+        assert_eq!(statuses.as_slice(), &[s_mono, s_mono]);
+    }
+
+    /// A 2-channel wrapper fed *decorrelated* (independently-seeded) streams
+    /// on the two channels must produce, per channel, the exact output of a
+    /// fresh mono [`Aec`] fed only that channel's data — proving the wrapper
+    /// is truly channel-independent (no cross-channel state leak). The two
+    /// output channels must not be equal (decorrelation preserved end-to-end).
+    #[test]
+    fn multi_channel_decorrelated_channels_produce_independent_outputs() {
+        let base = attrs_16k();
+        let n = base.frame_size;
+        let frames = 30;
+
+        // Two decorrelated far-end streams (different seeds), each convolved
+        // with the same fixed echo path to form a plausible mic stream.
+        let far0_i16 = noise(frames * n, 6000.0, 11);
+        let far1_i16 = noise(frames * n, 6000.0, 22);
+        let mic0_i16 = convolve(&far0_i16, &echo_path());
+        let mic1_i16 = convolve(&far1_i16, &echo_path());
+        let to_unit = |v: &[f32]| -> Vec<f32> { v.iter().map(|s| s / INT16_SCALE).collect() };
+        let far0 = to_unit(&far0_i16);
+        let far1 = to_unit(&far1_i16);
+        let mic0 = to_unit(&mic0_i16);
+        let mic1 = to_unit(&mic1_i16);
+
+        // MultiChannelAec run.
+        let mc_attrs = MultiChannelAecAttrs { base, channels: 2 };
+        let mut mc = MultiChannelAec::new(&mc_attrs).unwrap();
+        let mut mc_out0 = vec![0.0f32; frames * n];
+        let mut mc_out1 = vec![0.0f32; frames * n];
+        for f in 0..frames {
+            let s = f * n;
+            let e = s + n;
+            let mic_pairs: [&[f32]; 2] = [&mic0[s..e], &mic1[s..e]];
+            let far_pairs: [&[f32]; 2] = [&far0[s..e], &far1[s..e]];
+            // mc_out0 and mc_out1 are independent Vecs; the borrow checker
+            // sees the two mutable sub-slices as disjoint.
+            let mut out_slots: [&mut [f32]; 2] = [&mut mc_out0[s..e], &mut mc_out1[s..e]];
+            mc.process_with_far(&mic_pairs, &far_pairs, &mut out_slots)
+                .unwrap();
+        }
+
+        // Independent mono references: two fresh instances, one per channel.
+        let mut mono0 = Aec::new(&base).unwrap();
+        let mut mono1 = Aec::new(&base).unwrap();
+        let mut ref_out0 = vec![0.0f32; frames * n];
+        let mut ref_out1 = vec![0.0f32; frames * n];
+        for f in 0..frames {
+            let s = f * n;
+            let e = s + n;
+            mono0
+                .process_with_far(&mic0[s..e], &far0[s..e], &mut ref_out0[s..e])
+                .unwrap();
+            mono1
+                .process_with_far(&mic1[s..e], &far1[s..e], &mut ref_out1[s..e])
+                .unwrap();
+        }
+
+        // Bit-exact channel independence: MC channel c == fresh mono of ch c.
+        let mc0_bits: Vec<u32> = mc_out0.iter().map(|v| v.to_bits()).collect();
+        let mc1_bits: Vec<u32> = mc_out1.iter().map(|v| v.to_bits()).collect();
+        let ref0_bits: Vec<u32> = ref_out0.iter().map(|v| v.to_bits()).collect();
+        let ref1_bits: Vec<u32> = ref_out1.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(
+            mc0_bits, ref0_bits,
+            "MC channel 0 must equal a fresh mono fed channel 0's stream alone"
+        );
+        assert_eq!(
+            mc1_bits, ref1_bits,
+            "MC channel 1 must equal a fresh mono fed channel 1's stream alone"
+        );
+
+        // Decorrelation preserved: different seeds in ⇒ different residues
+        // out (defends against a hypothetical bug that would broadcast one
+        // channel's state to the other).
+        assert_ne!(
+            mc0_bits, mc1_bits,
+            "decorrelated inputs must yield different outputs"
+        );
+    }
+
+    /// `channels == 0` is an explicit error (FR-EX-08).
+    #[test]
+    fn multi_channel_zero_channels_is_rejected() {
+        let attrs = MultiChannelAecAttrs {
+            base: attrs_16k(),
+            channels: 0,
+        };
+        assert!(matches!(
+            MultiChannelAec::new(&attrs),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    /// Channel-count and per-channel length mismatches on `process_with_far`
+    /// are explicit errors (FR-EX-08 — no silent truncation).
+    #[test]
+    fn multi_channel_validates_dimensions() {
+        let base = attrs_16k();
+        let n = base.frame_size;
+        let mc_attrs = MultiChannelAecAttrs { base, channels: 2 };
+        let mut mc = MultiChannelAec::new(&mc_attrs).unwrap();
+
+        let ch = vec![0.0f32; n];
+        let mut out0 = vec![0.0f32; n];
+        let mut out1 = vec![0.0f32; n];
+
+        // Wrong mic channel count (1 vs 2).
+        {
+            let mic_pairs: [&[f32]; 1] = [&ch];
+            let far_pairs: [&[f32]; 2] = [&ch, &ch];
+            let mut out_slots: [&mut [f32]; 2] = [&mut out0, &mut out1];
+            assert!(matches!(
+                mc.process_with_far(&mic_pairs, &far_pairs, &mut out_slots),
+                Err(VokraError::InvalidArgument(_))
+            ));
+        }
+        // Wrong far channel count (1 vs 2).
+        {
+            let mic_pairs: [&[f32]; 2] = [&ch, &ch];
+            let far_pairs: [&[f32]; 1] = [&ch];
+            let mut out_slots: [&mut [f32]; 2] = [&mut out0, &mut out1];
+            assert!(matches!(
+                mc.process_with_far(&mic_pairs, &far_pairs, &mut out_slots),
+                Err(VokraError::InvalidArgument(_))
+            ));
+        }
+        // Wrong out channel count (1 vs 2).
+        {
+            let mic_pairs: [&[f32]; 2] = [&ch, &ch];
+            let far_pairs: [&[f32]; 2] = [&ch, &ch];
+            let mut out_slots: [&mut [f32]; 1] = [&mut out0];
+            assert!(matches!(
+                mc.process_with_far(&mic_pairs, &far_pairs, &mut out_slots),
+                Err(VokraError::InvalidArgument(_))
+            ));
+        }
+        // Wrong per-channel length (bubbled up from Aec::process_with_far).
+        {
+            let short = vec![0.0f32; n - 2];
+            let mic_pairs: [&[f32]; 2] = [&ch, &short];
+            let far_pairs: [&[f32]; 2] = [&ch, &ch];
+            let mut out_slots: [&mut [f32]; 2] = [&mut out0, &mut out1];
+            assert!(matches!(
+                mc.process_with_far(&mic_pairs, &far_pairs, &mut out_slots),
+                Err(VokraError::InvalidArgument(_))
+            ));
+        }
     }
 }
