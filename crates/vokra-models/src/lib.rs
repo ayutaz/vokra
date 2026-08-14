@@ -504,6 +504,15 @@ pub mod f0;
 // `docs/handoff/pyannote-implementation-plan-2026-07-30.md`. Same
 // posture as sibling RMVPE (`crate::f0::rmvpe`).
 pub mod pyannote;
+// Wave 1 2026-08-14 audit follow-up (vocoder + codec standalone binders):
+// hifigan = standalone runtime binder for `hifigan_vocoder` /
+// `speecht5_hifigan` converters (loud-partial `from_gguf`, real
+// synthesized-weight `decode` via `vokra_ops::hifigan::hifigan_generator`).
+// snac = standalone runtime binder for hubertsiuzdak/snac_{24khz,44khz}
+// (loud-partial `encode`/`decode` — RMVPE / DNSMOS precedent; discovery /
+// variant / config / license paths are real).
+pub mod hifigan;
+pub mod snac;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
