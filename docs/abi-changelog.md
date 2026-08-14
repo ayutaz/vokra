@@ -363,13 +363,33 @@ runs when `out_capacity > 0`).
 API edge; the pre-1.0 prerelease policy (rename / remove allowed with a dated
 entry) covers it.
 
-**Known gap**: the mutation above is only caught where a GPU feature *and* a
-real GGUF are both present. CI has each separately — `gpu-backends` builds the
-features against the committed Silero fixture, `nightly-full-parity` runs the
-real GGUF on a default build — but no job has both, so the GPU leg of the
-wiring test skips everywhere in CI today. It was verified by hand on an M1 iMac
-(`--features metal` + `VOKRA_CAMPLUS_GGUF` + `VOKRA_WHISPER_GGUF`). Closing it
-needs a model on a GPU-feature runner, which is an owner infrastructure call.
+**Closing the GPU-feature × real-model gap**: the mutation above is only caught
+where a GPU feature *and* a real model are both present, and no job had both.
+`nightly-full-parity.yml` cannot supply one — it resolves models from a
+runner-local path held in a repository variable, which is unset, and its
+`ubuntu-latest` runners have no such file, so every real-GGUF leg there
+(including the `campplus-capi` one added above) currently takes the honest-skip
+path. `gpu-backends` had the features but no model at all.
+
+So `gpu-backends` now fetches the models itself: the published, already
+converted GGUFs from **huggingface.co/vokra** (public, no token) —
+`campplus-speaker-encoder/campplus.gguf` (27.7 MB) and
+`whisper-base/whisper-base.gguf` (290.9 MB) — cached across runs and pinned by
+sha256 (the HF LFS oid), so an upstream change fails the job instead of quietly
+testing something else. Both files are **byte-identical to the ones the local
+mutation check ran against** (`c760971d…` / `7e774425…` verified on both
+sides), so the hand verification and the CI leg exercise the same weights. The
+test step also gained `--nocapture` so a skip states its reason in the log
+rather than passing silently.
+
+Two limits remain, both honest rather than hidden. Whether a hosted macOS
+runner exposes a usable Metal device is **not yet established** — no
+device-requiring test has run in CI, and the existing `camplus_metal_matches_cpu`
+leg has always short-circuited on the missing GGUF before reaching its device
+probe — so the first run of this job is what settles it; if the device is
+absent the wiring test skips and says so. And the `cuda` arm is `ubuntu-latest`
+with no GPU, so its GPU leg skips by construction; that arm's value is the
+feature build and the CPU-only-arch refusal path.
 
 **M5-13 relevance**: these ten C symbols are part of the surface IF-01 will
 freeze at v1.0 GA. They were added *before* the freeze precisely so they need

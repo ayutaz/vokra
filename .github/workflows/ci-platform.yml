@@ -115,11 +115,60 @@ jobs:
       # GPU + CPU-only arch => UNSUPPORTED_OP) run here for real; the real-GGUF
       # legs stay in nightly-full-parity.yml. vokra-capi has no coreml / qnn
       # feature, so this is restricted to the GPU arms.
+      # The backend-reached-the-engine test needs a GPU feature AND a real
+      # model at the same time: `.with_backend(backend)` can only be observed
+      # on a backend that is not the default, and `build_session` only reaches
+      # that line with a loadable GGUF. Neither existing mechanism supplies
+      # both — `nightly-full-parity.yml` resolves models from a runner-local
+      # path in a repository variable (unset, and hosted runners have no such
+      # file), and this job had no model at all — so the wiring assertion
+      # skipped everywhere in CI and a deleted `.with_backend` went unnoticed.
+      #
+      # These two GGUFs are the published, already-converted artefacts from
+      # huggingface.co/vokra (public, no token). Both are byte-identical to
+      # the files the 2026-08-14 mutation check ran against locally, so the
+      # hand verification and the CI leg exercise the same weights. Pinned by
+      # sha256 (the HF LFS oid): a changed upstream file fails the job rather
+      # than silently testing something else.
+      - name: Cache real GGUFs (C ABI wiring test)
+        if: matrix.feature == 'metal' || matrix.feature == 'cuda'
+        id: gguf-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vokra-ci-gguf
+          key: ci-gguf-campplus-c760971d-whisper-base-7e774425
+      - name: Download real GGUFs (huggingface.co/vokra, public)
+        if: (matrix.feature == 'metal' || matrix.feature == 'cuda') && steps.gguf-cache.outputs.cache-hit != 'true'
+        env:
+          DEST: ${{ runner.temp }}/vokra-ci-gguf
+        run: |
+          set -euo pipefail
+          mkdir -p "${DEST}"
+          curl -fsSL --retry 3 -o "${DEST}/campplus.gguf" \
+            https://huggingface.co/vokra/campplus-speaker-encoder/resolve/main/campplus.gguf
+          curl -fsSL --retry 3 -o "${DEST}/whisper-base.gguf" \
+            https://huggingface.co/vokra/whisper-base/resolve/main/whisper-base.gguf
+          cat > "${DEST}/SHA256SUMS" <<'EOF'
+          c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea  campplus.gguf
+          7e774425585d6e9ba58ac5337b406522b1408ab6ff6765d2938b092aef4c8e27  whisper-base.gguf
+          EOF
+          cd "${DEST}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c SHA256SUMS
+          else
+            shasum -a 256 -c SHA256SUMS
+          fi
       - name: C ABI backend selector (--features ${{ matrix.feature }})
         if: matrix.feature == 'metal' || matrix.feature == 'cuda'
+        env:
+          # Absent on a runner where the download step was skipped for any
+          # reason: the test then takes its documented skip path rather than
+          # failing, which keeps this leg honest instead of red-for-infra.
+          VOKRA_CAMPLUS_GGUF: ${{ runner.temp }}/vokra-ci-gguf/campplus.gguf
+          VOKRA_WHISPER_GGUF: ${{ runner.temp }}/vokra-ci-gguf/whisper-base.gguf
         run: |
           cargo clippy -p vokra-capi --features ${{ matrix.feature }} --all-targets -- -D warnings
-          cargo test -p vokra-capi --features ${{ matrix.feature }}
+          cargo test -p vokra-capi --features ${{ matrix.feature }} -- --nocapture
       # M3-01-T22: also run vokra-backend-cuda's own probe/coverage/parity tests
       # on the CUDA arm (the crate has no `cuda` feature of its own — see
       # `Cargo.toml` — so it compiles unconditionally and its device-gated tests
