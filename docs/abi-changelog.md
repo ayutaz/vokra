@@ -228,6 +228,86 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-14 — 1.0.0-rc.1-dev (WP-23 piper-plus landing: `PiperPlusTts::synthesize_streaming` + `PiperPlusTtsStream` single-chunk fallback + `TtsStreamHandle` re-export — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the FR-ST-04 streaming-surface
+unification on piper-plus (Vokra's first native TTS). The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+every change is Rust-surface, not cbindgen-exported (`scripts/gen-c-abi.sh
+--check` = no diff).
+
+**Motivation**: The `TtsEngine::synthesize_stream` trait method (WP-23,
+landed in the 2026-08-10 SBV2 v2 wave) loudly refused with
+`VokraError::UnsupportedOp` on every engine — including piper-plus — so
+downstream callers had to special-case full-utterance engines against
+future chunk-wise engines (piper-plus M4-03 chunked decode / SBV2
+streaming). This wave lands the piper-plus override as a **single-chunk
+fallback**: the full `TtsEngine::synthesize` path runs synchronously to
+produce the PCM, which is then wrapped in a `PiperPlusTtsStream` that
+yields the buffer once on `next_pcm_chunk()` and `None` afterwards. The
+generation time is unchanged — MB-iSTFT-VITS2 is a full-utterance
+synthesizer with no architectural chunk-boundary — and per FR-EX-08 this
+is stated in the docstring rather than hidden behind a name that
+promises incremental generation. A future chunk-boundary decoder (the
+WP-M4-03 piper streaming path) overrides this method to emit true
+incremental chunks; downstreams that already use `TtsStreamHandle` will
+pick up the improvement without an API change.
+
+**Backward compatibility**: Purely additive. The pre-existing
+`PiperPlusTts::synthesize_pseudo_streaming` inherent method (the honest
+name that FR-ST-04 mandates for the full-PCM route) is unchanged and
+still returns `SynthesizedAudio`. The new inherent methods return
+`Result<PiperPlusTtsStream>` (the stronger-typed variant). No existing
+call sites break.
+
+**Files touched**:
+- `crates/vokra-core/src/lib.rs`
+  — Added `TtsStreamHandle` to the `pub use engines::{...}` re-export
+    list, so downstream consumers can name the trait as
+    `vokra_core::TtsStreamHandle` (in addition to the pre-existing
+    `vokra_core::engines::TtsStreamHandle` path). The trait itself was
+    already `pub trait` and is present in
+    `docs/abi/vokra-rust-public-api.v1.0-rc.list` (line 1313); this
+    change adds a shorter re-export path, not a new symbol.
+- `crates/vokra-models/src/piper_plus/mod.rs`
+  — New top-level import `use vokra_core::{... TtsStreamHandle, ...};`.
+  — New `pub fn PiperPlusTts::synthesize_streaming(&self, request:
+    &SynthesisRequest) -> Result<PiperPlusTtsStream>` — mirrors
+    `TtsEngine::synthesize` (uses the placeholder `tokenize()` path)
+    and wraps the resulting `SynthesizedAudio` in the single-chunk
+    stream.
+  — New `pub fn PiperPlusTts::synthesize_streaming_with(&self, request:
+    &SynthesisRequest, phonemizer: &dyn Phonemizer) ->
+    Result<PiperPlusTtsStream>` — mirrors
+    `synthesize_pseudo_streaming` (takes an injected G2P) and wraps its
+    output.
+  — New `pub struct PiperPlusTtsStream { pcm: Option<Vec<f32>>,
+    sample_rate: u32 }` with a `pub(crate) fn new` constructor (only
+    the two `synthesize_streaming*` methods build one at runtime; the
+    crate-visible constructor exists for the wrapper-only unit tests).
+  — New `impl TtsStreamHandle for PiperPlusTtsStream` — drains the
+    buffer on the first `next_pcm_chunk()` call, returns `None`
+    afterwards, and reports the voice's sample rate.
+  — New `impl TtsEngine for PiperPlusTts { fn synthesize_stream(...)
+    -> Result<Box<dyn TtsStreamHandle + Send>> { ... } }` — overrides
+    the default (which loudly refuses per FR-EX-08) with a boxed
+    single-chunk wrapper.
+  — Six new tests in a new `stream_wrapper_tests` module:
+    `stream_yields_single_chunk_then_none`,
+    `stream_returns_first_chunk_bit_exact`,
+    `stream_reports_configured_sample_rate`,
+    `stream_handle_is_send`,
+    `stream_handles_empty_pcm_as_single_empty_chunk`,
+    `synthesize_streaming_symbol_shape_matches_wrapper`,
+    `tts_engine_stream_override_returns_boxed_handle_shape`.
+
+**Verification**: `scripts/gen-c-abi.sh --check` clean (no C ABI diff);
+zero-dep unchanged (root `Cargo.lock` still `vokra-*` only, NFR-DS-02);
+FR-ST-04 respected — the surface unification is documented as a
+single-chunk fallback and the existing `synthesize_pseudo_streaming`
+name is preserved so the honest full-PCM route stays reachable under
+its FR-ST-04-mandated name.
+
 ### 2026-08-14 — 1.0.0-rc.1-dev (`AsrEngine` impl for `DistilWhisperAsr` — Rust surface only, advisory)
 
 Additive **Rust public API** entry that wires

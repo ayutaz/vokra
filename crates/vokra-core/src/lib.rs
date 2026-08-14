@@ -195,7 +195,7 @@ pub use decode::{
 pub use engines::{
     AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle,
     DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine,
-    SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle,
+    SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle,
 };
 #[cfg(feature = "std")]
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
