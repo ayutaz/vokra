@@ -2674,6 +2674,13 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // encoder, cc-by-nc-4.0 default = T4 fail-closed). HF-hosted,
         // stamps `vokra.provenance.upstream_hf = facebook/melodyflow-t24-30secs`.
         | ModelKind::MelodyflowT2430secs
+        // Wave 7 2026-08-14 audit follow-up: WavLM-Base-Plus-SV speaker
+        // verification (Microsoft, apache-2.0 code, weight license
+        // fail-closed BLANK for Copyleft/Unknown sign-off). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = microsoft/wavlm-base-plus-sv`.
+        // Speaker-fleet extension over campplus / wespeaker / ecapa_tdnn /
+        // titanet / speaker_3d / redimnet.
+        | ModelKind::WavlmSv
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
@@ -2938,8 +2945,11 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // HuggingFace) same as sibling `NkfAec` / `Rnnoise` / `Nsnet2`
         // fleet — dedicated arms keep the verify output honest instead
         // of falling into a wildcard that would print `<none>` for the
-        // upstream URL.
-        ModelKind::DtlnAec | ModelKind::Gtcrn => {
+        // upstream URL. Wave 7 2026-08-14 RETRY: StoRM ships identical
+        // provenance/upstream_url/category surface (MIT, GitHub-only
+        // upstream via Google Drive distribution, category
+        // `enhancement`), so it joins the shared arm.
+        ModelKind::DtlnAec | ModelKind::Gtcrn | ModelKind::Storm => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

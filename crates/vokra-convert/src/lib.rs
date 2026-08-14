@@ -3043,6 +3043,105 @@ pub enum ModelKind {
     /// conv_tasnet / demucs loud-partial precedent. §3.1 sign-off
     /// BLANK (fail-closed) — publish blocked until owner signs.
     Gtcrn,
+    /// **StoRM** (`sp-uhh/storm`, **MIT**) safetensors → GGUF
+    /// converter (Wave 7 2026-08-14 audit follow-up RETRY of a Wave 6
+    /// lost item — workflow silently swallowed the result last time,
+    /// see WAVE 6 LESSON). Lay et al. 2023 arXiv:2312.09386 "StoRM:
+    /// A Diffusion-based Stochastic Regeneration Model for Speech
+    /// Enhancement and Dereverberation" — two-stage diffusion-based
+    /// speech enhancement + dereverberation model: (i) initial
+    /// deterministic predictive estimator (NCSN++ v2 U-Net variant,
+    /// MSE objective) → (ii) NCSN++ v2 score-network refinement via
+    /// OUVE-SDE (Ornstein-Uhlenbeck Variance-Exploding SDE)
+    /// predictor-corrector sampler.
+    ///
+    /// **Distinct arch tag `storm`** — sibling enhancement / separator
+    /// families (`denoise` (DFN3 ERB analysis/synthesis + CRN),
+    /// `rnnoise` (Xiph GRU + BFCC), `nsnet2` (Microsoft DNS baseline,
+    /// 2-layer GRU + 3-Linear mask over 257-bin STFT), `dnsmos`
+    /// (P.808/P.835 metric only), `gtcrn` (grouped Conv2D + SB-TF-LSTM
+    /// + ERB grouping ~23K params), `metricgan_plus`, `mp_senet_dns`,
+    /// `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
+    /// `mossformer2_ss_16k`, `facebook_denoiser`) all have distinct
+    /// topologies from StoRM's NCSN++ v2 score-network + OUVE-SDE
+    /// predictor-corrector diffusion-based two-stage stack. FR-EX-08
+    /// forbids silent shape misroute across enhancement / separator
+    /// families. **StoRM is the FIRST diffusion-based entry on the
+    /// enhancement arm** — no near-neighbor exists in the catalogue.
+    /// Category `enhancement` (single-mask enhancement + dereverb head
+    /// — mirrors the sibling DFN3 / NSNet2 / GTCRN enhancement family
+    /// posture).
+    ///
+    /// **License**: MIT per the upstream GitHub repo LICENSE
+    /// (`github.com/sp-uhh/storm/blob/main/LICENSE`, per task scout
+    /// input 2026-08-14 — owner must primary-source confirm at
+    /// sign-off time). MIT = `LicenseClass::Permissive` T1 tier
+    /// candidate (redistributable OK, no runtime-side attribution
+    /// obligation). GitHub-only upstream (no HF mirror as of
+    /// 2026-08-14 — Google Drive distribution) — same posture as
+    /// NSNet2 / RNNoise / facebook_denoiser / NKF-AEC / GTCRN
+    /// provenance (`vokra.provenance.upstream_url` rather than
+    /// `upstream_hf`). **Publish path gated on owner ADR** — no HF
+    /// mirror means the existing publish pipe is not directly
+    /// applicable; owner must decide between T4 Research-only
+    /// precedent vs new T1 Permissive GitHub-source precedent.
+    ///
+    /// **Upstream format**: PyTorch state dict (typical <100 MB per
+    /// sub-model per sp-uhh/storm README). Owners run the standard
+    /// `nemo_pt_to_safetensors.py` prep step (uv-managed Python 3.12
+    /// sidecar) before pointing this converter at the resulting
+    /// `.safetensors` — pickle deserialization inside the Rust
+    /// runtime would violate the FR-LD-05 "no arbitrary code
+    /// execution at load" rule.
+    ///
+    /// Scale <100 MB = local convert safe on M1 iMac (well below the
+    /// vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
+    /// skeleton mirror of `sepformer` / `conv_tasnet_libri1mix` /
+    /// `demucs_htdemucs` / `gtcrn`. Runtime binder `crates/vokra-
+    /// models/src/storm/mod.rs` real `from_gguf` (strict 6-axis chunk
+    /// group + arch check + tensor non-emptiness gate + license class
+    /// surface) + `enhance()` loud-partial pending NCSN++ v2 U-Net
+    /// score-network with sigma FiLM + OUVE-SDE predictor-corrector
+    /// sampler primitives per Wave 5-6 sepformer / conv_tasnet /
+    /// demucs / gtcrn loud-partial precedent. §3.1 sign-off BLANK
+    /// (fail-closed) — publish blocked until owner signs.
+    Storm,
+    /// **WavLM Base+ SV** (`microsoft/wavlm-base-plus-sv`,
+    /// **CC-BY-SA-3.0** → Copyleft) safetensors → GGUF converter
+    /// (Wave 7 2026-08-14 audit follow-up). Speaker-verification
+    /// checkpoint = HuBERT-lineage SSL encoder + **gated relative
+    /// position bias + convolutional position-bias fusion**
+    /// (Chen et al. 2022 arXiv:2110.13900 "WavLM: Large-Scale
+    /// Self-Supervised Pre-Training for Full Stack Speech
+    /// Processing") + fine-tuned on VoxCeleb1 with an **XVector head
+    /// + Additive Margin Softmax** for a 512-d speaker embedding
+    /// (EER ~0.84% on VoxCeleb1). Category = `speaker`. Distinct
+    /// arch tag `wavlm_sv` from every sibling speaker-fleet arch
+    /// (`campplus` CAM++ D-TDNN / `wespeaker` ResNet-34 /
+    /// `ecapa_tdnn` TDNN stack / `titanet` depth-wise separable
+    /// Conv1D / `speaker_3d` ERes2Net / `redimnet` 2D dim-reduction
+    /// + 1D conv+att + ASTP) — silently sharing an arch would
+    /// misroute runtime dispatch (FR-EX-08). BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name; the topology
+    /// axes (13 scalar + 6 axis-array chunk groups) are stamped from
+    /// the primary-source `config.json`. Runtime binder in
+    /// `crates/vokra-models/src/wavlm/mod.rs` ships as loud-partial
+    /// (`encode()` = `UnsupportedOp` naming the 7-layer conv stem +
+    /// WavLM Transformer encoder + XVector head + AM-Softmax gaps
+    /// with primary-source URLs `huggingface.co/microsoft/wavlm-base-plus-sv`
+    /// + `github.com/microsoft/UniSpeech` + arXiv:2110.13900).
+    /// **License**: CC-BY-SA-3.0 primary source = HF card LICENSE
+    /// link to `github.com/microsoft/UniSpeech/blob/main/LICENSE`
+    /// (Attribution-ShareAlike 3.0 Unported) — resolves to
+    /// `LicenseClass::Copyleft` via `has_sa` arm in
+    /// `LicenseClass::from_license_str` (share-alike ordering pin
+    /// tested before plain `cc-by`). Downstream redistribution must
+    /// preserve the SA license. §3.1 sign-off BLANK (fail-closed) —
+    /// Copyleft share-alike propagation is an owner-scope legal
+    /// decision. Convert with [`convert_wavlm_sv_file`].
+    WavlmSv,
     /// **Seamless-M4T-v2-Large** (`facebook/seamless-m4t-v2-large`,
     /// **cc-by-nc-4.0**) safetensors (Wave residual, 2026-08-02). Meta
     /// SeamlessM4T v2 flagship 2.3B parameter unified any-to-any speech-
@@ -5074,6 +5173,28 @@ impl ModelKind {
             | "gtcrn_16k"
             | "Xiaobin-Rong/gtcrn"
             | "xiaobin-rong/gtcrn" => Some(Self::Gtcrn),
+            // StoRM (sp-uhh/storm, MIT — Wave 7 2026-08-14 audit
+            // follow-up RETRY, score-based diffusion speech enhancement
+            // + dereverberation, distinct arch tag `storm`). Aliases
+            // cover kebab-case + explicit release variant + upstream
+            // GitHub slug (Signal Processing group @ Universität
+            // Hamburg).
+            "storm"
+            | "STORM"
+            | "storm-se"
+            | "storm-16k"
+            | "sp-uhh/storm"
+            | "sp_uhh/storm" => Some(Self::Storm),
+            // Wave 7 2026-08-14 audit follow-up: WavLM Base+ SV
+            // (`microsoft/wavlm-base-plus-sv`, CC-BY-SA-3.0 → Copyleft).
+            // Accept the arch tag, both underscore / hyphen variants of the
+            // release name, and the canonical HF slug.
+            "wavlm_sv"
+            | "wavlm-sv"
+            | "wavlm-base-plus-sv"
+            | "wavlm_base_plus_sv"
+            | "microsoft/wavlm-base-plus-sv"
+            | "wavlm-base-plus-sv-microsoft" => Some(Self::WavlmSv),
             // Seamless-M4T-v2-Large (Wave residual, 2026-08-02,
             // `facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
             // any-to-any speech-and-text translation, unity-2 arch (4
@@ -5415,6 +5536,15 @@ impl ModelKind {
             // release, canonical slug `gtcrn` (no `-16k` suffix needed
             // since there is only one variant).
             Self::Gtcrn => "gtcrn",
+            // StoRM (sp-uhh/storm, MIT — Wave 7 2026-08-14 audit
+            // follow-up RETRY, diffusion-based two-stage speech
+            // enhancement + dereverberation). Distinct arch tag
+            // `storm` — single 16 kHz release, canonical slug `storm`.
+            Self::Storm => "storm",
+            // Wave 7 2026-08-14 audit follow-up: WavLM Base+ SV
+            // (microsoft/wavlm-base-plus-sv, CC-BY-SA-3.0). Canonical CLI
+            // slug matches upstream release tail token.
+            Self::WavlmSv => "wavlm-base-plus-sv",
             Self::SeamlessM4tV2Large => "seamless-m4t-v2-large",
             // Meta music-gen post-audit CC-gap wave (2026-08-13).
             Self::MagnetSmall10secs => "magnet-small-10secs",
@@ -9470,6 +9600,99 @@ pub fn convert_file_licensed(
                  runtime binder loud-partial pending grouped Conv2D + PReLU + \
                  SB-TF-LSTM + ERB grouping primitives; §3.1 sign-off BLANK \
                  fail-closed until owner signs)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Storm (Wave 7 2026-08-14 audit follow-up RETRY, first diffusion-based enhancement entry) ===
+        ModelKind::Storm => {
+            // StoRM (sp-uhh/storm, MIT). Lay et al. 2023
+            // arXiv:2312.09386 "StoRM: A Diffusion-based Stochastic
+            // Regeneration Model for Speech Enhancement and
+            // Dereverberation" — two-stage diffusion-based speech
+            // enhancement + dereverberation model: (i) initial
+            // deterministic predictive estimator (NCSN++ v2 U-Net
+            // variant, MSE objective) → (ii) NCSN++ v2 score-network
+            // refinement via OUVE-SDE (Ornstein-Uhlenbeck Variance-
+            // Exploding SDE) predictor-corrector sampler.
+            //
+            // Distinct arch tag `storm` from every sibling denoise /
+            // separator family (`denoise` (DFN3), `rnnoise`, `nsnet2`,
+            // `dnsmos`, `gtcrn`, `metricgan_plus`, `mp_senet_dns`,
+            // `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
+            // `mossformer2_ss_16k`, `facebook_denoiser`) — FR-EX-08
+            // forbids silent shape misroute across enhancement /
+            // separator families. StoRM is the FIRST diffusion-based
+            // entry on the enhancement arm.
+            //
+            // First entry on the MIT (Permissive T1 tier candidate)
+            // diffusion-based enhancement arm from the Wave 7 audit
+            // follow-up RETRY (Wave 6 workflow silently swallowed the
+            // result last time — see WAVE 6 LESSON). Runtime binder
+            // (`crates/vokra-models/src/storm/mod.rs`) ships as
+            // loud-partial per Wave 5-6 sepformer / conv_tasnet /
+            // demucs / gtcrn precedent — `from_gguf` real, `enhance()`
+            // returns `UnsupportedOp` pending NCSN++ v2 U-Net
+            // score-network with sigma FiLM + OUVE-SDE predictor-
+            // corrector sampler primitives. Scale <100 MB = local
+            // convert safe on M1 iMac.
+            let report = models::storm::convert_storm_file(input, output, license)?;
+            let notes = vec![format!(
+                "storm: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive T1 tier candidate — \
+                 redistributable OK pending owner ADR on GitHub-source publish path, \
+                 no runtime-side attribution obligation; runtime binder loud-partial \
+                 pending NCSN++ v2 U-Net score-network + OUVE-SDE predictor-corrector \
+                 sampler primitives; §3.1 sign-off BLANK fail-closed until owner signs)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === WavlmSv (Wave 7 2026-08-14 audit follow-up, speaker-fleet extension) ===
+        ModelKind::WavlmSv => {
+            // WavLM Base+ SV (microsoft/wavlm-base-plus-sv, CC-BY-SA-3.0).
+            // Chen et al. 2022 arXiv:2110.13900 "WavLM: Large-Scale
+            // Self-Supervised Pre-Training for Full Stack Speech Processing"
+            // — HuBERT-lineage SSL encoder + gated relative position bias
+            // + convolutional position-bias fusion + fine-tuned on VoxCeleb1
+            // with an XVector head + Additive Margin Softmax (512-d
+            // embedding). Distinct arch tag `wavlm_sv` from every sibling
+            // speaker-fleet arch (`campplus` / `wespeaker` / `ecapa_tdnn` /
+            // `titanet` / `speaker_3d` / `redimnet`) — FR-EX-08 forbids
+            // silent shape misroute across speaker-embedding families.
+            // BF16 pass-through skeleton + full scalar + axis-array
+            // topology chunk group. Default license cc-by-sa-3.0 resolves
+            // to `LicenseClass::Copyleft` (share-alike arm before plain
+            // cc-by per ordering pin). Runtime binder
+            // (`crates/vokra-models/src/wavlm/mod.rs`) ships as
+            // loud-partial per Wave 4 redimnet precedent — `from_gguf` real,
+            // `encode()` returns `UnsupportedOp` pending 7-layer conv stem +
+            // WavLM Transformer encoder (gated relative position bias +
+            // convolutional position-bias fusion) + XVector head +
+            // AM-Softmax primitives. Scale ~377 MB = local convert safe on
+            // M1 iMac.
+            let report = models::wavlm_sv::convert_wavlm_sv_file(input, output, license)?;
+            let notes = vec![format!(
+                "wavlm-base-plus-sv: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped (cc-by-sa-3.0 default → Copyleft \
+                 — share-alike propagates to downstream consumers; runtime binder \
+                 loud-partial pending 7-layer conv stem + WavLM Transformer encoder \
+                 (gated relative position bias + convolutional position-bias fusion) \
+                 + XVector head + Additive Margin Softmax primitives; §3.1 sign-off \
+                 BLANK fail-closed until owner signs — Copyleft share-alike \
+                 propagation is an owner-scope legal decision)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

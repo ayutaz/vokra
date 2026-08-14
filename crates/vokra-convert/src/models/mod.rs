@@ -182,6 +182,24 @@ pub(crate) mod kokoro;
 // release is BF16 and the streaming-BF16 pass-through path is a follow-up
 // (T29-equivalent — the Moshi pattern).
 pub(crate) mod kyutai_stt;
+// Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up
+// (streaming S2S runtime binder — LIB.RS RULE parallel: append near
+// alphabetic slot with Wave 7 comment marker): ICTNLP LLaMA-Omni2
+// (apache-2.0 default, Qwen2.5 派生 chain, T1 tier Permissive). Four
+// variant HF repos (`ICTNLP/LLaMA-Omni2-{7B,3B-Bilingual,1.5B,32B}`)
+// share the three-stage streaming S2S topology (Whisper-family speech
+// encoder + Qwen2.5-family text backbone + streaming AR speech
+// decoder). Every F32 / F16 / BF16 tensor passes through verbatim;
+// BF16 pass-through emits GGUF type 30 (runtime widens via
+// `decode_bf16`). Distinct arch tag `llama_omni2` from every sibling
+// Qwen2-family arch (`voxtral` / `canary_qwen` / `kyutai_stt` /
+// `firered_asr_llm_l`) — silently sharing would misroute dispatch
+// (FR-EX-08). ELVIS Act 精査 = task-oriented S2S with fixed decoder
+// voice (not target-speaker cloning), main-repo stay per CLAUDE.md
+// 設計判断 8. Publish gate is fail-closed on §3.1 sign-off (CC never
+// pre-fills Approval column per memory
+// `[[feedback-license-signoff-primary-source]]`).
+pub(crate) mod llama_omni2;
 pub mod meanvc;
 pub(crate) mod mimi;
 // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave
@@ -1124,4 +1142,67 @@ pub mod gtcrn;
 // landing. Real-weight parity + runtime forward deferred to owner
 // sign-off (`docs/license-audit.md` §3.1).
 pub mod dtln_aec;
+// ---------------------------------------------------------------------------
+// Wave 7 2026-08-14 audit follow-up (LIB.RS RULE — append at end with
+// Wave 7 comment marker; RETRY of Wave 6 lost item, workflow silently
+// swallowed the result last time — see WAVE 6 LESSON in the directive):
+// StoRM (Stochastic Regeneration Model, `sp-uhh/storm`, MIT — Lay et al.
+// 2023 arXiv:2312.09386 "StoRM: A Diffusion-based Stochastic
+// Regeneration Model for Speech Enhancement and Dereverberation"). Two-
+// stage speech enhancement: (i) initial deterministic predictive
+// estimator (NCSN++ v2 U-Net variant, MSE objective) → (ii) NCSN++ v2
+// score-network refinement via OUVE-SDE (Ornstein-Uhlenbeck Variance-
+// Exploding SDE) predictor-corrector sampler. Category `enhancement`,
+// arch `storm` distinct from every sibling enhancement (`denoise` DFN3,
+// `rnnoise`, `nsnet2`, `dnsmos`, `metricgan_plus`, `mp_senet_dns`,
+// `frcrn`, `facebook_denoiser`, `mossformer2_ss_16k`, `gtcrn`) and
+// separator (`sepformer`, `conv_tasnet`, `demucs`, `bs_roformer`,
+// `tiger_separator`) family — FR-EX-08 forbids silent shape misroute.
+// Upstream ships PyTorch checkpoints via Google Drive (no HF mirror as
+// of 2026-08-14) — same non-HF `vokra.provenance.upstream_url` posture
+// as sibling `nsnet2` / `rnnoise` / `facebook_denoiser` / `gtcrn` /
+// `nkf_aec` / `dtln_aec`. `tools/parity/nemo_pt_to_safetensors.py` uv-
+// managed Python 3.12 sidecar bridges `.pt` to safetensors offline
+// (FR-LD-05 — pickle never in runtime, NFR-DS-02 zero-dep). BF16 pass-
+// through skeleton mirror of sibling `gtcrn` / `dtln_aec`. Runtime
+// binder `crates/vokra-models/src/storm/mod.rs` real `from_gguf` +
+// `enhance()` loud-partial pending NCSN++ v2 U-Net score-network + OUVE-
+// SDE predictor-corrector primitives (~two greenfield ops). §3.1 sign-
+// off BLANK fail-closed until owner ADR (publish gated on owner
+// judgement — Google Drive-only upstream, no established HF publish
+// path).
+pub mod storm;
+// ---------------------------------------------------------------------------
+// Wave 7 2026-08-14 audit follow-up (LIB.RS RULE — append at end
+// with Wave 7 comment marker): WavLM Base+ SV speaker-verification
+// converter (`microsoft/wavlm-base-plus-sv`, CC-BY-SA-3.0 → Copyleft
+// via HF card LICENSE link `github.com/microsoft/UniSpeech/blob/main/LICENSE`
+// + `has_sa` arm in `LicenseClass::from_license_str`). WavLM = HuBERT-
+// lineage SSL encoder + **gated relative position bias +
+// convolutional position-bias fusion** (Chen et al. arXiv:2110.13900)
+// — a WavLM-specific fused positional-bias combo that neither
+// wav2vec2 nor HuBERT expose. The `-sv` release is fine-tuned on
+// VoxCeleb1 with an **XVector head + Additive Margin Softmax**
+// (5-block TDNN → statistics pooling → 512-d embedding). BF16 pass-
+// through skeleton + `vokra.wavlm.*` scalar topology chunk group
+// (hidden_size / num_hidden_layers / num_attention_heads /
+// intermediate_size / num_feat_extract_layers / xvector_output_dim /
+// num_ctc_classes / num_conv_pos_embeddings /
+// num_conv_pos_embedding_groups / sample_rate /
+// layer_norm_eps_scaled_1e9 / feat_extract_norm_group /
+// hidden_dropout_scaled_1e3) + axis-array chunk groups
+// (`vokra.wavlm.conv_{dim,stride,kernel}_{0..6}` +
+// `vokra.wavlm.tdnn_{dim,kernel,dilation}_{0..4}`); runtime binder in
+// `crates/vokra-models/src/wavlm/mod.rs` ships as loud-partial
+// (`encode()` = `UnsupportedOp` naming the three missing pieces
+// per primary source `huggingface.co/microsoft/wavlm-base-plus-sv` +
+// `github.com/microsoft/UniSpeech` + arXiv:2110.13900). Speaker-fleet
+// extension over sibling `campplus` (CAM++) / `wespeaker` (ResNet-34)
+// / `ecapa_tdnn` (TDNN) / `titanet` (depth-wise separable Conv1D) /
+// `speaker_3d` (ERes2Net) / `redimnet` (2D dim-reduction + 1D conv+att
+// + ASTP). Distinct arch tag `wavlm_sv` — silently sharing an arch
+// would misroute runtime dispatch (FR-EX-08). §3.1 sign-off BLANK
+// fail-closed (Copyleft share-alike propagation is an owner-scope
+// legal decision).
+pub mod wavlm_sv;
 // ---------------------------------------------------------------------------

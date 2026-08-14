@@ -704,6 +704,108 @@ pub mod audiogen;
 // (vocos / bigvgan / snac / mt3 / musicgen / magnet / melodyflow /
 // sortformer / audioldm2 / audiogen).
 pub mod jasco;
+// Wave 7 2026-08-14 audit follow-up (audio-tagging runtime binder —
+// LIB.RS RULE append at end with Wave 7 comment marker): PANNs Cnn14
+// (`nicofarr/panns_Cnn14`, license Unknown fail-closed, ~80M params,
+// Kong et al. 2020 arXiv:1912.10211) — Pretrained Audio Neural Networks
+// Cnn14 checkpoint runtime binder for the `panns` converter arch
+// (§3.1 row 479 BLANK, upstream reference `qiuqiangkong/audioset_tagging_cnn`
+// is MIT but the HF mirror LICENSE is un-verified so the converter
+// defaults to `Unknown`, fail-closed at M2-13). Real from_gguf (arch
+// check + PannsConfig primary-source constant fallback for the
+// yet-to-be-stamped `vokra.panns.*` chunk group + non-empty tensor
+// gate + weight-license class surfacing); classify() loud-partial
+// pending (a) log-mel front-end binding against upstream
+// `torchlibrosa.STFT` + `LogmelFilterBank` reference
+// (`pytorch/pytorch_utils.py`), (b) 6-stage × 2-conv CNN14 backbone
+// (Conv2D(3×3) + BatchNorm2D + ReLU + AvgPool2D(2×2) with channel
+// plan 64→64→128→128→256→256→512→512→1024→1024→2048→2048 per
+// `pytorch/models.py class Cnn14`), and (c) global attention pooling
+// + fc1 Linear(2048, 2048) + fc_audioset Linear(2048, 527) + sigmoid
+// 527-way head (Kong et al. §III-A). Primary sources:
+// `github.com/qiuqiangkong/audioset_tagging_cnn` +
+// `github.com/qiuqiangkong/panns_inference` +
+// `arxiv.org/abs/1912.10211` + `research.google.com/audioset/ontology/`.
+// Distinct arch tag `panns` from sibling audio-tagging / audio-
+// embedding models (`yamnet` MobileNetV1 depthwise-separable / `ast`
+// patch-embed Transformer / `clap` contrastive text-audio dual-encoder
+// / `mert` HuBERT-derived masked prediction / `muq` Mel-RVQ + BEATs
+// teacher / `dasheng` MAE ViT/ConvNeXt universal / `beats` iterative
+// acoustic tokenizer) — silently sharing arch would misroute runtime
+// dispatch to a wrong-topology loader (FR-EX-08 boundary). Loud-partial
+// pattern per Wave 2-6 precedent (vocos / bigvgan / snac / mt3 /
+// musicgen / magnet / melodyflow / sortformer / audioldm2 / audiogen /
+// jasco / redimnet / gtcrn).
+pub mod panns;
+// Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up
+// (streaming S2S runtime binder — LIB.RS RULE append at end with
+// Wave 7 comment marker): ICTNLP LLaMA-Omni2 (apache-2.0 default,
+// Qwen2.5 派生 chain, T1 tier Permissive; per memory
+// `[[feedback-license-signoff-primary-source]]` §3.1 sign-off column
+// stays BLANK until owner primary-source verifies HF card + Qwen2.5
+// license-inheritance chain + speech-decoder training-corpus audit +
+// ELVIS Act 精査). Four sibling HF releases (`ICTNLP/LLaMA-Omni2-{7B,
+// 3B-Bilingual,1.5B,32B}`) share the three-stage streaming S2S
+// topology (Whisper-family speech encoder + Qwen2.5-family text
+// backbone + streaming AR speech decoder). Loud-partial pattern per
+// Wave 4-6 precedent (kyutai_stt / canary_qwen / voxtral /
+// firered_asr_llm_l / sepformer / demucs / conv_tasnet / musicgen /
+// gtcrn / audiogen / audioldm2 / jasco): `converse()` returns
+// `VokraError::UnsupportedOp(_)` naming the primary source URLs +
+// missing shared primitives (Qwen2.5 backbone forward, Whisper-family
+// speech encoder forward, streaming AR speech decoder, streaming
+// session infrastructure) — never a silent noise stream (FR-EX-08).
+// ELVIS Act 精査 = task-oriented S2S with fixed decoder voice (not
+// target-speaker cloning), main-repo stay per CLAUDE.md 設計判断 8.
+// Primary sources: `huggingface.co/ICTNLP/LLaMA-Omni2-7B` + sibling
+// repos + `github.com/ictnlp/LLaMA-Omni2` (ACL 2025).
+pub mod llama_omni2;
+// Wave 7 2026-08-14 audit follow-up (denoise runtime binder — LIB.RS
+// RULE append at end with Wave 7 comment marker; RETRY of Wave 6 lost
+// item per WAVE 6 LESSON): StoRM (`sp-uhh/storm`, MIT,
+// arXiv:2312.09386) — Stochastic Regeneration Model for Speech
+// Enhancement and Dereverberation runtime binder for the `storm`
+// converter arch. Real `from_gguf` (arch check + 6-axis `vokra.storm.*`
+// chunk-group + non-empty tensor gate + weight-license class);
+// `enhance()` loud-partial pending NCSN++ v2 U-Net score-network with
+// sigma-conditional FiLM + OUVE-SDE (Ornstein-Uhlenbeck Variance-
+// Exploding stochastic differential equation) predictor-corrector
+// sampler primitives (~two greenfield ops). §3.1 sign-off BLANK (row
+// added Wave 7, fail-closed, publish gated on owner ADR — Google
+// Drive-only upstream, no HF mirror as of 2026-08-14 = need decision
+// between T4 Research-only precedent vs new T1 Permissive
+// GitHub-source precedent). Denoise + dereverb alternative sibling to
+// `denoise` (DFN3), `nsnet2`, `rnnoise`, `gtcrn` — arch tag `storm`
+// distinct from every sibling per FR-EX-08. First diffusion-based
+// entry on the enhancement arm from the Wave 7 audit follow-up retry.
+pub mod storm;
+// Wave 7 2026-08-14 audit follow-up (LIB.RS RULE append at end with
+// Wave 7 comment marker): microsoft/wavlm-base-plus-sv speaker
+// verification (CC-BY-SA-3.0 → Copyleft) — WavLM Transformer encoder
+// with **gated relative position bias + convolutional position-bias
+// fusion** (Chen et al. arXiv:2110.13900 "WavLM: Large-Scale
+// Self-Supervised Pre-Training for Full Stack Speech Processing")
+// + XVector head + Additive Margin Softmax loss (5-block TDNN →
+// statistics pooling → 512-d embedding, VoxCeleb1 fine-tuned).
+// Sibling speaker-fleet arch (never `campplus` / `ecapa_tdnn` /
+// `wespeaker` / `titanet` / `speaker_3d` / `redimnet`). Loud-partial
+// pattern per redimnet precedent — `from_gguf` real with strict
+// `vokra.wavlm.*` scalar + axis-array chunk-group presence enforcement
+// (13 scalar axes + 6 axis-arrays: conv_{dim,stride,kernel}_{0..6} +
+// tdnn_{dim,kernel,dilation}_{0..4}) + tensor-manifest non-emptiness
+// gate + weight-license class surfacing; `encode()` returns
+// `UnsupportedOp` naming (i) 7-layer 1D conv feature-extractor stem
+// (HuBERT/wav2vec2 lineage), (ii) WavLM Transformer encoder with
+// gated relative position bias + convolutional position-bias fusion
+// (WavLM-specific primitive that neither wav2vec2 nor HuBERT expose),
+// (iii) XVector head + Additive Margin Softmax with primary-source
+// URLs `huggingface.co/microsoft/wavlm-base-plus-sv` +
+// `github.com/microsoft/UniSpeech` + arXiv:2110.13900. §3.1 sign-off
+// BLANK (fail-closed default per feedback-license-signoff-primary-source
+// memory — Copyleft class needs owner sign-off since redistribution
+// obligations propagate to downstream consumers = an owner-scope
+// legal decision, not a CC judgement).
+pub mod wavlm;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
