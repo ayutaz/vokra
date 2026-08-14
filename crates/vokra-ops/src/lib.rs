@@ -192,11 +192,11 @@ pub mod length_conditioning;
 // indirection above in `vokra_core::decode::BeamSearchConfig::lm_fusion`.
 pub mod lm_fusion;
 pub mod mel;
+pub mod mfcc;
 // Wave 4 2026-08-14 audit follow-up: unified VoiceRef API for TTS
 // engines (Kokoro voice_id / piper-plus fixed voice / CosyVoice2
 // reference audio) — API surface only; adapter wiring per-engine is
 // follow-up.
-pub mod mfcc;
 pub mod voice_ref;
 // ---- SoTA plan KWS binder (openwakeword classifier MLP, 2026-08-05) -----
 // Per-wake-word `Linear → ReLU → Linear → Sigmoid` classifier over a shared
@@ -485,6 +485,9 @@ pub use vae_continuous::{
     ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder,
     ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode,
 };
+// -------------------------------------------------------------------------
+// ---- Wave 4 2026-08-14 audit follow-up voice_ref re-exports -------------
+pub use voice_ref::{VoiceRef, VoiceRefSource};
 // -------------------------------------------------------------------------
 pub use vokra_core::Complex32;
 
