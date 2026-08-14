@@ -58,7 +58,7 @@
 //! forward against those axes. The [`VokraError::UnsupportedOp`]
 //! message cites both the redimnet.py + redimnet2.py primary sources
 //! + the arXiv paper so a reader diagnosing this gap has exactly
-//! three anchors to walk.
+//!   three anchors to walk.
 //!
 //! # `vokra.redimnet.*` chunk group (read here)
 //!
@@ -518,9 +518,9 @@ impl ReDimNet {
 ///
 /// Names **three** primary source anchors (base ReDimNet reference
 /// + ReDimNet2 wrap reference + arXiv paper) so a reader diagnosing
-/// the gap has exactly three places to walk (RMVPE / pyannote / snac
-/// / hifigan / beat_this / mt3 Wave 1-3 loud-partial-message
-/// precedent — CLAUDE.md 教訓 (a)).
+///   the gap has exactly three places to walk (RMVPE / pyannote / snac
+///   / hifigan / beat_this / mt3 Wave 1-3 loud-partial-message
+///   precedent — CLAUDE.md 教訓 (a)).
 fn encode_forward_loud_partial(cfg: &ReDimNetConfig) -> VokraError {
     VokraError::UnsupportedOp(format!(
         "redimnet encode: ReDimNet2 encode forward pending — the WeSpeaker Python source \

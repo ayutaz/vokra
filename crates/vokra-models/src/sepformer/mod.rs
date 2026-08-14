@@ -64,12 +64,12 @@
 //!   [`VokraError::UnsupportedOp`] naming the dual-path Transformer
 //!   masker composition (encoder + IntraTransformer + InterTransformer
 //!   + decoder per Subakan et al. 2021) + the tensor-name walk from
-//!   upstream `speechbrain/sepformer-*` `state_dict` prefixes onto the
-//!   composed masker forward. The message cites all three primary
-//!   sources (dual_path.py + resepformer.py + arXiv:2010.13154) and
-//!   echoes variant / tag / n_out / category so a reader diagnosing
-//!   this gap knows exactly which of the 7 variants fired and where to
-//!   walk.
+//!     upstream `speechbrain/sepformer-*` `state_dict` prefixes onto the
+//!     composed masker forward. The message cites all three primary
+//!     sources (dual_path.py + resepformer.py + arXiv:2010.13154) and
+//!     echoes variant / tag / n_out / category so a reader diagnosing
+//!     this gap knows exactly which of the 7 variants fired and where to
+//!     walk.
 //!
 //! Rationale (RMVPE / pyannote / hifigan / vocos / bigvgan / snac /
 //! beat_this / mt3 / redimnet / sortformer Wave 1-4 loud-partial
@@ -445,9 +445,9 @@ impl SepformerConfig {
 /// Under the current landing this struct stores the tensor names +
 /// GGUF-side dims discovered on disk. The dual-path Transformer masker
 /// + encoder / decoder Conv1D bank forward is deferred (see
-/// [`SepFormer::separate`] loud-partial), so the payload is not yet
-/// dequantised — the follow-up wave sizes the dequant per its kernel
-/// needs.
+///   [`SepFormer::separate`] loud-partial), so the payload is not yet
+///   dequantised — the follow-up wave sizes the dequant per its kernel
+///   needs.
 #[derive(Debug)]
 pub struct SepformerWeights {
     /// Tensors discovered on disk, indexed by upstream `state_dict`
@@ -864,10 +864,10 @@ mod tests {
     //! `separate(...)` returning a real `Vec<Vec<f32>>` of `n_out`
     //! parallel speaker streams, but the dual-path Transformer masker
     //! + encoder / decoder Conv1D bank composition has not been walked
-    //! against the upstream `speechbrain/sepformer-*` state_dict (see
-    //! the module doc + [`SepFormer::separate`] rustdoc). Fabricating
-    //! a real-PCM output would violate CLAUDE.md 教訓 (a)
-    //! ("loud-partial は fake-complete より honest").
+    //!   against the upstream `speechbrain/sepformer-*` state_dict (see
+    //!   the module doc + [`SepFormer::separate`] rustdoc). Fabricating
+    //!   a real-PCM output would violate CLAUDE.md 教訓 (a)
+    //!   ("loud-partial は fake-complete より honest").
     //!
     //! The round-trip semantics we *can* honestly test:
     //!

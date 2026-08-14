@@ -87,8 +87,8 @@
 //!   loop over sigma schedule).
 //!   The error cites both primary sources (upstream GitHub repo README
 //!   + arXiv:2312.09386 paper) and echoes every config axis so a
-//!   reader diagnosing this gap has exactly two anchors to walk and
-//!   knows the topology the follow-up wave targets.
+//!     reader diagnosing this gap has exactly two anchors to walk and
+//!     knows the topology the follow-up wave targets.
 //!
 //! Rationale (RMVPE / pyannote / hifigan / vocos / bigvgan / snac /
 //! beat_this / mt3 / redimnet / sortformer / sepformer / conv_tasnet /
@@ -305,9 +305,9 @@ pub struct StormConfig {
 impl StormConfig {
     /// The typical StoRM axes transcribed from arXiv:2312.09386 §III
     /// + SGMSE+ Interspeech 2022 precedent (implementer MUST
-    /// re-confirm against `github.com/sp-uhh/storm/configs/*.yaml` at
-    /// land time rather than trusting the transcribed constants alone
-    /// — CLAUDE.md「ハルシネーション厳禁」).
+    ///   re-confirm against `github.com/sp-uhh/storm/configs/*.yaml` at
+    ///   land time rather than trusting the transcribed constants alone
+    ///   — CLAUDE.md「ハルシネーション厳禁」).
     ///
     /// Used by the unit tests and as a diagnostic reference. The
     /// runtime loader does NOT default to these; it reads the stamped
@@ -792,8 +792,8 @@ fn enhance_forward_loud_partial(cfg: &StormConfig) -> VokraError {
 mod tests {
     //! Tests for the StoRM runtime binder — cross-crate constant mirror
     //! + config default pin + full topology round-trip on the strict
-    //! chunk group + negative-space round-trip on the loud-partial
-    //! gates + arch-tag distinctness pin.
+    //!   chunk group + negative-space round-trip on the loud-partial
+    //!   gates + arch-tag distinctness pin.
     //!
     //! # What "round-trip" means here
     //!

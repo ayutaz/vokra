@@ -69,8 +69,8 @@
 //! `charactr/vocos` Python `Vocos.from_pretrained(...).decode(...)`
 //! forward is deferred to owner") matches — CC ships the binder shape
 //! + the arch/variant-dispatch discipline, and the follow-up wave
-//! lands the real ConvNeXt V2 forward against a real upstream
-//! checkpoint rather than a silently-wrong transcription.
+//!   lands the real ConvNeXt V2 forward against a real upstream
+//!   checkpoint rather than a silently-wrong transcription.
 //!
 //! # `vokra.vocos.*` chunk group (read here)
 //!

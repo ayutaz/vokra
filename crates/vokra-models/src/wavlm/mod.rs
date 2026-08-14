@@ -52,8 +52,8 @@
 //!   pieces:
 //!   (i) 7-layer 1D conv feature-extractor stem walk,
 //!   (ii) WavLM Transformer encoder walk (gated relative position bias
-//!        + convolutional position-bias fusion — the WavLM-specific
-//!        primitive that neither wav2vec2 nor HuBERT expose),
+//!   plus convolutional position-bias fusion — the WavLM-specific
+//!   primitive that neither wav2vec2 nor HuBERT expose),
 //!   (iii) XVector head + Additive Margin Softmax walk.
 //!   Every message echoes every config axis so the reader can
 //!   cross-check what topology the follow-up wave targets.
@@ -65,9 +65,9 @@
 //! switch by transcribing the WavLM Python `WavLM/WavLM.py` topology
 //! + the UniSpeech `downstreams/speaker_verification` XVector head
 //! + writing the encode forward against those axes. The
-//! [`VokraError::UnsupportedOp`] message cites the HF card + the
-//! UniSpeech GitHub tree + the arXiv paper so a reader diagnosing
-//! this gap has exactly three anchors to walk.
+//!   [`VokraError::UnsupportedOp`] message cites the HF card + the
+//!   UniSpeech GitHub tree + the arXiv paper so a reader diagnosing
+//!   this gap has exactly three anchors to walk.
 //!
 //! # `vokra.wavlm.*` chunk group (read here)
 //!
@@ -134,27 +134,54 @@ use vokra_core::{LicenseClass, Result, VokraError};
 pub const ARCH: &str = "wavlm_sv";
 
 // Scalar topology chunk keys.
+
+/// Transformer hidden width (`config.hidden_size`).
 pub const GGUF_KEY_HIDDEN_SIZE: &str = "vokra.wavlm.hidden_size";
+/// Number of Transformer encoder blocks (`config.num_hidden_layers`).
 pub const GGUF_KEY_NUM_HIDDEN_LAYERS: &str = "vokra.wavlm.num_hidden_layers";
+/// Self-attention head count (`config.num_attention_heads`).
 pub const GGUF_KEY_NUM_ATTENTION_HEADS: &str = "vokra.wavlm.num_attention_heads";
+/// Feed-forward inner width (`config.intermediate_size`).
 pub const GGUF_KEY_INTERMEDIATE_SIZE: &str = "vokra.wavlm.intermediate_size";
+/// Conv feature-extractor layer count (`config.num_feat_extract_layers`).
 pub const GGUF_KEY_NUM_FEAT_EXTRACT_LAYERS: &str = "vokra.wavlm.num_feat_extract_layers";
+/// Speaker-embedding width emitted by the x-vector head
+/// (`config.xvector_output_dim`).
 pub const GGUF_KEY_XVECTOR_OUTPUT_DIM: &str = "vokra.wavlm.xvector_output_dim";
+/// CTC vocabulary size, when the checkpoint carries a CTC head.
 pub const GGUF_KEY_NUM_CTC_CLASSES: &str = "vokra.wavlm.num_ctc_classes";
+/// Kernel width of the convolutional positional embedding
+/// (`config.num_conv_pos_embeddings`).
 pub const GGUF_KEY_NUM_CONV_POS_EMBEDDINGS: &str = "vokra.wavlm.num_conv_pos_embeddings";
+/// Group count of the convolutional positional embedding
+/// (`config.num_conv_pos_embedding_groups`).
 pub const GGUF_KEY_NUM_CONV_POS_EMBEDDING_GROUPS: &str =
     "vokra.wavlm.num_conv_pos_embedding_groups";
+/// Input sample rate the front-end expects, in Hz (WavLM is 16 kHz).
 pub const GGUF_KEY_SAMPLE_RATE: &str = "vokra.wavlm.sample_rate";
+/// Layer-norm epsilon, stored as `eps * 1e9` so it survives the integer
+/// metadata channel without a float round-trip.
 pub const GGUF_KEY_LAYER_NORM_EPS_SCALED_1E9: &str = "vokra.wavlm.layer_norm_eps_scaled_1e9";
+/// Whether the feature extractor uses group norm (`1`) rather than layer
+/// norm (`0`) — `config.feat_extract_norm == "group"`.
 pub const GGUF_KEY_FEAT_EXTRACT_NORM_GROUP: &str = "vokra.wavlm.feat_extract_norm_group";
+/// Hidden dropout probability, stored as `p * 1e3` (inference-inert; kept
+/// so a converted artifact round-trips its source config faithfully).
 pub const GGUF_KEY_HIDDEN_DROPOUT_SCALED_1E3: &str = "vokra.wavlm.hidden_dropout_scaled_1e3";
 
 // Axis-array chunk-key prefixes (indexed `_0` .. `_N`).
+
+/// Per-layer conv feature-extractor channel counts (`config.conv_dim`).
 pub const GGUF_KEY_CONV_DIM_PREFIX: &str = "vokra.wavlm.conv_dim";
+/// Per-layer conv feature-extractor strides (`config.conv_stride`).
 pub const GGUF_KEY_CONV_STRIDE_PREFIX: &str = "vokra.wavlm.conv_stride";
+/// Per-layer conv feature-extractor kernel widths (`config.conv_kernel`).
 pub const GGUF_KEY_CONV_KERNEL_PREFIX: &str = "vokra.wavlm.conv_kernel";
+/// Per-layer TDNN channel counts of the x-vector head (`config.tdnn_dim`).
 pub const GGUF_KEY_TDNN_DIM_PREFIX: &str = "vokra.wavlm.tdnn_dim";
+/// Per-layer TDNN kernel widths of the x-vector head (`config.tdnn_kernel`).
 pub const GGUF_KEY_TDNN_KERNEL_PREFIX: &str = "vokra.wavlm.tdnn_kernel";
+/// Per-layer TDNN dilations of the x-vector head (`config.tdnn_dilation`).
 pub const GGUF_KEY_TDNN_DILATION_PREFIX: &str = "vokra.wavlm.tdnn_dilation";
 
 /// Conv feature-extractor axis-array length — 7 (WavLM Base+

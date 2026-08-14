@@ -871,7 +871,7 @@ fn generate_forward_loud_partial(
 mod tests {
     //! Tests for the AudioLDM 2 runtime binder — variant discrimination
     //! + config round-trip + negative-space round-trip on the
-    //! loud-partial gates + arch-tag distinctness pin.
+    //!   loud-partial gates + arch-tag distinctness pin.
     //!
     //! # What "round-trip" means here
     //!

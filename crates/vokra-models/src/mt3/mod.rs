@@ -355,9 +355,7 @@ impl Mt3Weights {
     #[must_use]
     pub fn matches_config(&self, config: &Mt3Config) -> bool {
         let d = config.d_model as usize;
-        self.tensors
-            .iter()
-            .any(|(_, dims)| dims.iter().any(|&x| x == d))
+        self.tensors.iter().any(|(_, dims)| dims.contains(&d))
     }
 }
 

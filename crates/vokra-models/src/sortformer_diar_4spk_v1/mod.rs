@@ -103,9 +103,9 @@
 //! sidecar per memory `[[feedback-python-uses-uv]]` +
 //! `[[feedback-python-3-12]]`) + (ii) wiring the encoder + Transformer
 //! + 4-sigmoid head composition + (iii) porting the region-merging
-//! helpers. The primitive `vokra_ops::conformer::ConformerEncoder`
-//! already exists so the follow-up wave is composition + tensor walk
-//! only, NOT a greenfield kernel.
+//!   helpers. The primitive `vokra_ops::conformer::ConformerEncoder`
+//!   already exists so the follow-up wave is composition + tensor walk
+//!   only, NOT a greenfield kernel.
 //!
 //! # `vokra.sortformer.*` chunk group (read here — fallback-friendly)
 //!
@@ -456,9 +456,7 @@ impl SortformerWeights {
     #[must_use]
     pub fn matches_config(&self, config: &SortformerConfig) -> bool {
         let d = config.d_model as usize;
-        self.tensors
-            .iter()
-            .any(|(_, dims)| dims.iter().any(|&x| x == d))
+        self.tensors.iter().any(|(_, dims)| dims.contains(&d))
     }
 }
 

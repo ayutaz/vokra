@@ -135,7 +135,7 @@
 //! future `tools/parity/panns_prepare_checkpoint.py` sidecar (an
 //! uv-managed Python 3.12 wrapper per memory `[[feedback-python-uses-uv]]`
 //! + `[[feedback-python-3-12]]` — not part of the runtime), mirroring the
-//! sibling audio-tagging / MIR bridge pattern.
+//!   sibling audio-tagging / MIR bridge pattern.
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
@@ -685,11 +685,19 @@ mod tests {
         // (first Conv2D in the first stage-1 block per
         // `pytorch/models.py class Cnn14`, matching the converter test's
         // chosen sample tensor for consistency).
+        // The `* 1` is the in-channel axis of `[64, 1, 3, 3]`, kept so the
+        // byte count reads as the shape it belongs to rather than as a folded
+        // magic number that no longer tracks the `vec!` above it.
+        #[allow(
+            clippy::identity_op,
+            reason = "the factor is a shape axis, not arithmetic padding"
+        )]
+        let conv1_bytes = vec![0u8; 64 * 1 * 3 * 3 * 4];
         b.add_tensor(
             "conv_block1.conv1.weight",
             GgmlType::F32,
             vec![64, 1, 3, 3],
-            vec![0u8; 64 * 1 * 3 * 3 * 4],
+            conv1_bytes,
         )
         .expect("add_tensor");
         GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")

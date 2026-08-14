@@ -199,7 +199,13 @@ pub(crate) mod kyutai_stt;
 // 設計判断 8. Publish gate is fail-closed on §3.1 sign-off (CC never
 // pre-fills Approval column per memory
 // `[[feedback-license-signoff-primary-source]]`).
-pub(crate) mod llama_omni2;
+// `pub` (not `pub(crate)`): this module declares `pub const ARCH` / `NAME_PREFIX`
+// / `CATEGORY` / `DEFAULT_LICENSE`, which the `vokra-models::llama_omni2` binder
+// mirrors as its own consts, plus `convert_llama_omni2_{file,bytes}`. `mod
+// models` is itself private, so reachability comes from the `pub use` in
+// `lib.rs` (same rationale as the speaker_3d / titanet / nkf_aec re-exports);
+// without it every one of these is `dead_code` under `-D warnings`.
+pub mod llama_omni2;
 pub mod meanvc;
 pub(crate) mod mimi;
 // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave

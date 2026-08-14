@@ -11444,6 +11444,30 @@ pub use models::titanet::{TitaNetReport, convert_titanet_file};
 // than `upstream_hf`. File-based entry mirroring the speaker_3d /
 // ecapa_tdnn re-export pattern.
 pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
+// LLaMA-Omni2 streaming speech-to-speech (ictnlp/LLaMA-Omni2-*, apache-2.0,
+// ACL 2025). Landed alongside its `vokra-models::llama_omni2` runtime binder,
+// which mirrors this module's `ARCH` / `NAME_PREFIX` / `CATEGORY` /
+// `DEFAULT_LICENSE` consts. Re-exported for the same reason as the
+// speaker_3d / titanet / nkf_aec entries above: `mod models` is private, so
+// the module's `pub` surface is unreachable — and therefore `dead_code` under
+// `-D warnings` — without a re-export here. NOT yet a `ModelKind` variant:
+// the CLI `--model llama-omni2` spelling is a follow-up, so today the
+// converter is reachable as a library entry point only.
+pub use models::llama_omni2::{
+    LlamaOmni2Report, convert_llama_omni2_bytes, convert_llama_omni2_file,
+};
+// Three more converters landed with runtime binders but without a `ModelKind`
+// variant, so — like the entries above — their only reachable surface is this
+// re-export, and omitting it makes every `pub` item in them `dead_code` under
+// `-D warnings`:
+//
+// - beat_this: CPJKU/beat_this joint beat + downbeat tracker (MIT, ISMIR 2024);
+// - mt3: Magenta MT3 multi-instrument audio-to-MIDI transcription (code
+//   Apache-2.0; the `gs://mt3/checkpoints` weights carry no LICENSE, so the
+//   converter hard-maps `LicenseClass::Unknown` and fails closed);
+// - dtln_aec: breizhn/DTLN-aec acoustic echo cancellation (MIT).
+pub use models::beat_this::{BeatThisReport, convert_beat_this_file};
+pub use models::mt3::{Mt3Report, convert_mt3_file};
 // Wave 6 2026-08-14 audit follow-up: breizhn/DTLN-aec (MIT). GitHub-only
 // release (no HF mirror) so provenance stamps `upstream_url` rather
 // than `upstream_hf`. File-based entry mirroring the nkf_aec /

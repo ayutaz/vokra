@@ -78,10 +78,10 @@
 //! `crates/vokra-convert/src/models/bigvgan.rs` so `vokra-models` does
 //! not gain a dependency edge onto `vokra-convert` (mirror of the SNAC
 //! + FSMN-VAD + openwakeword + dnsmos + FocalCodec + WeSpeaker
-//! binders — same rule keeps the layered convention `vokra-ops →
+//!   binders — same rule keeps the layered convention `vokra-ops →
 //! nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models →
 //! GGUF binder`, `vokra-convert → GGUF writer`). Drift is caught by
-//! the [`arch_and_variant_tags_match_converter`] regression pin below.
+//!   the [`arch_and_variant_tags_match_converter`] regression pin below.
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{Result, VokraError};

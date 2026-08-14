@@ -736,8 +736,8 @@ fn denoise_forward_loud_partial(cfg: &GtcrnConfig) -> VokraError {
 mod tests {
     //! Tests for the GTCRN runtime binder — cross-crate constant mirror
     //! + config default pin + full topology round-trip on the strict
-    //! chunk group + negative-space round-trip on the loud-partial
-    //! gates + arch-tag distinctness pin.
+    //!   chunk group + negative-space round-trip on the loud-partial
+    //!   gates + arch-tag distinctness pin.
     //!
     //! # What "round-trip" means here
     //!

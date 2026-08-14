@@ -295,7 +295,7 @@ const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2211.08553";
 /// constant fallback per key — a GGUF that never carried the chunk
 /// still loads with the upstream defaults transcribed from the HF card
 /// + upstream `htdemucs.py` + paper. Every numeric axis is `u32` in
-/// the GGUF.
+///   the GGUF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DemucsConfig {
     /// Input audio channel count (stereo = 2 for the standard 4-stem
@@ -506,9 +506,7 @@ impl DemucsWeights {
     #[must_use]
     pub fn matches_config(&self, config: &DemucsConfig) -> bool {
         let base = config.channels as usize;
-        self.tensors
-            .iter()
-            .any(|(_, dims)| dims.iter().any(|&x| x == base))
+        self.tensors.iter().any(|(_, dims)| dims.contains(&base))
     }
 }
 
@@ -718,7 +716,7 @@ impl Demucs {
     ///    `silero_vad::model` and is not shared); extraction is a
     ///    follow-up wave. The Transformer bottleneck (SwiGLU + MHA
     ///    + LayerNorm) is composable from Vokra's existing softmax +
-    ///    GEMM + LayerNorm primitives (no new op needed).
+    ///      GEMM + LayerNorm primitives (no new op needed).
     /// 4. **Cross-domain self-attention** between the waveform-branch
     ///    and spectrogram-branch trunks (the "hybrid" step — attention
     ///    heads read from both branches' tokens simultaneously).

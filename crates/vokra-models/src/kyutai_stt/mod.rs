@@ -115,6 +115,13 @@ const KEY_BB_N_LAYER: &str = "vokra.kyutai_stt.arch.backbone.n_layer";
 const KEY_BB_D_MODEL: &str = "vokra.kyutai_stt.arch.backbone.d_model";
 const KEY_BB_N_HEAD: &str = "vokra.kyutai_stt.arch.backbone.n_head";
 const KEY_BB_HIDDEN_SCALE: &str = "vokra.kyutai_stt.arch.backbone.hidden_scale";
+// Deliberately NOT read back: the converter stamps the resolved width as an
+// informational record of what it computed, but the runtime re-derives it from
+// `hidden_scale * d_model` (see `BackboneConfig::ffn_hidden`) so a hand-edited
+// or stale stamp can never silently disagree with the weight shapes. The
+// constant is kept because it documents the wire contract — deleting it would
+// lose the only in-tree record that the converter emits this key.
+#[allow(dead_code)]
 const KEY_BB_FFN_HIDDEN: &str = "vokra.kyutai_stt.arch.backbone.ffn_hidden";
 const KEY_BB_CONTEXT: &str = "vokra.kyutai_stt.arch.backbone.context";
 const KEY_BB_ROPE_MAX_PERIOD: &str = "vokra.kyutai_stt.arch.backbone.rope_max_period";

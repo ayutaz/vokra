@@ -11,9 +11,9 @@
 //!    embeddings) that projects into the LM residual width.
 //! 2. **Text backbone** — Qwen2.5-family decoder-only transformer (RoPE
 //!    + SwiGLU + RMSNorm), the same family Voxtral / Canary-Qwen /
-//!    Kyutai STT / FireRedASR-LLM-L consume via `vokra_ops::qwen2` (a
-//!    future follow-up wave lands the shared forward — currently every
-//!    Qwen2 sibling re-implements MHA + GEMM + LayerNorm inline).
+//!      Kyutai STT / FireRedASR-LLM-L consume via `vokra_ops::qwen2` (a
+//!      future follow-up wave lands the shared forward — currently every
+//!      Qwen2 sibling re-implements MHA + GEMM + LayerNorm inline).
 //! 3. **Speech decoder** — streaming AR head that emits audio tokens /
 //!    frames back to the caller (the streaming session infrastructure
 //!    the Moshi / CSM full-duplex sibling family exercises).
@@ -723,6 +723,9 @@ impl LlamaOmni2 {
             }
         }
         let bb = &self.cfg.backbone;
+        // Built before the outer `format!` so the message does not nest one
+        // `format!` inside another's arguments (`clippy::format_in_format_args`).
+        let repo_url = format!("https://huggingface.co/{}", self.cfg.variant.as_repo_id());
         Err(VokraError::UnsupportedOp(format!(
             "llama-omni2 converse: streaming S2S forward not yet bound. \
              This scaffold binds the shape / provenance / license contract; \
@@ -749,7 +752,6 @@ impl LlamaOmni2 {
             } else {
                 "real weights bound but forward path not yet lit"
             },
-            repo_url = format!("https://huggingface.co/{}", self.cfg.variant.as_repo_id()),
         )))
     }
 

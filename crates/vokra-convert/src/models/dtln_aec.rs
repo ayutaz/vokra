@@ -153,11 +153,15 @@ pub const SAMPLE_RATE: u32 = 16_000;
 /// hidden width used by BOTH the STFT-domain stage AND the time-domain
 /// stage (upstream trains the two stages with matched width per
 /// release).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum DtlnVariant {
     /// `dtln_aec_128.tflite` — smallest release (128 LSTM units per
     /// stage), ~1 MB.
+    ///
+    /// The [`Default`], because it is the sane fallback when the input
+    /// carries no LSTM tensor to width-probe from.
+    #[default]
     Units128,
     /// `dtln_aec_256.tflite` — mid release (256 LSTM units per stage),
     /// ~3 MB.
@@ -259,14 +263,6 @@ pub struct DtlnAecReport {
     /// [`DtlnVariant::Units128`] if no canonical LSTM tensor was
     /// present in the safetensors — e.g. an empty test buffer).
     pub variant: DtlnVariant,
-}
-
-impl Default for DtlnVariant {
-    fn default() -> Self {
-        // The smallest upstream release is the sane default when the
-        // input carries no LSTM tensor to width-probe from.
-        Self::Units128
-    }
 }
 
 /// Detects the variant from the loaded safetensors' tensor shapes. The

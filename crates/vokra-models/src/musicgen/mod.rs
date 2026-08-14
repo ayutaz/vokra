@@ -498,8 +498,8 @@ impl MusicGenConfig {
     /// Mirror of
     /// [`crate::sortformer_diar_4spk_v1::SortformerConfig::from_gguf`]
     /// + [`crate::pyannote::PyanNetConfig::from_gguf`] — the same
-    /// fallback pattern used for converters whose topology-stamp
-    /// sub-wave is still queued.
+    ///   fallback pattern used for converters whose topology-stamp
+    ///   sub-wave is still queued.
     #[must_use]
     pub fn from_gguf(gguf: &GgufFile, variant: MusicGenVariant) -> Self {
         let default = variant.default_config();
@@ -633,9 +633,7 @@ impl MusicGenWeights {
     #[must_use]
     pub fn matches_config(&self, config: &MusicGenConfig) -> bool {
         let d = config.d_model as usize;
-        self.tensors
-            .iter()
-            .any(|(_, dims)| dims.iter().any(|&x| x == d))
+        self.tensors.iter().any(|(_, dims)| dims.contains(&d))
     }
 }
 

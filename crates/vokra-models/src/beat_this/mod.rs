@@ -282,9 +282,7 @@ impl BeatThisWeights {
         // wave we only assert that AT LEAST ONE such tensor exists — the
         // encoder-body wave will replace this with the strict pin.
         let d = config.d_model as usize;
-        self.tensors
-            .iter()
-            .any(|(_, dims)| dims.iter().any(|&x| x == d))
+        self.tensors.iter().any(|(_, dims)| dims.contains(&d))
     }
 }
 

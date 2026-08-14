@@ -24,9 +24,9 @@
 //!
 //! [`HiFiGan`] bundles a pre-built [`HifiGanWeights`] + [`HifiGanAttrs`]
 //! + [`HifiGanConfig`] triple plus a `sample_rate` metadata field, and
-//! validates them up-front in [`HiFiGan::new`] so a mismatched pair
-//! fails loudly at construction — never deep inside a forward
-//! (FR-EX-08).
+//!   validates them up-front in [`HiFiGan::new`] so a mismatched pair
+//!   fails loudly at construction — never deep inside a forward
+//!   (FR-EX-08).
 //!
 //! The `vokra_ops::hifigan` op is a **free function** over those three
 //! separately-built bundles (not a method on some `HiFiGanGenerator`

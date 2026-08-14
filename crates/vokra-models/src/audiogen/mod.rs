@@ -313,10 +313,10 @@ pub const PRIMARY_SOURCE_HF_CARD: &str = "huggingface.co/facebook/audiogen-mediu
 pub const PRIMARY_SOURCE_AUDIOCRAFT_REPO: &str = "github.com/facebookresearch/audiocraft";
 /// Paper anchor (Kreuk et al. ICLR 2023) — cited alongside the HF card
 /// + AudioCraft repo so a reader has the theoretical context as well.
-/// DISTINCT from MusicGen's arXiv:2306.05284 (Copet et al. NeurIPS 2023)
-/// — the two are sibling papers but AudioGen came first and pioneered
-/// the delay-pattern + text-encoder-cross-attention architecture that
-/// MusicGen later refined.
+///   DISTINCT from MusicGen's arXiv:2306.05284 (Copet et al. NeurIPS 2023)
+///   — the two are sibling papers but AudioGen came first and pioneered
+///   the delay-pattern + text-encoder-cross-attention architecture that
+///   MusicGen later refined.
 pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2209.15352";
 
 // ---------------------------------------------------------------------------
@@ -392,8 +392,8 @@ impl AudioGenConfig {
     /// [`crate::musicgen::MusicGenConfig::from_gguf`] +
     /// [`crate::sortformer_diar_4spk_v1::SortformerConfig::from_gguf`]
     /// + [`crate::pyannote::PyanNetConfig::from_gguf`] — the same
-    /// fallback pattern used for converters whose topology-stamp
-    /// sub-wave is still queued.
+    ///   fallback pattern used for converters whose topology-stamp
+    ///   sub-wave is still queued.
     #[must_use]
     pub fn from_gguf(gguf: &GgufFile) -> Self {
         let default = Self::primary_source_default();
@@ -525,9 +525,7 @@ impl AudioGenWeights {
     #[must_use]
     pub fn matches_config(&self, config: &AudioGenConfig) -> bool {
         let d = config.d_model as usize;
-        self.tensors
-            .iter()
-            .any(|(_, dims)| dims.iter().any(|&x| x == d))
+        self.tensors.iter().any(|(_, dims)| dims.contains(&d))
     }
 }
 

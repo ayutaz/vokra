@@ -44,15 +44,15 @@
 //!
 //! Rationale (RMVPE precedent, CLAUDE.md 教訓 (a)): the surrounding scaffold
 //! + `from_gguf` variant-round-trip + FR-EX-08 loud-fails land today so a
-//! follow-up wave can flip the switch by (i) extending
-//! `crates/vokra-convert/src/models/snac.rs` to emit the derived
-//! per-quantizer tensors (weight-norm folding of the upstream
-//! `weight_g` + `weight_v` parametrization), and (ii) writing the encoder /
-//! decoder body primitives against those tensors. The RMVPE
-//! `VokraError::UnsupportedOp` messages cite the primary source
-//! (`hubertsiuzdak/snac/blob/main/snac/snac.py` for the Encoder / Decoder
-//! and `snac/vq.py` for `VectorQuantize.forward`) so a reader diagnosing
-//! this gap has exactly one place to walk.
+//!   follow-up wave can flip the switch by (i) extending
+//!   `crates/vokra-convert/src/models/snac.rs` to emit the derived
+//!   per-quantizer tensors (weight-norm folding of the upstream
+//!   `weight_g` + `weight_v` parametrization), and (ii) writing the encoder /
+//!   decoder body primitives against those tensors. The RMVPE
+//!   `VokraError::UnsupportedOp` messages cite the primary source
+//!   (`hubertsiuzdak/snac/blob/main/snac/snac.py` for the Encoder / Decoder
+//!   and `snac/vq.py` for `VectorQuantize.forward`) so a reader diagnosing
+//!   this gap has exactly one place to walk.
 //!
 //! # `vokra.snac.*` chunk group (read here)
 //!
@@ -411,14 +411,14 @@ impl Snac {
     /// Returns [`VokraError::UnsupportedOp`] — the SNAC decoder feature
     /// → PCM synthesis chain (decoder Conv1D upsample + Snake + noise
     /// + Hz44 local attention) is a follow-up WP. The intermediate
-    /// **codes → `[T, d_model]` features** step is *already* served by
-    /// [`vokra_ops::SnacDecoder::decode`], but this binder cannot wire
-    /// that primitive today because the derived per-quantizer tensors
-    /// have not been extracted into the GGUF yet — see
-    /// [`Snac::decode_codes_to_features`] for the specific gap. Errors
-    /// from [`decoder_pcm_forward_loud_partial`] name the exact
-    /// upstream source anchors so the follow-up wave has a single
-    /// place to walk.
+    ///   **codes → `[T, d_model]` features** step is *already* served by
+    ///   [`vokra_ops::SnacDecoder::decode`], but this binder cannot wire
+    ///   that primitive today because the derived per-quantizer tensors
+    ///   have not been extracted into the GGUF yet — see
+    ///   [`Snac::decode_codes_to_features`] for the specific gap. Errors
+    ///   from [`decoder_pcm_forward_loud_partial`] name the exact
+    ///   upstream source anchors so the follow-up wave has a single
+    ///   place to walk.
     pub fn decode(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
         // Validate the outer shape up front so a caller passing the
         // wrong number of stages sees an `InvalidArgument` (not the
@@ -487,9 +487,9 @@ impl Snac {
 /// Names the specific missing primitives from `vokra-ops` — the encoder
 /// Conv1D stack, the `VectorQuantize.forward` op (per-stage `avg_pool1d`
 /// + nearest-neighbour argmin), the noise-conditioned residual, and the
-/// Hz44-only sliding-window local attention. RMVPE / DNSMOS
-/// loud-partial-message precedent — one place to walk when the switch
-/// gets flipped (CLAUDE.md 教訓 (a)).
+///   Hz44-only sliding-window local attention. RMVPE / DNSMOS
+///   loud-partial-message precedent — one place to walk when the switch
+///   gets flipped (CLAUDE.md 教訓 (a)).
 fn encoder_forward_loud_partial(variant: SnacVariant) -> VokraError {
     let downsample_rates = match variant {
         SnacVariant::Hz24 => "[2, 4, 8, 8]",

@@ -46,7 +46,7 @@
 //! [`vokra_core::{Result, VokraError}`]. Root `Cargo.lock` still lists
 //! only `vokra-*` (NFR-DS-02).
 
-use vokra_core::{Result, VokraError};
+use vokra_core::Result;
 
 use super::{
     DEFAULT_ABSOLUTE_THRESHOLD, DEFAULT_FRAME_SIZE, DEFAULT_HOP, absolute_threshold, cmndf,
@@ -100,6 +100,9 @@ pub fn yin(pcm: &[f32], sample_rate: u32, fmin: f32, fmax: f32) -> Result<Vec<f3
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the error-path assertions below name the variant; importing it at
+    // module scope would be dead weight in a non-test build.
+    use vokra_core::VokraError;
 
     const TAU: f64 = std::f64::consts::TAU;
 

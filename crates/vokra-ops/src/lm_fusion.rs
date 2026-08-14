@@ -50,10 +50,13 @@ use std::collections::HashMap;
 use vokra_core::decode::LmScorer;
 use vokra_core::{Result, VokraError};
 
-/// `ln 10` — the ARPA log-base conversion factor. Hand-typed to `f32`
-/// precision so `from_arpa` does not depend on a runtime `ln(10)` call
-/// (matches how [`crate::ctc_decode`] hand-codes its numeric constants).
-const LN_10: f32 = 2.302_585_1_f32;
+/// `ln 10` — the ARPA log-base conversion factor.
+///
+/// Aliased from [`core::f32::consts::LN_10`] rather than hand-typed: the
+/// literal spelling was bit-identical to the constant, so the alias keeps the
+/// compile-time-constant property `from_arpa` relies on while letting
+/// `clippy::approx_constant` verify the value instead of a reader.
+const LN_10: f32 = core::f32::consts::LN_10;
 
 /// Default OOV floor in `ln` space: `-20 · ln 10 ≈ -46.05`. Equivalent to
 /// an ARPA `-20` (i.e. `10^-20` probability) — heavily disfavoured but

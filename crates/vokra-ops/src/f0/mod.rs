@@ -231,7 +231,7 @@ pub(crate) fn absolute_threshold(
     while tau <= tau_max {
         if d_prime[tau] < threshold {
             let mut best = tau;
-            while best + 1 <= tau_max && d_prime[best + 1] < d_prime[best] {
+            while best < tau_max && d_prime[best + 1] < d_prime[best] {
                 best += 1;
             }
             return Some(best);

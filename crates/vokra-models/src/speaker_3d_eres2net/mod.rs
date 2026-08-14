@@ -577,10 +577,10 @@ mod tests {
 
     /// Helper: builds a legitimate 3D-Speaker ERes2Net GGUF (arch + name
     /// + category + optional weight-license stamp + one representative
-    /// ERes2Net-style tensor). The tensor uses a placeholder upstream
-    /// name (`stem.conv1.weight`, mirroring the upstream
-    /// `speakerlab/models/eres2net/ERes2Net.py` stem convention) so the
-    /// non-emptiness gate is satisfied.
+    ///   ERes2Net-style tensor). The tensor uses a placeholder upstream
+    ///   name (`stem.conv1.weight`, mirroring the upstream
+    ///   `speakerlab/models/eres2net/ERes2Net.py` stem convention) so the
+    ///   non-emptiness gate is satisfied.
     fn eres2net_gguf(weight_license_class: Option<LicenseClass>) -> GgufFile {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);

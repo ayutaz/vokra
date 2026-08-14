@@ -54,7 +54,7 @@
 //! - **Loud-partial (this WP)**: [`Moonshine::transcribe`] returns
 //!   [`VokraError::UnsupportedOp`] naming the three exact missing pieces:
 //!   (i) raw-audio Conv1D stem walk (strides [64, 3, 2] — NO mel
-//!       front-end, distinguishing Moonshine trait vs Whisper family),
+//!   front-end, distinguishing Moonshine trait vs Whisper family),
 //!   (ii) RoPE + SwiGLU transformer encoder-decoder forward,
 //!   (iii) greedy / beam decoding + SentencePiece detokenize.
 //!   The message cites all three primary source URLs

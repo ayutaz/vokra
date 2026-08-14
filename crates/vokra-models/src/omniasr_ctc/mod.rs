@@ -937,11 +937,11 @@ impl OmniasrCtcConfig {
             stride: 0,
         };
             OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS];
-        for i in 0..OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS {
+        for (i, desc) in feature_extractor_layer_descs.iter_mut().enumerate() {
             let out_key = format!("{KEY_ENC_FEATURE_OUT_PREFIX}{i}");
             let kernel_key = format!("{KEY_ENC_FEATURE_KERNEL_PREFIX}{i}");
             let stride_key = format!("{KEY_ENC_FEATURE_STRIDE_PREFIX}{i}");
-            feature_extractor_layer_descs[i] = OmniasrCtcConvLayerDesc {
+            *desc = OmniasrCtcConvLayerDesc {
                 out_dim: req_u32(gguf, &out_key)? as usize,
                 kernel: req_u32(gguf, &kernel_key)? as usize,
                 stride: req_u32(gguf, &stride_key)? as usize,
