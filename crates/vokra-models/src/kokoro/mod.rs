@@ -302,6 +302,79 @@ impl KokoroTts {
         )
     }
 
+    /// Single-chunk **pseudo-streaming** wrapper around
+    /// [`Self::synthesize_phonemes`] — the FR-ST-04 API surface for Kokoro.
+    ///
+    /// # Why "pseudo-streaming" and not "streaming" (FR-ST-04)
+    ///
+    /// Kokoro-82M (`iSTFTNet` head, upstream `kokoro==0.9.4` `model.py`) is a
+    /// **full-utterance** synthesizer: `forward_with_tokens`
+    /// (`model.py:86-119`) runs the text encoder → PL-BERT → prosody predictor
+    /// → decoder → iSTFT chain over the entire phoneme sequence in one forward
+    /// pass, and there is no chunk-boundary that would let the model emit
+    /// audio while later frames are still being generated. Wrapping the
+    /// returned PCM in a chunk-emitting adapter reduces first-byte latency to
+    /// the caller, but the **generation** time is unchanged — the model has
+    /// already finished by the time the single chunk is emitted (mirrors the
+    /// same honesty red-line in
+    /// [`crate::piper_plus::PiperPlusTts::synthesize_pseudo_streaming`]).
+    ///
+    /// To keep this honest at the API boundary (SRS §FR-ST-04
+    /// `docs/system-requirements.md:190` — "真のストリーミング非対応モデルは
+    /// pseudo-streaming と API 名で明示する（例: `synthesize_pseudo_streaming`）")
+    /// this method is named `synthesize_phonemes_pseudo_streaming` rather
+    /// than `synthesize_phonemes_streaming`. A truly-incremental Kokoro path
+    /// (e.g. a per-phoneme downgrade adapter or a streaming iSTFT with
+    /// state carry-over across frames) would land as a distinct method — it
+    /// must not be silently swapped in behind this signature, or the
+    /// pseudo-streaming honesty guarantee is broken.
+    ///
+    /// # Contract
+    ///
+    /// - Returns `Ok(iter)` on success where `iter` yields **exactly one
+    ///   chunk** equal to the full PCM buffer of [`Self::synthesize_phonemes`],
+    ///   then `None`.
+    /// - Sync setup errors (unknown voice, style-length mismatch, empty
+    ///   phoneme sequence, out-of-range phoneme id, decoder shape mismatch,
+    ///   …) surface as the OUTER `Err` — the caller never sees an iterator
+    ///   that would then yield `Err`. This matches the `?`-propagation
+    ///   semantic and the FR-EX-08 red-line against silent-drop paths.
+    ///
+    /// The parameter set mirrors [`Self::synthesize_phonemes`] exactly (5
+    /// axes: `phoneme_ids`, `voice`, `style_override`, `noise_scale`,
+    /// `length_scale`) so the pseudo-streaming call is a drop-in replacement
+    /// for callers that want an [`Iterator`]-shaped adapter but do not need
+    /// M3-17 prosody control on this axis. A prosody-aware pseudo-streaming
+    /// variant, if ever needed, lands as a distinct method rather than
+    /// mutating this one.
+    ///
+    /// # Errors
+    ///
+    /// Any error [`Self::synthesize_phonemes`] can surface propagates as the
+    /// outer `Err` (typed [`VokraError`]).
+    pub fn synthesize_phonemes_pseudo_streaming(
+        &self,
+        phoneme_ids: &[i64],
+        voice: Option<&str>,
+        style_override: Option<&[f32]>,
+        noise_scale: f32,
+        length_scale: f32,
+    ) -> Result<impl Iterator<Item = Result<Vec<f32>>>> {
+        // Sync body has already finished by the time we return: the "streaming"
+        // is a chunk-shaped adapter over the full buffer, NOT a true
+        // per-chunk forward. `?` surfaces sync errors as the outer `Err`, so
+        // the caller never gets an iterator that would yield `Err(_)` — see
+        // the contract docstring above.
+        let audio = self.synthesize_phonemes(
+            phoneme_ids,
+            voice,
+            style_override,
+            noise_scale,
+            length_scale,
+        )?;
+        Ok(std::iter::once(Ok(audio.samples)))
+    }
+
     /// Prosody-aware variant of [`Self::synthesize_phonemes`] — the M3-17
     /// unified prosody-control API wired into Kokoro.
     ///
@@ -1514,6 +1587,156 @@ mod tests {
             "real GGUF PCM must be all-finite (FR-EX-08)"
         );
         assert_eq!(audio.sample_rate, tts.config().sample_rate);
+    }
+
+    // -----------------------------------------------------------------------
+    // FR-ST-04 pseudo-streaming (single-chunk fallback) — Kokoro-82M has no
+    // chunked forward upstream (kokoro==0.9.4 `model.py` runs the full
+    // pipeline in one pass), so the API name pins the honesty red-line and
+    // the tests pin the "one chunk equal to the sync output, then None"
+    // contract. See KokoroTts::synthesize_phonemes_pseudo_streaming for the
+    // full rationale.
+    // -----------------------------------------------------------------------
+
+    /// Compile-time gate on the `synthesize_phonemes_pseudo_streaming` name.
+    ///
+    /// A silent rename (e.g. dropping `_pseudo_` to look like a true
+    /// streaming method) would violate FR-ST-04 without any runtime test
+    /// firing — the fn-pointer binding here fails to compile if the symbol
+    /// moves or the signature drifts. Mirrors the piper_plus precedent at
+    /// `crates/vokra-models/src/piper_plus/mod.rs::synthesize_pseudo_streaming_symbol_exists`.
+    #[test]
+    fn synthesize_phonemes_pseudo_streaming_symbol_exists() {
+        // Bind through the fully-qualified path so this is a strict
+        // compile-time gate against a silent rename / signature drift.
+        // The `impl Iterator<...>` return means we can only bind the fn
+        // pointer with a leaked concrete type parameter — but the intent is
+        // symbol existence, not calling the function, so a reference-through
+        // a fn item is sufficient and does NOT require naming the opaque
+        // return type.
+        let _ = super::KokoroTts::synthesize_phonemes_pseudo_streaming;
+    }
+
+    /// Pseudo-streaming yields exactly one chunk equal to the sync output.
+    ///
+    /// Gated on `VOKRA_KOKORO_GGUF` (same pattern as
+    /// [`synthesize_from_real_gguf_gated`]) — CI stays green without the
+    /// 82M-parameter fixture. When set, both the sync entry and the
+    /// pseudo-streaming iterator are called with identical inputs; the
+    /// iterator MUST yield one chunk byte-equal to `sync.samples`, and MUST
+    /// be drained after (`.next().is_none()`).
+    #[test]
+    fn pseudo_streaming_matches_sync_from_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::pseudo_streaming_matches_sync_from_real_gguf_gated] \
+                 SKIP: set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path).unwrap_or_else(|e| {
+            panic!(
+                "load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}. Convert via \
+                 `vokra-cli convert --model kokoro-82m ...` first."
+            )
+        });
+        let style = vec![0.0f32; tts.config().style_dim];
+        let phoneme_ids: [i64; 4] = [0, 1, 2, 3];
+
+        // 1) Sync path — the byte-equality baseline.
+        let sync = tts
+            .synthesize_phonemes(&phoneme_ids, None, Some(&style), 0.0, 1.0)
+            .expect("sync synthesize");
+        assert!(
+            !sync.samples.is_empty(),
+            "sync sample buffer must be non-empty to make the parity meaningful"
+        );
+
+        // 2) Pseudo-streaming path — must yield exactly one chunk == sync PCM.
+        let iter = tts
+            .synthesize_phonemes_pseudo_streaming(&phoneme_ids, None, Some(&style), 0.0, 1.0)
+            .expect("pseudo-streaming synthesize");
+        let chunks: Vec<vokra_core::Result<Vec<f32>>> = iter.collect();
+        assert_eq!(
+            chunks.len(),
+            1,
+            "single-chunk fallback must yield exactly ONE chunk (FR-ST-04 pseudo-streaming contract)"
+        );
+        let chunk = chunks
+            .into_iter()
+            .next()
+            .expect("one chunk")
+            .expect("chunk is not an inner Err (sync errors surface as outer Err)");
+        assert_eq!(
+            chunk, sync.samples,
+            "pseudo-streaming chunk must be byte-equal to sync PCM"
+        );
+
+        // 3) A fresh call — iterator MUST drain to None on the second `.next()`.
+        //    Bind as `mut` so we can consume it.
+        let mut iter2 = tts
+            .synthesize_phonemes_pseudo_streaming(&phoneme_ids, None, Some(&style), 0.0, 1.0)
+            .expect("pseudo-streaming synthesize (drain check)");
+        assert!(iter2.next().is_some(), "first .next() must yield the chunk");
+        assert!(
+            iter2.next().is_none(),
+            "second .next() must yield None (single-chunk fallback drains after 1)"
+        );
+    }
+
+    /// Sync setup errors surface as the OUTER `Err`, never as an iterator
+    /// that then yields `Err`.
+    ///
+    /// Gated on `VOKRA_KOKORO_GGUF` because reaching the text encoder's
+    /// empty-input error path (`text_encoder.rs:248` — "kokoro text encoder:
+    /// empty phoneme id sequence") requires a real loaded voice. Passes an
+    /// empty `phoneme_ids` slice and asserts the outer `Result` is
+    /// `Err(VokraError::InvalidArgument(_))`. This pins the `?`-propagation
+    /// semantic documented on the method (FR-EX-08 — no silent-Ok-with-Err
+    /// paths).
+    #[test]
+    fn pseudo_streaming_propagates_sync_error_from_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::pseudo_streaming_propagates_sync_error_from_real_gguf_gated] \
+                 SKIP: set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path).unwrap_or_else(|e| {
+            panic!(
+                "load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}. Convert via \
+                 `vokra-cli convert --model kokoro-82m ...` first."
+            )
+        });
+        let style = vec![0.0f32; tts.config().style_dim];
+        // Empty phoneme_ids fires `VokraError::InvalidArgument("kokoro text
+        // encoder: empty phoneme id sequence")` at text_encoder.rs:248 — a
+        // sync-setup error that must surface as the OUTER Err, NOT as an
+        // Ok(iter) that then yields Err.
+        let empty: [i64; 0] = [];
+        let result = tts.synthesize_phonemes_pseudo_streaming(&empty, None, Some(&style), 0.0, 1.0);
+        // KokoroTts does not implement Debug (owns non-Debug component
+        // buffers), so the inner Ok type on this Result carries an opaque
+        // `impl Iterator<...>` that ALSO cannot be Debug-printed. Use the
+        // let-else pattern rather than `.expect_err(...)` to match on the
+        // outer Result.
+        let Err(err) = result else {
+            panic!(
+                "empty phoneme_ids must surface as OUTER Err — pseudo-streaming \
+                 contract (FR-EX-08); got Ok(iter)"
+            );
+        };
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains("empty phoneme id sequence"),
+                    "outer Err must name the text-encoder empty-input path \
+                     (FR-EX-08); got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
