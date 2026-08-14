@@ -926,7 +926,17 @@ impl ParakeetCtcAsr {
         //    "vokra.parakeet_ctc.arch.encoder.n_layer missing".
         match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
             Some(a) if a == EXPECTED_ARCH => {}
-            Some("parakeet-tdt") | Some("parakeet-tdt-0.6b-v3") | Some("parakeet-tdt-1.1b") => {
+            // Wave C1 (2026-08-15): `parakeet-tdt-1_1b` (UNDERSCORE) added —
+            // that is the spelling `vokra-convert::models::parakeet_tdt_1_1b`
+            // actually stamps, so before this the dedicated TDT hint never
+            // fired for a real 1.1B TDT artifact (it fell through to the
+            // generic `Some(other)` arm). The dotted `parakeet-tdt-1.1b` is
+            // retained: it is the model NAME spelling and a plausible
+            // hand-authored value.
+            Some("parakeet-tdt")
+            | Some("parakeet-tdt-0.6b-v3")
+            | Some("parakeet-tdt-1.1b")
+            | Some("parakeet-tdt-1_1b") => {
                 return Err(VokraError::ModelLoad(format!(
                     "parakeet-ctc: GGUF arch is a Parakeet-TDT variant (RNN-T + TDT \
                      joint / duration head), expected `{EXPECTED_ARCH}` (FastConformer \
@@ -934,7 +944,10 @@ impl ParakeetCtcAsr {
                      has a prediction network + joint projection + duration bins that \
                      the CTC binder cannot dispatch. Route the GGUF through the \
                      sibling `parakeet::ParakeetAsr::from_gguf` TDT binder \
-                     (`crates/vokra-models/src/parakeet/mod.rs`) instead."
+                     (`crates/vokra-models/src/parakeet/mod.rs`) instead — or, for the \
+                     1.1B TDT SKU (arch `parakeet-tdt-1_1b`), through \
+                     `parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf` \
+                     (`crates/vokra-models/src/parakeet_tdt_1_1b/mod.rs`)."
                 )));
             }
             Some(other) => {

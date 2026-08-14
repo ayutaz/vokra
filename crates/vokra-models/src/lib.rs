@@ -1490,6 +1490,395 @@ pub mod smart_turn;
 // separately by a test.
 pub mod firered_vad;
 
+// Wave C1 (2026-08-15) — runtime binder for the `parakeet-tdt-1_1b` converter
+// arch (NVIDIA Parakeet-TDT-1.1B, CC-BY 4.0). Closes a read-side gap: the
+// converter (`crates/vokra-convert/src/models/parakeet_tdt_1_1b.rs`) has
+// stamped `vokra.model.arch = "parakeet-tdt-1_1b"` since the 2026-08-03 Wave B
+// coverage audit, but NO code in the workspace read that arch string — weights
+// could be converted and then never loaded.
+//
+// SCOPE: the TDT DECODE leg is REAL and wired to `vokra_ops::rnnt_decode`'s
+// `RnntDecoderKind::Tdt` mode (the primitive already implements TDT: per-frame
+// vocab argmax over V+1 plus duration argmax over D, duration-driven frame
+// skip, zero-duration multi-emit cap), reachable via
+// `ParakeetTdt11b::decode_tdt` on a caller-materialized joint buffer. The full
+// PCM -> text `transcribe` is a LOUD-PARTIAL (`VokraError::UnsupportedOp`)
+// because the converter is a BF16 pass-through skeleton that stamps NO
+// `vokra.parakeet_tdt_1_1b.*` hparam chunk group — its docstring defers the
+// 1.1B axis transcription to the owner. Copying the `parakeet` (0.6B-v3) axes
+// would be fabrication: the releases are known to differ (0.6B-v3 = 24 layers /
+// 128 mel bins / attention_bias=false; the 1.1B CTC sibling = 42 layers / 80
+// mel bins / attention_bias=true), so the 1.1B TDT axes are genuinely unknown.
+// That is why this module carries no config constant, unlike `parakeet` /
+// `parakeet_ctc` whose `config.json` files were fetched and transcribed
+// verbatim (2026-07-24).
+//
+// Note the arch/name spelling split: the arch tag uses an UNDERSCORE
+// (`parakeet-tdt-1_1b`) while the model name / publish slug / CLI argument use
+// a DOT (`parakeet-tdt-1.1b`). Both are load-bearing on the wire and pinned
+// separately by tests (mirror of the `firered_vad` split note above).
+//
+// LICENSING: the converter stamps `cc-by-4.0` -> `AttributionRequired`, so the
+// FR-MD-09 attribution surface activates (the NVIDIA attribution must be
+// displayed). This binder only SURFACES whatever class the GGUF carries and
+// fail-closes to `Unknown` when nothing is stamped; the `--license` override is
+// a supported convert-time path, so nothing is asserted.
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+pub mod parakeet_tdt_1_1b;
+
+// Wave C1 (2026-08-15) — aiola Whisper-Medusa-v1 runtime binder (LIB.RS RULE:
+// append at the END of the `pub mod` block with a Wave marker; do NOT
+// alphabetize — rustfmt has reordered these before and broken a commit).
+//
+// Closes a real gap: `crates/vokra-convert/src/models/whisper_medusa_v1.rs`
+// (coverage-audit wave-b, 2026-08-03) produced a GGUF stamped
+// `vokra.model.arch = "whisper-medusa-v1"` / `vokra.model.name =
+// "whisper-medusa-v1"` / `vokra.model.category = "asr"` /
+// `vokra.provenance.upstream_hf = "aiola/whisper-medusa-v1"` that a
+// workspace-wide grep proved NOTHING read back — every converted
+// Whisper-Medusa checkpoint was unloadable. This module is that consumer.
+//
+// Whisper-Medusa (`huggingface.co/aiola/whisper-medusa-v1`) is an unmodified
+// OpenAI Whisper backbone plus N Medusa speculative-decoding heads (Cai et al.
+// 2024, arXiv:2401.10774): extra LM heads each predicting one further future
+// token from the same final decoder hidden state, so a step proposes several
+// candidate continuations that the base decoder then verifies in one forward.
+// Speculation is a THROUGHPUT optimisation, not a different model — which is
+// why this binder deliberately does NOT fork the Whisper tower.
+//
+// REUSE POSTURE: the base tower loads through the existing, real
+// `whisper::WhisperAsr` path. Two facts make that work — (i) the Medusa
+// converter passes every tensor through under its verbatim upstream
+// safetensors name and `whisper::WhisperWeights` binds on exactly those
+// HF-Transformers names (`model.encoder.layers.{i}.self_attn.q_proj.weight`
+// …), so no rename layer is needed; (ii) `WhisperAsr::from_gguf` does not gate
+// on arch — the arch gate lives on `WhisperSession`, which is the same seam
+// `distil_whisper` / `kotoba_whisper` already delegate through. Do NOT "fix"
+// this by adding `whisper-medusa-v1` to `whisper::ACCEPTED_ARCHS`: that list
+// is documented as excluding this arch precisely so a bare `WhisperSession`
+// cannot bind a Medusa checkpoint and SILENTLY DROP the heads. The tower is
+// borrowed; the arch identity stays here. A test pins the exclusion.
+//
+// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
+// with BOTH tags named and the whole vanilla-Whisper-topology sibling fleet
+// enumerated (`whisper` / `crisper-whisper` / `distil-whisper` /
+// `kotoba-whisper` — those four share the tensor topology verbatim, so only
+// the arch tag can disambiguate them); a real prefix walk over the tensor
+// manifest that groups Medusa tensors per head index and refuses a malformed
+// index BY TENSOR NAME, a non-contiguous index set BY FIRST MISSING INDEX, a
+// mix of both `nn.ModuleList` spellings as ambiguous, and an artifact with no
+// Medusa tensors at all (a vanilla Whisper checkpoint mis-stamped); a
+// base-tower presence gate (heads without a Whisper encoder can never run);
+// the optional all-or-nothing `vokra.medusa.*` hyper-parameter group (absent →
+// `config()` is `None` and the checkpoint still binds, because refusing it
+// would re-open the very gap this module closes; partially stamped → loud
+// naming the missing key; `0` sentinel → loud) CROSS-CHECKED against the head
+// count actually found on disk; base Whisper tower delegation whose load
+// outcome is RECORDED rather than swallowed; and weight-license surfacing that
+// fail-closes to `LicenseClass::Unknown`.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」), two distinct gates:
+//   (1) `transcribe` / `transcribe_tokens` / `base_asr` — real when the base
+//       tower bound; otherwise `VokraError::UnsupportedOp` QUOTING the
+//       underlying whisper error. Root cause with today's converter: it is a
+//       pure tensor pass-through and stamps NEITHER the `vokra.whisper.*`
+//       hyper-parameter chunk `WhisperConfig::from_gguf` requires, NOR the
+//       `vokra.frontend.*` chunk the FR-LD-03 bit-exact front-end check
+//       requires, NOR a `vokra.tokenizer.model` blob. The tensor NAMES already
+//       line up, so the fix is METADATA, not weights: teach the converter to
+//       stamp those chunks (mirror of `models/whisper.rs`) and this binder
+//       transcribes with zero changes here. `base_status()` lets a caller
+//       check which world it is in before calling.
+//   (2) `transcribe_speculative` — ALWAYS `UnsupportedOp`, even when the base
+//       tower bound, because silently running plain decoding under a
+//       "speculative" name would misreport what the runtime did. Three
+//       blockers: no draft→verify→accept driver anywhere in
+//       `vokra_core::decode` and no tree/sparse attention mask op in
+//       `vokra-ops`; the Medusa `medusa_choices` candidate tree is recorded in
+//       NO metadata (the converter stamps no `vokra.medusa.*` at all) and a
+//       guessed tree yields a shape-valid decode that silently ACCEPTS WRONG
+//       TOKENS; and the per-head sub-module interior (residual depth,
+//       final-projection bias) is untranscribable from any source the
+//       converter records. The error states the honest fallback explicitly —
+//       since a correct speculative decode accepts exactly what plain decoding
+//       produces, `transcribe` gives the SAME output today, minus the speedup.
+//       No fabricated speculative tokens are ever emitted (FR-EX-08).
+//
+// LICENSING — UNVERIFIED, owner follow-up: the 2026-08-03 audit flagged this
+// row `要一次 (Apache-2.0 想定)` — primary source required, Apache-2.0 ASSUMED.
+// The converter's own docstring is explicit that its `apache-2.0` default is
+// the ticket-header value ("the aiola precedent") and NOT a transcription of
+// the `huggingface.co/aiola/whisper-medusa-v1` model-card front matter. This
+// binder therefore makes NO license claim: `CONVERTER_DEFAULT_LICENSE` is
+// named only as "what the converter writes absent a `--license` override", and
+// `weight_license()` merely SURFACES whatever class the artifact carries,
+// fail-closing to `Unknown`. `docs/license-audit.md` §3.1 sign-off stays BLANK
+// (owner-only per `[[feedback-license-signoff-primary-source]]` — CC does NOT
+// sign, and does not treat the converter's assumption as a sign-off).
+// Publishing a converted Whisper-Medusa GGUF stays blocked at that §3.1 gate.
+//
+// Cross-crate string handshake via duplicated `pub const ARCH =
+// "whisper-medusa-v1"` / `NAME` / `CATEGORY` / `UPSTREAM_HF` (mirror of the
+// converter's constants, preserving the layered convention `vokra-ops →
+// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
+// binder`, `vokra-convert → GGUF writer`).
+pub mod whisper_medusa;
+
+// Wave C1 (2026-08-15) — runtime binder for the `firered_asr_aed_l` converter
+// arch (FireRedTeam/FireRedASR-AED-L, Apache-2.0, ~1.1B params / ~2.2 GB BF16,
+// Mandarin ASR). LIB.RS RULE: append at the END of the `pub mod` block with a
+// Wave marker; do NOT alphabetize — rustfmt has reordered these before and
+// broken a commit.
+//
+// Closes a real read-side gap: the converter
+// (`crates/vokra-convert/src/models/firered_asr_aed_l.rs`, coverage-audit
+// 2026-08-03 Wave B) has stamped `vokra.model.arch = "firered_asr_aed_l"` /
+// `vokra.model.name = "firered-asr-aed-l"` / `vokra.model.category = "asr"` /
+// `vokra.provenance.upstream_hf = "FireRedTeam/FireRedASR-AED-L"`, but a
+// workspace-wide grep proved NOTHING read that arch string back — every
+// converted checkpoint was unloadable. This module is that consumer.
+//
+// REAL: strict `vokra.model.arch` verification that refuses a foreign GGUF
+// loudly with the whole `category = "asr"` fleet enumerated — headed by the
+// SAME TEAM's `firered_asr_llm_l` (Conformer encoder + audio-text adapter +
+// Qwen2 LM decoder), then `whisper` / `distil-whisper` / `kotoba-whisper`,
+// `canary` / `canary-1b-flash` / `canary-qwen`, `parakeet-tdt` /
+// `parakeet-ctc` / `omniasr-ctc`, `kyutai-stt` / `voxtral` /
+// `nemotron_asr_streaming`, `moonshine`; the shared `asr` category can never
+// disambiguate them, only the arch tag can. Plus: a non-empty tensor-manifest
+// gate; a by-name `dims()` lookup that NAMES an absent tensor instead of
+// returning `None` for a caller to swallow; the optional `KEY_REQUIRED_TENSORS`
+// (`Array<String>`) declaration that turns a truncated / mis-merged GGUF into a
+// LOAD-time failure naming the first missing tensor; the optional
+// all-or-nothing `vokra.firered_asr_aed_l.*` hyper-parameter group (absent ->
+// `config()` is `None` and the checkpoint still binds, because refusing it
+// would re-open the very gap this module closes; partially stamped -> loud,
+// naming the missing key; `0` sentinel or indivisible `d_model % n_head` on
+// either stack -> loud); a sample-rate guard that refuses a mismatched rate
+// with `InvalidArgument` rather than resampling silently; tokenizer-presence
+// surfacing; and weight-license surfacing that fail-closes to
+// `LicenseClass::Unknown`. It implements `vokra_core::engines::AsrEngine` so
+// the handle is reachable from the session glue exactly like Whisper /
+// Voxtral / distil-Whisper.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `FireredAsrAed::transcribe_tokens` and the `AsrEngine` path return
+// `VokraError::UnsupportedOp` naming three concrete blockers — (i) NO
+// HYPER-PARAMETER TRANSCRIPTION: the converter stamps no
+// `vokra.firered_asr_aed_l.*` group at all, and the audit ticket
+// `docs/tickets/coverage-audit-2026-08-03/wave-b/firered-asr-aed-l.md` records
+// 「FireRedTeam AED は Whisper と shape 互換ではない、独自 hparam」, so
+// borrowing Whisper's axes would emit a SHAPE-VALID token sequence that is
+// quietly wrong (head counts in particular are unrecoverable from the weight
+// shapes when QKV is packed); (ii) NO TENSOR-NAME MANIFEST: the converter's own
+// docstring defers real-weight binding to an upstream manifest fetch that has
+// not happened, and the names in its test module are synthetic round-trip
+// placeholders; (iii) NO TOKENIZER: an AED decoder emits token ids and no
+// `vokra.tokenizer.model` blob rides on these GGUFs, so nothing can render
+// Mandarin text. The blocker is GEOMETRY and VOCABULARY, not kernels — the same
+// audit ticket records that the existing encoder / decoder / cross-attention /
+// beam-search / STFT / mel-filterbank primitives cover this topology once the
+// geometry is known. No fabricated token ids or transcript are ever emitted
+// (FR-EX-08).
+//
+// STRUCTURED FOR THE LLM SIBLING: `FireredAsrAedEncoderConfig` and
+// `FireredAsrAedDecoderConfig` are separate public types so that IF a real
+// checkpoint later shows the two FireRedTeam releases share an acoustic
+// encoder, the encoder half lifts into a shared type by a move rather than a
+// rewrite. The module deliberately does NOT assert that they share one: the
+// in-repo descriptions differ (the LLM converter calls the AED release's
+// encoder a "Transformer encoder" and its own a "Conformer encoder") and no
+// primary source in this repository settles it. The LLM variant
+// (`firered_asr_llm_l`) still has NO binder of its own — a separate gap.
+//
+// LICENSING: the converter stamps `apache-2.0` -> `LicenseClass::Permissive`.
+// This binder only SURFACES whatever class the GGUF carries and fail-closes to
+// `Unknown` when nothing is stamped. `docs/license-audit.md` §3.1 already
+// carries an owner-signed row for this release; this module neither reads nor
+// writes that sign-off (owner-only per
+// `[[feedback-license-signoff-primary-source]]`).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH =
+// "firered_asr_aed_l"` / `NAME` / `CATEGORY` / `UPSTREAM_HF` (mirror of the
+// converter's constants, preserving the layered convention `vokra-ops →
+// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
+// binder`, `vokra-convert → GGUF writer`). Note the arch uses `_` while the
+// name uses `-`; both spellings are load-bearing on the wire and are pinned
+// separately by a test.
+pub mod firered_asr_aed;
+
+// Wave C1 (2026-08-15) — Sber GigaAM family runtime binder (LIB.RS RULE: append
+// at the END of the `pub mod` block with a Wave marker; do NOT alphabetize —
+// rustfmt has reordered these before and broken a commit).
+//
+// Closes a real gap, TWICE OVER. Two converters existed with no consumer
+// anywhere in the workspace: `crates/vokra-convert/src/models/sber_gigaam_v3.rs`
+// stamps `vokra.model.arch = "sber_gigaam_v3"` and
+// `crates/vokra-convert/src/models/sber_gigaam_multilingual.rs` stamps
+// `vokra.model.arch = "gigaam_multilingual"`. A workspace-wide grep proved
+// NOTHING read either string back — every converted GigaAM checkpoint was
+// unloadable. This module is that missing consumer, for both halves at once.
+//
+// ONE MODULE, TWO ARCH TAGS: both Wave B tickets
+// (`docs/tickets/coverage-audit-2026-08-03/wave-b/sber-gigaam-{v3,multilingual}.md`)
+// call for a single `ModelKind::GigaAm` carrying a variant enum, and the
+// multilingual converter's own module doc records that splitting into two
+// standalone converters was a deliberate WORKTREE-ISOLATION decision, not an
+// architectural one. The runtime has no such constraint, so `gigaam` accepts
+// `ACCEPTED_ARCHS` and distinguishes the halves with `GigaamVariant` — the
+// `whisper` binder's existing ACCEPTED_ARCHS family precedent (`whisper` /
+// `crisper-whisper` / `distil-whisper` / `kotoba-whisper` share one reader).
+// What actually differs is the VOCABULARY (Russian / Central-Asian char space
+// vs a 70+-language char space) and the provenance key: v3 stamps
+// `vokra.provenance.upstream_hf = "ai-sage/GigaAM-v3"`, multilingual stamps
+// `vokra.provenance.upstream_url = "github.com/salute-developers/GigaAM"`
+// because its HF mirror is flagged 要 mirror URL 確認 in the ticket.
+//
+// REAL: strict `ACCEPTED_ARCHS` verification that refuses a foreign GGUF loudly,
+// naming both the observed and expected tags and enumerating the sibling
+// `category = "asr"` fleet (parakeet-ctc / canary / omniasr-ctc / whisper /
+// distil-whisper / kotoba-whisper / sensevoicesmall) — the shared category tag
+// alone cannot disambiguate them, only the arch tag can; a CROSSED-WIRES gate
+// that refuses a GGUF whose arch names one variant while `vokra.model.name`
+// names the other (they disagree about which vocabulary the CTC head emits
+// over); a non-empty tensor-manifest gate; a by-name `dims()` lookup that NAMES
+// an absent tensor instead of returning `None` for a caller to swallow; an
+// optional `KEY_REQUIRED_TENSORS` (`Array<String>`) declaration that turns a
+// truncated / mis-merged upload into a LOAD-time failure naming the first
+// missing tensor; and `GigaamTopology` — a MEASURED structural probe that
+// discovers every `<root>.layers.<i>.<leaf>` stack, counts its depth, and
+// enforces contiguity (no index hole) plus uniformity (every layer carries the
+// same leaf set as layer 0), refusing a violation by naming the EXACT absent
+// tensor. Weight-license surfacing fail-closes to `LicenseClass::Unknown`.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より honest」):
+// `Gigaam::transcribe` returns `VokraError::UnsupportedOp` naming three concrete
+// blockers, all properties of the GGUF CONTRACT rather than of the kernel
+// library — (i) the MISSING FRONT-END SPEC: neither converter stamps a
+// `vokra.gigaam.*` / `vokra.frontend.*` chunk, so sample rate, mel-bin count,
+// hop, window and normalisation convention are all unknown, and those differ
+// silently between librosa / torchaudio / Kaldi; (ii) the MISSING ENCODER
+// TENSOR-NAME MAPPING: both converters copy every tensor under its verbatim
+// upstream state-dict key and both explicitly record real-weight binding as a
+// follow-up "gated on the upstream tensor-name manifest fetch", so a best-guess
+// mapping would emit a SHAPE-VALID but quietly wrong transcript rather than
+// crash; (iii) the MISSING CTC VOCABULARY: no tokenizer / vocab chunk is
+// embedded (contrast the Whisper converter's `vokra.tokenizer.model` U8 array),
+// and GigaAM is char-wise CTC, so frame-argmax indices cannot be mapped to
+// characters at all. The message states explicitly that the blockers are
+// METADATA, not kernels — `vokra_ops::conformer`, `vokra_ops::ctc_decode_greedy`
+// / `ctc_decode_beam` and `vokra_ops::mel` / `kaldi_fbank` all already exist —
+// and points at the converter + sidecar to extend. No fabricated transcript is
+// ever emitted (FR-EX-08). Deliberately NO `GigaamConfig::upstream_default()`:
+// no in-repo primary source transcribes GigaAM's encoder geometry or front-end
+// axes, so a default would be invented numbers wearing an authoritative face
+// (CLAUDE.md ハルシネーション厳禁) — the same posture `ten_vad` / `firered_vad`
+// take. `GigaamTopology` MEASURES the checkpoint instead of asserting anything.
+//
+// LICENSING: both converters stamp `mit` → `LicenseClass::Permissive` per the
+// upstream `github.com/salute-developers/GigaAM/LICENSE`. This binder only
+// SURFACES whatever class the GGUF carries. `docs/license-audit.md` §3.1
+// sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign, and does not
+// treat a converter default as a sign-off). Both tickets additionally flag open
+// corpus-provenance questions (Sber-internal disclosure for v3; a Common Voice /
+// MLS / VoxPopuli / FLEURS rights chain for the 70+-language variant) that are
+// owner audit items, not runtime concerns.
+//
+// Cross-crate string handshake via duplicated `pub const ARCH_V3` /
+// `ARCH_MULTILINGUAL` / `NAME_*` / `CATEGORY` / `UPSTREAM_*` (mirrors of the two
+// converters' constants, preserving the layered convention `vokra-ops → nothing
+// GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
+// `vokra-convert → GGUF writer`). Note the arch tags use `_` while the names use
+// `-`, AND that v3's arch carries the `sber_` vendor prefix while
+// multilingual's does not; both asymmetries are load-bearing on the wire and are
+// pinned separately by tests.
+pub mod gigaam;
+
+// Wave C1 (2026-08-15) — runtime binder for the `canary-1b-flash` converter
+// arch (NVIDIA Canary-1B-Flash, CC-BY 4.0, 883M params, multitask ASR + AST +
+// timestamps over English / German / French / Spanish). LIB.RS RULE: append at
+// the END of the `pub mod` block with a Wave marker; do NOT alphabetize —
+// rustfmt has reordered these before and broken a commit.
+//
+// Closes a real read-side gap: the converter
+// (`crates/vokra-convert/src/models/canary_1b_flash.rs`, coverage-audit
+// 2026-08-03 Wave B) has stamped `vokra.model.arch = "canary-1b-flash"` /
+// `vokra.model.name = "canary-1b-flash"` / `vokra.model.category = "asr"` /
+// `vokra.provenance.upstream_hf = "nvidia/canary-1b-flash"`, but a
+// workspace-wide grep proved NOTHING read that arch string back — a converted
+// checkpoint was unloadable. This module is that consumer.
+//
+// STRUCTURE REUSE, NOT A THIRD SHAPE: the axes reuse `crate::canary`'s
+// `CanaryEncoderConfig` / `CanaryDecoderConfig` / `CanaryHeadConfig` verbatim
+// (re-exported), and `Canary1bFlashConfig::validate_for_forward` DELEGATES to
+// the shared Canary-family validator instead of duplicating ~130 lines of
+// shape algebra — the same posture `canary_qwen` takes when it re-exports the
+// encoder types. Flash-specific state is only what genuinely differs.
+//
+// WHY A SEPARATE ARCH TAG: Canary-1B-Flash keeps Canary-1B-v2's 32-layer
+// FastConformer encoder verbatim but distils the Transformer AED decoder from
+// 8 layers to **4** (Canary-1B-v1: 24) — the axis behind the model card's
+// "1000+ RTFx" claim. A loader that walks an 8-block decoder manifest against a
+// 4-block payload does not crash, it silently mis-reads, so `canary` /
+// `canary-1b-flash` / `canary-qwen` (Qwen LLM decoder, soft-prompt prefix) stay
+// three distinct tags and the arch gate is strict (FR-EX-08).
+//
+// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
+// with BOTH tags named and the Canary / NeMo-ASR neighbourhood enumerated
+// (`canary` / `canary-qwen` / `parakeet-ctc` / `parakeet-tdt` / `whisper` /
+// `voxtral` / `kyutai-stt`); primary-source axis transcription (32 encoder
+// layers + 4 decoder layers from the model card; d_model / lm_dec_hidden /
+// max_sequence_length = 1024 attested for `canary-1b-flash` BY NAME in the
+// `fast-conformer_aed.yaml` variant table; the remaining axes from that same
+// family reference); a forward-compatible OPTIONAL `vokra.canary_1b_flash.*`
+// axis-override group (the current converter stamps NONE of it, so a real
+// artifact resolves to `ConfigSource::FamilyAnchored` — absence is normal,
+// but a PRESENT key of the wrong dtype fails loud rather than being silently
+// ignored); a tensor manifest over the verbatim upstream safetensors names the
+// converter passes through, with a non-empty gate plus `require_tensor` /
+// `require_tensor_dims` lookups that NAME the missing tensor or BOTH the
+// expected and actual dims; and weight-license + FR-MD-09 attribution
+// surfacing that fail-closes to `LicenseClass::Unknown`.
+//
+// DELIBERATELY NOT TRANSCRIBED: `head.vocab_size` / `pad` / `bos` / `eos` stay
+// `0` sentinels that `validate_for_forward` REFUSES. No primary source states
+// them (the card says only "the 4-language subset of the unified Canary
+// SentencePiece"), and copying Canary-1B-v2's 25-language 16384 would be
+// fabrication across a different tokenizer.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `transcribe` / `transcribe_with_task` return
+// `VokraError::UnsupportedOp` naming four blockers — (i) NO TENSOR-NAME
+// MANIFEST: the converter copies every float tensor under its verbatim
+// upstream name and nothing in-repo transcribes NeMo's `EncDecMultiTaskModel`
+// state_dict naming, so walking guessed names into typed slots would bind
+// shape-valid garbage; (ii) NO TOKENIZER: the SentencePiece model, its width
+// and the pad/bos/eos/`<taskname>` ids live inside the `.nemo` tarball;
+// (iii) the `0` head sentinel that follows from (ii), so no logits array can
+// even be shaped; (iv) the 4-layer AED decoder STEP is unwired — a gap SHARED
+// with `crate::canary`, not specific to Flash. The message names the
+// primitives that DO exist and that the follow-up wave composes
+// (`vokra_ops::waveform_frontend`, `vokra_ops::conformer` with
+// `Stacking { factor: 8 }`, `vokra_core::decode::beam_search`). No fabricated
+// token ids are ever emitted (FR-EX-08).
+//
+// LICENSING: the converter stamps `cc-by-4.0` -> `AttributionRequired`, so the
+// FR-MD-09 attribution surface activates and `Canary1bFlashAsr::attribution`
+// returns the stamped text a downstream must display. This binder only
+// SURFACES whatever class the artifact carries and fail-closes to `Unknown`.
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH =
+// "canary-1b-flash"` / `NAME` / `CATEGORY` / `UPSTREAM_HF` / `DEFAULT_LICENSE`
+// (mirror of the converter's constants, preserving the layered convention
+// `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models
+// → GGUF binder`, `vokra-convert → GGUF writer`).
+pub mod canary_1b_flash;
+
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
 #[cfg(test)]
