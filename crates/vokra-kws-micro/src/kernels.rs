@@ -707,6 +707,16 @@ fn validate_conv_buffers(
 
 #[cfg(test)]
 mod tests {
+    // Dimensional-indexing expressions in this module are written in the
+    // canonical NHWC form `(row * H + col) * C + ch` (and its degenerate
+    // `row * C + col` for FC weights). Clippy's `identity_op` / `erasing_op`
+    // flag the trivially-zero (`0 * K`) and one-identity (`1 * K`, `x + 0`)
+    // sub-expressions, but reducing them destroys the visual anchor between
+    // the index formula and the intended (row, col, ch) tuple — the intent
+    // is that a reader can read `input[(1 * H + 1) * C + 0]` as "centre
+    // pixel, channel 0" without doing the algebra in their head.
+    #![allow(clippy::identity_op, clippy::erasing_op)]
+
     use super::*;
 
     // ---- conv2d_int8 ---------------------------------------------------

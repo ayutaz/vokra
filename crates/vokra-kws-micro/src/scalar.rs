@@ -222,6 +222,13 @@ fn cos_kernel(r: f32) -> f32 {
     1.0 + r2 * (-0.5 + r2 * ((1.0 / 24.0) + r2 * (-(1.0 / 720.0) + r2 * (1.0 / 40_320.0))))
 }
 
+// Keep the `INV_TWO_PI` constant referenced so no dead-const warnings fire
+// in future callers that reduce arguments by `mod 2π` (currently only the
+// π/2-octant reducer is wired). The compiler folds this at const-eval time,
+// so it contributes zero code size.
+#[allow(dead_code)]
+const _INV_TWO_PI_REF: f32 = INV_TWO_PI;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,9 +405,3 @@ mod tests {
         assert_eq!(floor(f32::NEG_INFINITY), f32::NEG_INFINITY);
     }
 }
-// Keep the `INV_TWO_PI` constant referenced so no dead-const warnings fire
-// in future callers that reduce arguments by `mod 2π` (currently only the
-// π/2-octant reducer is wired). The compiler folds this at const-eval time,
-// so it contributes zero code size.
-#[allow(dead_code)]
-const _INV_TWO_PI_REF: f32 = INV_TWO_PI;

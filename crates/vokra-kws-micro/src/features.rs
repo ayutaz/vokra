@@ -648,8 +648,8 @@ mod tests {
         let mut re = vec![0.0f32; n];
         let mut im = vec![0.0f32; n];
         let two_pi = 2.0 * PI;
-        for i in 0..n {
-            re[i] = (two_pi * (target_bin as f32) * (i as f32) / (n as f32)).cos();
+        for (i, r) in re.iter_mut().enumerate() {
+            *r = (two_pi * (target_bin as f32) * (i as f32) / (n as f32)).cos();
         }
         fft_radix2(&mut re, &mut im, &tw_re, &tw_im, &perm);
         // Find the peak of |X|² over the one-sided spectrum.
