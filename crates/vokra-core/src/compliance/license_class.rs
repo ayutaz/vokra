@@ -416,6 +416,29 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "pyannote-speaker-diarization-3_1" => LicenseClass::Permissive,
         "kokoro" | "kokoro-82m" | "cosyvoice" | "cosyvoice2" | "sesame-csm" | "csm-1b"
         | "voxtral" | "openwakeword" => LicenseClass::Permissive,
+        // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up:
+        // ICTNLP LLaMA-Omni2 streaming S2S family. Weight license =
+        // apache-2.0 (Qwen2.5 派生 chain) per the audit ticket + HF
+        // sibling repo cardData. Four sibling HF repos (`ICTNLP/
+        // LLaMA-Omni2-{7B,3B-Bilingual,1.5B,32B}`) — every canonical id
+        // + hyphen/underscore spelling maps here. §3.1 sign-off column
+        // remains BLANK (fail-closed) until owner primary-source
+        // verifies (memory `[[feedback-license-signoff-primary-source]]`).
+        "llama-omni2"
+        | "llama_omni2"
+        | "llama-omni2-7b"
+        | "llama_omni2_7b"
+        | "llama-omni2-3b-bilingual"
+        | "llama_omni2_3b_bilingual"
+        | "llama-omni2-1.5b"
+        | "llama-omni2-1_5b"
+        | "llama_omni2_1_5b"
+        | "llama-omni2-32b"
+        | "llama_omni2_32b"
+        | "ictnlp/llama-omni2-7b"
+        | "ictnlp/llama-omni2-3b-bilingual"
+        | "ictnlp/llama-omni2-1.5b"
+        | "ictnlp/llama-omni2-32b" => LicenseClass::Permissive,
         // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors, MIT).
         // 27M raw-audio transformer enc-dec ASR (arXiv:2410.15608). Weight
         // license = **MIT** per upstream `UsefulSensors/moonshine-tiny`
@@ -1459,6 +1482,12 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // this arm resolves to CC-BY 4.0, not the Apache-2.0 permissive
         // one — Kyutai's audio/text checkpoints ship CC-BY 4.0.
         _ if id.starts_with("kyutai-stt-") => LicenseClass::AttributionRequired,
+        // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up:
+        // ICTNLP LLaMA-Omni2 family prefix walk — a hypothetical future
+        // variant id (`llama-omni2-<something>`) still resolves
+        // Permissive by walking the dash. Guarded on the dash so an
+        // unrelated id (`llama-omni2xxx`) cannot slip through.
+        _ if id.starts_with("llama-omni2-") => LicenseClass::Permissive,
         // Parakeet family (SoTA plan Phase 2, 2026-07-24): a specific
         // variant id like `parakeet-tdt-1.1b` or `parakeet-rnnt-1.1b`
         // still resolves attribution-required. Guarded on the dash so
@@ -1961,6 +1990,18 @@ mod tests {
             // and the short form the CLI accepts.
             "zonos",
             "zonos-v0.1",
+            // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b
+            // follow-up — ICTNLP LLaMA-Omni2 streaming S2S family.
+            // Canonical arch tag + every sibling repo + the family
+            // prefix walk all resolve Permissive (apache-2.0 default).
+            "llama-omni2",
+            "llama-omni2-7b",
+            "llama-omni2-3b-bilingual",
+            "llama-omni2-1.5b",
+            "llama-omni2-32b",
+            // Family prefix — a hypothetical future variant still
+            // resolves Permissive by the walk.
+            "llama-omni2-70b",
         ] {
             assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
         }
