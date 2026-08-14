@@ -72,8 +72,9 @@
 //! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29
 //! / Moshi T29: this scaffold sets the seam so the follow-up lands drop-in.
 
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{Result, VokraError};
+use vokra_core::{CompliancePolicy, Result, VokraError, check_weight_license};
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
@@ -88,6 +89,57 @@ pub const EXPECTED_ARCH: &str = "kyutai-stt";
 /// `mimi_name` names — `mimi-pytorch-e351c8d8@125`, 24 kHz / 12.5 Hz per
 /// the shared Mimi module docs, ADR M4-06 §D3).
 pub const KYUTAI_STT_SAMPLE_RATE: u32 = 24_000;
+
+/// Deterministic seed [`KyutaiSttAsr::from_gguf_with_policy`] threads into
+/// [`KyutaiSttWeights::synthesized`] until the real-checkpoint tensor-name
+/// manifest lands (T29-equivalent — the CSM
+/// [`CSM_FROM_GGUF_DEFAULT_SEED`](super::csm::CSM_FROM_GGUF_DEFAULT_SEED)
+/// pattern). Fixed so every `from_gguf` build against the same shape
+/// config produces bit-identical weight bytes → reproducible bug reports.
+pub const KYUTAI_STT_FROM_GGUF_DEFAULT_SEED: u64 = 0x0C57_0C57_0C57_0C57;
+
+// ---------------------------------------------------------------------------
+// `vokra.kyutai_stt.*` metadata keys
+// ---------------------------------------------------------------------------
+//
+// These strings mirror the offline converter (`vokra-convert::models::kyutai_stt`)
+// verbatim; the two crates only share `vokra-core`, so the string
+// constants are the sole handshake (the cross-crate pattern established
+// by CSM / CosyVoice2 / Kokoro / Dia / Zonos — see this module docstring
+// and the CSM `config.rs` for the same layout).
+
+const KEY_SAMPLE_RATE: &str = "vokra.kyutai_stt.sample_rate";
+
+// Backbone
+const KEY_BB_N_LAYER: &str = "vokra.kyutai_stt.arch.backbone.n_layer";
+const KEY_BB_D_MODEL: &str = "vokra.kyutai_stt.arch.backbone.d_model";
+const KEY_BB_N_HEAD: &str = "vokra.kyutai_stt.arch.backbone.n_head";
+const KEY_BB_HIDDEN_SCALE: &str = "vokra.kyutai_stt.arch.backbone.hidden_scale";
+const KEY_BB_FFN_HIDDEN: &str = "vokra.kyutai_stt.arch.backbone.ffn_hidden";
+const KEY_BB_CONTEXT: &str = "vokra.kyutai_stt.arch.backbone.context";
+const KEY_BB_ROPE_MAX_PERIOD: &str = "vokra.kyutai_stt.arch.backbone.rope_max_period";
+const KEY_BB_CAUSAL: &str = "vokra.kyutai_stt.arch.backbone.causal";
+const KEY_BB_RMS_NORM_EPS: &str = "vokra.kyutai_stt.arch.backbone.rms_norm_eps";
+
+// Depformer (structurally present, unused for audio when dep_q=0)
+const KEY_DEP_N_LAYER: &str = "vokra.kyutai_stt.arch.depformer.n_layer";
+const KEY_DEP_D_MODEL: &str = "vokra.kyutai_stt.arch.depformer.d_model";
+const KEY_DEP_N_HEAD: &str = "vokra.kyutai_stt.arch.depformer.n_head";
+const KEY_DEP_MULTI_LINEAR: &str = "vokra.kyutai_stt.arch.depformer.multi_linear";
+const KEY_DEP_WEIGHTS_PER_STEP: &str = "vokra.kyutai_stt.arch.depformer.weights_per_step";
+
+// Audio / text / streaming
+const KEY_N_Q: &str = "vokra.kyutai_stt.audio.n_q";
+const KEY_DEP_Q: &str = "vokra.kyutai_stt.audio.dep_q";
+const KEY_AUDIO_CARD: &str = "vokra.kyutai_stt.audio.card";
+const KEY_TEXT_CARD: &str = "vokra.kyutai_stt.text.card";
+const KEY_TEXT_PAD_ID: &str = "vokra.kyutai_stt.text.pad_id";
+const KEY_AUDIO_DELAY_SECS: &str = "vokra.kyutai_stt.stream.audio_delay_seconds";
+const KEY_AUDIO_SILENCE_PREFIX_SECS: &str = "vokra.kyutai_stt.stream.audio_silence_prefix_seconds";
+
+// Delays (indexed keys — the CSM / Moshi / Dia pattern for array metadata)
+const KEY_N_DELAYS: &str = "vokra.kyutai_stt.n_delays";
+const PREFIX_DELAY: &str = "vokra.kyutai_stt.delay.";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -381,6 +433,94 @@ impl KyutaiSttConfig {
             )));
         }
         Ok(())
+    }
+
+    /// Reads the Kyutai STT hparams from a Kyutai STT GGUF.
+    ///
+    /// Missing numeric keys read as `0` placeholders (the CSM
+    /// `read_u32_or_zero` / `read_f32_or` pattern) so a shape-only
+    /// converter path decays gracefully to [`Self::validate_for_forward`]'s
+    /// loud gate; wrong-typed keys are loud
+    /// [`VokraError::InvalidArgument`] here (FR-EX-08 — never a silent
+    /// type coercion). Booleans ride as u32 0/1 per the converter contract
+    /// (`u32::from(bool)`), so `causal` / `multi_linear` / `weights_per_step`
+    /// read back through the same `read_u32_or_zero` helper.
+    ///
+    /// The `delays` vector is reconstructed from the `n_delays` count and
+    /// `delay.{i}` indexed keys the converter emits — the same array-
+    /// metadata pattern Moshi / mimi use. When `n_delays == 0` (a
+    /// metadata-only test fixture) the returned vector is empty and the
+    /// downstream [`Self::validate_for_forward`] gate refuses the config
+    /// because `delays.len() != n_channels()`; a `n_delays > 0` reads
+    /// every indexed entry back verbatim.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if any present key has the wrong
+    /// metadata type.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let backbone = KyutaiSttBackboneConfig {
+            n_layer: read_u32_or_zero(file, KEY_BB_N_LAYER)? as usize,
+            d_model: read_u32_or_zero(file, KEY_BB_D_MODEL)? as usize,
+            n_head: read_u32_or_zero(file, KEY_BB_N_HEAD)? as usize,
+            hidden_scale: read_f32_or(file, KEY_BB_HIDDEN_SCALE, 0.0)?,
+            context: read_u32_or_zero(file, KEY_BB_CONTEXT)? as usize,
+            rope_max_period: read_f32_or(file, KEY_BB_ROPE_MAX_PERIOD, 0.0)?,
+        };
+        let depformer = KyutaiSttDepformerConfig {
+            n_layer: read_u32_or_zero(file, KEY_DEP_N_LAYER)? as usize,
+            d_model: read_u32_or_zero(file, KEY_DEP_D_MODEL)? as usize,
+            n_head: read_u32_or_zero(file, KEY_DEP_N_HEAD)? as usize,
+            multi_linear: read_u32_or_zero(file, KEY_DEP_MULTI_LINEAR)? != 0,
+            weights_per_step: read_u32_or_zero(file, KEY_DEP_WEIGHTS_PER_STEP)? != 0,
+        };
+        let n_delays = read_u32_or_zero(file, KEY_N_DELAYS)? as usize;
+        let mut delays = Vec::with_capacity(n_delays);
+        for i in 0..n_delays {
+            let key = format!("{PREFIX_DELAY}{i}");
+            delays.push(read_u32_or_zero(file, &key)?);
+        }
+        Ok(Self {
+            backbone,
+            depformer,
+            n_q: read_u32_or_zero(file, KEY_N_Q)? as usize,
+            dep_q: read_u32_or_zero(file, KEY_DEP_Q)? as usize,
+            audio_card: read_u32_or_zero(file, KEY_AUDIO_CARD)? as usize,
+            text_card: read_u32_or_zero(file, KEY_TEXT_CARD)? as usize,
+            text_pad_id: read_u32_or_zero(file, KEY_TEXT_PAD_ID)?,
+            causal: read_u32_or_zero(file, KEY_BB_CAUSAL)? != 0,
+            rms_norm_eps: read_f32_or(file, KEY_BB_RMS_NORM_EPS, 1e-8)?,
+            delays,
+            audio_delay_seconds: read_f32_or(file, KEY_AUDIO_DELAY_SECS, 0.0)?,
+            audio_silence_prefix_seconds: read_f32_or(file, KEY_AUDIO_SILENCE_PREFIX_SECS, 0.0)?,
+            sample_rate: read_u32_or_zero(file, KEY_SAMPLE_RATE)?,
+        })
+    }
+}
+
+// Missing numeric keys read as `0` placeholders (a shape-only converter
+// path decays gracefully to `validate_for_forward`'s loud gate); wrong-
+// typed keys are loud `VokraError::InvalidArgument` (FR-EX-08 — never a
+// silent type coercion). Mirrors the CSM helper of the same name.
+fn read_u32_or_zero(file: &GgufFile, key: &str) -> Result<u32> {
+    match file.get(key) {
+        Some(GgufMetadataValue::U32(v)) => Ok(*v),
+        None => Ok(0),
+        Some(other) => Err(VokraError::InvalidArgument(format!(
+            "kyutai-stt config: `{key}` is not a UINT32 (got {:?})",
+            other.value_type()
+        ))),
+    }
+}
+
+fn read_f32_or(file: &GgufFile, key: &str, default: f32) -> Result<f32> {
+    match file.get(key) {
+        Some(GgufMetadataValue::F32(v)) => Ok(*v),
+        None => Ok(default),
+        Some(other) => Err(VokraError::InvalidArgument(format!(
+            "kyutai-stt config: `{key}` is not a FLOAT32 (got {:?})",
+            other.value_type()
+        ))),
     }
 }
 
@@ -679,7 +819,9 @@ impl KyutaiSttAsr {
                  The shape flow (config validation, weight-store construction, \
                  code-frame shape check) is exercised through KyutaiSttAsr::new; \
                  the real-checkpoint tensor-name manifest lands in a follow-up \
-                 wave (T29-equivalent — the Moshi / CSM pattern).",
+                 wave (T29-equivalent — the Moshi / CSM pattern). \
+                 Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
+                 https://github.com/kyutai-labs/delayed-streams-modeling",
             ));
         }
         Err(VokraError::NotImplemented(
@@ -688,8 +830,95 @@ impl KyutaiSttAsr {
              sampling + SentencePiece detokenize forward path has not landed \
              yet. Follow-up wave: transcribe the upstream tensor manifest and \
              wire the sliding-window causal attention (context=375) forward \
-             through the `Compute` seam (Moshi T29 pattern).",
+             through the `Compute` seam (Moshi T29 pattern). \
+             Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
+             https://github.com/kyutai-labs/delayed-streams-modeling",
         ))
+    }
+
+    /// Loads a Kyutai STT GGUF from raw bytes under `policy` (M2-13 gate —
+    /// a non-commercial provenance without a research flag is refused).
+    ///
+    /// Weight posture: **synthesized bridge** until the real-checkpoint
+    /// tensor-name manifest lands (T29-equivalent — the CSM
+    /// [`from_gguf_with_policy`](super::csm::CsmEngine::from_gguf_with_policy)
+    /// precedent). The engine binds
+    /// [`KyutaiSttWeights::synthesized`] against the GGUF's shape
+    /// config using [`KYUTAI_STT_FROM_GGUF_DEFAULT_SEED`] so shape /
+    /// dtype / size flow can be exercised without the real HF
+    /// checkpoint; a `transcribe` call fires the synthesized-weight
+    /// loud-partial arm and names the primary source URL.
+    ///
+    /// The Kyutai STT weight license is **CC-BY 4.0** (`AttributionRequired`) —
+    /// the converter's registry mapping and provenance stamps make the
+    /// M2-13 gate pass commercially, and the FR-MD-09 attribution
+    /// surface activates. `docs/license-audit.md` row 272 records the
+    /// commercial sign-off (2026-07-28 yousan).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] on parse failure / wrong or missing
+    ///   `vokra.model.arch` — the message names the expected arch tag
+    ///   (`kyutai-stt`), sibling arch tags (`csm` / `moshi` / `kyutai-tts`)
+    ///   so a mis-routed GGUF fails specifically here, and the primary
+    ///   source URL.
+    /// - [`VokraError::ResearchLicenseRequired`] (from the M2-13 gate)
+    ///   when the weight class is gated and `policy` grants no research
+    ///   opt-in (never a silent skip / substitution).
+    /// - [`VokraError::InvalidArgument`] on a `0`-placeholder shape
+    ///   config (a scaffold converter path that never wrote the real
+    ///   hparams) from the downstream
+    ///   [`KyutaiSttConfig::validate_for_forward`] gate.
+    pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
+        let file = GgufFile::parse(bytes.to_vec())
+            .map_err(|e| VokraError::ModelLoad(format!("kyutai-stt GGUF: {e}")))?;
+        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+            Some(a) if a == EXPECTED_ARCH => {}
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "kyutai-stt: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
+                     (was this GGUF produced by `vokra-cli convert --model kyutai-stt`? \
+                     Sibling Kyutai / Moshi-family arches — `csm` (Sesame CSM-1B \
+                     S2S), `moshi` (Kyutai Helium + Mimi full-duplex), `kyutai-tts` \
+                     (Kyutai text-to-speech) — are different topologies). \
+                     Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
+                     https://github.com/kyutai-labs/delayed-streams-modeling"
+                )));
+            }
+            None => {
+                return Err(VokraError::ModelLoad(format!(
+                    "kyutai-stt: GGUF is missing `vokra.model.arch` (converter did \
+                     not stamp it — this is not a Vokra-native `{EXPECTED_ARCH}` \
+                     GGUF). Primary source: \
+                     https://huggingface.co/kyutai/stt-2.6b-en / \
+                     https://github.com/kyutai-labs/delayed-streams-modeling"
+                )));
+            }
+        }
+        check_weight_license(&file, policy)?;
+        let cfg = KyutaiSttConfig::from_gguf(&file)?;
+        // `synthesized` runs `validate_for_forward` internally; keep the
+        // explicit call here so a validate failure surfaces with the config
+        // context intact (same posture as CSM `from_gguf_with_policy`).
+        cfg.validate_for_forward()?;
+        let weights = KyutaiSttWeights::synthesized(&cfg, KYUTAI_STT_FROM_GGUF_DEFAULT_SEED)?;
+        Self::new(cfg, weights)
+    }
+
+    /// Loads a Kyutai STT GGUF from a file path with the fail-closed
+    /// strict policy ([`CompliancePolicy::strict`]).
+    ///
+    /// The Kyutai STT weight license is **CC-BY 4.0**
+    /// (`AttributionRequired`), which is commercially permitted — the
+    /// M2-13 gate passes under `strict` without a research opt-in.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::Io`] on read failure.
+    /// - See [`Self::from_gguf_with_policy`].
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let bytes = std::fs::read(path.as_ref()).map_err(VokraError::Io)?;
+        Self::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
     }
 }
 
@@ -700,6 +929,8 @@ impl KyutaiSttAsr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::LicenseClass;
+    use vokra_core::gguf::GgufBuilder;
 
     /// Every hparam matches the primary source
     /// (`huggingface.co/kyutai/stt-2.6b-en/raw/main/config.json`) verbatim.
@@ -1083,5 +1314,306 @@ mod tests {
         // this constant documents the Mimi-side sample rate the caller
         // must use before encoding.
         assert_eq!(KYUTAI_STT_SAMPLE_RATE, 24_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // GGUF-loader (`from_gguf` / `from_gguf_with_policy` / `from_path`) tests
+    //
+    // These pin the loud-partial scaffold the M2-13 gate + arch check +
+    // config round-trip + license read + synthesized-weight `transcribe`
+    // arm depend on. Every path fails loudly (FR-EX-08) — never a silent
+    // zero-fill / substitution / mis-typed cast.
+    // -----------------------------------------------------------------------
+
+    /// Builds a metadata-only GGUF whose `vokra.model.arch` is `arch`
+    /// (unless `set_arch` is false). Adds every well-formed
+    /// `vokra.kyutai_stt.*` chunk group `KyutaiSttConfig::from_gguf`
+    /// reads, mirroring the offline converter's `write_hparams` so a
+    /// round-trip yields the same `KyutaiSttConfig::stt_2_6b_en()`
+    /// snapshot without dragging the converter crate into the models
+    /// test tree.
+    fn build_gguf_with_hparams(arch: Option<&str>) -> Vec<u8> {
+        let mut b = GgufBuilder::new();
+        if let Some(a) = arch {
+            b.add_string(chunks::KEY_MODEL_ARCH, a);
+        }
+        let cfg = KyutaiSttConfig::stt_2_6b_en();
+        b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        // Backbone
+        b.add_u32(KEY_BB_N_LAYER, cfg.backbone.n_layer as u32);
+        b.add_u32(KEY_BB_D_MODEL, cfg.backbone.d_model as u32);
+        b.add_u32(KEY_BB_N_HEAD, cfg.backbone.n_head as u32);
+        b.add_f32(KEY_BB_HIDDEN_SCALE, cfg.backbone.hidden_scale);
+        b.add_u32(KEY_BB_FFN_HIDDEN, cfg.backbone.ffn_hidden() as u32);
+        b.add_u32(KEY_BB_CONTEXT, cfg.backbone.context as u32);
+        b.add_f32(KEY_BB_ROPE_MAX_PERIOD, cfg.backbone.rope_max_period);
+        b.add_u32(KEY_BB_CAUSAL, u32::from(cfg.causal));
+        b.add_f32(KEY_BB_RMS_NORM_EPS, cfg.rms_norm_eps);
+        // Depformer
+        b.add_u32(KEY_DEP_N_LAYER, cfg.depformer.n_layer as u32);
+        b.add_u32(KEY_DEP_D_MODEL, cfg.depformer.d_model as u32);
+        b.add_u32(KEY_DEP_N_HEAD, cfg.depformer.n_head as u32);
+        b.add_u32(KEY_DEP_MULTI_LINEAR, u32::from(cfg.depformer.multi_linear));
+        b.add_u32(
+            KEY_DEP_WEIGHTS_PER_STEP,
+            u32::from(cfg.depformer.weights_per_step),
+        );
+        // Audio / text / streaming
+        b.add_u32(KEY_N_Q, cfg.n_q as u32);
+        b.add_u32(KEY_DEP_Q, cfg.dep_q as u32);
+        b.add_u32(KEY_AUDIO_CARD, cfg.audio_card as u32);
+        b.add_u32(KEY_TEXT_CARD, cfg.text_card as u32);
+        b.add_u32(KEY_TEXT_PAD_ID, cfg.text_pad_id);
+        b.add_f32(KEY_AUDIO_DELAY_SECS, cfg.audio_delay_seconds);
+        b.add_f32(
+            KEY_AUDIO_SILENCE_PREFIX_SECS,
+            cfg.audio_silence_prefix_seconds,
+        );
+        // Delays
+        b.add_u32(KEY_N_DELAYS, cfg.delays.len() as u32);
+        for (i, d) in cfg.delays.iter().enumerate() {
+            b.add_u32(&format!("{PREFIX_DELAY}{i}"), *d);
+        }
+        // Provenance — AttributionRequired (CC-BY 4.0) so the M2-13 gate
+        // passes under `CompliancePolicy::strict()`.
+        b.add_string(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::AttributionRequired.as_str(),
+        );
+        b.add_string(chunks::KEY_PROVENANCE_LICENSE, "CC-BY-4.0");
+        b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en");
+        b.to_bytes().expect("serialize kyutai-stt fixture GGUF")
+    }
+
+    /// A GGUF with no `vokra.model.arch` fails
+    /// [`KyutaiSttAsr::from_gguf_with_policy`] with a message that names
+    /// the expected arch tag + the primary source URL. Never a silent
+    /// substitution (FR-EX-08).
+    #[test]
+    fn from_gguf_rejects_missing_arch() {
+        let bytes = build_gguf_with_hparams(None);
+        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("missing arch must be rejected");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name expected arch `{EXPECTED_ARCH}`: {msg}"
+                );
+                assert!(
+                    msg.contains("huggingface.co/kyutai/stt-2.6b-en"),
+                    "message must name the primary source URL: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// A GGUF whose arch is a sibling (`csm`) fails with a message that
+    /// names both `kyutai-stt` and the offending tag so the caller can
+    /// diagnose the mis-routed conversion.
+    #[test]
+    fn from_gguf_rejects_wrong_arch() {
+        let bytes = build_gguf_with_hparams(Some("csm"));
+        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("wrong arch must be rejected");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name expected arch `{EXPECTED_ARCH}`: {msg}"
+                );
+                assert!(
+                    msg.contains("csm"),
+                    "message must name the offending arch tag `csm`: {msg}"
+                );
+                assert!(
+                    msg.contains("huggingface.co/kyutai/stt-2.6b-en"),
+                    "message must name the primary source URL: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// The `vokra.kyutai_stt.*` chunk group round-trips through the
+    /// offline-converter format: every field of
+    /// [`KyutaiSttConfig::stt_2_6b_en`] survives write → parse → read.
+    /// This pins the cross-crate handshake with `vokra-convert`
+    /// (`vokra-convert::models::kyutai_stt::write_hparams`) verbatim —
+    /// the two crates only share `vokra-core`, so a converter-side
+    /// key-string change surfaces as a runtime `from_gguf` regression.
+    #[test]
+    fn config_round_trips_from_converter_written_gguf() {
+        let bytes = build_gguf_with_hparams(Some(EXPECTED_ARCH));
+        let file = GgufFile::parse(bytes).expect("parse fixture");
+        let cfg = KyutaiSttConfig::from_gguf(&file).expect("from_gguf");
+        let want = KyutaiSttConfig::stt_2_6b_en();
+        assert_eq!(cfg, want);
+    }
+
+    /// A GGUF whose provenance advertises `AttributionRequired` (CC-BY
+    /// 4.0) passes the M2-13 gate under [`CompliancePolicy::strict`]
+    /// (no research opt-in needed — the license is commercially
+    /// permitted) and the resolution surfaces the attribution-required
+    /// class + `is_research_only == false`. This is what makes Kyutai
+    /// STT loadable in the default posture.
+    #[test]
+    fn from_gguf_reads_attribution_required_license() {
+        let bytes = build_gguf_with_hparams(Some(EXPECTED_ARCH));
+        let file = GgufFile::parse(bytes).expect("parse fixture");
+        let resolution =
+            check_weight_license(&file, &CompliancePolicy::strict()).expect("strict must pass");
+        assert_eq!(resolution.class, LicenseClass::AttributionRequired);
+        assert!(
+            !resolution.is_research_only(),
+            "CC-BY 4.0 is commercial-permitted; must NOT be marked research-only"
+        );
+        // The M2-13 gate + arch check + config load all pass together.
+        let asr = KyutaiSttAsr::from_gguf_with_policy(
+            &build_gguf_with_hparams(Some(EXPECTED_ARCH)),
+            &CompliancePolicy::strict(),
+        )
+        .expect("kyutai-stt from_gguf under strict policy");
+        assert!(asr.is_synthesized(), "from_gguf binds synthesized bridge");
+        assert_eq!(asr.config(), &KyutaiSttConfig::stt_2_6b_en());
+    }
+
+    /// The loud-partial transcribe gate names the primary source URL so a
+    /// downstream caller / user can look up the real forward's status
+    /// (Wave 4 loud-partial contract — never a silent noise transcript).
+    #[test]
+    fn transcribe_loud_partial_names_primary_source_url() {
+        let bytes = build_gguf_with_hparams(Some(EXPECTED_ARCH));
+        let asr = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("kyutai-stt from_gguf");
+        // Build a legal one-frame code slice against the resolved config.
+        let n_q = asr.config().n_q;
+        let codes = vec![0u32; n_q];
+        let err = asr.transcribe(&codes).unwrap_err();
+        match err {
+            VokraError::NotImplemented(msg) => {
+                assert!(
+                    msg.contains("https://huggingface.co/kyutai/stt-2.6b-en"),
+                    "message must name the HF primary source URL: {msg}"
+                );
+                assert!(
+                    msg.contains("github.com/kyutai-labs/delayed-streams-modeling"),
+                    "message must name the GitHub primary source URL: {msg}"
+                );
+                assert!(
+                    msg.contains("synthesized"),
+                    "message must name the synthesized-weight blocker: {msg}"
+                );
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
+    }
+
+    /// A GGUF with `n_layer = 0` (a scaffold converter path that never
+    /// wrote the real hparams) fails at the downstream
+    /// [`KyutaiSttConfig::validate_for_forward`] gate — the loud FR-EX-08
+    /// surface, not deep inside a GEMM.
+    #[test]
+    fn from_gguf_rejects_zero_placeholder_config() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_string(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::AttributionRequired.as_str(),
+        );
+        // Deliberately omit every `vokra.kyutai_stt.*` chunk — every
+        // read decays to the `0` placeholder branch.
+        let bytes = b.to_bytes().expect("serialize");
+        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("0-placeholder config must be rejected");
+        assert!(
+            matches!(err, VokraError::InvalidArgument(_)),
+            "expected InvalidArgument, got {err:?}"
+        );
+    }
+
+    /// A GGUF that mis-types `sample_rate` (F32 instead of U32 — a
+    /// hypothetical bad converter path) fails with a loud
+    /// [`VokraError::InvalidArgument`] naming the offending key
+    /// (FR-EX-08 — never a silent type coercion). This pins the
+    /// [`read_u32_or_zero`] helper's type check.
+    #[test]
+    fn from_gguf_rejects_wrong_typed_key() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_string(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::AttributionRequired.as_str(),
+        );
+        // sample_rate riding as F32 instead of U32.
+        b.add_f32(KEY_SAMPLE_RATE, 24_000.0);
+        let bytes = b.to_bytes().expect("serialize");
+        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("wrong-typed key must be rejected");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains(KEY_SAMPLE_RATE),
+                    "message must name the offending key `{KEY_SAMPLE_RATE}`: {msg}"
+                );
+                assert!(
+                    msg.contains("UINT32"),
+                    "message must name the expected type UINT32: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// `KyutaiSttAsr::from_path` reads the file bytes and threads them
+    /// through [`KyutaiSttAsr::from_gguf_with_policy`] with
+    /// [`CompliancePolicy::strict`] — the resulting engines are
+    /// equivalent (same config, same synthesized-weight bridge, same
+    /// loud-partial arm).
+    #[test]
+    fn from_path_round_trip() {
+        let bytes = build_gguf_with_hparams(Some(EXPECTED_ARCH));
+        let path = std::env::temp_dir().join(format!(
+            "vokra-kyutai-stt-scout-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).expect("write fixture");
+        let via_path = KyutaiSttAsr::from_path(&path).expect("from_path");
+        let via_bytes = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("from_gguf_with_policy");
+        // Best-effort cleanup — never a panic on cleanup failure (test
+        // determinism must not depend on tmp cleanup).
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(via_path.config(), via_bytes.config());
+        assert_eq!(via_path.is_synthesized(), via_bytes.is_synthesized());
+        // Both engines refuse to synthesise real text (synthesized-weight
+        // loud-partial arm) — pin the message parity so downstream
+        // callers see identical behaviour whichever loader they use.
+        let n_q = via_path.config().n_q;
+        let codes = vec![0u32; n_q];
+        let e1 = via_path.transcribe(&codes).unwrap_err();
+        let e2 = via_bytes.transcribe(&codes).unwrap_err();
+        match (e1, e2) {
+            (VokraError::NotImplemented(m1), VokraError::NotImplemented(m2)) => {
+                assert_eq!(m1, m2, "from_path and from_gguf must yield identical arms");
+            }
+            (a, b) => panic!("expected two NotImplemented, got {a:?} / {b:?}"),
+        }
+    }
+
+    /// `from_path` on a non-existent file surfaces
+    /// [`VokraError::Io`] loudly (never a silent empty-string fabricated
+    /// success).
+    #[test]
+    fn from_path_missing_file_returns_io_error() {
+        let path = std::env::temp_dir().join(format!(
+            "vokra-kyutai-stt-scout-does-not-exist-{}.gguf",
+            std::process::id()
+        ));
+        // Ensure the path really is missing before the assertion runs.
+        let _ = std::fs::remove_file(&path);
+        let err = KyutaiSttAsr::from_path(&path).expect_err("missing file must be rejected");
+        assert!(matches!(err, VokraError::Io(_)), "expected Io, got {err:?}");
     }
 }
