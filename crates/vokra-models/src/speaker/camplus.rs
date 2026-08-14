@@ -31,7 +31,7 @@
 //! the [`Compute`] seam, M2-01 Phase 3); this module is `unsafe`-free (workspace
 //! `unsafe_code = "deny"`).
 
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{BackendKind, Result, VokraError};
 
 use super::weights::{Bn, CamPlusWeights, Conv1dW, Conv2dW, ResBlockW};
@@ -39,6 +39,22 @@ use crate::compute::{Compute, HotOp};
 
 /// Output speaker-embedding dimension of the supported CAM++ voice.
 pub const EMBED_DIM: usize = 192;
+
+/// The `vokra.model.arch` value a CAM++ GGUF must carry.
+///
+/// Mirror of `crates/vokra-convert/src/models/campplus.rs::ARCH` — the
+/// converter owns the writer contract, this module owns the reader
+/// contract (the deliberate two-copies convention [`crate::pyannote`]
+/// documents; a compile-time check would need `vokra-convert` in
+/// `vokra-models`'s dependency graph, which the workspace pins forbid).
+///
+/// Every sibling speaker encoder in the fleet — `wespeaker` (ResNet-34),
+/// `ecapa_tdnn` (TDNN stack), `titanet` (depth-wise separable Conv1D),
+/// `speaker_3d` (ERes2Net), `redimnet` — is a distinct topology under its
+/// own arch tag, and several emit the *same* 192-d embedding width, so
+/// the output shape alone cannot tell them apart. See
+/// [`crate::redimnet`] for the sibling gate this one mirrors.
+pub const EXPECTED_ARCH: &str = "campplus";
 
 /// The backend hot ops CAM++ dispatches: **GEMM only**. Every convolution is
 /// lowered to im2col + GEMM here, and the ReLU / sigmoid / BatchNorm / stats glue
@@ -63,7 +79,27 @@ impl SpeakerEncoder {
     /// Binds the encoder from a parsed CAM++ GGUF (FR-LD-01). The backend
     /// defaults to [`BackendKind::Cpu`]; select another with
     /// [`with_backend`](Self::with_backend).
+    ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// `vokra.model.arch` is checked against [`EXPECTED_ARCH`] **before**
+    /// any tensor is bound. Without it, a sibling speaker-encoder GGUF
+    /// would bind whatever `xvector.*` names happen to overlap and return
+    /// an encoder that emits a well-formed 192-d vector carrying no
+    /// speaker identity — a silent-wrong result that downstream cosine
+    /// verification would happily score.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or is
+    ///   not [`EXPECTED_ARCH`].
+    /// - [`VokraError::ModelLoad`] from the weight binder for a missing /
+    ///   mis-shaped / non-`F32` tensor.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        // 1. Arch check — always first so a mis-typed model handed here
+        //    fails with a specific message instead of a downstream
+        //    "xvector.tdnn.linear missing".
+        verify_arch(gguf)?;
         Ok(Self {
             weights: CamPlusWeights::from_gguf(gguf)?,
             backend_kind: BackendKind::Cpu,
@@ -638,9 +674,108 @@ fn stats_pool(x: &[f32], c: usize, t: usize) -> Vec<f32> {
     out
 }
 
+/// Rejects a GGUF whose `vokra.model.arch` is absent or is not
+/// [`EXPECTED_ARCH`].
+///
+/// A *loud* validation step (FR-EX-08) — see
+/// [`SpeakerEncoder::from_gguf`].
+fn verify_arch(gguf: &GgufFile) -> Result<()> {
+    match gguf.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+        Some(a) if a == EXPECTED_ARCH => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "campplus: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` (was this GGUF \
+             produced by `vokra-cli convert --model campplus`? Note that sibling \
+             speaker-fleet arches — `wespeaker` (ResNet-34 backbone), `ecapa_tdnn` (TDNN \
+             stack), `titanet` (depth-wise separable Conv1D backbone), `speaker_3d` \
+             (ERes2Net backbone), `redimnet` — are all distinct topologies, and several \
+             emit the same 192-d embedding width, so the output shape cannot tell them \
+             apart. Binding one here would yield a well-formed vector carrying no speaker \
+             identity (FR-EX-08 — no silent partial load)."
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "campplus: GGUF is missing `{}` — this is not a Vokra-native CAM++ GGUF (was \
+             it produced by `vokra-cli convert --model campplus`?)",
+            chunks::KEY_MODEL_ARCH,
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a metadata-only GGUF carrying `arch` (or none when `arch` is
+    /// `None`) so the arch gate can be exercised without a weight manifest.
+    fn arch_only_gguf(arch: Option<&str>) -> GgufFile {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        if let Some(a) = arch {
+            b.add_string(chunks::KEY_MODEL_ARCH, a);
+        }
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    #[test]
+    fn from_gguf_rejects_gguf_without_arch_stamp() {
+        // FR-EX-08: an unstamped GGUF is not a Vokra-native CAM++ artifact.
+        // `SpeakerEncoder` is `!Debug` (it holds a `BackendKind` + weights
+        // bundle), so `unwrap_err()` would not compile here — use let-else.
+        let gguf = arch_only_gguf(None);
+        let Err(err) = SpeakerEncoder::from_gguf(&gguf) else {
+            panic!("an unstamped GGUF must not bind a CAM++ encoder");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(chunks::KEY_MODEL_ARCH),
+                    "message must name the missing key: {msg}",
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch: {msg}",
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_rejects_foreign_arch_naming_expected_and_actual() {
+        // `ecapa_tdnn` is the most dangerous mis-route: a sibling speaker
+        // encoder that also emits a 192-d embedding, so nothing downstream
+        // would notice the substitution.
+        let gguf = arch_only_gguf(Some("ecapa_tdnn"));
+        let Err(err) = SpeakerEncoder::from_gguf(&gguf) else {
+            panic!("a foreign-arch GGUF must not bind a CAM++ encoder");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("ecapa_tdnn"),
+                    "message must name the actual arch: {msg}",
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch: {msg}",
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_with_correct_arch_reaches_the_tensor_gate() {
+        // The arch gate must not swallow the weight-manifest gate: a
+        // correctly-stamped but weightless GGUF must still fail, and must
+        // NOT fail by naming the arch key.
+        let gguf = arch_only_gguf(Some(EXPECTED_ARCH));
+        let Err(err) = SpeakerEncoder::from_gguf(&gguf) else {
+            panic!("a weightless GGUF must not bind a CAM++ encoder");
+        };
+        assert!(
+            !err.to_string().contains(chunks::KEY_MODEL_ARCH),
+            "must reach the tensor gate, not stop at the arch gate: {err}",
+        );
+    }
 
     #[test]
     fn seg_pool_le_seglen_is_global_mean() {

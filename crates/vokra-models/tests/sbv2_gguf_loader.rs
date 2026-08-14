@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use vokra_core::VokraError;
 use vokra_core::gguf::{GgufBuilder, GgufFile};
-use vokra_models::sbv2::SbV2Model;
+use vokra_models::sbv2::{EXPECTED_ARCH as SBV2_ARCH, SbV2Model};
 
 /// Repo-root-relative real-fixture directory for SBV2 loader smoke tests
 /// (`tests/fixtures/sbv2/`, sibling of the existing `tests/fixtures/audio/`
@@ -74,15 +74,117 @@ fn from_gguf_on_empty_main_file_fails_loudly_naming_first_missing_key() {
             .expect("build empty gguf bytes"),
     )
     .expect("parse empty gguf");
+    // `main` carries the arch stamp and nothing else: the loader gates
+    // `vokra.model.arch` before any metadata read (FR-EX-08), so an
+    // unstamped `main` would stop at the arch gate and this test would
+    // pass for the wrong reason. `bert_ja` / `bert_en` stay empty — they
+    // are never consulted on this path.
+    let mut mb = GgufBuilder::new();
+    mb.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    let arch_only_main =
+        GgufFile::parse(mb.to_bytes().expect("build main gguf bytes")).expect("parse main gguf");
 
     // `SbV2Model` (the `Ok` payload) has no `Debug` impl, so `Result::expect_err`
     // (which would need to format it) is not usable here — match directly.
-    match SbV2Model::from_gguf(&empty, &empty, &empty) {
+    match SbV2Model::from_gguf(&arch_only_main, &empty, &empty) {
         Ok(_) => panic!("an empty main GGUF must fail to load, not succeed"),
         Err(VokraError::ModelLoad(msg)) => {
             assert!(
                 msg.contains("vokra.sbv2.d_model"),
                 "error message should name the first missing metadata key, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// FR-EX-08: a `main` GGUF with no `vokra.model.arch` at all is not a
+/// Vokra-native Style-Bert-VITS2 artifact and must be refused by name,
+/// before any `vokra.sbv2.*` read. Without this gate the loader would
+/// bind whatever `sbv2.*`-shaped tensor names happened to overlap.
+#[test]
+fn from_gguf_rejects_main_without_arch_stamp() {
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&empty, &empty, &empty) {
+        Ok(_) => panic!("an unstamped main GGUF must not load"),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("vokra.model.arch"),
+                "error must name the missing key, got: {msg}"
+            );
+            assert!(
+                msg.contains(SBV2_ARCH),
+                "error must name the expected arch, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// FR-EX-08: a foreign-arch `main` must be refused with BOTH the expected
+/// and the actual tag named. `deberta_v2` is the live failure mode here —
+/// it is the arch of this loader's own `bert_ja` argument, so an
+/// argument-order slip lands exactly this GGUF in the `main` slot.
+#[test]
+fn from_gguf_rejects_foreign_main_arch_naming_expected_and_actual() {
+    let mut b = GgufBuilder::new();
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, "deberta_v2");
+    let main =
+        GgufFile::parse(b.to_bytes().expect("build main gguf bytes")).expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!("a foreign-arch main GGUF must not load"),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("deberta_v2"),
+                "error must name the actual arch, got: {msg}"
+            );
+            assert!(
+                msg.contains(SBV2_ARCH),
+                "error must name the expected arch, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// The same arch gate guards the 4-file WP-19 entry point — the three
+/// public loaders share `from_gguf_inner`, so this pins that they cannot
+/// drift apart.
+#[test]
+fn from_gguf_with_zh_bert_rejects_foreign_main_arch() {
+    let mut b = GgufBuilder::new();
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+        "piper-plus-mb-istft-vits2",
+    );
+    let main =
+        GgufFile::parse(b.to_bytes().expect("build main gguf bytes")).expect("parse main gguf");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf_with_zh_bert(&main, &empty, &empty, &empty) {
+        Ok(_) => panic!("a foreign-arch main GGUF must not load"),
+        Err(VokraError::ModelLoad(msg)) => {
+            assert!(
+                msg.contains("piper-plus-mb-istft-vits2") && msg.contains(SBV2_ARCH),
+                "error must name both the actual and expected arch, got: {msg}"
             );
         }
         Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
@@ -103,6 +205,10 @@ fn from_gguf_on_empty_main_file_fails_loudly_naming_first_missing_key() {
 /// metadata read stage.
 fn scalar_dims_only_main() -> GgufBuilder {
     let mut b = GgufBuilder::new();
+    // The loader gates `vokra.model.arch` before any metadata read
+    // (FR-EX-08), so every `main` fixture that expects to reach a
+    // *metadata* assertion must carry the stamp.
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
     b.add_u32("vokra.sbv2.d_model", 8);
     b.add_u32("vokra.sbv2.d_bert", 8);
     b.add_u32("vokra.sbv2.d_speaker", 8);
@@ -570,6 +676,9 @@ fn sbv2_model_from_gguf_dispatches_both_bert_tokenizers() {
 fn from_gguf_rejects_anomalous_sdp_flows_even_index_tensor() {
     use vokra_core::gguf::GgmlType;
     let mut b = GgufBuilder::new();
+    // Arch stamp — the loader gates it ahead of the format-anomaly walk
+    // (FR-EX-08), so this fixture must carry it to reach the walk at all.
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
     // A 4-byte F32 tensor is enough to trip the check — the loader's
     // format-anomaly walk runs on tensor NAMES, not shapes.
     b.add_tensor(

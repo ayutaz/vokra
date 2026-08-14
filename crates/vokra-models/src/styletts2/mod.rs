@@ -79,7 +79,18 @@
 
 use std::path::Path;
 
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{Result, VokraError};
+
+/// The `vokra.model.arch` value a StyleTTS 2 GGUF must carry.
+///
+/// Mirror of `crates/vokra-convert/src/models/styletts2.rs::ARCH` — the
+/// converter owns the writer contract, this module owns the reader
+/// contract. Two copies of the string constant is deliberate (same
+/// convention as [`crate::pyannote`]): a compile-time check would need
+/// `vokra-convert` in `vokra-models`'s dependency graph, which the
+/// workspace pins forbid.
+pub const EXPECTED_ARCH: &str = "styletts2";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -269,13 +280,34 @@ impl StyleTts2Tts {
     /// for now the entry point is deliberately absent to avoid silent
     /// production use.
     ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// When `path` names a readable GGUF, its `vokra.model.arch` is
+    /// checked against [`EXPECTED_ARCH`] **before** the license refusal,
+    /// so a caller who hands a sibling TTS GGUF here (`kokoro`, `sbv2`,
+    /// `piper-plus-mb-istft-vits2`, …) is told *which* model they
+    /// actually passed instead of reading a StyleTTS 2 licensing essay
+    /// about a file that is not StyleTTS 2 at all. A path that cannot be
+    /// opened or parsed falls through to the license refusal — that gate
+    /// is the stronger of the two and is never masked by an I/O error.
+    ///
     /// # Errors
     ///
-    /// Always returns [`VokraError::NotImplemented`] naming
-    /// `docs/license-audit.md` §3.1 — the sign-off queue that owner has
-    /// **not** filled for StyleTTS 2 (fail-closed).
+    /// - [`VokraError::ModelLoad`] when `path` parses as a GGUF whose
+    ///   `vokra.model.arch` is absent or is not [`EXPECTED_ARCH`].
+    /// - [`VokraError::NotImplemented`] otherwise, naming
+    ///   `docs/license-audit.md` §3.1 — the sign-off queue that owner has
+    ///   **not** filled for StyleTTS 2 (fail-closed).
     pub fn from_gguf(path: &Path) -> Result<Self> {
-        let _ = path; // deliberately unused — see below
+        // 1. Arch check — always first for a readable GGUF so a mis-typed
+        //    model handed here fails with a specific message. An
+        //    unreadable / unparsable path deliberately falls through to
+        //    the (stronger) license refusal below rather than surfacing an
+        //    I/O error, preserving this entry point's "never silently
+        //    loads, whatever you give it" contract.
+        if let Ok(file) = GgufFile::open(path) {
+            verify_arch(&file)?;
+        }
         Err(VokraError::NotImplemented(
             "styletts2: from_gguf is intentionally not wired. The upstream \
              yl4579/StyleTTS2 weights ride a voice-consent / disclosure usage \
@@ -317,6 +349,34 @@ impl StyleTts2Tts {
              re-training on a permissive corpus overrides at `--license \
              <spdx>` conversion time, bound by a future wave).",
         ))
+    }
+}
+
+/// Rejects a GGUF whose `vokra.model.arch` is absent or is not
+/// [`EXPECTED_ARCH`].
+///
+/// A *loud* validation step (FR-EX-08): binding a foreign checkpoint by
+/// whatever tensor names happen to match would return a model that
+/// produces meaningless output — the silent-wrong failure this gate
+/// exists to prevent.
+fn verify_arch(file: &GgufFile) -> Result<()> {
+    match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+        Some(a) if a == EXPECTED_ARCH => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "styletts2: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` (was this GGUF \
+             produced by `vokra-cli convert --model styletts2`? Sibling TTS arch tags — \
+             `kokoro` (StyleTTS 2-derived but a distinct iSTFTNet head + its own voicepack \
+             chunk group), `sbv2` (Style-Bert-VITS2, a VITS2 lineage with DeBERTa side-cars), \
+             `piper-plus-mb-istft-vits2` — all live in the same style-conditioned-TTS \
+             neighbourhood and share hparam *names* like `style_dim`, but have entirely \
+             different tensor manifests. Loading one here would bind a partial, meaningless \
+             model (FR-EX-08 — no silent partial load)."
+        ))),
+        None => Err(VokraError::ModelLoad(
+            "styletts2: GGUF is missing `vokra.model.arch` — this is not a Vokra-native \
+             StyleTTS 2 GGUF (was it produced by `vokra-cli convert --model styletts2`?)"
+                .to_owned(),
+        )),
     }
 }
 
@@ -402,6 +462,92 @@ mod tests {
             }
             other => panic!("expected NotImplemented, got {other:?}"),
         }
+    }
+
+    /// Writes `bytes` to a unique scratch path and returns it. Mirrors the
+    /// `scratch_path` helper in [`crate::pyannote`]'s tests.
+    fn scratch_gguf(tag: &str, bytes: Vec<u8>) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "vokra-styletts2-arch-{}-{}-{}.gguf",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        ));
+        std::fs::write(&p, bytes).expect("write scratch gguf");
+        p
+    }
+
+    #[test]
+    fn from_gguf_rejects_gguf_without_arch_stamp() {
+        // FR-EX-08: a GGUF with no `vokra.model.arch` is not a Vokra-native
+        // StyleTTS 2 artifact. It must fail loudly naming the missing key,
+        // never be treated as "probably StyleTTS 2".
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_u32("vokra.styletts2.style_dim", 128);
+        let path = scratch_gguf("no-arch", b.to_bytes().expect("serialize"));
+
+        let err = StyleTts2Tts::from_gguf(&path).expect_err("missing arch must fail");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(chunks::KEY_MODEL_ARCH),
+                    "message must name the missing key: {msg}",
+                );
+                assert!(
+                    msg.contains("styletts2"),
+                    "message must name the expected model: {msg}",
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn from_gguf_rejects_foreign_arch_naming_expected_and_actual() {
+        // Handing a Kokoro GGUF (a StyleTTS 2 *derivative*, so the most
+        // plausible mis-route) must name BOTH what was expected and what
+        // was actually found — the diagnostic that turns a silent-wrong
+        // load into a one-line fix.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "kokoro");
+        let path = scratch_gguf("foreign-arch", b.to_bytes().expect("serialize"));
+
+        let err = StyleTts2Tts::from_gguf(&path).expect_err("foreign arch must fail");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("kokoro"),
+                    "message must name the actual: {msg}"
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected: {msg}",
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn from_gguf_still_fails_closed_on_licence_for_a_real_styletts2_arch() {
+        // The arch gate must not *replace* the license gate: a genuine
+        // StyleTTS 2 GGUF still refuses to load, with the license reason.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        let path = scratch_gguf("real-arch", b.to_bytes().expect("serialize"));
+
+        let err = StyleTts2Tts::from_gguf(&path).expect_err("must still be NotImplemented");
+        assert!(
+            matches!(err, VokraError::NotImplemented(msg) if msg.contains("voice-consent")),
+            "a correct-arch GGUF must still hit the fail-closed license gate",
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

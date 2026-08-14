@@ -123,7 +123,7 @@ use vokra_bert::deberta_v2::DebertaV2Encoder;
 use vokra_bert::deberta_v3::DebertaV3Encoder;
 use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_bert::wordpiece::BertWordpieceTokenizer;
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
@@ -131,6 +131,50 @@ use vokra_ops::hifigan::{
     GinCondition, HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
     UpsampleStageWeights,
 };
+
+/// The `vokra.model.arch` value the **main** Style-Bert-VITS2 GGUF must
+/// carry (the `bert_*` side-cars carry their own, different tags — see
+/// [`SbV2Model::from_gguf`]).
+///
+/// Mirror of `crates/vokra-convert/src/models/sbv2.rs::ARCH` — the
+/// converter owns the writer contract, this module owns the reader
+/// contract (the deliberate two-copies convention [`crate::pyannote`]
+/// documents; a compile-time check would need `vokra-convert` in
+/// `vokra-models`'s dependency graph, which the workspace pins forbid).
+///
+/// The converter's own test suite pins this tag as distinct from every
+/// near neighbour it could be confused with — `piper-plus-mb-istft-vits2`,
+/// `vits-ja`, `deberta_v2`, `deberta_v3` (`…/sbv2.rs`
+/// `arch_is_distinct_from_siblings`). Those last two matter especially
+/// here: they are the arch tags of this loader's *own* `bert_ja` /
+/// `bert_en` arguments, so an argument-order slip is a live failure mode.
+pub const EXPECTED_ARCH: &str = "sbv2";
+
+/// Rejects a **main** GGUF whose `vokra.model.arch` is absent or is not
+/// [`EXPECTED_ARCH`].
+///
+/// A *loud* validation step (FR-EX-08) — see [`SbV2Model::from_gguf`].
+fn verify_main_arch(main: &GgufFile) -> Result<()> {
+    match main.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+        Some(a) if a == EXPECTED_ARCH => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "SbV2Model::from_gguf: `main` GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
+             (was this GGUF produced by `vokra-cli convert --model sbv2`?). Two mis-routes \
+             are common here: (a) a sibling VITS-lineage TTS GGUF — \
+             `piper-plus-mb-istft-vits2`, `vits-ja` — which shares VITS ancestry but not \
+             this tensor manifest; (b) an argument-order slip that passes one of this \
+             loader's own BERT side-cars (`deberta_v2` for `bert_ja`, `deberta_v3` for \
+             `bert_en`, `bert_base` for `bert_zh`) in the `main` slot. Either way the load \
+             would bind whatever names happen to overlap (FR-EX-08 — no silent partial \
+             load)."
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "SbV2Model::from_gguf: `main` GGUF is missing `{}` — this is not a Vokra-native \
+             Style-Bert-VITS2 GGUF (was it produced by `vokra-cli convert --model sbv2`?)",
+            chunks::KEY_MODEL_ARCH,
+        ))),
+    }
+}
 
 /// Both BERT encoders (+ their tokenizers) [`SbV2Model`] needs, loaded
 /// together so one loaded model instance can serve either language without
@@ -2234,7 +2278,21 @@ impl SbV2Model {
     /// [`HifiGanWeights`] tensor field itself, following the `decoder.*`
     /// tensor-name scheme documented above.
     ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// `main`'s `vokra.model.arch` is checked against [`EXPECTED_ARCH`]
+    /// **before** anything else — ahead of even the Blocker 2c
+    /// format-anomaly walk. Only `main` is gated: the two BERT side-cars
+    /// legitimately carry *different* tags (`deberta_v2` for `bert_ja`,
+    /// `deberta_v3` for `bert_en`) and are cross-checked structurally
+    /// against `vokra.sbv2.d_bert` further down. Gating those tags too —
+    /// which would additionally catch a JA/EN argument swap — is a
+    /// follow-up.
+    ///
     /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] when `main`'s `vokra.model.arch` is absent
+    /// or is not [`EXPECTED_ARCH`].
     ///
     /// [`VokraError::ModelLoad`], naming the offending metadata key or
     /// tensor name, for any of: a missing or wrong-typed `vokra.sbv2.*`
@@ -2281,6 +2339,19 @@ impl SbV2Model {
         bert_zh: Option<&GgufFile>,
         phonemizer: SbV2Phonemizer,
     ) -> Result<Self> {
+        // Arch gate (FR-EX-08) — the very first thing, ahead of even the
+        // Blocker 2c format-anomaly walk below, so a caller who hands a
+        // sibling VITS-lineage GGUF as `main` is told *which* model they
+        // actually passed instead of chasing a "missing vokra.sbv2.d_model"
+        // that looks like a converter bug.
+        //
+        // Only `main` is gated here. The `bert_*` side-cars legitimately
+        // carry three *different* arch tags (`deberta_v2` for JA,
+        // `deberta_v3` for EN, `bert_base` for ZH) and are already
+        // cross-checked structurally against `vokra.sbv2.d_bert` further
+        // down; gating their tags too (which would also catch a JA/EN
+        // argument swap) is a follow-up.
+        verify_main_arch(main)?;
         // Blocker 2c defensive check (2026-08-10): the converter
         // (`crates/vokra-convert/src/models/sbv2.rs::rewrite_sdp_tensor_name`)
         // maps even-index upstream `sdp.flows.<even>.*` production tensors

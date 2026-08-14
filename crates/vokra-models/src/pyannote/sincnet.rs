@@ -774,6 +774,12 @@ mod tests {
             GGUF_KEY_SAMPLE_RATE, GGUF_KEY_SINCNET_STRIDE,
         };
         let mut b = GgufBuilder::new();
+        // Arch stamp — `PyanNetWeights::from_gguf` gates on it before any
+        // tensor scan (FR-EX-08).
+        b.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            crate::pyannote::EXPECTED_ARCH,
+        );
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
         b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
         b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
@@ -1072,6 +1078,12 @@ mod tests {
             DEFAULT_SINCNET_STRIDE, GGUF_KEY_SAMPLE_RATE, GGUF_KEY_SINCNET_STRIDE,
         };
         let mut b = GgufBuilder::new();
+        // Arch stamp — this fixture must reach the *shape* gate, so it
+        // cannot short-circuit at the arch gate (FR-EX-08).
+        b.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            crate::pyannote::EXPECTED_ARCH,
+        );
         b.add_u32(GGUF_KEY_SAMPLE_RATE, 16000);
         b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
         // Wrong-shape sinc filterbank: shape [10, 1] instead of [40, 1].

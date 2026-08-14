@@ -721,6 +721,13 @@ mod tests {
     fn local_synthetic_pyannet_gguf() -> Vec<u8> {
         use vokra_core::gguf::{GgmlType, GgufBuilder};
         let mut b = GgufBuilder::new();
+        // Arch stamp — `PyanNetWeights::from_gguf` (reached through
+        // `PyanNet::from_gguf`) gates on it before any tensor scan
+        // (FR-EX-08).
+        b.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            crate::pyannote::EXPECTED_ARCH,
+        );
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
         b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
         b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);

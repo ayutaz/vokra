@@ -57,11 +57,31 @@ mod parity;
 
 use std::sync::Arc;
 
-use vokra_core::Result;
 use vokra_core::engines::{VadEngine, VadStreamHandle};
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::{Result, VokraError};
 
 use vokra_vad_micro::SileroWeights;
+
+/// The `vokra.model.arch` value a Silero VAD GGUF must carry.
+///
+/// Mirror of `crates/vokra-convert/src/models/silero.rs::ARCH` — the
+/// converter owns the writer contract, this module owns the reader
+/// contract (the same deliberate two-copies convention
+/// [`crate::pyannote`] documents; a compile-time check would need
+/// `vokra-convert` in `vokra-models`'s dependency graph, which the
+/// workspace pins forbid).
+///
+/// **One tag covers both upstream releases.** v5 and v6.2.1 are
+/// architecturally identical per upstream (same `Conv1d(1, 258, k=256,
+/// stride=128)` pseudo-STFT + 4-conv encoder + `LSTMCell(128, 128)` +
+/// `Conv1d(128, 1, 1)` head — see `crates/vokra-models/tests/parity_silero_v6.rs`
+/// module docs for the primary-source walk), so the release is recorded in
+/// the separate `vokra.silero.version` key that [`SileroVadV5::variant`]
+/// reads, **not** in the arch tag. Sibling VAD models that are *not* this
+/// subgraph (`fsmn-vad`, `firered-vad`, `pyannote-segmentation`) carry
+/// their own distinct arch tags and are rejected here.
+pub const EXPECTED_ARCH: &str = "silero-vad";
 
 /// The sample rate a Silero v5 model handles, re-exported from the no_std
 /// forward core so `vokra_models::silero_vad::SampleRate` keeps resolving for
@@ -94,7 +114,23 @@ impl SileroVadV5 {
     /// Accepts the corrected both-rate GGUF (`sr8k.*` / `sr16k.*`) or the legacy
     /// single-rate one. Returns [`vokra_core::VokraError::ModelLoad`] if no Silero weights
     /// are present or a tensor has the wrong shape/dtype.
+    ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// `vokra.model.arch` is checked against [`EXPECTED_ARCH`] **before**
+    /// any tensor is bound. The Silero binder matches on bare tensor names
+    /// (`encoder.*` / `decoder.rnn.*`), which are generic enough that a
+    /// foreign checkpoint could bind a partial, meaningless model — this
+    /// gate is what keeps that from happening silently.
+    ///
+    /// # Errors
+    ///
+    /// - [`vokra_core::VokraError::ModelLoad`] when `vokra.model.arch` is
+    ///   absent or is not [`EXPECTED_ARCH`].
+    /// - [`vokra_core::VokraError::ModelLoad`] from
+    ///   [`SileroWeights::from_gguf`] for a missing / mis-shaped tensor.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        verify_arch(gguf)?;
         Ok(Self {
             weights: Arc::new(SileroWeights::from_gguf(gguf)?),
         })
@@ -160,6 +196,33 @@ impl VadEngine for SileroVadV5 {
     }
 }
 
+/// Rejects a GGUF whose `vokra.model.arch` is absent or is not
+/// [`EXPECTED_ARCH`].
+///
+/// A *loud* validation step (FR-EX-08) — see [`SileroVadV5::from_gguf`].
+fn verify_arch(gguf: &GgufFile) -> Result<()> {
+    match gguf.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+        Some(a) if a == EXPECTED_ARCH => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "silero-vad: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` (was this GGUF \
+             produced by `vokra-cli convert --model silero-vad`? Sibling VAD arch tags — \
+             `fsmn-vad` (FunASR FSMN-VAD, an FSMN memory-block stack, not this 1:1-preserved \
+             subgraph), `firered-vad`, `pyannote-segmentation` (PyanNet SincNet + BiLSTM \
+             powerset segmentation) — are all voice-activity models but have completely \
+             different tensor manifests. Note the v5 / v6.2.1 *release* is NOT carried in \
+             this key: both stamp `{EXPECTED_ARCH}` and differ only in \
+             `vokra.silero.version` (see SileroVadV5::variant). Binding a foreign \
+             checkpoint on bare tensor-name matches would produce a partial, meaningless \
+             model (FR-EX-08 — no silent partial load)."
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "silero-vad: GGUF is missing `{}` — this is not a Vokra-native Silero VAD GGUF \
+             (was it produced by `vokra-cli convert --model silero-vad`?)",
+            chunks::KEY_MODEL_ARCH,
+        ))),
+    }
+}
+
 /// Absolute path to the committed parity fixture GGUF (both rates), for tests.
 #[cfg(test)]
 pub(crate) fn test_gguf_path() -> std::path::PathBuf {
@@ -197,13 +260,62 @@ mod tests {
 
     #[test]
     fn from_gguf_reports_missing_tensor() {
-        // An empty GGUF has no Silero weights -> explicit ModelLoad error.
+        // A correctly-stamped but weightless GGUF has no Silero weights ->
+        // explicit ModelLoad error. The arch stamp is required so this test
+        // keeps exercising the *tensor* gate rather than short-circuiting on
+        // the arch gate added above.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        let gguf = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(VokraError::ModelLoad(msg)) = SileroVadV5::from_gguf(&gguf) else {
+            panic!("a weightless silero GGUF must fail with ModelLoad");
+        };
+        assert!(
+            !msg.contains(chunks::KEY_MODEL_ARCH),
+            "must reach the tensor gate, not stop at the arch gate: {msg}",
+        );
+    }
+
+    #[test]
+    fn from_gguf_rejects_gguf_without_arch_stamp() {
+        // FR-EX-08: an unstamped GGUF is not a Vokra-native Silero artifact.
+        // Silero binds on bare tensor names (`encoder.*` / `decoder.rnn.*`),
+        // so without this gate a foreign checkpoint could bind a partial
+        // model and emit confident, meaningless speech probabilities.
         let bytes = GgufBuilder::new().to_bytes().unwrap();
         let gguf = GgufFile::parse(bytes).unwrap();
-        assert!(matches!(
-            SileroVadV5::from_gguf(&gguf),
-            Err(VokraError::ModelLoad(_))
-        ));
+        let Err(VokraError::ModelLoad(msg)) = SileroVadV5::from_gguf(&gguf) else {
+            panic!("an unstamped GGUF must fail with ModelLoad");
+        };
+        assert!(
+            msg.contains(chunks::KEY_MODEL_ARCH),
+            "message must name the missing key: {msg}",
+        );
+        assert!(
+            msg.contains(EXPECTED_ARCH),
+            "message must name the expected arch: {msg}",
+        );
+    }
+
+    #[test]
+    fn from_gguf_rejects_foreign_arch_naming_expected_and_actual() {
+        // `fsmn-vad` is the most plausible mis-route (a sibling first-class
+        // VAD alternative). The refusal must name BOTH the expectation and
+        // what was actually handed over.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "fsmn-vad");
+        let gguf = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(VokraError::ModelLoad(msg)) = SileroVadV5::from_gguf(&gguf) else {
+            panic!("a foreign-arch GGUF must fail with ModelLoad");
+        };
+        assert!(
+            msg.contains("fsmn-vad"),
+            "message must name the actual arch: {msg}",
+        );
+        assert!(
+            msg.contains(EXPECTED_ARCH),
+            "message must name the expected arch: {msg}",
+        );
     }
 
     #[test]
@@ -235,7 +347,11 @@ mod tests {
     #[test]
     fn legacy_single_rate_stream_rejects_absent_rate() {
         // Minimal legacy (bare-name) 8 kHz GGUF: kernel 128 -> 8 kHz only.
+        // The arch stamp is required by `from_gguf` (FR-EX-08); "legacy"
+        // here refers to the bare tensor-name layout, not to an unstamped
+        // artifact.
         let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         let add = |b: &mut GgufBuilder, name: &str, dims: &[u64]| {
             let n: u64 = dims.iter().product();
             b.add_tensor(

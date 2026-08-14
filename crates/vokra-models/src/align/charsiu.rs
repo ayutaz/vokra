@@ -66,11 +66,32 @@
 
 use std::path::Path;
 
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 use vokra_ops::{ConvLayerWeights, WaveformFrontendAttrs, WaveformFrontendWeights};
 
 use super::{AlignedToken, LoadError, ctc_segmentation::ctc_segmentation};
+
+/// The `vokra.model.arch` value a Charsiu GGUF must carry.
+///
+/// This is the **reader** half of a writer contract whose writer has not
+/// landed yet: no `crates/vokra-convert/src/models/charsiu.rs` exists as
+/// of 2026-08-15, because the real-weight binder is itself a follow-up
+/// wave (see [`Charsiu::from_gguf`]). The tag is fixed here first so the
+/// converter, when it lands, has exactly one string to match — the same
+/// "two copies of the constant is deliberate" convention
+/// [`crate::pyannote`] documents for the pairs that already exist. It is
+/// **not** transcribed from any upstream artifact (upstream Charsiu ships
+/// HF `Wav2Vec2ForCTC` safetensors, which carry no Vokra arch tag at
+/// all).
+///
+/// Deliberately distinct from `wav2vec2_ctc` (the generic Meta
+/// wav2vec2 + CTC ASR head, which emits characters/letters) even though
+/// the two share a topology: Charsiu's head is an **IPA phoneme**
+/// inventory used for forced alignment, so aliasing the tags would let a
+/// letter-vocab checkpoint silently produce nonsense phoneme boundaries.
+pub const EXPECTED_ARCH: &str = "charsiu";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -469,13 +490,33 @@ impl Charsiu {
     /// upstream tensor-name manifest fetch (T29-equivalent, same as
     /// omniASR-CTC / CosyVoice2 / Voxtral).
     ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// When `path` parses as a GGUF, its `vokra.model.arch` is checked
+    /// against [`EXPECTED_ARCH`] **before** the follow-up-wave message, so
+    /// a caller who hands a sibling wav2vec2-lineage GGUF here is told
+    /// *which* model they actually passed rather than being sent to chase
+    /// an unrelated tensor-manifest TODO. This ordering is what the real
+    /// binder will keep when it lands, so the diagnostic does not change
+    /// shape under the caller.
+    ///
     /// # Errors
     ///
     /// - [`LoadError::FileNotFound`] if `path` does not exist.
+    /// - [`LoadError::Gguf`] if `path` parses as a GGUF whose
+    ///   `vokra.model.arch` is absent or is not [`EXPECTED_ARCH`].
     /// - [`LoadError::Gguf`] otherwise, naming the follow-up wave.
     pub fn from_gguf(path: &Path) -> std::result::Result<Self, LoadError> {
         if !path.exists() {
             return Err(LoadError::FileNotFound(path.to_path_buf()));
+        }
+        // 1. Arch check — always first for a parseable GGUF so a mis-typed
+        //    model handed here fails with a specific message instead of the
+        //    generic "binder not wired yet" note below. A file that does
+        //    not parse as a GGUF at all falls through to that note (it is
+        //    equally a refusal, and nothing is ever bound either way).
+        if let Ok(file) = GgufFile::open(path) {
+            verify_arch(&file)?;
         }
         Err(LoadError::Gguf(
             "charsiu: from_gguf is not wired yet — the wav2vec2 CTC forward path exists in this \
@@ -927,6 +968,34 @@ fn gelu_exact(x: f32) -> f32 {
     0.5 * x * (1.0 + erf_as(x * core::f32::consts::FRAC_1_SQRT_2))
 }
 
+/// Rejects a GGUF whose `vokra.model.arch` is absent or is not
+/// [`EXPECTED_ARCH`].
+///
+/// A *loud* validation step (FR-EX-08). The error type here is
+/// [`LoadError`] — the align module's own load-error enum — not
+/// `VokraError`, because [`Charsiu::from_gguf`] shares its signature with
+/// [`super::force_align`]'s other loaders.
+fn verify_arch(file: &GgufFile) -> std::result::Result<(), LoadError> {
+    match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+        Some(a) if a == EXPECTED_ARCH => Ok(()),
+        Some(other) => Err(LoadError::Gguf(format!(
+            "charsiu: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}`. Sibling \
+             wav2vec2-lineage arch tags share this exact topology but have incompatible \
+             output heads — `wav2vec2_ctc` (Meta wav2vec2 + CTC ASR head, character / \
+             letter vocabulary), `hubert` (HuBERT SSL encoder, no fixed downstream head), \
+             `emotion2vec` (fixed 9-way emotion classifier), `wavlm_sv` (XVector speaker \
+             verification head). Charsiu's head is an IPA *phoneme* inventory used for \
+             forced alignment; binding a letter-vocab or classifier checkpoint here would \
+             emit confident, meaningless phoneme boundaries (FR-EX-08 — no silent partial \
+             load)."
+        ))),
+        None => Err(LoadError::Gguf(format!(
+            "charsiu: GGUF is missing `{}` — this is not a Vokra-native Charsiu GGUF.",
+            chunks::KEY_MODEL_ARCH,
+        ))),
+    }
+}
+
 /// Abramowitz & Stegun 7.1.26 erf approximation (~1e-7 error).
 #[inline]
 #[allow(clippy::excessive_precision)]
@@ -977,6 +1046,94 @@ mod tests {
             matches!(err, LoadError::FileNotFound(_) | LoadError::Gguf(_)),
             "unexpected LoadError variant: {err:?}",
         );
+    }
+
+    /// Writes `bytes` to a unique scratch path and returns it.
+    fn scratch_gguf(tag: &str, bytes: Vec<u8>) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "vokra-charsiu-arch-{}-{}-{}.gguf",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        ));
+        std::fs::write(&p, bytes).expect("write scratch gguf");
+        p
+    }
+
+    #[test]
+    fn from_gguf_rejects_gguf_without_arch_stamp() {
+        // FR-EX-08: an unstamped GGUF is not a Vokra-native Charsiu
+        // artifact. The refusal must name the missing key rather than
+        // sending the caller to the (unrelated) follow-up-wave note.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_u32("vokra.charsiu.hidden_size", 768);
+        let path = scratch_gguf("no-arch", b.to_bytes().expect("serialize"));
+
+        let err = Charsiu::from_gguf(&path).expect_err("missing arch must fail");
+        match &err {
+            LoadError::Gguf(msg) => {
+                assert!(
+                    msg.contains(chunks::KEY_MODEL_ARCH),
+                    "message must name the missing key: {msg}",
+                );
+                assert!(
+                    msg.contains("charsiu"),
+                    "message must name the expected model: {msg}",
+                );
+            }
+            other => panic!("expected LoadError::Gguf, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn from_gguf_rejects_foreign_arch_naming_expected_and_actual() {
+        // `wav2vec2_ctc` is the most dangerous mis-route: identical
+        // topology, identical tensor names, incompatible output vocabulary
+        // (letters vs IPA phonemes). It must be named alongside the
+        // expectation so the caller sees exactly what they passed.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "wav2vec2_ctc");
+        let path = scratch_gguf("foreign-arch", b.to_bytes().expect("serialize"));
+
+        let err = Charsiu::from_gguf(&path).expect_err("foreign arch must fail");
+        match &err {
+            LoadError::Gguf(msg) => {
+                assert!(
+                    msg.contains("wav2vec2_ctc"),
+                    "message must name the actual arch: {msg}",
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch: {msg}",
+                );
+            }
+            other => panic!("expected LoadError::Gguf, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn from_gguf_with_correct_arch_still_reports_the_unwired_binder() {
+        // The arch gate must not *replace* the loud-partial contract: a
+        // correctly-stamped GGUF still refuses, naming the follow-up wave.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        let path = scratch_gguf("real-arch", b.to_bytes().expect("serialize"));
+
+        let err = Charsiu::from_gguf(&path).expect_err("binder is still unwired");
+        match &err {
+            LoadError::Gguf(msg) => assert!(
+                msg.contains("from_gguf is not wired yet"),
+                "correct arch must fall through to the follow-up-wave note: {msg}",
+            ),
+            other => panic!("expected LoadError::Gguf, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

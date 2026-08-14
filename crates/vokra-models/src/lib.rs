@@ -1262,6 +1262,234 @@ pub mod utmosv2;
 // `vokra-convert → GGUF writer`).
 pub mod nisqa;
 
+// Wave B (2026-08-15) — TEN-VAD runtime binder (LIB.RS RULE: append at the
+// END of the `pub mod` block with a Wave marker; do NOT alphabetize —
+// rustfmt has reordered these before and broken a commit).
+//
+// Closes a real gap: `crates/vokra-convert/src/models/ten_vad.rs` (landed
+// coverage-audit-2026-08-03 Wave A permissive continuation, 2026-08-04)
+// produced a GGUF stamped `vokra.model.arch = "ten_vad"` that NOTHING in the
+// workspace read back, so every converted checkpoint was unloadable. This
+// module is that consumer.
+//
+// TEN-VAD (`github.com/TEN-framework/ten-vad`) is a compact (~306 KB ONNX
+// bundle) real-time voice-activity detector positioned upstream as a
+// ~5.5x-lighter alternative to Silero VAD v5. It is the THIRD first-class VAD
+// topology under the shared `category = "vad-kws"` umbrella, and it exposes
+// the same `vokra_core::engines::VadEngine` / `VadStreamHandle` seam as
+// `silero_vad` and `fsmn_vad`, so a caller can swap between the three without
+// rewriting call sites.
+//
+// REAL: strict `vokra.model.arch` verification that refuses a foreign GGUF
+// loudly with the whole `vad-kws` sibling fleet enumerated (`silero-vad`
+// 1:1-preserved pseudo-STFT + LSTM subgraph / `fsmn-vad` fbank + LFR + CMVN op
+// stack / `openwakeword` + `openwakeword_op` keyword spotting); a tensor
+// manifest walk with a non-empty gate AND a converter-contract dtype gate
+// (`convert_ten_vad_file` has no quantization arm — it passes F32/F16/BF16
+// through verbatim — so a K-quant tensor proves a foreign producer); a
+// `require_tensor` name-resolution primitive that fails loudly NAMING the
+// tensor and previewing the real manifest; a BF16 counter mirroring the
+// converter's `TenVadReport::bf16_passthrough`; the OPTIONAL, all-or-nothing
+// `vokra.ten_vad.*` topology group (absent -> `None`, half-stamped -> loud);
+// a real hop-based streaming frame accumulator with a loud sample-rate gate
+// (never a silent resample); and weight-license surfacing that fail-closes to
+// `LicenseClass::Unknown`.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `TenVad::frame_probability` and the stream's `push_pcm` return
+// `VokraError::UnsupportedOp` naming four concrete blockers — (i) the MISSING
+// TENSOR-NAME MANIFEST, because the published artefact came from the generic
+// `tools/parity/onnx_to_safetensors.py` bridge which passes ONNX initializer
+// names through verbatim and nothing here records them; (ii) the MISSING
+// TOPOLOGY AXES, since the converter stamps no `vokra.ten_vad.*` group at all,
+// leaving hop size / feature width / hidden width / layer count unknown;
+// (iii) the UNRESOLVED BACKBONE FAMILY, since the converter docstring says
+// "small LSTM/GRU backbone" without committing to either and a coin flip here
+// is SILENT-wrong (note `vokra_ops::rnnoise::gru_forward` is already
+// shape-generic, so the blocker is the manifest and the axes, not the
+// arithmetic); (iv) the MISSING LPCNet-DERIVED FRONT-END, since
+// `vokra_ops::rnnoise::bark_filterbank` is RNNoise's FIXED 22-band table (same
+// Xiph lineage, different hard-coded edges), not TEN-VAD's front-end. No
+// fabricated speech probability is ever emitted (FR-EX-08). Deliberately NO
+// `TenVadConfig::upstream_default()`: unlike `FsmnVadConfig`, TEN-VAD's axes
+// are not stated in any available primary source, so a default would be
+// invented numbers wearing an authoritative face (CLAUDE.md ハルシネーション厳禁).
+//
+// LICENSING: Apache-2.0 for the main project (`LicenseClass::Permissive`,
+// mirroring the converter's `DEFAULT_LICENSE_SPDX`), but the LPCNet-derived
+// DSP front-end bundled in the upstream distribution is separately
+// BSD-3-Clause and requires NOTICE attribution for the LPCNet copyright when
+// redistributing binaries that embed it — surfaced as the named constant
+// `FRONTEND_LICENSE_SPDX` so the follow-up front-end-port wave has a greppable
+// anchor for that obligation. `docs/license-audit.md` §3.1 sign-off stays
+// BLANK (owner-only per `[[feedback-license-signoff-primary-source]]` — CC
+// does NOT sign).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH = "ten_vad"`
+// (mirror of the converter's ARCH constant, preserving the layered convention
+// `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF reader`,
+// `vokra-models → GGUF binder`, `vokra-convert → GGUF writer`).
+pub mod ten_vad;
+
+// Wave B (2026-08-15) — smart-turn v2 runtime binder for semantic
+// turn-completion / endpointing (LIB.RS RULE: append at the END of the
+// `pub mod` block with a Wave marker; do NOT alphabetize — rustfmt has
+// reordered these before and broken a commit).
+//
+// Closes a real gap: `crates/vokra-convert/src/models/smart_turn.rs`
+// produced a GGUF stamped `vokra.model.arch = "smart_turn"` that NOTHING in
+// the workspace read back, so every converted checkpoint was unloadable.
+// This module is that consumer.
+//
+// NOT A VAD, despite appearances — and this is the point most likely to be
+// got wrong by a future reader. The converter stamps
+// `vokra.model.category = "vad"` and the upstream HF card's pipeline tag is
+// literally `voice-activity-detection` (HF cardData API, recorded in
+// `docs/license-audit.md` §3.1 row "Smart-Turn v2", fetched 2026-07-30) —
+// both are CATALOG labels, not architectural claims. A VAD answers "is
+// there speech in this frame?" per frame; smart-turn
+// (`pipecat-ai/smart-turn-v2`, BSD-2-Clause, w2v-BERT 2.0 backbone) answers
+// "has this speaker finished their turn?" once per utterance-length
+// segment. A mid-sentence pause is speech-present AND turn-incomplete at
+// the same instant, which is exactly why a realtime pipeline runs both
+// rather than one in place of the other. The API is therefore
+// `SmartTurn::predict_endpoint(pcm, sample_rate) -> TurnPrediction` (ONE
+// completion probability per segment), and
+// `vokra_core::engines::VadEngine` is deliberately NOT implemented: its
+// `VadStreamHandle::push_pcm` returns one probability PER FRAME, so the
+// impl would have to either broadcast the single decision across every
+// frame (fabricated per-frame signal) or return a one-element vector
+// (silently wrong frame count) — both FR-EX-08 violations. Same posture
+// `nisqa` / `utmosv2` take toward `MosScorerEngine`. Note this makes
+// smart_turn distinct from the sibling `ten_vad` binder directly above,
+// which DOES implement `VadEngine` because it really is a frame-level VAD.
+//
+// REAL: strict `vokra.model.arch` verification refusing foreign GGUFs with
+// the whole `category = "vad"` sibling fleet enumerated by the question
+// each one actually answers (`fsmn-vad` / `firered_vad` / `silero-vad` /
+// `pyannote-segmentation`, all per-frame) plus the bare backbone
+// (`w2v-bert-2`, an SSL encoder with no turn head at all); a non-empty
+// tensor gate; an encoder-stack presence gate; a classification-head
+// presence gate that specifically stops a bare `facebook/w2v-bert-2.0`
+// converted with the wrong `--model` flag from binding as a turn detector;
+// the optional all-or-nothing `vokra.smart_turn.*` segment group; a
+// validating `TurnPrediction` constructor (a NaN probability would compare
+// false against every threshold, i.e. "still speaking" forever); and full
+// loud input validation on `predict_endpoint` (zero / mismatched sample
+// rate, empty segment, over-long segment) firing BEFORE the loud-partial
+// gate so a malformed request always gets the specific diagnostic.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `SmartTurn::predict_endpoint` returns
+// `VokraError::UnsupportedOp` naming four blockers — (i) the MISSING
+// ADAPTER, a w2v-BERT-flavoured Conformer: `vokra_ops::conformer` DOES
+// exist but is a NeMo port (Stacking subsampling stem, NeMo parameter
+// layout, parakeet/canary consumers) while w2v-BERT 2.0 uses the HF
+// `Wav2Vec2BertEncoder` variant that projects precomputed filterbank
+// features, and the shapes are close enough that a substituted forward
+// would RUN and return a plausible WRONG number rather than failing;
+// (ii) the MISSING METADATA, since the converter is a verbatim float
+// pass-through stamping no topology or front-end axes at all; (iii) the
+// MISSING HEAD CONTRACT — one-logit-sigmoid vs two-logit-softmax and which
+// index means "complete" are unrecoverable, and a guessed index has a 50%
+// chance of INVERTING the decision; (iv) the MISSING SIDECAR
+// `tools/parity/smart_turn_prepare_checkpoint.py`. No fabricated
+// turn-completion probability is ever emitted (FR-EX-08) — a fake "turn
+// complete" makes a realtime agent interrupt the user mid-sentence, so a
+// plausible lie here is worse than a loud failure.
+//
+// LICENSING: `bsd-2-clause` → `LicenseClass::Permissive` (T1 Commercial).
+// The `docs/license-audit.md` §3.1 row is owner-only and was already signed
+// ☑ Commercial on 2026-07-30; this module does not touch it. Cross-crate
+// string handshake via duplicated `pub const ARCH = "smart_turn"` (mirror
+// of the converter's ARCH constant, preserving the layered convention
+// `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF reader`,
+// `vokra-models → GGUF binder`, `vokra-convert → GGUF writer`).
+pub mod smart_turn;
+
+// Wave B (2026-08-15) — FireRedVAD runtime binder (LIB.RS RULE: append at the
+// END of the `pub mod` block with a Wave marker; do NOT alphabetize —
+// rustfmt has reordered these before and broken a commit).
+//
+// Closes a real gap: `crates/vokra-convert/src/models/firered_vad.rs` (TIER 1
+// F wave, 2026-07-30) produced a GGUF stamped `vokra.model.arch =
+// "firered_vad"` / `vokra.model.name = "firered-vad"` / `vokra.model.category
+// = "vad"` / `vokra.provenance.upstream_hf = "FireRedTeam/FireRedVAD"` that a
+// workspace-wide grep proved NOTHING read back — every converted FireRedVAD
+// checkpoint was unloadable. This module is that consumer.
+//
+// FireRedVAD (`huggingface.co/FireRedTeam/FireRedVAD`) is Xiaohongshu
+// FireRedTeam's transformer-based streaming voice-activity detector, shipped
+// alongside FireRedASR / FireRedTTS. It really IS a frame-level VAD, so —
+// unlike the `smart_turn` binder directly above, which answers a different
+// question once per segment — it DOES implement
+// `vokra_core::engines::VadEngine`, exposing the same per-frame
+// speech-probability API shape as `silero_vad` / `fsmn_vad` / `ten_vad`
+// (one-shot `FireredVad::speech_probabilities` plus a streaming handle) so
+// `vokra-core`'s `stream::open_stream` glue sees no asymmetry.
+//
+// REAL: strict `vokra.model.arch` verification that refuses foreign GGUFs
+// loudly with the whole `category = "vad"` sibling fleet enumerated
+// (`silero-vad` 1:1-preserved subgraph / `fsmn-vad` FunASR FSMN over Kaldi
+// fbank+LFR+CMVN / `pyannote-segmentation` speaker segmentation reduced to a
+// VAD signal / `smart_turn` end-of-turn prediction, plus the `vad-kws`
+// neighbour `ten_vad`) — the shared category tag alone cannot disambiguate
+// them, only the arch tag can; a non-empty tensor-manifest gate; a by-name
+// tensor lookup that NAMES an absent tensor instead of returning `None` for a
+// caller to swallow; an optional `KEY_REQUIRED_TENSORS` (`Array<String>`)
+// declaration that turns a truncated / mis-merged GGUF into a LOAD-time
+// failure naming the first missing tensor; the optional all-or-nothing
+// `vokra.firered_vad.*` hyper-parameter group (absent → `config()` is `None`
+// and the checkpoint still binds, because refusing it would re-open the very
+// gap this module closes; partially stamped → loud, naming the missing key;
+// `0` sentinel or indivisible `d_model % n_heads` → loud); a sample-rate guard
+// that refuses a mismatched rate with `InvalidArgument` rather than resampling
+// silently; and weight-license surfacing that fail-closes to
+// `LicenseClass::Unknown`.
+//
+// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
+// honest」): `FireredVad::speech_probabilities` / `FireredVadStream::push_pcm`
+// return `VokraError::UnsupportedOp` naming three concrete blockers — (i) the
+// MISSING TOPOLOGY TRANSCRIPTION: the converter describes the model only as a
+// "transformer-based streaming VAD" and copies every tensor under its verbatim
+// upstream safetensors name, so nothing in-repo transcribes the front-end,
+// the encoder geometry or the output-head class ordering, and a best-guess
+// topology would emit a SHAPE-VALID probability vector that is quietly wrong
+// (a mis-guessed head count or a swapped speech column never crashes — note
+// the blocker is GEOMETRY, not kernels: the encoder body composes from
+// transformer primitives Vokra already carries once the geometry is known);
+// (ii) the MISSING METADATA, i.e. the `vokra.firered_vad.*` group the
+// converter does not stamp — head count in particular is invisible in the
+// weight shapes whenever QKV is packed into one projection; (iii) the MISSING
+// SIDECAR `tools/parity/firered_vad_prepare_checkpoint.py`, which has never
+// been written. The stream deliberately never returns `Ok(vec![])`, because an
+// empty return is indistinguishable from "no frame completed" and would let a
+// caller loop forever believing the VAD runs. No fabricated speech
+// probabilities are ever emitted (FR-EX-08). Deliberately NO
+// `FireredVadConfig::upstream_default()`: unlike `FsmnVadConfig`, FireRedVAD's
+// axes are not stated in any available primary source, so a default would be
+// invented numbers wearing an authoritative face (CLAUDE.md ハルシネーション厳禁)
+// — the same posture the sibling `ten_vad` binder takes.
+//
+// LICENSING: the converter stamps `apache-2.0` → `LicenseClass::Permissive` on
+// the stated basis that the FireRedTeam family LICENSE pins Apache-2.0 across
+// the team's releases and the FireRedVAD card inherits it — an
+// INHERITED-FAMILY determination, not a transcription of a FireRedVAD-specific
+// licence file. This binder only SURFACES whatever class the GGUF carries and
+// fail-closes to `Unknown` when nothing is stamped.
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign, and does
+// not treat the converter's default as a sign-off).
+//
+// Cross-crate string handshake via duplicated `pub const ARCH =
+// "firered_vad"` / `NAME` / `CATEGORY` / `UPSTREAM_HF` (mirror of the
+// converter's constants, preserving the layered convention `vokra-ops →
+// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
+// binder`, `vokra-convert → GGUF writer`). Note the arch uses `_` while the
+// name uses `-`; both spellings are load-bearing on the wire and are pinned
+// separately by a test.
+pub mod firered_vad;
+
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
 #[cfg(test)]
