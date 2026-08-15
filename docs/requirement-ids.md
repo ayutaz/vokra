@@ -233,7 +233,7 @@ Tooling.
 | ID | What it governs |
 |---|---|
 | `FR-TL-01` | The offline checkpoint-to-GGUF conversion tool — the only place ONNX handling is allowed to live (see `FR-LD-05`). |
-| `FR-TL-02` | `vokra-cli`: `run`, `convert` and `bench`. |
+| `FR-TL-02` | `vokra-cli`: `run`, `convert`, `bench` and `f0`. |
 | `FR-TL-03` | `vokra-eval`: running the quality metrics of `FR-OP-93` from one command. |
 | `FR-TL-04` | The build scripts that generate the C header and the engine / binding packages. |
 | `FR-TL-05` | **Retired.** This was an automated competitor-changelog workflow. It was withdrawn by maintainer decision and fully superseded by the manual quarterly review under `NFR-MT-05`. It is listed here only because the retirement is still referenced. |
