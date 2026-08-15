@@ -385,6 +385,26 @@ pub mod f0;
 pub mod wpe;
 // -------------------------------------------------------------------------
 
+// ---- Wave E (2026-08-15) ViT audio encoder ------------------------------
+// 2-D patch embedding over a mel plane + plain pre-norm Transformer encoder.
+//
+// This is the ONE primitive the whole SSL audio-embedding fleet was missing.
+// The `atst` / `eat` / `m2d` / `maest` binders (and the `dasheng` / `beats` /
+// `ast` converters behind them) each loud-partialled for the same reason:
+// `conformer` / `ebranchformer` / `zipformer` are conv-augmented ASR encoders
+// over a 1-D frame sequence, which is a different architecture, not a
+// substitute for a patch-grid ViT.
+//
+// Pre-norm, not post-norm — getting that backwards is silently wrong rather
+// than loud, so it is stated here as well as in the module docs. Every axis
+// is caller-supplied: five models use this with five different axis sets, so
+// there is deliberately no "upstream default" to invent.
+//
+// Runtime functions, NOT `OpKind` variants (same posture as `resample` /
+// `agc` / `hpf` / `wpe` — ADR M4-20 §D-5).
+pub mod vit;
+// -------------------------------------------------------------------------
+
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
 // ---------------------------------------------------------------------------

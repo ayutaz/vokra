@@ -72,6 +72,73 @@
 //! `[[feedback-python-3-12]]`) mirroring the DAC / Kokoro /
 //! UTMOSv2 bridge pattern.
 //!
+//! # Topology axes — `vokra.m2d.*` (primary-source transcribed)
+//!
+//! The runtime binder `crates/vokra-models/src/m2d/mod.rs` declares an
+//! eight-key `vokra.m2d.*` axis group and refuses its encoder forward
+//! while any key is unstamped (`M2dConfig::validate_for_forward`).
+//! This converter stamps **all eight**, under exactly the binder's key
+//! spellings. Every value is transcribed from a primary source that was
+//! actually read — never a sibling SSL encoder's ViT-Base numbers
+//! borrowed across a different release (CLAUDE.md「ハルシネーション厳禁」):
+//!
+//! - `hidden_size` = 768, `num_hidden_layers` = 12,
+//!   `num_attention_heads` = 12 — upstream `examples/portable_m2d.py`
+//!   `get_backbone()` constructs the encoder as `LocalViT(in_chans=1,
+//!   ..., embed_dim=768, depth=12, num_heads=12, mlp_ratio=4,
+//!   norm_layer=partial(torch.nn.LayerNorm, eps=1e-6))`. These three
+//!   are hard-coded there (not parsed out of the weight name), so they
+//!   hold for every `m2d_vit_base` weight the upstream wrapper loads.
+//!   Corroborated by paper §4.1: "We used vanilla ViT-Base with a 768-d
+//!   output feature as our encoders (f_θ and f_ξ)".
+//! - `patch_height` = 16, `patch_width` = 16 — `portable_m2d.py`
+//!   `Config.patch_size = [16, 16]` (ordered `[freq bins, time
+//!   frames]`, matching `input_size = [80, 208]`); README pre-training
+//!   command `--patch_size 16x16`; paper §4.1: "fixed the patch size to
+//!   16×16 for all experiments".
+//! - `n_mels` = 80, `sample_rate` = 16000 — `portable_m2d.py`
+//!   `get_to_melspec()` 16 kHz arm sets `cfg.sample_rate, cfg.n_fft,
+//!   cfg.window_size, cfg.hop_size = 16000, 400, 400, 160` and
+//!   `cfg.n_mels, cfg.f_min, cfg.f_max = 80, 50, 8000`; paper §4.1: "We
+//!   preprocessed audio samples to a log-scaled mel spectrogram with a
+//!   sampling frequency of 16,000 Hz ... and mel-spaced frequency bins
+//!   F=80 in the range of 50 to 8,000 Hz".
+//! - `inference_branch` = `"online"` — paper §3 defines the duo as "the
+//!   online encoder f_θ" versus "The target network ... consists only
+//!   of momentum encoder f_ξ", then states outright: "After the
+//!   training, we transfer only the f_θ as a pre-trained model."
+//!   `util/to_encoder_only_weight.py` corroborates operationally: it
+//!   saves `PortableM2D(src).backbone.state_dict()`, i.e. the single
+//!   encoder `get_backbone()` bound, discarding the rest.
+//!
+//! Primary sources read for the above: `github.com/nttcslab/m2d`
+//! (`examples/portable_m2d.py`, `util/to_encoder_only_weight.py`,
+//! `README.md`, tree at default branch `master`) and the ICASSP 2023
+//! paper `arxiv.org/abs/2210.14648` §3 + §4.1.
+//!
+//! ## Axes deliberately NOT stamped
+//!
+//! The binder reads exactly the eight keys above and silently ignores
+//! any other `vokra.m2d.*` key, so stamping extras would add artifact
+//! surface with no consumer. Primary source does supply more (`mlp_ratio`
+//! = 4, LayerNorm eps = 1e-6, `f_min` = 50, `f_max` = 8000, pre-training
+//! `input_size` = 80×608 time frames while the portable `Config` default
+//! is 80×208); those land only if and when the binder grows fields for
+//! them, in the same commit.
+//!
+//! ## The 32 kHz release is a different identity
+//!
+//! `portable_m2d.py` also carries a 32 kHz arm (`sample_rate = 32000`,
+//! `f_max = 16000`; `n_mels` stays 80), selected from the weight
+//! directory name's third `p`-separated field (`...p32k`), which
+//! `parse_sizes_by_name` defaults to `'16k'` when absent. [`SAMPLE_RATE`]
+//! below is therefore the canonical 16 kHz [`NAME`] release **only**. A
+//! 32 kHz weight is a separate release identity that must arrive as its
+//! own `ModelKind` + `NAME` + stamp (the `snac_24khz` / `snac_44khz`
+//! precedent), never converted through this arm: a wrong sample-rate
+//! stamp resamples silently and has no loud failure mode downstream
+//! (FR-EX-08).
+//!
 //! # BF16 pass-through
 //!
 //! F32 / F16 / BF16 all ride the verbatim pass-through arm. BF16
@@ -127,6 +194,94 @@ pub const UPSTREAM_URL: &str = "github.com/nttcslab/m2d";
 /// is confirmed.
 pub const DEFAULT_LICENSE_SPDX: &str = "unknown";
 
+// ---------------------------------------------------------------------------
+// M2D topology axes — transcribed verbatim from upstream primary sources
+// (see the module docstring section "Topology axes" for the per-value
+// citation and the exact quoted sentences).
+//
+// Sources actually read, 2026-08-15:
+// - github.com/nttcslab/m2d `examples/portable_m2d.py` (`Config`,
+//   `get_backbone`, `get_to_melspec`, `parse_sizes_by_name`)
+// - github.com/nttcslab/m2d `util/to_encoder_only_weight.py`
+// - github.com/nttcslab/m2d `README.md` (pre-training commands)
+// - arxiv.org/abs/2210.14648 (Niizumi et al., ICASSP 2023) §3 + §4.1
+//
+// Stamped so the runtime binder `crates/vokra-models/src/m2d/mod.rs`
+// can shape the encoder without re-deriving topology from tensor
+// shapes. The binder treats a present-but-unreadable key as a loud
+// error, so a half-landed group here cannot masquerade as a silent
+// converter (FR-EX-08).
+// ---------------------------------------------------------------------------
+
+/// Transformer hidden width (ViT-Base embed dim) — **768**.
+///
+/// `portable_m2d.py` `get_backbone()`: `LocalViT(..., embed_dim=768,
+/// depth=12, num_heads=12, ...)`; paper §4.1 "vanilla ViT-Base with a
+/// 768-d output feature as our encoders".
+pub const HIDDEN_SIZE: u32 = 768;
+
+/// Transformer encoder block count — **12**.
+///
+/// `portable_m2d.py` `get_backbone()`: `depth=12`.
+pub const NUM_HIDDEN_LAYERS: u32 = 12;
+
+/// Self-attention head count — **12**.
+///
+/// `portable_m2d.py` `get_backbone()`: `num_heads=12`.
+pub const NUM_ATTENTION_HEADS: u32 = 12;
+
+/// Spectrogram patch height in **mel bins** — **16**.
+///
+/// `portable_m2d.py` `Config.patch_size = [16, 16]`, ordered
+/// `[freq bins, time frames]` to match `input_size = [80, 208]`; paper
+/// §4.1 "fixed the patch size to 16×16 for all experiments".
+pub const PATCH_HEIGHT: u32 = 16;
+
+/// Spectrogram patch width in **time frames** — **16**.
+///
+/// Same primary sources as [`PATCH_HEIGHT`]; M2D's patch is square, so
+/// the two axes coincide numerically but are kept distinct because the
+/// binder's grid arithmetic reads them separately.
+pub const PATCH_WIDTH: u32 = 16;
+
+/// Mel-filterbank bin count of the log-mel front-end — **80**.
+///
+/// `portable_m2d.py` `get_to_melspec()`: `cfg.n_mels, cfg.f_min,
+/// cfg.f_max = 80, 50, 8000`; paper §4.1 "mel-spaced frequency bins
+/// F=80 in the range of 50 to 8,000 Hz". Note 80 holds on the 32 kHz
+/// arm too — `sample_rate` is the axis that differs there.
+pub const N_MELS: u32 = 80;
+
+/// Input sample rate in Hz — **16000**, the canonical [`NAME`] release.
+///
+/// `portable_m2d.py` `get_to_melspec()` 16 kHz arm: `cfg.sample_rate,
+/// cfg.n_fft, cfg.window_size, cfg.hop_size = 16000, 400, 400, 160`;
+/// paper §4.1 "a sampling frequency of 16,000 Hz".
+///
+/// **A 32 kHz M2D weight must not be converted through this arm** — see
+/// the module docstring section "The 32 kHz release is a different
+/// identity". A wrong sample-rate stamp has no loud failure mode
+/// downstream (FR-EX-08).
+pub const SAMPLE_RATE: u32 = 16_000;
+
+/// Which network of the Masked Modeling **Duo** the inference path
+/// reads — **`"online"`**.
+///
+/// This is the one axis the binder singles out as unguessable: both
+/// branches are shape-compatible, so a wrong pick returns a
+/// plausible-but-wrong embedding with no loud failure mode. It is
+/// stamped here only because a primary source states it outright.
+/// Paper §3 defines "the online encoder f_θ" against "The target
+/// network ... consists only of momentum encoder f_ξ", then concludes:
+/// "After the training, we transfer only the f_θ as a pre-trained
+/// model." Corroborated by `util/to_encoder_only_weight.py`, which
+/// persists `PortableM2D(src).backbone.state_dict()` — the single
+/// encoder `get_backbone()` bound — and discards the rest.
+///
+/// Wire form must match the binder's `M2dBranch::from_wire` exactly
+/// (`"online"` / `"target"`, case-sensitive).
+pub const INFERENCE_BRANCH: &str = "online";
+
 const UPSTREAM_SOURCE: &str = "nttcslab/m2d (Masked Modeling Duo — dual-branch SSL audio encoder joint-predicting \
      masked patches AND online-branch representation, ~86M params base, Niizumi et al. \
      arXiv:2210.14648 ICASSP 2023 + TASLP 2024 extension, LICENSE.pdf non-machine-readable \
@@ -134,6 +289,25 @@ const UPSTREAM_SOURCE: &str = "nttcslab/m2d (Masked Modeling Duo — dual-branch
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
+
+// Scalar topology chunks (`vokra.m2d.*`). These spellings are a mirror
+// of the runtime binder's `GGUF_KEY_*` constants in
+// `crates/vokra-models/src/m2d/mod.rs` — the two halves only meet if
+// they match byte for byte, and `topology_axis_keys_mirror_the_runtime_binder`
+// pins every one of them. Duplicated rather than shared because
+// `vokra-models` must not gain a dependency edge onto `vokra-convert`
+// (layering: `vokra-core` = GGUF reader, `vokra-convert` = GGUF writer).
+const KEY_M2D_HIDDEN_SIZE: &str = "vokra.m2d.hidden_size";
+const KEY_M2D_NUM_HIDDEN_LAYERS: &str = "vokra.m2d.num_hidden_layers";
+const KEY_M2D_NUM_ATTENTION_HEADS: &str = "vokra.m2d.num_attention_heads";
+const KEY_M2D_PATCH_HEIGHT: &str = "vokra.m2d.patch_height";
+const KEY_M2D_PATCH_WIDTH: &str = "vokra.m2d.patch_width";
+const KEY_M2D_N_MELS: &str = "vokra.m2d.n_mels";
+const KEY_M2D_SAMPLE_RATE: &str = "vokra.m2d.sample_rate";
+/// String-valued, unlike every sibling axis: the binder parses it
+/// through `M2dBranch::from_wire` and rejects anything outside
+/// `{"online", "target"}`.
+const KEY_M2D_INFERENCE_BRANCH: &str = "vokra.m2d.inference_branch";
 
 /// Outcome of an M2D conversion. Mirrors the counter shape of the
 /// sibling BF16 pass-through converters (`beats` / `eat` / `atst`
@@ -188,6 +362,23 @@ pub fn convert_m2d_file(
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
     b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+
+    // M2D topology axes. Every value is transcribed from a primary
+    // source that was read (upstream `examples/portable_m2d.py` +
+    // arXiv:2210.14648 §3/§4.1 — see the constants' rustdoc for the
+    // per-axis citation), never inferred from a sibling SSL encoder.
+    // The whole group is stamped together: the binder distinguishes
+    // "converter silent" from "half a group landed", and a partial
+    // stamp would read as the latter.
+    b.add_u32(KEY_M2D_HIDDEN_SIZE, HIDDEN_SIZE);
+    b.add_u32(KEY_M2D_NUM_HIDDEN_LAYERS, NUM_HIDDEN_LAYERS);
+    b.add_u32(KEY_M2D_NUM_ATTENTION_HEADS, NUM_ATTENTION_HEADS);
+    b.add_u32(KEY_M2D_PATCH_HEIGHT, PATCH_HEIGHT);
+    b.add_u32(KEY_M2D_PATCH_WIDTH, PATCH_WIDTH);
+    b.add_u32(KEY_M2D_N_MELS, N_MELS);
+    b.add_u32(KEY_M2D_SAMPLE_RATE, SAMPLE_RATE);
+    // String-valued: the binder parses it via `M2dBranch::from_wire`.
+    b.add_string(KEY_M2D_INFERENCE_BRANCH, INFERENCE_BRANCH);
 
     // Unknown fail-closed default: if the caller passes no license
     // string, the classifier resolves `"unknown"` to
@@ -350,6 +541,193 @@ mod tests {
             g.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(LicenseClass::Permissive.as_str()),
+        );
+
+        let _ = std::fs::remove_file(&inp);
+        let _ = std::fs::remove_file(&outp);
+    }
+
+    // -----------------------------------------------------------------------
+    // Topology axes — `vokra.m2d.*`
+    //
+    // The runtime binder (`crates/vokra-models/src/m2d/mod.rs`) refuses its
+    // encoder forward while any of its eight `vokra.m2d.*` keys is unstamped.
+    // These rows prove the two halves meet: identical key spellings, values
+    // equal to the transcribed upstream constants, and a strictly ADDITIVE
+    // change to the artifact (arch / provenance / tensor bytes untouched).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn topology_axis_keys_mirror_the_runtime_binder() {
+        // Byte-for-byte pin against `vokra-models`' `GGUF_KEY_*` constants.
+        // The crates cannot share these (no `vokra-models` → `vokra-convert`
+        // dependency edge), so a rename on either side has to land here or
+        // fail this row — otherwise a stamped axis would simply never be read.
+        assert_eq!(KEY_M2D_HIDDEN_SIZE, "vokra.m2d.hidden_size");
+        assert_eq!(KEY_M2D_NUM_HIDDEN_LAYERS, "vokra.m2d.num_hidden_layers");
+        assert_eq!(KEY_M2D_NUM_ATTENTION_HEADS, "vokra.m2d.num_attention_heads");
+        assert_eq!(KEY_M2D_PATCH_HEIGHT, "vokra.m2d.patch_height");
+        assert_eq!(KEY_M2D_PATCH_WIDTH, "vokra.m2d.patch_width");
+        assert_eq!(KEY_M2D_N_MELS, "vokra.m2d.n_mels");
+        assert_eq!(KEY_M2D_SAMPLE_RATE, "vokra.m2d.sample_rate");
+        assert_eq!(KEY_M2D_INFERENCE_BRANCH, "vokra.m2d.inference_branch");
+
+        // Exactly eight, all distinct — the binder's `TOTAL_OPTIONAL_AXES`
+        // is 8 and it reports "partially stamped" for anything short of the
+        // full group, so a duplicated or dropped key would silently degrade
+        // a real artifact to `PartiallyStamped`.
+        let mut keys = vec![
+            KEY_M2D_HIDDEN_SIZE,
+            KEY_M2D_NUM_HIDDEN_LAYERS,
+            KEY_M2D_NUM_ATTENTION_HEADS,
+            KEY_M2D_PATCH_HEIGHT,
+            KEY_M2D_PATCH_WIDTH,
+            KEY_M2D_N_MELS,
+            KEY_M2D_SAMPLE_RATE,
+            KEY_M2D_INFERENCE_BRANCH,
+        ];
+        assert_eq!(keys.len(), 8, "the binder reads exactly 8 axes");
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), 8, "axis keys must be pairwise distinct");
+        for k in keys {
+            assert!(
+                k.starts_with("vokra.m2d."),
+                "`{k}` must live under the arch's own metadata namespace"
+            );
+        }
+    }
+
+    #[test]
+    fn transcribed_constants_match_their_primary_sources() {
+        // Each literal below is quoted in the constant's rustdoc against the
+        // exact upstream line or paper sentence it came from. Pinning them
+        // here means a "tidy-up" edit to a constant fails a test instead of
+        // silently shipping a fabricated axis.
+        //
+        // `examples/portable_m2d.py` `get_backbone()`:
+        //   LocalViT(..., embed_dim=768, depth=12, num_heads=12, ...)
+        assert_eq!(HIDDEN_SIZE, 768);
+        assert_eq!(NUM_HIDDEN_LAYERS, 12);
+        assert_eq!(NUM_ATTENTION_HEADS, 12);
+        // `portable_m2d.py` `Config.patch_size = [16, 16]` ([freq, time]);
+        // paper §4.1 "fixed the patch size to 16×16 for all experiments".
+        assert_eq!(PATCH_HEIGHT, 16);
+        assert_eq!(PATCH_WIDTH, 16);
+        // `portable_m2d.py` `get_to_melspec()` 16k arm:
+        //   sample_rate, n_fft, window_size, hop_size = 16000, 400, 400, 160
+        //   n_mels, f_min, f_max = 80, 50, 8000
+        assert_eq!(N_MELS, 80);
+        assert_eq!(SAMPLE_RATE, 16_000);
+        // Paper §3: "After the training, we transfer only the f_θ as a
+        // pre-trained model", where f_θ is "the online encoder". The
+        // binder's `M2dBranch::from_wire` is case-sensitive and accepts only
+        // `online` / `target`, so the casing here is load-bearing: `"Online"`
+        // would be a loud ModelLoad on the read side.
+        assert_eq!(INFERENCE_BRANCH, "online");
+    }
+
+    #[test]
+    fn topology_axes_round_trip_and_stay_purely_additive() {
+        let inp = tmp_path("topo-in");
+        let outp = tmp_path("topo-out");
+        let payload: Vec<u8> = [1.5_f32, -0.25, 8.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let st = safetensors_one("online.blocks.0.mlp.fc1.weight", "F32", &[1, 3], &payload);
+        std::fs::write(&inp, &st).unwrap();
+
+        let r = convert_m2d_file(&inp, &outp, None).expect("convert F32");
+        assert_eq!(r.read, 1);
+        assert_eq!(r.written, 1);
+
+        let g = GgufFile::open(&outp).unwrap();
+        let read_u64 = |k: &str| -> u64 {
+            g.get(k)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| panic!("{k}: missing or not an unsigned integer"))
+        };
+
+        // Every scalar axis round-trips as the transcribed constant. The
+        // literal on the right restates the upstream value, so this row
+        // fails if either the stamp or the constant drifts.
+        assert_eq!(read_u64(KEY_M2D_HIDDEN_SIZE), u64::from(HIDDEN_SIZE));
+        assert_eq!(read_u64(KEY_M2D_HIDDEN_SIZE), 768);
+        assert_eq!(
+            read_u64(KEY_M2D_NUM_HIDDEN_LAYERS),
+            u64::from(NUM_HIDDEN_LAYERS)
+        );
+        assert_eq!(read_u64(KEY_M2D_NUM_HIDDEN_LAYERS), 12);
+        assert_eq!(
+            read_u64(KEY_M2D_NUM_ATTENTION_HEADS),
+            u64::from(NUM_ATTENTION_HEADS)
+        );
+        assert_eq!(read_u64(KEY_M2D_NUM_ATTENTION_HEADS), 12);
+        assert_eq!(read_u64(KEY_M2D_PATCH_HEIGHT), u64::from(PATCH_HEIGHT));
+        assert_eq!(read_u64(KEY_M2D_PATCH_HEIGHT), 16);
+        assert_eq!(read_u64(KEY_M2D_PATCH_WIDTH), u64::from(PATCH_WIDTH));
+        assert_eq!(read_u64(KEY_M2D_PATCH_WIDTH), 16);
+        assert_eq!(read_u64(KEY_M2D_N_MELS), u64::from(N_MELS));
+        assert_eq!(read_u64(KEY_M2D_N_MELS), 80);
+        assert_eq!(read_u64(KEY_M2D_SAMPLE_RATE), u64::from(SAMPLE_RATE));
+        assert_eq!(
+            read_u64(KEY_M2D_SAMPLE_RATE),
+            16_000,
+            "canonical 16 kHz release — a 32 kHz weight is a separate identity"
+        );
+
+        // The branch selector is a STRING, not a u32: the binder reads it
+        // with `as_str()` and fails loud on any other GGUF value type.
+        assert_eq!(
+            g.get(KEY_M2D_INFERENCE_BRANCH).and_then(|v| v.as_str()),
+            Some(INFERENCE_BRANCH),
+        );
+        assert_eq!(
+            g.get(KEY_M2D_INFERENCE_BRANCH).and_then(|v| v.as_str()),
+            Some("online"),
+            "paper §3: after training only f_θ (the online encoder) is transferred"
+        );
+        assert_eq!(
+            g.get(KEY_M2D_INFERENCE_BRANCH).and_then(|v| v.as_u64()),
+            None,
+            "branch must NOT be stamped as an integer — the binder parses it \
+             with `M2dBranch::from_wire`"
+        );
+
+        // ---- purely additive: nothing that was already stamped moved ----
+        let read_str = |k: &str| -> String {
+            g.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("{k}: missing"))
+                .to_owned()
+        };
+        assert_eq!(read_str(chunks::KEY_MODEL_ARCH), ARCH);
+        assert_eq!(read_str(chunks::KEY_MODEL_NAME), NAME);
+        assert_eq!(read_str(KEY_MODEL_CATEGORY), CATEGORY);
+        assert_eq!(read_str(KEY_PROVENANCE_UPSTREAM_URL), UPSTREAM_URL);
+        assert_eq!(
+            read_str(chunks::KEY_PROVENANCE_LICENSE),
+            DEFAULT_LICENSE_SPDX,
+            "stamping topology must not disturb the fail-closed license default"
+        );
+        assert_eq!(
+            read_str(chunks::KEY_PROVENANCE_WEIGHT_LICENSE),
+            LicenseClass::Unknown.as_str(),
+            "M2D stays Unknown (LICENSE.pdf unreadable) — topology is not a \
+             license signal"
+        );
+
+        // …and the weights are still a verbatim pass-through.
+        let info = g
+            .tensor_info("online.blocks.0.mlp.fc1.weight")
+            .expect("tensor present");
+        assert_eq!(info.dtype, GgmlType::F32);
+        assert_eq!(info.dimensions, vec![1, 3]);
+        assert_eq!(
+            g.tensor_bytes(info),
+            payload.as_slice(),
+            "topology stamps must not perturb tensor payloads"
         );
 
         let _ = std::fs::remove_file(&inp);
