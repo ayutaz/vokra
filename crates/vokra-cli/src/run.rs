@@ -31,13 +31,22 @@ USAGE:
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
+    vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
+    vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
+    vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
+    vokra-cli run --model <rmvpe.gguf> --input <in.wav>
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
-                                speaker embedding)
-    --input <path>              mono WAV input (required for VAD, ASR and speaker;
-                                optional recorded context audio for S2S —
-                                the explicit AEC bypass path, FR-OP-60)
+                                speaker embedding / denoise / segmentation / F0).
+                                An arch vokra-models binds but this CLI has no
+                                task for is refused with the binding module and
+                                the library entry point to call — never a bare
+                                `unsupported model arch` (FR-EX-08).
+    --input <path>              mono WAV input (required for VAD, ASR, speaker,
+                                denoise, segmentation and F0; optional recorded
+                                context audio for S2S — the explicit AEC bypass
+                                path, FR-OP-60)
     --backend <name>            cpu | metal | cuda — backend for the model's hot
                                 ops [default cpu]. Mirrors `bench --backend`:
                                 honored by the whisper / voxtral ASR, kokoro TTS
@@ -74,7 +83,8 @@ OPTIONS:
                                 precedence over --voice.
     --length-scale <s>          kokoro only: duration multiplier (reciprocal
                                 of upstream `speed`) [default 1.0]
-    --output <path>             WAV file for the TTS / S2S output (optional)
+    --output <path>             WAV file for the TTS / S2S / denoise output
+                                (optional)
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Honored for `voxtral` (n-best beam) and, with
                                 --word-timestamps, for `whisper`. An arch whose
@@ -481,6 +491,15 @@ fn backend_flag_name(backend: vokra_core::BackendKind) -> String {
 fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
     match task {
         ModelTask::Vad => Some("VAD (Silero)"),
+        // Wave G (2026-08-15): the four newly routed arches all bind their
+        // concrete model WITHOUT a `.with_backend(...)` seam (none of
+        // `FsmnVadV1` / `Nsnet2V1` / `PyanNet` / `RMVPE` has one), so a
+        // non-CPU `--backend` would be a silent CPU run for them — same class
+        // of gap as VAD / piper-plus / CSM / Moshi above.
+        ModelTask::VadFsmn => Some("VAD (FSMN)"),
+        ModelTask::Denoise => Some("NSNet2 speech enhancement"),
+        ModelTask::Segment => Some("pyannote speaker segmentation"),
+        ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
@@ -620,7 +639,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
 
     match task {
-        ModelTask::Vad => {
+        // FSMN-VAD (Wave G) shares this arm verbatim: its binder implements
+        // the same `VadEngine` trait Silero does and the dispatch injects it
+        // into the same session slot, so the Silero path stays byte-identical.
+        ModelTask::Vad | ModelTask::VadFsmn => {
             let path = a
                 .input
                 .as_deref()
@@ -708,6 +730,16 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::Sbv2 => {
             run_sbv2(&session, &a)?;
+        }
+        // ---- Wave G (2026-08-15) — newly routed real forwards ------------
+        ModelTask::Denoise => {
+            run_denoise(&session, &a)?;
+        }
+        ModelTask::Segment => {
+            run_segment(&a)?;
+        }
+        ModelTask::F0Rmvpe => {
+            run_f0_rmvpe(&a)?;
         }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
@@ -1074,6 +1106,159 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
         let emb_b = embed_clip(compare)?;
         let result = speaker_verify(&emb_a, &emb_b, None).map_err(|e| e.to_string())?;
         println!("speaker: cosine_similarity={:.6}", result.similarity);
+    }
+    Ok(())
+}
+
+/// The NSNet2 speech-enhancement path (Wave G, 2026-08-15).
+///
+/// `--input` is a mono WAV at the model's trained rate; the denoised PCM goes
+/// to `--output` (or its duration is reported when the flag is absent, the
+/// shared [`emit_audio`] contract).
+///
+/// The forward is real — [`vokra_models::nsnet2::Nsnet2V1::denoise_pcm`] runs
+/// the STFT → `fc_in` → GRU ×2 → `fc_1..3` → mask → iSTFT chain. Like
+/// [`run_speaker`], the concrete model binds here from the session's own GGUF
+/// (the [`Session`] facade has no denoise engine slot), and its strict
+/// `vokra.model.arch` check refuses a foreign artifact loudly (FR-EX-08).
+///
+/// A rate mismatch is an explicit error rather than a silent resample: NSNet2's
+/// STFT geometry (`n_fft` / `hop` / `win_length`) is fixed against the trained
+/// rate, so feeding a 44.1/48 kHz clip through it would emit plausible-sounding
+/// but wrong audio with no diagnostic.
+fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::nsnet2::Nsnet2V1;
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (denoise): --input <in.wav> is required")?;
+    let model = Nsnet2V1::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let rate = model.config().sample_rate;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (denoise): {path}: expected a {rate} Hz mono WAV (the NSNet2 STFT \
+             front-end is fixed at the rate the model was trained on), got {} Hz — \
+             resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let out = model
+        .denoise_pcm(&clip.samples)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "denoise: {} in -> {} out samples @ {rate} Hz",
+        clip.samples.len(),
+        out.len()
+    );
+    emit_audio("denoise", &out, rate, a.output.as_deref())
+}
+
+/// The pyannote `segmentation-3.0` speaker-segmentation path (Wave G).
+///
+/// Prints one summary line: total frames, frames carrying any speaker, frames
+/// carrying two or more (overlapped speech), and the set of speaker indices
+/// seen. The per-frame powerset decode itself is
+/// [`vokra_models::pyannote::PyanNet::segment_powerset`].
+///
+/// # The env gate is deliberately NOT set here
+///
+/// PyanNet's SincNet + BiLSTM + linear + classifier forward is real, but the
+/// binder keeps it behind `VOKRA_PYANNET_ENABLE_FORWARD=1` because the BiLSTM
+/// stack has not been byte-compared against PyTorch cuDNN yet. This function
+/// does not set that variable: a user without the opt-in gets pyannote's own
+/// [`vokra_core::VokraError::UnsupportedOp`], which names the gate and the
+/// reason, and that is a far more useful answer than the "unsupported model
+/// arch" this arch used to produce. Setting it from the CLI would silently
+/// promote an unvalidated numeric path to a default.
+fn run_segment(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::pyannote::PyanNet;
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (segment): --input <in.wav> is required")?;
+    let model = PyanNet::open(&a.model).map_err(|e| e.to_string())?;
+    let rate = model.config().sample_rate;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (segment): {path}: expected a {rate} Hz mono WAV (PyanNet's SincNet \
+             front-end learns its filter cutoffs against that rate), got {} Hz — \
+             resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let activity = model
+        .segment_powerset(&clip.samples)
+        .map_err(|e| e.to_string())?;
+    let frames = activity.len();
+    let speech = activity
+        .iter()
+        .filter(|f| !f.active_speakers.is_empty())
+        .count();
+    let overlap = activity
+        .iter()
+        .filter(|f| f.active_speakers.len() > 1)
+        .count();
+    let mut speakers: Vec<usize> = activity
+        .iter()
+        .flat_map(|f| f.active_speakers.iter().copied())
+        .collect();
+    speakers.sort_unstable();
+    speakers.dedup();
+    println!(
+        "segment: {frames} frames, speech_frames={speech}, overlap_frames={overlap}, \
+         speakers_seen={speakers:?}"
+    );
+    Ok(())
+}
+
+/// The RMVPE F0 (pitch) extraction path (Wave G, FR-OP-83).
+///
+/// Prints a summary line, then one `time_sec<TAB>hz<TAB>voiced<TAB>confidence`
+/// row per analysis hop — the same tab-separated shape `--word-timestamps`
+/// uses, so the track pipes straight into a downstream tool.
+///
+/// Only RMVPE is routed here. Its
+/// [`extract_real`](vokra_models::f0::rmvpe::RMVPE::extract_real) returns a
+/// `Result` and has no silent all-zero branch, whereas the sibling FCPE /
+/// CREPE extractors degrade to a frame-count-only zero track on a weightless
+/// artifact — printing that would be indistinguishable from a real
+/// measurement, so those two stay in the CLI's bound-arch registry instead.
+fn run_f0_rmvpe(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::f0::rmvpe::RMVPE;
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (f0): --input <in.wav> is required")?;
+    let model = RMVPE::open(&a.model).map_err(|e| e.to_string())?;
+    let rate = model.config().sample_rate;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (f0): {path}: expected a {rate} Hz mono WAV (the RMVPE mel front-end is \
+             fixed at the rate in `vokra.f0.rmvpe.*`), got {} Hz — resample offline first \
+             (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let track = model
+        .extract_real(&clip.samples, clip.sample_rate)
+        .map_err(|e| e.to_string())?;
+    let voiced = track.iter().filter(|f| f.voiced).count();
+    println!(
+        "f0: {} frames, voiced_frames={voiced}, hop={} @ {rate} Hz",
+        track.len(),
+        model.config().hop
+    );
+    for frame in &track {
+        println!(
+            "{:.4}\t{:.3}\t{}\t{:.4}",
+            frame.time_sec, frame.hz, frame.voiced, frame.confidence
+        );
     }
     Ok(())
 }

@@ -2417,6 +2417,124 @@ pub mod ct_punc;
 // `[[feedback-license-signoff-primary-source]]`).
 pub mod wetextprocessing;
 
+// Wave G (2026-08-15) — runtime binder for the `lang_id_ecapa` converter arch
+// (`crates/vokra-convert/src/models/speechbrain_lang_id.rs`), which had been
+// stamping `vokra.model.arch = "lang_id_ecapa"` since the TIER 1 F wave with
+// nothing in the workspace reading it back. Covers both upstream SpeechBrain
+// spoken-language-ID releases — `lang-id-voxlingua107-ecapa` (F7) and
+// `lang-id-commonlanguage_ecapa` (F9) — which share one arch tag because they
+// share one ECAPA-TDNN topology; the variant is recovered from
+// `vokra.model.name`.
+//
+// REAL: strict arch verification refusing the maximally confusable sibling
+// `ecapa_tdnn` (same trunk, same `embedding_model.` naming, 192-d speaker head
+// instead of a language head) by name; a zero-tensor refusal plus a
+// trunk-presence gate on the `embedding_model.` prefix; variant + upstream-slug
+// + weight-licence surfacing (fail-closed to `Unknown`); and disk-truthful head
+// reporting.
+//
+// The language inventory is READ off the artifact, never hardcoded — this
+// module carries no taxonomy constant at all (the `maest` precedent). The
+// converter stamps neither a language list nor a language count, so the
+// language NAMES are unavailable from a converted GGUF; the count is recovered
+// from the classifier head projection's leading dimension when the layout is
+// unambiguous and reported as `None` otherwise, never as a fallback constant.
+//
+// LOUD-PARTIAL: `identify()` returns `VokraError::UnsupportedOp` naming all
+// four deferred primitives — the filterbank front-end (no `vokra.lang_id.*`
+// axis group is stamped, so `kaldi_fbank` opts cannot be derived), the
+// SE-Res2Block ECAPA trunk (no runtime ECAPA trunk binder exists to reuse), the
+// attentive statistics pooling, and the language classifier head — and citing
+// all four primary sources. No fabricated language logits are ever emitted
+// (FR-EX-08).
+//
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]`).
+pub mod lang_id;
+
+// Wave G (2026-08-15) — runtime binder for the `deepfake_detection` converter
+// arch (`MelodyMachine/Deepfake-audio-detection-V2`, apache-2.0): a WavLM-based
+// binary audio-deepfake / spoof-countermeasure classifier. Closes one of the
+// last converter arches that nothing in the workspace read back.
+//
+// DESIGN: a detector emits a SCORE, not a verdict. There is deliberately no
+// `is_fake() -> bool` — `score()` returns `DeepfakeScore` (raw logits plus a
+// real, tested, numerically stable softmax) and the caller picks the
+// operating point, because the right threshold depends on the base rate and
+// on the relative cost of the two error directions, and both directions do
+// real harm. Burying it in this crate would hide the choice from the person
+// accountable for it, so `DeepfakeScore::exceeds` takes the threshold as an
+// explicit argument and it shows up at the call site.
+//
+// The same principle, sharper: the GGUF does NOT record which output index
+// means "synthetic" — the converter never stamps the upstream `id2label` —
+// so `spoof_class_index()` is a loud `UnsupportedOp` naming the missing
+// `vokra.deepfake.id2label` chunk rather than a coin flip. An inverted spoof
+// detector reports confidently in the wrong direction and the inversion is
+// invisible at the call site, which is strictly worse than no detector at
+// all. Closing that gap is converter-side work, and the error says so.
+//
+// REAL here: strict `vokra.model.arch` verification, classifier-head
+// resolution against a documented candidate set, the head shape gate
+// (rank 2, out_features == 2 — "binary classifier" enforced rather than
+// merely documented), license surfacing, and all of `DeepfakeScore`.
+// LOUD-PARTIAL: `score()` returns `VokraError::UnsupportedOp` naming the
+// missing primitive — the WavLM gated relative position bias — along with
+// the conv stem and mean pooling, citing all three primary sources. No
+// fabricated detection score is ever emitted; on a spoof-countermeasure
+// model that would be a security control reporting a number it did not
+// compute (FR-EX-08).
+//
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]`).
+pub mod deepfake_detection;
+
+// Wave G (2026-08-15) — runtime binder for the `chattts` converter arch
+// (`2Noise/ChatTTS`, cc-by-nc-4.0): a dialogue-oriented TTS whose GGUFs have
+// been stamped `vokra.model.arch = "chattts"` since the coverage-audit
+// Wave D T4 landing with nothing in the workspace reading the tag back.
+//
+// LICENCE POSTURE (the point of this one): the converter's default SPDX is
+// `cc-by-nc-4.0` → `LicenseClass::NonCommercial`, which requires the research
+// flag, so a CORRECTLY stamped artifact is REFUSED by
+// `CompliancePolicy::strict()` and loads only under an explicit research
+// opt-in. That refusal is the fail-closed default working, not a defect, and
+// both halves are tested — as is the unstamped case, which fails closed to
+// `Unknown` and is refused for the same reason. In-tree precedent: `maest`
+// (cc-by-nc-sa-4.0); publish-side precedent: X-Codec-2, the first T4 release.
+//
+// ELVIS ACT: the audit ticket flags ChatTTS as borderline — the 30-d `spk_emb`
+// is seed-derived in the official release, but an arbitrary vector can
+// technically be substituted, and the owner ADR has not been made. So this
+// module exposes NO speaker-embedding injection entry point and will not grow
+// one before that ADR lands. The module census only REPORTS whether a
+// `spk_stat` group is on disk, which is the input the ADR needs; reporting
+// presence is not the trigger, providing the injection path is.
+//
+// REAL: strict arch verification naming both tags and enumerating the TTS
+// neighbourhood (`vocos` sharpest — ChatTTS's vocoder head IS Vocos, so tensor
+// shapes genuinely overlap while loader identity does not); zero-tensor
+// refusal; `require_tensor` / `require_tensor_dims` loud lookups; metadata and
+// weight-licence surfacing; and the on-disk module census. The census matters
+// because the PUBLISHED `vokra/chattts` repository was built from
+// `asset/gpt/model.safetensors` ALONE — so the artifact a caller most likely
+// holds carries the GPT backbone and neither the DVAE nor the Vocos head, and
+// naming that beats dying in a missing-tensor trail.
+//
+// LOUD-PARTIAL: `synthesize()` returns `VokraError::UnsupportedOp`. The
+// converter stamps NO `vokra.chattts.*` axis group at all — layer count,
+// hidden width, head count, vocab size, DVAE codebook layout and even the
+// output sample rate are unrecoverable — so every axis would have to be
+// guessed, and a guessed axis is shape-valid, numerically wrong and silent.
+// The error names both blockers (the un-written prep script that would pin the
+// module-namespace convention, and the absent axis group), the three deferred
+// modules, the on-disk census and all three primary sources. No fabricated
+// waveform is ever emitted (FR-EX-08).
+//
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]`).
+pub mod chattts;
+
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
 #[cfg(test)]
