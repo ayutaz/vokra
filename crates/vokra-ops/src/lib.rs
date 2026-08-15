@@ -405,6 +405,33 @@ pub mod wpe;
 pub mod vit;
 // -------------------------------------------------------------------------
 
+// ---- Wave D (2026-08-15) inverse text normalization / text normalization -
+// `itn` — the WeTextProcessing (Apache-2.0) two-stage tagger -> verbalizer
+// pipeline over compiled OpenFST grammars.
+//
+// A brand-new category: every ASR model here emits normalized, unpunctuated
+// text ("one hundred fourteen thousand five"); production transcripts need
+// "114005". This is the missing back half.
+//
+// It is mostly REUSE, not new machinery: `vokra_core::decode::wfst` (M5-06)
+// already ships the tropical semiring, the `Fst` type, structural validation
+// and a byte-verified `read_openfst_vector` for exactly the
+// `VectorFst<StdArc>` binary the upstream C++ runtime reads with
+// `StdVectorFst::Read`. The only new algorithm is composing a LINEAR input
+// string with a transducer and taking the best path — which does not need
+// the general `compose` that ADR M5-06 §1 deliberately omits.
+//
+// Feature-gated in HALVES: `vokra-ops/vokra-wfst` forwards to
+// `vokra-core/vokra-wfst` and gates only the two FST compositions. The
+// tagged-token parser, the per-language field-order tables, the `Reorder`
+// rewrite, the grammar container and the OpenFST header probe are all in the
+// DEFAULT build, so `cargo test --workspace` actually exercises them.
+//
+// Runtime functions, NOT `OpKind` variants (same posture as `resample` /
+// `agc` / `hpf` / `wpe` / `vit` — ADR M4-20 §D-5).
+pub mod itn;
+// -------------------------------------------------------------------------
+
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
 // ---------------------------------------------------------------------------

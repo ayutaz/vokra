@@ -2743,6 +2743,74 @@ pub enum ModelKind {
     /// binder deferred to owner sign-off (`docs/license-audit.md`
     /// §3.1 sign-off queue).
     AudioLdm2Large,
+    /// **AudioSR** (`haoheliu/audiosr_basic`, **MIT**) — versatile audio
+    /// **super-resolution / bandwidth extension**, safetensors → GGUF.
+    ///
+    /// **Opens a brand-new capability category.** Vokra had no audio
+    /// super-resolution model before this landing, so the converter
+    /// stamps a new `vokra.model.category = "super-resolution"` tag —
+    /// deliberately NOT the existing `enhancement` cohort (`denoise` /
+    /// `gtcrn` / `nsnet2` / `rnnoise` / `storm`), which *removes additive
+    /// noise within a fixed bandwidth*, whereas AudioSR *synthesises new
+    /// spectral content above the input cutoff*.
+    ///
+    /// Per arXiv:2309.07314 (Liu, Chen, Tian, Wang & Plumbley,
+    /// *"AudioSR: Versatile Audio Super-resolution at Scale"*), the model
+    /// accepts an input bandwidth **between 2 kHz and 16 kHz** and
+    /// upsamples to a **24 kHz bandwidth at a 48 kHz sample rate**,
+    /// across sound effects, music and speech.
+    ///
+    /// **Distinct arch tag `audiosr`** — the dangerous neighbour is
+    /// [`Self::AudioLdm2`]: same first author, same latent-diffusion
+    /// family, but the opposite task (text-to-audio GENERATION with
+    /// T5 + CLAP + GPT-2 cross-attention conditioning at 16 kHz, versus
+    /// AudioSR's RESTORATION with a low-pass latent concatenated
+    /// channel-wise at 48 kHz over a 256-band mel). The tensor shapes are
+    /// incompatible; silently sharing an arch tag would misroute runtime
+    /// dispatch (FR-EX-08).
+    ///
+    /// Full `vokra.audiosr.*` topology chunk group stamped, every axis
+    /// transcribed verbatim from upstream on 2026-08-15 (mel front-end
+    /// n_fft 2048 / hop 480 / win 2048 / 256 bands / 20 Hz–24 kHz;
+    /// latent [16, 128, 32]; U-Net model_channels 128, channel_mult
+    /// [1,2,3,5], attention_resolutions [8,4,2]; cosine β schedule over
+    /// 1000 train timesteps).
+    ///
+    /// License: **MIT** per the upstream repo `LICENSE`
+    /// ([`LicenseClass::Permissive`]). The `haoheliu/audiosr_basic` HF
+    /// card tags `apache-2.0` instead — a documented discrepancy that
+    /// does **not** change the class, since both normalise to
+    /// `Permissive`. §3.1 sign-off BLANK (fail-closed, owner-only);
+    /// publish blocked until signed.
+    ///
+    /// Runtime binder: `crates/vokra-models/src/audiosr/mod.rs` — real
+    /// strict `from_gguf` + a real mel filterbank and cosine-schedule ᾱ
+    /// table wired to `vokra_ops`, with `super_resolve()` loud-partial
+    /// pending the 2-D U-Net body plus the VAE / vocoder tensor-name
+    /// walks (upstream ships pickle, so no manifest is pinned).
+    AudioSr,
+    /// **AudioSR (speech)** (`haoheliu/audiosr_speech`, **MIT**) — the
+    /// speech-specialised sibling of [`Self::AudioSr`].
+    ///
+    /// Upstream ships exactly two checkpoints
+    /// (`audiosr --model_name` has `choices=["basic","speech"]`,
+    /// `default="basic"`). The **topology is identical** — upstream
+    /// `audiosr/utils.py::get_basic_config()` takes no `model_name`
+    /// argument — so this variant rides the shared
+    /// `models::audiosr::convert_audiosr_family_file` helper and only the
+    /// `vokra.model.name` + `vokra.provenance.{model_id,source,
+    /// upstream_hf}` chunks flip. No separate `audiosr_speech.rs` module
+    /// (the sibling-in-place pattern, mirror of
+    /// [`Self::AudioLdm2Large`]).
+    ///
+    /// Shares the `audiosr` arch tag with the basic checkpoint; the
+    /// runtime binder discriminates on `vokra.model.name`.
+    ///
+    /// Note `haoheliu/audiosr_speech` carries **no HF model card and no
+    /// license tag**, so the stamped default falls back to the upstream
+    /// code repo's MIT `LICENSE` exactly as for the basic checkpoint.
+    /// §3.1 sign-off BLANK (fail-closed, owner-only).
+    AudioSrSpeech,
     /// **BS-Roformer / Mel-Band Roformer** (upstream `chenmozhijin/BSRoformer-
     /// GGUF` third-party mirror, **weight provenance unclear**) safetensors
     /// checkpoint (Wave 5 candidate, 2026-08-01). First **music source
@@ -3142,6 +3210,70 @@ pub enum ModelKind {
     /// Copyleft share-alike propagation is an owner-scope legal
     /// decision. Convert with [`convert_wavlm_sv_file`].
     WavlmSv,
+    /// **DiffSinger** (`openvpi/DiffSinger`, **Apache-2.0**) safetensors →
+    /// GGUF converter (Wave D 2026-08-15) — the **first singing voice
+    /// synthesis (SVS) entry in the whole catalogue**, opening the
+    /// brand-new `svs` category.
+    ///
+    /// Liu, Li, Ren, Chen & Zhao 2021, arXiv:2105.02446 "DiffSinger:
+    /// Singing Voice Synthesis via Shallow Diffusion Mechanism" — a
+    /// score-to-singing acoustic model that (abstract, verbatim) "is a
+    /// parameterized Markov chain that iteratively converts the noise into
+    /// mel-spectrogram conditioned on the music score". The title
+    /// contribution, the **shallow diffusion mechanism**, has generation
+    /// "start at a shallow step smaller than the total number of diffusion
+    /// steps" — upstream `K_step: 400` against `timesteps: 1000`.
+    ///
+    /// **SVS is score-to-singing, NOT singing-voice conversion.** Inputs
+    /// are a music score (phonemes + per-note MIDI pitch + durations);
+    /// there is **no source singer recording anywhere in the signal
+    /// path**. It is therefore **not** an ELVIS Act voice-clone trigger
+    /// and belongs in this repo — unlike RVC v2 / GPT-SoVITS, which are
+    /// confined to `vokra-voiceclone-experimental` (CLAUDE.md 設計判断 8).
+    /// Do not relocate it; the same reasoning kept the F0 family
+    /// (`rmvpe` / `fcpe` / `crepe`) in-repo.
+    ///
+    /// **Emits a mel, not a waveform.** The vocoder stage is deliberately
+    /// separate — upstream lists HiFi-GAN / NSF / pc-ddsp as
+    /// interchangeable options — and Vokra already carries that half as
+    /// the landed `hifigan` / `bigvgan` / `vocos` binders. Embedding one
+    /// here would duplicate three binders and hard-wire a choice the
+    /// voicebank author owns.
+    ///
+    /// **Distinct arch tag `diffsinger`** from every speech-TTS sibling
+    /// (`piper` / `kokoro` / `cosyvoice2` / `qwen3_tts` / `xtts_v2` /
+    /// `sbv2` / `vits` — all text-driven with no note/pitch score axis)
+    /// and every vocoder sibling (`hifigan` / `bigvgan` / `vocos` / `nsf`
+    /// — which consume a mel rather than produce one). FR-EX-08 forbids
+    /// the silent shape misroute.
+    ///
+    /// 19-axis `vokra.diffsinger.*` topology chunk group transcribed from
+    /// upstream `configs/acoustic.yaml` + `configs/base.yaml` (fetched
+    /// 2026-08-15): 44.1 kHz / n_fft 2048 / hop 512 / win 2048 / 128 mel
+    /// bins / fmin 40 / fmax 16000 / hidden 384 / enc_layers 4 / heads 2 /
+    /// timesteps 1000 / K_step 400 / f0 65–1100 Hz / max_beta 0.02 /
+    /// mel range [-14, 4] / schedule linear / accelerator ddim / backbone
+    /// lynxnet2. Note the openvpi README calls out 44.1 kHz as an
+    /// improvement over the original paper's 24 kHz.
+    ///
+    /// Default license `apache-2.0` per the upstream README — but that is
+    /// the **framework** grant. Individual singer voicebanks ship under
+    /// their own, frequently non-commercial or consent-bound, terms:
+    /// pass `--license <spdx>` so the artifact stamps the voicebank's own
+    /// class instead of inheriting Permissive. §3.1 sign-off BLANK
+    /// (fail-closed) — publish blocked until the owner signs, and the
+    /// per-voicebank weight question is separate from the framework grant.
+    ///
+    /// Runtime binder `crates/vokra-models/src/diffsinger/mod.rs`: real
+    /// `from_gguf` (strict 19-axis parse + arch verify + tensor gate +
+    /// license surface), a real `Score` input type with real validation,
+    /// and real score-to-frame expansion via the landed
+    /// `vokra_ops::length_conditioning`; `synthesize_mel()` is
+    /// loud-partial pending the FFT-block phoneme encoder + LynxNet2
+    /// shallow-diffusion denoiser backbone (the `vokra_ops::ddpm_sampler`
+    /// loop itself is landed — what is missing is the denoiser closure it
+    /// drives). Convert with [`models::diffsinger::convert_diffsinger_file`].
+    DiffSinger,
     /// **Seamless-M4T-v2-Large** (`facebook/seamless-m4t-v2-large`,
     /// **cc-by-nc-4.0**) safetensors (Wave residual, 2026-08-02). Meta
     /// SeamlessM4T v2 flagship 2.3B parameter unified any-to-any speech-
@@ -3501,6 +3633,126 @@ pub enum ModelKind {
     /// wave (owner ADR judgement, sibling MAGNeT / RMVPE / Charsiu
     /// loud-partial precedent).
     MelodyflowT2430secs,
+    /// **CT-Transformer punctuation restoration** (`funasr/ct-punc`,
+    /// **apache-2.0**, Wave D 2026-08-15) — the **first `punctuation`
+    /// category entry in the tree**. FunASR's Controllable Time-delay
+    /// Transformer (Chen et al. 2020 arXiv:2003.01309) restores
+    /// punctuation over an unpunctuated ASR token stream and performs
+    /// disfluency removal; paired with the ITN stage it is what turns a
+    /// raw Vokra ASR transcript into readable text. Chinese + English
+    /// per the model card.
+    ///
+    /// **Topology**: `nn.Embedding(vocab_size, 516)` → `x * sqrt(516)`
+    /// → `SinusoidalPositionEncoder` (1-based positions) → a **SANM
+    /// encoder** of `num_blocks` pre-norm `EncoderLayerSANM` blocks →
+    /// `encoder.after_norm` → `nn.Linear(516, punc_size)`. Each block is
+    /// `x += self_attn(norm1(x))` then `x += w_2(relu(w_1(norm2(x))))`,
+    /// and `MultiHeadedAttentionSANM` is what makes this **not** a plain
+    /// BERT block: one fused `linear_q_k_v` projection (3× width) plus a
+    /// **parallel depthwise `nn.Conv1d(D, D, k, groups=D, bias=False)`
+    /// FSMN memory branch over `v`** whose output is *added* to the
+    /// attention output. Upstream splits the stack into `encoders0`
+    /// (exactly 1 block) + `encoders` (`num_blocks - 1`) — that is real
+    /// structure, not a typo, and the tensor names follow it.
+    ///
+    /// **Distinct arch tag `ct_punc`** from `bert_base` (post-norm,
+    /// learned absolute positions, separate q/k/v projections, no FSMN
+    /// branch), `deberta_v2` / `deberta_v3` (disentangled relative
+    /// position attention), `sensevoicesmall` (SAN-M as well, but a
+    /// *speech* encoder over fbank frames with four per-task heads) and
+    /// `fsmn-vad` (FSMN memory blocks but no self-attention, 2-class
+    /// frame output). Silently sharing an arch tag would misroute the
+    /// runtime dispatch onto a wrong-topology loader (FR-EX-08).
+    ///
+    /// **Label inventory**: 6 entries
+    /// `["<unk>", "_", "，", "。", "？", "、"]`, transcribed verbatim
+    /// from the upstream `config.yaml` `model_conf.punc_list` and
+    /// stamped as an `Array<String>` chunk so the runtime binder READS
+    /// the inventory rather than hardcoding it. Index order is
+    /// load-bearing (`argmax` indexes straight back into the list);
+    /// `"_"` = "no punctuation here"; `sentence_end_id: 3` selects
+    /// `"。"`. The converter **refuses** to write a GGUF whose
+    /// `decoder.weight` row count disagrees with the inventory.
+    ///
+    /// **Topology axes are derived from the checkpoint** wherever a
+    /// tensor shape determines them (`vocab_size` / `embed_unit` from
+    /// `embed.weight`; `att_unit` / `punc_size` from `decoder.weight`;
+    /// `linear_units` from `…feed_forward.w_1.weight`; `kernel_size`
+    /// from the depthwise `…fsmn_block.weight`; `num_blocks` by walking
+    /// `encoder.encoders.{i}`). Only `attention_heads` (12),
+    /// `sanm_shfit` (0) and `sentence_end_id` (3) come from the upstream
+    /// `config.yaml`, because no tensor shape determines them.
+    ///
+    /// **License**: `apache-2.0` per the model-card front-matter AND the
+    /// HF model API `cardData.license` (both read 2026-08-15) →
+    /// [`vokra_core::LicenseClass::Permissive`]. Note this is **not** the
+    /// bespoke FunASR `MODEL_LICENSE` ("FunASR Model Open Source License
+    /// Agreement" v1.1, Alibaba Group) that the sibling
+    /// `FunAudioLLM/SenseVoiceSmall` release carries — the `ct-punc` repo
+    /// ships no `MODEL_LICENSE` file, so the fail-closed
+    /// `LicenseClass::Unknown` posture that `sensevoicesmall` correctly
+    /// takes does not apply here. `docs/license-audit.md` §3.1 sign-off
+    /// stays **BLANK** (fail-closed, owner-only) — publish blocked until
+    /// the owner signs.
+    ///
+    /// **Scale**: `model.pt` = 1 125 507 622 bytes (~1.05 GiB, dominated
+    /// by the 471 067 × 516 embedding table) = local convert safe on the
+    /// M1 iMac 16 GB, well under the ≥8 GB vast.ai cutoff (memory
+    /// `[[feedback-large-models-on-vast-ai]]`). Upstream ships `model.pt`
+    /// (torch pickle) — run `tools/parity/nemo_pt_to_safetensors.py`
+    /// first, keeping the `state_dict` names verbatim (FR-LD-05 forbids
+    /// pickle in the runtime).
+    ///
+    /// Runtime binder `crates/vokra-models/src/ct_punc/mod.rs` is a
+    /// **real forward** (embedding → sqrt scale → sinusoidal PE → SANM
+    /// blocks → after_norm → linear head → per-token label), not a
+    /// loud-partial: every primitive it needs already exists. The
+    /// **tokenizer** is deliberately out of scope (upstream `CharTokenizer`
+    /// is fronted by jieba word segmentation over a 471 067-entry
+    /// `tokens.json`), so the forward takes **token ids**.
+    CtPunc,
+    /// **WeTextProcessing** (`wenet-e2e/WeTextProcessing`, **Apache-2.0**)
+    /// — inverse text normalization (ITN) and text normalization (TN)
+    /// grammar bundles (Wave D 2026-08-15, a brand-new
+    /// `text-normalization` category).
+    ///
+    /// **The first weightless converter in the tree.** A bundle is two
+    /// compiled OpenFST transducers — `tagger.fst` + `verbalizer.fst` —
+    /// plus the language/direction prefix (`zh_tn` / `zh_itn` / `en_tn` /
+    /// `en_itn` / `ja_tn` / `ja_itn`) that selects a field-order table.
+    /// There is no `state_dict`, no safetensors, and no tensor: the
+    /// converter routes **before** the whole-file safetensors read (same
+    /// posture as the weightless `PyannoteSpeakerDiarization31` pipeline
+    /// arm) and emits the grammars as GGUF `U8` metadata arrays, the
+    /// `vokra.tokenizer.model` precedent.
+    ///
+    /// **Why this exists**: every ASR model in the catalogue emits
+    /// normalized, unpunctuated text — an utterance spoken as *"one
+    /// hundred fourteen thousand five"* comes back as those words, while
+    /// a production transcript needs `114005`. ITN is the missing back
+    /// half of the ASR pipeline; TN is the same machine run the other way
+    /// for a TTS front-end.
+    ///
+    /// **Runtime**: `vokra-ops::itn` — mostly *reuse* rather than new
+    /// machinery. `vokra_core::decode::wfst` (M5-06) already ships the
+    /// tropical semiring, the `Fst` type, structural validation and a
+    /// byte-verified `read_openfst_vector` for exactly the
+    /// `VectorFst<StdArc>` binary the upstream C++ runtime reads with
+    /// `StdVectorFst::Read`. The only new algorithm is composing a linear
+    /// input string with a transducer and taking the best path.
+    ///
+    /// **License**: Apache-2.0 per the GitHub repository API
+    /// (`license.spdx_id = "Apache-2.0"`, verified 2026-08-15) =
+    /// `LicenseClass::Permissive`. `docs/license-audit.md` §3.1 sign-off
+    /// stays **BLANK** (fail-closed, owner-only).
+    ///
+    /// **Scale**: single-digit megabytes per grammar = local convert safe
+    /// on the M1 iMac, far under the ≥8 GB vast.ai cutoff (memory
+    /// `[[feedback-large-models-on-vast-ai]]`). The converter caps a
+    /// single grammar at 64 MiB with an explanatory refusal, because the
+    /// `U8` metadata-array encoding costs one enum per byte while the
+    /// builder assembles.
+    WeTextProcessing,
 }
 
 impl ModelKind {
@@ -5033,6 +5285,23 @@ impl ModelKind {
             | "audioldm_2_large"
             | "cvssp-audioldm2-large"
             | "cvssp/audioldm2-large" => Some(Self::AudioLdm2Large),
+            // AudioSR (Wave D 2026-08-15, brand-new `super-resolution`
+            // category). Accept the arch tag (`audiosr`), the explicit
+            // basic spelling (`audiosr-basic` / `audiosr_basic`, which
+            // is what `vokra.model.name` carries), and the upstream HF
+            // repo id. The speech sibling is a separate arm below —
+            // matched FIRST is irrelevant here because the literals are
+            // disjoint, but note `audiosr-speech` must NOT fall into
+            // this arm (it does not: no prefix matching is used).
+            "audiosr" | "audiosr-basic" | "audiosr_basic" | "AudioSR" | "audio-sr"
+            | "audio_sr" | "haoheliu/audiosr_basic" | "haoheliu-audiosr-basic"
+            | "versatile_audio_super_resolution" => Some(Self::AudioSr),
+            // AudioSR speech-specialised sibling. Same arch + same
+            // topology; only the weights and the name/provenance stamps
+            // differ (upstream `get_basic_config()` takes no model_name
+            // argument).
+            "audiosr-speech" | "audiosr_speech" | "audiosr-speech-48k"
+            | "haoheliu/audiosr_speech" | "haoheliu-audiosr-speech" => Some(Self::AudioSrSpeech),
             // BS-Roformer / Mel-Band Roformer (Wave 5 candidate,
             // 2026-08-01, `chenmozhijin/BSRoformer-GGUF`, weight
             // provenance unclear). Accept the arch tag (both
@@ -5195,6 +5464,23 @@ impl ModelKind {
             | "wavlm_base_plus_sv"
             | "microsoft/wavlm-base-plus-sv"
             | "wavlm-base-plus-sv-microsoft" => Some(Self::WavlmSv),
+            // DiffSinger (openvpi/DiffSinger, Apache-2.0 — Wave D
+            // 2026-08-15, the first singing voice synthesis (SVS) entry in
+            // the catalogue). Score-to-singing shallow-diffusion acoustic
+            // model (arXiv:2105.02446) emitting a mel for a SEPARATE
+            // vocoder. Distinct arch tag `diffsinger` from every speech-TTS
+            // and vocoder sibling — FR-EX-08. Aliases cover the arch tag,
+            // the kebab/underscore/lower-case spellings, the community-fork
+            // slug, and the upstream GitHub slug (the openvpi fork is the
+            // maintained one; the original MoonInTheRiver repo is accepted
+            // as an alias since checkpoints circulate under both names).
+            "diffsinger"
+            | "DiffSinger"
+            | "diff-singer"
+            | "diff_singer"
+            | "openvpi/DiffSinger"
+            | "openvpi/diffsinger"
+            | "MoonInTheRiver/DiffSinger" => Some(Self::DiffSinger),
             // Seamless-M4T-v2-Large (Wave residual, 2026-08-02,
             // `facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
             // any-to-any speech-and-text translation, unity-2 arch (4
@@ -5266,6 +5552,47 @@ impl ModelKind {
             | "melodyflow-t24"
             | "melodyflow"
             | "facebook/melodyflow-t24-30secs" => Some(Self::MelodyflowT2430secs),
+            // Wave D 2026-08-15: CT-Transformer punctuation restoration
+            // (`funasr/ct-punc`, apache-2.0) — first `punctuation`
+            // category entry. Accept the arch tag, both hyphen /
+            // underscore spellings, the bare `"punc"` family alias
+            // (there is exactly one punctuation model in the catalogue
+            // today; a second one claiming the bare alias would be an
+            // ADR moment), the upstream HF slug, and the ModelScope
+            // mirror id the repo's own `configuration.json` names.
+            "ct-punc"
+            | "ct_punc"
+            | "ctpunc"
+            | "ct-transformer"
+            | "ct_transformer"
+            | "punc"
+            | "punctuation"
+            | "funasr/ct-punc"
+            | "iic/punc_ct-transformer_cn-en-common-vocab471067-large" => Some(Self::CtPunc),
+            // Wave D 2026-08-15: WeTextProcessing ITN/TN grammar bundles
+            // (`wenet-e2e/WeTextProcessing`, apache-2.0) — first
+            // `text-normalization` category entry, and the first
+            // weightless converter. Accept the arch tag, the hyphenated
+            // and underscored spellings, the two family aliases `itn` /
+            // `tn` (there is exactly one ITN/TN implementation in the
+            // catalogue today; a second claiming the bare aliases would
+            // be an ADR moment), the short `wetext` name the upstream
+            // CLI entry points use (`weitn` / `wetn`), and the upstream
+            // GitHub slug.
+            //
+            // The language/direction is NOT part of the slug: one enum
+            // arm serves all six bundles, and the prefix is resolved from
+            // the input path exactly as the upstream C++ runtime does
+            // (`wetext_processor.cc` probes the tagger path for
+            // `zh_itn_` / `en_tn_` / …).
+            "wetextprocessing"
+            | "wetext-processing"
+            | "wetext_processing"
+            | "wetext"
+            | "itn"
+            | "tn"
+            | "text-normalization"
+            | "wenet-e2e/wetextprocessing" => Some(Self::WeTextProcessing),
             _ => None,
         }
     }
@@ -5522,6 +5849,12 @@ impl ModelKind {
             Self::W2vBert2 => "w2v-bert-2-0",
             Self::AudioLdm2 => "audioldm2",
             Self::AudioLdm2Large => "audioldm2-large",
+            // AudioSR (Wave D 2026-08-15). The canonical CLI slug is the
+            // bare `audiosr` (matching the upstream `--model_name basic`
+            // default); `from_arg` also accepts `audiosr-basic` so the
+            // `vokra.model.name` spelling round-trips.
+            Self::AudioSr => "audiosr",
+            Self::AudioSrSpeech => "audiosr-speech",
             Self::BsRoformer => "bs-roformer",
             Self::Openwakeword => "openwakeword",
             Self::MoonshineTiny => "moonshine-tiny",
@@ -5545,6 +5878,10 @@ impl ModelKind {
             // (microsoft/wavlm-base-plus-sv, CC-BY-SA-3.0). Canonical CLI
             // slug matches upstream release tail token.
             Self::WavlmSv => "wavlm-base-plus-sv",
+            // Wave D 2026-08-15: DiffSinger (openvpi/DiffSinger,
+            // Apache-2.0) — first singing voice synthesis (SVS) entry.
+            // Canonical slug matches the upstream project name.
+            Self::DiffSinger => "diffsinger",
             Self::SeamlessM4tV2Large => "seamless-m4t-v2-large",
             // Meta music-gen post-audit CC-gap wave (2026-08-13).
             Self::MagnetSmall10secs => "magnet-small-10secs",
@@ -5560,6 +5897,18 @@ impl ModelKind {
             // here today because this is the only MelodyFlow release
             // in the catalog.
             Self::MelodyflowT2430secs => "melodyflow-t24-30secs",
+            // Wave D 2026-08-15: CT-Transformer punctuation restoration.
+            // Canonical slug is the hyphenated release name `ct-punc`
+            // (the arch tag itself is the underscored `ct_punc`, matching
+            // the sibling `bert_base` / `wavlm_sv` convention where the
+            // CLI alias and the arch tag differ in separator).
+            Self::CtPunc => "ct-punc",
+            // Wave D 2026-08-15: WeTextProcessing ITN/TN grammar bundles.
+            // Canonical slug is the arch tag itself; the six bundles
+            // (zh/en/ja × itn/tn) share this one arm and are told apart
+            // by the input path, so there is nothing per-language to put
+            // in the slug.
+            Self::WeTextProcessing => "wetextprocessing",
         }
     }
 }
@@ -6174,6 +6523,98 @@ pub fn convert_file_licensed(
             notes,
         });
     }
+    // CT-Punc (`funasr/ct-punc`, apache-2.0) — Wave D 2026-08-15, the first
+    // `punctuation` category entry. Routed BEFORE the whole-file read below
+    // because `convert_ct_punc_file` opens the checkpoint itself: the real
+    // release is ~1.05 GiB (dominated by the 471 067 x 516 embedding table),
+    // so letting the shared prologue read it and then reading it a second
+    // time inside the converter would double the transient footprint for no
+    // benefit. Same posture as the Moshi / pyannote early routes above.
+    //
+    // The converter derives its topology axes from the checkpoint's own
+    // tensor shapes and refuses (loudly) a `decoder.weight` row count that
+    // disagrees with the upstream 6-entry `punc_list` — a mislabelled
+    // artifact would silently mis-punctuate every downstream transcript
+    // (FR-EX-08).
+    if matches!(model, ModelKind::CtPunc) {
+        let report = models::ct_punc::convert_ct_punc_file(input, output, license)?;
+        let notes = vec![format!(
+            "ct-punc: {} float weights written verbatim ({} BF16 passthrough), \
+             {} non-float skipped; topology DERIVED from the checkpoint \
+             (vocab_size={} att_unit={} num_blocks={} punc_size={}); \
+             apache-2.0 default per the funasr/ct-punc model card + HF API \
+             (NOT the FunASR MODEL_LICENSE that SenseVoiceSmall carries), \
+             Permissive T1 tier; punctuation labels stamped as an Array<String> \
+             chunk so the runtime binder reads the inventory instead of \
+             hardcoding it; tokenizer deliberately out of scope (upstream \
+             CharTokenizer is fronted by jieba over a 471067-entry tokens.json) \
+             so the runtime forward takes token ids; §3.1 sign-off BLANK \
+             fail-closed until owner signs",
+            report.written,
+            report.bf16_passthrough,
+            report.skipped_non_float,
+            report.vocab_size,
+            report.att_unit,
+            report.num_blocks,
+            report.punc_size,
+        )];
+        return Ok(ConvertSummary {
+            model: ModelKind::CtPunc,
+            tensor_count: report.written,
+            metadata_count: 0,
+            output_bytes: std::fs::metadata(output)?.len(),
+            notes,
+        });
+    }
+    // WeTextProcessing (`wenet-e2e/WeTextProcessing`, apache-2.0) — Wave D
+    // 2026-08-15, the first `text-normalization` category entry and the first
+    // **weightless** converter in the tree. Routed BEFORE the whole-file read
+    // below because `--input` is a *bundle* (a directory holding `tagger.fst`
+    // + `verbalizer.fst`, or a `<prefix>_tagger.fst` whose sibling sits next to
+    // it), not a single checkpoint file — the shared `std::fs::read(input)`
+    // prologue would fail outright on a directory. Same posture as the
+    // pyannote / Moshi / ct-punc early routes above.
+    //
+    // The language/direction prefix is resolved from the path exactly as the
+    // upstream C++ runtime does (`runtime/processor/wetext_processor.cc` probes
+    // the tagger path for `zh_itn_` / `en_tn_` / …), and an AMBIGUOUS path is
+    // refused rather than guessed: picking the wrong bundle would silently
+    // apply the wrong field-order table at verbalize time (FR-EX-08).
+    if matches!(model, ModelKind::WeTextProcessing) {
+        let report =
+            models::wetextprocessing::convert_wetextprocessing_file(input, output, license)?;
+        let mut notes = vec![format!(
+            "wetextprocessing: `{}` bundle packaged weightlessly (0 tensors by design) — \
+             tagger {} bytes / {} states, verbalizer {} bytes / {} states, both embedded as \
+             GGUF U8 metadata arrays (the vokra.tokenizer.model precedent, since GgmlType \
+             has no byte dtype); apache-2.0 default per the GitHub repository API \
+             (license.spdx_id = \"Apache-2.0\", verified 2026-08-15), Permissive T1 tier; \
+             runtime side is vokra-ops::itn, reusing the M5-06 vokra_core::decode::wfst \
+             machinery; §3.1 sign-off BLANK fail-closed until owner signs",
+            report.prefix,
+            report.tagger_bytes,
+            report.tagger_states,
+            report.verbalizer_bytes,
+            report.verbalizer_states,
+        )];
+        // Never silently ship a bundle the runtime cannot actually parse: the
+        // artifact is faithful, but the note says so out loud and repeats the
+        // developer-side fix (FR-EX-08).
+        if let Some(gap) = &report.reader_gap {
+            notes.push(format!(
+                "wetextprocessing: WARNING — vokra.itn.vokra_readable=false. Vokra's \
+                 read_openfst_vector cannot parse this bundle as stored, so the runtime will \
+                 loud-partial on use. {gap}"
+            ));
+        }
+        return Ok(ConvertSummary {
+            model: ModelKind::WeTextProcessing,
+            tensor_count: 0,
+            metadata_count: 0,
+            output_bytes: std::fs::metadata(output)?.len(),
+            notes,
+        });
+    }
     let bytes = std::fs::read(input)?;
 
     let (mut builder, notes) = match model {
@@ -6298,6 +6739,41 @@ pub fn convert_file_licensed(
                 "ModelKind::PyannoteSpeakerDiarization31 routes through \
                  convert_pyannote_speaker_diarization_3_1_file"
             )
+        }
+        ModelKind::CtPunc => {
+            // Handled by the early-return above, which lets
+            // `convert_ct_punc_file` open the ~1.05 GiB checkpoint itself
+            // instead of paying for a second whole-file read here;
+            // reaching this arm would mean the outer bypass was removed.
+            unreachable!("ModelKind::CtPunc routes through convert_ct_punc_file")
+        }
+        ModelKind::WeTextProcessing => {
+            // The one WEIGHTLESS entry in the catalogue: WeTextProcessing
+            // ships compiled OpenFST `tagger.fst` / `verbalizer.fst`
+            // grammars, not tensors, so this shared safetensors-driven
+            // dispatch has nothing to hand it. `convert_file_licensed`
+            // early-routes this kind to `convert_wetextprocessing_file`
+            // BEFORE the shared `std::fs::read(input)` above (which would
+            // fail outright on a bundle *directory*), so this arm is
+            // defence-in-depth for a caller that reaches the shared match by
+            // another path.
+            //
+            // The grammars are embedded as GGUF `U8` metadata arrays — the
+            // `vokra.tokenizer.model` precedent — because `GgmlType` has no
+            // byte dtype; every float dtype it does have would reinterpret
+            // the FST bytes as numbers.
+            //
+            // A loud refusal rather than a silent no-op: `--model
+            // wetextprocessing` against a safetensors input is a real
+            // mistake about what this converter consumes, and saying so is
+            // more useful than emitting an empty GGUF (FR-EX-08).
+            return Err(ConvertError::Usage(
+                "wetextprocessing converts compiled OpenFST grammars, not \
+                 safetensors weights — call convert_wetextprocessing_file \
+                 with the upstream tagger.fst / verbalizer.fst pair instead \
+                 of routing it through the weight-conversion path"
+                    .to_owned(),
+            ));
         }
         ModelKind::Csm => {
             // Tokenizer-less path (M4-05-T03/T04): every float tensor
@@ -9308,6 +9784,101 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === AudioSr (Wave D 2026-08-15, brand-new `super-resolution` category) ===
+        ModelKind::AudioSr => {
+            // AudioSR (`haoheliu/audiosr_basic`, **MIT**). Liu, Chen,
+            // Tian, Wang & Plumbley arXiv:2309.07314 "AudioSR:
+            // Versatile Audio Super-resolution at Scale" — latent-
+            // diffusion audio super-resolution / bandwidth extension:
+            // 2-16 kHz input bandwidth -> 24 kHz bandwidth at 48 kHz,
+            // across sound effects, music and speech.
+            //
+            // **Opens a brand-new capability category** — Vokra had no
+            // audio super-resolution model before this landing, hence
+            // `vokra.model.category = "super-resolution"` rather than
+            // reusing the `enhancement` cohort (which removes additive
+            // noise within a fixed bandwidth; AudioSR synthesises new
+            // spectral content above the input cutoff — advertising a
+            // bandwidth extender as a denoiser would mislead the zoo
+            // manifest).
+            //
+            // Distinct arch tag `audiosr` from `audioldm2` (same first
+            // author + same latent-diffusion family, but generation vs
+            // restoration with incompatible tensor shapes) and from
+            // every enhancement / separation / generation / vocoder
+            // sibling — FR-EX-08.
+            //
+            // Upstream ships `pytorch_model.bin` (torch pickle), so the
+            // caller bridges to safetensors offline via
+            // `tools/parity/nemo_pt_to_safetensors.py` first — pickle
+            // never enters the runtime (FR-LD-05 / NFR-DS-02). Single-
+            // file checkpoint well under the 8 GB M1 iMac threshold, so
+            // local convert is expected to be viable (no vast.ai
+            // handoff, unlike sibling audioldm2 at ~8.5 GB).
+            //
+            // Runtime binder `crates/vokra-models/src/audiosr/mod.rs`
+            // lands the mel filterbank + the cosine-schedule cumulative-
+            // alpha table as REAL wired computations over `vokra_ops`;
+            // `super_resolve()` is loud-partial pending the 2-D U-Net
+            // body (greenfield) plus the VAE / vocoder tensor-name walks.
+            let report = models::audiosr::convert_audiosr_file(input, output, license)?;
+            let notes = vec![format!(
+                "audiosr-basic: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read (mit default per the upstream repo \
+                 LICENSE, Permissive T1 tier — note the haoheliu/audiosr_basic HF card \
+                 tags apache-2.0 instead, a documented discrepancy that does NOT change \
+                 the class since both normalise to Permissive; use --license apache-2.0 \
+                 to match the card. Full vokra.audiosr.* topology chunk group stamped. \
+                 Runtime binder ships a real mel filterbank + real cosine-schedule \
+                 alpha-bar table; super_resolve() loud-partial pending the 2-D U-Net \
+                 forward plus the VAE / vocoder tensor-name walks. §3.1 sign-off BLANK \
+                 fail-closed until owner signs — publish blocked)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === AudioSrSpeech (Wave D 2026-08-15 sibling) ===
+        ModelKind::AudioSrSpeech => {
+            // AudioSR speech-specialised checkpoint
+            // (`haoheliu/audiosr_speech`, **MIT**). Upstream ships
+            // exactly two checkpoints (`--model_name` has
+            // `choices=["basic","speech"]`); the **topology is
+            // identical** because `audiosr/utils.py::get_basic_config()`
+            // takes no `model_name` argument, so this arm reuses the
+            // shared `convert_audiosr_family_file` helper and only the
+            // `vokra.model.name` + `vokra.provenance.{model_id,source,
+            // upstream_hf}` chunks flip (the sibling-in-place pattern,
+            // mirror of AudioLdm2Large — no new module).
+            //
+            // `haoheliu/audiosr_speech` carries no HF model card and no
+            // license tag, so the stamped default falls back to the
+            // upstream code repo's MIT LICENSE exactly as for the basic
+            // checkpoint.
+            let report = models::audiosr::convert_audiosr_speech_file(input, output, license)?;
+            let notes = vec![format!(
+                "audiosr-speech: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read (mit default per the upstream repo \
+                 LICENSE, Permissive T1 tier — the HF repo carries no model card and no \
+                 license tag of its own. Same topology as audiosr-basic: upstream \
+                 get_basic_config() takes no model_name argument, so only the weights and \
+                 the name/provenance stamps differ. §3.1 sign-off BLANK fail-closed until \
+                 owner signs — publish blocked)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === BsRoformer (2026-08-01 Wave 5 music-separation add) ===
         ModelKind::BsRoformer => {
             // BS-Roformer / Mel-Band Roformer (third-party mirror
@@ -9693,6 +10264,67 @@ pub fn convert_file_licensed(
                  + XVector head + Additive Margin Softmax primitives; §3.1 sign-off \
                  BLANK fail-closed until owner signs — Copyleft share-alike \
                  propagation is an owner-scope legal decision)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === DiffSinger (Wave D 2026-08-15, first singing voice synthesis entry) ===
+        ModelKind::DiffSinger => {
+            // DiffSinger (openvpi/DiffSinger, Apache-2.0). Liu, Li, Ren,
+            // Chen & Zhao 2021 arXiv:2105.02446 "DiffSinger: Singing Voice
+            // Synthesis via Shallow Diffusion Mechanism" — a score-to-
+            // singing acoustic model that (abstract, verbatim) "is a
+            // parameterized Markov chain that iteratively converts the
+            // noise into mel-spectrogram conditioned on the music score",
+            // with generation starting "at a shallow step smaller than the
+            // total number of diffusion steps" (upstream K_step 400 of
+            // timesteps 1000).
+            //
+            // FIRST SVS ENTRY in the catalogue — opens the `svs` category.
+            // SVS is score-to-singing (phonemes + per-note MIDI pitch +
+            // durations in), NOT singing-voice conversion: no source singer
+            // recording is in the signal path, so this is not an ELVIS Act
+            // voice-clone trigger and belongs in this repo, unlike RVC v2 /
+            // GPT-SoVITS which live in `vokra-voiceclone-experimental`
+            // (CLAUDE.md 設計判断 8). Do not relocate.
+            //
+            // Emits a MEL, not a waveform: the vocoder half is deliberately
+            // separate (upstream lists HiFi-GAN / NSF / pc-ddsp as
+            // interchangeable) and is already landed as the `hifigan` /
+            // `bigvgan` / `vocos` binders.
+            //
+            // Distinct arch tag `diffsinger` from every speech-TTS sibling
+            // (`piper`, `kokoro`, `cosyvoice2`, `qwen3_tts`, `xtts_v2`,
+            // `sbv2`, `vits` — text-driven, no score axis) and every
+            // vocoder sibling (`hifigan`, `bigvgan`, `vocos`, `nsf` — they
+            // consume a mel rather than produce one). FR-EX-08 forbids the
+            // silent shape misroute.
+            //
+            // Runtime binder (`crates/vokra-models/src/diffsinger/mod.rs`)
+            // is real for config + `from_gguf` + the `Score` input type +
+            // score-to-frame expansion (through the landed
+            // `vokra_ops::length_conditioning`); `synthesize_mel()` is
+            // loud-partial pending the FFT-block phoneme encoder + LynxNet2
+            // shallow-diffusion denoiser backbone. Scale is a few hundred MB
+            // = local convert safe on M1 iMac.
+            let report = models::diffsinger::convert_diffsinger_file(input, output, license)?;
+            let notes = vec![format!(
+                "diffsinger: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (apache-2.0 default, Permissive T1 tier). \
+                 NOTE: apache-2.0 is the openvpi FRAMEWORK grant — individual singer \
+                 voicebanks ship under their own, frequently non-commercial or \
+                 consent-bound, terms, so pass `--license <spdx>` when converting a \
+                 voicebank rather than inheriting Permissive. Emits a mel for a \
+                 SEPARATE vocoder (hifigan / bigvgan / vocos), not a waveform. \
+                 Runtime binder loud-partial pending FFT-block phoneme encoder + \
+                 LynxNet2 shallow-diffusion denoiser backbone; §3.1 sign-off BLANK \
+                 fail-closed until owner signs",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -11468,6 +12100,18 @@ pub use models::llama_omni2::{
 // - dtln_aec: breizhn/DTLN-aec acoustic echo cancellation (MIT).
 pub use models::beat_this::{BeatThisReport, convert_beat_this_file};
 pub use models::mt3::{Mt3Report, convert_mt3_file};
+// WeTextProcessing (wenet-e2e, Apache-2.0) — packs the upstream compiled
+// `tagger.fst` / `verbalizer.fst` grammars into a GGUF for the
+// `vokra_ops::itn` inverse-text-normalization pipeline. Same re-export
+// rationale as the entries above: `mod models` is private, so without this
+// the module's whole `pub` surface is `dead_code` under `-D warnings`.
+//
+// `ModelKind::WeTextProcessing` exists for CLI spelling resolution, but the
+// shared safetensors dispatch refuses it loudly: this is the one weightless
+// entry in the catalogue, so these entry points are the real interface.
+pub use models::wetextprocessing::{
+    WeTextProcessingReport, convert_wetextprocessing_file, convert_wetextprocessing_file_with_type,
+};
 // Wave 6 2026-08-14 audit follow-up: breizhn/DTLN-aec (MIT). GitHub-only
 // release (no HF mirror) so provenance stamps `upstream_url` rather
 // than `upstream_hf`. File-based entry mirroring the nkf_aec /
@@ -13375,6 +14019,18 @@ mod modelkind_alias_and_roundtrip_tests {
             // MAGNeT masked-LM decoding vs MusicGen AR token-by-token vs
             // JASCO joint symbolic conditioning stack.
             MelodyflowT2430secs,
+            // AudioSR (Wave D 2026-08-15) — the first audio
+            // super-resolution / bandwidth-extension entry in the
+            // catalogue. The canonical `--model audiosr` must round-trip
+            // through as_arg → from_arg, and the speech sibling must land
+            // on its OWN variant rather than collapsing onto the basic
+            // one: they share the `audiosr` arch tag and the whole
+            // topology chunk group (upstream `get_basic_config()` takes
+            // no model_name argument), so `vokra.model.name` is the only
+            // discriminator and a dropped alias here would silently stamp
+            // the wrong checkpoint identity onto a converted artifact.
+            AudioSr,
+            AudioSrSpeech,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -14217,6 +14873,28 @@ mod modelkind_alias_and_roundtrip_tests {
                     "melodyflow-t24",
                     "melodyflow",
                     "facebook/melodyflow-t24-30secs",
+                ],
+            ),
+            // Wave D 2026-08-15: CT-Transformer punctuation restoration —
+            // canonical `--model ct-punc` must round-trip, along with the
+            // arch-tag spelling, the family aliases and the two upstream
+            // ids (HF slug + the ModelScope mirror id the repo's own
+            // `configuration.json` names). The bare `punc` / `punctuation`
+            // aliases map here because this is the only punctuation model
+            // in the catalogue today; a second one claiming them would be
+            // an ADR moment (mirror of the `melodyflow` bare-alias note).
+            (
+                ModelKind::CtPunc,
+                &[
+                    "ct-punc",
+                    "ct_punc",
+                    "ctpunc",
+                    "ct-transformer",
+                    "ct_transformer",
+                    "punc",
+                    "punctuation",
+                    "funasr/ct-punc",
+                    "iic/punc_ct-transformer_cn-en-common-vocab471067-large",
                 ],
             ),
         ];

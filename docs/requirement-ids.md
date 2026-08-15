@@ -135,6 +135,7 @@ from generic tensor ops.
 | `FR-OP-11` | The `bigvgan_generator` operator, reimplemented from the paper because the reference implementation is not commercially licensed. |
 | `FR-OP-12` | The `vocos_head` operator, kept distinct from an iSTFTNet head, with a minimum precision the configuration cannot lower. |
 | `FR-OP-13` | The `snake_activation` operator and its internal-precision attribute. |
+| `FR-OP-30` | RVQ-family codec operators (`encodec_rvq`, `mimi_rvq`, `dac_rvq`), paged along the time axis with a block size of 2-4 to match audio frame rates. |
 | `FR-OP-31` | FSQ-family codec operators (`wavtokenizer_vq`, `xcodec2_fsq`), implemented as a subgraph separate from RVQ because their cost profile differs. |
 | `FR-OP-32` | How EnCodec is treated: the engine supports the operator, but the weights are kept out of the official model zoo. |
 | `FR-OP-40` | The `beam_search` operator — beam width, length normalisation, early stopping, n-best output and word-level timestamps — provided as a host-side function. |
@@ -146,10 +147,14 @@ from generic tensor ops.
 | `FR-OP-61` | The `denoise` (speech enhancement) operator. |
 | `FR-OP-62` | The `agc` and `hpf` operators of the capture-side audio pipeline. |
 | `FR-OP-63` | The `loudness_norm` operator (LUFS / EBU R128). |
+| `FR-OP-35` | The SNAC multi-scale RVQ codec operator — quantizer levels run at different temporal resolutions, unlike the flat stacks of FR-OP-30. |
+| `FR-OP-36` | The Qwen3-TTS 16-quantizer RVQ codec operator, whose stack splits into semantic and acoustic halves. |
 | `FR-OP-80` | The `speaker_encode` operator — one API over several speaker-embedding architectures. It stays in the core runtime because zero-shot TTS depends on it. |
 | `FR-OP-81` | The `speaker_verify` operator (similarity-based verification). |
 | `FR-OP-82` | The `diarize` operator, behind an optional feature flag. |
 | `FR-OP-83` | The `f0_extract` operator — one API over several pitch-extraction algorithms (RMVPE / FCPE / CREPE / PyIN / Harvest). |
+| `FR-OP-85` | The MAGNeT operators `magnet_masked_decode` and `span_masking_scheduler` — non-autoregressive parallel masked-LM decoding with a confidence-based span-masking schedule, a different sampler stack from the autoregressive MusicGen family. |
+| `FR-OP-86` | The MelodyFlow operators `flow_editing_inversion` and `t24_transformer` — rectified-flow music editing, where existing audio is inverted through the ODE and regenerated under a new prompt. Reuses the FR-OP-20 flow sampler for integration; the inversion path is specific to editing. |
 | `FR-OP-93` | Evaluation metrics (mel loss, UTMOS, DNSMOS, WER, CER) built into the runtime so quantization can be checked automatically. |
 
 ## FR-BE
@@ -206,6 +211,7 @@ Streaming.
 | ID | What it governs |
 |---|---|
 | `FR-ST-03` | Barge-in: an in-flight generation can be interrupted and its buffered audio flushed immediately. |
+| `FR-ST-04` | Models that cannot truly stream (whole-utterance generators such as F5-TTS) must say so in the API name — `synthesize_pseudo_streaming` rather than `synthesize_streaming` — with chunk size, lookahead and crossfade config-driven. |
 
 ## FR-CP
 

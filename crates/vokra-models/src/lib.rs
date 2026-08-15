@@ -2281,6 +2281,120 @@ pub mod w2v_bert2;
 // GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
 // `vokra-convert → GGUF writer`).
 pub mod maest;
+// Wave D (2026-08-15) — DiffSinger singing voice synthesis (SVS) runtime
+// binder: the first singing-voice entry in the catalogue. Real config +
+// `from_gguf` (strict 19-axis `vokra.diffsinger.*` parse + arch verify +
+// tensor gate + license surface) + a real `Score` input type (phonemes +
+// per-note MIDI pitch + durations) whose score-to-frame expansion runs
+// through the landed `vokra_ops::length_conditioning`; the acoustic
+// forward is loud-partial pending the FFT-block encoder + LynxNet2
+// shallow-diffusion denoiser. Emits a mel and hands off to the landed
+// `hifigan` / `bigvgan` / `vocos` vocoder binders rather than embedding
+// one. **SVS != SVC**: no source recording in the signal path, so this is
+// not an ELVIS Act voice-clone trigger and must not be relocated to
+// `vokra-voiceclone-experimental` (see the module docstring).
+pub mod diffsinger;
+// Wave D (2026-08-15) — AudioSR audio super-resolution / bandwidth-extension
+// runtime binder (`haoheliu/versatile_audio_super_resolution`, MIT,
+// arXiv:2309.07314) for the `audiosr` converter arch. **Opens a brand-new
+// capability category**: Vokra had no audio super-resolution model before
+// this landing (category tag `super-resolution`, deliberately distinct from
+// the `enhancement` cohort which removes additive noise within a fixed
+// bandwidth rather than synthesising new spectral content above the cutoff).
+//
+// REAL in this landing: strict `vokra.model.arch` verification naming both
+// the expected and actual tag; basic/speech variant discrimination; a STRICT
+// `vokra.audiosr.*` topology read that names the first missing axis (no
+// silent defaults); a loud tensor accessor that names a missing tensor; the
+// 256-band mel filterbank built through `vokra_ops::mel::MelFilterbank` from
+// the transcribed axes; and the cosine-schedule cumulative-alpha diffusion
+// table built through `vokra_ops::ddpm_sampler` from the transcribed
+// `timesteps: 1000` + `beta_schedule: "cosine"`.
+//
+// LOUD-PARTIAL: `super_resolve()` returns `UnsupportedOp` naming (a) the 2-D
+// latent-diffusion U-Net forward (GREENFIELD — no equivalent primitive in
+// `vokra_ops`), (b) the mel-VAE encode/decode walk (`vokra_ops::vae_continuous`
+// is an ANCHOR, walk not pinned), (c) the vocoder walk (`vokra_ops::hifigan`
+// is an ANCHOR; upstream `audiosr/utils.py` carries no vocoder config block,
+// verified absent), and (d) the absent tensor-name manifest (upstream ships
+// `pytorch_model.bin` pickle, not downloaded). No fabricated waveform is ever
+// emitted (FR-EX-08). Arch tag `audiosr` is distinct from `audioldm2` — same
+// author and latent-diffusion family, opposite task, incompatible shapes.
+pub mod audiosr;
+// Wave D (2026-08-15) — CT-Transformer punctuation restoration
+// (`funasr/ct-punc`): the FIRST `punctuation`-category model in the tree.
+// Pairs with the inverse-text-normalization stage: every ASR binder in this
+// crate emits unpunctuated text, and those two together are what turn it
+// into a readable transcript.
+//
+// REAL FORWARD, not a loud-partial — every primitive it needs already
+// exists, so `CtPunc::logits` actually runs the model: embedding lookup ->
+// `* sqrt(att_unit)` -> `SinusoidalPositionEncoder` (1-BASED positions, and
+// a `[sin block | cos block]` layout rather than interleaved pairs) -> N
+// pre-norm `EncoderLayerSANM` blocks -> `encoder.after_norm` -> a linear
+// head emitting one punctuation label per token. Each block's attention is
+// `MultiHeadedAttentionSANM`: ONE fused `linear_q_k_v` projection plus a
+// PARALLEL depthwise-Conv1d FSMN memory branch over `v` whose output is
+// ADDED to the attention output — which is exactly why this cannot reuse
+// `vokra-bert`'s `BertBaseEncoder`, and why `ARCH = "ct_punc"` must not
+// alias `bert_base` / `deberta_v2` / `deberta_v3` / `sensevoicesmall` /
+// `fsmn-vad` (FR-EX-08).
+//
+// The punctuation label inventory is READ from the artifact's
+// `vokra.ct_punc.punc_list` Array<String> chunk, never hardcoded — a
+// checkpoint with a different label set means different head columns.
+//
+// DELIBERATELY OUT OF SCOPE (documented, not faked): tokenisation (upstream
+// fronts a 471067-entry `CharTokenizer` with jieba word segmentation, so the
+// forward takes token IDS), upstream's cross-window `split_size = 20` cache
+// policy, and padded batches. Real-checkpoint numeric parity needs the
+// 1.05 GiB `model.pt` and is an owner task; the in-module tests pin the
+// structure analytically instead (zeroing the block LayerNorms provably
+// collapses the encoder to the identity, making the expected logits
+// hand-computable).
+//
+// LICENSING — note the FunASR code / weight split. FunASR's CODE is MIT
+// (`github.com/modelscope/FunASR/LICENSE` = `MIT License / Copyright (c)
+// 2025 FunASR`), but its weight releases are not uniformly MIT: the sibling
+// `sensevoicesmall_runtime` binder correctly fail-closes to
+// `LicenseClass::Unknown` because `FunAudioLLM/SenseVoiceSmall` ships the
+// bespoke `MODEL_LICENSE` instead of an SPDX id. THIS checkpoint's weights
+// are `apache-2.0` per the `funasr/ct-punc` model-card front-matter AND the
+// HF model API `cardData.license` (both read 2026-08-15), and the repo
+// carries no `MODEL_LICENSE` file. `docs/license-audit.md` §3.1 sign-off
+// stays BLANK (owner-only per `[[feedback-license-signoff-primary-source]]`).
+pub mod ct_punc;
+// Wave D (2026-08-15) — WeTextProcessing (`wenet-e2e/WeTextProcessing`,
+// Apache-2.0) inverse text normalization / text normalization grammar bundles:
+// the GGUF binder for the FIRST `text-normalization` category entry, and the
+// first weightless binder in the tree.
+//
+// Every ASR model in this crate emits normalized, unpunctuated text — an
+// utterance spoken as "one hundred fourteen thousand five" comes back as those
+// words, while a production transcript needs "114005". ITN is the missing back
+// half of the ASR pipeline; the same machine over the other grammar pair is TN,
+// the front half of a TTS pipeline.
+//
+// The binder is deliberately thin, because the layering says so: `vokra-core`
+// reads GGUF, `vokra-models` binds it, `vokra-ops` owns the GGUF-unaware
+// operator. So `WeTextProcessing::from_gguf` verifies `vokra.model.arch`
+// strictly, validates the `vokra.itn.*` chunk group (language / direction /
+// both grammar blobs / their size stamps), and hands the bytes to
+// `vokra_ops::itn::ItnGrammarSet`. The pipeline itself reuses the M5-06
+// `vokra_core::decode::wfst` port (tropical semiring + `Fst` +
+// `read_openfst_vector`).
+//
+// LOUD-PARTIAL: `pipeline()` / `normalize()` return `VokraError::UnsupportedOp`
+// when `vokra-ops` was built without the `vokra-wfst` feature, or when the
+// stored grammars fall outside the byte-verified OpenFST shape (pynini attaches
+// byte symbol tables by default, so non-zero header flags are the likely real
+// case). The message names the field, its value, and the developer-side fix.
+// `from_gguf` / `reorder_tagged` / `reader_gap` are fully real, and no
+// fabricated normalised text is ever returned (FR-EX-08).
+//
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]`).
+pub mod wetextprocessing;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 

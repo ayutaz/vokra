@@ -130,6 +130,7 @@ bash scripts/check-doc-references.sh --list   # 解決された集合を表示
 | `FR-OP-11` | `bigvgan_generator` op。reference 実装が商用利用可能なライセンスでないため、論文からの再実装とする。 |
 | `FR-OP-12` | `vocos_head` op。iSTFTNet head と区別し、config で引き下げられない最低精度を持つ。 |
 | `FR-OP-13` | `snake_activation` op と、その内部精度 attribute。 |
+| `FR-OP-30` | RVQ 系 codec op（`encodec_rvq` / `mimi_rvq` / `dac_rvq`）。音声フレームレートに合わせ block size 2-4 で時間方向に paging する。 |
 | `FR-OP-31` | FSQ 系 codec op（`wavtokenizer_vq` / `xcodec2_fsq`）。コスト特性が異なるため RVQ とは別サブグラフとして実装する。 |
 | `FR-OP-32` | EnCodec の扱い。エンジンは op に対応するが、weight は公式 model zoo から除外する。 |
 | `FR-OP-40` | `beam_search` op — beam 幅、length normalization、early stopping、n-best 出力、word-level timestamps。ホスト側関数として提供する。 |
@@ -141,10 +142,14 @@ bash scripts/check-doc-references.sh --list   # 解決された集合を表示
 | `FR-OP-61` | `denoise`（音声強調）op。 |
 | `FR-OP-62` | 収音側パイプラインの `agc` / `hpf` op。 |
 | `FR-OP-63` | `loudness_norm` op（LUFS / EBU R128）。 |
+| `FR-OP-35` | SNAC の multi-scale RVQ codec op。量子化段ごとに時間解像度が異なる点が FR-OP-30 のフラットな段構成と異なる。 |
+| `FR-OP-36` | Qwen3-TTS の 16 量子化器 RVQ codec op。段構成が semantic 半分と acoustic 半分に分かれる。 |
 | `FR-OP-80` | `speaker_encode` op — 複数の話者埋め込みアーキテクチャを 1 つの API で扱う。zero-shot TTS が依存するため core に残す。 |
 | `FR-OP-81` | `speaker_verify` op（類似度による話者照合）。 |
 | `FR-OP-82` | `diarize` op。optional feature flag の背後に置く。 |
 | `FR-OP-83` | `f0_extract` op — 複数のピッチ抽出アルゴリズム（RMVPE / FCPE / CREPE / PyIN / Harvest）を 1 つの API で扱う。 |
+| `FR-OP-85` | MAGNeT の `magnet_masked_decode` / `span_masking_scheduler` op。confidence ベースの span masking スケジュールを伴う非自己回帰の並列 masked-LM デコードで、自己回帰の MusicGen 系とは sampler スタックが別。 |
+| `FR-OP-86` | MelodyFlow の `flow_editing_inversion` / `t24_transformer` op。rectified flow による音楽編集で、既存音声を ODE で反転させ新しいプロンプトの下で再生成する。ODE 積分は FR-OP-20 の flow sampler を再利用し、反転経路のみが編集固有。 |
 | `FR-OP-93` | 評価メトリクス（mel loss / UTMOS / DNSMOS / WER / CER）を runtime に内蔵し、量子化の検証を自動化できるようにする。 |
 
 ## FR-BE
@@ -202,6 +207,7 @@ ID を持ちます）。
 | ID | 何を規定するか |
 |---|---|
 | `FR-ST-03` | barge-in。生成中の処理を中断し、バッファ済み音声を即座に flush できること。 |
+| `FR-ST-04` | 真のストリーミングに対応できないモデル（F5-TTS 等の全長生成型）は API 名で明示する（`synthesize_streaming` ではなく `synthesize_pseudo_streaming`）。chunk size / lookahead / crossfade は config 駆動とする。 |
 
 ## FR-CP
 

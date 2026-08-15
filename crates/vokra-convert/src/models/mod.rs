@@ -1212,3 +1212,112 @@ pub mod storm;
 // legal decision).
 pub mod wavlm_sv;
 // ---------------------------------------------------------------------------
+// Wave D 2026-08-15 (LIB.RS RULE — append at end with Wave D comment
+// marker): AudioSR converter (`haoheliu/versatile_audio_super_resolution`,
+// **MIT** — Liu, Chen, Tian, Wang & Plumbley arXiv:2309.07314 "AudioSR:
+// Versatile Audio Super-resolution at Scale"). **Opens a brand-new
+// capability category**: Vokra had no audio super-resolution / bandwidth
+// extension model before this landing, hence the new `super-resolution`
+// category tag (deliberately NOT the `enhancement` cohort — that cohort
+// removes additive noise within a fixed bandwidth, whereas AudioSR
+// synthesises new spectral content above the input cutoff).
+//
+// Latent-diffusion restoration: 2-16 kHz input bandwidth -> 24 kHz
+// bandwidth at 48 kHz sample rate, across sound effects, music and
+// speech. Mel front-end (n_fft 2048 / hop 480 / win 2048 / 256 bands /
+// 20 Hz-24 kHz) -> VAE -> [16, 128, 32] latent -> 2-D U-Net (model_channels
+// 128, channel_mult [1,2,3,5], attention_resolutions [8,4,2]) diffused with
+// a cosine beta schedule over 1000 train timesteps, conditioned by the
+// low-pass latent CONCATENATED channel-wise (upstream `concat_lowpass_cond`;
+// unet in_channels 32 = 2 x latent channels 16) -> VAE decode -> vocoder.
+//
+// Two checkpoints share the arch tag (`get_basic_config()` takes no
+// model_name argument upstream, so the topology is identical): `audiosr-basic`
+// (`haoheliu/audiosr_basic`) and `audiosr-speech` (`haoheliu/audiosr_speech`).
+//
+// BF16 pass-through skeleton + a full `vokra.audiosr.*` topology chunk group
+// (every axis transcribed verbatim from upstream on 2026-08-15). Runtime
+// binder in `crates/vokra-models/src/audiosr/mod.rs` ships the mel filterbank
+// and the cosine-schedule cumulative-alpha table as REAL wired computations
+// over `vokra_ops::mel` / `vokra_ops::ddpm_sampler`, with `super_resolve()`
+// loud-partial pending the 2-D U-Net body (greenfield) plus the VAE and
+// vocoder tensor-name walks (anchors exist in `vokra_ops::vae_continuous` /
+// `vokra_ops::hifigan` but upstream ships pickle, so no manifest is pinned).
+//
+// Distinct arch tag `audiosr` from every sibling — most importantly from
+// `audioldm2` (same first author, same latent-diffusion family, but
+// text-to-audio GENERATION with T5+CLAP+GPT-2 cross-attention at 16 kHz
+// versus AudioSR's RESTORATION with concatenated low-pass conditioning at
+// 48 kHz). FR-EX-08 forbids the silent shape misroute. §3.1 sign-off BLANK
+// (fail-closed, owner-only).
+pub mod audiosr;
+// ---------------------------------------------------------------------------
+// Wave D (2026-08-15): DiffSinger (`openvpi/DiffSinger`, Apache-2.0) —
+// the **first singing voice synthesis (SVS) entry** in the catalogue, a
+// brand-new `svs` category. Score-to-singing shallow-diffusion acoustic
+// model (arXiv:2105.02446): phonemes + per-note MIDI pitch + durations
+// in, mel-spectrogram out, with the vocoder stage deliberately left to
+// the landed `hifigan` / `bigvgan` / `vocos` binders (upstream lists
+// HiFi-GAN / NSF / pc-ddsp as interchangeable).
+//
+// **SVS is not SVC**: there is no source singer recording in the signal
+// path, so this is NOT an ELVIS Act voice-clone trigger and belongs in
+// this repo — unlike RVC v2 / GPT-SoVITS, which are confined to
+// `vokra-voiceclone-experimental` (CLAUDE.md 設計判断 8). Do not
+// relocate. Distinct arch tag `diffsinger` from every speech-TTS and
+// vocoder sibling — FR-EX-08. §3.1 sign-off BLANK fail-closed; note the
+// apache-2.0 default is the *framework* grant, and singer voicebanks
+// carry their own (often non-commercial) terms via the `--license`
+// override.
+pub mod diffsinger;
+// ---------------------------------------------------------------------------
+// Wave D (2026-08-15) — CT-Transformer punctuation restoration
+// (`funasr/ct-punc`, apache-2.0). **First `punctuation` category entry in
+// the tree**: paired with the ITN stage this is what turns a raw ASR token
+// stream into a readable transcript. SANM encoder (fused `linear_q_k_v`
+// projection + a parallel depthwise-Conv1d FSMN memory branch added to the
+// attention output) over TEXT tokens, 12 blocks x 516, emitting one
+// punctuation label per token out of a 6-entry inventory
+// (`["<unk>", "_", "，", "。", "？", "、"]`, transcribed verbatim from the
+// upstream `config.yaml` `model_conf.punc_list` and stamped as an
+// `Array<String>` chunk so the runtime binder READS the inventory instead
+// of hardcoding it). Distinct arch tag `ct_punc` from `bert_base` /
+// `deberta_v2` / `deberta_v3` (different attention assembly, no FSMN
+// branch), from `sensevoicesmall` (SAN-M but a speech encoder with four
+// per-task heads) and from `fsmn-vad` (FSMN memory, no self-attention) —
+// FR-EX-08 forbids the silent shape misroute. Topology axes are DERIVED
+// from the checkpoint's own tensor shapes wherever a shape determines them.
+// LICENSING: `apache-2.0` per the model-card front-matter AND the HF model
+// API `cardData.license` (read 2026-08-15) — note this is NOT the bespoke
+// FunASR `MODEL_LICENSE` that the sibling `sensevoicesmall` release carries,
+// so the fail-closed `LicenseClass::Unknown` posture does not apply here.
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+pub mod ct_punc;
+
+// ---------------------------------------------------------------------------
+// Wave D (2026-08-15): **WeTextProcessing** (`wenet-e2e/WeTextProcessing`,
+// **Apache-2.0**) — inverse text normalization / text normalization grammar
+// bundles. A brand-new `text-normalization` category and the first converter
+// in the tree that packages **no weights**: a bundle is two compiled OpenFST
+// transducers (`tagger.fst` + `verbalizer.fst`) plus the language/direction
+// that selects a field-order table.
+//
+// Every ASR model here emits normalized, unpunctuated text ("one hundred
+// fourteen thousand five"); a production transcript needs "114005". ITN is the
+// missing back half. The runtime side is `vokra-ops::itn`, which reuses the
+// M5-06 WFST machinery in `vokra_core::decode::wfst` (tropical semiring,
+// `Fst`, and the byte-verified `read_openfst_vector` for exactly the
+// `VectorFst<StdArc>` binary upstream reads with `StdVectorFst::Read`).
+//
+// Grammars ride as GGUF `U8` **metadata arrays** — `GgmlType` has no byte
+// dtype, and this is the established precedent (`vokra.tokenizer.model`,
+// `models/whisper.rs::embed_tokenizer`). Header flags / state counts / a
+// `vokra.itn.vokra_readable` verdict are stamped alongside so a consumer can
+// tell from metadata alone whether the runtime can parse the grammars.
+//
+// Distinct arch tag `wetextprocessing` — no sibling emits FST grammars, but
+// the binder verifies it strictly anyway (FR-EX-08). §3.1 sign-off BLANK
+// (fail-closed, owner-only).
+pub mod wetextprocessing;
+// ---------------------------------------------------------------------------

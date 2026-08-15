@@ -2422,6 +2422,21 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // still applies because the runtime-side lookup does not
         // depend on the publish gate.
         | ModelKind::AudioLdm2Large
+        // Wave D 2026-08-15: AudioSR (`haoheliu/audiosr_basic` /
+        // `haoheliu/audiosr_speech`, MIT — arXiv:2309.07314). Audio
+        // super-resolution / bandwidth extension, a **brand-new
+        // capability category** for Vokra: `category =
+        // "super-resolution"`, deliberately NOT the `enhancement`
+        // cohort. Both checkpoints stamp
+        // `vokra.provenance.upstream_hf` (the weights live on HF) so
+        // they join this group rather than the GitHub-only
+        // `upstream_url` arm — note the converter ALSO stamps
+        // `vokra.provenance.upstream_url` with the MIT code repo,
+        // because the GitHub tree is the config authority; this arm
+        // simply reports the HF anchor, which is the one that
+        // identifies the weights.
+        | ModelKind::AudioSr
+        | ModelKind::AudioSrSpeech
         // 2026-08-01 Wave 5 music-separation add: BS-Roformer /
         // Mel-Band Roformer (`chenmozhijin/BSRoformer-GGUF`, **weight
         // provenance unclear**). First music-source-separation
@@ -2681,6 +2696,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // Speaker-fleet extension over campplus / wespeaker / ecapa_tdnn /
         // titanet / speaker_3d / redimnet.
         | ModelKind::WavlmSv
+        // Wave D 2026-08-15: CT-Transformer punctuation restoration
+        // (`funasr/ct-punc`, apache-2.0) — the first `punctuation`
+        // category entry. HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = funasr/ct-punc`, so it belongs
+        // on the `upstream_hf` arm rather than the GitHub-only
+        // `upstream_url` arm below. The arch-specific `vokra.ct_punc.*`
+        // chunk group (including the `punc_list` Array<String>) is
+        // deliberately NOT read back here — this arm is the uniform
+        // provenance-triple lookup; `vokra-models::ct_punc::CtPunc::from_gguf`
+        // is what validates the full topology.
+        | ModelKind::CtPunc
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
@@ -2949,7 +2975,27 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // provenance/upstream_url/category surface (MIT, GitHub-only
         // upstream via Google Drive distribution, category
         // `enhancement`), so it joins the shared arm.
-        ModelKind::DtlnAec | ModelKind::Gtcrn | ModelKind::Storm => {
+        // Wave D 2026-08-15: DiffSinger joins the same arm — it also ships
+        // `vokra.provenance.upstream_url` (GitHub, `openvpi/DiffSinger`;
+        // the framework has no canonical HF mirror, individual voicebanks
+        // are scattered across hosts). Printing the upstream URL and the
+        // weight-license class is doubly load-bearing here: the apache-2.0
+        // default is the FRAMEWORK grant, so an operator verifying a
+        // converted singer voicebank needs to see at a glance whether the
+        // artifact inherited Permissive or carries the voicebank's own
+        // (often non-commercial) class from a `--license` override.
+        // WeTextProcessing joins this group for its provenance shape only
+        // (GitHub `upstream_url`, no HF mirror). It is the one weightless
+        // entry in the catalogue: the GGUF holds the compiled OpenFST
+        // `tagger.fst` / `verbalizer.fst` grammars as `U8` METADATA ARRAYS
+        // (the `vokra.tokenizer.model` precedent — `GgmlType` has no byte
+        // dtype), so its tensor count is legitimately 0 and the grammar
+        // detail lives in the `vokra.itn.*` chunk group.
+        ModelKind::DtlnAec
+        | ModelKind::Gtcrn
+        | ModelKind::Storm
+        | ModelKind::DiffSinger
+        | ModelKind::WeTextProcessing => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

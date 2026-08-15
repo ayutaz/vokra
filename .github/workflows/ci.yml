@@ -253,6 +253,35 @@ jobs:
             echo "$extra" >&2
             exit 1
           fi
+      # Wave D 2026-08-15: `vokra-ops` and `vokra-models` FORWARD the same
+      # opt-in flag for the ITN/TN pipeline (`vokra-ops/src/itn/`). Only the two
+      # FST compositions are gated — the tagged-token parser, the field-order
+      # tables, the `Reorder` rewrite, the grammar container and the OpenFST
+      # header probe all compile in the default build and are covered by the
+      # normal `cargo test --workspace`.
+      #
+      # But `src/itn/compose.rs` is `#[cfg(feature = "vokra-wfst")]`, so
+      # WITHOUT this step it compiles in NO CI job at all and a break there
+      # would be a vacuous green — exactly the failure mode the M5-06 step above
+      # was written to prevent. The flag is spelled out LITERALLY here for the
+      # same reason.
+      - name: ITN/TN feature gate (Wave D, vokra-ops + vokra-models, feature ON)
+        if: matrix.fusion == '0'
+        run: |
+          set -euo pipefail
+          cargo clippy -p vokra-ops --features vokra-wfst --all-targets -- -D warnings
+          cargo test -p vokra-ops --features vokra-wfst --lib itn
+          cargo clippy -p vokra-models --features vokra-wfst --all-targets -- -D warnings
+          cargo test -p vokra-models --features vokra-wfst --lib wetextprocessing
+          ./scripts/check-zero-deps.sh
+          # Forwarding the flag must still pull in no non-vokra crate.
+          extra=$(cargo tree -p vokra-ops --features vokra-wfst \
+            | grep -vE 'vokra-|^\[|^$' || true)
+          if [ -n "$extra" ]; then
+            echo "Wave D regression: vokra-ops/vokra-wfst pulled in non-vokra deps:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
       - name: Policy e2e (M2-08, converter → runtime → 5% mel-loss gate)
         run: cargo test -p vokra-cli --test policy_e2e
       # Audit 2026-08-10 (Rank 5): the M2-04-T09/T10 fusion pattern matchers
