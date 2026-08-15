@@ -183,12 +183,28 @@ def cli_surface(root: pathlib.Path):
     the tier-A leg cargo-free, which is what lets the doc-examples job stay a
     cheap checkout-only job.
     """
+    # The subcommand set is DERIVED from main.rs's dispatch, never hand-listed.
+    # It used to be a literal tuple of (run, convert, bench), which went stale
+    # the moment `f0` landed: the gate then rejected correct documentation of a
+    # real subcommand, and — worse — could not have checked a single one of its
+    # flags. A hand-maintained mirror of the code is exactly the shape this
+    # repo keeps finding rotted, so the mirror is gone.
+    main_rs = root / "crates/vokra-cli/src/main.rs"
+    if not main_rs.is_file():
+        raise SystemExit("setup error: crates/vokra-cli/src/main.rs not found")
+    dispatch = re.findall(
+        r'"([a-z0-9-]+)"\s*=>\s*([a-z0-9_]+)::main\(', main_rs.read_text(encoding="utf-8")
+    )
+    if not dispatch:
+        raise SystemExit(
+            "setup error: parsed no `\"<sub>\" => <mod>::main(` arms out of "
+            "crates/vokra-cli/src/main.rs — the dispatch shape changed, and "
+            "returning an empty subcommand set here would pass every doc"
+        )
+
     subs = {}
-    for sub, rel in (
-        ("run", "crates/vokra-cli/src/run.rs"),
-        ("convert", "crates/vokra-cli/src/convert.rs"),
-        ("bench", "crates/vokra-cli/src/bench.rs"),
-    ):
+    for sub, module in dispatch:
+        rel = f"crates/vokra-cli/src/{module}.rs"
         src = root / rel
         if not src.is_file():
             raise SystemExit(f"setup error: expected CLI source {rel} not found")
