@@ -214,7 +214,10 @@ C ABI freeze prep (M5-13) baseline is unaffected.
 - **What**: ratify `docs/adr/M5-05-voice-cloning-separation.md`.
 - **Why owner-only**: legal sufficiency + product policy (calendar
   deadline = EU AI Act Article 50, 2026-08-02).
-- **Reference**: `docs/handoff/m5-05.md` + `docs/legal-compliance.md` §1.4.
+- **Reference**: `docs/m5-owner-verification-checklist.md` §3 (M5-05) +
+  `docs/legal-compliance.md` §1.4. (There is no `docs/handoff/m5-05.md`;
+  the M5-05 owner surface lives in the checklist, unlike its m5-01 /
+  m5-02 / m5-03 / m5-04 / m5-06 siblings which do have handoff files.)
 
 ### 4. `vokra-voiceclone-experimental` separate-repo publish
 

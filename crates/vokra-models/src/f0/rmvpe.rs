@@ -7,8 +7,24 @@
 //!   <https://github.com/yxlllc/RMVPE> (fork, same architecture).
 //! - Wei et al. 2023 — "RMVPE: A Robust Model for Vocal Pitch
 //!   Estimation in Polyphonic Music" (INTERSPEECH 2023).
-//! - License: **MIT** (both upstreams — Permissive, no runtime-side
-//!   attribution obligation, unlike the CC-BY 4.0 codec / ASR weights).
+//! - License: the two upstreams differ, and this file previously claimed
+//!   "MIT (both upstreams)", which is wrong on both halves. Checked against
+//!   the GitHub API on 2026-08-15:
+//!   - `Dream-High/RMVPE` (the paper's reference implementation) is
+//!     **Apache-2.0**, matching what `crate::f0` already recorded.
+//!   - `yxlllc/RMVPE` (the fork this forward transcribes) has **no LICENSE
+//!     file at all** — `raw.githubusercontent.com/yxlllc/RMVPE/main/LICENSE`
+//!     returns 404 — so its terms are unstated, not permissive-by-default.
+//!
+//!   Both are Permissive-or-unstated rather than attribution-obligated, so
+//!   nothing here needs the runtime attribution the CC-BY 4.0 codec / ASR
+//!   weights do. The distribution question is a different one and stays
+//!   owner-only: an unstated fork licence is exactly the fail-closed case
+//!   `docs/license-audit.md` §3.1 exists to decide, and this comment does
+//!   not decide it. Note the converter
+//!   (`vokra-convert/src/models/rmvpe.rs`) stamps `DEFAULT_LICENSE = "mit"`,
+//!   which inherits the same error and should be revisited with the §3.1
+//!   row rather than silently changed here.
 //!
 //! # Architecture
 //!
@@ -32,19 +48,55 @@
 //! classes. A frame is `voiced` when the max sigmoid probability
 //! exceeds `voiced_threshold` (upstream default ≈ 0.03).
 //!
-//! # Implementation status (F0 tier, 2026-08-13 — loud-partial resolved)
+//! # Divergence from upstream (this runtime)
+//!
+//! The block above describes **upstream**. Two things this runtime does
+//! differently, both of which change the numbers a real checkpoint
+//! produces:
+//!
+//! 1. **The decoder has no skip-concat.** Upstream's up blocks are
+//!    `ConvTranspose2d + concat(paired encoder feature) + Conv2d + BN +
+//!    LReLU`; [`RMVPE::extract_real`] applies the `ConvTranspose2d` +
+//!    optional BN + `LeakyReLU` and drops the skip branch, because
+//!    carrying it needs a paired-encoder cache and the fork's exact
+//!    pairing is not primary-source-transcribable from the README.
+//!    Shapes still round-trip, so the forward runs and returns a
+//!    correctly sized track — it is the *values* that diverge. This is
+//!    an owner-gated follow-up, not a solved problem.
+//! 2. **The U-Net topology is discovered from tensor names**, not from
+//!    a hard-coded 5-down/5-up layout: the forward walks
+//!    `unet.encoder.block{i}.conv.weight` / `unet.decoder.block{i}.conv.weight`
+//!    for `i = 0..8` and stops at the first gap. Under the default
+//!    [`CnnChainPolicy::Required`], a checkpoint that flattens its
+//!    U-Net under any other scheme is refused loudly rather than run
+//!    with the CNN silently skipped — see [`CnnChainPolicy`] and
+//!    [`RMVPE::extract_real`].
+//!
+//! Until the owner-side parity wave lands (see below), treat the output
+//! on a real checkpoint as structurally correct and numerically
+//! unverified.
+//!
+//! # Implementation status (F0 tier — forward runs, numerics unverified)
 //!
 //! This module now:
 //!
 //! 1. **Loads the RMVPE hparams verbatim** from the `vokra.rmvpe.*`
 //!    chunk group (with primary-source constant fallback for a GGUF
 //!    that never carried the chunk) — [`RmvpeConfig::from_gguf`].
-//! 2. **Binds real weight tensors** via [`RmvpeWeights::from_gguf`].
-//!    Every tensor referenced by the CNN + GRU + head is required
-//!    (`vokra_core::VokraError::ModelLoad` on missing / mis-shaped /
-//!    wrong-dtype — FR-EX-08). A GGUF that carries *no* upstream
-//!    RMVPE tensors is refused loudly rather than silently running an
-//!    all-zero forward.
+//! 2. **Binds weight tensors** via [`RmvpeWeights::from_gguf`], which
+//!    is a *name-prefix* gate, not a manifest check. It requires at
+//!    least one tensor under one of the seven
+//!    `REQUIRED_TENSOR_PREFIXES` entries, and rank / dtype-validates
+//!    whatever tensors are present (`vokra_core::VokraError::ModelLoad`
+//!    on mis-shaped or non-widenable dtype — FR-EX-08). It does **not**
+//!    verify that any particular tensor exists: several of those seven
+//!    prefixes are fork conventions, so a checkpoint can pass this gate
+//!    carrying nothing the forward knows how to walk. The per-tensor
+//!    presence requirements (U-Net block scheme, bidirectional GRU,
+//!    360-class head) are enforced at forward time by
+//!    [`RMVPE::extract_real`], which refuses loudly — including the
+//!    case where zero U-Net blocks are discoverable, which would
+//!    otherwise skip the entire CNN and hand the raw mel to the BiGRU.
 //! 3. **Computes the real mel spectrogram** front-end (STFT + mel
 //!    filterbank at the primary-source n_fft=2048 / win=1024 / hop=160
 //!    / n_mels=128 / sr=16000 axes, matching the upstream RMVPE
@@ -287,15 +339,28 @@ impl RmvpeConfig {
 // RmvpeWeights — real weight-tensor binding with loud-error on missing
 // ---------------------------------------------------------------------------
 
-/// The upstream RMVPE state_dict tensor-name prefixes the runtime
-/// binder scans for. A GGUF that carries at least one of these is
-/// accepted as an RMVPE checkpoint; a GGUF that has none is refused
-/// loudly rather than silently running an all-zero forward (FR-EX-08).
+/// The RMVPE state_dict tensor-name prefixes the runtime binder scans
+/// for. A GGUF that carries at least one of these is accepted as an
+/// RMVPE checkpoint; a GGUF that has none is refused loudly rather than
+/// silently running an all-zero forward (FR-EX-08).
 ///
 /// Sourced from the upstream flattened `state_dict` layout: encoder /
 /// decoder blocks, intermediate GRU, terminal 360-class head, and the
 /// mel-extractor buffers used by RMVPE's Python-side front-end (which
 /// this runtime replaces with a Rust-native `mel_spectrogram`).
+///
+/// # This is an acceptance filter, not a topology contract
+///
+/// Only `unet.` names the upstream layout. The rest are deliberately
+/// broad — `encoder.` / `decoder.` / `cnn.` are *fork* conventions, and
+/// `mel_extractor.` is a front-end buffer the runtime does not consume
+/// at all. Matching one of them proves the artifact looks like some
+/// RMVPE, not that [`RMVPE::extract_real`] can walk it: the forward
+/// discovers its U-Net by the literal `unet.encoder.block{i}.conv.weight`
+/// scheme and nothing else. A fork-convention checkpoint therefore binds
+/// here and is then refused at forward time, by design — the two gates
+/// answer different questions and the error the caller sees names the
+/// scheme that was searched.
 const REQUIRED_TENSOR_PREFIXES: &[&str] = &[
     "unet.",          // U-Net encoder + decoder (upstream: `unet.encoder.*` / `unet.decoder.*`)
     "encoder.",       // fallback prefix used by some RMVPE forks
@@ -319,6 +384,11 @@ const REQUIRED_TENSOR_PREFIXES: &[&str] = &[
 /// rejected with [`VokraError::ModelLoad`] naming the required prefix
 /// (FR-EX-08). A tensor whose payload cannot be dequantized to f32 (or
 /// which has an unexpected non-float dtype) is likewise refused.
+///
+/// **What it does not check**: that the bound set composes into a
+/// runnable forward. `REQUIRED_TENSOR_PREFIXES` includes fork
+/// conventions, so a checkpoint can bind here with zero tensors the
+/// U-Net walker recognizes. [`RMVPE::extract_real`] owns that gate.
 #[derive(Debug)]
 pub struct RmvpeWeights {
     /// Tensors indexed by upstream `state_dict` name.
@@ -392,6 +462,33 @@ impl RmvpeWeights {
             .iter()
             .find(|(n, _, _)| n == name)
             .map(|(_, d, p)| (d.as_slice(), p.as_slice()))
+    }
+
+    /// The `REQUIRED_TENSOR_PREFIXES` entries this artifact actually
+    /// carries, in table order.
+    ///
+    /// Diagnostic only. When the forward cannot find its U-Net under
+    /// the literal upstream scheme, this tells the caller which
+    /// flattening convention the checkpoint *does* appear to use —
+    /// a fork checkpoint reports e.g. `["cnn.", "gru.", "head."]`,
+    /// which points straight at the re-conversion that would fix it.
+    fn present_prefixes(&self) -> Vec<&'static str> {
+        REQUIRED_TENSOR_PREFIXES
+            .iter()
+            .copied()
+            .filter(|p| self.tensors.iter().any(|(n, _, _)| n.starts_with(p)))
+            .collect()
+    }
+
+    /// Up to `max` bound tensor names in GGUF order, for error
+    /// messages. Bounded so a 500-tensor checkpoint cannot turn one
+    /// `ModelLoad` string into a screenful.
+    fn sample_tensor_names(&self, max: usize) -> Vec<&str> {
+        self.tensors
+            .iter()
+            .take(max)
+            .map(|(n, _, _)| n.as_str())
+            .collect()
     }
 }
 
@@ -1255,6 +1352,24 @@ impl RmvpeWeights {
         self.discover_block("unet.encoder", i, /*conv2d=*/ true)
     }
 
+    /// How many encoder blocks are discoverable under the literal
+    /// upstream scheme, walking from `block0` and stopping at the first
+    /// gap. `0` means the U-Net is invisible to this runtime — see
+    /// [`RMVPE::extract_real`], which refuses that case rather than
+    /// skipping the CNN.
+    fn encoder_block_count(&self) -> usize {
+        (0..MAX_UNET_BLOCKS)
+            .take_while(|&i| self.encoder_block(i).is_some())
+            .count()
+    }
+
+    /// Decoder-side counterpart of `encoder_block_count`.
+    fn decoder_block_count(&self) -> usize {
+        (0..MAX_UNET_BLOCKS)
+            .take_while(|&i| self.decoder_block(i).is_some())
+            .count()
+    }
+
     /// Discovers the `i`-th decoder block if present.
     fn decoder_block(&self, i: usize) -> Option<RmvpeBlock<'_>> {
         // For ConvTranspose2d the weight layout is [in, out, kh, kw],
@@ -1515,13 +1630,50 @@ struct RmvpeHead<'a> {
 // RMVPE — the public engine handle
 // ---------------------------------------------------------------------------
 
+/// Whether [`RMVPE::extract_real`] requires a discoverable U-Net.
+///
+/// The forward finds its CNN by walking the literal upstream scheme
+/// `unet.encoder.block{i}.conv.weight` / `unet.decoder.block{i}.conv.weight`.
+/// A checkpoint that flattens its U-Net under some other convention —
+/// several of which pass the loader's prefix gate — yields zero blocks,
+/// and running anyway would push the raw mel plane straight into the
+/// BiGRU. That produces a full-length, finite, in-band pitch track with
+/// nothing in it to distinguish "the U-Net ran" from "the U-Net was
+/// skipped entirely". This enum exists so that choice is made by a
+/// caller who names it, never by a failed lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CnnChainPolicy {
+    /// **Default.** Zero discoverable encoder blocks (or zero decoder
+    /// blocks) is a [`VokraError::ModelLoad`] naming the scheme that
+    /// was searched and the prefixes the artifact actually carries.
+    #[default]
+    Required,
+    /// Opt-in: tolerate a checkpoint with no discoverable U-Net,
+    /// handing the mel plane to the BiGRU unchanged.
+    ///
+    /// This exists for **structural smoke fixtures** — a hand-built
+    /// GGUF that binds only a GRU + head, used to exercise the
+    /// mel → collapse → BiGRU → head → decode chain without
+    /// synthesizing fake CNN weights. Point it at a real checkpoint and
+    /// the track it returns is not a pitch measurement: it is the
+    /// output of a model missing most of its layers. Nothing downstream
+    /// can detect that, which is the whole reason this is opt-in and
+    /// not a fallback.
+    ///
+    /// Blocks that *are* discoverable still run — this relaxes the
+    /// requirement, it does not disable the CNN.
+    Optional,
+}
+
 /// Robust Model for Vocal Pitch Estimation (RMVPE) — the pitch
 /// front-end required by RVC v2
 /// (<https://github.com/Dream-High/RMVPE>, MIT).
 ///
 /// Load with [`from_gguf`](Self::from_gguf) / [`open`](Self::open),
 /// then call [`extract`](Self::extract) on a PCM buffer to obtain a
-/// per-hop F0 track (frame count = `pcm.len() / hop`).
+/// per-hop F0 track (frame count = `pcm.len() / hop`). Both loaders use
+/// [`CnnChainPolicy::Required`]; the CNN-less path has its own
+/// constructor, [`from_gguf_with_cnn_policy`](Self::from_gguf_with_cnn_policy).
 ///
 /// [`extract`](Self::extract) and [`extract_real`](Self::extract_real)
 /// are the same fallible forward — every method that names pitch
@@ -1548,10 +1700,14 @@ pub struct RMVPE {
     // `RmvpeWeights` shape gate in `from_gguf` guarantees every tensor
     // is at the correct rank before it reaches the forward.
     weights: RmvpeWeights,
+    // Whether the forward may run with no discoverable U-Net. Set once
+    // at load time by the constructor the caller chose, never inferred.
+    cnn_policy: CnnChainPolicy,
 }
 
 impl RMVPE {
-    /// Loads an RMVPE model from a GGUF file on disk.
+    /// Loads an RMVPE model from a GGUF file on disk under
+    /// [`CnnChainPolicy::Required`].
     ///
     /// The GGUF must:
     ///
@@ -1561,18 +1717,73 @@ impl RMVPE {
     ///    (`REQUIRED_TENSOR_PREFIXES`) — otherwise
     ///    [`RmvpeWeights::from_gguf`] refuses the bind (FR-EX-08).
     ///
+    /// Note that (2) is a prefix gate: it does **not** guarantee the
+    /// forward can walk the artifact. A checkpoint whose U-Net is
+    /// flattened under a fork convention loads here and is refused by
+    /// [`extract_real`](Self::extract_real), which is where the
+    /// topology contract lives.
+    ///
     /// `vokra.rmvpe.*` metadata is optional (absent keys fall back to
     /// primary-source constants per [`RmvpeConfig::from_gguf`]).
     pub fn from_gguf(path: &Path) -> Result<Self, VokraError> {
+        Self::from_gguf_with_cnn_policy(path, CnnChainPolicy::Required)
+    }
+
+    /// Loads an RMVPE model under an explicit [`CnnChainPolicy`].
+    ///
+    /// Prefer [`from_gguf`](Self::from_gguf). Pass
+    /// [`CnnChainPolicy::Optional`] only for a hand-built structural
+    /// fixture that deliberately carries no U-Net — read that variant's
+    /// documentation first, because on a real checkpoint it converts a
+    /// loud load failure into a silently wrong pitch track.
+    ///
+    /// # Errors
+    ///
+    /// Same surface as [`from_gguf`](Self::from_gguf) — the policy is
+    /// recorded for forward time and changes nothing about loading.
+    pub fn from_gguf_with_cnn_policy(
+        path: &Path,
+        cnn_policy: CnnChainPolicy,
+    ) -> Result<Self, VokraError> {
         let gguf = GgufFile::open(path)?;
         let config = RmvpeConfig::from_gguf(&gguf);
         let weights = RmvpeWeights::from_gguf(&gguf)?;
-        Ok(Self { config, weights })
+        Ok(Self {
+            config,
+            weights,
+            cnn_policy,
+        })
     }
 
     /// Convenience alias for [`from_gguf`](Self::from_gguf).
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VokraError> {
         Self::from_gguf(path.as_ref())
+    }
+
+    /// The [`CnnChainPolicy`] this handle was loaded under.
+    pub fn cnn_policy(&self) -> CnnChainPolicy {
+        self.cnn_policy
+    }
+
+    /// How many U-Net encoder blocks [`extract_real`](Self::extract_real)
+    /// can discover in this artifact, walking
+    /// `unet.encoder.block{i}.conv.weight` from `block0` and stopping at
+    /// the first gap.
+    ///
+    /// `0` means the CNN is invisible to this runtime — under
+    /// [`CnnChainPolicy::Required`] the forward refuses; under
+    /// [`CnnChainPolicy::Optional`] it runs without it. Exposed so the
+    /// parity harness can pin that a real checkpoint's U-Net actually
+    /// ran, which frame count and finiteness cannot distinguish.
+    pub fn encoder_block_count(&self) -> usize {
+        self.weights.encoder_block_count()
+    }
+
+    /// Decoder-side counterpart of
+    /// [`encoder_block_count`](Self::encoder_block_count), walking
+    /// `unet.decoder.block{i}.conv.weight`.
+    pub fn decoder_block_count(&self) -> usize {
+        self.weights.decoder_block_count()
     }
 
     /// Returns the loaded [`RmvpeConfig`] for downstream inspection.
@@ -1642,21 +1853,47 @@ impl RMVPE {
         (0..pcm_len / hop).map(|i| (i * hop) as f32 / sr).collect()
     }
 
+    /// Builds the loud [`VokraError::ModelLoad`] for "the U-Net is not
+    /// where I looked". `half` is `"encoder"` or `"decoder"`.
+    ///
+    /// The message names the literal scheme that was searched, the
+    /// prefixes the artifact actually carries, and a bounded sample of
+    /// its tensor names — because the caller's next move differs
+    /// completely between "this is not an RMVPE at all" and "this is a
+    /// fork that flattens its U-Net somewhere else", and only the
+    /// artifact's own names can tell those apart.
+    fn no_unet_error(&self, half: &str) -> VokraError {
+        let present = self.weights.present_prefixes();
+        let sample = self.weights.sample_tensor_names(8);
+        let bound = self.weights.tensor_count();
+        VokraError::ModelLoad(format!(
+            "rmvpe: no U-Net {half} block found. The forward discovers its CNN by the \
+             literal upstream scheme `unet.{half}.block{{i}}.conv.weight` (i = \
+             0..{MAX_UNET_BLOCKS}); this artifact carries none of them, so the {half} \
+             half of the U-Net would be skipped entirely and the returned track would \
+             read as a pitch measurement without being one. Bound tensors: {bound}; \
+             prefixes present: {present:?}; first bound names: {sample:?}. Either this \
+             checkpoint flattens its U-Net under a fork convention (re-convert it to the \
+             upstream names), or this runtime's scheme is wrong for the canonical \
+             checkpoint and the walker needs fixing — the names above settle which. If \
+             the CNN-less path is genuinely what you want, load with \
+             `RMVPE::from_gguf_with_cnn_policy(path, CnnChainPolicy::Optional)` \
+             (FR-EX-08: never a silent fallback)."
+        ))
+    }
+
     /// Runs the **real** RMVPE forward on `pcm`.
     ///
     /// Pipeline:
     ///
     /// 1. `mel_spectrogram(pcm)` → `[n_frames, 128]` log-mel.
-    /// 2. Optional CNN encoder — for each contiguous
+    /// 2. CNN encoder — for each contiguous
     ///    `unet.encoder.block{i}.*` weight family, apply
     ///    `Conv2d(pad=same)` + `BatchNorm2d` + `LeakyReLU(0.01)` +
-    ///    `MaxPool2d(2, 2)`. Absent CNN = mel goes straight into the
-    ///    BiGRU (the smoke fixture path).
-    /// 3. Optional CNN decoder — for each contiguous
+    ///    `MaxPool2d(2, 2)`.
+    /// 3. CNN decoder — for each contiguous
     ///    `unet.decoder.block{i}.*` weight family, apply
-    ///    `ConvTranspose2d(stride=2)` + `LeakyReLU(0.01)` (skip-concat
-    ///    is a real-parity follow-up; the shape reduction / expansion
-    ///    axes still round-trip so downstream consumers can align).
+    ///    `ConvTranspose2d(stride=2)` + `LeakyReLU(0.01)`.
     /// 4. Collapse `[C, H, W]` to `[H, C * W]` per-frame features.
     /// 5. Bidirectional `GRU(input_size, hidden_size)` — discovered
     ///    from `gru.weight_ih_l0` shape. Output = `[T, 2*hidden]`.
@@ -1676,17 +1913,56 @@ impl RMVPE {
     /// contract so a consumer that pre-sized a buffer from
     /// `frame_times` sees no shape drift.
     ///
+    /// # Where this forward is not upstream RMVPE
+    ///
+    /// Read before treating the output as a measurement:
+    ///
+    /// - **The decoder omits the skip-concat.** Upstream's up block is
+    ///   `ConvTranspose2d + concat(paired encoder feature) + Conv2d +
+    ///   BN + LReLU`; step 3 above runs only the `ConvTranspose2d`,
+    ///   the optional BN and `LeakyReLU`. Carrying the skip needs a
+    ///   paired-encoder cache and the fork's exact pairing is not
+    ///   transcribable from the published README, so it is deferred to
+    ///   the owner-side parity wave. Shapes round-trip; values diverge,
+    ///   by an amount nothing in-tree has measured.
+    /// - **No numeric parity has been run against a real checkpoint.**
+    ///   The harness exists and is env-gated
+    ///   (`VOKRA_RMVPE_REAL_GGUF` / `VOKRA_RMVPE_REAL_HIDDEN`, see
+    ///   `crates/vokra-models/tests/parity_rmvpe.rs`); until an owner
+    ///   exports those, every in-tree assertion about this forward is
+    ///   structural (shape, finiteness, sigmoid range) and none of them
+    ///   would catch a wrong-but-plausible pitch track.
+    /// - **The U-Net must be findable by name.** See
+    ///   [`CnnChainPolicy`]: zero discoverable blocks is a load error,
+    ///   not a quiet mel-into-BiGRU shortcut.
+    /// - **The scheme itself is unverified against a real checkpoint.**
+    ///   `unet.encoder.block{i}.conv.weight` is this runtime's reading
+    ///   of the upstream layout, and `vokra-convert`'s RMVPE converter
+    ///   passes `state_dict` keys through verbatim, so whatever upstream
+    ///   emits is what lands in the GGUF. If upstream names its blocks
+    ///   differently, the first real checkpoint will hit the zero-block
+    ///   error above — which is the intended outcome, because the error
+    ///   prints the artifact's own prefixes and names and is therefore
+    ///   the diagnostic that settles the question. Do not "fix" it by
+    ///   relaxing the gate.
+    ///
     /// # Errors
     ///
+    /// - [`VokraError::ModelLoad`] when no U-Net encoder (or decoder)
+    ///   block is discoverable under
+    ///   `unet.{encoder,decoder}.block{i}.conv.weight` and the handle
+    ///   was loaded under [`CnnChainPolicy::Required`]. The message
+    ///   names the scheme searched and the prefixes the artifact
+    ///   carries, so a fork-convention checkpoint is diagnosable from
+    ///   the error alone.
     /// - [`VokraError::ModelLoad`] when the bound weight set does not
     ///   compose (e.g. GRU `input_size` mismatched against the mel /
     ///   post-CNN feature width, head input width mismatched against
     ///   BiGRU output, or a required tensor missing under the expected
     ///   name — FR-EX-08 loud-partial posture).
-    /// - Never returns [`VokraError::UnsupportedOp`] under this
-    ///   landing — the previous "kernel binding pending" stub was
-    ///   replaced by this real forward on 2026-08-13
-    ///   (`docs/abi-changelog.md`).
+    /// - Never returns [`VokraError::UnsupportedOp`] — the previous
+    ///   "kernel binding pending" stub was replaced by this real
+    ///   forward (`docs/abi-changelog.md`).
     pub fn extract_real(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<F0Frame>, VokraError> {
         // 1. Mel front-end (real STFT + mel filterbank).
         let mel = self.mel_spectrogram(pcm);
@@ -1713,9 +1989,13 @@ impl RMVPE {
         let mut h_cur = t_in;
         let mut w_cur = f_in;
 
-        // 3. Encoder blocks — applied only when present so a fixture
-        //    that omits the CNN (the structural smoke path) skips the
-        //    entire CNN chain and hands mel straight to the BiGRU.
+        // 3. Encoder blocks. The walk stops at the first gap, so a
+        //    checkpoint whose U-Net is named under a fork convention
+        //    yields zero blocks — which must NOT fall through to the
+        //    BiGRU (that would run ~none of the model and return a
+        //    track indistinguishable from a real one). Under the
+        //    default policy zero blocks is a loud load error.
+        let mut encoder_blocks = 0usize;
         for i in 0..MAX_UNET_BLOCKS {
             let Some(block) = self.weights.encoder_block(i) else {
                 break;
@@ -1725,13 +2005,20 @@ impl RMVPE {
             c_cur = block.n_out;
             h_cur = h_out;
             w_cur = w_out;
+            encoder_blocks += 1;
+        }
+        if encoder_blocks == 0 && self.cnn_policy == CnnChainPolicy::Required {
+            return Err(self.no_unet_error("encoder"));
         }
 
         // 4. Decoder blocks — same pattern, mirrored via
-        //    ConvTranspose2d(stride=2). Skip-concat is a follow-up
-        //    (would need paired encoder cache); the shape axes still
-        //    round-trip so a consumer aligning against frame_times()
-        //    works.
+        //    ConvTranspose2d(stride=2), and the same zero-block gate.
+        //    NOTE: even when every block IS found, this chain is not
+        //    upstream's: the skip-concat is dropped (see the method's
+        //    "Where this forward is not upstream RMVPE" section). The
+        //    shape axes round-trip so a consumer aligning against
+        //    frame_times() works; the values do not match upstream.
+        let mut decoder_blocks = 0usize;
         for i in 0..MAX_UNET_BLOCKS {
             let Some(block) = self.weights.decoder_block(i) else {
                 break;
@@ -1741,6 +2028,10 @@ impl RMVPE {
             c_cur = block.n_out;
             h_cur = h_out;
             w_cur = w_out;
+            decoder_blocks += 1;
+        }
+        if decoder_blocks == 0 && self.cnn_policy == CnnChainPolicy::Required {
+            return Err(self.no_unet_error("decoder"));
         }
 
         // 5. Collapse the CNN output into a per-frame feature vector.
@@ -1828,6 +2119,13 @@ impl RMVPE {
     /// bridge). Also used by the synthetic weight structural smoke
     /// test so a fixture that omits the CNN weights can exercise the
     /// forward + sigmoid + decoder chain without a fake CNN.
+    ///
+    /// Skipping the CNN is this method's *signature*, not a fallback —
+    /// the caller supplies the post-CNN state — so it does not consult
+    /// [`CnnChainPolicy`] and never raises the missing-U-Net error.
+    /// What comes out is a pitch track for the hidden state handed in,
+    /// which is a claim about the caller's buffer and not about any
+    /// audio this model has seen.
     ///
     /// # Errors
     ///
@@ -2204,6 +2502,10 @@ mod tests {
     /// Pins the delegation so the two names can never drift into two
     /// behaviours again — and pins that what they return is a real
     /// measurement rather than the old fabricated column.
+    ///
+    /// Uses the CNN-less structural fixture, so it must opt into
+    /// [`CnnChainPolicy::Optional`]; under the default policy this GGUF
+    /// is (correctly) refused.
     #[test]
     fn extract_agrees_with_extract_real_on_a_real_forward() {
         let bytes = smoke_no_cnn_gguf(/*n_mels=*/ 128, /*gru_hidden=*/ 8);
@@ -2217,7 +2519,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load smoke gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load smoke gguf");
         let sr = m.config().sample_rate as f32;
         let pcm: Vec<f32> = (0..m.config().sample_rate as usize)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
@@ -2289,12 +2592,17 @@ mod tests {
 
     /// FR-EX-08 loud-error contract: `extract_real` must refuse a GGUF
     /// whose bound tensors do not compose into a walkable forward
-    /// (`minimal_valid_rmvpe_gguf` binds one Conv2d weight with no BN /
-    /// no GRU / no head — the forward has nothing to consume after the
-    /// mel front-end). Under the 2026-08-13 landing the error is now a
-    /// [`VokraError::ModelLoad`] describing which required tensor is
-    /// missing (the previous loud-pending `UnsupportedOp` stub was
-    /// replaced by this real forward — see `docs/abi-changelog.md`).
+    /// (`minimal_valid_rmvpe_gguf` binds one 2x2 tensor named
+    /// `unet.encoder.block0.weight` — note the missing `.conv.` infix,
+    /// so not even the U-Net walker recognizes it, and there is no GRU
+    /// and no head).
+    ///
+    /// The first thing the forward hits is the missing U-Net, so that
+    /// is what the message must name. Pinning the *specific* error
+    /// matters: "some ModelLoad" would have passed just as happily
+    /// while the forward skipped the entire CNN and failed later on the
+    /// GRU width, which is the failure mode this test exists to
+    /// exclude.
     #[test]
     fn extract_real_refuses_gguf_missing_required_tensors() {
         let bytes = minimal_valid_rmvpe_gguf();
@@ -2310,23 +2618,14 @@ mod tests {
 
         let m = RMVPE::from_gguf(&tmp).expect("load valid gguf");
         let pcm = vec![0.0f32; 16_000];
-        let err = m
-            .extract_real(&pcm, 16_000)
-            .expect_err("extract_real must refuse a GGUF without a walkable forward");
+        let Err(VokraError::ModelLoad(msg)) = m.extract_real(&pcm, 16_000) else {
+            panic!("extract_real must refuse a GGUF without a walkable forward");
+        };
         assert!(
-            matches!(err, VokraError::ModelLoad(_)),
-            "expected ModelLoad naming the missing weight, got {err:?}"
+            msg.contains("no U-Net encoder block found"),
+            "expected the missing-U-Net error (the first thing the forward hits), \
+             got {msg}"
         );
-        // The exact message depends on the walk order (encoder blocks
-        // are optional so the first missing tensor the forward hits is
-        // `gru.weight_ih_l0`); just pin that the message names one of
-        // the required post-mel tensors.
-        if let VokraError::ModelLoad(msg) = &err {
-            assert!(
-                msg.contains("gru.weight_ih_l0") || msg.contains("head.weight"),
-                "expected error to name a missing required tensor, got {msg}"
-            );
-        }
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -2341,9 +2640,12 @@ mod tests {
     /// - Every `confidence` value lies in `[0, 1]` (sigmoid range).
     /// - Every `voiced` frame's `hz` lies in the `[fmin, fmax]` band.
     ///
-    /// This is the "real forward runs cleanly" pin. Bit-exact parity
-    /// against upstream RMVPE is env-gated on `VOKRA_RMVPE_REAL_GGUF`
-    /// / `VOKRA_RMVPE_REAL_HIDDEN` — see
+    /// This is the "real forward runs cleanly" pin, and nothing more:
+    /// the fixture carries no U-Net, so it must opt into
+    /// [`CnnChainPolicy::Optional`] and what it exercises is
+    /// mel → collapse → BiGRU → head → sigmoid → decode. Bit-exact
+    /// parity against upstream RMVPE is env-gated on
+    /// `VOKRA_RMVPE_REAL_GGUF` / `VOKRA_RMVPE_REAL_HIDDEN` — see
     /// `crates/vokra-models/tests/parity_rmvpe.rs`.
     #[test]
     fn extract_real_returns_real_frames_with_synthetic_weights() {
@@ -2360,7 +2662,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load smoke gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load smoke gguf");
         // 1 s of 440 Hz sine at 16 kHz — real signal, not zeros, so a
         // deterministic mel front-end propagates real energy through
         // the forward chain.
@@ -2497,11 +2800,37 @@ mod tests {
     /// NOT a numeric parity fixture. Real parity is env-gated on
     /// `VOKRA_RMVPE_REAL_GGUF` / `VOKRA_RMVPE_REAL_HIDDEN`.
     fn smoke_no_cnn_gguf(n_mels: u32, gru_hidden: usize) -> Vec<u8> {
+        smoke_gguf_builder(n_mels, n_mels as usize, gru_hidden)
+            .to_bytes()
+            .expect("serialize smoke gguf")
+    }
+
+    /// Small deterministic f32 fill, little-endian, for fixture
+    /// tensors. Magnitudes stay near 0.05 so a sigmoid downstream lands
+    /// inside `(0, 1)` rather than saturating.
+    fn f32_small(elems: usize, seed_offset: f32) -> Vec<u8> {
+        (0..elems)
+            .flat_map(|i| {
+                let v = ((i as f32) * 0.001 + seed_offset).sin() * 0.05;
+                v.to_le_bytes()
+            })
+            .collect()
+    }
+
+    /// Shared fixture spine: RMVPE metadata + a bidirectional GRU
+    /// (`gru_input` → `gru_hidden`) + a `[360, 2 * gru_hidden]` Linear
+    /// head. Carries **no** CNN tensors; callers add whatever U-Net
+    /// naming convention they are exercising.
+    ///
+    /// `gru_input` is separate from `n_mels` because it must equal the
+    /// *post-CNN* feature width: `n_mels` for a CNN-less fixture,
+    /// `C_last * W_last` when a U-Net chain is present.
+    fn smoke_gguf_builder(n_mels: u32, gru_input: usize, gru_hidden: usize) -> GgufBuilder {
         let mut b = GgufBuilder::new();
         b.add_string("vokra.model.arch", "rmvpe");
         // Pin the mel / hop axes to the primary-source defaults so
         // `RmvpeConfig::from_gguf` yields exactly the shape the forward
-        // expects (n_mels matches the BiGRU input_size).
+        // expects.
         b.add_u32(GGUF_KEY_N_MELS, n_mels);
         b.add_u32(GGUF_KEY_HOP, DEFAULT_HOP);
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
@@ -2509,20 +2838,10 @@ mod tests {
         b.add_u32(GGUF_KEY_WIN_LENGTH, DEFAULT_WIN_LENGTH);
         b.add_u32(GGUF_KEY_N_CLASS, DEFAULT_N_CLASS);
 
-        // GRU weights: bidirectional single-layer, input = n_mels,
-        // hidden = gru_hidden. Small-magnitude deterministic values so
-        // the sigmoid activation stays well within (0, 1) rather than
-        // saturating at the smoke-test scale.
-        let input_size = n_mels as usize;
+        // GRU weights: bidirectional single-layer, input = gru_input,
+        // hidden = gru_hidden.
+        let input_size = gru_input;
         let three_h = 3 * gru_hidden;
-        let f32_small = |elems: usize, seed_offset: f32| -> Vec<u8> {
-            (0..elems)
-                .flat_map(|i| {
-                    let v = ((i as f32) * 0.001 + seed_offset).sin() * 0.05;
-                    v.to_le_bytes()
-                })
-                .collect()
-        };
         for (suffix, seed) in [("l0", 0.10f32), ("l0_reverse", 0.20)] {
             b.add_tensor(
                 &format!("gru.weight_ih_{suffix}"),
@@ -2572,7 +2891,283 @@ mod tests {
         )
         .expect("add head.bias");
 
-        b.to_bytes().expect("serialize smoke gguf")
+        b
+    }
+
+    /// A GGUF that looks like an RMVPE fork: its U-Net is flattened
+    /// under `cnn.*` (one of `REQUIRED_TENSOR_PREFIXES`, so the loader
+    /// accepts it) and carries **nothing** under
+    /// `unet.encoder.block{i}.conv.weight`, so the U-Net walker sees
+    /// zero blocks.
+    ///
+    /// Critically, the GRU is sized for the *bypass* width
+    /// (`input = n_mels`), which is what makes this a regression
+    /// fixture rather than a shape-error fixture: before the
+    /// zero-block gate landed, this artifact ran to completion and
+    /// returned a full-length, finite, in-band pitch track produced by
+    /// a model with its entire CNN missing. Every structural assertion
+    /// in this module passed on that track.
+    fn fork_prefix_cnn_gguf(n_mels: u32, gru_hidden: usize) -> Vec<u8> {
+        let mut b = smoke_gguf_builder(n_mels, n_mels as usize, gru_hidden);
+        // Fork convention: `cnn.layers.{i}.conv.weight` — a plausible
+        // flattening, and none of it matches the scheme the forward
+        // walks.
+        b.add_tensor(
+            "cnn.layers.0.conv.weight",
+            GgmlType::F32,
+            vec![16, 1, 3, 3],
+            f32_small(16 * 9, 0.50),
+        )
+        .expect("add fork conv");
+        b.add_tensor(
+            "cnn.layers.0.bn.weight",
+            GgmlType::F32,
+            vec![16],
+            f32_small(16, 0.60),
+        )
+        .expect("add fork bn");
+        b.to_bytes().expect("serialize fork gguf")
+    }
+
+    /// A GGUF carrying a real one-block U-Net under the exact upstream
+    /// scheme, sized so the chain composes end to end at the RMVPE mel
+    /// axes:
+    ///
+    /// ```text
+    /// mel [1, 1, 101, 128]
+    ///   encoder.block0 Conv2d [2, 1, 3, 3] pad=same -> [2, 101, 128]
+    ///                  MaxPool2d(2,2)               -> [2,  50,  64]
+    ///   decoder.block0 ConvT2d [2, 2, 2, 2] stride=2 -> [2, 100, 128]
+    ///   collapse [H, C*W]                            -> [100, 256]
+    ///   BiGRU(256 -> 4) -> [100, 8] -> head [360, 8] -> 100 frames
+    /// ```
+    ///
+    /// 100 frames is exactly the `frame_times` contract for 1 s at
+    /// 16 kHz with hop 160, so the frame-count pin stays meaningful.
+    fn one_block_unet_gguf() -> Vec<u8> {
+        // C_last = 2, W_last = 128 => post-CNN feature width 256.
+        let mut b = smoke_gguf_builder(128, 256, /*gru_hidden=*/ 4);
+        b.add_tensor(
+            "unet.encoder.block0.conv.weight",
+            GgmlType::F32,
+            vec![2, 1, 3, 3],
+            f32_small(2 * 9, 0.70),
+        )
+        .expect("add encoder conv");
+        b.add_tensor(
+            "unet.encoder.block0.conv.bias",
+            GgmlType::F32,
+            vec![2],
+            f32_small(2, 0.71),
+        )
+        .expect("add encoder bias");
+        // ConvTranspose2d weight layout is [in, out, kh, kw].
+        b.add_tensor(
+            "unet.decoder.block0.conv.weight",
+            GgmlType::F32,
+            vec![2, 2, 2, 2],
+            f32_small(2 * 2 * 2 * 2, 0.80),
+        )
+        .expect("add decoder conv");
+        b.add_tensor(
+            "unet.decoder.block0.conv.bias",
+            GgmlType::F32,
+            vec![2],
+            f32_small(2, 0.81),
+        )
+        .expect("add decoder bias");
+        b.to_bytes().expect("serialize unet gguf")
+    }
+
+    /// Writes `bytes` to a uniquely named temp GGUF and returns the
+    /// path. Collapses the `process::id()` + nanos boilerplate every
+    /// fixture test was repeating.
+    fn write_temp_gguf(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-rmvpe-{tag}-{}-{}.gguf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        ));
+        std::fs::write(&tmp, bytes).expect("write temp gguf");
+        tmp
+    }
+
+    /// **The regression this whole gate exists for.** A fork-convention
+    /// checkpoint binds cleanly (its `cnn.*` tensors match a recognized
+    /// prefix) but exposes no U-Net under the scheme the forward walks.
+    ///
+    /// Before the zero-block gate, `extract_real` skipped the entire
+    /// U-Net, pushed the raw mel plane into the BiGRU, and returned 100
+    /// finite in-band frames — a pitch track that no downstream
+    /// consumer, and no assertion in this file, could tell apart from a
+    /// real measurement.
+    ///
+    /// The error must name the scheme that was searched, because
+    /// "ModelLoad happened" does not tell the owner of a fork
+    /// checkpoint what to re-convert.
+    #[test]
+    fn extract_real_refuses_fork_prefix_checkpoint_naming_the_scheme() {
+        let tmp = write_temp_gguf("fork-prefix", &fork_prefix_cnn_gguf(128, 8));
+
+        let m =
+            RMVPE::from_gguf(&tmp).expect("fork-prefix GGUF still binds — `cnn.` is recognized");
+        assert_eq!(
+            m.encoder_block_count(),
+            0,
+            "fixture precondition: the fork scheme must be invisible to the U-Net walker"
+        );
+
+        let sr = m.config().sample_rate as f32;
+        let pcm: Vec<f32> = (0..m.config().sample_rate as usize)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
+            .collect();
+
+        let Err(VokraError::ModelLoad(msg)) = m.extract_real(&pcm, 16_000) else {
+            panic!(
+                "a checkpoint with zero discoverable U-Net blocks must be refused, \
+                 not run with its CNN silently skipped"
+            );
+        };
+        assert!(
+            msg.contains("unet.encoder.block{i}.conv.weight"),
+            "the error must name the scheme that was searched, got {msg}"
+        );
+        assert!(
+            msg.contains("cnn."),
+            "the error must list the prefixes the artifact actually carries so a \
+             fork checkpoint is diagnosable from the message alone, got {msg}"
+        );
+        assert!(
+            msg.contains("CnnChainPolicy::Optional"),
+            "the error must name the opt-in that permits the CNN-less path, got {msg}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// The CNN-less path is reachable **only** by naming it. Same
+    /// artifact, two policies, two outcomes — which is the property
+    /// that makes "no blocks found" unusable as an implicit fallback.
+    #[test]
+    fn cnn_less_path_requires_an_explicit_opt_in() {
+        let tmp = write_temp_gguf("policy-optin", &fork_prefix_cnn_gguf(128, 8));
+
+        let sr = DEFAULT_SAMPLE_RATE as f32;
+        let pcm: Vec<f32> = (0..DEFAULT_SAMPLE_RATE as usize)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
+            .collect();
+
+        let strict = RMVPE::from_gguf(&tmp).expect("load");
+        assert_eq!(strict.cnn_policy(), CnnChainPolicy::Required);
+        assert!(
+            strict.extract_real(&pcm, 16_000).is_err(),
+            "the default policy must refuse a checkpoint with no discoverable U-Net"
+        );
+
+        let lenient = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load with opt-in");
+        assert_eq!(lenient.cnn_policy(), CnnChainPolicy::Optional);
+        let frames = lenient
+            .extract_real(&pcm, 16_000)
+            .expect("the opt-in path must still run");
+        assert_eq!(
+            frames.len(),
+            pcm.len() / (lenient.config().hop as usize),
+            "the opt-in path keeps the frame_times contract"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// The gate must not be a blanket refusal: a checkpoint that *does*
+    /// name its U-Net the upstream way runs under the default policy,
+    /// with the blocks actually applied.
+    ///
+    /// `encoder_block_count` / `decoder_block_count` are what separate
+    /// "the U-Net ran" from "the U-Net was skipped" — frame count,
+    /// finiteness and sigmoid range hold either way, which is precisely
+    /// why they were not enough on their own.
+    #[test]
+    fn extract_real_runs_a_discoverable_unet_under_the_default_policy() {
+        let tmp = write_temp_gguf("unet-one-block", &one_block_unet_gguf());
+
+        let m = RMVPE::from_gguf(&tmp).expect("load one-block unet gguf");
+        assert_eq!(m.cnn_policy(), CnnChainPolicy::Required);
+        assert_eq!(m.encoder_block_count(), 1, "encoder block0 must be found");
+        assert_eq!(m.decoder_block_count(), 1, "decoder block0 must be found");
+
+        let sr = m.config().sample_rate as f32;
+        let pcm: Vec<f32> = (0..m.config().sample_rate as usize)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
+            .collect();
+
+        let frames = m
+            .extract_real(&pcm, 16_000)
+            .expect("a discoverable U-Net must run, not trip the zero-block gate");
+        assert_eq!(
+            frames.len(),
+            pcm.len() / (m.config().hop as usize),
+            "extract_real must honor the frame_times() frame-count contract"
+        );
+        // `decode_class_to_hz` clamps both columns before returning, so
+        // these two comparisons catch `NaN` and nothing else. They are
+        // here as a "the chain did not produce garbage" pin, not as
+        // evidence that the numbers are right — no reference is
+        // involved anywhere in this file.
+        for (i, f) in frames.iter().enumerate() {
+            assert!(f.hz.is_finite(), "frame {i}: hz {} is not finite", f.hz);
+            assert!(
+                (0.0..=1.0).contains(&f.confidence),
+                "frame {i}: confidence {} is NaN or outside [0, 1]",
+                f.confidence
+            );
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// An encoder present but a decoder missing is the mirror hazard:
+    /// the naming convention IS understood, so the walker finds the
+    /// down path and then silently drops every up block. Under the
+    /// default policy that is refused too, and the message says which
+    /// half is missing.
+    #[test]
+    fn extract_real_refuses_a_unet_with_no_discoverable_decoder() {
+        // Encoder halves both axes, so the post-CNN width is
+        // C_last(2) * W_last(64) = 128 — which happens to equal n_mels,
+        // so the GRU and head compose and the forward reaches the end
+        // with the whole up path dropped. The only trace left is a
+        // halved frame count (50 where frame_times promises 100), which
+        // no error surfaces and no caller is obliged to check.
+        let mut b = smoke_gguf_builder(128, 128, /*gru_hidden=*/ 4);
+        b.add_tensor(
+            "unet.encoder.block0.conv.weight",
+            GgmlType::F32,
+            vec![2, 1, 3, 3],
+            f32_small(2 * 9, 0.70),
+        )
+        .expect("add encoder conv");
+        let bytes = b.to_bytes().expect("serialize");
+        let tmp = write_temp_gguf("unet-no-decoder", &bytes);
+
+        let m = RMVPE::from_gguf(&tmp).expect("load");
+        assert_eq!(m.encoder_block_count(), 1);
+        assert_eq!(m.decoder_block_count(), 0);
+
+        let sr = m.config().sample_rate as f32;
+        let pcm: Vec<f32> = (0..m.config().sample_rate as usize)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
+            .collect();
+
+        let Err(VokraError::ModelLoad(msg)) = m.extract_real(&pcm, 16_000) else {
+            panic!("a U-Net with no discoverable decoder must be refused");
+        };
+        assert!(
+            msg.contains("no U-Net decoder block found")
+                && msg.contains("unet.decoder.block{i}.conv.weight"),
+            "the error must name the missing half and its scheme, got {msg}"
+        );
+        std::fs::remove_file(&tmp).ok();
     }
 
     /// `RmvpeConfig::from_gguf` reads the chunk when present and falls

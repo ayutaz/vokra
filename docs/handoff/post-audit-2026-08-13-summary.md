@@ -191,7 +191,7 @@ resolved**（`FR-EX-08` compliance）。
    `ac03372`）: WF1 で scaffold のみだった `detect()` を上記 INT8 interpreter
    で real forward に置換（loud stub resolved）、`tools/parity/microwakeword/
    dump_reference.py`（tflite-runtime via uv Python 3.12）で TFLite reference
-   の dequant 出力を dump、`crates/vokra-kws-micro/tests/host_parity.rs` で
+   の dequant 出力を dump、`crates/vokra-kws-micro/tests/parity_microwakeword.rs` で
    env-gated（`VOKRA_KWS_REF_DIR`）に read してrust real detect() と比較する
    host parity harness を land（honest architectural atol、INT8 requantize
    rounding bound 由来）。

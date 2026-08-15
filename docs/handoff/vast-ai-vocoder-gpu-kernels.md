@@ -119,8 +119,14 @@ bit-identical parity verify** のフロー。以下は Metal + CUDA 両側の pa
 cd ~/vokra
 
 # 1. MSL kernel を追加
-# crates/vokra-backend-metal/src/kernels/mimi_rvq_decode.metal
-# （既存 kernel の pattern: fused_softmax_causal.metal 等）
+# crates/vokra-backend-metal/src/context.rs に MSL を inline const 文字列として追記
+# （既存 kernel の pattern: 同 file 内の `kernel void vokra_softmax_causal_f32(...)` 等）
+#
+# 注意: `.metal` ファイルも `src/kernels/` ディレクトリも存在しない。MSL は
+# すべて context.rs 内の Rust const 文字列で、実行時に compile される。
+# 別ファイルに置いても build が拾わないので kernel は無効のままになる。
+# 実証: 本 handoff が例に使っている mimi_rvq Metal kernel は commit 66d0077
+# で既に land 済みで、MSL は context.rs (+244 行) に入っている。
 
 # 2. compute.rs の Metal arm を実装
 # crates/vokra-models/src/compute.rs
@@ -134,7 +140,7 @@ cargo test --features metal -p vokra-models mimi_rvq_metal_bit_identical
 # atol < 5e-4 (M4-20 T17 DFN3 pattern の horizontal 展開)
 
 # 4. Commit
-git add crates/vokra-backend-metal/src/kernels/mimi_rvq_decode.metal
+git add crates/vokra-backend-metal/src/context.rs
 git add crates/vokra-models/src/compute.rs
 git commit -m "feat(mimi-rvq): Metal MSL kernel + bit-identical vs CPU parity"
 ```
@@ -152,8 +158,12 @@ source ~/.bashrc
 cd ~/vokra
 
 # 1. NVRTC kernel source string を追加（既 CC が下書き済み前提）
-# crates/vokra-backend-cuda/src/kernels/mimi_rvq_decode.cu.rs
-# （既存 kernel の pattern: fa_v2_causal.cu 相当の const &'static str）
+# crates/vokra-backend-cuda/src/context.rs に const &'static str として追記
+# （既存 kernel の pattern: 同 file の `vokra_flash_attn_v2_causal_f32`、
+#   Hopper 版は fa_v3.rs に分離）
+#
+# 注意: Metal 側と同じく `src/kernels/` ディレクトリも `.cu.rs` ファイルも
+# 存在しない。NVRTC source は context.rs / fa_v3.rs 内の const 文字列。
 
 # 2. compute.rs の CUDA arm を実装
 # crates/vokra-models/src/compute.rs
@@ -172,7 +182,7 @@ cargo test --release --features cuda -p vokra-models mimi_rvq_cuda_bit_identical
 # 結果を docs/bench-baselines/vast-YYYY-MM-DD/mimi-rvq-gpu.jsonl に record
 
 # 5. Commit → push（vast.ai から本 branch へ）
-git add crates/vokra-backend-cuda/src/kernels/mimi_rvq_decode.cu.rs
+git add crates/vokra-backend-cuda/src/context.rs
 git add crates/vokra-models/src/compute.rs
 git add docs/bench-baselines/vast-YYYY-MM-DD/mimi-rvq-gpu.jsonl
 git commit -m "feat(mimi-rvq): CUDA NVRTC kernel + bit-identical vs CPU (vast.ai)"
@@ -217,8 +227,8 @@ Kernel 実装 wave 完了後の artifacts:
 
 | Path | 内容 |
 |---|---|
-| `crates/vokra-backend-metal/src/kernels/*.metal` | 新規 MSL kernel source files（op ごとに 1-2 file） |
-| `crates/vokra-backend-cuda/src/kernels/*.cu.rs` | 新規 NVRTC kernel source string（`const &'static str`、実行時 compile） |
+| `crates/vokra-backend-metal/src/context.rs` | MSL kernel source を inline const 文字列として追記（`.metal` ファイルは存在しない） |
+| `crates/vokra-backend-cuda/src/context.rs` | NVRTC kernel source string を追記（`const &'static str`、実行時 compile。`src/kernels/` は存在しない） |
 | `crates/vokra-models/src/compute.rs` | Metal / CUDA arm の実装追加 |
 | `crates/vokra-models/tests/*_metal_bit_identical.rs` | M1 iMac local で bit-exact parity verify |
 | `crates/vokra-models/tests/*_cuda_bit_identical.rs` | vast.ai 上で bit-exact parity verify |
@@ -276,9 +286,10 @@ blocking ではない、C ABI 凍結 M5-13 の precondition でもない）。�
 - 総論: `docs/handoff/vast-ai-large-model-publish.md`
 - CPU arm reference: `crates/vokra-ops/src/{hifigan,hiftnet,bigvgan_generator,snac_decode,qwen3_tts_codec,mimi_rvq,dac_rvq,fsq_codec}.rs`
 - Compute seam: `crates/vokra-models/src/compute.rs`（`HotOp` enum + `for_backend` gate）
-- 既存 GPU kernel pattern:
-  - Metal: `crates/vokra-backend-metal/src/kernels/*.metal`（例: `fused_softmax_causal.metal`）
-  - CUDA: `crates/vokra-backend-cuda/src/kernels/*.cu.rs`（例: `fa_v2_causal`）
+- 既存 GPU kernel pattern（いずれも inline const 文字列、専用ディレクトリなし）:
+  - Metal: `crates/vokra-backend-metal/src/context.rs`（例: `kernel void vokra_softmax_causal_f32`）
+  - CUDA: `crates/vokra-backend-cuda/src/context.rs`（例: `vokra_flash_attn_v2_causal_f32`）、
+    Hopper 専用 FA v3 のみ `crates/vokra-backend-cuda/src/fa_v3.rs` に分離
 - Metal M1 iMac real GPU parity 実測 precedent:
   - M2-01 Whisper full Metal e2e（greedy 完全一致 vs CPU 1.58e-6）
   - Wave B（2026-07-16 real weight campaign）Mimi / Moshi / CosyVoice2 Δ 4.8-7.2e-7

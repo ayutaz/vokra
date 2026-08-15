@@ -13,10 +13,11 @@ Sibling of:
 - `../magnet_medium_30secs/prepare_checkpoint.py` (~5.7 GB, 1.5B / 30 sec
   — non-autoregressive masked-LM decoding, same-scale sibling in the
   Meta music-gen catalog)
-- `../jasco_400m_chords_drums/` (~1.6 GB, joint audio-symbolic
-  conditioning — same op family (flow-matching) but different
-  conditioning stack from MelodyFlow's dual text + audio prefix for
-  editing)
+- a future `../jasco_400m_chords_drums/` (not yet written — only the
+  wave-D tickets `docs/tickets/coverage-audit-2026-08-03/wave-d/jasco-*.md`
+  exist today; ~1.6 GB, joint audio-symbolic conditioning — same op
+  family (flow-matching) but different conditioning stack from
+  MelodyFlow's dual text + audio prefix for editing)
 - `../musicgen_medium_prepare_checkpoint.py` (11.4 GB, vast.ai required
   — AR-over-EnCodec sibling family, entirely different decoder loop
   from MelodyFlow flow-matching)
@@ -75,16 +76,28 @@ provisioning surface changes.
    # runbook (image, budget, provision.sh Wave 12 handling).
    vastai create instance <id> --image nvidia/cuda:13.0.0-devel-ubuntu24.04
    vastai ssh <id>
-   # Once on the box, run scripts/provision.sh — it installs uv, pins
-   # Python 3.12, and patches hf_config.pth to remove the malicious
-   # HF_ENDPOINT override.
+   # Once on the box, from a fresh clone of the repo:
+   cd /root/vokra
+   bash scripts/publish/vast-ai/provision.sh
+   # It installs uv, pins Python 3.12, pins huggingface_hub<0.30, and
+   # patches hf_config.pth to remove the malicious HF_ENDPOINT override.
    ```
 
 2. **Download** the release:
    ```bash
-   hf download facebook/melodyflow-t24-30secs \
+   uv run huggingface-cli download facebook/melodyflow-t24-30secs \
      --local-dir ./checkpoints/melodyflow-t24-30secs
    ```
+
+   `huggingface-cli`, **not** `hf`. Step 1's `provision.sh` pins
+   `huggingface_hub<0.30` (per
+   `[[reference-huggingface-hub-lt-030-vast-ai]]`), and that release
+   series ships exactly one console script — `huggingface-cli`. The
+   shorter `hf` entry point does not exist there, so a `hf download`
+   on a freshly provisioned box dies with `command not found` after
+   the rental clock has already started. `huggingface-cli` is present
+   both under the pin and in the current `tools/parity` lockfile
+   (huggingface-hub 1.24.0), so this one spelling works everywhere.
 
 3. **Prepare (torch pickle → flat safetensors)** — from this
    directory:
@@ -126,11 +139,18 @@ provisioning surface changes.
      --push
    ```
 
-   **Publish will refuse** unless the `docs/license-audit.md` §3.1 row
+   **This gate is satisfied** — the `docs/license-audit.md` §3.1 row
    `Meta MelodyFlow T24 30secs (\`facebook/melodyflow-t24-30secs\`)`
-   has an Approval cell filled in with ☑ Commercial or ☑ Research-only
-   (owner fail-closed default per memory
-   `[[feedback-license-signoff-primary-source]]`).
+   is signed **☑ Research-only 2026-08-14 yousan**, so the publish
+   proceeds. (Had it still been blank, `publish-one.sh` would refuse
+   at gate 4 — the fail-closed default per memory
+   `[[feedback-license-signoff-primary-source]]`.) `--allow-noncommercial`
+   remains **mandatory**: Research-only is a T4 tier, and omitting the
+   flag refuses at the non-commercial gate.
+
+   Note the training-data caveat under §Owner critical path below
+   survives the sign-off — it is a legal-review item, not a gate the
+   tooling enforces.
 
 6. **Verify**:
    ```bash
@@ -161,14 +181,13 @@ provisioning surface changes.
 
 ## Owner critical path (post-land)
 
-- **§3.1 sign-off**: fill the `Meta MelodyFlow T24 30secs` row Approval
-  cell in `docs/license-audit.md` §3.1. Primary source =
-  `https://huggingface.co/facebook/melodyflow-t24-30secs` cardData
-  `license: cc-by-nc-4.0` + audiocraft LICENSE file + arXiv:2407.03648.
-  Consider **bundling** sign-off with sibling MelodyFlow / MAGNeT /
-  MusicGen family rows — same license, same publisher, overlapping
-  training-data audit posture; a single owner audit session can cover
-  the family cluster.
+- ~~**§3.1 sign-off**~~ — **DONE: ☑ Research-only 2026-08-14 yousan.**
+  Primary source = `https://huggingface.co/facebook/melodyflow-t24-30secs`
+  cardData `license: cc-by-nc-4.0` + audiocraft LICENSE file +
+  arXiv:2407.03648. (The bundling suggestion — one owner session
+  covering the MelodyFlow / MAGNeT / MusicGen family cluster, same
+  license and publisher — is retained as guidance for the remaining
+  unsigned rows in that family.)
 - **training-data audit** (medium-high risk): Meta MusicGen family
   shares training corpus with Suno / Udio litigation cloud, and the
   MelodyFlow **editing** use-case (existing audio rewritten under a

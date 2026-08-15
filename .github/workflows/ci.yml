@@ -544,6 +544,46 @@ jobs:
         run: |
           bash scripts/check-parity-sidecar-citations.sh --self-test
           bash scripts/check-parity-sidecar-citations.sh
+      - name: Runbook path citation gate (cited paths in runbooks must exist)
+        # Sibling of the parity-sidecar gate above, pointed the other way:
+        # that one scans crates/ for citations OF tools/parity/*.py; this one
+        # scans the RUNBOOKS (tools/parity/**/README.md, docs/handoff/*.md)
+        # for citations of anything in the repo.
+        #
+        # Why a runbook is worth its own hard gate: the reader is an owner
+        # with a rented vast.ai box billing by the minute, midway through a
+        # multi-GB convert. A wrong path there costs money and an interrupted
+        # job, not just confusion. Measured 2026-08-15: THREE runbooks sent
+        # the owner to `scripts/vast-ai/provision.sh` (real path:
+        # scripts/publish/vast-ai/provision.sh) at step 2 of an 8-step paid
+        # walkthrough. The sweep that followed found the same class in
+        # `sentencepiece.rs` (really spm_proto.rs), `campplus.rs` (really
+        # camplus.rs — one `p`), `host_parity.rs` (renamed), and a
+        # `src/kernels/*.metal` layout that has never existed in either GPU
+        # backend, where kernels are inline const strings in context.rs.
+        #
+        # Scope is narrowed on purpose, because a gate that cries wolf on
+        # placeholders gets ignored — which is worse than no gate. Only
+        # repo-ANCHORED paths (scripts/ tools/ crates/ docs/ integrations/
+        # .github/) are checked; globs, <angle> placeholders, YYYY-MM-DD
+        # bakeoff templates, bare basenames, /root/... paths on the rented
+        # box, and URLs are all out of scope by construction rather than by
+        # an exception ledger. Gitignore-local citations (docs/tickets/,
+        # docs/adr/) are skipped via `git check-ignore`, so the gate cannot
+        # pass locally and fail in CI on citations that are perfectly correct.
+        #
+        # Like its sibling, it carries no exception ledger: the exception IS
+        # the sentence the reader sees ("a future `path` (not yet written)").
+        # Self-test covers RED (the real provision.sh defect, out-of-window
+        # marker, absent directory, non-ignored absent docs/ path) and GREEN
+        # (existing path, canonical/wrapped hedges, all 12 in-tree bilingual
+        # phrasings, placeholders, basenames/remote paths/URLs, gitignored
+        # paths) plus two parser guards, so a checker bug cannot manufacture
+        # a passing run. HARD FAIL, like its siblings. python3 stdlib + git
+        # only, no cargo.
+        run: |
+          bash scripts/check-runbook-path-citations.sh --self-test
+          bash scripts/check-runbook-path-citations.sh
       - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
         id: platform-support-drift
         # Verifies that every evidence anchor cited by

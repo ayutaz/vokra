@@ -29,11 +29,21 @@
 //! cargo test -p vokra-models --test parity_rmvpe -- --nocapture
 //! ```
 //!
-//! Under Path A the harness runs the full mel + CNN + BiGRU + head
-//! forward and asserts the frame_times() frame-count contract, the finite /
-//! sigmoid-range contract, and a coarse "voiced fraction sanity" band
-//! on a 1 s 440 Hz sine (a sine at F0 = 440 Hz should be well within
-//! the [30, 1000] Hz tracked band).
+//! Path A runs the mel + CNN + BiGRU + head forward on a 1 s 440 Hz
+//! sine and asserts: the U-Net is discoverable (non-zero encoder AND
+//! decoder block counts — without this, a differently-named checkpoint
+//! would run with its CNN skipped and every other assertion here would
+//! still hold), the `frame_times()` frame-count contract, and that no
+//! frame carries a `NaN`.
+//!
+//! **What Path A does not establish.** It compares against no
+//! reference, so it cannot detect a wrong-but-plausible pitch track;
+//! that is Path B's job. Read the per-frame `hz ∈ [fmin, fmax]` and
+//! `confidence ∈ [0, 1]` assertions for what they are: `decode_class_to_hz`
+//! *clamps* both before returning, so those comparisons fail only on
+//! `NaN` and never on an out-of-band estimate. And the decoder chain
+//! omits upstream's skip-concat regardless (see `RMVPE::extract_real`),
+//! so even a clean Path A run is not evidence of upstream agreement.
 //!
 //! ## Path B — post-CNN hidden state (`VOKRA_RMVPE_REAL_HIDDEN`)
 //!
@@ -326,6 +336,28 @@ fn parity_rmvpe_gguf_smoke() {
         m.tensor_count()
     );
 
+    // The U-Net must be visible to the forward, not merely present in
+    // the file. `tensor_count` counts everything under any of the seven
+    // recognized prefixes — including fork conventions the forward
+    // cannot walk — so a checkpoint can clear the bound-tensor floor
+    // above and still run with its entire CNN skipped. Nothing in the
+    // returned track distinguishes that case (the frame count,
+    // finiteness and sigmoid-range assertions below all hold either
+    // way), which is exactly why the block counts are pinned here.
+    assert!(
+        m.encoder_block_count() > 0,
+        "real RMVPE checkpoint must expose its U-Net under the scheme the \
+         forward walks (`unet.encoder.block{{i}}.conv.weight`); found 0 \
+         encoder blocks across {} bound tensors, so this GGUF was converted \
+         under a different naming convention",
+        m.tensor_count()
+    );
+    assert!(
+        m.decoder_block_count() > 0,
+        "real RMVPE checkpoint must expose its U-Net decoder under \
+         `unet.decoder.block{{i}}.conv.weight`; found 0 decoder blocks"
+    );
+
     // Real mel front-end: a 1 s 440 Hz sine at 16 kHz sample rate has
     // strong periodic energy near the 5th mel band; the log-mel peak
     // must be well above the ln(EPS) floor.
@@ -385,12 +417,16 @@ fn parity_rmvpe_gguf_smoke() {
     }
     eprintln!(
         "rmvpe GGUF loaded from {gguf_path}: sr={}, n_mels={}, n_class={}, \
-         {} tensors bound; extract_real returned {} frames (shape / finite / \
-         sigmoid-range contract holds; argmax parity is Path B)",
+         {} tensors bound, U-Net {}+{} blocks (encoder+decoder); extract_real \
+         returned {} frames (shape / finite / sigmoid-range contract holds; \
+         argmax parity is Path B, and the decoder still omits upstream's \
+         skip-concat — see RMVPE::extract_real)",
         cfg.sample_rate,
         cfg.n_mels,
         cfg.n_class,
         m.tensor_count(),
+        m.encoder_block_count(),
+        m.decoder_block_count(),
         frames.len(),
     );
 }

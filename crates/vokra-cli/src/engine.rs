@@ -1404,33 +1404,73 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::squim::Squim::from_gguf(g).map(|_| ())),
     },
     // --- Vocoders / codecs -----------------------------------------------
+    //
+    // Wave K (2026-08-15) — corrected rows. `bigvgan`, `hifigan_vocoder` and
+    // `speecht5_hifigan` all shipped as `LoudPartialForward` naming
+    // `X::from_gguf → X::decode`. Both halves were false, in the same
+    // direction as the Wave J charsiu defect: a non-loadable binder labelled
+    // as a working-loader-with-a-partial-forward. What the source says:
+    //
+    //   * The forwards are REAL and complete. `HiFiGan::decode`
+    //     (`hifigan/mod.rs`) is one call to the landed `hifigan_generator`
+    //     op; `BigVGan::decode` (`bigvgan/mod.rs`) delegates verbatim to
+    //     `BigVGanGenerator::forward`. Neither returns a deferral of any
+    //     kind, so `LoudPartialForward`'s promise — "calling the entry
+    //     point below reports the specific missing primitive" — sent the
+    //     reader hunting for a primitive that does not exist.
+    //   * The LOADERS are what block. `HiFiGan::from_gguf` returns
+    //     `NotImplemented` on both supported arches, and `BigVGan::from_gguf`
+    //     contains no `Ok(` return on any path — the variant check is the
+    //     last thing that can succeed, and the tensor walk past it is
+    //     deferred. Neither ever binds a tensor.
+    //
+    // So the blocker that fires FIRST is that nothing binds from a converted
+    // artifact — the same ordering rule the charsiu row above states.
+    // `NoGgufLoader` is that class, and its docstring already covers this
+    // exact shape ("A module whose `from_gguf` exists but refuses on every
+    // path, binding no tensor, is the same class"). Its `explain()`
+    // parenthetical about `synthesized` fixtures holds too: both modules
+    // ship `synthesized` alongside `new`, and that is where weights come
+    // from today.
+    //
+    // `entry` now names the constructor a caller can actually reach, per the
+    // charsiu precedent. `probe` drops to `None` because the registry
+    // invariant below requires it of this reason — a row must not claim
+    // "nothing binds" while carrying a probe that demonstrates a binder.
+    //
+    // `vocos` is the one row here that keeps `LoudPartialForward`: its
+    // `Vocos::decode` genuinely IS a loud-partial (it discards both args and
+    // returns `backbone_forward_loud_partial`, naming the ConvNeXt V2
+    // backbone). Only its `entry` was wrong for the same reason as the
+    // others — `Vocos::from_gguf` also has no `Ok(` return — so `from_gguf`
+    // is dropped from the entry while the reason stands.
     BoundArch {
         arch: "bigvgan",
         module: "vokra_models::bigvgan",
-        entry: "BigVGan::from_gguf → BigVGan::decode",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::bigvgan::BigVGan::from_gguf(g).map(|_| ())),
+        entry: "BigVGan::new(BigVGanVariant, BigVGanWeights) → BigVGan::decode",
+        reason: BoundReason::NoGgufLoader,
+        probe: None,
     },
     BoundArch {
         arch: "vocos",
         module: "vokra_models::vocos",
-        entry: "Vocos::from_gguf → Vocos::decode",
+        entry: "Vocos::new(VocosVariant, VocosConfig, u32) → Vocos::decode",
         reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::vocos::Vocos::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "hifigan_vocoder",
         module: "vokra_models::hifigan",
-        entry: "HiFiGan::from_gguf → HiFiGan::decode",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::hifigan::HiFiGan::from_gguf(g).map(|_| ())),
+        entry: "HiFiGan::new(HifiGanWeights, HifiGanAttrs, HifiGanConfig, u32) → HiFiGan::decode",
+        reason: BoundReason::NoGgufLoader,
+        probe: None,
     },
     BoundArch {
         arch: "speecht5_hifigan",
         module: "vokra_models::hifigan",
-        entry: "HiFiGan::from_gguf → HiFiGan::decode",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::hifigan::HiFiGan::from_gguf(g).map(|_| ())),
+        entry: "HiFiGan::new(HifiGanWeights, HifiGanAttrs, HifiGanConfig, u32) → HiFiGan::decode",
+        reason: BoundReason::NoGgufLoader,
+        probe: None,
     },
     BoundArch {
         arch: "snac",
@@ -1631,9 +1671,18 @@ fn bound_arch_error(bound: &BoundArch, gguf: &GgufFile) -> String {
                 format!("Loading this GGUF through that binder FAILED — the binder reports: {msg}")
             }
         },
-        None => "This CLI did not probe-load it: that binder's loader does not take an \
-                 already-parsed GGUF handle, so the load has to happen through the library \
-                 entry point below."
+        // Deliberately states only that no probe ran, not WHY. The rows
+        // reaching this arm no longer share a single cause: some have no
+        // loader at all, some have one that takes a filesystem path, and
+        // some (bigvgan, hifigan_vocoder, speecht5_hifigan) have a
+        // `&GgufFile` loader that refuses on every path. The previous
+        // wording asserted the second case for all of them, and also told
+        // the reader the load "has to happen through the library entry
+        // point below" — false wherever that entry is a hand-build
+        // constructor like `HiFiGan::new`, which loads nothing.
+        None => "This CLI did not probe-load it: no `&GgufFile` probe is registered for this \
+                 row, so the binder's own load behaviour is not exercised here. Reach the \
+                 runtime through the library entry point below."
             .to_owned(),
     };
     let arch = bound.arch;
@@ -2460,6 +2509,177 @@ mod tests {
             row.entry.contains("Charsiu::new"),
             "the module names `Charsiu::new(CharsiuConfig, CharsiuWeights)` as the \
              reachable constructor: {}",
+            row.entry
+        );
+    }
+
+    // ---- Wave K (2026-08-15) — vocoders: real forwards, dead loaders -----
+    //
+    // `bigvgan`, `hifigan_vocoder` and `speecht5_hifigan` shipped as
+    // `LoudPartialForward` naming `X::from_gguf → X::decode`. Both halves
+    // were false: the forwards are complete calls into landed ops, while the
+    // LOADERS refuse on every path. `vocos` sat beside them with a genuinely
+    // loud-partial `decode` but the same unreachable `from_gguf` in `entry`.
+    // No test mentioned any of the four, which is exactly how they drifted;
+    // these pin the corrected state from all three sides — the message a
+    // user sees, the binder behind it, and the rows' own data.
+
+    /// The `run` diagnostic names the blocker that actually fires (nothing
+    /// binds) rather than a forward gap, and points at the constructor a
+    /// caller can really reach.
+    #[test]
+    fn load_session_binds_hifigan_vocoder_as_unwired_loader_not_loud_partial_forward() {
+        let err = assert_bound_arch(
+            "hifigan_vocoder",
+            "hifigan-vocoder-arch",
+            "vokra_models::hifigan",
+            "HiFiGan::new",
+        );
+        assert!(
+            err.contains("no GGUF loader yet"),
+            "hifigan_vocoder's first blocker is that nothing binds from a converted \
+             artifact: {err}"
+        );
+        assert!(
+            !err.contains("runtime forward is a loud-partial"),
+            "`HiFiGan::decode` is one complete call into the landed `hifigan_generator` op \
+             — leading with a forward gap sends the reader hunting for a missing primitive \
+             that does not exist: {err}"
+        );
+        assert!(
+            !err.contains("HiFiGan::from_gguf"),
+            "the entry must not send a caller at a constructor that always errors: {err}"
+        );
+    }
+
+    /// The claim the re-filed rows rest on, checked against the binder
+    /// itself: `HiFiGan::from_gguf` refuses a correctly stamped GGUF on BOTH
+    /// supported arches, binding no tensor.
+    ///
+    /// If a real loader lands, this test fails — which is the point. The
+    /// rows' `reason` and `entry` both assume nothing binds, so that commit
+    /// has to revisit them rather than leave a stale claim in place.
+    #[test]
+    fn hifigan_from_gguf_still_binds_nothing_on_either_arch() {
+        for arch in ["hifigan_vocoder", "speecht5_hifigan"] {
+            let tag = format!("hifigan-loader-probe-{arch}");
+            with_arch_only_gguf(arch, &tag, |p| {
+                let gguf = GgufFile::open(p).expect("arch-only fixture parses");
+                // let-else rather than `.unwrap_err()`: `HiFiGan` is `!Debug`.
+                let Err(err) = vokra_models::hifigan::HiFiGan::from_gguf(&gguf) else {
+                    panic!(
+                        "HiFiGan::from_gguf bound a metadata-only `{arch}` GGUF — if the \
+                         real binder landed, revisit the BOUND_ARCHES row: its reason \
+                         (NoGgufLoader) and entry (HiFiGan::new) both assume nothing binds"
+                    );
+                };
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("real-weight loader is deferred"),
+                    "the refusal must still name the deferred loader: {msg}"
+                );
+            });
+        }
+    }
+
+    /// `BigVGan::from_gguf` has no `Ok(` return on any path. Stamping a valid
+    /// variant walks past both dispatch gates to the deepest reachable point
+    /// (the deferred tensor walk), so this pins the real blocker rather than
+    /// an early metadata refusal that would still fire under a real loader.
+    #[test]
+    fn bigvgan_from_gguf_still_binds_nothing_past_variant_dispatch() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "bigvgan");
+        b.add_string(
+            vokra_models::bigvgan::KEY_BIGVGAN_VARIANT,
+            vokra_models::bigvgan::VARIANT_TAG_V2_24KHZ_100BAND_256X,
+        );
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-bigvgan-variant-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let gguf = GgufFile::open(&path).expect("bigvgan variant fixture parses");
+        // let-else rather than `.unwrap_err()`: `BigVGan` is `!Debug`.
+        let Err(err) = vokra_models::bigvgan::BigVGan::from_gguf(&gguf) else {
+            let _ = std::fs::remove_file(&path);
+            panic!(
+                "BigVGan::from_gguf bound a metadata-only GGUF past its variant gate — if \
+                 the real tensor walk landed, revisit the BOUND_ARCHES row: its reason \
+                 (NoGgufLoader) and entry (BigVGan::new) both assume nothing binds"
+            );
+        };
+        let _ = std::fs::remove_file(&path);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("real-weight loader is deferred"),
+            "the refusal must still name the deferred tensor walk: {msg}"
+        );
+    }
+
+    /// The rows' own data, asserted directly so a regression reports its
+    /// cause rather than only the downstream message.
+    #[test]
+    fn bound_arch_registry_vocoder_rows_do_not_promise_a_gguf_load() {
+        for (arch, ctor) in [
+            ("bigvgan", "BigVGan::new"),
+            ("hifigan_vocoder", "HiFiGan::new"),
+            ("speecht5_hifigan", "HiFiGan::new"),
+        ] {
+            let row = BOUND_ARCHES
+                .iter()
+                .find(|b| b.arch == arch)
+                .unwrap_or_else(|| {
+                    panic!("`{arch}` has a vokra-models binder and must carry a row")
+                });
+            assert_eq!(
+                row.reason,
+                BoundReason::NoGgufLoader,
+                "`{arch}`: its loader refuses on every path, binding no tensor — \
+                 `LoudPartialForward` would assert a forward gap that its complete \
+                 `decode` does not have"
+            );
+            assert!(
+                !row.entry.contains("from_gguf"),
+                "`{arch}`: `entry` must name a reachable constructor, and its `from_gguf` \
+                 always errors: {}",
+                row.entry
+            );
+            assert!(
+                row.entry.contains(ctor),
+                "`{arch}`: the module names `{ctor}` as the reachable constructor: {}",
+                row.entry
+            );
+        }
+    }
+
+    /// `vocos` is the row that KEEPS `LoudPartialForward` — its `decode`
+    /// really does discard both arguments and return the ConvNeXt V2
+    /// deferral — but its `entry` must not name the loader, which never
+    /// binds either.
+    #[test]
+    fn bound_arch_registry_vocos_row_keeps_its_forward_gap_but_drops_the_loader() {
+        let row = BOUND_ARCHES
+            .iter()
+            .find(|b| b.arch == "vocos")
+            .expect("vocos has a vokra-models binder and must carry a row");
+        assert_eq!(
+            row.reason,
+            BoundReason::LoudPartialForward,
+            "`Vocos::decode` returns `backbone_forward_loud_partial` on every call — \
+             unlike its bigvgan / hifigan siblings, this row's forward gap is real"
+        );
+        assert!(
+            !row.entry.contains("from_gguf"),
+            "`Vocos::from_gguf` has no `Ok(` return on any path, so naming it points the \
+             caller at a dead end: {}",
+            row.entry
+        );
+        assert!(
+            row.entry.contains("Vocos::new"),
+            "the module names `Vocos::new` as the reachable constructor: {}",
             row.entry
         );
     }

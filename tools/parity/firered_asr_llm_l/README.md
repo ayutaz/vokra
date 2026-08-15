@@ -57,7 +57,7 @@ threshold. The full path runs on a rented vast.ai GPU box.
    ```bash
    # On the vast.ai host, from a fresh clone of the repo:
    cd /root/vokra
-   bash scripts/vast-ai/provision.sh          # torch, huggingface_hub<0.30 pin, etc.
+   bash scripts/publish/vast-ai/provision.sh  # torch, huggingface_hub<0.30 pin, etc.
    ```
 
    The provision script pins `huggingface_hub<0.30` on vast.ai to
@@ -138,26 +138,32 @@ threshold. The full path runs on a rented vast.ai GPU box.
    vastai destroy <instance-id>
    ```
 
-## Owner critical path (from the audit ticket §Owner critical path)
+## Owner critical path — CLEARED (signed 2026-08-14)
 
-Even after this CC land, publish stays fail-closed until owner:
+**The licensing gate is satisfied; step 7 above is runnable.**
+`docs/license-audit.md` §3.1 records **☑ Commercial 2026-08-14
+yousan**, on primary-source `curl` verification of the HF `cardData`
+and the README frontmatter (both `license: apache-2.0`; the commands
+and their output are preserved in
+`docs/handoff/vast-ai-publish-firered-asr-llm-l.md` §0.1).
 
-1. Verifies the HF card `license: apache-2.0` at primary source
+What that sign-off did and did not cover:
+
+1. ✅ HF card `license: apache-2.0` verified at primary source
    (`https://huggingface.co/FireRedTeam/FireRedASR-LLM-L`).
-2. Cross-checks the FireRedTeam GitHub LICENSE file
+2. ✅ FireRedTeam GitHub LICENSE cross-checked
    (`github.com/FireRedTeam/FireRedASR`).
-3. Audits the training-corpus commercial-use posture — Chinese ASR
-   implies possible WenetSpeech / KeSpeech 混成 which may carry
-   per-corpus attribution or NC obligations even though the released
-   weight itself is Apache-2.0.
-4. Adds the ☑ Commercial or ☑ Research-only sign-off to
-   `docs/license-audit.md` §3.1 row (this CC land inserts the row
-   with blank sign-off + `______________` — the fail-closed default
-   per memory `[[feedback-license-signoff-primary-source]]`).
+3. ⚠️ **Training-corpus posture was explicitly held OUT of scope** —
+   Chinese ASR implies possible WenetSpeech / KeSpeech 混成, which may
+   carry per-corpus attribution or NC obligations even though the
+   released weight is Apache-2.0. The §3.1 entry records this as a
+   risk-acceptance judgement made at publish time, not as a completed
+   audit. Re-read it before publishing if that risk posture has moved.
+4. ✅ §3.1 row signed ☑ Commercial.
 
-Only step (4) matters for the publish gate. `publish-one.sh` reads
-the signoff via `scripts/publish/signoff_match.py`; a blank row
-refuses the publish (`upload.sh` refuses per gate 4).
+`publish-one.sh` reads the sign-off via
+`scripts/publish/signoff_match.py`; a **blank** row would refuse at
+gate 4 (`upload.sh`), but this row is signed, so gate 4 passes.
 
 ## Honest boundaries
 
@@ -186,10 +192,11 @@ refuses the publish (`upload.sh` refuses per gate 4).
 ## License / distribution note
 
 The **`FireRedTeam/FireRedASR-LLM-L`** upstream release is
-Apache-2.0 per the HF card at the time of writing; the wave-B
-ticket records this. **Owner primary-source verification is
-pending** per §Owner critical path above — the ☑ sign-off column in
-`docs/license-audit.md` §3.1 stays blank until owner attests to it.
+Apache-2.0, **verified at primary source** (HF `cardData` + README
+frontmatter, CC `curl` 2026-08-13) and signed off as
+**☑ Commercial 2026-08-14 yousan** in `docs/license-audit.md` §3.1 —
+which is the authoritative record. See §Owner critical path above for
+the one carve-out (training-corpus posture).
 
 The Vokra runtime consumes the produced GGUF as an opaque numeric
 artefact; no Python / torch / safetensors code enters the runtime

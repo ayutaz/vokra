@@ -56,7 +56,9 @@
 //!
 //! Every required key is enforced (FR-EX-08): a missing key, a wrong value
 //! type, or a mismatched `arch` string is an explicit
-//! [`VokraError::ModelLoad`], never a silent bind.
+//! [`VokraError::ModelLoad`], never a silent bind. The `tests` module below
+//! sweeps all ten keys of this table for both the missing case and the
+//! wrong-type case, so the claim is pinned rather than merely asserted.
 //!
 //! # Tensors (shape-generic)
 //!
@@ -172,8 +174,15 @@ pub struct Tensor {
     /// Tensor name as emitted by the sidecar (equals the upstream `.tflite`
     /// tensor name).
     pub name: String,
-    /// Row-major dimensions, innermost first, as stored on disk. Matches
-    /// numpy `.shape` on the source tensor.
+    /// Dimensions exactly as stored on disk: innermost (fastest-varying)
+    /// axis first, which is the GGUF wire order every Vokra binder sees.
+    ///
+    /// This is the **reverse** of numpy `.shape` on the source tensor.
+    /// `gguf.GGUFWriter`, which the sidecar uses, packs dims back-to-front
+    /// at write time (the `ti.shape[n_dims - 1 - j]` index in
+    /// `gguf/gguf_writer.py`), so a numpy `(out, in)` weight arrives here
+    /// as `[in, out]`. Read this field as wire order and reverse it if you
+    /// need the upstream framework's convention.
     pub shape: Vec<u64>,
     /// Decoded F32 payload (little-endian off-disk → host `f32`).
     pub data: Vec<f32>,
@@ -401,22 +410,102 @@ fn get_f32(gguf: &GgufFile, key: &str) -> Result<f32> {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use vokra_core::gguf::GgufBuilder;
+    use vokra_core::gguf::{GgufBuilder, GgufMetadataValue};
+
+    /// Every key the module-doc contract table declares required, in the
+    /// order `ModelHeader::from_gguf` reads them.
+    ///
+    /// Kept as its own list so the sweeps below iterate the contract rather
+    /// than a hand-copied subset;
+    /// `required_key_list_covers_exactly_the_header_pairs` pins it against
+    /// `valid_header_pairs`.
+    const ALL_REQUIRED_KEYS: [&str; 10] = [
+        KEY_ARCH,
+        KEY_MODEL,
+        KEY_THRESHOLD,
+        KEY_SAMPLE_RATE,
+        KEY_HOP_MS,
+        KEY_WINDOW_MS,
+        KEY_N_MELS,
+        KEY_FEATURE_DIM,
+        KEY_TFLITE_SHA256,
+        KEY_UPSTREAM,
+    ];
+
+    /// The string-typed keys, read through `get_str`.
+    const STRING_KEYS: [&str; 4] = [KEY_ARCH, KEY_MODEL, KEY_TFLITE_SHA256, KEY_UPSTREAM];
+
+    /// The unsigned-integer dimensioning keys, read through
+    /// `require_nonzero_u32` and so through `get_u32`.
+    const U32_KEYS: [&str; 5] = [
+        KEY_SAMPLE_RATE,
+        KEY_HOP_MS,
+        KEY_WINDOW_MS,
+        KEY_N_MELS,
+        KEY_FEATURE_DIM,
+    ];
+
+    /// The canonical ten-key header as typed `(key, value)` pairs, in the
+    /// order the sidecar
+    /// (`tools/parity/microwakeword/prepare_checkpoint.py`) emits them.
+    ///
+    /// Single source for both the happy-path builder and the per-key
+    /// omission sweep, so a value used in one can never drift from the
+    /// other.
+    fn valid_header_pairs() -> Vec<(&'static str, GgufMetadataValue)> {
+        vec![
+            (
+                KEY_ARCH,
+                GgufMetadataValue::String(EXPECTED_ARCH.to_string()),
+            ),
+            (
+                KEY_MODEL,
+                GgufMetadataValue::String("hey_jarvis".to_string()),
+            ),
+            (KEY_THRESHOLD, GgufMetadataValue::F32(0.5)),
+            (KEY_SAMPLE_RATE, GgufMetadataValue::U32(16_000)),
+            (KEY_HOP_MS, GgufMetadataValue::U32(10)),
+            (KEY_WINDOW_MS, GgufMetadataValue::U32(32)),
+            (KEY_N_MELS, GgufMetadataValue::U32(40)),
+            (KEY_FEATURE_DIM, GgufMetadataValue::U32(40)),
+            (
+                KEY_TFLITE_SHA256,
+                GgufMetadataValue::String("0123456789abcdef".to_string()),
+            ),
+            (
+                KEY_UPSTREAM,
+                GgufMetadataValue::String("https://example.com/hey_jarvis.tflite".to_string()),
+            ),
+        ]
+    }
 
     /// The full set of `vokra.kws.*` keys the sidecar emits for the
     /// canonical `hey_jarvis` v2 release. Every test that wants a
     /// well-formed header starts from this and mutates one field.
     fn add_valid_header(b: &mut GgufBuilder) {
-        b.add_string(KEY_ARCH, EXPECTED_ARCH);
-        b.add_string(KEY_MODEL, "hey_jarvis");
-        b.add_f32(KEY_THRESHOLD, 0.5);
-        b.add_u32(KEY_SAMPLE_RATE, 16_000);
-        b.add_u32(KEY_HOP_MS, 10);
-        b.add_u32(KEY_WINDOW_MS, 32);
-        b.add_u32(KEY_N_MELS, 40);
-        b.add_u32(KEY_FEATURE_DIM, 40);
-        b.add_string(KEY_TFLITE_SHA256, "0123456789abcdef");
-        b.add_string(KEY_UPSTREAM, "https://example.com/hey_jarvis.tflite");
+        for (key, value) in valid_header_pairs() {
+            b.add_metadata(key, value);
+        }
+    }
+
+    /// Serializes an otherwise-valid header with one key replaced by
+    /// `value`. [`GgufBuilder::add_metadata`] replaces an existing key in
+    /// place, so the override wins over what `add_valid_header` stamped.
+    fn build_with_override(key: &str, value: GgufMetadataValue) -> Vec<u8> {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_metadata(key, value);
+        b.to_bytes().expect("serialize gguf")
+    }
+
+    /// Loads `bytes` requiring a [`VokraError::ModelLoad`], returning its
+    /// message for substring assertions. `context` names the case so a
+    /// sweep failure identifies which iteration broke.
+    fn expect_model_load(bytes: &[u8], context: &str) -> String {
+        match Model::from_bytes(bytes) {
+            Err(VokraError::ModelLoad(m)) => m,
+            other => panic!("expected VokraError::ModelLoad for {context}, got {other:?}"),
+        }
     }
 
     /// Queues an F32 tensor whose element values are the arithmetic
@@ -709,5 +798,262 @@ mod tests {
             }
             other => panic!("expected ModelLoad for wrong threshold type, got {other:?}"),
         }
+    }
+
+    // ---- contract sweeps: every required key, every key kind ------------
+    //
+    // The focused tests above cover one representative of each failure
+    // mode. These sweeps cover the whole ten-key contract, so a key that
+    // gains an accessor without gaining enforcement cannot slip through.
+
+    #[test]
+    fn required_key_list_covers_exactly_the_header_pairs() {
+        // Fail-closed structural pin: a key added to the contract (and so
+        // to `valid_header_pairs`) without being added to
+        // `ALL_REQUIRED_KEYS` would silently drop out of every sweep below,
+        // leaving it unenforced but apparently covered.
+        let pair_keys: Vec<&str> = valid_header_pairs().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(pair_keys, ALL_REQUIRED_KEYS.to_vec());
+        assert_eq!(
+            ALL_REQUIRED_KEYS.len(),
+            10,
+            "the module doc declares a ten-key contract"
+        );
+    }
+
+    #[test]
+    fn key_kind_groups_partition_the_required_keys() {
+        // Every required key is read by exactly one of the three typed
+        // accessors. `KEY_THRESHOLD` is the sole float key, so the two
+        // group constants plus it must reconstruct the full set — a new
+        // key left out of both groups fails here.
+        let mut covered: Vec<&str> = STRING_KEYS.to_vec();
+        covered.extend_from_slice(&U32_KEYS);
+        covered.push(KEY_THRESHOLD);
+        covered.sort_unstable();
+        let mut all = ALL_REQUIRED_KEYS.to_vec();
+        all.sort_unstable();
+        assert_eq!(covered, all, "every required key needs a typed-kind group");
+    }
+
+    #[test]
+    fn rejects_every_missing_required_key_by_name() {
+        // Omit exactly one key per iteration; every other key stays valid,
+        // so the error raised is unambiguously the one under test.
+        for skip in ALL_REQUIRED_KEYS {
+            let mut b = GgufBuilder::new();
+            for (key, value) in valid_header_pairs() {
+                if key != skip {
+                    b.add_metadata(key, value);
+                }
+            }
+            let bytes = b.to_bytes().expect("serialize gguf");
+            let m = expect_model_load(&bytes, skip);
+            assert!(
+                m.contains(skip),
+                "message must name the missing key `{skip}`: {m}"
+            );
+            assert!(
+                m.contains("missing"),
+                "message must say the key is missing `{skip}`: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_string_value_for_every_string_key() {
+        // A U32 where a string is contractually required must fail, not
+        // bind a stringified fallback (FR-EX-08).
+        for key in STRING_KEYS {
+            let bytes = build_with_override(key, GgufMetadataValue::U32(7));
+            let m = expect_model_load(&bytes, key);
+            assert!(m.contains(key), "message must name `{key}`: {m}");
+            assert!(
+                m.contains("not a string"),
+                "message must state the expected kind for `{key}`: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_integer_value_for_every_u32_key() {
+        // A numeric-looking STRING must not be parsed into a number: GGUF
+        // values are typed, and text parsing here would also drag in the
+        // locale-dependent `strtod` trap the format deliberately avoids.
+        for key in U32_KEYS {
+            let bytes = build_with_override(key, GgufMetadataValue::String("40".to_string()));
+            let m = expect_model_load(&bytes, key);
+            assert!(m.contains(key), "message must name `{key}`: {m}");
+            assert!(
+                m.contains("not an unsigned integer"),
+                "a numeric-looking string must not be parsed for `{key}`: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_signed_integer_for_every_u32_key() {
+        // `as_u64` refuses signed variants outright, so -1 surfaces as a
+        // wrong-type refusal instead of widening to u64::MAX and failing
+        // later with a confusing out-of-range message.
+        for key in U32_KEYS {
+            let bytes = build_with_override(key, GgufMetadataValue::I32(-1));
+            let m = expect_model_load(&bytes, key);
+            assert!(m.contains(key), "message must name `{key}`: {m}");
+            assert!(
+                m.contains("not an unsigned integer"),
+                "signed -1 must not widen for `{key}`: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_u32_key_whose_value_exceeds_u32() {
+        // `get_u32` accepts any unsigned width and then narrows; a value
+        // past u32::MAX is a corrupt or misidentified artifact and must be
+        // refused rather than truncated.
+        let too_big = u64::from(u32::MAX) + 1;
+        for key in U32_KEYS {
+            let bytes = build_with_override(key, GgufMetadataValue::U64(too_big));
+            let m = expect_model_load(&bytes, key);
+            assert!(m.contains(key), "message must name `{key}`: {m}");
+            assert!(
+                m.contains("u32"),
+                "message must state the narrowing failure for `{key}`: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_narrower_unsigned_widths_for_u32_keys() {
+        // The documented widening (U8 / U16 / U32 / U64 all accepted) is
+        // deliberate: GGUF writers pick the narrowest type that fits, so a
+        // U8-tagged `n_mels` is a legitimate file, not a corrupt one. This
+        // is the positive half of the narrowing contract above.
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_metadata(KEY_SAMPLE_RATE, GgufMetadataValue::U64(16_000));
+        b.add_metadata(KEY_HOP_MS, GgufMetadataValue::U16(10));
+        b.add_metadata(KEY_N_MELS, GgufMetadataValue::U8(40));
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let m = Model::from_bytes(&bytes).expect("widened unsigned header loads");
+        assert_eq!(m.header.sample_rate, 16_000);
+        assert_eq!(m.header.hop_ms, 10);
+        assert_eq!(m.header.n_mels, 40);
+    }
+
+    #[test]
+    fn rejects_integer_typed_threshold() {
+        // `as_f64` accepts F32 / F64 only, so an integer-tagged threshold
+        // is a wrong-type refusal — it must NOT coerce to 1.0, which would
+        // silently install a never-fires wake cutoff.
+        let bytes = build_with_override(KEY_THRESHOLD, GgufMetadataValue::U32(1));
+        let m = expect_model_load(&bytes, KEY_THRESHOLD);
+        assert!(m.contains(KEY_THRESHOLD), "message must name the key: {m}");
+        assert!(
+            m.contains("not a float"),
+            "message must state the expected kind: {m}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_threshold() {
+        // NaN and ±inf are corrupt artifacts. The F64 case additionally
+        // pins the "non-finite *after narrowing*" path: 1e300 is a finite
+        // f64 that becomes +inf as f32, so a reader that checked
+        // finiteness before narrowing would bind an infinite threshold —
+        // and `(0.0..=1.0).contains(&inf)` being false would then produce
+        // a misleading out-of-range message instead.
+        let cases = [
+            GgufMetadataValue::F32(f32::NAN),
+            GgufMetadataValue::F32(f32::INFINITY),
+            GgufMetadataValue::F32(f32::NEG_INFINITY),
+            GgufMetadataValue::F64(1e300),
+        ];
+        for value in cases {
+            let bytes = build_with_override(KEY_THRESHOLD, value);
+            let m = expect_model_load(&bytes, KEY_THRESHOLD);
+            assert!(m.contains(KEY_THRESHOLD), "message must name the key: {m}");
+            assert!(
+                m.contains("non-finite"),
+                "message must state non-finiteness: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_threshold_just_outside_the_inclusive_bounds() {
+        // Pairs with `header_accepts_threshold_at_range_endpoints`:
+        // together they pin the bound as inclusive at exactly 0.0 and 1.0,
+        // so a `<` / `<=` slip in either direction is caught. Both values
+        // are the adjacent representable f32 to the endpoint.
+        for t in [-f32::EPSILON, 1.0_f32 + f32::EPSILON] {
+            let bytes = build_with_override(KEY_THRESHOLD, GgufMetadataValue::F32(t));
+            let m = expect_model_load(&bytes, KEY_THRESHOLD);
+            assert!(
+                m.contains(KEY_THRESHOLD),
+                "message must name the key for {t}: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_every_non_f32_tensor_dtype() {
+        // Phase 2 is F32-only. F16 has its own focused test above; this
+        // sweep adds the other dtypes `GgmlType` can carry so "F32 only"
+        // cannot decay into "anything but F16".
+        let cases: [(&str, GgmlType, Vec<u64>, usize); 3] = [
+            ("bf16_weight", GgmlType::BF16, vec![4], 4 * 2),
+            ("f16_weight", GgmlType::F16, vec![4], 4 * 2),
+            // K-quants are block-addressed: one Q6_K super-block is 256
+            // elements stored in 210 bytes (`GgmlType::type_size`).
+            ("q6k_weight", GgmlType::Q6K, vec![256], 210),
+        ];
+        for (name, dtype, dims, payload) in cases {
+            let mut b = GgufBuilder::new();
+            add_valid_header(&mut b);
+            b.add_tensor(name, dtype, dims, vec![0u8; payload])
+                .expect("queue tensor");
+            let bytes = b.to_bytes().expect("serialize gguf");
+            let m = expect_model_load(&bytes, name);
+            assert!(
+                m.contains(name),
+                "message must name the offending tensor: {m}"
+            );
+            assert!(
+                m.contains("F32"),
+                "message must name the required dtype: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_unknown_metadata_keys() {
+        // The sidecar also stamps `vokra.provenance.*`, and the writer
+        // injects `general.*`. The loader must read its own group and
+        // leave the rest alone — otherwise every provenance-stamped real
+        // file (i.e. every file the sidecar actually emits) would fail.
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.provenance.license", "apache-2.0");
+        b.add_string("vokra.provenance.upstream_hf", "kahrendt/microWakeWord");
+        b.add_u32("some.unrelated.key", 1);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let m = Model::from_bytes(&bytes).expect("extra metadata must not break the bind");
+        assert_eq!(m.header.model, "hey_jarvis");
+    }
+
+    #[test]
+    fn tensor_shape_is_preserved_in_on_disk_order() {
+        // `Tensor::shape` is GGUF wire order (innermost axis first), copied
+        // verbatim from the tensor info: the Rust writer and reader both
+        // round-trip dims without reordering. This is the REVERSE of numpy
+        // `.shape` on a sidecar-produced file, because `gguf.GGUFWriter`
+        // packs dims back-to-front at write time — a Rust round-trip
+        // cannot exhibit that, so the field doc carries the citation.
+        let bytes = build_valid_bytes(&[("w", &[2, 3, 4])]);
+        let m = Model::from_bytes(&bytes).expect("valid gguf loads");
+        assert_eq!(m.tensor("w").expect("tensor present").shape, vec![2, 3, 4]);
+        assert_eq!(m.tensors[0].data.len(), 24);
     }
 }

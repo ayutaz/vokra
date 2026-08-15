@@ -228,6 +228,86 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-15 — 1.0.0-rc.1-dev (RMVPE: a checkpoint whose U-Net is not discoverable is refused instead of running without it — Rust surface only, advisory)
+
+**Behaviour change** plus additive Rust surface. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+no F0 extractor is cbindgen-exported, so `scripts/gen-c-abi.sh --check` sees
+no diff and `scripts/check-abi-changelog.sh` does not fire. The Rust
+public-API snapshot gate covers `vokra-core` / `vokra-ops` / `vokra-capi`
+only, so `vokra-models` changes do not move it either. Recorded here
+because the pre-1.0 policy's recording rule covers Rust `pub` items.
+
+**Motivation**: `RMVPE::extract_real` discovered its U-Net by walking the
+literal upstream scheme `unet.encoder.block{i}.conv.weight` and breaking at
+the first gap, with no check that the walk found anything. Meanwhile the
+loader's acceptance filter, `REQUIRED_TENSOR_PREFIXES`, admits seven broad
+prefixes — including `encoder.`, `decoder.` and `cnn.`, annotated in-file as
+"fallback prefix used by some RMVPE forks". A fork-convention checkpoint
+therefore loaded successfully, discovered **zero** blocks, and fed the raw
+mel plane straight into the BiGRU. The result was a full-length, finite,
+in-band pitch track produced by a model missing its entire CNN, and nothing
+distinguished it from a real measurement: not the return type, not the frame
+count, not any assertion in the tree. The module header compounded it by
+claiming "Every tensor referenced by the CNN + GRU + head is required", which
+`from_gguf` never implemented — it requires one tensor matching one of seven
+prefixes.
+
+| Item | Kind | Signature | Rationale |
+| --- | --- | --- | --- |
+| `f0::rmvpe::CnnChainPolicy` | Added | `pub enum { Required, Optional }` (`Default` = `Required`) | Makes the CNN-less path something a caller names, never something a failed lookup selects |
+| `f0::rmvpe::RMVPE::from_gguf_with_cnn_policy` | Added | `(&Path, CnnChainPolicy) -> Result<Self, VokraError>` | The explicit constructor for structural fixtures |
+| `f0::rmvpe::RMVPE::cnn_policy` | Added | `(&self) -> CnnChainPolicy` | Lets a caller (and a test) see which posture a handle carries |
+| `f0::rmvpe::RMVPE::encoder_block_count` | Added | `(&self) -> usize` | Separates "the U-Net ran" from "the U-Net was skipped" — frame count and finiteness cannot |
+| `f0::rmvpe::RMVPE::decoder_block_count` | Added | `(&self) -> usize` | Decoder-side counterpart |
+| `f0::rmvpe::RMVPE::extract_real` | Changed (behaviour) | signature unchanged | Zero discoverable encoder *or* decoder blocks is now `ModelLoad` under `CnnChainPolicy::Required` |
+| `f0::rmvpe::RMVPE::extract` | Changed (behaviour) | signature unchanged | Delegates to `extract_real`, so it inherits the refusal |
+
+**Who this breaks**: a caller loading a checkpoint that does not name its
+U-Net the upstream way now gets a `ModelLoad` where it previously got a
+track. That track was wrong, so the break is the fix. The error names the
+scheme searched, the prefixes the artifact actually carries and a bounded
+sample of its tensor names, so a fork checkpoint is diagnosable from the
+message alone — and it names `CnnChainPolicy::Optional` for the one case
+where running without a CNN is intended.
+
+**The scheme is itself unverified.** `unet.encoder.block{i}.conv.weight` is
+this runtime's reading of the upstream layout; no real checkpoint has been
+through it. `vokra-convert`'s RMVPE converter passes `state_dict` keys
+through verbatim ("Tensor naming contract"), so whatever upstream emits is
+what lands in the GGUF — and that crate's own synthetic fixture uses a third
+shape again (`unet.encoder.layer0.weight`). If upstream turns out to name
+its blocks differently, the first real checkpoint will hit the new error
+rather than silently mis-running, and the error prints the artifact's actual
+names, which is what settles it. The correct response then is to fix the
+walker, not to relax the gate; both the enum docs and `extract_real` say so
+in as many words.
+
+**Honest scope — what did NOT change**: the decoder still omits upstream's
+`concat(paired encoder feature)` skip branch, so even a fully discovered
+U-Net does not reproduce upstream numerics. That divergence was previously
+disclosed only in a parenthetical inside a numbered pipeline step; it is now
+stated in the module header, in `extract_real`'s doc under "Where this
+forward is not upstream RMVPE", and in the Path A parity harness output. No
+real checkpoint has been through this path — the parity harness remains
+env-gated (`VOKRA_RMVPE_REAL_GGUF` / `VOKRA_RMVPE_REAL_HIDDEN`) and its Path
+A compares against no reference. Path A now additionally asserts non-zero
+encoder and decoder block counts, and its docstring stops describing the
+per-frame `hz` / `confidence` band checks as range validation: both columns
+are clamped by `decode_class_to_hz` before return, so those assertions fail
+only on `NaN`.
+
+**Verify**: no `cargo` run on this pass (16 GB host; sequential verification
+deferred to the integrating loop). Checked by hand: the new fixtures'
+shapes were traced against `conv2d_pad_same` / `maxpool2d_2x2` /
+`conv_transpose2d_stride2` / `collapse_nchw_to_frames`
+(mel `[1,1,101,128]` → encoder `[2,50,64]` → decoder `[2,100,128]` →
+BiGRU input 256 → 100 frames, matching the `frame_times` contract for 1 s at
+16 kHz); the three in-module tests that relied on the old silent
+fall-through now opt in via `from_gguf_with_cnn_policy`; no `include/vokra.h`
+edit and no new third-party dependency (root `Cargo.lock` untouched,
+NFR-DS-02 preserved).
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (F0 family: `CREPE` / `FCPE` gain a fallible `extract` + `extract_real` + `frame_times`, matching RMVPE — Rust surface only, advisory)
 
 **Breaking (Rust surface, pre-1.0 window)** plus additive. The C ABI

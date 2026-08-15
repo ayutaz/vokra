@@ -146,8 +146,8 @@ the full write-up):
 ## What this directory still does NOT do
 
 - **No `vokra-cli convert` entry**: the Rust converter
-  (`crates/vokra-convert/src/models/microwakeword.rs`) is a Phase 3.5
-  WP. Phase 1 skips that layer by having Python emit GGUF directly, so
+  (a future `crates/vokra-convert/src/models/microwakeword.rs`, not yet
+  written) is a Phase 3.5 WP. Phase 1 skips that layer by having Python emit GGUF directly, so
   the produced artefact is loadable by the `vokra-vad-micro`-shape
   reader without extra Rust code.
 - **No bit-parity against `tf.signal`**: the training-time TF mel

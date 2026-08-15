@@ -1,9 +1,42 @@
 # tools/parity/higgs_audio_v3_tts_4b
 
+> ## ⛔ DO NOT RENT A BOX FOR THIS MODEL — publish is refused
+>
+> **This model cannot be published, and the walkthrough below will not
+> complete.** The upstream license is **not** Apache-2.0. Primary-source
+> verification on 2026-08-13 found HF `cardData` carrying
+> `license: other` +
+> `license_name: boson-higgs-tts-3-research-and-non-commercial-license`,
+> whose LICENSE §II-A(c) **explicitly forbids redistribution, hosting,
+> and TTS-product embedding**.
+>
+> `docs/license-audit.md` §3.1 accordingly records
+> **☑ Rejected 2026-08-14 yousan**, which maps to
+> `LicenseClass::RedistributionForbidden` →
+> `redistributable() == false` → **`publish-one.sh` refuses at gate 2**.
+> Not even the T4 `--allow-noncommercial` route clears it: that flag
+> admits non-commercial *redistribution*, and this license forbids
+> redistribution outright.
+>
+> So every step below still runs — rent, download ~8 GB, merge, convert
+> — and then the **final** step fails on a licensing check that was
+> already knowable before the clock started.
+> `docs/handoff/vast-ai-execution-priority.md` therefore recommends
+> **skipping this handoff** rather than spending the rental.
+>
+> The steps are kept for the day the upstream license changes, or for
+> local research use that never redistributes. They are **not** a
+> publish path today. Primary sources, with the exact `curl` commands
+> and the LICENSE quote, are preserved in
+> `docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md` §0.1–0.2.
+
 Offline sidecar for **BosonAI Higgs-Audio v3 TTS 4B**
-(`bosonai/higgs-audio-v3-tts-4b`, Apache-2.0, ~8 GB BF16) — bridges the
-upstream **sharded safetensors** release to the flat safetensors the
-Rust converter (`crates/vokra-convert/src/models/higgs_audio_v3_tts_4b.rs`)
+(`bosonai/higgs-audio-v3-tts-4b`,
+**LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial** — SPDX-unregistered
+custom license, *not* Apache-2.0; see the banner above, ~8 GB BF16) —
+bridges the upstream **sharded safetensors** release to the flat
+safetensors the Rust converter
+(`crates/vokra-convert/src/models/higgs_audio_v3_tts_4b.rs`)
 consumes. Sibling of the wave-B fast-track scripts
 `../magpietts_v2602_prepare_checkpoint.py` and
 `../firered_asr_aed_l_prepare_checkpoint.py`.
@@ -53,7 +86,7 @@ The full path runs on a rented vast.ai GPU box.
    ```bash
    # On the vast.ai host, from a fresh clone of the repo:
    cd /root/vokra
-   bash scripts/vast-ai/provision.sh          # torch, huggingface_hub<0.30 pin, etc.
+   bash scripts/publish/vast-ai/provision.sh  # torch, huggingface_hub<0.30 pin, etc.
    ```
 
    The provision script pins `huggingface_hub<0.30` on vast.ai to
@@ -112,21 +145,28 @@ The full path runs on a rented vast.ai GPU box.
        --output /root/gguf/higgs-audio-v3-tts-4b.gguf
    ```
 
-7. **Publish** through the 5-gate publish chain
-   (`docs/license-audit.md` §3.1 sign-off must be marked ☑
-   Commercial / ☑ Research-only by owner first — the row is added by
-   this CC land, the sign-off is fail-closed until owner audits the
-   HF card + BosonAI GitHub LICENSE + training-corpus commercial
-   posture):
+7. **Publish** — ⛔ **not available for this model.** There is no
+   working publish command to give here. `docs/license-audit.md` §3.1
+   records **☑ Rejected 2026-08-14 yousan**
+   (`LicenseClass::RedistributionForbidden`), so `publish-one.sh`
+   refuses at **gate 2 (redistributable)** regardless of flags. The
+   command that a reader of the old revision of this file would have
+   typed —
 
    ```bash
-   bash scripts/publish/publish-one.sh \
-       --gguf /root/gguf/higgs-audio-v3-tts-4b.gguf \
-       --repo vokra/higgs-audio-v3-tts-4b \
-       --license-spdx apache-2.0 \
-       --allow-large \
-       --push
+   # ⛔ REFUSED at gate 2 — shown so it is recognisable, not to be run.
+   #    `--license-spdx apache-2.0` also misstates the upstream license.
+   # bash scripts/publish/publish-one.sh \
+   #     --gguf /root/gguf/higgs-audio-v3-tts-4b.gguf \
+   #     --repo vokra/higgs-audio-v3-tts-4b \
+   #     --license-spdx apache-2.0 --allow-large --push
    ```
+
+   — cannot succeed, and `--allow-noncommercial` does not rescue it
+   (that flag permits non-commercial *redistribution*; this license
+   forbids redistribution outright). If the upstream license ever
+   changes, re-verify at primary source, get a fresh §3.1 sign-off,
+   and only then restore a publish step with the *correct* SPDX id.
 
 8. **Destroy** the vast.ai instance to stop billing:
 
@@ -134,26 +174,33 @@ The full path runs on a rented vast.ai GPU box.
    vastai destroy <instance-id>
    ```
 
-## Owner critical path (from the audit ticket §Owner critical path)
+## Owner critical path — CLOSED (rejected 2026-08-14)
 
-Even after this CC land, publish stays fail-closed until owner:
+**This section is resolved; nothing here is outstanding.** It is kept
+because the earlier revision of this file listed these as open owner
+tasks premised on an Apache-2.0 reading, and a reader who remembers
+that list needs to see how each item actually landed:
 
-1. Verifies the HF card `license: apache-2.0` at primary source
-   (`https://huggingface.co/bosonai/higgs-audio-v3-tts-4b`).
-2. Cross-checks the BosonAI GitHub LICENSE file
-   (`github.com/boson-ai/higgs-audio`).
-3. Audits the training-corpus commercial-use posture — 100+
-   languages implies possible Common Voice / VoxPopuli 混成 which
-   may carry per-corpus attribution obligations even though the
-   released weight itself is Apache-2.0.
-4. Adds the ☑ Commercial or ☑ Research-only sign-off to
-   `docs/license-audit.md` §3.1 row (this CC land inserts the row
-   with blank sign-off + `______________` — the fail-closed default
-   per memory `[[feedback-license-signoff-primary-source]]`).
+1. ~~Verify the HF card `license: apache-2.0` at primary source.~~
+   **Done, and it refuted the premise** — the card carries
+   `license: other` +
+   `license_name: boson-higgs-tts-3-research-and-non-commercial-license`
+   (CC `curl`, 2026-08-13; commands preserved in
+   `docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md` §0.1).
+2. ~~Cross-check the BosonAI GitHub LICENSE file.~~ **Done** — the
+   LICENSE is titled *"BOSON HIGGS TTS 3 RESEARCH AND NON-COMMERCIAL
+   LICENSE AGREEMENT"*; §II-A(c) forbids redistribution, hosting, and
+   TTS-product embedding (§0.2 of the same handoff).
+3. ~~Audit the training-corpus commercial-use posture.~~ **Moot** —
+   the weight's own license already blocks redistribution, so the
+   corpus question never becomes load-bearing.
+4. ~~Add the ☑ sign-off to `docs/license-audit.md` §3.1.~~ **Done:
+   ☑ Rejected 2026-08-14 yousan.**
 
-Only step (4) matters for the publish gate. `publish-one.sh` reads
-the signoff via `scripts/publish/signoff_match.py`; a blank row
-refuses the publish (`upload.sh` refuses per gate 4).
+`publish-one.sh` reads the sign-off via
+`scripts/publish/signoff_match.py`. A **blank** row refuses at gate 4;
+this row is not blank but **Rejected**, so it refuses earlier, at
+gate 2 (`redistributable() == false`).
 
 ## Honest boundaries
 
@@ -176,7 +223,7 @@ refuses the publish (`upload.sh` refuses per gate 4).
 - **SGLang sampler → Vokra Sampler primitive** — the upstream
   reference implementation uses SGLang's sampler. When the future
   runtime binder lands, it will consume Vokra's
-  `crates/vokra-core/src/engine/sampler.rs` primitive (already
+  `crates/vokra-core/src/decode/sampler.rs` primitive (already
   wired through voxtral / cosyvoice2 / canary_qwen). SGLang is a
   _reference-side implementation detail_ that the Vokra runtime
   does not inherit. No converter change is needed for the swap.
@@ -184,10 +231,21 @@ refuses the publish (`upload.sh` refuses per gate 4).
 ## License / distribution note
 
 The **`bosonai/higgs-audio-v3-tts-4b`** upstream release is
-Apache-2.0 per the HF card at the time of writing; the wave-B ticket
-records this. **Owner primary-source verification is pending** per
-§Owner critical path above — the ☑ sign-off column in
-`docs/license-audit.md` §3.1 stays blank until owner attests to it.
+**LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial** — a bespoke,
+SPDX-unregistered research-and-non-commercial license that forbids
+redistribution (§II-A(c)).
+
+**The wave-B audit ticket says Apache-2.0. The ticket is wrong**, and
+is left unedited as the historical record of what was assumed. That
+assumption came from a default, not from the HF card; primary-source
+`curl` verification on 2026-08-13 refuted it. Where this sidecar and
+the ticket disagree about the license, **this file and
+`docs/license-audit.md` §3.1 are authoritative** —
+§3.1 records ☑ Rejected 2026-08-14 yousan.
+
+Practical consequence: the GGUF may be produced locally for research,
+but it **must not be uploaded to `huggingface.co/vokra`**, and the
+publish chain enforces that rather than relying on the reader.
 
 The Vokra runtime consumes the produced GGUF as an opaque numeric
 artefact; no Python / SGLang / torch / safetensors code enters the
