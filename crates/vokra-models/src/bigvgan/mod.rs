@@ -132,7 +132,8 @@ pub const VARIANT_TAG_BASE_V1_24KHZ_100BAND: &str = "base_v1_24khz_100band";
 /// Which BigVGAN release the loaded GGUF carries. Selected via the
 /// `vokra.bigvgan.variant` chunk written by the converter.
 ///
-/// Mirror of `vokra_convert::models::bigvgan::BigVGanVariant` — the
+/// Mirror of `BigVGanVariant` in
+/// `crates/vokra-convert/src/models/bigvgan.rs` — the
 /// two enums are kept structurally identical (same order, same
 /// `#[derive]`s, same variant docstrings) so a reader that inspects
 /// one side has no drift risk on the other. The cross-crate constant

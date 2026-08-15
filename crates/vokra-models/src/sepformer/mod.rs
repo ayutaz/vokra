@@ -243,7 +243,8 @@ const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2010.13154";
 /// All 7 variants share the [`ARCH`] tag `sepformer`; the category,
 /// upstream HF slug, sample rate, and `n_out` differ.
 ///
-/// Mirror of `vokra_convert::models::sepformer::SepformerVariant`.
+/// Mirror of `SepformerVariant` in
+/// `crates/vokra-convert/src/models/sepformer.rs`.
 /// A test at the bottom of this module pins every accessor's return
 /// value byte-for-byte against the converter constants, so a rename
 /// on either side lands in the same commit or fails the pin.

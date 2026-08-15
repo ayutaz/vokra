@@ -16,9 +16,17 @@
 //! This is Vokra's first `category = "eval"` model (the sibling UTMOS
 //! predictor in `models::utmos` has been the informal reference for the
 //! `vokra-eval` NFR-QL-02 5 % quality gate; DNSMOS joins it as an
-//! independent MOS oracle). The runtime side is `vokra_eval::dnsmos::{
-//! p808_score, p835_score}` (deferred CC-implementation follow-up — this
-//! ticket lands only the offline **converter** contract).
+//! independent MOS oracle). The runtime side is
+//! `vokra_models::dnsmos_p808_p835` (landed 2026-08-05), which binds this
+//! converter's `vokra.model.arch = "dnsmos"` artifact: `Dnsmos::from_gguf`
+//! is real and walks both sub-models out of the single merged GGUF. Only
+//! the two scoring entry points (`Dnsmos::score_p808` /
+//! `Dnsmos::score_p835`, and the `score_all` / `MosScorerEngine::score`
+//! folds over them) are loud-partial, returning
+//! `VokraError::UnsupportedOp` until the CNN topology extension their own
+//! error text names lands. There is no `vokra_eval::dnsmos` module —
+//! `vokra-eval` never gained one, and `vokra_eval`'s CLI treats `dnsmos`
+//! as a fail-closed unknown metric.
 //!
 //! # ONNX bridge — offline only, permanent
 //!
@@ -56,9 +64,11 @@
 //! # Tensor naming contract
 //!
 //! GGUF tensor names are the **prepared safetensors names verbatim**
-//! (prefixed `p808.<upstream>` / `p835.<upstream>` by the sidecar). The
-//! future `vokra_eval::dnsmos::from_gguf` walks the two prefixes as
-//! independent sub-models; a single GGUF publishes both scores without a
+//! (prefixed `p808.<upstream>` / `p835.<upstream>` by the sidecar).
+//! `vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf` walks the two
+//! prefixes as independent sub-models, refusing loudly if a variant the
+//! `vokra.dnsmos.bundle` inventory advertises carries no tensors under its
+//! prefix; a single GGUF publishes both scores without a
 //! second artifact upload (bundle option (a) in the coverage-audit ticket
 //! §Converter — "2 ONNX を単一 GGUF に merge、bundle metadata で variant
 //! tag").
@@ -184,7 +194,8 @@ pub struct DnsmosReport {
 /// BF16 tensor is emitted verbatim under its prefixed name; the
 /// `vokra.model.*` / `vokra.provenance.*` / `vokra.dnsmos.*` chunk
 /// groups pin the artifact's identity for the runtime compliance gate
-/// (FR-CP-03) and the future `vokra_eval::dnsmos::from_gguf` binder.
+/// (FR-CP-03) and the `vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf`
+/// binder.
 ///
 /// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
 /// mechanism `lib.rs::convert_file_licensed` uses when a redistributed

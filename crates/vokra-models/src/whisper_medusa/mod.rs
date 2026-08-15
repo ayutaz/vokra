@@ -107,11 +107,22 @@
 //! underlying [`crate::whisper`] error verbatim. Nothing degrades silently
 //! (FR-EX-08).
 //!
-//! The moment the converter grows the `vokra.whisper.*` + `vokra.frontend.*`
-//! stamps (or an owner restamps an artifact through
-//! `vokra_core::restamp_provenance`-style tooling), the *same* code path
-//! transcribes for real with zero changes here — [`WhisperMedusa::base_status`]
-//! is how a caller checks which of the two worlds it is in.
+//! The fix is METADATA, not weights — the tensor names already line up. The
+//! real route is to teach `vokra-convert::models::whisper_medusa_v1` to stamp
+//! the `vokra.whisper.*` + `vokra.frontend.*` chunks the way its sibling
+//! `vokra-convert::models::whisper` already does; the moment it does, the
+//! *same* code path here transcribes for real with zero changes to this
+//! module, and [`WhisperMedusa::base_status`] is how a caller checks which of
+//! the two worlds it is in. That converter change is a follow-up and is NOT
+//! done here — today's Medusa converter stamps only `vokra.model.*`,
+//! `vokra.provenance.*` and `vokra.schema.*`.
+//!
+//! Restamping is NOT a route to those chunks. `restamp_provenance` lives in
+//! **`vokra-convert`** (`vokra_convert::restamp_provenance`), not in
+//! `vokra-core`, and it rewrites only the `vokra.provenance.*` group: it
+//! carries every other metadata key through verbatim from the input, so it
+//! can never introduce a `vokra.whisper.*` or `vokra.frontend.*` chunk that
+//! the input did not already carry.
 //!
 //! # Implementation-status matrix
 //!

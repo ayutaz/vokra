@@ -267,7 +267,11 @@ pub mod resample;
 // ---- SoTA plan denoise Wave A rnnoise primitives (2026-08-05) -----------
 // Xiph RNNoise v0.2 primitives (Vorbis window, Bark filterbank, 3-gate GRU
 // forward, feature packer, DCT-II) plus the loud-partial pitch_analysis
-// stub. Consumed by `vokra_models::rnnoise_v02`. Runtime function set,
+// stub. No RNNoise runtime binder exists yet: outside this crate the full
+// primitive set is exercised only by the env-gated harness
+// `crates/vokra-models/tests/parity_rnnoise_v02.rs`, and the sole
+// production consumer is `vokra_models::nsnet2`, which reuses
+// `rnnoise_gru_forward` alone. Runtime function set,
 // NOT `OpKind` variants (same posture as `openwakeword_classifier_forward`
 // / `denoise` / `fsmn_vad_forward` — ADR M3-06 §D-b).
 pub mod rnnoise;

@@ -146,7 +146,8 @@ pub const VARIANT_TAG_ENCODEC24KHZ: &str = "encodec_24khz";
 /// Which Vocos release the loaded GGUF carries. Selected via the
 /// `vokra.vocos.variant` chunk written by the converter.
 ///
-/// Mirror of `vokra_convert::models::vocos::VocosVariant` — the
+/// Mirror of `VocosVariant` in
+/// `crates/vokra-convert/src/models/vocos.rs` — the
 /// two enums are kept structurally identical (same order, same
 /// `#[derive]`s, same variant docstrings) so a reader inspecting one
 /// side has no drift risk on the other. The cross-crate constant

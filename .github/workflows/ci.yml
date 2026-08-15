@@ -370,6 +370,32 @@ jobs:
         run: |
           bash scripts/check-ops-path-citations.sh --self-test
           bash scripts/check-ops-path-citations.sh
+      - name: "vokra_<crate>:: citation resolution (all other namespaces)"
+        # The sibling step above covers exactly ONE of the 21 crate namespaces.
+        # Round 6 found the same defect class living in the others, unchecked:
+        # `vokra_models::rnnoise_v02` (no such module, ever), five sites naming
+        # `vokra_eval::dnsmos::{p808_score, p835_score}` when the binder landed
+        # at `vokra_models::dnsmos_p808_p835`, and `vokra_core::restamp_provenance`
+        # — wrong crate (it is in vokra-convert) AND structurally unable to do
+        # the job the comment claimed for it.
+        #
+        # Widening also exposed a second shape the ops gate never had to model:
+        # a first segment that IS a real file but a PRIVATE module, so the path
+        # is unnameable from outside (`vokra_backend_cpu::dispatch`,
+        # `vokra_vad_micro::math` / `::weights`, `vokra_convert::models` /
+        # `::safetensors`), plus `vokra_cli::` — a binary-only crate with no
+        # importable namespace at all. Resolving against the PUBLIC surface,
+        # rather than "does a file of that name exist", is what finds those.
+        #
+        # Namespaces are discovered from the filesystem, so `vokra_status_t::`
+        # and the other C ABI enum types are never mistaken for crates. The two
+        # gates split the namespace set so they can never hold contradictory
+        # ledgers for one identifier; this one hard-fails if its sibling goes
+        # missing, so the split cannot silently become a hole again.
+        # Pure python3 + bash, no cargo.
+        run: |
+          bash scripts/check-crate-path-citations.sh --self-test
+          bash scripts/check-crate-path-citations.sh
       - name: no_std subset tripwire (Cortex-M55 Tier 3, M5-03-T15)
         # NFR-PT-03 / NFR-DS-02: the no_std(+alloc) subset (vokra-core error +
         # GGUF reader, and the vokra-vad-micro Silero forward core) must keep

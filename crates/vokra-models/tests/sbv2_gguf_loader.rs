@@ -299,7 +299,7 @@ fn from_gguf_with_zh_bert_on_empty_zh_file_touches_zh_loader() {
 /// audio that is subtly wrong (leaky-ReLU negative-slope drift) without any
 /// observable signal to the caller — exactly the class of failure
 /// FR-EX-08 forbids. The Vokra converter always emits this key
-/// (`vokra_convert::models::sbv2::write_hparams`), so no Vokra-produced
+/// (`write_hparams` in `crates/vokra-convert/src/models/sbv2.rs`), so no Vokra-produced
 /// GGUF is affected — a third-party GGUF that omits it now surfaces a
 /// clear, named-key error rather than degrading silently.
 #[test]

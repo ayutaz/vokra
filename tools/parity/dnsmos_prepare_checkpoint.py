@@ -20,8 +20,13 @@ the model weights), prefixing every tensor name with the sub-model tag
 single merged safetensors alongside a sha256 manifest.
 
 The prefixing scheme is what the Rust converter's ``bundle_variants``
-detection walks; the future ``vokra_eval::dnsmos::from_gguf`` binder
-consumes the prefix to route each tensor to the right sub-model.
+detection walks; the runtime binder
+``vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf`` (landed 2026-08-05)
+consumes the prefix to route each tensor to the right sub-model. It landed
+in ``vokra-models``, not ``vokra-eval`` — there is no ``vokra_eval::dnsmos``
+module, for the same layering reason its ``squim`` sibling gives:
+``vokra-models`` binds GGUF-backed neural models, ``vokra-eval`` holds the
+``Metric`` traits and the weight-free algorithmic metrics.
 
 # License
 

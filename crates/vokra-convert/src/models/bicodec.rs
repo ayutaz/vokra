@@ -61,8 +61,8 @@ pub(crate) const NAME: &str = "spark-tts-bicodec";
 
 /// `vokra.model.category` key — codec bucket for the artifact.
 ///
-/// Kept as a local constant rather than a `vokra_core::chunks::*` re-export
-/// because no other converter has taken the category slot yet; the key name
+/// Kept as a local constant rather than a `vokra_core::gguf::chunks::*`
+/// re-export because no other converter has taken the category slot yet; the key name
 /// itself is documented at
 /// [`docs/tickets/sota-coverage-plan-2026-07-22.md`] (SoTA plan bookkeeping).
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";

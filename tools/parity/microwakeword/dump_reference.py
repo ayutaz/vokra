@@ -50,8 +50,9 @@ footprint (currently 3 deps: ``gguf`` + ``numpy`` +
 ``ai-edge-litert``). Empirically the standard log-mel algorithm
 matches ``tf.signal.stft`` + ``tf.signal.linear_to_mel_weight_matrix``
 within ``1e-3`` for the same parameters (Whisper front-end sibling
-takes the same posture — see ``vokra_backend_cpu::dispatch::
-fused_log_mel_dispatch``'s docs).
+takes the same posture — see ``vokra_backend_cpu::fused_log_mel_dispatch``'s
+docs; the ``dispatch`` module defining it is private, so the crate-root
+re-export is the only nameable path).
 
 The ``output_ref.bin`` reference, by contrast, is the **real**
 upstream TFLite forward: ``ai_edge_litert.Interpreter`` runs the exact

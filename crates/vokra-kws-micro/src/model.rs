@@ -33,7 +33,7 @@
 //! bounds / UTF-8 metadata strings / tensor payload alignment are all
 //! validated there once — and adds a `vokra.kws.*`-specific typing layer on
 //! top ([`ModelHeader`] + [`Tensor`]). This mirrors the sister
-//! [`vokra_vad_micro::weights::SileroWeights::from_gguf`] pattern and keeps
+//! [`vokra_vad_micro::SileroWeights::from_gguf`] pattern and keeps
 //! the FlatBuffer parser (which the runtime does NOT need — the sidecar is
 //! the only reader of `.tflite`) out of `vokra-kws-micro` entirely.
 //!
@@ -62,9 +62,11 @@
 //!
 //! Every tensor is bound generically as a [`Tensor`] (name + shape + F32
 //! payload). Per-layer typed bindings (Conv2d / DwConv2d / Dense weight
-//! blocks, mirroring the [`Conv1dW`] pattern from
-//! [`vokra_vad_micro::weights`]) are not written yet, and are blocked on the
-//! same missing quantisation params as the chain builder.
+//! blocks, mirroring the `Conv1dW` pattern in
+//! `crates/vokra-vad-micro/src/weights.rs` — that module is private and
+//! `Conv1dW` is `pub(crate)`, so neither has a docs.rs page to link) are not
+//! written yet, and are blocked on the same missing quantisation params as
+//! the chain builder.
 //!
 //! Quantization params are absent from the file: the sidecar
 //! (`tools/parity/microwakeword/prepare_checkpoint.py`) dequantizes
@@ -85,13 +87,11 @@
 //! [`crate::interpreter`]), matching the sister [`vokra_vad_micro`] and
 //! whisper.cpp `whisper_encoder` patterns.
 //!
-//! [`Conv1dW`]: https://docs.rs/vokra-vad-micro/latest/vokra_vad_micro/weights/struct.Conv1dW.html
 //! [`vokra_vad_micro`]: https://docs.rs/vokra-vad-micro
-//! [`vokra_vad_micro::weights`]: https://docs.rs/vokra-vad-micro/latest/vokra_vad_micro/weights/index.html
-//! [`vokra_vad_micro::weights::SileroWeights::from_gguf`]: https://docs.rs/vokra-vad-micro/latest/vokra_vad_micro/weights/struct.SileroWeights.html#method.from_gguf
+//! [`vokra_vad_micro::SileroWeights::from_gguf`]: https://docs.rs/vokra-vad-micro/latest/vokra_vad_micro/struct.SileroWeights.html#method.from_gguf
 
 // `alloc` items that are in the prelude under `std` need explicit imports
-// under `#![no_std]`. Mirrors the sister `vokra-vad-micro::weights` gate
+// under `#![no_std]`. Mirrors the sister `crates/vokra-vad-micro/src/weights.rs` gate
 // exactly: `format!` / `String` (+ `ToString`) / `Vec` are the only alloc
 // items this module touches.
 #[cfg(not(feature = "std"))]
@@ -394,7 +394,7 @@ fn get_f32(gguf: &GgufFile, key: &str) -> Result<f32> {
 // The tests below use the std-only `GgufBuilder` writer (feature-gated in
 // `vokra-core::gguf`) to synthesize valid + malformed GGUFs in memory, so
 // they gate on `feature = "std"` — the same posture the sister
-// `vokra-vad-micro::weights` tests use. The no_std load path itself is
+// `crates/vokra-vad-micro/src/weights.rs` tests use. The no_std load path itself is
 // implicitly exercised: `Model::from_gguf` accepts any `&GgufFile`, and
 // `GgufFile::parse` (called by `Model::from_bytes`) is the same code path
 // under `#![no_std]` as under std.

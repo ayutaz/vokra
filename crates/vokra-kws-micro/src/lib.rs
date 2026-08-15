@@ -88,7 +88,8 @@ pub mod interpreter;
 // M5-03b Phase 2: the scalar INT8 op kernels (`conv2d_int8`,
 // `depthwise_conv2d_int8`, `fully_connected_int8`, `sigmoid_int8`,
 // `softmax_int8`) the microWakeWord MC-MobileNet forward drives. Sibling to
-// `vokra_vad_micro::math` — a `#![no_std]`-clean numeric core with no
+// `vokra_vad_micro::scalar` (its `math` sibling is a private module) — a
+// `#![no_std]`-clean numeric core with no
 // `unsafe`, no SIMD intrinsics, and no `libm`. The Cortex-M55 Helium (MVE)
 // fast path is deferred per M5-03 ADR. Consumed by [`interpreter`] via
 // each [`interpreter::LayerSpec`] variant.

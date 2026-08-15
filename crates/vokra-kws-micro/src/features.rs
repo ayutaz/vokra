@@ -86,8 +86,9 @@ pub const N_BINS: usize = N_FFT / 2 + 1;
 
 /// Floor applied before `log10` (`log10(1e-10) = -10`) to keep the log
 /// bounded below for silent frames. Matches Whisper front-end floor
-/// convention (`vokra_backend_cpu::dispatch::fused_log_mel_dispatch`
-/// uses the same value).
+/// convention (`vokra_backend_cpu::fused_log_mel_dispatch` uses the same
+/// value; the `dispatch` module it is defined in is private, so the
+/// crate-root re-export is the only path a downstream can name).
 pub const LOG_MEL_EPSILON: f32 = 1e-10;
 
 // Compile-time contract: window must fit inside the FFT.

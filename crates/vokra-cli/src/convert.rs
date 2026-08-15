@@ -1192,9 +1192,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // (`renamed` / `weight_norm_reconstructed` /
             // `passed_through_verbatim` / `skipped_training` /
             // `weight_norm_v_consumed`) so an owner can spot-check the
-            // conversion at a glance. See
-            // `vokra_convert::models::sbv2` module doc "Wave audit
-            // trail" section for the base-checkpoint reference numbers.
+            // conversion at a glance. See the "Wave audit trail" section of
+            // the module doc in `crates/vokra-convert/src/models/sbv2.rs`
+            // (`vokra-convert`'s `models` module is private, so the file is
+            // the only referent) for the base-checkpoint reference numbers.
             let mut notes = vec![format!(
                 "sbv2: {read} tensors read → {written} written ({renamed} renamed + \
                  {wnorm} weight_norm reconstructed + {verbatim} verbatim), \

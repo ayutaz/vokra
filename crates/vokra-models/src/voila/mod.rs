@@ -210,7 +210,7 @@ pub const NAME: &str = "voila";
 pub const CATEGORY: &str = "s2s";
 
 /// Upstream reference-code `org/repo` slug, mirrored by the converter's
-/// `vokra_convert::models::voila::UPSTREAM_HF` — recorded here so this
+/// `UPSTREAM_HF` in `crates/vokra-convert/src/models/voila.rs` — recorded here so this
 /// binder can echo it in loud-partial diagnostics without re-fetching a
 /// manifest.
 ///

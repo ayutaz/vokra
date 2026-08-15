@@ -1241,7 +1241,9 @@ mod tests {
     //! # On the fixture axis values
     //!
     //! The numbers below mirror the converter's transcribed constants
-    //! (`vokra_convert::models::m2d::{HIDDEN_SIZE, …}`), which carry the
+    //! (`HIDDEN_SIZE`, … in `crates/vokra-convert/src/models/m2d.rs`;
+    //! `vokra-convert`'s `models` module is private, so the file is the
+    //! only referent), which carry the
     //! per-axis primary-source citation. Restating them here is a
     //! cross-crate handshake, not an independent claim about M2D.
 

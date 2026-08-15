@@ -659,8 +659,11 @@ fn parse_bool(flag: &str, value: &str) -> Result<bool, ConfigError> {
     }
 }
 
-/// Parse a backend name (cc-30). Mirrors `vokra_cli::bench::parse_backend`
-/// verbatim so the CLI and the server accept exactly the same vocabulary.
+/// Parse a backend name (cc-30). Mirrors `parse_backend` in
+/// `crates/vokra-cli/src/bench.rs` verbatim so the CLI and the server accept
+/// exactly the same vocabulary. (`vokra-cli` is a binary-only crate and that
+/// function is `pub(crate)`, so the file path is the only referent — there is
+/// no importable `vokra_cli::` path to share the code through.)
 ///
 /// Every [`BackendKind`] variant parses here regardless of which Cargo
 /// features this binary was built with — *selectability* is a separate,

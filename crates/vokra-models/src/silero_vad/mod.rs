@@ -250,8 +250,10 @@ mod tests {
 
     /// The committed fixture predates the `vokra.silero.version` tag, so it
     /// must load and default to [`SileroVariant::V5`] — the backward-compat
-    /// contract at the model-wrapper level (mirrors the binder-level test in
-    /// `vokra_vad_micro::weights::tests::from_gguf_defaults_to_v5_when_release_tag_absent`).
+    /// contract at the model-wrapper level (mirrors the binder-level test
+    /// `from_gguf_defaults_to_v5_when_release_tag_absent` in
+    /// `crates/vokra-vad-micro/src/weights.rs` — that `weights` module is
+    /// private, so the file is the only referent).
     #[test]
     fn fixture_gguf_reports_v5_variant() {
         let m = SileroVadV5::open(test_gguf_path()).unwrap();
@@ -342,7 +344,8 @@ mod tests {
 
     /// A legacy single-rate model exercised through the std `SileroVadV5`
     /// wrapper + `VadEngine` stream (the model-level half of the coverage the
-    /// binder-level checks moved to `vokra_vad_micro::weights`): a stream over a
+    /// binder-level checks moved to `crates/vokra-vad-micro/src/weights.rs`,
+    /// a private module with no importable path): a stream over a
     /// rate the model lacks is an explicit error, and the present rate works.
     #[test]
     fn legacy_single_rate_stream_rejects_absent_rate() {

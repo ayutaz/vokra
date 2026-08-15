@@ -60,13 +60,17 @@
 //!
 //! GGUF tensor names are the **upstream HF safetensors keys verbatim**
 //! (sibling to magnet_small_10secs / musicgen_medium / audiogen_medium /
-//! audioldm2 / jasco_400m_chords_drums — the runtime `vokra-models::magnet`
-//! future binder can rely on the upstream key set without a rename
-//! layer). Runtime `magnet_masked_decode` + `span_masking_scheduler`
-//! ops are the FR-OP-85 anchor for a follow-up wave (owner ADR
-//! judgement; runtime binder deferred per RMVPE / Charsiu /
-//! MOSS-Audio-Tokenizer / MioCodec / sibling `magnet_small_10secs`
-//! loud-partial precedent).
+//! audioldm2 / jasco_400m_chords_drums — the runtime binder
+//! `vokra_models::magnet` relies on the upstream key set without a
+//! rename layer). That binder has landed as a scaffold carrying
+//! `ARCH_MEDIUM = "magnet_medium_30secs"` matching this converter's
+//! stamp: `MagnetEngine::from_gguf` really validates the arch tag,
+//! deserialises `vokra.magnet.*` and catalogues these tensor names.
+//! Runtime `magnet_masked_decode` + `span_masking_scheduler` ops are
+//! the FR-OP-85 anchor for a follow-up wave (owner ADR judgement); what
+//! stays deferred is `MagnetEngine::forward`, which is loud-partial per
+//! the RMVPE / Charsiu / MOSS-Audio-Tokenizer / MioCodec precedent —
+//! not the binder.
 //!
 //! # No ONNX (permanent)
 //!

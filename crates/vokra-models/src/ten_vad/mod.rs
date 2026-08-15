@@ -1077,8 +1077,9 @@ mod tests {
 
     #[test]
     fn contract_constants_mirror_the_converter() {
-        // Mirror of `vokra_convert::models::ten_vad::{ARCH, NAME, CATEGORY,
-        // UPSTREAM_URL, DEFAULT_LICENSE_SPDX}` — a converter-side rename
+        // Mirror of `ARCH` / `NAME` / `CATEGORY` / `UPSTREAM_URL` /
+        // `DEFAULT_LICENSE_SPDX` in
+        // `crates/vokra-convert/src/models/ten_vad.rs` — a converter-side rename
         // without a binder-side follow-through lands here or fails.
         assert_eq!(ARCH, "ten_vad");
         assert_eq!(NAME, "ten_vad");

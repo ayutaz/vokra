@@ -88,8 +88,12 @@
 //! / neucodec / step_audio2_mini / xcodec2 contract). Real-weight
 //! binding + AudioCraft-parity forward is a follow-up wave gated on
 //! §3.1 sign-off + real-checkpoint tensor-name manifest fetch; this
-//! converter passes every F32 / F16 / BF16 tensor through unchanged so a
-//! future `MusicGenMedium::from_gguf` can walk the same names.
+//! converter passes every F32 / F16 / BF16 tensor through unchanged, and
+//! the runtime binder `vokra_models::musicgen` walks those names for
+//! real: it carries `ARCH = "musicgen"`, covers this checkpoint as
+//! `MusicGenVariant::Medium`, and the weight entry point is
+//! `MusicGenWeights::from_gguf` (there is no `MusicGenMedium` type — the
+//! variant is a dispatch tag, not a separate struct).
 //!
 //! # Real-weight parity
 //!

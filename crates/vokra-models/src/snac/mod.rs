@@ -104,7 +104,8 @@ mod tests;
 /// `bicodec`, `xy_tokenizer`, `focalcodec`, `step_audio2_mini`) because
 /// SNAC is a multi-scale hierarchical RVQ family member — flat-RVQ / FSQ /
 /// SoundStream siblings share none of SNAC's per-stage `vq_strides` axes
-/// (mirror of the converter's `vokra_convert::models::snac::ARCH` docstring).
+/// (mirror of the `ARCH` docstring in
+/// `crates/vokra-convert/src/models/snac.rs`).
 pub const ARCH: &str = "snac";
 
 /// `vokra.snac.variant` metadata key: `"24khz"` / `"44khz"`. Consumers
@@ -125,7 +126,8 @@ pub const VARIANT_TAG_HZ44: &str = "44khz";
 /// Which SNAC release the loaded GGUF carries. Selected via the
 /// `vokra.snac.variant` chunk written by the converter.
 ///
-/// Mirror of `vokra_convert::models::snac::SnacVariant` — the
+/// Mirror of `SnacVariant` in
+/// `crates/vokra-convert/src/models/snac.rs` — the
 /// two enums are kept structurally identical (same order, same
 /// `#[derive]`s, same variant docstrings) so a reader that inspects one
 /// side has no drift risk on the other. The cross-crate constant

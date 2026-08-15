@@ -14,9 +14,10 @@
 //!
 //! # Sibling to `vokra-vad-micro`
 //!
-//! [`vokra_vad_micro::math`](https://docs.rs/vokra-vad-micro) holds the same
-//! shape of scalar helpers but for Silero VAD's **f32** LSTM forward. This
-//! module is the microWakeWord counterpart for its **int8** MC-MobileNet
+//! [`vokra_vad_micro::scalar`](https://docs.rs/vokra-vad-micro) holds the same
+//! shape of scalar helpers but for Silero VAD's **f32** LSTM forward (its
+//! `math` sibling is a private module, so `scalar` is the public surface).
+//! This module is the microWakeWord counterpart for its **int8** MC-MobileNet
 //! forward. Both crates keep their numeric core out of `vokra-models` so the
 //! `thumbv8m-none` cross-build (IoT Tier 3, NFR-PT-03) can name a small
 //! `#![no_std] + alloc` crate directly.
@@ -206,8 +207,9 @@ fn requantize(acc_with_bias: i32, output_scale: f32, output_zero_point: i8) -> i
 //
 // `too_many_arguments`: 8 args (four buffers + two zero-points + output-scale
 // + dims struct) is the minimum a TFLite-shape INT8 conv exposes to callers.
-// The sister `vokra_vad_micro::math::conv1d` uses the same `#[allow]` for the
-// same reason.
+// The sister `conv1d` in `crates/vokra-vad-micro/src/math.rs` uses the same
+// `#[allow]` for the same reason (that module is private and its `conv1d` is
+// `pub(crate)`, so it has no importable path — the file is the only referent).
 #[allow(clippy::too_many_arguments)]
 pub fn conv2d_int8(
     input: &[i8],

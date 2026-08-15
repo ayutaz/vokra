@@ -278,9 +278,11 @@ pub mod nsnet2;
 // bundled as a single GGUF from the prepared safetensors that
 // `tools/parity/dnsmos_prepare_checkpoint.py` flattens from the two
 // upstream ONNX checkpoints (`model_v8.onnx` + `sig_bak_ovr.onnx`).
-// The first `eval`-category converter in the tree — the runtime binder
-// lives in the `vokra-eval` crate (`vokra_eval::dnsmos::{p808_score,
-// p835_score}`, follow-up CC ticket).
+// The first `eval`-category converter in the tree — the runtime binder is
+// `vokra_models::dnsmos_p808_p835` (landed 2026-08-05): `Dnsmos::from_gguf`
+// really binds both sub-models from the one merged artifact, and only the
+// `score_p808` / `score_p835` forwards are loud-partial pending the CNN
+// topology extension. No `vokra_eval::dnsmos` module exists.
 pub mod dnsmos;
 // coverage-audit wave-a (2026-08-03): alibabasglab/FRCRN (Apache-2.0
 // Permissive) safetensors → GGUF. Frequency Recurrent Convolutional

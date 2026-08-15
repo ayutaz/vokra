@@ -2136,7 +2136,9 @@ impl SbV2Model {
     ///   read to required per FR-EX-08 — silently defaulting a hparam that
     ///   the checkpoint can legitimately vary would produce audio that is
     ///   subtly wrong with no observable signal. The Vokra converter
-    ///   ([`vokra_convert::models::sbv2::write_hparams`]) always emits this
+    ///   (`write_hparams` in `crates/vokra-convert/src/models/sbv2.rs`;
+    ///   `vokra-convert`'s `models` module is private, so the file is the
+    ///   only referent) always emits this
     ///   key (falling back to `0.1` at config-parse time when the JSON
     ///   side-car omits it), so no Vokra-produced GGUF is affected.
     ///

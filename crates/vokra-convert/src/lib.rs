@@ -1135,9 +1135,13 @@ pub enum ModelKind {
     /// group carries the bundle inventory and the two upstream
     /// checkpoint filenames for auditability. MIT weight + code
     /// (`microsoft/DNS-Challenge/LICENSE`, verified 2026-08-03). The
-    /// runtime binder lives in the `vokra-eval` crate
-    /// (`vokra_eval::dnsmos::{p808_score, p835_score}` — follow-up CC
-    /// ticket, not implemented by this converter).
+    /// runtime binder is `vokra_models::dnsmos_p808_p835` (landed
+    /// 2026-08-05), not anything in `vokra-eval` (that crate has no
+    /// `dnsmos` module). `Dnsmos::from_gguf` is real and binds both
+    /// sub-models from this one artifact; only `Dnsmos::score_p808` /
+    /// `Dnsmos::score_p835` are loud-partial, returning
+    /// `VokraError::UnsupportedOp` until the CNN topology extension
+    /// their own error text names lands.
     Dnsmos,
     /// **FRCRN** — Frequency Recurrent Convolutional Recurrent Network
     /// (Zhao et al. ICASSP 2022, `arXiv:2206.07293`) safetensors

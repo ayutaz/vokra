@@ -107,9 +107,9 @@ pub const NAME: &str = "miocodec-25hz-44khz-v2";
 
 /// `vokra.model.category` key — codec bucket for the artifact.
 ///
-/// Kept as a local constant rather than a `vokra_core::chunks::*`
+/// Kept as a local constant rather than a `vokra_core::gguf::chunks::*`
 /// re-export because it is not yet part of the shared
-/// `vokra-core::chunks` surface (mirrors the bicodec / neucodec /
+/// `vokra_core::gguf::chunks` surface (mirrors the bicodec / neucodec /
 /// focalcodec convention).
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 
