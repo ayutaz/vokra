@@ -182,28 +182,43 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
     .map_err(|e| format!("f0 ({}): {e}", a.algo.name()))?;
 
+    for line in render(&hz, clip.sample_rate, a.algo) {
+        println!("{line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Formats the summary line and one row per frame.
+///
+/// Split out of [`main`] so the OUTPUT can be tested, not just the argument
+/// parsing. An earlier revision of this module had eight tests that all
+/// passed while `voiced` was hard-coded to `true` — they exercised
+/// `parse_args` and nothing else, so the column a caller actually reads was
+/// unguarded. `render` takes the Hz slice directly, which is what the ops
+/// return, so a test can hand it a known track and check every field.
+fn render(hz: &[f32], sample_rate: u32, algo: Algo) -> Vec<String> {
     let voiced = hz.iter().filter(|v| **v > 0.0).count();
-    println!(
-        "f0: {} frames, voiced_frames={voiced}, algo={} @ {} Hz",
+    let mut out = Vec::with_capacity(hz.len() + 1);
+    out.push(format!(
+        "f0: {} frames, voiced_frames={voiced}, algo={} @ {sample_rate} Hz",
         hz.len(),
-        a.algo.name(),
-        clip.sample_rate
-    );
+        algo.name(),
+    ));
     // The op's frame index times its hop, both fixed by the op — see
     // `vokra_ops::f0::DEFAULT_HOP`. Computed here rather than returned by the
     // op because the op's contract is "one Hz value per frame".
-    let hop_sec = vokra_ops::f0::DEFAULT_HOP as f32 / clip.sample_rate as f32;
+    let hop_sec = vokra_ops::f0::DEFAULT_HOP as f32 / sample_rate as f32;
     for (i, v) in hz.iter().enumerate() {
         let is_voiced = *v > 0.0;
-        println!(
+        out.push(format!(
             "{:.4}\t{:.3}\t{}\t{:.4}",
             i as f32 * hop_sec,
             v,
             is_voiced,
             if is_voiced { 1.0_f32 } else { 0.0 }
-        );
+        ));
     }
-    Ok(ExitCode::SUCCESS)
+    out
 }
 
 #[cfg(test)]
@@ -276,6 +291,92 @@ mod tests {
                 "{flag} must request the usage text"
             );
         }
+    }
+
+    /// A KNOWN track through `render`, checked field by field.
+    ///
+    /// This is the test the first revision of this module lacked: its eight
+    /// tests all passed while `voiced` was hard-coded to `true`, because
+    /// every one of them stopped at `parse_args`. Verified adversarially —
+    /// forcing `is_voiced = true` makes this fail and the parsing tests do
+    /// not notice.
+    #[test]
+    fn render_marks_voiced_frames_by_hz_and_times_them_by_the_op_hop() {
+        // 16 kHz, hop 256 -> 16 ms per frame.
+        let hz = [0.0_f32, 220.0, 0.0, 440.5];
+        let rows = render(&hz, 16_000, Algo::Yin);
+
+        assert_eq!(rows.len(), 5, "one summary line plus one row per frame");
+        assert_eq!(
+            rows[0],
+            "f0: 4 frames, voiced_frames=2, algo=yin @ 16000 Hz"
+        );
+
+        // time<TAB>hz<TAB>voiced<TAB>confidence, hop 256 / 16000 = 0.016 s.
+        assert_eq!(rows[1], "0.0000\t0.000\tfalse\t0.0000");
+        assert_eq!(rows[2], "0.0160\t220.000\ttrue\t1.0000");
+        assert_eq!(rows[3], "0.0320\t0.000\tfalse\t0.0000");
+        assert_eq!(rows[4], "0.0480\t440.500\ttrue\t1.0000");
+    }
+
+    /// The confidence column tracks `voiced`, which tracks `hz > 0.0`.
+    ///
+    /// Pinned separately because the three are derived from one another: a
+    /// change that decoupled them would still produce plausible-looking rows.
+    #[test]
+    fn confidence_never_disagrees_with_the_voiced_flag() {
+        let hz = [0.0_f32, 1.0, 0.0, 99.0, 0.0];
+        for row in render(&hz, 16_000, Algo::Pyin).iter().skip(1) {
+            let f: Vec<&str> = row.split('\t').collect();
+            let hz_v: f32 = f[1].parse().expect("hz column");
+            let voiced: bool = f[2].parse().expect("voiced column");
+            let conf: f32 = f[3].parse().expect("confidence column");
+            assert_eq!(voiced, hz_v > 0.0, "voiced must follow hz: {row}");
+            assert!(
+                (conf - if voiced { 1.0 } else { 0.0 }).abs() < f32::EPSILON,
+                "confidence must follow voiced: {row}"
+            );
+        }
+    }
+
+    /// The row shape must stay swappable with `run`'s RMVPE route, which is
+    /// the entire reason it was copied rather than invented.
+    #[test]
+    fn every_row_has_the_four_shared_columns() {
+        let rows = render(&[0.0_f32, 120.0], 22_050, Algo::Yin);
+        for row in rows.iter().skip(1) {
+            assert_eq!(
+                row.split('\t').count(),
+                4,
+                "row must stay time/hz/voiced/confidence: {row}"
+            );
+        }
+        assert!(
+            !rows[0].contains('\t'),
+            "the summary line must not look like a data row: {}",
+            rows[0]
+        );
+    }
+
+    /// The hop is per-second, so a different rate must retime the rows.
+    #[test]
+    fn a_different_sample_rate_retimes_the_frames() {
+        let hz = [0.0_f32, 0.0];
+        let at_16k = render(&hz, 16_000, Algo::Yin);
+        let at_8k = render(&hz, 8_000, Algo::Yin);
+        // Same hop in SAMPLES, half the rate -> twice the wall-clock spacing.
+        assert_eq!(at_16k[2].split('\t').next(), Some("0.0160"));
+        assert_eq!(at_8k[2].split('\t').next(), Some("0.0320"));
+    }
+
+    /// An empty track is a summary line and nothing else — not a panic and
+    /// not a fabricated frame.
+    #[test]
+    fn an_empty_track_renders_only_the_summary() {
+        let rows = render(&[], 16_000, Algo::Yin);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("0 frames"), "{}", rows[0]);
+        assert!(rows[0].contains("voiced_frames=0"), "{}", rows[0]);
     }
 
     #[test]
