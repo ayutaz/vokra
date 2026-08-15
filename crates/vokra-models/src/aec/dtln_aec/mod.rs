@@ -79,7 +79,11 @@
 //! - **Generic LSTM primitive gap**: [`DtlnAec::process`] returns a
 //!   loud [`VokraError::UnsupportedOp`] naming the missing
 //!   `vokra_ops::lstm` primitive + the four wiring pieces still owed +
-//!   the primary source URLs; the sibling `nkf_aec` inlined its
+//!   the primary source URLs. The one public LSTM in `vokra-ops` is
+//!   `vokra_ops::hybrid_ctc_attention::LstmLmCell`, which is LM-shaped
+//!   (token id in, one log-probability out, embedding + vocab
+//!   projection bundled in) and so cannot carry a feature sequence;
+//!   the sibling `nkf_aec` inlined its
 //!   per-layer GRU because its dim was tiny (H=18), but DTLN's
 //!   128/256/512-unit LSTMs with 4-gate concatenation are large enough
 //!   that inlining without a shared primitive multiplies

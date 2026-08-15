@@ -1164,7 +1164,7 @@ impl CanaryQwenAsr {
                  (iv) Voxtral-style Qwen decoder session — reuse \
                  `crate::voxtral::text_decoder` with GQA + RoPE + SwiGLU + RMSNorm, \
                  fed the encoder-out as a soft-prompt prefix, plus \
-                 `vokra_ops::beam_search` with blank_id / bos / eos taken from \
+                 `vokra_core::decode::beam_search` with blank_id / bos / eos taken from \
                  the .nemo tokenizer manifest. Bind real Canary-Qwen-2.5B weights \
                  (T29-equivalent .nemo extraction) — primary source: {hf}. \
                  Reference: FastConformer paper — {paper}; family YAML — {yaml}. \
@@ -1194,7 +1194,7 @@ impl CanaryQwenAsr {
              forward path has not landed yet. Follow-up wave: wire CanaryQwenWeights \
              to the shared ConformerEncoder + Voxtral TextDecoderSession, feeding the \
              encoder-out through enc_to_lm_proj as a soft-prompt prefix and reusing \
-             vokra_ops::beam_search with blank_id / bos / eos taken from the .nemo \
+             vokra_core::decode::beam_search with blank_id / bos / eos taken from the .nemo \
              tokenizer manifest.",
         ))
     }

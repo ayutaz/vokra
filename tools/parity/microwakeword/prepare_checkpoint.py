@@ -8,16 +8,21 @@ and emits a GGUF (via ``gguf.GGUFWriter``) whose metadata keys use the
 no_std GGUF reader the ``vokra-vad-micro`` sister crate already uses) can
 open it on both host and thumbv8m Cortex-M55 (M5-03 IoT Tier-3).
 
-# Why this file exists (Phase 1 of 3)
+# Why this file exists
 
-The ``vokra-kws-micro`` crate lands in this repo as a SCAFFOLD only —
-``KwsMicro::detect()`` returns ``KwsEvent::Idle`` unconditionally so
-callers can wire the type surface (register keywords, feed frames,
-pattern-match events). Phase 1 (this script + a companion feature
-extractor in Rust) bridges the upstream TFLite artifact to the Vokra
-GGUF shape the future ``KwsMicro`` forward will bind. Phase 2 (later
-wave) implements the actual detection forward + ``vokra-cli convert
---model microwakeword``; Phase 3 wires thumbv8m cross-build.
+This script bridges the upstream TFLite artifact to the Vokra GGUF shape
+the ``vokra-kws-micro`` runtime reads. That crate's forward is real:
+``KwsMicro::detect()`` runs log-mel -> INT8 quantise -> INT8 chain ->
+threshold for any chain attached via ``set_chain``, and refuses loudly
+when none is.
+
+What is NOT yet closed is the join between this script's output and that
+forward: the GGUF below carries DEQUANTIZED F32 weights and drops the
+per-tensor ``(scale, zero_point)`` pairs, which are exactly what the Rust
+side needs to build a ``ChainConfig``. Re-emitting them (Q8_0 +
+quantization params) is the follow-up that lets a real hey_jarvis
+checkpoint drive the forward; ``vokra-cli convert --model microwakeword``
+waits on the same thing.
 
 # Contract — GGUF metadata keys (vokra.kws.* prefix)
 

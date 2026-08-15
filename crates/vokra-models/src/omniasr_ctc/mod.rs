@@ -84,18 +84,28 @@
 //!   prefix beam search with LM shallow fusion + hotword boost. Uses
 //!   `blank_id = 0` (the fairseq2 wav2vec 2.0 CTC default).
 //!
-//! **Encoder body — no shared op yet.** Unlike Parakeet's FastConformer
+//! **Encoder body — partially covered.** Unlike Parakeet's FastConformer
 //! encoder (which routes through [`vokra_ops::conformer`]), the wav2vec 2.0
 //! encoder is a distinct topology (7-layer waveform Conv1D feature
 //! extractor + Conv1D positional encoder + plain Transformer encoder,
-//! not a Conformer). No shared "wav2vec 2.0 encoder" op exists in
-//! `vokra_ops` today; the task note explicitly calls this out ("may need
-//! new op"). This scaffold stops at shape / weight-store flow — a
-//! follow-up wave decides whether to (a) extract a shared
-//! `vokra_ops::wav2vec2_encoder` op (also usable for the paired W2V /
-//! LLM omniASR variants and the jonatasgrosman/wav2vec2 family) or
-//! (b) keep the encoder in this module and route only `ctc_decode`
-//! through the shared primitive.
+//! not a Conformer).
+//!
+//! The **feature-extractor stem already exists** and must not be
+//! rewritten: [`vokra_ops::waveform_frontend`] is exactly that 7-layer
+//! strided Conv1D stem, and its docs name omniASR-CTC as a planned
+//! consumer — [`vokra_ops::WaveformFrontendAttrs::wav2vec2_base`] plus
+//! `Norm::LayerAll` is the `layer_norm_convs=True` branch these
+//! checkpoints ship, pinned by that crate's own
+//! `wav2vec2_base_matches_omniasr_ctc_transcribed_table` test.
+//!
+//! What has **no shared op** is the rest: the Conv1D positional encoder
+//! and the plain Transformer encoder body. This scaffold stops at
+//! shape / weight-store flow — a follow-up wave decides whether to
+//! (a) extend the stem into a shared `vokra_ops::wav2vec2_encoder` op
+//! (a PROPOSED name — no such module exists today; it would also serve
+//! the paired W2V / LLM omniASR variants and the jonatasgrosman/wav2vec2
+//! family) or (b) keep the encoder body in this module and route only
+//! the stem plus `ctc_decode` through shared primitives.
 //!
 //! # What lands in this Phase 2 slice
 //!
@@ -1609,10 +1619,15 @@ impl OmniasrCtcAsr {
     /// Parakeet-CTC pattern) as the follow-up wave's anchor. The
     /// missing pieces are (a) the HF safetensors → fairseq2 state-dict
     /// → [`OmniasrCtcWeights`] tensor-name mapping, and (b) the
-    /// wav2vec 2.0 encoder body (no shared op yet — a follow-up wave
-    /// decides between extracting `vokra_ops::wav2vec2_encoder` or
-    /// keeping the encoder inline). The CTC decoding primitive
-    /// ([`vokra_ops::ctc_decode`]) with `blank_id = 0` already exists;
+    /// wav2vec 2.0 Conv1D positional encoder + Transformer encoder body
+    /// (no shared op yet — a follow-up wave decides between extending
+    /// the stem into a `vokra_ops::wav2vec2_encoder` op, a proposed
+    /// name rather than a landed module, or keeping the body inline).
+    /// Two primitives already exist and must not be rewritten: the
+    /// 7-layer strided conv stem ([`vokra_ops::waveform_frontend`],
+    /// whose `wav2vec2_base` preset targets exactly these checkpoints)
+    /// and the CTC decoding primitive ([`vokra_ops::ctc_decode`]) with
+    /// `blank_id = 0`.
     /// SentencePiece detokenize is model-specific (not a shared op).
     ///
     /// # Errors
@@ -1738,11 +1753,21 @@ impl OmniasrCtcAsr {
              feature projection → grouped-Conv1D positional encoder → \
              48-layer pre-norm Transformer encoder → CTC vocab head → \
              ctc_decode_greedy(blank_id = 0) → SentencePiece detokenize \
-             forward path has not landed yet. Follow-up wave: extract a \
-             shared vokra_ops::wav2vec2_encoder op (also usable for the \
+             forward path has not landed yet. ALREADY RESOLVED, do not \
+             re-report: the 7-layer strided waveform conv stem exists as \
+             vokra_ops::waveform_frontend (its wav2vec2_base preset plus \
+             Norm::LayerAll is the layer_norm_convs=True branch these \
+             checkpoints ship, pinned by that crate's own \
+             wav2vec2_base_matches_omniasr_ctc_transcribed_table test), and \
+             the CTC search exists as vokra_ops::ctc_decode_greedy. What is \
+             missing is the grouped-Conv1D positional encoder + the \
+             Transformer encoder body. Follow-up wave: extend the stem into \
+             a shared vokra_ops::wav2vec2_encoder op — a PROPOSED name, no \
+             such module exists today — (also usable for the \
              paired omniASR-W2V / omniASR-LLM sizes and the \
-             jonatasgrosman/wav2vec2 family) or keep the encoder inline and \
-             route only vokra_ops::ctc_decode_greedy with blank_id = \
+             jonatasgrosman/wav2vec2 family) or keep the encoder body \
+             inline and route only the stem plus \
+             vokra_ops::ctc_decode_greedy with blank_id = \
              head.blank_id() (= head.blank_id, fairseq2 default 0).",
         ))
     }

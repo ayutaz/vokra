@@ -12,7 +12,7 @@
 //! prefix** that carries task-specific tokens (`<source_lang>`,
 //! `<target_lang>`, `<taskname>`, `<pnc>`, `<itn>`, `<timestamp>`,
 //! `<diarize>`, `<emotion>`), and decoding uses a standard beam search over
-//! the vocabulary head (the shared `vokra_ops::beam_search` primitive —
+//! the vocabulary head (the shared `vokra_core::decode::beam_search` primitive —
 //! same op class Whisper and Voxtral consume). No new op is introduced by
 //! Canary; the encoder body reuses [`vokra_ops::conformer`] via the shared
 //! `Stacking { factor: 8 }` variant, exactly like Parakeet.
@@ -77,7 +77,7 @@
 //!   FastConformer encoder covers Canary via
 //!   `ConvSubsampleKind::Stacking { factor: 8 }` (matches
 //!   `subsampling_factor=8`). Same primitive Parakeet uses.
-//! - **Decoder search (OP-3)**: `vokra_ops::beam_search` — the beam
+//! - **Decoder search (OP-3)**: `vokra_core::decode::beam_search` — the beam
 //!   search / length-normalisation / early-stopping / n-best surface
 //!   Whisper and Voxtral already consume. Canary reuses it; no per-model
 //!   decoder primitive is introduced.
@@ -1346,10 +1346,10 @@ impl CanaryAsr {
              front-end → FastConformer encoder (vokra_ops::conformer) → \
              encoder→decoder projection → task-prompt-prefixed Transformer \
              decoder (self-attn + cross-attn + FFN) → vocab head → \
-             beam_search (vokra_ops::beam_search) → SentencePiece \
+             beam_search (vokra_core::decode::beam_search) → SentencePiece \
              detokenize forward path has not landed yet. Follow-up wave: \
              wire CanaryWeights to vokra_ops::conformer::ConformerEncoder + \
-             the decoder step + vokra_ops::beam_search with \
+             the decoder step + vokra_core::decode::beam_search with \
              blank_id / bos / eos taken from head.{pad,bos,eos}_token_id \
              once the .nemo extraction supplies them. Primary source: \
              https://huggingface.co/nvidia/canary-1b-v2",
@@ -1394,7 +1394,10 @@ impl CanaryAsr {
     /// (T29-equivalent — the Moshi / CSM / Zonos / Kyutai STT /
     /// Parakeet-TDT / Parakeet-CTC pattern) as the follow-up wave's
     /// anchor. The primitives named in that message
-    /// ([`vokra_ops::conformer`] + [`vokra_ops::beam_search`]) already
+    /// ([`vokra_ops::conformer`] + `vokra_core::decode::beam_search` —
+    /// the search primitive lives in `vokra-core`, not `vokra-ops`,
+    /// because per FR-OP-40 it is a host-side search rather than a
+    /// graph `OpKind`) already
     /// exist; the missing piece is the HF `.nemo` extraction →
     /// [`CanaryWeights`] tensor-name manifest plus SentencePiece
     /// detokenize (model-specific, not a shared op).

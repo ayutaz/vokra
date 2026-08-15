@@ -3,18 +3,25 @@
 //! Reads a Vokra microWakeWord GGUF (emitted by the offline sidecar
 //! [`tools/parity/microwakeword/prepare_checkpoint.py`]) and yields a typed
 //! [`Model`] carrying the audio-frontend contract (from `vokra.kws.*`
-//! metadata) plus every dense F32 weight tensor. This is the bridge that
-//! lets a future [`crate::KwsMicro::detect`] (Phase 3) consume the weights
-//! the sidecar emitted.
+//! metadata) plus every dense F32 weight tensor.
 //!
-//! # SCAFFOLD posture (Phase 2 of 3)
+//! # What a `Model` can and cannot reach today
 //!
-//! Phase 1 (WF1) landed the offline TFLite → GGUF sidecar and the log-mel
-//! feature extractor ([`crate::features`]). This module (Phase 2) lands the
-//! runtime *loader* — a shape-generic view of the GGUF contents that Phase 3
-//! (INT8 kernel chain + real [`crate::KwsMicro::detect`]) will consume.
-//! It does NOT run inference; a [`Model`] carrying weights but no forward
-//! is inert on purpose (matches the crate-level SCAFFOLD contract).
+//! This module is the runtime *loader*: it parses and validates, and does not
+//! itself run inference. The forward it would feed is real — the INT8 kernels
+//! ([`crate::kernels`]), the chain executor ([`crate::interpreter`]) and
+//! [`crate::KwsMicro::detect`] all execute for real on an attached
+//! [`crate::interpreter::ChainConfig`].
+//!
+//! What is missing is the join between the two: **no code path converts a
+//! [`Model`] into a [`crate::interpreter::ChainConfig`]**, and it cannot be
+//! written from what a [`Model`] currently holds. The sidecar dequantises the
+//! upstream INT8 weights to F32 at export time (see the note under *Tensors*
+//! below), so the per-tensor `(scale, zero_point)` pairs that every
+//! [`crate::interpreter::LayerSpec`] needs are simply not in the file. A
+//! [`Model`] is therefore usable for shape audits and metadata inspection,
+//! but a chain built from an upstream checkpoint waits on the sidecar
+//! re-emitting those params.
 //!
 //! # Design rationale (why a two-layer parser, not a monolithic one)
 //!
@@ -51,27 +58,31 @@
 //! type, or a mismatched `arch` string is an explicit
 //! [`VokraError::ModelLoad`], never a silent bind.
 //!
-//! # Tensors (Phase 2 shape-generic)
+//! # Tensors (shape-generic)
 //!
 //! Every tensor is bound generically as a [`Tensor`] (name + shape + F32
-//! payload). Phase 3 will introduce per-layer typed bindings (Conv2d /
-//! DwConv2d / Dense weight blocks, mirroring the [`Conv1dW`] pattern from
-//! [`vokra_vad_micro::weights`]) once the MC-MobileNet forward is wired.
+//! payload). Per-layer typed bindings (Conv2d / DwConv2d / Dense weight
+//! blocks, mirroring the [`Conv1dW`] pattern from
+//! [`vokra_vad_micro::weights`]) are not written yet, and are blocked on the
+//! same missing quantisation params as the chain builder.
 //!
-//! Quantization params are deliberately absent: the Phase 1 sidecar
-//! dequantizes INT8 → F32 losslessly before emit (the arithmetic is
+//! Quantization params are absent from the file: the sidecar
+//! (`tools/parity/microwakeword/prepare_checkpoint.py`) dequantizes
+//! INT8 → F32 before emit (the arithmetic is
 //! `f32 = scale · (int8 - zero_point)` for a fixed per-tensor
-//! `(scale, zero_point)` pair). Phase 3 will re-introduce them alongside
-//! Q8_0 support once [`vokra_core::gguf::GgmlType`] gains that variant.
+//! `(scale, zero_point)` pair, so the values round-trip losslessly — but the
+//! pair itself is discarded). Re-emitting them alongside Q8_0 storage, once
+//! [`vokra_core::gguf::GgmlType`] gains that variant, is the follow-up that
+//! unblocks binding an upstream checkpoint to a chain.
 //!
 //! # Ops are NOT represented
 //!
 //! The sidecar emits weights only — the microWakeWord architecture is a
 //! fixed MC-MobileNet whose op chain is hard-coded on the consumer side.
 //! Adding a `Op { kind, inputs, outputs, attributes }` struct here would be
-//! fake-complete (it would carry no data). Phase 3's `KwsMicro::detect`
-//! will call scalar INT8 kernels directly against these [`Tensor`] weights
-//! in a hand-written topology, matching the sister [`vokra_vad_micro`] and
+//! fake-complete (it would carry no data). [`crate::KwsMicro::detect`]
+//! instead drives scalar INT8 kernels through a hand-written topology (see
+//! [`crate::interpreter`]), matching the sister [`vokra_vad_micro`] and
 //! whisper.cpp `whisper_encoder` patterns.
 //!
 //! [`Conv1dW`]: https://docs.rs/vokra-vad-micro/latest/vokra_vad_micro/weights/struct.Conv1dW.html
@@ -127,8 +138,10 @@ const KEY_UPSTREAM: &str = "vokra.kws.upstream";
 pub struct ModelHeader {
     /// Human-readable model identifier (e.g. `"hey_jarvis"`).
     pub model: String,
-    /// Wake-decision cutoff in `[0.0, 1.0]`. The Phase 3 forward will emit
-    /// a wake event only when the model's softmax score exceeds this.
+    /// Wake-decision cutoff in `[0.0, 1.0]`, as declared by the checkpoint.
+    /// A caller wiring this model up copies it into
+    /// [`crate::KeywordDef::threshold`], which is what
+    /// [`crate::KwsMicro::detect`] actually compares scores against.
     pub threshold: f32,
     /// Audio sample rate in Hz (typically 16000).
     pub sample_rate: u32,
@@ -175,9 +188,9 @@ pub struct Model {
     /// Typed view of the `vokra.kws.*` metadata group.
     pub header: ModelHeader,
     /// Every dense F32 tensor in the file, in GGUF declaration order.
-    /// Phase 3 will introduce per-layer typed bindings on top of this;
-    /// Phase 2 keeps the shape-generic list so shape audits (via
-    /// `tests`) and the future forward can walk it independently.
+    /// Per-layer typed bindings on top of this are not written yet (see the
+    /// module docs); the shape-generic list is what shape audits (via
+    /// `tests`) and any future binder walk.
     pub tensors: Vec<Tensor>,
 }
 

@@ -29,9 +29,12 @@ diff when the sidecar lands.
 - **Interpreter (`src/interpreter.rs`)** — `LayerSpec` + `ChainConfig`
     ping-pong chain executor (Phase 3, WF2). Real; unit-tested end-to-
     end with a synthetic 2-layer chain.
-- **`KwsMicro::detect()` (`src/lib.rs`)** — REAL mode wires the log-mel
-    front-end into a `ChainConfig` chain (Phase 3, WF2). SCAFFOLD mode
-    is preserved as the honest default when no chain is attached.
+- **`KwsMicro::detect()` (`src/lib.rs`)** — wires the log-mel front-end
+    into a `ChainConfig` chain (Phase 3, WF2). Real. With no chain
+    attached it refuses with `VokraError::ModelLoad`; it does not return
+    `KwsEvent::Idle`, which is a legitimate per-frame result and would
+    make an unconfigured detector look like a configured one hearing
+    silence (FR-EX-08). `has_chain()` tells the two states apart.
 - **Host parity harness
     (`tests/parity_microwakeword.rs`)** — Phase 4 (this doc). Env-gated
     reference comparison against a numpy log-mel transcription and the

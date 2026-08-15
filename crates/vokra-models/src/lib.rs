@@ -40,7 +40,7 @@
 // reference config (fast-conformer_aed.yaml — the Canary family reference).
 // Weights: CC-BY 4.0 (AttributionRequired — FR-MD-09 attribution surface).
 // Reuses two existing ops (vokra_ops::conformer for the encoder body,
-// vokra_ops::beam_search for the attention-decoder search) rather than
+// vokra_core::decode::beam_search for the attention-decoder search) rather than
 // duplicating.
 // SoTA plan Phase X (2026-07-25): forced-alignment ops
 // (CLAUDE.md 音声特化オペレータ §"Alignment / Duration / Prosody" —
@@ -296,8 +296,9 @@ pub mod parakeet_ctc;
 // attribution obligation, unlike NVIDIA's CC-BY 4.0 Parakeet-CTC). The
 // wav2vec 2.0 encoder body is a distinct topology from the FastConformer
 // used by Parakeet-CTC (no shared vokra_ops::wav2vec2_encoder op today —
-// the "may need new op" note from the task); the shared primitive
-// reused today is vokra_ops::ctc_decode.
+// that is a proposed name, not a landed module); the shared primitives
+// reused today are vokra_ops::waveform_frontend for the 7-layer conv
+// stem and vokra_ops::ctc_decode for the search.
 pub mod omniasr_ctc;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer TTS
 // (Apache 2.0). Single-stack GQA transformer with typed prefix conditioner
@@ -569,8 +570,11 @@ pub mod sortformer_diar_4spk_v1;
 // redimnet precedent — hybrid waveform-branch U-Net + spectrogram-
 // branch U-Net + BiLSTM + Transformer bottleneck + cross-domain
 // attention + stem-sum path deferred to follow-up wave. STFT/iSTFT
-// primitives exist; BiLSTM extraction from silero_vad::model into
-// vokra_ops::lstm is a follow-up. `facebook/demucs` MIT — first
+// primitives exist; a generic sequence LSTM does not (the one public
+// LSTM, vokra_ops::hybrid_ctc_attention::LstmLmCell, is LM-shaped, and
+// Silero's is a pub(crate) fixed-width cell in the separate
+// vokra-vad-micro crate), so vokra_ops::lstm is a follow-up.
+// `facebook/demucs` MIT — first
 // music-source-separation Permissive land after BS-Roformer
 // Rejected).
 pub mod demucs;

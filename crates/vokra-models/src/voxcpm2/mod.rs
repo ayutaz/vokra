@@ -1064,7 +1064,7 @@ impl VoxCpm2Tts {
              latents); (4) drive vokra_ops::flow_sample with the 4-layer local DiT as the \
              velocity estimator (cfg_mode=SplitBatch, cfg_scale=inference_cfg_rate=2.0, \
              solver=Euler, schedule=Linear, nfe=inference_timesteps=10); (5) decode the \
-             continuous VAE latents through vokra_ops::vae_continuous_decode → 48 kHz \
+             continuous VAE latents through vokra_ops::continuous_vae_decode → 48 kHz \
              PCM (the shared Phase 4 primitive). The scalar-quantization bottleneck \
              (scalar_quantization_latent_dim=256, scalar_quantization_scale=9) applies \
              inside the LM hidden stream — not the codec.",

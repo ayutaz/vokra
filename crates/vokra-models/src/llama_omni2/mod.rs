@@ -11,9 +11,10 @@
 //!    embeddings) that projects into the LM residual width.
 //! 2. **Text backbone** — Qwen2.5-family decoder-only transformer (RoPE
 //!    + SwiGLU + RMSNorm), the same family Voxtral / Canary-Qwen /
-//!      Kyutai STT / FireRedASR-LLM-L consume via `vokra_ops::qwen2` (a
-//!      future follow-up wave lands the shared forward — currently every
-//!      Qwen2 sibling re-implements MHA + GEMM + LayerNorm inline).
+//!      Kyutai STT / FireRedASR-LLM-L would share as `vokra_ops::qwen2`,
+//!      which is a PROPOSED op name rather than a landed one. No such
+//!      module exists today; every Qwen2 sibling re-implements MHA +
+//!      GEMM + LayerNorm inline, and a follow-up wave consolidates them.
 //! 3. **Speech decoder** — streaming AR head that emits audio tokens /
 //!    frames back to the caller (the streaming session infrastructure
 //!    the Moshi / CSM full-duplex sibling family exercises).
@@ -450,8 +451,10 @@ fn read_string_or_empty(file: &GgufFile, key: &str) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Per-block backbone weights (Qwen2.5-family: pre-norm MHA + SwiGLU
-/// FFN). Field names mirror the Qwen2 convention (`vokra_ops::qwen2`
-/// primitives shared with voxtral / kyutai_stt / canary_qwen).
+/// FFN). Field names mirror the upstream Qwen2 convention, which is
+/// also what a future shared `vokra_ops::qwen2` op would bind against
+/// (that module is proposed, not landed — voxtral / kyutai_stt /
+/// canary_qwen each still re-implement the forward inline).
 #[derive(Debug, Clone)]
 pub struct LlamaOmni2BlockWeights {
     /// Pre-attention RMSNorm γ, shape `[d_model]`.
@@ -731,9 +734,10 @@ impl LlamaOmni2 {
              This scaffold binds the shape / provenance / license contract; \
              follow-up wave requires (1) Qwen2.5 backbone forward with RoPE + \
              SwiGLU + RMSNorm (n_layer={n_layer}, d_model={d_model}, \
-             n_head={n_head}, vocab={vocab}) — share vokra_ops::qwen2 \
-             primitives with voxtral / canary_qwen / kyutai_stt / \
-             firered_asr_llm_l, (2) Whisper-style speech encoder forward \
+             n_head={n_head}, vocab={vocab}) — landing this as a NEW shared \
+             `vokra_ops::qwen2` op (no such module exists today) would unlock \
+             voxtral / canary_qwen / kyutai_stt / \
+             firered_asr_llm_l together, (2) Whisper-style speech encoder forward \
              (projection dim={enc}) share primitives with voxtral / \
              canary_qwen speech encoders, (3) streaming AR speech decoder \
              (head dim={dec}) with streaming session infrastructure — \

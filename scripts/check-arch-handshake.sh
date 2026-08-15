@@ -35,9 +35,22 @@
 #   every audit rediscovered all 21 as "gaps" — which is exactly how a real
 #   regression gets lost in the noise.
 #
+# WHICH CONSTANTS COUNT AS A DECLARATION            [widened 2026-08-15]
+#   `pub const ARCH`, `pub const ARCH_<SUFFIX>` (gigaam's ARCH_V3, whisper's
+#   size siblings) AND `pub const EXPECTED_ARCH`. That last spelling is used by
+#   29 of the 89 arch constants under vokra-models/src, and the regex did not
+#   match it — so this gate and `check-bound-arch-coverage.sh` both printed a
+#   confident "60 binder arches, all clean" over a population that was missing
+#   a third of the binders. `charsiu`, which has no converter at all, sat
+#   inside that blind spot. A gate that is green because it did not look is
+#   worse than no gate: it actively certifies the thing it failed to check.
+#   `unseen_arch_spellings` now fails the run if ANY arch-shaped `&str`
+#   constant on disk is outside the discovery regex, so the next new spelling
+#   is a loud one-time failure rather than a silently smaller population.
+#
 # THE THREE LEGS
 #   (a) converter -> reader
-#       Every `pub const ARCH…: &str = "X"` under
+#       Every arch constant (see above) under
 #       `crates/vokra-convert/src/models/` must be answered by a reader:
 #       the literal "X" appearing in non-comment source under
 #       `crates/vokra-models/src/`, OR "X" being routed / registered in
@@ -46,10 +59,9 @@
 #       sibling gate keeps that assertion honest from the other side).
 #
 #   (b) binder -> converter
-#       Every `pub const ARCH…: &str = "X"` under
-#       `crates/vokra-models/src/` must be emitted by some converter: the
-#       literal "X" appearing in non-comment source under
-#       `crates/vokra-convert/src/`.
+#       Every arch constant (see above) under `crates/vokra-models/src/` must
+#       be emitted by some converter: the literal "X" appearing in
+#       non-comment source under `crates/vokra-convert/src/`.
 #
 #   Comment lines are stripped before literals are collected, deliberately: a
 #   doc-comment that merely NAMES an arch is not a reader and not an emitter,
@@ -159,8 +171,17 @@ declare -a NO_READER=(
 
 # ---------------------------------------------------------------------------
 # LEDGER (b): binder arch tags no converter emits.
+#
+# This ledger was empty until 2026-08-15 — not because there were no gaps, but
+# because the discovery regex could not see the 29 binders that spell the
+# constant `EXPECTED_ARCH` instead of `ARCH`. Widening it surfaced exactly one
+# real gap out of those 29 (`charsiu`); the other 28 were already emitted by a
+# converter and simply had nothing checking them. The guard added in the same
+# change (`unseen_arch_spellings`) is what stops the next spelling from
+# re-opening this hole.
 # ---------------------------------------------------------------------------
 declare -a NO_CONVERTER=(
+  'charsiu|reader-first by design, and the binder half is NOT wired either: no crates/vokra-convert/src/models/charsiu.rs exists, and every "charsiu" occurrence under vokra-convert/src is a doc comment citing the loud-partial precedent, never a stamped literal. Charsiu::from_gguf (align/charsiu.rs:509) verifies the arch tag and then refuses with LoadError::Gguf "from_gguf is not wired yet ... the upstream tensor-name manifest binder is a follow-up wave (T29-equivalent)", so this is NOT the dangerous shape of a working loader with no producer — nothing can be mis-bound, and the module is reachable only via Charsiu::new with caller-supplied weights. The tag is fixed reader-side first so the converter has exactly one string to match when it lands (align/charsiu.rs:76-94 states this verbatim), and it is deliberately distinct from wav2vec2_ctc because Charsiu head is an IPA phoneme inventory, not a letter vocab. Registered in engine.rs BOUND_ARCHES as BoundReason::NoCliShapedOutput; `charsiu` is correspondingly not a ModelKind::from_arg slug.'
 )
 
 # ---------------------------------------------------------------------------
@@ -192,13 +213,18 @@ Usage:
   bash scripts/check-arch-handshake.sh --help
   bash scripts/check-arch-handshake.sh --self-test
 
-Leg (a): every `pub const ARCH…: &str` under crates/vokra-convert/src/models/
-is answered by a reader — the arch literal in non-comment source under
+An arch constant is `pub const ARCH`, `pub const ARCH_<SUFFIX>` or
+`pub const EXPECTED_ARCH` typed `&str`. A parser guard fails the run if any
+arch-shaped `&str` constant on disk falls outside that set, so a discovery
+regex that stops matching cannot report a smaller clean population.
+
+Leg (a): every arch constant under crates/vokra-convert/src/models/ is
+answered by a reader — the arch literal in non-comment source under
 crates/vokra-models/src/, or a routed constant / BOUND_ARCHES row in
 crates/vokra-cli/src/engine.rs.
 
-Leg (b): every `pub const ARCH…: &str` under crates/vokra-models/src/ is
-emitted by some converter — the arch literal in non-comment source under
+Leg (b): every arch constant under crates/vokra-models/src/ is emitted by some
+converter — the arch literal in non-comment source under
 crates/vokra-convert/src/.
 
 Leg (c): every `convert --model <slug>` printed anywhere under
@@ -231,8 +257,25 @@ import os, re, sys
 (conv_models, conv_src, models_dir, engine_path, ledger_a, ledger_b,
  convert_lib, ledger_c) = sys.argv[1:9]
 
+# BOTH binder spellings are in scope. `EXPECTED_ARCH` is not a stylistic
+# variant nobody uses: it is what 29 of the 89 arch constants under
+# vokra-models/src are called (charsiu, csm, moshi, silero-vad, voxtral,
+# zonos, the whole chatterbox family, …). Until 2026-08-15 this regex matched
+# only the `ARCH` form, so this gate and its sibling both reported a confident
+# green over a population missing a third of the binders — `charsiu` among
+# them, which has no converter at all and is precisely the defect leg (b)
+# exists to catch. A gate that is green because it did not look is worse than
+# no gate: it certifies the thing it failed to check. LOOSE_ARCH_CONST below
+# is what keeps the NEXT spelling from going invisible the same way.
 ARCH_CONST = re.compile(
-    r'^\s*pub\s+const\s+(ARCH(?:_[A-Z0-9_]+)?)\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
+    r'^\s*pub\s+const\s+((?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?)\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
+)
+# Deliberately sloppy twin of ARCH_CONST: ANY `pub const <name>: &str = "…";`
+# whose name contains `ARCH`. Never used for discovery — only to prove that
+# discovery saw everything on disk that looks like an arch declaration. See
+# `unseen_arch_spellings`.
+LOOSE_ARCH_CONST = re.compile(
+    r'^\s*pub\s+const\s+([A-Z0-9_]*ARCH[A-Z0-9_]*)\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
 )
 STRING_LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
@@ -274,6 +317,58 @@ def arch_consts(root):
                 if m:
                     found.append((m.group(2), f"{rel}:{lineno}", m.group(1)))
     return found
+
+
+def unseen_arch_spellings(root):
+    """{const_name: 'relpath:lineno'} for arch-shaped consts DISCOVERY MISSED.
+
+    The failure mode this catches is the one that motivated the 2026-08-15
+    widening: a binder module spells its arch constant in a way ARCH_CONST
+    does not match, so the gate silently scans a smaller population and
+    passes cleanly over every module it never looked at. Nothing else in
+    this script can notice that — every leg is phrased over the constants
+    discovery *found*, so a discovery bug reads as "no gaps".
+
+    WHY THIS SHAPE AND NOT A COUNT BAND
+    A "discovered count is within N of the module count on disk" check
+    needs a threshold, and the threshold is unpickable: modules
+    legitimately declare zero arch constants (pure ops, helper modules) or
+    several (gigaam's ARCH_V3 + ARCH_MULTILINGUAL, whisper's size
+    siblings), so today's honest ratio is 89 constants across 86 declaring
+    files out of far more files overall. A band loose enough to avoid
+    false alarms would have happily accepted 60-of-89. Running the strict
+    regex against a deliberately sloppy twin has no threshold at all, and
+    instead of "the number moved" it names the exact unmatched spelling
+    and the file it is in. It is also self-maintaining: a genuinely new
+    spelling fails once, loudly, at the line that introduced it.
+
+    WHAT THIS GUARD DOES *NOT* COVER — measured, not assumed [2026-08-15]
+    It keys on the constant NAME while still requiring `pub `, so a
+    declaration hidden by VISIBILITY rather than by spelling stays
+    invisible to it. That is not hypothetical: 71 converter-side and 3
+    models-side arch constants are `pub(crate)` or private and sit outside
+    discovery for that reason (`pub(crate) const ARCH: &str = "whisper"` at
+    vokra-convert/src/models/whisper.rs:212 is typical). Those 74 were NOT
+    triaged in the change that added this guard, and at least one is a real
+    defect: `ARCH_CRISPERWHISPER` ("crisper-whisper",
+    vokra-convert/src/models/whisper.rs:225) is a converter arch that
+    `ModelKind::from_arg` accepts and `whisper::ACCEPTED_ARCHS` loads, yet
+    engine.rs matches `arch.as_str()` against `ARCH_WHISPER` alone
+    (engine.rs:353) — so `convert` succeeds and `run` answers "unsupported
+    model arch". Widening to `pub(crate)` means triaging ~74 constants
+    first, so it is deliberately left as a separate, scoped change rather
+    than smuggled in here. Do not read a pass from this guard as "every
+    arch constant in the tree is covered".
+    """
+    unseen = {}
+    for path in rust_files(root):
+        rel = os.path.relpath(path, root)
+        with open(path, encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                m = LOOSE_ARCH_CONST.match(line)
+                if m and not ARCH_CONST.match(line):
+                    unseen.setdefault(m.group(1), f"{rel}:{lineno}")
+    return unseen
 
 
 def literals(root):
@@ -523,6 +618,27 @@ if not emitter_lits:
         f"zero string literals scanned in non-comment source under {conv_src} — the "
         f"emitter scan is broken; every binder arch would read as unemitted."
     )
+# The discovery-coverage guard. Everything above notices a scan that found
+# NOTHING; this one notices a scan that found SOME — the far more dangerous
+# shape, because a partial population still prints a confident count. See
+# `unseen_arch_spellings` for why this is a regex-vs-regex check rather than
+# a count band.
+for _root, _rootname, _leg in (
+    (conv_models, "vokra-convert/src/models", "a"),
+    (models_dir, "vokra-models/src", "b"),
+):
+    for _name, _where in sorted(unseen_arch_spellings(_root).items()):
+        errors.append(
+            f"[guard] `pub const {_name}` at {_rootname}/{_where} declares an arch-shaped "
+            f"`&str` constant that the discovery regex does NOT match, so leg ({_leg}) never "
+            f"looked at it — and every OTHER declaration spelled `{_name}` is invisible too. "
+            f"This is the failure that let 29 `EXPECTED_ARCH` binders (charsiu among them) sit "
+            f"outside both arch gates until 2026-08-15 while they reported a clean green. Fix: "
+            f"widen ARCH_CONST in scripts/check-arch-handshake.sh AND in "
+            f"scripts/check-bound-arch-coverage.sh to cover `{_name}` (they discover "
+            f"independently, so both must change), then re-run both gates and expect NEW "
+            f"findings — or rename the constant to an already-covered spelling."
+        )
 if not registry_seen:
     errors.append(
         f"`const BOUND_ARCHES` not found in {engine_path} — the registry was renamed or "
@@ -667,6 +783,14 @@ if errors:
 
 conv_archs = {a for a, _, _ in converters}
 bind_archs = {a for a, _, _ in binders}
+# Print the raw declaration counts, not just the distinct arch values: a
+# discovery regex that stops matching shrinks these first, so they are the
+# numbers to eyeball in a CI log.
+bind_names = sorted({n for _, _, n in binders})
+print(
+    f"check-arch-handshake: discovery saw {len(converters)} converter + {len(binders)} binder "
+    f"arch constant(s); binder spellings in use: {', '.join(bind_names)}."
+)
 print(
     f"check-arch-handshake: OK — leg (a) {len(conv_archs)} converter arch(es), "
     f"{len(conv_archs) - len(gap_a)} answered by a reader, {len(gap_a)} declared in "
@@ -710,9 +834,14 @@ self_test() {
         printf 'pub const ARCH_ORPHAN: &str = "orphan";\n'
         # Emits the binder tag `mbeta`, so leg (b) is satisfied for it.
         printf 'const EMITS: &str = "mbeta";\n'
+        # Emits `mexpected`, the tag declared as `pub const EXPECTED_ARCH`
+        # below, so the base tree is clean for it. Case 15 removes this line
+        # to prove that spelling is genuinely discovered and checked.
+        printf 'const EMITS_EXPECTED: &str = "mexpected";\n'
         # A comment naming `mlonely` must NOT count as an emitter.
         printf '// this comment mentions "mlonely" and must not satisfy leg (b)\n'
     } >"$tmp/conv/models/convs.rs"
+    cp "$tmp/conv/models/convs.rs" "$tmp/convs_saved.rs"
 
     # Binder side: two arch constants + a reader literal for `alpha`.
     #   mbeta   -> emitted by the converter file above
@@ -720,6 +849,12 @@ self_test() {
     printf 'pub const ARCH: &str = "mbeta";\nconst READS: &str = "alpha";\n' \
         >"$tmp/models/alpha/mod.rs"
     printf 'pub const ARCH_LONELY: &str = "mlonely";\n' >"$tmp/models/nested/mod.rs"
+
+    # The `EXPECTED_ARCH` spelling — 29 real binders use it, and it was
+    # invisible to this gate until 2026-08-15. Emitted by convs.rs above, so
+    # it needs no ledger entry and perturbs none of the existing cases.
+    mkdir -p "$tmp/models/expected"
+    printf 'pub const EXPECTED_ARCH: &str = "mexpected";\n' >"$tmp/models/expected/mod.rs"
 
     # Leg (c) fixture: a stand-in `ModelKind::from_arg` accepting three
     # spellings, plus a `PolicyPreset::from_arg` in the same file whose
@@ -995,8 +1130,60 @@ self_test() {
     fi
     cp "$saved_lib" "$tmp/conv/lib.rs"
 
+    # 15. The `EXPECTED_ARCH` spelling is genuinely DISCOVERED, not merely
+    #     tolerated. Case 1 already passed with `mexpected` emitted; drop the
+    #     emitter and leg (b) must now report it. Had the discovery regex
+    #     stopped matching `EXPECTED_ARCH` — the state this gate shipped in
+    #     until 2026-08-15 — this case would pass vacuously, because nothing
+    #     would ever have looked at that binder at all.
+    grep -v 'EMITS_EXPECTED' "$tmp/convs_saved.rs" >"$tmp/conv/models/convs.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: an EXPECTED_ARCH binder with no emitter should fail" >&2
+        status=1
+    elif grep -q 'leg b.*`mexpected`' <<<"$out"; then
+        echo "self-test PASS: a \`pub const EXPECTED_ARCH\` binder is discovered and checked"
+    else
+        echo "self-test FAIL: leg (b) failure did not name \`mexpected\`" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    cp "$tmp/convs_saved.rs" "$tmp/conv/models/convs.rs"
+
+    # 16. The guard that would have CAUGHT the 2026-08-15 bug: an arch-shaped
+    #     `&str` constant whose name the discovery regex does not match. The
+    #     gate must fail loudly and name the spelling, instead of quietly
+    #     scanning a smaller population and reporting it as clean.
+    printf 'pub const LEGACY_ARCH: &str = "minvisible";\n' >"$tmp/models/nested/legacy.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: an undiscoverable arch spelling should fail the guard" >&2
+        status=1
+    elif grep -q 'guard.*LEGACY_ARCH' <<<"$out"; then
+        echo "self-test PASS: an arch-shaped constant outside the discovery regex fails the guard"
+    else
+        echo "self-test FAIL: the guard did not name \`LEGACY_ARCH\`" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    rm -f "$tmp/models/nested/legacy.rs"
+
+    # 17. The same guard on the CONVERTER tree. The two roots are scanned
+    #     separately, so covering only one would leave half the blind spot
+    #     open — leg (a) would keep passing over converters it never saw.
+    printf 'pub const MODEL_ARCH: &str = "cinvisible";\n' >"$tmp/conv/models/legacy.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: an undiscoverable converter arch spelling should fail" >&2
+        status=1
+    elif grep -q 'guard.*MODEL_ARCH' <<<"$out"; then
+        echo "self-test PASS: the discovery-coverage guard covers the converter tree too"
+    else
+        echo "self-test FAIL: the guard did not name \`MODEL_ARCH\`" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    rm -f "$tmp/conv/models/legacy.rs"
+
     if [ "$status" -eq 0 ]; then
-        echo "check-arch-handshake --self-test: OK (14 cases)"
+        echo "check-arch-handshake --self-test: OK (17 cases)"
     fi
     return "$status"
 }

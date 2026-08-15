@@ -9,25 +9,48 @@
 //! its public surface, keeping one forward shared bit-identically between the
 //! std and no_std builds.
 //!
-//! ## SCAFFOLD ONLY (honest UNIMPLEMENTED)
+//! ## Status: the forward is real; binding a checkpoint to it is not
 //!
-//! This is a **skeleton**. [`KwsMicro::detect`] returns [`KwsEvent::Idle`] for
-//! every input. It is **not** a fake wake detector; it is an intentionally
-//! inert stub so that downstream crates can wire the type surface (registering
-//! keywords, feeding audio frames, matching on the event) before the real
-//! model lands. Real inference — a TFLite-Micro forward pass on the
-//! microWakeWord model (Apache 2.0,
-//! <https://github.com/kahrendt/microWakeWord>) — is a follow-up WP.
+//! [`KwsMicro::detect`] runs a real inference pass — 40-band log-mel feature
+//! extraction ([`features`]) → INT8 quantisation → an INT8 forward chain
+//! ([`interpreter::ChainConfig`]) → per-keyword threshold — for whatever
+//! chain the caller attached with [`KwsMicro::set_chain`]. A caller holding
+//! its own pre-quantised weights can build a chain by hand today and get real
+//! detections out of it.
+//!
+//! Before a chain is attached the detector is **unconfigured**, and
+//! [`KwsMicro::detect`] refuses with [`VokraError::ModelLoad`]. It does not
+//! answer [`KwsEvent::Idle`]: `Idle` is a legitimate per-frame result
+//! ("nothing woke on this frame"), so returning it while unconfigured would
+//! hide the misconfiguration behind a plausible-looking null result
+//! (FR-EX-08). [`KwsMicro::has_chain`] distinguishes the two states.
+//!
+//! ### The remaining gap
+//!
+//! **No code path builds an [`interpreter::ChainConfig`] from a
+//! [`model::Model`].** The offline sidecar
+//! (`tools/parity/microwakeword/prepare_checkpoint.py`) dequantises the
+//! upstream `.tflite`'s INT8 weights to F32 at export time and writes only
+//! those F32 tensors, so a loaded [`model::Model`] carries no per-tensor
+//! `(scale, zero_point)` — precisely the params every
+//! [`interpreter::LayerSpec`] needs to be constructed. Re-emitting them,
+//! alongside the `Q8_0` storage type [`vokra_core::gguf::GgmlType`] does not
+//! yet carry, is the follow-up that closes the loop (see [`model`]'s module
+//! docs). Until then a real hey_jarvis run stays owner-triggered — it also
+//! wants a canned "hey jarvis" audio fixture for accuracy verification.
+//!
+//! Upstream model: microWakeWord (Apache 2.0,
+//! <https://github.com/kahrendt/microWakeWord>).
 //!
 //! ## Design red lines (inherited from `vokra-vad-micro`)
 //!
-//! - **Zero external deps (NFR-DS-02)**: only `vokra-core`. When the real
-//!   forward lands, transcendentals will come from a shared scalar module
-//!   (mirroring `vokra_vad_micro::scalar`) — **no `libm`** (deny.toml bans it).
+//! - **Zero external deps (NFR-DS-02)**: only `vokra-core`. Transcendentals
+//!   come from the crate-local `scalar` module (mirroring
+//!   `vokra_vad_micro::scalar`) — **no `libm`** (deny.toml bans it).
 //! - **No `unsafe` (NFR-RL-07)**: workspace lint `unsafe_code = "deny"`.
-//! - **1:1 preservation (FR-LD-06 / FR-OP-50 / NFR-QL-05)**: microWakeWord
-//!   will be a dedicated subgraph, not lowered to generic audio-dialect ops
-//!   (same rule that keeps Silero VAD as its own subgraph).
+//! - **1:1 preservation (FR-LD-06 / FR-OP-50 / NFR-QL-05)**: microWakeWord is
+//!   a dedicated subgraph, not lowered to generic audio-dialect ops (same rule
+//!   that keeps Silero VAD as its own subgraph).
 //!
 //! [`vokra-vad-micro`]: https://docs.rs/vokra-vad-micro
 
@@ -95,9 +118,9 @@ pub struct KeywordDef {
     /// Human-readable keyword name (e.g. `"hey_vokra"`), for logs and demos.
     /// Not used by the numeric forward.
     pub name: String,
-    /// Confidence threshold in `[0.0, 1.0]`. The real forward will only emit
-    /// [`KwsEvent::Wake`] when the model's softmax score for this keyword is
-    /// `>= threshold`. Currently unused (scaffold).
+    /// Confidence threshold in `[0.0, 1.0]`. [`KwsMicro::detect`] emits
+    /// [`KwsEvent::Wake`] only when the chain's dequantised score for this
+    /// keyword is `>= threshold`.
     pub threshold: f32,
 }
 
@@ -136,9 +159,8 @@ pub enum KwsEvent {
 
 /// Everything [`KwsMicro`] needs to run a real detection pass: an INT8
 /// forward chain, a log-mel feature extractor, and the FFI quantisation
-/// params that bridge them. Attached via [`KwsMicro::set_chain`]; when
-/// unattached [`KwsMicro::detect`] returns [`KwsEvent::Idle`] (honest
-/// SCAFFOLD default).
+/// params that bridge them. Attached via [`KwsMicro::set_chain`]; while
+/// unattached [`KwsMicro::detect`] refuses outright (see its `# Errors`).
 ///
 /// Private because the fields have interdependent invariants (the extractor's
 /// feature vector length must equal the chain's `input_size`) — callers go
@@ -168,18 +190,20 @@ struct AttachedChain {
 
 /// microWakeWord-style KWS detector.
 ///
-/// # Two modes
+/// # Two states
 ///
-/// * **SCAFFOLD (default)** — no chain attached. [`Self::detect`] returns
-///   [`KwsEvent::Idle`] for every frame. This is the honest UNIMPLEMENTED
-///   default before a real hey_jarvis chain is loaded (see the crate-level
-///   docs for the honest-boundary contract).
-/// * **REAL (after [`Self::set_chain`])** — a validated
+/// * **Unconfigured (default)** — no chain attached. [`Self::detect`] refuses
+///   with [`VokraError::ModelLoad`] on every call. It never answers
+///   [`KwsEvent::Idle`], which would be indistinguishable from a configured
+///   detector hearing silence (FR-EX-08).
+/// * **Configured (after [`Self::set_chain`])** — a validated
 ///   [`interpreter::ChainConfig`] plus a [`features::FeatureExtractor`] are
 ///   attached; [`Self::detect`] runs the full log-mel → INT8 forward → argmax
 ///   → threshold pipeline and returns [`KwsEvent::Wake`] when any registered
 ///   keyword's dequantised probability crosses its
 ///   [`KeywordDef::threshold`].
+///
+/// [`Self::has_chain`] reports which of the two a detector is in.
 #[derive(Debug, Default)]
 pub struct KwsMicro {
     /// Registered keywords, in the order [`Self::add_keyword`] received them.
@@ -212,7 +236,8 @@ impl core::fmt::Debug for AttachedChain {
 
 impl KwsMicro {
     /// Constructs an empty detector with no keywords and no chain attached
-    /// (SCAFFOLD mode — [`Self::detect`] returns [`KwsEvent::Idle`]).
+    /// (unconfigured — [`Self::detect`] refuses until [`Self::set_chain`]
+    /// attaches one).
     pub fn new() -> Self {
         Self {
             keywords: Vec::new(),
@@ -232,8 +257,9 @@ impl KwsMicro {
         self.keywords.push(def);
     }
 
-    /// Attaches a real inference chain, promoting the detector out of
-    /// SCAFFOLD mode.
+    /// Attaches a real inference chain, moving the detector from
+    /// unconfigured to configured. Until this succeeds, [`Self::detect`]
+    /// refuses every call.
     ///
     /// `feature_scale` / `feature_zero_point` control the front-end
     /// quantisation ([`features_f32`](features::FeatureExtractor::compute_frame_f32)
@@ -278,23 +304,35 @@ impl KwsMicro {
         Ok(())
     }
 
-    /// Reports whether a real chain is attached (i.e. we are in REAL mode
-    /// rather than SCAFFOLD mode). Useful for tests and integration diagnostics.
+    /// Reports whether a chain is attached, i.e. whether this detector is
+    /// configured. When `false`, [`Self::detect`] refuses with
+    /// [`VokraError::ModelLoad`] rather than returning an event — call this
+    /// to tell the two states apart without provoking that error.
     pub fn has_chain(&self) -> bool {
         self.chain.is_some()
     }
 
     /// Runs the detector on one audio frame and returns the resulting event.
     ///
-    /// # SCAFFOLD mode (no chain attached)
+    /// # Errors
     ///
-    /// Returns `Ok(KwsEvent::Idle)` unconditionally, ignoring `frame`
-    /// contents. This is the honest UNIMPLEMENTED default before a real
-    /// chain is loaded (via [`Self::set_chain`]). A probabilistic guess
-    /// would be dishonest; a `panic!` would break integrators wiring the
-    /// type surface.
+    /// - [`VokraError::ModelLoad`] when no chain is attached — i.e.
+    ///   [`Self::set_chain`] has never been called, so there is nothing to
+    ///   run. This is deliberately **not** answered with
+    ///   `Ok(KwsEvent::Idle)`: `Idle` is a legitimate runtime result
+    ///   meaning "no registered keyword scored above its threshold on this
+    ///   frame", so returning it here would make an unconfigured detector
+    ///   indistinguishable from a correctly configured one hearing silence
+    ///   (FR-EX-08 — never a plausible-looking null result). The refusal
+    ///   names [`Self::set_chain`], and [`Self::has_chain`] distinguishes
+    ///   the two states without provoking an error.
+    /// - [`VokraError::InvalidArgument`] when `frame.len()` is not
+    ///   [`features::WINDOW_SAMPLES`]; a silent zero-pad or truncate would
+    ///   silently misclassify.
+    /// - Whatever [`interpreter::ChainConfig::run`] raises, propagated
+    ///   verbatim.
     ///
-    /// # REAL mode (chain attached)
+    /// # Detection pipeline (chain attached)
     ///
     /// Runs the full pipeline:
     ///
@@ -317,22 +355,34 @@ impl KwsMicro {
     ///
     /// # Honest boundary
     ///
-    /// Real hey_jarvis accuracy verification requires (a) a real MC-MobileNet
-    /// chain constructed from a GGUF the sidecar produced, and (b) a canned
-    /// "hey jarvis" audio fixture. Both are owner-triggered — the SCAFFOLD
-    /// default (no chain) is the safe posture until they land. See the
-    /// crate-level docs for the full honest-boundary contract.
+    /// The pipeline above is real for whatever chain the caller attached.
+    /// What is not yet reachable is a chain built from an upstream
+    /// checkpoint: nothing converts a [`model::Model`] into an
+    /// [`interpreter::ChainConfig`], because the offline sidecar emits
+    /// dequantised F32 tensors carrying no per-tensor `(scale,
+    /// zero_point)`. Real hey_jarvis accuracy verification additionally
+    /// needs a canned "hey jarvis" audio fixture (owner-triggered). See
+    /// the crate-level docs for the full contract.
     pub fn detect(&mut self, frame: &[i16]) -> Result<KwsEvent> {
-        // SCAFFOLD mode: no chain attached → return Idle without touching
-        // `frame`. This is the honest UNIMPLEMENTED behaviour before a real
-        // hey_jarvis chain is loaded.
+        // Unconfigured: `set_chain` was never called, so there is no chain
+        // to run. Refuse loudly instead of returning `KwsEvent::Idle` — the
+        // latter is a legitimate per-frame result, so answering with it here
+        // would make "never configured" indistinguishable from "configured
+        // and heard silence" (FR-EX-08).
         let Some(state) = self.chain.as_mut() else {
-            let _ = frame;
-            return Ok(KwsEvent::Idle);
+            return Err(VokraError::ModelLoad(String::from(
+                "kws-micro: no forward chain is attached, so nothing can be \
+                 detected — call `set_chain` with an `interpreter::ChainConfig` \
+                 first (`has_chain` reports which of the two states a detector \
+                 is in, without provoking this error). Refusing rather than \
+                 returning `KwsEvent::Idle`, which a configured detector emits \
+                 for every frame without a wake word and would therefore hide \
+                 the misconfiguration (FR-EX-08)",
+            )));
         };
 
-        // REAL mode: length-check first (fail-closed — silent zero-pad or
-        // truncate would silently misclassify).
+        // Length-check first (fail-closed — silent zero-pad or truncate
+        // would silently misclassify).
         if frame.len() != features::WINDOW_SAMPLES {
             return Err(VokraError::InvalidArgument(format!(
                 "detect: frame len {} != expected {} (WINDOW_SAMPLES @ {} Hz)",
@@ -406,25 +456,69 @@ mod tests {
     fn kws_new_creates_empty_detector_without_chain() {
         let d = KwsMicro::new();
         assert_eq!(d.keywords.len(), 0);
-        assert!(!d.has_chain(), "fresh detector must start in SCAFFOLD mode");
+        assert!(
+            !d.has_chain(),
+            "fresh detector must start unconfigured (no chain attached)"
+        );
     }
 
     #[test]
-    fn kws_detect_scaffold_mode_returns_idle_for_any_frame() {
-        // No chain attached → SCAFFOLD mode: every frame is Idle, regardless
-        // of content or length (SCAFFOLD ignores `frame` entirely, so this
-        // holds even for frames the REAL path would reject).
+    fn kws_detect_without_chain_refuses_instead_of_returning_idle() {
+        // No chain attached → `detect` must refuse for EVERY frame, including
+        // the well-formed `WINDOW_SAMPLES` one a configured detector accepts.
+        // `Idle` is a legitimate per-frame answer, so returning it here would
+        // make "never configured" indistinguishable from "configured and heard
+        // silence" (FR-EX-08).
         let mut d = KwsMicro::new();
         d.add_keyword(KeywordDef::new(0, "hey_vokra", 0.5));
-        for frame_len in [0usize, 128, 512, 1024] {
+        for frame_len in [0usize, 128, 1024, features::WINDOW_SAMPLES] {
             let frame = alloc::vec![0i16; frame_len];
-            let ev = d.detect(&frame).unwrap();
-            assert_eq!(
-                ev,
-                KwsEvent::Idle,
-                "SCAFFOLD mode must return Idle for frame_len={frame_len}"
+            let Err(err) = d.detect(&frame) else {
+                panic!(
+                    "unconfigured detect must refuse, not return an event \
+                     (frame_len={frame_len})"
+                );
+            };
+            let VokraError::ModelLoad(msg) = err else {
+                panic!(
+                    "unconfigured detect must refuse with ModelLoad \
+                     (frame_len={frame_len})"
+                );
+            };
+            // The message must point at the fix and at the predicate that
+            // tells the two states apart, so the refusal is actionable.
+            assert!(
+                msg.contains("set_chain"),
+                "refusal must name `set_chain`; got: {msg}"
+            );
+            assert!(
+                msg.contains("has_chain"),
+                "refusal must name `has_chain`; got: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn kws_detect_refuses_until_a_chain_is_attached_then_answers() {
+        // The same detector, same frame: refusal before `set_chain`, a real
+        // event after. Pins that the refusal is a function of configuration
+        // state alone — not of the input.
+        let frame = [0i16; features::WINDOW_SAMPLES];
+        let mut d = KwsMicro::new();
+        d.add_keyword(KeywordDef::new(0, "always_fires", 0.5));
+        assert!(
+            d.detect(&frame).is_err(),
+            "detect must refuse while unconfigured"
+        );
+        d.set_chain(always_wake_chain(), 1.0, 0, 1.0 / 256.0, -128)
+            .unwrap();
+        let ev = d
+            .detect(&frame)
+            .expect("detect must succeed once a chain is attached");
+        assert!(
+            matches!(ev, KwsEvent::Wake { keyword_id: 0, .. }),
+            "attached always-wake chain must fire; got {ev:?}"
+        );
     }
 
     #[test]
@@ -435,7 +529,7 @@ mod tests {
         assert_eq!(d.keywords.len(), 2);
     }
 
-    // ---- REAL-mode helpers ---------------------------------------------
+    // ---- configured-detector helpers -----------------------------------
 
     /// Builds a trivial "always fires class 0" chain:
     /// - `FullyConnected(N_MELS → 1)` with `weight = 0` and a strong positive
@@ -498,7 +592,8 @@ mod tests {
             .unwrap();
         assert!(
             d.has_chain(),
-            "chain must be attached before REAL-mode test"
+            "chain must be attached before the length-check test — an \
+             unconfigured detector refuses for a different reason"
         );
         // Wrong length: WINDOW_SAMPLES is 512, feed 100.
         let err = d.detect(&[0i16; 100]).unwrap_err();
@@ -580,9 +675,9 @@ mod tests {
     // available in a host `cargo test`.
     #[test]
     fn kws_detect_is_bit_identical_across_repeat_calls_std_and_no_std() {
-        // A REAL-mode configuration (SCAFFOLD returns Idle for every
-        // frame; that would trivially pass this test without exercising
-        // any arithmetic).
+        // Both detectors are configured: an unconfigured one refuses every
+        // call, which would pass a determinism check without ever running
+        // the arithmetic this test exists to pin.
         let mut a = KwsMicro::new();
         a.add_keyword(KeywordDef::new(0, "det", 0.5));
         a.set_chain(always_wake_chain(), 1.0, 0, 1.0 / 256.0, -128)

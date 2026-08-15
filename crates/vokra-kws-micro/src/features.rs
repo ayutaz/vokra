@@ -26,13 +26,13 @@
 //! 6. `log10(max(mel_energy, EPSILON))` — the per-band log-magnitude that
 //!    the classifier consumes.
 //!
-//! # Scope (Phase 1)
+//! # Scope
 //!
-//! Phase 1 provides the API + tests + host-side implementation. The
-//! [`KwsMicro::detect`](crate::KwsMicro::detect) forward remains a
-//! scaffold; Phase 2 (later wave) wires the extracted features into the
-//! Q8_0 microWakeWord classifier and adds INT8-preserving GGUF I/O; Phase
-//! 3 flips the thumbv8m cross-build gate. This module is
+//! This module provides the API + tests + host-side implementation, and
+//! [`KwsMicro::detect`](crate::KwsMicro::detect) consumes it for real on
+//! every frame. What is still outstanding sits downstream, not here:
+//! INT8-preserving (Q8_0) GGUF I/O, without which no upstream checkpoint can
+//! be bound to a forward chain. This module is
 //! ALREADY `#![no_std]`-clean (checked visually below — only `core` +
 //! `alloc` + `crate::scalar`, no `std` imports); the crate's `std` /
 //! `no_std` toggle is set by [`crate`]'s `lib.rs`.
@@ -135,9 +135,10 @@ impl FeatureExtractor {
     /// Computes one frame's log-mel feature vector.
     ///
     /// `window` MUST be exactly [`WINDOW_SAMPLES`] i16 samples wide — the
-    /// caller is responsible for buffering + hop management (the
-    /// scaffold-only [`crate::KwsMicro::detect`] does not do this yet;
-    /// Phase 2 will add a ring-buffer helper).
+    /// caller is responsible for buffering + hop management
+    /// ([`crate::KwsMicro::detect`] does not do this: it length-checks the
+    /// frame it is handed and rejects any other width, so a ring-buffer
+    /// helper is still owed).
     ///
     /// Returns a `Vec<f32>` of length [`N_MELS`] (heap-allocated for
     /// `#![no_std]` compatibility; a fixed-array variant is Phase 3
@@ -241,8 +242,8 @@ impl Default for FeatureExtractor {
 /// quantization (`i8 = clamp(round(f32 / scale) + zero_point, -128, 127)`).
 ///
 /// Mirror of the `dequantize_int8_to_f32` helper in
-/// `tools/parity/microwakeword/prepare_checkpoint.py`. Used by the
-/// Phase 2 forward to feed features into the INT8 microWakeWord model
+/// `tools/parity/microwakeword/prepare_checkpoint.py`. Used by
+/// [`crate::KwsMicro::detect`] to feed features into the INT8 forward chain
 /// with bit-identical arithmetic on both sides of the FFI.
 ///
 /// `scale > 0` is enforced via `debug_assert!`; a `scale ≤ 0` in

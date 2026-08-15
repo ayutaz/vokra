@@ -75,8 +75,13 @@
 //!      wiring (STFT/iSTFT primitives exist in `vokra_ops::stft` /
 //!      `vokra_ops::istft` — what is pending is the *composition*);
 //!   3. the BiLSTM bottleneck primitive (a new `vokra_ops::lstm` op —
-//!      the Silero-VAD LSTM is embedded 1:1 in `silero_vad::model`
-//!      and is not shared; extraction as an op is a follow-up wave)
+//!      the one public LSTM today is
+//!      `vokra_ops::hybrid_ctc_attention::LstmLmCell`, which is
+//!      LM-shaped (token id in, one log-probability out) and so is
+//!      the wrong function for a bottleneck; Silero's is a
+//!      `pub(crate)` `lstm_forward` fixed at `HIDDEN = 128` in the
+//!      separate `vokra-vad-micro` crate. Extraction of a generic
+//!      sequence LSTM as an op is a follow-up wave)
 //!      **plus** the Transformer bottleneck composition (composable
 //!      from existing softmax + GEMM + LayerNorm — no new op needed);
 //!   4. cross-domain self-attention between the waveform and
@@ -99,7 +104,8 @@
 //! sidecar per memory `[[feedback-python-uses-uv]]` +
 //! `[[feedback-python-3-12]]`) + (ii) wiring the two U-Net branches +
 //! STFT/iSTFT composition + (iii) extracting the shared BiLSTM
-//! primitive from `silero_vad` into `vokra_ops::lstm` + (iv) porting
+//! primitive (from the `vokra-vad-micro` Silero cell, which is
+//! `pub(crate)` and fixed-width) into `vokra_ops::lstm` + (iv) porting
 //! the cross-domain self-attention + stem-sum output stage. STFT /
 //! iSTFT / softmax / GEMM / LayerNorm primitives already exist —
 //! the follow-up wave is composition + tensor walk + one new op
@@ -712,9 +718,13 @@ impl Demucs {
     ///    the composition.
     /// 3. **BiLSTM bottleneck + Transformer bottleneck composition**:
     ///    the BiLSTM primitive is *not yet extracted* into
-    ///    `vokra_ops::lstm` (Silero VAD embeds its own LSTM 1:1 in
-    ///    `silero_vad::model` and is not shared); extraction is a
-    ///    follow-up wave. The Transformer bottleneck (SwiGLU + MHA
+    ///    `vokra_ops::lstm`. The one public LSTM,
+    ///    `vokra_ops::hybrid_ctc_attention::LstmLmCell`, is LM-shaped
+    ///    (token id in, one log-probability out, embedding + vocab
+    ///    projection bundled in) and so is the wrong function for a
+    ///    bottleneck; Silero's is a `pub(crate)` `lstm_forward` fixed
+    ///    at `HIDDEN = 128` in the separate `vokra-vad-micro` crate.
+    ///    Extraction is a follow-up wave. The Transformer bottleneck (SwiGLU + MHA
     ///    + LayerNorm) is composable from Vokra's existing softmax +
     ///      GEMM + LayerNorm primitives (no new op needed).
     /// 4. **Cross-domain self-attention** between the waveform-branch
@@ -765,8 +775,13 @@ fn separate_forward_loud_partial(cfg: &DemucsConfig) -> VokraError {
          GLU depth={depth} → iSTFT — the STFT/iSTFT primitives `vokra_ops::stft` / \
          `vokra_ops::istft` already exist, what is pending is the composition), \
          (c) the BiLSTM bottleneck (lstm_layers={lstm_layers} — a new `vokra_ops::lstm` \
-         op is needed; the Silero-VAD LSTM is embedded 1:1 in `silero_vad::model` and \
-         is not shared, extraction is a follow-up wave) plus the Transformer \
+         op is needed. The one public LSTM in vokra-ops is \
+         `vokra_ops::hybrid_ctc_attention::LstmLmCell`, which is LM-shaped (token id \
+         in, one log-probability out, embedding + vocab projection bundled in) and is \
+         therefore the wrong function for a bottleneck rather than a missing one; \
+         Silero's LSTM is a `pub(crate)` `lstm_forward` fixed at `HIDDEN = 128` in \
+         the separate `vokra-vad-micro` crate, not in `silero_vad`, which is only a \
+         std veneer over it. Extraction is a follow-up wave) plus the Transformer \
          bottleneck (transformer_layers={transformer_layers} — composable from existing \
          softmax + GEMM + LayerNorm, no new op needed), (d) the cross-domain \
          self-attention connecting waveform and spectrogram trunks (the 'hybrid' step \

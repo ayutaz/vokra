@@ -24,28 +24,47 @@
 //!                                                  `vokra_ops::stft`]
 //!   -> grouped 2D Conv encoder                    ← **loud-partial**
 //!        (channel-grouped 2D convolutions over the log-magnitude
-//!         STFT — depthwise-style grouped Conv2D is NOT a current
-//!         `vokra_ops` primitive; `vokra_ops::conv2d` handles the
-//!         un-grouped case only.)
+//!         STFT. `vokra_ops` exposes NO public 2-D convolution at
+//!         all — grouped or un-grouped. Every convolution helper in
+//!         the crate is private to the module that owns it:
+//!         `denoise.rs` has a DFN3-internal `struct Conv2d`, and
+//!         `hifigan` / `hiftnet` / `bigvgan_generator` ship private
+//!         1-D helpers. The gap is therefore a 2-D convolution op
+//!         *with* grouping as an axis — not a grouping extension to
+//!         some existing un-grouped one.)
 //!   -> PReLU activations                          ← **loud-partial**
-//!        (parameterized ReLU with a learned per-channel scalar slope;
-//!         `vokra_ops` has plain ReLU / GELU / SiLU but no PReLU cell.)
+//!        (parameterized ReLU with a learned per-channel scalar
+//!         slope. `vokra_ops` has no PReLU — and no public ReLU,
+//!         GELU or SiLU cell either: the only public pointwise activation
+//!         functions in the crate are `snake_activation_f32` and
+//!         `snake_beta_f32`, and GELU exists solely as private
+//!         per-module helpers. This is the cheapest of the four
+//!         gaps — a two-branch scalar map — and is listed for
+//!         completeness, not because it is hard.)
 //!   -> ERB (equivalent rectangular bandwidth) grouping ← **loud-partial**
 //!        (perceptual band aggregation over the linear STFT bins.
-//!         DeepFilterNet3's `denoise` op uses its own ERB analysis /
-//!         synthesis pair; GTCRN's ERB grouping is a distinct
-//!         efficiency-preserving frequency-axis pooler used as an
-//!         internal feature aggregator rather than an analysis /
-//!         synthesis stage — the two ERB usages are NOT compatible
-//!         and cannot be silently aliased.)
+//!         An ERB *partition* helper does exist and is public —
+//!         `vokra_ops::DeepFilterNetConfig::erb_widths` — but it is
+//!         parameterised by DFN3's own band config and DFN3 uses ERB
+//!         as a real analysis / synthesis pair, whereas GTCRN uses it
+//!         as an internal efficiency-preserving feature pooler. Reusing
+//!         DFN3's partition under GTCRN's axes would be shape-valid and
+//!         numerically wrong, i.e. silent — the failure FR-EX-08 exists
+//!         to forbid. What is missing is GTCRN's own aggregation matrix,
+//!         not the notion of ERB.)
 //!   -> SB-TF-LSTM (sub-band time-frequency LSTM) bottleneck
 //!                                                 ← **loud-partial**
-//!        (dual-axis LSTM composition — the `crates/vokra-models/src/
-//!         silero_vad/model.rs` binder ships a scalar LSTM tuned for
-//!         VAD; extracting that primitive into a shared
-//!         `vokra_ops::lstm` for reuse across gtcrn / demucs / other
-//!         SB-TF-LSTM consumers is a follow-up per `demucs::separate`'s
-//!         own loud-partial rationale.)
+//!        (dual-axis LSTM composition. The one public LSTM in
+//!         `vokra_ops` is `hybrid_ctc_attention::LstmLmCell`, and it
+//!         is LM-shaped rather than generic: `step()` consumes a
+//!         token id plus a candidate id and returns one
+//!         log-probability, and the struct bundles a token embedding
+//!         table and a vocab output projection. Running a feature
+//!         sequence through it is not possible without rewriting it,
+//!         so it is the wrong function here rather than a missing
+//!         one. Silero's LSTM is not reusable either: it lives in the
+//!         separate `vokra-vad-micro` crate as a `pub(crate)`
+//!         `lstm_forward` hard-wired to `HIDDEN = 128`.)
 //!   -> grouped 2D Conv decoder + PReLU            ← **loud-partial**
 //!        (mirror of the encoder — same grouped Conv2D gap.)
 //!   -> per-bin gain mask G ∈ [0, 1]
@@ -74,15 +93,22 @@
 //! - **Loud-partial (this WP)**: [`Gtcrn::denoise`] returns
 //!   [`VokraError::UnsupportedOp`] naming **all four** deferred
 //!   primitives from the encoder-bottleneck-decoder decomposition:
-//!   (i) **grouped Conv2D** (channel-grouped depthwise-style
-//!   convolutions not covered by `vokra_ops::conv2d`),
-//!   (ii) **PReLU** (parameterized per-channel scalar activation not
-//!   in current `vokra_ops`),
-//!   (iii) **SB-TF-LSTM** (sub-band time-frequency LSTM — the scalar
-//!   LSTM in `silero_vad::model` is not extracted into a shareable
-//!   `vokra_ops::lstm` primitive yet), and
-//!   (iv) **ERB grouping** (perceptual bandwidth aggregation matrix
-//!   distinct from DeepFilterNet3's ERB analysis / synthesis pair).
+//!   (i) **2-D convolution with grouping** (`vokra_ops` has no public
+//!   2-D convolution at all, grouped or un-grouped — every conv
+//!   helper in the crate is private to its owning module),
+//!   (ii) **PReLU** (no PReLU cell — and no public ReLU / GELU / SiLU
+//!   cell either; the only public pointwise activation functions are
+//!   `snake_activation_f32` / `snake_beta_f32`),
+//!   (iii) **SB-TF-LSTM** (the one public LSTM,
+//!   `vokra_ops::hybrid_ctc_attention::LstmLmCell`, is LM-shaped —
+//!   token id in, one log-probability out, embedding + vocab
+//!   projection bundled in — so it is the wrong function here, and
+//!   Silero's is a `pub(crate)` fixed-width cell in the separate
+//!   `vokra-vad-micro` crate), and
+//!   (iv) **ERB grouping** (the public partition helper
+//!   `vokra_ops::DeepFilterNetConfig::erb_widths` carries DFN3's band
+//!   config and DFN3's analysis / synthesis semantics; GTCRN's
+//!   internal-pooler aggregation matrix is what is absent).
 //!   The error cites both primary sources (upstream GitHub repo
 //!   README + arXiv:2211.02063) and echoes every config axis so a
 //!   reader diagnosing this gap has exactly two anchors to walk and
@@ -98,9 +124,11 @@
 //! ships PyTorch state dict on GitHub that
 //! `tools/parity/nemo_pt_to_safetensors.py` uv-managed Python 3.12
 //! sidecar bridges to safetensors), (ii) landing the four missing
-//! primitives (grouped Conv2D + PReLU + SB-TF-LSTM + ERB grouping) in
-//! `vokra_ops`, and (iii) composing the encoder-bottleneck-decoder
-//! forward against the stamped `vokra.gtcrn.*` axes.
+//! primitives in `vokra_ops` (a 2-D convolution op carrying grouping
+//! as an axis + PReLU + a generic sequence LSTM + the GTCRN ERB
+//! aggregation matrix), and (iii) composing the
+//! encoder-bottleneck-decoder forward against the stamped
+//! `vokra.gtcrn.*` axes.
 //!
 //! # `vokra.gtcrn.*` chunk group (read here)
 //!
@@ -626,24 +654,38 @@ impl Gtcrn {
     /// requires **four** deferred primitives from the encoder-
     /// bottleneck-decoder decomposition:
     ///
-    /// 1. **grouped Conv2D** (channel-grouped depthwise-style
-    ///    convolutions over log-magnitude STFT) — NOT covered by
-    ///    `vokra_ops::conv2d` (which handles the un-grouped case
-    ///    only).
+    /// 1. **2-D convolution with grouping** (channel-grouped
+    ///    depthwise-style convolutions over log-magnitude STFT).
+    ///    `vokra_ops` exposes no public 2-D convolution whatsoever —
+    ///    grouped or un-grouped. Every convolution helper in the
+    ///    crate is private to the module that owns it (`denoise.rs`
+    ///    holds a DFN3-internal `struct Conv2d`; `hifigan` /
+    ///    `hiftnet` / `bigvgan_generator` hold private 1-D helpers),
+    ///    so this is a new op rather than an extension of an
+    ///    existing one.
     /// 2. **PReLU** (parameterized ReLU with a learned per-channel
-    ///    scalar slope) — `vokra_ops` has plain ReLU / GELU / SiLU
-    ///    but no PReLU activation cell.
-    /// 3. **SB-TF-LSTM** (sub-band time-frequency LSTM bottleneck) —
-    ///    the `silero_vad::model` binder ships a scalar LSTM tuned
-    ///    for VAD; extracting that primitive into a shared
-    ///    `vokra_ops::lstm` for reuse across GTCRN / demucs / other
-    ///    SB-TF-LSTM consumers is a follow-up per `demucs::separate`'s
-    ///    own loud-partial rationale.
+    ///    scalar slope). `vokra_ops` has no PReLU cell, and no
+    ///    public ReLU / GELU / SiLU cell either — the only public
+    ///    activation functions are `snake_activation_f32` and
+    ///    `snake_beta_f32`, with GELU present only as private
+    ///    per-module helpers. This is the cheapest of the four gaps.
+    /// 3. **SB-TF-LSTM** (sub-band time-frequency LSTM bottleneck).
+    ///    The one public LSTM in `vokra_ops` is
+    ///    `hybrid_ctc_attention::LstmLmCell`, which is LM-shaped:
+    ///    `step()` takes a token id plus a candidate id and returns a
+    ///    single log-probability, and the struct bundles an embedding
+    ///    table and a vocab projection. It is the wrong function for
+    ///    a feature-sequence bottleneck rather than a missing one.
+    ///    Silero's LSTM is a `pub(crate)` `lstm_forward` hard-wired to
+    ///    `HIDDEN = 128` in the separate `vokra-vad-micro` crate.
     /// 4. **ERB (equivalent rectangular bandwidth) frequency-band
-    ///    grouping** (perceptual band aggregation matrix distinct
-    ///    from DeepFilterNet3's ERB analysis / synthesis pair — the
-    ///    two ERB usages are NOT compatible and cannot be silently
-    ///    aliased).
+    ///    grouping**. The public partition helper
+    ///    `vokra_ops::DeepFilterNetConfig::erb_widths` exists, but it
+    ///    carries DFN3's band config and DFN3 uses ERB as an
+    ///    analysis / synthesis pair while GTCRN uses it as an internal
+    ///    feature pooler. Aliasing the two would be shape-valid and
+    ///    numerically wrong, i.e. silent (FR-EX-08). GTCRN's own
+    ///    aggregation matrix is what is absent.
     ///
     /// The error names all four primitives + both primary-source
     /// anchors (upstream repo + arXiv paper) so a reader diagnosing
@@ -669,14 +711,32 @@ impl Gtcrn {
 /// by [`Gtcrn::denoise`] until the tensor-name walk + encoder-
 /// bottleneck-decoder composition + four missing primitives land.
 ///
-/// Names **all four** deferred primitives (grouped Conv2D + PReLU +
-/// SB-TF-LSTM + ERB grouping) so a reader diagnosing the gap knows
-/// exactly which `vokra_ops` extensions are required. Cites both
-/// primary source URLs (upstream repo README + arXiv paper) so the
-/// reader has both the implementation and theoretical anchors.
-/// Mirrors the Sortformer / MT3 / beat_this / RMVPE / pyannote / snac /
-/// hifigan / vocos / bigvgan / sepformer / conv_tasnet / demucs Wave
-/// 3-5 loud-partial-message precedent — CLAUDE.md 教訓 (a).
+/// Names **all four** deferred primitives (2-D convolution with
+/// grouping + PReLU + SB-TF-LSTM + ERB grouping) so a reader
+/// diagnosing the gap knows exactly which `vokra_ops` extensions are
+/// required. Cites both primary source URLs (upstream repo README +
+/// arXiv paper) so the reader has both the implementation and
+/// theoretical anchors. Mirrors the Sortformer / MT3 / beat_this /
+/// RMVPE / pyannote / snac / hifigan / vocos / bigvgan / sepformer /
+/// conv_tasnet / demucs Wave 3-5 loud-partial-message precedent —
+/// CLAUDE.md 教訓 (a).
+///
+/// Every clause here is checked against `crates/vokra-ops/src` rather
+/// than restated from a neighbouring comment. An earlier revision
+/// claimed the grouped conv was "NOT covered by `vokra_ops::conv2d`
+/// which handles only the un-grouped case" and that "`vokra_ops` has
+/// plain ReLU / GELU / SiLU but no PReLU cell". Neither held: there is
+/// no `conv2d` module and no public 2-D convolution of any kind, and
+/// the only public pointwise activation functions are `snake_activation_f32` /
+/// `snake_beta_f32`. A message that names a primitive which does not
+/// exist is worse than no message — it sends the next reader to a
+/// module they cannot find, and the second claim reached the right
+/// conclusion (no PReLU) from a false premise, which is the kind of
+/// accident that stops being right the moment anything nearby moves.
+/// The test `denoise_loud_partial_names_only_real_primitives` asserts
+/// the stale phrasing is ABSENT as well as asserting the live blockers
+/// are present, so it cannot rot back in (mirror of the `beat_this`
+/// guard).
 ///
 /// Echoes every [`GtcrnConfig`] axis so the reader can cross-check
 /// what topology the follow-up wave targets.
@@ -690,28 +750,46 @@ fn denoise_forward_loud_partial(cfg: &GtcrnConfig) -> VokraError {
     VokraError::UnsupportedOp(format!(
         "gtcrn denoise: grouped Conv2D encoder + PReLU + SB-TF-LSTM (sub-band \
          time-frequency LSTM) bottleneck + ERB (equivalent rectangular bandwidth) \
-         frequency-band grouping + grouped Conv2D decoder composition pending. GTCRN's \
-         reference implementation decomposes as (a) a grouped 2D Conv encoder \
-         (channel-grouped depthwise-style convolutions over the log-magnitude STFT — \
-         NOT covered by `vokra_ops::conv2d` which handles only the un-grouped case), \
-         (b) PReLU activations (parameterized ReLU with a learned per-channel scalar \
-         slope — `vokra_ops` has plain ReLU / GELU / SiLU but no PReLU cell), (c) an \
-         SB-TF-LSTM bottleneck (sub-band time-frequency LSTM composition — the \
-         `silero_vad::model` binder ships a scalar LSTM tuned for VAD; extracting \
-         that primitive into a shared `vokra_ops::lstm` for GTCRN + demucs + other \
-         SB-TF-LSTM consumers is a follow-up per demucs's own loud-partial \
-         rationale), (d) ERB frequency-band grouping (perceptual band aggregation \
-         matrix over the linear STFT bins — DISTINCT from DeepFilterNet3's ERB \
-         analysis / synthesis pair: DFN3 uses ERB as a real analysis/synthesis stage, \
-         GTCRN uses ERB as an internal feature aggregator; the two usages are NOT \
-         compatible and cannot be silently aliased), and (e) a grouped 2D Conv \
-         decoder + PReLU mirror of the encoder. Every piece needs (i) the tensor-name \
-         walk from the upstream `Xiaobin-Rong/gtcrn` state_dict prefixes to the \
-         appropriate `vokra_ops` primitives' inputs (pending the manifest fetch — \
-         same posture as pyannote / Charsiu real-weight bind), (ii) the four missing \
-         primitives themselves landing in `vokra_ops` (grouped Conv2D + PReLU + \
-         SB-TF-LSTM extraction from `silero_vad::model` + ERB grouping matrix), and \
-         (iii) the encoder-bottleneck-decoder block composition itself. Config: \
+         frequency-band grouping + grouped Conv2D decoder composition pending. \
+         ALREADY RESOLVED, do not re-report — the STFT / iSTFT framing this model \
+         needs is supplied by `vokra_ops::stft` and `vokra_ops::istft_streaming`, and \
+         the `vokra.gtcrn.*` group is read strictly. GTCRN's reference implementation \
+         then decomposes as (a) a grouped 2D Conv encoder (channel-grouped \
+         depthwise-style convolutions over the log-magnitude STFT). `vokra_ops` \
+         exposes NO public 2-D convolution AT ALL — grouped or un-grouped: every \
+         convolution helper in the crate is private to the module that owns it \
+         (`denoise.rs` holds a DFN3-internal `struct Conv2d`; `hifigan` / `hiftnet` / \
+         `bigvgan_generator` hold private 1-D helpers), so this is a NEW op, not a \
+         grouping extension to an existing un-grouped one. (b) PReLU activations \
+         (parameterized ReLU with a learned per-channel scalar slope). There is no \
+         PReLU cell, and no public ReLU / GELU / SiLU cell either — the only public \
+         POINTWISE activation functions in `vokra_ops` are `snake_activation_f32` and \
+         `snake_beta_f32`, GELU existing solely as private per-module helpers. This \
+         is the CHEAPEST of the four gaps (a two-branch scalar map), listed for \
+         completeness rather than difficulty. (c) an SB-TF-LSTM bottleneck (sub-band \
+         time-frequency LSTM composition). The one public LSTM in `vokra_ops` is \
+         `vokra_ops::hybrid_ctc_attention::LstmLmCell`, which is LM-shaped: `step()` \
+         consumes a token id plus a candidate id and returns a single \
+         log-probability, and the struct bundles a token embedding table and a vocab \
+         output projection — it is the WRONG FUNCTION for a feature-sequence \
+         bottleneck rather than a missing one, and substituting it is not even \
+         shape-valid. Silero's LSTM is not reusable either: it is a `pub(crate)` \
+         `lstm_forward` hard-wired to `HIDDEN = 128` living in the separate \
+         `vokra-vad-micro` crate (NOT in `silero_vad`, which is only a std veneer \
+         over it). (d) ERB frequency-band grouping. The public ERB partition helper \
+         `vokra_ops::DeepFilterNetConfig::erb_widths` DOES exist, but it carries \
+         DFN3's own band config and DFN3 uses ERB as a real analysis / synthesis \
+         stage whereas GTCRN uses it as an internal feature aggregator; reusing it \
+         under GTCRN's axes would be shape-valid and numerically wrong, i.e. silent. \
+         What is absent is GTCRN's own aggregation matrix, not the notion of ERB. \
+         (e) a grouped 2D Conv decoder + PReLU mirror of the encoder. Every piece \
+         needs (i) the tensor-name walk from the upstream `Xiaobin-Rong/gtcrn` \
+         state_dict prefixes to the appropriate primitives' inputs (pending the \
+         manifest fetch — same posture as pyannote / Charsiu real-weight bind), \
+         (ii) the missing primitives themselves landing in `vokra_ops` (2-D \
+         convolution with grouping + PReLU + a generic sequence LSTM + the GTCRN ERB \
+         aggregation matrix), and (iii) the encoder-bottleneck-decoder block \
+         composition itself. Config: \
          sample_rate={sample_rate}, n_fft={n_fft}, hop={hop}, n_bands={n_bands}, \
          gru_hidden={gru_hidden}, category={category}. Primary sources: {repo} + \
          {paper}. Loud pending (CLAUDE.md 教訓 (a) — 'loud-partial は fake-complete \
@@ -1286,5 +1364,128 @@ mod tests {
             }
             other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Test 12 — the loud-partial message may only name primitives that
+    //           actually exist in `vokra-ops`, and may only claim a
+    //           primitive is missing when it really is
+    // -----------------------------------------------------------------
+
+    /// [`Gtcrn::denoise`]'s message must not resurrect any of the four
+    /// phantom claims an earlier revision carried.
+    ///
+    /// It cited `vokra_ops::conv2d` as an existing un-grouped
+    /// convolution the grouped case merely fell outside of — there is
+    /// no `conv2d` module and no public 2-D convolution of any kind in
+    /// the crate, so that sentence sent a reader to a module they could
+    /// never find. It justified the PReLU gap by contrast with "plain
+    /// ReLU / GELU / SiLU" — the only public pointwise activation functions are
+    /// `snake_activation_f32` and `snake_beta_f32`, so the conclusion
+    /// (no PReLU) was right by accident off a false premise. It named
+    /// `vokra_ops::lstm`, which was never landed. And it placed the
+    /// Silero LSTM in `silero_vad::model`, a module that does not
+    /// exist — the cell lives in the separate `vokra-vad-micro` crate.
+    ///
+    /// The negative assertions are the load-bearing half: without them
+    /// the stale phrasing can rot back with nothing to catch it. The
+    /// positive assertions pin what is actually true, so the row also
+    /// fails if someone deletes the real reason instead of fixing it.
+    #[test]
+    fn denoise_loud_partial_names_only_real_primitives() {
+        let file = gtcrn_gguf(
+            GtcrnConfig::typical_default(),
+            Some(LicenseClass::Permissive),
+        );
+        let g = Gtcrn::from_gguf(&file).unwrap();
+        let pcm = vec![0.0f32; 16_000];
+        let Err(err) = g.denoise(&pcm) else {
+            panic!("denoise must loud-partial");
+        };
+        let VokraError::UnsupportedOp(m) = err else {
+            panic!("expected VokraError::UnsupportedOp");
+        };
+
+        // --- Phantom primitive #1: `vokra_ops::conv2d` does not exist.
+        //
+        // Verified by grep over `crates/vokra-ops/src`: no `pub mod
+        // conv2d`, no `pub fn conv2d`, and `pub fn conv` matches
+        // nothing crate-wide. The only Conv2d is a private `struct
+        // Conv2d` inside `denoise.rs`.
+        assert!(
+            !m.contains("vokra_ops::conv2d"),
+            "`vokra_ops::conv2d` does not exist — naming it sends the reader to a \
+             module that is not there: {m}"
+        );
+
+        // --- Phantom claim #2: the ReLU / GELU / SiLU contrast.
+        //
+        // `vokra_ops` exposes exactly two public activation functions,
+        // `snake_activation_f32` and `snake_beta_f32`. Asserting a
+        // family of plain activations is present as the foil for PReLU
+        // is false, even though "no PReLU" is itself correct.
+        assert!(
+            !m.contains("has plain ReLU"),
+            "`vokra_ops` has no public ReLU / GELU / SiLU cell — the only public \
+             pointwise activation fns are snake_activation_f32 / snake_beta_f32, so \
+             this contrast is false: {m}"
+        );
+
+        // --- Phantom primitive #3: `vokra_ops::lstm` does not exist,
+        // --- and the Silero cell is not where this message said it was.
+        //
+        // The Silero LSTM lives in the separate `vokra-vad-micro` crate
+        // as a `pub(crate) fn lstm_forward`; there is no
+        // `silero_vad::model` module at all (the directory holds
+        // mod.rs / parity.rs / stream.rs / wav.rs).
+        assert!(
+            !m.contains("vokra_ops::lstm"),
+            "`vokra_ops::lstm` does not exist — the module was never landed: {m}"
+        );
+        assert!(
+            !m.contains("silero_vad::model"),
+            "there is no `silero_vad::model` module; the Silero LSTM lives in the \
+             separate `vokra-vad-micro` crate: {m}"
+        );
+
+        // --- and the message must say the true things POSITIVELY, so a
+        // --- later edit cannot satisfy this test by going silent.
+        assert!(
+            m.contains("NO public 2-D convolution AT ALL"),
+            "must state the real conv gap: there is no public 2-D convolution in \
+             `vokra_ops`, grouped or un-grouped: {m}"
+        );
+        assert!(
+            m.contains("snake_activation_f32") && m.contains("snake_beta_f32"),
+            "must name the activations that DO exist, so the PReLU gap rests on a \
+             checked premise rather than an invented contrast: {m}"
+        );
+        assert!(
+            m.contains("LstmLmCell") && m.contains("WRONG FUNCTION"),
+            "must name the public LSTM that exists and say why it is the wrong \
+             function here, rather than claiming no LSTM exists: {m}"
+        );
+        assert!(
+            m.contains("vokra-vad-micro"),
+            "must point at the crate the Silero LSTM actually lives in: {m}"
+        );
+        assert!(
+            m.contains("erb_widths"),
+            "must name the public ERB partition helper that DOES exist, so the ERB \
+             gap is stated as GTCRN's aggregation matrix rather than as ERB being \
+             absent: {m}"
+        );
+
+        // --- The already-resolved half, so the reader is told what NOT
+        // --- to re-report (beat_this precedent).
+        assert!(
+            m.contains("ALREADY RESOLVED"),
+            "the message must tell the reader which pieces are done: {m}"
+        );
+        assert!(
+            m.contains("vokra_ops::stft") && m.contains("vokra_ops::istft_streaming"),
+            "must name the framing primitives that already exist so nobody rewrites \
+             STFT/iSTFT for this model: {m}"
+        );
     }
 }

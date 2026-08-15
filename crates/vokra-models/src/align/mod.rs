@@ -27,9 +27,11 @@
 //!   covers word / sub-word / character tokens uniformly. No external
 //!   weights.
 //! - [`charsiu`] — Wav2Vec2-based neural forced aligner (real forward,
-//!   2026-07-30). A small subgraph loaded from a Vokra GGUF
-//!   (`vokra.charsiu.*` metadata + tensor weights); reports one
-//!   [`AlignedToken`] per input phoneme.
+//!   2026-07-30). Reports one [`AlignedToken`] per input phoneme. Its
+//!   weights are caller-supplied ([`charsiu::CharsiuWeights`]); the
+//!   `vokra.charsiu.*` GGUF binding is not wired yet, so nothing is loaded
+//!   from a GGUF today — see "Current status (Charsiu)" below, which has
+//!   said so since the real forward landed.
 //!
 //! # Current status (Charsiu)
 //!
@@ -89,8 +91,10 @@ pub struct AlignedToken {
 /// own error type at the integration boundary.
 ///
 /// Note: [`ctc_segmentation`] is a pure host-side algorithm with no external
-/// weights and does not surface `LoadError`; [`charsiu`] loads its wav2vec2
-/// weights from a Vokra GGUF and returns this type.
+/// weights and does not surface `LoadError`; [`charsiu`] is the only producer
+/// of this type. Its `from_gguf` returns [`Self::Gguf`] on every path today —
+/// the real weight binder is a follow-up wave — so a `LoadError` here reports
+/// a refusal to bind, not a load that went wrong partway.
 #[derive(Debug)]
 pub enum LoadError {
     /// The path did not exist or could not be opened.
