@@ -1223,10 +1223,15 @@ fn run_segment(a: &RunArgs) -> Result<(), String> {
 ///
 /// Only RMVPE is routed here. Its
 /// [`extract_real`](vokra_models::f0::rmvpe::RMVPE::extract_real) returns a
-/// `Result` and has no silent all-zero branch, whereas the sibling FCPE /
-/// CREPE extractors degrade to a frame-count-only zero track on a weightless
-/// artifact — printing that would be indistinguishable from a real
-/// measurement, so those two stay in the CLI's bound-arch registry instead.
+/// `Result` and has no silent all-zero branch — the timebase-only accessor is
+/// [`frame_times`](vokra_models::f0::rmvpe::RMVPE::frame_times), which returns
+/// bare timestamps and is never what this path calls.
+///
+/// The sibling extractors FCPE and CREPE stay in the CLI's bound-arch
+/// registry, but as of 2026-08-15 neither is held back by a fabricated track:
+/// both gained the same `extract` / `extract_real` / `frame_times` shape and
+/// now refuse a weightless or wrong-rate artifact with a named error. What
+/// they lack is the CLI wiring — see their rows in `BOUND_ARCHES`.
 fn run_f0_rmvpe(a: &RunArgs) -> Result<(), String> {
     use vokra_models::f0::rmvpe::RMVPE;
 

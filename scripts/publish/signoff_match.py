@@ -1730,6 +1730,71 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "whisper_medusa_v1": [
         "aiola whisper-medusa-v1 (`aiola/whisper-medusa-v1`)"
     ],
+    # ---- 2026-08-15 converter-signoff gate repair -------------------------
+    # Twelve converters had landed across the 2026-08-14 / 2026-08-15 waves
+    # without their CONVERTER_TO_SIGNOFF_ROWS entry, which turned this
+    # fail-closed gate red (and therefore OFF) for all of them. Every row
+    # below already existed in docs/license-audit.md §3.1 — nothing here is
+    # a new row, and nothing here is a decision: each row is still blank
+    # (approver `______________`, all three boxes unticked), which is the
+    # fail-closed default per memory [[feedback-license-signoff-primary-source]].
+    # Row headings are transcribed byte-for-byte from the parsed §3.1 table.
+    #
+    # AudioSR ships as TWO distinct upstream weight releases, and the
+    # converter exposes one entry point per release
+    # (`convert_audiosr_file` -> `haoheliu/audiosr_basic`,
+    # `convert_audiosr_speech_file` -> `haoheliu/audiosr_speech`). §3.1
+    # carries a separate row for each, so both are listed — the `whisper` /
+    # `voxtral` multi-row precedent.
+    "audiosr": [
+        "AudioSR (`haoheliu/versatile_audio_super_resolution`、weight = `haoheliu/audiosr_basic`)",
+        "AudioSR (speech) (weight = `haoheliu/audiosr_speech`)",
+    ],
+    # NOT the `BEATs (`microsoft/unilm/tree/master/beats`)` row, which is a
+    # different model (Microsoft SSL audio encoder). beat_this is the CPJKU
+    # beat/downbeat tracker; the converter's own header calls out this exact
+    # confusion as an FR-EX-08 misroute risk.
+    "beat_this": ["beat_this (`CPJKU/beat_this`)"],
+    "ct_punc": ["FunASR CT-Punc (`funasr/ct-punc`)"],
+    "diffsinger": ["DiffSinger (`openvpi/DiffSinger`)"],
+    "dtln_aec": ["DTLN-AEC (`breizhn/DTLN-aec`)"],
+    "gtcrn": ["GTCRN (`Xiaobin-Rong/gtcrn`)"],
+    # One row covers all four sibling repos (7B / 3B-Bilingual / 1.5B / 32B),
+    # mirroring how the row itself is titled.
+    "llama_omni2": [
+        "ICTNLP LLaMA-Omni2 (`ICTNLP/LLaMA-Omni2-{7B,3B-Bilingual,1.5B,32B}`)"
+    ],
+    # Upstream CODE is apache-2.0 but the WEIGHTS ship on a GCS bucket with
+    # no LICENSE file (see the converter header). That unresolved question is
+    # exactly what the blank §3.1 row exists to hold — mapping it here keeps
+    # the gate armed; it does not resolve anything.
+    "mt3": ["Magenta MT3 Multitrack (`magenta/mt3`)"],
+    # Row heading is lower-case `redimnet` in §3.1; matching is exact, so the
+    # casing here is deliberate and must not be "corrected".
+    "redimnet": ["redimnet (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`)"],
+    "storm": ["StoRM (`sp-uhh/storm`)"],
+    "wavlm_sv": ["WavLM Base+ SV (`microsoft/wavlm-base-plus-sv`)"],
+    # WeTextProcessing packs compiled OpenFST grammars rather than weights,
+    # so "does a weight-distribution row apply?" is a fair question. It maps
+    # rather than being excluded, on three pieces of evidence:
+    #   1. A §3.1 row already exists and is titled "— ITN/TN grammar
+    #      bundles", so whoever authored it knew it ships grammars and
+    #      created the row regardless.
+    #   2. The converter embeds the upstream tagger/verbalizer FSTs into the
+    #      GGUF as U8 metadata arrays (KEY_ITN_TAGGER_FST /
+    #      KEY_ITN_VERBALIZER_FST) and stamps upstream_url + apache-2.0 +
+    #      LicenseClass. Publishing that artifact redistributes third-party
+    #      Apache-2.0 material — the same legal act a weight row authorizes.
+    #      Grammars are copyrightable subject matter; "not a tensor" is not
+    #      "not licensed".
+    #   3. CONVERTER_NO_SIGNOFF_ROW means "the row deliberately lives
+    #      elsewhere" (voice-clone -> separate repo, silero -> §3 catalog).
+    #      Filing it there while a §3.1 row exists would both contradict the
+    #      table and switch the gate off for a converter that really does
+    #      redistribute upstream content.
+    "wetextprocessing": [
+        "WeTextProcessing (`wenet-e2e/WeTextProcessing`) — ITN/TN grammar bundles"
+    ],
 }
 
 # Converters that intentionally have no §3.1 row.

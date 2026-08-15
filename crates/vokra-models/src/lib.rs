@@ -489,11 +489,14 @@ pub mod voxtral;
 pub mod whisper;
 pub mod zonos;
 
-// F0 (fundamental-frequency) extractor family (FR-OP-83). Skeleton — each
-// member (`crepe`, and future PyIN / FCPE / Harvest / RMVPE siblings) exposes a
-// GGUF `from_gguf` loader and an `extract` method whose real forward is a
-// follow-up WP. Kept in its own block so `rustfmt`'s alphabetical sort inside
-// consecutive `pub mod` blocks does not hijack the doc-preceded siblings above.
+// F0 (fundamental-frequency) extractor family (FR-OP-83). Each member
+// (`rmvpe` / `fcpe` / `crepe`, plus future PyIN / Harvest siblings) exposes a
+// GGUF `from_gguf` loader, a fallible `extract` / `extract_real` pair carrying
+// the real forward, and a `frame_times` accessor for the analysis timebase
+// alone. No member answers a failure with a zero-filled track (FR-EX-08 —
+// see the `f0` module doc). Kept in its own block so `rustfmt`'s alphabetical
+// sort inside consecutive `pub mod` blocks does not hijack the doc-preceded
+// siblings above.
 pub mod f0;
 // pyannote/segmentation-3.0 (Bredin, CNRS, MIT — 2026-07-30 Wave 2
 // runtime scaffold with loud-partial forward). PyanNet VAD /

@@ -363,8 +363,9 @@ impl FcpeWeights {
     /// - `Ok(Some(weights))` — every canonical tensor is present and has
     ///   the expected shape.
     /// - `Ok(None)` — the GGUF is metadata-only (no tensor named
-    ///   `input_stack.0.weight` or `output_proj.weight`) — the caller runs
-    ///   the skeleton extract path.
+    ///   `input_stack.0.weight` or `output_proj.weight`). The handle still
+    ///   loads, but [`FCPE::extract`] then refuses it by name; only
+    ///   [`FCPE::frame_times`] works on such a handle.
     /// - `Err(LoadError::Gguf)` — a canonical tensor is partially present
     ///   or has a wrong shape (loud, per FR-EX-08 — never a silent
     ///   fallback).
@@ -553,60 +554,144 @@ impl FCPE {
         })
     }
 
-    /// Extracts an F0 track from PCM samples.
+    /// Extracts an F0 track from PCM samples by running the real FCPE
+    /// forward.
+    ///
+    /// This is a straight delegation to [`extract_real`](Self::extract_real)
+    /// — identical behaviour, identical errors. It exists so the obvious
+    /// name on a loaded model is the one that measures pitch, matching
+    /// [`super::rmvpe::RMVPE::extract`] and [`super::crepe::CREPE::extract`].
+    ///
+    /// # History
+    ///
+    /// Before 2026-08-15 this name returned `Vec<F0Frame>` and answered two
+    /// different failures with the same all-zero track: no weights bound,
+    /// and a `compute_mel` error swallowed by an `Err(_) =>` arm — the
+    /// latter directly under a comment claiming "no silent success on
+    /// garbage weights". Downstream, a frame-count-correct zero track reads
+    /// as "this audio is entirely unvoiced" rather than "no measurement was
+    /// made". The timebase-only half now lives in
+    /// [`frame_times`](Self::frame_times).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`extract_real`](Self::extract_real)'s errors verbatim —
+    /// see that method for the list.
+    pub fn extract(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, vokra_core::VokraError> {
+        self.extract_real(pcm, sample_rate)
+    }
+
+    /// Runs the **real** FCPE forward on `pcm` and returns a per-hop F0
+    /// track.
     ///
     /// The output has exactly `pcm.len() / hop` frames (integer truncation;
     /// tail samples that do not fill a hop are dropped — the frame-count
-    /// contract callers align buffers against). When real weights are
-    /// bound the forward runs; otherwise each frame carries `hz=0.0,
-    /// voiced=false, confidence=0.0` (skeleton mode).
-    pub fn extract(&self, pcm: &[f32], sample_rate: u32) -> Vec<F0Frame> {
+    /// contract callers align buffers against).
+    ///
+    /// Reachable both under this name and as [`extract`](Self::extract),
+    /// which delegates here verbatim. It is fallible on purpose: every
+    /// failure below used to be answered with a frame-count-correct all-zero
+    /// track, and silently wrong pitch flows straight into a vocoder or a VC
+    /// pipeline (FR-EX-08). Call [`frame_times`](Self::frame_times) when
+    /// only the per-hop timestamps are wanted.
+    ///
+    /// # Errors
+    ///
+    /// - [`vokra_core::VokraError::ModelLoad`] when no weights were bound
+    ///   (a metadata-only GGUF — [`has_real_weights`](Self::has_real_weights)
+    ///   reports `false`), or when the bound config is unusable
+    ///   (`hop == 0` / `sample_rate == 0`, only reachable from a hand-forged
+    ///   GGUF).
+    /// - [`vokra_core::VokraError::InvalidArgument`] when `sample_rate` is
+    ///   not the rate this checkpoint declares in
+    ///   `vokra.f0.fcpe.sample_rate`; the error names both. Vokra never
+    ///   silently resamples — resample offline and call again.
+    /// - Whatever the STFT / mel front-end raises (propagated verbatim) when
+    ///   the front-end cannot run on this PCM. That error used to be
+    ///   discarded by an `Err(_) =>` arm that returned zeros.
+    pub fn extract_real(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, vokra_core::VokraError> {
+        let Some(weights) = &self.weights else {
+            return Err(vokra_core::VokraError::ModelLoad(
+                "fcpe: no weight tensors were bound from this GGUF (metadata-only \
+                 artifact — neither `input_stack.0.weight` nor `output_proj.weight` \
+                 is present), so there is nothing to run; convert a real CNChTu/FCPE \
+                 checkpoint, or call `frame_times` if only the per-hop timestamps \
+                 are wanted (FR-EX-08: never a zero-filled track)"
+                    .to_owned(),
+            ));
+        };
+        let hop = self.cfg.hop as usize;
+        if hop == 0 {
+            return Err(vokra_core::VokraError::ModelLoad(
+                "fcpe: `vokra.f0.fcpe.hop` is 0, so the per-frame timebase is \
+                 undefined and no track can be produced (FR-EX-08)"
+                    .to_owned(),
+            ));
+        }
+        if self.cfg.sample_rate == 0 {
+            return Err(vokra_core::VokraError::ModelLoad(
+                "fcpe: `vokra.f0.fcpe.sample_rate` is 0, so the mel filterbank is \
+                 undefined and no track can be produced (FR-EX-08)"
+                    .to_owned(),
+            ));
+        }
+        if sample_rate != self.cfg.sample_rate {
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "fcpe: got {sample_rate} Hz PCM but this checkpoint declares \
+                 {} Hz in `vokra.f0.fcpe.sample_rate` (its mel filterbank edges and \
+                 cent grid are anchored to that rate) — resample offline and call \
+                 again; Vokra never silently resamples (FR-EX-08)",
+                self.cfg.sample_rate,
+            )));
+        }
+
+        let n_frames = pcm.len() / hop;
+        if n_frames == 0 {
+            return Ok(Vec::new());
+        }
+        let sr = sample_rate as f32;
+        // Compute mel-spectrogram — the FCPE front-end. A failure here is
+        // propagated verbatim: it means the STFT could not run on this PCM
+        // (buffer shorter than one window, or a hand-forged GGUF with an
+        // unusable n_fft / hop), which is a fact the caller needs, not one
+        // to paper over with zeros.
+        let mel = self.compute_mel(pcm, n_frames)?;
+        let latents = self.forward(&mel, n_frames, weights);
+        Ok(self.decode(&latents, n_frames, sr, hop))
+    }
+
+    /// Returns the analysis timestamps [`extract`](Self::extract) will emit
+    /// for a PCM buffer of `pcm_len` samples, in seconds from the start of
+    /// the buffer.
+    ///
+    /// `result.len()` is the frame-count contract (`pcm_len / hop`,
+    /// integer-truncated); `result[i]` is the hop-aligned left edge of frame
+    /// `i`. A `hop` of 0 yields an empty slice (the timebase is undefined),
+    /// and a `sample_rate` of `0` is clamped to `1` so the column stays
+    /// finite rather than `NaN` / `±inf`.
+    ///
+    /// This runs no weights and cannot fail: it is pure arithmetic over the
+    /// config, for callers that need to size or align a buffer before (or
+    /// without) running the forward — including holders of a metadata-only
+    /// GGUF. It deliberately does **not** return [`F0Frame`]: a frame carries
+    /// `hz` / `voiced` / `confidence` columns this method has no evidence
+    /// for, and emitting zeros there is exactly the fabricated track the
+    /// 2026-08-15 fix removed. Mirrors [`super::rmvpe::RMVPE::frame_times`].
+    pub fn frame_times(&self, pcm_len: usize, sample_rate: u32) -> Vec<f32> {
         let hop = self.cfg.hop as usize;
         if hop == 0 {
             return Vec::new();
         }
-        let n_frames = pcm.len() / hop;
         let sr = sample_rate.max(1) as f32;
-
-        // Skeleton fast path when no real weights are bound. Deliberately
-        // matches RMVPE's contract so downstream consumers can size
-        // buffers before a real-weight WP lands.
-        let Some(weights) = &self.weights else {
-            return (0..n_frames)
-                .map(|i| F0Frame {
-                    time_sec: (i * hop) as f32 / sr,
-                    hz: 0.0,
-                    voiced: false,
-                    confidence: 0.0,
-                })
-                .collect();
-        };
-
-        if n_frames == 0 {
-            return Vec::new();
-        }
-        // Compute mel-spectrogram — the FCPE front-end. If the STFT / mel
-        // path errors out (short PCM, degenerate config), fall through to
-        // the skeleton **for the requested frame count** — no crash, no
-        // silent success on garbage weights. This branch cannot happen
-        // with a well-formed non-empty PCM under the canonical defaults;
-        // it guards against a hand-forged GGUF with an unusable config.
-        let mel = match self.compute_mel(pcm, n_frames) {
-            Ok(m) => m,
-            Err(_) => {
-                return (0..n_frames)
-                    .map(|i| F0Frame {
-                        time_sec: (i * hop) as f32 / sr,
-                        hz: 0.0,
-                        voiced: false,
-                        confidence: 0.0,
-                    })
-                    .collect();
-            }
-        };
-
-        let latents = self.forward(&mel, n_frames, weights);
-        self.decode(&latents, n_frames, sr, hop)
+        (0..pcm_len / hop).map(|i| (i * hop) as f32 / sr).collect()
     }
 
     /// Returns the configured hop length (samples per frame).
@@ -621,8 +706,13 @@ impl FCPE {
     pub fn fmax(&self) -> f32 {
         self.cfg.fmax
     }
-    /// Returns `true` when real weights are bound (i.e. `extract` runs the
-    /// real forward rather than the skeleton).
+    /// Returns `true` when real weights are bound — i.e.
+    /// [`extract`](Self::extract) / [`extract_real`](Self::extract_real) can
+    /// actually run rather than refusing with a "nothing bound" error.
+    ///
+    /// Callers that want to branch rather than handle the error can gate on
+    /// this first; [`frame_times`](Self::frame_times) is the entry point that
+    /// works either way.
     pub fn has_real_weights(&self) -> bool {
         self.weights.is_some()
     }
@@ -795,14 +885,27 @@ impl FCPE {
     }
 
     /// Log-mel-spectrogram front-end (STFT power → Mel filterbank → log).
-    fn compute_mel(&self, pcm: &[f32], n_frames: usize) -> Result<Vec<f32>, ()> {
+    ///
+    /// Errors carry the reason rather than the `()` this used to return: the
+    /// sole caller now propagates them to the user, and "the STFT refused
+    /// this n_fft" and "the buffer is shorter than one window" are different
+    /// facts a caller needs to tell apart.
+    fn compute_mel(
+        &self,
+        pcm: &[f32],
+        n_frames: usize,
+    ) -> Result<Vec<f32>, vokra_core::VokraError> {
         let stft_attrs = StftAttrs::new(self.cfg.n_fft as usize, self.cfg.hop as usize);
-        let spec = match stft(pcm, &stft_attrs) {
-            Ok(s) => s,
-            Err(_) => return Err(()),
-        };
+        let spec = stft(pcm, &stft_attrs)?;
         if spec.frames == 0 {
-            return Err(());
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "fcpe: the STFT produced 0 frames from {} PCM sample(s) at n_fft={} / \
+                 hop={} — the buffer is shorter than one analysis window, so there is \
+                 no mel to run the encoder on (FR-EX-08)",
+                pcm.len(),
+                self.cfg.n_fft,
+                self.cfg.hop,
+            )));
         }
         let mel_attrs = MelAttrs::new(
             self.cfg.sample_rate,
@@ -1191,8 +1294,10 @@ mod tests {
         );
     }
 
-    /// Metadata-only GGUF: config parses, no real weights bound, `extract`
-    /// returns the frame-count-contract skeleton (RMVPE parity).
+    /// Metadata-only GGUF: config parses, no real weights bound.
+    /// `frame_times` still honors the frame-count contract (bare timestamps,
+    /// nothing readable as pitch), and `extract` refuses LOUDLY instead of
+    /// handing back an all-zero track (RMVPE parity).
     #[test]
     fn fcpe_extract_frame_count_matches_hop_metadata_only() {
         let tmp =
@@ -1200,13 +1305,33 @@ mod tests {
         let bytes = GgufBuilder::new().to_bytes().unwrap();
         std::fs::write(&tmp, &bytes).unwrap();
         let fcpe = FCPE::from_gguf(&tmp).expect("load metadata-only GGUF");
-        assert!(!fcpe.has_real_weights(), "no tensors → skeleton mode");
+        assert!(!fcpe.has_real_weights(), "no tensors → no bound weights");
         let hop = fcpe.hop() as usize;
         assert_eq!(hop, 160);
         let pcm = vec![0.0f32; hop * 10];
-        let frames = fcpe.extract(&pcm, 16_000);
-        assert_eq!(frames.len(), pcm.len() / hop);
-        assert!(frames.iter().all(|f| f.hz == 0.0 && !f.voiced));
+
+        let times = fcpe.frame_times(pcm.len(), 16_000);
+        assert_eq!(times.len(), pcm.len() / hop);
+        for (i, t) in times.iter().enumerate() {
+            let expected = (i * hop) as f32 / 16_000.0;
+            assert!(
+                (t - expected).abs() < 1e-9,
+                "frame {i}: timestamp {t} != {expected}",
+            );
+        }
+
+        let Err(err) = fcpe.extract(&pcm, 16_000) else {
+            panic!("expected an error when no weight tensors were bound, got a track");
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(err, vokra_core::VokraError::ModelLoad(_)),
+            "an unbound weight set is a model-load failure, got: {msg}",
+        );
+        assert!(
+            msg.contains("output_proj.weight"),
+            "the error must name a tensor whose absence it detected: {msg}",
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1244,12 +1369,21 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
-    /// Real-forward smoke test with a tiny synthetic FCPE checkpoint —
-    /// exercises the mel front-end + input stack + encoder + head + local-
-    /// argmax path end-to-end and asserts finite output + one frame per
-    /// hop.
-    #[test]
-    fn fcpe_forward_end_to_end_smoke() {
+    /// Writes a tiny but structurally complete synthetic FCPE checkpoint to
+    /// `path` (no `vokra.f0.fcpe.sample_rate` key, so the config keeps the
+    /// 16 kHz default) and returns the hop it encodes.
+    ///
+    /// Shared by every test that needs `has_real_weights() == true`. The
+    /// weights come from a fixed-seed SplitMix64 stream, so the forward's
+    /// output is reproducible.
+    fn write_synthetic_fcpe_gguf(path: &Path) -> u32 {
+        write_synthetic_fcpe_gguf_with_n_fft(path, 512)
+    }
+
+    /// [`write_synthetic_fcpe_gguf`] with the STFT size under the caller's
+    /// control, so a test can hand the front-end a config it must refuse.
+    /// No weight shape depends on `n_fft`, so the bind succeeds regardless.
+    fn write_synthetic_fcpe_gguf_with_n_fft(path: &Path, n_fft: u32) -> u32 {
         // Deterministic synthetic weights via SplitMix64.
         fn splitmix64(state: &mut u64) -> u64 {
             *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -1279,7 +1413,6 @@ mod tests {
         let stem_groups = 2u32;
         let n_bins = 16u32;
         let hop = 160u32;
-        let n_fft = 512u32;
 
         let mut b = GgufBuilder::new();
         b.add_u32("vokra.f0.fcpe.hop", hop);
@@ -1449,24 +1582,134 @@ mod tests {
         )
         .unwrap();
 
+        std::fs::write(path, b.to_bytes().unwrap()).unwrap();
+        hop
+    }
+
+    /// A deterministic 220 Hz sine, `n_hops` hops long at 16 kHz.
+    fn synthetic_sine_pcm(hop: u32, n_hops: usize) -> Vec<f32> {
+        let n_samp = hop as usize * n_hops;
+        (0..n_samp)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
+            .collect()
+    }
+
+    /// Real-forward smoke test with a tiny synthetic FCPE checkpoint —
+    /// exercises the mel front-end + input stack + encoder + head + local-
+    /// argmax path end-to-end and asserts finite output + one frame per
+    /// hop.
+    #[test]
+    fn fcpe_forward_end_to_end_smoke() {
         let tmp =
             std::env::temp_dir().join(format!("vokra-fcpe-forward-{}.gguf", std::process::id()));
-        std::fs::write(&tmp, b.to_bytes().unwrap()).unwrap();
+        let hop = write_synthetic_fcpe_gguf(&tmp);
         let fcpe = FCPE::from_gguf(&tmp).expect("load real weights");
         assert!(fcpe.has_real_weights(), "real weights should bind");
         // Sine input, 20 hops.
         let hop_u = hop as usize;
-        let n_samp = hop_u * 20;
-        let pcm: Vec<f32> = (0..n_samp)
-            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
-            .collect();
-        let frames = fcpe.extract(&pcm, 16_000);
-        assert_eq!(frames.len(), n_samp / hop_u);
+        let pcm = synthetic_sine_pcm(hop, 20);
+        let frames = fcpe
+            .extract(&pcm, 16_000)
+            .expect("bound weights at the declared rate must produce a real track");
+        assert_eq!(frames.len(), pcm.len() / hop_u);
         for f in &frames {
             assert!(f.hz.is_finite(), "hz must be finite (got {})", f.hz);
             assert!(f.hz >= 0.0);
             assert!(f.confidence >= 0.0 && f.confidence <= 1.0);
         }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Bound weights + a rate this checkpoint does not declare must be a
+    /// LOUD error naming both rates — never a frame-count-correct all-zero
+    /// track, and never a silent resample (FR-EX-08).
+    #[test]
+    fn fcpe_extract_refuses_rate_mismatch_with_bound_weights() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-rate-mismatch-{}.gguf",
+            std::process::id()
+        ));
+        let hop = write_synthetic_fcpe_gguf(&tmp);
+        let fcpe = FCPE::from_gguf(&tmp).expect("load real weights");
+        assert!(
+            fcpe.has_real_weights(),
+            "the synthetic fixture must bind weights for this test to mean anything",
+        );
+        assert_eq!(
+            fcpe.config().sample_rate,
+            16_000,
+            "fixture omits the sample_rate key, so the 16 kHz default must apply",
+        );
+
+        let pcm = synthetic_sine_pcm(hop, 20);
+        let Err(err) = fcpe.extract(&pcm, 44_100) else {
+            panic!("expected an error at 44.1 kHz with weights bound, got a track");
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(err, vokra_core::VokraError::InvalidArgument(_)),
+            "a rate mismatch is a caller-argument failure, got: {msg}",
+        );
+        assert!(
+            msg.contains("44100"),
+            "the error must name the rate it received: {msg}",
+        );
+        assert!(
+            msg.contains("16000"),
+            "the error must name the rate it needs: {msg}",
+        );
+
+        // `extract_real` is the same refusal, verbatim — a lenient `extract`
+        // next to a strict `extract_real` would re-open the hole.
+        let Err(direct) = fcpe.extract_real(&pcm, 44_100) else {
+            panic!("`extract_real` must refuse what `extract` refuses");
+        };
+        assert_eq!(direct.to_string(), msg);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A front-end that cannot run must surface its OWN error, not a zero
+    /// track.
+    ///
+    /// Regression pin: the pre-2026-08-15 `extract` matched `compute_mel`
+    /// with `Err(_) =>` and returned `n_frames` all-zero rows — directly
+    /// under a comment claiming "no silent success on garbage weights". The
+    /// weights here are perfectly good; it is the STFT config that is not,
+    /// and the caller has to be told which.
+    ///
+    /// `n_fft = 0` is the deterministic trigger: `vokra_ops::stft::stft`
+    /// rejects it outright, no weight shape depends on it (so the bind still
+    /// succeeds), and `FcpeConfig::from_gguf` does not screen it — exactly
+    /// the "hand-forged GGUF with an unusable config" the old comment said
+    /// it was guarding against while quietly answering with zeros.
+    #[test]
+    fn fcpe_extract_propagates_front_end_error_instead_of_zeros() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-unusable-stft-{}.gguf",
+            std::process::id()
+        ));
+        let hop = write_synthetic_fcpe_gguf_with_n_fft(&tmp, 0);
+        let fcpe = FCPE::from_gguf(&tmp).expect("load real weights");
+        assert!(
+            fcpe.has_real_weights(),
+            "the weights are fine here — only the STFT config is broken",
+        );
+        assert_eq!(fcpe.config().n_fft, 0, "the fixture must carry n_fft = 0");
+
+        // 20 hops: the old code would have had 20 rows to fabricate.
+        let pcm = synthetic_sine_pcm(hop, 20);
+        let Err(err) = fcpe.extract(&pcm, 16_000) else {
+            panic!(
+                "expected the STFT's own error; an all-zero track here is the bug \
+                 (`Err(_) =>` swallowing the front-end failure)"
+            );
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("stft"),
+            "the front-end's own error must reach the caller verbatim, naming the op \
+             that refused: {msg}",
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1574,7 +1817,9 @@ mod tests {
         );
         let bytes = std::fs::read(&wav).expect("read WAV");
         let samples = parse_pcm16_wav_16k_mono(&bytes).expect("PCM16 mono @ 16 kHz");
-        let frames = fcpe.extract(&samples, 16_000);
+        let frames = fcpe
+            .extract(&samples, 16_000)
+            .expect("a real GGUF at its declared rate must produce a real track");
         assert!(!frames.is_empty(), "extract must emit frames");
         for f in frames {
             assert!(f.hz.is_finite() && f.hz >= 0.0);

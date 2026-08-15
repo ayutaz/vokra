@@ -228,6 +228,68 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-15 — 1.0.0-rc.1-dev (F0 family: `CREPE` / `FCPE` gain a fallible `extract` + `extract_real` + `frame_times`, matching RMVPE — Rust surface only, advisory)
+
+**Breaking (Rust surface, pre-1.0 window)** plus additive. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+no F0 extractor is cbindgen-exported, so `scripts/gen-c-abi.sh --check`
+sees no diff and `scripts/check-abi-changelog.sh` does not fire. Recorded
+here because the pre-1.0 policy's recording rule covers Rust `pub` items.
+
+**Motivation**: `CREPE::extract` matched
+`Some(w) if sample_rate == 16_000` and let its `_` arm answer **two
+different failures with the same value** — "no weights bound" and "weights
+bound but the caller passed 44.1 kHz" both produced a frame-count-correct
+track of `hz = 0.0 / voiced = false / confidence = 0.0`. Downstream that is
+indistinguishable from "this audio is entirely unvoiced", so silently wrong
+pitch flowed into whatever consumed it (a vocoder, a VC pipeline). The
+docstring directly above claimed the opposite — "a non-16 kHz caller is
+honest-refused when weights are bound (no silent resample, FR-EX-08)" —
+which no code implemented, and could not have: `extract` returned
+`Vec<F0Frame>` with no error channel at all. `FCPE::extract` had the same
+shape plus a third case: a `compute_mel` failure discarded by `Err(_) =>`,
+under a comment claiming "no silent success on garbage weights".
+
+| Item | Kind | Signature | Rationale |
+| --- | --- | --- | --- |
+| `f0::crepe::CREPE::extract` | Changed | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` (was `-> Vec<F0Frame>`) | Delegates to `extract_real`; the obvious name is now the one that measures |
+| `f0::crepe::CREPE::extract_real` | Added | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` | The real forward, under the name the parity harnesses use |
+| `f0::crepe::CREPE::frame_times` | Added | `(&self, usize, u32) -> Vec<f32>` | Analysis timebase alone; bare seconds, never `F0Frame` |
+| `f0::crepe::CREPE::has_real_weights` | Added | `(&self) -> bool` | Lets a caller branch instead of handling the error |
+| `f0::crepe::NATIVE_SAMPLE_RATE` | Added | `pub const u32 = 16_000` | The rate the CNN is defined at, so the refusal can name it |
+| `f0::fcpe::FCPE::extract` | Changed | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` (was `-> Vec<F0Frame>`) | Same delegation |
+| `f0::fcpe::FCPE::extract_real` | Added | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` | Real forward; propagates the STFT/mel error verbatim |
+| `f0::fcpe::FCPE::frame_times` | Added | `(&self, usize, u32) -> Vec<f32>` | Analysis timebase alone |
+
+**Errors are distinguished, not merged**: `VokraError::ModelLoad` for an
+unbound weight set (and, for FCPE, an unusable `hop` / `sample_rate`),
+`VokraError::InvalidArgument` for a rate the checkpoint is not defined at
+(naming both what it received and what it needs), and for FCPE the
+front-end's own error propagated verbatim. Neither extractor resamples on
+the caller's behalf — refusing is the point (FR-EX-08).
+
+**Shape**: deliberately identical to the `extract` / `extract_real` /
+`frame_times` split RMVPE received the same day, so the family reads the
+same way at every call site rather than carrying three different answers to
+one problem. `CREPE::extract_full` also stopped `.expect()`-ing on
+`forward_one` now that an error channel exists above it.
+
+**Callers updated**: `crates/vokra-models/tests/parity_crepe.rs` (now
+asserts `has_real_weights()` before comparing, so a weightless GGUF cannot
+silently "pass" a parity run against zeros); `crates/vokra-cli/src/engine.rs`
+(both `BOUND_ARCHES` rows move to `BoundReason::RealForwardNoCliTask`, and
+`BoundReason::SkeletonFallback` — whose only two users these were — is
+**removed** rather than left as a label no row could honestly carry; a
+`dead_code` warning under `-D warnings` would have caught it either way);
+`crates/vokra-cli/src/run.rs` and `crates/vokra-models/src/{lib.rs,f0/mod.rs}`
+doc corrections.
+
+**Verify**: no `cargo` run on this pass (16 GB host, sequential verification
+deferred to the integrating loop). Checked by hand: every workspace call
+site of the changed methods was re-grepped and updated; `SkeletonFallback`
+has zero remaining referents; no `include/vokra.h` edit and no new
+third-party dependency (root `Cargo.lock` untouched, NFR-DS-02 preserved).
+
 ### 2026-08-14 — 1.0.0-rc.1-dev (WP-23 piper-plus landing: `PiperPlusTts::synthesize_streaming` + `PiperPlusTtsStream` single-chunk fallback + `TtsStreamHandle` re-export — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the FR-ST-04 streaming-surface

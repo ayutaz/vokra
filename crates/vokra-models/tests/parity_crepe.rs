@@ -34,7 +34,9 @@
 //!
 //! A companion audio file's path lives in `VOKRA_CREPE_REFERENCE_WAV`
 //! (16-bit mono PCM WAV at 16 kHz — the CREPE canonical input rate;
-//! non-16 kHz input is honest-refused by the forward per FR-EX-08).
+//! non-16 kHz input is honest-refused by the forward per FR-EX-08, as is
+//! a GGUF that carries no weights — both surface as an `Err` from
+//! `CREPE::extract` rather than as an all-zero track, since 2026-08-15).
 
 #![allow(clippy::items_after_statements)]
 
@@ -183,7 +185,15 @@ fn crepe_real_weight_matches_reference() {
     let refs = parse_reference_json(&ref_bytes).expect("parse reference JSON");
 
     let crepe = CREPE::from_gguf(&gguf).expect("load CREPE GGUF");
-    let frames = crepe.extract(&pcm, 16_000);
+    assert!(
+        crepe.has_real_weights(),
+        "a parity run against a weightless GGUF would compare nothing — \
+         VOKRA_CREPE_GGUF must point at a converted checkpoint, not a \
+         metadata-only artifact"
+    );
+    let frames = crepe
+        .extract(&pcm, 16_000)
+        .expect("extract must run cleanly on a real GGUF at 16 kHz");
     assert_eq!(
         frames.len(),
         refs.len(),

@@ -163,9 +163,17 @@ pub(crate) enum ModelTask {
     ///
     /// Real forward: [`vokra_models::f0::rmvpe::RMVPE::extract_real`] runs
     /// the mel front-end + U-Net CNN + BiGRU + 360-class head + Hz decode
-    /// and returns a `Result` — it has no silent all-zero skeleton branch
-    /// (its siblings FCPE / CREPE do, which is why they are NOT routed
-    /// here; see [`BOUND_ARCHES`]).
+    /// and returns a `Result` — it has no silent all-zero skeleton branch.
+    /// (The timebase-only accessor is
+    /// [`frame_times`](vokra_models::f0::rmvpe::RMVPE::frame_times), which
+    /// returns bare timestamps; before 2026-08-15 that body sat behind the
+    /// name `extract`, so the obvious name on a loaded model handed back a
+    /// fabricated track.)
+    ///
+    /// Its siblings FCPE and CREPE are still NOT routed here, but as of
+    /// 2026-08-15 no longer because they fabricate: both now refuse a
+    /// weightless or wrong-rate artifact with a named error. What they lack
+    /// is the CLI wiring. See their rows in [`BOUND_ARCHES`].
     F0Rmvpe,
 }
 
@@ -720,11 +728,32 @@ enum BoundReason {
     /// carry. Rendering one of those as a `run` result would mean inventing a
     /// presentation the model never defined.
     NoCliShapedOutput,
-    /// The forward runs when the GGUF carries weights but silently degrades
-    /// to an all-zero, frame-count-only track when it does not, and the
-    /// binder exposes no probe the CLI could gate on. Printing that track
-    /// would be indistinguishable from a real measurement.
-    SkeletonFallback,
+    /// The forward is real and complete, but it consumes a **pair** of
+    /// strictly sample-aligned input streams — an AEC mic signal plus its
+    /// far-end reference — and `run` carries exactly one `--input`. Neither
+    /// the GGUF nor any current flag supplies the second stream (`--compare`
+    /// is the campplus speaker-verify pair and is rejected on every other
+    /// task), so there is no honest input to drive the model with.
+    NeedsPairedInput,
+    /// The forward is real, complete and fallible — it refuses a weightless
+    /// or wrong-rate artifact with a named error rather than degrading to a
+    /// zero track — and its output would be CLI-shaped. Nothing about the
+    /// binder blocks a `run` task; this CLI simply has not wired one for the
+    /// arch yet.
+    ///
+    /// # A `SkeletonFallback` variant used to sit here
+    ///
+    /// It named the opposite hazard: a forward that runs when the GGUF
+    /// carries weights but degrades to an all-zero, frame-count-only track
+    /// when it does not, so that printing the track could not be told apart
+    /// from a real measurement. Its only two users were the FCPE and CREPE
+    /// rows, and on 2026-08-15 both binders stopped doing that — every
+    /// failure is now a named error. The variant was removed with its last
+    /// user rather than kept as a label no row could honestly carry.
+    ///
+    /// If a future binder reintroduces that shape, reintroduce the variant
+    /// with it; do not file it under this one, which asserts the opposite.
+    RealForwardNoCliTask,
     /// The module has no GGUF loader at all yet — its weights come from a
     /// deterministic `synthesized` fixture, so there is nothing for the CLI
     /// to bind from a converted artifact.
@@ -746,10 +775,18 @@ impl BoundReason {
                  codes, or it needs a caller-supplied tokenization the GGUF does not \
                  carry), so `run` has no honest way to render it"
             }
-            Self::SkeletonFallback => {
-                "its forward silently degrades to an all-zero, frame-count-only track on \
-                 a weightless artifact and exposes no probe to gate on, so printing the \
-                 track could not be told apart from a real measurement"
+            Self::NeedsPairedInput => {
+                "its forward is real, but it consumes a PAIR of strictly sample-aligned \
+                 streams (an AEC mic signal plus its far-end reference) while `run` \
+                 carries exactly one `--input` — neither the GGUF nor any current flag \
+                 supplies the second one, so there is nothing honest to feed it"
+            }
+            Self::RealForwardNoCliTask => {
+                "its forward is real, complete and fallible — it refuses a weightless or \
+                 wrong-rate artifact with a named error rather than degrading to a zero \
+                 track — so nothing about the binder blocks execution; this CLI has \
+                 simply not wired a `run` task for the arch yet, and the entry point \
+                 below is callable from a library context today"
             }
             Self::NoGgufLoader => {
                 "the module has no GGUF loader yet (its weights come from a deterministic \
@@ -1358,19 +1395,99 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: None,
     },
     // --- F0 siblings that are NOT routed to `ModelTask::F0Rmvpe` ----------
+    //
+    // Both stopped being skeleton-fallbacks on 2026-08-15, in the same change
+    // that gave RMVPE its `extract` / `extract_real` / `frame_times` shape.
+    // Each now refuses loudly instead of degrading to a zero track:
+    // `ModelLoad` when no weights were bound, `InvalidArgument` when the
+    // caller's sample rate is not the one the checkpoint is defined at, and —
+    // for FCPE — the STFT front-end's own error propagated verbatim instead
+    // of swallowed by an `Err(_) =>` arm. The timebase-only half moved to a
+    // `frame_times` accessor that returns bare `f32` seconds, so nothing it
+    // returns can be read as a pitch estimate.
+    //
+    // Both rows stay because no `run` task is wired for either arch — but the
+    // reason they carry had to change with the binders, and the entries they
+    // name had to stop pointing at a method whose contract no longer holds.
     BoundArch {
         arch: "fcpe",
         module: "vokra_models::f0::fcpe",
         entry: "FCPE::from_gguf → FCPE::extract",
-        reason: BoundReason::SkeletonFallback,
+        reason: BoundReason::RealForwardNoCliTask,
         probe: None,
     },
     BoundArch {
         arch: "crepe",
         module: "vokra_models::f0::crepe",
         entry: "CREPE::from_gguf → CREPE::extract",
-        reason: BoundReason::SkeletonFallback,
+        reason: BoundReason::RealForwardNoCliTask,
         probe: None,
+    },
+    // --- Wave H (2026-08-15) — five binders this registry had missed -------
+    //
+    // Each of these landed a `vokra-models` binder without the row the doc
+    // comment above requires ("Adding a binder? Add a row here in the same
+    // commit") — three of them in the very commit that wrote that rule. Their
+    // users got the blanket "unsupported model arch", the exact misreport this
+    // table exists to remove. Grouped as one wave rather than filed into the
+    // family sections above, per this table's stated landing-order rule, so
+    // the omission and its fix read as one diff.
+    //
+    // `scripts/check-bound-arch-coverage.sh` is what keeps the next one from
+    // going quiet: it walks every `pub const ARCH…: &str` under
+    // `crates/vokra-models/src/` and fails unless the arch is either routed by
+    // the dispatch or present here. The in-crate test below can only inspect
+    // rows that exist, which is why it never noticed these five.
+    BoundArch {
+        arch: "chattts",
+        module: "vokra_models::chattts",
+        entry: "ChatTts::from_gguf → ChatTts::synthesize",
+        reason: BoundReason::LoudPartialForward,
+        // The probe is the un-gated `&GgufFile` binder, which reads only the
+        // tensor MANIFEST (`ChatTtsWeights` holds `(name, dims)` pairs — no
+        // payload) and drops it. ChatTTS weights are CC-BY-NC-4.0 and the
+        // M2-13 research-flag gate lives on the `from_path` /
+        // `from_gguf_with_policy` routes a real consumer takes, so probing
+        // here neither loads weights for use nor steps around that gate.
+        probe: Some(|g: &GgufFile| vokra_models::chattts::ChatTts::from_gguf(g).map(|_| ())),
+    },
+    BoundArch {
+        arch: "deepfake_detection",
+        module: "vokra_models::deepfake_detection",
+        entry: "DeepfakeDetection::from_gguf → DeepfakeDetection::score",
+        reason: BoundReason::LoudPartialForward,
+        probe: Some(|g: &GgufFile| {
+            vokra_models::deepfake_detection::DeepfakeDetection::from_gguf(g).map(|_| ())
+        }),
+    },
+    BoundArch {
+        arch: "lang_id_ecapa",
+        module: "vokra_models::lang_id",
+        entry: "LangIdEcapa::from_gguf → LangIdEcapa::identify",
+        reason: BoundReason::LoudPartialForward,
+        probe: Some(|g: &GgufFile| vokra_models::lang_id::LangIdEcapa::from_gguf(g).map(|_| ())),
+    },
+    // Both AEC binders take a paired (mic, far-end) input that `run` cannot
+    // supply, but `reason` names the blocker that fires FIRST for the library
+    // caller the row points at — and the two differ. DTLN-AEC's `process`
+    // returns `UnsupportedOp` unconditionally (the generic LSTM primitive is
+    // absent from `vokra-ops`), so a caller holding both streams still hits a
+    // loud-partial. NKF-AEC's forward is a real native re-implementation with
+    // an upstream parity harness, so for it the paired input IS the only
+    // blocker. Reporting both as loud-partials would slander a working model.
+    BoundArch {
+        arch: "dtln_aec",
+        module: "vokra_models::aec::dtln_aec",
+        entry: "DtlnAec::from_gguf → DtlnAec::process",
+        reason: BoundReason::LoudPartialForward,
+        probe: Some(|g: &GgufFile| vokra_models::aec::dtln_aec::DtlnAec::from_gguf(g).map(|_| ())),
+    },
+    BoundArch {
+        arch: "nkf_aec",
+        module: "vokra_models::aec::nkf_aec",
+        entry: "NkfAec::from_gguf → AecEngine::open_stream → NkfAecStream::push_paired",
+        reason: BoundReason::NeedsPairedInput,
+        probe: Some(|g: &GgufFile| vokra_models::aec::nkf_aec::NkfAec::from_gguf(g).map(|_| ())),
     },
 ];
 
@@ -1916,9 +2033,128 @@ mod tests {
         );
     }
 
+    // ---- Wave H (2026-08-15) — the five rows the registry had missed -----
+    //
+    // One test per row, not one loop over all five: a loop reports only the
+    // first arch that regresses, and these five went missing INDIVIDUALLY.
+
+    /// Asserts `arch` resolves through [`BOUND_ARCHES`] to its own binder —
+    /// the message states the model is bound, names `module` and
+    /// `entry_fragment`, and never falls back to the blanket "unsupported
+    /// model arch". Returns the message so a caller can assert further.
+    fn assert_bound_arch(arch: &str, tag: &str, module: &str, entry_fragment: &str) -> String {
+        let err = with_arch_only_gguf(arch, tag, |p| {
+            // let-else rather than `.expect_err()`: `Session` is `!Debug`.
+            let Err(e) = load_session(p) else {
+                panic!("`{arch}` has no run task — load_session must refuse it");
+            };
+            e
+        });
+        assert!(
+            !err.contains("unsupported model arch"),
+            "`{arch}` has a vokra-models binder — the blanket message is the bug being \
+             fixed here: {err}"
+        );
+        assert!(
+            err.contains("is BOUND"),
+            "`{arch}` must state that this build binds it: {err}"
+        );
+        assert!(
+            err.contains(module),
+            "`{arch}` must name its binding module `{module}`: {err}"
+        );
+        assert!(
+            err.contains(entry_fragment),
+            "`{arch}` must name the library entry point `{entry_fragment}`: {err}"
+        );
+        err
+    }
+
+    /// ChatTTS (`vokra_models::chattts`) — loud-partial `synthesize`.
+    #[test]
+    fn load_session_binds_chattts_arch() {
+        assert_bound_arch(
+            "chattts",
+            "chattts-arch",
+            "vokra_models::chattts",
+            "ChatTts::synthesize",
+        );
+    }
+
+    /// Deepfake detection (`vokra_models::deepfake_detection`) — loud-partial
+    /// `score`. A spoof detector misreported as an unknown arch is the worst
+    /// of the five: the caller cannot tell "no such model" from "the model is
+    /// here but its feature extractor is deferred".
+    #[test]
+    fn load_session_binds_deepfake_detection_arch() {
+        assert_bound_arch(
+            "deepfake_detection",
+            "deepfake-arch",
+            "vokra_models::deepfake_detection",
+            "DeepfakeDetection::score",
+        );
+    }
+
+    /// Spoken-language ID (`vokra_models::lang_id`) — loud-partial `identify`.
+    /// Note the arch tag (`lang_id_ecapa`) is not the module name.
+    #[test]
+    fn load_session_binds_lang_id_ecapa_arch() {
+        assert_bound_arch(
+            "lang_id_ecapa",
+            "lang-id-arch",
+            "vokra_models::lang_id",
+            "LangIdEcapa::identify",
+        );
+    }
+
+    /// DTLN-AEC (`vokra_models::aec::dtln_aec`) — loud-partial `process`
+    /// (the generic LSTM primitive is absent from `vokra-ops`).
+    #[test]
+    fn load_session_binds_dtln_aec_arch() {
+        let err = assert_bound_arch(
+            "dtln_aec",
+            "dtln-aec-arch",
+            "vokra_models::aec::dtln_aec",
+            "DtlnAec::process",
+        );
+        assert!(
+            err.contains("its runtime forward is a loud-partial"),
+            "dtln_aec's blocker is its deferred forward, not its input shape: {err}"
+        );
+    }
+
+    /// NKF-AEC (`vokra_models::aec::nkf_aec`) — the one row of the five whose
+    /// forward is REAL (native re-implementation with an upstream parity
+    /// harness). Its blocker is the paired (mic, far-end) input `run` cannot
+    /// supply, so it must NOT be reported as a loud-partial like its DTLN
+    /// sibling — that would slander a working model.
+    #[test]
+    fn load_session_binds_nkf_aec_arch_as_paired_input_not_loud_partial() {
+        let err = assert_bound_arch(
+            "nkf_aec",
+            "nkf-aec-arch",
+            "vokra_models::aec::nkf_aec",
+            "NkfAecStream::push_paired",
+        );
+        assert!(
+            err.contains("PAIR of strictly sample-aligned"),
+            "nkf_aec must name the paired-input blocker: {err}"
+        );
+        assert!(
+            !err.contains("its runtime forward is a loud-partial"),
+            "nkf_aec's forward is real — reporting it as a loud-partial is a lie: {err}"
+        );
+    }
+
     /// The registry is well formed: no duplicate arch strings, and no row
     /// shadowing an arch the dispatch actually runs (a duplicate there would
     /// be unreachable and would rot into a lie).
+    ///
+    /// This test can only inspect rows that EXIST — which is why it never
+    /// noticed the five binders that shipped with no row at all. The
+    /// completeness half lives in `scripts/check-bound-arch-coverage.sh`,
+    /// which starts from the binders instead: a Rust test would have to walk
+    /// `crates/vokra-models/src/` from a crate-relative CWD to do the same.
     #[test]
     fn bound_arch_registry_is_disjoint_from_the_routed_arches() {
         let routed = [

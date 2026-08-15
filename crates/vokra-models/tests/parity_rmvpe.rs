@@ -30,7 +30,7 @@
 //! ```
 //!
 //! Under Path A the harness runs the full mel + CNN + BiGRU + head
-//! forward and asserts the extract() frame-count contract, the finite /
+//! forward and asserts the frame_times() frame-count contract, the finite /
 //! sigmoid-range contract, and a coarse "voiced fraction sanity" band
 //! on a 1 s 440 Hz sine (a sine at F0 = 440 Hz should be well within
 //! the [30, 1000] Hz tracked band).
@@ -273,7 +273,7 @@ fn parity_rmvpe_gguf_smoke() {
     assert_eq!(
         frames.len(),
         pcm.len() / hop,
-        "extract_real must honor the extract() frame-count contract"
+        "extract_real must honor the frame_times() frame-count contract"
     );
     for (i, f) in frames.iter().enumerate() {
         assert!(f.hz.is_finite(), "frame {i}: hz {} is not finite", f.hz);
@@ -380,7 +380,7 @@ fn parity_rmvpe_from_hidden_argmax_match_rate() {
 
     // Run the Vokra forward on the hidden state and re-derive argmax
     // by feeding each frame through decode_class_to_hz internally
-    // (extract() reports (hz, voiced, confidence), so we reconstruct
+    // (extract()/extract_real() report (hz, voiced, confidence), so we reconstruct
     // argmax from voiced Hz via the log-Hz grid: class ≈ log2(hz /
     // base_hz) * 1200 / cents_per_class). To keep the argmax
     // comparison free of that inverse, we run through

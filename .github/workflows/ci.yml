@@ -405,6 +405,27 @@ jobs:
         run: |
           bash scripts/check-find-hygiene.sh --self-test
           bash scripts/check-find-hygiene.sh
+      - name: Bound-arch registry completeness gate (vokra-cli run diagnostics)
+        # crates/vokra-cli/src/engine.rs BOUND_ARCHES turns "unsupported model
+        # arch `X`" — a lie whenever vokra-models has a binder for X — into a
+        # diagnostic naming the binding module, the library entry point and the
+        # blocker class. Its doc comment says "Adding a binder? Add a row here
+        # in the same commit"; nothing enforced it, and five binders (chattts,
+        # deepfake_detection, lang_id_ecapa, dtln_aec, nkf_aec) went missing
+        # that way — three of them in the commit that wrote the rule. The
+        # in-crate test can only inspect rows that EXIST, so it cannot see a row
+        # that was never written; this gate starts from the BINDERS instead and
+        # fails unless every `pub const ARCH…: &str` under vokra-models/src is
+        # either routed by the dispatch or present in the registry. Self-test
+        # runs RED (missing row) and GREEN (complete) cases plus two
+        # parser guards against a synthetic tree, so a checker bug cannot
+        # manufacture a passing run. HARD FAIL, like its check-find-hygiene /
+        # check-workflow-advisory-suffix siblings above — a source-to-source
+        # invariant of Vokra's own, not upstream drift. python3 stdlib only,
+        # no cargo, so it costs nothing in this job.
+        run: |
+          bash scripts/check-bound-arch-coverage.sh --self-test
+          bash scripts/check-bound-arch-coverage.sh
       - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
         id: platform-support-drift
         # Verifies that every evidence anchor cited by

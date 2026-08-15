@@ -52,7 +52,15 @@
 //! 4. **Decodes the 360-class head into Hz** with the log-cents grid
 //!    (base_hz=32.703, 20 cents/class) — [`decode_class_to_hz`].
 //! 5. **Runs a real (learnable) forward** through the bound weights
-//!    ([`RMVPE::extract_real`]). The forward implements PyTorch-native
+//!    ([`RMVPE::extract`], which delegates to [`RMVPE::extract_real`] —
+//!    both fallible on purpose). The one accessor that does *not* run
+//!    weights is [`RMVPE::frame_times`], which returns bare `f32`
+//!    timestamps and no pitch column at all. Until 2026-08-15 that
+//!    timebase body sat behind the name `extract`, so the
+//!    obviously-named method handed back a fabricated all-zero track on
+//!    a fully loaded model; the three names now mean the same thing
+//!    across [`super::crepe`] / [`super::fcpe`] / this module. The
+//!    forward implements PyTorch-native
 //!    primitives (`Conv2d(pad=same)` / `BatchNorm2d` / `MaxPool2d(2)` /
 //!    `ConvTranspose2d(s=2)` / `LeakyReLU` / bidirectional `GRU` /
 //!    `Linear` / `sigmoid`), discovers the topology from the bound
@@ -1504,11 +1512,26 @@ struct RmvpeHead<'a> {
 /// (<https://github.com/Dream-High/RMVPE>, MIT).
 ///
 /// Load with [`from_gguf`](Self::from_gguf) / [`open`](Self::open),
-/// then call [`extract_real`](Self::extract_real) on a PCM buffer to
-/// obtain a per-hop F0 track (frame count = `pcm.len() / hop`). The
-/// [`extract`](Self::extract) accessor is retained as a placeholder
-/// track for the pre-2026-08-13 API surface — see the module doc for
-/// the current implementation-status matrix.
+/// then call [`extract`](Self::extract) on a PCM buffer to obtain a
+/// per-hop F0 track (frame count = `pcm.len() / hop`).
+///
+/// [`extract`](Self::extract) and [`extract_real`](Self::extract_real)
+/// are the same fallible forward — every method that names pitch
+/// measures it. [`frame_times`](Self::frame_times) returns bare
+/// timestamps and no pitch column at all, so no call on this type can
+/// hand back a track that reads as a measurement. The sibling
+/// [`super::crepe::CREPE`] and [`super::fcpe::FCPE`] binders expose the
+/// same three names with the same meanings, so the F0 family reads the
+/// same way at every call site. See the module doc for the current
+/// implementation-status matrix.
+///
+/// Those two siblings also carry a `has_real_weights()` probe and this
+/// type does not — deliberately, not by oversight. Their weight bundles
+/// are `Option`al, so a metadata-only GGUF loads with none bound and a
+/// caller may want to branch before calling. [`from_gguf`](Self::from_gguf)
+/// refuses a GGUF carrying no RMVPE tensor at all, so a loaded `RMVPE`
+/// always has weights: the probe would be a constant `true`, which is a
+/// worse thing to expose than nothing.
 #[derive(Debug)]
 pub struct RMVPE {
     config: RmvpeConfig,
@@ -1555,35 +1578,60 @@ impl RMVPE {
         self.weights.tensor_count()
     }
 
-    /// Extracts a per-hop **placeholder** F0 track from `pcm` (kept
-    /// for backward compatibility with pre-2026-08-13 callers).
+    /// Extracts a per-hop F0 track from `pcm` by running the real
+    /// RMVPE forward.
     ///
-    /// The per-frame timing follows the [`RmvpeConfig::hop`] contract
-    /// (`frames.len() == pcm.len() / hop`); the caller supplies
-    /// `sample_rate` in Hz so the frame timestamps are honest even
-    /// when the PCM was not resampled to the RMVPE-native 16 kHz.
+    /// This is a straight delegation to
+    /// [`extract_real`](Self::extract_real) — identical behaviour,
+    /// identical errors. It exists so the obvious name on a loaded
+    /// model is the one that measures pitch, matching
+    /// [`super::crepe::CREPE::extract`] and
+    /// [`super::fcpe::FCPE::extract`].
     ///
-    /// This method deliberately returns `hz = 0.0`, `voiced = false`,
-    /// `confidence = 0.0` on every frame — the API surface is
-    /// complete but the real U-Net + GRU + head forward is skipped so
-    /// no weight bind is required (the placeholder path also serves as
-    /// a fast frame-count contract when the caller only needs the
-    /// timebase). Call [`extract_real`](Self::extract_real) for the
-    /// real forward that actually runs the CNN + BiGRU + head against
-    /// the bound weights and emits sigmoid-thresholded V/UV with
-    /// local-centroid Hz decoding.
-    pub fn extract(&self, pcm: &[f32], sample_rate: u32) -> Vec<F0Frame> {
+    /// # History
+    ///
+    /// Before 2026-08-15 this name returned `Vec<F0Frame>` and handed
+    /// back `hz = 0.0` / `voiced = false` / `confidence = 0.0` on every
+    /// frame **regardless of whether weights were bound** — the real
+    /// forward was reachable only as `extract_real`. A caller who
+    /// reached for the obviously-named method on a fully loaded model
+    /// got a frame-count-correct zero track, which downstream reads as
+    /// "this audio is entirely unvoiced" rather than "no measurement
+    /// was made". The timebase-only half now lives in
+    /// [`frame_times`](Self::frame_times), which returns timestamps and
+    /// nothing that could be read as a pitch estimate.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`extract_real`](Self::extract_real)'s errors
+    /// verbatim — see that method for the list.
+    pub fn extract(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<F0Frame>, VokraError> {
+        self.extract_real(pcm, sample_rate)
+    }
+
+    /// Returns the analysis timestamps [`extract`](Self::extract) will
+    /// emit for a PCM buffer of `pcm_len` samples, in seconds from the
+    /// start of the buffer.
+    ///
+    /// `result.len()` is the frame-count contract (`pcm_len / hop`,
+    /// integer-truncated per [`RmvpeConfig::hop`]); `result[i]` is the
+    /// hop-aligned left edge of frame `i`. A `sample_rate` of `0` is
+    /// clamped to `1` so the column stays finite rather than `NaN` /
+    /// `±inf`.
+    ///
+    /// This runs no weights and cannot fail: it is pure arithmetic over
+    /// the config, for callers that need to size or align a buffer
+    /// before (or without) running the forward. It deliberately does
+    /// **not** return [`F0Frame`]: a frame carries `hz` / `voiced` /
+    /// `confidence` columns this method has no evidence for, and
+    /// emitting zeros there is exactly the fabricated track the
+    /// 2026-08-15 fix removed. Mirrors
+    /// [`super::crepe::CREPE::frame_times`] and
+    /// [`super::fcpe::FCPE::frame_times`].
+    pub fn frame_times(&self, pcm_len: usize, sample_rate: u32) -> Vec<f32> {
         let hop = (self.config.hop as usize).max(1);
-        let n_frames = pcm.len() / hop;
         let sr = (sample_rate as f32).max(1.0);
-        (0..n_frames)
-            .map(|i| F0Frame {
-                time_sec: (i * hop) as f32 / sr,
-                hz: 0.0,
-                voiced: false,
-                confidence: 0.0,
-            })
-            .collect()
+        (0..pcm_len / hop).map(|i| (i * hop) as f32 / sr).collect()
     }
 
     /// Runs the **real** RMVPE forward on `pcm`.
@@ -1610,11 +1658,15 @@ impl RMVPE {
     /// 7. Element-wise `sigmoid` → per-class voiced probability.
     /// 8. `decode_class_to_hz` per frame → [`F0Frame`].
     ///
-    /// The returned frame count matches the [`extract`](Self::extract)
-    /// contract (`pcm.len() / hop`) — mel runs with centered STFT
-    /// (which yields `pcm.len() / hop + 1` frames), and this method
-    /// truncates to the `extract` contract so consumers can swap the
-    /// two calls without a shape drift.
+    /// Reachable both under this name and as
+    /// [`extract`](Self::extract), which delegates here verbatim.
+    ///
+    /// The returned frame count matches the
+    /// [`frame_times`](Self::frame_times) contract
+    /// (`pcm.len() / hop`) — mel runs with centered STFT (which yields
+    /// `pcm.len() / hop + 1` frames), and this method truncates to that
+    /// contract so a consumer that pre-sized a buffer from
+    /// `frame_times` sees no shape drift.
     ///
     /// # Errors
     ///
@@ -1670,7 +1722,8 @@ impl RMVPE {
         // 4. Decoder blocks — same pattern, mirrored via
         //    ConvTranspose2d(stride=2). Skip-concat is a follow-up
         //    (would need paired encoder cache); the shape axes still
-        //    round-trip so a consumer aligning against extract() works.
+        //    round-trip so a consumer aligning against frame_times()
+        //    works.
         for i in 0..MAX_UNET_BLOCKS {
             let Some(block) = self.weights.decoder_block(i) else {
                 break;
@@ -1737,8 +1790,9 @@ impl RMVPE {
             all_probs.extend(probs);
         }
 
-        // 8. Decode per-frame -> F0Frame. Honor the extract() frame-
-        //    count contract by truncating any center-STFT extra frame.
+        // 8. Decode per-frame -> F0Frame. Honor the frame_times()
+        //    frame-count contract by truncating any center-STFT extra
+        //    frame.
         let sr = (sample_rate as f32).max(1.0);
         const VOICED_THRESHOLD: f32 = 0.03;
         let mut frames = Vec::with_capacity(n_frames);
@@ -2041,11 +2095,13 @@ mod tests {
     }
 
     /// STEP 1 (contract): the frame-count contract is
-    /// `extract(&pcm, sr).len() == pcm.len() / hop` with `hop = 160`.
-    /// Uses the minimal valid GGUF fixture so the load path is exercised
-    /// end-to-end (not the skeleton `with_defaults` shortcut).
+    /// `frame_times(pcm.len(), sr).len() == pcm.len() / hop` with
+    /// `hop = 160`, and each timestamp is the hop-aligned left edge of
+    /// its frame. Uses the minimal valid GGUF fixture so the load path
+    /// is exercised end-to-end (not the skeleton `with_defaults`
+    /// shortcut).
     #[test]
-    fn extract_frame_count_matches_hop() {
+    fn frame_times_matches_hop() {
         let bytes = minimal_valid_rmvpe_gguf();
         let tmp = std::env::temp_dir().join(format!(
             "vokra-rmvpe-frame-count-{}-{}.gguf",
@@ -2061,9 +2117,132 @@ mod tests {
         let hop = m.config.hop as usize;
         // 16 033 samples = 1 s @ 16 kHz + 33 extra — exercises the
         // integer-truncation of `pcm.len() / hop`.
-        let pcm = vec![0.0f32; 16_033];
-        let frames = m.extract(&pcm, 16_000);
-        assert_eq!(frames.len(), pcm.len() / hop);
+        let pcm_len = 16_033usize;
+        let times = m.frame_times(pcm_len, 16_000);
+        assert_eq!(times.len(), pcm_len / hop);
+        for (i, t) in times.iter().enumerate() {
+            assert!(t.is_finite(), "frame {i}: time_sec {t} is not finite");
+            let expected = (i * hop) as f32 / 16_000.0;
+            assert!(
+                (t - expected).abs() < 1e-6,
+                "frame {i}: time_sec {t} is not the hop-aligned left edge {expected}"
+            );
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// A zero `sample_rate` must not produce a `NaN` / `±inf`
+    /// timestamp column — the clamp to `1` keeps the output finite.
+    #[test]
+    fn frame_times_clamps_zero_sample_rate() {
+        let bytes = minimal_valid_rmvpe_gguf();
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-rmvpe-zero-sr-{}-{}.gguf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        ));
+        std::fs::write(&tmp, &bytes).expect("write test gguf");
+
+        let m = RMVPE::from_gguf(&tmp).expect("load valid gguf");
+        let times = m.frame_times(16_000, 0);
+        assert!(!times.is_empty(), "16 000 samples must yield frames");
+        assert!(
+            times.iter().all(|t| t.is_finite()),
+            "a zero sample_rate must be clamped, not divided by"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Regression pin for the 2026-08-15 honesty fix: `extract` must be
+    /// the REAL forward, so on a GGUF whose bound tensors do not compose
+    /// into a walkable forward it reports the missing weight loudly.
+    /// Before the fix this name unconditionally returned an all-zero
+    /// `F0Frame` track that a caller could not tell apart from a real
+    /// measurement of silence.
+    ///
+    /// The assertion is deliberately "is an `Err`" rather than "is a zero
+    /// track": a future refactor that quietly restores the fabricated
+    /// path fails here.
+    #[test]
+    fn extract_is_the_real_forward_not_a_fabricated_track() {
+        let bytes = minimal_valid_rmvpe_gguf();
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-rmvpe-extract-real-path-{}-{}.gguf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        ));
+        std::fs::write(&tmp, &bytes).expect("write test gguf");
+
+        let m = RMVPE::from_gguf(&tmp).expect("load valid gguf");
+        let pcm = vec![0.0f32; 16_000];
+        let err = m
+            .extract(&pcm, 16_000)
+            .expect_err("extract must refuse a GGUF without a walkable forward");
+        assert!(
+            matches!(err, VokraError::ModelLoad(_)),
+            "expected ModelLoad naming the missing weight, got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// `extract` and `extract_real` are the same code path, so on a
+    /// fixture whose weights DO compose they must agree frame for frame.
+    /// Pins the delegation so the two names can never drift into two
+    /// behaviours again — and pins that what they return is a real
+    /// measurement rather than the old fabricated column.
+    #[test]
+    fn extract_agrees_with_extract_real_on_a_real_forward() {
+        let bytes = smoke_no_cnn_gguf(/*n_mels=*/ 128, /*gru_hidden=*/ 8);
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-rmvpe-alias-{}-{}.gguf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        ));
+        std::fs::write(&tmp, &bytes).expect("write");
+
+        let m = RMVPE::from_gguf(&tmp).expect("load smoke gguf");
+        let sr = m.config().sample_rate as f32;
+        let pcm: Vec<f32> = (0..m.config().sample_rate as usize)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
+            .collect();
+
+        let via_extract = m.extract(&pcm, 16_000).expect("real forward must run");
+        let via_extract_real = m.extract_real(&pcm, 16_000).expect("real forward must run");
+        assert_eq!(
+            via_extract, via_extract_real,
+            "the two names must not drift"
+        );
+
+        // The result is a REAL track, not the old fabricated one. The
+        // fabricated path pinned `confidence` at exactly 0.0 on EVERY
+        // frame, so a single positive frame is enough to tell the two
+        // apart — and that is all this pins, deliberately: `confidence`
+        // is the peak sigmoid over the 360 classes
+        // (`decode_class_to_hz`), and asserting it is positive on every
+        // frame would be a claim about the synthetic fixture's logits
+        // that this test has no basis to make.
+        assert!(
+            via_extract.iter().any(|f| f.confidence > 0.0),
+            "a real forward must produce some positive confidence, \
+             not the fabricated all-zero column"
+        );
+
+        // The frame count matches what `frame_times` promised, so a
+        // consumer can still pre-size from the timebase.
+        assert_eq!(
+            via_extract.len(),
+            m.frame_times(pcm.len(), 16_000).len(),
+            "extract must honor the frame_times frame-count contract"
+        );
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -2148,7 +2327,7 @@ mod tests {
     /// straight into the BiGRU + head + sigmoid + decoder chain). The
     /// smoke test asserts:
     ///
-    /// - Frame count matches the [`RMVPE::extract`] contract
+    /// - Frame count matches the [`RMVPE::frame_times`] contract
     ///   (`pcm.len() / hop`).
     /// - Every `hz` / `confidence` value is finite (no NaN / Inf).
     /// - Every `confidence` value lies in `[0, 1]` (sigmoid range).
@@ -2188,7 +2367,7 @@ mod tests {
         assert_eq!(
             frames.len(),
             pcm.len() / hop,
-            "extract_real must honor the extract() frame-count contract"
+            "extract_real must honor the frame_times() frame-count contract"
         );
         for (i, f) in frames.iter().enumerate() {
             assert!(f.hz.is_finite(), "frame {i}: hz {} is not finite", f.hz);
