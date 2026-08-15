@@ -16,18 +16,20 @@
 //!
 //! ```text
 //! # 1. Fetch upstream ONNX from github.com/dscripka/openWakeWord releases
-//! # 2. Merge to Vokra safetensors + emit per-frame reference probs (uv):
+//! # 2. Merge to Vokra safetensors + config side-car + reference probs (uv):
 //! uv run python tools/parity/openwakeword_prepare_checkpoint.py \
-//!     --embedding    ~/openwakeword/embedding_model.onnx \
-//!     --wakeword     alexa=~/openwakeword/alexa_v0.1.onnx \
-//!     --wakeword     hey_jarvis=~/openwakeword/hey_jarvis_v0.1.onnx \
-//!     --input-wav    ~/test-speech.wav \
-//!     --output-st    ~/openwakeword.safetensors \
-//!     --output-ref   ~/openwakeword_reference.json \
-//!     --output-wav   ~/openwakeword-16k.wav
-//! # 3. Convert safetensors → GGUF:
+//!     --embedding     ~/openwakeword/embedding_model.onnx \
+//!     --wakeword      alexa=~/openwakeword/alexa_v0.1.onnx \
+//!     --wakeword      hey_jarvis=~/openwakeword/hey_jarvis_v0.1.onnx \
+//!     --input-wav     ~/test-speech.wav \
+//!     --output-st     ~/openwakeword.safetensors \
+//!     --output-config ~/openwakeword_config.json \
+//!     --output-ref    ~/openwakeword_reference.json \
+//!     --output-wav    ~/openwakeword-16k.wav
+//! # 3. Convert safetensors → GGUF (--config is REQUIRED, see below):
 //! vokra-cli convert --model openwakeword-op \
 //!     --input  ~/openwakeword.safetensors \
+//!     --config ~/openwakeword_config.json \
 //!     --output ~/openwakeword.gguf
 //! # 4. Point the parity harness at all three artefacts:
 //! export VOKRA_OPENWAKEWORD_REAL_GGUF=~/openwakeword.gguf
@@ -35,6 +37,26 @@
 //! export VOKRA_OPENWAKEWORD_REFERENCE_JSON=~/openwakeword_reference.json
 //! cargo test -p vokra-models --test parity_openwakeword -- --nocapture
 //! ```
+//!
+//! # Why step 3 takes a `--config` (2026-08-15)
+//!
+//! This recipe used to omit it, and as written it could not work: the
+//! converter stamped none of the seven `vokra.openwakeword.*` keys
+//! [`OpenwakewordSession::from_gguf`] requires, so step 4 died at the
+//! first load and the harness never ran. The converter now emits the
+//! whole chunk group, deriving `n_wakewords` and `embedding_dim` from
+//! the classifier tensors and taking the per-wake-word labels from the
+//! side-car — those labels exist nowhere in the safetensors (tensors are
+//! indexed positionally) and are not invented.
+//!
+//! Because that gap was invisible to CI — the unit tests below
+//! hand-build their GGUF, and everything needing a real one is gated on
+//! [`GGUF_ENV`] and skips — two fixture-free tests now run the real
+//! converter into the real binder on every CI run:
+//! `crates/vokra-convert/tests/openwakeword_op_roundtrip.rs` and
+//! `crates/vokra-models/tests/openwakeword_convert_bind.rs`. This
+//! harness stays the place real-weight NUMERICS are checked; those two
+//! keep the two halves able to talk at all.
 //!
 //! # Numeric parity contract
 //!

@@ -30,7 +30,7 @@ description: Vokra の audio-dialect オペレータ（STFT/vocoder/flow sampler
 
 - **soxr / rubberband（GPL）禁止** → resample は speexdsp(BSD) resampler 設計ベースの自前実装。
 - FFT は pocketfft(BSD-3) アルゴリズムの自前 Rust 移植（`crates/vokra-ops/src/fft/`、`NOTICE` §3 に既記）。
-- **BigVGAN は論文からスクラッチ再実装**（NVIDIA reference は Source Code License-NC で非商用、`NOTICE` §1）。
+- **【2026-07-22 訂正】BigVGAN は MIT**（`github.com/NVIDIA/BigVGAN/LICENSE` = 標準 MIT `Copyright (c) 2024 NVIDIA CORPORATION`）。旧記述「Source Code License-NC で非商用ゆえ論文からスクラッチ再実装」の**非商用前提は失効**し、スクラッチ制約は解除 = reference の直接移植が MIT 帰属表示で可能（移植時は `crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt` に MIT 全文を同 PR で同梱、`NOTICE` §1 + §9 / `docs/license-audit.md` BigVGAN 行）。
 - **EnCodec weight は CC-BY-NC → 公式 zoo 除外**。DAC/Mimi/WavTokenizer/X-Codec2 が商用 OK 候補。
 - 新 codec/依存の追加時は skill `license-audit` を通す。
 

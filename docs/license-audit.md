@@ -18,7 +18,7 @@
   - Meta AudioSeal (MIT) — 論文 attribution
   - piper-plus (MIT) — 依頼者作 TTS 統合
   - Mimi codec (CC-BY 4.0) — Kyutai attribution
-  - BigVGAN 論文 attribution (実装はスクラッチ、NVIDIA reference は使用しない)
+  - BigVGAN 論文 attribution (**2026-07-22 訂正**: NVIDIA reference は標準 MIT ゆえ「実装はスクラッチ、NVIDIA reference は使用しない」の制約は解除 — 直接移植する場合は MIT 全文を `crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt` に同梱。下記 BigVGAN 行 + `NOTICE` §1/§9 参照)
   - Snake activation 論文 attribution (Ziyin 2020)
   - FlashAttention v2 論文 attribution (Dao 2023)
 

@@ -16,11 +16,12 @@ use vokra_convert::{
     convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
     convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
     convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_file_with_slug, convert_irodori_file, convert_kokoro_file, convert_piper_plus_file,
-    convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file, convert_styletts2_file,
-    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
+    convert_openwakeword_op_file_with_config, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
+    convert_vits_ja_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
+    convert_voxtral_file_streaming, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -66,6 +67,7 @@ USAGE:
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model fsmn-vad --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -345,7 +347,13 @@ OPTIONS:
                               vocab, max positions — cross-validated against
                               the checkpoint shapes) OR the DAC prepare-script
                               config.json (required for dac — from
-                              tools/parity/dac_prepare_checkpoint.py)
+                              tools/parity/dac_prepare_checkpoint.py) OR the
+                              openWakeWord side-car (required for
+                              openwakeword-op — from
+                              tools/parity/openwakeword_prepare_checkpoint.py
+                              --output-config; carries `wakeword_names`, the
+                              per-wake-word labels that exist nowhere in the
+                              safetensors and are never invented)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
@@ -1153,6 +1161,39 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 None => {
                     return Err("--model crepe requires --config <config.json> (from \
                                 tools/parity/keras_h5_to_safetensors.py)"
+                        .to_owned());
+                }
+            }
+        }
+        ModelKind::OpenwakewordOp => {
+            // 2026-08-15 handshake repair. A dedicated arm (rather than
+            // the generic `convert_file_with_slug` fallthrough) for the
+            // same reason as the Crepe / BeatThis arms: the generic
+            // dispatch hard-codes `config_side_car = None`, so `--config`
+            // would be silently dropped — and here that is not a cosmetic
+            // loss. Without the side-car's `wakeword_names` the emitted
+            // GGUF is missing a key `OpenwakewordConfig::from_gguf`
+            // treats as required, i.e. it cannot load at all.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_openwakeword_op_file_with_config(
+                    &p.input,
+                    config,
+                    &p.output,
+                    p.license.as_deref(),
+                ),
+                None => {
+                    return Err("--model openwakeword-op requires --config <config.json> \
+                                carrying `wakeword_names` (from \
+                                tools/parity/openwakeword_prepare_checkpoint.py \
+                                --output-config). The per-wake-word labels the runtime \
+                                returns are not present in the safetensors and are not \
+                                invented here."
                         .to_owned());
                 }
             }

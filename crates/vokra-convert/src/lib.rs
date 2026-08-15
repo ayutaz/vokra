@@ -1334,7 +1334,12 @@ pub enum ModelKind {
     /// base `Openwakeword` ModelKind — the `_op` variant is where
     /// user-provided weights route (Vokra does NOT redistribute the
     /// upstream official CC-BY-NC-SA-4.0 weights). Category =
-    /// `vad-kws`. Convert with `convert_openwakeword_op_file`.
+    /// `vad-kws`. Convert with
+    /// [`convert_openwakeword_op_file_with_config`], which needs a
+    /// `--config` side-car: the runtime binder requires a
+    /// `wakeword_names` list that exists nowhere in the safetensors, so
+    /// the config-less [`convert_openwakeword_op_file`] refuses rather
+    /// than invent labels (the [`ModelKind::Crepe`] precedent).
     OpenwakewordOp,
     /// **MossFormer2-SS-16K** (`alibabasglab/MossFormer2_SS_16K`,
     /// Apache-2.0, coverage-audit-2026-08-03 Wave A permissive
@@ -8556,22 +8561,27 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::OpenwakewordOp => {
-            let report =
-                models::openwakeword_op::convert_openwakeword_op_file(input, output, license)?;
-            let notes = vec![format!(
-                "openwakeword-op: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped (apache-2.0 code default, Permissive; official upstream \
-                 weights are CC-BY-NC-SA-4.0 — override via --license cc-by-nc-sa-4.0 to flip to \
-                 NonCommercialShareAlike when distributing official weights)",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
-            )];
-            return Ok(ConvertSummary {
-                model: ModelKind::OpenwakewordOp,
-                tensor_count: report.written,
-                metadata_count: 0,
-                output_bytes: std::fs::metadata(output)?.len(),
-                notes,
-            });
+            // 2026-08-15 handshake repair. Until this wave the arm called
+            // `convert_openwakeword_op_file`, which stamped only
+            // `vokra.model.*` + `vokra.provenance.*`. The runtime binder
+            // `OpenwakewordConfig::from_gguf` requires SEVEN
+            // `vokra.openwakeword.*` keys, so every GGUF produced here
+            // failed to load in the binder written for it — and nothing
+            // caught it, because the binder's unit tests hand-build their
+            // GGUF with `GgufBuilder` and the parity harness is env-gated.
+            //
+            // Six of the seven are derivable or mirrorable; the seventh,
+            // `wakeword_names`, is a per-checkpoint label that exists
+            // nowhere in the safetensors. Refuse rather than invent it
+            // (the `ModelKind::Crepe` precedent immediately below).
+            return Err(ConvertError::Usage(
+                "openwakeword-op needs a --config config.json carrying `wakeword_names` \
+                 (emitted by tools/parity/openwakeword_prepare_checkpoint.py alongside the \
+                 flattened safetensors); the per-wake-word labels the runtime binder returns \
+                 are not present in the checkpoint and will not be invented. Use \
+                 convert_openwakeword_op_file_with_config"
+                    .to_owned(),
+            ));
         }
         ModelKind::Mossformer2Ss16k => {
             let report = models::mossformer2_ss_16k::convert_mossformer2_ss_16k_file(
@@ -11699,11 +11709,55 @@ pub fn convert_file_licensed(
         // overrides at the outer `--license <spdx>` boundary below.
         ModelKind::Fcpe => {
             let report = models::fcpe::convert_fcpe_file(input, output, license)?;
-            let notes = vec![format!(
+            let mut notes = vec![format!(
                 "fcpe: {} float weights written verbatim ({} BF16 passthrough — runtime widens \
                  to f32 exactly at load), {} non-float skipped, {} tensors read",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
+            // The `vokra.f0.fcpe.*` state is reported out loud because it
+            // decides whether the artifact will load at all: the runtime
+            // requires all fourteen axes on a weight-carrying GGUF, and a
+            // variant topology gets only the seven that are derivable.
+            match report.topology {
+                Some(t) => {
+                    notes.push(format!(
+                        "fcpe: topology derived from tensor shapes — d_model={} n_mels={} \
+                         stem_kernel={} ffn_dim={} conv_kernel={} n_layers={} n_pitch_bins={}",
+                        t.d_model,
+                        t.n_mels,
+                        t.stem_kernel,
+                        t.ffn_dim,
+                        t.conv_kernel,
+                        t.n_layers,
+                        t.n_pitch_bins,
+                    ));
+                    if report.front_end_withheld {
+                        notes.push(format!(
+                            "fcpe: WITHHELD the 7 front-end / decode axes (hop, n_fft, \
+                             sample_rate, fmin, fmax, stem_groups, confidence_threshold) — this \
+                             topology is not the released fcpe_c_v001, and those values live in \
+                             upstream's config rather than the checkpoint, so asserting them \
+                             here would be a guess. {} of 14 axes stamped; the runtime will \
+                             refuse to bind this artifact until they are supplied by whoever \
+                             knows the variant.",
+                            report.axes_stamped,
+                        ));
+                    } else {
+                        notes.push(format!(
+                            "fcpe: topology matches the released fcpe_c_v001, so the 7 \
+                             front-end / decode axes were asserted from that reference — \
+                             {} of 14 axes stamped",
+                            report.axes_stamped,
+                        ));
+                    }
+                }
+                None => notes.push(
+                    "fcpe: no `input_stack.0.weight` / `output_proj.weight`, so no topology \
+                     could be derived and NO `vokra.f0.fcpe.*` axes were stamped — this is \
+                     not an FCPE checkpoint"
+                        .to_owned(),
+                ),
+            }
             return Ok(ConvertSummary {
                 model: ModelKind::Fcpe,
                 tensor_count: report.written,
@@ -12316,6 +12370,83 @@ pub fn convert_crepe_file(
     })
 }
 
+/// Convert an openWakeWord op-wiring safetensors checkpoint into a Vokra
+/// GGUF that the runtime `OpenwakewordSession::from_gguf` binder can
+/// actually load (2026-08-15 handshake repair).
+///
+/// `input` is the flattened safetensors and `config` the JSON side-car,
+/// both produced offline by
+/// `tools/parity/openwakeword_prepare_checkpoint.py` (the upstream ONNX
+/// never enters the runtime — FR-LD-05 / NFR-DS-02).
+///
+/// # Why the side-car is required
+///
+/// `OpenwakewordConfig::from_gguf` reads seven `vokra.openwakeword.*`
+/// keys and treats every one as required. Two of them (`n_wakewords`,
+/// `embedding_dim`) are derived here from the classifier tensors, and
+/// four (`window_frames`, `mel_bins`, `sample_rate`, `hop_samples`) fall
+/// back to mirrored constants documented in
+/// `crates/vokra-convert/src/models/openwakeword_op.rs`. The seventh,
+/// `wakeword_names`, is a per-checkpoint label that exists nowhere in the
+/// safetensors — the prepare script indexes classifier tensors
+/// positionally and keeps the names only in its reference JSON, having
+/// explicitly declined to infer them. Rather than synthesise
+/// `wakeword_0`, the plain [`convert_openwakeword_op_file`] refuses and
+/// this entry point takes the names from the side-car (the
+/// [`ModelKind::Crepe`] precedent).
+///
+/// The side-car's only required field is `wakeword_names`:
+///
+/// ```json
+/// { "wakeword_names": ["alexa", "hey_jarvis"] }
+/// ```
+///
+/// # Errors
+///
+/// - [`ConvertError::Io`] on read/write failure.
+/// - [`ConvertError::Parse`] on malformed safetensors / JSON input, or
+///   on any classifier group whose shapes do not satisfy the contract
+///   the runtime binder enforces (checked here so the failure names the
+///   offending tensor at convert time rather than at first load).
+/// - [`ConvertError::Usage`] when the side-car's `wakeword_names` count
+///   disagrees with the number of classifier groups in the checkpoint.
+/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+pub fn convert_openwakeword_op_file_with_config(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::openwakeword_op::OpenwakewordOpConvertConfig::parse(&config_bytes)?;
+    let (builder, report) = models::openwakeword_op::convert(bytes, &cfg, license)?;
+
+    let notes = vec![format!(
+        "openwakeword-op: {} float weights written verbatim ({} BF16 passthrough), {} \
+         non-float skipped; vokra.openwakeword.* stamped with n_wakewords={} \
+         embedding_dim={} (both derived from the classifier tensors)",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.n_wakewords,
+        report.embedding_dim,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::OpenwakewordOp,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
 /// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
 /// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
 /// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
@@ -12842,6 +12973,11 @@ pub use models::miocodec::{MioCodecReport, convert_miocodec_file};
 // same bytes.
 pub use models::mossformer2_ss_16k::{Mossformer2Ss16kReport, convert_mossformer2_ss_16k_file};
 pub use models::neutts_air::{NeuTtsAirReport, convert_neutts_air_file};
+// openWakeWord op wiring: `convert_openwakeword_op_file` is the plain
+// path and REFUSES (the per-wake-word labels the runtime binder requires
+// are not in the safetensors, so it will not invent them — the
+// `ModelKind::Crepe` precedent). The working entry point is
+// [`convert_openwakeword_op_file_with_config`] below.
 pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_file};
 pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
 pub use models::torchaudio_squim::{TorchaudioSquimReport, convert_torchaudio_squim_file};

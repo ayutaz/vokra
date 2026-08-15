@@ -234,6 +234,10 @@ jobs:
         run: |
           bash scripts/check-m5-residual-no-abi.sh --self-test
           bash scripts/check-m5-residual-no-abi.sh
+      - name: M5-residual blocker column honesty (self-test, then check)
+        run: |
+          bash scripts/check-m5-residual-blockers.sh --self-test
+          bash scripts/check-m5-residual-blockers.sh
       - name: Rust public-API surface (self-test, then snapshot compare)
         run: |
           bash scripts/rust-public-api-list.sh --self-test

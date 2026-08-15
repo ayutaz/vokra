@@ -21,10 +21,14 @@
 //! # The honest scope (do not overstate)
 //!
 //! `wfst_decode` consumes a per-frame **emission** matrix (a CTC / RNN-T
-//! posterior). Those acoustic decoders are **reserved and unimplemented**
-//! ([`crate::m5_residual_ops`], NeMo-family trigger pending), and Vokra's only
-//! live acoustic decoder (`beam_search`) returns token sequences, not an
-//! emission matrix. So M5-06 is **decode-only**: verified against offline
+//! posterior). The decoders themselves have since landed as runtime
+//! primitives (`vokra_ops::ctc_decode_greedy` / `ctc_decode_beam` /
+//! `rnnt_decode`); what [`crate::m5_residual_ops`] still reserves is only
+//! their graph-side `OpKind` variant. The constraint that actually binds M5-06
+//! is the **feeder**: no model forward yet produces an emission matrix
+//! end-to-end (the CTC / TDT binders are loud-partial on their encoder
+//! forward), and Vokra's only live acoustic decoder (`beam_search`) returns
+//! token sequences, not an emission matrix. So M5-06 is **decode-only**: verified against offline
 //! reference emissions (`tests/parity_wfst.rs`, OpenFST oracle) and usable for
 //! lexicon / grammar rescoring at the word level; a classic HCLG
 //! frame-synchronous e2e ASR waits on the CTC/RNN-T feeder. See ADR M5-06 and

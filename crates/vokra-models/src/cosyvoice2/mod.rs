@@ -1,8 +1,10 @@
 //! CosyVoice2 native TTS / S2S — module scaffold (M3-09).
 //!
 //! Native re-implementation of the CosyVoice2 inference core (text tokenizer,
-//! LLM backbone, Flow Matching CFM, Mimi codec, chunk-aware streaming) in the
-//! whisper.cpp style: the model *definition* lives in Rust; only the upstream
+//! LLM backbone, Flow Matching CFM → mel, HiFTNet vocoder, chunk-aware
+//! streaming — see [`hift_chain`] for the 2026-07-22 訂正 that replaced the
+//! wrong-premise Mimi wiring) in the whisper.cpp style: the model
+//! *definition* lives in Rust; only the upstream
 //! **safetensors** checkpoint (Apache 2.0 code + weight, official
 //! `iic/CosyVoice2-0.5B` on HuggingFace, converted offline to GGUF by
 //! `vokra-convert`, T03) is consumed at runtime. No ONNX at runtime

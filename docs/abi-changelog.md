@@ -228,6 +228,98 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-15 — 1.0.0-rc.1-dev (FCPE: the `vokra.f0.fcpe.*` chunk is now stamped by the converter and REQUIRED by the loader — GGUF schema break + Rust surface, advisory)
+
+**Breaking, for GGUF artifacts.** The C ABI (`include/vokra.h`, 33 fn + 11
+typedef, v1.0-rc baseline) is **untouched** — no F0 extractor is
+cbindgen-exported, so `scripts/gen-c-abi.sh --check` sees no diff. The Rust
+public-API snapshot gate covers `vokra-core` / `vokra-ops` / `vokra-capi`
+only, so `vokra-models` changes do not move it. The GGUF chunk-prefix leg of
+`scripts/check-abi-changelog.sh` is satisfied: no new `vokra.<group>` prefix
+is introduced (`vokra.f0` was already stamped by the CREPE converter, and is
+already named in this file). Recorded here because §Scope puts the GGUF
+metadata schema under `vokra.*` in scope, and because the pre-1.0 recording
+rule covers Rust `pub` items.
+
+**Motivation**: `crates/vokra-convert/src/models/fcpe.rs` stamped **none** of
+the `vokra.f0.fcpe.*` axes, while `vokra_models::f0::fcpe::FcpeConfig::
+from_gguf` read all of them with `.unwrap_or(DEFAULT_*)` and documented
+"Missing keys are honored silently". Every FCPE GGUF Vokra has ever produced
+therefore described no topology at all, and the loader supplied the released
+`fcpe_c_v001` shape for all fourteen axes. FCPE was alone in this among the F0
+siblings: the CREPE converter stamps its four axes from a required side-car
+config, and the RMVPE converter stamps all ten of its own.
+
+Seven axes are pinned by a tensor length the binder already checks, so a wrong
+value there was at least loud. The other seven — `hop`, `n_fft`,
+`sample_rate`, `fmin`, `fmax`, `stem_groups`, `confidence_threshold` — are
+cross-checked by nothing, and neither was `n_layers` in one direction: an
+artifact carrying **more** encoder blocks than the config declared had the
+surplus dropped by the `0..n_layers` bind loop and ran a truncated encoder to
+completion. Wrong pitch, full frame count, finite values, no error — the same
+failure shape round 7 found in RMVPE. `crates/vokra-convert/src/main.rs`
+carried a comment asserting the chunk was "written by the model, not the
+converter"; nothing wrote it.
+
+| Item | Kind | Signature | Rationale |
+| --- | --- | --- | --- |
+| GGUF `vokra.f0.fcpe.*` | Changed (schema) | 14 keys, all REQUIRED on a weight-carrying artifact | Seven axes have no cross-check; substituting any of them yields a completed forward and wrong numbers |
+| `f0::fcpe::GGUF_KEY_*` | Added | 14 × `pub const &str` | Lets producer, loader and tests name one key each instead of transcribing literals |
+| `f0::fcpe::GGUF_REQUIRED_KEYS` | Added | `pub const [&str; 14]` | The enforced set, walked by the test that proves each key is individually required |
+| `f0::fcpe::FcpeConfig::from_gguf` | Changed (behaviour) | signature unchanged | Every axis required; an absent key is a `LoadError::Gguf` naming it |
+| `f0::fcpe::FcpeConfig::from_gguf_metadata_only` | Added | `(&GgufFile) -> Result<Self, LoadError>` | The lenient reader, scoped to weightless artifacts that cannot run a forward |
+| `f0::fcpe::FcpeConfig` | Changed | now derives `PartialEq` | So a test can assert a whole config rather than field-by-field (matches `CrepeConfig`) |
+| `f0::fcpe::FcpeWeights::try_from_gguf` | Changed (behaviour) | signature unchanged | Declared `n_layers` is cross-checked against the layer set the artifact carries |
+| `vokra-convert models::fcpe::FcpeTopology` | Added | `pub struct` (crate-visible — `models::fcpe` is `pub(crate)`) | The seven axes derived from tensor shapes |
+| `vokra-convert models::fcpe::FCPE_V001_TOPOLOGY` | Added | `pub const FcpeTopology` | The gate deciding when the front-end constants may be asserted |
+| `vokra-convert models::fcpe::FcpeReport` | Changed | `+ topology`, `+ axes_stamped`, `+ front_end_withheld` | So the CLI note can say which axes were written and which were withheld |
+
+**What the converter now does**: it derives `d_model`, `n_mels`,
+`stem_kernel`, `ffn_dim`, `conv_kernel`, `n_layers` and `n_pitch_bins` from
+the checkpoint's own tensor shapes — measured, not assumed — and enforces
+every cross-check the shapes permit (head width against stem width, pointwise
+input against `d_model`, depthwise channels against the post-GLU width, mutual
+uniformity across layers, both kernels odd, `ffn_dim` even, at least one
+encoder block). The remaining seven live in upstream's Python config and are
+in no tensor: the prep script even drops `cent_table`, the one buffer that
+would have pinned `fmin` / `fmax`. Those are asserted from the documented
+`fcpe_c_v001` constants **only when the derived topology equals
+`FCPE_V001_TOPOLOGY` exactly**, and withheld otherwise, because a 16 kHz
+front-end asserted onto an unidentified variant is a fabricated axis.
+
+**Who this breaks**: every FCPE GGUF converted before today that carries
+weights. They stamp zero axes, so they no longer load; the error names the
+first absent key and says to re-run the converter. Nothing trustworthy is
+lost — such an artifact was being interpreted entirely by assumption, and if
+it was not v001 the pitch it produced was wrong with no way to tell. Nothing
+is published: FCPE has no `huggingface.co/vokra` repo and no model-zoo entry,
+so the blast radius is locally converted files. Metadata-only artifacts (no
+weights) still load, under the lenient reader, because they cannot run a
+forward at all.
+
+**Second break, narrower**: a *variant* checkpoint now converts to an artifact
+carrying 7 of 14 axes, which the loader then refuses. That is deliberate — the
+weights are preserved and correct, and the axes nobody can derive have to come
+from whoever knows the variant. The conversion note says so in full. A
+`--config` side-car for those seven, mirroring CREPE's, is the natural
+follow-up and is not in this change.
+
+**Correction to the 2026-07-30 entry below**: it records this chunk as "13
+keys" including `n_heads` and `kernel_size`, and describes it as "Additive —
+every key defaults if absent". The 2026-07-30 CFNaiveMelPEInfer rewrite
+superseded that shape (no attention, so no `n_heads`; `kernel_size` split into
+`conv_kernel` + `stem_kernel`; `stem_groups` added) without updating the
+entry, and the "defaults if absent" clause is exactly what this change
+removes. The historical entry is left as written; this note is the correction.
+
+**Verify**: no `cargo` run on this pass (16 GB host; sequential verification
+deferred to the integrating loop). Checked by hand: `rustfmt --edition 2024
+--check` parses all four touched files clean; the derived axes were traced
+against the tensor-name / shape contract in the prep script's docstring
+(`tools/parity/fcpe_prepare_checkpoint.py`) and the runtime module header; no
+`include/vokra.h` edit; no new third-party dependency (root `Cargo.lock`
+untouched, NFR-DS-02 preserved); no `docs/license-audit.md` §3.1 change.
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (RMVPE: a checkpoint whose U-Net is not discoverable is refused instead of running without it — Rust surface only, advisory)
 
 **Behaviour change** plus additive Rust surface. The C ABI
@@ -1991,17 +2083,37 @@ Forward reservations recorded **before** the IF-01 freeze (M5-13; ADR M4-20
 shape break. These are `vokra-core::m5_residual_ops` `&'static str` constants —
 **declared, never registered** (the `KOKORO_ISTFT_HEAD_OP` pattern; guarded by
 `m5_residual_ops::tests::new_anchors_are_reserved_but_unregistered`). They add
-**no** C ABI symbol and are **not** inserted into `MinDtypeRegistry` / `OpKind`.
+**no** C ABI symbol (machine-gated by `scripts/check-m5-residual-no-abi.sh`)
+and are **not** `OpKind` variants. They are also absent from `MinDtypeRegistry`
+with one documented exception: `bigvgan_generator`'s min-dtype anchor *is*
+registered (M2-08, fp16 minimum) — only its op landing is M5, which is exactly
+what `m5_residual_ops::tests::bigvgan_min_dtype_anchor_is_registered_but_op_is_m5`
+pins.
 
-| Reserved op-kind id          | FR-OP    | M5 blocker (why deferred)                                     |
+Read the blocker column as **what is still reserved**, not as "what does not
+exist". Per ADR M4-20 §D-5 these decoders / generators are deliberately
+*runtime functions* rather than `OpKind` variants, so a landed runtime
+primitive and a still-reserved graph-side id coexist by design — the
+reservation stays valid after the primitive ships, and only the graph-side
+variant + C ABI export are actually deferred to the M5-13 freeze policy.
+
+**Updated 2026-08-15** — the `bigvgan_generator` / `ctc_decode` / `rnnt_decode`
+rows previously asserted a missing trigger model. That is no longer true (all
+three runtime primitives landed, and `rnnt_decode` has a live consumer), so the
+rows now name what is genuinely reserved. `titanet_speaker_encode` and
+`diarize` are synced to the license decisions already recorded in
+`crates/vokra-core/src/m5_residual_ops.rs`. The new gate
+`scripts/check-m5-residual-blockers.sh` keeps this column from drifting back.
+
+| Reserved op-kind id          | FR-OP    | M5 blocker (what is still reserved)                           |
 | ---------------------------- | -------- | ------------------------------------------------------------ |
-| `bigvgan_generator` (op)     | FR-OP-11 | no trigger model; min-dtype anchor already registered (M2-08), only the generator **op landing** is M5 |
-| `ctc_decode`                 | FR-OP-41 | NeMo-family trigger pending                                  |
-| `rnnt_decode`                | FR-OP-42 | NeMo-family trigger pending                                  |
+| `bigvgan_generator` (op)     | FR-OP-11 | graph-side `OpKind` variant + C ABI export. Runtime vocoder landed (`vokra_ops::bigvgan_generator` + the `vokra_models::bigvgan` arch binder); min-dtype anchor registered (M2-08). `BigVGan::from_gguf` is separately still loud-partial |
+| `ctc_decode`                 | FR-OP-41 | graph-side `OpKind` variant + C ABI export. Runtime primitives landed (`ctc_decode_greedy` / `ctc_decode_beam`, LM shallow fusion + hotwords); NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`) but no live call site yet |
+| `rnnt_decode`                | FR-OP-42 | graph-side `OpKind` variant + C ABI export. Runtime primitive landed, live consumer `ParakeetTdt11b::decode_tdt` (`parakeet_tdt_1_1b/mod.rs:621`); e2e `transcribe` still loud-partial |
 | `ecapa_tdnn_speaker_encode`  | FR-OP-80 | CAM++ already covers speaker embedding                       |
 | `wespeaker_speaker_encode`   | FR-OP-80 | CAM++ already covers speaker embedding                       |
-| `titanet_speaker_encode`     | FR-OP-80 | CAM++ covers it; TitaNet NVIDIA NC restriction unconfirmed   |
-| `diarize`                    | FR-OP-82 | trigger + license (pyannote HF-gated) double blocker         |
+| `titanet_speaker_encode`     | FR-OP-80 | CAM++ covers it; the converter side landed 2026-07-30 with a CC-BY-4.0 sign-off (the earlier "NVIDIA NC restriction unconfirmed" is resolved), runtime op landing is M5 |
+| `diarize`                    | FR-OP-82 | trigger only — the license half unblocked 2026-07-30: pyannote is MIT by primary source (`gated: auto` is access control, no extra terms), `docs/license-audit.md` §3.1 row 263 |
 
 ### 2026-08-09 — 1.0.0-rc.1-dev (Wave 7 Part C: Moshi head mapped-lazy, MOSHI-16GB-STRATEGY residual)
 
@@ -2236,6 +2348,7 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.chatterbox_nano.*` | **25** keys — `arch.ffn_dim`, `arch.head_dim`, `arch.hidden_dim`, `arch.hop_size`, …  | `u32` + `f32` + `string` | persisted | `chatterbox_nano` — written by `crates/vokra-convert/src/models/chatterbox_nano.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
 | backfill | `vokra.chatterbox_turbo.*` | **21** keys — `arch.head_dim`, `arch.hidden_dim`, `arch.hop_size`, `arch.max_speech_tokens`, …  | `u32` + `string` | persisted | `chatterbox_turbo` — written by `crates/vokra-convert/src/models/chatterbox_turbo.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
 | backfill | `vokra.ct_punc.*` | **11** keys — `att_unit`, `attention_heads`, `embed_unit`, `kernel_size`, …  | `u32` + `f32` + `string[]` | persisted | `ct-punc`, `funasr/ct-punc` — written by `crates/vokra-convert/src/models/ct_punc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.openwakeword.*` | **7** keys — `n_wakewords`, `embedding_dim`, `window_frames`, `mel_bins`, `sample_rate`, `hop_samples`, `wakeword_names` | `u32` + `string[]` | persisted | `openwakeword-op` — written by `crates/vokra-convert/src/models/openwakeword_op.rs`. **Additive**, but note the repair it belongs to: the binder (`vokra-models/src/kws/openwakeword/mod.rs`) had required all seven since it landed, while the converter stamped none, so every GGUF it produced failed to load. Nothing caught it — the unit tests hand-build their GGUF and the parity harness is env-gated. Stamping the group is what makes the documented convert-then-run recipe work for the first time. **Behaviour change**: `--model openwakeword-op` now REFUSES without `--config`, because `wakeword_names` is a user-facing label that cannot be derived from tensors and must not be synthesised (the `ModelKind::Crepe` refusal precedent). The config-less form previously "succeeded" and wrote an unloadable artifact. | `173a811` (2026-08-15) |
 | backfill | `vokra.dia.*` | **28** keys — `arch.decoder.cross_head_dim`, `arch.decoder.cross_query_heads`, `arch.decoder.gqa_head_dim`, `arch.decoder.gqa_query_heads`, …  | `u32` + `f32` | persisted | `dia-1.6b` — written by `crates/vokra-convert/src/models/dia.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
 | backfill | `vokra.diffsinger.*` | **24** keys — `backbone_type`, `diff_accelerator`, `enc_layers`, `f0_max`, …  | `u32` + `f32` + `string` | persisted | `diffsinger`, `github.com/openvpi/DiffSinger` — written by `crates/vokra-convert/src/models/diffsinger.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
 | backfill | `vokra.dtln_aec.*` | **5** keys — `block_len`, `hop`, `lstm_units`, `n_fft`, …  | `u32` | persisted | `dtln-aec`, `github.com/breizhn/DTLN-aec` — written by `crates/vokra-convert/src/models/dtln_aec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `c8320f0` (2026-08-14) |

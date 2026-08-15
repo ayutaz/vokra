@@ -1060,6 +1060,28 @@ const BOUND_ARCHES: &[BoundArch] = &[
         reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::smart_turn::SmartTurn::from_gguf(g).map(|_| ())),
     },
+    // `LoudPartialForward` asserts something specific: that the LOAD
+    // works and only the forward is partial. Until 2026-08-15 that was
+    // false for this row, and not marginally so — the named converter
+    // (`vokra-convert/src/models/openwakeword_op.rs`) stamped none of the
+    // seven `vokra.openwakeword.*` keys `OpenwakewordConfig::from_gguf`
+    // requires, so no GGUF this workspace could produce reached the
+    // forward at all. The row described the second failure of a pipeline
+    // that never survived the first.
+    //
+    // Worth noting why the `probe` below did not catch it: it runs
+    // against a GGUF a caller supplies at runtime, so it can only fail on
+    // someone's machine, never in CI. The tests that now hold this row
+    // honest are `crates/vokra-convert/tests/openwakeword_op_roundtrip.rs`
+    // and `crates/vokra-models/tests/openwakeword_convert_bind.rs`, the
+    // latter running the real converter into the real binder.
+    //
+    // The claim is accurate as of the converter repair: the load binds
+    // real config and real per-wake-word classifier weights, and
+    // `push_pcm16k` is a genuine loud-partial (`UnsupportedOp` naming the
+    // frozen Google `speech_embedding` extractor and the env-gated parity
+    // harness). Note the converter now requires a `--config` side-car for
+    // the per-wake-word names, which are not derivable from the tensors.
     BoundArch {
         arch: "openwakeword_op",
         module: "vokra_models::kws::openwakeword",

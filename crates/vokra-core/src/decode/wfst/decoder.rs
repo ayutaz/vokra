@@ -18,9 +18,14 @@
 //!
 //! # Feeder honesty (the M5-06 constraint, do not paper over it)
 //!
-//! The emission matrix is what a CTC / RNN-T acoustic head would produce, but
-//! those decoders (`ctc_decode` / `rnnt_decode`, FR-OP-41/42) are **reserved
-//! and unimplemented** ([`crate::m5_residual_ops`]). Vokra's only live acoustic
+//! The emission matrix is what a CTC / RNN-T acoustic head would produce.
+//! Those decoders (`ctc_decode` / `rnnt_decode`, FR-OP-41/42) have landed as
+//! runtime primitives in `vokra_ops`; [`crate::m5_residual_ops`] reserves only
+//! their graph-side `OpKind` variant, so their reservation is **not** a claim
+//! that they are unimplemented. What still blocks a live path here is the
+//! feeder: no model forward yet emits a frame-synchronous emission matrix
+//! end-to-end (the CTC / TDT binders are loud-partial on their encoder
+//! forward), and Vokra's only live acoustic
 //! decoder is attention-based `beam_search`, which returns *token sequences*,
 //! not a frame-synchronous emission matrix. So M5-06 lands `wfst_decode` as a
 //! **decode-only** primitive verified against offline reference emissions; a

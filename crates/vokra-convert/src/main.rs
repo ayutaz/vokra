@@ -2302,10 +2302,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::GraniteSpeech
         // M5-16 / FR-OP-83: FCPE — pass-through BF16 skeleton verify shares
         // the same shape as the Phase 5 fleet (arch/name/category +
-        // upstream_hf + license triple). The FCPE-specific `vokra.f0.fcpe.*`
-        // config chunk is written by the model, not the converter, so this
-        // verify path deliberately does not readback it (a follow-up if a
-        // future variant lands a converter-written config).
+        // upstream_hf + license triple), plus a `vokra.f0.fcpe.*` config
+        // chunk this uniform verify arm does not read back.
+        //
+        // Until 2026-08-15 this comment claimed the chunk was "written by the
+        // model, not the converter". Nothing wrote it: the converter stamped
+        // none of the fourteen axes and the runtime silently defaulted every
+        // one of them to the released v001 shape. The converter now derives
+        // seven from the checkpoint's tensor shapes and asserts the other
+        // seven only when those shapes prove the artifact is v001; its own
+        // unit tests read the chunk back, so this shape-lookup arm stays a
+        // shape lookup rather than growing a per-model switch.
         | ModelKind::Fcpe
         // 2026-08-01 Wave 3: SNAC — Multi-Scale Neural Audio Codec
         // (hubertsiuzdak/snac_{24khz,44khz}, MIT). Same verify shape as

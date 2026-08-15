@@ -885,13 +885,13 @@ fn execute_mel_frontend_standalone(args: &BenchArgs) -> Result<BenchOutcome, Str
 
 // ---- CosyVoice2 synthetic bench (M3-09-T24 scaffold) ---------------------
 
-/// Runtime CosyVoice2 audio sample rate (Hz). Matches the Mimi codec native
-/// rate + the CosyVoice2 model card constant (24 kHz).
+/// Runtime CosyVoice2 audio sample rate (Hz). Matches the CosyVoice2 model
+/// card constant (24 kHz).
 const COSYVOICE2_SYNTHETIC_SAMPLE_RATE: u32 = 24_000;
 
 /// Target audio duration for the standalone synthetic bench. Fixed at 1 s
-/// so the RTF measurement path exercises multiple chunk boundaries (mimi
-/// native rate 12.5–50 Hz → 12–50 chunks per second in typical use).
+/// so the RTF measurement path exercises multiple chunk boundaries (audio
+/// token rates of 12.5–50 Hz → 12–50 chunks per second in typical use).
 const COSYVOICE2_SYNTHETIC_TARGET_SECONDS: f64 = 1.0;
 
 /// Chunk size (frames per chunk boundary) for the synthetic bench. Chosen

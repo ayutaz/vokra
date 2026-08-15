@@ -52,26 +52,51 @@
 //!
 //! # Blockers (why each is M5-residual)
 //!
+//! **Read this column as "what is still reserved", not "what does not
+//! exist".** Per ADR M4-20 §D-5 these primitives are deliberately *runtime
+//! functions*, not [`OpKind`](crate::ir::OpKind) variants — so a landed
+//! runtime implementation and a still-reserved graph-side id coexist by
+//! design, and the reservation stays defensible after the primitive ships.
+//! The first three rows below are exactly that case: their runtime functions
+//! have landed — `rnnt_decode` even has a live consumer — and what remains
+//! reserved is only the graph-side `OpKind` variant plus the C ABI export,
+//! both deferred to the M5-13 freeze policy.
+//!
+//! A blocker that instead asserts a *pending trigger* or an *absent
+//! implementation* is a factual claim about the tree, and it goes stale the
+//! moment that thing lands — which is what happened to the three rows below
+//! before 2026-08-15. `scripts/check-m5-residual-blockers.sh` now refuses an
+//! absence-claim on any op whose `vokra-ops` module exists, so this specific
+//! drift cannot silently return.
+//!
 //! | op-kind id                       | FR-OP    | blocker                                            |
 //! | -------------------------------- | -------- | -------------------------------------------------- |
-//! | [`BIGVGAN_GENERATOR_OP`]         | FR-OP-11 | no trigger model (Kokoro=iSTFTNet, CosyVoice2=Mimi, piper-plus=MB-iSTFT); the min-dtype anchor is already in the registry, only the *generator op landing* is M5 |
-//! | [`CTC_DECODE_OP`]                | FR-OP-41 | NeMo-family trigger pending                        |
-//! | [`RNNT_DECODE_OP`]               | FR-OP-42 | NeMo-family trigger pending                        |
+//! | [`BIGVGAN_GENERATOR_OP`]         | FR-OP-11 | runtime primitive landed (`vokra_ops::bigvgan_generator`, `BigVGanGenerator::forward`), plus a standalone `bigvgan` arch binder (`vokra_models::bigvgan`, whose `BigVGan::decode` delegates verbatim) and a converter; the min-dtype anchor is registered (M2-08). Reserved: the graph-side `OpKind` variant + C ABI export. Separately still loud-partial: `BigVGan::from_gguf` binds no tensor, so weights come from `new` / `synthesized` today |
+//! | [`CTC_DECODE_OP`]                | FR-OP-41 | runtime primitives landed (`vokra_ops::ctc_decode_greedy` / `ctc_decode_beam`, incl. n-gram LM shallow fusion + hotword boost) and the NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`); those binders are loud-partial and name this primitive as the piece that already exists, so no live call site exists yet. Reserved: the graph-side `OpKind` variant + C ABI export |
+//! | [`RNNT_DECODE_OP`]               | FR-OP-42 | runtime primitive landed (`vokra_ops::rnnt_decode`) with a **live consumer**: `ParakeetTdt11b::decode_tdt` calls it at `vokra-models/src/parakeet_tdt_1_1b/mod.rs:621`. The e2e `transcribe` stays loud-partial (encoder axes await the first real 1.1B weight). Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`ECAPA_TDNN_SPEAKER_ENCODE_OP`] | FR-OP-80 | CAM++ already covers speaker embedding             |
 //! | [`WESPEAKER_SPEAKER_ENCODE_OP`]  | FR-OP-80 | CAM++ already covers speaker embedding             |
 //! | [`TITANET_SPEAKER_ENCODE_OP`]    | FR-OP-80 | CAM++ already covers speaker embedding             |
 //! | [`DIARIZE_OP`]                   | FR-OP-82 | trigger only (pyannote license MIT primary source 2026-07-30 signed = `docs/license-audit.md` §3.1 row 263, `gated: auto` は access control のみで追加条項なし) |
 
 /// BigVGAN generator op-kind identifier. Re-exported from the M2-08 registry:
-/// the min-dtype audit anchor (fp16 minimum) is already registered there, but
-/// the **generator op landing** is M5-residual (no trigger model). ADR M4-20
-/// §D-6.
+/// the min-dtype audit anchor (fp16 minimum) is already registered there, and
+/// the runtime vocoder itself has landed (`vokra_ops::bigvgan_generator` plus
+/// the `vokra_models::bigvgan` arch binder). What stays M5-residual is the
+/// **graph-side `OpKind` variant + C ABI export**. ADR M4-20 §D-5 / §D-6.
 pub use crate::quant::registry::BIGVGAN_GENERATOR_OP;
 
 /// CTC decoder op-kind identifier (FR-OP-41). Reserved; unregistered.
+///
+/// The runtime primitives (`vokra_ops::ctc_decode_greedy` /
+/// `ctc_decode_beam`) have landed; this reserves only the graph-side variant.
 pub const CTC_DECODE_OP: &str = "ctc_decode";
 
 /// RNN-T decoder op-kind identifier (FR-OP-42). Reserved; unregistered.
+///
+/// The runtime primitive (`vokra_ops::rnnt_decode`) has landed and has a live
+/// consumer (`ParakeetTdt11b::decode_tdt`); this reserves only the graph-side
+/// variant.
 pub const RNNT_DECODE_OP: &str = "rnnt_decode";
 
 /// ECAPA-TDNN speaker-encoder op-kind identifier (FR-OP-80 variant, covered by
@@ -105,7 +130,15 @@ pub struct M5ResidualAnchor {
     pub op_id: &'static str,
     /// FR-OP requirement this anchor will satisfy when landed in M5.
     pub fr_op: &'static str,
-    /// Why it is M5-residual (no trigger model / license / covered elsewhere).
+    /// What is still reserved, and why it is M5-residual.
+    ///
+    /// Reasons split into two shapes, and mixing them up is what let this
+    /// column go stale: either the primitive genuinely does not exist yet
+    /// (covered elsewhere / license), or the **runtime function has landed**
+    /// and only the graph-side `OpKind` variant + C ABI export remain
+    /// reserved (ADR M4-20 §D-5). Prefer the latter wording whenever the
+    /// `vokra-ops` module exists — an absence-claim there is a factual claim
+    /// that decays, and `scripts/check-m5-residual-blockers.sh` rejects it.
     pub blocker: &'static str,
 }
 
@@ -117,17 +150,28 @@ pub fn m5_residual_op_anchors() -> &'static [M5ResidualAnchor] {
         M5ResidualAnchor {
             op_id: BIGVGAN_GENERATOR_OP,
             fr_op: "FR-OP-11",
-            blocker: "no trigger model; min-dtype anchor already registered, op landing is M5",
+            blocker: "graph-side OpKind variant + C ABI export reserved; the runtime vocoder \
+                      landed (vokra_ops::bigvgan_generator, plus the vokra_models::bigvgan arch \
+                      binder whose decode delegates verbatim) and the min-dtype anchor is \
+                      registered (M2-08). BigVGan::from_gguf is separately still loud-partial",
         },
         M5ResidualAnchor {
             op_id: CTC_DECODE_OP,
             fr_op: "FR-OP-41",
-            blocker: "NeMo-family trigger pending",
+            blocker: "graph-side OpKind variant + C ABI export reserved; the runtime primitives \
+                      landed (vokra_ops::ctc_decode_greedy / ctc_decode_beam with LM shallow \
+                      fusion + hotwords) and the NeMo family landed (parakeet_ctc, canary, \
+                      canary_qwen, canary_1b_flash, omniasr_ctc), whose loud-partial binders \
+                      name this primitive as already-existing — no live call site yet",
         },
         M5ResidualAnchor {
             op_id: RNNT_DECODE_OP,
             fr_op: "FR-OP-42",
-            blocker: "NeMo-family trigger pending",
+            blocker: "graph-side OpKind variant + C ABI export reserved; the runtime primitive \
+                      landed (vokra_ops::rnnt_decode) with a live consumer at \
+                      vokra-models/src/parakeet_tdt_1_1b/mod.rs:621 \
+                      (ParakeetTdt11b::decode_tdt). The e2e transcribe stays loud-partial \
+                      pending the first real 1.1B weight",
         },
         M5ResidualAnchor {
             op_id: ECAPA_TDNN_SPEAKER_ENCODE_OP,

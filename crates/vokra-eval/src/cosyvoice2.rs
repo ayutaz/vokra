@@ -25,10 +25,15 @@
 //! ([`check_cosyvoice2_degradation_with_utmos`]) takes an **injected**
 //! [`AudioMosMetric`] scorer (M4-18 T08 — the real UTMOS weights are
 //! owner-deferred, so no weight path is hard-coded here) plus an explicit
-//! [`MosDomain`]; because CosyVoice2 synthesizes through the Mimi codec,
-//! the codec/streaming domain is advisory-only until the owner-side
-//! calibration study clears it (see `degradation` module docs). DNSMOS
-//! remains fail-closed (M4-18 T03).
+//! [`MosDomain`], which the caller must state — there is no default, and
+//! this module hard-codes none. The advisory-only machinery exists because
+//! the UTMOS reference is trained on the SaruLab MOS Challenge 2022 domain
+//! (synthetic TTS speech), so a score taken outside that distribution may be
+//! miscalibrated; whether a given domain *is* miscalibrated is an owner-side
+//! real-sample correlation study, deferred with the weights (M4-18 T10).
+//! Until it lands, [`MosDomain::CodecStreaming`] errs safe by never gating
+//! (see the `degradation` module docs). DNSMOS remains fail-closed
+//! (M4-18 T03).
 //!
 //! # Frontend spec (bit-exact MEL, CLAUDE.md STFT ≠ FFT)
 //!
@@ -59,8 +64,10 @@ use vokra_core::{Result, VokraError};
 /// CosyVoice2 CI path.
 pub const COSYVOICE2_MEL_LOSS_THRESHOLD: f64 = 0.05;
 
-/// CosyVoice2 output sample rate (Hz). Fixed at 24 kHz — the upstream
-/// model card and the Mimi codec's native rate. Kept here as a constant
+/// CosyVoice2 output sample rate (Hz). Fixed at 24 kHz by the upstream
+/// CosyVoice2 model card — the same "model-card invariant" exception the
+/// converter records for this axis in `vokra-convert::models::cosyvoice2`,
+/// and that Kokoro uses for its own 24 kHz value. Kept here as a constant
 /// so the CI gate can validate the reference matches without importing
 /// `CosyVoice2Config` from `vokra-models` (which would create a
 /// vokra-eval → vokra-models dep — banned by the crate layer: eval
@@ -91,7 +98,7 @@ pub fn check_cosyvoice2_degradation(
     if sample_rate != COSYVOICE2_SAMPLE_RATE {
         return Err(VokraError::InvalidArgument(format!(
             "check_cosyvoice2_degradation: sample_rate {sample_rate} != {COSYVOICE2_SAMPLE_RATE} \
-             (CosyVoice2 output is fixed at {COSYVOICE2_SAMPLE_RATE} Hz — Mimi codec native \
+             (CosyVoice2 output is fixed at {COSYVOICE2_SAMPLE_RATE} Hz — upstream model-card \
              rate; the gate does not silently resample, FR-EX-08)"
         )));
     }
@@ -115,11 +122,17 @@ pub fn check_cosyvoice2_degradation(
 /// gate deferred the real UTMOS weights, so this crate never hard-codes a
 /// weight path — a weight-less caller uses
 /// [`check_cosyvoice2_degradation`] and inherits its honest partial-gate
-/// flag. `domain` must be stated explicitly; note CosyVoice2 synthesizes
-/// **through the Mimi codec**, so until the owner-side calibration study
-/// validates the codec domain, [`MosDomain::CodecStreaming`] (advisory-only)
-/// is the honest choice — [`MosDomain::TtsSynthesis`] turns the MOS half
-/// into a hard gate.
+/// flag. `domain` must be stated explicitly and is **not** fixed by this
+/// wrapper: [`MosDomain::TtsSynthesis`] is the in-distribution case for the
+/// SaruLab-trained UTMOS reference and turns the MOS half into a hard gate,
+/// while [`MosDomain::CodecStreaming`] reports the score as advisory-only.
+/// Which of the two honestly describes a given CosyVoice2 run is **not**
+/// settled in-tree — one-shot synthesis and the chunk-aware streaming path
+/// (`vokra-models::cosyvoice2::chunk_pipeline`) are not obviously the same
+/// domain, and the owner-side correlation study deferred with the weights
+/// (M4-18 T10) is what would decide it. A caller who is unsure picks the
+/// advisory-only domain, which cannot launder a possibly-miscalibrated
+/// score into a pass (NFR-QL-04).
 ///
 /// # Errors
 ///
@@ -137,7 +150,7 @@ pub fn check_cosyvoice2_degradation_with_utmos(
         return Err(VokraError::InvalidArgument(format!(
             "check_cosyvoice2_degradation_with_utmos: sample_rate {sample_rate} != \
              {COSYVOICE2_SAMPLE_RATE} (CosyVoice2 output is fixed at {COSYVOICE2_SAMPLE_RATE} Hz \
-             — Mimi codec native rate; the gate does not silently resample, FR-EX-08)"
+             — upstream model-card rate; the gate does not silently resample, FR-EX-08)"
         )));
     }
     crate::check_degradation_with_utmos(
@@ -241,8 +254,8 @@ mod tests {
 
     #[test]
     fn sample_rate_constant_is_24khz() {
-        // The 24 kHz rate is the Mimi codec native rate + the CosyVoice2
-        // model card constant; same doc-update tripwire as above.
+        // The 24 kHz rate is the CosyVoice2 model-card constant; same
+        // doc-update tripwire as above.
         assert_eq!(COSYVOICE2_SAMPLE_RATE, 24_000);
     }
 
@@ -277,8 +290,9 @@ mod tests {
         let m = tiny_utmos_24k();
         // Identical audio through a deterministic scorer: exact zero MOS
         // decrease, and the mel half is 0 — the full gate passes with the
-        // partial flag cleared. CodecStreaming is the honest domain for
-        // Mimi-codec output (advisory-only until the owner study).
+        // partial flag cleared. CodecStreaming is chosen here to exercise
+        // the advisory-only branch (it never gates), not as a claim about
+        // CosyVoice2's true domain — see the wrapper's docstring.
         let report = check_cosyvoice2_degradation_with_utmos(
             &ref_pcm,
             &ref_pcm,

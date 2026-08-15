@@ -1,4 +1,4 @@
-//! CosyVoice2 (Flow Matching + Mimi codec + chunk-aware CFM): safetensors
+//! CosyVoice2 (chunk-aware CFM → mel → HiFTNet vocoder): safetensors
 //! checkpoint → GGUF conversion (M3-09-T03 / T04).
 //!
 //! Input: the upstream `FunAudioLLM/CosyVoice2-0.5B` LLM checkpoint

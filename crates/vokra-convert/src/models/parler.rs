@@ -73,8 +73,9 @@
 //! (`ModelKind::Dac`, `crates/vokra-convert/src/models/dac.rs`). This
 //! converter therefore emits **only** the Parler LM + T5 tensor pack;
 //! the caller wires a separate DAC GGUF at runtime bind time (mirror
-//! of the CosyVoice2 + Mimi split — CosyVoice2's GGUF also does not
-//! carry the codec).
+//! of the CosyVoice2 split — that converter likewise emits only the
+//! upstream LLM pack, not the terminal HiFTNet vocoder shipped as a
+//! separate `hift.pt`).
 //!
 //! # Real-weight parity
 //!

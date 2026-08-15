@@ -57,12 +57,20 @@
 //!    fused op — see `FusedOp::ConvSnake { …, internal_precision }`
 //!    when it lands.
 //!
-//! 2. **BigVGAN kernel body pending scratch reimplementation.** The
-//!    upstream NVIDIA BigVGAN reference is NVIDIA Source Code License-NC
-//!    (non-commercial) — see `docs/license-audit.md` redline. Vokra's
-//!    BigVGAN kernel MUST be written from the published paper, not
-//!    ported from the NVIDIA implementation. This gate lands in the
-//!    same followup that removes the `fusion-snake-stub` cfg.
+//! 2. **BigVGAN kernel body: no clean-room constraint (2026-07-22 訂正).**
+//!    The upstream NVIDIA BigVGAN reference is standard MIT
+//!    ("Copyright (c) 2024 NVIDIA CORPORATION"), so the earlier redline
+//!    here — "Source Code License-NC, non-commercial, therefore Vokra's
+//!    kernel MUST be rebuilt from the published paper" — rests on a
+//!    premise that has lapsed and no longer binds. A direct port is
+//!    permissible under MIT attribution; if the reference is ported, the
+//!    MIT text is reproduced in
+//!    `crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt` in the
+//!    same PR (`NOTICE` §1 + §9, `docs/license-audit.md` BigVGAN row).
+//!    The generator primitive has since landed as
+//!    `vokra_ops::bigvgan_generator::BigVGanGenerator`; what this note
+//!    still gates is only the *fused* Snake kernel body, which lands in
+//!    the same followup that removes the `fusion-snake-stub` cfg.
 //!
 //! 3. **Vocos / BigVGAN minimum dtype = fp16** (FR-QT-03 / FR-OP-11 /
 //!    FR-OP-12). Snake activation, anti-aliased upsample, and their

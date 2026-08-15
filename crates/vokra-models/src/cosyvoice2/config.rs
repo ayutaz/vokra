@@ -54,8 +54,9 @@ pub(crate) const KEY_STREAMING_CHUNK_HOP: &str = "vokra.cosyvoice2.streaming.chu
 #[non_exhaustive]
 pub struct CosyVoice2Config {
     /// Output PCM sample rate, Hz. The upstream CosyVoice2 model card fixes
-    /// this at 24 kHz (Mimi codec native rate); read from the GGUF to keep
-    /// the runtime data-driven.
+    /// this at 24 kHz — it is the rate the terminal HiFTNet vocoder emits
+    /// (see `super::hift_chain`); read from the GGUF to keep the runtime
+    /// data-driven.
     pub sample_rate: u32,
     /// Text tokenizer vocabulary size. Runtime uses this to size the LLM
     /// backbone's input embedding table (T07 lookup).
