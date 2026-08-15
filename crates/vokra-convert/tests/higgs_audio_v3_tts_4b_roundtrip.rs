@@ -184,16 +184,24 @@ fn higgs_audio_v3_tts_4b_safetensors_roundtrips_through_convert_file() {
         Some("bosonai/higgs-audio-v3-tts-4b"),
         "upstream slug pins traceability back to the BosonAI HF release"
     );
+    // The audit-ticket default really was `apache-2.0`, and this assertion
+    // pinned it. Primary-source verification (3baf317, 2026-08-14) found the
+    // actual LICENSE is "BOSON HIGGS TTS 3 RESEARCH AND NON-COMMERCIAL
+    // LICENSE AGREEMENT", whose §II-A(c) bans redistribution, hosting and
+    // embedding. The converter was corrected; this test was not, so it went
+    // on asserting that a redistribution-forbidden model is Permissive —
+    // the one direction a stale licence claim must never fail in.
     assert_eq!(
         file.get(chunks::KEY_PROVENANCE_LICENSE)
             .and_then(|v| v.as_str()),
-        Some("apache-2.0"),
-        "default license is apache-2.0 (Permissive) pending owner primary-source verification"
+        Some("LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial"),
+        "licence is the bespoke BOSON HIGGS TTS 3 R&NC agreement, not apache-2.0"
     );
     assert_eq!(
         file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
             .and_then(|v| v.as_str()),
-        Some(LicenseClass::Permissive.as_str())
+        Some(LicenseClass::RedistributionForbidden.as_str()),
+        "R&NC §II-A(c) forbids redistribution — publishing must stay gated"
     );
     assert!(
         file.get(chunks::KEY_SCHEMA_VERSION).is_some(),
@@ -263,6 +271,12 @@ fn higgs_audio_v3_tts_4b_license_override_threads_through_convert_file_licensed(
     .expect("convert_file_licensed with explicit apache-2.0 override");
     assert_eq!(summary.model, ModelKind::HiggsAudioV3Tts4b);
 
+    // This exercises the `--license` override PLUMBING, not a claim about
+    // Higgs-Audio: the override exists for "implementation is clean-room but
+    // the upstream checkpoint carries something else". `apache-2.0` is the
+    // arbitrary probe value. Higgs-Audio's real licence is the R&NC agreement
+    // asserted in the roundtrip test above; do not read this as a second,
+    // contradictory answer.
     let file = GgufFile::open(&output).expect("load output gguf");
     assert_eq!(
         file.get(chunks::KEY_PROVENANCE_LICENSE)
