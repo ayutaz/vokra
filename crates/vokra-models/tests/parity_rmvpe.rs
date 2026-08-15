@@ -38,8 +38,9 @@
 //! ## Path B — post-CNN hidden state (`VOKRA_RMVPE_REAL_HIDDEN`)
 //!
 //! Bit-exact numeric parity against the upstream Python is gated on
-//! the owner-side dumper (`tools/parity/rmvpe_dump_reference.py`, a
-//! future WP). The dumper runs the upstream RMVPE forward on a known
+//! the owner-side dumper `tools/parity/rmvpe/dump_reference.py`, which
+//! **has landed** (see `tools/parity/rmvpe/README.md` for the
+//! end-to-end owner walkthrough). The dumper runs the upstream RMVPE forward on a known
 //! clip, dumps the post-CNN hidden state (`[n_frames, feature_dim]`)
 //! and the argmax pitch classes (`[n_frames]`), and the parity harness
 //! feeds the hidden state straight into
@@ -52,18 +53,33 @@
 //!
 //! ```text
 //! # 1. Prepare the same Vokra GGUF as Path A (steps 1-3 above).
-//! # 2. Run the reference dumper (future WP):
-//! uv run python tools/parity/rmvpe_dump_reference.py \
-//!     --checkpoint ~/rmvpe.pt \
-//!     --pcm ~/test_clip.wav \
-//!     --hidden-out ~/rmvpe_hidden.npy \
-//!     --argmax-out ~/rmvpe_argmax.npy
-//! # 3. Point the harness at the fixtures:
+//! # 2. Clone the upstream repo — the dumper imports the `nn.Module`
+//! #    from it at runtime (no upstream Python is vendored here):
+//! git clone https://github.com/yxlllc/RMVPE.git ~/rmvpe-upstream
+//! # 3. Run the reference dumper (uv-managed, Python 3.12):
+//! cd tools/parity/rmvpe && uv sync
+//! uv run python dump_reference.py \
+//!     --pt-path      ~/rmvpe.pt \
+//!     --upstream-src ~/rmvpe-upstream \
+//!     --canned \
+//!     --out-dir      ~/rmvpe-fixtures/dump
+//! #    (--canned dumps a deterministic offline sweep; swap it for
+//! #     `--pcm ~/test_clip.wav` to dump against a real 16 kHz mono clip.
+//! #     --pcm and --canned are mutually exclusive and one is REQUIRED.)
+//! # 4. Point the harness at the fixtures. NOTE the outputs are RAW
+//! #    little-endian buffers with no `.npy` header, which is why the
+//! #    feature_dim env var is mandatory — the buffer carries no shape:
 //! export VOKRA_RMVPE_REAL_GGUF=~/rmvpe.gguf
-//! export VOKRA_RMVPE_REAL_HIDDEN=~/rmvpe_hidden.npy
-//! export VOKRA_RMVPE_REAL_ARGMAX=~/rmvpe_argmax.npy
+//! export VOKRA_RMVPE_REAL_HIDDEN=~/rmvpe-fixtures/dump/hidden.f32
+//! export VOKRA_RMVPE_REAL_ARGMAX=~/rmvpe-fixtures/dump/argmax.u32
+//! export VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM=$(python3 -c \
+//!     'import json,os;print(json.load(open(os.path.expanduser(
+//!      "~/rmvpe-fixtures/dump/meta.json")))["feature_dim"])')
 //! cargo test -p vokra-models --test parity_rmvpe -- --nocapture
 //! ```
+//!
+//! The dumper echoes the three `export` lines it expects on stdout, so
+//! the `feature_dim` value can be copy-pasted instead of re-parsed.
 //!
 //! Path B binds the [`ARGMAX_MATCH_RATE_MIN`] gate (>= 99 % match at
 //! 20 cents / class == mean pitch |Δ| < 1 semitone). Path A alone
@@ -170,6 +186,81 @@ fn decode_class_to_hz_matches_analytic_grid_over_full_span() {
             "class {c}: analytic Hz = {expected}, got {hz} (Δ = {delta})"
         );
     }
+}
+
+/// FIXTURE-FREE anti-rot guard: the Path B recipe in this module's docs
+/// must name a dumper that actually exists, at the path it actually
+/// lives.
+///
+/// This module previously documented `tools/parity/rmvpe_dump_reference.py`
+/// as "a future WP" and gave an invocation
+/// (`--checkpoint/--pcm/--hidden-out/--argmax-out`, `.npy` outputs) that
+/// matched neither the real flags nor the real output format. An owner
+/// following it exactly produces no fixtures, Path B skips — and a skip
+/// reads as a pass, which is the precise failure FR-EX-08 exists to
+/// forbid. Asserting the stale path is ABSENT is the load-bearing half:
+/// without it, the wrong path can rot back in with nothing to catch it.
+#[test]
+fn path_b_recipe_names_a_dumper_that_exists() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/vokra-models must sit two levels below the repo root");
+
+    let dumper = repo_root.join("tools/parity/rmvpe/dump_reference.py");
+    assert!(
+        dumper.is_file(),
+        "the Path B recipe points at {} — it must exist, or the recipe is unfollowable",
+        dumper.display()
+    );
+
+    let readme = repo_root.join("tools/parity/rmvpe/README.md");
+    assert!(
+        readme.is_file(),
+        "the Path B recipe defers the owner walkthrough to {} — it must exist",
+        readme.display()
+    );
+
+    // The stale path this module used to name must stay absent, so a
+    // future reader cannot "fix" a broken reference by recreating the
+    // wrong file instead of correcting the doc.
+    let stale = repo_root.join("tools/parity/rmvpe_dump_reference.py");
+    assert!(
+        !stale.exists(),
+        "{} is the stale path this harness used to document; the dumper lives at \
+         tools/parity/rmvpe/dump_reference.py",
+        stale.display()
+    );
+
+    // The real dumper's flags and output names, pinned against the file
+    // itself so the documented invocation cannot drift from it. A recipe
+    // that names flags the dumper does not accept is worse than none.
+    let src = std::fs::read_to_string(&dumper).expect("read the dumper");
+    for flag in [
+        "--pt-path",
+        "--upstream-src",
+        "--out-dir",
+        "--pcm",
+        "--canned",
+    ] {
+        assert!(
+            src.contains(flag),
+            "the documented recipe passes {flag}, but the dumper does not declare it"
+        );
+    }
+    for out in ["hidden.f32", "argmax.u32", "meta.json"] {
+        assert!(
+            src.contains(out),
+            "the documented recipe reads {out}, but the dumper does not write it"
+        );
+    }
+    // Raw little-endian, no `.npy` header — which is exactly why
+    // `HIDDEN_FEATURE_DIM_ENV` is mandatory. If the dumper ever starts
+    // emitting `.npy`, this harness's raw reader breaks silently.
+    assert!(
+        src.contains("feature_dim"),
+        "the dumper must echo feature_dim ({HIDDEN_FEATURE_DIM_ENV} has no other source)"
+    );
 }
 
 /// GATED: opens a real RMVPE GGUF and verifies the load path is a

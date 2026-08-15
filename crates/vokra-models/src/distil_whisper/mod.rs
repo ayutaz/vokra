@@ -81,12 +81,18 @@
 //!   deterministic [`DistilWhisperWeights::synthesized`] fixture
 //!   (SplitMix64 + Xavier) so shape / dtype / size flow can be exercised
 //!   without the real HF checkpoint.
-//! - [`DistilWhisperAsr`] — engine handle carrying config + weights.
-//!   [`DistilWhisperAsr::transcribe`] returns
-//!   [`VokraError::NotImplemented`] until real weights are bound (the
-//!   real forward — log-mel front-end → 32-layer encoder → 2-layer
-//!   decoder → BPE detokenize — is a follow-up wave gated on the real
-//!   HF checkpoint T29 hand-off).
+//! - [`DistilWhisperAsr`] — engine handle with two construction paths.
+//!   [`DistilWhisperAsr::from_gguf`] binds a converted GGUF through
+//!   [`crate::whisper::WhisperAsr`] and [`DistilWhisperAsr::transcribe`]
+//!   then runs the **real** forward (log-mel front-end → 32-layer
+//!   encoder → 2-layer decoder → BPE detokenize), shared verbatim with
+//!   vanilla Whisper; the [`AsrEngine`] impl below exposes the same
+//!   forward behind the session facade. The scaffold path
+//!   [`DistilWhisperAsr::new`] (config + a standalone
+//!   [`DistilWhisperWeights`] store) is the only one that hard-errors
+//!   with [`VokraError::NotImplemented`] — that store is deliberately not
+//!   wired to the shared engine, so it exercises shape / invariant flow
+//!   only.
 //!
 //! # No ONNX (permanent)
 //!

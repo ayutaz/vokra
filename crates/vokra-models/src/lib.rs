@@ -167,10 +167,18 @@ pub mod dnsmos_p808_p835;
 // forward path is shared with the vanilla Whisper implementation, only
 // `n_text_layer` differs. Config is transcribed verbatim from
 // huggingface.co/distil-whisper/distil-large-v3.5/raw/main/config.json
-// (CLAUDE.md ハルシネーション厳禁); real-checkpoint binding is a
-// follow-up wave (T29-equivalent — delegates to `crate::whisper::WhisperModel`
-// with the distil-shrunk decoder depth). Weights: MIT (Permissive — no
-// runtime-side attribution obligation).
+// (CLAUDE.md ハルシネーション厳禁). **Real-checkpoint binding has landed**:
+// `DistilWhisperAsr::from_gguf` loads a converted GGUF through
+// `crate::whisper::WhisperAsr` (enforcing the distil invariant
+// `n_text_layer < n_audio_layer` so a vanilla-Whisper GGUF cannot be
+// mis-labelled), and `transcribe` — plus the `AsrEngine` impl the session
+// facade consumes — delegates to that shared forward. A real
+// distil-whisper GGUF therefore transcribes today, and `vokra-cli run`
+// routes the `distil-whisper` arch to its ASR task. The only path that
+// still hard-errors is the config-only `DistilWhisperAsr::new` scaffold
+// (its standalone `DistilWhisperWeights` store was never wired to the
+// shared engine — it exists for shape / invariant tests).
+// Weights: MIT (Permissive — no runtime-side attribution obligation).
 pub mod distil_whisper;
 // SoTA plan Phase 5 JA-ASR-2 (2026-07-24): Kotoba Technologies
 // **kotoba-whisper** — Whisper large-v3 encoder + a 2-layer decoder
@@ -180,9 +188,16 @@ pub mod distil_whisper;
 // (Kotoba Technologies) with **apache-2.0** weights (distil-whisper is
 // MIT). Config is transcribed verbatim from
 // huggingface.co/kotoba-tech/kotoba-whisper-v2.0/raw/main/config.json
-// (CLAUDE.md ハルシネーション厳禁); real-checkpoint binding is a
-// follow-up wave (T29-equivalent — delegates to `crate::whisper::WhisperModel`
-// with the kotoba-shrunk decoder depth). Weights: Apache-2.0 (Permissive
+// (CLAUDE.md ハルシネーション厳禁). **Real-checkpoint binding has landed**:
+// `KotobaWhisperAsr::from_gguf` loads a converted GGUF through
+// `crate::whisper::WhisperAsr` (enforcing the distil invariant
+// `n_text_layer < n_audio_layer`), and `transcribe` — plus the `AsrEngine`
+// impl the session facade consumes — delegates to that shared forward. A
+// real kotoba-whisper GGUF therefore transcribes today, and `vokra-cli
+// run` routes the `kotoba-whisper` arch to its ASR task. The only path
+// that still hard-errors is the config-only `KotobaWhisperAsr::new` shell
+// (no weights bound — it exists for shape / invariant tests).
+// Weights: Apache-2.0 (Permissive
 // — no runtime-side attribution obligation). The JA-ASR-2 axis
 // (data-driven decoder depth) is honored by the shared WhisperConfig
 // loader — this module rides on top of it with a distinct arch tag

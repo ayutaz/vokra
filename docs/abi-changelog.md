@@ -626,8 +626,15 @@ IF-01 semver freeze is M5-13/v1.0 GA).
 
 **Parity gate — env-gated, owner action**: bit-exact numeric parity
 against the upstream `yxlllc/RMVPE` Python is gated on the owner-side
-dumper wave (`tools/parity/rmvpe_dump_reference.py`, future WP). Two
-env vars gate the harness:
+dumper `tools/parity/rmvpe/dump_reference.py`. That dumper **has since
+landed** (this entry originally called it a future WP at path
+`tools/parity/rmvpe_dump_reference.py`, which never existed); its real
+invocation is `--pt-path` / `--upstream-src` / `--out-dir` plus exactly
+one of `--pcm | --canned`, and it emits raw little-endian
+`hidden.f32` + `argmax.u32` alongside a `meta.json` carrying
+`feature_dim` — **not** `.npy` files. See
+`tools/parity/rmvpe/README.md` for the owner walkthrough. Env vars
+gate the harness:
 
 - `VOKRA_RMVPE_REAL_GGUF` — Path A (full end-to-end shape / finite /
   sigmoid-range contract).
@@ -2093,6 +2100,121 @@ Notes:
 | `vokra-core:license_class`      | `voxcpm2-0.5b` / `voxcpm2-2b` / `voxcpm2-` prefix     | Added   | `LicenseClass::Permissive` (apache-2.0 end-to-end)                                                                                                                                                                | The registry accepts every canonical + underscore + `-base` spelling of both variants, plus the `voxcpm2-` prefix guard for future 2B-lineage variants. The pre-existing `voxcpm-` prefix + `voxcpm-0.5b` explicit entries stay live for backward compat with legacy GGUFs.                                                                                                                                                                              | no        | —    |
 
 Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS is license fail-closed until the owner's M4-18 T03 verification (no keys are invented ahead of it).
+
+### 2026-08-15 — model-converter chunk backfill (50 prefixes, retroactive)
+
+Fifty `vokra.<model>.*` chunk groups were being stamped by converters in
+`crates/vokra-convert/src/models/` with **no row anywhere in this file**.
+Under §"Scope: what belongs in this file" the GGUF metadata schema is
+in-scope precisely because model files are content-addressed by these
+chunks: a consumer who converted last month and one who converts today got
+different metadata with nothing on disk recording the difference. This
+section closes that, and `scripts/check-abi-changelog.sh
+--check-gguf-prefixes` (added the same day) keeps it closed mechanically.
+
+Read this as a **record, not a change**: nothing here alters a shipped key.
+Every group listed is new in its entirety, so the "no pre-existing key
+changed meaning" claim in each row is a statement about the whole group,
+not a per-key diff against an earlier schema.
+
+Scope limits, stated rather than implied:
+
+- **The `WP` column reads `backfill`** because the work-package that
+  introduced each group is not recoverable from the converter source, and
+  inventing one would be worse than omitting it. The `Introducing wave /
+  commit` column carries the real traceability — each SHA is the
+  `--diff-filter=A` commit that added the converter file.
+- **`Keys` is truncated to the first four leaf names plus an exact count.**
+  The converter file named in the row is the authority for the full set;
+  transcribing 500-odd leaf names here would be a second copy to drift.
+- **`Kind` is the observed writer call** (`add_u32` / `add_f32` /
+  `add_bool` / `add_string`), and for the four groups that go through
+  `GgufBuilder::add_metadata` the concrete `GgufMetadataValue` variant
+  (`vokra.kokoro.*` / `vokra.ct_punc.*` string arrays, `vokra.maest.*`
+  `F64`, `vokra.itn.*` `U8` array + `U64` + `I64`).
+- **`vokra.voila.*` is deliberately NOT in this table.** An audit listed it
+  as an unrecorded stamped prefix; it is not stamped at all.
+  `models/voila.rs` mentions the string only in a refusal message and in a
+  test (`no vokra.voila.* axis may be stamped without a primary source`)
+  that asserts the emitted GGUF carries zero such keys. Adding a row for it
+  would document a chunk group that does not exist.
+- **Converter-crate scope.** These rows, and the gate, cover
+  `crates/vokra-convert/src/`. Two writers live elsewhere and are already
+  recorded: `vokra.denoise.*` (`DenoiseModel::to_gguf_bytes` in
+  `vokra-ops`) and the unconditional `vokra.schema.*` / `vokra.provenance.*`
+  / `vokra.model.*` stamp in `GgufBuilder::effective_metadata`
+  (`vokra-core`).
+
+| WP    | Chunk prefix | Keys | Kind | Status | Rationale | Introducing wave / commit |
+| ----- | ------------ | ---- | ---- | ------ | --------- | -------------------------- |
+| backfill | `vokra.atst.*` | **34** keys — `act_layer`, `amp_to_db_stype`, `amp_to_db_top_db`, `depth`, …  | `u32` + `f32` + `bool` + `string` | persisted | `atst-base`, `github.com/Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst` — written by `crates/vokra-convert/src/models/atst.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `a8867cf` (2026-08-13) |
+| backfill | `vokra.audiosr.*` | **32** keys — `attention_resolution_`, `attention_resolutions_count`, `beta_schedule`, `channel_mult_`, …  | `u32` + `string` | persisted | `audiosr` — written by `crates/vokra-convert/src/models/audiosr.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.bark.*` | **15** keys — `block_size`, `coarse.input_vocab_size`, `coarse.output_vocab_size`, `codec.sample_rate`, …  | `u32` + `string` | persisted | `bark` — written by `crates/vokra-convert/src/models/bark.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.beat_this.*` | **6** keys — `d_model`, `n_classes`, `n_frames`, `n_head`, …  | `u32` | persisted | `beat-this`, `github.com/CPJKU/beat_this` — written by `crates/vokra-convert/src/models/beat_this.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `173fea8` (2026-08-14) |
+| backfill | `vokra.bigvgan.*` | **1** keys — `variant` | `string` | persisted | `bigvgan` — written by `crates/vokra-convert/src/models/bigvgan.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.canary_qwen.*` | **22** keys — `arch.cross_attn.hidden_dim`, `arch.decoder.ffn_dim`, `arch.decoder.head_dim`, `arch.decoder.hidden_dim`, …  | `u32` + `f32` | persisted | `canary-qwen-2.5b` — written by `crates/vokra-convert/src/models/canary_qwen.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.chatterbox_nano.*` | **25** keys — `arch.ffn_dim`, `arch.head_dim`, `arch.hidden_dim`, `arch.hop_size`, …  | `u32` + `f32` + `string` | persisted | `chatterbox_nano` — written by `crates/vokra-convert/src/models/chatterbox_nano.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.chatterbox_turbo.*` | **21** keys — `arch.head_dim`, `arch.hidden_dim`, `arch.hop_size`, `arch.max_speech_tokens`, …  | `u32` + `string` | persisted | `chatterbox_turbo` — written by `crates/vokra-convert/src/models/chatterbox_turbo.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.ct_punc.*` | **11** keys — `att_unit`, `attention_heads`, `embed_unit`, `kernel_size`, …  | `u32` + `f32` + `string[]` | persisted | `ct-punc`, `funasr/ct-punc` — written by `crates/vokra-convert/src/models/ct_punc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.dia.*` | **28** keys — `arch.decoder.cross_head_dim`, `arch.decoder.cross_query_heads`, `arch.decoder.gqa_head_dim`, `arch.decoder.gqa_query_heads`, …  | `u32` + `f32` | persisted | `dia-1.6b` — written by `crates/vokra-convert/src/models/dia.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.diffsinger.*` | **24** keys — `backbone_type`, `diff_accelerator`, `enc_layers`, `f0_max`, …  | `u32` + `f32` + `string` | persisted | `diffsinger`, `github.com/openvpi/DiffSinger` — written by `crates/vokra-convert/src/models/diffsinger.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.dtln_aec.*` | **5** keys — `block_len`, `hop`, `lstm_units`, `n_fft`, …  | `u32` | persisted | `dtln-aec`, `github.com/breizhn/DTLN-aec` — written by `crates/vokra-convert/src/models/dtln_aec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `c8320f0` (2026-08-14) |
+| backfill | `vokra.eat.*` | **38** keys — `decoder_dim`, `decoder_groups`, `decoder_kernel`, `decoder_layers`, …  | `u32` + `f32` + `bool` + `string` | persisted | `eat-base`, `github.com/cwx-worst-one/EAT` — written by `crates/vokra-convert/src/models/eat.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `ca04c1b` (2026-08-13) |
+| backfill | `vokra.facodec.*` | **6** keys — `hop_size`, `n_quantizers_content`, `n_quantizers_detail`, `n_quantizers_prosody`, …  | `u32` + `string` | persisted | `naturalspeech3-facodec-v2`, `amphion/naturalspeech3_facodec` — written by `crates/vokra-convert/src/models/naturalspeech3_facodec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.focalcodec.*` | **1** keys — `variant` | `string` | persisted | `focalcodec-50hz`, `lucadellalib/focalcodec_50hz` — written by `crates/vokra-convert/src/models/focalcodec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.granite_speech.*` | **36** keys — `arch.decoder.attention_multiplier`, `arch.decoder.embedding_multiplier`, `arch.decoder.ffn_dim`, `arch.decoder.hidden_dim`, …  | `u32` + `f32` | persisted | `granite-speech-4.1-2b`, `ibm-granite/granite-speech-4.1-2b` — written by `crates/vokra-convert/src/models/granite_speech.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.gtcrn.*` | **5** keys — `gru_hidden`, `hop`, `n_bands`, `n_fft`, …  | `u32` | persisted | `gtcrn`, `github.com/Xiaobin-Rong/gtcrn` — written by `crates/vokra-convert/src/models/gtcrn.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `c8320f0` (2026-08-14) |
+| backfill | `vokra.itn.*` | **12** keys — `direction`, `language`, `prefix`, `tagger_bytes`, …  | `u32` + `bool` + `string` + `u8[]` + `u64` + `i64` | persisted | `wetextprocessing`, `github.com/wenet-e2e/WeTextProcessing` — written by `crates/vokra-convert/src/models/wetextprocessing.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.kokoro.*` | **11** keys — `hidden_dim`, `istft.hop`, `istft.n_fft`, `istft.win_length`, …  | `u32` + `string[]` | persisted | `kokoro-82m` — written by `crates/vokra-convert/src/models/kokoro.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `e294034` (2026-07-06) |
+| backfill | `vokra.kyutai_stt.*` | **24** keys — `arch.backbone.causal`, `arch.backbone.context`, `arch.backbone.d_model`, `arch.backbone.ffn_hidden`, …  | `u32` + `f32` | persisted | `kyutai-stt-2.6b-en` — written by `crates/vokra-convert/src/models/kyutai_stt.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.llama_omni2.*` | **1** keys — `variant` | `string` | persisted | `llama_omni2` — written by `crates/vokra-convert/src/models/llama_omni2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `9346982` (2026-08-14) |
+| backfill | `vokra.m2d.*` | **8** keys — `hidden_size`, `inference_branch`, `n_mels`, `num_attention_heads`, …  | `u32` + `string` | persisted | `m2d-base`, `github.com/nttcslab/m2d` — written by `crates/vokra-convert/src/models/m2d.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `bdce8c3` (2026-08-13) |
+| backfill | `vokra.maest.*` | **33** keys — `attention_dropout_scaled_1e3`, `do_normalize`, `fmax_hz`, `fmin_hz`, …  | `u32` + `bool` + `string` + `f64` | persisted | `maest-30s-pw-129e`, `mtg-upf/discogs-maest-30s-pw-129e` — written by `crates/vokra-convert/src/models/maest.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `79c3691` (2026-08-13) |
+| backfill | `vokra.melotts.*` | **18** keys — `filter_channels`, `gin_channels`, `hidden_channels`, `hop_length`, …  | `u32` + `string` | persisted | `melotts` — written by `crates/vokra-convert/src/models/melotts.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.moss_audio_tokenizer.*` | **1** keys — `variant` | `string` | persisted | `moss-audio-tokenizer`, `OpenMOSS-Team/MOSS-Audio-Tokenizer` — written by `crates/vokra-convert/src/models/moss_audio_tokenizer.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.moss_tts.*` | **14** keys — `audio_vocab_size`, `llm.family`, `llm.ffn_dim`, `llm.head_dim`, …  | `u32` + `f32` + `string` | persisted | `moss_tts` — written by `crates/vokra-convert/src/models/moss_tts.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.mt3.*` | **9** keys — `d_ff`, `d_kv`, `d_model`, `music_vocab_size`, …  | `u32` | persisted | `mt3-multitrack`, `github.com/magenta/mt3` — written by `crates/vokra-convert/src/models/mt3.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `382addc` (2026-08-14) |
+| backfill | `vokra.neucodec.*` | **1** keys — `variant` | `string` | persisted | `neucodec`, `neuphonic/neucodec` — written by `crates/vokra-convert/src/models/neucodec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.nsnet2.*` | **8** keys — `fc1_dim`, `fc2_dim`, `hidden_dim`, `hop`, …  | `u32` | persisted | `nsnet2-20ms-baseline`, `github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline` — written by `crates/vokra-convert/src/models/nsnet2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.omniasr_ctc.*` | **20** keys — `arch.encoder.feature_dim`, `arch.encoder.feature_extractor_bias`, `arch.encoder.feature_extractor_kernel.`, `arch.encoder.feature_extractor_layer_count`, …  | `u32` | persisted | `omniasr-ctc-1b` — written by `crates/vokra-convert/src/models/omniasr_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.parakeet_ctc.*` | **18** keys — `arch.encoder.attention_bias`, `arch.encoder.conv_kernel_size`, `arch.encoder.convolution_bias`, `arch.encoder.d_model`, …  | `u32` | persisted | `parakeet-ctc-1.1b` — written by `crates/vokra-convert/src/models/parakeet_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.parler.*` | **17** keys — `audio_encoder.codebook_size`, `audio_encoder.sampling_rate`, `decoder.ffn_dim`, `decoder.hidden_size`, …  | `u32` + `bool` + `string` | persisted | `parler_tts` — written by `crates/vokra-convert/src/models/parler.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.pyannote.*` | **9** keys — `linear.hidden_size`, `linear.num_layers`, `lstm.bidirectional`, `lstm.hidden_size`, …  | `u32` + `bool` | persisted | `pyannote-segmentation-3.0`, `pyannote/segmentation-3.0` — written by `crates/vokra-convert/src/models/pyannote_segmentation.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.pyannote_pipeline.*` | **13** keys — `clustering.algorithm`, `clustering.method`, `clustering.min_cluster_size`, `clustering.threshold`, …  | `u32` + `f32` + `bool` + `string` | persisted | `pyannote-speaker-diarization-3.1`, `pyannote/speaker-diarization-3.1` — written by `crates/vokra-convert/src/models/pyannote_speaker_diarization_3_1.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.qwen3_asr.*` | **26** keys — `audio.conv_chunksize`, `audio.d_model`, `audio.downsample_hidden_size`, `audio.ffn_dim`, …  | `u32` + `f32` + `bool` | persisted | `qwen3_asr` — written by `crates/vokra-convert/src/models/qwen3_asr.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.redimnet.*` | **12** keys — `c`, `do_preemph`, `embed_dim`, `f`, …  | `u32` | persisted | `wespeaker-voxceleb-redimnet2-b6-lm`, `Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM` — written by `crates/vokra-convert/src/models/redimnet.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `56581d7` (2026-08-14) |
+| backfill | `vokra.rmvpe.*` | **10** keys — `base_hz`, `cents_per_class`, `fmax`, `fmin`, …  | `u32` + `f32` | persisted | `rmvpe`, `yxlllc/RMVPE` — written by `crates/vokra-convert/src/models/rmvpe.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.sbv2.*` | **32** keys — `converter_zero_defaults`, `d_bert`, `d_ff`, `d_model`, …  | `u32` + `f32` + `bool` + `string` | persisted | `sbv2-v2-multilingual-base`, `litagin02/style_bert_vits2` — written by `crates/vokra-convert/src/models/sbv2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `f7af1ba` (2026-07-28) |
+| backfill | `vokra.sepformer.*` | **2** keys — `n_out`, `variant` | `u32` + `string` | persisted | `sepformer` — written by `crates/vokra-convert/src/models/sepformer.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.snac.*` | **1** keys — `variant` | `string` | persisted | `snac-24khz`, `hubertsiuzdak/snac_24khz` — written by `crates/vokra-convert/src/models/snac.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.speecht5.*` | **13** keys — `decoder_attention_heads`, `decoder_ffn_dim`, `decoder_layers`, `encoder_attention_heads`, …  | `u32` | persisted | `speecht5-tts`, `microsoft/speecht5_tts` — written by `crates/vokra-convert/src/models/speecht5.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.storm.*` | **6** keys — `d_model`, `hop`, `n_fft`, `n_stages`, …  | `u32` | persisted | `storm`, `github.com/sp-uhh/storm` — written by `crates/vokra-convert/src/models/storm.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `82cbd3c` (2026-08-14) |
+| backfill | `vokra.styletts2.*` | **12** keys — `decoder.dim_in`, `decoder.gen_istft_hop_size`, `decoder.gen_istft_n_fft`, `diffusion.steps`, …  | `u32` + `bool` + `string` | persisted | `styletts2-ljspeech-24khz` — written by `crates/vokra-convert/src/models/styletts2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.tiger.*` | **1** keys — `variant` | `string` | persisted | `tiger_separator` — written by `crates/vokra-convert/src/models/tiger.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.vieneu.*` | **35** keys — `audio_pad_token_id`, `audio_ref_slot_token_id`, `audio_sample_rate`, `audio_tokenizer_ref`, …  | `u32` + `f32` + `bool` + `string` | persisted | `vieneu-tts-v3-turbo`, `pnnbao-ump/VieNeu-TTS-v3-Turbo` — written by `crates/vokra-convert/src/models/vieneu.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.vocos.*` | **1** keys — `variant` | `string` | persisted | `vocos` — written by `crates/vokra-convert/src/models/vocos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.wav2vec2_ctc.*` | **16** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `do_stable_layer_norm`, …  | `u32` + `f32` + `bool` + `string` | persisted | `wav2vec2_ctc` — written by `crates/vokra-convert/src/models/wav2vec2_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.wavlm.*` | **19** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `feat_extract_norm_group`, …  | `u32` | persisted | `wavlm-base-plus-sv`, `microsoft/wavlm-base-plus-sv` — written by `crates/vokra-convert/src/models/wavlm_sv.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7a0f823` (2026-08-14) |
+| backfill | `vokra.yue_bundle.*` | **1** keys — `variant` | `string` | persisted | YuE bundle (`yue-upsampler` + `yue-xcodec-mini`, `m-a-p/YuE-upsampler` / `m-a-p/xcodec_mini_infer`) — written by `crates/vokra-convert/src/models/yue_bundle.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.zonos.*` | **22** keys — `arch.backbone.causal`, `arch.backbone.d_intermediate`, `arch.backbone.d_model`, `arch.backbone.n_layer`, …  | `u32` + `f32` + `bool` | persisted | `zonos-v0.1` — written by `crates/vokra-convert/src/models/zonos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+
+**Broken cross-reference repaired by this table**: the 2026-07-24 "SoTA
+Phase 2/3/4 + JA" entry above says its model chunks are "recorded here in
+the GGUF metadata additions block at the bottom of this file". They were
+not, and no such rows were ever added. The twelve prefixes that entry names
+in its own prose are findable by grep only because it names them; its
+siblings from the same waves — `vokra.chatterbox_nano.*`,
+`vokra.chatterbox_turbo.*`, `vokra.parakeet_ctc.*`, `vokra.omniasr_ctc.*`,
+`vokra.kyutai_stt.*` — were named nowhere at all. The rows above supply
+what that entry promised.
+
+Three prefixes that entry names are the opposite error and get **no** row
+here, because no converter stamps them: `vokra.distil_whisper.*`,
+`vokra.kotoba_whisper.*` and `vokra.voxcpm.*` (the shipped chunk is
+`vokra.voxcpm2.*`, recorded in the 2026-07-30 VoxCPM2 section above).
+Verified with `scripts/check-abi-changelog.sh --list-gguf-prefixes`, which
+reports zero stamped keys under each. A row for a chunk group nothing
+writes would be the same kind of defect this section exists to fix.
 
 <!-- Template — copy into an `### YYYY-MM-DD — vX.Y.Z-dev` section per PR-day:
 

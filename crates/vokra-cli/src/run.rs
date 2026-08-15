@@ -547,7 +547,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     // rejected off its own arch rather than silently ignored (FR-EX-08).
     if a.word_timestamps && task != ModelTask::Asr {
         return Err(
-            "run: --word-timestamps is only supported for the whisper arch — it needs the \
+            "run: --word-timestamps is only supported for the whisper arches (`whisper`, \
+             `distil-whisper`, `kotoba-whisper` — the distilled checkpoints share the \
+             identical decoder topology and route to this same ASR task) — it needs the \
              cross-attention alignment heads (M4-20). Voxtral has no such alignment."
                 .to_owned(),
         );

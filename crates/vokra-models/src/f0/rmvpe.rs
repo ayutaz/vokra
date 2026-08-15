@@ -80,13 +80,21 @@
 //!   exercises the end-to-end forward on a 1 s 440 Hz sine (shape /
 //!   finite / sigmoid range).
 //! - `VOKRA_RMVPE_REAL_HIDDEN` — bypasses the CNN and feeds a pre-
-//!   dumped hidden-state `.npy` directly into the BiGRU + head, so the
+//!   dumped hidden state directly into the BiGRU + head, so the
 //!   argmax-match-rate gate isolates the numerical parity of the
 //!   deterministic post-CNN primitives from any topology drift in the
-//!   CNN chain. When the owner-side dumper lands
-//!   (`tools/parity/rmvpe_dump_reference.py`), this env var makes the
-//!   parity test flip from "harness ready" to "real argmax-match ≥ 99 %"
-//!   without any Rust code change.
+//!   CNN chain. The buffer is a **raw little-endian f32 blob with no
+//!   `.npy` header**, so `VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM` must be
+//!   exported alongside it (the blob carries no shape), together with
+//!   `VOKRA_RMVPE_REAL_ARGMAX` (raw little-endian `u32`).
+//!
+//! The owner-side dumper that produces those blobs is
+//! `tools/parity/rmvpe/dump_reference.py` — it **has landed**; see
+//! `tools/parity/rmvpe/README.md` for the end-to-end walkthrough
+//! (`--pt-path` / `--upstream-src` / `--out-dir` / one of
+//! `--pcm | --canned`, emitting `hidden.f32` + `argmax.u32` +
+//! `meta.json`). Exporting the env vars flips the parity test from
+//! "harness ready" to "real argmax-match ≥ 99 %" with no Rust change.
 //!
 //! Absent either env var the harness skips cleanly — never a fabricated
 //! pass. See [`RMVPE::forward_from_hidden`] for the env-gated entry

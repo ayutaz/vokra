@@ -34,9 +34,16 @@
 //!         §III.B: 2 stacked LSTM layers between encoder and decoder,
 //!         hidden = 2 * (H · 2^(L-1)). Unidirectional for the causal
 //!         real-time model (`denoiser_causal.th`); bidirectional for
-//!         the non-causal offline model (`master64.th` etc.). LSTM
-//!         forward is NOT covered by any existing enhancement-family
-//!         primitive in `vokra_ops` — greenfield.)
+//!         the non-causal offline model (`master64.th` etc.). No
+//!         *enhancement-family* op in `vokra_ops` carries an LSTM — but
+//!         this is a LIFT, not greenfield RNN work: the LSTM gate body
+//!         in `vokra_ops::hybrid_ctc_attention::LstmLmCell` and the two
+//!         bidirectional LSTMs `crate::kokoro::nn::BiLstm1d` /
+//!         `crate::pyannote::bilstm::BiLstmLayer` are all already
+//!         written against the PyTorch weight layout. See
+//!         [`crate::squim::missing_primitive_note`] — SQUIM's DPRNN
+//!         head needs the same reusable bare cell, so landing it once
+//!         unblocks both.)
 //!   -> 5-block symmetric transposed-conv decoder     ← **loud-partial**
 //!        (per arXiv:2006.12847 §II.A: five symmetric decoder blocks
 //!         mirroring the encoder, each doubling temporal resolution via
@@ -493,8 +500,11 @@ impl FbDenoiser {
     ///    encoder and decoder per arXiv:2006.12847 §II.A + §III.B
     ///    ablation, hidden = `2 · (H · 2^(L-1))`. Unidirectional for
     ///    causal `denoiser_causal.th`, bidirectional for offline
-    ///    `master64.th`. NOT covered by any existing enhancement-family
-    ///    primitive in `vokra_ops` — greenfield.
+    ///    `master64.th`. No *enhancement-family* op in `vokra_ops`
+    ///    carries an LSTM, but this is a LIFT rather than greenfield
+    ///    RNN work — see [`crate::squim::missing_primitive_note`] for
+    ///    the four recurrent bodies already in the tree and why none is
+    ///    yet callable as a bare cell.
     /// 3. **5-block symmetric transposed-conv decoder** — five
     ///    decoder blocks mirroring the encoder, each doubling temporal
     ///    resolution via `ConvTranspose1d(kernel=8, stride=4)` and
@@ -555,8 +565,14 @@ fn denoise_forward_loud_partial() -> VokraError {
          a 2-layer LSTM bottleneck (2 stacked LSTM layers between encoder and decoder \
          per arXiv:2006.12847 §II.A + §III.B ablation, hidden = `2 · (H · 2^(L-1))`; \
          unidirectional for causal `denoiser_causal.th`, bidirectional for offline \
-         `master64.th` — NOT covered by any existing enhancement-family primitive in \
-         `vokra_ops`, greenfield), and (iii) a 5-block symmetric transposed-conv \
+         `master64.th` — no ENHANCEMENT-family op in `vokra_ops` carries an LSTM, but \
+         this is a LIFT, NOT greenfield RNN work: \
+         `vokra_ops::hybrid_ctc_attention::LstmLmCell` holds a PyTorch-order i|f|g|o \
+         gate body, and `kokoro::nn::BiLstm1d` + `pyannote::bilstm::BiLstmLayer` are \
+         two in-tree bidirectional LSTMs on the PyTorch weight layout; what is absent \
+         is a reusable bare cell in `vokra-ops` taking a plain feature vector, which \
+         `crate::squim`'s DPRNN head needs too — landing it once unblocks both), and \
+         (iii) a 5-block symmetric transposed-conv \
          decoder (five decoder blocks mirroring the encoder, each doubling temporal \
          resolution via `ConvTranspose1d(kernel=8, stride=4)` and halving channel \
          width; each block = `Conv1d(1x1, 2C output) + GLU + ConvTranspose1d(k=8, \
@@ -907,6 +923,29 @@ mod tests {
                 assert!(
                     msg.contains("LSTM bottleneck"),
                     "message must name the LSTM bottleneck gap, got `{msg}`"
+                );
+                // --- Anti-rot guard (mirror of the `beat_this` / `squim`
+                // --- guards).
+                //
+                // An earlier revision called the LSTM bottleneck outright
+                // "greenfield". Four recurrent bodies already exist in this
+                // tree, so that phrasing sent the next reader off to write an
+                // RNN from scratch. The negative assertion is the load-bearing
+                // half: without it the falsehood can rot back in unnoticed.
+                assert!(
+                    !msg.contains("`vokra_ops`, greenfield"),
+                    "stale claim — `hybrid_ctc_attention::LstmLmCell`, \
+                     `kokoro::nn::BiLstm1d` and `pyannote::bilstm::BiLstmLayer` are \
+                     recurrent bodies already in this tree, got `{msg}`"
+                );
+                assert!(
+                    msg.contains("LIFT, NOT greenfield"),
+                    "message must tell the reader the LSTM is a lift, not new RNN \
+                     work, got `{msg}`"
+                );
+                assert!(
+                    msg.contains("LstmLmCell") && msg.contains("BiLstm1d"),
+                    "message must name the in-tree bodies to lift from, got `{msg}`"
                 );
                 assert!(
                     msg.contains("U-Net"),

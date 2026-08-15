@@ -12,15 +12,15 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ConvertSummary, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant, VoxtralConfig,
-    convert_bert_base_file, convert_chatterbox_file, convert_chatterbox_nano_file,
-    convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_crepe_file, convert_dac_file, convert_deberta_v2_file, convert_deberta_v3_file,
-    convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
-    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_streaming, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    convert_beat_this_with_config, convert_bert_base_file, convert_chatterbox_file,
+    convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
+    convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
+    convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
+    convert_file_with_slug, convert_irodori_file, convert_kokoro_file, convert_piper_plus_file,
+    convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file, convert_styletts2_file,
+    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -1228,6 +1228,36 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 println!("  note: {note}");
             }
             return Ok(ExitCode::SUCCESS);
+        }
+        ModelKind::BeatThis => {
+            // 2026-08-15 audit follow-up. `vokra-models::beat_this` names
+            // `vokra-cli convert --model beat-this` in four error
+            // messages; until this wave `ModelKind::from_arg` accepted no
+            // such spelling, so that recovery command answered `unknown
+            // model`. This arm is what makes it real.
+            //
+            // Dedicated (rather than falling through to
+            // `convert_file_with_slug`) for the same reason as the
+            // DebertaV2 / DebertaV3 arms above: the generic dispatch has
+            // no per-model side-car parameter, so `--config` would be
+            // silently dropped. `convert_beat_this_file` takes its six
+            // topology axes from the caller and invents none of them —
+            // the upstream `CPJKU/beat_this` `.pt` release ships no
+            // config.yaml, they live implicitly in tensor shapes — so a
+            // dropped `--config` is not a cosmetic loss: it is the
+            // difference between a conversion and a refusal.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper and voxtral".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_beat_this_with_config(
+                &p.input,
+                &p.output,
+                p.config.as_deref(),
+                p.license.as_deref(),
+            )
         }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the

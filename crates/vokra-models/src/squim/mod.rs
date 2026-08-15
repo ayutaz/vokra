@@ -137,11 +137,22 @@
 //! read is strictly more useful, and the surrounding scaffold (routing,
 //! validation, licence surfacing) is real and testable today.
 //!
-//! Separately, the DPRNN stack needs a **general RNN primitive that
-//! `vokra-ops` does not have**: the only recurrent kernels in the tree are the
-//! DFN3-specific GRU stack embedded in `vokra_ops::denoise`, which is bound to
-//! DeepFilterNet3's own tensor layout and is not a reusable cell. See
-//! [`missing_primitive_note`] for the note carried in the error text.
+//! Separately, the DPRNN stack needs a recurrent cell. That is a **lift, not
+//! greenfield work**: the tree already carries four recurrent bodies — the
+//! public shape-generic GRU `vokra_ops::rnnoise::gru_forward` (re-exported as
+//! `vokra_ops::rnnoise_gru_forward`), the public LSTM gate body inside
+//! `vokra_ops::hybrid_ctc_attention::LstmLmCell`, and two crate-private
+//! bidirectional LSTMs with the PyTorch weight layout
+//! (`crate::kokoro::nn::BiLstm1d`, `crate::pyannote::bilstm::BiLstmLayer`).
+//! What is missing is a *reusable bare cell in `vokra-ops` that consumes a
+//! plain feature vector*, which none of the four is today. An earlier revision
+//! of this file instead claimed the DFN3-internal GRU in `vokra_ops::denoise`
+//! was "the only recurrent kernel in the tree" — false from the moment
+//! `rnnoise.rs` landed, and worse than saying nothing, because it sends the
+//! next implementer off to write an RNN from scratch. See
+//! [`missing_primitive_note`] for the note carried in the error text, and
+//! `objective_head_loud_partials_naming_the_dprnn_and_its_missing_primitive`
+//! for the negative assertion that keeps the stale phrasing from rotting back.
 //!
 //! # Tensor naming contract (the sidecar is authoritative)
 //!
@@ -958,19 +969,41 @@ fn require_non_empty_pcm(pcm: &[f32], arg: &str) -> Result<()> {
     Ok(())
 }
 
-/// The note about the recurrent primitive `vokra-ops` does not yet have,
-/// carried inside the objective head's loud-partial message.
+/// The note about the recurrent cell the DPRNN stack needs, carried inside the
+/// objective head's loud-partial message.
 ///
 /// Exposed as a function rather than inlined so the module docs can point at
-/// one authoritative wording, and so a follow-up wave that lands a general RNN
-/// op has a single grep target to delete.
+/// one authoritative wording, and so a follow-up wave that lands a reusable
+/// `vokra-ops` cell has a single grep target to update.
+///
+/// The wording is deliberately a *lift* instruction rather than a "primitive
+/// does not exist" claim. An earlier revision asserted that the DFN3-internal
+/// GRU stack in `vokra_ops::denoise` was "the only recurrent kernel in the
+/// tree" — false from the moment `crates/vokra-ops/src/rnnoise.rs` landed a
+/// shape-generic public GRU, and false three times over once
+/// `hybrid_ctc_attention::LstmLmCell`, `crate::kokoro::nn::BiLstm1d` and
+/// `crate::pyannote::bilstm::BiLstmLayer` are counted. A stale blocker in an
+/// error message is worse than no message: it sends the next reader off to
+/// write an RNN that already exists in four places. The test
+/// `objective_head_loud_partials_naming_the_dprnn_and_its_missing_primitive`
+/// therefore asserts the stale phrasing is ABSENT as well as asserting the
+/// live blocker is present (mirror of the `beat_this` guard).
 #[must_use]
 pub fn missing_primitive_note() -> &'static str {
-    "the DPRNN stack additionally needs a GENERAL recurrent primitive that `vokra-ops` does \
-     not currently expose: the only recurrent kernels in the tree are the DeepFilterNet3- \
-     specific GRU stack embedded in `vokra_ops::denoise` (bound to DFN3's own tensor layout \
-     and grouped-linear skips, not a reusable cell). Landing this head therefore means \
-     either adding a reusable RNN op to `vokra-ops` or transcribing SQUIM's cell inline"
+    "the DPRNN stack additionally needs a recurrent cell, and that is a LIFT, NOT greenfield \
+     RNN work — do not re-report it as a missing kernel. Four recurrent bodies already exist: \
+     `vokra_ops::rnnoise::gru_forward` (public, re-exported as \
+     `vokra_ops::rnnoise_gru_forward`) is a shape-generic, shape-validating GRU cell over a \
+     plain feature vector; `vokra_ops::hybrid_ctc_attention::LstmLmCell` carries a full \
+     PyTorch-order i|f|g|o LSTM gate body; and `crate::kokoro::nn::BiLstm1d` plus \
+     `crate::pyannote::bilstm::BiLstmLayer` are two bidirectional LSTMs already written \
+     against the PyTorch weight layout. What `vokra-ops` does not yet expose is a REUSABLE \
+     BARE CELL taking a plain feature vector: `LstmLmCell::step` welds a token-embedding \
+     lookup onto its input and a vocab log-softmax onto its output, so it cannot be called \
+     on a DPRNN chunk, and the two BiLSTMs are `pub(crate)` inside `vokra-models` and so are \
+     unreachable from an op. Landing this head therefore means promoting one of those bodies \
+     into a shared `vokra-ops` cell (or transcribing SQUIM's inline) once the upstream module \
+     settles which cell type it is"
 }
 
 /// Builds the loud-partial [`VokraError::UnsupportedOp`] returned by
@@ -1554,15 +1587,57 @@ mod tests {
                     msg.contains("transformer metric heads"),
                     "names the deferred heads: {msg}"
                 );
-                // The missing vokra-ops primitive is named explicitly.
+                // --- Anti-rot guard (mirror of the `beat_this` guard).
+                //
+                // An earlier revision claimed the DFN3-internal GRU stack in
+                // `vokra_ops::denoise` was "the only recurrent kernels in the
+                // tree". That was false from the moment
+                // `crates/vokra-ops/src/rnnoise.rs` landed a shape-generic
+                // public GRU, and it sent the next reader off to write an RNN
+                // that already exists in four places. Asserting the phrase is
+                // ABSENT is the load-bearing half: without it the falsehood can
+                // rot back in with nothing to catch it.
                 assert!(
-                    msg.contains("vokra-ops") && msg.contains("recurrent"),
-                    "must name the missing recurrent primitive: {msg}"
+                    !msg.contains("the only recurrent kernels in the tree"),
+                    "stale claim: `vokra_ops::rnnoise::gru_forward`, \
+                     `vokra_ops::hybrid_ctc_attention::LstmLmCell`, \
+                     `kokoro::nn::BiLstm1d` and `pyannote::bilstm::BiLstmLayer` are all \
+                     recurrent bodies in this tree: {msg}"
                 );
                 assert!(
-                    msg.contains("vokra_ops::denoise"),
-                    "must say which recurrent kernels DO exist so the reader is not sent \
-                     looking for nothing: {msg}"
+                    !msg.contains("does not currently expose: the only"),
+                    "stale phrasing of the recurrent-primitive blocker: {msg}"
+                );
+
+                // --- and it must say POSITIVELY what the real task is, naming
+                // --- every body a reader can lift from.
+                assert!(
+                    msg.contains("LIFT, NOT greenfield"),
+                    "must tell the reader this is a lift, not new RNN work: {msg}"
+                );
+                assert!(
+                    msg.contains("vokra_ops::rnnoise::gru_forward"),
+                    "must name the public shape-generic GRU that already exists: {msg}"
+                );
+                assert!(
+                    msg.contains("vokra_ops::hybrid_ctc_attention::LstmLmCell"),
+                    "must name the public LSTM gate body that already exists: {msg}"
+                );
+                assert!(
+                    msg.contains("BiLstm1d") && msg.contains("BiLstmLayer"),
+                    "must name the two in-tree bidirectional LSTMs: {msg}"
+                );
+
+                // --- The blocker that IS live: no reusable bare cell in
+                // --- vokra-ops taking a plain feature vector.
+                assert!(
+                    msg.contains("vokra-ops") && msg.contains("REUSABLE BARE CELL"),
+                    "must name what is actually missing from vokra-ops: {msg}"
+                );
+                assert!(
+                    msg.contains("token-embedding") && msg.contains("pub(crate)"),
+                    "must say WHY each existing body is not directly callable, so the \
+                     reader does not simply call one and get a shape error: {msg}"
                 );
                 // Anchors to walk.
                 assert!(

@@ -236,9 +236,12 @@ impl BeatThisConfig {
                          upstream `CPJKU/beat_this` `.pt` release does not carry a \
                          first-class `config.yaml`, so this runtime binder refuses to \
                          fabricate topology axes from primary-source constants (FR-EX-08). \
-                         Re-run `vokra-cli convert --model beat-this` with the caller-\
-                         supplied `BeatThisHparams` sourced from the upstream tensor-shape \
-                         walk (see `tools/parity/beat_this_prepare_checkpoint.py` recipe)."
+                         Re-run `vokra-cli convert --model beat-this --config \
+                         <side-car.json>`, where the side-car is a flat JSON object \
+                         carrying all six axes as unsigned integers: sample_rate, \
+                         n_frames, d_model, n_layers, n_head, n_classes. Read them off \
+                         the checkpoint's own tensor shapes — the converter will not \
+                         default any of them."
                     ))
                 })
         }

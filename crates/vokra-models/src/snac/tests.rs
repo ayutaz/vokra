@@ -231,6 +231,22 @@ fn encode_returns_unsupported_op_with_primitive_gap_message() {
                 m.contains("[2, 4, 8, 8]"),
                 "message must cite the Hz24 encoder_rates, got `{m}`"
             );
+
+            // --- Anti-rot guard: an earlier revision claimed "none of the
+            // --- required primitives are in `vokra-ops` today", which is
+            // --- false for the convolution — a conv1d kernel exists and is
+            // --- reachable through the Compute seam. The negative assertion
+            // --- keeps that phrasing from rotting back in.
+            assert!(
+                !m.contains("none of the required primitives"),
+                "stale claim — `vokra_backend_cpu::kernels::conv1d_f32` exists and is \
+                 reachable through `Compute::conv1d_f32`, got `{m}`"
+            );
+            assert!(
+                m.contains("NOT missing, do not re-report") && m.contains("conv1d_f32"),
+                "message must name the convolution primitive that already exists so the \
+                 reader wires the seam instead of writing one, got `{m}`"
+            );
         }
         other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
     }
@@ -286,6 +302,31 @@ fn decode_returns_unsupported_op_with_primitive_gap_message() {
             assert!(
                 m.contains("decode_codes_to_features"),
                 "message must forward the reader to the intermediate seam, got `{m}`"
+            );
+
+            // --- Anti-rot guard (mirror of the `beat_this` / `squim` guards).
+            //
+            // An earlier revision listed "Snake activation on every decoder
+            // block" among the MISSING pieces. `vokra_ops::snake_activation_f32`
+            // and `vokra_ops::snake_beta_f32` are landed public primitives
+            // (Metal-covered via `HotOp::SnakeActivation`), so that entry sent
+            // the next reader off to write an activation that already exists.
+            // Asserting it is ABSENT is the load-bearing half — omission alone
+            // is not enforceable.
+            assert!(
+                !m.contains("(b) Snake activation"),
+                "stale claim — `vokra_ops::snake_activation_f32` is a landed, \
+                 Metal-covered primitive, got `{m}`"
+            );
+            assert!(
+                m.contains("NOT missing, do not re-report"),
+                "message must positively disclaim the resolved blockers rather \
+                 than merely omitting them, got `{m}`"
+            );
+            assert!(
+                m.contains("snake_activation_f32") && m.contains("conv1d_f32"),
+                "message must name the primitives that already exist so the reader \
+                 does not rewrite them, got `{m}`"
             );
         }
         other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),

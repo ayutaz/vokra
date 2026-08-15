@@ -178,11 +178,16 @@ impl CsmAudioDecodeChain {
     }
 
     /// Routes the **neural decoder** (features → PCM) through `backend`
-    /// (#12). The RVQ codebook lookup stays CPU-side: it is cheap array
-    /// indexing, and `HotOp::MimiRvq` has no GPU kernel through the Compute
-    /// seam today (the coverage gate pinned by
-    /// `mimi_rvq_hot_op_coverage_gate_is_consistent_with_this_chain`). Only
-    /// the neural seam ops (GEMM / GEMV / Softmax / LayerNorm / GELU) move.
+    /// (#12). The RVQ codebook lookup stays CPU-side because it is cheap
+    /// array indexing — **not** because no GPU kernel exists for it.
+    /// `HotOp::MimiRvq` has been Metal-covered since M3-06 T14 (2026-08-13,
+    /// MSL kernel `vokra_mimi_rvq_gather_fold_f32`); this chain simply has
+    /// not been ported to call the seam for the RVQ fold, and porting it is
+    /// a wiring change here, not a kernel to write. (CUDA / Vulkan / WebGPU
+    /// remain uncovered for that op.) The coverage gate is pinned by
+    /// `mimi_rvq_hot_op_coverage_gate_is_consistent_with_this_chain`, which
+    /// asserts the Metal flip has not regressed. Only the neural seam ops
+    /// (GEMM / GEMV / Softmax / LayerNorm / GELU) move today.
     /// An unsupported neural hot op on `backend` is a loud error at decode
     /// time (FR-EX-08 — no silent CPU fall back).
     #[must_use]

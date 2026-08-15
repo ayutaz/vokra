@@ -3794,6 +3794,120 @@ pub enum ModelKind {
     /// on the sign-off gate — adding and signing that row is owner-only
     /// work (memory `[[feedback-license-signoff-primary-source]]`).
     Voila,
+    /// **Magenta MT3** (`magenta/mt3`, code **Apache-2.0**) — multi-track
+    /// / multi-instrument automatic music transcription (audio → MIDI) on
+    /// a T5-small encoder-decoder backbone with a music-event vocabulary.
+    /// Category = `music-transcription`, distinct arch tag `mt3` from
+    /// every sibling music-tree arch (`basic-pitch` Spotify polyphonic
+    /// CNN posteriorgram, `beat-this` Transformer beat + downbeat
+    /// tracker, `musicgen` text-to-music AR LM).
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): the
+    /// runtime binder `vokra-models::mt3` shipped with four error
+    /// messages telling the operator to re-run
+    /// `vokra-cli convert --model mt3`, while `ModelKind::from_arg`
+    /// accepted no such spelling — the promised recovery command
+    /// answered `unknown model`. This arm makes the promise true. The
+    /// converter function ([`convert_mt3_file`]) already existed; only
+    /// the CLI wiring was missing.
+    ///
+    /// **License**: the *code* is Apache-2.0, but the weight bucket
+    /// (`gs://mt3/checkpoints/`) carries no per-bucket LICENSE file and
+    /// no HuggingFace mirror exists, so [`convert_mt3_file`] hard-maps
+    /// the stamped class to [`vokra_core::LicenseClass::Unknown`]
+    /// regardless of `--license`. That is fail-closed at the M2-13
+    /// runtime compliance gate: the artifact will not load in commercial
+    /// mode until the owner completes primary-source confirmation.
+    /// `docs/license-audit.md` §3.1 sign-off stays **BLANK** (owner-only).
+    ///
+    /// Provenance rides `vokra.provenance.upstream_url`
+    /// (`github.com/magenta/mt3`) rather than `upstream_hf`, so
+    /// `verify()` routes this kind through the GitHub-native arm.
+    Mt3,
+    /// **Beat This!** (`CPJKU/beat_this`, **MIT**, ISMIR 2024) — joint
+    /// beat + downbeat tracking on a Transformer encoder over log-mel
+    /// frames. Category = `beat-tracking`, arch tag `beat-this`
+    /// (deliberately hyphenated to stay distinct from the sibling `beats`
+    /// arch, which is the Microsoft SSL audio encoder — sharing the tag
+    /// would let runtime dispatch mis-route across two unrelated
+    /// topologies, FR-EX-08).
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): the
+    /// runtime binder `vokra-models::beat_this` names
+    /// `vokra-cli convert --model beat-this` in four places while
+    /// `ModelKind::from_arg` accepted no such spelling. This arm makes
+    /// the promise true.
+    ///
+    /// **Requires `--config <side-car.json>`**: [`convert_beat_this_file`]
+    /// takes its six topology axes from the caller and deliberately
+    /// fabricates none of them — the upstream `.pt` release stores them
+    /// implicitly in tensor shapes rather than in a first-class
+    /// `config.yaml` (CLAUDE.md 「ハルシネーション厳禁」). The dispatch
+    /// therefore refuses a bare invocation with a
+    /// [`ConvertError::Usage`] naming the flag and every required key,
+    /// rather than stamping guessed axes into a redistributable
+    /// artifact. See [`convert_beat_this_with_config`] for the side-car
+    /// schema.
+    ///
+    /// Provenance rides `vokra.provenance.upstream_url`
+    /// (`github.com/CPJKU/beat_this`) — the GitHub tree is the release
+    /// channel, there is no HF mirror.
+    BeatThis,
+    /// **ReDimNet** (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`,
+    /// **apache-2.0**) — the "reshaped dimensions network" speaker
+    /// verification backbone, B6-LM release (192-d embedding).
+    /// Category = `speaker`, distinct arch tag `redimnet` from every
+    /// sibling speaker-fleet arch — never `wespeaker` (ResNet-34), never
+    /// `ecapa_tdnn` (TDNN stack), never `titanet` (depth-wise separable
+    /// Conv1D), never `speaker_3d` (ERes2Net), never `campplus` (CAM++).
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): this was
+    /// the worst of the four unreachable converters. The binder
+    /// `vokra-models::redimnet` named `vokra-cli convert --model
+    /// redimnet` in four messages; `ModelKind::from_arg` accepted no such
+    /// spelling; `convert_redimnet_file` had no `pub use` re-export out
+    /// of the private `mod models`; and the resulting `dead_code`
+    /// warnings were silenced by a module-level `#![allow(dead_code)]`.
+    /// There was no route at all — from any entry point — to produce the
+    /// GGUF the binder demanded. This arm, the paired re-export, and the
+    /// deletion of that allow attribute close the loop.
+    ///
+    /// **License**: apache-2.0 confirmed through HF cardData primary
+    /// source; the class resolves via
+    /// [`vokra_core::LicenseClass::from_license_str`] for whatever SPDX
+    /// `--license` passes. `docs/license-audit.md` §3.1 sign-off stays
+    /// **BLANK** (fail-closed, owner-only). Provenance rides
+    /// `vokra.provenance.upstream_hf`.
+    Redimnet,
+    /// **LLaMA-Omni2** (`ICTNLP/LLaMA-Omni2-*`, **apache-2.0**, ACL 2025)
+    /// — streaming half-duplex speech-to-speech: a Whisper-style speech
+    /// encoder feeding a Qwen2 LM backbone with an autoregressive speech
+    /// decoder. Category = `s2s`, distinct arch tag `llama_omni2` from
+    /// the sibling Qwen2-family ASR / S2S arches (`voxtral`,
+    /// `canary_qwen`, `kyutai_stt`, `firered_asr_llm_l`) and from the
+    /// full-duplex `moshi` / `csm` / `voila` trio.
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): the
+    /// binder `vokra-models::llama_omni2` names
+    /// `vokra-cli convert --model llama-omni2` in its arch-mismatch
+    /// message while `ModelKind::from_arg` accepted no such spelling.
+    ///
+    /// **One arm, four releases**: 7B (default) / 3B-Bilingual / 1.5B /
+    /// 32B share this variant, and the raw `--model` slug picks the
+    /// release through [`convert_file_with_slug`] — the BigVGan / Snac /
+    /// Qwen3Asr precedent. The variant is a real discriminator here (it
+    /// is stamped into `vokra.llama_omni2.variant` and decides the
+    /// `vokra.model.name` suffix and the `upstream_hf` repo id), so the
+    /// plain [`convert_file`] path lands the 7B default that the ACL 2025
+    /// paper anchors to rather than guessing from tensor shapes.
+    ///
+    /// **Scale**: 7B ≈ 14 GB and 32B ≈ 64 GB both exceed the local
+    /// convert threshold — those two run on vast.ai per memory
+    /// `[[feedback-large-models-on-vast-ai]]`. 1.5B (≈ 3 GB) and
+    /// 3B-Bilingual (≈ 6 GB) are local-safe. Provenance rides
+    /// `vokra.provenance.upstream_hf`; `docs/license-audit.md` §3.1
+    /// sign-off stays **BLANK** (fail-closed, owner-only).
+    LlamaOmni2,
 }
 
 impl ModelKind {
@@ -3813,7 +3927,15 @@ impl ModelKind {
             "utmos" => Some(Self::Utmos),
             "piper-plus" => Some(Self::PiperPlus),
             "campplus" => Some(Self::CamPlus),
-            "kokoro" => Some(Self::Kokoro),
+            // `kokoro-82m` is not decoration: `vokra-models::kokoro`
+            // prints "`vokra-cli convert --model kokoro-82m ...` first"
+            // from four call sites, and until 2026-08-15 that command
+            // answered `unknown model` because only the bare `kokoro`
+            // spelling parsed. It is also the published repo name
+            // (`huggingface.co/vokra/kokoro-82m`), so it is what an
+            // operator has in hand. Both spellings land the same kind —
+            // there is one Kokoro release.
+            "kokoro" | "kokoro-82m" | "kokoro_82m" | "hexgrad/kokoro-82m" => Some(Self::Kokoro),
             "cosyvoice2" => Some(Self::CosyVoice2),
             "cosyvoice3"
             | "cosyvoice-3"
@@ -4505,8 +4627,17 @@ impl ModelKind {
             | "we_speaker"
             | "wespeaker-voxceleb-resnet34-lm"
             | "wespeaker/wespeaker-voxceleb-resnet34-lm" => Some(Self::Wespeaker),
+            // `speaker-3d-eres2net` is the spelling the runtime binder
+            // `vokra-models::speaker_3d_eres2net` prints in three recovery
+            // messages (and pins with its own `m.contains(...)` test), so
+            // it has to parse — until 2026-08-15 it did not. That binder
+            // reads `vokra.model.arch == "speaker_3d"`, the exact tag this
+            // converter stamps, so the alias lands on the same kind rather
+            // than needing a variant of its own.
             "speaker-3d"
             | "speaker_3d"
+            | "speaker-3d-eres2net"
+            | "speaker_3d_eres2net"
             | "3d-speaker"
             | "eres2net"
             | "speech_eres2net_sv_zh-cn_16k-common"
@@ -5648,6 +5779,65 @@ impl ModelKind {
             // together with the `vokra.voila.variant` chunk that makes
             // them mean something (FR-EX-08 — no silent collapse).
             "voila" | "maitrix-org/voila" => Some(Self::Voila),
+            // MT3 (magenta/mt3) — 2026-08-15 audit follow-up. The runtime
+            // binder's own recovery text is `vokra-cli convert --model
+            // mt3`, so the bare `mt3` spelling is load-bearing: it is the
+            // exact string four error messages promise. The remaining
+            // aliases cover the `vokra.model.name` stamp and the upstream
+            // GitHub slug.
+            "mt3" | "MT3" | "mt3-multitrack" | "magenta/mt3" => Some(Self::Mt3),
+            // Beat This! (CPJKU/beat_this) — 2026-08-15 audit follow-up.
+            // `beat-this` is the spelling the binder's four messages
+            // promise AND the arch tag; the underscore form matches the
+            // upstream repo name, which is what an operator copying from
+            // GitHub types first.
+            "beat-this" | "beat_this" | "beatthis" | "CPJKU/beat_this" | "cpjku/beat_this" => {
+                Some(Self::BeatThis)
+            }
+            // ReDimNet (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM) —
+            // 2026-08-15 audit follow-up. `redimnet` is the spelling the
+            // binder's four messages promise and the arch tag. Aliases
+            // cover the release id + the full upstream HF slug in both
+            // the upstream mixed case and lower case.
+            "redimnet"
+            | "redimnet2"
+            | "redimnet2-b6-lm"
+            | "redimnet2_b6_lm"
+            | "wespeaker-voxceleb-redimnet2-b6-lm"
+            | "Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM"
+            | "wespeaker/wespeaker-voxceleb-redimnet2-b6-lm" => Some(Self::Redimnet),
+            // LLaMA-Omni2 (ICTNLP/LLaMA-Omni2-*) — 2026-08-15 audit
+            // follow-up. `llama-omni2` is the spelling the binder's
+            // arch-mismatch message promises. Every per-release spelling
+            // lands on this same kind and is resolved to a
+            // `LlamaOmni2Variant` by `convert_file_with_slug`; the list
+            // below mirrors `LlamaOmni2Variant::from_arg` exactly, so a
+            // slug that parses here always resolves there (a spelling
+            // accepted here but unknown there would silently collapse to
+            // the 7B default — FR-EX-08).
+            "llama-omni2"
+            | "llama_omni2"
+            | "llamaomni2"
+            | "llama-omni2-7b"
+            | "llama_omni2_7b"
+            | "llamaomni2-7b"
+            | "llama-omni2-7b-english"
+            | "ictnlp/llama-omni2-7b"
+            | "llama-omni2-3b-bilingual"
+            | "llama_omni2_3b_bilingual"
+            | "llamaomni2-3b-bilingual"
+            | "llama-omni2-3b"
+            | "llama_omni2_3b"
+            | "ictnlp/llama-omni2-3b-bilingual"
+            | "llama-omni2-1.5b"
+            | "llama-omni2-1_5b"
+            | "llama_omni2_1_5b"
+            | "llamaomni2-1.5b"
+            | "ictnlp/llama-omni2-1.5b"
+            | "llama-omni2-32b"
+            | "llama_omni2_32b"
+            | "llamaomni2-32b"
+            | "ictnlp/llama-omni2-32b" => Some(Self::LlamaOmni2),
             _ => None,
         }
     }
@@ -5968,6 +6158,20 @@ impl ModelKind {
             // arch tag itself; one arm serves the whole family because no
             // per-release axis is stamped to tell the releases apart.
             Self::Voila => "voila",
+            // 2026-08-15 audit follow-up: four converters whose runtime
+            // binders named a `--model` spelling that `from_arg` did not
+            // accept. Each canonical slug below is the exact string those
+            // binders print in their recovery text — keep them byte-equal
+            // or the promise breaks again (the `check-arch-handshake.sh`
+            // leg (c) added in the same commit fails the build if they
+            // drift apart).
+            Self::Mt3 => "mt3",
+            Self::BeatThis => "beat-this",
+            Self::Redimnet => "redimnet",
+            // Canonical slug is the 7B default's family spelling; the
+            // per-release slugs round-trip back to this same kind and are
+            // resolved to a variant by `convert_file_with_slug`.
+            Self::LlamaOmni2 => "llama-omni2",
         }
     }
 }
@@ -6520,8 +6724,171 @@ pub fn convert_file_with_slug(
                 notes,
             })
         }
+        ModelKind::LlamaOmni2 => {
+            // 2026-08-15 audit follow-up. Four ICTNLP releases (7B /
+            // 3B-Bilingual / 1.5B / 32B) share one `ModelKind`, and the
+            // variant is a real discriminator: it decides
+            // `vokra.llama_omni2.variant`, the `vokra.model.name` suffix
+            // and the `vokra.provenance.upstream_hf` repo id. Resolving
+            // it from the raw slug is what keeps `--model
+            // llama-omni2-32b` from silently stamping a 7B identity onto
+            // a 64 GB artifact.
+            //
+            // `LlamaOmni2Variant::from_arg` owns the spelling table, so
+            // there is exactly one place to edit when a release is added
+            // — `ModelKind::from_arg` mirrors that same list, and the
+            // `llama_omni2_slugs_resolve_to_distinct_variants` test below
+            // pins the two lists together. The `unwrap_or_default()` is
+            // reachable only for a slug `ModelKind::from_arg` accepts but
+            // `LlamaOmni2Variant::from_arg` does not, which that test
+            // asserts is the empty set.
+            let variant =
+                models::llama_omni2::LlamaOmni2Variant::from_arg(slug).unwrap_or_default();
+            let report =
+                models::llama_omni2::convert_llama_omni2_file(input, output, variant, license)?;
+            let notes = vec![format!(
+                "llama-omni2 ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} tensors read; upstream repo {}. \
+                 docs/license-audit.md §3.1 sign-off is BLANK (fail-closed) until the owner \
+                 signs, so publish stays blocked",
+                report.variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+                report.read,
+                variant.as_repo_id(),
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
         _ => convert_file_licensed(model, input, output, license),
     }
+}
+
+/// Converts a `CPJKU/beat_this` checkpoint, taking the six required
+/// topology axes from a JSON side-car at `config`.
+///
+/// # Why a side-car rather than defaults
+///
+/// [`convert_beat_this_file`] takes its axes from the caller and invents
+/// none of them. The upstream `.pt` release ships no `config.yaml` — the
+/// axes are implicit in tensor shapes — so a default baked in here would
+/// be a fabricated number stamped into a redistributable artifact
+/// (CLAUDE.md 「ハルシネーション厳禁」). Both CLI front-ends route
+/// `--model beat-this` through this entry so `--config` is not silently
+/// dropped, the same fix the `SbV2` arm carries in
+/// `vokra-convert/src/main.rs`.
+///
+/// # Side-car schema
+///
+/// A flat JSON object; every key is required and must be a non-negative
+/// integer. Missing or non-integer keys are a
+/// [`ConvertError::Usage`] naming the offender — never a silent default.
+///
+/// ```json
+/// {
+///   "sample_rate": 22050,
+///   "n_frames": 1500,
+///   "d_model": 512,
+///   "n_layers": 6,
+///   "n_head": 8,
+///   "n_classes": 2
+/// }
+/// ```
+///
+/// The values above are an *illustrative shape*, not transcribed
+/// upstream constants: source them from the checkpoint being converted.
+///
+/// # Errors
+///
+/// - [`ConvertError::Usage`] when `config` is `None`, when a key is
+///   missing, when a value is not a non-negative integer, or when a
+///   value does not fit in a `u32`.
+/// - [`ConvertError::Io`] when the side-car or the checkpoint cannot be
+///   read, or the output cannot be written.
+/// - [`ConvertError::Parse`] on malformed JSON or malformed safetensors.
+/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+pub fn convert_beat_this_with_config(
+    input: &Path,
+    output: &Path,
+    config: Option<&Path>,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let Some(config) = config else {
+        return Err(ConvertError::Usage(
+            "--model beat-this requires --config <side-car.json>: the upstream \
+             CPJKU/beat_this `.pt` release ships no config.yaml, so the six topology axes \
+             must come from the caller rather than be invented here. Required keys: \
+             sample_rate, n_frames, d_model, n_layers, n_head, n_classes (all unsigned \
+             integers)."
+                .to_owned(),
+        ));
+    };
+    let bytes = std::fs::read(config).map_err(ConvertError::Io)?;
+    let root = vokra_core::json::parse(&bytes)
+        .map_err(|e| ConvertError::Parse(format!("--config {}: {e}", config.display())))?;
+
+    // Every axis is read the same way, and a missing / non-integer / out
+    // of range value is a loud usage error naming the key. `as_u64`
+    // rejects floats and strings, so `"d_model": 512.5` fails here rather
+    // than being silently truncated into the artifact.
+    let axis = |key: &str| -> Result<u32, ConvertError> {
+        let raw = root.get(key).and_then(vokra_core::json::JsonValue::as_u64);
+        let Some(raw) = raw else {
+            return Err(ConvertError::Usage(format!(
+                "--config {}: key `{key}` is missing or is not a non-negative integer. \
+                 beat-this requires all six axes (sample_rate, n_frames, d_model, n_layers, \
+                 n_head, n_classes) — this path will not default any of them.",
+                config.display()
+            )));
+        };
+        u32::try_from(raw).map_err(|_| {
+            ConvertError::Usage(format!(
+                "--config {}: key `{key}` = {raw} does not fit in a u32 (the \
+                 vokra.beat_this.* chunk group is u32-typed)",
+                config.display()
+            ))
+        })
+    };
+    let hparams = models::beat_this::BeatThisHparams {
+        sample_rate: axis("sample_rate")?,
+        n_frames: axis("n_frames")?,
+        d_model: axis("d_model")?,
+        n_layers: axis("n_layers")?,
+        n_head: axis("n_head")?,
+        n_classes: axis("n_classes")?,
+    };
+
+    let report = models::beat_this::convert_beat_this_file(input, output, license, hparams)?;
+    let notes = vec![format!(
+        "beat-this: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+         skipped, {} tensors read; vokra.beat_this.* axes taken from {} (sample_rate={} \
+         n_frames={} d_model={} n_layers={} n_head={} n_classes={}); docs/license-audit.md \
+         §3.1 sign-off is BLANK (fail-closed) until the owner signs, so publish stays blocked",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.read,
+        config.display(),
+        hparams.sample_rate,
+        hparams.n_frames,
+        hparams.d_model,
+        hparams.n_layers,
+        hparams.n_head,
+        hparams.n_classes,
+    )];
+    Ok(ConvertSummary {
+        model: ModelKind::BeatThis,
+        tensor_count: report.written,
+        metadata_count: 0,
+        output_bytes: std::fs::metadata(output)?.len(),
+        notes,
+    })
 }
 
 /// [`convert_file`] with an explicit weight-licence override.
@@ -11365,6 +11732,130 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === 2026-08-15 audit follow-up: the four unreachable converters ===
+        //
+        // `convert_mt3_file` / `convert_beat_this_file` /
+        // `convert_redimnet_file` / `convert_llama_omni2_file` all
+        // existed and all had runtime binders whose error messages named
+        // a `vokra-cli convert --model <slug>` recovery command — but no
+        // `ModelKind` variant carried those slugs, so every one of those
+        // commands answered `unknown model`. These arms are the wiring
+        // that makes the promised commands real.
+        ModelKind::Mt3 => {
+            // MT3 (magenta/mt3, code apache-2.0). Multi-instrument
+            // audio-to-MIDI on a T5-small backbone; the converter stamps
+            // the nine `vokra.mt3.*` T5 / music-vocab axes it transcribes
+            // from `mt3/network.py` + Raffel et al. 2020.
+            //
+            // The weight license is UNCLEAR (no LICENSE on the
+            // `gs://mt3/checkpoints/` bucket, no HF mirror), so
+            // `convert_mt3_file` hard-maps `LicenseClass::Unknown`
+            // regardless of `--license`. That is deliberate fail-closed
+            // behaviour at the M2-13 runtime gate, and the note below
+            // says so out loud rather than letting a caller discover it
+            // only when the artifact refuses to load.
+            let report = models::mt3::convert_mt3_file(input, output, license)?;
+            let notes = vec![format!(
+                "mt3: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped, {} tensors read; weight_license is hard-mapped to Unknown \
+                 (fail-closed) — the gs://mt3/checkpoints bucket carries no LICENSE and there \
+                 is no HF mirror, so --license changes only the raw SPDX string, not the \
+                 class. docs/license-audit.md §3.1 has no signed mt3 row, so redistribution \
+                 stays blocked until the owner adds and signs one",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Mt3,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::BeatThis => {
+            // Beat This! (CPJKU/beat_this, MIT). Unlike its three
+            // siblings in this group, `convert_beat_this_file` needs six
+            // caller-supplied topology axes and deliberately fabricates
+            // none of them: the upstream `.pt` release keeps them
+            // implicit in tensor shapes rather than in a `config.yaml`,
+            // so any default written here would be an invented number in
+            // a redistributable artifact (CLAUDE.md 「ハルシネーション
+            // 厳禁」).
+            //
+            // This signature has no `--config` parameter to forward, so
+            // refuse loudly and name the entry point that does — exactly
+            // the posture `convert_file_quantized` takes for Voxtral.
+            // Both CLI front-ends route `--model beat-this` to
+            // `convert_beat_this_with_config` before reaching here, so
+            // this arm is what a *library* caller sees.
+            return Err(ConvertError::Usage(
+                "beat-this needs its six topology axes from a side-car: use \
+                 `vokra-cli convert --model beat-this --config <side-car.json>` (or call \
+                 `convert_beat_this_with_config` / `convert_beat_this_file` directly). The \
+                 upstream CPJKU/beat_this `.pt` release ships no config.yaml — the axes live \
+                 implicitly in tensor shapes — so this path will not invent them. Required \
+                 JSON keys: sample_rate, n_frames, d_model, n_layers, n_head, n_classes (all \
+                 unsigned integers)."
+                    .to_owned(),
+            ));
+        }
+        ModelKind::Redimnet => {
+            // ReDimNet B6-LM (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM,
+            // apache-2.0). Speaker-verification backbone; the converter
+            // transcribes all twelve `vokra.redimnet.*` axes from the
+            // upstream config.yaml, and the binder is a strict loader
+            // that requires every one of them (FR-EX-08 — a partial stamp
+            // would fabricate axes without primary-source backing).
+            let report = models::redimnet::convert_redimnet_file(input, output, license)?;
+            let notes = vec![format!(
+                "redimnet: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} tensors read (apache-2.0 default, Permissive T1 tier — \
+                 redistributable OK, no runtime-side attribution obligation); \
+                 docs/license-audit.md §3.1 sign-off is BLANK (fail-closed) until the owner \
+                 signs, so publish stays blocked",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Redimnet,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::LlamaOmni2 => {
+            // LLaMA-Omni2 (ICTNLP/LLaMA-Omni2-*, apache-2.0). Four
+            // releases share this kind; the raw `--model` slug picks one
+            // in `convert_file_with_slug` (the BigVGan / Snac / Qwen3Asr
+            // precedent). This arm is the slug-less path — plain
+            // `convert_file` / `convert_file_licensed` — so it lands the
+            // 7B default the ACL 2025 paper anchors to, and the note says
+            // which release it stamped so a caller who meant 32B sees it
+            // in the output rather than in a mis-stamped artifact.
+            let variant = models::llama_omni2::LlamaOmni2Variant::default();
+            let report =
+                models::llama_omni2::convert_llama_omni2_file(input, output, variant, license)?;
+            let notes = vec![format!(
+                "llama-omni2 ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} tensors read; variant defaulted because this entry \
+                 point takes no `--model` slug — pass a per-release spelling \
+                 (llama-omni2-3b-bilingual / llama-omni2-1.5b / llama-omni2-32b) through the \
+                 CLI to stamp a different one. docs/license-audit.md §3.1 sign-off is BLANK \
+                 (fail-closed) until the owner signs",
+                report.variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+                report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::LlamaOmni2,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
     };
 
     // Override the stamped licence when the caller supplies the distribution
@@ -12178,24 +12669,37 @@ pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
 // `DEFAULT_LICENSE` consts. Re-exported for the same reason as the
 // speaker_3d / titanet / nkf_aec entries above: `mod models` is private, so
 // the module's `pub` surface is unreachable — and therefore `dead_code` under
-// `-D warnings` — without a re-export here. NOT yet a `ModelKind` variant:
-// the CLI `--model llama-omni2` spelling is a follow-up, so today the
-// converter is reachable as a library entry point only.
+// `-D warnings` — without a re-export here.
+//
+// 2026-08-15: `--model llama-omni2` is no longer a follow-up — the CLI
+// spelling landed (`ModelKind::LlamaOmni2`), and `LlamaOmni2Variant` joins
+// the re-export because a library caller of `convert_llama_omni2_file` needs
+// to be able to NAME the variant argument it takes.
 pub use models::llama_omni2::{
-    LlamaOmni2Report, convert_llama_omni2_bytes, convert_llama_omni2_file,
+    LlamaOmni2Report, LlamaOmni2Variant, convert_llama_omni2_bytes, convert_llama_omni2_file,
 };
-// Three more converters landed with runtime binders but without a `ModelKind`
-// variant, so — like the entries above — their only reachable surface is this
-// re-export, and omitting it makes every `pub` item in them `dead_code` under
+// Converters whose only reachable surface is this re-export — `mod models` is
+// private, so omitting it makes every `pub` item in them `dead_code` under
 // `-D warnings`:
 //
-// - beat_this: CPJKU/beat_this joint beat + downbeat tracker (MIT, ISMIR 2024);
+// - beat_this: CPJKU/beat_this joint beat + downbeat tracker (MIT, ISMIR
+//   2024). `BeatThisHparams` is re-exported alongside the converter fn
+//   because that fn takes one by value: without the type in scope the entry
+//   point is unnameable from outside the crate;
 // - mt3: Magenta MT3 multi-instrument audio-to-MIDI transcription (code
 //   Apache-2.0; the `gs://mt3/checkpoints` weights carry no LICENSE, so the
 //   converter hard-maps `LicenseClass::Unknown` and fails closed);
+// - redimnet: Wespeaker ReDimNet2 B6-LM speaker backbone (apache-2.0). This
+//   re-export was MISSING until 2026-08-15, and the resulting `dead_code`
+//   warnings were papered over by a module-level `#![allow(dead_code)]` in
+//   `models/redimnet.rs` — so the module was unreachable from every entry
+//   point while its runtime binder told operators to run a converter for it.
+//   Both halves are fixed together: the allow attribute is deleted in the
+//   same commit that adds this line and the `ModelKind::Redimnet` arm;
 // - dtln_aec: breizhn/DTLN-aec acoustic echo cancellation (MIT).
-pub use models::beat_this::{BeatThisReport, convert_beat_this_file};
+pub use models::beat_this::{BeatThisHparams, BeatThisReport, convert_beat_this_file};
 pub use models::mt3::{Mt3Report, convert_mt3_file};
+pub use models::redimnet::{RedimnetReport, convert_redimnet_file};
 // WeTextProcessing (wenet-e2e, Apache-2.0) — packs the upstream compiled
 // `tagger.fst` / `verbalizer.fst` grammars into a GGUF for the
 // `vokra_ops::itn` inverse-text-normalization pipeline. Same re-export
@@ -14142,6 +14646,20 @@ mod modelkind_alias_and_roundtrip_tests {
             // command, so a dropped alias here would put the repro text
             // back into the state this converter landed to fix.
             Voila,
+            // 2026-08-15 audit follow-up — the four converters whose
+            // runtime binders printed a `vokra-cli convert --model
+            // <slug>` recovery command that `from_arg` did not accept.
+            // Each canonical slug below is byte-identical to the string
+            // those binders print, and that is the whole point of pinning
+            // them here: the failure being fixed was not "a slug is
+            // missing", it was "the error message and the parser
+            // disagree". `scripts/check-arch-handshake.sh` leg (c) checks
+            // the same invariant from the binder side; this test checks
+            // it from the parser side.
+            Mt3,
+            BeatThis,
+            Redimnet,
+            LlamaOmni2,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -14155,6 +14673,164 @@ mod modelkind_alias_and_roundtrip_tests {
                 "from_arg({arg:?}) = {parsed:?} but round-trip target was {kind:?}"
             );
         }
+    }
+
+    /// The four slugs the 2026-08-15 audit found unparseable — each one
+    /// quoted verbatim from a runtime binder's recovery text — parse.
+    ///
+    /// This is a regression pin on a specific past defect, not a generic
+    /// alias walk: `crates/vokra-models/src/{mt3,beat_this,redimnet,
+    /// llama_omni2}/mod.rs` printed "re-run `vokra-cli convert --model
+    /// X`" from ten call sites while `from_arg` accepted none of the four
+    /// spellings, so every operator who followed the instruction got
+    /// `unknown model` and learned to distrust the error text. If a
+    /// future refactor renames one of these slugs without updating the
+    /// binder message, this test is what fails.
+    #[test]
+    fn slugs_named_by_runtime_binder_error_messages_parse() {
+        // (slug as printed by the binder, expected kind, one binder site)
+        let cases: &[(&str, ModelKind, &str)] = &[
+            ("mt3", ModelKind::Mt3, "vokra-models/src/mt3/mod.rs:496"),
+            (
+                "beat-this",
+                ModelKind::BeatThis,
+                "vokra-models/src/beat_this/mod.rs:428",
+            ),
+            (
+                "redimnet",
+                ModelKind::Redimnet,
+                "vokra-models/src/redimnet/mod.rs:401",
+            ),
+            (
+                "llama-omni2",
+                ModelKind::LlamaOmni2,
+                "vokra-models/src/llama_omni2/mod.rs:800",
+            ),
+        ];
+        for (slug, want, site) in cases {
+            let got = ModelKind::from_arg(slug).unwrap_or_else(|| {
+                panic!(
+                    "`vokra-cli convert --model {slug}` is printed as a recovery command at \
+                     {site}, so from_arg({slug:?}) must parse — an unparseable slug makes that \
+                     message actively misleading"
+                )
+            });
+            assert_eq!(got, *want, "from_arg({slug:?}) landed on the wrong kind");
+        }
+    }
+
+    /// Every spelling `ModelKind::from_arg` maps to
+    /// [`ModelKind::LlamaOmni2`] must also resolve through
+    /// [`LlamaOmni2Variant::from_arg`].
+    ///
+    /// The two tables are maintained separately (one picks the kind, the
+    /// other picks the release), and `convert_file_with_slug` closes over
+    /// the gap with `unwrap_or_default()`. A spelling accepted by the
+    /// first table but not the second would therefore silently stamp the
+    /// 7B identity — repo id, `vokra.model.name` suffix and
+    /// `vokra.llama_omni2.variant` chunk all wrong — onto whatever
+    /// checkpoint the caller supplied. That is exactly the silent
+    /// mis-stamp FR-EX-08 forbids, so the two tables are pinned together
+    /// here rather than trusted to stay in sync.
+    #[test]
+    fn every_llama_omni2_slug_resolves_to_a_variant() {
+        use super::LlamaOmni2Variant;
+
+        let spellings = [
+            "llama-omni2",
+            "llama_omni2",
+            "llamaomni2",
+            "llama-omni2-7b",
+            "llama_omni2_7b",
+            "llamaomni2-7b",
+            "llama-omni2-7b-english",
+            "ictnlp/llama-omni2-7b",
+            "llama-omni2-3b-bilingual",
+            "llama_omni2_3b_bilingual",
+            "llamaomni2-3b-bilingual",
+            "llama-omni2-3b",
+            "llama_omni2_3b",
+            "ictnlp/llama-omni2-3b-bilingual",
+            "llama-omni2-1.5b",
+            "llama-omni2-1_5b",
+            "llama_omni2_1_5b",
+            "llamaomni2-1.5b",
+            "ictnlp/llama-omni2-1.5b",
+            "llama-omni2-32b",
+            "llama_omni2_32b",
+            "llamaomni2-32b",
+            "ictnlp/llama-omni2-32b",
+        ];
+        for spelling in spellings {
+            assert_eq!(
+                ModelKind::from_arg(spelling),
+                Some(ModelKind::LlamaOmni2),
+                "--model {spelling} must land on ModelKind::LlamaOmni2"
+            );
+            assert!(
+                LlamaOmni2Variant::from_arg(spelling).is_some(),
+                "--model {spelling} parses as ModelKind::LlamaOmni2 but \
+                 LlamaOmni2Variant::from_arg does not recognise it, so convert_file_with_slug \
+                 would fall back to the 7B default and stamp the wrong release identity"
+            );
+        }
+
+        // The three non-default releases must each resolve to their OWN
+        // variant. Without this the previous assertion would still pass
+        // if every spelling collapsed onto 7B.
+        assert_eq!(
+            LlamaOmni2Variant::from_arg("llama-omni2-32b"),
+            Some(LlamaOmni2Variant::_32B)
+        );
+        assert_eq!(
+            LlamaOmni2Variant::from_arg("llama-omni2-1.5b"),
+            Some(LlamaOmni2Variant::_1_5B)
+        );
+        assert_eq!(
+            LlamaOmni2Variant::from_arg("llama-omni2-3b-bilingual"),
+            Some(LlamaOmni2Variant::_3BBilingual)
+        );
+    }
+
+    /// `--model beat-this` without `--config` refuses loudly, and the
+    /// refusal names both the flag and every required key.
+    ///
+    /// The point of the loud-partial is an actionable next step. "beat
+    /// this needs hparams" would be as useless as the unparseable slug
+    /// this wave removed, so the message is asserted to carry the flag
+    /// spelling and all six key names.
+    #[test]
+    fn beat_this_without_config_names_the_flag_and_every_key() {
+        let input = std::path::Path::new("does-not-exist.safetensors");
+        let output = std::path::Path::new("does-not-exist.gguf");
+        let Err(err) = super::convert_beat_this_with_config(input, output, None, None) else {
+            panic!("beat-this without --config must refuse rather than default its axes");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--config"),
+            "refusal must name the flag; got: {msg}"
+        );
+        for key in [
+            "sample_rate",
+            "n_frames",
+            "d_model",
+            "n_layers",
+            "n_head",
+            "n_classes",
+        ] {
+            assert!(
+                msg.contains(key),
+                "refusal must name the required key `{key}`; got: {msg}"
+            );
+        }
+        // The refusal must land before any file I/O: neither path above
+        // exists, so an `Io` error here would mean the check ran too late
+        // to be the reason for the failure.
+        assert!(
+            !msg.contains("I/O error"),
+            "the missing-config refusal must precede reading the checkpoint; got: {msg}"
+        );
     }
 
     /// Every SoTA-plan alias spelling the CLI accepts must dispatch to

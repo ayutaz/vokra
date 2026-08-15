@@ -14,6 +14,8 @@ use std::sync::Arc;
 use vokra_core::gguf::GgufFile;
 use vokra_core::{BackendKind, Session, VokraError};
 use vokra_models::csm::{CsmEngine, EchoPath, FixtureByteTokenizer};
+use vokra_models::distil_whisper::DistilWhisperAsr;
+use vokra_models::kotoba_whisper::KotobaWhisperAsr;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
@@ -263,6 +265,25 @@ const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
 /// string is matched; it is kept verbatim in lock-step with the converter.
 const ARCH_RMVPE: &str = "rmvpe";
 
+// ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
+//
+// Both were carried in `BOUND_ARCHES` as `LoudPartialForward`, which told
+// every user of a real distil-whisper / kotoba-whisper GGUF that the model
+// could not run. That was false: each binder's `from_gguf` loads through
+// `vokra_models::whisper::WhisperAsr` and its `transcribe` delegates to that
+// shared forward, so the runtime has been complete since those loaders
+// landed. Only the config-only scaffold constructors (`::new`, unreachable
+// from a GGUF) hard-error. They are routed here instead, into the same
+// `ModelTask::Asr` the vanilla Whisper arch uses — which is architecturally
+// exact, since the sole difference is a shrunk `n_text_layer`.
+
+/// distil-whisper (`distil-whisper/distil-large-v3.5` and family) — mirror of
+/// `vokra-convert::models::distil_whisper::ARCH`.
+const ARCH_DISTIL_WHISPER: &str = "distil-whisper";
+/// kotoba-whisper (`kotoba-tech/kotoba-whisper-v2.0` and family) — mirror of
+/// `vokra-convert::models::kotoba_whisper::ARCH`.
+const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
+
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
 #[cfg(test)]
@@ -339,6 +360,43 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 return Ok((session, ModelTask::MelFrontend));
             }
             let asr = WhisperAsr::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        // distil-whisper / kotoba-whisper (Wave I): the same `ModelTask::Asr`
+        // the vanilla Whisper arm returns. Both binders wrap
+        // `WhisperAsr::from_gguf` and delegate `transcribe` to it, so the
+        // forward, the op set and the backend seam are literally Whisper's —
+        // the only architectural difference is a shrunk `n_text_layer`, which
+        // the shared config loader reads from the GGUF.
+        //
+        // Loading through the model-specific binder rather than `WhisperAsr`
+        // directly is deliberate: each one enforces the distil invariant
+        // (`n_text_layer < n_audio_layer`) and so refuses a vanilla-Whisper
+        // GGUF that was mis-tagged, or a distil whose decoder tensors were
+        // flattened to the encoder count (FR-EX-08 — a loud mis-label refusal
+        // at load time, which is where such a refusal belongs).
+        ARCH_DISTIL_WHISPER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_DISTIL_WHISPER}`)"
+                ));
+            }
+            let asr = DistilWhisperAsr::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_KOTOBA_WHISPER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_KOTOBA_WHISPER}`)"
+                ));
+            }
+            let asr = KotobaWhisperAsr::from_gguf(session.gguf())
                 .map_err(|e| e.to_string())?
                 .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
@@ -659,6 +717,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Err(format!(
                 "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
+                 `{ARCH_DISTIL_WHISPER}` / `{ARCH_KOTOBA_WHISPER}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
@@ -848,24 +907,13 @@ const BOUND_ARCHES: &[BoundArch] = &[
             vokra_models::canary_qwen::CanaryQwenAsr::from_gguf(g).map(|_| ())
         }),
     },
-    BoundArch {
-        arch: "distil-whisper",
-        module: "vokra_models::distil_whisper",
-        entry: "DistilWhisperAsr::from_gguf → DistilWhisperAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| {
-            vokra_models::distil_whisper::DistilWhisperAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "kotoba-whisper",
-        module: "vokra_models::kotoba_whisper",
-        entry: "KotobaWhisperAsr::from_gguf → KotobaWhisperAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| {
-            vokra_models::kotoba_whisper::KotobaWhisperAsr::from_gguf(g).map(|_| ())
-        }),
-    },
+    // `distil-whisper` and `kotoba-whisper` used to sit here as
+    // `LoudPartialForward`. Both were false — each binder's `transcribe`
+    // delegates to `vokra_models::whisper::WhisperAsr`, a real forward — so
+    // the rows were removed and the two arches routed to `ModelTask::Asr`
+    // instead (see `ARCH_DISTIL_WHISPER` / `ARCH_KOTOBA_WHISPER` above). Do
+    // not re-add them: `bound_arch_registry_is_disjoint_from_the_routed_arches`
+    // now fails on a row that shadows either arch.
     BoundArch {
         arch: "whisper-medusa-v1",
         module: "vokra_models::whisper_medusa",
@@ -2146,6 +2194,94 @@ mod tests {
         );
     }
 
+    // ---- Wave I (2026-08-15) — distil-whisper / kotoba-whisper ----------
+    //
+    // Both shipped as `BOUND_ARCHES` rows labelled `LoudPartialForward`, so a
+    // user holding a real GGUF for either was told the runtime forward was a
+    // loud-partial and `run` refused the model. Reading the binders shows the
+    // opposite: `DistilWhisperAsr::transcribe` / `KotobaWhisperAsr::transcribe`
+    // delegate to `WhisperAsr::transcribe_tokens` whenever the handle came
+    // from `from_gguf` — which is the ONLY way the CLI can build one. The
+    // scaffold arms that do hard-error are reachable only from the in-process
+    // `::new` constructors, which no GGUF can reach.
+    //
+    // Nothing pinned the falsehood, so nothing blocked the fix; these tests
+    // exist so nothing un-fixes it either. Same shape as the fsmn-vad /
+    // nsnet2 routing tests above: a metadata-only fixture cannot bind a
+    // 1.5 B-parameter Whisper checkpoint, so what is asserted is WHICH loader
+    // the dispatch reached — the shared Whisper config reader, never the
+    // registry and never the blanket unknown-arch message.
+
+    /// Asserts `arch` is routed to the shared Whisper ASR loader: the failure
+    /// on a metadata-only fixture is the Whisper config reader's own missing-key
+    /// error, and none of the three "this model cannot run" messages appear.
+    /// Returns the message so a caller can assert further.
+    fn assert_routed_to_whisper_asr(arch: &str, tag: &str) -> String {
+        let err = with_arch_only_gguf(arch, tag, |p| {
+            // let-else rather than `.expect_err()`: `Session` is `!Debug`.
+            let Err(e) = load_session(p) else {
+                panic!("a metadata-only `{arch}` GGUF carries no weights — it cannot bind");
+            };
+            e
+        });
+        assert!(
+            err.contains("whisper config"),
+            "`{arch}` must reach the shared Whisper config loader — that is what proves \
+             the dispatch routes it to the ASR task rather than refusing it: {err}"
+        );
+        assert!(
+            err.contains("vokra.whisper.n_mels"),
+            "`{arch}` must fail on the first missing Whisper hparam key, i.e. inside the \
+             loader and not before it: {err}"
+        );
+        assert!(
+            !err.contains("unsupported model arch"),
+            "`{arch}` is routed — it must never read as unknown: {err}"
+        );
+        assert!(
+            !err.contains("is BOUND"),
+            "`{arch}` is routed, so it must not fall through to the BOUND_ARCHES \
+             registry (a row there would now be unreachable): {err}"
+        );
+        assert!(
+            !err.contains("its runtime forward is a loud-partial"),
+            "`{arch}` delegates its forward to WhisperAsr — calling it a loud-partial is \
+             the exact lie this routing removes: {err}"
+        );
+        err
+    }
+
+    /// distil-whisper (`vokra_models::distil_whisper`) — a real Whisper
+    /// forward behind a shrunk decoder, routed to [`ModelTask::Asr`].
+    #[test]
+    fn load_session_routes_distil_whisper_to_the_whisper_asr_task() {
+        assert_routed_to_whisper_asr("distil-whisper", "distil-whisper-arch");
+    }
+
+    /// kotoba-whisper (`vokra_models::kotoba_whisper`) — same delegation, same
+    /// task. Landed as its own test rather than a loop over both: the two rows
+    /// were wrong INDIVIDUALLY, and a loop reports only the first regression.
+    #[test]
+    fn load_session_routes_kotoba_whisper_to_the_whisper_asr_task() {
+        assert_routed_to_whisper_asr("kotoba-whisper", "kotoba-whisper-arch");
+    }
+
+    /// The registry must not carry either arch again. `assert_routed_to_whisper_asr`
+    /// checks the message a user sees; this checks the data behind it, so a
+    /// re-added row fails here with a direct explanation rather than only as a
+    /// downstream symptom.
+    #[test]
+    fn bound_arch_registry_does_not_slander_the_distilled_whispers() {
+        for arch in [ARCH_DISTIL_WHISPER, ARCH_KOTOBA_WHISPER] {
+            assert!(
+                BOUND_ARCHES.iter().all(|b| b.arch != arch),
+                "`{arch}` has a real forward (its binder delegates to WhisperAsr) and is \
+                 routed to ModelTask::Asr — a BOUND_ARCHES row for it is both unreachable \
+                 and untrue"
+            );
+        }
+    }
+
     /// The registry is well formed: no duplicate arch strings, and no row
     /// shadowing an arch the dispatch actually runs (a duplicate there would
     /// be unreachable and would rot into a lie).
@@ -2159,6 +2295,8 @@ mod tests {
     fn bound_arch_registry_is_disjoint_from_the_routed_arches() {
         let routed = [
             ARCH_WHISPER,
+            ARCH_DISTIL_WHISPER,
+            ARCH_KOTOBA_WHISPER,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,
             ARCH_CSM,

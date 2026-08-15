@@ -30,9 +30,18 @@
 //!   exposure), variant accessors, license-class surfacing.
 //! - **Loud-partial (this WP)**: [`Snac::encode`] / [`Snac::decode`] both
 //!   return [`VokraError::UnsupportedOp`] naming the exact missing primitive
-//!   (encoder Conv1D stack / decoder feature→PCM synthesis chain — neither
-//!   exists in `vokra-ops` today, and both are follow-up WPs sized similarly
-//!   to M4-04/M4-05 codec waves).
+//!   (encoder Conv1D stack / decoder feature→PCM synthesis chain, both
+//!   follow-up WPs sized similarly to M4-04/M4-05 codec waves). Note these
+//!   are **compositions to assemble, not kernels to invent**: a conv1d kernel
+//!   already exists (`vokra_backend_cpu::kernels::conv1d_f32`, reachable
+//!   through `vokra_models::compute::Compute::conv1d_f32` with Metal / CUDA /
+//!   WebGPU coverage), `vokra_ops::snake_activation_f32` /
+//!   `vokra_ops::snake_beta_f32` are landed and Metal-covered, and
+//!   `vokra_ops::hifigan::hifigan_generator` /
+//!   `vokra_ops::bigvgan_generator::BigVGanGenerator` are existing
+//!   feature→PCM synthesis chains to model the decoder on. What is absent is
+//!   SNAC's own topology (its rates, noise blocks and Hz44 local attention),
+//!   not the arithmetic.
 //! - **Deferred (converter-side)**: [`Snac::decode_codes_to_features`] shim
 //!   surfaces the derived-tensor gap: the existing
 //!   `vokra_ops::SnacDecoder::decode` primitive covers the intermediate
@@ -505,8 +514,11 @@ fn encoder_forward_loud_partial(variant: SnacVariant) -> VokraError {
     };
     VokraError::UnsupportedOp(format!(
         "snac ({variant:?}) encode: SNAC encoder Conv1D stack + \
-         `VectorQuantize.forward` are follow-up WPs — none of the required \
-         primitives are in `vokra-ops` today. Missing: (a) encoder Conv1D \
+         `VectorQuantize.forward` are follow-up WPs. NOT missing, do not \
+         re-report: a conv1d kernel already exists \
+         (`vokra_backend_cpu::kernels::conv1d_f32`, reachable through \
+         `Compute::conv1d_f32`) — what is absent is SNAC's own encoder \
+         topology and the VQ search, below. Missing: (a) encoder Conv1D \
          chain (`encoder_rates={downsample_rates}`, {downsample_factor} \
          downsampling — upstream `hubertsiuzdak/snac/blob/main/snac/snac.py` \
          `class Encoder`); (b) `VectorQuantize.forward` (per-stage \
@@ -545,9 +557,17 @@ fn decoder_pcm_forward_loud_partial(variant: SnacVariant) -> VokraError {
          L61-71), NOT the terminal PCM synthesis. Missing: (a) decoder Conv1D \
          upsample stack (`decoder_rates={upsample_rates}` — upstream \
          `hubertsiuzdak/snac/blob/main/snac/snac.py` `class Decoder`); \
-         (b) Snake activation on every decoder block (upstream \
-         `snac/layers.py`); (c) noise module (`noise=true` for both variants); \
-         (d) {attn_note}. See `Snac::decode_codes_to_features` for the \
+         (b) noise module (`noise=true` for both variants); \
+         (c) {attn_note}. NOT missing, do not re-report: Snake activation is \
+         a landed primitive (`vokra_ops::snake_activation_f32` / \
+         `vokra_ops::snake_beta_f32`, Metal-covered via \
+         `HotOp::SnakeActivation`), a conv1d kernel exists \
+         (`vokra_backend_cpu::kernels::conv1d_f32`, reachable through \
+         `Compute::conv1d_f32`), and \
+         `vokra_ops::hifigan::hifigan_generator` / \
+         `vokra_ops::bigvgan_generator::BigVGanGenerator` are existing \
+         feature→PCM chains to model this decoder on — the WP is SNAC's \
+         topology, not the arithmetic. See `Snac::decode_codes_to_features` for the \
          intermediate-features gap (converter-side, separate follow-up). \
          Loud pending — no silent fabricated PCM ever emitted (FR-EX-08)."
     ))

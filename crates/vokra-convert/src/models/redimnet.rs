@@ -83,20 +83,28 @@
 //! against — never fabricated fp32 conversions elsewhere in the
 //! tree).
 //!
-//! # Wiring status
+//! # Wiring status — WIRED (2026-08-15)
 //!
-//! This is the TDD skeleton (BF16 / F16 / F32 pass-through +
-//! provenance / category / topology chunk stamps). CLI + `ModelKind`
-//! + `pub use` re-export in `lib.rs` land in the same commit. The
-//! module-level `#[allow(dead_code)]` is temporary and removed as
-//! soon as callers exercise the API — the same sibling wespeaker
-//! pattern.
-
-// Skeleton-only allowance: the public API is exercised by the
-// in-module tests + wired to the CLI + `ModelKind` + `pub use`
-// re-export in `lib.rs` in the same commit. Removed once callers
-// exercise the API outside tests.
-#![allow(dead_code)]
+//! BF16 / F16 / F32 pass-through + provenance / category / topology
+//! chunk stamps, reachable end to end:
+//!
+//! - `ModelKind::Redimnet` with `from_arg("redimnet")` /
+//!   `as_arg() == "redimnet"` — the exact spelling the runtime binder
+//!   `crates/vokra-models/src/redimnet/mod.rs` names in its four
+//!   recovery messages;
+//! - a `convert_file_licensed` dispatch arm and a `verify()` arm in
+//!   `vokra-convert/src/main.rs`;
+//! - `pub use models::redimnet::{RedimnetReport, convert_redimnet_file}`
+//!   in `lib.rs`, without which the whole module is unreachable through
+//!   the private `mod models`.
+//!
+//! This module previously carried a module-level `#![allow(dead_code)]`
+//! while none of the above existed. That attribute was load-bearing
+//! camouflage: it silenced the warnings that were correctly reporting
+//! an unreachable module, so nothing surfaced the fact that the binder
+//! demanded a GGUF no entry point could produce. It is deleted rather
+//! than kept "just in case" — if a `pub` item here ever goes dead
+//! again, that is a fact worth learning from the compiler.
 
 use std::path::Path;
 

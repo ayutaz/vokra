@@ -18,9 +18,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ConvertError, ConvertSummary, ModelKind, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_csm_file, convert_dac_file, convert_file_licensed, convert_file_quantized,
-    convert_moshi_file, convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
+    ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
+    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
+    convert_file_licensed, convert_file_quantized, convert_moshi_file, convert_piper_plus_file,
+    convert_sbv2_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -283,6 +284,24 @@ fn main() -> ExitCode {
             // directly instead, mirroring the `Csm` / `Moshi` /
             // `CosyVoice2` / `CosyVoice3` arms above.
             convert_sbv2(&input, config.as_deref(), &output, license.as_deref())
+        }
+        ModelKind::BeatThis => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // Same reason as the `SbV2` arm above: `convert_file_licensed`
+            // has no `--config` parameter to forward, so routing through
+            // the generic `_ =>` arm would drop this flag on the floor.
+            // (Its `BeatThis` branch refuses loudly rather than silently
+            // defaulting, so nothing would be *mis-stamped* — but the
+            // command would be unusable from this binary.)
+            //
+            // The upstream `CPJKU/beat_this` `.pt` release ships no
+            // config.yaml, so the six `vokra.beat_this.*` axes have to
+            // come from the caller; `convert_beat_this_with_config`
+            // documents the schema and refuses every missing key by name.
+            convert_beat_this_with_config(&input, &output, config.as_deref(), license.as_deref())
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
@@ -2707,6 +2726,25 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // provenance-triple lookup; `vokra-models::ct_punc::CtPunc::from_gguf`
         // is what validates the full topology.
         | ModelKind::CtPunc
+        // 2026-08-15 audit follow-up: ReDimNet2 B6-LM speaker backbone
+        // (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`, apache-2.0).
+        // HF-hosted, stamps `vokra.provenance.upstream_hf`, so it belongs
+        // on this arm rather than the GitHub-only `upstream_url` arm
+        // below. Speaker-fleet sibling of campplus / wespeaker /
+        // ecapa_tdnn / titanet / speaker_3d / wavlm_sv. The twelve
+        // `vokra.redimnet.*` topology axes are deliberately NOT read back
+        // here — that is `vokra-models::redimnet`'s strict-loader job;
+        // this arm is the uniform provenance-triple lookup.
+        | ModelKind::Redimnet
+        // 2026-08-15 audit follow-up: LLaMA-Omni2 streaming S2S
+        // (`ICTNLP/LLaMA-Omni2-*`, apache-2.0). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = ICTNLP/LLaMA-Omni2-<variant>`
+        // — the repo id is per-release, which is exactly why printing it
+        // back matters: it is how an operator confirms that `--model
+        // llama-omni2-32b` stamped the 32B identity and not the 7B
+        // default. The `vokra.llama_omni2.variant` chunk is validated by
+        // `vokra-models::llama_omni2`, not here.
+        | ModelKind::LlamaOmni2
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
@@ -3001,10 +3039,25 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // (the `vokra.tokenizer.model` precedent — `GgmlType` has no byte
         // dtype), so its tensor count is legitimately 0 and the grammar
         // detail lives in the `vokra.itn.*` chunk group.
+        // 2026-08-15 audit follow-up: MT3 and Beat This! join this arm.
+        // Both are GitHub-native releases with no HF mirror, so both
+        // stamp `vokra.provenance.upstream_url` (`github.com/magenta/mt3`
+        // and `github.com/CPJKU/beat_this`) and would print `<none>` for
+        // the upstream if they fell onto the `upstream_hf` arm above.
+        //
+        // Printing `weight_license` back is doubly load-bearing for MT3:
+        // its converter hard-maps the class to `Unknown` no matter what
+        // `--license` says, because the `gs://mt3/checkpoints/` bucket
+        // ships no LICENSE. An operator who passed `--license apache-2.0`
+        // and saw only the raw SPDX echoed would reasonably conclude the
+        // artifact is cleared for redistribution; the class column is
+        // where the fail-closed verdict is visible.
         ModelKind::DtlnAec
         | ModelKind::Gtcrn
         | ModelKind::Storm
         | ModelKind::DiffSinger
+        | ModelKind::Mt3
+        | ModelKind::BeatThis
         | ModelKind::WeTextProcessing => {
             let arch = file
                 .get("vokra.model.arch")

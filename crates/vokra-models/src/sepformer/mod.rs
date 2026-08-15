@@ -83,8 +83,13 @@
 //! `[[feedback-python-3-12]]` bridges to safetensors), (ii) composing
 //! the `SBTransformerBlock`-based intra/inter masker forward from
 //! Vokra's existing softmax + GEMM + LayerNorm primitives (no new op
-//! needed for the Transformer body itself; the composition + the
-//! encoder / decoder Conv1D bank is the greenfield work).
+//! needed for the Transformer body itself). The learnable encoder /
+//! decoder Conv1D bank is **not** greenfield either: a conv1d kernel
+//! exists at `vokra_backend_cpu::kernels::conv1d_f32` and is reachable
+//! through `vokra_models::compute::Compute::conv1d_f32` with Metal /
+//! CUDA / WebGPU coverage. The greenfield work is the *composition* —
+//! SepFormer's dual-path chunking, the `n_out`-way parallel mask head,
+//! and the overlap-add — not the arithmetic underneath it.
 //!
 //! # `vokra.sepformer.*` chunk group (read here)
 //!

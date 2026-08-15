@@ -92,14 +92,21 @@ pub enum HotOp {
     /// runtime function in `vokra-ops` rather than an [`vokra_core::OpKind`]
     /// variant (module docs in `vokra_ops::mimi_rvq`).
     ///
-    /// **CPU-only through the imperative seam today.** The Metal / CUDA arms
-    /// of [`Compute::mimi_rvq_f32`] return an explicit
-    /// [`VokraError::UnsupportedOp`]; the M3-06 T14 (Metal) / T15 (CUDA) GPU
-    /// kernels are deferred to the M3-09 mimi_bridge upgrade past stub. This
-    /// variant therefore has `covered_by_metal` / `covered_by_cuda` /
-    /// `covered_by_vulkan` return `false`, so any model that lists `MimiRvq`
-    /// in its required set will fail `for_backend(Metal|Cuda|Vulkan, …)` with
-    /// a coverage `UnsupportedOp` — never a silent CPU fall back (FR-EX-08).
+    /// **Metal-covered since M3-06 T14 (2026-08-13)** — do not report the
+    /// Metal kernel as missing. [`Compute::mimi_rvq_f32`] dispatches the
+    /// `vokra_mimi_rvq_gather_fold_f32` MSL kernel (shape-generic FP32 gather
+    /// + fold, bit-identical to `vokra_ops::mimi_rvq::rvq_fold_core`, with the
+    ///   per-index bound check host-side upstream of the dispatch — FR-EX-08),
+    ///   so `covered_by_metal` returns `true` for this variant.
+    ///
+    /// Still uncovered on **CUDA** (the M3-06 T15 NVRTC sibling is on the
+    /// vast.ai owner track), on **Vulkan** (needs the M3-06 kernels' Vulkan
+    /// sibling — it is not on the M3-02 T14〜T22 track at all) and on
+    /// **WebGPU**, so a model listing `MimiRvq` still fails
+    /// `for_backend(Cuda|Vulkan|WebGpu, …)` with a coverage
+    /// `UnsupportedOp` — never a silent CPU fall back (FR-EX-08). The
+    /// `metal_coverage_is_consistent` / `vulkan_coverage_is_consistent` tests
+    /// pin this table to the `Compute` method arms.
     MimiRvq,
     /// DAC (Descript) factorized residual VQ codec decode
     /// (`dac_rvq_decode`) — M4-04, FR-OP-30. Same heterogeneous-signature /
@@ -107,20 +114,30 @@ pub enum HotOp {
     /// projection operands ([`DacOutProj`]). Kept a **separate variant** from
     /// `MimiRvq` so the coverage table stays honest per op (ADR M4-04 §D-e).
     ///
-    /// **CPU-only through the imperative seam today** — the Metal / CUDA arms
-    /// of [`Compute::dac_rvq_f32`] return an explicit
-    /// [`VokraError::UnsupportedOp`] (the M4-04 GPU kernels are deferred; the
-    /// naive gather + GEMV + fold layout note in `vokra_ops::mimi_rvq`
-    /// L104-106 applies to all three RVQ ops). `covered_by_*` return `false`
-    /// so the coverage gate rejects GPU listings (FR-EX-08).
+    /// **Metal-covered since M4-04 WF2 (2026-08-13)** — do not report the
+    /// Metal kernel as missing. [`Compute::dac_rvq_f32`] dispatches the
+    /// `vokra_dac_rvq_gather_project_fold_f32` MSL kernel (factorized gather +
+    /// per-quantizer projection + FP32 fold, equal to
+    /// `vokra_ops::dac_rvq::dac_rvq_decode` within FP32 fast-math tolerance,
+    /// with the per-index bound check host-side upstream — FR-EX-08), so
+    /// `covered_by_metal` returns `true` for this variant.
+    ///
+    /// Still uncovered on **CUDA / Vulkan / WebGPU** (the CUDA sibling is on
+    /// the vast.ai owner track; the naive gather + GEMV + fold layout note in
+    /// `vokra_ops::mimi_rvq` L104-106 applies to all three RVQ ops), so the
+    /// coverage gate rejects those listings (FR-EX-08).
     DacRvq,
     /// EnCodec residual VQ codec decode (`encodec_rvq_decode`) — M4-04,
     /// FR-OP-30 op / FR-OP-32 permanent weight exclusion. The op rides the
     /// shape-generic gather + FP32 fold; **pretrained EnCodec weights never
     /// ship** (the official zoo excludes them permanently; the M2-13 gate
     /// refuses them without a research flag). Separate variant for honest
-    /// per-op coverage (ADR M4-04 §D-e); CPU-only today like
-    /// [`HotOp::DacRvq`].
+    /// per-op coverage (ADR M4-04 §D-e).
+    ///
+    /// **CPU-only on every backend today** — the last RVQ variant with no
+    /// Metal kernel (its siblings [`HotOp::MimiRvq`] and [`HotOp::DacRvq`]
+    /// both flipped to Metal-covered on 2026-08-13; this one did not, which is
+    /// exactly why the coverage table is per-op).
     EncodecRvq,
     /// WavTokenizer single-codebook VQ decode (`wavtokenizer_vq_decode`) —
     /// M4-16, FR-OP-31 **FSQ family** (single-stage, *separate subgraph from
@@ -421,16 +438,26 @@ impl HotOp {
 
     /// Whether the Vulkan backend's imperative [`Compute`] seam covers this op.
     ///
-    /// **M3-02 foundation slice (2026-07-09):** no SPIR-V kernel is wired yet
-    /// (`crates/vokra-backend-vulkan/kernels/precompiled/` ships no `.spv`
-    /// blob), so **every** hot op is uncovered — including [`HotOp::MimiRvq`]
-    /// — and `covered_by_vulkan(_) = false` for every variant. As T14〜T22
-    /// land, this method flips to `true` op-by-op, in lock-step with the
-    /// `Be::Vulkan` arms of the `Compute` methods below (the
-    /// `vulkan_coverage_is_consistent` test pins the two together). MimiRvq
-    /// on Vulkan is not on the M3-02 track at all — it lands with the M3-06
-    /// GPU kernels' Vulkan sibling (M4+), so the `false` here holds through
-    /// the whole Vulkan T14〜T22 rollout.
+    /// **`false` for every variant — but NOT because the shaders are
+    /// missing.** Do not read this as "compile the SPIR-V first": that work is
+    /// done. `crates/vokra-backend-vulkan/kernels/precompiled/` ships all 12
+    /// `.spv` blobs (M4-13-T16, 2026-07-19, glslangValidator-pinned with
+    /// `SHA256SUMS` + `PROVENANCE`), and `VulkanBackend` already exposes typed
+    /// dispatch entry points over them — `gemm_f32` / `gemv_f32` /
+    /// `softmax_f32` / `softmax_causal_f32` / `layer_norm_f32` / `gelu_f32` /
+    /// `conv1d_f32` (M4-13-T03〜T08).
+    ///
+    /// What is missing is on **this** side of the seam: the private `Be` enum
+    /// has no `Vulkan` variant, so the `Compute` methods below have no arm to
+    /// delegate into. Flipping an op to `true` therefore means adding that arm
+    /// and routing it at the already-landed `VulkanBackend` method — in
+    /// lock-step, pinned by the `vulkan_coverage_is_consistent` test. Claiming
+    /// a shader gap here would send the next reader off to recompile kernels
+    /// that are already committed.
+    ///
+    /// [`HotOp::MimiRvq`] is the one variant whose `false` survives that
+    /// wiring: it is not on the M3-02 T14〜T22 track at all and needs the
+    /// M3-06 GPU kernels' Vulkan sibling (M4+).
     ///
     /// The consequence today is that `Compute::for_backend(BackendKind::Vulkan,
     /// &required)` returns an explicit [`VokraError::UnsupportedOp`] for every
@@ -440,12 +467,14 @@ impl HotOp {
         any(target_os = "linux", target_os = "android", target_os = "windows")
     ))]
     fn covered_by_vulkan(self) -> bool {
-        // Foundation slice: the Vulkan backend has NO wired kernels. This is
-        // the honest state — as ticket M3-02-T14 ships the GEMM `.spv`, its
-        // arm becomes `HotOp::Gemm => true`; T15 flips GEMV, and so on. Note
+        // The `Compute` seam has no Vulkan arm — NOT "the shaders are
+        // missing". The 12 `.spv` blobs and the typed `VulkanBackend::*_f32`
+        // dispatch entry points both landed (see this method's docs); what is
+        // absent is a `Be::Vulkan` variant here to delegate into. Flipping an
+        // op to `true` means adding that arm, not compiling a kernel. Note
         // that MimiRvq is off the M3-02 T14〜T22 track (it needs the M3-06 GPU
         // kernels' Vulkan sibling, which is an M4+ item), so this method will
-        // still return `false` for `HotOp::MimiRvq` after T22 lands.
+        // still return `false` for `HotOp::MimiRvq` after that wiring lands.
         let _ = self;
         false
     }
@@ -647,24 +676,29 @@ impl Compute {
             BackendKind::Vulkan => {
                 if let Some(op) = required.iter().copied().find(|op| !op.covered_by_vulkan()) {
                     return Err(VokraError::UnsupportedOp(format!(
-                        "vulkan backend has no wired kernel for {op:?} in the M3-02 foundation \
-                         slice; the model requires {required:?}. \
-                         `crates/vokra-backend-vulkan/kernels/precompiled/` ships no .spv blob \
-                         yet — every hot op is uncovered. One model = one backend — Vokra does \
-                         not silently run the uncovered ops on the CPU (FR-EX-08). Select \
-                         BackendKind::Cpu, or wait for the SPIR-V kernels (M3-02-T14〜T22)."
+                        "vulkan: the Compute seam has no arm for {op:?}; the model requires \
+                         {required:?}. NOTE — the SPIR-V kernels are NOT the gap: \
+                         `crates/vokra-backend-vulkan/kernels/precompiled/` ships all 12 .spv \
+                         blobs (M4-13-T16) and `VulkanBackend` exposes gemm_f32 / gemv_f32 / \
+                         softmax_f32 / softmax_causal_f32 / layer_norm_f32 / gelu_f32 / \
+                         conv1d_f32 over them (M4-13-T03〜T08). What is missing is a \
+                         `Be::Vulkan` variant in `vokra_models::compute` delegating to those \
+                         methods. One model = one backend — Vokra does not silently run the \
+                         uncovered ops on the CPU (FR-EX-08). Select BackendKind::Cpu until \
+                         that seam arm lands."
                     )));
                 }
-                // `required` is empty AND every hot op is uncovered — the
-                // foundation slice cannot construct a useful `Compute::Vulkan`
-                // dispatcher (no callable kernel). Surface an explicit error
-                // rather than pretending a coverage-empty dispatcher is usable.
-                // Once T14+ lands, this branch becomes an
-                // `Ok(Compute { be: Be::Vulkan(...) })` — the same shape as the
-                // Metal / CUDA arms above.
+                // `required` is empty AND every hot op is uncovered — there is
+                // no `Be::Vulkan` variant to construct a dispatcher around, so
+                // surface an explicit error rather than pretending a
+                // coverage-empty dispatcher is usable. Wiring that variant
+                // turns this branch into `Ok(Compute { be: Be::Vulkan(...) })`
+                // — the same shape as the Metal / CUDA arms above.
                 Err(VokraError::UnsupportedOp(
-                    "vulkan Compute path has no wired kernels in the M3-02 foundation slice — \
-                     no covered required set exists. Wait for M3-02-T14+ SPIR-V kernels."
+                    "vulkan: `vokra_models::compute` has no `Be::Vulkan` seam arm, so no \
+                     covered required set exists. The SPIR-V kernels are NOT the gap — all 12 \
+                     .spv blobs and the typed `VulkanBackend::*_f32` dispatch entry points have \
+                     landed; the seam arm delegating to them has not."
                         .to_owned(),
                 ))
             }
@@ -4092,12 +4126,39 @@ mod tests {
         ] {
             assert!(
                 !op.covered_by_vulkan(),
-                "{op:?} unexpectedly covered by the M3-02 foundation-slice Vulkan backend \
-                 (kernels/precompiled/ still ships no .spv). If T14+ has just landed a kernel, \
-                 update `HotOp::covered_by_vulkan` to `true` for the covered variants and shrink \
-                 this test's negative-assertion set accordingly.",
+                "{op:?} unexpectedly covered: `HotOp::covered_by_vulkan` says `true` but the \
+                 `Compute` methods have no `Be::Vulkan` arm to delegate into. Flip the coverage \
+                 flag and the seam arm together, then shrink this test's negative-assertion set \
+                 accordingly.",
             );
         }
+
+        // --- Anti-rot guard: the diagnostic must not blame the shaders.
+        //
+        // All 12 `.spv` blobs (M4-13-T16) and the typed
+        // `VulkanBackend::*_f32` dispatch entry points (M4-13-T03〜T08)
+        // landed long ago; an earlier revision of this arm still told the
+        // reader to "wait for the SPIR-V kernels", which sends them off to
+        // recompile committed artefacts. Assert the stale phrasing is ABSENT
+        // as well as asserting the live blocker is named — omission alone is
+        // not enforceable (mirror of the `beat_this` guard).
+        let Err(VokraError::UnsupportedOp(msg)) =
+            Compute::for_backend(BackendKind::Vulkan, &[HotOp::Gemm])
+        else {
+            panic!("Vulkan must reject an uncovered required set with UnsupportedOp");
+        };
+        assert!(
+            !msg.contains("ships no .spv"),
+            "stale claim — kernels/precompiled/ ships all 12 blobs: {msg}"
+        );
+        assert!(
+            !msg.contains("wait for the SPIR-V kernels"),
+            "stale instruction — the SPIR-V kernels have landed: {msg}"
+        );
+        assert!(
+            msg.contains("Be::Vulkan"),
+            "must name the seam arm that is actually missing: {msg}"
+        );
         // Every non-empty required set therefore fails coverage with an
         // explicit `UnsupportedOp` — no silent CPU fall back (FR-EX-08).
         for op in [

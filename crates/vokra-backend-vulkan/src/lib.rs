@@ -15,19 +15,27 @@
 //!   [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable)
 //!   elsewhere (FR-EX-08 / NFR-RL-06 — never a silent CPU fall back);
 //! - the [`VulkanBackend`] trait handle with honest, no-silent-fallback op
-//!   coverage — no SPIR-V kernel ships yet, so every op reports
+//!   coverage, reporting
 //!   [`VokraError::UnsupportedOp`](vokra_core::VokraError::UnsupportedOp)
-//!   until T14〜T22 land;
+//!   for anything it cannot dispatch;
 //! - a `VkInstance` create + destroy round-trip through the loader (T06 +
 //!   T07 partial).
 //!
-//! The remaining M3-02 tickets (SPIR-V shaders for GEMM /
-//! GEMV / softmax / softmax_causal / layer_norm / gelu / conv1d / elementwise
-//! / activation / shape-ops with subgroup + cooperative-matrix fallback path
-//! — T14〜T22; graph-executor Vulkan arm — T26〜T29; Whisper-base parity —
-//! T32〜T34; CI wiring — T36〜T38) build on top of this slice. Android arm64
-//! cross-build (T37) and Android real-device RTF (T39〜T40, owner run) are
-//! future work.
+//! **Status update — the SPIR-V kernels have landed (M4-13, 2026-07-19).**
+//! Do not read the "foundation slice" framing above as "no shader exists":
+//! `kernels/precompiled/` ships all 12 `.spv` blobs (T16, glslangValidator
+//! pinned, with `SHA256SUMS` + `PROVENANCE`), and [`VulkanBackend`] exposes
+//! typed dispatch entry points over them — `gemm_f32` / `gemv_f32` /
+//! `softmax_f32` / `softmax_causal_f32` / `layer_norm_f32` / `gelu_f32` /
+//! `conv1d_f32` (T03〜T08). What is still absent is on the consumer side:
+//! `vokra_models::compute` has no `Be::Vulkan` seam arm delegating into
+//! those methods, so `Compute::for_backend(BackendKind::Vulkan, …)` still
+//! refuses every op.
+//!
+//! The remaining M3-02 tickets (graph-executor Vulkan arm — T26〜T29;
+//! Whisper-base parity — T32〜T34; CI wiring — T36〜T38) build on top of this
+//! slice. Android arm64 cross-build (T37) and Android real-device RTF
+//! (T39〜T40, owner run) are future work.
 //!
 //! # Design record (M3-02-T01, recorded here)
 //!
