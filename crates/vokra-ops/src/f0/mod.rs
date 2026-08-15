@@ -1,5 +1,20 @@
 //! Classical DSP F0 (fundamental frequency / pitch) extractors
-//! (FR-OP-83 classical branch — landing WP **M5-16**).
+//! (FR-OP-83 classical branch).
+//!
+//! # Reachability (was: "landing WP M5-16")
+//!
+//! This header carried a blanket "landing WP **M5-16**" label until
+//! 2026-08-16, by which point it was half false. [`yin`] and [`pyin`] are
+//! reachable from a shipped binary as `vokra-cli f0 --algo yin|pyin`; what
+//! remains dormant under M5-16 is the UNIFIED `f0_extract` API of FR-OP-83
+//! that would put these two and the neural members
+//! (`vokra_models::f0::{rmvpe, fcpe, crepe}`) behind one entry point.
+//!
+//! The distinction is worth keeping straight: the two here need no
+//! checkpoint, no license class and no `docs/license-audit.md` §3.1 row, so
+//! nothing external gates them — they were simply never wired to a binary,
+//! which is a different problem from being blocked. The neural members do
+//! load weights and stay on `vokra-cli run --model <gguf>`.
 //!
 //! # Scope
 //!
