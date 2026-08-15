@@ -46,10 +46,13 @@
 //!   -> Whisper-lineage speech encoder                 ← **loud-partial**
 //!        (raw PCM -> semantic features; exact encoder
 //!         backbone / hidden dim / layer count deferred
-//!         to real-checkpoint dump since the converter
-//!         does not currently stamp `vokra.voila.*`
-//!         axes — mirror of the emotion2vec / moonshine
-//!         "converter does not yet stamp variant axes"
+//!         to real-checkpoint dump. The converter
+//!         deliberately stamps no `vokra.voila.*` axes —
+//!         they are not transcribable from the primary
+//!         sources and shift per release, so a guessed
+//!         value in a redistributed artifact would be a
+//!         fabrication. Mirror of the emotion2vec /
+//!         moonshine "no fabricated variant axes"
 //!         posture)
 //!   -> Voila LLM backbone forward                     ← **loud-partial**
 //!        (transformer decoder that consumes speech
@@ -117,6 +120,40 @@
 //! manager — FR-EX-08 forbids the silent shape misroute across S2S
 //! sibling arches.
 //!
+//! # Converter handshake (what produces a GGUF this binder accepts)
+//!
+//! `crates/vokra-convert/src/models/voila.rs`, reached from the CLI as
+//! `vokra-cli convert --model voila` (or `vokra_convert::convert_voila_file`
+//! / `convert_file_licensed(ModelKind::Voila, ..)` in-process). It is a
+//! **BF16 pass-through skeleton**: every F32 / F16 / BF16 tensor is emitted
+//! verbatim under its upstream `state_dict` name, and the metadata it
+//! writes is exactly `vokra.model.{arch,name,category}` +
+//! `vokra.provenance.{upstream_url,weight_license,license,model_id,source}`.
+//!
+//! That is enough, because this binder gates on precisely two things —
+//! `vokra.model.arch == "voila"` and a non-empty tensor manifest — and
+//! walks no specific tensor name. A pass-through artifact therefore binds
+//! end to end, and [`Voila::converse`] is the only thing still deferred.
+//!
+//! Two deliberate omissions on the converter side, so a reader does not
+//! go looking for chunks that were never meant to exist:
+//!
+//! - **No `vokra.voila.*` topology chunk.** The per-release speech-encoder
+//!   and LLM-backbone axes are not transcribable from the primary sources
+//!   and shift across the four releases; the converter abstains rather
+//!   than guessing, and this binder reads none of them anyway.
+//! - **No `vokra.provenance.upstream_hf`.** Provenance rides
+//!   `vokra.provenance.upstream_url = "github.com/maitrix-org/Voila"` (the
+//!   MIT reference-code tree, the verified primary source). Stamping a
+//!   HuggingFace repo id would assert a per-release identity nobody has
+//!   verified — see [`UPSTREAM_HF`].
+//!
+//! **Redistribution is still fail-closed.** `docs/license-audit.md` §3.1
+//! carries no Voila row, so the publish chain refuses a converted artifact
+//! on the sign-off gate. Adding and signing that row is owner-only work
+//! (memory `[[feedback-license-signoff-primary-source]]` — CC does not
+//! pre-fill it).
+//!
 //! # Cross-crate constant duplication
 //!
 //! Mirror of the converter's [`ARCH`] / [`NAME`] / [`CATEGORY`] /
@@ -172,10 +209,21 @@ pub const NAME: &str = "voila";
 /// advertised as an ASR / TTS release.
 pub const CATEGORY: &str = "s2s";
 
-/// Upstream reference-code slug (mirror of the converter's
-/// `UPSTREAM_HF` / `UPSTREAM_REPO` equivalent — recorded here so the
-/// runtime binder can echo it in loud-partial diagnostics without
-/// re-fetching a manifest).
+/// Upstream reference-code `org/repo` slug, mirrored by the converter's
+/// `vokra_convert::models::voila::UPSTREAM_HF` — recorded here so this
+/// binder can echo it in loud-partial diagnostics without re-fetching a
+/// manifest.
+///
+/// **The name is historical: this is a GitHub slug, not a HuggingFace
+/// repo id.** The verified primary source is
+/// `github.com/maitrix-org/Voila` (MIT); the weights live under the
+/// `huggingface.co/maitrix-org` org at per-release repo ids that shift
+/// across `Voila-base` / `Voila-chat` / `Voila-audio-alpha` /
+/// `Voila-autonomous-preview` and are owner-verified at bind time. The
+/// converter accordingly stamps `vokra.provenance.upstream_url =
+/// "github.com/maitrix-org/Voila"` and asserts no HF repo id — the
+/// GitHub-native posture of the sibling `facebook_denoiser` / `beats` /
+/// `nkf_aec` / `rnnoise` / `nsnet2` converters.
 pub const UPSTREAM_HF: &str = "maitrix-org/Voila";
 
 /// Raw PCM sample rate the Voila speech encoder consumes at the
@@ -494,8 +542,10 @@ fn converse_forward_loud_partial() -> VokraError {
          requires its own binding pass); \
          (ii) Whisper-lineage speech encoder — raw PCM ({VOILA_SAMPLE_RATE} Hz \
          mono f32) -> semantic features; exact encoder backbone / hidden dim \
-         / layer count deferred to real-checkpoint dump since the converter \
-         does not currently stamp `vokra.voila.*` axes; \
+         / layer count deferred to real-checkpoint dump. `vokra-cli convert \
+         --model voila` deliberately stamps no `vokra.voila.*` axes: they are \
+         not transcribable from the primary sources and shift per release, so \
+         a guessed value in a redistributed artifact would be a fabrication; \
          (iii) Voila LLM backbone forward — transformer decoder that consumes \
          speech features + previous turn context to produce speech tokens; \
          exact backbone family / depth / width deferred to real-checkpoint \

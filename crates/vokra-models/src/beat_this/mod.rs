@@ -9,21 +9,41 @@
 //! ```text
 //! PCM (mono f32, sample_rate per config)
 //!   -> log-mel front-end                     ← **loud-partial**
-//!        (Hann-window STFT + Mel filterbank, n_frames per analysis
-//!         window per config — Vokra's shared STFT + Mel-filterbank
-//!         primitives cover the front-end math, the wire-up onto
-//!         beat_this' upstream mel spec lands in the follow-up wave.)
-//!   -> stacked Transformer encoder blocks    ← **loud-partial**
-//!        (n_layers × (multi-head self-attn + FFN), no shared MHA
-//!         primitive exists in `vokra-ops` today — every Transformer
-//!         model in the tree (`whisper` / `canary` / `voxtral`)
-//!         re-implements attention from `softmax` + `GEMM` +
-//!         `LayerNorm` primitives, so beat_this' encoder body is
-//!         greenfield attention code the follow-up wave lands.)
+//!        (upstream is torchaudio MelSpectrogram(n_fft=1024,
+//!         hop_length=441, n_mels=128, f_min=30, f_max=11000,
+//!         mel_scale="slaney", normalized="frame_length", power=1)
+//!         followed by log1p(1000 · x). Vokra's STFT + Mel-filterbank
+//!         primitives cover the filterbank itself, but the
+//!         frame-length normalisation and the log1p multiplier are
+//!         neither expressible through `vokra.frontend.*` nor stamped
+//!         anywhere in `vokra.beat_this.*`.)
+//!   -> convolutional frontend                ← **loud-partial**
+//!        (BatchNorm1d(spect_dim) → Conv2d(1, stem_dim, kernel (4,3),
+//!         stride (4,1)) → BatchNorm2d → GELU, then three blocks of
+//!         [optional PartialFTTransformer → Conv2d(kernel (2,3),
+//!         stride (2,1))], then `b c f t -> b t (c f)` and a linear
+//!         projection to the transformer width. `vokra-ops` exposes no
+//!         public BatchNorm and no public 2-D convolution — its only
+//!         Conv2d is `denoise.rs`' private DeepFilterNet-internal
+//!         grouped conv, and `waveform_frontend` is Conv1d over time —
+//!         while `vokra_ops::vit::vit_patch_embed` is a single
+//!         non-overlapping linear patchifier over a 1-channel plane,
+//!         which is a different function.)
+//!   -> roformer encoder blocks               ← **loud-partial**
+//!        (`vokra_ops::vit::ViTEncoder` DOES now supply a pre-norm
+//!         multi-head-self-attention + MLP stack, so this model no
+//!         longer needs attention written from scratch. It is still
+//!         the wrong function here: beat_this normalises with RMSNorm
+//!         (learnable γ only, no β, no mean subtraction) and rotates
+//!         RotaryEmbedding(head_dim) into q and k inside every layer,
+//!         while `ViTEncoder` is LayerNorm (γ and β, mean-centred) by
+//!         construction and takes position from one additive absolute
+//!         table applied before the stack.)
 //!   -> 2-head classifier + activation        ← **loud-partial**
-//!        (per-frame beat activation + per-frame downbeat activation
-//!         posteriorgrams; caller peak-picks these directly — the
-//!         paper's central claim is "no DBN postprocessing".)
+//!        (Linear(dim, 2) → `b t c -> c b t` → per-frame beat and
+//!         per-frame downbeat activation posteriorgrams; caller
+//!         peak-picks these directly — the paper's central claim is
+//!         "no DBN postprocessing".)
 //!   -> BeatAnalysis { beat_frames, downbeat_frames, confidence }
 //! ```
 //!
@@ -40,23 +60,38 @@
 //!   tensors is refused rather than silently running an all-zero
 //!   forward), license-class surfacing.
 //! - **Loud-partial (this WP)**: [`BeatThis::analyze`] returns
-//!   [`VokraError::UnsupportedOp`] naming the exact missing primitive
-//!   (Transformer encoder forward — greenfield attention code, sized
-//!   similarly to the whisper / canary / voxtral per-model attention
-//!   implementations).
+//!   [`VokraError::UnsupportedOp`] naming the blockers that are still
+//!   real — the roformer's RMSNorm + rotary attention (which
+//!   `vokra_ops::vit::ViTEncoder`'s LayerNorm + additive absolute
+//!   positional table cannot stand in for without being *silently*
+//!   wrong), the convolutional frontend `vokra-ops` exposes no public
+//!   primitive for, the axis-factorised `PartialFTTransformer`, and that
+//!   the `vokra.beat_this.*` group carries no chunk for `spect_dim` /
+//!   `stem_dim` / `ff_mult` / `head_dim` / `partial_transformers` /
+//!   `sum_head`, so the model could not be sized from this GGUF even
+//!   with a complete primitive set. The message also states what is
+//!   **already resolved**, so a reader does not re-report the encoder
+//!   skeleton as missing.
 //!
 //! Rationale (RMVPE / pyannote / hifigan Wave 1 precedent, CLAUDE.md 教訓
 //! (a)): the surrounding scaffold + `from_gguf` chunk-group validation +
-//! FR-EX-08 loud-fails land today so a follow-up wave can flip the
-//! switch by (i) sourcing an upstream config transcription (log-mel
-//! front-end axes + Transformer body axes) either from `.pt` tensor-shape
-//! walk in `tools/parity/beat_this_prepare_checkpoint.py` (uv-managed
-//! Python 3.12 sidecar per memory `[[feedback-python-uses-uv]]` +
-//! `[[feedback-python-3-12]]`) or from the upstream README + reference
-//! source (`github.com/CPJKU/beat_this/blob/main/beat_this/model/beat_tracker.py`),
-//! and (ii) writing the encoder + 2-head classifier forward against those
-//! axes. The [`VokraError::UnsupportedOp`] message cites the primary
-//! source so a reader diagnosing this gap has exactly one place to walk.
+//! FR-EX-08 loud-fails land today so a follow-up wave can flip the switch
+//! by (i) landing the primitives this architecture actually needs (an
+//! RMSNorm pre-norm block with rotary q/k, a BatchNorm + strided 2-D conv
+//! frontend, and the factorised frequency/time attention), and (ii)
+//! widening the `vokra.beat_this.*` group to carry the axes that size
+//! them. The upstream defaults transcribed from the primary sources
+//! below (`spect_dim=128`, `transformer_dim=512`, `ff_mult=4`,
+//! `n_layers=6`, `head_dim=32`, `stem_dim=32`, `sum_head=True`,
+//! `partial_transformers=True`) are recorded here as a *reading of
+//! upstream*, *not* as a fallback this binder will ever apply — the
+//! checkpoint stays the only authority, and
+//! `tools/parity/beat_this_prepare_checkpoint.py` (uv-managed Python 3.12
+//! sidecar per memory `[[feedback-python-uses-uv]]` +
+//! `[[feedback-python-3-12]]`) is where a caller confirms them against
+//! real tensor shapes. Each [`VokraError::UnsupportedOp`] clause cites
+//! the upstream file that settles it, so a reader diagnosing this gap
+//! walks to a specific source rather than a repository root.
 //!
 //! # `vokra.beat_this.*` chunk group (read here)
 //!
@@ -123,10 +158,30 @@ pub const GGUF_KEY_N_HEAD: &str = "vokra.beat_this.n_head";
 /// `vokra.beat_this.n_classes` — terminal classifier output class count.
 pub const GGUF_KEY_N_CLASSES: &str = "vokra.beat_this.n_classes";
 
-/// Primary-source anchor cited in every loud-partial error message so a
-/// reader diagnosing the missing forward has exactly one URL to walk.
+/// Primary-source anchor for the model assembly: the convolutional
+/// frontend (`Rearrange` / `BatchNorm1d` / strided `Conv2d` stem and
+/// blocks), the `PartialFTTransformer` frequency/time factorisation, and
+/// the `Head` / `SumHead` beat + downbeat projections.
 const PRIMARY_SOURCE_URL: &str =
     "github.com/CPJKU/beat_this/blob/main/beat_this/model/beat_tracker.py";
+
+/// Primary-source anchor for the encoder-block internals: the `RMSNorm`
+/// definition (learnable gain, no bias, no mean subtraction), the
+/// `bias=False` fused qkv projection, and the `rotate_queries_or_keys`
+/// calls that put position *inside* attention instead of in an additive
+/// table.
+///
+/// Cited separately from `PRIMARY_SOURCE_URL` because none of those facts
+/// are readable from `beat_tracker.py`, which only names the transformer
+/// it composes.
+const ROFORMER_SOURCE_URL: &str =
+    "github.com/CPJKU/beat_this/blob/main/beat_this/model/roformer.py";
+
+/// Primary-source anchor for the mel front-end arguments, including the
+/// `normalized="frame_length"` option and the `log1p(1000 · x)`
+/// compression — neither of which any `vokra.frontend.*` field can
+/// express today.
+const FRONTEND_SOURCE_URL: &str = "github.com/CPJKU/beat_this/blob/main/beat_this/preprocessing.py";
 
 // ---------------------------------------------------------------------------
 // BeatThisConfig — the topology axes read from the `vokra.beat_this.*`
@@ -328,12 +383,11 @@ pub struct BeatAnalysis {
 #[derive(Debug)]
 pub struct BeatThis {
     config: BeatThisConfig,
-    // The bound weights are held (real, counted) but the Transformer
-    // encoder + classifier forward is a follow-up wave; the field is
-    // deliberately `#[allow(dead_code)]` until the kernel lands so a
-    // reader is not misled by an unused field. Same posture as RMVPE /
-    // pyannote / Charsiu.
-    #[allow(dead_code)]
+    // The bound weights are held and counted; the forward that would
+    // consume them is a follow-up wave. The manifest is still read on
+    // every loud-partial fire so the error can report what the artifact
+    // actually holds rather than only what it should hold. Same posture
+    // as RMVPE / pyannote / Charsiu.
     weights: BeatThisWeights,
     weight_license: LicenseClass,
 }
@@ -441,16 +495,41 @@ impl BeatThis {
     ///
     /// # Loud-partial (this WP)
     ///
-    /// Returns [`VokraError::UnsupportedOp`] — the beat_this
-    /// **Transformer encoder forward** requires greenfield attention
-    /// code (no shared MHA primitive exists in `vokra-ops` today; every
-    /// Transformer model in the tree — `whisper` / `canary` / `voxtral`
-    /// — re-implements attention from `softmax` + `GEMM` + `LayerNorm`
-    /// primitives, so beat_this' encoder body is a distinct
-    /// implementation the follow-up wave lands). The error message
-    /// names the primary source
-    /// (`github.com/CPJKU/beat_this/blob/main/beat_this/model/beat_tracker.py`)
-    /// so a reader diagnosing this gap has exactly one URL to walk.
+    /// Returns [`VokraError::UnsupportedOp`]. The encoder **skeleton** is
+    /// no longer the blocker: `vokra_ops::vit::ViTEncoder` supplies a
+    /// pre-norm multi-head-self-attention + MLP stack over a token
+    /// sequence, so nobody should spend a wave re-deriving attention for
+    /// this model. What blocks the forward is that beat_this is a
+    /// **roformer over a convolutional frontend**, not a plain ViT:
+    ///
+    /// - it normalises with `RMSNorm` (learnable gain only, no bias, no
+    ///   mean subtraction) where `ViTEncoder` is `LayerNorm` by
+    ///   construction and exposes no norm selector;
+    /// - it takes position from `RotaryEmbedding(head_dim)` rotated into
+    ///   q and k inside every attention layer, and carries no absolute
+    ///   positional table at all, where `ViTEncoder` takes position from
+    ///   one additive absolute table applied before the stack — which is
+    ///   exactly why its own docs call `encode_tokens`
+    ///   permutation-equivariant — and exposes no hook to rotate q/k;
+    /// - it feeds the transformer from a `BatchNorm` + strided 2-D
+    ///   `Conv2d` stack with an optional axis-factorised
+    ///   `PartialFTTransformer`, and `vokra-ops` exposes no public
+    ///   primitive for any of those: its only `Conv2d` is `denoise.rs`'
+    ///   private DeepFilterNet-internal grouped conv (BatchNorm folded
+    ///   into a per-channel affine at load) and `waveform_frontend` is
+    ///   `Conv1d` over the time axis;
+    /// - and the `vokra.beat_this.*` group carries no chunk for
+    ///   `spect_dim` / `stem_dim` / `ff_mult` / `head_dim` /
+    ///   `partial_transformers` / `sum_head`, so the model could not be
+    ///   sized from this GGUF even if every primitive existed.
+    ///
+    /// Substituting `LayerNorm` for `RMSNorm`, or an additive absolute
+    /// table for rotary, is shape-valid and numerically wrong — a
+    /// *silent* failure, which is the one FR-EX-08 forbids. The message
+    /// names one upstream file per claim (`beat_tracker.py` for the
+    /// frontend and heads, `roformer.py` for the norm and rotary,
+    /// `preprocessing.py` for the mel spec) so a reader walks to a
+    /// specific source rather than a repository root.
     ///
     /// # Errors
     ///
@@ -458,7 +537,7 @@ impl BeatThis {
     ///   with `self.config().sample_rate` (a caller must resample
     ///   externally — never a silent resample, FR-EX-08).
     /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
-    ///   deferred Transformer encoder forward.
+    ///   deferred forward.
     pub fn analyze(&self, pcm: &[f32], sample_rate: u32) -> Result<BeatAnalysis> {
         // Bind unused args so a `#[warn(unused_variables)]` change does
         // not silently mask the loud-partial fire path; the future real
@@ -472,32 +551,84 @@ impl BeatThis {
                 self.config.sample_rate
             )));
         }
-        Err(analyze_forward_loud_partial(&self.config))
+        Err(analyze_forward_loud_partial(&self.config, &self.weights))
     }
 }
 
 /// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`BeatThis::analyze`] until the Transformer encoder forward lands.
+/// [`BeatThis::analyze`] until the forward lands.
 ///
-/// Names the primary source URL so a reader diagnosing the gap has
-/// exactly one place to walk (RMVPE / pyannote / snac / hifigan Wave 1
-/// loud-partial-message precedent — CLAUDE.md 教訓 (a)).
-fn analyze_forward_loud_partial(cfg: &BeatThisConfig) -> VokraError {
+/// Every clause is checked against the tree and the upstream file it
+/// describes. The message opens by naming what is **already resolved**
+/// rather than merely omitting it, because an earlier revision asserted
+/// that "no shared MHA primitive exists in `vokra-ops`" — true when it
+/// was written, and false from the moment `crates/vokra-ops/src/vit.rs`
+/// landed a pre-norm MHSA + MLP stack. A stale blocker in an error
+/// message is worse than no message: it sends the next reader off to
+/// write attention code that already exists. The test
+/// `analyze_loud_partials_naming_only_live_blockers` therefore asserts
+/// the stale phrasing is ABSENT as well as asserting the live blockers
+/// are present, so it cannot rot back in silently (mirror of the
+/// `eat` / `m2d` guards).
+fn analyze_forward_loud_partial(cfg: &BeatThisConfig, weights: &BeatThisWeights) -> VokraError {
     VokraError::UnsupportedOp(format!(
-        "beat_this analyze: Transformer encoder forward pending — no shared MHA \
-         primitive in vokra-ops (each Transformer model in the tree — whisper / \
-         canary / voxtral — re-implements attention from softmax + GEMM + LayerNorm \
-         primitives, so the beat_this encoder body is greenfield attention code). \
-         Config: n_layers={n_layers}, d_model={d_model}, n_head={n_head}, \
-         n_classes={n_classes} (beat + downbeat activations, no DBN postprocessing \
-         per Foscarin et al. ISMIR 2024). Primary source: {PRIMARY_SOURCE_URL}. \
-         Loud pending (CLAUDE.md 教訓 (a) — 'loud-partial は fake-complete より \
-         honest') — no silent fabricated beat / downbeat indices ever emitted \
-         (FR-EX-08).",
-        n_layers = cfg.n_layers,
+        "beat_this analyze (loud-partial): ALREADY RESOLVED, do not re-report — \
+         `vokra_ops::vit::ViTEncoder` supplies a pre-norm multi-head-self-attention \
+         + MLP stack over a token sequence, so this model no longer needs attention \
+         written from scratch, and the `vokra.beat_this.*` group is read strictly \
+         (sample_rate={sample_rate}, n_frames={n_frames}, d_model={d_model}, \
+         n_layers={n_layers}, n_head={n_head}, n_classes={n_classes}; \
+         tensor_count={count}). What still blocks the forward is that beat_this is \
+         a ROFORMER OVER A CONVOLUTIONAL FRONTEND, not a plain ViT. \
+         (i) WRONG NORM: upstream normalises with RMSNorm — learnable gain only, no \
+         bias, no mean subtraction — while `ViTEncoder` is LayerNorm (gain AND bias, \
+         mean-centred) by construction and exposes no norm selector. \
+         (ii) WRONG POSITIONAL SCHEME: upstream rotates RotaryEmbedding(head_dim) \
+         into q and k inside EVERY attention layer and carries no absolute \
+         positional table at all; `ViTEncoder` takes position from one additive \
+         absolute table applied before the stack — which is why its own docs call \
+         `encode_tokens` permutation-equivariant — and exposes no hook to rotate \
+         q/k. Substituting either (i) or (ii) is shape-valid and numerically wrong, \
+         i.e. silent, which is the failure FR-EX-08 exists to forbid. \
+         (iii) NO CONVOLUTIONAL FRONTEND PRIMITIVE: upstream feeds the transformer \
+         from BatchNorm1d(spect_dim) -> Conv2d(1, stem_dim, kernel (4,3), stride \
+         (4,1), bias=False) -> BatchNorm2d -> GELU, then three blocks of \
+         [optional PartialFTTransformer -> Conv2d(kernel (2,3), stride (2,1), \
+         bias=False)], then `b c f t -> b t (c f)` and a linear projection. \
+         `vokra-ops` exposes no public BatchNorm and no public 2-D convolution: \
+         its only Conv2d is `denoise.rs`'s PRIVATE DeepFilterNet-internal grouped \
+         conv (causal time padding, eval-mode BatchNorm2d folded into a \
+         per-channel affine at load), and `waveform_frontend` is Conv1d over the \
+         time axis. `vokra_ops::vit::vit_patch_embed` is a single non-overlapping \
+         linear patchifier over a 1-channel plane, a different function. \
+         (iv) NO AXIS-FACTORISED ATTENTION: with partial_transformers enabled, \
+         PartialFTTransformer attends once across frequency (`(b t) f c`) and once \
+         across time (`(b f) t c`) INSIDE the frontend; `ViTEncoder` attends over \
+         one flat token sequence and has no factorised mode. \
+         (v) THE STAMPED GROUP CANNOT SIZE THE MODEL: upstream is parameterised by \
+         spect_dim / stem_dim / ff_mult / head_dim / partial_transformers / \
+         sum_head, and `vokra.beat_this.*` carries a chunk for NONE of them (it \
+         stamps n_head, which is not an argument of the upstream BeatThis \
+         signature at all — that takes head_dim), so even a complete primitive \
+         set could not be bound from this GGUF. The mel \
+         front-end sits in the same position: upstream is torchaudio \
+         MelSpectrogram(n_fft=1024, hop_length=441, n_mels=128, f_min=30, \
+         f_max=11000, mel_scale=slaney, normalized=frame_length, power=1) followed \
+         by log1p(1000 * x), and neither n_mels nor the frame-length normalisation \
+         nor the log multiplier is stamped anywhere. \
+         Primary sources: {PRIMARY_SOURCE_URL} (frontend + heads), \
+         {ROFORMER_SOURCE_URL} (RMSNorm + rotary attention), {FRONTEND_SOURCE_URL} \
+         (mel spec). Beat + downbeat activations, no DBN postprocessing per \
+         Foscarin et al. ISMIR 2024. Loud pending (CLAUDE.md 教訓 (a) — \
+         'loud-partial は fake-complete より honest') — no silent fabricated beat / \
+         downbeat indices ever emitted (FR-EX-08).",
+        sample_rate = cfg.sample_rate,
+        n_frames = cfg.n_frames,
         d_model = cfg.d_model,
+        n_layers = cfg.n_layers,
         n_head = cfg.n_head,
         n_classes = cfg.n_classes,
+        count = weights.tensor_count(),
     ))
 }
 
@@ -512,12 +643,14 @@ mod tests {
     //!
     //! # What "round-trip" means here
     //!
-    //! The task spec asks for 5+ unit tests. On real PCM this would be
-    //! `analyze(...)` returning real beat / downbeat frame indices, but
-    //! the Transformer encoder forward primitive does not exist in
-    //! `vokra-ops` today (see the module doc + [`BeatThis::analyze`]
-    //! rustdoc). Fabricating a real-PCM output would violate CLAUDE.md
-    //! 教訓 (a) ("loud-partial は fake-complete より honest").
+    //! On real PCM this would be `analyze(...)` returning real beat /
+    //! downbeat frame indices. It cannot yet: `vokra_ops::vit::ViTEncoder`
+    //! supplies the pre-norm attention stack, but beat_this is a roformer
+    //! (RMSNorm + rotary q/k) over a BatchNorm + strided-conv frontend,
+    //! and `vokra-ops` has no primitive for those — see the module doc +
+    //! [`BeatThis::analyze`] rustdoc for the enumerated gap. Fabricating a
+    //! real-PCM output would violate CLAUDE.md 教訓 (a) ("loud-partial は
+    //! fake-complete より honest").
     //!
     //! The round-trip semantics we *can* honestly test:
     //!
@@ -527,6 +660,14 @@ mod tests {
     //!    (missing arch / wrong arch / missing chunk / empty tensor list /
     //!    unsupported forward surface) fires at its documented surface
     //!    point, in the documented error variant.
+    //! 3. **Anti-rot guard**: the loud-partial message must NOT name a
+    //!    blocker that has since been resolved. This is asserted
+    //!    negatively, because omission alone is not enforceable — an
+    //!    earlier revision of this file claimed "no shared MHA primitive
+    //!    exists in `vokra-ops`" and a test pinned that phrase, so the
+    //!    cheapest action once `vokra-ops`' ViT landed was to leave the
+    //!    falsehood in place. See
+    //!    `analyze_loud_partials_naming_only_live_blockers`.
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
@@ -724,42 +865,111 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Loud-partial round-trip — analyze() fires with the primary-source URL
+    // Loud-partial round-trip — analyze() names ONLY the blockers that are
+    // real today, and positively disclaims the one that was resolved
     // -----------------------------------------------------------------------
 
     #[test]
-    fn analyze_returns_unsupported_op_with_primary_source_anchor() {
+    fn analyze_loud_partials_naming_only_live_blockers() {
         let file = beat_this_gguf(128, 6, 8, 2, Some(LicenseClass::Permissive));
         let bt = BeatThis::from_gguf(&file).unwrap();
-        // Give analyze a legitimate-sample-rate PCM buffer so the loud-
-        // partial gate fires, not the sample-rate mismatch guard.
+        // A legitimate-sample-rate PCM buffer, so the loud-partial gate is
+        // what fires — not the sample-rate mismatch guard ahead of it.
         let pcm = vec![0.0f32; 22_050];
         let Err(err) = bt.analyze(&pcm, 22_050) else {
             panic!("analyze must loud-partial");
         };
-        match err {
-            VokraError::UnsupportedOp(m) => {
-                assert!(
-                    m.contains("Transformer encoder forward pending"),
-                    "message must call out the Transformer encoder gap, got `{m}`"
-                );
-                assert!(
-                    m.contains(PRIMARY_SOURCE_URL),
-                    "message must cite the primary source URL so a reader has one place \
-                     to walk, got `{m}`"
-                );
-                assert!(
-                    m.contains("no shared MHA primitive"),
-                    "message must explain why the gap exists (missing MHA primitive), got `{m}`"
-                );
-                // Every config axis must be echoed so the reader can
-                // cross-check what topology the follow-up wave targets.
-                assert!(m.contains("n_layers=6"), "n_layers axis missing: {m}");
-                assert!(m.contains("d_model=128"), "d_model axis missing: {m}");
-                assert!(m.contains("n_head=8"), "n_head axis missing: {m}");
-                assert!(m.contains("n_classes=2"), "n_classes axis missing: {m}");
-            }
-            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
+        let VokraError::UnsupportedOp(m) = err else {
+            panic!("expected VokraError::UnsupportedOp");
+        };
+
+        // --- The blocker that `vokra-ops`' ViT landing RESOLVED must not be
+        // --- claimed any more.
+        //
+        // `crates/vokra-ops/src/vit.rs` supplies a pre-norm MHSA + MLP stack.
+        // A message still asserting that primitive is absent sends the next
+        // reader off to write attention code that already exists, which is
+        // the precise failure this guard exists to prevent. The negative
+        // assertions are the load-bearing half of the row: without them the
+        // stale phrasing can rot back in with nothing to catch it.
+        assert!(
+            !m.contains("no shared MHA primitive"),
+            "`vokra_ops::vit::ViTEncoder` supplies the pre-norm MHSA + MLP stack — \
+             this claim is stale: {m}"
+        );
+        assert!(
+            !m.contains("greenfield"),
+            "the encoder skeleton is no longer written from scratch for this model: {m}"
+        );
+
+        // --- and the message must say so POSITIVELY, not merely omit it.
+        assert!(
+            m.contains("ALREADY RESOLVED"),
+            "the message must tell the reader what NOT to re-report: {m}"
+        );
+        assert!(
+            m.contains("vokra_ops::vit::ViTEncoder"),
+            "the message must name the primitive that now exists: {m}"
+        );
+
+        // --- What actually remains: one assertion per stated blocker.
+        assert!(
+            m.contains("RMSNorm") && m.contains("LayerNorm"),
+            "must name the norm mismatch that makes ViTEncoder the wrong function \
+             here rather than a missing one: {m}"
+        );
+        assert!(
+            m.contains("RotaryEmbedding") && m.contains("absolute"),
+            "must name the positional-scheme mismatch (rotary q/k vs one additive \
+             absolute table): {m}"
+        );
+        assert!(
+            m.contains("BatchNorm") && m.contains("Conv2d"),
+            "must name the convolutional frontend `vokra-ops` has no primitive for: {m}"
+        );
+        assert!(
+            m.contains("PartialFTTransformer"),
+            "must name the axis-factorised frequency/time attention: {m}"
+        );
+        assert!(
+            m.contains("head_dim") && m.contains("ff_mult"),
+            "must name axes the stamped chunk group cannot carry, so a reader knows \
+             the GGUF schema is part of the gap and not only the kernels: {m}"
+        );
+        assert!(
+            m.contains("FR-EX-08"),
+            "must cite the no-silent-output clause: {m}"
+        );
+
+        // --- One upstream file per distinct claim, so a reader walks to a
+        // --- specific source rather than a repository root.
+        assert!(
+            m.contains(PRIMARY_SOURCE_URL),
+            "must cite beat_tracker.py for the frontend and heads: {m}"
+        );
+        assert!(
+            m.contains(ROFORMER_SOURCE_URL),
+            "must cite roformer.py — the RMSNorm and rotary claims are not readable \
+             from beat_tracker.py, which only names the transformer it composes: {m}"
+        );
+        assert!(
+            m.contains(FRONTEND_SOURCE_URL),
+            "must cite preprocessing.py for the mel spec: {m}"
+        );
+
+        // --- Every stamped axis is echoed, so a reader can cross-check what
+        // --- topology a follow-up wave would target, plus what the manifest
+        // --- actually holds.
+        for fragment in [
+            "sample_rate=22050",
+            "n_frames=128",
+            "d_model=128",
+            "n_layers=6",
+            "n_head=8",
+            "n_classes=2",
+            "tensor_count=1",
+        ] {
+            assert!(m.contains(fragment), "must echo `{fragment}`: {m}");
         }
     }
 

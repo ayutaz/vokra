@@ -940,6 +940,20 @@ pub mod facebook_denoiser;
 // (owner-side commercial-sign-off gate; feedback-license-signoff-
 // primary-source memory — CC MUST NOT sign, row addition is a follow-up
 // task for docs/license-audit.md).
+//
+// Post-audit CC-gap 2026-08-15: the converter this binder's error text
+// already told operators to run — `vokra-cli convert --model voila` —
+// did NOT exist at Wave 9 time; nothing in the tree could emit a GGUF
+// this binder accepts. `crates/vokra-convert/src/models/voila.rs` now
+// lands it as a BF16 pass-through skeleton, which is sufficient because
+// this binder gates only on arch + a non-empty tensor manifest and walks
+// no specific tensor name. It deliberately stamps neither `vokra.voila.*`
+// axes (not transcribable, shift per release) nor
+// `vokra.provenance.upstream_hf` (per-release HF weight repo ids are
+// owner-verified at bind time) — provenance rides
+// `vokra.provenance.upstream_url = github.com/maitrix-org/Voila`. The
+// §3.1 row is STILL absent, so redistribution remains fail-closed and the
+// row addition is still the owner follow-up recorded above.
 pub mod voila;
 // Wave 9 2026-08-14 audit follow-up (LIB.RS RULE append at end with
 // Wave 9 comment marker): **CLAP** (`laion/clap-htsat-fused`,
@@ -1924,32 +1938,53 @@ pub mod canary_1b_flash;
 // NAME the missing tensor or BOTH the expected and actual dims; and
 // pure-observation structure discovery (`observed_block_count` /
 // `has_patch_embed` / `count_with_prefix`) derived from what is actually on
-// disk rather than from a transcribed constant.
+// disk rather than from a transcribed constant — PLUS the full `EatConfig`
+// axis group and the real ViT weight binding, both described in the two
+// paragraphs below (this list is not exhaustive on its own).
 //
-// NO `vokra.eat.*` TOPOLOGY GROUP EXISTS: unlike `wavlm`, this converter
-// stamps NO axes at all, so hidden width / depth / head count / patch size /
-// mel-bin count are simply not known to the runtime — and this binder invents
-// NO defaults. `observed_block_count` returns `None` (meaning "unknown", never
+// THE `vokra.eat.*` TOPOLOGY GROUP IS STAMPED AND IS READ STRICTLY: an
+// earlier landing of this header recorded that the converter "stamps NO axes
+// at all". That was true when written and is NO LONGER TRUE — the converter
+// now stamps a 38-key `vokra.eat.*` group covering the ViT-B backbone, the
+// patch grid, the pre-training decoder and the complete Kaldi-fbank argument
+// set. `EatConfig::from_gguf` reads every one of them in the `vokra.wavlm.*`
+// posture: a missing key is a loud `ModelLoad` naming it, never a fallback to
+// a primary-source constant, because a silent default would let a mismatched
+// artifact bind a topology it does not carry (FR-EX-08). `EatConfig` also
+// maps those axes onto `vokra_ops::vit::ViTAttrs`, DERIVING the patch stride
+// and checking it against the independently stamped grid rather than assuming
+// it. `observed_block_count` still returns `None` (meaning "unknown", never
 // "zero layers") for a checkpoint whose state_dict uses a prefix this repo has
-// not transcribed. A future converter revision that transcribes the upstream
-// config should add the group and this binder should grow a strict reader,
-// following `crate::wavlm`.
+// not transcribed.
 //
 // LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `encode` / `embed_utterance` return `VokraError::UnsupportedOp`
-// naming three blockers — (i) the log-mel FRONT-END SPEC: the mel primitives
-// DO exist (`vokra_ops::mel` / `kaldi_fbank` / `fused_logmel`) but the
-// converter stamps no `vokra.frontend.*` group, and CLAUDE.md requires that
-// spec to be bit-exact and metadata-stamped precisely because librosa /
-// torchaudio / TF filterbanks are not bit-identical; (ii) a 2-D PATCH
-// EMBEDDING (Conv2d patchifier) primitive, which `vokra-ops` does not expose
-// (its conv2d code is private to `denoise` / `conformer`); (iii) a ViT-style
-// pre-norm TRANSFORMER ENCODER block — `vokra-ops` ships `conformer` /
-// `ebranchformer` / `zipformer`, all ASR-specific, convolution-augmented and
-// CLS-less, so none substitutes. `embed_utterance` adds (iv) the utterance
-// read-out, whose CLS-token / pooled form and output width are stamped
-// nowhere. The message also reports the manifest facts actually observed on
-// disk. No fabricated hidden states or embeddings are ever emitted (FR-EX-08).
+// honest」): the PCM-in surfaces `encode` / `embed_utterance` return
+// `VokraError::UnsupportedOp` naming three blockers — (i) NO VERIFIED
+// TENSOR-NAME MANIFEST: the converter passes upstream names through verbatim
+// and nothing in-repo transcribes them (EAT descends from fairseq data2vec2,
+// whose modality-specific parameters live under a `modality_encoders.*` tree),
+// so this PCM-in surface has no manifest to reach for and will not guess one;
+// (ii) THE KALDI-FBANK WINDOW: the front-end arguments ARE stamped in full and
+// `vokra.eat.fbank_window_type` is `hanning`, but `vokra_ops::kaldi_fbank`
+// hard-codes the Povey window and exposes no selector, so every feature would
+// desync — the stamp is what makes this detectable rather than invisible;
+// (iii) NORM ORDER UNRECONCILED: `vokra.eat.layer_norm_first` is stamped as a
+// transcribed config value, explicitly NOT as an assertion about where the
+// norms sit, while `vokra_ops::vit::ViTEncoder` is pre-norm BY CONSTRUCTION.
+// `embed_utterance` adds (iv) the utterance-level READ-OUT convention —
+// `vokra_ops::vit::ViTPooling` can express either form and the width IS
+// stamped, but WHICH form EAT trained, and at which index the CLS token sits,
+// are not transcribed in-repo. The message also reports the manifest facts
+// actually observed on disk. No fabricated hidden states or embeddings are
+// ever emitted (FR-EX-08).
+//
+// THE ViT PRIMITIVES ARE REAL AND ARE BOUND: the 2-D patch embedding and the
+// pre-norm Transformer encoder this header used to list as missing now exist
+// as `vokra_ops::vit::vit_patch_embed` / `vokra_ops::vit::ViTEncoder`, and
+// `Eat::bind_vit_weights` / `Eat::bind_vit_encoder` decode a real
+// `ViTWeights` out of the GGUF through shape-gated `require_tensor` /
+// `require_tensor_dims` lookups. A caller that can DEFEND a tensor naming
+// supplies it as `EatVitTensorNames` and gets a real forward on that path.
 //
 // LICENSING: upstream reports `spdx_id: MIT` via the GitHub license API
 // (converter task input 2026-08-13), so the converter stamps `mit` ->
@@ -2011,24 +2046,39 @@ pub mod eat;
 // fail-closes to `LicenseClass::Unknown`; and the compliance-gated
 // `from_gguf_with_policy` / `from_path` entry points.
 //
+// TWO BLOCKERS CLOSED ON 2026-08-15: this header previously named FOUR
+// blockers. Two of them are now facts about the world rather than about this
+// repository. (a) The `vokra.atst.*` AXIS CHUNK GROUP now EXISTS — the
+// converter stamps the full topology group (Transformer width / depth /
+// heads, the patch grid and position table, and the whole log-mel front-end),
+// each value transcribed from the upstream source tree with its file and line
+// recorded, and `AtstConfig` is the strict consumer. (b) The ViT-STYLE
+// ENCODER PRIMITIVE now EXISTS — `vokra_ops::vit` landed with 2-D patch
+// embedding over a mel plane, learned prepended tokens, an additive
+// positional table, a pre-norm Transformer stack, a final norm and pooling;
+// `AtstConfig::vit_tensor_shapes` derives the exact dims every ViT weight
+// must carry and `Atst::verify_vit_tensor_shapes` walks a caller-supplied
+// `AtstVitTensorNames` through `require_tensor_dims`.
+//
 // LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `encode` / `embed` return `VokraError::UnsupportedOp` naming four
-// blockers — (i) NO `vokra.atst.*` AXIS CHUNK GROUP: the converter is a
-// verbatim F32/F16/BF16 pass-through that stamps only `vokra.model.*` +
-// `vokra.provenance.*`, so embedding width, depth, head count, patch grid AND
-// every log-mel front-end axis are absent from the artifact and untranscribed
-// in-repo (upstream keeps them in the training argparse namespace inside the
-// `.ckpt`, which the no-pickle rule FR-LD-05 / NFR-DS-02 keeps out of this
-// runtime); (ii) NO ViT-STYLE ENCODER PRIMITIVE in `vokra-ops` — the log-mel
-// front-end genuinely exists (`vokra_ops::mel` / `fused_logmel` /
-// `kaldi_fbank`) but the 2-D patch embedding + plain pre-norm Transformer
-// encoder does not, and `conformer` / `ebranchformer` / `zipformer` are
-// conv-augmented ASR encoders over a 1-D frame sequence, not ViT patch
-// encoders over a 2-D mel plane; (iii) TEACHER/STUDENT BRANCH SELECTION IS
-// UNRESOLVED — a BYOL EMA checkpoint carries both branches and picking the
-// wrong one yields a shape-valid but numerically different embedding;
-// (iv) NO VERIFIED TENSOR-NAME MANIFEST. No fabricated hidden states or
-// embeddings are ever emitted (FR-EX-08).
+// honest」): `encode` / `embed` return `VokraError::UnsupportedOp` naming the
+// TWO blockers that remain, both facts about a real checkpoint that no file in
+// this repository records — (i) TEACHER/STUDENT BRANCH SELECTION IS
+// UNRESOLVED: a BYOL-style EMA checkpoint carries BOTH branches and picking
+// the wrong one yields a shape-valid but numerically different embedding, so
+// the branch upstream's own inference entry point uses must be read off the
+// upstream tree first (`AtstBranch` / `Atst::branch_tensor_count` exist today
+// only as diagnostics over what is on disk; they gate nothing); (ii) NO
+// VERIFIED TENSOR-NAME MANIFEST: the converter copies every float tensor under
+// its verbatim upstream `state_dict` name and nothing in-repo transcribes
+// ATST's naming — the real key chain is recorded as running
+// `ATSTLightningModule.model` -> `ATST.student` / `.teacher` ->
+// `MultiCropWrapper` -> the `AST` encoder, so the prefix is at least
+// `model.student.`, but no checkpoint key listing has been read. This is why
+// `AtstVitTensorNames` deliberately has NO `Default` and no `atst_base()`
+// constructor. Reading one real key listing resolves BOTH remaining blockers
+// at once, since the branch prefix and the tensor names are the same listing.
+// No fabricated hidden states or embeddings are ever emitted (FR-EX-08).
 //
 // LICENSING: the upstream LICENSE file SPLITS the tiers — code `mit`,
 // pretrained checkpoints `cc-by-4.0` — and `vokra.provenance.weight_license`

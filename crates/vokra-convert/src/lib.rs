@@ -3753,6 +3753,47 @@ pub enum ModelKind {
     /// `U8` metadata-array encoding costs one enum per byte while the
     /// builder assembles.
     WeTextProcessing,
+    /// **Voila** (`maitrix-org/Voila`, **MIT**, 2025) — Maitrix's
+    /// full-duplex speech-to-speech dialog family. Category = `s2s`,
+    /// alongside the sibling `Moshi` / `Csm` full-duplex pair and the
+    /// streaming half-duplex LLaMA-Omni2 family.
+    ///
+    /// **Why this variant exists**: the runtime binder
+    /// `vokra-models::voila` landed with a strict `vokra.model.arch ==
+    /// "voila"` load gate, a `vokra-cli convert --model voila` repro
+    /// command inside two of its error messages, and a
+    /// `crates/vokra-cli/src/engine.rs` `BOUND_ARCHES` row advertising the
+    /// model as bound — while **no converter anywhere in the tree could
+    /// emit a GGUF that binder accepts**. This arm makes those three
+    /// statements true.
+    ///
+    /// BF16 pass-through skeleton: every F32 / F16 / BF16 tensor is
+    /// emitted verbatim under its upstream `state_dict` name. **No
+    /// `vokra.voila.*` topology chunk is stamped** — the per-release
+    /// speech-encoder / LLM-backbone axes shift across `Voila-base` /
+    /// `Voila-chat` / `Voila-audio-alpha` / `Voila-autonomous-preview` and
+    /// are not transcribable from the primary sources, so a guessed axis
+    /// in a redistributed artifact would be a fabrication (CLAUDE.md
+    /// 「ハルシネーション厳禁」). The binder reads none of them: it gates
+    /// on arch plus a non-empty tensor manifest, so a pass-through GGUF
+    /// binds end to end and `Voila::converse` remains the documented
+    /// loud-partial. One `ModelKind` covers the whole family for the same
+    /// reason — with no per-release axes stamped there is nothing to tell
+    /// the releases apart; a variant-aware landing would add a
+    /// `vokra.voila.variant` chunk the way [`Self::MossTts`] does.
+    ///
+    /// Provenance rides `vokra.provenance.upstream_url`
+    /// (`github.com/maitrix-org/Voila`, the MIT reference-code tree)
+    /// rather than `upstream_hf`, so `verify()` routes this kind through
+    /// the GitHub-native arm. No HF repo id is stamped: the per-release
+    /// weight repos are owner-verified at bind time.
+    ///
+    /// Provenance = **mit** ([`vokra_core::LicenseClass::Permissive`]) by
+    /// default, overridable at `--license <spdx>`. `docs/license-audit.md`
+    /// §3.1 carries **no Voila row**, so redistribution stays fail-closed
+    /// on the sign-off gate — adding and signing that row is owner-only
+    /// work (memory `[[feedback-license-signoff-primary-source]]`).
+    Voila,
 }
 
 impl ModelKind {
@@ -5593,6 +5634,20 @@ impl ModelKind {
             | "tn"
             | "text-normalization"
             | "wenet-e2e/wetextprocessing" => Some(Self::WeTextProcessing),
+            // Voila (`maitrix-org/Voila`, mit) — full-duplex S2S dialog
+            // family. Accept the arch tag and the upstream `org/repo`
+            // slug only.
+            //
+            // The per-release spellings (`voila-base` / `voila-chat` /
+            // `voila-audio-alpha` / `voila-autonomous-preview`) are
+            // deliberately NOT accepted. This converter stamps no
+            // per-release axes, so honouring a variant spelling would
+            // silently collapse it to the generic `voila` name stamp and
+            // hand the caller an artifact that does not say what they
+            // asked for. A variant-aware landing adds those spellings
+            // together with the `vokra.voila.variant` chunk that makes
+            // them mean something (FR-EX-08 — no silent collapse).
+            "voila" | "maitrix-org/voila" => Some(Self::Voila),
             _ => None,
         }
     }
@@ -5909,6 +5964,10 @@ impl ModelKind {
             // by the input path, so there is nothing per-language to put
             // in the slug.
             Self::WeTextProcessing => "wetextprocessing",
+            // Voila full-duplex S2S dialog family. Canonical slug is the
+            // arch tag itself; one arm serves the whole family because no
+            // per-release axis is stamped to tell the releases apart.
+            Self::Voila => "voila",
         }
     }
 }
@@ -11269,6 +11328,43 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // Voila (`maitrix-org/Voila`, mit) — full-duplex S2S dialog family.
+        // Pass every F32 / F16 / BF16 tensor through verbatim and stamp
+        // `vokra.model.arch = "voila"` + `vokra.model.category = "s2s"` +
+        // `vokra.provenance.upstream_url = "github.com/maitrix-org/Voila"`.
+        //
+        // Deliberately stamps NO `vokra.voila.*` topology chunk (the
+        // per-release axes are not transcribable — see the module doc) and
+        // NO `upstream_hf` (the per-release HF weight repo ids are
+        // owner-verified at bind time). The note below says both out loud
+        // so an operator reading converter output learns the artifact's
+        // limits without opening the source.
+        ModelKind::Voila => {
+            let report = models::voila::convert_voila_file(input, output, license)?;
+            let notes = vec![format!(
+                "voila: {} float weights written verbatim ({} BF16 passthrough — runtime widens \
+                 to f32 exactly at load), {} non-float skipped, {} tensors read; no \
+                 vokra.voila.* topology axes stamped (per-release encoder / LLM-backbone axes \
+                 are not transcribable from the primary sources — the runtime binder gates on \
+                 arch + a non-empty tensor manifest and reads none of them); provenance rides \
+                 vokra.provenance.upstream_url = {} (no HF repo id asserted); \
+                 docs/license-audit.md §3.1 has no `{}` row, so redistribution stays \
+                 fail-closed until the owner adds and signs one",
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+                report.read,
+                models::voila::UPSTREAM_URL,
+                models::voila::UPSTREAM_HF,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Voila,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
     };
 
     // Override the stamped licence when the caller supplies the distribution
@@ -12298,6 +12394,14 @@ pub use models::m2d::{M2dReport, convert_m2d_file};
 // file-based entry point (not routed through `ModelKind` dispatch)
 // exposes its `pub` API to external callers.
 pub use models::emotion2vec::{Emotion2vecReport, convert_emotion2vec_file};
+// Post-audit CC-gap 2026-08-15: Voila (`maitrix-org/Voila`, mit) —
+// full-duplex speech-to-speech dialog family. Closes the gap where the
+// `vokra-models::voila` binder, its `vokra-cli convert --model voila` repro
+// text and its `BOUND_ARCHES` row all advertised a converter that did not
+// exist. Standalone file-based entry point mirrors the llama_omni2 /
+// facebook_denoiser / clap re-export pattern; also reachable through
+// `convert_file_licensed(ModelKind::Voila, ..)`.
+pub use models::voila::{VoilaReport, convert_voila_file};
 // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD — first-class
 // audio-dialect op posture (distinct from Silero VAD v5's FR-LD-06
 // 1:1 subgraph). Self-contained file-based entry point with SPDX
@@ -14031,6 +14135,13 @@ mod modelkind_alias_and_roundtrip_tests {
             // the wrong checkpoint identity onto a converted artifact.
             AudioSr,
             AudioSrSpeech,
+            // Voila (post-audit CC-gap 2026-08-15) — full-duplex S2S
+            // dialog family. The canonical `--model voila` must
+            // round-trip through as_arg → from_arg: the runtime binder's
+            // own error messages tell an operator to run exactly that
+            // command, so a dropped alias here would put the repro text
+            // back into the state this converter landed to fix.
+            Voila,
         ] {
             let arg = kind.as_arg();
             assert!(

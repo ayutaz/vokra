@@ -1321,3 +1321,41 @@ pub mod ct_punc;
 // (fail-closed, owner-only).
 pub mod wetextprocessing;
 // ---------------------------------------------------------------------------
+// **Voila** (`maitrix-org/Voila`, **MIT**, 2025) — Maitrix's full-duplex
+// speech-to-speech dialog family. Closes a converter gap, not a coverage gap:
+// the runtime binder `vokra-models::voila` shipped in the Wave 9 2026-08-14
+// audit follow-up with a strict `vokra.model.arch == "voila"` load gate, a
+// `vokra-cli convert --model voila` repro command in two of its error
+// messages, and a `crates/vokra-cli/src/engine.rs` BOUND_ARCHES row — while
+// nothing in the tree could produce a GGUF it accepts.
+//
+// BF16 pass-through skeleton (the `llama_omni2` / `facebook_denoiser` /
+// `clap` / `beats` mold): every F32 / F16 / BF16 tensor rides through
+// verbatim under its upstream `state_dict` name. **No `vokra.voila.*`
+// topology chunk is stamped** — the per-release encoder / backbone axes shift
+// across Voila-base / Voila-chat / Voila-audio-alpha /
+// Voila-autonomous-preview and are not transcribable from the primary
+// sources, so inventing them would be a fabricated axis in a redistributed
+// artifact (CLAUDE.md 「ハルシネーション厳禁」). The binder reads none of
+// them: it gates on arch + a non-empty tensor manifest, so a pass-through
+// artifact binds end to end and `Voila::converse` stays the honest
+// loud-partial.
+//
+// Provenance rides `vokra.provenance.upstream_url`
+// (`github.com/maitrix-org/Voila`, the MIT reference-code tree), NOT
+// `upstream_hf` — the per-release HF weight repo ids are owner-verified at
+// bind time, and stamping one would assert a repo id this converter has not
+// read. Same GitHub-native posture as facebook_denoiser / nkf_aec / rnnoise /
+// nsnet2 / beats / eat / atst / m2d.
+//
+// Distinct arch tag `voila` from every sibling S2S arch (`moshi` Kyutai
+// full-duplex + Mimi, `csm` Sesame full-duplex + Mimi, `llama_omni2` ICTNLP
+// streaming half-duplex + Qwen2.5) — sharing one would misroute runtime
+// dispatch onto a differently-shaped session manager (FR-EX-08).
+//
+// LICENSING: default SPDX `mit` (Permissive), mirroring what the runtime
+// binder documents. `docs/license-audit.md` §3.1 carries **no Voila row at
+// all**, so redistribution stays fail-closed on the sign-off gate; adding and
+// signing that row is owner-only work (memory
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+pub mod voila;

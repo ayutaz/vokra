@@ -92,7 +92,8 @@ OPTIONS:
                               lang-id-voxlingua107 | lang-id-commonlanguage |
                               xvector | deepfake-detection | kyutai-tts |
                               audiobox-aesthetics | voxtral-mini-realtime |
-                              cohere-transcribe | nemotron-asr-streaming
+                              cohere-transcribe | nemotron-asr-streaming |
+                              voila
                               (crepe: marl/crepe — a prepared safetensors from
                               tools/parity/keras_h5_to_safetensors.py, needs
                               --config <config.json> with the capacity /

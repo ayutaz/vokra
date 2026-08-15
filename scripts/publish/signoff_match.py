@@ -1815,6 +1815,14 @@ CONVERTER_NO_SIGNOFF_ROW: dict[str, str] = {
     # (Historic pre-§3.1 shipment; the row was never re-added when the
     # template was introduced.)
     "silero": "row lives in §3 (pre-§3.1 shipment), not in the §3.1 template",
+    # Voila landed 2026-08-15 to close a binder-with-no-converter hole
+    # (crates/vokra-models/src/voila/ had no way to be fed a GGUF this repo
+    # could produce). docs/license-audit.md has NO §3.1 row for it yet, and
+    # authoring one is an owner act — the row carries the sign-off decision.
+    # Excluded here so the gate reports the real state rather than pointing
+    # at a row that does not exist; publishing stays blocked either way,
+    # since upload.sh refuses a repo with no signed row.
+    "voila": "no §3.1 row exists yet (maitrix-org/Voila, MIT) — owner authors the row; converter landed 2026-08-15 to close a binder-with-no-converter gap, not to enable publishing",
 }
 
 

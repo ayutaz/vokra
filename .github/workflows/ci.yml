@@ -426,6 +426,34 @@ jobs:
         run: |
           bash scripts/check-bound-arch-coverage.sh --self-test
           bash scripts/check-bound-arch-coverage.sh
+      - name: Converter <-> binder arch handshake gate
+        # A model arch tag is a contract between two crates: vokra-convert
+        # STAMPS `vokra.model.arch = "X"`, vokra-models READS it back with a
+        # strict equality check so a foreign GGUF fails loudly instead of
+        # misrouting into a wrong-shape forward (FR-EX-08). Either half alone
+        # is a dead end — a converter with no reader emits GGUFs nothing can
+        # load, a binder with no converter can only be fed a GGUF this repo
+        # cannot produce. The sibling gate above watches a DIFFERENT edge
+        # (binder -> engine.rs BOUND_ARCHES); neither direction of the
+        # converter/binder handshake was watched by anything, which is how a
+        # converterless `voila` binder and 21 reader-less converter arch tags
+        # all survived. Several of those 21 are legitimately converter-only
+        # (publish-only pass-throughs, an ELVIS-Act voice-clone bound for a
+        # separate repo, a redistribution-forbidden weight, vast.ai-gated
+        # multi-shard giants) — fine, but recorded NOWHERE, so every audit
+        # rediscovered them as "gaps" and a real regression would drown in the
+        # noise. The NO_READER / NO_CONVERTER ledgers record them with a reason
+        # each and are DOUBLE-SIDED like EXPECTED_GAPS in
+        # scripts/publish/check-catalog-reality.sh: an undeclared gap fails,
+        # and a ledger entry whose gap has since closed also fails, so the file
+        # cannot rot in either direction. Self-test covers both legs RED+GREEN,
+        # both stale directions, a malformed ledger line and two parser guards,
+        # so a checker bug cannot manufacture a passing run. HARD FAIL, like
+        # its siblings above — a source-to-source invariant of Vokra's own.
+        # python3 stdlib only, no cargo, so it costs nothing in this job.
+        run: |
+          bash scripts/check-arch-handshake.sh --self-test
+          bash scripts/check-arch-handshake.sh
       - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
         id: platform-support-drift
         # Verifies that every evidence anchor cited by

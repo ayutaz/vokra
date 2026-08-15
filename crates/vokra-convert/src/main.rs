@@ -2889,7 +2889,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // of 2026-08-13, upstream LICENSE.pdf non-machine-readable.
         // Stamps `vokra.provenance.upstream_url =
         // github.com/nttcslab/m2d` per the sibling-BEATs precedent.
-        | ModelKind::M2d => {
+        | ModelKind::M2d
+        // Post-audit CC-gap 2026-08-15: Voila (`maitrix-org/Voila`, mit)
+        // — full-duplex S2S dialog family. Stamps
+        // `vokra.provenance.upstream_url = github.com/maitrix-org/Voila`
+        // (the MIT reference-code tree) rather than `upstream_hf`,
+        // because the per-release HF weight repo ids are owner-verified
+        // at bind time and the converter asserts none of them. Reading
+        // the wrong key here would print `<none>` for the URL and hide
+        // the only upstream anchor the artifact carries, which is exactly
+        // what FR-EX-08 forbids for provenance.
+        | ModelKind::Voila => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())
