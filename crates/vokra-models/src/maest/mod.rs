@@ -52,40 +52,62 @@
 //! ```text
 //! PCM (mono f32)
 //!   -> log-mel spectrogram front-end                    ← **loud-partial**
-//!        (axes — sample rate / n_fft / hop / n_mels — are NOT stamped by
-//!         the converter and are not transcribed anywhere in-repo; see
-//!         blocker (i)).
-//!   -> 2-D patch embedding over the mel plane           ← **loud-partial**
-//!        (ViT-style patchification; the patch grid is part of blocker (i)).
-//!   -> pre-norm Transformer encoder (~87M-param AST)    ← **loud-partial**
-//!        (blocker (ii): `vokra-ops` has no ViT-style plain pre-norm
-//!         Transformer encoder primitive today — the SHARED gap across the
-//!         whole SSL fleet).
-//!   -> per-patch hidden states     ── [`Maest::encode`]
-//!   -> pooled clip embedding       ── [`Maest::embed`]
-//!   -> Discogs tag logits          ── [`Maest::tag`]
+//!        (every axis IS stamped — sample rate, n_fft, hop, win, window, mel
+//!         scale / norm, fmin / fmax, logC + multiplier, mean / std — EXCEPT
+//!         the STFT framing / centering convention, which the converter
+//!         deliberately omits because no primary source states it).
+//!   -> log-mel plane [num_mel_bins, n_frames]           ── caller-supplied
+//!   -> 2-D patch embedding over the mel plane           ── **real**
+//!   -> pre-norm Transformer encoder (~87M-param AST)    ── **real**
+//!   -> final LayerNorm -> token hidden states           ── [`MaestEncoder::encode_mel`]
+//!   -> mean(CLS, distillation) -> clip embedding        ── [`MaestEncoder::embed_mel`]
+//!   -> ASTMLPHead -> Discogs tag logits                 ── [`MaestEncoder::tag_mel`]
 //! ```
 //!
-//! # Label taxonomy — count is READ, names and size are never guessed
+//! # What changed, and what is still missing
 //!
-//! The converter stamps **no** label list and **no** label count: it is a
-//! verbatim F32/F16/BF16 pass-through whose only metadata is `vokra.model.*` +
-//! `vokra.provenance.*`. Writing a taxonomy size into this module from memory
-//! would be exactly the fabrication CLAUDE.md「ハルシネーション厳禁」forbids,
-//! so this module contains **no taxonomy constant at all**.
+//! This module was written when three things were true and are no longer:
 //!
-//! What it does instead is *read* the artifact: [`Maest::label_count`] scans
-//! the tensors actually on disk under [`TAG_HEAD_PREFIX`] and, when exactly one
-//! of them is 2-D, reports that tensor's first dimension — because a PyTorch
-//! `nn.Linear` weight is `[out_features, in_features]`, so `dims[0]` of the
-//! head projection *is* the label-set size of whatever checkpoint the caller
-//! converted. Any other shape on disk yields `None`, never a fallback number.
-//! The label **names** are unrecoverable from the artifact entirely, which is
-//! blocker (iv) of the [`Maest::tag`] loud-partial.
+//! 1. The converter stamped no `vokra.maest.*` axis group. It now stamps the
+//!    full topology + front-end group, so [`MaestConfig`] reads the axes off
+//!    the artifact instead of the binder guessing them.
+//! 2. `vokra-ops` had no ViT primitive. [`vokra_ops::vit`] now supplies the 2-D
+//!    patch embedding, prepended tokens, additive positional table, pre-norm
+//!    Transformer stack and final norm — the gap that was shared across the
+//!    whole SSL fleet.
+//! 3. The upstream `state_dict` names were unverified. They are now transcribed
+//!    from [`PRIMARY_SOURCE_HF_AST_MODELING`], the HuggingFace AST modelling
+//!    file at the tag the checkpoint's own config names
+//!    (`transformers_version: "4.34.0.dev0"` → `v4.34.0`).
 //!
-//! # Loud-partial classification (design § — CLAUDE.md 教訓 (a))
+//! **What remains** is one axis, and the loud-partial names only that: the
+//! **STFT framing / centering convention** of the log-mel front end. The
+//! converter records this as a deliberate omission — no primary source it
+//! reached states whether the analysis is centred or which padding mode it
+//! uses — and it writes no `vokra.frontend.*` bit-exact group for the same
+//! reason. Choosing centred vs non-centred shifts every frame by half a
+//! window: shape-valid, numerically wrong, and silent. So the PCM-in surfaces
+//! [`Maest::encode`] / [`Maest::embed`] / [`Maest::tag`] stay loud-partial,
+//! while the mel-plane-in surfaces on [`MaestEncoder`] are real.
 //!
-//! **Real (this WP)** — everything around the forward:
+//! # Label taxonomy — the count has two witnesses, the names have none
+//!
+//! The converter stamps the label **count** (`vokra.maest.num_labels`, from
+//! `config.json`'s `id2label` cardinality) but **no label list**. This module
+//! still contains no taxonomy constant of its own: [`Maest::label_count`] reads
+//! the head projection's leading dimension off disk — a PyTorch `nn.Linear`
+//! weight is `[out_features, in_features]` — so the stamp and the payload are
+//! independent witnesses that the head binding cross-checks. Any ambiguous
+//! shape on disk yields `None`, never a fallback number.
+//!
+//! The label **names** are unrecoverable from the artifact. That does not block
+//! [`MaestEncoder::tag_mel`], whose return type is logits, but it does mean a
+//! caller cannot map logit index `i` onto a Discogs genre / mood / instrument /
+//! era string from the GGUF alone.
+//!
+//! # Real / loud-partial classification (design § — CLAUDE.md 教訓 (a))
+//!
+//! **Real**:
 //!
 //! - [`Maest::from_gguf`] with **strict** `vokra.model.arch == "maest"`
 //!   verification. A sibling SSL-encoder GGUF handed here by mistake fails with
@@ -93,11 +115,22 @@
 //!   audio/music-embedding neighbourhood — `ast` most sharply, since MAEST
 //!   shares its *backbone* but not its objective, its domain or its taxonomy
 //!   (FR-EX-08 — never a silent misroute).
+//! - [`MaestConfig::from_gguf`] **strict** axis-group reading: every stamped
+//!   key required, a missing one a loud [`VokraError::ModelLoad`] naming it, and
+//!   no primary-source constant fallback.
+//! - [`MaestConfig::vit_attrs`] mapping onto [`vokra_ops::vit::ViTAttrs`], with
+//!   the `mlp_ratio` round-trip and [`ViTAttrs::validate`] both enforced.
 //! - [`MaestWeights::from_gguf`] tensor-manifest binding over the verbatim
 //!   upstream `state_dict` names the converter passes through, with a non-empty
 //!   gate plus [`MaestWeights::require_tensor`] /
 //!   [`MaestWeights::require_tensor_dims`] lookups that name the missing
-//!   tensor, or **both** the expected and the actual dims.
+//!   tensor, or **both** the expected and the actual dims, and
+//!   [`MaestWeights::detect_tensor_prefix`] probing which `state_dict` prefix
+//!   the artifact actually uses.
+//! - [`Maest::encoder`] weight binding and the [`MaestEncoder`] forward:
+//!   patch embedding, prepended CLS + distillation tokens, positional table,
+//!   12-block pre-norm stack, final norm, DeiT-style pooling and the
+//!   `ASTMLPHead` tagging head.
 //! - Tag-head discovery from disk: [`MaestWeights::tag_head_tensors`] /
 //!   [`MaestWeights::label_count_from_disk`], reporting only what the artifact
 //!   contains.
@@ -109,42 +142,26 @@
 //!   compliance-gated [`Maest::from_gguf_with_policy`] / [`Maest::from_path`] /
 //!   [`Maest::from_path_with_policy`] entry points.
 //!
-//! **Loud-partial (this WP)** — [`Maest::encode`], [`Maest::embed`] and
-//! [`Maest::tag`] return [`VokraError::UnsupportedOp`] naming these blockers:
-//!
-//! 1. **No `vokra.maest.*` axis chunk group.** The converter stamps
-//!    `vokra.model.*` + `vokra.provenance.*` and nothing else. Embedding width,
-//!    depth, head count, patch grid, and every log-mel front-end axis are
-//!    therefore **absent from the artifact** and are not transcribed anywhere
-//!    in this repository. Fabricating them from "typical AST-base" numbers
-//!    would bind shape-valid garbage.
-//! 2. **No ViT-style encoder primitive in `vokra-ops`.** The log-mel front-end
-//!    genuinely exists (`vokra_ops::mel`, `vokra_ops::fused_logmel`,
-//!    `vokra_ops::kaldi_fbank` — verified by listing `crates/vokra-ops/src/`),
-//!    but the 2-D patch embedding + plain pre-norm Transformer encoder does
-//!    not: `vokra_ops::conformer`, `vokra_ops::ebranchformer` and
-//!    `vokra_ops::zipformer` are all conv-augmented **ASR** encoders over a 1-D
-//!    frame sequence, not ViT patch encoders over a 2-D mel plane. This is the
-//!    **same single gap** the sibling `atst` / `eat` / `m2d` / `dasheng`
-//!    binders hit — one shared follow-up, not five unrelated ones.
-//! 3. **No verified tensor-name manifest.** The converter copies every float
-//!    tensor under its verbatim upstream `state_dict` name, and the only MAEST
-//!    names recorded in-repo are the two samples in the converter's own test
-//!    module. Walking guessed names into typed slots would bind the wrong
-//!    tensors without failing.
-//! 4. **No label taxonomy** (tag surface only). Even once the encoder lands,
-//!    the artifact carries no label *names*, so logits cannot be mapped to
-//!    human-readable Discogs genre / mood / instrument / era tags. Only the
-//!    label **count** is recoverable, and only by reading the head tensor's
-//!    dims off disk (see "Label taxonomy" above).
+//! **Loud-partial** — [`Maest::encode`], [`Maest::embed`] and [`Maest::tag`]
+//! return [`VokraError::UnsupportedOp`] for the unstamped STFT framing
+//! convention described above, and for nothing else.
 //!
 //! No fabricated hidden states, embeddings or tag logits are ever emitted
-//! (FR-EX-08 — no silent partial output). The scaffold is arranged so a
-//! follow-up wave flips the switch by (a) teaching the converter to stamp a
-//! `vokra.maest.*` axis group plus the label list, (b) adding the shared ViT
-//! patch-encoder primitive to `vokra-ops`, and (c) transcribing the upstream
-//! tensor names — with the binder, the manifest lookups and the tests already
-//! in place.
+//! (FR-EX-08 — no silent partial output). A follow-up wave flips the last
+//! switch by establishing the framing convention from a primary source — most
+//! likely by reading `feature_extraction_maest.py`'s framing call against a
+//! real checkpoint — and teaching the converter to stamp it.
+//!
+//! # Numerical parity is NOT claimed
+//!
+//! The forward is transcribed from upstream, but no parity run against a real
+//! MAEST checkpoint has happened in this repository: the weights are gated
+//! CC-BY-NC-SA 4.0 and no fixture exists. The tests below therefore assert
+//! structure, shape, determinism and finiteness — never an expected numeric
+//! value, since inventing one would be fabrication with the appearance of
+//! verification. Two axes in particular would survive a shape-only check while
+//! being numerically wrong, and are called out at their binding sites: the
+//! pre-norm vs post-norm LayerNorm ordering, and the erf vs tanh GELU flavour.
 //!
 //! # Sibling family distinctness (SSL audio/music-embedding neighbourhood)
 //!
@@ -218,6 +235,10 @@
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{CompliancePolicy, LicenseClass, Result, VokraError, check_weight_license};
+use vokra_ops::vit::{
+    GeluKind, PatchEmbedWeights, PatchGrid, PosEmbedPolicy, ViTAttnWeights, ViTAttrs,
+    ViTBlockWeights, ViTEncoder, ViTMlpWeights, ViTWeights,
+};
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of `crates/vokra-convert/src/models/maest.rs`.
@@ -283,17 +304,18 @@ pub const GGUF_KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf"
 /// validate a payload, because a sibling duration variant legitimately differs.
 pub const UPSTREAM_PARAM_COUNT_F32: usize = 86_858_128;
 
-/// `state_dict` name prefix under which the upstream tagging head is expected
-/// to sit.
+/// `state_dict` name prefix under which the upstream tagging head sits.
 ///
-/// **Unverified convention.** The converter records that upstream's HF `config`
-/// declares `architectures: ["ASTForAudioClassification"]`, and the HF wrapper
-/// of that name places its head under a `classifier.` prefix — but no real
-/// MAEST tensor listing is transcribed anywhere in this repository, so this
-/// string has not been checked against a released checkpoint. Nothing in this
-/// binder *depends* on it: it only shapes what
-/// [`MaestWeights::tag_head_tensors`] reports, and an artifact with no matching
-/// tensor is **not** rejected (a bare-encoder export is a legitimate artifact).
+/// **Transcribed, not assumed.** Upstream's HF `config` declares
+/// `architectures: ["ASTForAudioClassification"]`, and that class holds
+/// `self.classifier = ASTMLPHead(config)` — so a `state_dict` saved from it
+/// carries the head under `classifier.`, alongside
+/// `classifier.layernorm.{weight,bias}` and `classifier.dense.{weight,bias}`
+/// (see [`PRIMARY_SOURCE_HF_AST_MODELING`]).
+///
+/// An artifact with no matching tensor is still **not** rejected: a
+/// bare-`ASTModel` encoder export carries no head at all, which is a legitimate
+/// artifact. It simply has no [`MaestEncoder::tag_mel`] surface.
 pub const TAG_HEAD_PREFIX: &str = "classifier.";
 
 // Primary-source anchors, cited inside the loud-partial error so a reader
@@ -304,6 +326,442 @@ pub const PRIMARY_SOURCE_UPSTREAM_HF: &str = "huggingface.co/mtg-upf/discogs-mae
 
 /// Primary-source anchor: Alonso-Jiménez et al. 2023 (ISMIR) — the MAEST paper.
 pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2309.16418";
+
+/// Primary-source anchor: the HuggingFace `transformers` AST modelling file at
+/// the tag the checkpoint's own config names.
+///
+/// The upstream `config.json` records `transformers_version: "4.34.0.dev0"`, so
+/// `v4.34.0` is the matching tag. Every `state_dict` name this module walks —
+/// and the pre-norm block ordering, the token concatenation order, the plane
+/// orientation and the pooling rule — is transcribed from this file rather than
+/// inferred from a naming convention.
+pub const PRIMARY_SOURCE_HF_AST_MODELING: &str = "github.com/huggingface/transformers/blob/v4.34.0/src/transformers/models/audio_spectrogram_transformer/modeling_audio_spectrogram_transformer.py";
+
+// ---------------------------------------------------------------------------
+// `vokra.maest.*` metadata keys — byte-identical mirrors of the converter's
+// private `KEY_MAEST_*` constants in
+// `crates/vokra-convert/src/models/maest.rs`. The spellings ARE the cross-crate
+// contract, so they are pinned by a test rather than merely copied.
+// ---------------------------------------------------------------------------
+
+/// Transformer hidden width (`config.json` `hidden_size`).
+pub const GGUF_KEY_HIDDEN_SIZE: &str = "vokra.maest.hidden_size";
+/// Transformer block count (`config.json` `num_hidden_layers`).
+pub const GGUF_KEY_NUM_HIDDEN_LAYERS: &str = "vokra.maest.num_hidden_layers";
+/// Attention head count (`config.json` `num_attention_heads`).
+pub const GGUF_KEY_NUM_ATTENTION_HEADS: &str = "vokra.maest.num_attention_heads";
+/// FFN intermediate width (`config.json` `intermediate_size`).
+pub const GGUF_KEY_INTERMEDIATE_SIZE: &str = "vokra.maest.intermediate_size";
+/// Square ViT patch edge in mel bins × frames (`config.json` `patch_size`).
+pub const GGUF_KEY_PATCH_SIZE: &str = "vokra.maest.patch_size";
+/// Patch stride along the mel-bin axis (`config.json` `frequency_stride`).
+pub const GGUF_KEY_FREQUENCY_STRIDE: &str = "vokra.maest.frequency_stride";
+/// Patch stride along the frame axis (`config.json` `time_stride`).
+pub const GGUF_KEY_TIME_STRIDE: &str = "vokra.maest.time_stride";
+/// Log-mel band count (`config.json` `num_mel_bins`).
+pub const GGUF_KEY_NUM_MEL_BINS: &str = "vokra.maest.num_mel_bins";
+/// Frame count the position table is sized for (`config.json` `max_length`).
+pub const GGUF_KEY_MAX_LENGTH: &str = "vokra.maest.max_length";
+/// Discogs label-set size (`config.json` `id2label` cardinality).
+pub const GGUF_KEY_NUM_LABELS: &str = "vokra.maest.num_labels";
+/// Whether q/k/v projections carry a bias (`config.json` `qkv_bias`).
+pub const GGUF_KEY_QKV_BIAS: &str = "vokra.maest.qkv_bias";
+/// Encoder activation name (`config.json` `hidden_act`).
+pub const GGUF_KEY_HIDDEN_ACT: &str = "vokra.maest.hidden_act";
+/// LayerNorm epsilon as a `u32` scaled by 1e9 (`config.json` `layer_norm_eps`).
+pub const GGUF_KEY_LAYER_NORM_EPS_SCALED_1E9: &str = "vokra.maest.layer_norm_eps_scaled_1e9";
+/// Hidden dropout scaled by 1e3 — inference-inert, stamped for audit.
+pub const GGUF_KEY_HIDDEN_DROPOUT_SCALED_1E3: &str = "vokra.maest.hidden_dropout_scaled_1e3";
+/// Attention dropout scaled by 1e3 — inference-inert, stamped for audit.
+pub const GGUF_KEY_ATTENTION_DROPOUT_SCALED_1E3: &str = "vokra.maest.attention_dropout_scaled_1e3";
+/// Patch-grid extent along the mel-bin axis.
+pub const GGUF_KEY_FREQ_PATCHES: &str = "vokra.maest.freq_patches";
+/// Patch-grid extent along the frame axis.
+pub const GGUF_KEY_TIME_PATCHES: &str = "vokra.maest.time_patches";
+/// Total patch-token count entering the encoder.
+pub const GGUF_KEY_NUM_PATCHES: &str = "vokra.maest.num_patches";
+/// Learned tokens prepended ahead of the patch tokens (AST: CLS + distillation).
+pub const GGUF_KEY_NUM_PREFIX_TOKENS: &str = "vokra.maest.num_prefix_tokens";
+/// Front-end sample rate in Hz.
+pub const GGUF_KEY_SAMPLE_RATE: &str = "vokra.maest.sample_rate";
+/// STFT transform size.
+pub const GGUF_KEY_N_FFT: &str = "vokra.maest.n_fft";
+/// STFT hop in samples.
+pub const GGUF_KEY_HOP_LENGTH: &str = "vokra.maest.hop_length";
+/// STFT analysis-window length in samples.
+pub const GGUF_KEY_WIN_LENGTH: &str = "vokra.maest.win_length";
+/// STFT analysis-window type.
+pub const GGUF_KEY_WINDOW: &str = "vokra.maest.window";
+/// Mel filterbank frequency scale.
+pub const GGUF_KEY_MEL_SCALE: &str = "vokra.maest.mel_scale";
+/// Mel filterbank normalization.
+pub const GGUF_KEY_MEL_NORM: &str = "vokra.maest.mel_norm";
+/// Mel filterbank lower edge in Hz.
+pub const GGUF_KEY_FMIN_HZ: &str = "vokra.maest.fmin_hz";
+/// Mel filterbank upper edge in Hz.
+pub const GGUF_KEY_FMAX_HZ: &str = "vokra.maest.fmax_hz";
+/// Magnitude-compression mode.
+pub const GGUF_KEY_LOG_COMPRESSION: &str = "vokra.maest.log_compression";
+/// Multiplier inside the `logC` compression.
+pub const GGUF_KEY_LOG_COMPRESSION_MUL: &str = "vokra.maest.log_compression_mul";
+/// Whether the compressed spectrogram is mean/std normalized.
+pub const GGUF_KEY_DO_NORMALIZE: &str = "vokra.maest.do_normalize";
+/// Normalization mean, stamped `FLOAT64`.
+pub const GGUF_KEY_NORM_MEAN: &str = "vokra.maest.norm_mean";
+/// Normalization standard deviation, stamped `FLOAT64`.
+pub const GGUF_KEY_NORM_STD: &str = "vokra.maest.norm_std";
+
+/// The `hidden_act` value this binder can map onto a [`GeluKind`].
+///
+/// Upstream `ACT2FN["gelu"]` is `GELUActivation`, the **exact erf** formulation
+/// (`x · 0.5 · (1 + erf(x / √2))`). The tanh approximation is registered under
+/// *different* keys upstream (`gelu_new`, `gelu_pytorch_tanh`, `gelu_fast`,
+/// `gelu_accurate`), so a value other than this one is a genuinely different
+/// activation and is refused rather than silently folded onto the erf form —
+/// the two differ by up to ~1e-3, which is shape-valid and numerically wrong.
+pub const SUPPORTED_HIDDEN_ACT: &str = "gelu";
+
+/// The `state_dict` prefix an `ASTForAudioClassification` export carries.
+///
+/// That class holds the backbone as `self.audio_spectrogram_transformer`, so
+/// every encoder tensor is nested under this prefix.
+pub const TENSOR_PREFIX_CLASSIFICATION: &str = "audio_spectrogram_transformer.";
+
+/// The `state_dict` prefix a bare `ASTModel` export carries — none.
+///
+/// Both spellings occur in the wild depending on which class was saved, so the
+/// prefix is **discovered** from the manifest on disk rather than assumed; see
+/// [`MaestWeights::detect_tensor_prefix`].
+pub const TENSOR_PREFIX_BARE: &str = "";
+
+/// Prefix-relative name of the position table, used to probe which
+/// `state_dict` prefix an artifact was saved under.
+const PROBE_SUFFIX_POSITION_EMBEDDINGS: &str = "embeddings.position_embeddings";
+
+// ---------------------------------------------------------------------------
+// MaestConfig — the `vokra.maest.*` topology + front-end axis group
+// ---------------------------------------------------------------------------
+
+/// MAEST topology and log-mel front-end axes, as they ride the
+/// `vokra.maest.*` chunk group.
+///
+/// [`from_gguf`](Self::from_gguf) is a **strict** loader: every stamped key is
+/// required and a missing one is a loud [`VokraError::ModelLoad`] naming it.
+/// There is deliberately **no** primary-source constant fallback — the
+/// converter transcribes each of these from the upstream `config.json` /
+/// `preprocessor_config.json` and stamps them, so a partially stamped artifact
+/// signals a mis-produced GGUF, and defaulting would let it through while
+/// binding fabricated axes (FR-EX-08). Same posture as the sibling
+/// `vokra.wavlm.*` reader.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaestConfig {
+    /// Transformer hidden width `D`.
+    pub hidden_size: u32,
+    /// Transformer block count.
+    pub num_hidden_layers: u32,
+    /// Attention head count; must divide [`Self::hidden_size`].
+    pub num_attention_heads: u32,
+    /// FFN intermediate width.
+    pub intermediate_size: u32,
+    /// Square ViT patch edge, in mel bins × frames.
+    pub patch_size: u32,
+    /// Patch stride along the mel-bin axis. **Smaller than
+    /// [`Self::patch_size`]** for MAEST — the patches overlap.
+    pub frequency_stride: u32,
+    /// Patch stride along the frame axis, likewise overlapping.
+    pub time_stride: u32,
+    /// Log-mel band count the front-end produces.
+    pub num_mel_bins: u32,
+    /// Frame count the position table was trained at.
+    pub max_length: u32,
+    /// Discogs label-set size.
+    pub num_labels: u32,
+    /// Whether the q/k/v projections carry a bias.
+    pub qkv_bias: bool,
+    /// Encoder activation name; see [`SUPPORTED_HIDDEN_ACT`].
+    pub hidden_act: String,
+    /// LayerNorm epsilon scaled by 1e9.
+    pub layer_norm_eps_scaled_1e9: u32,
+    /// Hidden dropout scaled by 1e3 (inference-inert).
+    pub hidden_dropout_scaled_1e3: u32,
+    /// Attention dropout scaled by 1e3 (inference-inert).
+    pub attention_dropout_scaled_1e3: u32,
+    /// Patch-grid extent along the mel-bin axis, at the trained length.
+    pub freq_patches: u32,
+    /// Patch-grid extent along the frame axis, at the trained length.
+    pub time_patches: u32,
+    /// Total patch tokens at the trained length.
+    pub num_patches: u32,
+    /// Learned tokens prepended ahead of the patch tokens.
+    pub num_prefix_tokens: u32,
+    /// Front-end sample rate in Hz.
+    pub sample_rate: u32,
+    /// STFT transform size.
+    pub n_fft: u32,
+    /// STFT hop in samples.
+    pub hop_length: u32,
+    /// STFT analysis-window length in samples.
+    pub win_length: u32,
+    /// STFT analysis-window type.
+    pub window: String,
+    /// Mel filterbank frequency scale.
+    pub mel_scale: String,
+    /// Mel filterbank normalization.
+    pub mel_norm: String,
+    /// Mel filterbank lower edge in Hz.
+    pub fmin_hz: u32,
+    /// Mel filterbank upper edge in Hz.
+    pub fmax_hz: u32,
+    /// Magnitude-compression mode.
+    pub log_compression: String,
+    /// Multiplier inside the `logC` compression.
+    pub log_compression_mul: u32,
+    /// Whether the compressed spectrogram is mean/std normalized.
+    pub do_normalize: bool,
+    /// Normalization mean, at the `FLOAT64` precision it was published with.
+    pub norm_mean: f64,
+    /// Normalization standard deviation, likewise `FLOAT64`.
+    pub norm_std: f64,
+}
+
+impl MaestConfig {
+    /// Reads every `vokra.maest.*` chunk from `gguf`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when any stamped key is absent or carries
+    ///   the wrong metadata type — the message names the key (FR-EX-08, no
+    ///   primary-source constant fallback).
+    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        Ok(Self {
+            hidden_size: req_u32(gguf, GGUF_KEY_HIDDEN_SIZE)?,
+            num_hidden_layers: req_u32(gguf, GGUF_KEY_NUM_HIDDEN_LAYERS)?,
+            num_attention_heads: req_u32(gguf, GGUF_KEY_NUM_ATTENTION_HEADS)?,
+            intermediate_size: req_u32(gguf, GGUF_KEY_INTERMEDIATE_SIZE)?,
+            patch_size: req_u32(gguf, GGUF_KEY_PATCH_SIZE)?,
+            frequency_stride: req_u32(gguf, GGUF_KEY_FREQUENCY_STRIDE)?,
+            time_stride: req_u32(gguf, GGUF_KEY_TIME_STRIDE)?,
+            num_mel_bins: req_u32(gguf, GGUF_KEY_NUM_MEL_BINS)?,
+            max_length: req_u32(gguf, GGUF_KEY_MAX_LENGTH)?,
+            num_labels: req_u32(gguf, GGUF_KEY_NUM_LABELS)?,
+            qkv_bias: req_bool(gguf, GGUF_KEY_QKV_BIAS)?,
+            hidden_act: req_string(gguf, GGUF_KEY_HIDDEN_ACT)?,
+            layer_norm_eps_scaled_1e9: req_u32(gguf, GGUF_KEY_LAYER_NORM_EPS_SCALED_1E9)?,
+            hidden_dropout_scaled_1e3: req_u32(gguf, GGUF_KEY_HIDDEN_DROPOUT_SCALED_1E3)?,
+            attention_dropout_scaled_1e3: req_u32(gguf, GGUF_KEY_ATTENTION_DROPOUT_SCALED_1E3)?,
+            freq_patches: req_u32(gguf, GGUF_KEY_FREQ_PATCHES)?,
+            time_patches: req_u32(gguf, GGUF_KEY_TIME_PATCHES)?,
+            num_patches: req_u32(gguf, GGUF_KEY_NUM_PATCHES)?,
+            num_prefix_tokens: req_u32(gguf, GGUF_KEY_NUM_PREFIX_TOKENS)?,
+            sample_rate: req_u32(gguf, GGUF_KEY_SAMPLE_RATE)?,
+            n_fft: req_u32(gguf, GGUF_KEY_N_FFT)?,
+            hop_length: req_u32(gguf, GGUF_KEY_HOP_LENGTH)?,
+            win_length: req_u32(gguf, GGUF_KEY_WIN_LENGTH)?,
+            window: req_string(gguf, GGUF_KEY_WINDOW)?,
+            mel_scale: req_string(gguf, GGUF_KEY_MEL_SCALE)?,
+            mel_norm: req_string(gguf, GGUF_KEY_MEL_NORM)?,
+            fmin_hz: req_u32(gguf, GGUF_KEY_FMIN_HZ)?,
+            fmax_hz: req_u32(gguf, GGUF_KEY_FMAX_HZ)?,
+            log_compression: req_string(gguf, GGUF_KEY_LOG_COMPRESSION)?,
+            log_compression_mul: req_u32(gguf, GGUF_KEY_LOG_COMPRESSION_MUL)?,
+            do_normalize: req_bool(gguf, GGUF_KEY_DO_NORMALIZE)?,
+            norm_mean: req_f64(gguf, GGUF_KEY_NORM_MEAN)?,
+            norm_std: req_f64(gguf, GGUF_KEY_NORM_STD)?,
+        })
+    }
+
+    /// LayerNorm epsilon, un-scaling the stamped `× 1e9` integer encoding.
+    #[inline]
+    #[must_use]
+    pub fn layer_norm_eps(&self) -> f32 {
+        // Divide in f64, then narrow once — the stamped integer is exact, so
+        // this is the only rounding step.
+        (f64::from(self.layer_norm_eps_scaled_1e9) / 1.0e9) as f32
+    }
+
+    /// MLP hidden width as a multiple of the hidden width.
+    ///
+    /// [`ViTAttrs`] carries the *ratio* rather than the absolute width, so this
+    /// divides the two stamped axes. [`Self::vit_attrs_with_pos_embed`]
+    /// verifies that the ratio rounds back to the stamped
+    /// [`Self::intermediate_size`] exactly, so the conversion cannot silently
+    /// lose a unit.
+    #[inline]
+    #[must_use]
+    pub fn mlp_ratio(&self) -> f32 {
+        self.intermediate_size as f32 / self.hidden_size as f32
+    }
+
+    /// Encoder sequence length at the trained input length:
+    /// `num_prefix_tokens + num_patches`.
+    #[inline]
+    #[must_use]
+    pub fn encoder_sequence_len(&self) -> usize {
+        self.num_prefix_tokens as usize + self.num_patches as usize
+    }
+
+    /// Maps the stamped [`Self::hidden_act`] onto a [`GeluKind`].
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] for any value other than
+    ///   [`SUPPORTED_HIDDEN_ACT`] — the tanh-family activations carry distinct
+    ///   upstream names, so folding them onto the erf form would be silently
+    ///   wrong rather than loud.
+    pub fn gelu_kind(&self) -> Result<GeluKind> {
+        if self.hidden_act == SUPPORTED_HIDDEN_ACT {
+            return Ok(GeluKind::Erf);
+        }
+        Err(VokraError::ModelLoad(format!(
+            "maest: `{GGUF_KEY_HIDDEN_ACT}` is `{act}`, but this binder maps only \
+             `{SUPPORTED_HIDDEN_ACT}` (upstream `ACT2FN[\"gelu\"]` = `GELUActivation`, the exact \
+             erf formulation `x · 0.5 · (1 + erf(x / √2))`). The tanh approximation is registered \
+             upstream under DIFFERENT keys (`gelu_new`, `gelu_pytorch_tanh`, `gelu_fast`, \
+             `gelu_accurate`), so `{act}` is a genuinely different activation — the two differ by \
+             up to ~1e-3, which stays shape-valid while being numerically wrong. Refusing to fold \
+             it onto the erf form (FR-EX-08). Primary source: {PRIMARY_SOURCE_HF_AST_MODELING}",
+            act = self.hidden_act,
+        )))
+    }
+
+    /// The positional-embedding policy that resizes the **stamped** table grid
+    /// to whatever grid the runtime plane produces.
+    ///
+    /// Use this when encoding a clip whose frame count differs from the trained
+    /// [`Self::max_length`]. Note the resize is **bilinear**, whereas ViT-audio
+    /// implementations generally resize positional tables bicubically — see
+    /// [`PosEmbedPolicy::InterpolateGridBilinear`]. For numerical parity against
+    /// upstream, resize offline and use [`PosEmbedPolicy::RequireExact`].
+    #[inline]
+    #[must_use]
+    pub fn stamped_grid_pos_embed_policy(&self) -> PosEmbedPolicy {
+        PosEmbedPolicy::InterpolateGridBilinear {
+            table_grid_h: self.freq_patches as usize,
+            table_grid_w: self.time_patches as usize,
+        }
+    }
+
+    /// Maps the stamped axes onto [`ViTAttrs`] under
+    /// [`PosEmbedPolicy::RequireExact`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::vit_attrs_with_pos_embed`].
+    pub fn vit_attrs(&self) -> Result<ViTAttrs> {
+        self.vit_attrs_with_pos_embed(PosEmbedPolicy::RequireExact)
+    }
+
+    /// Maps the stamped axes onto [`ViTAttrs`] under an explicit
+    /// positional-embedding policy.
+    ///
+    /// Where each [`ViTAttrs`] field comes from — every one is a stamped value,
+    /// none is a "typical AST-base" default:
+    ///
+    /// - `embed_dim` ← [`Self::hidden_size`].
+    /// - `depth` ← [`Self::num_hidden_layers`].
+    /// - `n_heads` ← [`Self::num_attention_heads`].
+    /// - `mlp_ratio` ← [`Self::intermediate_size`] ÷ [`Self::hidden_size`],
+    ///   checked to round back to `intermediate_size` exactly.
+    /// - `patch_h` / `patch_w` ← [`Self::patch_size`], which upstream passes to
+    ///   `Conv2d` as the square `kernel_size=(patch_size, patch_size)`.
+    /// - `stride_h` ← [`Self::frequency_stride`] and `stride_w` ←
+    ///   [`Self::time_stride`], matching upstream's
+    ///   `stride=(frequency_stride, time_stride)`. Because upstream transposes
+    ///   the plane to `[num_mel_bins, max_length]` before the convolution, the
+    ///   *first* stride walks the mel-bin axis — which is exactly `vokra-ops`'
+    ///   `stride_h`. Both are 10 against a kernel of 16, so the patches overlap.
+    /// - `n_prepended_tokens` ← [`Self::num_prefix_tokens`].
+    /// - `layer_norm_eps` ← [`Self::layer_norm_eps`].
+    /// - `gelu` ← [`Self::gelu_kind`].
+    /// - `pos_embed_policy` ← the caller's `policy`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when [`Self::gelu_kind`] rejects the stamped
+    ///   activation, or when the `mlp_ratio` division does not round back to
+    ///   the stamped `intermediate_size`.
+    /// - [`VokraError::InvalidArgument`] from [`ViTAttrs::validate`] when an
+    ///   axis is zero or `hidden_size` is not divisible by
+    ///   `num_attention_heads`.
+    pub fn vit_attrs_with_pos_embed(&self, policy: PosEmbedPolicy) -> Result<ViTAttrs> {
+        let attrs = ViTAttrs {
+            embed_dim: self.hidden_size as usize,
+            depth: self.num_hidden_layers as usize,
+            n_heads: self.num_attention_heads as usize,
+            mlp_ratio: self.mlp_ratio(),
+            patch_h: self.patch_size as usize,
+            patch_w: self.patch_size as usize,
+            stride_h: self.frequency_stride as usize,
+            stride_w: self.time_stride as usize,
+            n_prepended_tokens: self.num_prefix_tokens as usize,
+            layer_norm_eps: self.layer_norm_eps(),
+            gelu: self.gelu_kind()?,
+            pos_embed_policy: policy,
+        };
+        attrs.validate()?;
+
+        // The ratio is a lossy re-encoding of two integers, so verify it lands
+        // back on the stamped width instead of trusting the division.
+        let resolved = attrs.mlp_dim();
+        if resolved != self.intermediate_size as usize {
+            return Err(VokraError::ModelLoad(format!(
+                "maest: `{GGUF_KEY_INTERMEDIATE_SIZE}` is {stamped} but the `ViTAttrs` \
+                 mlp_ratio ({ratio}) derived from it and `{GGUF_KEY_HIDDEN_SIZE}` ({hidden}) \
+                 rounds the MLP hidden width to {resolved}. Refusing to bind an FFN of the \
+                 wrong width (FR-EX-08).",
+                stamped = self.intermediate_size,
+                ratio = attrs.mlp_ratio,
+                hidden = self.hidden_size,
+            )));
+        }
+        Ok(attrs)
+    }
+}
+
+/// Reads a required `u32`-ish metadata value, naming the key on failure.
+fn req_u32(gguf: &GgufFile, key: &str) -> Result<u32> {
+    gguf.get(key)
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .ok_or_else(|| missing_axis(key, "unsigned integer"))
+}
+
+/// Reads a required boolean metadata value, naming the key on failure.
+fn req_bool(gguf: &GgufFile, key: &str) -> Result<bool> {
+    gguf.get(key)
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| missing_axis(key, "boolean"))
+}
+
+/// Reads a required string metadata value, naming the key on failure.
+fn req_string(gguf: &GgufFile, key: &str) -> Result<String> {
+    gguf.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| missing_axis(key, "string"))
+}
+
+/// Reads a required float metadata value, naming the key on failure.
+fn req_f64(gguf: &GgufFile, key: &str) -> Result<f64> {
+    gguf.get(key)
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| missing_axis(key, "float"))
+}
+
+/// The one loud message shape for an absent or wrongly typed `vokra.maest.*`
+/// axis.
+fn missing_axis(key: &str, want: &str) -> VokraError {
+    VokraError::ModelLoad(format!(
+        "maest: GGUF is missing required {want} chunk `{key}` — the upstream `{UPSTREAM_HF}` \
+         release carries a first-class `config.json` + `preprocessor_config.json`, and the \
+         converter transcribes every axis from them and stamps the whole `vokra.maest.*` group, \
+         so a proper conversion always carries this key. This binder refuses to fall back to a \
+         primary-source constant, because a silent default would let a mismatched artifact bind \
+         against a fabricated axis (FR-EX-08). Re-run `vokra-cli convert --model \
+         maest-30s-pw-129e` against the upstream safetensors release. Primary source: \
+         {PRIMARY_SOURCE_UPSTREAM_HF}"
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // MaestWeights — the tensor manifest, with loud lookups
@@ -420,10 +878,11 @@ impl MaestWeights {
     /// Discogs labels in whatever checkpoint the caller converted.
     ///
     /// Returns `None` in every other case (no head on disk, or an ambiguous
-    /// shape layout). It never falls back to a taxonomy constant: this module
-    /// deliberately contains none, because the converter stamps no label count
-    /// and inventing one would be fabrication
-    /// (CLAUDE.md「ハルシネーション厳禁」).
+    /// shape layout). It never falls back to a constant — not even to the
+    /// stamped [`MaestConfig::num_labels`], deliberately: the stamp comes from
+    /// `config.json` and this value comes from the payload, so keeping them
+    /// independent is what lets the head binding cross-check them. Collapsing
+    /// one onto the other would turn two witnesses into one.
     #[must_use]
     pub fn label_count_from_disk(&self) -> Option<usize> {
         let mut two_d = self
@@ -498,14 +957,58 @@ impl MaestWeights {
         if actual != expected {
             return Err(VokraError::ModelLoad(format!(
                 "maest: tensor `{name}` has dims {actual:?} but the caller expects \
-                 {expected:?} — refusing to reshape or truncate silently (FR-EX-08). MAEST \
-                 stamps no `vokra.maest.*` axis group, so a dims disagreement here means the \
-                 walking code's transcribed topology does not match the payload (a different \
-                 duration variant, a different epoch checkpoint, or a re-export with a \
-                 different label-set size). Primary source: {PRIMARY_SOURCE_UPSTREAM_HF}"
+                 {expected:?} — refusing to reshape or truncate silently (FR-EX-08). The \
+                 expected shape is derived from the stamped `vokra.maest.*` axis group, so a \
+                 disagreement here means the payload and the stamped topology describe different \
+                 checkpoints (a different duration variant, a different epoch checkpoint, or a \
+                 re-export with a different label-set size). Primary sources: \
+                 {PRIMARY_SOURCE_UPSTREAM_HF}, {PRIMARY_SOURCE_HF_AST_MODELING}"
             )));
         }
         Ok(())
+    }
+
+    /// Discovers which `state_dict` prefix this artifact was saved under.
+    ///
+    /// Returns [`TENSOR_PREFIX_CLASSIFICATION`] for an
+    /// `ASTForAudioClassification` export (the class holds the backbone as
+    /// `self.audio_spectrogram_transformer`, so every encoder tensor is nested
+    /// under it) or [`TENSOR_PREFIX_BARE`] for a bare `ASTModel` export. Both
+    /// occur in the wild, so the prefix is **probed against the manifest on
+    /// disk** rather than assumed from the upstream `architectures` string —
+    /// a re-export can legitimately strip it.
+    ///
+    /// The probe is the position table, which every AST export carries exactly
+    /// once.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when neither spelling is present — the
+    ///   message names **both** candidates it looked for (FR-EX-08 — never pick
+    ///   a prefix that is not actually on disk).
+    pub fn detect_tensor_prefix(&self) -> Result<&'static str> {
+        for prefix in [TENSOR_PREFIX_CLASSIFICATION, TENSOR_PREFIX_BARE] {
+            let probe = format!("{prefix}{PROBE_SUFFIX_POSITION_EMBEDDINGS}");
+            if self.tensor_dims(&probe).is_some() {
+                return Ok(prefix);
+            }
+        }
+        let sample: Vec<&str> = self
+            .tensors
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .take(5)
+            .collect();
+        Err(VokraError::ModelLoad(format!(
+            "maest: could not find the position table under either known `state_dict` prefix — \
+             looked for `{TENSOR_PREFIX_CLASSIFICATION}{PROBE_SUFFIX_POSITION_EMBEDDINGS}` (an \
+             `ASTForAudioClassification` export, which nests the backbone under \
+             `self.audio_spectrogram_transformer`) and \
+             `{PROBE_SUFFIX_POSITION_EMBEDDINGS}` (a bare `ASTModel` export). The GGUF holds \
+             {count} tensor(s); first names on disk: {sample:?}. Refusing to guess a third \
+             prefix (FR-EX-08). Primary source: {PRIMARY_SOURCE_HF_AST_MODELING}",
+            count = self.tensors.len(),
+        )))
     }
 }
 
@@ -518,11 +1021,18 @@ impl MaestWeights {
 ///
 /// Bind with [`from_gguf`](Self::from_gguf) — or the compliance-gated
 /// [`from_gguf_with_policy`](Self::from_gguf_with_policy) /
-/// [`from_path`](Self::from_path) / [`from_path_with_policy`](Self::from_path_with_policy)
-/// — then call [`encode`](Self::encode) for per-patch hidden states,
-/// [`embed`](Self::embed) for the pooled clip embedding, or [`tag`](Self::tag)
-/// for Discogs tag logits. All three forwards are **loud-partial** today; see
-/// the module docstring for the blockers and the FR-EX-08 contract.
+/// [`from_path`](Self::from_path) / [`from_path_with_policy`](Self::from_path_with_policy).
+///
+/// Binding is cheap: it reads the metadata, the strict [`MaestConfig`] axis
+/// group and the tensor **manifest**, but decodes no payload. To run the
+/// encoder, call [`encoder`](Self::encoder), which binds the weights into a
+/// [`MaestEncoder`] and gives you [`MaestEncoder::encode_mel`] /
+/// [`MaestEncoder::embed_mel`] / [`MaestEncoder::tag_mel`].
+///
+/// The PCM-in surfaces [`encode`](Self::encode) / [`embed`](Self::embed) /
+/// [`tag`](Self::tag) remain **loud-partial**: the log-mel front-end's framing
+/// convention is the one axis the converter deliberately does not stamp. See
+/// the module docstring.
 #[derive(Debug, Clone)]
 pub struct Maest {
     name: Option<String>,
@@ -530,6 +1040,7 @@ pub struct Maest {
     upstream_hf: Option<String>,
     model_id: Option<String>,
     source: Option<String>,
+    config: MaestConfig,
     weights: MaestWeights,
     weight_license: LicenseClass,
     attribution: Option<String>,
@@ -559,6 +1070,8 @@ impl Maest {
     /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is not `"maest"` —
     ///   the message names both the found and the expected tag and enumerates
     ///   the SSL audio/music-embedding neighbourhood.
+    /// - [`VokraError::ModelLoad`] when any `vokra.maest.*` axis is absent
+    ///   ([`MaestConfig::from_gguf`] is strict — no constant fallback).
     /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
     ///   ([`MaestWeights::from_gguf`]).
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
@@ -577,10 +1090,15 @@ impl Maest {
         let model_id = read_str(chunks::KEY_PROVENANCE_MODEL_ID);
         let source = read_str(chunks::KEY_PROVENANCE_SOURCE);
 
-        // 3. Tensor manifest with the non-emptiness gate.
+        // 3. Strict topology + front-end axes from the `vokra.maest.*` group.
+        //    Ahead of the manifest so a pre-axis-group artifact reports the
+        //    missing axis (the actionable fact) rather than a tensor trail.
+        let config = MaestConfig::from_gguf(file)?;
+
+        // 4. Tensor manifest with the non-emptiness gate.
         let weights = MaestWeights::from_gguf(file)?;
 
-        // 4. Provenance surfacing. The converter stamps
+        // 5. Provenance surfacing. The converter stamps
         //    `NonCommercialShareAlike` (cc-by-nc-sa-4.0); an artifact missing
         //    the stamp reads back as `Unknown` — fail-closed at the M2-13 gate.
         let weight_license = file
@@ -596,6 +1114,7 @@ impl Maest {
             upstream_hf,
             model_id,
             source,
+            config,
             weights,
             weight_license,
             attribution,
@@ -717,6 +1236,45 @@ impl Maest {
         &self.weights
     }
 
+    /// The strict topology + front-end axes read from the `vokra.maest.*`
+    /// chunk group.
+    #[inline]
+    #[must_use]
+    pub fn config(&self) -> &MaestConfig {
+        &self.config
+    }
+
+    /// Binds the encoder weights, producing a runnable [`MaestEncoder`].
+    ///
+    /// This is the expensive step [`Self::from_gguf`] deliberately skips: it
+    /// decodes every encoder tensor through `GgufFile::tensor_f32` (so a
+    /// K-quantised artifact dequantises on the way in) and shape-checks each
+    /// one against the stamped axes. `file` must be the same GGUF this handle
+    /// was bound from.
+    ///
+    /// `pos_embed_policy` decides what happens when the plane you later encode
+    /// produces a different patch grid than the table on disk was trained at.
+    /// [`PosEmbedPolicy::RequireExact`] is the parity-safe choice;
+    /// [`MaestConfig::stamped_grid_pos_embed_policy`] builds the interpolating
+    /// alternative from the stamped grid.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when the `state_dict` prefix cannot be
+    ///   discovered ([`MaestWeights::detect_tensor_prefix`]), when a required
+    ///   tensor is absent or has unexpected dims, when a payload fails to
+    ///   decode, or when the stamped `num_prefix_tokens` is not the 2 that an
+    ///   AST checkpoint's CLS + distillation pair implies.
+    /// - [`VokraError::InvalidArgument`] from `ViTEncoder::new` when a weight
+    ///   buffer is the wrong length or holds a non-finite value.
+    pub fn encoder(
+        &self,
+        file: &GgufFile,
+        pos_embed_policy: PosEmbedPolicy,
+    ) -> Result<MaestEncoder> {
+        MaestEncoder::bind(file, &self.config, &self.weights, pos_embed_policy)
+    }
+
     /// Number of tensors discovered on disk.
     #[inline]
     #[must_use]
@@ -775,84 +1333,99 @@ impl Maest {
         self.attribution.as_deref()
     }
 
-    /// Encodes a mono `f32` PCM slice into the MAEST encoder's **per-patch
-    /// hidden states** (`[n_patches][embed_dim]`).
+    /// Encodes a mono `f32` PCM slice into the encoder's token hidden states.
     ///
-    /// # Loud-partial (this WP)
+    /// # Loud-partial — the log-mel **framing convention**, and only that
     ///
-    /// Returns [`VokraError::UnsupportedOp`] naming the three blockers
-    /// enumerated in the module docstring: (i) no `vokra.maest.*` axis chunk
-    /// group, (ii) no ViT-style patch-embedding + pre-norm Transformer encoder
-    /// primitive in `vokra-ops` — the gap shared with the whole SSL fleet, (iii)
-    /// no verified tensor-name manifest. Both primary sources are cited so a
-    /// reader diagnosing the gap has concrete places to walk. **No fabricated
-    /// hidden states are ever emitted** (FR-EX-08 — no silent partial output).
+    /// Returns [`VokraError::UnsupportedOp`]. The encoder itself is **no longer
+    /// a blocker**: [`Self::encoder`] binds it and
+    /// [`MaestEncoder::encode_mel`] runs it. What is missing is the PCM → mel
+    /// step, and specifically one axis of it — the STFT framing / centering
+    /// convention. Every other front-end axis *is* stamped and readable off
+    /// [`Self::config`] (sample rate, `n_fft`, hop, window length and type, mel
+    /// scale and normalization, `fmin` / `fmax`, the `logC` compression and its
+    /// multiplier, and the normalization mean / std). The converter
+    /// deliberately does not stamp `center` or `pad_mode` because no primary
+    /// source it reached states them, and choosing wrongly shifts every frame
+    /// by half a window — shape-valid, numerically wrong, and silent.
     ///
-    /// `pcm` is treated as mono `f32` in `[-1, 1]`. Its sample rate is
-    /// deliberately **not** asserted: the required rate is part of blocker (i),
-    /// and asserting a guessed rate would be exactly the fabrication this module
-    /// refuses.
+    /// Callers holding their own log-mel plane should use
+    /// [`MaestEncoder::encode_mel`], which is real today.
+    ///
+    /// **No fabricated hidden states are ever emitted** (FR-EX-08).
     ///
     /// # Errors
     ///
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the deferred
-    ///   encoder forward.
+    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
+    ///   unstamped front-end framing convention.
     pub fn encode(&self, pcm: &[f32]) -> Result<Vec<Vec<f32>>> {
         // Bind explicitly so a future accidental removal of the parameter is
         // not masked by an unused-variable warning (mirror of the atst / m2d /
         // emotion2vec loud-partial signature discipline).
         let _ = pcm;
-        Err(forward_loud_partial(
+        Err(front_end_loud_partial(
             "encode",
-            "per-patch hidden states",
-            false,
+            "token hidden states",
+            &self.config,
         ))
     }
 
     /// Encodes a mono `f32` PCM slice into the **pooled clip embedding**.
     ///
-    /// # Loud-partial (this WP)
+    /// # Loud-partial — same single blocker as [`Self::encode`]
     ///
-    /// Returns [`VokraError::UnsupportedOp`] for the same blockers as
-    /// [`Self::encode`] — the pooled embedding is the encoder output reduced
-    /// over the patch axis, so it cannot exist before the encoder does. The
-    /// **width** of the returned vector is itself unknown, because the embedding
-    /// dimension is part of blocker (i). **No fabricated embedding is ever
-    /// emitted** (FR-EX-08).
+    /// Returns [`VokraError::UnsupportedOp`] for the unstamped log-mel framing
+    /// convention. Unlike the previous landing, the **width** of the vector is
+    /// no longer unknown: it is [`MaestConfig::hidden_size`]. Callers holding
+    /// their own mel plane should use [`MaestEncoder::embed_mel`], which is
+    /// real today.
+    ///
+    /// **No fabricated embedding is ever emitted** (FR-EX-08).
     ///
     /// # Errors
     ///
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the deferred
-    ///   encoder forward.
+    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
+    ///   unstamped front-end framing convention.
     pub fn embed(&self, pcm: &[f32]) -> Result<Vec<f32>> {
         let _ = pcm;
-        Err(forward_loud_partial(
+        Err(front_end_loud_partial(
             "embed",
             "pooled clip embedding",
-            false,
+            &self.config,
         ))
     }
 
     /// Runs the Discogs tagging head over a mono `f32` PCM slice, returning one
     /// logit per label.
     ///
-    /// # Loud-partial (this WP)
+    /// # Loud-partial — same single blocker as [`Self::encode`]
     ///
-    /// Returns [`VokraError::UnsupportedOp`] naming the same three encoder
-    /// blockers as [`Self::encode`] **plus** a fourth that is specific to this
-    /// surface: the artifact carries no label *names*, so even a working head
-    /// could not map logits to human-readable Discogs genre / mood / instrument
-    /// / era tags. The label **count** is recoverable — see [`Self::label_count`]
-    /// — but it is read off the head tensor's dims, never assumed. **No
-    /// fabricated logits are ever emitted** (FR-EX-08).
+    /// Returns [`VokraError::UnsupportedOp`] for the unstamped log-mel framing
+    /// convention. Callers holding their own mel plane should use
+    /// [`MaestEncoder::tag_mel`], which is real today.
+    ///
+    /// Note what is **not** a blocker here: the head produces *logits*, and
+    /// this method's return type is logits, so the absent label taxonomy does
+    /// not stand in its way. The taxonomy gap is real but narrower than it once
+    /// read — the artifact carries no label *names*, so a caller cannot map
+    /// those logits onto human-readable Discogs genre / mood / instrument / era
+    /// strings. The label **count** is available twice over and cross-checked:
+    /// stamped as [`MaestConfig::num_labels`] and read off the head projection
+    /// on disk via [`Self::label_count`].
+    ///
+    /// **No fabricated logits are ever emitted** (FR-EX-08).
     ///
     /// # Errors
     ///
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the deferred
-    ///   encoder forward and the absent label taxonomy.
+    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
+    ///   unstamped front-end framing convention.
     pub fn tag(&self, pcm: &[f32]) -> Result<Vec<f32>> {
         let _ = pcm;
-        Err(forward_loud_partial("tag", "Discogs tag logits", true))
+        Err(front_end_loud_partial(
+            "tag",
+            "Discogs tag logits",
+            &self.config,
+        ))
     }
 }
 
@@ -897,59 +1470,488 @@ fn verify_arch(file: &GgufFile) -> Result<()> {
     }
 }
 
-/// Builds the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`Maest::encode`] / [`Maest::embed`] / [`Maest::tag`] until the MAEST forward
-/// wave lands.
+/// Builds the loud-partial [`VokraError::UnsupportedOp`] returned by the
+/// PCM-in surfaces [`Maest::encode`] / [`Maest::embed`] / [`Maest::tag`].
 ///
-/// `surface` is the method name, `output` is what that method would have
-/// returned, and `tag_head` adds the taxonomy blocker that only the tag surface
-/// hits. The message names the blockers and cites both primary sources so a
-/// reader diagnosing the gap has fully specified anchors (`atst` / `m2d` /
-/// `emotion2vec` / `wavlm` / `panns` / `redimnet` loud-partial-message
-/// precedent — CLAUDE.md 教訓 (a)).
-fn forward_loud_partial(surface: &str, output: &str, tag_head: bool) -> VokraError {
+/// `surface` is the method name and `output` is what that method would have
+/// returned. The message states the **one** remaining blocker — the unstamped
+/// log-mel framing convention — and, so a reader can see the boundary rather
+/// than infer it, enumerates the front-end axes that ARE stamped and points at
+/// the real mel-plane entry point.
+///
+/// # Why this message shrank
+///
+/// It once named four blockers. Three are resolved and were removed rather than
+/// left standing, because a stale claim in an error message misleads whoever
+/// reads it next: the converter now stamps the full `vokra.maest.*` axis group;
+/// `vokra_ops::vit` now supplies the 2-D patch embedding + pre-norm Transformer
+/// encoder; and the `state_dict` manifest is now transcribed from
+/// [`PRIMARY_SOURCE_HF_AST_MODELING`]. The fourth (the absent label taxonomy)
+/// was never a blocker on *logits* — see [`Maest::tag`].
+fn front_end_loud_partial(surface: &str, output: &str, cfg: &MaestConfig) -> VokraError {
     // Bound to a `let` rather than nested inside the outer `format!` args
     // (clippy: no `format!` inside another `format!`'s arguments).
-    let taxonomy_blocker = if tag_head {
-        "(iv) NO LABEL TAXONOMY — the converter stamps no label list and no label count, so \
-         even a working head could not map logits onto human-readable Discogs genre / mood / \
-         instrument / era tags; the label COUNT is recoverable via `Maest::label_count` by \
-         reading the head projection's leading dimension off disk, but the NAMES are \
-         unrecoverable from the artifact and this module deliberately hardcodes no taxonomy \
-         size; "
-    } else {
-        ""
-    };
+    let stamped_axes = format!(
+        "sample_rate={sr}, n_fft={n_fft}, hop_length={hop}, win_length={win}, window={window}, \
+         num_mel_bins={mels}, mel_scale={scale}, mel_norm={norm}, fmin_hz={fmin}, \
+         fmax_hz={fmax}, log_compression={comp} (multiplier {mul}), do_normalize={do_norm}, \
+         norm_mean={mean}, norm_std={std}",
+        sr = cfg.sample_rate,
+        n_fft = cfg.n_fft,
+        hop = cfg.hop_length,
+        win = cfg.win_length,
+        window = cfg.window,
+        mels = cfg.num_mel_bins,
+        scale = cfg.mel_scale,
+        norm = cfg.mel_norm,
+        fmin = cfg.fmin_hz,
+        fmax = cfg.fmax_hz,
+        comp = cfg.log_compression,
+        mul = cfg.log_compression_mul,
+        do_norm = cfg.do_normalize,
+        mean = cfg.norm_mean,
+        std = cfg.norm_std,
+    );
 
     VokraError::UnsupportedOp(format!(
-        "maest {surface} (loud-partial): the MAEST encoder forward is deferred, so no \
-         {output} can be produced. These pieces must land first: \
-         (i) NO `vokra.maest.*` AXIS CHUNK GROUP — the converter \
-         (`vokra-cli convert --model maest-30s-pw-129e`) is a verbatim F32/F16/BF16 \
-         pass-through that stamps only `vokra.model.*` + `vokra.provenance.*`, so the \
-         embedding width, depth, head count, patch grid AND every log-mel front-end axis \
-         (sample rate, n_fft, hop, n_mels) are absent from the artifact and are not \
-         transcribed anywhere in-repo; fabricating them from 'typical AST-base' numbers would \
-         bind shape-valid garbage; \
-         (ii) NO ViT-STYLE ENCODER PRIMITIVE — the log-mel front-end does exist \
-         (`vokra_ops::mel`, `vokra_ops::fused_logmel`, `vokra_ops::kaldi_fbank`), but the 2-D \
-         patch embedding + plain pre-norm Transformer encoder does not: \
-         `vokra_ops::conformer`, `vokra_ops::ebranchformer` and `vokra_ops::zipformer` are \
-         conv-augmented ASR encoders over a 1-D frame sequence, not ViT patch encoders over a \
-         2-D mel plane. This is the SAME SHARED GAP the sibling `atst` / `eat` / `m2d` / \
-         `dasheng` binders hit — one follow-up primitive unblocks the whole SSL fleet, not \
-         five unrelated ones; \
-         (iii) NO VERIFIED TENSOR-NAME MANIFEST — the converter copies every float tensor \
-         under its verbatim upstream `state_dict` name and the only MAEST names recorded \
-         in-repo are the two samples in the converter's own test module, so walking guessed \
-         names into typed slots would bind shape-valid garbage; \
-         {taxonomy_blocker}\
+        "maest {surface} (loud-partial): the PCM -> log-mel front end is incomplete, so no \
+         {output} can be produced FROM PCM. Exactly ONE axis is missing: the STFT FRAMING / \
+         CENTERING CONVENTION. The converter deliberately stamps no `center` and no `pad_mode` \
+         key, and writes no `vokra.frontend.*` bit-exact group, because no primary source it \
+         reached states them; picking centred vs non-centred shifts every frame by half a \
+         window, which stays shape-valid while being numerically wrong, so it is refused rather \
+         than guessed. Every OTHER front-end axis IS stamped and readable via \
+         `Maest::config`: {stamped_axes}. \
+         THE ENCODER ITSELF IS NOT A BLOCKER — bind it with `Maest::encoder` and run \
+         `MaestEncoder::encode_mel` / `MaestEncoder::embed_mel` / `MaestEncoder::tag_mel` over a \
+         log-mel plane you supply as [num_mel_bins, n_frames] row-major. That path is real: the \
+         `vokra.maest.*` axis group is stamped, `vokra_ops::vit` supplies the 2-D patch \
+         embedding + pre-norm Transformer encoder, and the upstream `state_dict` names are \
+         transcribed from {modeling}. \
          Primary sources: upstream release {upstream}, paper (Alonso-Jiménez et al., ISMIR \
-         2023) {paper}. The runtime cannot fabricate {output} (FR-EX-08 — no silent partial \
-         output; CLAUDE.md 教訓 (a) 'loud-partial は fake-complete より honest').",
+         2023) {paper}, HF AST modelling file {modeling}. The runtime cannot fabricate {output} \
+         (FR-EX-08 — no silent partial output; CLAUDE.md 教訓 (a) 'loud-partial は \
+         fake-complete より honest').",
         upstream = PRIMARY_SOURCE_UPSTREAM_HF,
         paper = PRIMARY_SOURCE_PAPER,
+        modeling = PRIMARY_SOURCE_HF_AST_MODELING,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// MaestEncoder — the bound, runnable encoder
+// ---------------------------------------------------------------------------
+
+/// The Discogs tagging head (`ASTMLPHead`): a LayerNorm followed by a linear
+/// projection onto the label set.
+///
+/// Transcribed from `ASTMLPHead.forward`, which is
+/// `dense(layernorm(hidden_state))`.
+#[derive(Debug, Clone)]
+pub struct MaestTagHead {
+    /// `[hidden_size]` LayerNorm gain (`classifier.layernorm.weight`).
+    ln_gamma: Vec<f32>,
+    /// `[hidden_size]` LayerNorm bias (`classifier.layernorm.bias`).
+    ln_beta: Vec<f32>,
+    /// Row-major `[num_labels, hidden_size]` (`classifier.dense.weight`).
+    dense_w: Vec<f32>,
+    /// `[num_labels]` (`classifier.dense.bias`).
+    dense_b: Vec<f32>,
+}
+
+impl MaestTagHead {
+    /// Number of labels this head projects onto.
+    #[inline]
+    #[must_use]
+    pub fn label_count(&self) -> usize {
+        self.dense_b.len()
+    }
+}
+
+/// A MAEST encoder with its weights bound and validated — the runnable handle.
+///
+/// Produced by [`Maest::encoder`]. The forward entry points take a **log-mel
+/// plane**, not PCM, because the PCM → mel framing convention is the one axis
+/// the converter does not stamp (see [`Maest::encode`]).
+///
+/// # Plane orientation — the axis order is load-bearing
+///
+/// `mel` is `[num_mel_bins, n_frames]` **row-major**: index
+/// `bin * n_frames + frame`. Upstream's own feature extractor produces
+/// `[n_frames, num_mel_bins]` and `ASTPatchEmbeddings.forward` transposes it
+/// (`input_values.unsqueeze(1).transpose(2, 3)`) precisely so the convolution
+/// walks mel bins as its first spatial axis. Handing this method the untransposed
+/// plane is shape-plausible whenever the two extents coincide and silently wrong
+/// otherwise, so the mel-bin extent is checked against the stamped
+/// [`MaestConfig::num_mel_bins`] rather than inferred.
+#[derive(Debug, Clone)]
+pub struct MaestEncoder {
+    config: MaestConfig,
+    encoder: ViTEncoder,
+    head: Option<MaestTagHead>,
+    tensor_prefix: &'static str,
+}
+
+impl MaestEncoder {
+    /// Binds and validates every encoder tensor. See [`Maest::encoder`].
+    fn bind(
+        file: &GgufFile,
+        config: &MaestConfig,
+        manifest: &MaestWeights,
+        pos_embed_policy: PosEmbedPolicy,
+    ) -> Result<Self> {
+        let attrs = config.vit_attrs_with_pos_embed(pos_embed_policy)?;
+        let prefix = manifest.detect_tensor_prefix()?;
+
+        // AST is DeiT-derived: `ASTEmbeddings` allocates a cls token AND a
+        // distillation token, and sizes the position table `num_patches + 2`.
+        // A different prefix-token count is a different topology, not a knob.
+        if config.num_prefix_tokens != 2 {
+            return Err(VokraError::ModelLoad(format!(
+                "maest: `{GGUF_KEY_NUM_PREFIX_TOKENS}` is {got}, but the AST backbone this \
+                 binder walks is DeiT-derived and prepends exactly two learned tokens — \
+                 `cls_token` and `distillation_token` — with its position table sized \
+                 `num_patches + 2`. Refusing to bind a prefix block of a different width \
+                 (FR-EX-08). Primary source: {PRIMARY_SOURCE_HF_AST_MODELING}",
+                got = config.num_prefix_tokens,
+            )));
+        }
+
+        let hidden = config.hidden_size as usize;
+        let inter = config.intermediate_size as usize;
+        let patch = config.patch_size as usize;
+        let seq_len = config.encoder_sequence_len();
+
+        let embeddings = format!("{prefix}embeddings.");
+        let load = |name: &str, expected: &[usize]| -> Result<Vec<f32>> {
+            load_tensor(file, manifest, name, expected)
+        };
+
+        // ---- embeddings -------------------------------------------------
+        // `nn.Parameter(torch.zeros(1, 1, hidden_size))` for both tokens, and
+        // `torch.zeros(1, num_patches + 2, hidden_size)` for the table.
+        let cls = load(&format!("{embeddings}cls_token"), &[1, 1, hidden])?;
+        let distillation = load(&format!("{embeddings}distillation_token"), &[1, 1, hidden])?;
+        // NOT `{embeddings}{PROBE_SUFFIX_POSITION_EMBEDDINGS}`: the probe
+        // suffix is rooted at the `state_dict` prefix and already carries its
+        // own `embeddings.` segment, so composing it with `embeddings` (which
+        // is `{prefix}embeddings.`) yields a doubled `embeddings.embeddings.`
+        // that matches nothing.
+        let pos_embed = load(
+            &format!("{embeddings}position_embeddings"),
+            &[1, seq_len, hidden],
+        )?;
+
+        // `ASTEmbeddings.forward` concatenates `(cls, distillation, patches)`
+        // along the token axis, so the prepended block is in that order and the
+        // position table's leading rows line up with it.
+        let mut prepended_tokens = Vec::with_capacity(2 * hidden);
+        prepended_tokens.extend_from_slice(&cls);
+        prepended_tokens.extend_from_slice(&distillation);
+
+        // `Conv2d(1, hidden, kernel_size=(patch, patch))` weight is
+        // `[hidden, 1, patch, patch]`; flattening its trailing dims gives the
+        // `[embed_dim, patch_h * patch_w]` row-major layout `vokra_ops::vit`
+        // wants, and because the channel dim is 1 the buffer is already in
+        // that order.
+        let proj = format!("{embeddings}patch_embeddings.projection.");
+        let proj_w = load(&format!("{proj}weight"), &[hidden, 1, patch, patch])?;
+        let proj_b = load(&format!("{proj}bias"), &[hidden])?;
+
+        // ---- encoder blocks ---------------------------------------------
+        let mut blocks = Vec::with_capacity(config.num_hidden_layers as usize);
+        for layer in 0..config.num_hidden_layers as usize {
+            let base = format!("{prefix}encoder.layer.{layer}.");
+            // `ASTLayer.forward` norms BEFORE each branch:
+            //   hidden = attention(layernorm_before(x)) + x
+            //   out    = ASTOutput(intermediate(layernorm_after(hidden)), hidden)
+            // so `layernorm_before` is ln1 and `layernorm_after` is ln2. Reading
+            // them the other way round is the post-norm function: shape-valid,
+            // numerically wrong, silent.
+            let ln1 = format!("{base}layernorm_before.");
+            let ln2 = format!("{base}layernorm_after.");
+            let attn = format!("{base}attention.attention.");
+            let attn_out = format!("{base}attention.output.dense.");
+            let mlp_in = format!("{base}intermediate.dense.");
+            let mlp_out = format!("{base}output.dense.");
+
+            // `nn.Linear(hidden, all_head_size, bias=config.qkv_bias)` — the
+            // q/k/v biases exist only when the stamped flag says so.
+            let qkv_bias = |name: &str| -> Result<Option<Vec<f32>>> {
+                if config.qkv_bias {
+                    Ok(Some(load(name, &[hidden])?))
+                } else {
+                    Ok(None)
+                }
+            };
+
+            blocks.push(ViTBlockWeights {
+                ln1_gamma: load(&format!("{ln1}weight"), &[hidden])?,
+                ln1_beta: load(&format!("{ln1}bias"), &[hidden])?,
+                attn: ViTAttnWeights {
+                    wq: load(&format!("{attn}query.weight"), &[hidden, hidden])?,
+                    bq: qkv_bias(&format!("{attn}query.bias"))?,
+                    wk: load(&format!("{attn}key.weight"), &[hidden, hidden])?,
+                    bk: qkv_bias(&format!("{attn}key.bias"))?,
+                    wv: load(&format!("{attn}value.weight"), &[hidden, hidden])?,
+                    bv: qkv_bias(&format!("{attn}value.bias"))?,
+                    // `ASTSelfOutput.dense` is a plain `nn.Linear`, so its bias
+                    // is unconditional — it does NOT follow `qkv_bias`.
+                    wo: load(&format!("{attn_out}weight"), &[hidden, hidden])?,
+                    bo: Some(load(&format!("{attn_out}bias"), &[hidden])?),
+                },
+                ln2_gamma: load(&format!("{ln2}weight"), &[hidden])?,
+                ln2_beta: load(&format!("{ln2}bias"), &[hidden])?,
+                mlp: ViTMlpWeights {
+                    w1: load(&format!("{mlp_in}weight"), &[inter, hidden])?,
+                    b1: Some(load(&format!("{mlp_in}bias"), &[inter])?),
+                    w2: load(&format!("{mlp_out}weight"), &[hidden, inter])?,
+                    b2: Some(load(&format!("{mlp_out}bias"), &[hidden])?),
+                },
+            });
+        }
+
+        // `ASTModel.forward` applies `self.layernorm` to the whole sequence
+        // after the stack — the final norm `ViTEncoder` owns.
+        let final_ln = format!("{prefix}layernorm.");
+        let weights = ViTWeights {
+            patch_embed: PatchEmbedWeights {
+                proj_w,
+                proj_b: Some(proj_b),
+            },
+            prepended_tokens,
+            pos_embed,
+            blocks,
+            final_ln_gamma: load(&format!("{final_ln}weight"), &[hidden])?,
+            final_ln_beta: load(&format!("{final_ln}bias"), &[hidden])?,
+        };
+        let encoder = ViTEncoder::new(attrs, weights)?;
+
+        // ---- optional tagging head --------------------------------------
+        // A bare `ASTModel` export legitimately carries none.
+        let head = if manifest.count_with_prefix(TAG_HEAD_PREFIX) > 0 {
+            Some(bind_tag_head(file, manifest, config)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            config: config.clone(),
+            encoder,
+            head,
+            tensor_prefix: prefix,
+        })
+    }
+
+    /// The axes this encoder was bound against.
+    #[inline]
+    #[must_use]
+    pub fn config(&self) -> &MaestConfig {
+        &self.config
+    }
+
+    /// The underlying `vokra-ops` ViT encoder.
+    #[inline]
+    #[must_use]
+    pub fn vit(&self) -> &ViTEncoder {
+        &self.encoder
+    }
+
+    /// The `state_dict` prefix this artifact was discovered to use — either
+    /// [`TENSOR_PREFIX_CLASSIFICATION`] or [`TENSOR_PREFIX_BARE`].
+    #[inline]
+    #[must_use]
+    pub fn tensor_prefix(&self) -> &'static str {
+        self.tensor_prefix
+    }
+
+    /// The bound tagging head, or `None` for a bare-encoder artifact.
+    #[inline]
+    #[must_use]
+    pub fn tag_head(&self) -> Option<&MaestTagHead> {
+        self.head.as_ref()
+    }
+
+    /// The patch grid a `[num_mel_bins, n_frames]` plane produces.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] when the plane is smaller than one
+    ///   patch along either axis.
+    pub fn patch_grid(&self, n_mels: usize, n_frames: usize) -> Result<PatchGrid> {
+        self.encoder.patch_grid(n_mels, n_frames)
+    }
+
+    /// Runs the encoder over a log-mel plane, returning one row per token.
+    ///
+    /// The result is upstream's `sequence_output`: row `0` is the CLS token,
+    /// row `1` the distillation token, and rows `2..` the patch tokens in grid
+    /// row-major order (mel-bin major, then frame). Every row is
+    /// [`MaestConfig::hidden_size`] wide and has already passed through the
+    /// final LayerNorm, matching `ASTModel.forward`'s
+    /// `sequence_output = self.layernorm(encoder_outputs[0])`.
+    ///
+    /// See the type docs for the plane's required orientation.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] when `n_mels` disagrees with the
+    ///   stamped [`MaestConfig::num_mel_bins`], when
+    ///   `mel.len() != n_mels * n_frames`, when the plane holds a non-finite
+    ///   value, when no patch fits, or when the positional table cannot be
+    ///   applied under the configured [`PosEmbedPolicy`].
+    pub fn encode_mel(&self, mel: &[f32], n_mels: usize, n_frames: usize) -> Result<Vec<Vec<f32>>> {
+        if n_mels != self.config.num_mel_bins as usize {
+            return Err(VokraError::InvalidArgument(format!(
+                "maest encode_mel: the plane has {n_mels} mel bin(s) but the artifact stamps \
+                 `{GGUF_KEY_NUM_MEL_BINS}` = {want}. The plane must be \
+                 [num_mel_bins, n_frames] row-major; upstream's feature extractor emits \
+                 [n_frames, num_mel_bins] and `ASTPatchEmbeddings.forward` transposes it, so a \
+                 caller passing the untransposed plane lands here. Refusing to reinterpret the \
+                 axes (FR-EX-08).",
+                want = self.config.num_mel_bins,
+            )));
+        }
+        let (hidden, _grid) = self.encoder.forward(mel, n_mels, n_frames)?;
+        let width = self.config.hidden_size as usize;
+        Ok(hidden.chunks(width).map(<[f32]>::to_vec).collect())
+    }
+
+    /// Runs the encoder and pools it into the clip embedding.
+    ///
+    /// The pooling is upstream's, verbatim:
+    /// `pooled_output = (sequence_output[:, 0] + sequence_output[:, 1]) / 2` —
+    /// the **mean of the CLS and distillation tokens**. That is a DeiT-style
+    /// rule rather than either of the two conventions `vokra_ops::vit`'s
+    /// [`vokra_ops::vit::ViTPooling`] offers, so it is computed here instead of
+    /// approximated with a CLS-only or mean-over-patches variant, both of which
+    /// would return a different vector without failing.
+    ///
+    /// # Errors
+    ///
+    /// - See [`Self::encode_mel`].
+    pub fn embed_mel(&self, mel: &[f32], n_mels: usize, n_frames: usize) -> Result<Vec<f32>> {
+        let tokens = self.encode_mel(mel, n_mels, n_frames)?;
+        // `encode_mel` returns `n_prefix + n_patches` rows and `bind` pinned
+        // `n_prefix == 2`, so both rows exist; the grid check inside `forward`
+        // already refused a plane too small to produce any patch token.
+        let (cls, distillation) = (&tokens[0], &tokens[1]);
+        Ok(cls
+            .iter()
+            .zip(distillation.iter())
+            .map(|(a, b)| (a + b) * 0.5)
+            .collect())
+    }
+
+    /// Runs the encoder, pools it, and applies the Discogs tagging head,
+    /// returning one **logit** per label.
+    ///
+    /// The head is `ASTMLPHead.forward`: `dense(layernorm(pooled))`. No softmax
+    /// or sigmoid is applied — the return value is raw logits, and which
+    /// activation is appropriate is the caller's modelling decision.
+    ///
+    /// The logits are **unnamed**: the artifact carries no label list, so
+    /// mapping index `i` onto a Discogs genre / mood / instrument / era string
+    /// is not possible from the GGUF alone.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::UnsupportedOp`] when the artifact carries no tagging
+    ///   head (a bare-`ASTModel` export) — the message says so rather than
+    ///   returning an empty or zero-filled vector.
+    /// - Otherwise see [`Self::encode_mel`].
+    pub fn tag_mel(&self, mel: &[f32], n_mels: usize, n_frames: usize) -> Result<Vec<f32>> {
+        let Some(head) = self.head.as_ref() else {
+            return Err(VokraError::UnsupportedOp(format!(
+                "maest tag_mel: this artifact carries no tagging head — no tensor on disk sits \
+                 under `{TAG_HEAD_PREFIX}`, which is what a bare `ASTModel` export looks like \
+                 (only an `ASTForAudioClassification` export carries \
+                 `{TAG_HEAD_PREFIX}layernorm.*` + `{TAG_HEAD_PREFIX}dense.*`). The encoder \
+                 itself bound fine: use `MaestEncoder::encode_mel` or \
+                 `MaestEncoder::embed_mel`. Refusing to return empty or zero-filled logits \
+                 (FR-EX-08). Primary source: {PRIMARY_SOURCE_HF_AST_MODELING}"
+            )));
+        };
+        let pooled = self.embed_mel(mel, n_mels, n_frames)?;
+        let hidden = self.config.hidden_size as usize;
+        let eps = self.config.layer_norm_eps();
+
+        // `ASTMLPHead.layernorm` is built with `eps=config.layer_norm_eps`, the
+        // same epsilon the encoder's norms use.
+        let mut normed = pooled;
+        let n = hidden as f32;
+        let mean = normed.iter().sum::<f32>() / n;
+        let var = normed
+            .iter()
+            .map(|v| {
+                let d = v - mean;
+                d * d
+            })
+            .sum::<f32>()
+            / n;
+        let inv = 1.0 / (var + eps).sqrt();
+        for ((slot, &g), &b) in normed
+            .iter_mut()
+            .zip(head.ln_gamma.iter())
+            .zip(head.ln_beta.iter())
+        {
+            *slot = (*slot - mean) * inv * g + b;
+        }
+
+        // `nn.Linear` weight is `[out_features, in_features]` row-major.
+        Ok(head
+            .dense_b
+            .iter()
+            .enumerate()
+            .map(|(o, bias)| {
+                let row = &head.dense_w[o * hidden..(o + 1) * hidden];
+                let dot: f32 = row.iter().zip(normed.iter()).map(|(a, b)| a * b).sum();
+                bias + dot
+            })
+            .collect())
+    }
+}
+
+/// Shape-checks a tensor against the stamped topology, then decodes it to
+/// `f32` through the canonical `GgufFile::tensor_f32` path (so K-quantised
+/// artifacts dequantise on the way in).
+fn load_tensor(
+    file: &GgufFile,
+    manifest: &MaestWeights,
+    name: &str,
+    expected: &[usize],
+) -> Result<Vec<f32>> {
+    manifest.require_tensor_dims(name, expected)?;
+    file.tensor_f32(name).map_err(|e| {
+        VokraError::ModelLoad(format!(
+            "maest: tensor `{name}` is present with the expected dims {expected:?} but its \
+             payload failed to decode: {e}. Refusing to substitute zeros (FR-EX-08)."
+        ))
+    })
+}
+
+/// Binds `ASTMLPHead` — `classifier.layernorm.*` + `classifier.dense.*`.
+///
+/// The label count is cross-checked against the stamped
+/// [`MaestConfig::num_labels`]: the converter stamps it from `config.json`'s
+/// `id2label` cardinality while the head projection carries it as its leading
+/// dimension, so the two are independent witnesses and a disagreement means the
+/// payload and the stamps describe different checkpoints.
+fn bind_tag_head(
+    file: &GgufFile,
+    manifest: &MaestWeights,
+    config: &MaestConfig,
+) -> Result<MaestTagHead> {
+    let hidden = config.hidden_size as usize;
+    let labels = config.num_labels as usize;
+    let ln = format!("{TAG_HEAD_PREFIX}layernorm.");
+    let dense = format!("{TAG_HEAD_PREFIX}dense.");
+    Ok(MaestTagHead {
+        ln_gamma: load_tensor(file, manifest, &format!("{ln}weight"), &[hidden])?,
+        ln_beta: load_tensor(file, manifest, &format!("{ln}bias"), &[hidden])?,
+        dense_w: load_tensor(file, manifest, &format!("{dense}weight"), &[labels, hidden])?,
+        dense_b: load_tensor(file, manifest, &format!("{dense}bias"), &[labels])?,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -988,11 +1990,391 @@ mod tests {
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
+    /// The upstream MAEST axes, transcribed by the converter from
+    /// `config.json` + `preprocessor_config.json`.
+    ///
+    /// Pinned here as literals rather than imported from `vokra-convert`, so
+    /// that a converter-side drift fails a test instead of propagating: this
+    /// crate deliberately has no dependency edge onto the writer.
+    fn upstream_config() -> MaestConfig {
+        MaestConfig {
+            hidden_size: 768,
+            num_hidden_layers: 12,
+            num_attention_heads: 12,
+            intermediate_size: 3072,
+            patch_size: 16,
+            frequency_stride: 10,
+            time_stride: 10,
+            num_mel_bins: 96,
+            max_length: 1876,
+            num_labels: 400,
+            qkv_bias: true,
+            hidden_act: "gelu".to_owned(),
+            layer_norm_eps_scaled_1e9: 1_000,
+            hidden_dropout_scaled_1e3: 0,
+            attention_dropout_scaled_1e3: 0,
+            freq_patches: 9,
+            time_patches: 187,
+            num_patches: 1683,
+            num_prefix_tokens: 2,
+            sample_rate: 16_000,
+            n_fft: 512,
+            hop_length: 256,
+            win_length: 512,
+            window: "hann".to_owned(),
+            mel_scale: "slaney".to_owned(),
+            mel_norm: "slaney".to_owned(),
+            fmin_hz: 0,
+            fmax_hz: 8_000,
+            log_compression: "logC".to_owned(),
+            log_compression_mul: 10_000,
+            do_normalize: true,
+            norm_mean: 2.067_556_860_985_54,
+            norm_std: 1.268_292_820_667_291,
+        }
+    }
+
+    /// A deliberately tiny topology, so a full synthetic weight set stays small
+    /// enough to build, bind and run inside a unit test.
+    ///
+    /// The patch grid closes on itself the same way the real one does:
+    /// `freq_patches = (4 - 2) / 1 + 1 = 3`, `time_patches = (5 - 2) / 1 + 1 = 4`,
+    /// `num_patches = 12`, sequence length `12 + 2 = 14`.
+    fn tiny_config() -> MaestConfig {
+        MaestConfig {
+            hidden_size: 4,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            intermediate_size: 8,
+            patch_size: 2,
+            frequency_stride: 1,
+            time_stride: 1,
+            num_mel_bins: 4,
+            max_length: 5,
+            num_labels: 3,
+            freq_patches: 3,
+            time_patches: 4,
+            num_patches: 12,
+            ..upstream_config()
+        }
+    }
+
+    /// Writes the full `vokra.maest.*` axis group, with the same key spellings
+    /// and metadata types the converter uses.
+    fn stamp_axis_group(b: &mut GgufBuilder, cfg: &MaestConfig) {
+        // No real key is the empty string, so nothing is withheld.
+        stamp_axis_group_except(b, cfg, "");
+    }
+
+    /// Writes the axis group with exactly one key withheld — the fixture behind
+    /// the per-key missing-axis test.
+    fn stamp_axis_group_except(b: &mut GgufBuilder, cfg: &MaestConfig, withheld: &str) {
+        let u32s: [(&str, u32); 24] = [
+            (GGUF_KEY_HIDDEN_SIZE, cfg.hidden_size),
+            (GGUF_KEY_NUM_HIDDEN_LAYERS, cfg.num_hidden_layers),
+            (GGUF_KEY_NUM_ATTENTION_HEADS, cfg.num_attention_heads),
+            (GGUF_KEY_INTERMEDIATE_SIZE, cfg.intermediate_size),
+            (GGUF_KEY_PATCH_SIZE, cfg.patch_size),
+            (GGUF_KEY_FREQUENCY_STRIDE, cfg.frequency_stride),
+            (GGUF_KEY_TIME_STRIDE, cfg.time_stride),
+            (GGUF_KEY_NUM_MEL_BINS, cfg.num_mel_bins),
+            (GGUF_KEY_MAX_LENGTH, cfg.max_length),
+            (GGUF_KEY_NUM_LABELS, cfg.num_labels),
+            (
+                GGUF_KEY_LAYER_NORM_EPS_SCALED_1E9,
+                cfg.layer_norm_eps_scaled_1e9,
+            ),
+            (
+                GGUF_KEY_HIDDEN_DROPOUT_SCALED_1E3,
+                cfg.hidden_dropout_scaled_1e3,
+            ),
+            (
+                GGUF_KEY_ATTENTION_DROPOUT_SCALED_1E3,
+                cfg.attention_dropout_scaled_1e3,
+            ),
+            (GGUF_KEY_FREQ_PATCHES, cfg.freq_patches),
+            (GGUF_KEY_TIME_PATCHES, cfg.time_patches),
+            (GGUF_KEY_NUM_PATCHES, cfg.num_patches),
+            (GGUF_KEY_NUM_PREFIX_TOKENS, cfg.num_prefix_tokens),
+            (GGUF_KEY_SAMPLE_RATE, cfg.sample_rate),
+            (GGUF_KEY_N_FFT, cfg.n_fft),
+            (GGUF_KEY_HOP_LENGTH, cfg.hop_length),
+            (GGUF_KEY_WIN_LENGTH, cfg.win_length),
+            (GGUF_KEY_FMIN_HZ, cfg.fmin_hz),
+            (GGUF_KEY_FMAX_HZ, cfg.fmax_hz),
+            (GGUF_KEY_LOG_COMPRESSION_MUL, cfg.log_compression_mul),
+        ];
+        for (key, value) in u32s {
+            if key != withheld {
+                b.add_u32(key, value);
+            }
+        }
+
+        let strings: [(&str, &str); 5] = [
+            (GGUF_KEY_HIDDEN_ACT, cfg.hidden_act.as_str()),
+            (GGUF_KEY_WINDOW, cfg.window.as_str()),
+            (GGUF_KEY_MEL_SCALE, cfg.mel_scale.as_str()),
+            (GGUF_KEY_MEL_NORM, cfg.mel_norm.as_str()),
+            (GGUF_KEY_LOG_COMPRESSION, cfg.log_compression.as_str()),
+        ];
+        for (key, value) in strings {
+            if key != withheld {
+                b.add_string(key, value);
+            }
+        }
+
+        let bools: [(&str, bool); 2] = [
+            (GGUF_KEY_QKV_BIAS, cfg.qkv_bias),
+            (GGUF_KEY_DO_NORMALIZE, cfg.do_normalize),
+        ];
+        for (key, value) in bools {
+            if key != withheld {
+                b.add_bool(key, value);
+            }
+        }
+
+        let f64s: [(&str, f64); 2] = [
+            (GGUF_KEY_NORM_MEAN, cfg.norm_mean),
+            (GGUF_KEY_NORM_STD, cfg.norm_std),
+        ];
+        for (key, value) in f64s {
+            if key != withheld {
+                b.add_metadata(key, vokra_core::gguf::GgufMetadataValue::F64(value));
+            }
+        }
+    }
+
+    /// Copies every tensor out of `source` under a fresh axis-group stamp.
+    ///
+    /// Used to build artifacts where the stamps and the payload deliberately
+    /// disagree, which is how the cross-check assertions are exercised.
+    fn restamped(source: &GgufFile, cfg: &MaestConfig) -> GgufFile {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        stamp_axis_group(&mut b, cfg);
+        for info in source.tensors() {
+            b.add_tensor(
+                &info.name,
+                info.dtype,
+                info.dimensions.clone(),
+                source.tensor_bytes(info).to_vec(),
+            )
+            .expect("add_tensor");
+        }
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    /// Deterministic small-value source. No committed fixtures: every synthetic
+    /// weight below is generated in-test from a fixed seed, so the tests
+    /// reproduce on every platform and nothing here pretends to be upstream
+    /// data.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn new() -> Self {
+            Self(0x2545_F491_4F6C_DD1D)
+        }
+
+        /// Values in `[-0.5, 0.5)`, small enough that a 1-block forward stays
+        /// comfortably inside `f32` range.
+        fn next_f32(&mut self) -> f32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let unit = ((self.0 >> 40) as f32) / ((1u32 << 24) as f32);
+            unit - 0.5
+        }
+    }
+
+    /// Adds one deterministic F32 tensor of the given shape.
+    fn add_f32(b: &mut GgufBuilder, rng: &mut Lcg, name: &str, dims: &[u64]) {
+        let n: u64 = dims.iter().product();
+        let mut bytes = Vec::with_capacity((n * 4) as usize);
+        for _ in 0..n {
+            bytes.extend_from_slice(&rng.next_f32().to_le_bytes());
+        }
+        b.add_tensor(name, GgmlType::F32, dims.to_vec(), bytes)
+            .expect("add_tensor");
+    }
+
+    /// Builds a GGUF carrying a COMPLETE synthetic weight set for `cfg`, under
+    /// the given `state_dict` prefix, optionally including the tagging head.
+    ///
+    /// Every tensor name and shape here is the one `MaestEncoder::bind` walks,
+    /// so this fixture doubles as an executable statement of the transcribed
+    /// manifest.
+    fn synthetic_weights_gguf(cfg: &MaestConfig, prefix: &str, with_head: bool) -> GgufFile {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, NAME);
+        b.add_string(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::NonCommercialShareAlike.as_str(),
+        );
+        stamp_axis_group(&mut b, cfg);
+
+        let mut rng = Lcg::new();
+        let hidden = u64::from(cfg.hidden_size);
+        let inter = u64::from(cfg.intermediate_size);
+        let patch = u64::from(cfg.patch_size);
+        let seq = cfg.encoder_sequence_len() as u64;
+
+        let emb = format!("{prefix}embeddings.");
+        add_f32(
+            &mut b,
+            &mut rng,
+            &format!("{emb}cls_token"),
+            &[1, 1, hidden],
+        );
+        add_f32(
+            &mut b,
+            &mut rng,
+            &format!("{emb}distillation_token"),
+            &[1, 1, hidden],
+        );
+        add_f32(
+            &mut b,
+            &mut rng,
+            &format!("{emb}position_embeddings"),
+            &[1, seq, hidden],
+        );
+        add_f32(
+            &mut b,
+            &mut rng,
+            &format!("{emb}patch_embeddings.projection.weight"),
+            &[hidden, 1, patch, patch],
+        );
+        add_f32(
+            &mut b,
+            &mut rng,
+            &format!("{emb}patch_embeddings.projection.bias"),
+            &[hidden],
+        );
+
+        for layer in 0..cfg.num_hidden_layers {
+            let base = format!("{prefix}encoder.layer.{layer}.");
+            for suffix in ["layernorm_before", "layernorm_after"] {
+                add_f32(
+                    &mut b,
+                    &mut rng,
+                    &format!("{base}{suffix}.weight"),
+                    &[hidden],
+                );
+                add_f32(&mut b, &mut rng, &format!("{base}{suffix}.bias"), &[hidden]);
+            }
+            for proj in ["query", "key", "value"] {
+                add_f32(
+                    &mut b,
+                    &mut rng,
+                    &format!("{base}attention.attention.{proj}.weight"),
+                    &[hidden, hidden],
+                );
+                if cfg.qkv_bias {
+                    add_f32(
+                        &mut b,
+                        &mut rng,
+                        &format!("{base}attention.attention.{proj}.bias"),
+                        &[hidden],
+                    );
+                }
+            }
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{base}attention.output.dense.weight"),
+                &[hidden, hidden],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{base}attention.output.dense.bias"),
+                &[hidden],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{base}intermediate.dense.weight"),
+                &[inter, hidden],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{base}intermediate.dense.bias"),
+                &[inter],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{base}output.dense.weight"),
+                &[hidden, inter],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{base}output.dense.bias"),
+                &[hidden],
+            );
+        }
+
+        add_f32(
+            &mut b,
+            &mut rng,
+            &format!("{prefix}layernorm.weight"),
+            &[hidden],
+        );
+        add_f32(
+            &mut b,
+            &mut rng,
+            &format!("{prefix}layernorm.bias"),
+            &[hidden],
+        );
+
+        if with_head {
+            let labels = u64::from(cfg.num_labels);
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{TAG_HEAD_PREFIX}layernorm.weight"),
+                &[hidden],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{TAG_HEAD_PREFIX}layernorm.bias"),
+                &[hidden],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{TAG_HEAD_PREFIX}dense.weight"),
+                &[labels, hidden],
+            );
+            add_f32(
+                &mut b,
+                &mut rng,
+                &format!("{TAG_HEAD_PREFIX}dense.bias"),
+                &[labels],
+            );
+        }
+
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    /// A deterministic `[num_mel_bins, n_frames]` row-major plane.
+    fn mel_plane(cfg: &MaestConfig, n_frames: usize) -> Vec<f32> {
+        let mut rng = Lcg::new();
+        (0..cfg.num_mel_bins as usize * n_frames)
+            .map(|_| rng.next_f32())
+            .collect()
+    }
+
     /// Tensor-name samples shaped like the converter's own test module's
     /// "realistic upstream state-dict name" choices (the HF
     /// `ASTForAudioClassification` wrapper places the body under an
-    /// `audio_spectrogram_transformer.` prefix). Unverified against a real
-    /// checkpoint — used here only to give the manifest something to hold.
+    /// `audio_spectrogram_transformer.` prefix). Used only to give the manifest
+    /// something to hold in the metadata-level tests; the *real* transcribed
+    /// manifest is exercised by [`synthetic_weights_gguf`].
     const SAMPLE_TENSORS: [(&str, [u64; 2]); 3] = [
         (
             "audio_spectrogram_transformer.encoder.layer.0.attention.attention.query.weight",
@@ -1027,6 +2409,7 @@ mod tests {
             chunks::KEY_PROVENANCE_SOURCE,
             "mtg-upf/discogs-maest-30s-pw-129e (test)",
         );
+        stamp_axis_group(&mut b, &upstream_config());
         if let Some(cls) = weight_license_class {
             b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
             b.add_string(chunks::KEY_PROVENANCE_LICENSE, DEFAULT_LICENSE_SPDX);
@@ -1467,11 +2850,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9. encode loud-partials, naming the missing primitive
+    // 9. encode loud-partials on the framing convention — and ONLY on that
     // -----------------------------------------------------------------------
 
     #[test]
-    fn encode_loud_partials_naming_the_missing_primitive() {
+    fn encode_loud_partial_names_the_framing_gap_and_drops_the_resolved_ones() {
         let file = maest_gguf(
             Some(LicenseClass::NonCommercialShareAlike),
             false,
@@ -1491,62 +2874,91 @@ mod tests {
                 assert!(msg.contains("maest encode"), "surface must be named: {msg}");
                 assert!(msg.contains("loud-partial"), "posture label: {msg}");
 
-                // Blocker (i): the missing axis chunk group.
+                // ---- the blocker that is REAL today --------------------
                 assert!(
-                    msg.contains("vokra.maest.*"),
-                    "must name the absent axis chunk group: {msg}"
+                    msg.contains("FRAMING") && msg.contains("CENTERING"),
+                    "must name the STFT framing / centering convention as the gap: {msg}"
                 );
-                // Blocker (ii): the missing PRIMITIVE, named exactly, plus the
-                // primitives that genuinely do exist.
-                assert!(
-                    msg.contains("patch embedding") && msg.contains("pre-norm Transformer"),
-                    "must name the missing ViT patch-encoder primitive: {msg}"
-                );
-                for present in [
-                    "vokra_ops::mel",
-                    "vokra_ops::fused_logmel",
-                    "vokra_ops::kaldi_fbank",
-                ] {
+                for key in ["center", "pad_mode", "vokra.frontend.*"] {
                     assert!(
-                        msg.contains(present),
-                        "must name the front-end primitive `{present}` that DOES exist: {msg}"
+                        msg.contains(key),
+                        "must name the unstamped front-end key `{key}`: {msg}"
                     );
                 }
-                for absent in [
+                // It must say WHY guessing is refused, not merely that it is.
+                assert!(
+                    msg.contains("half a window"),
+                    "must explain that a wrong framing choice is silently wrong: {msg}"
+                );
+
+                // ---- the boundary: what IS available -------------------
+                // The stamped front-end axes are echoed so a reader can see
+                // that only one axis is missing rather than the whole group.
+                for stamped in [
+                    "sample_rate=16000",
+                    "n_fft=512",
+                    "hop_length=256",
+                    "win_length=512",
+                    "window=hann",
+                    "num_mel_bins=96",
+                    "mel_scale=slaney",
+                    "mel_norm=slaney",
+                    "fmax_hz=8000",
+                    "log_compression=logC",
+                ] {
+                    assert!(
+                        msg.contains(stamped),
+                        "must echo the stamped front-end axis `{stamped}`: {msg}"
+                    );
+                }
+                // And the real path must be pointed at by name.
+                for path in [
+                    "Maest::encoder",
+                    "MaestEncoder::encode_mel",
+                    "vokra_ops::vit",
+                ] {
+                    assert!(
+                        msg.contains(path),
+                        "must point at the real entry point `{path}`: {msg}"
+                    );
+                }
+
+                // ---- the RESOLVED blockers must be GONE ----------------
+                // This is the heart of the test: a stale claim in an error
+                // message actively misleads whoever reads it next.
+                assert!(
+                    !msg.contains("NO `vokra.maest.*` AXIS CHUNK GROUP"),
+                    "the axis group IS stamped now — that claim must not survive: {msg}"
+                );
+                assert!(
+                    !msg.contains("NO ViT-STYLE ENCODER PRIMITIVE"),
+                    "`vokra_ops::vit` exists now — that claim must not survive: {msg}"
+                );
+                assert!(
+                    !msg.contains("NO VERIFIED TENSOR-NAME MANIFEST"),
+                    "the manifest is transcribed now — that claim must not survive: {msg}"
+                );
+                assert!(
+                    !msg.contains("SAME SHARED GAP"),
+                    "the shared SSL-fleet primitive gap is closed: {msg}"
+                );
+                for stale in [
                     "vokra_ops::conformer",
                     "vokra_ops::ebranchformer",
                     "vokra_ops::zipformer",
                 ] {
                     assert!(
-                        msg.contains(absent),
-                        "must explain why `{absent}` is not a substitute: {msg}"
+                        !msg.contains(stale),
+                        "must not still argue why `{stale}` is not a substitute: {msg}"
                     );
                 }
-                // The gap must be described as SHARED across the SSL fleet so a
-                // follow-up wave sees one primitive, not five models.
-                assert!(
-                    msg.contains("SAME SHARED GAP"),
-                    "must flag the shared SSL-fleet gap: {msg}"
-                );
-                for fleet_sibling in ["atst", "eat", "m2d", "dasheng"] {
-                    assert!(
-                        msg.contains(fleet_sibling),
-                        "must name fleet sibling `{fleet_sibling}` sharing the gap: {msg}"
-                    );
-                }
-                // Blocker (iii): no verified tensor-name manifest.
-                assert!(
-                    msg.contains("state_dict"),
-                    "must name the unverified tensor-name manifest: {msg}"
-                );
-                // The taxonomy blocker belongs to `tag`, not to `encode`.
-                assert!(
-                    !msg.contains("NO LABEL TAXONOMY"),
-                    "encode must not claim a taxonomy blocker it does not hit: {msg}"
-                );
 
-                // Both primary sources.
-                for url in [PRIMARY_SOURCE_UPSTREAM_HF, PRIMARY_SOURCE_PAPER] {
+                // Primary sources, including the newly cited modelling file.
+                for url in [
+                    PRIMARY_SOURCE_UPSTREAM_HF,
+                    PRIMARY_SOURCE_PAPER,
+                    PRIMARY_SOURCE_HF_AST_MODELING,
+                ] {
                     assert!(msg.contains(url), "expected primary source `{url}`: {msg}");
                 }
 
@@ -1560,11 +2972,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 10. embed loud-partials on the same blockers
+    // 10. embed loud-partials on the same single blocker
     // -----------------------------------------------------------------------
 
     #[test]
-    fn embed_loud_partials_on_the_same_blockers() {
+    fn embed_loud_partials_on_the_same_framing_gap() {
         let file = maest_gguf(
             Some(LicenseClass::NonCommercialShareAlike),
             false,
@@ -1585,12 +2997,16 @@ mod tests {
                     "must name the output it refuses to fabricate: {msg}"
                 );
                 assert!(
-                    msg.contains("vokra.maest.*"),
-                    "must name the absent axis chunk group: {msg}"
+                    msg.contains("FRAMING") && msg.contains("CENTERING"),
+                    "must name the framing gap: {msg}"
                 );
                 assert!(
-                    msg.contains("patch embedding") && msg.contains("pre-norm Transformer"),
-                    "must name the missing primitive: {msg}"
+                    msg.contains("MaestEncoder::embed_mel"),
+                    "must point at the real mel-plane entry point: {msg}"
+                );
+                assert!(
+                    !msg.contains("NO ViT-STYLE ENCODER PRIMITIVE"),
+                    "the resolved primitive blocker must not survive: {msg}"
                 );
                 assert!(
                     msg.contains("FR-EX-08"),
@@ -1602,11 +3018,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 11. tag loud-partials on the encoder gap AND the absent taxonomy
+    // 11. tag loud-partials on the framing gap, NOT on the taxonomy
     // -----------------------------------------------------------------------
 
     #[test]
-    fn tag_loud_partials_naming_the_primitive_and_the_absent_taxonomy() {
+    fn tag_loud_partials_on_the_framing_gap_not_the_taxonomy() {
         // Give this artifact a head, so the refusal is unambiguously about the
         // deferred forward rather than about a missing classifier.
         let file = maest_gguf(
@@ -1629,27 +3045,25 @@ mod tests {
                     msg.contains("Discogs tag logits"),
                     "must name the output it refuses to fabricate: {msg}"
                 );
-                // The shared encoder primitive gap.
+                // The one real blocker.
                 assert!(
-                    msg.contains("patch embedding") && msg.contains("pre-norm Transformer"),
-                    "must name the missing primitive: {msg}"
+                    msg.contains("FRAMING") && msg.contains("CENTERING"),
+                    "must name the framing gap: {msg}"
                 );
                 assert!(
-                    msg.contains("SAME SHARED GAP"),
-                    "must flag the shared SSL-fleet gap: {msg}"
+                    msg.contains("MaestEncoder::tag_mel"),
+                    "must point at the real mel-plane entry point: {msg}"
                 );
-                // The tag-only fourth blocker.
+                // The taxonomy is NOT claimed as a blocker on logits any more:
+                // `tag` returns logits, and the head produces logits. The gap
+                // that remains is naming them, which lives in the rustdoc.
                 assert!(
-                    msg.contains("NO LABEL TAXONOMY"),
-                    "tag must name the absent label taxonomy: {msg}"
-                );
-                assert!(
-                    msg.contains("Maest::label_count"),
-                    "must point at the read-from-disk label count: {msg}"
+                    !msg.contains("NO LABEL TAXONOMY"),
+                    "the taxonomy never blocked LOGITS — that claim must not survive: {msg}"
                 );
                 assert!(
-                    msg.contains("hardcodes no taxonomy size"),
-                    "must state that no taxonomy size is hardcoded: {msg}"
+                    !msg.contains("SAME SHARED GAP"),
+                    "the shared SSL-fleet primitive gap is closed: {msg}"
                 );
                 assert!(
                     msg.contains("FR-EX-08"),
@@ -1820,6 +3234,540 @@ mod tests {
                 msg.contains("`mert`") && msg.contains("`maest`"),
                 "arch mismatch must be reported ahead of any licence verdict: {msg}"
             ),
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 15. The stamped axis group round-trips into MaestConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_round_trips_every_stamped_axis() {
+        let want = upstream_config();
+        let file = maest_gguf(
+            Some(LicenseClass::NonCommercialShareAlike),
+            false,
+            true,
+            None,
+        );
+        let m = Maest::from_gguf(&file).expect("bind");
+        let got = m.config();
+
+        // Whole-struct equality first, so a field added later without a
+        // reader-side follow-through fails here.
+        assert_eq!(*got, want, "every stamped axis must round-trip");
+
+        // Then field-by-field against literals restating the upstream value, so
+        // the test fails if the shared `upstream_config()` helper itself drifts.
+        assert_eq!(got.hidden_size, 768);
+        assert_eq!(got.num_hidden_layers, 12);
+        assert_eq!(got.num_attention_heads, 12);
+        assert_eq!(got.intermediate_size, 3072);
+        assert_eq!(got.patch_size, 16);
+        // The strides are SMALLER than the patch — MAEST's patches overlap, and
+        // a reader assuming the usual non-overlapping ViT convention would
+        // compute a ~3x smaller grid.
+        assert_eq!(got.frequency_stride, 10);
+        assert_eq!(got.time_stride, 10);
+        // 96, not the 128 the general-audio AST / AudioSet lineage uses.
+        assert_eq!(got.num_mel_bins, 96);
+        assert_eq!(got.max_length, 1876);
+        assert_eq!(got.num_labels, 400);
+        assert!(got.qkv_bias);
+        assert_eq!(got.hidden_act, "gelu");
+        assert_eq!(got.layer_norm_eps_scaled_1e9, 1_000);
+        assert_eq!(got.freq_patches, 9);
+        assert_eq!(got.time_patches, 187);
+        assert_eq!(got.num_patches, 1683);
+        assert_eq!(got.num_prefix_tokens, 2);
+        assert_eq!(got.sample_rate, 16_000);
+        assert_eq!(got.n_fft, 512);
+        assert_eq!(got.hop_length, 256);
+        assert_eq!(got.win_length, 512);
+        assert_eq!(got.window, "hann");
+        assert_eq!(got.mel_scale, "slaney");
+        assert_eq!(got.mel_norm, "slaney");
+        assert_eq!(got.fmin_hz, 0);
+        assert_eq!(got.fmax_hz, 8_000);
+        assert_eq!(got.log_compression, "logC");
+        assert_eq!(got.log_compression_mul, 10_000);
+        assert!(got.do_normalize);
+
+        // The normalization statistics are stamped FLOAT64 precisely so they do
+        // NOT lose precision; assert exact equality rather than a tolerance.
+        assert_eq!(got.norm_mean, 2.067_556_860_985_54);
+        assert_eq!(got.norm_std, 1.268_292_820_667_291);
+
+        // Derived views.
+        assert_eq!(got.layer_norm_eps(), 1.0e-6);
+        assert_eq!(got.mlp_ratio(), 4.0);
+        assert_eq!(got.encoder_sequence_len(), 1685);
+
+        // The patch grid the stamped axes imply is the one upstream's
+        // `get_shape` computes: (96-16)/10+1 = 9, (1876-16)/10+1 = 187.
+        assert_eq!(
+            got.freq_patches * got.time_patches,
+            got.num_patches,
+            "the stamped grid must close on the stamped patch count"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. A missing stamped key is loud and names itself
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn missing_axis_key_is_loud_and_names_the_key() {
+        // Rebuild the axis group with exactly one key withheld, for EVERY key
+        // in the group — so a future key added to the writer without a
+        // reader-side `req_*` call cannot slip through.
+        let cfg = upstream_config();
+        for withheld in [
+            GGUF_KEY_HIDDEN_SIZE,
+            GGUF_KEY_NUM_HIDDEN_LAYERS,
+            GGUF_KEY_NUM_ATTENTION_HEADS,
+            GGUF_KEY_INTERMEDIATE_SIZE,
+            GGUF_KEY_PATCH_SIZE,
+            GGUF_KEY_FREQUENCY_STRIDE,
+            GGUF_KEY_TIME_STRIDE,
+            GGUF_KEY_NUM_MEL_BINS,
+            GGUF_KEY_MAX_LENGTH,
+            GGUF_KEY_NUM_LABELS,
+            GGUF_KEY_QKV_BIAS,
+            GGUF_KEY_HIDDEN_ACT,
+            GGUF_KEY_LAYER_NORM_EPS_SCALED_1E9,
+            GGUF_KEY_HIDDEN_DROPOUT_SCALED_1E3,
+            GGUF_KEY_ATTENTION_DROPOUT_SCALED_1E3,
+            GGUF_KEY_FREQ_PATCHES,
+            GGUF_KEY_TIME_PATCHES,
+            GGUF_KEY_NUM_PATCHES,
+            GGUF_KEY_NUM_PREFIX_TOKENS,
+            GGUF_KEY_SAMPLE_RATE,
+            GGUF_KEY_N_FFT,
+            GGUF_KEY_HOP_LENGTH,
+            GGUF_KEY_WIN_LENGTH,
+            GGUF_KEY_WINDOW,
+            GGUF_KEY_MEL_SCALE,
+            GGUF_KEY_MEL_NORM,
+            GGUF_KEY_FMIN_HZ,
+            GGUF_KEY_FMAX_HZ,
+            GGUF_KEY_LOG_COMPRESSION,
+            GGUF_KEY_LOG_COMPRESSION_MUL,
+            GGUF_KEY_DO_NORMALIZE,
+            GGUF_KEY_NORM_MEAN,
+            GGUF_KEY_NORM_STD,
+        ] {
+            let mut b = GgufBuilder::new();
+            b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+            stamp_axis_group_except(&mut b, &cfg, withheld);
+            b.add_tensor("probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
+                .expect("add_tensor");
+            let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+
+            let Err(err) = Maest::from_gguf(&file) else {
+                panic!("expected ModelLoad when `{withheld}` is withheld");
+            };
+            match err {
+                VokraError::ModelLoad(msg) => {
+                    assert!(
+                        msg.contains(withheld),
+                        "message must name the missing key `{withheld}`, got `{msg}`"
+                    );
+                    assert!(
+                        msg.contains("FR-EX-08"),
+                        "message must cite the no-fallback clause for `{withheld}`: {msg}"
+                    );
+                }
+                other => panic!("expected VokraError::ModelLoad for `{withheld}`, got {other:?}"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 17. The config maps onto ViTAttrs, and that ViTAttrs validates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_maps_onto_validating_vit_attrs() {
+        let cfg = upstream_config();
+        let attrs = cfg
+            .vit_attrs()
+            .expect("the stamped axes must map onto ViTAttrs");
+        attrs.validate().expect("the mapped ViTAttrs must validate");
+
+        assert_eq!(attrs.embed_dim, 768);
+        assert_eq!(attrs.depth, 12);
+        assert_eq!(attrs.n_heads, 12);
+        assert_eq!(attrs.head_dim(), 64);
+        // The ratio is a re-encoding of two stamped integers, so what matters
+        // is that it lands back on the stamped intermediate width.
+        assert_eq!(attrs.mlp_dim(), cfg.intermediate_size as usize);
+        assert_eq!(attrs.patch_h, 16);
+        assert_eq!(attrs.patch_w, 16);
+        // Upstream transposes the plane to [num_mel_bins, max_length] BEFORE the
+        // convolution, so `frequency_stride` is the mel-axis stride — which is
+        // `vokra-ops`' `stride_h`. Swapping these is silently wrong whenever the
+        // two happen to differ, so pin the assignment.
+        assert_eq!(attrs.stride_h, cfg.frequency_stride as usize);
+        assert_eq!(attrs.stride_w, cfg.time_stride as usize);
+        assert_eq!(attrs.n_prepended_tokens, 2);
+        assert_eq!(attrs.layer_norm_eps, 1.0e-6);
+        // `hidden_act: "gelu"` is upstream's EXACT erf GELU, not the tanh
+        // approximation (which carries distinct upstream keys).
+        assert_eq!(attrs.gelu, GeluKind::Erf);
+        assert_eq!(attrs.pos_embed_policy, PosEmbedPolicy::RequireExact);
+
+        // The patch grid the primitive computes from the stamped plane size must
+        // agree with the stamped grid — an independent check on the mapping.
+        let grid =
+            vokra_ops::vit::patch_grid(cfg.num_mel_bins as usize, cfg.max_length as usize, &attrs)
+                .expect("the stamped plane must produce a grid");
+        assert_eq!(grid.grid_h, cfg.freq_patches as usize);
+        assert_eq!(grid.grid_w, cfg.time_patches as usize);
+        assert_eq!(grid.n_patches, cfg.num_patches as usize);
+        assert_eq!(grid.n_tokens(attrs.n_prepended_tokens), 1685);
+
+        // The interpolating policy is built from the stamped grid, not invented.
+        assert_eq!(
+            cfg.stamped_grid_pos_embed_policy(),
+            PosEmbedPolicy::InterpolateGridBilinear {
+                table_grid_h: 9,
+                table_grid_w: 187,
+            }
+        );
+    }
+
+    #[test]
+    fn unsupported_hidden_act_is_refused_rather_than_folded_onto_erf() {
+        // `gelu_pytorch_tanh` is a REAL upstream activation key naming the tanh
+        // approximation. Folding it onto the erf form would stay shape-valid
+        // while differing by ~1e-3 — exactly the silent wrongness FR-EX-08
+        // forbids.
+        let mut cfg = upstream_config();
+        cfg.hidden_act = "gelu_pytorch_tanh".to_owned();
+
+        let Err(err) = cfg.gelu_kind() else {
+            panic!("a tanh-family activation must be refused");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("gelu_pytorch_tanh"),
+                    "must name the activation it found: {msg}"
+                );
+                assert!(
+                    msg.contains(GGUF_KEY_HIDDEN_ACT),
+                    "must name the key it read: {msg}"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+        // And it must propagate rather than being swallowed by the mapping.
+        assert!(
+            cfg.vit_attrs().is_err(),
+            "vit_attrs must propagate the refusal"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 18. The transcribed manifest binds, and the forward runs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encoder_binds_the_transcribed_manifest_under_either_prefix() {
+        let cfg = tiny_config();
+        for prefix in [TENSOR_PREFIX_CLASSIFICATION, TENSOR_PREFIX_BARE] {
+            let file = synthetic_weights_gguf(&cfg, prefix, false);
+            let m = Maest::from_gguf(&file).expect("bind");
+            let enc = m
+                .encoder(&file, PosEmbedPolicy::RequireExact)
+                .expect("a complete synthetic weight set must bind");
+
+            assert_eq!(
+                enc.tensor_prefix(),
+                prefix,
+                "the prefix must be DISCOVERED from disk, not assumed"
+            );
+            assert_eq!(*enc.config(), cfg);
+            // A bare-encoder export has no head, and that is not an error.
+            assert!(enc.tag_head().is_none());
+        }
+    }
+
+    #[test]
+    fn missing_encoder_tensor_is_loud_and_names_itself() {
+        // An artifact whose stamps claim more layers than the payload carries.
+        // Layer 1's tensors are therefore required and absent, and the binder
+        // must name one rather than substituting zeros.
+        let cfg = tiny_config();
+        let one_layer = synthetic_weights_gguf(&cfg, TENSOR_PREFIX_CLASSIFICATION, false);
+        let mut deeper = cfg.clone();
+        deeper.num_hidden_layers = 2;
+        let file = restamped(&one_layer, &deeper);
+
+        let m = Maest::from_gguf(&file).expect("bind");
+        let Err(err) = m.encoder(&file, PosEmbedPolicy::RequireExact) else {
+            panic!("a manifest missing layer 1 must not bind");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("encoder.layer.1."),
+                    "message must name the missing layer-1 tensor: {msg}"
+                );
+                assert!(
+                    msg.contains("FR-EX-08"),
+                    "message must cite the no-zero-substitution clause: {msg}"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_mel_produces_finite_output_of_the_expected_shape_and_is_deterministic() {
+        // NOTE: this asserts SHAPE, FINITENESS and DETERMINISM only. There is
+        // no upstream reference to compare against here — the weights are gated
+        // CC-BY-NC-SA 4.0 and no fixture exists — so asserting a specific
+        // numeric value would be fabrication dressed as verification.
+        let cfg = tiny_config();
+        let file = synthetic_weights_gguf(&cfg, TENSOR_PREFIX_CLASSIFICATION, true);
+        let m = Maest::from_gguf(&file).expect("bind");
+        let enc = m
+            .encoder(&file, PosEmbedPolicy::RequireExact)
+            .expect("bind weights");
+
+        let n_frames = cfg.max_length as usize;
+        let n_mels = cfg.num_mel_bins as usize;
+        let mel = mel_plane(&cfg, n_frames);
+
+        let tokens = enc
+            .encode_mel(&mel, n_mels, n_frames)
+            .expect("the forward must run over a stamped-size plane");
+
+        // One row per token: 2 prefix + 12 patch = 14, each `hidden_size` wide.
+        assert_eq!(tokens.len(), cfg.encoder_sequence_len());
+        assert_eq!(tokens.len(), 14);
+        for row in &tokens {
+            assert_eq!(row.len(), cfg.hidden_size as usize);
+            for v in row {
+                assert!(v.is_finite(), "every hidden state must be finite, got {v}");
+            }
+        }
+
+        // Deterministic: the same plane through the same weights twice.
+        let again = enc.encode_mel(&mel, n_mels, n_frames).expect("second run");
+        assert_eq!(tokens, again, "the forward must be deterministic");
+
+        // The grid is reported, because it cannot be recovered from the token
+        // count alone.
+        let grid = enc.patch_grid(n_mels, n_frames).expect("grid");
+        assert_eq!(grid.grid_h, cfg.freq_patches as usize);
+        assert_eq!(grid.grid_w, cfg.time_patches as usize);
+
+        // Pooling is the DeiT rule — mean of the CLS and distillation tokens —
+        // so it must equal that mean computed from the token rows, and must NOT
+        // equal either token alone.
+        let pooled = enc.embed_mel(&mel, n_mels, n_frames).expect("embed");
+        assert_eq!(pooled.len(), cfg.hidden_size as usize);
+        for (i, v) in pooled.iter().enumerate() {
+            assert!(v.is_finite(), "pooled element {i} must be finite, got {v}");
+            let want = (tokens[0][i] + tokens[1][i]) * 0.5;
+            assert_eq!(*v, want, "pooling must be mean(CLS, distillation)");
+        }
+
+        // Tag logits: one per stamped label, finite and deterministic.
+        let logits = enc.tag_mel(&mel, n_mels, n_frames).expect("tag");
+        assert_eq!(logits.len(), cfg.num_labels as usize);
+        for (i, v) in logits.iter().enumerate() {
+            assert!(v.is_finite(), "logit {i} must be finite, got {v}");
+        }
+        assert_eq!(
+            logits,
+            enc.tag_mel(&mel, n_mels, n_frames).expect("tag again"),
+            "the head must be deterministic"
+        );
+    }
+
+    #[test]
+    fn encode_mel_refuses_a_transposed_plane() {
+        // The plane must be [num_mel_bins, n_frames]. Upstream's extractor emits
+        // the transpose and `ASTPatchEmbeddings.forward` flips it, so a caller
+        // handing over the untransposed plane is a real mistake — and one that
+        // would be shape-plausible rather than loud if the extent were not
+        // checked against the stamped band count.
+        let cfg = tiny_config();
+        let file = synthetic_weights_gguf(&cfg, TENSOR_PREFIX_CLASSIFICATION, false);
+        let m = Maest::from_gguf(&file).expect("bind");
+        let enc = m
+            .encoder(&file, PosEmbedPolicy::RequireExact)
+            .expect("bind weights");
+
+        let n_frames = cfg.max_length as usize;
+        let n_mels = cfg.num_mel_bins as usize;
+        let mel = mel_plane(&cfg, n_frames);
+
+        // Swap the two extents: same buffer length, wrong interpretation.
+        let Err(err) = enc.encode_mel(&mel, n_frames, n_mels) else {
+            panic!("a transposed plane must be refused");
+        };
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains(GGUF_KEY_NUM_MEL_BINS),
+                    "must name the stamped band-count key: {msg}"
+                );
+                assert!(
+                    msg.contains("num_mel_bins, n_frames"),
+                    "must state the required orientation: {msg}"
+                );
+            }
+            other => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_shorter_clip_needs_the_interpolating_policy() {
+        // The position table on disk is sized for the trained frame count, so a
+        // shorter clip produces fewer patch tokens than the table has rows.
+        // Under RequireExact that is loud; the interpolating policy built from
+        // the stamped grid handles it.
+        let cfg = tiny_config();
+        let file = synthetic_weights_gguf(&cfg, TENSOR_PREFIX_CLASSIFICATION, false);
+        let m = Maest::from_gguf(&file).expect("bind");
+        let n_mels = cfg.num_mel_bins as usize;
+        let short_frames = cfg.max_length as usize - 1;
+        let mel = mel_plane(&cfg, short_frames);
+
+        let strict = m
+            .encoder(&file, PosEmbedPolicy::RequireExact)
+            .expect("bind weights");
+        let Err(err) = strict.encode_mel(&mel, n_mels, short_frames) else {
+            panic!("RequireExact must refuse a table/token-count mismatch");
+        };
+        assert!(
+            matches!(err, VokraError::InvalidArgument(_)),
+            "expected InvalidArgument, got {err:?}"
+        );
+
+        let lenient = m
+            .encoder(&file, cfg.stamped_grid_pos_embed_policy())
+            .expect("bind weights");
+        let tokens = lenient
+            .encode_mel(&mel, n_mels, short_frames)
+            .expect("the interpolating policy must accept a shorter clip");
+        let grid = lenient.patch_grid(n_mels, short_frames).expect("grid");
+        assert_eq!(tokens.len(), grid.n_tokens(cfg.num_prefix_tokens as usize));
+        for row in &tokens {
+            assert!(row.iter().all(|v| v.is_finite()));
+        }
+    }
+
+    #[test]
+    fn tag_mel_refuses_a_bare_encoder_artifact() {
+        // No head on disk: the encoder still runs, but the tag surface must say
+        // so rather than returning empty or zero-filled logits.
+        let cfg = tiny_config();
+        let file = synthetic_weights_gguf(&cfg, TENSOR_PREFIX_CLASSIFICATION, false);
+        let m = Maest::from_gguf(&file).expect("bind");
+        let enc = m
+            .encoder(&file, PosEmbedPolicy::RequireExact)
+            .expect("bind weights");
+
+        let n_frames = cfg.max_length as usize;
+        let n_mels = cfg.num_mel_bins as usize;
+        let mel = mel_plane(&cfg, n_frames);
+
+        // The encoder half works.
+        assert!(enc.encode_mel(&mel, n_mels, n_frames).is_ok());
+
+        let Err(err) = enc.tag_mel(&mel, n_mels, n_frames) else {
+            panic!("a bare-encoder artifact must refuse the tag surface");
+        };
+        match err {
+            VokraError::UnsupportedOp(msg) => {
+                assert!(
+                    msg.contains(TAG_HEAD_PREFIX),
+                    "must name the prefix it looked under: {msg}"
+                );
+                assert!(
+                    msg.contains("MaestEncoder::encode_mel"),
+                    "must point at the surfaces that DO work: {msg}"
+                );
+                assert!(
+                    msg.contains("FR-EX-08"),
+                    "must cite the no-fabricated-output clause: {msg}"
+                );
+            }
+            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn head_label_count_must_agree_with_the_stamped_count() {
+        // The stamp comes from `config.json` and the projection comes from the
+        // payload: two independent witnesses. A disagreement means the two
+        // describe different checkpoints, so binding must refuse.
+        let cfg = tiny_config();
+        let mut lying = cfg.clone();
+        lying.num_labels = cfg.num_labels + 1;
+
+        // Weights carry `cfg.num_labels`; the stamps claim one more.
+        let honest = synthetic_weights_gguf(&cfg, TENSOR_PREFIX_CLASSIFICATION, true);
+        let file = restamped(&honest, &lying);
+
+        let m = Maest::from_gguf(&file).expect("bind");
+        // The disk still reports the honest count.
+        assert_eq!(m.label_count(), Some(cfg.num_labels as usize));
+
+        let Err(err) = m.encoder(&file, PosEmbedPolicy::RequireExact) else {
+            panic!("a stamped/payload label-count disagreement must not bind");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("classifier.dense.weight"),
+                    "must name the head projection: {msg}"
+                );
+                assert!(
+                    msg.contains("FR-EX-08"),
+                    "must cite the no-silent-reshape clause: {msg}"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_non_ast_prefix_is_loud_and_names_both_candidates() {
+        // A manifest with tensors but no position table under either known
+        // prefix: refuse rather than invent a third spelling.
+        let file = maest_gguf(
+            Some(LicenseClass::NonCommercialShareAlike),
+            false,
+            true,
+            None,
+        );
+        let m = Maest::from_gguf(&file).expect("bind");
+        let Err(err) = m.weights().detect_tensor_prefix() else {
+            panic!("expected ModelLoad when no position table is on disk");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(TENSOR_PREFIX_CLASSIFICATION),
+                    "must name the ASTForAudioClassification candidate: {msg}"
+                );
+                assert!(
+                    msg.contains(PROBE_SUFFIX_POSITION_EMBEDDINGS),
+                    "must name the probe it used: {msg}"
+                );
+                assert!(
+                    msg.contains("FR-EX-08"),
+                    "must cite the no-guessing clause: {msg}"
+                );
+            }
             other => panic!("expected VokraError::ModelLoad, got {other:?}"),
         }
     }

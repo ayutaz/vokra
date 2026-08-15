@@ -2079,37 +2079,42 @@ pub mod atst;
 // (FR-EX-08).
 //
 // REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
-// with BOTH tags named; a forward-compatible OPTIONAL `vokra.m2d.*` axis group
-// (the current converter stamps NONE of it, so a real artifact resolves to
-// `M2dConfigSource::ConverterSilent` — absence is normal, but a PRESENT key of
-// the wrong dtype fails loud rather than being silently ignored, and a
-// half-landed group is reported as `PartiallyStamped` rather than mistaken for
-// a silent converter); a tensor manifest over the verbatim upstream
+// with BOTH tags named; the REQUIRED eight-key `vokra.m2d.*` axis group (the
+// converter stamps all eight, each transcribed from a primary source it cites
+// line by line, so `M2dConfig::from_gguf` demands every one and fails with a
+// loud `ModelLoad` NAMING the absent key — deliberately NO primary-source
+// constant fallback, since the producer stamps these and a silent default
+// would let a mismatched artifact, e.g. the separate 32 kHz M2D identity, bind
+// as the canonical one); `M2dConfig::vit_attrs`, the mapping onto
+// `vokra_ops::vit::ViTAttrs`; a tensor manifest over the verbatim upstream
 // `state_dict` names the converter passes through, with a non-empty gate plus
 // `require_tensor` / `require_tensor_dims` lookups that NAME the missing tensor
-// or BOTH the expected and actual dims; and weight-license surfacing that
-// fail-closes to `LicenseClass::Unknown`.
+// or BOTH the expected and actual dims, and `branch_triage` which OBSERVES how
+// the bound manifest is prefixed; and weight-license surfacing that fail-closes
+// to `LicenseClass::Unknown`.
 //
-// DELIBERATELY NOT TRANSCRIBED: hidden size, layer count, head count, patch
-// geometry, mel-bin count, sample rate, pooling recipe, and WHICH duo branch
-// inference reads. M2D ships NO HuggingFace mirror as of 2026-08-13, hence no
-// `config.json`, and borrowing a sibling's ViT-Base numbers would be
-// fabrication across a different release (CLAUDE.md「ハルシネーション厳禁」).
-// Those axes are `Option`-typed and `M2dConfig::validate_for_forward` REFUSES
-// while they are unset. Branch selection is the sharpest case: both branches
-// are shape-compatible, so a guess has NO loud failure mode.
+// NOT CARRIED BY THE ARTIFACT: `ViTAttrs` has 12 axes and the stamped group
+// supplies 5 (embed_dim, depth, n_heads, patch_h, patch_w). The other 7
+// (`UNSTAMPED_VIT_AXES`: stride_h/w, n_prepended_tokens, mlp_ratio,
+// layer_norm_eps, gelu, pos_embed_policy) are carried by NO `vokra.m2d.*` key,
+// so `vit_attrs` takes them from the CALLER as an `M2dUnstampedAxes` rather
+// than hard-coding a constant the artifact cannot contradict (CLAUDE.md
+// 「ハルシネーション厳禁」).
 //
 // LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `encode` / `embed` return `VokraError::UnsupportedOp` naming five
-// blockers — (1) NO BRANCH SELECTION; (2) NO TENSOR-NAME MANIFEST (nothing
-// in-repo transcribes M2D's `state_dict` naming, so walking guessed names would
-// bind shape-valid garbage); (3) NO TOPOLOGY AXES; (4) NO PATCH-EMBEDDING
-// FRONT-END; (5) MISSING PRIMITIVE — no ViT-style Transformer encoder over 2-D
-// spectrogram patch tokens exists in `vokra-ops` (the encoders that do exist,
-// `vokra_ops::conformer` / `zipformer` / `ebranchformer`, are 1-D ASR encoders
-// with different token geometry). All three primary sources are cited in the
-// message. No fabricated hidden states or embeddings are ever emitted
-// (FR-EX-08).
+// honest」): `encode` / `embed` return `VokraError::UnsupportedOp` naming THREE
+// remaining blockers — (1) UNVERIFIED TENSOR-NAME MANIFEST (nothing in-repo
+// transcribes M2D's `state_dict` naming; a real checkpoint also settles whether
+// the release keeps the `online.`/`target.` prefixes at all and whether qkv is
+// fused); (2) UNSTAMPED ViT AXES; (3) NO MEL FRONT-END BINDING (the ViT forward
+// consumes a log-mel plane, and n_fft/hop/window/f_min/f_max are not stamped) —
+// plus, for `embed`, the unresolved POOLING RECIPE. The message states
+// OUTRIGHT which blockers are already RESOLVED (the axis group IS stamped,
+// branch selection rides `vokra.m2d.inference_branch`, and `vokra_ops::vit` now
+// supplies the ViT encoder that `conformer`/`zipformer`/`ebranchformer` — 1-D
+// ASR encoders — could not stand in for) so nobody re-reports them. All three
+// primary sources are cited. No fabricated hidden states or embeddings are ever
+// emitted (FR-EX-08).
 //
 // LICENSING: upstream's LICENSE is a PDF that GitHub's classifier cannot read
 // (`spdx_id: NOASSERTION`), so the converter default is `unknown` ->
@@ -2230,39 +2235,55 @@ pub mod w2v_bert2;
 // (FR-EX-08), so the arch gate is strict and its error enumerates the whole
 // neighbourhood including that pair.
 //
-// LABEL TAXONOMY — READ, NEVER GUESSED: the converter is a verbatim
-// F32/F16/BF16 pass-through that stamps NO label list and NO label count, so
-// this module contains NO taxonomy constant at all. `Maest::label_count` scans
-// the tensors actually on disk under `TAG_HEAD_PREFIX` and reports the head
-// projection's leading dim (`nn.Linear` weight is `[out_features,
-// in_features]`) — `None` for a bare-encoder export or an ambiguous layout,
-// never a fallback number. A unit test pins this by asserting two synthetic
-// artifacts with different head widths report different counts, which a
-// hardcoded taxonomy size could not satisfy (CLAUDE.md「ハルシネーション厳禁」).
+// LABEL TAXONOMY — COUNT HAS TWO WITNESSES, NAMES HAVE NONE: the converter
+// stamps the label COUNT (`vokra.maest.num_labels`, from `config.json`'s
+// `id2label` cardinality) but NO label list. This module still hardcodes no
+// taxonomy constant of its own: `Maest::label_count` scans the tensors actually
+// on disk under `TAG_HEAD_PREFIX` and reports the head projection's leading dim
+// (`nn.Linear` weight is `[out_features, in_features]`) — `None` for a
+// bare-encoder export or an ambiguous layout, never a fallback number. Keeping
+// the stamp and the payload independent is what lets the head binding
+// cross-check them and refuse an artifact where they disagree. A unit test pins
+// the read-not-guessed property by asserting two synthetic artifacts with
+// different head widths report different counts, which a hardcoded taxonomy
+// size could not satisfy (CLAUDE.md「ハルシネーション厳禁」). The label NAMES
+// remain unrecoverable from the artifact; that does not block `tag_mel`, whose
+// return type is logits, but it does mean logit index `i` cannot be mapped onto
+// a Discogs genre / mood / instrument / era string from the GGUF alone.
 //
 // REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
-// with BOTH tags named; a tensor manifest over the verbatim upstream
-// `state_dict` names the converter passes through, with a non-empty gate plus
-// `require_tensor` / `require_tensor_dims` lookups that NAME the missing tensor
-// or BOTH the expected and actual dims; tag-head discovery from disk; metadata
-// surfacing (`name` / `category` / `upstream_hf` / `model_id` / `source`); and
-// weight-license + FR-MD-09 attribution surfacing that fail-closes to
-// `LicenseClass::Unknown`.
+// with BOTH tags named; strict `MaestConfig` reading of the `vokra.maest.*`
+// topology + front-end axis group (every stamped key required, a missing one a
+// loud `ModelLoad` naming it, no primary-source constant fallback); the mapping
+// of those axes onto `vokra_ops::vit::ViTAttrs`; a tensor manifest over the
+// verbatim upstream `state_dict` names the converter passes through, with a
+// non-empty gate plus `require_tensor` / `require_tensor_dims` lookups that NAME
+// the missing tensor or BOTH the expected and actual dims, and
+// `detect_tensor_prefix` probing which `state_dict` prefix the artifact actually
+// uses; `Maest::encoder` weight binding and the `MaestEncoder` FORWARD over a
+// log-mel plane (`encode_mel` / `embed_mel` / `tag_mel`); tag-head discovery
+// from disk; metadata surfacing (`name` / `category` / `upstream_hf` /
+// `model_id` / `source`); and weight-license + FR-MD-09 attribution surfacing
+// that fail-closes to `LicenseClass::Unknown`.
+//
+// The forward is transcribed from the HuggingFace AST modelling file at
+// `v4.34.0` — the tag the checkpoint's own config names
+// (`transformers_version: "4.34.0.dev0"`) — which supplies the `state_dict`
+// names, the pre-norm block ordering, the `(cls, distillation, patches)`
+// concatenation order, the `[num_mel_bins, max_length]` plane orientation, and
+// the `(sequence_output[:, 0] + sequence_output[:, 1]) / 2` pooling rule.
+// NOTE: no numerical parity run exists — the weights are gated CC-BY-NC-SA 4.0
+// and no fixture is committed — so the tests assert shape, finiteness and
+// determinism only, never an expected numeric value.
 //
 // LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `encode` / `embed` / `tag` return `VokraError::UnsupportedOp`
-// naming (i) NO `vokra.maest.*` AXIS CHUNK GROUP (embedding width, depth, head
-// count, patch grid and every log-mel front-end axis are absent from the
-// artifact and are not transcribed in-repo); (ii) NO ViT-STYLE ENCODER
-// PRIMITIVE — verified by listing `crates/vokra-ops/src/`: the log-mel
-// front-end genuinely exists (`vokra_ops::mel` / `fused_logmel` /
-// `kaldi_fbank`) but the 2-D patch embedding + plain pre-norm Transformer
-// encoder does not, and `vokra_ops::conformer` / `ebranchformer` / `zipformer`
-// are conv-augmented ASR encoders over a 1-D frame sequence, a different thing.
-// This is the SAME SHARED GAP the sibling `atst` / `eat` / `m2d` / `dasheng`
-// binders hit, and the message says so explicitly so the follow-up wave sees
-// ONE primitive to add rather than five unrelated model gaps; (iii) NO VERIFIED
-// TENSOR-NAME MANIFEST; and, for `tag` only, (iv) NO LABEL TAXONOMY. No
+// honest」): the PCM-in surfaces `encode` / `embed` / `tag` return
+// `VokraError::UnsupportedOp` for ONE remaining gap — the STFT FRAMING /
+// CENTERING convention of the log-mel front end. The converter deliberately
+// stamps no `center` / `pad_mode` and writes no `vokra.frontend.*` group
+// because no primary source it reached states them, and choosing wrongly shifts
+// every frame by half a window: shape-valid, numerically wrong, silent. Every
+// OTHER front-end axis IS stamped and is echoed in the error message. No
 // fabricated hidden states, embeddings or logits are ever emitted (FR-EX-08).
 //
 // LICENSING: the converter stamps `cc-by-nc-sa-4.0` ->

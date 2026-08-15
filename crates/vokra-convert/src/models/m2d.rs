@@ -75,10 +75,11 @@
 //! # Topology axes — `vokra.m2d.*` (primary-source transcribed)
 //!
 //! The runtime binder `crates/vokra-models/src/m2d/mod.rs` declares an
-//! eight-key `vokra.m2d.*` axis group and refuses its encoder forward
-//! while any key is unstamped (`M2dConfig::validate_for_forward`).
-//! This converter stamps **all eight**, under exactly the binder's key
-//! spellings. Every value is transcribed from a primary source that was
+//! eight-key `vokra.m2d.*` axis group and treats every key as
+//! **REQUIRED**: `M2dConfig::from_gguf` fails with a loud `ModelLoad`
+//! naming any absent one, with no primary-source constant fallback on
+//! the read side. This converter stamps **all eight**, under exactly
+//! the binder's key spellings. Every value is transcribed from a primary source that was
 //! actually read — never a sibling SSL encoder's ViT-Base numbers
 //! borrowed across a different release (CLAUDE.md「ハルシネーション厳禁」):
 //!
@@ -572,10 +573,10 @@ mod tests {
         assert_eq!(KEY_M2D_SAMPLE_RATE, "vokra.m2d.sample_rate");
         assert_eq!(KEY_M2D_INFERENCE_BRANCH, "vokra.m2d.inference_branch");
 
-        // Exactly eight, all distinct — the binder's `TOTAL_OPTIONAL_AXES`
-        // is 8 and it reports "partially stamped" for anything short of the
-        // full group, so a duplicated or dropped key would silently degrade
-        // a real artifact to `PartiallyStamped`.
+        // Exactly eight, all distinct — the binder's `TOTAL_STAMPED_AXES`
+        // is 8 and every one of them is REQUIRED on the read side, so a
+        // duplicated or dropped key here would make a real artifact fail to
+        // load with a loud "missing required chunk".
         let mut keys = vec![
             KEY_M2D_HIDDEN_SIZE,
             KEY_M2D_NUM_HIDDEN_LAYERS,

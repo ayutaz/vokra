@@ -25,8 +25,9 @@
 //!   verified 2026-08-13 per the converter docstring).
 //!
 //! Everything this module asserts about M2D is traceable to those three
-//! anchors. Everything it does **not** know is named explicitly below rather
-//! than filled in with a plausible guess (CLAUDE.md「ハルシネーション厳禁」).
+//! anchors, or to the converter's own per-axis transcription of them.
+//! Everything it does **not** know is named explicitly below rather than
+//! filled in with a plausible guess (CLAUDE.md「ハルシネーション厳禁」).
 //!
 //! # What M2D is
 //!
@@ -56,11 +57,46 @@
 //! wav2vec2-lineage neighbourhood (`wav2vec2_ctc`, `wavlm_sv`, `hubert`,
 //! `emotion2vec`) all live nearby, and every one of them has a *different*
 //! parameter topology. M2D's masked-modeling-**duo** objective leaves two
-//! parallel branches in the state dict; a single-branch MAE loader pointed at
+//! parallel branches in the state dict; a single-branch loader pointed at
 //! such a checkpoint does not crash, it silently binds one branch's tensors
 //! and produces plausible-but-wrong embeddings. FR-EX-08 forbids exactly that
 //! silent misroute, so the arch gate here is strict and its error enumerates
 //! the whole neighbourhood.
+//!
+//! # The `vokra.m2d.*` axis group is REQUIRED
+//!
+//! An earlier revision of this module treated the group as *optional* and
+//! forward-compatible, because the converter of the day stamped none of it.
+//! **That is no longer true.** The converter now stamps all
+//! [`TOTAL_STAMPED_AXES`] keys, every value transcribed from a primary source
+//! its constants cite line by line (upstream `examples/portable_m2d.py`
+//! `get_backbone()` / `Config` / `get_to_melspec()`, plus arXiv:2210.14648 §3
+//! and §4.1).
+//!
+//! So [`M2dConfig::from_gguf`] treats each key as **mandatory** and fails with
+//! a loud [`VokraError::ModelLoad`] naming the absent one — the `wavlm_sv`
+//! posture. There is deliberately **no primary-source constant fallback**: the
+//! producer stamps these, so a silent default would let a mismatched artifact
+//! (a differently-configured release, a half-written GGUF, the 32 kHz M2D
+//! variant whose `sample_rate` differs) bind as though it were the canonical
+//! one, with no loud failure mode (FR-EX-08).
+//!
+//! # What the axis group does *not* carry
+//!
+//! [`vokra_ops::vit::ViTAttrs`] has twelve axes. The stamped group supplies
+//! five of them (`embed_dim`, `depth`, `n_heads`, `patch_h`, `patch_w`); the
+//! other seven — listed in [`UNSTAMPED_VIT_AXES`] — are carried by no
+//! `vokra.m2d.*` key at all. The converter's docstring records `mlp_ratio = 4`
+//! and LayerNorm `eps = 1e-6` from upstream `get_backbone()` and then
+//! deliberately declines to stamp them, on the grounds that they "land only if
+//! and when the binder grows fields for them, in the same commit".
+//!
+//! This binder therefore does **not** read them, and equally does not assume
+//! them: [`M2dConfig::vit_attrs`] takes them from the caller as an explicit
+//! [`M2dUnstampedAxes`], mirroring the no-defaults posture of `ViTAttrs`
+//! itself. Hard-coding them here would put a constant in the runtime that the
+//! artifact cannot contradict — the same silent-mismatch hazard the required
+//! reader exists to prevent.
 //!
 //! # Loud-partial classification
 //!
@@ -71,18 +107,17 @@
 //! - [`M2d::from_gguf`]: strict `vokra.model.arch == "m2d"` verification that
 //!   refuses a foreign GGUF loudly, naming **both** the expected and the
 //!   actual tag and enumerating the sibling fleet.
-//! - [`M2dConfig::from_gguf`]: a **forward-compatible optional**
-//!   `vokra.m2d.*` axis group. The current converter stamps **none** of it,
-//!   so a real artifact today resolves to
-//!   [`M2dConfigSource::ConverterSilent`] — absence is normal and is *not* an
-//!   error. But a key that is **present with the wrong dtype** fails loud
-//!   rather than being silently ignored, so a future converter revision
-//!   cannot half-land an axis group unnoticed.
-//! - [`M2dWeights::from_gguf`]: the tensor manifest over the verbatim
-//!   upstream `state_dict` names the converter passes through, with a
-//!   non-empty gate plus [`M2dWeights::require_tensor`] /
-//!   [`M2dWeights::require_tensor_dims`] lookups that name the missing
-//!   tensor, or **both** the expected and the actual dims.
+//! - [`M2dConfig::from_gguf`]: the **required** eight-key `vokra.m2d.*` reader
+//!   described above.
+//! - [`M2dConfig::vit_attrs`]: the config → [`vokra_ops::vit::ViTAttrs`]
+//!   mapping, validated through `ViTAttrs::validate`.
+//! - [`M2dWeights::from_gguf`]: the tensor manifest over the verbatim upstream
+//!   `state_dict` names the converter passes through, with a non-empty gate
+//!   plus [`M2dWeights::require_tensor`] / [`M2dWeights::require_tensor_dims`]
+//!   lookups that name the missing tensor, or **both** the expected and the
+//!   actual dims, plus [`M2dWeights::branch_triage`] — an *observation* of how
+//!   the bound manifest is prefixed, never an assertion about how it ought to
+//!   be.
 //! - License surfacing that fail-closes to [`LicenseClass::Unknown`], plus
 //!   [`M2d::requires_research_flag`] so a caller can see the M2-13 gate state
 //!   without re-reading the GGUF.
@@ -91,27 +126,18 @@
 //!   lands.
 //!
 //! **Loud-partial (this WP)**: [`M2d::encode`] and [`M2d::embed`] return
-//! [`VokraError::UnsupportedOp`] naming five distinct blockers (see
-//! [`M2d::encode`]). No fabricated hidden states or embeddings are **ever**
-//! emitted (FR-EX-08 — no silent partial output).
+//! [`VokraError::UnsupportedOp`] naming three remaining blockers (see
+//! [`M2d::encode`]), plus a fourth specific to `embed`. No fabricated hidden
+//! states or embeddings are **ever** emitted (FR-EX-08 — no silent partial
+//! output).
 //!
-//! # Deliberately not transcribed
-//!
-//! M2D ships **no HuggingFace mirror** as of 2026-08-13 and therefore no
-//! `config.json` to transcribe. Consequently this module states **no**
-//! hidden size, layer count, head count, patch geometry, mel-bin count,
-//! sample rate, or pooling recipe. Those are the `Option`-typed axes of
-//! [`M2dConfig`], all `None` today. Copying a sibling's ViT-Base numbers
-//! would be fabrication across a different release, so
-//! [`M2dConfig::validate_for_forward`] **refuses** while they are unset
-//! rather than defaulting.
-//!
-//! The same applies to branch selection: whether the inference path reads the
-//! `online` or the `target` sub-tree is not stated by any machine-readable
-//! primary source available to this wave, so
-//! [`M2dConfig::inference_branch`] is `Option<M2dBranch>` and stays `None`.
-//! Guessing has no loud failure mode — it silently returns the wrong
-//! embedding — which is precisely why it is a blocker and not a default.
+//! **Resolved since the gate was first written** — the message says so
+//! explicitly, so nobody re-reports them: the `vokra.m2d.*` group is stamped,
+//! branch selection rides [`GGUF_KEY_INFERENCE_BRANCH`], and
+//! [`vokra_ops::vit`] now supplies the 2-D patch embedding + pre-norm
+//! Transformer encoder this arch needs (the `conformer` / `zipformer` /
+//! `ebranchformer` encoders were 1-D ASR encoders with different token
+//! geometry, and are not substitutes).
 //!
 //! # Licensing (owner-gated, fail-closed)
 //!
@@ -128,12 +154,13 @@
 //! # Cross-crate constant duplication
 //!
 //! [`ARCH`] / [`NAME`] / [`CATEGORY`] / [`UPSTREAM_URL`] /
-//! [`DEFAULT_LICENSE_SPDX`] are mirrors of the converter's constants — the
-//! same rule the sibling binders (`wavlm` / `emotion2vec` / `panns` /
-//! `redimnet` / `canary_1b_flash`) follow so `vokra-models` does not gain a
-//! dependency edge onto `vokra-convert`, preserving the layered convention
-//! `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF reader`,
-//! `vokra-models → GGUF binder`, `vokra-convert → GGUF writer`.
+//! [`DEFAULT_LICENSE_SPDX`] and every `GGUF_KEY_*` are mirrors of the
+//! converter's constants — the same rule the sibling binders (`wavlm` /
+//! `emotion2vec` / `panns` / `redimnet` / `canary_1b_flash`) follow so
+//! `vokra-models` does not gain a dependency edge onto `vokra-convert`,
+//! preserving the layered convention `vokra-ops → nothing GGUF-aware`,
+//! `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
+//! `vokra-convert → GGUF writer`.
 //!
 //! # No ONNX / no pickle (permanent)
 //!
@@ -145,6 +172,7 @@
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
+use vokra_ops::vit::{GeluKind, PosEmbedPolicy, ViTAttrs};
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of `crates/vokra-convert/src/models/m2d.rs`.
@@ -207,37 +235,77 @@ pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2210.14648";
 /// Primary-source anchor: the non-machine-readable upstream license PDF.
 pub const PRIMARY_SOURCE_LICENSE_PDF: &str = "github.com/nttcslab/m2d/blob/master/LICENSE.pdf";
 
-// --- Optional, forward-compatible `vokra.m2d.*` axis group ----------------
+// --- The REQUIRED `vokra.m2d.*` axis group --------------------------------
 //
-// The converter stamps NONE of these today. They exist so a follow-up wave
-// that walks the upstream release can stamp axes WITHOUT a breaking change,
-// and so a half-landed axis group fails loud instead of silently reading as
-// absent.
+// Key spellings are byte-identical to the converter's `KEY_M2D_*` constants;
+// its `topology_axis_keys_mirror_the_runtime_binder` test pins them from the
+// other side, and `stamped_axis_key_spellings_mirror_the_converter` below
+// pins them from this one. The two halves only meet if both hold.
 
-/// Optional axis: Transformer hidden width.
+/// Required axis: Transformer hidden width. Maps to
+/// [`vokra_ops::vit::ViTAttrs::embed_dim`].
 pub const GGUF_KEY_HIDDEN_SIZE: &str = "vokra.m2d.hidden_size";
-/// Optional axis: number of Transformer encoder blocks.
+/// Required axis: number of Transformer encoder blocks. Maps to
+/// [`vokra_ops::vit::ViTAttrs::depth`].
 pub const GGUF_KEY_NUM_HIDDEN_LAYERS: &str = "vokra.m2d.num_hidden_layers";
-/// Optional axis: self-attention head count.
+/// Required axis: self-attention head count. Maps to
+/// [`vokra_ops::vit::ViTAttrs::n_heads`].
 pub const GGUF_KEY_NUM_ATTENTION_HEADS: &str = "vokra.m2d.num_attention_heads";
-/// Optional axis: patch height in mel bins (spectrogram patch tokenization).
+/// Required axis: patch height in mel bins. Maps to
+/// [`vokra_ops::vit::ViTAttrs::patch_h`].
 pub const GGUF_KEY_PATCH_HEIGHT: &str = "vokra.m2d.patch_height";
-/// Optional axis: patch width in frames (spectrogram patch tokenization).
+/// Required axis: patch width in frames. Maps to
+/// [`vokra_ops::vit::ViTAttrs::patch_w`].
 pub const GGUF_KEY_PATCH_WIDTH: &str = "vokra.m2d.patch_width";
-/// Optional axis: mel-filterbank bin count of the front-end.
+/// Required axis: mel-filterbank bin count of the front-end.
+///
+/// A front-end axis, **not** a [`vokra_ops::vit::ViTAttrs`] field: it fixes
+/// the height of the `[n_mels, n_frames]` plane the encoder consumes.
 pub const GGUF_KEY_N_MELS: &str = "vokra.m2d.n_mels";
-/// Optional axis: input sample rate in Hz.
+/// Required axis: input sample rate in Hz. Also a front-end axis rather than
+/// a `ViTAttrs` field.
 pub const GGUF_KEY_SAMPLE_RATE: &str = "vokra.m2d.sample_rate";
-/// Optional axis (**string**): which duo branch the inference path reads —
+/// Required axis (**string**): which duo branch the inference path reads —
 /// `"online"` or `"target"`. See [`M2dBranch`].
 pub const GGUF_KEY_INFERENCE_BRANCH: &str = "vokra.m2d.inference_branch";
+
+/// Number of keys in the required `vokra.m2d.*` group.
+pub const TOTAL_STAMPED_AXES: usize = 8;
+
+/// Every required `vokra.m2d.*` key, in a stable order.
+pub const STAMPED_AXIS_KEYS: [&str; TOTAL_STAMPED_AXES] = [
+    GGUF_KEY_HIDDEN_SIZE,
+    GGUF_KEY_NUM_HIDDEN_LAYERS,
+    GGUF_KEY_NUM_ATTENTION_HEADS,
+    GGUF_KEY_PATCH_HEIGHT,
+    GGUF_KEY_PATCH_WIDTH,
+    GGUF_KEY_N_MELS,
+    GGUF_KEY_SAMPLE_RATE,
+    GGUF_KEY_INFERENCE_BRANCH,
+];
+
+/// The [`vokra_ops::vit::ViTAttrs`] fields that **no** `vokra.m2d.*` key
+/// carries, and which [`M2dConfig::vit_attrs`] therefore takes from the
+/// caller as an [`M2dUnstampedAxes`].
+///
+/// Named as `ViTAttrs` field identifiers rather than as GGUF keys, precisely
+/// because there are no GGUF keys for them.
+pub const UNSTAMPED_VIT_AXES: [&str; 7] = [
+    "stride_h",
+    "stride_w",
+    "n_prepended_tokens",
+    "mlp_ratio",
+    "layer_norm_eps",
+    "gelu",
+    "pos_embed_policy",
+];
 
 /// Conventional `state_dict` prefix of the duo's **online** branch.
 ///
 /// Illustrative only — recorded so [`M2dWeights::branch_tensor_count`] has a
 /// documented argument, **not** asserted as the verified upstream manifest.
 /// No in-repo transcription of M2D's `state_dict` naming exists yet; that is
-/// blocker (2) of [`M2d::encode`].
+/// blocker (1) of [`M2d::encode`].
 pub const BRANCH_PREFIX_ONLINE: &str = "online.";
 
 /// Conventional `state_dict` prefix of the duo's **target** branch. Same
@@ -250,19 +318,19 @@ pub const BRANCH_PREFIX_TARGET: &str = "target.";
 
 /// Which network of the Masked Modeling **Duo** an inference pass reads.
 ///
-/// M2D trains two networks jointly. Only one of them is the encoder a
-/// downstream task consumes, and **this module does not know which** — no
-/// machine-readable primary source available to this wave states it (M2D has
-/// no HuggingFace mirror, so there is no `config.json`, and the repository's
-/// own license is a PDF the classifier cannot read).
+/// M2D trains two networks jointly, and only one of them is the encoder a
+/// downstream task consumes. Guessing would be uniquely dangerous: both
+/// branches are shape-compatible, so a wrong pick produces a full-rank,
+/// finite, plausible-looking embedding that is simply *not the model's
+/// output*, with no loud failure mode downstream.
 ///
-/// Guessing is uniquely dangerous here: both branches are shape-compatible,
-/// so a wrong pick produces a full-rank, finite, plausible-looking embedding
-/// that is simply *not the model's output*. There is no loud failure mode to
-/// catch it downstream. That is why this rides an `Option` on
-/// [`M2dConfig::inference_branch`] and why
-/// [`M2dConfig::validate_for_forward`] refuses while it is `None`
-/// (FR-EX-08).
+/// It is not guessed. The converter stamps [`GGUF_KEY_INFERENCE_BRANCH`] from
+/// a primary source that states it outright — paper §3 defines "the online
+/// encoder f_θ" against "The target network … consists only of momentum
+/// encoder f_ξ" and then concludes "After the training, we transfer only the
+/// f_θ as a pre-trained model", corroborated operationally by upstream
+/// `util/to_encoder_only_weight.py`. This binder reads that stamp and refuses
+/// anything outside `{"online", "target"}` (FR-EX-08).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum M2dBranch {
     /// The `online` network of the duo.
@@ -310,236 +378,243 @@ impl M2dBranch {
 }
 
 // ---------------------------------------------------------------------------
-// M2dConfigSource — how much of the optional axis group an artifact carries.
+// M2dConfig — the REQUIRED axis group. Nothing is defaulted: the converter
+// stamps every key, so a silent fallback would let a mismatched artifact bind
+// (FR-EX-08).
 // ---------------------------------------------------------------------------
 
-/// How much of the optional `vokra.m2d.*` axis group a bound artifact
-/// carries.
+/// The `vokra.m2d.*` topology axes, all of them mandatory.
 ///
-/// Reported so a caller can distinguish "the converter is silent, as
-/// expected" from "somebody stamped half a group", without inspecting each
-/// axis. Neither state is an error at bind time; both are refused by
-/// [`M2dConfig::validate_for_forward`], with different messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum M2dConfigSource {
-    /// **The expected state today.** No `vokra.m2d.*` key present — the
-    /// converter stamps none of them.
-    ConverterSilent,
-    /// Some, but not all, axes present — a half-landed converter revision.
-    PartiallyStamped,
-    /// Every axis present, including the branch selector. Only in this state
-    /// can [`M2dConfig::validate_for_forward`] succeed.
-    FullyStamped,
-}
-
-// ---------------------------------------------------------------------------
-// M2dConfig — the optional axis group. Every field is `Option`: nothing is
-// defaulted, because no primary source states a value (FR-EX-08 — refusing
-// beats fabricating).
-// ---------------------------------------------------------------------------
-
-/// The optional `vokra.m2d.*` topology axes.
-///
-/// **Every field is `Option` and every one is `None` for an artifact produced
-/// by the current converter.** That is deliberate: M2D ships no HuggingFace
-/// mirror and hence no `config.json`, so there is nothing to transcribe, and
-/// borrowing a sibling's ViT-Base numbers would be fabrication across a
-/// different release (CLAUDE.md「ハルシネーション厳禁」).
-///
-/// [`from_gguf`](Self::from_gguf) therefore treats **absence as normal** but
-/// a **present key of the wrong dtype as a loud error**, so a future
-/// converter revision cannot half-land the group unnoticed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Each field is stamped by `crates/vokra-convert/src/models/m2d.rs` from a
+/// primary source its own constants cite line by line. See the module
+/// docstring section "The `vokra.m2d.*` axis group is REQUIRED" for why
+/// there is no constant fallback here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct M2dConfig {
-    /// Transformer hidden width, if stamped.
-    pub hidden_size: Option<u32>,
-    /// Transformer encoder block count, if stamped.
-    pub num_hidden_layers: Option<u32>,
-    /// Self-attention head count, if stamped.
-    pub num_attention_heads: Option<u32>,
-    /// Spectrogram patch height in mel bins, if stamped.
-    pub patch_height: Option<u32>,
-    /// Spectrogram patch width in frames, if stamped.
-    pub patch_width: Option<u32>,
-    /// Mel-filterbank bin count of the front-end, if stamped.
-    pub n_mels: Option<u32>,
-    /// Input sample rate in Hz, if stamped.
-    pub sample_rate: Option<u32>,
-    /// Which duo branch the inference path reads, if stamped. See
-    /// [`M2dBranch`] for why this can never be defaulted.
-    pub inference_branch: Option<M2dBranch>,
+    /// Transformer hidden width, from [`GGUF_KEY_HIDDEN_SIZE`].
+    pub hidden_size: u32,
+    /// Transformer encoder block count, from [`GGUF_KEY_NUM_HIDDEN_LAYERS`].
+    pub num_hidden_layers: u32,
+    /// Self-attention head count, from [`GGUF_KEY_NUM_ATTENTION_HEADS`].
+    pub num_attention_heads: u32,
+    /// Spectrogram patch height in mel bins, from [`GGUF_KEY_PATCH_HEIGHT`].
+    pub patch_height: u32,
+    /// Spectrogram patch width in frames, from [`GGUF_KEY_PATCH_WIDTH`].
+    pub patch_width: u32,
+    /// Mel-filterbank bin count of the front-end, from [`GGUF_KEY_N_MELS`].
+    pub n_mels: u32,
+    /// Input sample rate in Hz, from [`GGUF_KEY_SAMPLE_RATE`].
+    pub sample_rate: u32,
+    /// Which duo branch the inference path reads, from
+    /// [`GGUF_KEY_INFERENCE_BRANCH`].
+    pub inference_branch: M2dBranch,
 }
 
 impl M2dConfig {
-    /// Reads the optional `vokra.m2d.*` axis group.
+    /// Reads every required `vokra.m2d.*` key.
     ///
-    /// - Key absent → the field stays `None` (**normal** — the current
-    ///   converter stamps nothing).
-    /// - Key present with a readable value → bound.
-    /// - Key present with the **wrong dtype** → loud [`VokraError::ModelLoad`]
-    ///   naming the key, the expected dtype and the actual one. Silently
-    ///   ignoring it would let a half-landed converter revision look like a
-    ///   silent converter (FR-EX-08).
+    /// - Key absent → loud [`VokraError::ModelLoad`] **naming that key**.
+    /// - Key present with the wrong GGUF value type → loud
+    ///   [`VokraError::ModelLoad`] naming the key, what was expected, and the
+    ///   actual value type. Distinguished from absence so a half-written
+    ///   artifact reports the truth rather than "missing".
     /// - [`GGUF_KEY_INFERENCE_BRANCH`] present with a value outside
     ///   `{"online", "target"}` → loud, naming both accepted values.
     ///
+    /// There is no primary-source constant fallback anywhere in this reader.
+    /// The producer stamps these axes, so defaulting a missing one would let
+    /// a mismatched artifact — a differently-configured release, a truncated
+    /// GGUF, the separate 32 kHz M2D identity — bind as the canonical one
+    /// with no loud failure mode (FR-EX-08).
+    ///
     /// # Errors
     ///
-    /// - [`VokraError::ModelLoad`] for any present-but-unreadable
-    ///   `vokra.m2d.*` key.
+    /// - [`VokraError::ModelLoad`] when any of the [`TOTAL_STAMPED_AXES`]
+    ///   keys is absent, unreadable, or (for the branch selector) outside the
+    ///   duo.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
-        fn opt_u32(gguf: &GgufFile, key: &str) -> Result<Option<u32>> {
-            match gguf.get(key) {
-                None => Ok(None),
-                Some(v) => match v.as_u64() {
-                    Some(n) => Ok(Some(n as u32)),
-                    None => Err(VokraError::ModelLoad(format!(
-                        "m2d: GGUF key `{key}` is present but is not an unsigned \
-                         integer (actual GGUF value type: {actual:?}). The \
-                         `vokra.m2d.*` axis group is OPTIONAL — the current \
-                         converter stamps none of it, and absence is normal — but a \
-                         key that IS present must be readable, otherwise a \
-                         half-landed converter revision would be indistinguishable \
-                         from a silent converter and the runtime would bind \
-                         fabricated topology (FR-EX-08). Either drop the key or \
-                         stamp it as a u32.",
-                        actual = v.value_type()
-                    ))),
-                },
-            }
-        }
-
-        let inference_branch = match gguf.get(GGUF_KEY_INFERENCE_BRANCH) {
-            None => None,
-            Some(v) => {
-                let s = v.as_str().ok_or_else(|| {
-                    VokraError::ModelLoad(format!(
-                        "m2d: GGUF key `{GGUF_KEY_INFERENCE_BRANCH}` is present but is \
-                         not a string (actual GGUF value type: {actual:?}). It selects \
-                         which network of the Masked Modeling Duo the inference path \
-                         reads and must be exactly `online` or `target` (FR-EX-08 — \
-                         never a silent default, because both branches are \
-                         shape-compatible and a wrong pick returns a \
-                         plausible-but-wrong embedding with no loud failure mode).",
-                        actual = v.value_type()
-                    ))
-                })?;
-                Some(M2dBranch::from_wire(s).ok_or_else(|| {
-                    VokraError::ModelLoad(format!(
-                        "m2d: GGUF key `{GGUF_KEY_INFERENCE_BRANCH}` is `{s}`, but the \
-                         only accepted values are `online` and `target` — the two \
-                         networks of the Masked Modeling Duo (Niizumi et al., \
-                         {paper}). Refusing rather than defaulting: both branches are \
-                         shape-compatible, so a wrong pick returns a \
-                         plausible-but-wrong embedding with no loud failure mode \
-                         (FR-EX-08).",
-                        paper = PRIMARY_SOURCE_PAPER
-                    ))
-                })?)
-            }
-        };
-
         Ok(Self {
-            hidden_size: opt_u32(gguf, GGUF_KEY_HIDDEN_SIZE)?,
-            num_hidden_layers: opt_u32(gguf, GGUF_KEY_NUM_HIDDEN_LAYERS)?,
-            num_attention_heads: opt_u32(gguf, GGUF_KEY_NUM_ATTENTION_HEADS)?,
-            patch_height: opt_u32(gguf, GGUF_KEY_PATCH_HEIGHT)?,
-            patch_width: opt_u32(gguf, GGUF_KEY_PATCH_WIDTH)?,
-            n_mels: opt_u32(gguf, GGUF_KEY_N_MELS)?,
-            sample_rate: opt_u32(gguf, GGUF_KEY_SAMPLE_RATE)?,
-            inference_branch,
+            hidden_size: req_u32(gguf, GGUF_KEY_HIDDEN_SIZE)?,
+            num_hidden_layers: req_u32(gguf, GGUF_KEY_NUM_HIDDEN_LAYERS)?,
+            num_attention_heads: req_u32(gguf, GGUF_KEY_NUM_ATTENTION_HEADS)?,
+            patch_height: req_u32(gguf, GGUF_KEY_PATCH_HEIGHT)?,
+            patch_width: req_u32(gguf, GGUF_KEY_PATCH_WIDTH)?,
+            n_mels: req_u32(gguf, GGUF_KEY_N_MELS)?,
+            sample_rate: req_u32(gguf, GGUF_KEY_SAMPLE_RATE)?,
+            inference_branch: req_branch(gguf)?,
         })
     }
 
-    /// Names of the axes that are still unstamped, in a stable order.
+    /// Maps the stamped axes onto a [`vokra_ops::vit::ViTAttrs`], taking the
+    /// seven axes no `vokra.m2d.*` key carries from `unstamped`.
     ///
-    /// Empty exactly when [`Self::source`] is
-    /// [`M2dConfigSource::FullyStamped`].
-    #[must_use]
-    pub fn missing_axes(&self) -> Vec<&'static str> {
-        let mut missing = Vec::new();
-        if self.hidden_size.is_none() {
-            missing.push(GGUF_KEY_HIDDEN_SIZE);
-        }
-        if self.num_hidden_layers.is_none() {
-            missing.push(GGUF_KEY_NUM_HIDDEN_LAYERS);
-        }
-        if self.num_attention_heads.is_none() {
-            missing.push(GGUF_KEY_NUM_ATTENTION_HEADS);
-        }
-        if self.patch_height.is_none() {
-            missing.push(GGUF_KEY_PATCH_HEIGHT);
-        }
-        if self.patch_width.is_none() {
-            missing.push(GGUF_KEY_PATCH_WIDTH);
-        }
-        if self.n_mels.is_none() {
-            missing.push(GGUF_KEY_N_MELS);
-        }
-        if self.sample_rate.is_none() {
-            missing.push(GGUF_KEY_SAMPLE_RATE);
-        }
-        if self.inference_branch.is_none() {
-            missing.push(GGUF_KEY_INFERENCE_BRANCH);
-        }
-        missing
-    }
-
-    /// How much of the optional axis group this config carries.
+    /// Where each `ViTAttrs` field comes from:
     ///
-    /// A converter-produced artifact today reports
-    /// [`M2dConfigSource::ConverterSilent`].
-    #[must_use]
-    pub fn source(&self) -> M2dConfigSource {
-        let missing = self.missing_axes().len();
-        if missing == 0 {
-            M2dConfigSource::FullyStamped
-        } else if missing == TOTAL_OPTIONAL_AXES {
-            M2dConfigSource::ConverterSilent
-        } else {
-            M2dConfigSource::PartiallyStamped
-        }
-    }
-
-    /// Refuses unless every axis is stamped.
+    /// - `embed_dim` ← [`GGUF_KEY_HIDDEN_SIZE`]
+    /// - `depth` ← [`GGUF_KEY_NUM_HIDDEN_LAYERS`]
+    /// - `n_heads` ← [`GGUF_KEY_NUM_ATTENTION_HEADS`]
+    /// - `patch_h` ← [`GGUF_KEY_PATCH_HEIGHT`]
+    /// - `patch_w` ← [`GGUF_KEY_PATCH_WIDTH`]
+    /// - `stride_h`, `stride_w`, `n_prepended_tokens`, `mlp_ratio`,
+    ///   `layer_norm_eps`, `gelu`, `pos_embed_policy` ← the caller, via
+    ///   `unstamped` ([`UNSTAMPED_VIT_AXES`])
     ///
-    /// The encoder forward cannot be shaped without them, and no primary
-    /// source available to this wave supplies a default, so refusing is the
-    /// honest behaviour — defaulting would silently bind fabricated topology
-    /// (FR-EX-08).
+    /// [`GGUF_KEY_N_MELS`] and [`GGUF_KEY_SAMPLE_RATE`] are deliberately
+    /// absent from that list: they describe the log-mel plane fed *to* the
+    /// encoder, not the encoder, and `ViTAttrs` has no field for either.
     ///
     /// # Errors
     ///
-    /// - [`VokraError::UnsupportedOp`] naming every unstamped axis and both
-    ///   primary sources.
-    pub fn validate_for_forward(&self) -> Result<()> {
-        let missing = self.missing_axes();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        Err(VokraError::UnsupportedOp(format!(
-            "m2d config (loud-partial): the optional `vokra.m2d.*` axis group is \
-             {state:?} — {n} of {total} axes are unstamped: [{missing}]. The current \
-             converter stamps NONE of this group, and M2D ships no HuggingFace mirror \
-             as of 2026-08-13, so there is no upstream `config.json` to transcribe \
-             them from. This binder refuses to default them: borrowing a sibling SSL \
-             encoder's ViT-Base numbers would be fabrication across a different \
-             release, and the runtime would then bind fabricated topology with no \
-             loud failure mode (FR-EX-08). Primary sources: code {code}, paper \
-             {paper}.",
-            state = self.source(),
-            n = missing.len(),
-            total = TOTAL_OPTIONAL_AXES,
-            missing = missing.join(", "),
-            code = PRIMARY_SOURCE_CODE,
-            paper = PRIMARY_SOURCE_PAPER,
-        )))
+    /// - [`VokraError::InvalidArgument`] from `ViTAttrs::validate` when the
+    ///   combined axis set is inconsistent — a zero axis, a head count that
+    ///   does not divide the width, a non-positive `mlp_ratio` or
+    ///   `layer_norm_eps`, or an `mlp_ratio` that rounds the MLP hidden width
+    ///   to zero.
+    pub fn vit_attrs(&self, unstamped: &M2dUnstampedAxes) -> Result<ViTAttrs> {
+        let attrs = ViTAttrs {
+            // --- stamped by the converter, read above -----------------------
+            embed_dim: self.hidden_size as usize,
+            depth: self.num_hidden_layers as usize,
+            n_heads: self.num_attention_heads as usize,
+            patch_h: self.patch_height as usize,
+            patch_w: self.patch_width as usize,
+            // --- caller-supplied: no `vokra.m2d.*` key carries these --------
+            stride_h: unstamped.stride_h,
+            stride_w: unstamped.stride_w,
+            n_prepended_tokens: unstamped.n_prepended_tokens,
+            mlp_ratio: unstamped.mlp_ratio,
+            layer_norm_eps: unstamped.layer_norm_eps,
+            gelu: unstamped.gelu,
+            pos_embed_policy: unstamped.pos_embed_policy,
+        };
+        attrs.validate()?;
+        Ok(attrs)
     }
 }
 
-/// Number of axes in the optional `vokra.m2d.*` group — used to tell
-/// "converter is silent" apart from "half a group landed".
-pub const TOTAL_OPTIONAL_AXES: usize = 8;
+/// Reads one mandatory u32 axis, distinguishing "absent" from "present but
+/// not an unsigned integer".
+fn req_u32(gguf: &GgufFile, key: &str) -> Result<u32> {
+    match gguf.get(key) {
+        Some(v) => match v.as_u64() {
+            Some(n) => Ok(n as u32),
+            None => Err(VokraError::ModelLoad(format!(
+                "m2d: GGUF key `{key}` is present but is not an unsigned integer \
+                 (actual GGUF value type: {actual:?}). Every `vokra.m2d.*` axis is \
+                 REQUIRED and the converter stamps it with `add_u32`, so a key of \
+                 another type means a hand-edited or half-written artifact. Refusing \
+                 rather than ignoring it: a silently skipped axis would be \
+                 indistinguishable from a correctly stamped one and the runtime would \
+                 shape the encoder from fabricated topology (FR-EX-08).",
+                actual = v.value_type()
+            ))),
+        },
+        None => Err(VokraError::ModelLoad(format!(
+            "m2d: GGUF is missing required u32 chunk `{key}` — the converter \
+             (`vokra-cli convert --model m2d-base`) stamps all {TOTAL_STAMPED_AXES} \
+             `vokra.m2d.*` axes, each transcribed from a primary source it cites line \
+             by line (upstream `examples/portable_m2d.py` `get_backbone()` / `Config` \
+             / `get_to_melspec()`, plus {paper} §3 and §4.1), so a proper conversion \
+             carries the whole group. This binder refuses to substitute a \
+             primary-source constant for the absent key (FR-EX-08): the producer \
+             stamps it, so a default here would let a mismatched artifact — a \
+             differently-configured release, a truncated GGUF, or the separate 32 kHz \
+             M2D identity whose `{sr_key}` differs — bind as the canonical one with no \
+             loud failure mode. Re-run the conversion against an upstream \
+             `{UPSTREAM_URL}` release checkpoint.",
+            paper = PRIMARY_SOURCE_PAPER,
+            sr_key = GGUF_KEY_SAMPLE_RATE,
+        ))),
+    }
+}
+
+/// Reads the mandatory string-valued branch selector.
+fn req_branch(gguf: &GgufFile) -> Result<M2dBranch> {
+    let value = gguf.get(GGUF_KEY_INFERENCE_BRANCH).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "m2d: GGUF is missing required string chunk `{GGUF_KEY_INFERENCE_BRANCH}` \
+             — it selects which network of the Masked Modeling Duo the inference path \
+             reads, and the converter stamps it as `online` on the authority of \
+             {paper} §3 (\"After the training, we transfer only the f_θ as a \
+             pre-trained model\", f_θ being the online encoder). This binder will not \
+             default it: both branches are shape-compatible, so a wrong pick returns a \
+             plausible-but-wrong embedding with NO loud failure mode (FR-EX-08). \
+             Re-run `vokra-cli convert --model m2d-base`.",
+            paper = PRIMARY_SOURCE_PAPER
+        ))
+    })?;
+    let wire = value.as_str().ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "m2d: GGUF key `{GGUF_KEY_INFERENCE_BRANCH}` is present but is not a \
+             string (actual GGUF value type: {actual:?}). It must be exactly `online` \
+             or `target` — the converter stamps it with `add_string`, so another type \
+             means a hand-edited artifact (FR-EX-08).",
+            actual = value.value_type()
+        ))
+    })?;
+    M2dBranch::from_wire(wire).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "m2d: GGUF key `{GGUF_KEY_INFERENCE_BRANCH}` is `{wire}`, but the only \
+             accepted values are `online` and `target` — the two networks of the \
+             Masked Modeling Duo (Niizumi et al., {paper}). Refusing rather than \
+             defaulting: both branches are shape-compatible, so a wrong pick returns a \
+             plausible-but-wrong embedding with no loud failure mode (FR-EX-08).",
+            paper = PRIMARY_SOURCE_PAPER
+        ))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// M2dUnstampedAxes — the ViT axes the artifact does not carry.
+// ---------------------------------------------------------------------------
+
+/// The seven [`vokra_ops::vit::ViTAttrs`] axes that no `vokra.m2d.*` key
+/// carries, supplied by the caller.
+///
+/// This type deliberately implements neither `Default` nor any `*_base()`
+/// constructor, for the same reason `ViTAttrs` does not: a default here would
+/// be a number the artifact cannot contradict, so a release configured
+/// differently from the one whoever wrote the default had in mind would bind
+/// silently wrong (FR-EX-08).
+///
+/// # Where a caller gets these
+///
+/// The converter's module docstring records two of them from upstream
+/// `examples/portable_m2d.py` `get_backbone()`, which it transcribes as
+/// `LocalViT(in_chans=1, …, embed_dim=768, depth=12, num_heads=12,
+/// mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6))` — i.e.
+/// `mlp_ratio = 4` and `layer_norm_eps = 1e-6` — and then declines to stamp
+/// them, noting they "land only if and when the binder grows fields for them,
+/// in the same commit". A caller who has read that same line supplies them
+/// here explicitly; this binder does not assume them on the caller's behalf.
+///
+/// The remaining five (`stride_h`, `stride_w`, `n_prepended_tokens`, `gelu`,
+/// `pos_embed_policy`) are recorded by **no** in-repo transcription at all and
+/// must be read off the upstream release or a real checkpoint. In particular
+/// `n_prepended_tokens` is settled by the row count of the positional table
+/// relative to the patch grid, which needs the checkpoint — see blocker (1) of
+/// [`M2d::encode`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct M2dUnstampedAxes {
+    /// Patch stride along the mel-bin axis. Equal to the patch height for a
+    /// non-overlapping tiling, smaller for overlapping patches.
+    pub stride_h: usize,
+    /// Patch stride along the frame axis. Equal to the patch width for a
+    /// non-overlapping tiling, smaller for overlapping patches.
+    pub stride_w: usize,
+    /// How many learned tokens are prepended ahead of the patch tokens
+    /// (class / distillation). May be `0`.
+    pub n_prepended_tokens: usize,
+    /// MLP hidden width as a multiple of the embedding width.
+    pub mlp_ratio: f32,
+    /// LayerNorm epsilon used by every norm in the encoder.
+    pub layer_norm_eps: f32,
+    /// Which GELU formulation the MLP uses.
+    pub gelu: GeluKind,
+    /// What to do when the positional table length does not match the runtime
+    /// token count.
+    pub pos_embed_policy: PosEmbedPolicy,
+}
 
 // ---------------------------------------------------------------------------
 // M2dHiddenStates — the shape contract `encode` will honour.
@@ -622,6 +697,41 @@ impl M2dHiddenStates {
 }
 
 // ---------------------------------------------------------------------------
+// M2dBranchTriage — an OBSERVATION of how the bound manifest is prefixed.
+// ---------------------------------------------------------------------------
+
+/// How the bound tensor manifest is split across the duo's branch prefixes.
+///
+/// Every field is **counted from the artifact**, never asserted about it. The
+/// distinction matters: which shape a real M2D GGUF has is exactly blocker (1)
+/// of [`M2d::encode`], and reporting the observed counts turns "the manifest
+/// is unverified" into a concrete fact a reader can act on.
+///
+/// Two upstream artifacts plausibly reach the converter and produce different
+/// shapes here — the raw duo checkpoint (both prefixes populated) and the
+/// encoder-only export, since upstream `util/to_encoder_only_weight.py`
+/// persists `PortableM2D(src).backbone.state_dict()`, a single **unprefixed**
+/// encoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct M2dBranchTriage {
+    /// Tensors whose name starts with [`BRANCH_PREFIX_ONLINE`].
+    pub online_prefixed: usize,
+    /// Tensors whose name starts with [`BRANCH_PREFIX_TARGET`].
+    pub target_prefixed: usize,
+    /// Tensors carrying neither prefix.
+    pub unprefixed: usize,
+}
+
+impl M2dBranchTriage {
+    /// Total tensors observed — the sum of the three counters.
+    #[inline]
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.online_prefixed + self.target_prefixed + self.unprefixed
+    }
+}
+
+// ---------------------------------------------------------------------------
 // M2dWeights — the tensor manifest plus loud lookups.
 // ---------------------------------------------------------------------------
 
@@ -689,6 +799,20 @@ impl M2dWeights {
             .count()
     }
 
+    /// Counts how the bound manifest splits across the duo's branch prefixes.
+    ///
+    /// Purely observational — see [`M2dBranchTriage`].
+    #[must_use]
+    pub fn branch_triage(&self) -> M2dBranchTriage {
+        let online_prefixed = self.branch_tensor_count(BRANCH_PREFIX_ONLINE);
+        let target_prefixed = self.branch_tensor_count(BRANCH_PREFIX_TARGET);
+        M2dBranchTriage {
+            online_prefixed,
+            target_prefixed,
+            unprefixed: self.tensors.len() - online_prefixed - target_prefixed,
+        }
+    }
+
     /// Looks up one tensor's dims, failing loud and **naming the tensor** when
     /// it is absent.
     ///
@@ -708,7 +832,7 @@ impl M2dWeights {
                      float tensor under its VERBATIM upstream `state_dict` name, so an \
                      absent name means either the checkpoint does not carry it or the \
                      expected name is wrong — and nothing in-repo has transcribed \
-                     M2D's `state_dict` naming yet (see `M2d::encode` blocker 2). \
+                     M2D's `state_dict` naming yet (see `M2d::encode` blocker 1). \
                      Refusing rather than substituting a zero tensor (FR-EX-08). \
                      Re-run `vokra-cli convert --model m2d-base` against an upstream \
                      `{UPSTREAM_URL}` release checkpoint.",
@@ -764,7 +888,7 @@ pub struct M2d {
 }
 
 impl M2d {
-    /// Binds an M2D GGUF: verifies arch strictly, reads the optional
+    /// Binds an M2D GGUF: verifies arch strictly, reads the required
     /// `vokra.m2d.*` axis group, discovers the tensor manifest, and surfaces
     /// the stamped provenance.
     ///
@@ -777,13 +901,13 @@ impl M2d {
     /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent, or is
     ///   not `"m2d"` (a sibling SSL-encoder GGUF handed here by mistake fails
     ///   with both tags named and the neighbourhood enumerated).
-    /// - [`VokraError::ModelLoad`] when a `vokra.m2d.*` key is present with
-    ///   the wrong dtype ([`M2dConfig::from_gguf`]).
+    /// - [`VokraError::ModelLoad`] when any required `vokra.m2d.*` key is
+    ///   absent or unreadable ([`M2dConfig::from_gguf`]).
     /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
     ///   ([`M2dWeights::from_gguf`]).
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         // 1. Arch gate FIRST, so a mis-typed model fails with a specific
-        //    message instead of a downstream missing-tensor error.
+        //    message instead of a downstream missing-key error.
         match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
             Some(a) if a == ARCH => {}
             Some(other) => {
@@ -814,8 +938,7 @@ impl M2d {
             }
         }
 
-        // 2. Optional axis group. Absent is normal; present-but-unreadable is
-        //    loud.
+        // 2. Required axis group. Every key must be present and readable.
         let config = M2dConfig::from_gguf(file)?;
 
         // 3. Tensor manifest with the non-emptiness gate.
@@ -844,8 +967,7 @@ impl M2d {
         })
     }
 
-    /// The optional `vokra.m2d.*` axes as bound (all `None` for a
-    /// converter-produced artifact today).
+    /// The required `vokra.m2d.*` axes as bound.
     #[inline]
     #[must_use]
     pub const fn config(&self) -> &M2dConfig {
@@ -914,60 +1036,71 @@ impl M2d {
     ///
     /// # Loud-partial (this WP)
     ///
-    /// Returns [`VokraError::UnsupportedOp`]. Five blockers stand between the
+    /// Returns [`VokraError::UnsupportedOp`]. Three blockers stand between the
     /// current landing and a real forward:
     ///
-    /// 1. **No branch selection.** M2D trains a *duo*; which of `online` /
-    ///    `target` the inference path reads is not stated by any
-    ///    machine-readable primary source available to this wave, and both
-    ///    branches are shape-compatible, so a guess returns a
-    ///    plausible-but-wrong embedding with no loud failure mode. Cleared by
-    ///    stamping [`GGUF_KEY_INFERENCE_BRANCH`].
-    /// 2. **No tensor-name manifest.** The converter copies every float
-    ///    tensor under its verbatim upstream `state_dict` name and nothing
-    ///    in-repo transcribes M2D's naming, so walking guessed names into
-    ///    typed slots would bind shape-valid garbage.
-    /// 3. **No topology axes.** The converter stamps none of the optional
-    ///    `vokra.m2d.*` group and there is no upstream `config.json` to
-    ///    transcribe (M2D ships no HuggingFace mirror as of 2026-08-13) — see
-    ///    [`M2dConfig::validate_for_forward`].
-    /// 4. **No patch-embedding front-end.** The log-mel → spectrogram-patch
-    ///    tokenization needs the patch geometry and mel-bin count from
-    ///    blocker 3 before `vokra_ops::mel` / `vokra_ops::waveform_frontend`
-    ///    can be pointed at it.
-    /// 5. **Missing primitive.** No ViT-style Transformer encoder over 2-D
-    ///    spectrogram patch tokens is composed in `vokra-ops`; the encoders
-    ///    that exist (`vokra_ops::conformer`, `zipformer`, `ebranchformer`)
-    ///    are 1-D ASR encoders with different token geometry.
+    /// 1. **Unverified tensor-name manifest.** The converter copies every
+    ///    float tensor under its verbatim upstream `state_dict` name, and
+    ///    nothing in-repo transcribes M2D's naming — the names both crates'
+    ///    fixtures use are illustrative, not read off a checkpoint. Two
+    ///    sub-questions only a real checkpoint settles: whether the released
+    ///    artifact keeps the `online.` / `target.` prefixes at all (upstream
+    ///    `util/to_encoder_only_weight.py` persists a single **unprefixed**
+    ///    `backbone.state_dict()`), and whether attention ships one fused
+    ///    `qkv` projection or three separate ones, since
+    ///    [`vokra_ops::vit::ViTAttnWeights`] holds `wq` / `wk` / `wv`
+    ///    separately and a fused split's concat order is a convention rather
+    ///    than a transcription.
+    /// 2. **Unstamped ViT axes.** [`vokra_ops::vit::ViTAttrs`] has twelve
+    ///    axes and the stamped group supplies five; the other seven
+    ///    ([`UNSTAMPED_VIT_AXES`]) reach [`M2dConfig::vit_attrs`] from the
+    ///    caller. `encode` has no caller-supplied axes, so it cannot shape the
+    ///    encoder from this artifact alone.
+    /// 3. **No mel front-end binding.** [`vokra_ops::vit::ViTEncoder::forward`]
+    ///    consumes a `[n_mels, n_frames]` log-mel plane, not PCM.
+    ///    [`GGUF_KEY_N_MELS`] and [`GGUF_KEY_SAMPLE_RATE`] are stamped, but
+    ///    `n_fft` / hop / window / `f_min` / `f_max` and the log-scaling
+    ///    convention are not, so `_pcm` cannot be turned into that plane.
+    ///
+    /// **Resolved, and named as resolved in the message** so nobody
+    /// re-reports them: the `vokra.m2d.*` axis group is now stamped in full,
+    /// branch selection rides [`GGUF_KEY_INFERENCE_BRANCH`], and the ViT
+    /// primitive exists in [`vokra_ops::vit`].
     ///
     /// **No fabricated hidden states are ever emitted** (FR-EX-08 — no silent
     /// partial output).
     ///
-    /// `_pcm` is the raw mono f32 waveform in `[-1, 1]`. Its expected sample
-    /// rate is itself blocker 3, so no resampling is attempted here — that
-    /// would be a silent assumption.
+    /// `_pcm` is the raw mono f32 waveform in `[-1, 1]`, at the stamped
+    /// [`GGUF_KEY_SAMPLE_RATE`]. Nothing here resamples: the stamp is the
+    /// artifact's claim about its training rate, not a licence to resample
+    /// silently.
     ///
     /// # Errors
     ///
     /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
     ///   deferred encoder forward.
     pub fn encode(&self, _pcm: &[f32]) -> Result<M2dHiddenStates> {
-        let _ = _pcm;
-        Err(forward_loud_partial(&self.config, "encode", ENCODE_OUTPUT))
+        Err(forward_loud_partial(
+            &self.config,
+            self.weights.branch_triage(),
+            "encode",
+            ENCODE_OUTPUT,
+        ))
     }
 
     /// Encodes a PCM waveform to a single utterance-level pooled embedding.
     ///
     /// # Loud-partial (this WP)
     ///
-    /// Returns [`VokraError::UnsupportedOp`] with the same five blockers as
-    /// [`encode`](Self::encode), plus a sixth specific to this surface: the
-    /// **pooling recipe itself is unresolved**. M2D is published as an
-    /// embedding backbone, but exactly how the per-patch hidden states are
-    /// reduced to one clip-level vector (which layer(s), mean vs. mean+max,
-    /// whether a normalisation follows) is defined by the upstream inference
-    /// wrapper, not by anything this wave can read. Applying a plain mean and
-    /// calling it "the M2D embedding" would be fabrication.
+    /// Returns [`VokraError::UnsupportedOp`] with the same three blockers as
+    /// [`encode`](Self::encode), plus a fourth specific to this surface: the
+    /// **pooling recipe itself is unresolved**. [`vokra_ops::vit::ViTPooling`]
+    /// now makes the choice an explicit axis — a prepended token versus the
+    /// mean over patch tokens — which sharpens the question rather than
+    /// answering it. Which convention M2D was published under, over which
+    /// layer, and whether a normalisation follows, is defined by the upstream
+    /// inference wrapper and not by anything this wave can read. Applying a
+    /// plain mean and calling it "the M2D embedding" would be fabrication.
     ///
     /// **No fabricated embedding is ever emitted** (FR-EX-08).
     ///
@@ -976,8 +1109,12 @@ impl M2d {
     /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
     ///   deferred pooled-embedding forward.
     pub fn embed(&self, _pcm: &[f32]) -> Result<Vec<f32>> {
-        let _ = _pcm;
-        Err(forward_loud_partial(&self.config, "embed", EMBED_OUTPUT))
+        Err(forward_loud_partial(
+            &self.config,
+            self.weights.branch_triage(),
+            "embed",
+            EMBED_OUTPUT,
+        ))
     }
 }
 
@@ -987,63 +1124,81 @@ const ENCODE_OUTPUT: &str = "a [num_frames, hidden_size] block of encoder hidden
      classification output exists to emit)";
 
 /// Output-contract clause used by [`M2d::embed`]'s loud-partial message.
-const EMBED_OUTPUT: &str = "an utterance-level pooled embedding, whose POOLING RECIPE is itself unresolved \
-     (which layer(s) are pooled, mean vs. mean+max, whether a normalisation follows) \
-     — it is defined by the upstream inference wrapper, not by anything this wave can \
-     read, so applying a plain mean and calling it the M2D embedding would be \
-     fabrication";
+const EMBED_OUTPUT: &str = "an utterance-level pooled embedding, whose POOLING RECIPE is itself unresolved. \
+     `vokra_ops::vit::ViTPooling` now makes the choice an explicit axis — a prepended \
+     token versus the mean over patch tokens — which sharpens the question rather than \
+     answering it: which convention M2D was published under, over which layer, and \
+     whether a normalisation follows, is defined by the upstream inference wrapper and \
+     not by anything this wave can read, so applying a plain mean and calling it the \
+     M2D embedding would be fabrication";
 
 /// Builds the loud-partial [`VokraError::UnsupportedOp`] shared by
 /// [`M2d::encode`] and [`M2d::embed`].
 ///
-/// Names all five blockers by exact identifier, echoes the current axis-group
-/// state, and cites all three primary sources (code + paper + license PDF) so
-/// a reader diagnosing the gap has exactly three places to walk — the
-/// `wavlm` / `emotion2vec` / `panns` / `canary_1b_flash` loud-partial-message
-/// precedent (CLAUDE.md 教訓 (a)).
-fn forward_loud_partial(cfg: &M2dConfig, surface: &str, output: &str) -> VokraError {
-    let missing = cfg.missing_axes();
-    let missing_desc = if missing.is_empty() {
-        "none (every axis stamped)".to_owned()
-    } else {
-        missing.join(", ")
-    };
-    let branch = match cfg.inference_branch {
-        Some(b) => b.as_str(),
-        None => "UNSET",
-    };
+/// Names the three remaining blockers by exact identifier, states outright
+/// which blockers are **resolved** (so a reader does not re-report them),
+/// echoes the axes this artifact actually carries and how its manifest is
+/// actually prefixed, and cites all three primary sources — the `wavlm` /
+/// `emotion2vec` / `panns` / `canary_1b_flash` loud-partial-message precedent
+/// (CLAUDE.md 教訓 (a)).
+fn forward_loud_partial(
+    cfg: &M2dConfig,
+    triage: M2dBranchTriage,
+    surface: &str,
+    output: &str,
+) -> VokraError {
+    let unstamped = UNSTAMPED_VIT_AXES.join(", ");
     VokraError::UnsupportedOp(format!(
         "m2d {surface} (loud-partial): the M2D (Masked Modeling Duo) encoder forward \
-         is deferred. Target output: {output}. Five blockers must clear first: \
-         (1) NO BRANCH SELECTION — M2D trains a duo of an `online` and a `target` \
-         network (Niizumi et al., {paper}); which one the inference path reads is not \
-         stated by any machine-readable primary source available to this wave, and \
-         both branches are shape-compatible, so a guess returns a \
-         plausible-but-wrong embedding with NO loud failure mode. Current \
-         `{branch_key}` = {branch}. \
-         (2) NO TENSOR-NAME MANIFEST — the converter copies every float tensor under \
-         its VERBATIM upstream `state_dict` name and nothing in-repo transcribes \
+         is deferred. Target output: {output}. \
+         ALREADY RESOLVED, do not re-report: the converter now stamps the full \
+         {total}-key `vokra.m2d.*` axis group and this artifact reads back \
+         hidden_size={hidden}, num_hidden_layers={layers}, \
+         num_attention_heads={heads}, patch {ph}x{pw} (mel bins x frames), \
+         n_mels={n_mels}, sample_rate={sr}, `{branch_key}`={branch}; and \
+         `vokra_ops::vit` now supplies the 2-D patch embedding + pre-norm Transformer \
+         encoder (`ViTEncoder`) this arch needs, which the 1-D ASR encoders \
+         (`vokra_ops::conformer`, `zipformer`, `ebranchformer`) could not stand in \
+         for. THREE blockers remain: \
+         (1) UNVERIFIED TENSOR-NAME MANIFEST — the converter copies every float tensor \
+         under its VERBATIM upstream `state_dict` name and nothing in-repo transcribes \
          M2D's naming, so walking guessed names into typed slots would bind \
-         shape-valid garbage. \
-         (3) NO TOPOLOGY AXES — the optional `vokra.m2d.*` group is {state:?}; \
-         unstamped axes: [{missing_desc}]. M2D ships NO HuggingFace mirror as of \
-         2026-08-13, so there is no upstream `config.json` to transcribe, and \
-         borrowing a sibling SSL encoder's ViT-Base numbers would be fabrication \
-         across a different release. \
-         (4) NO PATCH-EMBEDDING FRONT-END — the log-mel to spectrogram-patch \
-         tokenization needs the patch geometry and mel-bin count from blocker (3) \
-         before `vokra_ops::mel` / `vokra_ops::waveform_frontend` can be pointed at \
-         it. \
-         (5) MISSING PRIMITIVE — no ViT-style Transformer encoder over 2-D \
-         spectrogram patch tokens is composed in `vokra-ops`; the encoders that do \
-         exist (`vokra_ops::conformer`, `zipformer`, `ebranchformer`) are 1-D ASR \
-         encoders with different token geometry. \
+         shape-valid garbage. Two sub-questions only a real checkpoint settles: \
+         (a) whether the released artifact keeps the `online.` / `target.` duo \
+         prefixes at all — upstream `util/to_encoder_only_weight.py` persists \
+         `PortableM2D(src).backbone.state_dict()`, i.e. a single UNPREFIXED encoder, so \
+         a converted encoder-only export and a converted raw duo checkpoint have \
+         different manifests; THIS artifact shows {triage:?} — and (b) whether \
+         attention ships one FUSED `qkv` projection or three separate ones, since \
+         `vokra_ops::vit::ViTAttnWeights` holds wq/wk/wv separately and a fused \
+         tensor's concat order is a convention rather than a transcription. \
+         (2) UNSTAMPED ViT AXES — `ViTAttrs` has 12 axes and the stamped group supplies \
+         5 (embed_dim, depth, n_heads, patch_h, patch_w); the other 7 — {unstamped} — \
+         are carried by NO `vokra.m2d.*` key. The converter's docstring records \
+         mlp_ratio=4 and LayerNorm eps=1e-6 from upstream `examples/portable_m2d.py` \
+         `get_backbone()` but deliberately does not stamp them, so this binder neither \
+         reads nor assumes them: `M2dConfig::vit_attrs` takes them from the caller as \
+         an `M2dUnstampedAxes`, and this surface has no caller-supplied axes. \
+         (3) NO MEL FRONT-END BINDING — `vokra_ops::vit::ViTEncoder::forward` consumes \
+         a [n_mels, n_frames] log-mel plane, not PCM. n_mels and sample_rate are \
+         stamped, but n_fft, hop, window, f_min, f_max and the log-scaling convention \
+         are not, so the PCM handed to this call cannot be turned into that plane. \
+         Nothing here resamples: the stamped rate is the artifact's claim about its \
+         training rate, not a licence to resample silently. \
          Primary sources: code {code}, paper {paper}, license {license_pdf} (a PDF \
          GitHub's classifier cannot read, which is why this arch defaults to \
          LicenseClass::Unknown and fails closed at the M2-13 gate). \
          Runtime cannot fabricate an output (FR-EX-08 — no silent partial output).",
-        state = cfg.source(),
+        total = TOTAL_STAMPED_AXES,
+        hidden = cfg.hidden_size,
+        layers = cfg.num_hidden_layers,
+        heads = cfg.num_attention_heads,
+        ph = cfg.patch_height,
+        pw = cfg.patch_width,
+        n_mels = cfg.n_mels,
+        sr = cfg.sample_rate,
         branch_key = GGUF_KEY_INFERENCE_BRANCH,
+        branch = cfg.inference_branch.as_str(),
         code = PRIMARY_SOURCE_CODE,
         paper = PRIMARY_SOURCE_PAPER,
         license_pdf = PRIMARY_SOURCE_LICENSE_PDF,
@@ -1068,36 +1223,67 @@ mod tests {
     //! The semantics we *can* honestly test:
     //!
     //! 1. **Contract-constant pin** — `ARCH` / `NAME` / `CATEGORY` /
-    //!    `UPSTREAM_URL` / `DEFAULT_LICENSE_SPDX` match the converter, and
-    //!    the arch tag is distinct from every sibling SSL-encoder tag.
-    //! 2. **Metadata round-trip** — a converter-shaped GGUF binds, and the
-    //!    optional axis group reads back as `ConverterSilent`.
-    //! 3. **Loud negative space** — missing arch, foreign arch, empty tensor
-    //!    manifest, missing tensor, dim mismatch, present-but-wrong-dtype
-    //!    axis, and a bogus branch string each fire at their documented
-    //!    surface in their documented variant.
-    //! 4. **Loud-partial contract** — `encode` / `embed` name the missing
-    //!    primitive and every primary source.
+    //!    `UPSTREAM_URL` / `DEFAULT_LICENSE_SPDX` and every `GGUF_KEY_*`
+    //!    spelling match the converter, and the arch tag is distinct from
+    //!    every sibling SSL-encoder tag.
+    //! 2. **Required axis group** — a fully stamped GGUF parses into
+    //!    `M2dConfig` with each field equal to what was stamped, and dropping
+    //!    any single key is a loud `ModelLoad` naming that key.
+    //! 3. **ViT mapping** — the config maps onto `ViTAttrs` and validates,
+    //!    and an inconsistent axis set is refused.
+    //! 4. **Loud negative space** — missing arch, foreign arch, empty tensor
+    //!    manifest, missing tensor, dim mismatch, wrong-dtype axis and a
+    //!    bogus branch string each fire at their documented surface in their
+    //!    documented variant.
+    //! 5. **Loud-partial contract** — `encode` / `embed` drop the blockers
+    //!    that are now resolved and name the ones that remain.
+    //!
+    //! # On the fixture axis values
+    //!
+    //! The numbers below mirror the converter's transcribed constants
+    //! (`vokra_convert::models::m2d::{HIDDEN_SIZE, …}`), which carry the
+    //! per-axis primary-source citation. Restating them here is a
+    //! cross-crate handshake, not an independent claim about M2D.
 
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
-    /// Builds a GGUF shaped like the one the M2D converter emits: arch +
-    /// name + category + upstream_url + optional license stamp + two
-    /// representative duo-branch tensors.
+    /// The seven u32 axes, with the values the converter stamps.
+    const FIXTURE_U32_AXES: [(&str, u32); 7] = [
+        (GGUF_KEY_HIDDEN_SIZE, 768),
+        (GGUF_KEY_NUM_HIDDEN_LAYERS, 12),
+        (GGUF_KEY_NUM_ATTENTION_HEADS, 12),
+        (GGUF_KEY_PATCH_HEIGHT, 16),
+        (GGUF_KEY_PATCH_WIDTH, 16),
+        (GGUF_KEY_N_MELS, 80),
+        (GGUF_KEY_SAMPLE_RATE, 16_000),
+    ];
+
+    /// Builds a GGUF shaped like the one the M2D converter emits: arch + name
+    /// + category + upstream_url + the full required axis group + an optional
+    ///   license stamp + two representative duo-branch tensors.
     ///
-    /// The tensor names mirror the converter's own test fixtures
-    /// (`online.blocks.0.attn.qkv.weight` / `target.blocks.0.attn.qkv.weight`)
-    /// and are **illustrative**, not a verified upstream manifest — see
+    /// `omit` drops exactly one axis key, for the missing-key rows. The tensor
+    /// names mirror the converter's own test fixtures and are
+    /// **illustrative**, not a verified upstream manifest — see
     /// [`BRANCH_PREFIX_ONLINE`].
-    fn m2d_gguf(weight_license_class: Option<LicenseClass>) -> GgufFile {
+    fn m2d_gguf_omitting(omit: Option<&str>, weight_license: Option<LicenseClass>) -> GgufFile {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
         b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
         b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
-        if let Some(cls) = weight_license_class {
+        if let Some(cls) = weight_license {
             b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
+        }
+        for (key, value) in FIXTURE_U32_AXES {
+            if omit == Some(key) {
+                continue;
+            }
+            b.add_u32(key, value);
+        }
+        if omit != Some(GGUF_KEY_INFERENCE_BRANCH) {
+            b.add_string(GGUF_KEY_INFERENCE_BRANCH, M2dBranch::Online.as_str());
         }
         b.add_tensor(
             "online.blocks.0.attn.qkv.weight",
@@ -1114,6 +1300,32 @@ mod tests {
         )
         .expect("add_tensor target");
         GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    /// The fully stamped fixture.
+    fn m2d_gguf(weight_license: Option<LicenseClass>) -> GgufFile {
+        m2d_gguf_omitting(None, weight_license)
+    }
+
+    /// A ViT axis set for the seven axes no `vokra.m2d.*` key carries.
+    ///
+    /// These are **test inputs**, not claims about M2D: the point of
+    /// [`M2dUnstampedAxes`] is that the caller states them. `mlp_ratio` and
+    /// `layer_norm_eps` use the values the converter's docstring transcribes
+    /// from upstream `get_backbone()`; the rest are chosen to make a
+    /// well-formed encoder and are labelled as such.
+    fn unstamped_axes() -> M2dUnstampedAxes {
+        M2dUnstampedAxes {
+            // Non-overlapping tiling: stride == patch extent.
+            stride_h: 16,
+            stride_w: 16,
+            // Test input — the real count is settled by a checkpoint.
+            n_prepended_tokens: 1,
+            mlp_ratio: 4.0,
+            layer_norm_eps: 1e-6,
+            gelu: GeluKind::Erf,
+            pos_embed_policy: PosEmbedPolicy::RequireExact,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1148,12 +1360,57 @@ mod tests {
             KEY_PROVENANCE_UPSTREAM_URL, "vokra.provenance.upstream_url",
             "M2D has no HF mirror, so provenance rides `upstream_url`, not `upstream_hf`"
         );
-        // Axis-group width must match the field count `missing_axes` walks.
+    }
+
+    #[test]
+    fn stamped_axis_key_spellings_mirror_the_converter() {
+        // Byte-for-byte pin against `vokra-convert`'s `KEY_M2D_*` constants.
+        // The crates cannot share these (no `vokra-models` -> `vokra-convert`
+        // dependency edge), so a rename on either side has to land here or
+        // fail this row — otherwise a stamped axis would simply never be read.
+        assert_eq!(GGUF_KEY_HIDDEN_SIZE, "vokra.m2d.hidden_size");
+        assert_eq!(GGUF_KEY_NUM_HIDDEN_LAYERS, "vokra.m2d.num_hidden_layers");
         assert_eq!(
-            M2dConfig::default().missing_axes().len(),
-            TOTAL_OPTIONAL_AXES,
-            "TOTAL_OPTIONAL_AXES must equal the number of axes missing_axes reports"
+            GGUF_KEY_NUM_ATTENTION_HEADS,
+            "vokra.m2d.num_attention_heads"
         );
+        assert_eq!(GGUF_KEY_PATCH_HEIGHT, "vokra.m2d.patch_height");
+        assert_eq!(GGUF_KEY_PATCH_WIDTH, "vokra.m2d.patch_width");
+        assert_eq!(GGUF_KEY_N_MELS, "vokra.m2d.n_mels");
+        assert_eq!(GGUF_KEY_SAMPLE_RATE, "vokra.m2d.sample_rate");
+        assert_eq!(GGUF_KEY_INFERENCE_BRANCH, "vokra.m2d.inference_branch");
+
+        let mut keys = STAMPED_AXIS_KEYS.to_vec();
+        assert_eq!(
+            keys.len(),
+            TOTAL_STAMPED_AXES,
+            "STAMPED_AXIS_KEYS must hold exactly TOTAL_STAMPED_AXES entries"
+        );
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(
+            keys.len(),
+            TOTAL_STAMPED_AXES,
+            "axis keys must be pairwise distinct"
+        );
+        for key in STAMPED_AXIS_KEYS {
+            assert!(
+                key.starts_with("vokra.m2d."),
+                "`{key}` must live under the arch's own metadata namespace"
+            );
+        }
+        // The seven caller-supplied axes are named as ViTAttrs fields, not as
+        // GGUF keys — precisely because there are no GGUF keys for them.
+        for axis in UNSTAMPED_VIT_AXES {
+            assert!(
+                !axis.starts_with("vokra."),
+                "`{axis}` is a ViTAttrs field, not a stamped chunk"
+            );
+            assert!(
+                !STAMPED_AXIS_KEYS.iter().any(|k| k.ends_with(axis)),
+                "`{axis}` is listed as unstamped but a stamped key matches it"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1184,7 +1441,217 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 3 — Metadata round-trip on a converter-shaped GGUF
+    // 3 — The required axis group parses, field by field
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stamped_axis_group_parses_into_the_config() {
+        let file = m2d_gguf(Some(LicenseClass::Unknown));
+        let m = M2d::from_gguf(&file).expect("a fully stamped GGUF must bind");
+        let cfg = *m.config();
+
+        // Every field equals the value that was stamped.
+        assert_eq!(cfg.hidden_size, 768);
+        assert_eq!(cfg.num_hidden_layers, 12);
+        assert_eq!(cfg.num_attention_heads, 12);
+        assert_eq!(cfg.patch_height, 16);
+        assert_eq!(cfg.patch_width, 16);
+        assert_eq!(cfg.n_mels, 80);
+        assert_eq!(cfg.sample_rate, 16_000);
+        assert_eq!(
+            cfg.inference_branch,
+            M2dBranch::Online,
+            "paper §3: after training only f_θ (the online encoder) is transferred"
+        );
+
+        // …and the u32 half agrees with the fixture table it was built from,
+        // so a fixture edit cannot silently pass by moving both sides.
+        for (key, value) in FIXTURE_U32_AXES {
+            let read = file
+                .get(key)
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| panic!("{key}: missing or not an unsigned integer"));
+            assert_eq!(read, u64::from(value), "{key} round-trip");
+        }
+
+        // Branch wire form is exact and case-sensitive.
+        assert_eq!(M2dBranch::from_wire("target"), Some(M2dBranch::Target));
+        assert_eq!(M2dBranch::from_wire("Online"), None, "wire form is exact");
+        assert_eq!(M2dBranch::Online.tensor_prefix(), BRANCH_PREFIX_ONLINE);
+        assert_eq!(M2dBranch::Target.tensor_prefix(), BRANCH_PREFIX_TARGET);
+    }
+
+    #[test]
+    fn every_missing_stamped_key_is_a_loud_model_load_naming_it() {
+        for key in STAMPED_AXIS_KEYS {
+            let file = m2d_gguf_omitting(Some(key), None);
+            let Err(err) = M2d::from_gguf(&file) else {
+                panic!("dropping `{key}` must be refused — every axis is REQUIRED");
+            };
+            match err {
+                VokraError::ModelLoad(msg) => {
+                    assert!(
+                        msg.contains(key),
+                        "the message must NAME the absent key `{key}`, got `{msg}`"
+                    );
+                    assert!(
+                        msg.contains("FR-EX-08"),
+                        "message must cite FR-EX-08 for `{key}`, got `{msg}`"
+                    );
+                    assert!(
+                        msg.contains("m2d-base"),
+                        "message must include the repro command for `{key}`, got `{msg}`"
+                    );
+                }
+                other => panic!("expected VokraError::ModelLoad for `{key}`, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_axis_is_never_filled_from_a_primary_source_constant() {
+        // The sharpest regression this reader exists to prevent: an artifact
+        // that omits `sample_rate` must NOT bind as the canonical 16 kHz
+        // release. The 32 kHz M2D weight is a separate identity, and a
+        // defaulted rate would resample silently (FR-EX-08).
+        let file = m2d_gguf_omitting(Some(GGUF_KEY_SAMPLE_RATE), None);
+        let Err(err) = M2d::from_gguf(&file) else {
+            panic!("a missing sample_rate must be refused, never defaulted to 16 kHz");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(GGUF_KEY_SAMPLE_RATE),
+                    "must name the key: {msg}"
+                );
+                assert!(
+                    msg.contains("32 kHz"),
+                    "message should explain WHY defaulting is unsafe here: {msg}"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 4 — Config -> ViTAttrs mapping
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_maps_onto_vit_attrs_that_validate() {
+        let file = m2d_gguf(None);
+        let m = M2d::from_gguf(&file).expect("valid GGUF must bind");
+        let unstamped = unstamped_axes();
+        let attrs = m
+            .config()
+            .vit_attrs(&unstamped)
+            .expect("the mapped axis set must validate");
+
+        // Whole-struct equality rather than field-by-field: a mapping that
+        // forgot to copy an axis, or crossed patch_h with patch_w, would slip
+        // past a partial check but not past this one.
+        let expected = ViTAttrs {
+            // <- vokra.m2d.hidden_size / num_hidden_layers /
+            //    num_attention_heads / patch_height / patch_width
+            embed_dim: 768,
+            depth: 12,
+            n_heads: 12,
+            patch_h: 16,
+            patch_w: 16,
+            // <- the caller's M2dUnstampedAxes, copied through unchanged
+            stride_h: unstamped.stride_h,
+            stride_w: unstamped.stride_w,
+            n_prepended_tokens: unstamped.n_prepended_tokens,
+            mlp_ratio: unstamped.mlp_ratio,
+            layer_norm_eps: unstamped.layer_norm_eps,
+            gelu: unstamped.gelu,
+            pos_embed_policy: unstamped.pos_embed_policy,
+        };
+        assert_eq!(attrs, expected, "config -> ViTAttrs mapping");
+
+        // The stamped half must really have come from the GGUF, not from the
+        // expectation above: perturb one key and the mapped axis must follow.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, NAME);
+        for (key, value) in FIXTURE_U32_AXES {
+            // A 384-wide, 6-deep variant: still consistent (384 % 12 == 0).
+            let value = match key {
+                GGUF_KEY_HIDDEN_SIZE => 384,
+                GGUF_KEY_NUM_HIDDEN_LAYERS => 6,
+                _ => value,
+            };
+            b.add_u32(key, value);
+        }
+        b.add_string(GGUF_KEY_INFERENCE_BRANCH, M2dBranch::Target.as_str());
+        b.add_tensor("probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
+            .expect("add_tensor");
+        let other = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let m_other = M2d::from_gguf(&other).expect("valid GGUF must bind");
+        let attrs_other = m_other
+            .config()
+            .vit_attrs(&unstamped)
+            .expect("384/12 is consistent");
+        assert_eq!(attrs_other.embed_dim, 384, "embed_dim tracks the stamp");
+        assert_eq!(attrs_other.depth, 6, "depth tracks the stamp");
+        assert_eq!(
+            m_other.config().inference_branch,
+            M2dBranch::Target,
+            "the branch selector tracks the stamp too"
+        );
+
+        // Independently re-validating must also pass, and the derived widths
+        // must be consistent with the mapped axes.
+        attrs.validate().expect("ViTAttrs::validate");
+        assert_eq!(attrs.head_dim(), 64, "768 / 12");
+        assert_eq!(attrs.mlp_dim(), 3072, "768 * 4.0");
+    }
+
+    #[test]
+    fn vit_attrs_mapping_refuses_an_inconsistent_axis_set() {
+        // A head count that does not divide the width must be refused by
+        // `ViTAttrs::validate` through the mapping, rather than silently
+        // flooring the per-head width.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, NAME);
+        b.add_u32(GGUF_KEY_HIDDEN_SIZE, 768);
+        b.add_u32(GGUF_KEY_NUM_HIDDEN_LAYERS, 12);
+        b.add_u32(GGUF_KEY_NUM_ATTENTION_HEADS, 7); // 768 % 7 != 0
+        b.add_u32(GGUF_KEY_PATCH_HEIGHT, 16);
+        b.add_u32(GGUF_KEY_PATCH_WIDTH, 16);
+        b.add_u32(GGUF_KEY_N_MELS, 80);
+        b.add_u32(GGUF_KEY_SAMPLE_RATE, 16_000);
+        b.add_string(GGUF_KEY_INFERENCE_BRANCH, M2dBranch::Online.as_str());
+        b.add_tensor("online.probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
+            .expect("add_tensor");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        let m = M2d::from_gguf(&file).expect("the axis group is complete, so it binds");
+        let Err(err) = m.config().vit_attrs(&unstamped_axes()) else {
+            panic!("7 heads over a 768-wide model must be refused");
+        };
+        assert!(
+            matches!(err, VokraError::InvalidArgument(_)),
+            "expected InvalidArgument, got {err:?}"
+        );
+
+        // A zero-rounding mlp_ratio is refused through the same seam.
+        let mut degenerate = unstamped_axes();
+        degenerate.mlp_ratio = 0.0;
+        let file2 = m2d_gguf(None);
+        let m2 = M2d::from_gguf(&file2).expect("valid GGUF must bind");
+        let Err(err2) = m2.config().vit_attrs(&degenerate) else {
+            panic!("a non-positive mlp_ratio must be refused");
+        };
+        assert!(
+            matches!(err2, VokraError::InvalidArgument(_)),
+            "expected InvalidArgument, got {err2:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 5 — Metadata round-trip on a converter-shaped GGUF
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1197,22 +1664,10 @@ mod tests {
         assert_eq!(m.upstream_url(), Some(UPSTREAM_URL));
         assert_eq!(m.tensor_count(), 2);
 
-        // The converter stamps NO `vokra.m2d.*` axis — absence is normal.
-        assert_eq!(
-            m.config().source(),
-            M2dConfigSource::ConverterSilent,
-            "a converter-produced artifact carries none of the optional axis group"
-        );
-        assert_eq!(m.config().hidden_size, None);
-        assert_eq!(m.config().inference_branch, None);
-
         // Fail-closed licensing: Unknown demands the research flag.
         assert_eq!(m.weight_license(), LicenseClass::Unknown);
         assert!(m.requires_research_flag());
 
-        // Duo-branch triage over the illustrative fixture names.
-        assert_eq!(m.weights().branch_tensor_count(BRANCH_PREFIX_ONLINE), 1);
-        assert_eq!(m.weights().branch_tensor_count(BRANCH_PREFIX_TARGET), 1);
         let names: Vec<&str> = m.weights().tensor_names().collect();
         assert_eq!(names.len(), 2);
     }
@@ -1230,7 +1685,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 4 — Arch metadata absent → loud ModelLoad
+    // 6 — Arch metadata absent / foreign / empty manifest
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1262,10 +1717,6 @@ mod tests {
             other => panic!("expected VokraError::ModelLoad, got {other:?}"),
         }
     }
-
-    // -----------------------------------------------------------------------
-    // 5 — Foreign arch → loud ModelLoad naming BOTH expected and actual
-    // -----------------------------------------------------------------------
 
     #[test]
     fn from_gguf_rejects_foreign_arch_naming_both_tags() {
@@ -1310,15 +1761,17 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // 6 — Empty tensor manifest → loud (never binds an all-zero forward)
-    // -----------------------------------------------------------------------
-
     #[test]
     fn from_gguf_rejects_empty_tensor_manifest() {
+        // Fully stamped metadata, zero tensors: the axis group passes and the
+        // manifest gate is what fires, so this row proves the gate is reached.
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
+        for (key, value) in FIXTURE_U32_AXES {
+            b.add_u32(key, value);
+        }
+        b.add_string(GGUF_KEY_INFERENCE_BRANCH, M2dBranch::Online.as_str());
         // NO tensors added.
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
 
@@ -1345,8 +1798,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 7 — Missing tensor → loud error NAMING the tensor; dim mismatch names
-    //     both shapes
+    // 7 — Missing tensor names itself; dim mismatch names both shapes
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1409,13 +1861,31 @@ mod tests {
             .expect("matching dims must bind");
     }
 
+    #[test]
+    fn branch_triage_counts_what_the_manifest_actually_shows() {
+        let file = m2d_gguf(None);
+        let m = M2d::from_gguf(&file).expect("valid GGUF must bind");
+        let triage = m.weights().branch_triage();
+        assert_eq!(triage.online_prefixed, 1);
+        assert_eq!(triage.target_prefixed, 1);
+        assert_eq!(triage.unprefixed, 0);
+        assert_eq!(
+            triage.total(),
+            m.tensor_count(),
+            "the counters must partition"
+        );
+        assert_eq!(
+            m.weights().branch_tensor_count(BRANCH_PREFIX_ONLINE),
+            triage.online_prefixed
+        );
+    }
+
     // -----------------------------------------------------------------------
-    // 8 — Optional axis group: absent is fine, present-but-wrong-dtype is
-    //     loud, bogus branch string is loud
+    // 8 — Wrong dtype / bogus branch string
     // -----------------------------------------------------------------------
 
     #[test]
-    fn optional_axis_present_with_wrong_dtype_fails_loud() {
+    fn axis_present_with_wrong_dtype_fails_loud() {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
@@ -1436,7 +1906,8 @@ mod tests {
                 );
                 assert!(
                     m.contains("not an unsigned integer"),
-                    "message must name the dtype problem, got `{m}`"
+                    "message must name the dtype problem — and NOT report the key as \
+                     missing, which would be a different bug, got `{m}`"
                 );
                 assert!(
                     m.contains("FR-EX-08"),
@@ -1452,6 +1923,9 @@ mod tests {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
+        for (key, value) in FIXTURE_U32_AXES {
+            b.add_u32(key, value);
+        }
         b.add_string(GGUF_KEY_INFERENCE_BRANCH, "student");
         b.add_tensor("online.probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
             .expect("add_tensor");
@@ -1479,96 +1953,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fully_stamped_axis_group_round_trips_and_validates() {
-        // A future converter revision stamping the whole group must bind and
-        // pass `validate_for_forward` — the forward-compatibility contract.
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, NAME);
-        b.add_u32(GGUF_KEY_HIDDEN_SIZE, 768);
-        b.add_u32(GGUF_KEY_NUM_HIDDEN_LAYERS, 12);
-        b.add_u32(GGUF_KEY_NUM_ATTENTION_HEADS, 12);
-        b.add_u32(GGUF_KEY_PATCH_HEIGHT, 16);
-        b.add_u32(GGUF_KEY_PATCH_WIDTH, 16);
-        b.add_u32(GGUF_KEY_N_MELS, 80);
-        b.add_u32(GGUF_KEY_SAMPLE_RATE, 16_000);
-        b.add_string(GGUF_KEY_INFERENCE_BRANCH, M2dBranch::Online.as_str());
-        b.add_tensor("online.probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
-            .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let m = M2d::from_gguf(&file).expect("fully stamped GGUF must bind");
-        let cfg = m.config();
-        // NOTE: these values are a synthetic FIXTURE, not a primary-source
-        // claim about M2D's real topology — see the module doc's
-        // "Deliberately not transcribed" section.
-        assert_eq!(cfg.hidden_size, Some(768));
-        assert_eq!(cfg.num_hidden_layers, Some(12));
-        assert_eq!(cfg.num_attention_heads, Some(12));
-        assert_eq!(cfg.patch_height, Some(16));
-        assert_eq!(cfg.patch_width, Some(16));
-        assert_eq!(cfg.n_mels, Some(80));
-        assert_eq!(cfg.sample_rate, Some(16_000));
-        assert_eq!(cfg.inference_branch, Some(M2dBranch::Online));
-        assert_eq!(cfg.source(), M2dConfigSource::FullyStamped);
-        assert!(cfg.missing_axes().is_empty());
-        cfg.validate_for_forward()
-            .expect("a fully stamped group must validate");
-        assert_eq!(
-            M2dBranch::Online.tensor_prefix(),
-            BRANCH_PREFIX_ONLINE,
-            "branch prefix mapping pin"
-        );
-        assert_eq!(M2dBranch::from_wire("target"), Some(M2dBranch::Target));
-        assert_eq!(M2dBranch::from_wire("Online"), None, "wire form is exact");
-    }
-
-    #[test]
-    fn partially_stamped_axis_group_is_distinguishable_and_refused() {
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, NAME);
-        b.add_u32(GGUF_KEY_HIDDEN_SIZE, 768);
-        // …and nothing else.
-        b.add_tensor("online.probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
-            .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let m = M2d::from_gguf(&file).expect("a half-stamped group still binds");
-        assert_eq!(
-            m.config().source(),
-            M2dConfigSource::PartiallyStamped,
-            "half a group must be distinguishable from a silent converter"
-        );
-        let Err(err) = m.config().validate_for_forward() else {
-            panic!("a partial axis group must be refused for forward");
-        };
-        match err {
-            VokraError::UnsupportedOp(msg) => {
-                assert!(
-                    msg.contains(GGUF_KEY_INFERENCE_BRANCH),
-                    "message must list the unstamped branch axis, got `{msg}`"
-                );
-                assert!(
-                    !msg.contains(GGUF_KEY_HIDDEN_SIZE),
-                    "the STAMPED axis must not be listed as missing, got `{msg}`"
-                );
-                assert!(
-                    msg.contains("FR-EX-08"),
-                    "message must cite FR-EX-08, got `{msg}`"
-                );
-            }
-            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
-        }
-    }
-
     // -----------------------------------------------------------------------
-    // 9 — encode / embed loud-partial: name the missing primitive + sources
+    // 9 — Loud-partial: the resolved blockers are GONE, the real ones remain
     // -----------------------------------------------------------------------
 
     #[test]
-    fn encode_loud_partials_naming_every_blocker_and_source() {
+    fn encode_loud_partial_drops_resolved_blockers_and_names_what_remains() {
         let file = m2d_gguf(Some(LicenseClass::Unknown));
         let m = M2d::from_gguf(&file).expect("valid GGUF must bind");
 
@@ -1578,78 +1968,105 @@ mod tests {
         let Err(err) = m.encode(&pcm) else {
             panic!("encode must loud-partial");
         };
-        match err {
-            VokraError::UnsupportedOp(msg) => {
-                assert!(msg.contains("m2d encode"), "surface must be named: {msg}");
-                assert!(msg.contains("loud-partial"), "posture label: {msg}");
+        let VokraError::UnsupportedOp(msg) = err else {
+            panic!("expected VokraError::UnsupportedOp");
+        };
 
-                // All five blockers, by their exact identifiers.
-                assert!(
-                    msg.contains("NO BRANCH SELECTION"),
-                    "blocker 1 missing: {msg}"
-                );
-                assert!(
-                    msg.contains("NO TENSOR-NAME MANIFEST"),
-                    "blocker 2 missing: {msg}"
-                );
-                assert!(msg.contains("NO TOPOLOGY AXES"), "blocker 3 missing: {msg}");
-                assert!(
-                    msg.contains("NO PATCH-EMBEDDING FRONT-END"),
-                    "blocker 4 missing: {msg}"
-                );
-                // The MISSING PRIMITIVE must be named explicitly, per the
-                // loud-partial contract.
-                assert!(
-                    msg.contains("MISSING PRIMITIVE"),
-                    "blocker 5 missing: {msg}"
-                );
-                assert!(
-                    msg.contains("ViT-style Transformer encoder"),
-                    "the missing primitive must be named exactly: {msg}"
-                );
-                assert!(
-                    msg.contains("vokra_ops::conformer"),
-                    "message should name the primitives that DO exist so the reader \
-                     can see why they do not fit: {msg}"
-                );
+        assert!(msg.contains("m2d encode"), "surface must be named: {msg}");
+        assert!(msg.contains("loud-partial"), "posture label: {msg}");
 
-                // Honest about what the encoder does and does not carry.
-                assert!(
-                    msg.contains("feature extractor"),
-                    "message must state M2D is a feature extractor, not a task \
-                     model: {msg}"
-                );
+        // --- the blockers that are now RESOLVED must not be claimed ---------
+        //
+        // This is the point of the row. The converter stamps the whole
+        // `vokra.m2d.*` group and `vokra_ops::vit` exists, so a message still
+        // asserting either gap would actively mislead the next reader.
+        assert!(
+            !msg.contains("NO TOPOLOGY AXES"),
+            "the axis group IS stamped now — this blocker must be gone: {msg}"
+        );
+        assert!(
+            !msg.contains("stamps NONE"),
+            "the converter no longer stamps none of the group: {msg}"
+        );
+        assert!(
+            !msg.contains("MISSING PRIMITIVE"),
+            "vokra_ops::vit supplies the ViT encoder now: {msg}"
+        );
+        assert!(
+            !msg.contains("NO BRANCH SELECTION"),
+            "the branch selector IS stamped now: {msg}"
+        );
+        assert!(
+            !msg.contains("no ViT-style Transformer encoder"),
+            "the primitive exists — that claim must be gone: {msg}"
+        );
 
-                // Current axis-group state echoed.
-                assert!(
-                    msg.contains("ConverterSilent"),
-                    "message must echo the axis-group state: {msg}"
-                );
-                assert!(
-                    msg.contains(GGUF_KEY_INFERENCE_BRANCH) && msg.contains("UNSET"),
-                    "message must report the unset branch selector: {msg}"
-                );
-
-                // All three primary sources cited.
-                for url in [
-                    PRIMARY_SOURCE_CODE,
-                    PRIMARY_SOURCE_PAPER,
-                    PRIMARY_SOURCE_LICENSE_PDF,
-                ] {
-                    assert!(msg.contains(url), "primary source `{url}` not cited: {msg}");
-                }
-
-                assert!(
-                    msg.contains("FR-EX-08"),
-                    "message must cite FR-EX-08, got `{msg}`"
-                );
-            }
-            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
+        // --- and the message must say so positively, not just omit them -----
+        assert!(
+            msg.contains("ALREADY RESOLVED"),
+            "the message should tell the reader what NOT to re-report: {msg}"
+        );
+        assert!(
+            msg.contains("vokra_ops::vit"),
+            "the message should name the primitive that now exists: {msg}"
+        );
+        // The axis values this artifact actually carries are echoed, so the
+        // reader can see the group really is populated.
+        for fragment in ["hidden_size=768", "num_hidden_layers=12", "n_mels=80"] {
+            assert!(msg.contains(fragment), "must echo `{fragment}`: {msg}");
         }
+        assert!(
+            msg.contains(GGUF_KEY_INFERENCE_BRANCH) && msg.contains("=online"),
+            "must report the RESOLVED branch selector, not `UNSET`: {msg}"
+        );
+        assert!(!msg.contains("UNSET"), "nothing is unset any more: {msg}");
+
+        // --- what actually remains ------------------------------------------
+        assert!(
+            msg.contains("UNVERIFIED TENSOR-NAME MANIFEST"),
+            "the real remaining blocker must be named: {msg}"
+        );
+        assert!(
+            msg.contains("to_encoder_only_weight.py"),
+            "the manifest blocker must name the concrete ambiguity a checkpoint \
+             settles: {msg}"
+        );
+        assert!(
+            msg.contains("UNSTAMPED ViT AXES") && msg.contains("pos_embed_policy"),
+            "the caller-supplied axes must be enumerated: {msg}"
+        );
+        assert!(
+            msg.contains("NO MEL FRONT-END BINDING"),
+            "the front-end blocker must be named: {msg}"
+        );
+        // The observed manifest shape is reported, not asserted.
+        assert!(
+            msg.contains("online_prefixed: 1"),
+            "the message must report the OBSERVED manifest shape: {msg}"
+        );
+
+        // Honest about what the encoder does and does not carry.
+        assert!(
+            msg.contains("feature extractor"),
+            "message must state M2D is a feature extractor, not a task model: {msg}"
+        );
+
+        // All three primary sources cited.
+        for url in [
+            PRIMARY_SOURCE_CODE,
+            PRIMARY_SOURCE_PAPER,
+            PRIMARY_SOURCE_LICENSE_PDF,
+        ] {
+            assert!(msg.contains(url), "primary source `{url}` not cited: {msg}");
+        }
+        assert!(
+            msg.contains("FR-EX-08"),
+            "message must cite FR-EX-08, got `{msg}`"
+        );
     }
 
     #[test]
-    fn embed_loud_partials_and_calls_out_the_unresolved_pooling() {
+    fn embed_loud_partial_still_calls_out_the_unresolved_pooling() {
         let file = m2d_gguf(None);
         let m = M2d::from_gguf(&file).expect("valid GGUF must bind");
         let pcm = vec![0.0_f32; 16_000];
@@ -1657,24 +2074,32 @@ mod tests {
         let Err(err) = m.embed(&pcm) else {
             panic!("embed must loud-partial");
         };
-        match err {
-            VokraError::UnsupportedOp(msg) => {
-                assert!(msg.contains("m2d embed"), "surface must be named: {msg}");
-                assert!(
-                    msg.contains("POOLING RECIPE"),
-                    "embed must call out the unresolved pooling recipe: {msg}"
-                );
-                assert!(
-                    msg.contains("MISSING PRIMITIVE"),
-                    "embed shares the encoder blockers: {msg}"
-                );
-                assert!(
-                    msg.contains(PRIMARY_SOURCE_PAPER),
-                    "primary source must be cited: {msg}"
-                );
-            }
-            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
-        }
+        let VokraError::UnsupportedOp(msg) = err else {
+            panic!("expected VokraError::UnsupportedOp");
+        };
+
+        assert!(msg.contains("m2d embed"), "surface must be named: {msg}");
+        assert!(
+            msg.contains("POOLING RECIPE"),
+            "embed must call out the unresolved pooling recipe: {msg}"
+        );
+        assert!(
+            msg.contains("ViTPooling"),
+            "the pooling clause should name the axis the primitive now exposes, \
+             since that sharpens the question rather than answering it: {msg}"
+        );
+        assert!(
+            msg.contains("UNVERIFIED TENSOR-NAME MANIFEST"),
+            "embed shares the encoder blockers: {msg}"
+        );
+        assert!(
+            !msg.contains("MISSING PRIMITIVE"),
+            "the ViT primitive exists — embed must not claim otherwise: {msg}"
+        );
+        assert!(
+            msg.contains(PRIMARY_SOURCE_PAPER),
+            "primary source must be cited: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
