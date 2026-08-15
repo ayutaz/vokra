@@ -57,12 +57,23 @@
 #                                                        input
 #   scripts/rust-public-api-list.sh --help             -- this text
 #
-# NOT WIRED INTO CI
-#   Per M3-16 spec §T03 last paragraph and the sibling C-ABI tool
-#   (`scripts/abi-diff.sh`), CI gating is deferred to M5-13 with the v1.0
+# CI POSTURE: WIRED, ADVISORY
+#   This runs on every CI run as the "Rust public-API surface" step of the
+#   `abi-surface (advisory)` job in `.github/workflows/ci-quality.yml`
+#   (`--self-test`, then the snapshot compare). That job sets
+#   `continue-on-error: true`, so a delta is REPORTED and does not fail the
+#   build.
+#
+#   The header here said "NOT WIRED INTO CI" until 2026-08-16, which was
+#   true when written and had become false — and the script exits non-zero
+#   today, so the stale note was training readers to ignore a live signal.
+#
+#   Promotion to a branch-protection REQUIRED check is M5-13, with the v1.0
 #   GA freeze (the 2026-07-14 v-label reassignment #2 moved the freeze WP
-#   M4-12 → M5-13). Run this from a pre-commit hook or manually to snapshot
-#   the v1.0-rc Rust surface.
+#   M4-12 → M5-13). That deferral, per M3-16 spec §T03 last paragraph and
+#   the sibling C-ABI tool (`scripts/abi-diff.sh`), still stands; only the
+#   "nothing runs this" half was wrong. See docs/abi-changelog.md §"CI
+#   posture of the three ABI gates (X-08, 2026-07-20)".
 #
 # ZERO-DEP
 #   Pure bash + awk + grep + diff + sort + find. No `cargo public-api`, no

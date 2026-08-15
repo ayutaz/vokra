@@ -66,8 +66,9 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
 
 `scripts/abi-diff.sh`, `scripts/check-abi-changelog.sh` and
 `scripts/rust-public-api-list.sh` were unwired from CI until X-08. They now run
-in the `abi-surface (advisory)` job of `.github/workflows/ci.yml`, which sets
-`continue-on-error: true`.
+in the `abi-surface (advisory)` job of `.github/workflows/ci-quality.yml`,
+which sets `continue-on-error: true`. (This said `ci.yml` until 2026-08-16;
+that file contains no `abi-surface` job, so the citation pointed at nothing.)
 
 **That job must stay advisory until M5-13.** Promoting these three from
 advisory to a branch-protection required check *is* the content of M5-13
@@ -78,12 +79,29 @@ promoted them, M5-13 would have had nothing left to execute. The cool-off
 posture mirrors `gpu-vulkan-parity.yml` and the platform-support drift step in
 the `license` job.
 
-Known state at wiring time: `rust-public-api-list.sh` is **already red** on
-`13a2a6e` (53 added / 13 removed lines vs.
-`docs/abi/vokra-rust-public-api.v1.0-rc.list`), from surface added in `ff12104`
+Known state: `rust-public-api-list.sh` is **already red**, from surface added
 without a snapshot rotation. X-08 did not rotate it — that is M5-13/IF-01's
 call — and the advisory posture keeps the red from blocking PRs. See
 `docs/adr/X-08-ci-gate-completion.md` §2 and §7-(4).
+
+The drift figure here read "53 added / 13 removed on `13a2a6e`" until
+2026-08-16. Measured at that date: **180 added / 5 removed** vs.
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` — 3.4x the recorded size.
+Anyone sizing the M5-13 rotation from the old number under-counted badly.
+Reproduce with `bash scripts/rust-public-api-list.sh` (no flags; it prints a
+unified diff and exits non-zero).
+
+**The pile is no longer purely additive.** It carries a source-BREAKING
+`vokra-core` change: `pub struct BeamSearchConfig` gained a `<'a>` lifetime
+for the FR-OP-41/42 shallow-fusion LM, alongside a changed `beam_search`
+signature and the new `LmScorer` / `LmFusionConfig` public items. Recorded
+here so it is not discovered at freeze time — a breaking change inside a pile
+described as additive is the kind of surprise M5-13 should not have to find
+for itself.
+
+The additions are dominated by `vokra-ops`: the `vit`, `itn` (grammar +
+token), `wpe`, `aec`, `moe_*` and `f0` (pyin / yin) modules landed across
+this campaign.
 
 ## Entry schema
 

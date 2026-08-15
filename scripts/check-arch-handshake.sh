@@ -642,6 +642,15 @@ OPTION_BIND = re.compile(r'\b(?:if|while)\s+let\s+Some\s*\(|\.is_some\s*\(\)|\.i
 # S2: a real caller-supplied fallback. `unwrap_or_default()` is included
 # because a `Default` impl is a declared value, unlike the bare `0` below.
 FALLBACK_CALL = re.compile(r'\.unwrap_or(?:_else|_default)?\s*\(')
+# The `unwrap_or(<expr>)` ARGUMENT, so the same ZERO-SENTINEL test the
+# `None => Ok(<expr>)` arm gets can be applied here too. Without it, the
+# round-9 defect spelled `.unwrap_or(0)` instead of `None => Ok(0)` files
+# itself as an S2 caller default and disappears into the suppression count —
+# in the one leg that exists to stop a third recurrence of that class.
+# `unwrap_or_else` / `unwrap_or_default` are deliberately NOT matched here:
+# the first takes a closure (its body is a real computed default) and the
+# second names a `Default` impl, which is a declared value.
+FALLBACK_ARG = re.compile(r'\.unwrap_or\s*\(\s*([^,()\n]*?)\s*\)')
 # `None => Ok(<expr>)`. Captured so a ZERO SENTINEL can be told from a real
 # default — the distinction `llama_omni2` turns on.
 NONE_ARM = re.compile(r'None\s*=>\s*Ok\s*\(\s*([^,\n]*?)\s*\)\s*,')
@@ -1071,6 +1080,12 @@ def absence_tolerant(expr):
     default would suppress the very thing this leg was added to catch.
     """
     if FALLBACK_CALL.search(expr):
+        # A bare `.unwrap_or(0)` is the round-9 defect wearing a different
+        # spelling, so it gets the same sentinel test as the `None => Ok(0)`
+        # arm below rather than being waved through as a caller default.
+        for m in FALLBACK_ARG.finditer(expr):
+            if SENTINEL_VALUE.match(m.group(1).strip()):
+                return False
         return True
     for m in NONE_ARM.finditer(expr):
         if not SENTINEL_VALUE.match(m.group(1).strip()):
@@ -2571,6 +2586,48 @@ self_test() {
         status=1
     fi
 
+    # 32b. The SAME zero sentinel spelled `.unwrap_or(0)` instead of
+    #      `None => Ok(0)`. Until 2026-08-16 the `FALLBACK_CALL` branch
+    #      returned True without inspecting its argument, so this spelling
+    #      filed itself as an S2 caller default and vanished into the
+    #      suppression count — in the one leg that exists to stop a third
+    #      recurrence of the round-8 / round-9 class. Proven at the time by
+    #      deleting a real `vokra.voxtral.audio_encoder.n_ctx` stamp, which
+    #      the gate missed before the fix and names after it.
+    write_meta \
+        'const KEY_UWZ: &str = "vokra.duwz.axis";' \
+        'fn load6b(g: &GgufFile) -> Result<Self> {' \
+        '    let axis = g.get(KEY_UWZ).and_then(|v| v.as_u64()).unwrap_or(0) as usize;' \
+        '    Ok(Self { axis })' \
+        '}'
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: \`.unwrap_or(0)\` must NOT be treated as a caller default" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.duwz.\*`' <<<"$out"; then
+        echo "self-test PASS: S2 — \`.unwrap_or(0)\` is the same deferred failure"
+    else
+        echo "self-test FAIL: leg (d) did not report the unwrap_or-sentinel group" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+
+    # 32c. Negative control for 32b: `.unwrap_or_default()` stays tolerated.
+    #      A `Default` impl is a DECLARED value, unlike a bare `0` written at
+    #      the call site, so narrowing the rule must not sweep it up. Without
+    #      this case, an over-strict fix would look correct.
+    write_meta \
+        'const KEY_UWD: &str = "vokra.duwd.axis";' \
+        'fn load6c(g: &GgufFile) -> Result<Self> {' \
+        '    let axis = g.get(KEY_UWD).and_then(|v| v.as_u64()).unwrap_or_default() as usize;' \
+        '    Ok(Self { axis })' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S2 — \`unwrap_or_default()\` is a declared value"
+    else
+        echo "self-test FAIL: unwrap_or_default must remain a tolerated default" >&2
+        status=1
+    fi
+
     # 33. S2, option-returning helper: the escape lives at the READ SITE, not
     #     on the enclosing fn, so the S1 check cannot see it. canary_1b_flash
     #     reads 23 axes this way and leaves each at its primary-source
@@ -2830,7 +2887,7 @@ self_test() {
     write_stamps
 
     if [ "$status" -eq 0 ]; then
-        echo "check-arch-handshake --self-test: OK (44 cases)"
+        echo "check-arch-handshake --self-test: OK (47 cases)"
     fi
     return "$status"
 }
