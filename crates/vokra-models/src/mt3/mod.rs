@@ -64,9 +64,10 @@
 //! flip the switch by (i) landing the T5 relative-attention-bias
 //! primitive in `vokra-ops` (distinct from `vokra-bert`'s DeBERTa
 //! log-bucket bucketing per Raffel et al. 2020 §2.1) plus (ii)
-//! porting `mt3/event_codec.py` to Rust and wiring the T5X
-//! checkpoint flattener at `tools/parity/mt3_prepare_checkpoint.py`
-//! (uv-managed Python 3.12 sidecar per memory
+//! porting `mt3/event_codec.py` to Rust and writing the T5X
+//! checkpoint flattener — a future
+//! `tools/parity/mt3_prepare_checkpoint.py` (not yet written;
+//! uv-managed Python 3.12 sidecar per memory
 //! `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]`).
 //! The [`VokraError::UnsupportedOp`] message cites both primary
 //! sources so the follow-up wave has exactly the two anchors it
@@ -109,10 +110,10 @@
 //! MT3 ships upstream as a **T5X / JAX checkpoint** on
 //! `gs://mt3/checkpoints/` (no HF mirror). This runtime **never**
 //! touches ONNX, JAX, or pickle (FR-LD-05 / NFR-DS-02). The T5X →
-//! safetensors bridge lives in
-//! `tools/parity/mt3_prepare_checkpoint.py` (an offline uv-managed
-//! Python 3.12 sidecar — not part of the runtime), mirroring the
-//! DAC / Kokoro / UTMOSv2 / beats bridge pattern.
+//! safetensors bridge is a future
+//! `tools/parity/mt3_prepare_checkpoint.py` (**not yet written** — an
+//! offline uv-managed Python 3.12 sidecar, never part of the runtime),
+//! mirroring the DAC / Kokoro / UTMOSv2 / beats bridge pattern.
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
@@ -253,8 +254,9 @@ impl Mt3Config {
                          does not carry a first-class `config.json`, so this runtime \
                          binder refuses to fabricate topology axes from primary-source \
                          constants (FR-EX-08). Re-run `vokra-cli convert --model mt3` \
-                         with a checkpoint flattened via \
-                         `tools/parity/mt3_prepare_checkpoint.py` (the converter \
+                         with a T5X checkpoint flattened to safetensors offline (a \
+                         future `tools/parity/mt3_prepare_checkpoint.py` is not yet \
+                         written, so that step is manual today) — the converter \
                          transcribes the T5-small axes from \
                          `github.com/magenta/mt3/blob/main/mt3/network.py` and stamps \
                          them, so a proper conversion carries every mandatory chunk)."
@@ -323,8 +325,8 @@ impl Mt3Weights {
             return Err(VokraError::ModelLoad(
                 "mt3: GGUF carries zero tensors — refusing to bind an all-zero \
                  forward (FR-EX-08). Re-run `vokra-cli convert --model mt3` \
-                 against a T5X checkpoint flattened via \
-                 `tools/parity/mt3_prepare_checkpoint.py`."
+                 against a T5X checkpoint flattened to safetensors offline (a future \
+                 `tools/parity/mt3_prepare_checkpoint.py` is not yet written)."
                     .to_owned(),
             ));
         }

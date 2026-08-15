@@ -14,9 +14,9 @@
 //! ModelKind covers both without a variant enum. The upstream release
 //! ships torch pickles distributed via `torch.hub` /
 //! `demucs.pretrained.get_model()`; callers pre-flatten to safetensors
-//! offline via `tools/parity/htdemucs_prepare_checkpoint.py` (the
-//! DFN3 / DAC / CSM pickle-bridge pattern — no pickle enters the
-//! runtime, FR-LD-05).
+//! offline via a future `tools/parity/htdemucs_prepare_checkpoint.py`
+//! (not yet written — the DFN3 / DAC / CSM pickle-bridge pattern, so no
+//! pickle enters the runtime, FR-LD-05).
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
 //! and `vokra.provenance.*` metadata chunks the runtime source-
@@ -146,8 +146,9 @@ pub struct HtdemucsMultiReport {
 
 /// Converts an HT-Demucs Multi safetensors checkpoint at `input`
 /// (pre-flattened from either `htdemucs_ft` 4-source or `htdemucs_6s`
-/// 6-source torch pickle by
-/// `tools/parity/htdemucs_prepare_checkpoint.py`) into a Vokra-native
+/// 6-source torch pickle — a future
+/// `tools/parity/htdemucs_prepare_checkpoint.py` is not yet written, so
+/// that flattening is an owner-side step today) into a Vokra-native
 /// GGUF at `output`, returning an [`HtdemucsMultiReport`].
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream

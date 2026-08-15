@@ -352,6 +352,24 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
+      - name: "vokra_ops:: citation resolution (phantom-primitive tripwire)"
+        # CLAUDE.md ハルシネーション厳禁, enforced mechanically. Five consecutive
+        # audit rounds found comments citing `vokra_ops::` modules that have
+        # never existed (`qwen2`, `beam_search`, ...), each sending the next
+        # reader hunting for a module to bind against. Round 4 swept for the
+        # class by hand and still missed four sites, because it covered
+        # vokra-models only. A manual sweep is evidently not the control.
+        #
+        # Structural invariant, same family as check-zero-deps.sh — it asserts
+        # that prose may not claim an op exists when it does not. Naming a
+        # not-yet-landed op stays legal via the script's EXPECTED_UNLANDED
+        # ledger, but every such mention must carry an honesty marker.
+        # The self-test proves detection power in both directions, including a
+        # regression case pinned to the verbatim historical wording (an earlier
+        # draft of the gate passed it). Pure python3 + bash, no cargo.
+        run: |
+          bash scripts/check-ops-path-citations.sh --self-test
+          bash scripts/check-ops-path-citations.sh
       - name: no_std subset tripwire (Cortex-M55 Tier 3, M5-03-T15)
         # NFR-PT-03 / NFR-DS-02: the no_std(+alloc) subset (vokra-core error +
         # GGUF reader, and the vokra-vad-micro Silero forward core) must keep
@@ -415,8 +433,18 @@ jobs:
         # that way — three of them in the commit that wrote the rule. The
         # in-crate test can only inspect rows that EXIST, so it cannot see a row
         # that was never written; this gate starts from the BINDERS instead and
-        # fails unless every `pub const ARCH…: &str` under vokra-models/src is
-        # either routed by the dispatch or present in the registry. Self-test
+        # fails unless every arch-shaped `&str` constant under vokra-models/src
+        # is either routed by the dispatch or present in the registry. That
+        # population is `pub const ARCH`, `pub const ARCH_<SUFFIX>` AND
+        # `pub const EXPECTED_ARCH` — the last spelling was added 2026-08-15 and
+        # is not a rounding error: 29 of the 89 constants use it, so while the
+        # scan read `ARCH…` alone this gate reported a confident green over a
+        # third of the binders (that is how `charsiu`, a binder with no
+        # converter at all, survived four audit rounds behind it). A
+        # discovery-coverage guard now fails the run if any arch-shaped
+        # constant on disk falls outside the scan, so the next new spelling is
+        # a loud one-time failure rather than a silently smaller
+        # population. Self-test
         # runs RED (missing row) and GREEN (complete) cases plus two
         # parser guards against a synthetic tree, so a checker bug cannot
         # manufacture a passing run. HARD FAIL, like its check-find-hygiene /
@@ -454,6 +482,42 @@ jobs:
         run: |
           bash scripts/check-arch-handshake.sh --self-test
           bash scripts/check-arch-handshake.sh
+      - name: Parity sidecar citation gate (cited tools/parity/*.py must exist)
+        # Source under crates/ names `tools/parity/*.py` bridges constantly —
+        # converter docs on flattening a torch pickle, binder error strings
+        # naming which bridge to re-run, parity harnesses printing a numbered
+        # fixture recipe. Those are INSTRUCTIONS: an operator types one, gets
+        # `No such file or directory`, and stops trusting every other docstring
+        # in the tree. Measured 2026-08-15: 109 distinct paths cited, 47 not on
+        # disk, most phrased in the present tense as existing tools.
+        #
+        # The sharpest instance had made a parity gate permanently vacuous:
+        # parity_dnsmos.rs step 3 ran `dnsmos_score_reference.py`, which has
+        # never existed, so VOKRA_DNSMOS_REFERENCE_JSONL could not be produced
+        # by anything, so the MOS comparison always skipped — while the module
+        # doc asserted a skip is "never a fabricated pass". Its sibling
+        # `dnsmos_prepare_checkpoint.py` DOES exist, so the recipe was
+        # half-runnable, which is why it went unnoticed.
+        #
+        # The fix for a missing bridge is to correct the SENTENCE, never to
+        # write the Python file — ~35 sidecars invented from unread upstream
+        # formats would be fabrication at a larger scale. So this gate carries
+        # no exception ledger, unlike its check-arch-handshake sibling above:
+        # the exception here IS the sentence the reader sees ("a future
+        # `tools/parity/x.py` (not yet written)"), and parking it in a shell
+        # array would put the honesty where no operator ever looks.
+        #
+        # scripts/check-doc-references.sh is the wrong home — it only reads
+        # published docs under docs/ and never opens crates/. Self-test covers
+        # RED (unmarked missing citation, out-of-window marker, distant
+        # "future", missing nested path) and GREEN (existing file, canonical
+        # hedge, wrapped hedge, doc-block hedge, all 8 in-tree phrasings) plus
+        # two parser guards, so a checker bug cannot manufacture a passing run.
+        # HARD FAIL, like its siblings above — a source-to-source invariant of
+        # Vokra's own, not upstream drift. python3 stdlib only, no cargo.
+        run: |
+          bash scripts/check-parity-sidecar-citations.sh --self-test
+          bash scripts/check-parity-sidecar-citations.sh
       - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
         id: platform-support-drift
         # Verifies that every evidence anchor cited by

@@ -94,8 +94,9 @@
 //! [`BeatThisHparams`] — the upstream checkpoint carries the axes implicitly
 //! in tensor shapes rather than a first-class `config.yaml`, so
 //! primary-source verification of the true axes is a step the caller
-//! (owner + `tools/parity/beat_this_prepare_checkpoint.py`) performs
-//! before invoking this converter. No hard-coded default constants are
+//! (owner — aided by a future
+//! `tools/parity/beat_this_prepare_checkpoint.py`, not yet written)
+//! performs before invoking this converter. No hard-coded defaults are
 //! fabricated here (CLAUDE.md 「ハルシネーション厳禁」).
 //!
 //! # BF16 pass-through
@@ -176,7 +177,8 @@ pub const KEY_N_CLASSES: &str = "vokra.beat_this.n_classes";
 // BeatThisHparams — caller-supplied axes for the `vokra.beat_this.*` chunk
 // group. The upstream `.pt` release does not ship a first-class
 // `config.yaml`, so primary-source verification of these axes is a
-// caller-side step (owner + `tools/parity/beat_this_prepare_checkpoint.py`).
+// caller-side step (owner — aided by a future
+// `tools/parity/beat_this_prepare_checkpoint.py`, not yet written).
 // No hard-coded defaults are fabricated here (CLAUDE.md 「ハルシネーション
 // 厳禁」).
 // ---------------------------------------------------------------------------
@@ -184,9 +186,11 @@ pub const KEY_N_CLASSES: &str = "vokra.beat_this.n_classes";
 /// Caller-supplied beat_this hyperparameters for the `vokra.beat_this.*`
 /// chunk group. Every axis is `u32` in the emitted GGUF.
 ///
-/// Callers source these from the upstream config transcription step
-/// (`tools/parity/beat_this_prepare_checkpoint.py`, uv-managed Python 3.12
-/// sidecar). This converter does **not** fabricate any of them — the
+/// Callers source these from the upstream config transcription step —
+/// today by hand, and in future via a
+/// `tools/parity/beat_this_prepare_checkpoint.py` uv-managed Python
+/// 3.12 sidecar (not yet written). This converter does **not**
+/// fabricate any of them — the
 /// upstream `.pt` release stores axes implicitly in tensor shapes rather
 /// than a first-class `config.yaml`, so a primary-source-verified caller
 /// value is the honest input.
@@ -345,8 +349,9 @@ mod tests {
         // consistent (n_head divides d_model, n_classes >= 2 for beat +
         // downbeat) but they are NOT transcribed from an upstream config.
         // The converter has no responsibility to primary-source them —
-        // the caller (owner + `tools/parity/beat_this_prepare_checkpoint.py`)
-        // sources them from the upstream `.pt` tensor-shape walk.
+        // the caller (owner — aided by a future
+        // `tools/parity/beat_this_prepare_checkpoint.py`, not yet
+        // written) sources them from the upstream `.pt` shape walk.
         BeatThisHparams {
             sample_rate: 22_050,
             n_frames: 128,

@@ -8,9 +8,12 @@
 //! edge inference. Positioned as a **~5.5x lighter** alternative to
 //! Silero VAD v5 (upstream claim) for latency-constrained deployments
 //! at 16 kHz. The upstream release is distributed as ONNX only —
-//! `tools/parity/ten_vad_prepare_checkpoint.py` bridges the ONNX graph
-//! to safetensors offline (NSNet2 / DNSMOS ONNX-bridge precedent — no
-//! ONNX ever enters the runtime, NFR-DS-02 zero-dep + FR-LD-05).
+//! `tools/parity/onnx_to_safetensors.py` bridges the ONNX graph to
+//! safetensors offline (NSNet2 / DNSMOS ONNX-bridge precedent — no
+//! ONNX ever enters the runtime, NFR-DS-02 zero-dep + FR-LD-05). A
+//! model-specific `tools/parity/ten_vad_prepare_checkpoint.py` is **not
+//! yet written**, and the binder records that discrepancy verbatim (see
+//! `crates/vokra-models/src/ten_vad/mod.rs`).
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
 //! and `vokra.provenance.*` metadata chunks the runtime VAD path binds
@@ -62,9 +65,10 @@
 //! # No ONNX (permanent) in the runtime
 //!
 //! The upstream TEN-VAD release ships an ONNX file; the offline bridge
-//! `tools/parity/ten_vad_prepare_checkpoint.py` flattens the graph
-//! tensors to safetensors so the runtime never touches the ONNX
-//! (FR-LD-05, NFR-DS-02).
+//! `tools/parity/onnx_to_safetensors.py` flattens the graph tensors to
+//! safetensors so the runtime never touches the ONNX (FR-LD-05,
+//! NFR-DS-02). A model-specific
+//! `tools/parity/ten_vad_prepare_checkpoint.py` is not yet written.
 //!
 //! # Wiring status
 //!
@@ -155,9 +159,10 @@ pub struct TenVadReport {
 }
 
 /// Converts a TEN-VAD safetensors checkpoint at `input` (pre-flattened
-/// from the upstream ONNX by
-/// `tools/parity/ten_vad_prepare_checkpoint.py`) into a Vokra-native
-/// GGUF at `output`, returning a [`TenVadReport`].
+/// from the upstream ONNX by `tools/parity/onnx_to_safetensors.py`; a
+/// model-specific `tools/parity/ten_vad_prepare_checkpoint.py` is not
+/// yet written) into a Vokra-native GGUF at `output`, returning a
+/// [`TenVadReport`].
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream
 /// ONNX-inspection-derived key; the `vokra.model.*` (arch / name /

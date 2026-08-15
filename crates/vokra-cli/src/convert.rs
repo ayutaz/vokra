@@ -995,9 +995,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold.
             // The upstream release ships PyTorch `.pth` checkpoints; a
             // caller who legitimately holds a StyleTTS 2 checkpoint
-            // pre-flattens it to safetensors offline
-            // (`tools/parity/pytorch_to_safetensors.py`) the same way
-            // CSM / DAC / VoxCPM / Kokoro do. No --config side-car
+            // pre-flattens it to safetensors offline the same way
+            // CSM / DAC / VoxCPM / Kokoro do — via a future
+            // `tools/parity/pytorch_to_safetensors.py` (not yet
+            // written; today the closest shipped bridges are
+            // `tools/parity/bin_to_safetensors.py` /
+            // `nemo_pt_to_safetensors.py`). No --config side-car
             // today: every architectural axis is fixed for the
             // LJSpeech / LibriTTS release (24 kHz, hidden_dim=512,
             // style_dim=128, iSTFTNet decoder) and byte-parallel to

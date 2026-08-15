@@ -85,11 +85,13 @@
 //! `n_layers=6`, `head_dim=32`, `stem_dim=32`, `sum_head=True`,
 //! `partial_transformers=True`) are recorded here as a *reading of
 //! upstream*, *not* as a fallback this binder will ever apply — the
-//! checkpoint stays the only authority, and
-//! `tools/parity/beat_this_prepare_checkpoint.py` (uv-managed Python 3.12
-//! sidecar per memory `[[feedback-python-uses-uv]]` +
-//! `[[feedback-python-3-12]]`) is where a caller confirms them against
-//! real tensor shapes. Each [`VokraError::UnsupportedOp`] clause cites
+//! checkpoint stays the only authority, and a future
+//! `tools/parity/beat_this_prepare_checkpoint.py` (not yet written; a
+//! uv-managed Python 3.12 sidecar per memory
+//! `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]`) is where
+//! a caller would confirm them against real tensor shapes — until it
+//! lands that confirmation is a manual owner-side walk. Each
+//! [`VokraError::UnsupportedOp`] clause cites
 //! the upstream file that settles it, so a reader diagnosing this gap
 //! walks to a specific source rather than a repository root.
 //!
@@ -120,10 +122,10 @@
 //!
 //! beat_this ships as PyTorch `.pt` pickle upstream; this runtime
 //! **never** touches ONNX or pickle (FR-LD-05 / NFR-DS-02). The `.pt`
-//! → safetensors bridge lives in `tools/parity/beat_this_prepare_checkpoint.py`
-//! (an offline uv-managed Python 3.12 sidecar — not part of the
-//! runtime), mirroring the DAC / Kokoro / UTMOSv2 / beats bridge
-//! pattern.
+//! → safetensors bridge is a future
+//! `tools/parity/beat_this_prepare_checkpoint.py` (not yet written — an
+//! offline uv-managed Python 3.12 sidecar, never part of the runtime),
+//! mirroring the DAC / Kokoro / UTMOSv2 / beats bridge pattern.
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
@@ -305,8 +307,10 @@ impl BeatThisWeights {
             return Err(VokraError::ModelLoad(
                 "beat_this: GGUF carries zero tensors — refusing to bind an all-zero \
                  forward (FR-EX-08). Re-run `vokra-cli convert --model beat-this` \
-                 against the upstream `CPJKU/beat_this` `.pt` checkpoint flattened via \
-                 `tools/parity/beat_this_prepare_checkpoint.py`."
+                 against the upstream `CPJKU/beat_this` `.pt` checkpoint, flattened to \
+                 safetensors offline (a future \
+                 `tools/parity/beat_this_prepare_checkpoint.py` is not yet written, so \
+                 that flattening is a manual owner-side step today)."
                     .to_owned(),
             ));
         }

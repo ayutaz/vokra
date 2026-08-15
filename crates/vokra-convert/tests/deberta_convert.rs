@@ -2,10 +2,11 @@
 //! Task 11, 2026-07-26).
 //!
 //! The real-checkpoint round-trips are `#[ignore]`d pending a real HF
-//! safetensors fixture at `tests/fixtures/sbv2/*.safetensors` (Task 30,
-//! `tools/parity/deberta_v2_prepare_checkpoint.py` — mirrors the gating
-//! convention `crates/vokra-bert/tests/deberta_v2_loader.rs` already uses
-//! for the loader side of this same fixture family).
+//! safetensors fixture at `tests/fixtures/sbv2/*.safetensors` (Task 30;
+//! a future `tools/parity/deberta_v2_prepare_checkpoint.py` is not yet
+//! written — mirrors the gating convention
+//! `crates/vokra-bert/tests/deberta_v2_loader.rs` already uses for the
+//! loader side of this same fixture family).
 //! `convert_report_fields_exist` runs unconditionally as the CI-visible
 //! pin on `ConvertReport`'s shape. Synthetic-fixture behavior (BF16
 //! pass-through, hparam shape-inference, provenance stamping) is covered

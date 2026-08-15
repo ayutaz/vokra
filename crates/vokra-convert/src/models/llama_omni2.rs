@@ -63,19 +63,27 @@
 //! Kokoro / CosyVoice2 contract). Real-weight parity is a follow-up wave
 //! gated on the upstream tensor-name manifest fetch + §3.1 sign-off; this
 //! converter passes every float tensor through unchanged so a future
-//! `LlamaOmni2Weights::from_gguf` can walk the same names (Qwen2.5 forward
-//! shares the `vokra_ops::qwen2` primitives already wired through
-//! voxtral / kyutai_stt / canary_qwen).
+//! `LlamaOmni2Weights::from_gguf` can walk the same names.
+//!
+//! The Qwen2.5 forward does **not** yet have a shared op:
+//! `vokra_ops::qwen2` is a PROPOSED consolidation, not a landed module
+//! — no such module exists today (the same wording the runtime binder
+//! `vokra-models/src/llama_omni2/mod.rs` uses). The only landed
+//! Qwen2-family forward is the inline one in
+//! `vokra-models/src/voxtral/text_decoder.rs` (GQA + RoPE + SwiGLU +
+//! RMSNorm). `canary_qwen` reuses that module; `kyutai_stt` does not.
+//! Consolidating them is the follow-up wave.
 //!
 //! # Prep script bridge — sharded safetensors merge
 //!
 //! The upstream LLaMA-Omni2 releases ship **sharded safetensors**
 //! (`model-000NN-of-000MM.safetensors` + `model.safetensors.index.json`).
 //! This Rust converter consumes a **single** safetensors file, so a
-//! downstream user runs the sidecar
-//! `tools/parity/llama_omni2_prepare_checkpoint.py` (uv-managed Python
-//! 3.12 per memory `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]`,
-//! mirror of `firered_asr_llm_l/` / `higgs_audio_v3_tts_4b/`) to merge
+//! downstream user needs a sidecar — a future
+//! `tools/parity/llama_omni2_prepare_checkpoint.py` (**not yet
+//! written**; uv-managed Python 3.12 per memory
+//! `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]`, mirror
+//! of `firered_asr_llm_l/` / `higgs_audio_v3_tts_4b/`) — to merge
 //! the shards, dedupe tied tensors (data_ptr collision → clone + audit
 //! trail — Qwen2.5 `tie_word_embeddings=true` posture), and strip
 //! non-float training scaffold (`.num_batches_tracked` / `.total_ops`)
@@ -289,9 +297,10 @@ pub struct LlamaOmni2Report {
     pub variant: LlamaOmni2Variant,
 }
 
-/// Reads a safetensors checkpoint at `input` (as emitted by
-/// `tools/parity/llama_omni2_prepare_checkpoint.py`) and writes a
-/// LLaMA-Omni2 GGUF to `output`.
+/// Reads a single merged safetensors checkpoint at `input` (a future
+/// `tools/parity/llama_omni2_prepare_checkpoint.py` would emit it; that
+/// sidecar is not yet written, so the shard merge is an owner-side step
+/// today) and writes a LLaMA-Omni2 GGUF to `output`.
 ///
 /// Every F32 / F16 / BF16 tensor is emitted verbatim under its upstream
 /// name; the `vokra.provenance.*`, `vokra.model.*` and

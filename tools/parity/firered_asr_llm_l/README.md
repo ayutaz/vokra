@@ -173,12 +173,15 @@ refuses the publish (`upload.sh` refuses per gate 4).
   runner owner triggers.
 - **Conformer + audio-text adapter + Qwen2 LM decoder** — this
   sidecar preserves whatever tokenizer / adapter / LM state the
-  upstream shards ship verbatim. A future runtime binder will
-  reuse the shared `vokra_ops::qwen2` primitives (already wired
-  through voxtral / kyutai_stt / canary_qwen) for the LM decoder
-  half; the Conformer encoder half will reuse `vokra_ops::conformer`
-  (canary / parakeet_ctc precedent); the audio-text adapter is a
-  plain Linear / MLP.
+  upstream shards ship verbatim. A future runtime binder will need a
+  Qwen2-family LM decoder forward. A shared `vokra_ops::qwen2` op is a
+  PROPOSED consolidation, not a landed module — no such module exists
+  today; the only landed Qwen2-family forward is the inline one in
+  `crates/vokra-models/src/voxtral/text_decoder.rs`, which `canary_qwen`
+  reuses and `kyutai_stt` does not. The Conformer encoder half will
+  reuse `vokra_ops::conformer` (canary / parakeet_ctc precedent, a
+  module that does exist); the audio-text adapter is a plain
+  Linear / MLP.
 
 ## License / distribution note
 

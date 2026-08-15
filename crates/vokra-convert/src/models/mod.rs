@@ -25,9 +25,12 @@ pub(crate) mod campplus;
 // verbatim; every hparam on the model card is transcribed from it and
 // every remaining axis from the shared FastConformer-Transformer AED
 // reference config (fast-conformer_aed.yaml — the whole Canary family's
-// reference). Reuses the `vokra_ops::conformer` (FastConformer encoder
-// body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
+// reference). Targets the `vokra_ops::conformer` (FastConformer encoder
+// body via `Stacking { factor: 8 }`) and `vokra_core::decode::beam_search`
 // (attention-decoder search) primitives — no per-model op duplication.
+// The beam search lives in `vokra-core`, not in `vokra-ops`, and the
+// runtime binder's `transcribe` is still `NotImplemented`, so this is
+// the target wiring, not landed wiring.
 pub(crate) mod canary;
 // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
 // multimodal ASR + Qwen LLM head-swap on top of Canary FastConformer
@@ -308,9 +311,11 @@ pub mod firered_asr_aed_l;
 // apache-2.0, ~16.6 GB BF16 = 8.3B params). Chinese ASR with Conformer
 // encoder + audio-to-text adapter + Qwen2 LM decoder = AISHELL-1 SoTA.
 // Same "encoder + adapter + LLM decoder" mold as sibling canary_qwen
-// (Canary FastConformer + Voxtral-style Qwen decoder) — reuses the
-// shared vokra_ops::qwen2 primitives (voxtral / kyutai_stt /
-// canary_qwen precedent) once the runtime binder lands. Distinct arch
+// (Canary FastConformer + Voxtral-style Qwen decoder). A shared
+// vokra_ops::qwen2 op is a PROPOSED consolidation, not a landed module
+// — no such module exists today; the only landed Qwen2-family forward
+// is the inline one in vokra-models/src/voxtral/text_decoder.rs, which
+// canary_qwen reuses and kyutai_stt does not. Distinct arch
 // tag `firered_asr_llm_l` from the FireRedTeam AED sibling
 // (`firered_asr_aed_l`, Whisper-topology) because the LLM release
 // swaps the AED decoder for a Qwen2 LLM decoder — silently sharing
@@ -846,19 +851,20 @@ pub mod vieneu;
 // contract; real-weight parity is deferred to owner
 // (`docs/license-audit.md` §3.1 sign-off). Upstream ships torch
 // pickle `pytorch_model.bin` + `config.yaml` only — pre-flatten to
-// safetensors offline via
-// `tools/parity/vocos_prepare_checkpoint.py` (a thin wrapper over
-// `bin_to_safetensors.py`, mirror of speecht5_hifigan).
+// safetensors offline via `tools/parity/bin_to_safetensors.py`; a
+// dedicated `tools/parity/vocos_prepare_checkpoint.py` thin wrapper
+// over it (mirror of speecht5_hifigan) is not yet written.
 pub mod vocos;
 pub mod wav2vec2_ctc;
 pub mod xvector;
 // Wave 3 codec add (2026-08-01): novateur/WavTokenizer-large-speech-75token
 // (MIT). Single-codebook FSQ audio codec at 24 kHz, 75 tokens/sec
 // (hop_length=320, arXiv:2408.16532). Upstream ships a torch pickle
-// Lightning `.ckpt` (1.75 GB) so callers pre-flatten to safetensors via
-// a dedicated `tools/parity/wavtokenizer_prepare_checkpoint.py` bridge
-// (the DFN3 / DAC / CSM / SpeechT5-HiFi-GAN precedent — no pickle in the
-// runtime, NFR-DS-02 zero-dep + FR-LD-05). Real-weight parity deferred
+// Lightning `.ckpt` (1.75 GB) so callers pre-flatten to safetensors
+// offline; a dedicated `tools/parity/wavtokenizer_prepare_checkpoint.py`
+// bridge (the DFN3 / DAC / CSM / SpeechT5-HiFi-GAN precedent — no pickle
+// in the runtime, NFR-DS-02 zero-dep + FR-LD-05) is not yet written, so
+// that step is manual today. Real-weight parity deferred
 // to owner sign-off (§3.1). Runtime forward reuses the M4-16 landed
 // `wavtokenizer_vq` op (`crates/vokra-ops/src/fsq_codec.rs`).
 pub mod wavtokenizer;
@@ -1138,9 +1144,10 @@ pub mod gtcrn;
 // vs neural-Kalman-filter is a distinct topology axis, silently
 // sharing would mis-route runtime dispatch and try to interpret DTLN's
 // LSTM tensors as NKF-AEC's ComplexGRU tensors. Upstream ships
-// `.tflite` only (128 / 256 / 512-unit variants) — the sidecar
-// `tools/parity/dtln_aec_prepare_checkpoint.py` bridges to safetensors
-// offline (FR-LD-05: TFLite never enters runtime, NFR-DS-02 zero-dep).
+// `.tflite` only (128 / 256 / 512-unit variants) — a future sidecar
+// `tools/parity/dtln_aec_prepare_checkpoint.py` (not yet written) would
+// bridge to safetensors offline (FR-LD-05: TFLite never enters runtime,
+// NFR-DS-02 zero-dep); today that step is manual.
 // BF16 pass-through skeleton mirror of nkf_aec / speaker_3d /
 // ecapa_tdnn; runtime binder in `crates/vokra-models/src/aec/dtln_aec/
 // mod.rs` ships as loud-partial (`process()` = UnsupportedOp naming

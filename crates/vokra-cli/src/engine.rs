@@ -1498,12 +1498,17 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // separately true — but stating it FIRST asserts a load this build
     // cannot perform, and that is the lie being removed.
     //
-    // `scripts/check-bound-arch-coverage.sh` does not see this arch today:
-    // charsiu spells its constant `EXPECTED_ARCH`, which that script's
-    // `pub const ARCH…` scan does not match. The row is kept on its own
-    // merits (a `charsiu`-stamped GGUF must not read as an unknown arch),
-    // and would also satisfy that gate should its scan widen to the
-    // `EXPECTED_ARCH` spelling.
+    // `scripts/check-bound-arch-coverage.sh` DOES see this arch. charsiu
+    // spells its constant `EXPECTED_ARCH`, and that gate's discovery scan
+    // was widened to that spelling by the same 2026-08-15 change that
+    // corrected this row — it now reports 89 arch constants across the
+    // spellings `ARCH`, `ARCH_<SUFFIX>` and `EXPECTED_ARCH`, `charsiu`
+    // among them. So this row is not merely kept on its own merits (a
+    // `charsiu`-stamped GGUF must not read as an unknown arch): the arch is
+    // not routed by the dispatch, so deleting the row would leave it
+    // unaccounted and fail that gate. Its self-test pins exactly that shape
+    // (fixture 2b drops the row of an `EXPECTED_ARCH` binder and requires a
+    // failure).
     BoundArch {
         arch: "charsiu",
         module: "vokra_models::align::charsiu",

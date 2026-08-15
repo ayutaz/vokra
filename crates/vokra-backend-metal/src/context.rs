@@ -4854,8 +4854,9 @@ impl MetalContext {
         // Explicit shape validation. The MSL kernel guards `t >= time` and
         // `d >= d_model` but assumes the buffers have the expected element
         // counts, so a wrong-shape upload would be a silent OOB read
-        // (FR-EX-08 forbids). Mirror the vokra_ops::wavtokenizer_vq shape
-        // checks.
+        // (FR-EX-08 forbids). Mirror the
+        // vokra_ops::fsq_codec::wavtokenizer_vq_decode shape checks
+        // (`wavtokenizer_vq` is the op name, not a module path).
         if vocab_size == 0 || d_model == 0 {
             return Err(VokraError::InvalidArgument(format!(
                 "wavtokenizer_vq_gather_f32: vocab_size / d_model must both be > 0, got \
@@ -4993,8 +4994,10 @@ impl MetalContext {
         n_dims: usize,
         time: usize,
     ) -> Result<Vec<f32>> {
-        // Explicit shape validation. Mirrors the vokra_ops::xcodec2_fsq shape
-        // checks (FR-EX-08 — no silent OOB or CPU fall back).
+        // Explicit shape validation. Mirrors the
+        // vokra_ops::fsq_codec::xcodec2_fsq_decode shape checks
+        // (`xcodec2_fsq` is the op name, not a module path)
+        // (FR-EX-08 — no silent OOB or CPU fall back).
         if d_model == 0 || n_dims == 0 {
             return Err(VokraError::InvalidArgument(format!(
                 "xcodec2_fsq_decode_f32: d_model / n_dims must both be > 0, got \

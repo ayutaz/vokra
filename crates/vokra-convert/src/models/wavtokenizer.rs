@@ -11,11 +11,12 @@
 //! (~1.75 GB, verified 2026-08-01 via `https://huggingface.co/api/models/
 //! novateur/WavTokenizer-large-speech-75token`) ships as a **torch pickle
 //! Lightning-style `.ckpt`** — there is no `model.safetensors` mirror.
-//! Callers must pre-flatten to safetensors offline via a dedicated
+//! Callers must pre-flatten to safetensors offline. A dedicated
 //! `tools/parity/wavtokenizer_prepare_checkpoint.py` bridge (the DFN3 /
-//! DAC / CSM / SpeechT5-HiFi-GAN / FCPE pattern), keeping Vokra's Rust
-//! converter safetensors-only by design (NFR-DS-02 zero-dep + FR-LD-05
-//! no pickle in the runtime).
+//! DAC / CSM / SpeechT5-HiFi-GAN / FCPE pattern) is **not yet
+//! written**, so that step is manual today — either way Vokra's Rust
+//! converter stays safetensors-only by design (NFR-DS-02 zero-dep +
+//! FR-LD-05 no pickle in the runtime).
 //!
 //! Output: a GGUF carrying every float tensor verbatim under its
 //! upstream state-dict name, plus the `vokra.provenance.*` /
@@ -197,10 +198,10 @@ pub struct WavtokenizerReport {
 /// a [`WavtokenizerReport`].
 ///
 /// The upstream distribution is a **torch pickle Lightning `.ckpt`** —
-/// callers must first flatten it to safetensors via the offline
+/// callers must first flatten it to safetensors offline. The dedicated
 /// `tools/parity/wavtokenizer_prepare_checkpoint.py` bridge (the DFN3
-/// / DAC / CSM / SpeechT5-HiFi-GAN pattern). This function accepts
-/// safetensors only.
+/// / DAC / CSM / SpeechT5-HiFi-GAN pattern) is not yet written, so that
+/// step is manual today. This function accepts safetensors only.
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream
 /// state-dict name; the `vokra.model.*` (arch / name / category) and

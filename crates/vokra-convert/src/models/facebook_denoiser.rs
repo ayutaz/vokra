@@ -24,9 +24,11 @@
 //!
 //! GGUF tensor names are the **upstream torch state-dict keys
 //! verbatim** (the sibling NKF-AEC / RNNoise / DFN3 contract — the
-//! `.th` / `.pt` pickle is pre-flattened offline to safetensors by
-//! `tools/parity/facebook_denoiser_prepare_checkpoint.py` and this
-//! converter accepts safetensors only).
+//! `.th` / `.pt` pickle is pre-flattened offline to safetensors, and
+//! this converter accepts safetensors only). A dedicated
+//! `tools/parity/facebook_denoiser_prepare_checkpoint.py` is **not yet
+//! written**; the generic `tools/parity/nemo_pt_to_safetensors.py`
+//! bridge is what exists today.
 //!
 //! # No ONNX (permanent)
 //!
@@ -102,10 +104,11 @@ pub struct FacebookDenoiserReport {
 }
 
 /// Converts a Facebook Denoiser safetensors checkpoint at `input`
-/// (pre-flattened from the upstream torch `.th` pickle by
-/// `tools/parity/facebook_denoiser_prepare_checkpoint.py`) into a
-/// Vokra-native GGUF at `output`, returning a
-/// [`FacebookDenoiserReport`].
+/// (pre-flattened from the upstream torch `.th` pickle — a dedicated
+/// `tools/parity/facebook_denoiser_prepare_checkpoint.py` is not yet
+/// written, so today that means the generic
+/// `tools/parity/nemo_pt_to_safetensors.py`) into a Vokra-native GGUF
+/// at `output`, returning a [`FacebookDenoiserReport`].
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream
 /// state-dict key; the `vokra.model.*` (arch / name / category) and

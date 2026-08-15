@@ -9,10 +9,11 @@
 //! Transformation LSTM Network". The upstream distribution ships
 //! `.tflite` files ONLY (three variants: 128 / 256 / 512 LSTM units per
 //! stage) — no `.h5` / `.onnx` checkpoint. Callers pre-flatten the
-//! TFLite `.tflite` to safetensors offline through
-//! `tools/parity/dtln_aec_prepare_checkpoint.py` (the DFN3 / NKF-AEC /
-//! Kokoro pickle-bridge pattern — TFLite is a Python-side tool that
-//! **never** enters the runtime, FR-LD-05).
+//! TFLite `.tflite` to safetensors offline through a future
+//! `tools/parity/dtln_aec_prepare_checkpoint.py` (**not yet written** —
+//! the DFN3 / NKF-AEC / Kokoro pickle-bridge pattern, where TFLite is a
+//! Python-side tool that **never** enters the runtime, FR-LD-05).
+//! Until it lands, that flattening is a manual owner-side step.
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`,
 //! `vokra.provenance.*`, and `vokra.dtln_aec.*` metadata chunks the
@@ -85,11 +86,12 @@
 //!
 //! The upstream DTLN-AEC release ships TensorFlow-Lite `.tflite` files
 //! only; this converter accepts pre-flattened safetensors only and
-//! **never** touches TFLite or ONNX (FR-LD-05, NFR-DS-02 zero-dep). The
-//! `tools/parity/dtln_aec_prepare_checkpoint.py` sidecar
-//! (uv-managed Python 3.12 per memory `[[feedback-python-uses-uv]]` +
-//! `[[feedback-python-3-12]]`) is the sole bridge from `.tflite` bytes
-//! to safetensors — the runtime tree contains neither.
+//! **never** touches TFLite or ONNX (FR-LD-05, NFR-DS-02 zero-dep). A
+//! future `tools/parity/dtln_aec_prepare_checkpoint.py` sidecar
+//! (**not yet written**; uv-managed Python 3.12 per memory
+//! `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]`) is the
+//! intended bridge from `.tflite` bytes to safetensors — the runtime
+//! tree contains neither, and today no such bridge is on disk.
 
 use std::path::Path;
 
@@ -296,10 +298,11 @@ fn detect_variant_from_shapes(st: &SafetensorsFile) -> Option<DtlnVariant> {
     None
 }
 
-/// Converts a DTLN-AEC safetensors checkpoint at `input` (as emitted by
-/// `tools/parity/dtln_aec_prepare_checkpoint.py` from an upstream
-/// `.tflite` file) into a Vokra-native GGUF at `output`, returning a
-/// [`DtlnAecReport`].
+/// Converts a DTLN-AEC safetensors checkpoint at `input` (flattened
+/// from an upstream `.tflite` file — a future
+/// `tools/parity/dtln_aec_prepare_checkpoint.py` is not yet written, so
+/// that flattening is an owner-side step today) into a Vokra-native
+/// GGUF at `output`, returning a [`DtlnAecReport`].
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream
 /// tensor key; the `vokra.model.*` (arch / name / category),

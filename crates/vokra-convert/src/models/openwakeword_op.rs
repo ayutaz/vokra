@@ -16,9 +16,10 @@
 //! and reach the runtime `KwsSession::from_gguf` binder without
 //! silently masquerading as the base official-checkpoint converter.
 //! Callers pre-flatten the upstream ONNX / TFLite to safetensors
-//! offline via `tools/parity/openwakeword_op_prepare_checkpoint.py`
-//! (the NSNet2 / TEN-VAD ONNX-bridge precedent — no ONNX enters the
-//! runtime, NFR-DS-02 zero-dep + FR-LD-05).
+//! offline via `tools/parity/onnx_to_safetensors.py`; a model-specific
+//! `tools/parity/openwakeword_op_prepare_checkpoint.py` is **not yet
+//! written** (the NSNet2 / TEN-VAD ONNX-bridge precedent — no ONNX
+//! enters the runtime, NFR-DS-02 zero-dep + FR-LD-05).
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
 //! and `vokra.provenance.*` metadata chunks the runtime `kws` op binds
@@ -78,9 +79,11 @@
 //! # No ONNX (permanent) in the runtime
 //!
 //! The upstream openWakeWord release ships ONNX + TFLite; the offline
-//! bridge `tools/parity/openwakeword_op_prepare_checkpoint.py`
-//! flattens the graph tensors to safetensors so the runtime never
-//! touches the ONNX (FR-LD-05, NFR-DS-02).
+//! bridge `tools/parity/onnx_to_safetensors.py` flattens the graph
+//! tensors to safetensors so the runtime never touches the ONNX
+//! (FR-LD-05, NFR-DS-02). A model-specific
+//! `tools/parity/openwakeword_op_prepare_checkpoint.py` is not yet
+//! written — the generic bridge is what exists.
 //!
 //! # Wiring status
 //!
@@ -155,8 +158,9 @@ pub struct OpenwakewordOpReport {
 
 /// Converts an openWakeWord op-wiring safetensors checkpoint at `input`
 /// (pre-flattened from the upstream ONNX / TFLite by
-/// `tools/parity/openwakeword_op_prepare_checkpoint.py`) into a
-/// Vokra-native GGUF at `output`, returning an
+/// `tools/parity/onnx_to_safetensors.py`; a model-specific
+/// `tools/parity/openwakeword_op_prepare_checkpoint.py` is not yet
+/// written) into a Vokra-native GGUF at `output`, returning an
 /// [`OpenwakewordOpReport`].
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream

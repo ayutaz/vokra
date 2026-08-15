@@ -178,11 +178,12 @@
 //! facebook-denoiser ships as PyTorch `.th` / `.pt` pickles upstream
 //! (distributed via `dl.fbaipublicfiles.com/adiyoss/denoiser/`); this
 //! runtime **never** touches ONNX or pickle (FR-LD-05 / NFR-DS-02).
-//! The `.th` → safetensors bridge lives offline through
-//! `tools/parity/facebook_denoiser_prepare_checkpoint.py` +
+//! The `.th` → safetensors bridge lives offline in
 //! `tools/parity/nemo_pt_to_safetensors.py` (uv-managed Python 3.12
 //! sidecar per memory `[[feedback-python-uses-uv]]` +
-//! `[[feedback-python-3-12]]`), not part of the runtime — pickle
+//! `[[feedback-python-3-12]]`); a model-specific
+//! `tools/parity/facebook_denoiser_prepare_checkpoint.py` is **not yet
+//! written**. Neither is part of the runtime — pickle
 //! deserialization inside the Rust runtime would violate the FR-LD-05
 //! "no arbitrary code execution at load" rule.
 
@@ -295,9 +296,11 @@ impl FbDenoiserWeights {
                 "facebook_denoiser: GGUF carries zero tensors — refusing to bind an \
                  all-zero forward (FR-EX-08). Re-run `vokra-cli convert --model \
                  facebook-denoiser` against a safetensors checkpoint flattened via \
-                 `tools/parity/facebook_denoiser_prepare_checkpoint.py` (uv-managed \
-                 Python 3.12 sidecar per memory `[[feedback-python-uses-uv]]` — pickle \
-                 deserialization inside the Rust runtime would violate FR-LD-05)."
+                 `tools/parity/nemo_pt_to_safetensors.py` (uv-managed Python 3.12 \
+                 sidecar per memory `[[feedback-python-uses-uv]]`; a model-specific \
+                 `tools/parity/facebook_denoiser_prepare_checkpoint.py` is not yet \
+                 written — pickle deserialization inside the Rust runtime would \
+                 violate FR-LD-05)."
                     .to_owned(),
             ));
         }
@@ -583,10 +586,11 @@ fn denoise_forward_loud_partial() -> VokraError {
          upstream `facebookresearch/denoiser` state_dict prefixes to the appropriate \
          primitive inputs (pending manifest fetch — same posture as pyannote / \
          Charsiu real-weight bind, upstream ships `.th` pickles at \
-         `dl.fbaipublicfiles.com/adiyoss/denoiser/` which the sibling \
-         `tools/parity/facebook_denoiser_prepare_checkpoint.py` + \
+         `dl.fbaipublicfiles.com/adiyoss/denoiser/` which the \
          `tools/parity/nemo_pt_to_safetensors.py` uv-managed Python 3.12 sidecar per \
-         memory `[[feedback-python-uses-uv]]` bridges to safetensors), (b) the three \
+         memory `[[feedback-python-uses-uv]]` bridges to safetensors; a \
+         model-specific `tools/parity/facebook_denoiser_prepare_checkpoint.py` is \
+         not yet written), (b) the three \
          missing pieces themselves landing in `vokra_ops` (waveform U-Net encoder + \
          LSTM bottleneck + waveform U-Net decoder with additive skip), and (c) the \
          three-stage encoder → LSTM → decoder composition against the discovered \

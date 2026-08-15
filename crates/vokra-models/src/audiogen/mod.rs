@@ -177,12 +177,12 @@
 //!
 //! AudioGen ships safetensors + PyTorch pickle upstream; this runtime
 //! **never** touches ONNX (FR-LD-05 / NFR-DS-02). If the upstream
-//! release ships pickle only, callers pre-flatten offline via
-//! `tools/parity/audiogen_medium_prepare_checkpoint.py` (a thin wrapper
-//! over `bin_to_safetensors.py`; an uv-managed Python 3.12 sidecar per
-//! memory `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]` —
-//! not part of the runtime), mirroring the SpeechT5-HiFi-GAN /
-//! Sortformer / Charsiu / MusicGen bridge pattern.
+//! release ships pickle only, callers pre-flatten offline via a future
+//! `tools/parity/audiogen_medium_prepare_checkpoint.py` (not yet
+//! written — a thin wrapper over `bin_to_safetensors.py`; an uv-managed
+//! Python 3.12 sidecar per memory `[[feedback-python-uses-uv]]` +
+//! `[[feedback-python-3-12]]` — not part of the runtime), mirroring the
+//! SpeechT5-HiFi-GAN / Sortformer / Charsiu / MusicGen bridge pattern.
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};

@@ -244,8 +244,10 @@ pub struct HifiGanWeights {
     pub conv_post_weight: Vec<f32>,
     /// `[1]` bias — **or `[]` (empty) when the upstream `conv_post` was
     /// trained `bias=False`** (HGAN-04 fix, 2026-08-09). VITS-family
-    /// upstreams (`tools/parity/vendor/vits/models.py` at `Conv1d(ch,
-    /// 1, 7, 1, padding=3, bias=False)`) and SBV2 v2 both ship
+    /// upstreams (`tools/parity/vendor/vits/decoder.py:76` —
+    /// `self.conv_post = Conv1d(ch, 1, 7, 1, padding=3, bias=False)`;
+    /// that file is the vendored byte-identical extract of upstream
+    /// `models.py` lines 244-296) and SBV2 v2 both ship
     /// bias-less `conv_post`; storing an empty `Vec` here lets a
     /// converter emit the true upstream shape without the pre-HGAN-04
     /// zero-placeholder workaround. Both shapes are numerically
@@ -273,8 +275,8 @@ pub struct HifiGanWeights {
 
 /// HGAN-05-GIN-COND: `cond` layer weight bundle (2026-08-09).
 ///
-/// Upstream reference (`tools/parity/vendor/vits/models.py`
-/// `Generator.__init__`):
+/// Upstream reference (`tools/parity/vendor/vits/decoder.py:80`, the
+/// vendored extract of upstream `models.py`, `Generator.__init__`):
 ///
 /// ```python
 /// if gin_channels != 0:
@@ -879,8 +881,8 @@ pub fn hifigan_generator_conditioned(
 
     // --- HGAN-05-GIN-COND: broadcast-add cond(g) after conv_pre ---
     //
-    // Upstream reference (`tools/parity/vendor/vits/models.py`
-    // `Generator.forward`):
+    // Upstream reference (`tools/parity/vendor/vits/decoder.py:85`, the
+    // vendored extract of upstream `models.py`, `Generator.forward`):
     //
     // ```python
     // x = self.conv_pre(x)

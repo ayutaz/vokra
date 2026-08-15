@@ -257,10 +257,13 @@ pub enum ModelKind {
     /// transcribed from the shared FastConformer-Transformer AED
     /// reference config
     /// (`github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/speech_multitask/fast-conformer_aed.yaml`).
-    /// Reuses the shared `vokra_ops::conformer` (FastConformer encoder
-    /// body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
-    /// (attention-decoder search — OP-3) primitives — no per-model op
-    /// duplication.
+    /// Targets the shared `vokra_ops::conformer` (FastConformer encoder
+    /// body via `Stacking { factor: 8 }`) and
+    /// `vokra_core::decode::beam_search` (attention-decoder search —
+    /// OP-3) primitives — no per-model op duplication. The beam search
+    /// lives in `vokra-core`, not in `vokra-ops`. The runtime binder's
+    /// `CanaryAsr::transcribe` is still `NotImplemented`, so this is the
+    /// target wiring, not landed wiring.
     Canary,
     /// NVIDIA **Canary-Qwen-2.5B** safetensors checkpoint (SoTA plan
     /// reuse bundle, 2026-07-30). Multimodal ASR + LLM head-swap on top
@@ -1063,9 +1066,10 @@ pub enum ModelKind {
     /// (`dtln_aec_128.tflite` / `dtln_aec_256.tflite` /
     /// `dtln_aec_512.tflite`) as TensorFlow-Lite files ONLY (no `.h5`
     /// / `.onnx`); callers pre-flatten the TFLite to safetensors
-    /// offline via `tools/parity/dtln_aec_prepare_checkpoint.py` (the
-    /// DFN3 / NKF-AEC / Kokoro pickle-bridge pattern — TFLite is a
-    /// Python-side tool that never enters the runtime, FR-LD-05,
+    /// offline via a future
+    /// `tools/parity/dtln_aec_prepare_checkpoint.py` (not yet written —
+    /// the DFN3 / NKF-AEC / Kokoro pickle-bridge pattern, where TFLite
+    /// is a Python-side tool that never enters the runtime, FR-LD-05,
     /// NFR-DS-02 zero-dep). BF16 pass-through skeleton — every F32 /
     /// F16 / BF16 tensor passes through verbatim under its upstream
     /// tensor key; the variant is detected from the LSTM kernel
@@ -1212,9 +1216,12 @@ pub enum ModelKind {
     /// encoder + audio-to-text adapter + Qwen2 LM decoder**. Same
     /// "encoder + adapter + LLM decoder" mold as sibling
     /// [`ModelKind::CanaryQwen`] (Canary FastConformer + Voxtral-style
-    /// Qwen decoder) — reuses the shared `vokra_ops::qwen2` primitives
-    /// (voxtral / kyutai_stt / canary_qwen precedent) once the runtime
-    /// binder lands. Distinct arch tag from the sibling FireRedTeam
+    /// Qwen decoder). A shared `vokra_ops::qwen2` op is a PROPOSED
+    /// consolidation, not a landed module — no such module exists
+    /// today. The only landed Qwen2-family forward is the inline one in
+    /// `vokra-models/src/voxtral/text_decoder.rs`; `canary_qwen` reuses
+    /// it, `kyutai_stt` does not, and this model has no runtime binder
+    /// at all yet. Distinct arch tag from the sibling FireRedTeam
     /// AED release ([`ModelKind::FireredAsrAedL`], Whisper-topology).
     /// Convert with `convert_firered_asr_llm_l_file`. vast.ai required
     /// for the actual weight fetch + convert per memory
@@ -1840,7 +1847,8 @@ pub enum ModelKind {
     /// generator (Kong et al. 2020, arXiv:2010.05646) trained on
     /// LibriTTS at 22 050 Hz. Ships torch-pickle generator.ckpt +
     /// hyperparams.yaml; callers pre-flatten to safetensors offline via
-    /// `tools/parity/hifigan_prepare_checkpoint.py`. BF16 pass-through
+    /// a future `tools/parity/hifigan_prepare_checkpoint.py` (not yet
+    /// written, so that step is manual today). BF16 pass-through
     /// skeleton — every F32 / F16 / BF16 tensor passes through
     /// verbatim under its upstream safetensors name; runtime binding +
     /// real-weight parity are deferred to owner
@@ -2290,9 +2298,10 @@ pub enum ModelKind {
     /// upstream releases ship torch pickle `pytorch_model.bin` +
     /// `config.yaml` only (no `model.safetensors` mirror, verified
     /// 2026-08-01 via HF cardData API); callers pre-flatten to
-    /// safetensors offline via
-    /// `tools/parity/vocos_prepare_checkpoint.py` (thin bridge over
-    /// `bin_to_safetensors.py` — the SpeechT5-HiFi-GAN pattern). BF16
+    /// safetensors offline via `tools/parity/bin_to_safetensors.py` —
+    /// a dedicated `tools/parity/vocos_prepare_checkpoint.py` thin
+    /// bridge over it (the SpeechT5-HiFi-GAN pattern) is **not yet
+    /// written**. BF16
     /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
     /// through verbatim under its upstream state-dict name; runtime
     /// binding + real-weight parity are deferred to owner
@@ -8018,9 +8027,11 @@ pub fn convert_file_licensed(
         }
         ModelKind::DtlnAec => {
             // Wave 6 2026-08-14 audit follow-up: pass every F32 / F16 /
-            // BF16 tensor through verbatim (the flattened safetensors
-            // from `tools/parity/dtln_aec_prepare_checkpoint.py` — the
-            // upstream ships .tflite only) and stamp `vokra.model.*`
+            // BF16 tensor through verbatim (flattened safetensors — a
+            // future `tools/parity/dtln_aec_prepare_checkpoint.py` is
+            // not yet written, and the upstream ships .tflite only, so
+            // that flattening is an owner-side step today) and stamp
+            // `vokra.model.*`
             // (arch = "dtln_aec", name = "dtln-aec", category = "aec") +
             // `vokra.provenance.upstream_url = github.com/breizhn/DTLN-aec`
             // (GitHub-only release, no HF mirror) +
@@ -9769,7 +9780,9 @@ pub fn convert_file_licensed(
             // mirror of speecht5_hifigan / bigvgan / focalcodec;
             // runtime binding is deferred to owner. Upstream ships
             // torch pickle only — pre-flatten via
-            // tools/parity/vocos_prepare_checkpoint.py.
+            // tools/parity/bin_to_safetensors.py; a dedicated
+            // tools/parity/vocos_prepare_checkpoint.py is not yet
+            // written.
             //
             // This path is the enum-arm default (Mel24khz); the
             // encodec-24khz variant is picked from the raw `--model`

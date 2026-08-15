@@ -93,9 +93,17 @@
 //! binding is a follow-up wave gated on the upstream tensor-name
 //! manifest fetch + license §3.1 sign-off (`docs/license-audit.md`);
 //! this converter passes every float tensor through unchanged so a
-//! future `FireredAsrLlmLWeights::from_gguf` can walk the same names
-//! (per the vokra_ops::qwen2 primitives already wired through
-//! voxtral / kyutai_stt / canary_qwen).
+//! future `FireredAsrLlmLWeights::from_gguf` can walk the same names.
+//!
+//! A shared `vokra_ops::qwen2` op is a PROPOSED consolidation, not a
+//! landed module — no such module exists today, and this model has no
+//! runtime binder of its own yet. The only landed Qwen2-family forward
+//! is the inline one in `vokra-models/src/voxtral/text_decoder.rs`
+//! (GQA + RoPE + SwiGLU + RMSNorm, via the public `rms_norm` /
+//! `silu_inplace` / `rope_apply` helpers). `canary_qwen` reuses that
+//! module; `kyutai_stt` does not (it re-implements nothing yet — its
+//! `transcribe` is still `NotImplemented`). Consolidating the three
+//! into one op is the follow-up wave this converter is written against.
 //!
 //! # Prep script bridge — sharded safetensors merge
 //!

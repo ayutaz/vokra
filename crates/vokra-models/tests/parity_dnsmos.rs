@@ -7,6 +7,31 @@
 //! opted in, every failure is hard: a missing / malformed / wrong-
 //! shaped fixture is a loud panic (FR-EX-08).
 //!
+//! # The MOS-comparison leg is unreachable today
+//!
+//! Step 3 of the recipe below invokes
+//! `tools/parity/dnsmos_score_reference.py`, which **has never been
+//! written** — it is not on disk anywhere in this repository. Its
+//! sibling `dnsmos_prepare_checkpoint.py` DOES exist, so the recipe is
+//! *half*-runnable, which is exactly why the gap went unnoticed: an
+//! owner gets through steps 1, 2, 4 and 5 and only step 3 silently
+//! yields nothing.
+//!
+//! The consequence is concrete: [`REFERENCE_JSONL_ENV`] cannot be
+//! produced by any tool in this tree, so the numeric MOS comparison
+//! **can never run**, and `parity_dnsmos_gated_scores` always takes its
+//! skip branch. The header above says a skip is "never a fabricated
+//! pass" — but a skip that is *unreachable by construction* has become
+//! precisely that. **A green run of this file is NOT evidence that
+//! Vokra's DNSMOS scores match the upstream reference; it is evidence
+//! that nothing compared them.** Until the reference dumper lands, treat
+//! this harness as covering fixture plumbing and shape validation only.
+//!
+//! Writing that dumper is the one change that opens the leg. It is
+//! deliberately not stubbed here: a fabricated reference emitted by
+//! Vokra itself would compare Vokra to Vokra and prove nothing (see
+//! `numerical-parity`'s independence rule).
+//!
 //! # Fixture recipe (owner-side)
 //!
 //! `microsoft/DNS-Challenge/DNSMOS/` (MIT) ships two ONNX checkpoints
@@ -20,9 +45,12 @@
 //!     --p808     ~/DNSMOS/model_v8.onnx \
 //!     --p835     ~/DNSMOS/sig_bak_ovr.onnx \
 //!     --output-st ~/dnsmos.safetensors
-//! # 3. Emit the reference JSONL (uses the upstream `dnsmos_local.py`
-//! #    under `onnxruntime` — offline reference tool only, never enters
-//! #    the runtime dependency graph):
+//! # 3. Emit the reference JSONL. NOTE: a future
+//! #    `tools/parity/dnsmos_score_reference.py` (not yet written — see
+//! #    the section above). It would wrap the upstream `dnsmos_local.py`
+//! #    under `onnxruntime` as an offline reference tool that never
+//! #    enters the runtime dependency graph. This step is CURRENTLY
+//! #    UNRUNNABLE:
 //! uv run python tools/parity/dnsmos_score_reference.py \
 //!     --p808      ~/DNSMOS/model_v8.onnx \
 //!     --p835      ~/DNSMOS/sig_bak_ovr.onnx \
@@ -259,8 +287,9 @@ fn parity_dnsmos_gated_scores() {
             let _ = env::var(REFERENCE_JSONL_ENV).unwrap_or_else(|_| {
                 panic!(
                     "the CNN forward is now real but {REFERENCE_JSONL_ENV} is \
-                     unset — provide the reference JSONL side-car per \
-                     tools/parity/dnsmos_score_reference.py"
+                     unset — and no tool in this tree can produce it: a future \
+                     tools/parity/dnsmos_score_reference.py (not yet written) \
+                     is the missing half. See the module docs."
                 )
             });
             panic!(

@@ -1145,14 +1145,30 @@ pub mod sensevoicesmall_runtime;
 //
 // Loud-partial: `estimate_objective` / `estimate_subjective` each return
 // `UnsupportedOp` naming their OWN deferred stages — the objective head's
-// learnable 1-D encoder + DPRNN stack (which additionally needs a general
-// recurrent primitive `vokra-ops` does not expose; the only recurrent kernels
-// in the tree are the DFN3-specific GRU stack inside `vokra_ops::denoise`) +
-// three transformer metric heads; the subjective head's `wav2vec2_base` SSL
-// encoder (the shared wav2vec2-lineage gap with `emotion2vec` / `wavlm`) +
-// attentive pool + linear projector + the NMR pairing — plus the upstream file
-// to transcribe and the reserved `vokra.squim.{objective,subjective}.topology`
-// chunk to stamp. No score value is ever fabricated (FR-EX-08).
+// learnable 1-D encoder + DPRNN stack + three transformer metric heads; the
+// subjective head's `wav2vec2_base` SSL encoder (the shared wav2vec2-lineage
+// gap with `emotion2vec` / `wavlm`) + attentive pool + linear projector + the
+// NMR pairing — plus the upstream file to transcribe and the reserved
+// `vokra.squim.{objective,subjective}.topology` chunk to stamp. No score value
+// is ever fabricated (FR-EX-08).
+//
+// The DPRNN stack additionally needs a recurrent cell, and that is a LIFT, not
+// greenfield RNN work: four recurrent bodies already exist — the public
+// shape-generic GRU `vokra_ops::rnnoise::gru_forward` (re-exported as
+// `vokra_ops::rnnoise_gru_forward`), the public LSTM gate body
+// `vokra_ops::hybrid_ctc_attention::LstmLmCell`, and the `pub(crate)`
+// `kokoro::nn::BiLstm1d` / `pyannote::bilstm::BiLstmLayer`. What `vokra-ops`
+// does not expose is a REUSABLE BARE CELL over a plain feature vector:
+// `LstmLmCell::step` welds a token-embedding lookup onto its input and a vocab
+// log-softmax onto its output, and the two BiLSTMs are unreachable from an op.
+// `squim::missing_primitive_note` is the authoritative wording — pinned by
+// `objective_head_loud_partials_naming_the_dprnn_and_its_missing_primitive`,
+// which asserts the stale phrasing is absent as well as asserting the live
+// blocker is present. This marker carried that stale phrasing ("the only
+// recurrent kernels in the tree are the DFN3-specific GRU stack inside
+// `vokra_ops::denoise`") until 2026-08-15: false from the moment
+// `vokra-ops/src/rnnoise.rs` landed, and left behind by the same change that
+// corrected every other copy.
 //
 // Deliberately does NOT implement `vokra_core::engines::MosScorerEngine`:
 // `MosScore`'s fields are DNSMOS-shaped (`p808` / `sig` / `bak` / `ovrl`), each

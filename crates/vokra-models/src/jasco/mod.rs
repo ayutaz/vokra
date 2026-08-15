@@ -210,11 +210,12 @@
 //!
 //! JASCO ships safetensors + PyTorch pickle upstream; this runtime
 //! **never** touches ONNX (FR-LD-05 / NFR-DS-02). If the upstream release
-//! ships pickle only, callers pre-flatten offline via
-//! `tools/parity/jasco_400m_chords_drums_prepare_checkpoint.py` (a thin
-//! wrapper over `bin_to_safetensors.py`; an uv-managed Python 3.12
-//! sidecar per memory `[[feedback-python-uses-uv]]` +
-//! `[[feedback-python-3-12]]` — not part of the runtime), mirroring the
+//! ships pickle only, callers pre-flatten offline via a future
+//! `tools/parity/jasco_400m_chords_drums_prepare_checkpoint.py` (not
+//! yet written — a thin wrapper over `bin_to_safetensors.py`; an
+//! uv-managed Python 3.12 sidecar per memory
+//! `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]` — not
+//! part of the runtime), mirroring the
 //! MusicGen / MelodyFlow / SpeechT5-HiFi-GAN / Sortformer / Charsiu
 //! bridge pattern.
 
