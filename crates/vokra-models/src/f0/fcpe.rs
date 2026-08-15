@@ -248,8 +248,12 @@ const NORM_EPS: f32 = 1e-5;
 // -- `vokra.f0.fcpe.*` schema keys -------------------------------------------
 //
 // Kept in lock-step with the producer
-// `vokra_convert::models::fcpe`, which stamps the first seven from the
-// checkpoint's tensor shapes and the last seven from its v001 reference.
+// `crates/vokra-convert/src/models/fcpe.rs`, which stamps the first seven
+// from the checkpoint's tensor shapes and the last seven from its v001
+// reference. Named by file path rather than by a Rust module path because
+// `mod models` is private in that crate: the module path is unnameable, not
+// unlanded, so it belongs in prose as a file path and not in the citation
+// gate's unlanded ledger. Matches the convention the sibling binders use.
 
 /// GGUF key: encoder hidden width.
 pub const GGUF_KEY_D_MODEL: &str = "vokra.f0.fcpe.d_model";

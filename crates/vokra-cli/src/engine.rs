@@ -1191,6 +1191,32 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::diffsinger::DiffSinger::from_gguf(g).map(|_| ())),
     },
     // --- Speech-to-speech -------------------------------------------------
+    // The same defect the `openwakeword_op` row above carried, found one
+    // round later in this one. `LoudPartialForward` asserts the LOAD
+    // works and only the forward is partial; until 2026-08-15 that was
+    // false here. The named converter
+    // (`crates/vokra-convert/src/models/llama_omni2.rs`) stamped one of
+    // the eleven `vokra.llama_omni2.*` keys the binder declares, so the
+    // other ten decayed to `0` and `validate_for_forward` refused every
+    // artifact with "backbone ill-formed (n_layer=0, d_model=0,
+    // n_head=0)". This row described the second failure of a pipeline
+    // that never survived the first.
+    //
+    // `probe: None` is correct rather than an oversight — `from_path`
+    // takes a path, not an already-parsed `&GgufFile`, which is exactly
+    // the case the field's doc calls out. It also would not have caught
+    // this: a probe only runs against a caller-supplied GGUF, so it fails
+    // on someone's machine, never in CI. What holds this row honest is
+    // `crates/vokra-models/tests/llama_omni2_convert_bind.rs`, which runs
+    // the real converter into the real binder with no fixture.
+    //
+    // The claim is accurate as of the converter repair: the load binds a
+    // real shape config (four axes derived from the tensors, six from a
+    // now-required `--config` side-car) and `converse` is a genuine
+    // loud-partial — `UnsupportedOp` naming the missing Qwen2.5 forward,
+    // speech encoder, streaming AR decoder and the primary source. Note
+    // the weight store is still `synthesized`, so a successful load is
+    // not a claim that real ICTNLP weights are bound.
     BoundArch {
         arch: "llama_omni2",
         module: "vokra_models::llama_omni2",
@@ -1460,12 +1486,38 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // invariant below requires it of this reason — a row must not claim
     // "nothing binds" while carrying a probe that demonstrates a binder.
     //
-    // `vocos` is the one row here that keeps `LoudPartialForward`: its
+    // Wave L (2026-08-15) — `vocos`, the fourth row, corrected. Wave K
+    // exempted it: it kept `LoudPartialForward` on the ground that its
     // `Vocos::decode` genuinely IS a loud-partial (it discards both args and
     // returns `backbone_forward_loud_partial`, naming the ConvNeXt V2
-    // backbone). Only its `entry` was wrong for the same reason as the
-    // others — `Vocos::from_gguf` also has no `Ok(` return — so `from_gguf`
-    // is dropped from the entry while the reason stands.
+    // backbone), and only its `entry` was rewritten. That exemption was
+    // wrong, and the paragraph asserting it has been removed rather than
+    // left standing — a comment that justifies the wrong answer is worse
+    // than none, because the next reader trusts it.
+    //
+    // What it got wrong is not the observation but the ordering. BOTH
+    // blockers apply to vocos:
+    //
+    //   * `Vocos::from_gguf` (`crates/vokra-models/src/vocos/mod.rs`) has no
+    //     `Ok(` return on any path — the whole file's single `Ok(` belongs to
+    //     `Vocos::new`. The variant check is the last thing that can succeed,
+    //     and the tensor walk past it returns `NotImplemented` on both
+    //     variant arms. Exactly the `BigVGan::from_gguf` shape above.
+    //   * `Vocos::decode` then refuses too, as Wave K observed.
+    //
+    // The loader is the one that fires FIRST, and the ordering rule this very
+    // comment states two paragraphs up ("the blocker that fires FIRST is that
+    // nothing binds from a converted artifact") does not stop applying because
+    // a second blocker also exists. Wave K read the second blocker's presence
+    // as grounds to name it, which inverted the rule it was applying to the
+    // three siblings in the same breath. A user was promised a forward-blocker
+    // diagnostic and handed a load failure.
+    //
+    // So the row is filed with its three siblings: `NoGgufLoader`, no probe.
+    // The forward gap is not discarded — it moves into `entry`, which is
+    // where a caller who gets past the (absent) loader would meet it. That is
+    // the one thing separating this row from the other three, whose `decode`
+    // calls are complete.
     BoundArch {
         arch: "bigvgan",
         module: "vokra_models::bigvgan",
@@ -1476,9 +1528,11 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "vocos",
         module: "vokra_models::vocos",
-        entry: "Vocos::new(VocosVariant, VocosConfig, u32) → Vocos::decode",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::vocos::Vocos::from_gguf(g).map(|_| ())),
+        entry: "Vocos::new(VocosVariant, VocosConfig, u32) → Vocos::decode (a SECOND \
+                blocker, unlike its bigvgan / hifigan siblings: the ConvNeXt V2 backbone \
+                is absent from vokra-ops, so decode names that gap instead of returning PCM)",
+        reason: BoundReason::NoGgufLoader,
+        probe: None,
     },
     BoundArch {
         arch: "hifigan_vocoder",
@@ -1696,7 +1750,7 @@ fn bound_arch_error(bound: &BoundArch, gguf: &GgufFile) -> String {
         // Deliberately states only that no probe ran, not WHY. The rows
         // reaching this arm no longer share a single cause: some have no
         // loader at all, some have one that takes a filesystem path, and
-        // some (bigvgan, hifigan_vocoder, speecht5_hifigan) have a
+        // some (bigvgan, vocos, hifigan_vocoder, speecht5_hifigan) have a
         // `&GgufFile` loader that refuses on every path. The previous
         // wording asserted the second case for all of them, and also told
         // the reader the load "has to happen through the library entry
@@ -2540,11 +2594,20 @@ mod tests {
     // `bigvgan`, `hifigan_vocoder` and `speecht5_hifigan` shipped as
     // `LoudPartialForward` naming `X::from_gguf → X::decode`. Both halves
     // were false: the forwards are complete calls into landed ops, while the
-    // LOADERS refuse on every path. `vocos` sat beside them with a genuinely
-    // loud-partial `decode` but the same unreachable `from_gguf` in `entry`.
-    // No test mentioned any of the four, which is exactly how they drifted;
-    // these pin the corrected state from all three sides — the message a
-    // user sees, the binder behind it, and the rows' own data.
+    // LOADERS refuse on every path. No test mentioned any of them, which is
+    // exactly how they drifted; these pin the corrected state from all three
+    // sides — the message a user sees, the binder behind it, and the rows'
+    // own data.
+    //
+    // Wave L (2026-08-15) folded `vocos` in as the fourth. Wave K had left it
+    // on `LoudPartialForward` because its `decode` is a genuine loud-partial,
+    // which named the SECOND of its two blockers — its `from_gguf` is as dead
+    // as the other three. Its tests sit at the end of this block and are
+    // built to the same three-sided shape, so the exemption cannot return
+    // quietly. The scan behind that fold: of the 56 registry rows carrying a
+    // `&GgufFile` `from_gguf` probe, `vocos` was the only one whose loader
+    // had no `Ok(` return on any path — so this defect class is closed at
+    // four, not merely reduced.
 
     /// The `run` diagnostic names the blocker that actually fires (nothing
     /// binds) rather than a forward gap, and points at the constructor a
@@ -2677,31 +2740,120 @@ mod tests {
         }
     }
 
-    /// `vocos` is the row that KEEPS `LoudPartialForward` — its `decode`
-    /// really does discard both arguments and return the ConvNeXt V2
-    /// deferral — but its `entry` must not name the loader, which never
-    /// binds either.
+    /// The `run` diagnostic for `vocos` names the blocker that actually fires
+    /// FIRST — nothing binds — rather than the forward gap behind it.
+    ///
+    /// Wave K left this row on `LoudPartialForward` because `Vocos::decode`
+    /// really is a loud-partial. It is, but it is the SECOND blocker: a user
+    /// handed a `vocos` GGUF never reaches `decode`, because `Vocos::from_gguf`
+    /// refuses first. Promising a forward-blocker diagnostic and delivering a
+    /// load failure is the defect this pins shut.
     #[test]
-    fn bound_arch_registry_vocos_row_keeps_its_forward_gap_but_drops_the_loader() {
+    fn load_session_binds_vocos_arch_as_unwired_loader_not_loud_partial_forward() {
+        let err = assert_bound_arch("vocos", "vocos-arch", "vokra_models::vocos", "Vocos::new");
+        assert!(
+            err.contains("no GGUF loader yet"),
+            "vocos's first blocker is that nothing binds from a converted artifact — its \
+             `from_gguf` has no `Ok(` return on any path: {err}"
+        );
+        assert!(
+            !err.contains("runtime forward is a loud-partial"),
+            "leading with the forward gap asserts a working load this build cannot perform; \
+             the gap is real but second, and belongs in `entry`: {err}"
+        );
+        assert!(
+            !err.contains("Vocos::from_gguf"),
+            "the entry must not send a caller at a constructor that always errors: {err}"
+        );
+        assert!(
+            err.contains("ConvNeXt V2"),
+            "demoting the forward gap must not DELETE it — vocos is the one row here whose \
+             `decode` also refuses, and a caller past the constructor needs to know: {err}"
+        );
+    }
+
+    /// The claim the corrected row rests on, checked against the binder
+    /// itself. Stamping a valid variant walks past both dispatch gates to the
+    /// deepest reachable point (the deferred tensor walk), so this pins the
+    /// real blocker rather than an early metadata refusal that would still
+    /// fire under a real loader — the `bigvgan` precedent above.
+    ///
+    /// If a real loader lands, this test fails, which is the point: the row's
+    /// `reason` and `entry` both assume nothing binds.
+    #[test]
+    fn vocos_from_gguf_still_binds_nothing_past_variant_dispatch() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "vocos");
+        b.add_string(
+            vokra_models::vocos::KEY_VOCOS_VARIANT,
+            vokra_models::vocos::VARIANT_TAG_MEL24KHZ,
+        );
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-vocos-variant-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let gguf = GgufFile::open(&path).expect("vocos variant fixture parses");
+        // let-else for symmetry with the sibling probes above. Here it is a
+        // style match rather than a necessity: `BigVGan` and `HiFiGan` are
+        // `!Debug`, whereas `Vocos` derives it.
+        let Err(err) = vokra_models::vocos::Vocos::from_gguf(&gguf) else {
+            let _ = std::fs::remove_file(&path);
+            panic!(
+                "Vocos::from_gguf bound a metadata-only GGUF past its variant gate — if the \
+                 real tensor walk landed, revisit the BOUND_ARCHES row: its reason \
+                 (NoGgufLoader) and entry (Vocos::new) both assume nothing binds"
+            );
+        };
+        let _ = std::fs::remove_file(&path);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("real-weight loader is deferred"),
+            "the refusal must still name the deferred tensor walk: {msg}"
+        );
+    }
+
+    /// The row's own data, asserted directly so a regression reports its cause
+    /// rather than only the downstream message.
+    ///
+    /// Kept separate from
+    /// `bound_arch_registry_vocoder_rows_do_not_promise_a_gguf_load` above
+    /// because vocos carries one assertion its three siblings must NOT: its
+    /// `entry` has to record the second blocker, since its `decode` — unlike
+    /// theirs — does not work either.
+    #[test]
+    fn bound_arch_registry_vocos_row_does_not_promise_a_gguf_load() {
         let row = BOUND_ARCHES
             .iter()
             .find(|b| b.arch == "vocos")
             .expect("vocos has a vokra-models binder and must carry a row");
         assert_eq!(
             row.reason,
-            BoundReason::LoudPartialForward,
-            "`Vocos::decode` returns `backbone_forward_loud_partial` on every call — \
-             unlike its bigvgan / hifigan siblings, this row's forward gap is real"
+            BoundReason::NoGgufLoader,
+            "`Vocos::from_gguf` has no `Ok(` return on any path, so nothing binds from a \
+             converted artifact — that fires BEFORE the (also real) forward gap, and \
+             `LoudPartialForward` states the second blocker as if it were the first"
+        );
+        assert!(
+            row.probe.is_none(),
+            "a row claiming nothing binds must not carry a probe that demonstrates a binder"
         );
         assert!(
             !row.entry.contains("from_gguf"),
-            "`Vocos::from_gguf` has no `Ok(` return on any path, so naming it points the \
-             caller at a dead end: {}",
+            "`entry` must name a reachable constructor; `Vocos::from_gguf` always errors: {}",
             row.entry
         );
         assert!(
             row.entry.contains("Vocos::new"),
             "the module names `Vocos::new` as the reachable constructor: {}",
+            row.entry
+        );
+        assert!(
+            row.entry.contains("ConvNeXt V2"),
+            "vocos is the only row in this family whose `decode` ALSO refuses; demoting that \
+             gap out of `reason` must move it into `entry`, not drop it: {}",
             row.entry
         );
     }

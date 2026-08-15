@@ -41,9 +41,16 @@
 //!
 //! CLAUDE.md「ハルシネーション厳禁」: the scaffold does **not** hardcode
 //! per-variant `n_layer` / `d_model` / `n_head` / `vocab` / adapter dims.
-//! Every hparam is transcribed from the upstream `config.json` at
-//! **convert time** and stamped into the GGUF; the runtime reads them
-//! back verbatim through [`LlamaOmni2Config::from_gguf`]. Per-variant
+//! Every hparam is resolved at **convert time** and stamped into the
+//! GGUF; the runtime reads them back verbatim through
+//! [`LlamaOmni2Config::from_gguf`]. As of the 2026-08-15 handshake
+//! repair the converter splits that resolution two ways: `n_layer` /
+//! `d_model` / `vocab` / `intermediate_size` are derived from the
+//! checkpoint's own tensor shapes, and the six axes no tensor carries
+//! (`n_head`, `rope_max_period`, `rms_norm_eps`, `sample_rate`,
+//! `speech_encoder.dim`, `speech_decoder.dim`) come from a required
+//! `--config` side-car the operator transcribes from the upstream
+//! `config.json`. Neither half is defaulted. Per-variant
 //! primary-source constants (e.g. `llama_omni2_7b()`) land in a future
 //! wave once the owner fetches each variant's `config.json` on vast.ai
 //! and records the JSON in the audit ticket — this mirrors the exact
@@ -112,11 +119,29 @@ pub const LLAMA_OMNI2_FROM_GGUF_DEFAULT_SEED: u64 = 0x_10AD_11AD_10AD_11AD;
 // ---------------------------------------------------------------------------
 //
 // These strings mirror the offline converter
-// (`vokra-convert::models::llama_omni2`) verbatim; the two crates only
-// share `vokra-core`, so the string constants are the sole handshake
-// (the cross-crate pattern established by CSM / CosyVoice2 / Kokoro /
-// Dia / Zonos / KyutaiSTT — see this module docstring and the sibling
-// `kyutai_stt/mod.rs` for the same layout).
+// (`crates/vokra-convert/src/models/llama_omni2.rs` — `vokra-convert`'s
+// `models` module is private, so the file is the only honest referent)
+// verbatim; the two crates only share `vokra-core`, so the string
+// constants are the sole handshake (the cross-crate pattern established
+// by CSM / CosyVoice2 / Kokoro / Dia / Zonos / KyutaiSTT — see this
+// module docstring and the sibling `kyutai_stt/mod.rs` for the same
+// layout).
+//
+// UNTIL 2026-08-15 THIS CLAIM WAS FALSE FOR TEN OF THE ELEVEN.
+//
+// The converter stamped `variant` and nothing else, so the ten numeric
+// keys below read back through `read_u32_or_zero` / `read_f32_or` as
+// their `0` placeholders and `validate_for_forward` refused the load
+// with "backbone ill-formed (n_layer=0, d_model=0, n_head=0)". Every
+// GGUF `vokra-cli convert --model llama-omni2` produced failed here.
+//
+// A comment asserting a mirror does not create one, and nothing checked
+// it: this crate's unit tests hand-build their fixtures with
+// `GgufBuilder`, so both halves were only ever tested against a mock of
+// the other. What makes the claim true now — and keeps it true — is
+// `crates/vokra-models/tests/llama_omni2_convert_bind.rs`, which runs
+// the real converter into this binder. Edit either list without the
+// other and it goes red.
 
 const KEY_VARIANT: &str = "vokra.llama_omni2.variant";
 const KEY_SAMPLE_RATE: &str = "vokra.llama_omni2.sample_rate";
@@ -413,6 +438,23 @@ impl LlamaOmni2Config {
 // typed keys are loud `VokraError::InvalidArgument` (FR-EX-08 — never a
 // silent type coercion). Mirrors the CSM / kyutai_stt helper of the
 // same name.
+//
+// A NOTE ON WHAT THIS PERMISSIVENESS COST
+//
+// The `_or_zero` shape is safe at the point of USE — `validate_for_forward`
+// refuses every zero, so a missing key can never reach a forward. What it is
+// not safe against is a converter that never stamps the keys at all, which is
+// exactly what happened here until 2026-08-15: the defect presented as a
+// runtime load failure rather than as a converter bug, and it presented that
+// way to nobody, because no test ran the two together.
+//
+// It also hid the gap from `scripts/check-arch-handshake.sh`, whose leg (d)
+// pairs "keys a binder requires" against "keys a converter stamps". A read
+// with a caller-supplied default is suppressed there as intentional (its "S2
+// caller default" class) — which is the right default for a genuinely
+// optional key, and was wrong for these ten. So do not read that gate's green
+// as coverage for this file; `crates/vokra-models/tests/llama_omni2_convert_bind.rs`
+// is what covers it.
 fn read_u32_or_zero(file: &GgufFile, key: &str) -> Result<u32> {
     match file.get(key) {
         Some(GgufMetadataValue::U32(v)) => Ok(*v),
@@ -801,7 +843,8 @@ impl LlamaOmni2 {
             Some(other) => {
                 return Err(VokraError::ModelLoad(format!(
                     "llama-omni2: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
-                     (was this GGUF produced by `vokra-cli convert --model llama-omni2`? \
+                     (was this GGUF produced by `vokra-cli convert --model llama-omni2 \
+                     --config <config.json>`? \
                      Sibling Qwen2-family arches — `voxtral` (Mistral-family ASR / S2S), \
                      `canary_qwen` (FastConformer + Qwen decoder ASR), \
                      `kyutai_stt` (Helium-style decoder-only ASR), \
@@ -858,11 +901,24 @@ mod tests {
     use vokra_core::LicenseClass;
     use vokra_core::gguf::GgufBuilder;
 
-    /// Builds a metadata-only GGUF whose `vokra.model.arch` is `arch`
-    /// (unless `set_arch` is false). Adds every well-formed
-    /// `vokra.llama_omni2.*` chunk group `LlamaOmni2Config::from_gguf`
-    /// reads, mirroring the offline converter's `write_hparams` so a
-    /// round-trip yields the same tiny config snapshot.
+    /// Builds a metadata-only GGUF carrying every well-formed
+    /// `vokra.llama_omni2.*` chunk `LlamaOmni2Config::from_gguf` reads,
+    /// so a round-trip yields the same tiny config snapshot. `arch` is
+    /// stamped when `Some`, omitted when `None`.
+    ///
+    /// This is a HAND-BUILT fixture, not a conversion. It deliberately
+    /// does not claim to mirror the offline converter: an earlier
+    /// revision of this docstring cited that converter's `write_hparams`,
+    /// which has never existed in it — and while this fixture was
+    /// asserting a mirror that was not there, the converter was in fact
+    /// stamping none of these keys.
+    ///
+    /// A fixture like this one cannot detect that class of defect,
+    /// because it IS the mock. The real converter → binder path is
+    /// exercised by `crates/vokra-models/tests/llama_omni2_convert_bind.rs`;
+    /// this helper stays for the narrower job of driving `from_gguf`'s
+    /// own branches (missing arch, wrong arch, bad variant tag) without
+    /// a checkpoint.
     fn build_gguf_with_hparams(arch: Option<&str>, cfg: &LlamaOmni2Config) -> Vec<u8> {
         let mut b = GgufBuilder::new();
         if let Some(a) = arch {

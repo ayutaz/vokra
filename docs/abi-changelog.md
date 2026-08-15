@@ -228,6 +228,84 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
+
+**Behaviour change** plus additive Rust surface. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+LLaMA-Omni2 is not cbindgen-exported, so `scripts/gen-c-abi.sh --check` sees
+no diff. The Rust public-API snapshot gate covers `vokra-core` / `vokra-ops`
+/ `vokra-capi` only, so `vokra-convert` and `vokra-models` changes do not
+move it. The GGUF chunk-prefix leg of `scripts/check-abi-changelog.sh` is
+satisfied: no new `vokra.<group>` prefix appears — `vokra.llama_omni2` was
+already stamped (by the one key that was) and is already named in this file.
+Recorded here because §Scope puts the `vokra.*` GGUF schema in scope, and
+because the pre-1.0 recording rule covers Rust `pub` items.
+
+**Motivation**: `crates/vokra-convert/src/models/llama_omni2.rs` stamped
+five strings — arch, name, category, `vokra.llama_omni2.variant`,
+upstream_hf — plus provenance, and none of the **ten** numeric keys
+`vokra_models::llama_omni2::LlamaOmni2Config::from_gguf` reads. Those ten go
+through `read_u32_or_zero` / `read_f32_or`, so every one decayed to its `0`
+placeholder and `validate_for_forward` refused the load with
+`InvalidArgument("backbone ill-formed (n_layer=0, d_model=0, n_head=0)")`.
+**Every GGUF `vokra-cli convert --model llama-omni2` produced failed to load
+in the binder written for it.** This is the same defect the
+`vokra.openwakeword.*` repair closed one round earlier; the sibling
+`kyutai_stt`, which this module's docs name as its precedent, does stamp its
+full group, so the precedent was real and simply was not carried over.
+
+Nothing caught it because both halves were tested against a mock of the
+other: the binder's unit tests hand-build their GGUF with `GgufBuilder`, and
+the converter's tests asserted only the five strings it did stamp. The new
+`crates/vokra-models/tests/llama_omni2_convert_bind.rs` runs the real
+converter into the real binder, fixture-free, so neither can drift again.
+
+**GGUF schema**: the `vokra.llama_omni2.*` group grows from 1 stamped key to
+11 (see the chunk-prefix table). Four are derived from the tensors —
+`arch.backbone.n_layer` from the contiguous layer run (a gap is a hard
+error), `arch.backbone.d_model` / `arch.backbone.vocab` from the token
+embedding axes, and `arch.backbone.intermediate_size` from the SwiGLU gate
+projection, whose second axis cross-checks `d_model`. Existing artifacts are
+unaffected in the only sense that matters: there are none that worked.
+
+**Rust surface** (`vokra-convert`):
+
+- **Breaking**: `convert_llama_omni2_file` and `convert_llama_omni2_bytes`
+  now always return `ConvertError::Usage`. Six axes (`n_head`,
+  `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim`,
+  `speech_decoder_dim`) cannot be read off any tensor shape, and the binder
+  refuses a `0` on every one, so no `--config`-less conversion can produce a
+  loadable artifact. Refusing is the `ModelKind::Crepe` /
+  `openwakeword_op` precedent; the alternative is to keep writing files that
+  cannot be opened. Both are kept as named refusals rather than deleted so an
+  existing caller gets a routing message instead of a link error.
+- **Breaking**: `ModelKind::LlamaOmni2` through `convert_file` /
+  `convert_file_licensed` / `convert_file_with_slug` likewise returns
+  `ConvertError::Usage` naming the side-car.
+- **Added**: `convert_llama_omni2_file_with_config(input, config, output,
+  variant, license)` — the working route.
+- **Added**: ten `pub const KEY_*` metadata-key constants plus
+  `DEFAULT_LAYER_PREFIX` / `DEFAULT_EMBEDDING_TENSOR` /
+  `DEFAULT_GATE_PROJ_SUFFIX`, mirroring the binder's own list.
+- **Added**: `LlamaOmni2Report` gains `n_layer` / `d_model` / `vocab` /
+  `intermediate_size`, so a caller can see what was derived rather than
+  re-deriving it.
+
+**CLI**: `--model llama-omni2[-<release>]` gains a dedicated arm and now
+requires `--config <config.json>`. It previously fell through the generic
+dispatch, which hard-codes `config_side_car = None` and would have dropped
+the flag silently.
+
+**Honest limits**: the upstream tensor manifest has still not been
+transcribed into this tree, so the names the derivation searches for
+(`layer_prefix`, `embedding_tensor`, `gate_proj_suffix`) are side-car knobs
+defaulting to the bare HuggingFace Qwen2 spelling. A default *search key* is
+admissible where a default *model axis* is not, because a key that matches
+nothing yields a hard error naming the knob rather than a plausible wrong
+number. The binder's weight store also remains `synthesized` — a successful
+load is not a claim that real ICTNLP weights are bound, and `converse` is
+still a loud-partial.
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (FCPE: the `vokra.f0.fcpe.*` chunk is now stamped by the converter and REQUIRED by the loader — GGUF schema break + Rust surface, advisory)
 
 **Breaking, for GGUF artifacts.** The C ABI (`include/vokra.h`, 33 fn + 11
@@ -2360,7 +2438,7 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.itn.*` | **12** keys — `direction`, `language`, `prefix`, `tagger_bytes`, …  | `u32` + `bool` + `string` + `u8[]` + `u64` + `i64` | persisted | `wetextprocessing`, `github.com/wenet-e2e/WeTextProcessing` — written by `crates/vokra-convert/src/models/wetextprocessing.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
 | backfill | `vokra.kokoro.*` | **11** keys — `hidden_dim`, `istft.hop`, `istft.n_fft`, `istft.win_length`, …  | `u32` + `string[]` | persisted | `kokoro-82m` — written by `crates/vokra-convert/src/models/kokoro.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `e294034` (2026-07-06) |
 | backfill | `vokra.kyutai_stt.*` | **24** keys — `arch.backbone.causal`, `arch.backbone.context`, `arch.backbone.d_model`, `arch.backbone.ffn_hidden`, …  | `u32` + `f32` | persisted | `kyutai-stt-2.6b-en` — written by `crates/vokra-convert/src/models/kyutai_stt.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
-| backfill | `vokra.llama_omni2.*` | **1** keys — `variant` | `string` | persisted | `llama_omni2` — written by `crates/vokra-convert/src/models/llama_omni2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `9346982` (2026-08-14) |
+| backfill | `vokra.llama_omni2.*` | **11** keys — `variant`, `sample_rate`, `arch.backbone.{n_layer, d_model, n_head, vocab, intermediate_size, rope_max_period, rms_norm_eps}`, `arch.speech_encoder.dim`, `arch.speech_decoder.dim` | `u32` + `f32` + `string` | persisted | `llama_omni2` — written by `crates/vokra-convert/src/models/llama_omni2.rs`. **Additive**, but note the repair it belongs to — the same defect class as the `vokra.openwakeword.*` row above, found one round later. The binder (`vokra-models/src/llama_omni2/mod.rs`) has declared all eleven since it landed; the converter stamped only `variant`, so the other ten decayed to `0` through `read_u32_or_zero` / `read_f32_or` and `validate_for_forward` refused every artifact with "backbone ill-formed (n_layer=0, d_model=0, n_head=0)". Nothing caught it: both halves were tested against a mock of the other, and no test ran the real converter into the real binder until `crates/vokra-models/tests/llama_omni2_convert_bind.rs`. Four of the ten are derived from the tensors (`n_layer` from the contiguous layer run, `d_model` / `vocab` from the embedding axes, `intermediate_size` from the SwiGLU gate projection, whose second axis cross-checks `d_model`). **Behaviour change**: `--model llama-omni2` now REFUSES without `--config`, because the other six (`n_head`, `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim`, `speech_decoder_dim`) cannot be read off any tensor shape and must not be synthesised (the `ModelKind::Crepe` refusal precedent). The config-less form previously "succeeded" and wrote an unloadable artifact. | `9346982` (2026-08-14), repaired 2026-08-15 |
 | backfill | `vokra.m2d.*` | **8** keys — `hidden_size`, `inference_branch`, `n_mels`, `num_attention_heads`, …  | `u32` + `string` | persisted | `m2d-base`, `github.com/nttcslab/m2d` — written by `crates/vokra-convert/src/models/m2d.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `bdce8c3` (2026-08-13) |
 | backfill | `vokra.maest.*` | **33** keys — `attention_dropout_scaled_1e3`, `do_normalize`, `fmax_hz`, `fmin_hz`, …  | `u32` + `bool` + `string` + `f64` | persisted | `maest-30s-pw-129e`, `mtg-upf/discogs-maest-30s-pw-129e` — written by `crates/vokra-convert/src/models/maest.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `79c3691` (2026-08-13) |
 | backfill | `vokra.melotts.*` | **18** keys — `filter_channels`, `gin_channels`, `hidden_channels`, `hop_length`, …  | `u32` + `string` | persisted | `melotts` — written by `crates/vokra-convert/src/models/melotts.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |

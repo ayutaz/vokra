@@ -11,17 +11,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ConvertSummary, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant, VoxtralConfig,
-    convert_beat_this_with_config, convert_bert_base_file, convert_chatterbox_file,
+    ConvertSummary, LlamaOmni2Variant, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant,
+    VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file, convert_chatterbox_file,
     convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
     convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
     convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
-    convert_openwakeword_op_file_with_config, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_streaming, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    convert_llama_omni2_file_with_config, convert_openwakeword_op_file_with_config,
+    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -68,6 +68,7 @@ USAGE:
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model fsmn-vad --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -353,7 +354,13 @@ OPTIONS:
                               tools/parity/openwakeword_prepare_checkpoint.py
                               --output-config; carries `wakeword_names`, the
                               per-wake-word labels that exist nowhere in the
-                              safetensors and are never invented)
+                              safetensors and are never invented) OR the
+                              LLaMA-Omni2 side-car (required for llama-omni2;
+                              carries `n_head`, `rope_max_period`,
+                              `rms_norm_eps`, `sample_rate`,
+                              `speech_encoder_dim`, `speech_decoder_dim`
+                              transcribed from the upstream config.json —
+                              six axes no tensor shape carries)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
@@ -1194,6 +1201,47 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                                 --output-config). The per-wake-word labels the runtime \
                                 returns are not present in the safetensors and are not \
                                 invented here."
+                        .to_owned());
+                }
+            }
+        }
+        ModelKind::LlamaOmni2 => {
+            // 2026-08-15 handshake repair. A dedicated arm rather than
+            // the generic `convert_file_with_slug` fallthrough, for the
+            // same reason as the Crepe / OpenwakewordOp arms above: the
+            // generic dispatch hard-codes `config_side_car = None`, so
+            // `--config` would be silently dropped. Here that is not a
+            // cosmetic loss — without the side-car the GGUF is missing
+            // ten keys `LlamaOmni2Config::from_gguf` reads, every one of
+            // which then decays to 0 and fails `validate_for_forward`.
+            //
+            // The variant comes from the raw `--model` slug, so
+            // `--model llama-omni2-32b` cannot stamp a 7B identity onto
+            // a 64 GB artifact.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let variant = LlamaOmni2Variant::from_arg(&p.raw_model_slug).unwrap_or_default();
+            match &p.config {
+                Some(config) => convert_llama_omni2_file_with_config(
+                    &p.input,
+                    config,
+                    &p.output,
+                    variant,
+                    p.license.as_deref(),
+                ),
+                None => {
+                    return Err("--model llama-omni2 requires --config <config.json> \
+                                carrying `n_head`, `rope_max_period`, `rms_norm_eps`, \
+                                `sample_rate`, `speech_encoder_dim` and \
+                                `speech_decoder_dim`, transcribed from the upstream \
+                                config.json. Those six axes cannot be read off any tensor \
+                                shape and are not invented here; the runtime binder \
+                                refuses a 0 on every one of them, so a GGUF built without \
+                                them cannot load at all."
                         .to_owned());
                 }
             }

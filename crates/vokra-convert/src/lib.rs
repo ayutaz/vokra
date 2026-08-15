@@ -3906,9 +3906,19 @@ pub enum ModelKind {
     /// full-duplex `moshi` / `csm` / `voila` trio.
     ///
     /// **Why this variant exists** (2026-08-15 audit follow-up): the
-    /// binder `vokra-models::llama_omni2` names
-    /// `vokra-cli convert --model llama-omni2` in its arch-mismatch
-    /// message while `ModelKind::from_arg` accepted no such spelling.
+    /// binder `vokra_models::llama_omni2` names
+    /// `vokra-cli convert --model llama-omni2 --config <config.json>` in
+    /// its arch-mismatch message while `ModelKind::from_arg` accepted no
+    /// such spelling.
+    ///
+    /// **Requires `--config`** (2026-08-15 handshake repair): this kind
+    /// refuses through the plain [`convert_file`] /
+    /// [`convert_file_with_slug`] routes and converts only through
+    /// [`convert_llama_omni2_file_with_config`]. Six of the eleven
+    /// `vokra.llama_omni2.*` axes the binder reads exist only in the
+    /// upstream `config.json`, so a side-car-less conversion cannot
+    /// produce a loadable artifact — it previously produced an unloadable
+    /// one instead of saying so.
     ///
     /// **One arm, four releases**: 7B (default) / 3B-Bilingual / 1.5B /
     /// 32B share this variant, and the raw `--model` slug picks the
@@ -6743,46 +6753,33 @@ pub fn convert_file_with_slug(
             })
         }
         ModelKind::LlamaOmni2 => {
-            // 2026-08-15 audit follow-up. Four ICTNLP releases (7B /
-            // 3B-Bilingual / 1.5B / 32B) share one `ModelKind`, and the
-            // variant is a real discriminator: it decides
-            // `vokra.llama_omni2.variant`, the `vokra.model.name` suffix
-            // and the `vokra.provenance.upstream_hf` repo id. Resolving
-            // it from the raw slug is what keeps `--model
-            // llama-omni2-32b` from silently stamping a 7B identity onto
-            // a 64 GB artifact.
+            // 2026-08-15 handshake repair. This arm used to call
+            // `convert_llama_omni2_file`, which stamped five strings and
+            // none of the ten numeric `vokra.llama_omni2.*` keys the
+            // runtime binder reads — so every artifact it produced failed
+            // to load. Six of those axes cannot be derived from any
+            // tensor shape, so there is no `--config`-less conversion
+            // that would load: this path refuses and routes to
+            // [`convert_llama_omni2_file_with_config`], mirroring the
+            // Crepe / openwakeword-op precedent.
             //
-            // `LlamaOmni2Variant::from_arg` owns the spelling table, so
-            // there is exactly one place to edit when a release is added
-            // — `ModelKind::from_arg` mirrors that same list, and the
-            // `llama_omni2_slugs_resolve_to_distinct_variants` test below
-            // pins the two lists together. The `unwrap_or_default()` is
-            // reachable only for a slug `ModelKind::from_arg` accepts but
-            // `LlamaOmni2Variant::from_arg` does not, which that test
-            // asserts is the empty set.
+            // The variant is still resolved from the slug here so the
+            // error can say which release was asked for, and so the
+            // resolution stays exercised by the sibling
+            // `every_llama_omni2_slug_resolves_to_a_variant` test.
             let variant =
                 models::llama_omni2::LlamaOmni2Variant::from_arg(slug).unwrap_or_default();
-            let report =
-                models::llama_omni2::convert_llama_omni2_file(input, output, variant, license)?;
-            let notes = vec![format!(
-                "llama-omni2 ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped, {} tensors read; upstream repo {}. \
-                 docs/license-audit.md §3.1 sign-off is BLANK (fail-closed) until the owner \
-                 signs, so publish stays blocked",
-                report.variant.tag(),
-                report.written,
-                report.bf16_passthrough,
-                report.skipped_non_float,
-                report.read,
+            let _ = (input, output, license);
+            Err(ConvertError::Usage(format!(
+                "llama-omni2 ({}) needs a --config config.json: `n_head`, \
+                 `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim` and \
+                 `speech_decoder_dim` cannot be read off any tensor shape, and the runtime \
+                 binder refuses a 0 on every one of them. Use \
+                 convert_llama_omni2_file_with_config (or `vokra-cli convert --model {slug} \
+                 --config <config.json>`). Upstream repo {}.",
+                variant.tag(),
                 variant.as_repo_id(),
-            )];
-            Ok(ConvertSummary {
-                model,
-                tensor_count: report.written,
-                metadata_count: 0,
-                output_bytes: std::fs::metadata(output)?.len(),
-                notes,
-            })
+            )))
         }
         _ => convert_file_licensed(model, input, output, license),
     }
@@ -11895,37 +11892,21 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::LlamaOmni2 => {
-            // LLaMA-Omni2 (ICTNLP/LLaMA-Omni2-*, apache-2.0). Four
-            // releases share this kind; the raw `--model` slug picks one
-            // in `convert_file_with_slug` (the BigVGan / Snac / Qwen3Asr
-            // precedent). This arm is the slug-less path — plain
-            // `convert_file` / `convert_file_licensed` — so it lands the
-            // 7B default the ACL 2025 paper anchors to, and the note says
-            // which release it stamped so a caller who meant 32B sees it
-            // in the output rather than in a mis-stamped artifact.
-            let variant = models::llama_omni2::LlamaOmni2Variant::default();
-            let report =
-                models::llama_omni2::convert_llama_omni2_file(input, output, variant, license)?;
-            let notes = vec![format!(
-                "llama-omni2 ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped, {} tensors read; variant defaulted because this entry \
-                 point takes no `--model` slug — pass a per-release spelling \
-                 (llama-omni2-3b-bilingual / llama-omni2-1.5b / llama-omni2-32b) through the \
-                 CLI to stamp a different one. docs/license-audit.md §3.1 sign-off is BLANK \
-                 (fail-closed) until the owner signs",
-                report.variant.tag(),
-                report.written,
-                report.bf16_passthrough,
-                report.skipped_non_float,
-                report.read,
-            )];
-            return Ok(ConvertSummary {
-                model: ModelKind::LlamaOmni2,
-                tensor_count: report.written,
-                metadata_count: 0,
-                output_bytes: std::fs::metadata(output)?.len(),
-                notes,
-            });
+            // 2026-08-15 handshake repair — the slug-less twin of the
+            // arm in `convert_file_with_slug`. Same reason to refuse:
+            // six of the eleven `vokra.llama_omni2.*` axes the runtime
+            // binder reads exist only in the upstream config.json, and
+            // this entry point has nowhere to get them from. It used to
+            // emit an artifact anyway, and that artifact could not load.
+            let _ = (input, output, license);
+            return Err(ConvertError::Usage(
+                "llama-omni2 needs a --config config.json carrying `n_head`, \
+                 `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim` and \
+                 `speech_decoder_dim`; use convert_llama_omni2_file_with_config. This \
+                 slug-less entry point also cannot pick a release variant, so prefer \
+                 `vokra-cli convert --model llama-omni2-<release> --config <config.json>`."
+                    .to_owned(),
+            ));
         }
     };
 
@@ -12447,6 +12428,100 @@ pub fn convert_openwakeword_op_file_with_config(
     })
 }
 
+/// Convert a merged LLaMA-Omni2 safetensors checkpoint into a Vokra GGUF
+/// that the runtime `LlamaOmni2::from_path` binder can actually load
+/// (2026-08-15 handshake repair).
+///
+/// `input` is the merged safetensors (the upstream release ships shards;
+/// the merge is an owner-side step today) and `config` the JSON side-car
+/// the operator transcribes from the upstream `config.json`.
+///
+/// # Why the side-car is required
+///
+/// The runtime binder declares eleven `vokra.llama_omni2.*` keys. Until
+/// this repair the converter stamped exactly one of them — the variant
+/// tag — so the other ten decayed to `0` placeholders and
+/// `LlamaOmni2Config::validate_for_forward` refused every artifact the
+/// converter produced.
+///
+/// Four of the ten are now derived from the tensors themselves
+/// (`backbone.n_layer` from the contiguous layer run, `backbone.d_model`
+/// and `backbone.vocab` from the embedding axes, and
+/// `backbone.intermediate_size` from the SwiGLU gate projection, whose
+/// second axis cross-checks `d_model`). The remaining six cannot be read
+/// off any tensor shape and come from the side-car, because inventing
+/// them would produce a GGUF that loads and is silently wrong:
+///
+/// ```json
+/// {
+///   "n_head": 32,
+///   "rope_max_period": 1000000.0,
+///   "rms_norm_eps": 1e-6,
+///   "sample_rate": 16000,
+///   "speech_encoder_dim": 1280,
+///   "speech_decoder_dim": 3584
+/// }
+/// ```
+///
+/// The upstream tensor manifest has not been transcribed into this tree,
+/// so the names the derivation searches for are themselves overridable
+/// (`layer_prefix`, `embedding_tensor`, `gate_proj_suffix`), defaulting
+/// to the bare HuggingFace Qwen2 spelling. A name that matches nothing is
+/// a hard error naming the knob — never a silent zero.
+///
+/// # Errors
+///
+/// - [`ConvertError::Io`] on read/write failure.
+/// - [`ConvertError::Parse`] on malformed safetensors / JSON input, on a
+///   required side-car field being absent, on a derivation whose tensors
+///   are missing or mis-shaped, or on an `n_head` that fails the binder's
+///   own head-split rules (checked here so the failure names the field at
+///   convert time rather than at first load).
+/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+pub fn convert_llama_omni2_file_with_config(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+    variant: LlamaOmni2Variant,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::llama_omni2::LlamaOmni2ConvertConfig::parse(&config_bytes)?;
+    let (builder, report) = models::llama_omni2::convert(bytes, &cfg, variant, license)?;
+
+    let notes = vec![format!(
+        "llama-omni2 ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+         non-float skipped, {} tensors read; upstream repo {}. vokra.llama_omni2.* stamped \
+         with n_layer={} d_model={} vocab={} intermediate_size={} (all four derived from \
+         the tensors). docs/license-audit.md §3.1 sign-off is BLANK (fail-closed) until the \
+         owner signs, so publish stays blocked",
+        report.variant.tag(),
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.read,
+        variant.as_repo_id(),
+        report.n_layer,
+        report.d_model,
+        report.vocab,
+        report.intermediate_size,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::LlamaOmni2,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
 /// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
 /// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
 /// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
@@ -12821,8 +12896,18 @@ pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
 //
 // 2026-08-15: `--model llama-omni2` is no longer a follow-up — the CLI
 // spelling landed (`ModelKind::LlamaOmni2`), and `LlamaOmni2Variant` joins
-// the re-export because a library caller of `convert_llama_omni2_file` needs
-// to be able to NAME the variant argument it takes.
+// the re-export because a library caller of
+// `convert_llama_omni2_file_with_config` needs to be able to NAME the variant
+// argument it takes.
+//
+// `convert_llama_omni2_file` / `convert_llama_omni2_bytes` are still exported,
+// but both now REFUSE: six of the eleven `vokra.llama_omni2.*` axes the
+// runtime binder reads live only in the upstream config.json, so a
+// `--config`-less conversion cannot produce a loadable artifact. They are kept
+// as named refusals rather than deleted so an existing caller gets a message
+// routing it to `convert_llama_omni2_file_with_config` instead of a link
+// error. See the 2026-08-15 handshake-repair section of the module doc in
+// `crates/vokra-convert/src/models/llama_omni2.rs`.
 pub use models::llama_omni2::{
     LlamaOmni2Report, LlamaOmni2Variant, convert_llama_omni2_bytes, convert_llama_omni2_file,
 };

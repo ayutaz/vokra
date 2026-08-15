@@ -500,8 +500,31 @@ jobs:
         # each and are DOUBLE-SIDED like EXPECTED_GAPS in
         # scripts/publish/check-catalog-reality.sh: an undeclared gap fails,
         # and a ledger entry whose gap has since closed also fails, so the file
-        # cannot rot in either direction. Self-test covers both legs RED+GREEN,
-        # both stale directions, a malformed ledger line and two parser guards,
+        # cannot rot in either direction.
+        #
+        # FOUR legs now, not two. Leg (c) checks that a `convert --model
+        # <slug>` printed in a binder's error text actually parses through
+        # `ModelKind::from_arg` — six messages named slugs that had never been
+        # accepted, which is worse than printing no recovery step. Leg (d)
+        # closes the blind spot the openwakeword NO_READER entry admits in its
+        # own text: matching on the arch tag proves nothing about the REST of
+        # the handshake. That binder also required seven `vokra.openwakeword.*`
+        # metadata keys the converter stamped none of, so every GGUF it wrote
+        # failed to load while this gate stayed green — it only ever compared
+        # arch literals. Round 8 fixed that instance, round 9 found a second
+        # (llama_omni2), and neither the sibling gate above nor the in-crate
+        # registry test can see the class. Leg (d) asserts every
+        # `vokra.<group>.<key>` a REQUIRED reader looks up is stamped by some
+        # converter, where "required" means the reader has no escape for its
+        # absence — five suppression categories (all-or-nothing `Ok(None)`
+        # groups, caller defaults, string-literal mentions, runtime-assembled
+        # PREFIX constants, dead-code reserved constants) keep the 172 raw
+        # literal mismatches from drowning the real ones, and every
+        # suppression is counted in the output so the leg cannot go quiet
+        # unnoticed. Self-test covers all four legs RED+GREEN, every stale
+        # direction, each suppression category, a zero-sentinel read that must
+        # NOT count as a default (the llama_omni2 discriminator), a
+        # commented-out stamp, a malformed ledger line and four parser guards,
         # so a checker bug cannot manufacture a passing run. HARD FAIL, like
         # its siblings above — a source-to-source invariant of Vokra's own.
         # python3 stdlib only, no cargo, so it costs nothing in this job.

@@ -147,6 +147,150 @@
 #       because no accepted `--model` value contains `|`, `<`, `*`, `{` or
 #       a space, so those characters can only be notation.
 #
+#   (d) metadata key -> converter stamp          [added 2026-08-15]
+#       Every `vokra.<group>.<key>` a REQUIRED reader under
+#       `crates/vokra-models/src/` looks up must be stamped by some file
+#       under `crates/vokra-convert/src/`.
+#
+#       WHY: legs (a)-(c) compare arch literals and nothing else, and the
+#       NO_READER ledger entry for `openwakeword` says out loud what that
+#       cost — "What handshakes on the arch tag need not handshake on
+#       anything else: the binder also requires seven
+#       `vokra.openwakeword.*` metadata keys, the converter stamped none of
+#       them, and so every GGUF it produced failed to load — while this
+#       gate stayed green, because it only ever compared arch literals."
+#       Round 8 repaired that instance; round 9 found a second
+#       (`llama_omni2`, ten unstamped `vokra.llama_omni2.arch.*` keys).
+#       Neither `scripts/check-bound-arch-coverage.sh` nor the in-crate
+#       registry test can see this class either: an arch tag that matches
+#       perfectly still describes a GGUF whose config chunk is empty.
+#
+#       WHAT "REQUIRED" MEANS, AND WHY THE DEFINITION IS THE WHOLE JOB
+#       A naive scan — every `vokra.*` literal on the reader side must be
+#       emitted on the converter side — reports 172 gaps on the 2026-08-15
+#       tree, which is not a gate, it is noise with a shell script around
+#       it. The overwhelming majority are deliberate, documented and
+#       correct, in two shapes this repo uses everywhere:
+#
+#         - OPTIONAL ALL-OR-NOTHING GROUPS. `from_gguf` returns
+#           `Result<Option<Self>>` and answers `Ok(None)` when NO key of
+#           the group is present, but errors loudly when only SOME are
+#           (nisqa, ten_vad, smart_turn, firered_vad, firered_asr_aed_l,
+#           gigaam, whisper_medusa). A converter that stamps none of the
+#           group is exactly what that reader is written for.
+#         - CALLER DEFAULTS. `unwrap_or(default.n_fft)` over a
+#           primary-source constant (panns, musicgen, jasco, audiogen,
+#           demucs, sortformer, canary_1b_flash). panns says so in its own
+#           comment: "the PANNs converter does NOT stamp these, so
+#           `PannsConfig::from_gguf` falls back to the primary-source
+#           constants per-key."
+#
+#       So a key is REQUIRED only when the reader has no escape for it:
+#       absence is an error (`ok_or_else` / `None => Err`), or absence
+#       yields a ZERO SENTINEL that a later gate rejects. The sentinel case
+#       is not a stylistic quibble — it is `llama_omni2`, whose
+#       `read_u32_or_zero` decays every unstamped axis to `0` and defers
+#       the failure to `validate_for_forward`. A zero is not a default; it
+#       is a deferred loud-partial, and a converter that never stamps the
+#       axis makes that gate fire on every artifact it writes.
+#
+#       THE SUPPRESSIONS ARE RULES, NOT A NAME LIST
+#       Five classes of literal look like a required read and are not. Each
+#       is expressed as a CATEGORY, because a category generalises to the
+#       next model and a list of five names does not:
+#
+#         S1 group-optional escape  — the enclosing fn returns
+#            `Result<Option<…>>`/`Option<…>`, or its body has an early
+#            `return Ok(None)`. The all-or-nothing shape above.
+#         S2 caller default         — the read supplies a real fallback
+#            value (`unwrap_or*`, `None => Ok(<value>)`). A zero/empty
+#            fallback does NOT qualify; see the sentinel note above.
+#         S3 mention, not a read    — every occurrence sits inside a string
+#            literal (a diagnostic naming a key it cannot find, or an error
+#            describing a future artifact) and none in code position.
+#            `vokra.snac.codebook_tables` is only ever error text.
+#         S4 runtime-assembled prefix — the constant is a PREFIX an index
+#            is appended to (`GGUF_KEY_PATCH_GRID_PREFIX =
+#            "vokra.atst.patch_grid"` stamped as `_0`/`_1`; `PREFIX_DELAY =
+#            "vokra.moshi.delay."`). The assembled key never exists as a
+#            literal on either side, so comparing literals is a category
+#            error. Recognised by `PREFIX` in the constant NAME.
+#         S5 dead-code reserved constant — the declaration carries
+#            `#[allow(dead_code)]`/`#[expect(dead_code)]` and is read by
+#            nothing yet (`vokra.kokoro.phase_activation`, "consumed by the
+#            T18 load/forward wiring").
+#
+#       Every suppression is counted and printed. A run that suppressed
+#       everything would say so rather than printing a confident clean line.
+#
+#       DECLARING A KEY IS NOT STAMPING IT  [fixed 2026-08-15]
+#       For its first day this leg answered "is the key stamped?" by asking
+#       whether the literal appeared ANYWHERE in non-comment, non-test
+#       converter source — and a
+#       `pub const KEY_N_WAKEWORDS: &str = "vokra.openwakeword.n_wakewords";`
+#       declaration is such an appearance. Deleting the single
+#       `b.add_u32(KEY_N_WAKEWORDS, …)` call that actually writes it left
+#       the leg's output byte-identical and still saying OK; deleting six of
+#       openwakeword's seven stamps did too. So the leg certified a property
+#       it did not check — the round-4 lesson recurring inside the gate
+#       written after learning it — and it did so for the more likely of the
+#       two regressions: the founding cases (openwakeword round 8,
+#       llama_omni2 round 9) had converters that never mentioned the group at
+#       all, which a literal scan does catch, whereas a const block wired six
+#       ways out of seven is what a refactor actually leaves behind.
+#
+#       `meta_stamped` now mirrors the reader half, which never had this bug:
+#       a key counts as written only when it REACHES CODE — the const name in
+#       code position, the key inline at the call site, or head interpolation
+#       (`format!("{KEY_WORDPIECE_PREFIX}.kind")`). The declaration line
+#       itself is skipped, exactly as `meta_read_keys` skips it and counts
+#       the difference as S3. The suppressions were never involved: the
+#       reader side classified all seven openwakeword keys REQUIRED with no
+#       suppression firing, and the driver then short-circuited on
+#       `key in stamped_keys`.
+#
+#       WHAT THIS LEG DOES NOT SEE — measured, not assumed
+#       It resolves a key to its read site through a `const NAME: &str`
+#       binding or an inline literal. A key assembled by `format!` from
+#       parts (other than the S4 prefix shape) is invisible to it, as is a
+#       key stamped by an offline Python sidecar under `tools/parity/`
+#       rather than by Rust. Both were checked on the 2026-08-15 tree —
+#       no `vokra.*` key is stamped by a sidecar, and no required read
+#       assembles its key beyond the S4 prefixes — but a pass here is not a
+#       proof that every metadata handshake in the tree is sound.
+#
+#       A READ-BACK IS NOT A WRITE, AND THE EMITTER SIDE CANNOT TELL
+#       [open, measured 2026-08-15]
+#       `meta_stamped` asks "does this key reach converter CODE", not "does
+#       it reach a GGUF writer", because converters stamp through too many
+#       shapes to enumerate (`b.add_u32`, `b.add_metadata`,
+#       `write_u32_array(b, KEY, …)`, `[KEY_A, KEY_B]` arrays a loop walks).
+#       So a converter-side READ of a key counts as a stamp. That is not
+#       hypothetical: `crates/vokra-convert/src/main.rs` prints a per-model
+#       summary by reading the GGUF it just wrote, and 80 required keys have
+#       their only INLINE sighting in one of those `file.get("vokra.…")`
+#       calls.
+#
+#       Consequence, measured rather than argued: deleting
+#       `b.add_u32(KEY_SAMPLE_RATE, …)` from
+#       `crates/vokra-convert/src/models/kyutai_stt.rs` leaves this gate
+#       GREEN, and NOT because a suppression fired —
+#       `vokra.kyutai_stt.sample_rate` is classified REQUIRED at
+#       crates/vokra-models/src/kyutai_stt/mod.rs:503, since its
+#       `read_u32_or_zero` yields the zero sentinel that self-test case 32
+#       pins as "a deferred failure, not a default". It stays green only
+#       because main.rs:885 reads the key back for that summary line. Mask
+#       that one literal and the gate names the key correctly. Worth noting
+#       that `KyutaiSttConfig::validate_for_forward` does NOT re-check
+#       `sample_rate`, so unlike llama_omni2's axes the zero would not be
+#       caught downstream either.
+#
+#       Excluding `.get(` / `contains_key(` positions from the emitter scan
+#       was measured against the whole tree and costs ZERO new findings, so
+#       it is available as a follow-up. It is deliberately NOT taken here:
+#       it would change the verdict on a live converter, which is an owner
+#       call rather than a gate-hygiene one.
+#
 # THE LEDGERS ARE DOUBLE-SIDED
 #   Known, accepted gaps live in `NO_READER` / `NO_CONVERTER` below with a real
 #   reason each. Exactly like `EXPECTED_GAPS` in
@@ -300,6 +444,33 @@ declare -a NOT_A_READER=(
 declare -a NOT_A_MODEL_SLUG=(
 )
 
+# ---------------------------------------------------------------------------
+# LEDGER (d): `vokra.<group>.<key>` chunks a REQUIRED reader looks up that no
+# converter stamps.
+#
+# Empty is the goal state, because every entry here describes a converter that
+# writes a GGUF its own binder refuses. That is a strictly worse failure than
+# the ones legs (a)/(b) catch: the arch tag matches, the load is attempted,
+# and it dies on a missing config chunk.
+#
+# The five suppression CATEGORIES (S1-S5, see the header) are implemented in
+# the leg itself and must not be re-litigated here — an entry in this ledger
+# is a claim that the reader genuinely requires the key and the converter
+# genuinely does not stamp it.
+#
+# Format: 'group|reason', keyed on the CHUNK GROUP rather than the individual
+# key. A group is stamped or not stamped as a unit — `magnet` is ten keys from
+# one `require_u32`/`require_f32` block — and per-key entries would be ten
+# copies of one reason that rot together.
+#
+# Double-sided like every ledger here: an unlisted group fails, and a listed
+# group whose converter now stamps it fails as stale.
+# ---------------------------------------------------------------------------
+declare -a NO_STAMP=(
+  'magnet|converter is a BF16 pass-through skeleton and says so in the binder error text: `require_u32` (crates/vokra-models/src/magnet/mod.rs:332-336) refuses with "the converter does not yet emit `vokra.magnet.*` config (BF16 pass-through skeleton only). Extend the converter to stamp this key before loading the GGUF into `MagnetEngine::from_gguf`." Both converters (magnet_small_10secs.rs, magnet_medium_30secs.rs) stamp only arch / name / category / provenance; their sole `vokra.magnet.*` occurrences are `//!` doc comments naming the group as future work. Unlike openwakeword and llama_omni2 this is NOT a silent mismatch — the refusal names the missing key and the reason — but the artifact is still unloadable, so it is recorded rather than tolerated.'
+  'melodyflow|same shape as its `magnet` sibling and the same AudioCraft wave: `MelodyFlowConfig::from_gguf` (crates/vokra-models/src/melodyflow/mod.rs:344-355) hard-requires twelve axes through eleven `require_u32` calls plus one `require_f32`, with no all-or-nothing escape (it returns `Result<Self>` at :319, not `Result<Option<Self>>`), while melodyflow_t24_30secs.rs stamps only arch / name / category / provenance. Its one `vokra.melodyflow.*` mention is a `//!` doc comment explaining that naming the chunk keys early "would force a rename cycle" — i.e. the gap is deliberate and dated, not overlooked.'
+)
+
 usage() {
     cat <<'USAGE'
 check-arch-handshake.sh — converter <-> binder arch handshake gate
@@ -335,10 +506,24 @@ ModelKind::from_arg in crates/vokra-convert/src/lib.rs. A binder that tells an
 operator to run a command that does not exist is worse than one that stays
 silent.
 
+Leg (d): every `vokra.<group>.<key>` chunk a REQUIRED reader under
+crates/vokra-models/src looks up is stamped by some file under
+crates/vokra-convert/src. Required means the reader has no escape: absence is
+an error, or absence yields a zero sentinel a later gate rejects. Stamped
+means the key REACHES CODE — the const name in code position, the key inline
+at the call site, or head interpolation (`format!("{KEY_PFX}.kind")`);
+declaring `const KEY_X: &str = "vokra.g.x"` and never using it does NOT
+count, which is the shape a dropped stamp leaves behind. Five
+suppression categories (group-optional `Ok(None)` escapes, caller defaults,
+string-literal mentions, runtime-assembled `PREFIX` constants, dead-code
+reserved constants) are implemented in the leg and counted in its output.
+An arch tag that matches perfectly still describes a GGUF whose config chunk
+is empty — that is the failure legs (a)-(c) cannot see.
+
 Accepted gaps live in the NO_READER / NO_CONVERTER / NOT_A_MODEL_SLUG /
-NOT_A_READER ledgers at the top of this script, one reason each. All four are
-double-sided: an undeclared gap fails, and a ledger entry whose gap has since
-been closed also fails. Exit 1 on any.
+NOT_A_READER / NO_STAMP ledgers at the top of this script, one reason each.
+All five are double-sided: an undeclared gap fails, and a ledger entry whose
+gap has since been closed also fails. Exit 1 on any.
 USAGE
 }
 
@@ -349,15 +534,16 @@ USAGE
 #                          `convert --model` recovery commands leg (c) reads)
 #   $4 engine.rs path     (routed constants + BOUND_ARCHES rows)
 #   $5 ledger file for leg (a), $6 ledger file for leg (b), $8 ledger file for
-#      leg (c); all 'key|reason' per line, blank lines and #-comments ignored.
+#      leg (c), ${10} ledger file for leg (d); all 'key|reason' per line, blank
+#      lines and #-comments ignored.
 #   $7 convert lib.rs path (leg (c) reads `ModelKind::from_arg` out of it)
 # stdlib only. Reused verbatim by the main path and --self-test.
 run_check() {
-    python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" <<'PY'
+    python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" <<'PY'
 import os, re, sys
 
 (conv_models, conv_src, models_dir, engine_path, ledger_a, ledger_b,
- convert_lib, ledger_c, ledger_sup) = sys.argv[1:10]
+ convert_lib, ledger_c, ledger_sup, ledger_d) = sys.argv[1:11]
 
 # BOTH binder spellings are in scope. `EXPECTED_ARCH` is not a stylistic
 # variant nobody uses: it is what 29 of the 89 arch constants under
@@ -415,6 +601,51 @@ MODEL_CMD_AT_EOL = re.compile(r"convert\s+--model[ \t]*$")
 CONT_PREFIX = re.compile(r"^[ \t]*(?://[/!]?)?[ \t]*")
 # Innermost brace group, for alternation expansion.
 BRACE = re.compile(r"\{([^{}]*)\}")
+
+# ---- leg (d) patterns -----------------------------------------------------
+# A `vokra.<group>.<key>` chunk name. Anchored: the literal must be the WHOLE
+# string, so a diagnostic sentence that happens to contain a key is not
+# mistaken for the key itself.
+META_KEY = re.compile(r"^vokra\.[A-Za-z0-9_]+\.[A-Za-z0-9_.]+$")
+# `const NAME: &str = "vokra.…";` at any visibility — `pub`, `pub(crate)` and
+# private all bind keys, unlike the arch constants legs (a)/(b) discover.
+META_CONST = re.compile(
+    r'^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+([A-Z][A-Z0-9_]*)\s*:\s*&(?:\'static\s+)?str'
+    r'\s*=\s*"(vokra\.[^"]+)"\s*;'
+)
+FN_SIG = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-z_][a-z0-9_]*)\s*[(<]')
+# S1: the group-optional escape. Either spelling is decisive on its own.
+OPTION_RETURN = re.compile(r'->\s*(?:Result\s*<\s*)?Option\s*<')
+RETURN_OK_NONE = re.compile(r'\bOk\s*\(\s*None\s*\)')
+# The same escape spelled at the CALL SITE: the read yields an `Option` the
+# caller destructures, so a missing key leaves the field at its default.
+OPTION_BIND = re.compile(r'\b(?:if|while)\s+let\s+Some\s*\(|\.is_some\s*\(\)|\.is_none\s*\(\)')
+# S2: a real caller-supplied fallback. `unwrap_or_default()` is included
+# because a `Default` impl is a declared value, unlike the bare `0` below.
+FALLBACK_CALL = re.compile(r'\.unwrap_or(?:_else|_default)?\s*\(')
+# `None => Ok(<expr>)`. Captured so a ZERO SENTINEL can be told from a real
+# default — the distinction `llama_omni2` turns on.
+NONE_ARM = re.compile(r'None\s*=>\s*Ok\s*\(\s*([^,\n]*?)\s*\)\s*,')
+SENTINEL_VALUE = re.compile(
+    r'^(?:0|0u\d+|0i\d+|0\.0|0\.0f\d+|""|String::new\(\)|Vec::new\(\)|Default::default\(\))$'
+)
+# S4: a constant whose value is a prefix an index is appended to at runtime.
+# Matched as a SCREAMING_SNAKE segment, not with `\b`: the two real spellings
+# are `GGUF_KEY_PATCH_GRID_PREFIX` and `PREFIX_DELAY`, and `\bPREFIX\b` finds
+# neither, because `_` is a word character on both sides.
+PREFIX_NAME = re.compile(r'(?:^|_)PREFIX(?:_|$)')
+# S5: a reserved constant nothing reads yet.
+DEAD_CODE_ATTR = re.compile(r'^\s*#\[\s*(?:allow|expect)\s*\(\s*dead_code\s*\)\s*\]')
+# Emitter-side use detection (see `meta_stamped`). A SCREAMING_SNAKE name in
+# code position; `\b` is enough because a path-qualified `chunks::KEY_FOO`
+# still starts the name at a word boundary.
+CONST_USE = re.compile(r'\b([A-Z][A-Z0-9_]*)\b')
+# A string literal that IS a key being assembled from a head constant:
+# `{KEY_WORDPIECE_PREFIX}.kind`, `{KEY_WAVLM_CONV_DIM_PREFIX}_{i}`. The
+# no-whitespace tail is the discriminator against a diagnostic sentence.
+ASSEMBLED_KEY = re.compile(r'^\{([A-Z][A-Z0-9_]*)\}(\S*)$')
+# The tail of an assembled key, when it is literal enough to name exactly.
+KEY_TAIL = re.compile(r'[A-Za-z0-9_.]*')
 
 
 def rust_files(root):
@@ -613,6 +844,429 @@ def answering_literals(sites, suppressed):
         lit for lit, files in sites.items()
         if files - suppressed.get(lit, set())
     }
+
+
+def split_code_and_strings(path):
+    """([code_line, …], {lineno: [literal, …]}) — strings lifted out of code.
+
+    Leg (d) turns on telling a key used in CODE position (a lookup) from the
+    same key MENTIONED inside a diagnostic (S3). A line-at-a-time regex
+    cannot do that, because Rust strings legally span lines: the second
+    line of a wrapped `format!` message looks like bare code to it, so a
+    `{KEY_FOO}` interpolation inside an error reads as a lookup of
+    `KEY_FOO`. That is not hypothetical — it is `vokra.gigaam.required_tensors`
+    and `vokra.snac.codebook_tables`, both of which a naive scan reports as
+    unstamped required reads when neither is read at all.
+
+    Comments are blanked too, so a doc comment naming a key cannot count.
+    Raw strings (`r"…"`, `r#"…"#`) are handled because converter docs use
+    them for JSON samples.
+    """
+    text = open(path, encoding="utf-8").read()
+    code, lits = [], {}
+    line = []
+    lineno = 1
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            code.append("".join(line))
+            line = []
+            lineno += 1
+            i += 1
+            continue
+        # line comment: blank to end of line
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        # block comment
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                if text[i] == "\n":
+                    code.append("".join(line))
+                    line = []
+                    lineno += 1
+                i += 1
+            i += 2
+            continue
+        # raw string r"…" / r#"…"#
+        if c == "r" and i + 1 < n and text[i + 1] in '#"':
+            j = i + 1
+            hashes = 0
+            while j < n and text[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and text[j] == '"':
+                start_line = lineno
+                j += 1
+                buf = []
+                close = '"' + "#" * hashes
+                while j < n and not text.startswith(close, j):
+                    if text[j] == "\n":
+                        code.append("".join(line))
+                        line = []
+                        lineno += 1
+                    else:
+                        buf.append(text[j])
+                    j += 1
+                lits.setdefault(start_line, []).append("".join(buf))
+                i = j + len(close)
+                continue
+        if c == '"':
+            start_line = lineno
+            i += 1
+            buf = []
+            while i < n and text[i] != '"':
+                if text[i] == "\\":
+                    # A backslash-newline is a Rust line continuation: the
+                    # newline and the next line's indent vanish from the
+                    # value but the FILE still advanced a line.
+                    if i + 1 < n and text[i + 1] == "\n":
+                        code.append("".join(line))
+                        line = []
+                        lineno += 1
+                        i += 2
+                        while i < n and text[i] in " \t":
+                            i += 1
+                        continue
+                    buf.append(text[i : i + 2])
+                    i += 2
+                    continue
+                if text[i] == "\n":
+                    code.append("".join(line))
+                    line = []
+                    lineno += 1
+                else:
+                    buf.append(text[i])
+                i += 1
+            lits.setdefault(start_line, []).append("".join(buf))
+            i += 1
+            continue
+        if c == "'":
+            m = CHAR_LIT.match(text, i)
+            if m:
+                i = m.end()
+                continue
+            line.append(c)
+            i += 1
+            continue
+        line.append(c)
+        i += 1
+    code.append("".join(line))
+    return code, lits
+
+
+def fn_spans(lines):
+    """[(start_idx, end_idx, sig_line, body_text)] for every `fn` in a file.
+
+    Brace-balanced over `brace_source`, so a `{` inside a string or comment
+    cannot end a body early. Used for S1: whether the function enclosing a
+    read has a whole-group-absent escape.
+    """
+    spans = []
+    for i, l in enumerate(lines):
+        if not FN_SIG.match(l):
+            continue
+        depth, started = 0, False
+        j = i
+        while j < len(lines):
+            src = brace_source(lines[j])
+            depth += src.count("{") - src.count("}")
+            if not started and depth > 0:
+                started = True
+            if started and depth <= 0:
+                break
+            if not started and src.rstrip().endswith(";"):
+                break               # a trait method declaration, no body
+            j += 1
+        spans.append((i, min(j, len(lines) - 1), l, "\n".join(lines[i : j + 1])))
+    return spans
+
+
+def enclosing_fn(spans, idx):
+    """The innermost span containing `idx`, or None."""
+    best = None
+    for s in spans:
+        if s[0] <= idx <= s[1] and (best is None or s[0] >= best[0]):
+            best = s
+    return best
+
+
+def stmt_window(lines, idx):
+    """The whole statement around line `idx`, as one string.
+
+    Wide enough that a `?` on a later physical line still counts — a
+    multi-line call like `read_u32_key(\\n gguf,\\n KEY,\\n )?;` must not
+    read as an infallible lookup — and bounded so it never swallows a
+    neighbouring statement whose fallback would then be misattributed.
+    """
+    start = idx
+    while start > 0:
+        prev = brace_source(lines[start - 1]).rstrip()
+        if prev == "" or prev.endswith((";", "{", "}", ",")):
+            break
+        start -= 1
+    end = idx
+    depth = 0
+    while end < len(lines):
+        src = brace_source(lines[end])
+        depth += src.count("(") - src.count(")")
+        stripped = src.rstrip()
+        if depth <= 0 and stripped.endswith((";", ",")):
+            break
+        if end + 1 < len(lines) and lines[end + 1].lstrip().startswith("."):
+            end += 1
+            continue
+        if depth <= 0 and end > idx:
+            break
+        end += 1
+    return "\n".join(lines[start : min(end + 1, len(lines))])
+
+
+def absence_tolerant(expr):
+    """True when a read expression tolerates the key being absent (S2).
+
+    Four shapes, all meaning "absence is a value, not a failure":
+
+      - an explicit fallback call (`unwrap_or`, `unwrap_or_else`,
+        `unwrap_or_default`);
+      - a `None => Ok(<value>)` arm whose value is a real one;
+      - an OPTION-RETURNING read — the helper hands back `Option<T>` or
+        `Result<Option<T>>` and the call site consumes it as an option
+        (`if let Some(v) = opt_usize(file, KEY)?`). A function that answers
+        `None` for a missing key is tolerating absence by construction.
+        This is `canary_1b_flash`, whose per-key `opt_*` helpers leave the
+        field at its primary-source default and merely stop incrementing a
+        `stamped` counter — the escape lives at the READ SITE rather than
+        on the enclosing `from_gguf`, so the S1 check cannot see it;
+      - an INFALLIBLE read — no `?` and no `return Err`, so the expression
+        has no failure path at all. That is `panns`, whose closure takes a
+        `fallback: u32` parameter and whose `from_gguf` returns `Self`
+        rather than `Result<Self>`.
+
+    A ZERO SENTINEL is deliberately NOT tolerance: `None => Ok(0)` hands
+    back a value no forward pass can use, which is `llama_omni2`'s
+    `read_u32_or_zero` and precisely the round-9 defect. Treating it as a
+    default would suppress the very thing this leg was added to catch.
+    """
+    if FALLBACK_CALL.search(expr):
+        return True
+    for m in NONE_ARM.finditer(expr):
+        if not SENTINEL_VALUE.match(m.group(1).strip()):
+            return True
+    if OPTION_RETURN.search(expr) or OPTION_BIND.search(expr):
+        return True
+    if "?" not in expr and "return Err" not in expr and "Err(" not in expr:
+        return True
+    return False
+
+
+def meta_read_keys(root):
+    """({key: [site, …]}, {category: count}) — REQUIRED metadata reads.
+
+    Walks every non-comment, non-test line under `root`, resolves each
+    `vokra.<group>.<key>` to its read site (through a `const NAME: &str`
+    binding or as an inline literal), and applies suppression categories
+    S1-S5 (see the header). Every suppression is counted so a run that
+    dropped everything reports it instead of printing a clean line.
+    """
+    out, counts = {}, {}
+    def bump(cat):
+        counts[cat] = counts.get(cat, 0) + 1
+
+    for path in rust_files(root):
+        rel = os.path.relpath(path, root)
+        if os.path.basename(path) == "tests.rs":
+            continue
+        skip, _ = test_region_lines(path)
+        lines = open(path, encoding="utf-8").read().split("\n")
+        code, _lits = split_code_and_strings(path)
+        while len(code) < len(lines):
+            code.append("")
+        spans = fn_spans(lines)
+
+        # Const bindings, plus the inline literals that are their own key.
+        binds, inline = {}, {}
+        for i, line in enumerate(lines):
+            if (i + 1) in skip:
+                continue
+            m = META_CONST.match(line)
+            if m:
+                name, key = m.group(1), m.group(2)
+                if not META_KEY.match(key):
+                    continue
+                if PREFIX_NAME.search(name):
+                    bump("S4 runtime-assembled prefix")
+                    continue
+                if i > 0 and DEAD_CODE_ATTR.match(lines[i - 1]):
+                    bump("S5 dead-code reserved constant")
+                    continue
+                binds[name] = key
+                continue
+            for lit in _lits.get(i + 1, []):
+                if META_KEY.match(lit):
+                    inline.setdefault(lit, []).append(i)
+
+        # Code-position references. `code` has strings blanked out, so a key
+        # named inside a diagnostic is invisible here — that IS S3.
+        seen_in_code = set()
+        for name, key in binds.items():
+            pat = re.compile(r"\b" + re.escape(name) + r"\b")
+            for i, cline in enumerate(code):
+                if (i + 1) in skip or META_CONST.match(lines[i]):
+                    continue
+                if not pat.search(cline):
+                    continue
+                seen_in_code.add(key)
+                span = enclosing_fn(spans, i)
+                if span is not None and (
+                    OPTION_RETURN.search(span[2]) or RETURN_OK_NONE.search(span[3])
+                ):
+                    bump("S1 group-optional escape")
+                    continue
+                expr = stmt_window(lines, i)
+                # Resolve a helper called on this line to its body: the
+                # `None => Ok(0)` that decides sentinel-vs-default usually
+                # lives there, not at the call site.
+                for hm in re.finditer(r"\b([a-z_][a-z0-9_]*)\s*\(", cline):
+                    for s in spans:
+                        if FN_SIG.match(s[2]) and FN_SIG.match(s[2]).group(1) == hm.group(1):
+                            expr = expr + "\n" + s[3]
+                            break
+                if absence_tolerant(expr):
+                    bump("S2 caller default")
+                    continue
+                out.setdefault(key, []).append(f"{rel}:{i + 1}")
+        for key, idxs in inline.items():
+            for i in idxs:
+                if not re.search(r"\bget\s*\(|\bcontains_key\s*\(", code[i]) and \
+                        not re.search(r'"', lines[i].split("//")[0]):
+                    continue
+                seen_in_code.add(key)
+                span = enclosing_fn(spans, i)
+                if span is not None and (
+                    OPTION_RETURN.search(span[2]) or RETURN_OK_NONE.search(span[3])
+                ):
+                    bump("S1 group-optional escape")
+                    continue
+                if absence_tolerant(stmt_window(lines, i)):
+                    bump("S2 caller default")
+                    continue
+                out.setdefault(key, []).append(f"{rel}:{i + 1}")
+        for key in set(binds.values()) - seen_in_code:
+            bump("S3 mention, not a read")
+    return out, counts
+
+
+def meta_stamped(root):
+    """{key} every `vokra.<group>.<key>` some converter writes, + prefixes.
+
+    Comments and test code are excluded for the same reason as legs
+    (a)/(b): a doc comment naming a chunk group does not stamp it, and a
+    test fixture that builds a GGUF by hand is not the converter.
+
+    Prefix constants are returned too, so a runtime-assembled
+    `vokra.moshi.delay.0` is answered by the stamped `vokra.moshi.delay.`
+    rather than read as missing.
+
+    DECLARING A KEY IS NOT STAMPING IT [2026-08-15]
+    Until this rewrite the whole function was "harvest every `vokra.*`
+    string literal in non-comment, non-test converter source", and a
+    `pub const KEY_N_WAKEWORDS: &str = "vokra.openwakeword.n_wakewords";`
+    IS such a literal. So the DECLARATION of a key constant was accepted as
+    proof the key gets written. Deleting the one
+    `b.add_u32(KEY_N_WAKEWORDS, …)` call from openwakeword_op.rs — which
+    reproduces the exact round-8 defect this leg was added to catch — left
+    every number in the leg's output byte-identical, and it printed OK.
+    Deleting six of the seven did too.
+
+    The reader half never had this bug: `meta_read_keys` builds `binds`
+    from the declarations and then requires the NAME to appear in CODE
+    position on a non-declaration line, counting the difference as S3
+    "mention, not a read". This half now asks the mirrored question, so the
+    two halves are finally symmetric: a literal must REACH CODE, not merely
+    be bound to a name.
+
+    A use is one of three shapes:
+      - the const NAME in code position (`b.add_u32(KEY_FOO, v)`,
+        `write_u32_array(b, KEY_CONV_DIM, &CONV_DIM)`, a `[KEY_A, KEY_B]`
+        array a loop later stamps);
+      - the key spelled inline at the call site
+        (`b.add_u32("vokra.foo.bar", v)`);
+      - HEAD INTERPOLATION — a string literal that IS `{NAME}` followed by
+        key-shaped text, i.e. `format!("{KEY_WORDPIECE_PREFIX}.kind")` or
+        `format!("{KEY_WAVLM_CONV_DIM_PREFIX}_{i}")`. Strings are blanked
+        out of `code`, so without this the prefix builders read as
+        declaration-only. Requiring the interpolation at the HEAD and no
+        whitespace after it is what separates key construction from a
+        diagnostic that merely names a key: `"{KEY_FOO} is missing"` has a
+        space, `"missing {k}"` interpolates a lowercase local. Both the
+        head const's own value and the assembled key are recorded.
+
+    Resolution is same-file first, then tree-wide for names that bind
+    exactly one key. Ambiguity is real — `KEY_SAMPLE_RATE` is declared in
+    several converters with a different `vokra.<group>.` each — so a
+    cross-file use of an ambiguous name is deliberately NOT resolved.
+
+    FAILURE DIRECTION: a bug in this scan shrinks the stamped set, which
+    makes the gate FAIL loudly on keys that are in fact written. That is
+    the opposite of the bug it replaces, which made the gate pass over
+    keys that were not.
+    """
+    per_file, name_keys, files = {}, {}, []
+    for path in rust_files(root):
+        if os.path.basename(path) == "tests.rs":
+            continue
+        skip, _ = test_region_lines(path)
+        lines = open(path, encoding="utf-8").read().split("\n")
+        code, lits = split_code_and_strings(path)
+        while len(code) < len(lines):
+            code.append("")
+        decls = {}
+        for i, line in enumerate(lines):
+            if (i + 1) in skip:
+                continue
+            m = META_CONST.match(line)
+            if m:
+                decls[m.group(1)] = m.group(2)
+                name_keys.setdefault(m.group(1), set()).add(m.group(2))
+        per_file[path] = decls
+        files.append((path, skip, lines, code, lits))
+
+    def resolve(name, decls):
+        if name in decls:
+            return decls[name]
+        bound = name_keys.get(name)
+        if bound and len(bound) == 1:
+            return next(iter(bound))
+        return None
+
+    keys = set()
+    for path, skip, lines, code, lits in files:
+        decls = per_file[path]
+        for i, line in enumerate(lines):
+            # The declaration line itself is not a use — the mirror of the
+            # `META_CONST.match(lines[i]): continue` guard on the reader
+            # side. This single `continue` is what gives the leg teeth.
+            if (i + 1) in skip or META_CONST.match(line):
+                continue
+            for v in lits.get(i + 1, []):
+                if META_KEY.match(v) or v.startswith("vokra."):
+                    keys.add(v)
+                am = ASSEMBLED_KEY.match(v)
+                if am:
+                    base = resolve(am.group(1), decls)
+                    if base:
+                        keys.add(base)
+                        if KEY_TAIL.fullmatch(am.group(2)):
+                            keys.add(base + am.group(2))
+            for m in CONST_USE.finditer(code[i]):
+                base = resolve(m.group(1), decls)
+                if base:
+                    keys.add(base)
+    return keys
 
 
 def logical_lines(path):
@@ -838,6 +1492,9 @@ ledger_no_reader, ledger_a_bad = read_ledger(ledger_a)
 ledger_no_conv, ledger_b_bad = read_ledger(ledger_b)
 ledger_not_slug, ledger_c_bad = read_ledger(ledger_c)
 suppressed, ledger_sup_bad = read_suppress_ledger(ledger_sup)
+ledger_no_stamp, ledger_d_bad = read_ledger(ledger_d)
+required_keys, suppress_counts = meta_read_keys(models_dir)
+stamped_keys = meta_stamped(conv_src)
 
 reader_lits = answering_literals(reader_sites, suppressed)
 # Leg (b) applies the same test-code exclusion but no suppression: no
@@ -846,7 +1503,8 @@ reader_lits = answering_literals(reader_sites, suppressed)
 emitter_lits = answering_literals(emitter_sites, {})
 
 errors = (list(ledger_a_bad) + list(ledger_b_bad) + list(ledger_c_bad)
-          + list(ledger_sup_bad) + list(reader_problems) + list(emitter_problems))
+          + list(ledger_sup_bad) + list(ledger_d_bad) + list(reader_problems)
+          + list(emitter_problems))
 
 # NOT_A_READER staleness: an entry must name a file that exists AND still
 # contains the literal in scanned source. An entry that retracts nothing is
@@ -1056,6 +1714,83 @@ for slug in sorted(ledger_not_slug):
             f"NOT_A_MODEL_SLUG in scripts/check-arch-handshake.sh."
         )
 
+# ---- leg (d): metadata key -> converter stamp ----------------------------
+# Grouped by chunk group: a group is stamped or not stamped as a unit, so
+# per-key findings would be N copies of one defect. The keys are listed
+# inside the message, because "which of the twelve" is the first thing
+# anyone fixing it needs.
+gap_d = {}
+for key in sorted(required_keys):
+    if key in stamped_keys:
+        continue
+    if any(key.startswith(p) for p in stamped_keys if p.endswith((".", "_"))):
+        continue                        # runtime-assembled index, S4
+    group = key.split(".")[1]
+    gap_d.setdefault(group, []).append(key)
+
+for group in sorted(gap_d):
+    keys = gap_d[group]
+    if group not in ledger_no_stamp:
+        first = required_keys[keys[0]][0]
+        # A PARTIAL gap — some keys of the group stamped, some not — became
+        # reportable when `meta_stamped` stopped accepting a bare `const`
+        # declaration as a stamp. Saying "stamped by NO converter" about a
+        # group that is six-sevenths stamped would send whoever reads this
+        # looking for the wrong thing, so the sentence adapts.
+        in_group = sum(1 for k in required_keys if k.split(".")[1] == group)
+        scope = (
+            f"stamped by NO converter: {len(keys)} key(s)"
+            if len(keys) == in_group
+            else f"only PARTLY stamped: {len(keys)} of its {in_group} required key(s)"
+        )
+        errors.append(
+            f"[leg d] chunk group `vokra.{group}.*` is REQUIRED by a reader and "
+            f"{scope} — {', '.join(keys[:6])}"
+            f"{' …' if len(keys) > 6 else ''} — are looked up under vokra-models/src/ "
+            f"(first at vokra-models/src/{first}) with no escape for their absence, and "
+            f"no non-comment, non-test code under vokra-convert/src/ WRITES them. The "
+            f"converter therefore writes a GGUF whose arch tag matches but whose config "
+            f"chunk is missing those keys, so the binder refuses every artifact it "
+            f"produces — the openwakeword (round 8) and llama_omni2 (round 9) defect, "
+            f"which legs (a)-(c) cannot see because they only ever compare arch literals. "
+            f"NOTE: DECLARING the key does not stamp it. A "
+            f"`const KEY_…: &str = \"vokra.{group}.…\";` that no code ever passes to a "
+            f"`b.add_*` call counts as unstamped here, which is the shape a dropped stamp "
+            f"leaves behind and the reason this finding can name part of a group. Fix: "
+            f"stamp the key(s) in the converter under crates/vokra-convert/src/models/ — "
+            f"or, if the reader is meant to tolerate the group being absent, give it the "
+            f"all-or-nothing escape the rest of the repo uses (`from_gguf` returning "
+            f"`Result<Option<Self>>` with `Ok(None)` when no key of the group is present) "
+            f"— or, if converter-side work is genuinely queued, add `{group}` to the "
+            f"NO_STAMP ledger in scripts/check-arch-handshake.sh with the real reason."
+        )
+
+for group in sorted(ledger_no_stamp):
+    if group not in gap_d:
+        errors.append(
+            f"[leg d] STALE ledger entry `{group}`: NO_STAMP says no converter stamps the "
+            f"`vokra.{group}.*` chunks its binder requires, but that is no longer true — "
+            f"either a converter now stamps them, or the reader stopped requiring them. "
+            f"Fix: delete the `{group}` line from NO_STAMP in "
+            f"scripts/check-arch-handshake.sh."
+        )
+
+# Leg (d)'s parser guards. The reader scan finding nothing is the silent
+# direction — every group would read as fine — so it fails rather than
+# passing vacuously, exactly like leg (c)'s pair.
+if not required_keys:
+    errors.append(
+        f"no REQUIRED `vokra.<group>.<key>` read found anywhere under {models_dir} — the "
+        f"const-binding scan, the suppression rules or the walk changed; leg (d) covered "
+        f"nothing, so a pass here would be vacuous."
+    )
+if not stamped_keys:
+    errors.append(
+        f"zero `vokra.*` metadata literals scanned in non-comment, non-test source under "
+        f"{conv_src} — the emitter scan is broken; every required read would read as "
+        f"unstamped."
+    )
+
 if errors:
     print(f"check-arch-handshake: FAIL — {len(errors)} problem(s):")
     for e in errors:
@@ -1085,6 +1820,16 @@ print(
     f"NO_CONVERTER; leg (c) {len(cmd_slugs)} distinct `convert --model` string(s) -> "
     f"{checked_c} slug candidate(s) checked against {len(accepted_slugs)} accepted "
     f"spelling(s), {len(gap_c)} declared in NOT_A_MODEL_SLUG."
+)
+# Printed even when clean: the suppression tally is the number to eyeball if
+# leg (d) ever goes suspiciously quiet. A rule that started over-matching
+# would shrink `required_keys` and grow one of these instead of failing.
+sup_summary = ", ".join(f"{k} ×{v}" for k, v in sorted(suppress_counts.items())) or "none"
+print(
+    f"check-arch-handshake: OK — leg (d) {len(required_keys)} required `vokra.*` metadata "
+    f"key(s) read, {len(required_keys) - sum(len(v) for v in gap_d.values())} stamped by a "
+    f"converter, {len(gap_d)} chunk group(s) declared in NO_STAMP; suppressed: "
+    f"{sup_summary}."
 )
 PY
 }
@@ -1208,9 +1953,37 @@ self_test() {
     }
     write_engine gamma
 
-    # run <ledger-a...> -- <ledger-b...> [-- <ledger-c...> [-- <suppress...>]]
+    # Leg (d) fixture. Kept in its own file so the leg (a)/(b)/(c) cases are
+    # untouched by it. One REQUIRED read that IS stamped (`dkept`), so the
+    # base tree is clean and every red case below is the planted change.
+    write_meta() {
+        {
+            printf 'const KEY_KEPT: &str = "vokra.dfix.kept";\n'
+            printf 'fn load(g: &GgufFile) -> Result<Self> {\n'
+            printf '    let kept = g.get(KEY_KEPT).ok_or_else(|| e())?;\n'
+            printf '    Ok(Self { kept })\n'
+            printf '}\n'
+            local extra
+            for extra in "$@"; do
+                printf '%s\n' "$extra"
+            done
+        } >"$tmp/models/nested/meta.rs"
+    }
+    write_meta
+
+    write_stamps() {
+        {
+            printf 'fn stamp(b: &mut GgufBuilder) {\n'
+            printf '    b.add_u32("vokra.dfix.kept", 1);\n'
+            printf '}\n'
+        } >"$tmp/conv/models/stamps.rs"
+    }
+    write_stamps
+
+    # run <ledger-a...> -- <ledger-b...> [-- <ledger-c...> [-- <suppress...>
+    #      [-- <ledger-d...>]]]
     run() {
-        local -a la=() lb=() lc=() ls=()
+        local -a la=() lb=() lc=() ls=() ld=()
         local seen_sep=0 arg
         for arg in "$@"; do
             if [ "$arg" = "--" ]; then
@@ -1221,16 +1994,18 @@ self_test() {
                 0) la+=("$arg") ;;
                 1) lb+=("$arg") ;;
                 2) lc+=("$arg") ;;
-                *) ls+=("$arg") ;;
+                3) ls+=("$arg") ;;
+                *) ld+=("$arg") ;;
             esac
         done
         write_ledger "$tmp/ledger_a" ${la[@]+"${la[@]}"}
         write_ledger "$tmp/ledger_b" ${lb[@]+"${lb[@]}"}
         write_ledger "$tmp/ledger_c" ${lc[@]+"${lc[@]}"}
         write_ledger "$tmp/ledger_sup" ${ls[@]+"${ls[@]}"}
+        write_ledger "$tmp/ledger_d" ${ld[@]+"${ld[@]}"}
         run_check "$tmp/conv/models" "$tmp/conv" "$tmp/models" "$tmp/engine.rs" \
             "$tmp/ledger_a" "$tmp/ledger_b" "$tmp/conv/lib.rs" "$tmp/ledger_c" \
-            "$tmp/ledger_sup"
+            "$tmp/ledger_sup" "$tmp/ledger_d"
     }
 
     local out
@@ -1300,11 +2075,12 @@ self_test() {
     write_ledger "$tmp/ledger_a" "$ok"
     write_ledger "$tmp/ledger_b" "$okb"
     write_ledger "$tmp/ledger_c"
+    write_ledger "$tmp/ledger_d"
     write_ledger "$tmp/ledger_sup"
     mkdir -p "$tmp/empty"
     if run_check "$tmp/empty" "$tmp/conv" "$tmp/models" "$tmp/engine.rs" \
         "$tmp/ledger_a" "$tmp/ledger_b" "$tmp/conv/lib.rs" "$tmp/ledger_c" \
-        "$tmp/ledger_sup" >/dev/null 2>&1; then
+        "$tmp/ledger_sup" "$tmp/ledger_d" >/dev/null 2>&1; then
         echo "self-test FAIL: scanning zero converter arches should fail the guard" >&2
         status=1
     else
@@ -1644,8 +2420,398 @@ self_test() {
         status=1
     fi
 
+    # ---- leg (d): metadata key -> converter stamp (2026-08-15) -----------
+    # Cases 26-38. The base fixture has ONE required read (`vokra.dfix.kept`)
+    # that IS stamped, so every red case below is the planted change and
+    # every green case is a suppression rule actually firing. Suppression
+    # cases are asserted GREEN with an EMPTY leg (d) ledger, so the only way
+    # to pass is for the rule to have classified the planted read as
+    # tolerated — a rule that stopped working would fail them, not silently
+    # widen the population.
+
+    # 26. The planted TRUE POSITIVE: a required read (`ok_or_else` on the
+    #     absent branch) whose group no converter stamps. This is the
+    #     openwakeword / llama_omni2 shape, and the whole reason for the leg.
+    write_meta \
+        'const KEY_GAP: &str = "vokra.dgap.missing";' \
+        'fn load2(g: &GgufFile) -> Result<u32> {' \
+        '    g.get(KEY_GAP).ok_or_else(|| e())?' \
+        '}'
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: a required metadata read no converter stamps should fail" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.dgap.\*`' <<<"$out" \
+        && grep -q 'vokra.dgap.missing' <<<"$out"; then
+        echo "self-test PASS: an unstamped required metadata group fails, naming group and key"
+    else
+        echo "self-test FAIL: leg (d) failure did not name \`vokra.dgap.*\`" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+
+    # 27. The same gap, declared in NO_STAMP -> passes. Proves the ledger is
+    #     honoured and (with 26) that it is what changed.
+    if run "$ok" -- "$okb" -- -- -- 'dgap|converter sub-wave queued' >/dev/null 2>&1; then
+        echo "self-test PASS: a declared NO_STAMP group passes leg (d)"
+    else
+        echo "self-test FAIL: a declared NO_STAMP entry should pass" >&2
+        status=1
+    fi
+
+    # 28. Stale NO_STAMP entry -> fails. `dfix` is stamped, so claiming it is
+    #     not is a lie the gate must catch — same double-sidedness as every
+    #     other ledger here.
+    write_meta
+    if out="$(run "$ok" -- "$okb" -- -- -- 'dfix|stale claim' 2>&1)"; then
+        echo "self-test FAIL: a stale NO_STAMP entry should fail" >&2
+        status=1
+    elif grep -q 'STALE ledger entry `dfix`' <<<"$out"; then
+        echo "self-test PASS: a NO_STAMP entry whose converter now stamps it fails as stale"
+    else
+        echo "self-test FAIL: stale leg (d) failure did not name \`dfix\`" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+
+    # 29. S1, spelled on the return type: a group whose reader answers
+    #     `Result<Option<Self>>` is the repo's all-or-nothing convention
+    #     (nisqa, ten_vad, smart_turn, firered_*). A converter that stamps
+    #     none of it is what that reader is FOR.
+    write_meta \
+        'const KEY_OPT: &str = "vokra.dopt.axis";' \
+        'fn load3(g: &GgufFile) -> Result<Option<Self>> {' \
+        '    let v = g.get(KEY_OPT).ok_or_else(|| e())?;' \
+        '    Ok(Some(v))' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S1 — a \`Result<Option<..>>\` reader tolerates an unstamped group"
+    else
+        echo "self-test FAIL: an all-or-nothing optional group must not be a leg (d) finding" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+
+    # 30. S1, spelled as an early escape: `-> Result<Self>` but the body
+    #     returns `Ok(None)` when no key of the group is present. gigaam's
+    #     `let Some(..) = .. else { return Ok(None) }` shape.
+    write_meta \
+        'const KEY_ESC: &str = "vokra.desc.axis";' \
+        'fn load4(g: &GgufFile) -> Result<Self> {' \
+        '    if g.is_empty() { return Ok(None); }' \
+        '    let v = g.get(KEY_ESC).ok_or_else(|| e())?;' \
+        '    Ok(v)' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S1 — an \`Ok(None)\` whole-group escape is tolerated"
+    else
+        echo "self-test FAIL: an \`Ok(None)\` escape must not be a leg (d) finding" >&2
+        status=1
+    fi
+
+    # 31. S2, caller default: `unwrap_or` over a primary-source constant.
+    #     panns / musicgen, which document the fallback in their own source.
+    write_meta \
+        'const KEY_DEF: &str = "vokra.ddef.axis";' \
+        'fn load5(g: &GgufFile) -> Result<u32> {' \
+        '    Ok(g.get(KEY_DEF).and_then(|v| v.as_u64()).unwrap_or(DEFAULT_AXIS)?)' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S2 — an \`unwrap_or\` caller default is tolerated"
+    else
+        echo "self-test FAIL: an unwrap_or fallback must not be a leg (d) finding" >&2
+        status=1
+    fi
+
+    # 32. …but a ZERO SENTINEL is NOT a default, and this is the case the
+    #     whole rule turns on. `read_u32_or_zero`'s `None => Ok(0)` hands
+    #     back a value no forward pass can use: llama_omni2 (round 9)
+    #     decayed every unstamped axis to `0` and deferred the failure to
+    #     `validate_for_forward`. If this case ever goes green, the leg has
+    #     stopped catching the defect it was written for.
+    write_meta \
+        'const KEY_SENT: &str = "vokra.dsent.axis";' \
+        'fn read_u32_or_zero(g: &GgufFile, key: &str) -> Result<u32> {' \
+        '    match g.get(key) {' \
+        '        Some(V::U32(v)) => Ok(*v),' \
+        '        None => Ok(0),' \
+        '        Some(o) => Err(e(o)),' \
+        '    }' \
+        '}' \
+        'fn load6(g: &GgufFile) -> Result<Self> {' \
+        '    let axis = read_u32_or_zero(g, KEY_SENT)? as usize;' \
+        '    Ok(Self { axis })' \
+        '}'
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: a zero-sentinel read must NOT be treated as a caller default" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.dsent.\*`' <<<"$out"; then
+        echo "self-test PASS: S2 — \`None => Ok(0)\` is a deferred failure, not a default"
+    else
+        echo "self-test FAIL: leg (d) did not report the zero-sentinel group" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+
+    # 33. S2, option-returning helper: the escape lives at the READ SITE, not
+    #     on the enclosing fn, so the S1 check cannot see it. canary_1b_flash
+    #     reads 23 axes this way and leaves each at its primary-source
+    #     default — it was a false positive until this rule was added.
+    write_meta \
+        'const KEY_OPTF: &str = "vokra.doptf.axis";' \
+        'fn opt_u32(g: &GgufFile, key: &str) -> Result<Option<u32>> {' \
+        '    Ok(g.get(key).and_then(|v| v.as_u64()).map(|v| v as u32))' \
+        '}' \
+        'fn load7(g: &GgufFile) -> Result<Self> {' \
+        '    let mut cfg = Self::default();' \
+        '    if let Some(v) = opt_u32(g, KEY_OPTF)? { cfg.axis = v; }' \
+        '    Ok(cfg)' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S2 — an \`Option\`-returning per-key helper is tolerated"
+    else
+        echo "self-test FAIL: an opt_* read-site escape must not be a leg (d) finding" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+
+    # 34. S3, mention not a read: the key is named only inside a diagnostic.
+    #     `vokra.snac.codebook_tables` describes an artifact that does not
+    #     exist yet; gigaam interpolates its key into a wrapped error whose
+    #     continuation lines look like bare code to a line-at-a-time scan.
+    #     The multi-line string here is the load-bearing half of the case.
+    write_meta \
+        'const KEY_MENTION: &str = "vokra.dment.future";' \
+        'fn explain() -> String {' \
+        '    format!(' \
+        '        "this binder will one day need `{KEY_MENTION}` \' \
+        '         but no converter writes it yet"' \
+        '    )' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S3 — a key named only inside a diagnostic is not a read"
+    else
+        echo "self-test FAIL: an error-text mention must not be a leg (d) finding" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+
+    # 35. S4, runtime-assembled prefix: `vokra.atst.patch_grid` is stamped as
+    #     `_0` / `_1` and `vokra.moshi.delay.` as `.0` / `.1`, so the
+    #     assembled key exists as a literal on NEITHER side and comparing
+    #     literals is a category error. Recognised by the `PREFIX` segment in
+    #     the constant name — note `\bPREFIX\b` matches neither real
+    #     spelling, because `_` is a word character on both sides.
+    write_meta \
+        'const GGUF_KEY_AXIS_PREFIX: &str = "vokra.dpfx.axis";' \
+        'fn load8(g: &GgufFile, i: usize) -> Result<u32> {' \
+        '    g.get(&format!("{GGUF_KEY_AXIS_PREFIX}_{i}")).ok_or_else(|| e())?' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S4 — a runtime-assembled PREFIX constant is not compared literally"
+    else
+        echo "self-test FAIL: an indexed-prefix constant must not be a leg (d) finding" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+
+    # 36. S5, dead-code reserved constant: declared for a wiring wave that has
+    #     not landed, read by nothing. `vokra.kokoro.phase_activation`,
+    #     "consumed by the T18 load/forward wiring".
+    write_meta \
+        '#[allow(dead_code)]' \
+        'const KEY_RESERVED: &str = "vokra.dres.future";'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: S5 — an \`#[allow(dead_code)]\` reserved constant is not a read"
+    else
+        echo "self-test FAIL: a dead-code reserved constant must not be a leg (d) finding" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+
+    # 37. A required read inside `#[cfg(test)]` must not count either — the
+    #     same exclusion legs (a)/(b) apply, checked on leg (d) because it
+    #     discovers constants independently.
+    write_meta \
+        '#[cfg(test)]' \
+        'mod tests {' \
+        '    const KEY_T: &str = "vokra.dtest.axis";' \
+        '    fn t(g: &GgufFile) -> Result<u32> { g.get(KEY_T).ok_or_else(|| e())? }' \
+        '}'
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: a required read inside #[cfg(test)] is not a leg (d) finding"
+    else
+        echo "self-test FAIL: a #[cfg(test)] metadata read must not count" >&2
+        status=1
+    fi
+    write_meta
+
+    # 38. The leg's own parser guard: a models tree with no required read at
+    #     all. Finding nothing is the SILENT direction — every group would
+    #     read as fine — so it must fail rather than pass vacuously, exactly
+    #     like leg (c)'s pair.
+    local saved_meta="$tmp/meta_saved.rs"
+    cp "$tmp/models/nested/meta.rs" "$saved_meta"
+    : >"$tmp/models/nested/meta.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: zero required metadata reads should fail the guard" >&2
+        status=1
+    elif grep -q 'no REQUIRED `vokra' <<<"$out"; then
+        echo "self-test PASS: a leg (d) scan that found no required read fails the guard"
+    else
+        echo "self-test FAIL: the leg (d) empty-scan guard did not fire" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    cp "$saved_meta" "$tmp/models/nested/meta.rs"
+
+    # 39. The EMITTER half, checked from the converter side. Every case above
+    #     varies the reader; this one deletes the converter's stamp and
+    #     asserts the same key becomes a finding. Without it the whole leg
+    #     could be passing because the emitter scan matches everything
+    #     rather than because the stamp is really there — and that is the
+    #     precise shape of the bug this gate exists to prevent.
+    printf 'fn stamp(b: &mut GgufBuilder) {\n}\n' >"$tmp/conv/models/stamps.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: deleting the converter stamp should make the key a finding" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.dfix.\*`' <<<"$out"; then
+        echo "self-test PASS: removing the converter's stamp turns a clean key into a finding"
+    else
+        echo "self-test FAIL: leg (d) did not report \`vokra.dfix.*\` once unstamped" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    write_stamps
+
+    # 40. …and a stamp that lives only in a converter COMMENT does not
+    #     count. `//! …deserialises `vokra.melodyflow.*`…` is exactly how
+    #     both real NO_STAMP entries describe work they have not done, so a
+    #     comment-blind scan would have marked them stamped and hidden both.
+    printf 'fn stamp(b: &mut GgufBuilder) {\n    // b.add_u32("vokra.dfix.kept", 1);\n}\n' \
+        >"$tmp/conv/models/stamps.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: a commented-out stamp must not satisfy leg (d)" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.dfix.\*`' <<<"$out"; then
+        echo "self-test PASS: a stamp that exists only in a comment does not count"
+    else
+        echo "self-test FAIL: leg (d) accepted a commented-out stamp" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    write_stamps
+
+    # 41. THE TEETH CASE. A converter that DECLARES the key constant and
+    #     never passes it to a writer. This is the shape a dropped stamp
+    #     leaves behind, and for one day it was invisible: deleting
+    #     `b.add_u32(KEY_N_WAKEWORDS, …)` from openwakeword_op.rs while its
+    #     `pub const KEY_N_WAKEWORDS: &str = "vokra.openwakeword.n_wakewords";`
+    #     stayed put reproduced the round-8 defect exactly, and leg (d)
+    #     printed OK with every number unchanged — because `meta_stamped`
+    #     harvested literals and a declaration IS a literal. The unrelated
+    #     `dother` stamp keeps the emitter scan non-empty, so the ONLY thing
+    #     that can fail this case is the declaration being mistaken for a
+    #     stamp.
+    {
+        printf 'const KEY_KEPT: &str = "vokra.dfix.kept";\n'
+        printf 'fn stamp(b: &mut GgufBuilder) {\n'
+        printf '    b.add_u32("vokra.dother.axis", 1);\n'
+        printf '}\n'
+    } >"$tmp/conv/models/stamps.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: a declared-but-never-stamped required key must fail" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.dfix.\*`' <<<"$out"; then
+        echo "self-test PASS: declaring a key constant is not stamping it"
+    else
+        echo "self-test FAIL: leg (d) did not report \`vokra.dfix.*\` as unstamped" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    write_stamps
+
+    # 42. The OTHER side of the same boundary, and the reason case 41's fix
+    #     cannot be "treat every unstamped key as a defect": a read with a
+    #     REAL caller default is not broken by a missing stamp. S2 covers 383
+    #     sites on the live tree, so a fix that failed this would bury the
+    #     signal it just gained. The converter here declares the constant and
+    #     never stamps it, exactly as in case 41 — the ONLY difference is
+    #     `unwrap_or(16)` on the read, which is precisely the distinction
+    #     that should decide the verdict.
+    write_meta \
+        'const KEY_DEF: &str = "vokra.ddef.axis";' \
+        'fn load_def(g: &GgufFile) -> Result<Self> {' \
+        '    let axis = g.get(KEY_DEF).and_then(|v| v.as_u64()).unwrap_or(16);' \
+        '    Ok(Self { axis })' \
+        '}'
+    {
+        printf 'const KEY_DEF: &str = "vokra.ddef.axis";\n'
+        printf 'fn stamp(b: &mut GgufBuilder) {\n'
+        printf '    b.add_u32("vokra.dfix.kept", 1);\n'
+        printf '}\n'
+    } >"$tmp/conv/models/stamps.rs"
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: a DEFAULTED read with no stamp is not a leg (d) finding"
+    else
+        echo "self-test FAIL: an unwrap_or read must survive its key going unstamped" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+    write_meta
+    write_stamps
+
+    # 43. Head interpolation IS a stamp. Tightening case 41 by looking for
+    #     the constant in CODE position alone would break the prefix
+    #     builders, because `format!("{KEY_WORDPIECE_PREFIX}.kind")` hides
+    #     the name inside a string and strings are blanked out of `code`.
+    #     Found by measurement, not by guesswork: it was the single false
+    #     positive the first cut of the fix produced across the whole tree
+    #     (`vokra.bert.wordpiece`, stamped by bert_base.rs:616-641 and read
+    #     as an inline prefix literal by sbv2/mod.rs:2708).
+    {
+        printf 'const KEY_PFX: &str = "vokra.dfix";\n'
+        printf 'fn stamp(b: &mut GgufBuilder) {\n'
+        printf '    b.add_u32(&format!("{KEY_PFX}.kept"), 1);\n'
+        printf '}\n'
+    } >"$tmp/conv/models/stamps.rs"
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: a key assembled from a head-interpolated constant counts as stamped"
+    else
+        echo "self-test FAIL: format!(\"{KEY_PFX}.kept\") must count as a stamp" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+    write_stamps
+
+    # 44. A use that exists only inside `#[cfg(test)]` is not a stamp — the
+    #     converter half of case 37. Real shape: openwakeword_op.rs names all
+    #     seven keys in `all_seven_runtime_metadata_keys_are_stamped`, so a
+    #     scan that forgot the test exclusion here would call a group stamped
+    #     on the strength of the test asserting that it is.
+    {
+        printf 'const KEY_KEPT: &str = "vokra.dfix.kept";\n'
+        printf 'fn stamp(b: &mut GgufBuilder) {\n'
+        printf '    b.add_u32("vokra.dother.axis", 1);\n'
+        printf '}\n'
+        printf '#[cfg(test)]\n'
+        printf 'mod tests {\n'
+        printf '    fn t(b: &mut GgufBuilder) { b.add_u32(KEY_KEPT, 1); }\n'
+        printf '}\n'
+    } >"$tmp/conv/models/stamps.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: a stamp that only exists in #[cfg(test)] must not count" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.dfix.\*`' <<<"$out"; then
+        echo "self-test PASS: a test-only stamp does not satisfy leg (d)"
+    else
+        echo "self-test FAIL: leg (d) accepted a #[cfg(test)]-only stamp" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    write_stamps
+
     if [ "$status" -eq 0 ]; then
-        echo "check-arch-handshake --self-test: OK (25 cases)"
+        echo "check-arch-handshake --self-test: OK (44 cases)"
     fi
     return "$status"
 }
@@ -1676,14 +2842,16 @@ case "${1:-}" in
         LEDGER_B="$(mktemp)"
         LEDGER_C="$(mktemp)"
         LEDGER_SUP="$(mktemp)"
-        trap 'rm -f "$LEDGER_A" "$LEDGER_B" "$LEDGER_C" "$LEDGER_SUP"' EXIT
+        LEDGER_D="$(mktemp)"
+        trap 'rm -f "$LEDGER_A" "$LEDGER_B" "$LEDGER_C" "$LEDGER_SUP" "$LEDGER_D"' EXIT
         write_ledger "$LEDGER_A" ${NO_READER[@]+"${NO_READER[@]}"}
         write_ledger "$LEDGER_B" ${NO_CONVERTER[@]+"${NO_CONVERTER[@]}"}
         write_ledger "$LEDGER_C" ${NOT_A_MODEL_SLUG[@]+"${NOT_A_MODEL_SLUG[@]}"}
         write_ledger "$LEDGER_SUP" ${NOT_A_READER[@]+"${NOT_A_READER[@]}"}
+        write_ledger "$LEDGER_D" ${NO_STAMP[@]+"${NO_STAMP[@]}"}
         run_check "$CONVERT_MODELS_DEFAULT" "$CONVERT_SRC_DEFAULT" "$MODELS_DEFAULT" \
             "$ENGINE_DEFAULT" "$LEDGER_A" "$LEDGER_B" "$CONVERT_LIB_DEFAULT" "$LEDGER_C" \
-            "$LEDGER_SUP"
+            "$LEDGER_SUP" "$LEDGER_D"
         ;;
     *)
         echo "error: unknown argument '$1'" >&2
