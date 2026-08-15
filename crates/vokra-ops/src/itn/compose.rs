@@ -156,13 +156,18 @@ pub fn compose_shortest_path(input: &[u8], fst: &Fst<TropicalWeight>) -> Result<
     let mut layer: BTreeMap<StateId, usize> = BTreeMap::new();
     layer.insert(start, 0);
 
+    // `0..=n`, not `input.iter()`: the loop runs one extra time past the last
+    // byte so the final epsilon closure happens with nothing left to consume.
+    // Iterating the slice would drop that closing pass, and `Option<&u8>` from
+    // `input.get(pos)` is what lets the extra iteration fall out of the same
+    // body rather than needing a duplicate call after the loop.
     let n = input.len();
     for pos in 0..=n {
         epsilon_close(fst, &mut arena, &mut layer)?;
-        if pos == n {
+        let Some(&input_byte) = input.get(pos) else {
             break;
-        }
-        let byte = Label::from(input[pos]);
+        };
+        let byte = Label::from(input_byte);
         let mut next: BTreeMap<StateId, usize> = BTreeMap::new();
         for (&state, &node) in &layer {
             let base = arena[node].cost;

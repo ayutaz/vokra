@@ -47,6 +47,16 @@ cuda = ["vokra-models/cuda"]
 # stock CLI stays CPU-only (feature OFF by default) and the root Cargo.lock
 # stays vokra-*-only (NFR-DS-02).
 vulkan = ["vokra-models/vulkan"]
+# ITN/TN (Wave D). The forward chain `vokra-core -> vokra-ops -> vokra-models`
+# existed but stopped one crate short of every shipped binary, so
+# `crates/vokra-ops/src/itn/` (~3,000 lines) plus the `wetextprocessing`
+# converter and binder were unreachable to any CLI user — and the loud-partial
+# told them to "rebuild with --features vokra-wfst", which failed with
+# "package `vokra-cli` does not contain this feature". Same first-party
+# zero-dep rationale as the three rows above: everything it pulls is a
+# `vokra-*` crate, so the root Cargo.lock stays vokra-*-only (NFR-DS-02), and
+# it is OFF by default so the stock CLI is unchanged.
+vokra-wfst = ["vokra-models/vokra-wfst"]
 
 # dev-only: M2-08 T14 policy e2e test uses `vokra-eval::check_degradation` for
 # the NFR-QL-02 5% gate; `vokra-eval` is a first-party `vokra-*` crate with no

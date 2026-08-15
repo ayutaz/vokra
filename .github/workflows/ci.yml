@@ -265,7 +265,18 @@ jobs:
       # would be a vacuous green — exactly the failure mode the M5-06 step above
       # was written to prevent. The flag is spelled out LITERALLY here for the
       # same reason.
-      - name: ITN/TN feature gate (Wave D, vokra-ops + vokra-models, feature ON)
+      #
+      # `vokra-cli` joined that forwarding chain on 2026-08-15
+      # (`vokra-wfst = ["vokra-models/vokra-wfst"]`). Until then the chain
+      # stopped one crate short of every shipped binary, so the loud-partial
+      # the ITN pipeline prints told a CLI user to "rebuild with --features
+      # vokra-wfst" and cargo answered "package `vokra-cli` does not contain
+      # this feature". A third manifest edge left unbuilt is the same vacuous
+      # green this comment exists to prevent, so it gets its own leg.
+      # `--all-targets` is what makes that leg worth having: it reaches the
+      # `#[cfg(test)]` registry in `crates/vokra-cli/src/engine.rs`, whose
+      # `wetextprocessing` row asserts the feature-ON forward is real.
+      - name: ITN/TN feature gate (Wave D, vokra-ops + vokra-models + vokra-cli, feature ON)
         if: matrix.fusion == '0'
         run: |
           set -euo pipefail
@@ -273,12 +284,23 @@ jobs:
           cargo test -p vokra-ops --features vokra-wfst --lib itn
           cargo clippy -p vokra-models --features vokra-wfst --all-targets -- -D warnings
           cargo test -p vokra-models --features vokra-wfst --lib wetextprocessing
+          cargo clippy -p vokra-cli --features vokra-wfst --all-targets -- -D warnings
           ./scripts/check-zero-deps.sh
           # Forwarding the flag must still pull in no non-vokra crate.
           extra=$(cargo tree -p vokra-ops --features vokra-wfst \
             | grep -vE 'vokra-|^\[|^$' || true)
           if [ -n "$extra" ]; then
             echo "Wave D regression: vokra-ops/vokra-wfst pulled in non-vokra deps:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
+          # Same assertion for the CLI passthrough — the binary is what ships,
+          # so it is the edge where a third-party dep would actually reach a
+          # user (NFR-DS-02).
+          extra=$(cargo tree -p vokra-cli --features vokra-wfst \
+            | grep -vE 'vokra-|^\[|^$' || true)
+          if [ -n "$extra" ]; then
+            echo "Wave D regression: vokra-cli/vokra-wfst pulled in non-vokra deps:" >&2
             echo "$extra" >&2
             exit 1
           fi

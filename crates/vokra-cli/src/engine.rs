@@ -813,11 +813,25 @@ enum BoundReason {
     /// is the campplus speaker-verify pair and is rejected on every other
     /// task), so there is no honest input to drive the model with.
     NeedsPairedInput,
-    /// The forward is real, complete and fallible — it refuses a weightless
-    /// or wrong-rate artifact with a named error rather than degrading to a
-    /// zero track — and its output would be CLI-shaped. Nothing about the
+    /// The forward is real, complete and fallible — it refuses a bad artifact
+    /// with a named error rather than handing back a plausible-looking
+    /// fabrication — and its output would be CLI-shaped. Nothing about the
     /// binder blocks a `run` task; this CLI simply has not wired one for the
     /// arch yet.
+    ///
+    /// The gloss above used to name only the F0 instance of that fallibility
+    /// ("a weightless or wrong-rate artifact ... rather than degrading to a
+    /// zero track"), because the FCPE and CREPE rows were its only users. The
+    /// `wetextprocessing` row is a text side-car with neither a sample rate
+    /// nor a track, so the wording was widened to the class and the audio
+    /// instance moved into those rows' own comment, where it is still exact.
+    /// Nothing about the variant's meaning changed.
+    ///
+    /// A row here may still carry a BUILD-time gate — `wetextprocessing`'s
+    /// two FST stages need the `vokra-wfst` feature — provided its `entry`
+    /// names that gate. What the variant forbids is a forward that refuses
+    /// unconditionally: that is [`Self::LoudPartialForward`], and confusing
+    /// the two in either direction is the defect both rows' comments record.
     ///
     /// # A `SkeletonFallback` variant used to sit here
     ///
@@ -869,11 +883,12 @@ impl BoundReason {
                  supplies the second one, so there is nothing honest to feed it"
             }
             Self::RealForwardNoCliTask => {
-                "its forward is real, complete and fallible — it refuses a weightless or \
-                 wrong-rate artifact with a named error rather than degrading to a zero \
-                 track — so nothing about the binder blocks execution; this CLI has \
-                 simply not wired a `run` task for the arch yet, and the entry point \
-                 below is callable from a library context today"
+                "its forward is real, complete and fallible — it refuses a bad artifact with \
+                 a named error rather than handing back a plausible-looking fabrication — so \
+                 nothing about the binder blocks execution; this CLI has simply not wired a \
+                 `run` task for the arch yet, and the entry point below is callable from a \
+                 library context today, subject to any build-time feature gate that entry \
+                 names"
             }
             Self::NoGgufLoader => {
                 "the module has no GGUF loader yet (its weights come from a deterministic \
@@ -1570,11 +1585,59 @@ const BOUND_ARCHES: &[BoundArch] = &[
         reason: BoundReason::NoCliShapedOutput,
         probe: Some(|g: &GgufFile| vokra_models::ct_punc::CtPunc::from_gguf(g).map(|_| ())),
     },
+    // Wave M (2026-08-15) — corrected row. This shipped as
+    // `NoCliShapedOutput`, whose definition above names the blocker class
+    // "hidden states, per-token logits, codec codes, or an output that needs a
+    // caller-supplied tokenization / phoneme sequence the GGUF does not carry".
+    // None of those applies. The entry the row itself names is declared in
+    // `crates/vokra-models/src/wetextprocessing/mod.rs` as
+    //
+    //     pub fn normalize(&self, input: &str) -> Result<String>
+    //
+    // text in, text out — and `run` already carries `--text`.
+    //
+    // The tag looks borrowed from the neighbour directly above rather than read
+    // off the binder. That `ct_punc` row IS correct under the same definition,
+    // because `CtPunc::restore(&self, tokens: &[&str], token_ids: &[u32])`
+    // genuinely needs a tokenization no GGUF carries. Two adjacent text
+    // side-cars, one signature apart, and the wrong one was copied.
+    //
+    // What actually blocks it, in the order a caller meets them:
+    //
+    //   1. no `run` task is wired for the arch. Structural, true in every
+    //      build, and exactly what `RealForwardNoCliTask` states.
+    //   2. the two FST stages behind `normalize` compile only under the
+    //      `vokra-wfst` feature — `crates/vokra-ops/src/itn/pipeline.rs` gates
+    //      `compose_stage` on it. Until 2026-08-15 `vokra-cli` declared no such
+    //      feature, so a CLI build could not reach the real forward at all and
+    //      the honest tag then WOULD have been `LoudPartialForward`; the
+    //      passthrough in `crates/vokra-cli/Cargo.toml` is what changed that.
+    //
+    // Blocker 2 is build-conditional, so it is stated in `entry` — the vocos
+    // precedent above for naming a second blocker — while `reason` carries the
+    // class that holds in both builds. Filing the row back under
+    // `LoudPartialForward` would now repeat the Wave I distil-whisper defect in
+    // its own direction: that variant asserts an UNCONDITIONAL refusal, and a
+    // `--features vokra-wfst` build composes both grammars for real.
+    //
+    // The feature-off build still refuses loudly for every non-empty input
+    // (`UnsupportedOp` naming the absent OpenFST reader, the rebuild command
+    // and the upstream URL). The one input it does not refuse is the empty
+    // string, which short-circuits to `Ok("")` in both builds because
+    // upstream's `Processor::Tag` / `Processor::Verbalize` do. No normalised
+    // text is fabricated on any path, in either build (FR-EX-08).
+    //
+    // The half of this judgement a compiler can hold — the two signatures — is
+    // pinned by `text_shaped_entry_points_still_have_the_signatures_their_rows_assume`
+    // below, so the next reader need not take the paragraphs above on trust.
     BoundArch {
         arch: "wetextprocessing",
         module: "vokra_models::wetextprocessing",
-        entry: "WeTextProcessing::from_gguf → WeTextProcessing::normalize",
-        reason: BoundReason::NoCliShapedOutput,
+        entry: "WeTextProcessing::from_gguf → WeTextProcessing::normalize (real text→text; \
+                the two FST stages behind it compile only under the `vokra-wfst` feature, \
+                which this crate now forwards — without it `normalize` refuses loudly \
+                instead of composing, so build the CLI with `--features vokra-wfst`)",
+        reason: BoundReason::RealForwardNoCliTask,
         probe: Some(|g: &GgufFile| {
             vokra_models::wetextprocessing::WeTextProcessing::from_gguf(g).map(|_| ())
         }),
@@ -2855,6 +2918,105 @@ mod tests {
             "vocos is the only row in this family whose `decode` ALSO refuses; demoting that \
              gap out of `reason` must move it into `entry`, not drop it: {}",
             row.entry
+        );
+    }
+
+    // ---- Wave M (2026-08-15) — wetextprocessing: a text side-car ---------
+    //
+    // The row shipped as `NoCliShapedOutput`, a class defined as "hidden
+    // states, per-token logits, codec codes, or an output that needs a
+    // caller-supplied tokenization the GGUF does not carry". Its own named
+    // entry point is `WeTextProcessing::normalize(&self, input: &str) ->
+    // Result<String>`, which is none of those, and `run` already carries
+    // `--text`. The neighbour it was filed beside, `ct_punc`, IS correct under
+    // that class — `CtPunc::restore` takes tokens and token ids from the
+    // caller — which is the likeliest route the wrong tag took.
+    //
+    // Nothing pinned either row, so these two tests pin both sides: the
+    // message a user sees, and the signatures the two classifications rest on.
+
+    /// The `run` diagnostic names the blockers that actually apply — no task
+    /// wired, plus the build-time FST feature gate — instead of an output
+    /// shape that does not.
+    #[test]
+    fn load_session_binds_wetextprocessing_arch_as_unwired_task_not_no_cli_shaped_output() {
+        let err = assert_bound_arch(
+            "wetextprocessing",
+            "wetext-arch",
+            "vokra_models::wetextprocessing",
+            "WeTextProcessing::normalize",
+        );
+        assert!(
+            err.contains("not wired a `run` task"),
+            "`normalize` is text in, text out — what is missing is the task: {err}"
+        );
+        assert!(
+            !err.contains("not a CLI-shaped artifact"),
+            "a `&str` -> `String` entry point is exactly CLI-shaped, and `run` already \
+             carries `--text`: {err}"
+        );
+        assert!(
+            err.contains("vokra-wfst"),
+            "the real forward needs that feature; dropping the gate from the diagnostic \
+             would send a default-build user at an entry point that refuses: {err}"
+        );
+    }
+
+    /// The text-in/text-out judgement behind two adjacent rows, made
+    /// mechanical.
+    ///
+    /// `BoundReason` accuracy is otherwise established by reading each
+    /// module's entry point — the enum's own doc says so — which is how this
+    /// pair drifted: `wetextprocessing` ended up filed under the class its
+    /// neighbour belongs to. A signature is the one part of that judgement a
+    /// compiler can hold, so each entry point is coerced to an `fn` pointer
+    /// carrying the argument and return types its row assumes. Change either
+    /// binder's shape and this stops compiling, which forces the row to be
+    /// re-read rather than left behind.
+    ///
+    /// It cannot check the rest: nothing here can see whether a forward is a
+    /// loud-partial, or whether a task was wired. It covers only the half that
+    /// turns on "what must the caller supply, and what comes back" — which is
+    /// exactly the half `NoCliShapedOutput` rests on, and exactly where the
+    /// drift was.
+    #[test]
+    fn text_shaped_entry_points_still_have_the_signatures_their_rows_assume() {
+        // Text in, text out: no output shape blocks a `run` task here.
+        const _: fn(
+            &vokra_models::wetextprocessing::WeTextProcessing,
+            &str,
+        ) -> vokra_core::Result<String> =
+            vokra_models::wetextprocessing::WeTextProcessing::normalize;
+        // A caller-supplied tokenization AND its ids, neither of which a GGUF
+        // carries — the contrast that keeps the neighbouring row where it is.
+        const _: fn(&vokra_models::ct_punc::CtPunc, &[&str], &[u32]) -> vokra_core::Result<String> =
+            vokra_models::ct_punc::CtPunc::restore;
+
+        let wetext = BOUND_ARCHES
+            .iter()
+            .find(|b| b.arch == "wetextprocessing")
+            .expect("wetextprocessing has a vokra-models binder and must carry a row");
+        let ct_punc = BOUND_ARCHES
+            .iter()
+            .find(|b| b.arch == "ct_punc")
+            .expect("ct_punc has a vokra-models binder and must carry a row");
+        assert_eq!(
+            wetext.reason,
+            BoundReason::RealForwardNoCliTask,
+            "`normalize` takes `&str` and returns `String`, so nothing about the output \
+             shape blocks a task — what is missing is the task itself"
+        );
+        assert_eq!(
+            ct_punc.reason,
+            BoundReason::NoCliShapedOutput,
+            "`restore` needs tokens and token ids from the caller — the contrast the \
+             wetextprocessing row's old tag had lost"
+        );
+        assert!(
+            wetext.entry.contains("vokra-wfst"),
+            "the FST stages behind `normalize` are feature-gated — demoting that out of \
+             `reason` must move it into `entry`, not drop it: {}",
+            wetext.entry
         );
     }
 

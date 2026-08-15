@@ -40,19 +40,6 @@
 //! converter guarantees byte-preserving pass-through only; a
 //! `SpeechTokenizerWeights::from_gguf` native runtime binding is a
 //! follow-up wave gated on the upstream tensor-name manifest fetch.
-//!
-//! # Dead-code suppression
-//!
-//! `pub fn convert_speechtokenizer_file` and its companion
-//! [`SpeechtokenizerReport`] are wired only by this module's own
-//! `#[cfg(test)]` block today — the outer CLI / `convert_file_licensed`
-//! plumbing lands in a follow-up wave. In the non-test lib target the
-//! Rust dead-code lint therefore fires on the module-private
-//! constants + `pub` API items even though they are exercised end-to-end
-//! by two passing tests, so we opt them out at the module level. The
-//! test coverage is authoritative — the lint here would be a
-//! false-positive gate.
-#![allow(dead_code)]
 
 use std::path::Path;
 
