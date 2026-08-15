@@ -191,8 +191,9 @@ land 済みで、forward pass は **loud partial** です。もっともらし�
 - **音楽生成・解析** — MusicGen、MAGNeT、MelodyFlow、JASCO、AudioGen、
   AudioLDM2、MT3 採譜、Beat-This ビートトラッキング
 - **音源分離** — Demucs、SepFormer、Conv-TasNet
-- **自己教師あり音響エンコーダ** — ATST、EAT、M2D、MAEST、W2V-BERT-2、
-  WavLM、CLAP（ViT 系 5 種は `vokra_ops::vit` プリミティブを共有）
+- **音響表現エンコーダ** — ATST / EAT / M2D / MAEST（Beat-This と併せて
+  `vokra_ops::vit` プリミティブを共有する 5 件）、および W2V-BERT-2
+  （Conformer 系で deferred 理由が別）、WavLM、CLAP
 - **音響タグ付け・分類** — PANNs、ディープフェイク検出、言語識別、emotion2vec
 - **品質評価** — UTMOSv2、NISQA、TorchAudio-SQUIM、DNSMOS P.808 / P.835
 - **ASR** — Canary-1B-Flash、Parakeet-TDT-1.1B、GigaAM、Whisper-Medusa、

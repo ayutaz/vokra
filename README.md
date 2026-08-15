@@ -192,9 +192,9 @@ checkpoint verifies them; nothing about them is silent.
 - **Music generation and analysis** — MusicGen, MAGNeT, MelodyFlow, JASCO,
   AudioGen, AudioLDM2, MT3 transcription, Beat-This beat tracking
 - **Source separation** — Demucs, SepFormer, Conv-TasNet
-- **Self-supervised audio encoders** — ATST, EAT, M2D, MAEST, W2V-BERT-2,
-  WavLM, CLAP (all five ViT-family encoders share one
-  `vokra_ops::vit` primitive)
+- **Audio representation encoders** — ATST, EAT, M2D and MAEST, which share
+  one `vokra_ops::vit` primitive with Beat-This; plus W2V-BERT-2 (Conformer,
+  deferred for a different reason), WavLM and CLAP
 - **Audio tagging and classification** — PANNs, deepfake detection,
   language identification, emotion2vec
 - **Quality assessment** — UTMOSv2, NISQA, TorchAudio-SQUIM, DNSMOS P.808 / P.835

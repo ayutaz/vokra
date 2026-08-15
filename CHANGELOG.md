@@ -55,8 +55,9 @@ answer.
   WeTextProcessing inverse text normalization / text normalization, with the
   ITN grammar and rule-fallback pipeline in `vokra-ops`.
 - **Shared operators** rather than per-model copies: a ViT audio encoder
-  (2-D patch embedding + pre-norm Transformer) that every self-supervised
-  encoder binder sits on, WPE dereverberation transcribed from `fgnt/nara_wpe`,
+  (2-D patch embedding + pre-norm Transformer) shared by five binders —
+  ATST, EAT, M2D, MAEST and Beat-This — WPE dereverberation transcribed
+  from `fgnt/nara_wpe`,
   YIN and PyIN, Snake activation, anti-aliased upsampling, MoE dispatch and
   expert GEMM, and shallow-fusion LM scoring.
 - **`vokra-cli f0`** — a fourth subcommand for checkpoint-free pitch

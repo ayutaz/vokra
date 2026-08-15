@@ -1,7 +1,8 @@
 # Audit-followup campaign — owner handoff (2026-08-14 / 15 / 16)
 
 **Branch**: `feat/audit-followup-cc-wave1-2026-08-14`
-**Scope**: 109 commits ahead of `main` (326 files, +171 460 / −1 751)
+**Scope**: 109 implementation + audit commits ahead of `main`, plus the
+documentation refresh of 2026-08-16 (§8).
 **PR**: not yet opened — see §6.
 **Status**: CC-actionable work is **terminal** (14 audit rounds; rounds 13 and
 14 both found nothing to fix, which is this project's two-consecutive-zero
@@ -41,11 +42,18 @@ this campaign or were introduced by it and invisible to every existing check.
 **Coverage result**: 26 converter arches produced GGUFs that nothing in the
 workspace could read back. All 26 are now consumed.
 
-**The most useful single finding of the wave phase** was not a model: five SSL
+**The most useful single finding of the wave phase** was not a model: several
 binders were blocked for the *same* reason — `vokra-ops` had no 2-D patch
-embedding + pre-norm Transformer encoder. One primitive unblocked five
-binders. `conformer` / `ebranchformer` / `zipformer` are conv-augmented ASR
-encoders over a 1-D frame sequence and could not substitute.
+embedding + pre-norm Transformer encoder. One primitive now carries five of
+them: ATST, EAT, M2D, MAEST and Beat-This all call `vokra_ops::vit` in code.
+`conformer` / `ebranchformer` / `zipformer` are conv-augmented ASR encoders
+over a 1-D frame sequence and could not substitute.
+
+Worth stating precisely, because the first version of this paragraph did not:
+**W2V-BERT-2 is not one of the five.** It is Conformer-based, and its forward
+is deferred for an unrelated reason (`vokra_ops::conformer::PositionEncoding`
+exposes only the variants it does). Grouping it with the ViT set would send a
+reader to the wrong primitive.
 
 ## 3. What the audit rounds found
 
@@ -209,3 +217,37 @@ proven by breaking real code and watching it fail by name.
 shipped with eight passing tests that all stopped at argument parsing —
 hard-coding "every frame is voiced" left all eight green. They now check the
 output, and the same mutation fails two of them.
+
+## 8. Documentation refresh (2026-08-16)
+
+A separate instruction — "bring all the documentation up to date" — turned up
+the same classes of defect one layer out, in the pages a newcomer reads first.
+
+- **README.md / README.ja.md** described a narrower project than the one that
+  exists. The opening still scoped Vokra to speech; music generation, source
+  separation and audio understanding have been in scope since 2026-07-30. The
+  roster was missing the ASR distillations and TTS models that landed
+  2026-07-24, plus keyword spotting, vocoders, text normalization, punctuation
+  restoration and diarization. RMVPE was still described as a loud partial
+  awaiting verification — untrue since `e7b6810`. The 49 architectures whose
+  forward is deferred now have their own heading rather than being mixed in
+  with what runs.
+- **`tools/docs/check_doc_examples.py` would have rejected correct
+  documentation.** Its subcommand set was a literal `(run, convert, bench)`
+  tuple, so it answered "subcommand 'f0' does not exist" for a subcommand that
+  does, and could not have checked one of its flags. Derived from `main.rs`'s
+  dispatch now; proven by planting `--bogus-flag` on an `f0` example and
+  watching it fail by name.
+- **`docs/architecture.md`** said `vokra-kws-micro` was scaffold-only and that
+  `detect()` returns `Idle` unconditionally. Both halves had stopped being
+  true, the second because returning `Idle` while unconfigured was itself the
+  defect an audit round removed.
+- **CONTRIBUTING.md** advertised three gates in the `license` required check,
+  which runs fifteen.
+- **CHANGELOG.md** had no entry after 2026-07-23, across six merged PRs.
+- Also refreshed: the CLI tutorial (en/ja), `docs/deliverables.md`,
+  `docs/requirement-ids.{md,ja.md}`, and `docs/milestones.md` §9.
+
+One claim in this handoff was corrected in the process — see §2 on which five
+binders actually share the ViT primitive. It was written from the wave
+narrative rather than from the code, and the code disagreed.
