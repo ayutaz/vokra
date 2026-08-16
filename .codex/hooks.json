@@ -1,0 +1,31 @@
+{
+  "description": "Vokra repository policy hooks for Codex.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/pre_tool_use.sh\"",
+            "statusMessage": "Checking Vokra command policy",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/post_tool_use.py\"",
+            "statusMessage": "Formatting and checking Vokra edits",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
