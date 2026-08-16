@@ -1,34 +1,38 @@
 ---
 name: vast-ai-workflow
-description: 大モデル（>8 GB safetensors）を vast.ai で変換 / 検証 / publish するときに使う。M1 iMac（16 GB）で mmap すると swap で死ぬのを避け、`provision.sh` の 4 gotcha（hf_config.pth shim / huggingface_hub<0.30 pin / certifi / stack tool install）+ rent→provision→work→destroy lifecycle + Voxtral streaming reader パターン + FA v3 Hopper bakeoff の runbook を示す。
+description: メモリを食う作業を vast.ai へ逃がすときに使う。**≥2 GB のモデル artefact の変換 / 検証 / publish**、および **workspace 全体や `vokra-models` の cargo**（2026-08-16 に M1 iMac を OOM で再起動させた実績）が対象。`provision.sh` の 4 gotcha（hf_config.pth shim / huggingface_hub<0.30 pin / certifi / stack tool install）+ rent→provision→work→destroy lifecycle + 未 push コミットの git bundle 転送 + Voxtral streaming reader + FA v3 Hopper bakeoff の runbook を示す。
 ---
 
 # vast.ai で大モデルを扱う
 
 **単一事実源**: `scripts/publish/vast-ai/provision.sh` + `docs/handoff/vast-ai-large-model-publish.md`。本 skill はそれを skill 表現に翻訳したもの。
 
-**大原則**: 依頼者機（M1 iMac 16 GB）で >8 GB safetensors を mmap すると swap が急伸して macOS が強制終了する。Voxtral-Small-24B (48 GB) で swap 40 GB 到達実証済。→ **vast.ai へ escalate**。
+**大原則**: 依頼者機は **M1 iMac 16 GB**。ここでメモリを食う作業を走らせると swap が急伸し、**macOS が強制終了する**。実証は 2 系統:
+
+- **モデル artefact**: Voxtral-Small-24B (48 GB) の mmap で swap 40 GB 到達
+- **cargo**: 2026-08-16、`cargo test -p vokra-models --lib kyutai_stt` が exit 137 (OOM kill) → **macOS 再起動**
+
+→ どちらも **vast.ai へ escalate**。
 
 ## 0. いつ vast.ai を使うか
 
+**閾値は 2 GB**（依頼者指示 2026-08-16）。実測 safe な範囲（whisper-* 2.9 GB / csm-1b 6.21 GB は変換実績あり）より意図的に厳しい。**誤ってブロックした代償は環境変数 1 個、誤って通した代償は再起動**だから。
+
 **要 vast.ai**:
-- >8 GB safetensors の convert（converter が全 tensor を Python 側で touch する場合）
-- >8 GB GGUF の publish（30 Mbps outbound で数時間、vast.ai の 2.6 Gbps で数分）
+- **≥2 GB のモデル artefact の convert**（sharded の場合は shard 単体でなく**合計**で判定）
+- ≥2 GB GGUF の publish（30 Mbps outbound で数時間、vast.ai の 2.6 Gbps で数分）
+- **workspace 全体の cargo**（`--workspace` / `--all` / `-p` 無しの `cargo test`）
+- **`-p vokra-models` の cargo**（最大 crate、2026-08-16 の再起動の直接原因）
 - H100 / A100 が必要な bakeoff（FA v3 Hopper、CoreML/ANE は別 = 実機 Mac / iPhone）
 
-**M1 iMac で OK（実測）**:
-- whisper-* (最大 2.9 GB)
-- csm-1b (6.21 GB tight OK)
-- kyutai-stt (5.23 GB)
-- parakeet-* (2.5-4.25 GB)
-- **restamp_provenance 経路**: **8.7 GB Voxtral を peak 6.4 MB で publish 実績あり**（mmap 読取のみ、tensor コピーなし。→ skill `publish-model-to-hf` §7）
+**M1 iMac で OK**:
+- 軽い crate 単体: `-p vokra-convert` / `-cli` / `-eval` / `-core` / `-ops`（`CARGO_BUILD_JOBS=1` 併用）
+- シェルゲート全般（`scripts/check-*.sh`）、`cargo fmt`、`cargo metadata`
+- **restamp_provenance 経路**: **8.7 GB Voxtral を peak 6.4 MB で publish 実績あり**（mmap 読取のみ、tensor コピーなし。→ skill `publish-model-to-hf` §7）。**tensor を触らず provenance だけ差し替えるなら 2 GB 閾値の例外**
 
-**要 vast.ai 実例**:
-- Voxtral-Small-24B (48 GB)
-- Kimi-Audio-7B 系
-- 30B+ 全般
+**強制されている**: `scripts/claude-hooks/guard-local-memory.sh` が PreToolUse フックとして上記を**ブロック**する（`.claude/settings.json` に登録済み、`--self-test` 19 ケース）。指針ではなく強制なのは、8 GB の memory を持ったまま重いコマンドを打った実績があるため。意図的に通す場合のみ `VOKRA_ALLOW_LOCAL_HEAVY=1` を前置する。
 
-[[feedback-large-models-on-vast-ai]]。
+[[feedback-large-models-on-vast-ai]] / [[feedback-no-local-workspace-cargo]]。
 
 ## 1. Lifecycle（4 phase）
 
@@ -102,6 +106,48 @@ scripts/publish/vast-ai/run-one.sh <slug>  # convert → stage → push chain
 
 **vast.ai を借りる vs 借りない判断**: convert が要る = 借りる / provenance だけ = ローカル restamp。
 
+### 4.4 workspace 検証を逃がす（GPU も provision.sh も不要）
+
+`cargo test --workspace` をローカルで走らせられないときの実績レシピ（2026-08-16、**所要 ~25 分 / $0.03**）。**モデル変換ではないので GPU も HF token も `provision.sh` も要らない** — 必要なのは CPU と RAM だけ。
+
+```bash
+# 1. RAM で選ぶ（GPU 性能は無関係）。48 core / 125 GB が $0.082/hr だった
+vastai search offers 'rentable=true cpu_ram>=64 disk_space>=150 num_gpus=1' \
+  --order 'dph_total' --raw | python3 -c "
+import json,sys
+for o in json.load(sys.stdin)[:10]:
+    print(o['id'], o['dph_total'], o['cpu_cores_effective'], int(o['cpu_ram']/1024))"
+
+vastai create instance <offer-id> --image nvidia/cuda:12.4.1-devel-ubuntu22.04 \
+  --disk 150 --ssh --direct --label vokra-verify
+
+# 2. 接続は direct endpoint を使う（public_ipaddr + direct_port_start）。
+#    ssh_host/ssh_port 側は Connection refused になることがある
+vastai show instance <id> --raw | python3 -c "
+import json,sys; d=json.load(sys.stdin); print(d['public_ipaddr'], d['direct_port_start'])"
+
+# 3. Rust。--profile minimal は rustfmt/clippy を入れないので明示追加が要る
+curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+rustup component add rustfmt clippy
+```
+
+**未 push のコミットは push せずに bundle で渡す**（未検証コミットを remote branch に載せないため）:
+
+```bash
+# 手元
+git bundle create /tmp/wave.bundle <remote-tip>..HEAD   # docs 数本なら 20 KB 程度
+scp -P <port> /tmp/wave.bundle root@<ip>:/root/
+
+# vast.ai 側
+git clone -q --branch <branch> https://github.com/ayutaz/vokra.git vokra && cd vokra
+git fetch -q /root/wave.bundle HEAD:work && git checkout -q work
+git rev-parse --short HEAD    # 手元と一致することを必ず確認
+```
+
+**判定に使える実測値**: フル workspace = `6965 passed / 0 failed / 23 ignored / 234 suites`。ローカル並列実行で落ちる 2 件は **regression ではない** — `kyutai_stt` は正当に **155 秒**かかるため 180 秒タイムアウトに接触し、`csm_frame_loop_allocates_zero_after_open` は alloc カウンタが他スレッドに撹乱される。どちらも単独・大容量機では通る。
+
+検証が green なら、手元からの push は pre-push の重い経路を踏まないよう `VOKRA_SKIP_HOOKS=1` を使う。**無検証のまま bypass しないこと** — 根拠はリモート検証結果。
+
 ## 5. Destroy phase（**必ず**）
 
 ```bash
@@ -133,11 +179,14 @@ trap 'vastai destroy instance $VAST_CONTAINERLABEL' EXIT
 |------|--------------|------|
 | Voxtral-Small-24B convert + publish | RTX 4090 8h × $0.30/h = $2.4 | 妥当（M1 で試すと mac 強制終了 = 復旧に時間 loss） |
 | H100 FA v3 bakeoff | H100 60 min × $1.73/h = $1.73 | 妥当（M4-07 実績） |
-| provenance だけの差替 | $0（ローカル restamp） | **借りない** |
-| whisper-large-v3 convert | $0（M1 で 2.9 GB は余裕） | **借りない** |
+| **workspace 全体の cargo 検証** | **21 min × $0.082/h = $0.03**（実績） | **妥当**（ローカルは再起動、復旧コストが桁違い） |
+| provenance だけの差替 | $0（ローカル restamp、tensor 不読み） | **借りない** |
+| ≥2 GB checkpoint の convert | 借りる | 実測 safe でも**閾値どおり借りる**（2026-08-16 依頼者指示） |
 
 ## 8. 出禁パターン
 
+- **「今回くらいはローカルで」**: これが 2026-08-16 に mac を再起動させた。8 GB 閾値の memory を持ったうえで `cargo test -p vokra-models` を打っている。**判断で防げなかったので hook で強制した** = `guard-local-memory.sh`。`VOKRA_ALLOW_LOCAL_HEAVY=1` は「測って安全と分かっている」ときだけで、「面倒だから」で使わない
+- **未検証のまま `VOKRA_SKIP_HOOKS=1` で push**: bypass の根拠はリモート検証結果であって、急いでいることではない
 - **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap `vastai destroy` を必ず仕込む
 - **provision.sh を skip して pip 手打ちで頑張る**: 4 gotcha に順番にハマる（実績 1 day 溶かす）
 - **`huggingface_hub` を local と同じ最新版で使う**: vast.ai 上では <0.30 pin 必須（xet-token regression）、local との差分を明示的に持つ
