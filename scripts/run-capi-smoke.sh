@@ -6,7 +6,8 @@
 #   1. cargo build -p vokra-capi --release   (libvokra cdylib + header inputs)
 #   2. scripts/gen-c-abi.sh --check          (vokra.h has no drift — WP cond.)
 #   3. exported-symbol check                 (only vokra_* symbols are public)
-#   4. cc-build + run tests/capi/smoke_{vad,vad_bytes,aec,s2s,asr,tts}.c
+#   4. cc-build + run
+#      tests/capi/smoke_{vad,vad_bytes,aec,s2s,backend_options,asr,tts}.c
 #      against <vokra.h>
 #
 # VAD / VAD(bytes) use the committed 2 MB Silero fixture; AEC is model-free
@@ -95,6 +96,13 @@ build_one aec
 # VOKRA_MOSHI_GGUF (SKIP when unset).
 build_one s2s
 "$TMP/smoke_s2s" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" || status=1
+
+# 2026-08-14: backend selection through the opaque options object
+# (vokra_backend_t / vokra_session_options_* / vokra_backend_available) plus
+# vokra_speaker_verify. Uses the committed Silero fixture for the session legs;
+# the verify legs are model-free (two vectors in, no session), so no env gate.
+build_one backend_options
+"$TMP/smoke_backend_options" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" || status=1
 
 build_one asr
 "$TMP/smoke_asr" "$ROOT/tests/capi/fixtures/asr_input_16k.f32" || status=1

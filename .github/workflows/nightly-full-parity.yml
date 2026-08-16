@@ -186,6 +186,23 @@ jobs:
             test_flag: "--lib"
             test_filter: "speaker::parity"
             needs_gguf: "true"
+          # 2026-08-14 (C ABI speaker surface): the leg above pins the Rust
+          # chain; this one pins the C entry points that host bindings call
+          # (`vokra_speaker_embed` PCM->embedding, the two-call sizing idiom,
+          # and the backend-reached-the-engine wiring). Both consume the same
+          # CAM++ GGUF. Without this leg the gated C ABI tests never run
+          # anywhere: the campplus cell above only touches vokra-models, so
+          # "the C ABI returns the right embedding" was an unverified claim.
+          # No test_filter — vokra-capi's whole suite is seconds, and the
+          # wiring test is not named after the model it loads.
+          - leg: campplus-capi
+            model_name: "CAM++ through the C ABI (vokra_speaker_embed + backend wiring)"
+            gguf_var: VOKRA_NIGHTLY_CAMPLUS_GGUF
+            fixture_dir: tests/parity/camplus
+            test_crate: vokra-capi
+            test_flag: ""
+            test_filter: ""
+            needs_gguf: "true"
           - leg: dac
             model_name: "DAC 24kHz codec (RVQ decode against sliced fixtures)"
             gguf_var: VOKRA_NIGHTLY_DAC_GGUF
@@ -366,7 +383,7 @@ jobs:
           VOKRA_KOKORO_GGUF: ${{ matrix.leg == 'kokoro' && steps.gguf.outputs.gguf_path || '' }}
           VOKRA_WHISPER_BASE_GGUF: ${{ matrix.leg == 'whisper-base' && steps.gguf.outputs.gguf_path || '' }}
           VOKRA_PIPER_V7_GGUF: ${{ matrix.leg == 'piper-plus' && steps.gguf.outputs.gguf_path || '' }}
-          VOKRA_CAMPLUS_GGUF: ${{ matrix.leg == 'campplus' && steps.gguf.outputs.gguf_path || '' }}
+          VOKRA_CAMPLUS_GGUF: ${{ (matrix.leg == 'campplus' || matrix.leg == 'campplus-capi') && steps.gguf.outputs.gguf_path || '' }}
           VOKRA_DAC_GGUF: ${{ matrix.leg == 'dac' && steps.gguf.outputs.gguf_path || '' }}
           VOKRA_DAC_REF_DIR: ${{ matrix.leg == 'dac' && steps.gguf.outputs.dac_ref_dir || '' }}
           TEST_CRATE: ${{ matrix.test_crate }}

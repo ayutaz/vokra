@@ -884,6 +884,10 @@ impl AsrEngine for VoxtralAsr {
         };
         Ok(Transcription::new(text))
     }
+
+    fn backend(&self) -> BackendKind {
+        self.backend
+    }
 }
 
 #[cfg(test)]

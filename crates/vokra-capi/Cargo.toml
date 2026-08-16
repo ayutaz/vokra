@@ -92,6 +92,26 @@ cpu = []
 # (SKU detection API is post-v1.0 additive — ADR M4-15 §(d)).
 # --------------------------------------------------------------------------
 vulkan = ["vokra-models/vulkan"]
+# --------------------------------------------------------------------------
+# GPU backends reachable from the C ABI (2026-08-14).
+#
+# `vokra_backend_t` lets a C caller ask for Metal / CUDA / Vulkan / WebGPU,
+# and `vokra_backend_available` answers by probing `vokra_models::make_backend`
+# — whose Metal / CUDA / WebGPU arms are `#[cfg(feature = ...)]` on the MODEL
+# crate. Without these pass-throughs the selector would be inert in every
+# buildable configuration of this crate: the query would always answer `false`
+# and every non-CPU session would be `VOKRA_ERROR_BACKEND_UNAVAILABLE`.
+#
+# Mirrors `crates/vokra-cli/Cargo.toml`; all first-party, so the root
+# Cargo.lock stays vokra-*-only (NFR-DS-02) and nothing is linked or bundled
+# (CUDA is dlopen'd at run time — NVIDIA EULA install model). Deliberately
+# separate from `cpu` and `vulkan` above so the CPU-only audit-trail build and
+# the CPU + Vulkan-only build target keep excluding these from the dependency
+# graph (their `cargo tree` audits are unaffected).
+# --------------------------------------------------------------------------
+metal = ["vokra-models/metal"]
+cuda = ["vokra-models/cuda"]
+webgpu = ["vokra-models/webgpu"]
 # Explicit no-op default so `--no-default-features` on the audit-trail
 # build does not need to be paired with anything else — the CPU-only
 # build is the default shape.

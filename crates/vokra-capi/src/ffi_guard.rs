@@ -48,6 +48,22 @@ pub(crate) fn guard_void<F: FnOnce()>(body: F) {
     let _ = catch_unwind(AssertUnwindSafe(body));
 }
 
+/// Panic firewall for a **handle-returning constructor**
+/// (`vokra_session_options_create`), whose contract signals failure with a
+/// `NULL` return rather than a status. A caught panic therefore becomes
+/// `NULL` — the one failure value the caller already has to check.
+pub(crate) fn guard_ptr<T, F: FnOnce() -> *mut T>(body: F) -> *mut T {
+    catch_unwind(AssertUnwindSafe(body)).unwrap_or(std::ptr::null_mut())
+}
+
+/// Panic firewall for a **pure boolean query** (`vokra_backend_available`),
+/// which by design has no failure channel at all: it must not touch
+/// `vokra_last_error()` and cannot return a status. A caught panic becomes
+/// `false` ("not available"), the conservative answer.
+pub(crate) fn guard_bool<F: FnOnce() -> bool>(body: F) -> bool {
+    catch_unwind(AssertUnwindSafe(body)).unwrap_or(false)
+}
+
 /// Best-effort human-readable text for a caught panic payload.
 fn describe_panic(payload: &Box<dyn Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {

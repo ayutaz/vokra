@@ -10,10 +10,16 @@
 //! - [`camplus`] — the forward pass ([`SpeakerEncoder`]);
 //! - `weights` — GGUF binding + BatchNorm fold (internal).
 //!
-//! The audio→fbank front-end (Kaldi fbank + CMN) is a separate work item and is
-//! validated once an offline Kaldi-fbank oracle exists; this module's
-//! fbank→embedding network is fully validated against onnxruntime fixtures
-//! (`tests/parity/camplus/`) by the `parity` submodule.
+//! Both halves of the PCM→embedding chain are validated against independent
+//! offline oracles: the fbank→embedding network against onnxruntime fixtures
+//! (`tests/parity/camplus/`) by the `parity` submodule (atol 0.01, measured
+//! 7e-6), and the audio→fbank front-end
+//! ([`vokra_ops::kaldi_fbank()`]) against a
+//! `torchaudio.compliance.kaldi` reference by
+//! `crates/vokra-ops/tests/kaldi_fbank_parity.rs` (atol 2e-4, measured
+//! 9.346e-5). [`SpeakerEncoder`]'s
+//! [`SpeakerEngine`](vokra_core::SpeakerEngine) implementation joins the two,
+//! and is what the C ABI's `vokra_speaker_embed` runs.
 
 pub mod camplus;
 // M4-20 (b): speaker verification (FR-OP-81) — cosine similarity of two

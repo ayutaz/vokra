@@ -195,7 +195,7 @@ pub use decode::{
 pub use engines::{
     AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle,
     DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine,
-    SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle,
+    SpeakerEngine, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle,
 };
 #[cfg(feature = "std")]
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
@@ -223,4 +223,4 @@ pub use stream::{
     Stream, StreamEvent, StreamState, StreamStep, channel,
 };
 #[cfg(feature = "std")]
-pub use tasks::{Asr, DialogTurn, S2s, SynthesizedAudio, Transcription, Tts};
+pub use tasks::{Asr, DialogTurn, S2s, Speaker, SynthesizedAudio, Transcription, Tts};

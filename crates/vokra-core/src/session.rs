@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicU64;
 use crate::backend::BackendKind;
 use crate::compliance::AttributionInfo;
 use crate::engines::{
-    AsrEngine, S2sDuplexEngine, S2sEngine, TtsEngine, VadEngine, VadStreamHandle,
+    AsrEngine, S2sDuplexEngine, S2sEngine, SpeakerEngine, TtsEngine, VadEngine, VadStreamHandle,
 };
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
@@ -78,6 +78,9 @@ pub struct Session {
     vad: Option<Arc<dyn VadEngine>>,
     s2s: Option<Arc<dyn S2sEngine>>,
     s2s_duplex: Option<Arc<dyn S2sDuplexEngine>>,
+    /// Speaker-embedding engine (CAM++ = M0-08, FR-OP-80). Same shape as the
+    /// engines above; the facade entry is [`Session::speaker`].
+    speaker: Option<Arc<dyn SpeakerEngine>>,
     attribution: Option<AttributionInfo>,
 }
 
@@ -95,6 +98,7 @@ impl Clone for Session {
             vad: self.vad.clone(),
             s2s: self.s2s.clone(),
             s2s_duplex: self.s2s_duplex.clone(),
+            speaker: self.speaker.clone(),
             attribution: self.attribution.clone(),
         }
     }
@@ -111,6 +115,7 @@ impl fmt::Debug for Session {
             .field("vad_engine", &self.vad.is_some())
             .field("s2s_engine", &self.s2s.is_some())
             .field("s2s_duplex_engine", &self.s2s_duplex.is_some())
+            .field("speaker_engine", &self.speaker.is_some())
             .field("attribution", &self.attribution.is_some())
             .finish()
     }
@@ -222,6 +227,14 @@ impl Session {
         self
     }
 
+    /// Attaches a speaker-embedding engine (CAM++ = M0-08, FR-OP-80); the
+    /// [`Speaker`](crate::tasks::Speaker) facade delegates to it.
+    #[must_use]
+    pub fn with_speaker_engine(mut self, engine: Arc<dyn SpeakerEngine>) -> Self {
+        self.speaker = Some(engine);
+        self
+    }
+
     /// Attaches the model's attribution info (FR-MD-09 — the loader
     /// resolves it from the GGUF via
     /// [`resolve_attribution`](crate::resolve_attribution); deployers
@@ -261,6 +274,12 @@ impl Session {
     /// [`S2s`](crate::S2s) facade's `duplex` entry).
     pub(crate) fn s2s_duplex_engine(&self) -> Option<&Arc<dyn S2sDuplexEngine>> {
         self.s2s_duplex.as_ref()
+    }
+
+    /// The injected speaker-embedding engine, if any (used by the
+    /// [`Speaker`](crate::tasks::Speaker) facade).
+    pub(crate) fn speaker_engine(&self) -> Option<&Arc<dyn SpeakerEngine>> {
+        self.speaker.as_ref()
     }
 
     /// Opens a streaming VAD handle from the injected VAD engine (M0-05).
@@ -372,6 +391,7 @@ impl SessionBuilder {
             vad: None,
             s2s: None,
             s2s_duplex: None,
+            speaker: None,
             attribution: None,
         })
     }
