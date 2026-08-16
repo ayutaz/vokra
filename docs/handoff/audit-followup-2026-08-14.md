@@ -164,6 +164,25 @@ vokra-cli      185   vokra-core     577   vokra-eval  158   kws-micro 85
 doc tests       30                        all 0 failed
 ```
 
+**Confirmed by a single full-workspace run** (2026-08-16), which the per-crate
+sequence above cannot fully substitute for — it never proves the crates agree
+in one consistent build:
+
+```
+cargo test --workspace  →  6965 passed / 0 failed / 23 ignored / 234 suites
+                           exit 0;  fmt, clippy -D warnings, 10 shell gates,
+                           doc-examples all green
+```
+
+That run happened on a rented 48-core / 125 GB box, not here. Attempting it
+locally exhausted memory and **rebooted the machine**; the same sweep is what
+the pre-push hook performs, so pushing a Rust change from this machine can
+take it down. Two tests reported failing under that local sweep are healthy:
+`csm_frame_loop_allocates_zero_after_open` passes in isolation (its allocation
+counter is perturbed by neighbouring test threads), and the `kyutai_stt` tests
+take **155 s** legitimately, so contention pushed them past the 180 s timeout.
+Neither is a regression. The box cost $0.03 and was destroyed.
+
 - `cargo clippy --all-targets -- -D warnings` clean on every crate, and on
   `-p vokra-cli --features vokra-wfst`.
 - 12 gates green; `check-zero-deps` OK (root `Cargo.lock` still `vokra-*` only,
