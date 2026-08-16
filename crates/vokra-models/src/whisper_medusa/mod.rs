@@ -952,6 +952,22 @@ impl AsrEngine for WhisperMedusa {
             BaseTower::Unavailable(reason) => Err(base_tower_loud_partial("transcribe", reason)),
         }
     }
+
+    /// Asks the base tower rather than storing a second copy: the backend is
+    /// set through [`WhisperMedusa::with_backend`], which forwards to the
+    /// bound [`WhisperAsr`], so a duplicate field here could disagree with
+    /// the engine that actually runs.
+    ///
+    /// The unavailable arm reports `Cpu`, which cannot mislead in the way
+    /// the trait warns about: without a bound tower every transcription
+    /// entry point is a loud partial, so nothing executes anywhere for the
+    /// answer to contradict.
+    fn backend(&self) -> BackendKind {
+        match &self.base {
+            BaseTower::Bound(asr) => asr.backend(),
+            BaseTower::Unavailable(_) => BackendKind::Cpu,
+        }
+    }
 }
 
 /// The loud error raised whenever the base Whisper tower is needed but did not

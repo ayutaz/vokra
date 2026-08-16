@@ -623,6 +623,20 @@ impl AsrEngine for KotobaWhisperAsr {
         let ids = self.transcribe(pcm)?;
         Ok(Transcription::new(self.render_ids(&ids)?))
     }
+
+    /// Asks the delegate rather than storing a second copy: the backend is
+    /// set through [`KotobaWhisperAsr::with_backend`], which forwards to the
+    /// inner [`WhisperAsr`], so a duplicate field here could disagree with
+    /// the engine that actually runs.
+    ///
+    /// The unbound arm reports `Cpu`, which cannot mislead in the way the
+    /// trait warns about: with no inner engine there is no forward, so no
+    /// execution exists anywhere else to contradict the answer.
+    fn backend(&self) -> BackendKind {
+        self.inner
+            .as_ref()
+            .map_or(BackendKind::Cpu, AsrEngine::backend)
+    }
 }
 
 // ---------------------------------------------------------------------------

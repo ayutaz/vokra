@@ -956,6 +956,21 @@ impl AsrEngine for DistilWhisperAsr {
         let ids = self.transcribe(pcm)?;
         Ok(Transcription::new(self.render_ids(&ids)?))
     }
+
+    /// Asks the delegate rather than storing a second copy: the backend is
+    /// set through [`DistilWhisperAsr::with_backend`], which forwards to the
+    /// inner [`WhisperAsr`], so a duplicate field here could disagree with
+    /// the engine that actually runs.
+    ///
+    /// The scaffold arm reports `Cpu`, which cannot mislead in the way the
+    /// trait warns about: it wires no forward at all, so there is no
+    /// execution anywhere else for the answer to contradict.
+    fn backend(&self) -> BackendKind {
+        match &self.kind {
+            DistilWhisperAsrKind::Delegate(asr) => asr.backend(),
+            DistilWhisperAsrKind::Scaffold(_) => BackendKind::Cpu,
+        }
+    }
 }
 
 fn check_len(name: &str, got: usize, expected: usize) -> Result<()> {

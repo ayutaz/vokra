@@ -221,7 +221,7 @@
 use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::tasks::Transcription;
-use vokra_core::{LicenseClass, Result, VokraError};
+use vokra_core::{BackendKind, LicenseClass, Result, VokraError};
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of
@@ -1108,6 +1108,17 @@ impl AsrEngine for FireredAsrAed {
              fabricated transcript).",
             n = ids.len()
         )))
+    }
+
+    /// Reports `Cpu`. This engine has no backend selector at all — every
+    /// transcription entry point is a loud partial (three named blockers),
+    /// so no forward executes on any device and the answer cannot
+    /// contradict where inference happened. When the forward lands, this
+    /// must start reporting the real backend rather than staying a
+    /// constant: that is the lie the trait's missing default exists to
+    /// prevent.
+    fn backend(&self) -> BackendKind {
+        BackendKind::Cpu
     }
 }
 
