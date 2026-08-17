@@ -19,14 +19,38 @@
 //! wired to emit the full sdp_sample tensor.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::{NormalSource, TorchRandnStream};
+use vokra_models::sbv2::SbV2Model;
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/sbv2")
         .join(name)
+}
+
+fn real_fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests/fixtures/sbv2")
+        .join(name)
+}
+
+fn read_f32_fixture(path: &Path) -> Vec<f32> {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(
+        bytes.len() % std::mem::size_of::<f32>(),
+        0,
+        "{} must contain little-endian f32 values",
+        path.display()
+    );
+    bytes
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
+        .collect()
 }
 
 /// Replicates the exact `SbV2SDP::sample` inner fill loop: a per-
@@ -249,14 +273,17 @@ fn sdp_noise_from_gaussian_splitmix_diverges_from_torch_philox() {
 ///
 /// This test is `#[ignore]`d until the fixture bundle lands:
 ///
+///   `tests/fixtures/sbv2/sdp_body_hidden_seed0_T50.f32.bin`
+///     — fixed row-major `[T=50, d_hidden]` body input;
+///   `tests/fixtures/sbv2/sdp_body_g_seed0.f32.bin`
+///     — fixed `[gin]` speaker-conditioning input; and
 ///   `tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin`
 ///     — reference SDP body output `[d_hidden, T]` channel-major f32
-///       bytes, computed against a fixed test hidden `[T=50, d_hidden]`
-///       + speaker `[gin]` input. Regeneration recipe should live in
-///       `tools/parity/sbv2_sdp_body_dump.py` (mirror of the existing
-///       `sbv2_sdp_noise_dump.py`), invoked as
+///       bytes. Regenerate all three plus the adjacent JSON provenance with
+///       `tools/parity/sbv2_sdp_body_dump.py` on VAST:
 ///       `cd tools/parity && uv run python sbv2_sdp_body_dump.py \
-///        --seed 0 --T 50 --out tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin`.
+///        --checkpoint /root/sbv2-checkpoint --output-dir \
+///        /root/vokra/tests/fixtures/sbv2 --seed 0 --T 50`.
 ///
 ///   `tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf`
 ///     — the real SBV2 v2 base checkpoint (Task 28 real fixture), used
@@ -272,31 +299,72 @@ fn sdp_noise_from_gaussian_splitmix_diverges_from_torch_philox() {
 /// tighten `PER_TENSOR_ATOL["sdp_sample"]` (currently 0.05) toward it
 /// on the same land.
 ///
-/// This scaffold does not read any fixture bytes yet — the actual body
-/// invocation shape (weights slice-out from `SbV2Model.sdp`, hidden /
-/// gin input construction, byte-exact SDP body dump comparison) lands
-/// with the fixture. Leaving the scaffold ignored keeps the file
-/// compilable and the test named/searchable for the future fixture
-/// author.
+/// The test stays ignored until those VAST-generated artifacts arrive. Its
+/// initial 1e-5 bound is deliberately strict; the VAST result must be
+/// recorded and independently reviewed before removing `#[ignore]` or
+/// changing that bound.
 #[test]
-#[ignore = "Blocker 2c residual: needs tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin \
-            + tools/parity/sbv2_sdp_body_dump.py (see test doc)"]
+#[ignore = "Blocker 2c residual: needs VAST-generated SDP-body input/output fixtures \
+            + SBV2 GGUFs (see test doc)"]
 fn sdp_body_matches_torch_ref() {
-    // Deliberate: the fixture bundle is not yet populated. Un-ignore
-    // this test once the two paths listed in the doc land. See the
-    // doc-comment for the regeneration recipe.
-    //
-    // FR-EX-08: no silent-skip — the `#[ignore]` attribute IS the gate,
-    // per `parity_sbv2_real.rs`'s established pattern (a `#[test]` +
-    // `#[ignore]` combination means "runs on explicit
-    // `--include-ignored`, otherwise skipped visibly"). This is not a
-    // no-op body — a future fixture author must implement the actual
-    // body-forward comparison and remove the panic below in the same
-    // land as the fixture files.
-    panic!(
-        "SDP body parity fixture (`tests/fixtures/sbv2/sdp_body_seed0_T50.f32.bin` + \
-         `tools/parity/sbv2_sdp_body_dump.py`) not yet populated — see the test's \
-         doc-comment for the recipe. Remove `#[ignore]` + this panic when the \
-         fixture bundle lands."
+    const T: usize = 50;
+    const INITIAL_ATOL: f32 = 1.0e-5;
+
+    let hidden_path = real_fixture_path("sdp_body_hidden_seed0_T50.f32.bin");
+    let speaker_path = real_fixture_path("sdp_body_g_seed0.f32.bin");
+    let expected_path = real_fixture_path("sdp_body_seed0_T50.f32.bin");
+    let main_path = real_fixture_path("sbv2-v2-multilingual-base.gguf");
+    let bert_ja_path = real_fixture_path("deberta-v2-large-japanese-char-wwm.gguf");
+    let bert_en_path = real_fixture_path("deberta-v3-large.gguf");
+    for path in [
+        &hidden_path,
+        &speaker_path,
+        &expected_path,
+        &main_path,
+        &bert_ja_path,
+        &bert_en_path,
+    ] {
+        assert!(
+            path.is_file(),
+            "missing {}; regenerate the SDP-body inputs/output on VAST with \
+             tools/parity/sbv2_sdp_body_dump.py and stage the three SBV2 GGUFs",
+            path.display()
+        );
+    }
+
+    let hidden = read_f32_fixture(&hidden_path);
+    let speaker = read_f32_fixture(&speaker_path);
+    let expected = read_f32_fixture(&expected_path);
+    assert_eq!(hidden.len() % T, 0, "hidden fixture must be [T, d_hidden]");
+
+    let main =
+        GgufFile::open(&main_path).unwrap_or_else(|e| panic!("{}: {e}", main_path.display()));
+    let bert_ja =
+        GgufFile::open(&bert_ja_path).unwrap_or_else(|e| panic!("{}: {e}", bert_ja_path.display()));
+    let bert_en =
+        GgufFile::open(&bert_en_path).unwrap_or_else(|e| panic!("{}: {e}", bert_en_path.display()));
+    let model = SbV2Model::from_gguf(&main, &bert_ja, &bert_en)
+        .unwrap_or_else(|e| panic!("SbV2Model::from_gguf: {e}"));
+
+    let got = model.sdp_body_for_parity(&hidden, T, &speaker);
+    assert_eq!(
+        got.len(),
+        expected.len(),
+        "SDP body output shape must match the VAST-generated reference"
+    );
+    let (max_diff, index) = got
+        .iter()
+        .zip(&expected)
+        .enumerate()
+        .map(|(index, (actual, reference))| ((actual - reference).abs(), index))
+        .max_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or((0.0, 0));
+    assert!(
+        max_diff <= INITIAL_ATOL,
+        "SBV2 SDP body max |Δ| = {max_diff:.6e} at channel {} / time {} exceeds \
+         initial strict atol {INITIAL_ATOL:.6e}; record the VAST measurement and \
+         diagnose before changing the bound",
+        index / T,
+        index % T,
     );
 }

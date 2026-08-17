@@ -366,7 +366,7 @@ Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `
 
 ### 7.2 Blocker 2c residual — owner-fixture-待ち gate
 
-- [ ] **`sdp_body_matches_torch_ref` real-parity flip** (Blocker 2c residual, commit `c8e2777` = `#[ignore]`d scaffold). Owner action: provide the SDP torch reference fixture (`tests/fixtures/sbv2/sdp_body_torch_ref.*` per `tests/fixtures/sbv2/README.md`) so the CC can flip `#[ignore]` → `#[test]` and gate SDP body parity in CI. Until the fixture lands the scaffold stays honest-ignored (does not fake a pass). This is a parity flip only; it does not gate the AGPL-3.0 weight publish (already done, §7.1) or the 4-Blocker close-out itself.
+- [ ] **`sdp_body_matches_torch_ref` real-parity flip** (Blocker 2c residual, commit `c8e2777` = `#[ignore]`d scaffold). The comparison and independent MIT-reference dumper now exist; owner action is to run `tools/parity/sbv2_sdp_body_dump.py` on VAST against the staged real checkpoint, review/record the strict body bound, then flip `#[ignore]` → `#[test]`. Until those VAST-generated input/output fixtures land the test stays honestly ignored (does not fake a pass). This is a parity flip only; it does not gate the AGPL-3.0 weight publish (already done, §7.1) or the 4-Blocker close-out itself.
 
 ### 7.3 PR #27 merge
 

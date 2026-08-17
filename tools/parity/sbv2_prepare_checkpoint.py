@@ -89,7 +89,7 @@ numbers. A human (Task 30 / a real checkpoint in hand) fills the rest in.
 
 ::
 
-    python3 tools/parity/sbv2_prepare_checkpoint.py \\
+    uv run --project tools/parity python tools/parity/sbv2_prepare_checkpoint.py \\
         --hf-repo litagin02/style_bert_vits2 \\
         --output-dir /tmp/sbv2-checkpoint
 
@@ -101,12 +101,12 @@ numbers. A human (Task 30 / a real checkpoint in hand) fills the rest in.
 
 # Dependencies
 
-Requires ``huggingface_hub`` (``pip install huggingface_hub``) — the only
-hard runtime dependency, imported lazily so ``--help`` works even without
-it installed. The ``.safetensors`` header is read with a small hand-rolled
-stdlib parser (mirrors ``dfn3_prepare_checkpoint.py``'s hand-rolled writer),
-so the ``safetensors`` PyPI package is deliberately **not** required just to
-report tensor counts.
+Requires ``huggingface_hub`` in the managed ``tools/parity`` uv environment
+(``uv sync``) — the only hard runtime dependency, imported lazily so
+``--help`` works even without it installed. The ``.safetensors`` header is
+read with a small hand-rolled stdlib parser (mirrors
+``dfn3_prepare_checkpoint.py``'s hand-rolled writer), so the ``safetensors``
+PyPI package is deliberately **not** required just to report tensor counts.
 """
 
 from __future__ import annotations
@@ -772,7 +772,7 @@ def download_checkpoint(hf_repo: str, output_dir: Path, revision: "str | None") 
     except ImportError as exc:
         sys.exit(
             f"missing Python dep ({exc}); install with "
-            "`pip install huggingface_hub` in the parity venv"
+            "`cd tools/parity && uv sync`, then rerun through `uv run python`"
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)

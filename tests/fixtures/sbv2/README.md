@@ -234,6 +234,29 @@ cargo test -p vokra-models --test parity_sbv2_real -- --ignored
 A missing fixture at this point is a **loud, actionable panic** naming
 exactly what's absent — never a silent skip-and-pass (FR-EX-08).
 
+### 6. Generate the SDP-body fixture (Blocker 2c residual)
+
+This is separate from the end-to-end `reference_dump/sdp_sample.bin`: it
+isolates the deterministic `pre -> +cond(g) -> DDSConv -> proj` body from
+the random latent and flow inverse. On the VAST instance, after the main
+checkpoint has been staged, run:
+
+```bash
+cd ~/vokra/tools/parity
+uv run python sbv2_sdp_body_dump.py \
+    --checkpoint /root/sbv2-checkpoint \
+    --output-dir ~/vokra/tests/fixtures/sbv2 \
+    --seed 0 --T 50
+```
+
+The tool uses the vendored MIT upstream `StochasticDurationPredictor`, not
+the Rust implementation, and writes two raw input fixtures plus the
+channel-major output and JSON provenance. Do not generate or load these
+large-model artifacts on the Mac. Once the VAST measurement is reviewed,
+remove the `#[ignore]` marker from
+`crates/vokra-models/tests/sbv2_sdp_torch_parity.rs::sdp_body_matches_torch_ref`
+in the same change that records its measured bound.
+
 ## About the committed `reference_dump.manifest.json`
 
 The committed manifest is **not a real dump** — it is the exact,
