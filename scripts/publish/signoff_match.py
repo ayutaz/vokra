@@ -972,6 +972,34 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "owsm-v4-medium-1b": ["ESPnet OWSM v4 Medium 1B (`espnet/owsm_v4_medium_1B`)"],
     "parakeet-tdt-1.1b": ["NVIDIA Parakeet-TDT-1.1B (`nvidia/parakeet-tdt-1.1b`)"],
     "firered-asr-aed-l": ["FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # FireRedTeam/FireRedASR-LLM-L — Conformer + audio-to-text adapter +
+    # Qwen2 LM decoder Chinese ASR (~16.6 GB BF16, 8.3B params, AISHELL-1
+    # SoTA). Distinct HF publish target from the sibling
+    # `firered-asr-aed-l` (Whisper-topology AED) because the LLM release
+    # is a different arch (Conformer + Qwen2 LM decoder) with a different
+    # tensor manifest. Owner primary-source verification pending (HF card
+    # `license: apache-2.0` + FireRedTeam GitHub LICENSE + Chinese ASR
+    # training-corpus commercial audit — WenetSpeech / KeSpeech 混成疑義)
+    # — the §3.1 row exists with blank sign-off (fail-closed default).
+    # publish-one.sh refuses via the upload gate 4 until owner marks ☑
+    # Commercial. Real weights fetch + convert runs on vast.ai (~16.6 GB
+    # threshold, well above the 2 GB CC-workflow local-convert limit)
+    # per memory `[[feedback-large-models-on-vast-ai]]`.
+    "firered-asr-llm-l": [
+        "FireRedTeam FireRedASR-LLM-L (`FireRedTeam/FireRedASR-LLM-L`)"
+    ],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # BosonAI Higgs-Audio v3 TTS 4B. Owner primary-source verification
+    # pending (HF card `license: apache-2.0` + BosonAI GitHub LICENSE +
+    # training-corpus commercial audit) — the §3.1 row exists with
+    # blank sign-off (fail-closed default). publish-one.sh refuses via
+    # the upload gate 4 until owner marks ☑ Commercial. Real weights
+    # fetch + convert runs on vast.ai (~8 GB threshold) per memory
+    # `[[feedback-large-models-on-vast-ai]]`.
+    "higgs-audio-v3-tts-4b": [
+        "BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`)"
+    ],
     "sortformer-diar-4spk-v1": [
         "NVIDIA Sortformer diar 4spk v1 (`nvidia/diar_sortformer_4spk-v1`)"
     ],
@@ -993,6 +1021,62 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "jasco-400m-chords-drums": [
         "Meta JASCO 400M Chords+Drums (`facebook/jasco-chords-drums-400M`)"
     ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+    # `feat/post-audit-cc-gap-2026-08-13` Wave D remaining): Meta MAGNeT
+    # Small 10secs (`facebook/magnet-small-10secs`, cc-by-nc-4.0). Non-
+    # autoregressive masked-LM parallel decoding for 10-second music
+    # generation (~500M params ~2 GB, Ziv et al. 2024 arXiv:2401.04577).
+    # T4 tier (Research-only, non-commercial) — inherits the X-Codec 2 /
+    # MusicGen family / jasco_400m_chords_drums T4 precedent workflow
+    # (`LicenseClass::NonCommercial` + `--allow-noncommercial` gate +
+    # `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE fetch).
+    # Local-safe convert on M1 iMac 16 GB per memory
+    # `[[feedback-large-models-on-vast-ai]]` (~2 GB, below 8 GB threshold —
+    # no vast.ai handoff). Row heading matches `docs/license-audit.md`
+    # §3.1 byte-for-byte.
+    "magnet-small-10secs": [
+        "Meta MAGNeT Small 10secs (`facebook/magnet-small-10secs`)"
+    ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+    # `feat/post-audit-cc-gap-2026-08-13` Wave D remaining WF7): Meta MAGNeT
+    # Medium 30secs (`facebook/magnet-medium-30secs`, cc-by-nc-4.0). 1.5B
+    # parameter non-autoregressive masked-LM parallel decoding for 30-second
+    # music generation (~5.7 GB bundle = LM + bundled EnCodec 32 kHz +
+    # T5-base text encoder, Ziv et al. 2024 arXiv:2401.04577). T4 tier
+    # (Research-only, non-commercial) — inherits the X-Codec 2 / MusicGen
+    # family / jasco_400m_chords_drums / sibling magnet_small_10secs T4
+    # precedent workflow (`LicenseClass::NonCommercial` +
+    # `--allow-noncommercial` gate + `fetch_license.sh --spdx cc-by-nc-4.0`
+    # canonical LICENSE fetch). Local-safe convert on M1 iMac 16 GB per
+    # memory `[[feedback-large-models-on-vast-ai]]` (below the 8 GB owner
+    # cutoff — sibling small was ~2 GB, medium sits well within the local
+    # window and needs no vast.ai handoff). Row heading matches
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "magnet-medium-30secs": [
+        "Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`)"
+    ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+    # `feat/post-audit-cc-gap-2026-08-13` Wave D remaining WF8): Meta
+    # MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`,
+    # cc-by-nc-4.0). 1 B parameter flow-matching music **editing** model
+    # (DiT-style backbone with 24 timesteps, 30 sec max horizon at 48 kHz,
+    # dual text + audio prefix conditioning for the editing use-case —
+    # ~4.0 GB bundle = flow-matching transformer + 48 kHz RVQ codec +
+    # T5-base text encoder, Le Lan et al. 2024 arXiv:2407.03648). T4 tier
+    # (Research-only, non-commercial) — inherits the X-Codec 2 / MusicGen
+    # family / jasco_400m_chords_drums / sibling `magnet_small_10secs` /
+    # `magnet_medium_30secs` T4 precedent workflow
+    # (`LicenseClass::NonCommercial` + `--allow-noncommercial` gate +
+    # `fetch_license.sh --spdx cc-by-nc-4.0` canonical LICENSE fetch).
+    # **Vast.ai-flagged per phase task** to stay conservative at the CC /
+    # owner cutoff per memory `[[feedback-large-models-on-vast-ai]]`
+    # (~4 GB sits below the 8 GB local ceiling but the phase task pins
+    # vast.ai as the owner path for weights ≥ 2 GB — Voxtral-Small-24B
+    # forced-shutdown precedent). Row heading matches
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "melodyflow-t24-30secs": [
+        "Meta MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`)"
+    ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 T1 (Permissive) rows all ☑ Commercial 2026-08-04
     # yousan. publish-one.sh maps `--repo <slug>` to APPROVED against
@@ -1011,6 +1095,30 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "ten-vad": ["TEN-VAD (`TEN-framework/ten-vad`)"],
     "audioseal-real-weight": ["AudioSeal real weight (`facebook/audioseal`)"],
+    # Music-understanding wave (2026-08-13, post-audit CC-gap): 6 audio-tagging /
+    # music-embedding / pitch-detection converters. Row headings match
+    # `docs/license-audit.md` §3.1 byte-for-byte. §3.1 sign-off blank fail-closed
+    # at land time (no CC pre-fill per memory
+    # [[feedback-license-signoff-primary-source]]); owner must fill Approval
+    # cell via primary-source confirmation before publish is unblocked.
+    "yamnet": ["YAMNet (`thelou1s/yamnet`)"],
+    "mert": ["MERT (`m-a-p/MERT-v1-330M`)"],
+    "muq": ["MuQ (`OpenMuQ/MuQ-large-msd-iter`)"],
+    "dasheng-base": ["Dasheng (`mispeech/dasheng-base`)"],
+    "panns-cnn14": ["PANNs Cnn14 (`nicofarr/panns_Cnn14`)"],
+    "basic-pitch": ["Basic-Pitch (`spotify/basic-pitch`)"],
+    # SSL audio-encoder wave (2026-08-13, post-audit CC-gap): 5 SSL
+    # audio-encoder converters land one per commit (BEATs → EAT → ATST →
+    # MAEST → M2D). Row headings match `docs/license-audit.md` §3.1
+    # byte-for-byte. §3.1 sign-off blank fail-closed at land time (no
+    # CC pre-fill per memory [[feedback-license-signoff-primary-source]]).
+    "beats-iter3-plus-as2m": ["BEATs (`microsoft/unilm/tree/master/beats`)"],
+    "eat-base": ["EAT (`cwx-worst-one/EAT`)"],
+    "atst-base": [
+        "ATST (`Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst`)"
+    ],
+    "maest-30s-pw-129e": ["MAEST (`mtg-upf/discogs-maest-30s-pw-129e`)"],
+    "m2d-base": ["M2D (`nttcslab/m2d`)"],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
     "titanet-l": ["TitaNet (NVIDIA NeMo)"],
     "titanet-large": ["TitaNet (NVIDIA NeMo)"],
@@ -1491,6 +1599,35 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "jasco_400m_chords_drums": [
         "Meta JASCO 400M Chords+Drums (`facebook/jasco-chords-drums-400M`)"
     ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining):
+    # magnet_small_10secs — sibling of jasco_400m_chords_drums with a
+    # distinct arch tag (non-autoregressive masked-LM vs joint audio-
+    # symbolic conditioning). Row heading matches `docs/license-audit.md`
+    # §3.1 byte-for-byte.
+    "magnet_small_10secs": [
+        "Meta MAGNeT Small 10secs (`facebook/magnet-small-10secs`)"
+    ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining WF7):
+    # magnet_medium_30secs — sibling of magnet_small_10secs with wider hidden /
+    # more layers / 30 sec span. Same masked-LM op path but distinct arch tag
+    # so the runtime binder cannot silently load small hparams into medium
+    # weights. Row heading matches `docs/license-audit.md` §3.1 byte-for-byte.
+    "magnet_medium_30secs": [
+        "Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`)"
+    ],
+    # Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining
+    # WF8): melodyflow_t24_30secs — Meta AudioCraft flow-matching music
+    # editing (DiT backbone, 24 timesteps, 30 sec / 48 kHz) with a
+    # distinct arch tag from every sibling music-gen family (MAGNeT
+    # masked-LM, MusicGen AR, JASCO joint-symbolic, AudioLDM2 latent
+    # diffusion, Stable Audio Open DiT, ACE-Step, BS-RoFormer). Same op
+    # family (flow-matching / DiT / M3-05 flow_sampler ODE integrator)
+    # as JASCO but different conditioning stack (dual text + audio prefix
+    # for editing vs joint audio-symbolic chord/drum). Row heading matches
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "melodyflow_t24_30secs": [
+        "Meta MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`)"
+    ],
     # coverage-audit-2026-08-03 Wave A permissive continuation
     # (2026-08-04): 7 BF16 pass-through skeleton converters, all T1
     # (Permissive) tier. Row headings match `docs/license-audit.md`
@@ -1506,6 +1643,25 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "ten_vad": ["TEN-VAD (`TEN-framework/ten-vad`)"],
     "audioseal_real_weight": ["AudioSeal real weight (`facebook/audioseal`)"],
+    # Music-understanding wave (2026-08-13, post-audit CC-gap): 6 BF16
+    # pass-through skeleton converters. Row headings match
+    # `docs/license-audit.md` §3.1 byte-for-byte.
+    "yamnet": ["YAMNet (`thelou1s/yamnet`)"],
+    "mert": ["MERT (`m-a-p/MERT-v1-330M`)"],
+    "muq": ["MuQ (`OpenMuQ/MuQ-large-msd-iter`)"],
+    "dasheng": ["Dasheng (`mispeech/dasheng-base`)"],
+    "panns": ["PANNs Cnn14 (`nicofarr/panns_Cnn14`)"],
+    "basic_pitch": ["Basic-Pitch (`spotify/basic-pitch`)"],
+    # SSL audio-encoder wave (2026-08-13, post-audit CC-gap): 5 BF16
+    # pass-through skeleton converters land one per commit. Row headings
+    # match `docs/license-audit.md` §3.1 byte-for-byte.
+    "beats": ["BEATs (`microsoft/unilm/tree/master/beats`)"],
+    "eat": ["EAT (`cwx-worst-one/EAT`)"],
+    "atst": [
+        "ATST (`Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst`)"
+    ],
+    "maest": ["MAEST (`mtg-upf/discogs-maest-30s-pw-129e`)"],
+    "m2d": ["M2D (`nttcslab/m2d`)"],
     # -----------------------------------------------------------------------
     # 2026-08-06 batch: 23-converter signoff backfill (PR #24 coverage-audit
     # 2026-08-03 + M5 gap wave 1 + KWS + Denoise/MOS/AEC binder wave).
@@ -1525,7 +1681,23 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "firered_asr_aed_l": [
         "FireRedTeam FireRedASR-AED-L (`FireRedTeam/FireRedASR-AED-L`)"
     ],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # FireRedTeam/FireRedASR-LLM-L — converter stem `firered_asr_llm_l`
+    # (snake_case, matches file basename), §3.1 row heading verbatim.
+    # Sibling of firered_asr_aed_l but distinct converter file / arch tag
+    # / dispatch — silently sharing would mis-route runtime dispatch
+    # (Conformer + Qwen2 LM decoder vs Whisper-topology AED).
+    "firered_asr_llm_l": [
+        "FireRedTeam FireRedASR-LLM-L (`FireRedTeam/FireRedASR-LLM-L`)"
+    ],
     "hibiki": ["Hibiki-2B (`kyutai/hibiki-2b-pytorch-bf16`)"],
+    # coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+    # BosonAI Higgs-Audio v3 TTS 4B — converter stem `higgs_audio_v3_tts_4b`
+    # (snake_case, matches file basename), §3.1 row heading verbatim as
+    # emitted at license-audit.md L~480.
+    "higgs_audio_v3_tts_4b": [
+        "BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`)"
+    ],
     "magpietts_v2602": ["MagpieTTS v2602 (`nvidia/magpietts-v2602`)"],
     "moonshine_base": ["Moonshine-Base (`UsefulSensors/moonshine-base`)"],
     "moonshine_tiny": ["Moonshine-Tiny (`UsefulSensors/moonshine-tiny`)"],
@@ -1558,6 +1730,71 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "whisper_medusa_v1": [
         "aiola whisper-medusa-v1 (`aiola/whisper-medusa-v1`)"
     ],
+    # ---- 2026-08-15 converter-signoff gate repair -------------------------
+    # Twelve converters had landed across the 2026-08-14 / 2026-08-15 waves
+    # without their CONVERTER_TO_SIGNOFF_ROWS entry, which turned this
+    # fail-closed gate red (and therefore OFF) for all of them. Every row
+    # below already existed in docs/license-audit.md §3.1 — nothing here is
+    # a new row, and nothing here is a decision: each row is still blank
+    # (approver `______________`, all three boxes unticked), which is the
+    # fail-closed default per memory [[feedback-license-signoff-primary-source]].
+    # Row headings are transcribed byte-for-byte from the parsed §3.1 table.
+    #
+    # AudioSR ships as TWO distinct upstream weight releases, and the
+    # converter exposes one entry point per release
+    # (`convert_audiosr_file` -> `haoheliu/audiosr_basic`,
+    # `convert_audiosr_speech_file` -> `haoheliu/audiosr_speech`). §3.1
+    # carries a separate row for each, so both are listed — the `whisper` /
+    # `voxtral` multi-row precedent.
+    "audiosr": [
+        "AudioSR (`haoheliu/versatile_audio_super_resolution`、weight = `haoheliu/audiosr_basic`)",
+        "AudioSR (speech) (weight = `haoheliu/audiosr_speech`)",
+    ],
+    # NOT the `BEATs (`microsoft/unilm/tree/master/beats`)` row, which is a
+    # different model (Microsoft SSL audio encoder). beat_this is the CPJKU
+    # beat/downbeat tracker; the converter's own header calls out this exact
+    # confusion as an FR-EX-08 misroute risk.
+    "beat_this": ["beat_this (`CPJKU/beat_this`)"],
+    "ct_punc": ["FunASR CT-Punc (`funasr/ct-punc`)"],
+    "diffsinger": ["DiffSinger (`openvpi/DiffSinger`)"],
+    "dtln_aec": ["DTLN-AEC (`breizhn/DTLN-aec`)"],
+    "gtcrn": ["GTCRN (`Xiaobin-Rong/gtcrn`)"],
+    # One row covers all four sibling repos (7B / 3B-Bilingual / 1.5B / 32B),
+    # mirroring how the row itself is titled.
+    "llama_omni2": [
+        "ICTNLP LLaMA-Omni2 (`ICTNLP/LLaMA-Omni2-{7B,3B-Bilingual,1.5B,32B}`)"
+    ],
+    # Upstream CODE is apache-2.0 but the WEIGHTS ship on a GCS bucket with
+    # no LICENSE file (see the converter header). That unresolved question is
+    # exactly what the blank §3.1 row exists to hold — mapping it here keeps
+    # the gate armed; it does not resolve anything.
+    "mt3": ["Magenta MT3 Multitrack (`magenta/mt3`)"],
+    # Row heading is lower-case `redimnet` in §3.1; matching is exact, so the
+    # casing here is deliberate and must not be "corrected".
+    "redimnet": ["redimnet (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`)"],
+    "storm": ["StoRM (`sp-uhh/storm`)"],
+    "wavlm_sv": ["WavLM Base+ SV (`microsoft/wavlm-base-plus-sv`)"],
+    # WeTextProcessing packs compiled OpenFST grammars rather than weights,
+    # so "does a weight-distribution row apply?" is a fair question. It maps
+    # rather than being excluded, on three pieces of evidence:
+    #   1. A §3.1 row already exists and is titled "— ITN/TN grammar
+    #      bundles", so whoever authored it knew it ships grammars and
+    #      created the row regardless.
+    #   2. The converter embeds the upstream tagger/verbalizer FSTs into the
+    #      GGUF as U8 metadata arrays (KEY_ITN_TAGGER_FST /
+    #      KEY_ITN_VERBALIZER_FST) and stamps upstream_url + apache-2.0 +
+    #      LicenseClass. Publishing that artifact redistributes third-party
+    #      Apache-2.0 material — the same legal act a weight row authorizes.
+    #      Grammars are copyrightable subject matter; "not a tensor" is not
+    #      "not licensed".
+    #   3. CONVERTER_NO_SIGNOFF_ROW means "the row deliberately lives
+    #      elsewhere" (voice-clone -> separate repo, silero -> §3 catalog).
+    #      Filing it there while a §3.1 row exists would both contradict the
+    #      table and switch the gate off for a converter that really does
+    #      redistribute upstream content.
+    "wetextprocessing": [
+        "WeTextProcessing (`wenet-e2e/WeTextProcessing`) — ITN/TN grammar bundles"
+    ],
 }
 
 # Converters that intentionally have no §3.1 row.
@@ -1578,12 +1815,64 @@ CONVERTER_NO_SIGNOFF_ROW: dict[str, str] = {
     # (Historic pre-§3.1 shipment; the row was never re-added when the
     # template was introduced.)
     "silero": "row lives in §3 (pre-§3.1 shipment), not in the §3.1 template",
+    # Voila landed 2026-08-15 to close a binder-with-no-converter hole
+    # (crates/vokra-models/src/voila/ had no way to be fed a GGUF this repo
+    # could produce). docs/license-audit.md has NO §3.1 row for it yet, and
+    # authoring one is an owner act — the row carries the sign-off decision.
+    # Excluded here so the gate reports the real state rather than pointing
+    # at a row that does not exist; publishing stays blocked either way,
+    # since upload.sh refuses a repo with no signed row.
+    "voila": "no §3.1 row exists yet (maitrix-org/Voila, MIT) — owner authors the row; converter landed 2026-08-15 to close a binder-with-no-converter gap, not to enable publishing",
 }
 
 
 # ---------------------------------------------------------------------------
 # PARSER
 # ---------------------------------------------------------------------------
+
+
+def _split_markdown_row(line: str) -> list[str]:
+    """Split a markdown table row on UNESCAPED pipes only.
+
+    Standard markdown table syntax lets a cell embed a literal `|` via
+    `\\|`. A naive `str.split("|")` would treat that escaped pipe as a
+    separator and shift every downstream field by one. This helper walks
+    the string character-by-character and honours the escape, so a cell
+    whose text contains `\\|` reads as one field.
+
+    Escape semantics (mirrors CommonMark's table extension):
+      - `\\|`  -> literal `|` inside the current cell
+      - `\\\\` -> literal `\\` inside the current cell (so `\\\\|` = `\\` +
+        separator, matching common markdown renderers)
+      - a trailing `\\` at end-of-line is passed through verbatim so
+        malformed input still round-trips.
+    """
+    fields: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        c = line[i]
+        if c == "\\" and i + 1 < n:
+            nxt = line[i + 1]
+            if nxt == "|" or nxt == "\\":
+                buf.append(nxt)
+                i += 2
+                continue
+            # Unknown escape — keep backslash so downstream diffs stay
+            # honest ("\\x" round-trips as "\\x", not "x").
+            buf.append(c)
+            i += 1
+            continue
+        if c == "|":
+            fields.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    fields.append("".join(buf))
+    return fields
 
 
 def parse_signoff_rows(audit_path: Path) -> dict[str, bool]:
@@ -1609,7 +1898,17 @@ def parse_signoff_rows(audit_path: Path) -> dict[str, bool]:
         # `**` after stripping.
         if not line.startswith("|"):
             continue
-        f = line.split("|")
+        # Split on UNESCAPED pipes only. Standard markdown table syntax
+        # allows `\|` inside a cell to embed a literal pipe (needed when a
+        # cell quotes upstream LICENSE text that itself uses `|` as a
+        # delimiter — e.g. the ATST row at line 477 quotes the audiossl
+        # LICENSE `... licenses/by/4.0/ \| audiossl is licenced under MIT
+        # Licence.`). A naive `str.split("|")` would count the embedded
+        # pipe as a separator, shift `approver`/`decision` indices by one,
+        # and silently drop the row from this dict — causing
+        # check-converter-signoff.sh to report a spurious NO_ROW even
+        # though the row is present and blank.
+        f = _split_markdown_row(line)
         if len(f) < 7:
             continue
         first = f[1].strip()
@@ -1903,6 +2202,54 @@ def _cli_self_test() -> int:
                 "check_converter_coverage: unknown_stem was not flagged as missing"
             )
 
+    # Escaped-pipe parser regression: the ATST row in the real audit quotes
+    # an upstream LICENSE body that itself contains `|`. Before the parser
+    # honoured `\|` as an escape, the row silently dropped from
+    # parse_signoff_rows and check-converter-signoff.sh reported a spurious
+    # NO_ROW for atst.rs. Lock the semantics in with a synthetic fixture so
+    # a future refactor that reverts to `str.split("|")` fails HERE, not
+    # once someone next runs the shell wrapper.
+    split_cases = [
+        # (input, expected fields)
+        ("|a|b|c|", ["", "a", "b", "c", ""]),
+        # Embedded escaped pipe stays inside the middle cell.
+        ("|a|has \\| pipe|c|", ["", "a", "has | pipe", "c", ""]),
+        # Multiple escapes in one cell.
+        ("|foo\\|bar\\|baz|end|", ["", "foo|bar|baz", "end", ""]),
+    ]
+    for inp, want in split_cases:
+        got = _split_markdown_row(inp)
+        if got != want:
+            failures.append(
+                f"_split_markdown_row({inp!r}): want {want!r}, got {got!r}"
+            )
+
+    # End-to-end: a synthetic sign-off row whose notes column embeds `\|`
+    # must still appear in parse_signoff_rows.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit = Path(tmp) / "audit.md"
+        audit.write_text(
+            "| Model | Weight License | Notes | Owner sign-off | Approval | Reason |\n"
+            "|---|---|---|---|---|---|\n"
+            "| **Escaped-Pipe-Model** | CC-BY-4.0 | quotes upstream "
+            "'foo \\| bar' | 2026-01-01 yousan "
+            "| ☑ Commercial / ☐ Research-only / ☐ Rejected | fixture |\n",
+            encoding="utf-8",
+        )
+        parsed = parse_signoff_rows(audit)
+        if "Escaped-Pipe-Model" not in parsed:
+            failures.append(
+                "parse_signoff_rows: row with escaped \\| in notes column "
+                "was silently dropped (rows found: "
+                f"{sorted(parsed)!r})"
+            )
+        elif parsed["Escaped-Pipe-Model"] is not True:
+            failures.append(
+                "parse_signoff_rows: row with escaped \\| in notes column "
+                "was parsed but its approval state was wrong "
+                f"(got {parsed['Escaped-Pipe-Model']!r}, want True)"
+            )
+
     if failures:
         print("signoff_match self-test: FAIL")
         for f in failures:
@@ -1910,7 +2257,7 @@ def _cli_self_test() -> int:
         return 1
     print(
         f"signoff_match self-test: OK ({len(cases) + 1} approval cases "
-        f"+ 1 converter case)"
+        f"+ 1 converter case + {len(split_cases) + 1} escaped-pipe cases)"
     )
     return 0
 

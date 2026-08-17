@@ -61,8 +61,20 @@ impl WhisperSession {
     /// Defaults to [`BackendKind::Cpu`]; use [`Self::from_gguf_on`] for
     /// another backend.
     ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// `vokra.model.arch` is checked against
+    /// [`ACCEPTED_ARCHS`](super::ACCEPTED_ARCHS) **before** any tensor is
+    /// bound. Whisper is one of the binders that legitimately serves more
+    /// than one arch tag (`whisper` / `crisper-whisper` / `distil-whisper`
+    /// / `kotoba-whisper` all share the topology verbatim) — the whole set
+    /// is accepted and everything else refused; the per-tag rationale is
+    /// recorded on [`ACCEPTED_ARCHS`](super::ACCEPTED_ARCHS).
+    ///
     /// # Errors
     ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or is
+    ///   not one of [`ACCEPTED_ARCHS`](super::ACCEPTED_ARCHS);
     /// - [`VokraError::ModelLoad`] / [`VokraError::FrontendMismatch`] from
     ///   [`WhisperModel::from_gguf`];
     /// - [`VokraError::UnsupportedQuantPath`] if the resolved policy asks any
@@ -74,8 +86,14 @@ impl WhisperSession {
 
     /// [`Self::from_gguf`] on an explicit [`BackendKind`]. The activation
     /// gate applies uniformly across backends: an INT8 activation is
-    /// rejected on CPU, Metal, and CUDA alike (FR-EX-08 uniformity).
+    /// rejected on CPU, Metal, and CUDA alike (FR-EX-08 uniformity). The
+    /// arch gate documented on [`Self::from_gguf`] applies here too — this
+    /// is the shared body both entry points run.
     pub fn from_gguf_on(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        // 1. Arch check — always first so a mis-typed model handed here
+        //    fails with a specific message instead of a downstream
+        //    "vokra.whisper.n_mels missing" or, worse, a partial bind.
+        super::verify_arch(file)?;
         let model = WhisperModel::from_gguf(file)?;
         // T05 lands the real chunk reader inside `QuantPolicy::from_gguf`;
         // until then the reader returns `default_vocoder_safe`, which is
@@ -175,6 +193,96 @@ mod quant_load {
         let mut b = GgufBuilder::new();
         b.add_u32("unrelated.key", 1);
         GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+    }
+
+    /// Builds a metadata-only GGUF carrying `arch` (or none when `arch` is
+    /// `None`) so the arch gate can be exercised without a weight manifest.
+    fn arch_only_gguf(arch: Option<&str>) -> GgufFile {
+        let mut b = GgufBuilder::new();
+        if let Some(a) = arch {
+            b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, a);
+        }
+        GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn from_gguf_rejects_gguf_without_arch_stamp() {
+        // FR-EX-08: an unstamped GGUF is not a Vokra-native Whisper
+        // artifact. `WhisperSession` is `!Debug`, so `unwrap_err()` would
+        // not compile on the `Result` — use let-else on the `Err` arm.
+        let file = arch_only_gguf(None);
+        let Err(err) = WhisperSession::from_gguf(&file) else {
+            panic!("an unstamped GGUF must not build a Whisper session");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => assert!(
+                msg.contains(vokra_core::gguf::chunks::KEY_MODEL_ARCH),
+                "message must name the missing key: {msg}",
+            ),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_rejects_foreign_arch_naming_expected_and_actual() {
+        // A Kokoro GGUF is the canonical mis-route from the audit note.
+        let file = arch_only_gguf(Some("kokoro"));
+        let Err(err) = WhisperSession::from_gguf_on(&file, BackendKind::Cpu) else {
+            panic!("a foreign-arch GGUF must not build a Whisper session");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("kokoro"),
+                    "message must name the actual arch: {msg}",
+                );
+                assert!(
+                    msg.contains("whisper"),
+                    "message must name the expected arch set: {msg}",
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_accepts_every_whisper_family_arch_past_the_arch_gate() {
+        // Whisper legitimately serves four arch tags. Each must clear the
+        // arch gate and fail *later* (on the absent `vokra.whisper.*`
+        // config), never at the arch gate itself — otherwise a working
+        // distil-whisper / kotoba-whisper / CrisperWhisper checkpoint would
+        // regress to unloadable.
+        for &arch in super::super::ACCEPTED_ARCHS {
+            let file = arch_only_gguf(Some(arch));
+            let Err(err) = WhisperSession::from_gguf(&file) else {
+                panic!("{arch}: a weightless GGUF must still fail");
+            };
+            match err {
+                VokraError::ModelLoad(msg) => assert!(
+                    !msg.contains("GGUF arch is") && !msg.contains("is missing `vokra.model.arch`"),
+                    "{arch} must clear the arch gate, got: {msg}",
+                ),
+                other => panic!("{arch}: expected ModelLoad, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn whisper_medusa_is_not_accepted_by_the_arch_gate() {
+        // `whisper-medusa-v1` shares the base topology but adds Medusa
+        // speculative-decoding heads this binder has no module for.
+        // Admitting it would silently drop the heads.
+        let file = arch_only_gguf(Some("whisper-medusa-v1"));
+        let Err(err) = WhisperSession::from_gguf(&file) else {
+            panic!("whisper-medusa-v1 must not build a Whisper session");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => assert!(
+                msg.contains("whisper-medusa-v1"),
+                "message must name the actual arch: {msg}",
+            ),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 
     #[test]

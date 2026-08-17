@@ -165,7 +165,7 @@ for k, v in w.items():
   - `PyanNetConfig` struct with all hparams from `vokra.pyannote.*` chunk group
   - `PyanNetConfig::from_gguf(gguf)` = fail-closed hparam parse (FR-EX-08)
   - Primary-source constant fallback for a GGUF that never carried the chunk (mirror RMVPE pattern)
-- `crates/vokra-models/src/pyannote/weights.rs`:
+- `crates/vokra-models/src/pyannote/weights.rs` (new):
   - `PyanNetWeights` struct binding every tensor from the manifest
   - `PyanNetWeights::from_gguf(gguf)` = required-tensor load (missing/mis-shaped/wrong-dtype → `VokraError::ModelLoad`)
   - GGUF with no upstream PyanNet tensors → loud refuse (no all-zero silent forward)
@@ -199,7 +199,7 @@ for k, v in w.items():
 
 **Blockers**:
 - SincNet primary source (`sincnet.py` from pyannote-audio) 詳細 study が必要
-- Real weight parity harness (`crates/vokra-parity/tests/parity_pyannote_segmentation.rs`, env-gated `PARITY_PYANNOTE_REAL_GGUF`) の owner-provisioned GGUF が必要 (owner の HF gate accept + DL 後)
+- Real weight parity harness (新規 `crates/vokra-models/tests/parity_pyannote_segmentation.rs`、env-gated `PARITY_PYANNOTE_REAL_GGUF`) の owner-provisioned GGUF が必要 (owner の HF gate accept + DL 後)。**crate 名注意**: `crates/vokra-parity` は存在しない — root `Cargo.toml` の comment に名前が出るだけで、実 parity test 34 本はすべて `crates/vokra-models/tests/parity_*.rs` にある
 
 ### Wave 4 — Diarization pipeline (Vokra 独自 assembly、Vokra-native)
 
@@ -234,5 +234,5 @@ pyannote pipeline の Python 版に依存せず、Vokra native の diarization p
 - Registry pin: `crates/vokra-core/src/compliance/license_class.rs` (2026-07-30 land 済)
 - DIARIZE_OP anchor: `crates/vokra-core/src/m5_residual_ops.rs::DIARIZE_OP` (2026-07-30 blocker text 更新済)
 - §3.1 sign-off: `docs/license-audit.md` row 263 (2026-07-30 yousan ☑ Commercial CC 判断)
-- CAM++ speaker encoder (Wave 4 diarization pipeline の依存): `crates/vokra-models/src/speaker/campplus.rs`
+- CAM++ speaker encoder (Wave 4 diarization pipeline の依存): `crates/vokra-models/src/speaker/camplus.rs` (綴りは `camplus`、`p` 一つ — converter 側の `crates/vokra-convert/src/models/campplus.rs` は `p` 二つで非対称ゆえ注意)
 - Loud-partial precedent: RMVPE (`crates/vokra-models/src/f0/rmvpe.rs`) + Charsiu (`crates/vokra-models/src/align/charsiu.rs`)

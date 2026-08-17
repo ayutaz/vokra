@@ -12,7 +12,7 @@
 //! prefix** that carries task-specific tokens (`<source_lang>`,
 //! `<target_lang>`, `<taskname>`, `<pnc>`, `<itn>`, `<timestamp>`,
 //! `<diarize>`, `<emotion>`), and decoding uses a standard beam search over
-//! the vocabulary head (the shared `vokra_ops::beam_search` primitive —
+//! the vocabulary head (the shared `vokra_core::decode::beam_search` primitive —
 //! same op class Whisper and Voxtral consume). No new op is introduced by
 //! Canary; the encoder body reuses [`vokra_ops::conformer`] via the shared
 //! `Stacking { factor: 8 }` variant, exactly like Parakeet.
@@ -77,7 +77,7 @@
 //!   FastConformer encoder covers Canary via
 //!   `ConvSubsampleKind::Stacking { factor: 8 }` (matches
 //!   `subsampling_factor=8`). Same primitive Parakeet uses.
-//! - **Decoder search (OP-3)**: `vokra_ops::beam_search` — the beam
+//! - **Decoder search (OP-3)**: `vokra_core::decode::beam_search` — the beam
 //!   search / length-normalisation / early-stopping / n-best surface
 //!   Whisper and Voxtral already consume. Canary reuses it; no per-model
 //!   decoder primitive is introduced.
@@ -107,8 +107,9 @@
 //! re-implemented natively in `vokra-models/src/canary/` (whisper.cpp 型,
 //! CLAUDE.md 設計判断 4). This module never touches ONNX.
 
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{Result, VokraError};
+use vokra_core::{CompliancePolicy, LicenseClass, Result, VokraError, check_weight_license};
 
 /// `vokra.model.arch` a Canary GGUF must carry. Written by
 /// `vokra-convert::models::canary::ARCH`; the compliance registry
@@ -122,6 +123,63 @@ pub const EXPECTED_ARCH: &str = "canary";
 /// PCM sample rate Canary expects — **16 000 Hz**. Model card:
 /// "16kHz Audio, .wav and .flac audio formats, Monochannel audio".
 pub const CANARY_SAMPLE_RATE: u32 = 16_000;
+
+/// Deterministic seed [`CanaryAsr::from_gguf_with_policy`] threads into
+/// [`CanaryWeights::synthesized`] until the real-checkpoint tensor-name
+/// manifest lands (T29-equivalent — the CSM
+/// [`CSM_FROM_GGUF_DEFAULT_SEED`](super::csm::CSM_FROM_GGUF_DEFAULT_SEED) /
+/// [`KYUTAI_STT_FROM_GGUF_DEFAULT_SEED`](super::kyutai_stt::KYUTAI_STT_FROM_GGUF_DEFAULT_SEED)
+/// / Parakeet-CTC precedent). Fixed so every `from_gguf` build against the
+/// same shape config produces bit-identical weight bytes → reproducible bug
+/// reports.
+pub const CANARY_FROM_GGUF_DEFAULT_SEED: u64 = 0xCA5A_1B72_CA5A_1B72;
+
+// ---------------------------------------------------------------------------
+// `vokra.canary.*` chunk-key mirrors — duplicated verbatim from the
+// converter (`crates/vokra-convert/src/models/canary.rs`) so
+// `vokra-models` does not gain a dependency edge onto `vokra-convert`.
+// This is the same layered-convention rule sibling ASR binders
+// (`parakeet-ctc` / `kyutai-stt` / `mt3` / `snac` / `vocos` / `bigvgan`)
+// use.
+//
+// Booleans (`attention_bias`, `convolution_bias`, `scale_input`, `pre_ln`)
+// are stamped by the converter as `u32` via `u32::from(bool)` (0 / 1); the
+// read side inverts with `!= 0`. `hidden_act` rides as a string.
+// ---------------------------------------------------------------------------
+
+const KEY_SAMPLE_RATE: &str = "vokra.canary.sample_rate";
+
+// Encoder (FastConformer)
+const KEY_ENC_N_LAYER: &str = "vokra.canary.arch.encoder.n_layer";
+const KEY_ENC_D_MODEL: &str = "vokra.canary.arch.encoder.d_model";
+const KEY_ENC_N_HEAD: &str = "vokra.canary.arch.encoder.n_head";
+const KEY_ENC_N_HEAD_KV: &str = "vokra.canary.arch.encoder.n_head_kv";
+const KEY_ENC_FFN_DIM: &str = "vokra.canary.arch.encoder.ffn_dim";
+const KEY_ENC_CONV_KERNEL: &str = "vokra.canary.arch.encoder.conv_kernel_size";
+const KEY_ENC_IN_DIM: &str = "vokra.canary.arch.encoder.in_dim";
+const KEY_ENC_SUBSAMPLING_FACTOR: &str = "vokra.canary.arch.encoder.subsampling_factor";
+const KEY_ENC_SUB_CONV_KERNEL: &str = "vokra.canary.arch.encoder.subsampling_conv_kernel_size";
+const KEY_ENC_SUB_CONV_STRIDE: &str = "vokra.canary.arch.encoder.subsampling_conv_stride";
+const KEY_ENC_SUB_CONV_CHANNELS: &str = "vokra.canary.arch.encoder.subsampling_conv_channels";
+const KEY_ENC_MAX_POS: &str = "vokra.canary.arch.encoder.max_position_embeddings";
+const KEY_ENC_ATTN_BIAS: &str = "vokra.canary.arch.encoder.attention_bias";
+const KEY_ENC_CONV_BIAS: &str = "vokra.canary.arch.encoder.convolution_bias";
+const KEY_ENC_SCALE_INPUT: &str = "vokra.canary.arch.encoder.scale_input";
+
+// Decoder (Transformer AED)
+const KEY_DEC_N_LAYER: &str = "vokra.canary.arch.decoder.n_layer";
+const KEY_DEC_D_MODEL: &str = "vokra.canary.arch.decoder.d_model";
+const KEY_DEC_N_HEAD: &str = "vokra.canary.arch.decoder.n_head";
+const KEY_DEC_FFN_DIM: &str = "vokra.canary.arch.decoder.ffn_dim";
+const KEY_DEC_MAX_SEQ: &str = "vokra.canary.arch.decoder.max_sequence_length";
+const KEY_DEC_PRE_LN: &str = "vokra.canary.arch.decoder.pre_ln";
+const KEY_DEC_HIDDEN_ACT: &str = "vokra.canary.arch.decoder.hidden_act";
+
+// Head + vocab
+const KEY_HEAD_VOCAB_SIZE: &str = "vokra.canary.head.vocab_size";
+const KEY_HEAD_PAD_ID: &str = "vokra.canary.head.pad_token_id";
+const KEY_HEAD_BOS_ID: &str = "vokra.canary.head.bos_token_id";
+const KEY_HEAD_EOS_ID: &str = "vokra.canary.head.eos_token_id";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -535,6 +593,95 @@ impl CanaryConfig {
         }
         Ok(())
     }
+
+    /// Reads every `vokra.canary.*` chunk from `gguf` (strict).
+    ///
+    /// Missing axis = loud [`VokraError::ModelLoad`] naming the absent
+    /// key (FR-EX-08 — no primary-source constant fallback because a
+    /// converter that fails to stamp an axis is a converter bug, not a
+    /// runtime silent-default).
+    ///
+    /// Primary source for the axis table: `huggingface.co/nvidia/canary-1b-v2`
+    /// (fetched 2026-07-24 by the converter, transcribed verbatim into
+    /// [`Self::canary_1b_v2`]).
+    ///
+    /// Booleans (`attention_bias`, `convolution_bias`, `scale_input`,
+    /// `pre_ln`) are stamped by the converter as u32 (0 / 1); this
+    /// reader inverts back to `bool` with `!= 0`, mirroring the
+    /// Parakeet-CTC / Zonos / CSM / Kyutai STT convention. `hidden_act`
+    /// rides as a string.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when any mandatory `vokra.canary.*`
+    ///   chunk is absent (numeric axes ride as `u32`; `hidden_act` rides
+    ///   as a string).
+    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        fn req_u32(gguf: &GgufFile, key: &str) -> Result<u32> {
+            gguf.get(key)
+                .and_then(vokra_core::gguf::GgufMetadataValue::as_u64)
+                .map(|v| v as u32)
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "canary: GGUF is missing required u32 chunk `{key}` — the \
+                         upstream `nvidia/canary-1b-v2` model card + family reference \
+                         yaml (fetched 2026-07-24) supply every FastConformer + \
+                         Transformer AED axis; a converter that fails to stamp one \
+                         is a converter bug, not a runtime silent-default \
+                         (FR-EX-08). Re-run `vokra-cli convert --model canary` \
+                         against `nvidia/canary-1b-v2` safetensors. Primary source: \
+                         https://huggingface.co/nvidia/canary-1b-v2"
+                    ))
+                })
+        }
+        fn req_str<'a>(gguf: &'a GgufFile, key: &str) -> Result<&'a str> {
+            gguf.get(key).and_then(|v| v.as_str()).ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "canary: GGUF is missing required string chunk `{key}` — the \
+                     upstream reference yaml specifies `hidden_act` (\"relu\" for \
+                     Canary-1B-v2); a converter that fails to stamp it is a \
+                     converter bug, not a runtime silent-default (FR-EX-08). \
+                     Re-run `vokra-cli convert --model canary`. Primary source: \
+                     https://huggingface.co/nvidia/canary-1b-v2"
+                ))
+            })
+        }
+        Ok(Self {
+            encoder: CanaryEncoderConfig {
+                n_layer: req_u32(gguf, KEY_ENC_N_LAYER)? as usize,
+                d_model: req_u32(gguf, KEY_ENC_D_MODEL)? as usize,
+                n_head: req_u32(gguf, KEY_ENC_N_HEAD)? as usize,
+                n_head_kv: req_u32(gguf, KEY_ENC_N_HEAD_KV)? as usize,
+                ffn_dim: req_u32(gguf, KEY_ENC_FFN_DIM)? as usize,
+                conv_kernel_size: req_u32(gguf, KEY_ENC_CONV_KERNEL)? as usize,
+                in_dim: req_u32(gguf, KEY_ENC_IN_DIM)? as usize,
+                subsampling_factor: req_u32(gguf, KEY_ENC_SUBSAMPLING_FACTOR)? as usize,
+                subsampling_conv_kernel_size: req_u32(gguf, KEY_ENC_SUB_CONV_KERNEL)? as usize,
+                subsampling_conv_stride: req_u32(gguf, KEY_ENC_SUB_CONV_STRIDE)? as usize,
+                subsampling_conv_channels: req_u32(gguf, KEY_ENC_SUB_CONV_CHANNELS)? as usize,
+                max_position_embeddings: req_u32(gguf, KEY_ENC_MAX_POS)? as usize,
+                attention_bias: req_u32(gguf, KEY_ENC_ATTN_BIAS)? != 0,
+                convolution_bias: req_u32(gguf, KEY_ENC_CONV_BIAS)? != 0,
+                scale_input: req_u32(gguf, KEY_ENC_SCALE_INPUT)? != 0,
+            },
+            decoder: CanaryDecoderConfig {
+                n_layer: req_u32(gguf, KEY_DEC_N_LAYER)? as usize,
+                d_model: req_u32(gguf, KEY_DEC_D_MODEL)? as usize,
+                n_head: req_u32(gguf, KEY_DEC_N_HEAD)? as usize,
+                ffn_dim: req_u32(gguf, KEY_DEC_FFN_DIM)? as usize,
+                max_sequence_length: req_u32(gguf, KEY_DEC_MAX_SEQ)? as usize,
+                pre_ln: req_u32(gguf, KEY_DEC_PRE_LN)? != 0,
+                hidden_act: req_str(gguf, KEY_DEC_HIDDEN_ACT)?.to_owned(),
+            },
+            head: CanaryHeadConfig {
+                vocab_size: req_u32(gguf, KEY_HEAD_VOCAB_SIZE)? as usize,
+                pad_token_id: req_u32(gguf, KEY_HEAD_PAD_ID)?,
+                bos_token_id: req_u32(gguf, KEY_HEAD_BOS_ID)?,
+                eos_token_id: req_u32(gguf, KEY_HEAD_EOS_ID)?,
+            },
+            sample_rate: req_u32(gguf, KEY_SAMPLE_RATE)?,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -858,10 +1005,25 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// the module docstring) it returns [`VokraError::NotImplemented`] with a
 /// message naming the blocker (FR-EX-08 — never a silent zero-fill or
 /// empty transcript).
+///
+/// # Weight license surfacing
+///
+/// The `weight_license` field carries the compliance class surfaced from
+/// the GGUF's `vokra.provenance.weight_license` chunk (populated by
+/// [`Self::from_gguf`] / [`Self::from_gguf_with_policy`]) or defaults to
+/// [`LicenseClass::AttributionRequired`] under [`Self::new`] (the CC-BY
+/// 4.0 class that is the only legitimate class for real Canary weights
+/// per the compliance registry — `vokra_core::compliance::license_class`
+/// maps `canary` / `canary-1b-v2` / the whole `canary-*` family to
+/// [`LicenseClass::AttributionRequired`]). The M2-13 outer compliance
+/// gate does the strict enforcement (see
+/// [`Self::from_gguf_with_policy`]); this handle simply surfaces the
+/// class so callers can cross-check.
 #[derive(Debug, Clone)]
 pub struct CanaryAsr {
     cfg: CanaryConfig,
     weights: CanaryWeights,
+    weight_license: LicenseClass,
 }
 
 impl CanaryAsr {
@@ -1116,7 +1278,17 @@ impl CanaryAsr {
             )));
         }
 
-        Ok(Self { cfg, weights })
+        Ok(Self {
+            cfg,
+            weights,
+            // Default weight-license class under `new()` mirrors the
+            // compliance registry (`vokra_core::compliance::license_class`
+            // maps `canary` / `canary-1b-v2` / the whole `canary-*` family
+            // to CC-BY 4.0 = AttributionRequired). `from_gguf` overrides
+            // with whatever the provenance chunk carries (or `Unknown` if
+            // absent — fail-closed at the outer M2-13 gate).
+            weight_license: LicenseClass::AttributionRequired,
+        })
     }
 
     /// The resolved configuration.
@@ -1174,13 +1346,222 @@ impl CanaryAsr {
              front-end → FastConformer encoder (vokra_ops::conformer) → \
              encoder→decoder projection → task-prompt-prefixed Transformer \
              decoder (self-attn + cross-attn + FFN) → vocab head → \
-             beam_search (vokra_ops::beam_search) → SentencePiece \
+             beam_search (vokra_core::decode::beam_search) → SentencePiece \
              detokenize forward path has not landed yet. Follow-up wave: \
              wire CanaryWeights to vokra_ops::conformer::ConformerEncoder + \
-             the decoder step + vokra_ops::beam_search with \
+             the decoder step + vokra_core::decode::beam_search with \
              blank_id / bos / eos taken from head.{pad,bos,eos}_token_id \
-             once the .nemo extraction supplies them.",
+             once the .nemo extraction supplies them. Primary source: \
+             https://huggingface.co/nvidia/canary-1b-v2",
         ))
+    }
+
+    /// The stamped weight-license class surfaced from the GGUF's
+    /// `vokra.provenance.weight_license` chunk. For real Canary
+    /// checkpoints the compliance registry
+    /// (`vokra_core::compliance::license_class`) maps `canary` /
+    /// `canary-1b-v2` / the whole `canary-*` family to
+    /// [`LicenseClass::AttributionRequired`] (CC-BY 4.0). A GGUF missing
+    /// the stamp reads back as [`LicenseClass::Unknown`] (fail-closed at
+    /// the outer M2-13 gate); [`Self::new`] defaults to
+    /// [`LicenseClass::AttributionRequired`] (the only legitimate class
+    /// for real weights).
+    #[inline]
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
+    }
+
+    /// Binds a Canary GGUF: validates arch, reads the strict
+    /// `vokra.canary.*` topology chunk group, builds a deterministic
+    /// synthesized weight fixture matching the resolved config, and
+    /// surfaces the stamped weight-license class for compliance-gate
+    /// cross-checks.
+    ///
+    /// This binder is a *loud* validation step. Every failure is a
+    /// distinct [`VokraError::ModelLoad`] naming the missing / wrong
+    /// key so a reader diagnosing a mis-produced GGUF has exactly one
+    /// place to walk (FR-EX-08 — never a silent partial bind).
+    ///
+    /// # Loud-partial contract
+    ///
+    /// After this returns `Ok(_)`, the resulting engine is a
+    /// **synthesized-weight** handle — the shape / dtype / size flow is
+    /// exercised end-to-end (config chunk validation, weight-store
+    /// construction, PCM boundary check), but calling
+    /// [`Self::transcribe`] still returns [`VokraError::NotImplemented`]
+    /// naming the real-checkpoint tensor-name manifest binding
+    /// (T29-equivalent — the Moshi / CSM / Zonos / Kyutai STT /
+    /// Parakeet-TDT / Parakeet-CTC pattern) as the follow-up wave's
+    /// anchor. The primitives named in that message
+    /// ([`vokra_ops::conformer`] + `vokra_core::decode::beam_search` —
+    /// the search primitive lives in `vokra-core`, not `vokra-ops`,
+    /// because per FR-OP-40 it is a host-side search rather than a
+    /// graph `OpKind`) already
+    /// exist; the missing piece is the HF `.nemo` extraction →
+    /// [`CanaryWeights`] tensor-name manifest plus SentencePiece
+    /// detokenize (model-specific, not a shared op).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or
+    ///   not `"canary"` (a sibling ASR GGUF handed to us by mistake
+    ///   fails with a hint naming the sibling arches — the
+    ///   Parakeet-CTC / Kyutai STT precedent).
+    /// - [`VokraError::ModelLoad`] when any `vokra.canary.*` chunk is
+    ///   absent ([`CanaryConfig::from_gguf`] is strict).
+    /// - [`VokraError::InvalidArgument`] from
+    ///   [`CanaryConfig::validate_for_forward`] +
+    ///   [`CanaryAsr::new`] shape gates.
+    ///
+    /// # See also
+    ///
+    /// - [`Self::from_gguf_with_policy`] — the M2-13 compliance-gated
+    ///   primary path (parses raw bytes, enforces
+    ///   [`CompliancePolicy`]).
+    /// - [`Self::from_path`] — fail-closed convenience wrapper around
+    ///   `from_gguf_with_policy` with [`CompliancePolicy::strict`].
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        // 1. Arch check — always first so a mis-typed model handed here
+        //    fails with a specific message instead of a downstream
+        //    "vokra.canary.arch.encoder.n_layer missing".
+        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+            Some(a) if a == EXPECTED_ARCH => {}
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "canary: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
+                     (was this GGUF produced by `vokra-cli convert --model canary`? \
+                     Sibling ASR arches — `whisper`, `voxtral`, `parakeet-ctc`, \
+                     `parakeet-tdt`, `kyutai-stt` — are completely different \
+                     topologies). Primary source: \
+                     https://huggingface.co/nvidia/canary-1b-v2"
+                )));
+            }
+            None => {
+                return Err(VokraError::ModelLoad(
+                    "canary: GGUF is missing `vokra.model.arch` (converter did \
+                     not stamp it — this is not a Vokra-native canary GGUF). \
+                     Primary source: https://huggingface.co/nvidia/canary-1b-v2"
+                        .to_owned(),
+                ));
+            }
+        }
+
+        // 2. Strict topology axes from the `vokra.canary.*` chunk group.
+        let cfg = CanaryConfig::from_gguf(file)?;
+
+        // 3. Provenance surfacing — read the stamped weight-license class
+        //    for compliance-gate cross-checks (defaults to `Unknown` if
+        //    absent, which is fail-closed at the outer M2-13 gate).
+        //    Matches the Parakeet-CTC / MT3 / SNAC precedent — surface
+        //    the class here, let the outer gate do the strict
+        //    enforcement.
+        let weight_license = file
+            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+            .and_then(|v| v.as_str())
+            .and_then(LicenseClass::from_class_str)
+            .unwrap_or(LicenseClass::Unknown);
+
+        // 4. Build synthesized weights against the freshly-read config
+        //    so the engine is constructible. `transcribe` still loud-
+        //    partials with the synthesized-weight blocker message —
+        //    binding real `.nemo` checkpoint tensor names is the
+        //    follow-up wave (T29-equivalent).
+        let weights = CanaryWeights::synthesized(&cfg, CANARY_FROM_GGUF_DEFAULT_SEED)?;
+        let mut asr = Self::new(cfg, weights)?;
+        asr.weight_license = weight_license;
+        Ok(asr)
+    }
+
+    /// Loads a Canary GGUF from raw bytes under `policy` (M2-13 gate —
+    /// a non-commercial provenance without a research flag is refused).
+    ///
+    /// Weight posture: **synthesized bridge** until the real-checkpoint
+    /// tensor-name manifest lands (T29-equivalent — the CSM /
+    /// Parakeet-CTC / Kyutai STT precedent). The engine binds
+    /// [`CanaryWeights::synthesized`] against the GGUF's shape config
+    /// using [`CANARY_FROM_GGUF_DEFAULT_SEED`] so shape / dtype / size
+    /// flow can be exercised without the real `.nemo` extraction; a
+    /// [`Self::transcribe`] call fires the synthesized-weight
+    /// loud-partial arm and names the primary source URL.
+    ///
+    /// The Canary weight license is **CC-BY 4.0** (`AttributionRequired`) —
+    /// the converter's registry mapping and provenance stamps make the
+    /// M2-13 gate pass commercially, and the FR-MD-09 attribution
+    /// surface activates.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] on parse failure / wrong or missing
+    ///   `vokra.model.arch` — the message names the expected arch tag
+    ///   (`canary`), sibling ASR arch tags (`whisper` / `voxtral` /
+    ///   `parakeet-ctc` / `parakeet-tdt` / `kyutai-stt`) so a mis-routed
+    ///   GGUF fails specifically here, and the primary source URL.
+    /// - [`VokraError::ResearchLicenseRequired`] (from the M2-13 gate)
+    ///   when the weight class is gated and `policy` grants no research
+    ///   opt-in (never a silent skip / substitution).
+    /// - [`VokraError::ModelLoad`] when any `vokra.canary.*` chunk is
+    ///   absent ([`CanaryConfig::from_gguf`] is strict).
+    /// - [`VokraError::InvalidArgument`] on a `0`-placeholder shape
+    ///   config (a scaffold converter path that never wrote the real
+    ///   hparams) from the downstream
+    ///   [`CanaryConfig::validate_for_forward`] gate.
+    pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
+        let file = GgufFile::parse(bytes.to_vec())
+            .map_err(|e| VokraError::ModelLoad(format!("canary GGUF: {e}")))?;
+        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+            Some(a) if a == EXPECTED_ARCH => {}
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "canary: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
+                     (was this GGUF produced by `vokra-cli convert --model canary`? \
+                     Sibling ASR arches — `whisper`, `voxtral`, `parakeet-ctc`, \
+                     `parakeet-tdt`, `kyutai-stt` — are completely different \
+                     topologies). Primary source: \
+                     https://huggingface.co/nvidia/canary-1b-v2"
+                )));
+            }
+            None => {
+                return Err(VokraError::ModelLoad(
+                    "canary: GGUF is missing `vokra.model.arch` (converter did \
+                     not stamp it — this is not a Vokra-native canary GGUF). \
+                     Primary source: https://huggingface.co/nvidia/canary-1b-v2"
+                        .to_owned(),
+                ));
+            }
+        }
+        check_weight_license(&file, policy)?;
+        let cfg = CanaryConfig::from_gguf(&file)?;
+        // `synthesized` runs `validate_for_forward` internally; keep the
+        // explicit call here so a validate failure surfaces with the config
+        // context intact (same posture as CSM / Kyutai STT
+        // `from_gguf_with_policy`).
+        cfg.validate_for_forward()?;
+        let weight_license = file
+            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+            .and_then(|v| v.as_str())
+            .and_then(LicenseClass::from_class_str)
+            .unwrap_or(LicenseClass::Unknown);
+        let weights = CanaryWeights::synthesized(&cfg, CANARY_FROM_GGUF_DEFAULT_SEED)?;
+        let mut asr = Self::new(cfg, weights)?;
+        asr.weight_license = weight_license;
+        Ok(asr)
+    }
+
+    /// Loads a Canary GGUF from a file path with the fail-closed strict
+    /// policy ([`CompliancePolicy::strict`]).
+    ///
+    /// The Canary weight license is **CC-BY 4.0**
+    /// (`AttributionRequired`), which is commercially permitted — the
+    /// M2-13 gate passes under `strict` without a research opt-in.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::Io`] on read failure.
+    /// - See [`Self::from_gguf_with_policy`].
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let bytes = std::fs::read(path.as_ref()).map_err(VokraError::Io)?;
+        Self::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
     }
 }
 
@@ -1802,5 +2183,327 @@ mod tests {
     fn sample_rate_matches_model_card_boundary() {
         // 16 kHz — per the model card (.wav / .flac mono @ 16 kHz).
         assert_eq!(CANARY_SAMPLE_RATE, 16_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // Wave 5: `from_gguf` / `from_gguf_with_policy` / `from_path` loud-partial
+    // contract (real config validation, arch + provenance surface, license
+    // class round-trip, engine constructibility from GGUF, `transcribe` still
+    // loud-partials on the synthesized-weight blocker so a follow-up wave has
+    // exactly one place to walk — mirror of Wave 4 kyutai_stt / parakeet_ctc
+    // precedent).
+    // -----------------------------------------------------------------------
+
+    /// Builds a metadata-only Canary GGUF matching the offline converter
+    /// (`vokra-convert::models::canary::write_hparams`) so a round trip
+    /// yields `cfg` back through [`CanaryConfig::from_gguf`]. If
+    /// `weight_license_class` is `Some`, the `vokra.provenance.weight_license`
+    /// chunk is stamped; otherwise the reader must fall back to
+    /// [`LicenseClass::Unknown`] (fail-closed at the outer M2-13 gate).
+    fn build_canary_gguf(
+        cfg: &CanaryConfig,
+        arch: Option<&str>,
+        weight_license_class: Option<LicenseClass>,
+    ) -> Vec<u8> {
+        use vokra_core::gguf::GgufBuilder;
+
+        let mut b = GgufBuilder::new();
+        if let Some(a) = arch {
+            b.add_string(chunks::KEY_MODEL_ARCH, a);
+        }
+        b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        // Encoder
+        b.add_u32(KEY_ENC_N_LAYER, cfg.encoder.n_layer as u32);
+        b.add_u32(KEY_ENC_D_MODEL, cfg.encoder.d_model as u32);
+        b.add_u32(KEY_ENC_N_HEAD, cfg.encoder.n_head as u32);
+        b.add_u32(KEY_ENC_N_HEAD_KV, cfg.encoder.n_head_kv as u32);
+        b.add_u32(KEY_ENC_FFN_DIM, cfg.encoder.ffn_dim as u32);
+        b.add_u32(KEY_ENC_CONV_KERNEL, cfg.encoder.conv_kernel_size as u32);
+        b.add_u32(KEY_ENC_IN_DIM, cfg.encoder.in_dim as u32);
+        b.add_u32(
+            KEY_ENC_SUBSAMPLING_FACTOR,
+            cfg.encoder.subsampling_factor as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_KERNEL,
+            cfg.encoder.subsampling_conv_kernel_size as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_STRIDE,
+            cfg.encoder.subsampling_conv_stride as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_CHANNELS,
+            cfg.encoder.subsampling_conv_channels as u32,
+        );
+        b.add_u32(KEY_ENC_MAX_POS, cfg.encoder.max_position_embeddings as u32);
+        b.add_u32(KEY_ENC_ATTN_BIAS, u32::from(cfg.encoder.attention_bias));
+        b.add_u32(KEY_ENC_CONV_BIAS, u32::from(cfg.encoder.convolution_bias));
+        b.add_u32(KEY_ENC_SCALE_INPUT, u32::from(cfg.encoder.scale_input));
+        // Decoder
+        b.add_u32(KEY_DEC_N_LAYER, cfg.decoder.n_layer as u32);
+        b.add_u32(KEY_DEC_D_MODEL, cfg.decoder.d_model as u32);
+        b.add_u32(KEY_DEC_N_HEAD, cfg.decoder.n_head as u32);
+        b.add_u32(KEY_DEC_FFN_DIM, cfg.decoder.ffn_dim as u32);
+        b.add_u32(KEY_DEC_MAX_SEQ, cfg.decoder.max_sequence_length as u32);
+        b.add_u32(KEY_DEC_PRE_LN, u32::from(cfg.decoder.pre_ln));
+        b.add_string(KEY_DEC_HIDDEN_ACT, &cfg.decoder.hidden_act);
+        // Head + vocab
+        b.add_u32(KEY_HEAD_VOCAB_SIZE, cfg.head.vocab_size as u32);
+        b.add_u32(KEY_HEAD_PAD_ID, cfg.head.pad_token_id);
+        b.add_u32(KEY_HEAD_BOS_ID, cfg.head.bos_token_id);
+        b.add_u32(KEY_HEAD_EOS_ID, cfg.head.eos_token_id);
+        if let Some(cls) = weight_license_class {
+            b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
+        }
+        b.to_bytes().expect("serialize canary fixture GGUF")
+    }
+
+    /// A well-formed tiny GGUF binds: arch matches, every
+    /// `vokra.canary.*` chunk round-trips, `AttributionRequired`
+    /// provenance surfaces, synthesized weights are constructed.
+    #[test]
+    fn from_gguf_binds_synthesized_from_tiny_config() {
+        use vokra_core::gguf::GgufFile;
+
+        let cfg = CanaryConfig::tiny_for_tests();
+        let bytes = build_canary_gguf(
+            &cfg,
+            Some(EXPECTED_ARCH),
+            Some(LicenseClass::AttributionRequired),
+        );
+        let file = GgufFile::parse(bytes).expect("parse fixture");
+        let asr = CanaryAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert!(asr.is_synthesized(), "from_gguf binds synthesized bridge");
+        assert_eq!(
+            asr.weight_license(),
+            LicenseClass::AttributionRequired,
+            "CC-BY 4.0 = AttributionRequired must surface"
+        );
+        assert_eq!(asr.config(), &cfg, "config must round-trip verbatim");
+    }
+
+    /// A GGUF that omits `vokra.model.arch` entirely fails loud
+    /// (converter did not stamp it — the GGUF is not Vokra-native).
+    /// Message names the missing arch key + primary source URL.
+    #[test]
+    fn from_gguf_rejects_missing_arch() {
+        use vokra_core::gguf::GgufFile;
+
+        let cfg = CanaryConfig::tiny_for_tests();
+        // Build fixture WITHOUT an arch chunk (arch = None).
+        let bytes = build_canary_gguf(&cfg, None, Some(LicenseClass::AttributionRequired));
+        let file = GgufFile::parse(bytes).expect("parse fixture");
+        let Err(err) = CanaryAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing arch");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("vokra.model.arch"),
+                    "message must name the missing arch key: {msg}"
+                );
+                assert!(
+                    msg.contains("huggingface.co/nvidia/canary-1b-v2"),
+                    "message must name the primary source URL: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// A GGUF whose arch is a sibling ASR (`whisper`) fails loud with a
+    /// message naming both `canary` and the offending tag + sibling
+    /// arches so a reader diagnosing the mis-routed conversion has
+    /// exactly one place to walk.
+    #[test]
+    fn from_gguf_rejects_wrong_arch() {
+        use vokra_core::gguf::GgufFile;
+
+        let cfg = CanaryConfig::tiny_for_tests();
+        let bytes = build_canary_gguf(
+            &cfg,
+            Some("whisper"),
+            Some(LicenseClass::AttributionRequired),
+        );
+        let file = GgufFile::parse(bytes).expect("parse fixture");
+        let Err(err) = CanaryAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on wrong arch");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("`whisper`"),
+                    "message must name the offending arch tag `whisper`: {msg}"
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch `{EXPECTED_ARCH}`: {msg}"
+                );
+                assert!(
+                    msg.contains("parakeet-ctc") && msg.contains("kyutai-stt"),
+                    "message must name sibling ASR arches for disambiguation: {msg}"
+                );
+                assert!(
+                    msg.contains("huggingface.co/nvidia/canary-1b-v2"),
+                    "message must name the primary source URL: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// Every mandatory `vokra.canary.*` chunk is required — a converter
+    /// that fails to stamp any one is a converter bug, not a runtime
+    /// silent-default (FR-EX-08). The loud error names the exact absent
+    /// chunk key.
+    #[test]
+    fn from_gguf_rejects_missing_axis() {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        let cfg = CanaryConfig::tiny_for_tests();
+        // Build a hand-crafted GGUF that stamps every axis EXCEPT
+        // `KEY_ENC_N_LAYER` — the loud error must fire on `n_layer`.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        // Deliberately omit KEY_ENC_N_LAYER.
+        b.add_u32(KEY_ENC_D_MODEL, cfg.encoder.d_model as u32);
+        b.add_u32(KEY_ENC_N_HEAD, cfg.encoder.n_head as u32);
+        b.add_u32(KEY_ENC_N_HEAD_KV, cfg.encoder.n_head_kv as u32);
+        b.add_u32(KEY_ENC_FFN_DIM, cfg.encoder.ffn_dim as u32);
+        b.add_u32(KEY_ENC_CONV_KERNEL, cfg.encoder.conv_kernel_size as u32);
+        b.add_u32(KEY_ENC_IN_DIM, cfg.encoder.in_dim as u32);
+        b.add_u32(
+            KEY_ENC_SUBSAMPLING_FACTOR,
+            cfg.encoder.subsampling_factor as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_KERNEL,
+            cfg.encoder.subsampling_conv_kernel_size as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_STRIDE,
+            cfg.encoder.subsampling_conv_stride as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_CHANNELS,
+            cfg.encoder.subsampling_conv_channels as u32,
+        );
+        b.add_u32(KEY_ENC_MAX_POS, cfg.encoder.max_position_embeddings as u32);
+        b.add_u32(KEY_ENC_ATTN_BIAS, u32::from(cfg.encoder.attention_bias));
+        b.add_u32(KEY_ENC_CONV_BIAS, u32::from(cfg.encoder.convolution_bias));
+        b.add_u32(KEY_ENC_SCALE_INPUT, u32::from(cfg.encoder.scale_input));
+        b.add_u32(KEY_DEC_N_LAYER, cfg.decoder.n_layer as u32);
+        b.add_u32(KEY_DEC_D_MODEL, cfg.decoder.d_model as u32);
+        b.add_u32(KEY_DEC_N_HEAD, cfg.decoder.n_head as u32);
+        b.add_u32(KEY_DEC_FFN_DIM, cfg.decoder.ffn_dim as u32);
+        b.add_u32(KEY_DEC_MAX_SEQ, cfg.decoder.max_sequence_length as u32);
+        b.add_u32(KEY_DEC_PRE_LN, u32::from(cfg.decoder.pre_ln));
+        b.add_string(KEY_DEC_HIDDEN_ACT, &cfg.decoder.hidden_act);
+        b.add_u32(KEY_HEAD_VOCAB_SIZE, cfg.head.vocab_size as u32);
+        b.add_u32(KEY_HEAD_PAD_ID, cfg.head.pad_token_id);
+        b.add_u32(KEY_HEAD_BOS_ID, cfg.head.bos_token_id);
+        b.add_u32(KEY_HEAD_EOS_ID, cfg.head.eos_token_id);
+        b.add_string(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::AttributionRequired.as_str(),
+        );
+        let bytes = b.to_bytes().expect("serialize");
+        let file = GgufFile::parse(bytes).expect("parse");
+        let Err(err) = CanaryAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing axis");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(KEY_ENC_N_LAYER),
+                    "message must name the exact missing chunk key `{KEY_ENC_N_LAYER}`: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// After a full round-trip via `from_gguf`, `transcribe` still
+    /// returns `NotImplemented` naming the synthesized-weight blocker +
+    /// the primary source URL (loud-partial contract preserved — the
+    /// follow-up wave binds real HF `.nemo` checkpoint tensor names,
+    /// T29-equivalent).
+    #[test]
+    fn from_gguf_transcribe_returns_not_implemented() {
+        use vokra_core::gguf::GgufFile;
+
+        let cfg = CanaryConfig::tiny_for_tests();
+        let bytes = build_canary_gguf(
+            &cfg,
+            Some(EXPECTED_ARCH),
+            Some(LicenseClass::AttributionRequired),
+        );
+        let file = GgufFile::parse(bytes).expect("parse fixture");
+        let asr = CanaryAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert!(asr.is_synthesized(), "from_gguf builds synthesized weights");
+        // 1 second of 16 kHz mono content — legitimate input shape, so
+        // the loud-partial gate fires (not the empty-pcm gate).
+        let pcm = [0.1_f32; 16_000];
+        let err = asr.transcribe(&pcm).unwrap_err();
+        match err {
+            VokraError::NotImplemented(msg) => {
+                assert!(
+                    msg.contains("synthesized"),
+                    "message must name the synthesized-weight blocker: {msg}"
+                );
+                assert!(
+                    msg.contains("canary-1b-v2"),
+                    "message must name the primary source anchor `canary-1b-v2`: {msg}"
+                );
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
+    }
+
+    /// A GGUF that omits `vokra.provenance.weight_license` reads back
+    /// as `LicenseClass::Unknown` (fail-closed at the outer M2-13 gate,
+    /// matching Parakeet-CTC / MT3 / SNAC precedent).
+    #[test]
+    fn from_gguf_defaults_weight_license_when_provenance_missing() {
+        use vokra_core::gguf::GgufFile;
+
+        let cfg = CanaryConfig::tiny_for_tests();
+        // weight_license_class = None → no provenance chunk written.
+        let bytes = build_canary_gguf(&cfg, Some(EXPECTED_ARCH), None);
+        let file = GgufFile::parse(bytes).expect("parse fixture");
+        let asr = CanaryAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            asr.weight_license(),
+            LicenseClass::Unknown,
+            "missing provenance must default to Unknown (fail-closed at outer gate)"
+        );
+    }
+
+    /// [`CanaryAsr::from_path`] uses [`CompliancePolicy::strict`] — a
+    /// GGUF advertising `NonCommercial` weight license without a
+    /// research opt-in is refused by the M2-13 gate. Guards against a
+    /// future silent skip / substitution regression.
+    #[test]
+    fn from_path_fail_closed_strict_policy() {
+        let cfg = CanaryConfig::tiny_for_tests();
+        // Stamp NonCommercial weight license — the M2-13 gate under
+        // strict must refuse (never a silent skip / substitution).
+        let bytes = build_canary_gguf(&cfg, Some(EXPECTED_ARCH), Some(LicenseClass::NonCommercial));
+        let path =
+            std::env::temp_dir().join(format!("vokra-canary-scout-nc-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).expect("write fixture");
+        let result = CanaryAsr::from_path(&path);
+        // Best-effort cleanup — never a panic on cleanup failure (test
+        // determinism must not depend on tmp cleanup).
+        let _ = std::fs::remove_file(&path);
+        let Err(err) = result else {
+            panic!("expected ResearchLicenseRequired on NonCommercial under strict");
+        };
+        assert!(
+            matches!(err, VokraError::ResearchLicenseRequired { .. }),
+            "expected ResearchLicenseRequired, got {err:?}"
+        );
     }
 }

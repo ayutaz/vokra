@@ -11,16 +11,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ConvertSummary, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant, VoxtralConfig,
-    convert_bert_base_file, convert_chatterbox_file, convert_chatterbox_nano_file,
-    convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_crepe_file, convert_dac_file, convert_deberta_v2_file, convert_deberta_v3_file,
-    convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
-    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_streaming, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    ConvertSummary, LlamaOmni2Variant, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant,
+    VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file, convert_chatterbox_file,
+    convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
+    convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
+    convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
+    convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
+    convert_llama_omni2_file_with_config, convert_openwakeword_op_file_with_config,
+    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -66,6 +67,8 @@ USAGE:
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model fsmn-vad --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -92,7 +95,8 @@ OPTIONS:
                               lang-id-voxlingua107 | lang-id-commonlanguage |
                               xvector | deepfake-detection | kyutai-tts |
                               audiobox-aesthetics | voxtral-mini-realtime |
-                              cohere-transcribe | nemotron-asr-streaming
+                              cohere-transcribe | nemotron-asr-streaming |
+                              voila
                               (crepe: marl/crepe — a prepared safetensors from
                               tools/parity/keras_h5_to_safetensors.py, needs
                               --config <config.json> with the capacity /
@@ -344,7 +348,19 @@ OPTIONS:
                               vocab, max positions — cross-validated against
                               the checkpoint shapes) OR the DAC prepare-script
                               config.json (required for dac — from
-                              tools/parity/dac_prepare_checkpoint.py)
+                              tools/parity/dac_prepare_checkpoint.py) OR the
+                              openWakeWord side-car (required for
+                              openwakeword-op — from
+                              tools/parity/openwakeword_prepare_checkpoint.py
+                              --output-config; carries `wakeword_names`, the
+                              per-wake-word labels that exist nowhere in the
+                              safetensors and are never invented) OR the
+                              LLaMA-Omni2 side-car (required for llama-omni2;
+                              carries `n_head`, `rope_max_period`,
+                              `rms_norm_eps`, `sample_rate`,
+                              `speech_encoder_dim`, `speech_decoder_dim`
+                              transcribed from the upstream config.json —
+                              six axes no tensor shape carries)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
@@ -994,9 +1010,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold.
             // The upstream release ships PyTorch `.pth` checkpoints; a
             // caller who legitimately holds a StyleTTS 2 checkpoint
-            // pre-flattens it to safetensors offline
-            // (`tools/parity/pytorch_to_safetensors.py`) the same way
-            // CSM / DAC / VoxCPM / Kokoro do. No --config side-car
+            // pre-flattens it to safetensors offline the same way
+            // CSM / DAC / VoxCPM / Kokoro do — via a future
+            // `tools/parity/pytorch_to_safetensors.py` (not yet
+            // written; today the closest shipped bridges are
+            // `tools/parity/bin_to_safetensors.py` /
+            // `nemo_pt_to_safetensors.py`). No --config side-car
             // today: every architectural axis is fixed for the
             // LJSpeech / LibriTTS release (24 kHz, hidden_dim=512,
             // style_dim=128, iSTFTNet decoder) and byte-parallel to
@@ -1153,6 +1172,80 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
+        ModelKind::OpenwakewordOp => {
+            // 2026-08-15 handshake repair. A dedicated arm (rather than
+            // the generic `convert_file_with_slug` fallthrough) for the
+            // same reason as the Crepe / BeatThis arms: the generic
+            // dispatch hard-codes `config_side_car = None`, so `--config`
+            // would be silently dropped — and here that is not a cosmetic
+            // loss. Without the side-car's `wakeword_names` the emitted
+            // GGUF is missing a key `OpenwakewordConfig::from_gguf`
+            // treats as required, i.e. it cannot load at all.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_openwakeword_op_file_with_config(
+                    &p.input,
+                    config,
+                    &p.output,
+                    p.license.as_deref(),
+                ),
+                None => {
+                    return Err("--model openwakeword-op requires --config <config.json> \
+                                carrying `wakeword_names` (from \
+                                tools/parity/openwakeword_prepare_checkpoint.py \
+                                --output-config). The per-wake-word labels the runtime \
+                                returns are not present in the safetensors and are not \
+                                invented here."
+                        .to_owned());
+                }
+            }
+        }
+        ModelKind::LlamaOmni2 => {
+            // 2026-08-15 handshake repair. A dedicated arm rather than
+            // the generic `convert_file_with_slug` fallthrough, for the
+            // same reason as the Crepe / OpenwakewordOp arms above: the
+            // generic dispatch hard-codes `config_side_car = None`, so
+            // `--config` would be silently dropped. Here that is not a
+            // cosmetic loss — without the side-car the GGUF is missing
+            // ten keys `LlamaOmni2Config::from_gguf` reads, every one of
+            // which then decays to 0 and fails `validate_for_forward`.
+            //
+            // The variant comes from the raw `--model` slug, so
+            // `--model llama-omni2-32b` cannot stamp a 7B identity onto
+            // a 64 GB artifact.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let variant = LlamaOmni2Variant::from_arg(&p.raw_model_slug).unwrap_or_default();
+            match &p.config {
+                Some(config) => convert_llama_omni2_file_with_config(
+                    &p.input,
+                    config,
+                    &p.output,
+                    variant,
+                    p.license.as_deref(),
+                ),
+                None => {
+                    return Err("--model llama-omni2 requires --config <config.json> \
+                                carrying `n_head`, `rope_max_period`, `rms_norm_eps`, \
+                                `sample_rate`, `speech_encoder_dim` and \
+                                `speech_decoder_dim`, transcribed from the upstream \
+                                config.json. Those six axes cannot be read off any tensor \
+                                shape and are not invented here; the runtime binder \
+                                refuses a 0 on every one of them, so a GGUF built without \
+                                them cannot load at all."
+                        .to_owned());
+                }
+            }
+        }
         ModelKind::SbV2 => {
             // SBV2 v2 plan (2026-07-26 / 2026-08-06): the generic
             // `convert_file_with_slug` fallthrough arm in
@@ -1188,9 +1281,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // (`renamed` / `weight_norm_reconstructed` /
             // `passed_through_verbatim` / `skipped_training` /
             // `weight_norm_v_consumed`) so an owner can spot-check the
-            // conversion at a glance. See
-            // `vokra_convert::models::sbv2` module doc "Wave audit
-            // trail" section for the base-checkpoint reference numbers.
+            // conversion at a glance. See the "Wave audit trail" section of
+            // the module doc in `crates/vokra-convert/src/models/sbv2.rs`
+            // (`vokra-convert`'s `models` module is private, so the file is
+            // the only referent) for the base-checkpoint reference numbers.
             let mut notes = vec![format!(
                 "sbv2: {read} tensors read → {written} written ({renamed} renamed + \
                  {wnorm} weight_norm reconstructed + {verbatim} verbatim), \
@@ -1227,6 +1321,36 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 println!("  note: {note}");
             }
             return Ok(ExitCode::SUCCESS);
+        }
+        ModelKind::BeatThis => {
+            // 2026-08-15 audit follow-up. `vokra-models::beat_this` names
+            // `vokra-cli convert --model beat-this` in four error
+            // messages; until this wave `ModelKind::from_arg` accepted no
+            // such spelling, so that recovery command answered `unknown
+            // model`. This arm is what makes it real.
+            //
+            // Dedicated (rather than falling through to
+            // `convert_file_with_slug`) for the same reason as the
+            // DebertaV2 / DebertaV3 arms above: the generic dispatch has
+            // no per-model side-car parameter, so `--config` would be
+            // silently dropped. `convert_beat_this_file` takes its six
+            // topology axes from the caller and invents none of them —
+            // the upstream `CPJKU/beat_this` `.pt` release ships no
+            // config.yaml, they live implicitly in tensor shapes — so a
+            // dropped `--config` is not a cosmetic loss: it is the
+            // difference between a conversion and a refusal.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper and voxtral".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_beat_this_with_config(
+                &p.input,
+                &p.output,
+                p.config.as_deref(),
+                p.license.as_deref(),
+            )
         }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the

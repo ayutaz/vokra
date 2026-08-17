@@ -10,7 +10,7 @@
 //! reference candidates (RMVPE / FCPE / CREPE / PyIN / Harvest — CLAUDE.md
 //! 音声特化オペレータ §"F0 / Pitch 抽出").
 //!
-//! Each per-model skeleton is loaded from a Vokra GGUF
+//! Each per-model extractor is loaded from a Vokra GGUF
 //! (`vokra.f0.*` metadata + tensor weights) and reports pitch per-frame
 //! through the shared [`F0Frame`] type.
 //!
@@ -19,23 +19,37 @@
 //! - [`rmvpe`] — Robust Model for Vocal Pitch Estimation
 //!   (<https://github.com/Dream-High/RMVPE>, apache-2.0); polyphonic vocal
 //!   pitch with V/UV detection; required by RVC.
-//! - [`fcpe`] — Fast Context-based Pitch Estimation (skeleton).
+//! - [`fcpe`] — Fast Context-based Pitch Estimation (CFNaiveMelPEInfer,
+//!   CNChTu/FCPE, MIT); a GLU-conv encoder over log-mel.
 //! - [`crepe`] — Convolutional Representation for Pitch Estimation
-//!   (Kim et al. 2018, MIT), a monophonic CNN F0 extractor (skeleton).
+//!   (Kim et al. 2018, MIT), a monophonic 6-block CNN over raw 16 kHz audio.
 //!
-//! # Current status (skeleton)
+//! # Shared API shape (all three, since 2026-08-15)
 //!
-//! FCPE and CREPE are landed skeletons — real CNN / attention /
-//! autocorrelation inference is a follow-up WP; the current skeletons
-//! guarantee only the **frame-count contract** so downstream consumers can
-//! wire the API surface without waiting on weights.
+//! - `extract(&pcm, sample_rate) -> Result<Vec<F0Frame>, VokraError>` — the
+//!   obvious name, and the one that measures. Delegates to `extract_real`.
+//! - `extract_real(..) -> Result<Vec<F0Frame>, VokraError>` — the real
+//!   forward, under the name the parity harnesses call.
+//! - `frame_times(pcm_len, sample_rate) -> Vec<f32>` — the analysis
+//!   timestamps alone, for sizing and aligning buffers. It returns bare
+//!   seconds rather than [`F0Frame`] rows precisely so that nothing it
+//!   returns can be mistaken for a pitch estimate.
+//!
+//! **No extractor answers a failure with a zero-filled track** (FR-EX-08).
+//! Unbound weights, a sample rate the checkpoint is not defined at, and a
+//! front-end that cannot run are three distinct named errors. Each names what
+//! it received against what it needs. A frame-count-correct all-zero `F0Frame`
+//! track would be indistinguishable downstream from "this audio is entirely
+//! unvoiced", and silently wrong pitch propagates straight into a vocoder or
+//! a VC pipeline — worse than no pitch at all. None of them resamples on the
+//! caller's behalf either: refusing is the point.
 //!
 //! # Frame shape
 //!
-//! Every F0 extractor emits [`F0Frame`] rows on a per-hop timebase. The frame
-//! itself is model-agnostic (`time_sec` / `hz` / `voiced` / `confidence`), so
-//! downstream consumers (VC / TTS conditioners) can share one shape across
-//! extractors.
+//! Every F0 extractor emits [`F0Frame`] rows on a per-hop timebase, with
+//! `frames.len() == pcm.len() / hop`. The frame itself is model-agnostic
+//! (`time_sec` / `hz` / `voiced` / `confidence`), so downstream consumers
+//! (VC / TTS conditioners) can share one shape across extractors.
 
 use std::path::PathBuf;
 

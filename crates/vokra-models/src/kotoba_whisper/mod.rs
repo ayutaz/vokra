@@ -101,12 +101,16 @@
 //!   (`n_text_layer < n_audio_layer`) that catches a checkpoint whose
 //!   decoder depth was left at the source (large-v3 = 32) instead of the
 //!   shrunk kotoba count.
-//! - [`KotobaWhisperAsr`] — engine handle carrying config.
-//!   [`KotobaWhisperAsr::transcribe`] returns
-//!   [`VokraError::NotImplemented`] until real weights are bound (the
-//!   real forward — log-mel front-end → 32-layer encoder → 2-layer
-//!   decoder → BPE detokenize — is a follow-up wave gated on the real
-//!   HF checkpoint T29 hand-off).
+//! - [`KotobaWhisperAsr`] — engine handle with two construction paths.
+//!   [`KotobaWhisperAsr::from_gguf`] binds a converted GGUF through
+//!   [`crate::whisper::WhisperAsr`] and [`KotobaWhisperAsr::transcribe`]
+//!   then runs the **real** forward (log-mel front-end → 32-layer
+//!   encoder → 2-layer decoder → BPE detokenize), shared verbatim with
+//!   vanilla Whisper; the [`AsrEngine`] impl below exposes the same
+//!   forward behind the session facade. The config-only shell
+//!   [`KotobaWhisperAsr::new`] is the only path that hard-errors with
+//!   [`VokraError::NotImplemented`] — it binds no weights and exists to
+//!   exercise shape / invariant flow.
 //!
 //! # No ONNX (permanent)
 //!
@@ -114,7 +118,9 @@
 //! pipeline is re-implemented natively via [`crate::whisper`]
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
 
+use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::GgufFile;
+use vokra_core::tasks::Transcription;
 use vokra_core::{BackendKind, Result, VokraError};
 
 use crate::whisper::{WhisperAsr, WhisperTokenizer};
@@ -549,6 +555,88 @@ impl KotobaWhisperAsr {
             )),
         }
     }
+
+    /// Test-only wrapper: build a weights-bound handle around an already-loaded
+    /// [`WhisperAsr`] **without** enforcing the [`Self::from_gguf`] distil
+    /// invariant (`n_text_layer < n_audio_layer`). Tests that exercise the
+    /// [`AsrEngine`] trait dispatch (composition, empty-PCM early return) only
+    /// need a handle whose `transcribe` funnels through the shared Whisper
+    /// engine — they do not exercise the mislabel-refusal path, which has its
+    /// own dedicated `from_gguf_rejects_non_distil_shape_via_delegate_chain`
+    /// coverage below.
+    ///
+    /// Mirrors `crate::distil_whisper::DistilWhisperAsr::from_whisper_asr_for_test`.
+    /// The config surfaced through [`Self::config`] mirrors the inner Whisper
+    /// config verbatim (same shape as [`Self::from_gguf`]), so
+    /// [`Self::has_weights`] is `true` and the handle behaves indistinguishably
+    /// from a real GGUF load to code that only reads the introspection surface.
+    ///
+    /// Not part of the public API (compiled only under `cfg(test)`).
+    #[cfg(test)]
+    pub(crate) fn from_whisper_asr_for_test(inner: WhisperAsr) -> Self {
+        let wc = inner.model().config();
+        let cfg = KotobaWhisperConfig {
+            n_mels: wc.n_mels,
+            d_model: wc.d_model,
+            n_audio_ctx: wc.n_audio_ctx,
+            n_audio_head: wc.n_audio_head,
+            n_audio_layer: wc.n_audio_layer,
+            n_text_ctx: wc.n_text_ctx,
+            n_text_head: wc.n_text_head,
+            n_text_layer: wc.n_text_layer,
+            n_vocab: wc.n_vocab,
+            ffn_dim: wc.ffn_dim,
+            eot: wc.eot,
+            sot: wc.decoder_start_ids.first().copied().unwrap_or(50_258),
+            sample_rate: KOTOBA_WHISPER_SAMPLE_RATE,
+        };
+        Self {
+            cfg,
+            inner: Some(inner),
+        }
+    }
+}
+
+/// [`AsrEngine`] wiring so a kotoba-whisper handle can be injected via
+/// [`vokra_core::Session::with_asr_engine`] and drive
+/// `session.asr().transcribe()` end-to-end — which is exactly how
+/// `vokra-cli run` reaches this model.
+///
+/// Composition — verbatim the [`WhisperAsr`] / [`crate::distil_whisper`]
+/// pattern:
+/// 1. call the inherent [`KotobaWhisperAsr::transcribe`] for raw token ids
+///    (GGUF path → [`WhisperAsr::transcribe_tokens`] greedy; config-only
+///    shell → loud [`VokraError::NotImplemented`]),
+/// 2. render them through [`KotobaWhisperAsr::render_ids`] (GGUF path →
+///    [`WhisperAsr::render_ids`]; shell → the bracketed-id fallback),
+/// 3. wrap the resulting `String` in a [`Transcription`].
+///
+/// The inherent method and this trait method share the receiver + argument
+/// shape, so method resolution inside the trait body picks the inherent one
+/// (returning `Result<Vec<u32>>`) — the composition leg we want, with no
+/// accidental recursion.
+///
+/// The empty-PCM guard lives in the inherent method and therefore also
+/// governs this one (FR-EX-08 — never a silent empty transcription).
+impl AsrEngine for KotobaWhisperAsr {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        let ids = self.transcribe(pcm)?;
+        Ok(Transcription::new(self.render_ids(&ids)?))
+    }
+
+    /// Asks the delegate rather than storing a second copy: the backend is
+    /// set through [`KotobaWhisperAsr::with_backend`], which forwards to the
+    /// inner [`WhisperAsr`], so a duplicate field here could disagree with
+    /// the engine that actually runs.
+    ///
+    /// The unbound arm reports `Cpu`, which cannot mislead in the way the
+    /// trait warns about: with no inner engine there is no forward, so no
+    /// execution exists anywhere else to contradict the answer.
+    fn backend(&self) -> BackendKind {
+        self.inner
+            .as_ref()
+            .map_or(BackendKind::Cpu, AsrEngine::backend)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -895,5 +983,109 @@ mod tests {
                 "registry must map `{id}` to Permissive (Apache-2.0)"
             );
         }
+    }
+
+    // -------- AsrEngine trait dispatch tests --------
+    //
+    // These prove the `impl AsrEngine for KotobaWhisperAsr` (a) reaches the
+    // shared Whisper delegate on the weights-bound arm rather than the
+    // config-only `NotImplemented` arm, (b) honors the empty-PCM early return
+    // through the trait method, and (c) composes to the same text as the
+    // inherent `.transcribe(...)` → `.render_ids(...)` pipeline.
+    //
+    // The trait impl is what `vokra-cli run` consumes (the dispatch injects
+    // this handle into the session's ASR slot), so an untested impl here would
+    // leave the CLI routing resting on nothing. Mirrors the distil-whisper
+    // trait tests, against the same synthetic fixture.
+
+    use crate::whisper::decoder::test_support::tiny_model_distil;
+
+    /// Builds a weights-bound `KotobaWhisperAsr` over a whisper-shape synthetic
+    /// model (`n_audio_ctx = 1500` so the encoder passes its output-length
+    /// check; 2 encoder layers, 1 decoder layer keeps the distil axis honest
+    /// even though the test-only ctor bypasses the invariant check).
+    fn delegate_asr() -> KotobaWhisperAsr {
+        let model = tiny_model_distil(2, 1);
+        let inner = WhisperAsr::from_model_for_test(model);
+        KotobaWhisperAsr::from_whisper_asr_for_test(inner)
+    }
+
+    /// (a) `AsrEngine::transcribe` reaches the shared Whisper delegate — never
+    /// the config-only `NotImplemented` arm — and returns a bounded
+    /// [`Transcription`]. `Ok` here is itself the proof: the unbound arm
+    /// returns `Err`.
+    #[test]
+    fn asr_engine_transcribe_delegate_returns_finite_transcription() {
+        let asr = delegate_asr();
+        assert!(
+            asr.has_weights(),
+            "the test fixture must be the weights-bound arm"
+        );
+        // 1024 mono samples: the WhisperAsr log-mel front-end zero-pads to its
+        // fixed 30 s window regardless, so any non-empty PCM exercises the full
+        // PCM → mel → encoder → decoder path.
+        let pcm = vec![0.0f32; 1024];
+        let out: Transcription = <KotobaWhisperAsr as AsrEngine>::transcribe(&asr, &pcm)
+            .expect("bound AsrEngine::transcribe must return Ok(Transcription)");
+        // Bounded (never unbounded / DoS): greedy stops on eot within
+        // DEFAULT_MAX_NEW_TOKENS = 224 iterations, so the bracketed-ids render
+        // is at most a few KB even in the worst case.
+        assert!(
+            out.text.len() < 16 * 1024,
+            "transcription text must stay bounded; got {} bytes",
+            out.text.len()
+        );
+    }
+
+    /// (b) The trait method honors the empty-PCM early return the inherent
+    /// method enforces, so a caller behind `dyn AsrEngine` (i.e.
+    /// `session.asr().transcribe(&[])`, which is what the CLI holds) sees the
+    /// same loud `InvalidArgument` — never a silent empty transcript
+    /// (FR-EX-08).
+    #[test]
+    fn asr_engine_transcribe_rejects_empty_pcm() {
+        let asr = delegate_asr();
+        let Err(err) = <KotobaWhisperAsr as AsrEngine>::transcribe(&asr, &[]) else {
+            panic!("expected an error when the trait method is handed empty PCM");
+        };
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains("kotoba-whisper"),
+                    "error must name the model: {msg}"
+                );
+                assert!(msg.contains("empty"), "error must name the blocker: {msg}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// (c) The trait method is exactly
+    /// `Transcription::new(self.render_ids(&self.transcribe(pcm)?)?)` — the
+    /// text is byte-identical to the manual pipeline, proving it introduced no
+    /// separate beam / sampling branch and no post-processing beyond
+    /// `render_ids`.
+    #[test]
+    fn asr_engine_transcribe_composes_with_inherent_transcribe() {
+        let asr = delegate_asr();
+        let pcm = vec![0.0f32; 1024];
+
+        let via_trait = <KotobaWhisperAsr as AsrEngine>::transcribe(&asr, &pcm)
+            .expect("trait transcribe must succeed on the bound path");
+
+        // `WhisperAsr::transcribe_tokens` is idempotent per call (fresh KV
+        // cache, no RNG on greedy), so re-running over the same PCM reproduces
+        // the same ids deterministically.
+        let ids = asr
+            .transcribe(&pcm)
+            .expect("inherent transcribe must succeed on the bound path");
+        let text = asr
+            .render_ids(&ids)
+            .expect("render_ids must succeed on the bound path");
+
+        assert_eq!(
+            via_trait.text, text,
+            "trait method must be a straight composition of inherent transcribe + render_ids",
+        );
     }
 }

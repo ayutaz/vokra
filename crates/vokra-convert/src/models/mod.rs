@@ -25,9 +25,12 @@ pub(crate) mod campplus;
 // verbatim; every hparam on the model card is transcribed from it and
 // every remaining axis from the shared FastConformer-Transformer AED
 // reference config (fast-conformer_aed.yaml — the whole Canary family's
-// reference). Reuses the `vokra_ops::conformer` (FastConformer encoder
-// body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
+// reference). Targets the `vokra_ops::conformer` (FastConformer encoder
+// body via `Stacking { factor: 8 }`) and `vokra_core::decode::beam_search`
 // (attention-decoder search) primitives — no per-model op duplication.
+// The beam search lives in `vokra-core`, not in `vokra-ops`, and the
+// runtime binder's `transcribe` is still `NotImplemented`, so this is
+// the target wiring, not landed wiring.
 pub(crate) mod canary;
 // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
 // multimodal ASR + Qwen LLM head-swap on top of Canary FastConformer
@@ -182,6 +185,30 @@ pub(crate) mod kokoro;
 // release is BF16 and the streaming-BF16 pass-through path is a follow-up
 // (T29-equivalent — the Moshi pattern).
 pub(crate) mod kyutai_stt;
+// Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up
+// (streaming S2S runtime binder — LIB.RS RULE parallel: append near
+// alphabetic slot with Wave 7 comment marker): ICTNLP LLaMA-Omni2
+// (apache-2.0 default, Qwen2.5 派生 chain, T1 tier Permissive). Four
+// variant HF repos (`ICTNLP/LLaMA-Omni2-{7B,3B-Bilingual,1.5B,32B}`)
+// share the three-stage streaming S2S topology (Whisper-family speech
+// encoder + Qwen2.5-family text backbone + streaming AR speech
+// decoder). Every F32 / F16 / BF16 tensor passes through verbatim;
+// BF16 pass-through emits GGUF type 30 (runtime widens via
+// `decode_bf16`). Distinct arch tag `llama_omni2` from every sibling
+// Qwen2-family arch (`voxtral` / `canary_qwen` / `kyutai_stt` /
+// `firered_asr_llm_l`) — silently sharing would misroute dispatch
+// (FR-EX-08). ELVIS Act 精査 = task-oriented S2S with fixed decoder
+// voice (not target-speaker cloning), main-repo stay per CLAUDE.md
+// 設計判断 8. Publish gate is fail-closed on §3.1 sign-off (CC never
+// pre-fills Approval column per memory
+// `[[feedback-license-signoff-primary-source]]`).
+// `pub` (not `pub(crate)`): this module declares `pub const ARCH` / `NAME_PREFIX`
+// / `CATEGORY` / `DEFAULT_LICENSE`, which the `vokra-models::llama_omni2` binder
+// mirrors as its own consts, plus `convert_llama_omni2_{file,bytes}`. `mod
+// models` is itself private, so reachability comes from the `pub use` in
+// `lib.rs` (same rationale as the speaker_3d / titanet / nkf_aec re-exports);
+// without it every one of these is `dead_code` under `-D warnings`.
+pub mod llama_omni2;
 pub mod meanvc;
 pub(crate) mod mimi;
 // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement wave
@@ -251,9 +278,11 @@ pub mod nsnet2;
 // bundled as a single GGUF from the prepared safetensors that
 // `tools/parity/dnsmos_prepare_checkpoint.py` flattens from the two
 // upstream ONNX checkpoints (`model_v8.onnx` + `sig_bak_ovr.onnx`).
-// The first `eval`-category converter in the tree — the runtime binder
-// lives in the `vokra-eval` crate (`vokra_eval::dnsmos::{p808_score,
-// p835_score}`, follow-up CC ticket).
+// The first `eval`-category converter in the tree — the runtime binder is
+// `vokra_models::dnsmos_p808_p835` (landed 2026-08-05): `Dnsmos::from_gguf`
+// really binds both sub-models from the one merged artifact, and only the
+// `score_p808` / `score_p835` forwards are loud-partial pending the CNN
+// topology extension. No `vokra_eval::dnsmos` module exists.
 pub mod dnsmos;
 // coverage-audit wave-a (2026-08-03): alibabasglab/FRCRN (Apache-2.0
 // Permissive) safetensors → GGUF. Frequency Recurrent Convolutional
@@ -279,7 +308,39 @@ pub mod frcrn;
 // sign-off + real checkpoint fetch).
 pub mod canary_1b_flash;
 pub mod firered_asr_aed_l;
+// coverage-audit 2026-08-03 Wave B fast-track (post-audit, 2026-08-13):
+// FireRedTeam/FireRedASR-LLM-L (`FireRedTeam/FireRedASR-LLM-L`,
+// apache-2.0, ~16.6 GB BF16 = 8.3B params). Chinese ASR with Conformer
+// encoder + audio-to-text adapter + Qwen2 LM decoder = AISHELL-1 SoTA.
+// Same "encoder + adapter + LLM decoder" mold as sibling canary_qwen
+// (Canary FastConformer + Voxtral-style Qwen decoder). A shared
+// vokra_ops::qwen2 op is a PROPOSED consolidation, not a landed module
+// — no such module exists today; the only landed Qwen2-family forward
+// is the inline one in vokra-models/src/voxtral/text_decoder.rs, which
+// canary_qwen reuses and kyutai_stt does not. Distinct arch
+// tag `firered_asr_llm_l` from the FireRedTeam AED sibling
+// (`firered_asr_aed_l`, Whisper-topology) because the LLM release
+// swaps the AED decoder for a Qwen2 LLM decoder — silently sharing
+// would mis-route the runtime dispatch (an AED Whisper loader would
+// try to interpret a Qwen2 LM decoder checkpoint). Every F32 / F16 /
+// BF16 tensor passes through verbatim following the wave-B uniform
+// posture. vast.ai required per memory `[[feedback-large-models-on-vast-ai]]`
+// (>2 GB CC-workflow threshold). Real-weight parity + native runtime
+// binder deferred to owner (`docs/license-audit.md` §3.1 sign-off).
+pub mod firered_asr_llm_l;
 pub mod hibiki;
+// coverage-audit 2026-08-03 Wave B fast-track (post-audit, 2026-08-13):
+// BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`,
+// apache-2.0, ~8 GB BF16). Multilingual TTS (100+ languages) with
+// emotion inline tags ([happy]/[sad]/...). SGLang sampler on the LM
+// decoder side → Vokra runtime substitutes its Sampler primitive at
+// runtime binder time (this converter stamps weights + provenance
+// only). Every F32 / F16 / BF16 tensor passes through verbatim
+// following the magpietts_v2602 / firered_asr_aed_l pattern. vast.ai
+// required per memory `[[feedback-large-models-on-vast-ai]]` (>2 GB
+// CC-workflow threshold). Real-weight parity + native runtime binder
+// deferred to owner (`docs/license-audit.md` §3.1 sign-off).
+pub mod higgs_audio_v3_tts_4b;
 pub mod magpietts_v2602;
 pub mod nemotron_speech_streaming_v2603;
 pub mod owsm_v4_medium_1b;
@@ -792,19 +853,20 @@ pub mod vieneu;
 // contract; real-weight parity is deferred to owner
 // (`docs/license-audit.md` §3.1 sign-off). Upstream ships torch
 // pickle `pytorch_model.bin` + `config.yaml` only — pre-flatten to
-// safetensors offline via
-// `tools/parity/vocos_prepare_checkpoint.py` (a thin wrapper over
-// `bin_to_safetensors.py`, mirror of speecht5_hifigan).
+// safetensors offline via `tools/parity/bin_to_safetensors.py`; a
+// dedicated `tools/parity/vocos_prepare_checkpoint.py` thin wrapper
+// over it (mirror of speecht5_hifigan) is not yet written.
 pub mod vocos;
 pub mod wav2vec2_ctc;
 pub mod xvector;
 // Wave 3 codec add (2026-08-01): novateur/WavTokenizer-large-speech-75token
 // (MIT). Single-codebook FSQ audio codec at 24 kHz, 75 tokens/sec
 // (hop_length=320, arXiv:2408.16532). Upstream ships a torch pickle
-// Lightning `.ckpt` (1.75 GB) so callers pre-flatten to safetensors via
-// a dedicated `tools/parity/wavtokenizer_prepare_checkpoint.py` bridge
-// (the DFN3 / DAC / CSM / SpeechT5-HiFi-GAN precedent — no pickle in the
-// runtime, NFR-DS-02 zero-dep + FR-LD-05). Real-weight parity deferred
+// Lightning `.ckpt` (1.75 GB) so callers pre-flatten to safetensors
+// offline; a dedicated `tools/parity/wavtokenizer_prepare_checkpoint.py`
+// bridge (the DFN3 / DAC / CSM / SpeechT5-HiFi-GAN precedent — no pickle
+// in the runtime, NFR-DS-02 zero-dep + FR-LD-05) is not yet written, so
+// that step is manual today. Real-weight parity deferred
 // to owner sign-off (§3.1). Runtime forward reuses the M4-16 landed
 // `wavtokenizer_vq` op (`crates/vokra-ops/src/fsq_codec.rs`).
 pub mod wavtokenizer;
@@ -941,3 +1003,368 @@ pub mod ten_vad;
 pub mod torchaudio_squim;
 pub mod utmosv2;
 // ---------------------------------------------------------------------------
+// Music-understanding wave (2026-08-13, post-audit CC-gap): 6 audio-tagging /
+// music-embedding / pitch-detection converters. All local-safe (<2 GB) per
+// memory [[feedback-large-models-on-vast-ai]] threshold. BF16 pass-through
+// skeletons mirror of the utmosv2 / nkf_aec / musicgen_medium contract; each
+// declares a distinct arch tag so silent runtime dispatch cannot misroute an
+// MobileNetV1 checkpoint through a Cnn14 loader (FR-EX-08). Real-weight
+// parity + runtime binder deferred to owner sign-off (`docs/license-audit.md`
+// §3.1). §3.1 sign-off blank fail-closed at land time (no CC pre-fill per
+// memory [[feedback-license-signoff-primary-source]]).
+pub mod basic_pitch;
+pub mod dasheng;
+pub mod mert;
+pub mod muq;
+pub mod panns;
+pub mod yamnet;
+// ---------------------------------------------------------------------------
+// SSL audio-encoder wave (2026-08-13, post-audit CC-gap): 5 self-supervised
+// audio-encoder converters land one per commit (BEATs → EAT → ATST → MAEST →
+// M2D). All local-safe (<2 GB) per memory
+// [[feedback-large-models-on-vast-ai]] threshold. BF16 pass-through skeletons
+// mirror the music-understanding wave contract; each declares a distinct arch
+// tag so silent runtime dispatch cannot misroute e.g. a BEATs iterative-
+// tokenizer checkpoint through an EAT utterance-level loader (FR-EX-08).
+// Real-weight parity + runtime binder deferred to owner sign-off
+// (`docs/license-audit.md` §3.1). §3.1 sign-off blank fail-closed at land
+// time (no CC pre-fill per memory
+// [[feedback-license-signoff-primary-source]]).
+pub mod atst;
+pub mod beats;
+pub mod eat;
+pub mod m2d;
+pub mod maest;
+// ---------------------------------------------------------------------------
+// Meta music-gen post-audit CC-gap wave (2026-08-13, branch
+// `feat/post-audit-cc-gap-2026-08-13` Wave D remaining): fills the last three
+// Meta AudioCraft music-generation catalog rows that were flagged by the
+// coverage-audit-2026-08-03 audit but not landed in the 2026-08-04 T4 batch.
+// All three are T4 tier (Research-only, CC-BY-NC-4.0) per the MusicGen family
+// / X-Codec-2 / jasco_400m_chords_drums precedent — LicenseClass::NonCommercial
+// default fail-closed, publish requires `--allow-noncommercial`, runtime M2-13
+// gate refuses commercial-mode load. Each converter is a distinct file with a
+// distinct arch tag to prevent FR-EX-08 silent runtime dispatch mis-route
+// (MAGNeT non-autoregressive masked-LM decoding is a different code path from
+// MusicGen AR-over-EnCodec; MelodyFlow DiT is a different code path from both).
+// Sibling files land one per WF phase: WF6 = magnet_small_10secs (2026-08-13
+// WF6 landed), WF7 = magnet_medium_30secs (this land, 2026-08-13 WF7),
+// WF8 = melodyflow_t24_30secs.
+// Real-weight parity + runtime binder (magnet_masked_decode /
+// span_masking_scheduler / DiT flow-sampler forward) is deferred per RMVPE /
+// Charsiu / MOSS-Audio-Tokenizer / MioCodec loud-partial precedent — the
+// converter code stamps the upstream tensors verbatim so a future owner
+// wave can flip the switch after §3.1 sign-off + real weight download.
+pub mod magnet_small_10secs;
+// WF7 (2026-08-13, this land): MAGNeT Medium 30secs — 1.5 B parameter
+// medium variant of MAGNeT with the 30 sec generation slot (matching
+// MusicGen family's max horizon). Same non-autoregressive masked-LM
+// decoding op path as `magnet_small_10secs`, but distinct arch tag
+// `magnet_medium_30secs` so the runtime binder does not silently load
+// small hparams into medium weights (different hidden width / layer
+// count / max span). BF16 pass-through skeleton mirror of sibling
+// small. Local-safe convert (~5.7 GB) on M1 iMac 16 GB per memory
+// `[[feedback-large-models-on-vast-ai]]` (below 8 GB threshold — sibling
+// small was ~2 GB, medium sits below the 8 GB owner cutoff).
+pub mod magnet_medium_30secs;
+// WF8 (2026-08-13, this land): MelodyFlow T24 30secs — Meta AudioCraft
+// flow-matching music **editing** model (Le Lan et al. 2024
+// arXiv:2407.03648). DiT-style backbone with 24 timesteps, 30 sec max
+// horizon at 48 kHz, dual text + audio prefix conditioning for the
+// editing use-case (an existing clip is inverted through the ODE, then
+// regenerated under a new text prompt). Distinct arch tag
+// `melodyflow_t24_30secs` from every sibling in the Meta music-gen
+// catalog — MAGNeT (non-autoregressive masked-LM), MusicGen
+// (AR-over-EnCodec), JASCO (flow-matching but with joint symbolic
+// chord/drum conditioning stack rather than dual text + audio editing
+// prefix). BF16 pass-through skeleton mirror of sibling
+// `magnet_medium_30secs` / `magnet_small_10secs` /
+// `jasco_400m_chords_drums`. **Vast.ai handoff per phase task**:
+// weight ≥ 2 GB (~4.0 GB bundle = 1 B flow-matching transformer + 48 kHz
+// RVQ codec + T5-base text encoder) is at the CC / owner cutoff per
+// memory `[[feedback-large-models-on-vast-ai]]`; the phase task tags
+// this land as vast.ai-required to be conservative even though ~4 GB
+// sits below the 8 GB local ceiling for other models. The FR-OP-86
+// runtime binder anchor (`flow_editing_inversion` + `t24_transformer`
+// ops) reuses `vokra_ops::flow_sampler` from M3-05 for the ODE
+// integrator, but the editing-specific inversion path and the 48 kHz
+// RVQ codec bundle need explicit ADR judgement — same loud-partial
+// posture as sibling MAGNeT / RMVPE / Charsiu.
+pub mod melodyflow_t24_30secs;
+// ---------------------------------------------------------------------------
+// Wave 2 2026-08-14 audit follow-up: beat_this = Transformer-based
+// beat / downbeat tracker (CPJKU, ISMIR 2024, MIT). Adds first music-
+// understanding MIR primitive to the catalog per 2026-08-14 audit.
+pub mod beat_this;
+// Wave 3 2026-08-14 audit follow-up: MT3 = Magenta Multi-Task Multitrack
+// Music Transcription (Gardner et al. ICLR 2022, arXiv:2111.03017).
+// T5-small encoder-decoder ~60M params, log-mel input → MIDI event
+// token stream (multi-track). First `audio → MIDI` real transcription
+// primitive (music-understanding gap per 2026-08-14 audit). Code =
+// Apache-2.0; weights on gs://mt3/checkpoints/ have no per-bucket
+// LICENSE and no HF mirror → converter hard-maps LicenseClass::Unknown
+// (fail-closed).
+pub mod mt3;
+// Wave 4 2026-08-14 audit follow-up (LIB.RS RULE — append at end
+// with Wave 4 comment marker): ReDimNet2 speaker encoder converter
+// (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM, apache-2.0). BF16
+// pass-through skeleton + `vokra.redimnet.*` topology chunk group;
+// runtime binder in `crates/vokra-models/src/redimnet/mod.rs` ships
+// as loud-partial (encode = UnsupportedOp) pending WeSpeaker Python
+// source transcription. Speaker-fleet extension over sibling
+// wespeaker (ResNet-34) / ecapa_tdnn / titanet / speaker_3d
+// (arXiv:2402.01049 "Reshape Dimensions Network for Speaker
+// Recognition").
+pub mod redimnet;
+// Wave 6 2026-08-14 audit follow-up (LIB.RS RULE — append at end
+// with Wave 6 comment marker): GTCRN converter (Xiaobin-Rong/gtcrn,
+// MIT — Rong et al. arXiv:2211.02063 "GTCRN: A Speech Enhancement
+// Model Requiring Ultralow Computational Resources"). ~23K
+// parameter STFT-domain enhancement model designed for embedded /
+// streaming applications: grouped 2D Conv encoder + PReLU +
+// SB-TF-LSTM (sub-band time-frequency LSTM) bottleneck + ERB
+// (equivalent rectangular bandwidth) frequency-band grouping +
+// grouped 2D Conv decoder. BF16 pass-through skeleton + full
+// 5-axis `vokra.gtcrn.*` topology chunk group
+// (sample_rate/n_fft/hop/n_bands/gru_hidden); runtime binder in
+// `crates/vokra-models/src/gtcrn/mod.rs` ships as loud-partial
+// (denoise = UnsupportedOp) pending grouped Conv2D + PReLU +
+// SB-TF-LSTM + ERB grouping primitives. Distinct arch tag `gtcrn`
+// from every sibling denoise / separator family (`denoise` (DFN3),
+// `rnnoise`, `nsnet2`, `dnsmos`, `metricgan_plus`, `mp_senet_dns`,
+// `sepformer`, `conv_tasnet`, `demucs`) — FR-EX-08 forbids silent
+// shape misroute across enhancement families. Denoise alternative
+// sibling to DFN3 / NSNet2 / RNNoise per the Wave 6 audit
+// follow-up.
+pub mod gtcrn;
+// ---------------------------------------------------------------------------
+// Wave 6 2026-08-14 audit follow-up (LIB.RS RULE — append at end with
+// Wave 6 comment marker): DTLN-AEC dual-signal LSTM neural AEC
+// (`breizhn/DTLN-aec`, MIT — Westhausen & Meyer INTERSPEECH 2021
+// arXiv:2010.15754). Category `aec`. Distinct arch tag `dtln_aec` from
+// sibling `nkf_aec` (per-bin neural Kalman filter): dual-signal LSTM
+// vs neural-Kalman-filter is a distinct topology axis, silently
+// sharing would mis-route runtime dispatch and try to interpret DTLN's
+// LSTM tensors as NKF-AEC's ComplexGRU tensors. Upstream ships
+// `.tflite` only (128 / 256 / 512-unit variants) — a future sidecar
+// `tools/parity/dtln_aec_prepare_checkpoint.py` (not yet written) would
+// bridge to safetensors offline (FR-LD-05: TFLite never enters runtime,
+// NFR-DS-02 zero-dep); today that step is manual.
+// BF16 pass-through skeleton mirror of nkf_aec / speaker_3d /
+// ecapa_tdnn; runtime binder in `crates/vokra-models/src/aec/dtln_aec/
+// mod.rs` ships as loud-partial (`process()` = UnsupportedOp naming
+// the generic LSTM primitive gap in vokra_ops) pending the primitive
+// landing. Real-weight parity + runtime forward deferred to owner
+// sign-off (`docs/license-audit.md` §3.1).
+pub mod dtln_aec;
+// ---------------------------------------------------------------------------
+// Wave 7 2026-08-14 audit follow-up (LIB.RS RULE — append at end with
+// Wave 7 comment marker; RETRY of Wave 6 lost item, workflow silently
+// swallowed the result last time — see WAVE 6 LESSON in the directive):
+// StoRM (Stochastic Regeneration Model, `sp-uhh/storm`, MIT — Lay et al.
+// 2023 arXiv:2312.09386 "StoRM: A Diffusion-based Stochastic
+// Regeneration Model for Speech Enhancement and Dereverberation"). Two-
+// stage speech enhancement: (i) initial deterministic predictive
+// estimator (NCSN++ v2 U-Net variant, MSE objective) → (ii) NCSN++ v2
+// score-network refinement via OUVE-SDE (Ornstein-Uhlenbeck Variance-
+// Exploding SDE) predictor-corrector sampler. Category `enhancement`,
+// arch `storm` distinct from every sibling enhancement (`denoise` DFN3,
+// `rnnoise`, `nsnet2`, `dnsmos`, `metricgan_plus`, `mp_senet_dns`,
+// `frcrn`, `facebook_denoiser`, `mossformer2_ss_16k`, `gtcrn`) and
+// separator (`sepformer`, `conv_tasnet`, `demucs`, `bs_roformer`,
+// `tiger_separator`) family — FR-EX-08 forbids silent shape misroute.
+// Upstream ships PyTorch checkpoints via Google Drive (no HF mirror as
+// of 2026-08-14) — same non-HF `vokra.provenance.upstream_url` posture
+// as sibling `nsnet2` / `rnnoise` / `facebook_denoiser` / `gtcrn` /
+// `nkf_aec` / `dtln_aec`. `tools/parity/nemo_pt_to_safetensors.py` uv-
+// managed Python 3.12 sidecar bridges `.pt` to safetensors offline
+// (FR-LD-05 — pickle never in runtime, NFR-DS-02 zero-dep). BF16 pass-
+// through skeleton mirror of sibling `gtcrn` / `dtln_aec`. Runtime
+// binder `crates/vokra-models/src/storm/mod.rs` real `from_gguf` +
+// `enhance()` loud-partial pending NCSN++ v2 U-Net score-network + OUVE-
+// SDE predictor-corrector primitives (~two greenfield ops). §3.1 sign-
+// off BLANK fail-closed until owner ADR (publish gated on owner
+// judgement — Google Drive-only upstream, no established HF publish
+// path).
+pub mod storm;
+// ---------------------------------------------------------------------------
+// Wave 7 2026-08-14 audit follow-up (LIB.RS RULE — append at end
+// with Wave 7 comment marker): WavLM Base+ SV speaker-verification
+// converter (`microsoft/wavlm-base-plus-sv`, CC-BY-SA-3.0 → Copyleft
+// via HF card LICENSE link `github.com/microsoft/UniSpeech/blob/main/LICENSE`
+// + `has_sa` arm in `LicenseClass::from_license_str`). WavLM = HuBERT-
+// lineage SSL encoder + **gated relative position bias +
+// convolutional position-bias fusion** (Chen et al. arXiv:2110.13900)
+// — a WavLM-specific fused positional-bias combo that neither
+// wav2vec2 nor HuBERT expose. The `-sv` release is fine-tuned on
+// VoxCeleb1 with an **XVector head + Additive Margin Softmax**
+// (5-block TDNN → statistics pooling → 512-d embedding). BF16 pass-
+// through skeleton + `vokra.wavlm.*` scalar topology chunk group
+// (hidden_size / num_hidden_layers / num_attention_heads /
+// intermediate_size / num_feat_extract_layers / xvector_output_dim /
+// num_ctc_classes / num_conv_pos_embeddings /
+// num_conv_pos_embedding_groups / sample_rate /
+// layer_norm_eps_scaled_1e9 / feat_extract_norm_group /
+// hidden_dropout_scaled_1e3) + axis-array chunk groups
+// (`vokra.wavlm.conv_{dim,stride,kernel}_{0..6}` +
+// `vokra.wavlm.tdnn_{dim,kernel,dilation}_{0..4}`); runtime binder in
+// `crates/vokra-models/src/wavlm/mod.rs` ships as loud-partial
+// (`encode()` = `UnsupportedOp` naming the three missing pieces
+// per primary source `huggingface.co/microsoft/wavlm-base-plus-sv` +
+// `github.com/microsoft/UniSpeech` + arXiv:2110.13900). Speaker-fleet
+// extension over sibling `campplus` (CAM++) / `wespeaker` (ResNet-34)
+// / `ecapa_tdnn` (TDNN) / `titanet` (depth-wise separable Conv1D) /
+// `speaker_3d` (ERes2Net) / `redimnet` (2D dim-reduction + 1D conv+att
+// + ASTP). Distinct arch tag `wavlm_sv` — silently sharing an arch
+// would misroute runtime dispatch (FR-EX-08). §3.1 sign-off BLANK
+// fail-closed (Copyleft share-alike propagation is an owner-scope
+// legal decision).
+pub mod wavlm_sv;
+// ---------------------------------------------------------------------------
+// Wave D 2026-08-15 (LIB.RS RULE — append at end with Wave D comment
+// marker): AudioSR converter (`haoheliu/versatile_audio_super_resolution`,
+// **MIT** — Liu, Chen, Tian, Wang & Plumbley arXiv:2309.07314 "AudioSR:
+// Versatile Audio Super-resolution at Scale"). **Opens a brand-new
+// capability category**: Vokra had no audio super-resolution / bandwidth
+// extension model before this landing, hence the new `super-resolution`
+// category tag (deliberately NOT the `enhancement` cohort — that cohort
+// removes additive noise within a fixed bandwidth, whereas AudioSR
+// synthesises new spectral content above the input cutoff).
+//
+// Latent-diffusion restoration: 2-16 kHz input bandwidth -> 24 kHz
+// bandwidth at 48 kHz sample rate, across sound effects, music and
+// speech. Mel front-end (n_fft 2048 / hop 480 / win 2048 / 256 bands /
+// 20 Hz-24 kHz) -> VAE -> [16, 128, 32] latent -> 2-D U-Net (model_channels
+// 128, channel_mult [1,2,3,5], attention_resolutions [8,4,2]) diffused with
+// a cosine beta schedule over 1000 train timesteps, conditioned by the
+// low-pass latent CONCATENATED channel-wise (upstream `concat_lowpass_cond`;
+// unet in_channels 32 = 2 x latent channels 16) -> VAE decode -> vocoder.
+//
+// Two checkpoints share the arch tag (`get_basic_config()` takes no
+// model_name argument upstream, so the topology is identical): `audiosr-basic`
+// (`haoheliu/audiosr_basic`) and `audiosr-speech` (`haoheliu/audiosr_speech`).
+//
+// BF16 pass-through skeleton + a full `vokra.audiosr.*` topology chunk group
+// (every axis transcribed verbatim from upstream on 2026-08-15). Runtime
+// binder in `crates/vokra-models/src/audiosr/mod.rs` ships the mel filterbank
+// and the cosine-schedule cumulative-alpha table as REAL wired computations
+// over `vokra_ops::mel` / `vokra_ops::ddpm_sampler`, with `super_resolve()`
+// loud-partial pending the 2-D U-Net body (greenfield) plus the VAE and
+// vocoder tensor-name walks (anchors exist in `vokra_ops::vae_continuous` /
+// `vokra_ops::hifigan` but upstream ships pickle, so no manifest is pinned).
+//
+// Distinct arch tag `audiosr` from every sibling — most importantly from
+// `audioldm2` (same first author, same latent-diffusion family, but
+// text-to-audio GENERATION with T5+CLAP+GPT-2 cross-attention at 16 kHz
+// versus AudioSR's RESTORATION with concatenated low-pass conditioning at
+// 48 kHz). FR-EX-08 forbids the silent shape misroute. §3.1 sign-off BLANK
+// (fail-closed, owner-only).
+pub mod audiosr;
+// ---------------------------------------------------------------------------
+// Wave D (2026-08-15): DiffSinger (`openvpi/DiffSinger`, Apache-2.0) —
+// the **first singing voice synthesis (SVS) entry** in the catalogue, a
+// brand-new `svs` category. Score-to-singing shallow-diffusion acoustic
+// model (arXiv:2105.02446): phonemes + per-note MIDI pitch + durations
+// in, mel-spectrogram out, with the vocoder stage deliberately left to
+// the landed `hifigan` / `bigvgan` / `vocos` binders (upstream lists
+// HiFi-GAN / NSF / pc-ddsp as interchangeable).
+//
+// **SVS is not SVC**: there is no source singer recording in the signal
+// path, so this is NOT an ELVIS Act voice-clone trigger and belongs in
+// this repo — unlike RVC v2 / GPT-SoVITS, which are confined to
+// `vokra-voiceclone-experimental` (CLAUDE.md 設計判断 8). Do not
+// relocate. Distinct arch tag `diffsinger` from every speech-TTS and
+// vocoder sibling — FR-EX-08. §3.1 sign-off BLANK fail-closed; note the
+// apache-2.0 default is the *framework* grant, and singer voicebanks
+// carry their own (often non-commercial) terms via the `--license`
+// override.
+pub mod diffsinger;
+// ---------------------------------------------------------------------------
+// Wave D (2026-08-15) — CT-Transformer punctuation restoration
+// (`funasr/ct-punc`, apache-2.0). **First `punctuation` category entry in
+// the tree**: paired with the ITN stage this is what turns a raw ASR token
+// stream into a readable transcript. SANM encoder (fused `linear_q_k_v`
+// projection + a parallel depthwise-Conv1d FSMN memory branch added to the
+// attention output) over TEXT tokens, 12 blocks x 516, emitting one
+// punctuation label per token out of a 6-entry inventory
+// (`["<unk>", "_", "，", "。", "？", "、"]`, transcribed verbatim from the
+// upstream `config.yaml` `model_conf.punc_list` and stamped as an
+// `Array<String>` chunk so the runtime binder READS the inventory instead
+// of hardcoding it). Distinct arch tag `ct_punc` from `bert_base` /
+// `deberta_v2` / `deberta_v3` (different attention assembly, no FSMN
+// branch), from `sensevoicesmall` (SAN-M but a speech encoder with four
+// per-task heads) and from `fsmn-vad` (FSMN memory, no self-attention) —
+// FR-EX-08 forbids the silent shape misroute. Topology axes are DERIVED
+// from the checkpoint's own tensor shapes wherever a shape determines them.
+// LICENSING: `apache-2.0` per the model-card front-matter AND the HF model
+// API `cardData.license` (read 2026-08-15) — note this is NOT the bespoke
+// FunASR `MODEL_LICENSE` that the sibling `sensevoicesmall` release carries,
+// so the fail-closed `LicenseClass::Unknown` posture does not apply here.
+// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+pub mod ct_punc;
+
+// ---------------------------------------------------------------------------
+// Wave D (2026-08-15): **WeTextProcessing** (`wenet-e2e/WeTextProcessing`,
+// **Apache-2.0**) — inverse text normalization / text normalization grammar
+// bundles. A brand-new `text-normalization` category and the first converter
+// in the tree that packages **no weights**: a bundle is two compiled OpenFST
+// transducers (`tagger.fst` + `verbalizer.fst`) plus the language/direction
+// that selects a field-order table.
+//
+// Every ASR model here emits normalized, unpunctuated text ("one hundred
+// fourteen thousand five"); a production transcript needs "114005". ITN is the
+// missing back half. The runtime side is `vokra-ops::itn`, which reuses the
+// M5-06 WFST machinery in `vokra_core::decode::wfst` (tropical semiring,
+// `Fst`, and the byte-verified `read_openfst_vector` for exactly the
+// `VectorFst<StdArc>` binary upstream reads with `StdVectorFst::Read`).
+//
+// Grammars ride as GGUF `U8` **metadata arrays** — `GgmlType` has no byte
+// dtype, and this is the established precedent (`vokra.tokenizer.model`,
+// `models/whisper.rs::embed_tokenizer`). Header flags / state counts / a
+// `vokra.itn.vokra_readable` verdict are stamped alongside so a consumer can
+// tell from metadata alone whether the runtime can parse the grammars.
+//
+// Distinct arch tag `wetextprocessing` — no sibling emits FST grammars, but
+// the binder verifies it strictly anyway (FR-EX-08). §3.1 sign-off BLANK
+// (fail-closed, owner-only).
+pub mod wetextprocessing;
+// ---------------------------------------------------------------------------
+// **Voila** (`maitrix-org/Voila`, **MIT**, 2025) — Maitrix's full-duplex
+// speech-to-speech dialog family. Closes a converter gap, not a coverage gap:
+// the runtime binder `vokra-models::voila` shipped in the Wave 9 2026-08-14
+// audit follow-up with a strict `vokra.model.arch == "voila"` load gate, a
+// `vokra-cli convert --model voila` repro command in two of its error
+// messages, and a `crates/vokra-cli/src/engine.rs` BOUND_ARCHES row — while
+// nothing in the tree could produce a GGUF it accepts.
+//
+// BF16 pass-through skeleton (the `llama_omni2` / `facebook_denoiser` /
+// `clap` / `beats` mold): every F32 / F16 / BF16 tensor rides through
+// verbatim under its upstream `state_dict` name. **No `vokra.voila.*`
+// topology chunk is stamped** — the per-release encoder / backbone axes shift
+// across Voila-base / Voila-chat / Voila-audio-alpha /
+// Voila-autonomous-preview and are not transcribable from the primary
+// sources, so inventing them would be a fabricated axis in a redistributed
+// artifact (CLAUDE.md 「ハルシネーション厳禁」). The binder reads none of
+// them: it gates on arch + a non-empty tensor manifest, so a pass-through
+// artifact binds end to end and `Voila::converse` stays the honest
+// loud-partial.
+//
+// Provenance rides `vokra.provenance.upstream_url`
+// (`github.com/maitrix-org/Voila`, the MIT reference-code tree), NOT
+// `upstream_hf` — the per-release HF weight repo ids are owner-verified at
+// bind time, and stamping one would assert a repo id this converter has not
+// read. Same GitHub-native posture as facebook_denoiser / nkf_aec / rnnoise /
+// nsnet2 / beats / eat / atst / m2d.
+//
+// Distinct arch tag `voila` from every sibling S2S arch (`moshi` Kyutai
+// full-duplex + Mimi, `csm` Sesame full-duplex + Mimi, `llama_omni2` ICTNLP
+// streaming half-duplex + Qwen2.5) — sharing one would misroute runtime
+// dispatch onto a differently-shaped session manager (FR-EX-08).
+//
+// LICENSING: default SPDX `mit` (Permissive), mirroring what the runtime
+// binder documents. `docs/license-audit.md` §3.1 carries **no Voila row at
+// all**, so redistribution stays fail-closed on the sign-off gate; adding and
+// signing that row is owner-only work (memory
+// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+pub mod voila;

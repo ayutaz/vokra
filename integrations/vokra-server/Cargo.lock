@@ -2250,6 +2250,7 @@ name = "vokra-backend-cpu"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",
+ "vokra-math",
 ]
 
 [[package]]
@@ -2274,7 +2275,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-bert"
+version = "0.1.0"
+dependencies = [
+ "vokra-core",
+ "vokra-math",
+ "vokra-mmap",
+]
+
+[[package]]
 name = "vokra-core"
+version = "0.1.0-alpha.0"
+
+[[package]]
+name = "vokra-math"
 version = "0.1.0-alpha.0"
 
 [[package]]
@@ -2292,7 +2306,9 @@ dependencies = [
  "vokra-backend-cuda",
  "vokra-backend-metal",
  "vokra-backend-vulkan",
+ "vokra-bert",
  "vokra-core",
+ "vokra-math",
  "vokra-mmap",
  "vokra-ops",
  "vokra-piper-plus",
@@ -2304,6 +2320,7 @@ name = "vokra-ops"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",
+ "vokra-math",
 ]
 
 [[package]]

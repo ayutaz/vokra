@@ -1178,7 +1178,7 @@ impl VibeVoiceTts {
         Err(VokraError::NotImplemented(
             "vibevoice synthesize: real weights are bound but the Qwen2 decoder LM → diffusion \
              head → DDPM sampler (vokra_ops::ddpm_sample, v-prediction / cosine β / 20 inference \
-             steps) → acoustic VAE decode (vokra_ops::vae_continuous_decode, 24 kHz PCM out) \
+             steps) → acoustic VAE decode (vokra_ops::continuous_vae_decode, 24 kHz PCM out) \
              forward path has not landed yet. Follow-up wave (T29-equivalent): (1) run the \
              Qwen2 LM (GQA 12 Q ÷ 2 KV / RoPE θ=1_000_000 / RMSNorm ε=1e-6 / SwiGLU / tied \
              word embeddings / max_position_embeddings=65_536) with the tokenizer prompt; (2) \
@@ -1186,7 +1186,7 @@ impl VibeVoiceTts {
              head as the v-prediction closure (AdaLN-modulated Linear+SwiGLU MLP receiving the \
              LM hidden state as `c` and the sinusoidal `timestep_embedding(t)` fused via \
              `t_embedder.mlp`); (3) decode the recovered continuous acoustic latent through \
-             vokra_ops::vae_continuous_decode → 24 kHz PCM (the shared Phase 4 primitive). \
+             vokra_ops::continuous_vae_decode → 24 kHz PCM (the shared Phase 4 primitive). \
              The semantic tokenizer runs the encoder chain on the audio prompt (24 kHz PCM \
              → 7.5 Hz continuous 128-d latents) as LM conditioning; VibeVoice does NOT decode \
              the semantic latents back to audio.",

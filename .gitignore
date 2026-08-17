@@ -181,3 +181,12 @@ tools/parity/tests/
 # Secrets — never commit (HF token etc.)
 .env
 .env.*
+
+# Downloaded evaluation corpora and staged release artifacts.
+#
+# `dist/` holds fetched datasets (LibriSpeech dev-clean is a 188 MB tarball)
+# and packaging output. A 2026-08-15 `git add -A` swept one in and the push
+# was rejected by GitHub's 100 MB file limit — the commit had to be rebuilt.
+# These are reproducible downloads, not source: the fetch scripts under
+# `scripts/` re-create them.
+dist/

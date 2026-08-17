@@ -46,21 +46,6 @@
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
 //! re-implemented natively in a future `crates/vokra-models/src/wespeaker/`
 //! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
-//!
-//! # Wiring status
-//!
-//! This is the TDD skeleton (BF16 / F16 / F32 pass-through +
-//! provenance / category stamps). CLI + `ModelKind` + `pub use`
-//! re-export in `lib.rs` land in a follow-up commit; the module-level
-//! `#[allow(dead_code)]` below is temporary and removed as soon as
-//! that wiring lands (or a caller starts using the API).
-
-// Skeleton-only allowance: the public API (`convert_wespeaker_file`,
-// `WespeakerReport`, `KEY_*` / `MODEL_CATEGORY` / `UPSTREAM_HF`) is
-// exercised by the in-module tests and will be wired to the CLI +
-// `ModelKind` + `pub use` re-export in `lib.rs` in the next commit —
-// this attribute is removed at that point.
-#![allow(dead_code)]
 
 use std::path::Path;
 

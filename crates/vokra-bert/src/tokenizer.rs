@@ -29,9 +29,11 @@ const WORD_START: char = '▁'; // U+2581 LOWER ONE EIGHTH BLOCK — SentencePie
 /// `ku-nlp/deberta-v2-large-japanese-char-wwm`) splits by Unicode code point;
 /// SentencePiece Unigram tokenizers (used by `microsoft/deberta-v3-large`)
 /// run a Viterbi search with a `▁` word-start marker. The converter stamps
-/// the discriminator into `<prefix>.kind`
-/// (`vokra_convert::models::deberta_v2::{KIND_BERT_CHARSPLIT,
-/// KIND_SENTENCEPIECE_UNIGRAM}`) so `from_gguf` can pick the correct branch.
+/// the discriminator into `<prefix>.kind` (`KIND_BERT_CHARSPLIT` /
+/// `KIND_SENTENCEPIECE_UNIGRAM` in
+/// `crates/vokra-convert/src/models/deberta_v2.rs`; `vokra-convert`'s
+/// `models` module is private, so the file is the only referent) so
+/// `from_gguf` can pick the correct branch.
 /// Runtime choice is intentional over converter-time flattening: the tensor
 /// vocabulary is the same shape either way, only encode's semantics differ.
 ///
@@ -447,8 +449,8 @@ impl SbertTokenizer {
             .unwrap_or(3);
 
         // Kind discriminator stamped by the converter (see
-        // `vokra_convert::models::deberta_v2::{KIND_BERT_CHARSPLIT,
-        // KIND_SENTENCEPIECE_UNIGRAM}`). Default = SentencePiece for
+        // `KIND_BERT_CHARSPLIT` / `KIND_SENTENCEPIECE_UNIGRAM` in
+        // `crates/vokra-convert/src/models/deberta_v2.rs`). Default = SentencePiece for
         // backward compat with GGUFs written before the kind stamp existed.
         let kind = match gguf.get(&kind_key).and_then(|v| v.as_str()) {
             Some("bert-charsplit") => TokenizerKind::BertCharSplit,

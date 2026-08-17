@@ -288,4 +288,57 @@ mod tests {
         assert!(integrated_lufs(&[f32::NAN], 48000).is_err());
         assert!(loudness_norm(&[f32::NAN], &LoudnessNormAttrs::ebu_r128(48000)).is_err());
     }
+
+    /// EBU Tech 3341 §2.1 test signal 1: 1 kHz sine at −23 dBFS RMS (48 kHz mono,
+    /// ≥ 10 s per spec; we use 3 s which is enough to exercise the full 400 ms /
+    /// 100 ms gated block machinery). Per EBU R128 conformance, the measured
+    /// integrated loudness must equal −23.0 LUFS (±0.1 LU tolerance for
+    /// conformant meters, per EBU Tech 3341 §5.1). Reference:
+    /// <https://tech.ebu.ch/publications/tech3341>.
+    ///
+    /// Our coefficients are transcribed verbatim from pyloudnorm (BSD-3), which
+    /// is an EBU R128-conformant reference implementation, so ±0.1 LU is the
+    /// natural bound. We use ±0.2 LU to leave a small margin for the sinusoid's
+    /// startup transient (0.1 s of the 3 s signal) which is present in the first
+    /// gated block.
+    #[test]
+    fn ebu_tech_3341_test1_1khz_sine_at_minus_23_dbfs_measures_minus_23_lufs() {
+        let fs = 48_000;
+        // −23 dBFS RMS for a sine = amplitude 10^(-23/20) · √2.
+        let amp = 10.0_f32.powf(-23.0 / 20.0) * std::f32::consts::SQRT_2;
+        let signal = tone(1000.0, fs, amp, 3.0);
+        let measured = integrated_lufs(&signal, fs).unwrap();
+        assert!(
+            (measured - (-23.0)).abs() < 0.2,
+            "EBU Tech 3341 test 1: measured {measured} LUFS, expected -23.0 ±0.2"
+        );
+    }
+
+    /// Documents the silence convention required by callers: pure zero input
+    /// must return exactly `f32::NEG_INFINITY` (not NaN, not `f32::MIN`, not a
+    /// large negative finite value). This is a stronger assertion than
+    /// [`silence_is_returned_unchanged`], which only checks `!is_finite()` and
+    /// would accept ±inf or NaN. Downstream code (e.g. `loudness_norm`) branches
+    /// on `is_finite()` to short-circuit the gain computation, so accidentally
+    /// producing NaN or `+inf` here would silently corrupt the normalization
+    /// path (FR-EX-08 loud-fail contract).
+    #[test]
+    fn silence_is_negative_infinity_not_positive_or_nan() {
+        let fs = 48_000;
+        // 1 s of pure silence.
+        let silence = vec![0.0f32; fs as usize];
+        let measured = integrated_lufs(&silence, fs).unwrap();
+        assert_eq!(
+            measured,
+            f32::NEG_INFINITY,
+            "silence must measure exactly NEG_INFINITY, got {measured}"
+        );
+        // Also: empty signal → NEG_INFINITY (measure() early-return branch).
+        let empty_measured = integrated_lufs(&[], fs).unwrap();
+        assert_eq!(
+            empty_measured,
+            f32::NEG_INFINITY,
+            "empty signal must measure exactly NEG_INFINITY, got {empty_measured}"
+        );
+    }
 }

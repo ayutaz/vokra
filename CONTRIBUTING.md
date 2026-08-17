@@ -29,12 +29,17 @@ As of M0 (v0.1 spike) every PR must pass **6 required checks**:
 | `fmt` | `cargo fmt --all -- --check` |
 | `clippy` | `cargo clippy --all-targets -- -D warnings` |
 | `parity` | `cargo test -p vokra-parity` — numerical parity harness against reference implementations (`tests/parity/`) |
-| `license` | `cargo deny check licenses advisories bans` + `cargo audit` + `scripts/check-forbidden-symbols.sh` |
+| `license` | `cargo deny check licenses advisories bans` + `cargo audit`, then the repository invariant gates under `scripts/`: zero-dependency, forbidden symbols, `no_std` subset, EnCodec weight exclusion, workflow hygiene, the converter ⇄ binder architecture handshake, bound-arch registry completeness, and the citation gates (`vokra_ops::`, `vokra_<crate>::`, parity sidecars, runbook paths). Each runs its own `--self-test` first, so a gate that has stopped being able to see a defect fails before it reports on your PR. |
 
-Run the same commands locally before pushing; the CI configuration is
-`.github/workflows/ci.yml`.
+Run the same commands locally before pushing. These six required checks live in
+`.github/workflows/ci.yml`; the advisory checks were split out on 2026-07-23 into
+`.github/workflows/ci-quality.yml` (lint / audit / doc-drift / API-compat) and
+`.github/workflows/ci-platform.yml` (platform build targets / GPU backends /
+regression gate). `.github/workflows/README.md` is the index of which job lives
+where.
 
-Beyond the six required checks, CI also runs a **`gpu-backends`** job that
+Beyond the six required checks, CI also runs a **`gpu-backends`** job
+(in `.github/workflows/ci-platform.yml`) that
 keeps the optional `metal` / `cuda` GPU backends compiling and lint-clean
 (`cargo build`/`clippy`/`test -p vokra-models -p vokra-cli --features
 metal|cuda`). The `metal` leg runs its GPU parity tests on the Apple-silicon

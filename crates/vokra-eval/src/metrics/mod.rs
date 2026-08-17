@@ -5,19 +5,52 @@
 //!
 //! - [`TextMetric`] — hypothesis string vs reference string ([`Wer`], [`Cer`]);
 //! - [`AudioRefMetric`] — hypothesis waveform vs reference waveform
-//!   ([`MelLoss`]);
+//!   ([`MelLoss`]; the separation / enhancement scores [`SiSnr`], [`SiSdr`],
+//!   [`Sdr`] and [`Stoi`]);
 //! - [`AudioMosMetric`] — a **reference-free** neural MOS predictor
 //!   (UTMOS / DNSMOS). The trait was the reserved M1-09b slot; M4-18 wired in
 //!   the first implementor, [`utmos::Utmos`] — a weight-deferred wav2vec2
 //!   skeleton (real UTMOS weights are still owner-sourced, see the module
 //!   docs). The wiring was additive — no existing caller of [`Metric`]
 //!   changed. DNSMOS remains unimplemented (license fail-closed, M4-18 T03).
+//!
+//! # Separation / enhancement scores (Wave A, 2026-08-15)
+//!
+//! Waves 1-9 landed 20+ separation and enhancement models (`sepformer`,
+//! `demucs`, `conv_tasnet`, `gtcrn`, `storm`, `facebook_denoiser`, `dtln_aec`,
+//! …) with no way to score any of them. [`si_snr`] supplies the waveform-domain
+//! ratios ([`SiSnr`] / [`SiSdr`] / [`Sdr`] — the promotion of the private oracle
+//! inside `vokra-ops`' DeepFilterNet3 parity test, which stays there and is now
+//! pinned against this one) and
+//! [`mod@stoi`] the intelligibility score. All four are [`AudioRefMetric`] +
+//! [`Direction::HigherIsBetter`], and every degenerate input (length mismatch,
+//! zero energy, perfect reconstruction, non-finite sample) is a loud
+//! [`vokra_core::VokraError`] rather than an `inf` / `NaN` / sentinel — see the
+//! two modules' docs for the per-case rationale.
+//!
+//! ## PESQ (ITU-T P.862) is deliberately NOT implemented — do not add it
+//!
+//! PESQ is the other metric enhancement papers quote, and it is **out of scope
+//! on licensing grounds, not effort grounds**. The score is defined by its
+//! ITU-T reference implementation, which is distributed under ITU-T terms that
+//! restrict redistribution and modification; those terms are incompatible with
+//! this Apache-2.0 tree and with the zero-dependency rule (NFR-DS-02), and every
+//! widely used Python/C port inherits them. A from-scratch reimplementation
+//! would not help: the metric's value comes from bit-agreeing with the
+//! reference, which is precisely the artefact that cannot be vendored or
+//! validated against here. If PESQ is ever required, it belongs behind an
+//! owner-provisioned, licence-audited external tool invoked offline — not in
+//! this crate. (Related fail-closed precedent: DNSMOS above.)
 
 pub mod mel_loss;
+pub mod si_snr;
+pub mod stoi;
 pub mod utmos;
 pub mod wer;
 
 pub use mel_loss::MelLoss;
+pub use si_snr::{MeanRemoval, Sdr, SiSdr, SiSnr, sdr_db, si_sdr_db, si_snr_db};
+pub use stoi::{Stoi, stoi};
 pub use utmos::{Utmos, UtmosConfig, UtmosWeights};
 pub use wer::{Cer, Wer, edit_distance};
 

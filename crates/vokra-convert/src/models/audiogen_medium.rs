@@ -1,15 +1,20 @@
 #![allow(clippy::doc_lazy_continuation)]
 //! **AudioGen-Medium** (`facebook/audiogen-medium`, **cc-by-nc-4.0**):
-//! safetensors → GGUF conversion (Wave 5 residual, 2026-08-01).
+//! safetensors → GGUF conversion (Wave 5 residual, 2026-08-01; retagged
+//! to distinct `audiogen` arch by Wave 6 audit follow-up 2026-08-14).
 //!
 //! Input: the upstream `facebook/audiogen-medium` release — Meta AudioCraft's
 //! 1.5B-parameter text-to-audio autoregressive transformer LM (Kreuk et al.
 //! 2023, arXiv:2209.15352 "AudioGen: Textually Guided Audio Generation").
-//! AudioGen is a **MusicGen sibling** — identical topology (transformer LM
-//! over EnCodec RVQ tokens conditioned on frozen T5 text encoder), tuned
-//! on environmental sounds / SFX (dog barking, footsteps, glass breaking,
+//! AudioGen is a **MusicGen sibling by topology** — identical AR-LM over
+//! EnCodec RVQ tokens conditioned on frozen T5 text encoder — but tuned on
+//! environmental sounds / SFX (dog barking, footsteps, glass breaking,
 //! ambient noise) rather than music. Only the training data + optional
-//! stereo head differ; the arch is shared under the same `musicgen` tag.
+//! stereo head differ today. The arch tag is `audiogen` (distinct from
+//! `musicgen` per FR-EX-08 dispatch safety — a future modality-specific
+//! head (SFX-only conditioning stack, stereo output head) must not silent-
+//! mis-bind against MusicGen's music-only runtime path — audit follow-up
+//! 2026-08-14).
 //!
 //! # Vokra scope — audio generation (per 2026-07-30 scope expansion)
 //!
@@ -48,11 +53,15 @@ use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for AudioGen GGUFs.
 ///
-/// Shared with MusicGen family — the topology is byte-parallel identical
-/// (transformer LM over EnCodec RVQ tokens + T5 text encoder). Only the
-/// training corpus differs (music vs environmental sounds), which does
-/// not change the runtime dispatch surface.
-pub const ARCH: &str = "musicgen";
+/// **Distinct from `musicgen`** — same AR-LM topology today but different
+/// training corpus + output modality (SFX vs music). FR-EX-08 keeps them
+/// dispatch-separated so a future modality-specific head (SFX-only
+/// conditioning stack, stereo output head, per-class embedding table) does
+/// not silent-mis-bind against MusicGen's music-only runtime path. The
+/// two families share the `category = "music"` taxonomy tag but the arch
+/// tag is the runtime dispatch discriminator — audit follow-up
+/// 2026-08-14.
+pub const ARCH: &str = "audiogen";
 
 /// `vokra.model.name` — distinct spelling within the shared arch (mirror
 /// of snac_24khz / snac_44khz sibling posture).

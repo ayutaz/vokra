@@ -11,6 +11,10 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude-hooks/block-pip-conda.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude-hooks/guard-local-memory.sh\""
           }
         ]
       }

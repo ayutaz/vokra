@@ -69,24 +69,63 @@
 //! *buffers*, not learned; the runtime re-computes the cent grid from
 //! `fmin` / `fmax` / `n_pitch_bins` so the prep script drops them.
 //!
-//! # GGUF schema (`vokra.f0.fcpe.*`)
+//! # GGUF schema (`vokra.f0.fcpe.*`) — fourteen axes, all REQUIRED
 //!
-//! | Key                                          | Type | Default  | Description                                       |
-//! | -------------------------------------------- | ---- | -------- | ------------------------------------------------- |
-//! | `vokra.f0.fcpe.hop`                          | u32  | 160      | Mel-frame hop, samples                            |
-//! | `vokra.f0.fcpe.fmin`                         | f32  | 32.7     | Lowest tracked pitch, Hz                          |
-//! | `vokra.f0.fcpe.fmax`                         | f32  | 1975.5   | Highest tracked pitch, Hz                         |
-//! | `vokra.f0.fcpe.sample_rate`                  | u32  | 16000    | Expected PCM sample rate                          |
-//! | `vokra.f0.fcpe.n_mels`                       | u32  | 128      | Mel channel count (== input_channels upstream)    |
-//! | `vokra.f0.fcpe.n_fft`                        | u32  | 1024     | STFT FFT / window size                            |
-//! | `vokra.f0.fcpe.n_pitch_bins`                 | u32  | 360      | Output class count (`out_dims`)                   |
-//! | `vokra.f0.fcpe.confidence_threshold`         | f32  | 0.05     | V/UV threshold on `max(sigmoid(logits))` — upstream default (was mistakenly 0.006 before the 2026-07-30 rewrite) |
-//! | `vokra.f0.fcpe.d_model`                      | u32  | 512      | Hidden width                                      |
-//! | `vokra.f0.fcpe.ffn_dim`                      | u32  | 2048     | Pre-GLU pointwise expansion (halves to 1024 after GLU) |
-//! | `vokra.f0.fcpe.n_layers`                     | u32  | 6        | Encoder block count                               |
-//! | `vokra.f0.fcpe.conv_kernel`                  | u32  | 31       | Depthwise conv kernel (must be odd; upstream default) |
-//! | `vokra.f0.fcpe.stem_kernel`                  | u32  | 3        | Input-stack Conv1d kernel (both convs; must be odd, `pad = k/2`) |
-//! | `vokra.f0.fcpe.stem_groups`                  | u32  | 4        | Input-stack GroupNorm group count                 |
+//! Required on any artifact that carries weights; see "Why they are required"
+//! below.
+//!
+//! | Key                                  | Type | Cross-checked against | Description                                            |
+//! | ------------------------------------ | ---- | --------------------- | ------------------------------------------------------ |
+//! | `vokra.f0.fcpe.d_model`              | u32  | `input_stack.0.bias`  | Hidden width                                           |
+//! | `vokra.f0.fcpe.n_mels`               | u32  | `input_stack.0.weight`| Mel channel count (== `input_channels` upstream)       |
+//! | `vokra.f0.fcpe.stem_kernel`          | u32  | `input_stack.3.weight`| Input-stack Conv1d kernel (both convs; odd, `pad = k/2`) |
+//! | `vokra.f0.fcpe.ffn_dim`              | u32  | layer 0 `net.2.bias`  | Pre-GLU pointwise expansion (halves after the GLU)     |
+//! | `vokra.f0.fcpe.conv_kernel`          | u32  | layer 0 `net.4.conv.weight` | Depthwise conv kernel (must be odd)              |
+//! | `vokra.f0.fcpe.n_layers`             | u32  | discovered layer count | Encoder block count                                   |
+//! | `vokra.f0.fcpe.n_pitch_bins`         | u32  | `output_proj.bias`    | Output class count (`out_dims`)                        |
+//! | `vokra.f0.fcpe.hop`                  | u32  | **nothing**           | Mel-frame hop, samples                                 |
+//! | `vokra.f0.fcpe.n_fft`                | u32  | **nothing**           | STFT FFT / window size                                 |
+//! | `vokra.f0.fcpe.sample_rate`          | u32  | **nothing**           | Expected PCM sample rate                               |
+//! | `vokra.f0.fcpe.fmin`                 | f32  | **nothing**           | Lowest tracked pitch, Hz                               |
+//! | `vokra.f0.fcpe.fmax`                 | f32  | **nothing**           | Highest tracked pitch, Hz                              |
+//! | `vokra.f0.fcpe.stem_groups`          | u32  | **nothing**           | Input-stack GroupNorm group count                      |
+//! | `vokra.f0.fcpe.confidence_threshold` | f32  | **nothing**           | V/UV threshold on `max(sigmoid(logits))`               |
+//!
+//! ## Why they are required (changed 2026-08-15)
+//!
+//! Until 2026-08-15 every one of these keys was optional and an absent key
+//! fell back to a `DEFAULT_*` constant — while
+//! `crates/vokra-convert/src/models/fcpe.rs` stamped **none of them**. Every
+//! FCPE GGUF Vokra had ever produced therefore described no topology at all,
+//! and this loader silently supplied the released `fcpe_c_v001` shape for all
+//! fourteen axes. FCPE was the only F0 sibling in that state: the RMVPE and
+//! CREPE converters both stamp their axis sets.
+//!
+//! Seven of the fourteen are pinned by a tensor length the binder already
+//! checks, so a wrong value there was at least loud. The other seven — the
+//! whole right-hand column marked **nothing** — were not checked by anything,
+//! and neither was `n_layers` in one direction: an artifact carrying *more*
+//! encoder layers than the config claimed had the surplus silently dropped and
+//! ran a truncated encoder. That is the failure this schema change closes, and
+//! it is the same shape round 7 found in RMVPE (zero U-Net blocks discovered,
+//! mel handed straight to the BiGRU).
+//!
+//! So: an artifact that binds weights must declare all fourteen.
+//! [`FcpeConfig::from_gguf`] names the first absent key and refuses. The
+//! converter derives the seven topology axes from the checkpoint's own tensor
+//! shapes and asserts the other seven only when those shapes prove the
+//! artifact is the released v001 architecture.
+//!
+//! **This breaks existing artifacts.** Any FCPE GGUF converted before
+//! 2026-08-15 carries zero `vokra.f0.fcpe.*` keys, so if it also carries
+//! weights it no longer loads. Re-run the converter. Nothing is lost that was
+//! trustworthy: such an artifact was being interpreted entirely by assumption,
+//! and if it was not v001 the pitch it produced was wrong with no way to tell.
+//!
+//! A metadata-only artifact (no weights) still loads under the v001 reference
+//! values, because it cannot run a forward at all — only
+//! [`FCPE::frame_times`] works on such a handle, and [`FCPE::extract`] already
+//! refuses it by name.
 //!
 //! Tensor names (verbatim from upstream state dict, no rename — the prep
 //! script just extracts and drops the two buffers `cent_table` and
@@ -142,61 +181,135 @@ use vokra_ops::stft::stft;
 
 use super::{F0Frame, LoadError};
 
-// -- Defaults (see the module doc for the source of each value) --------------
+// -- Released `fcpe_c_v001` reference values ---------------------------------
+//
+// These describe ONE checkpoint: `torchfcpe/assets/fcpe_c_v001.pt`. They are
+// NOT defaults for an arbitrary artifact, and since 2026-08-15 they are never
+// substituted for an absent key on a weight-carrying GGUF — that is a loud
+// refusal instead. Their only remaining use is
+// `FcpeConfig::from_gguf_metadata_only`, which describes a handle that cannot
+// run a forward, plus `FcpeConfig::default_v001` for callers building a config
+// by hand. The converter mirrors this block to decide when the front-end axes
+// may be asserted onto an artifact.
 
-/// Default hop between output frames, in samples (10 ms at 16 kHz — the
-/// upstream FCPE / RMVPE / CREPE default).
-const DEFAULT_HOP: u32 = 160;
-/// Default lower pitch bound in Hz (C1 ≈ 32.7 Hz — the torchfcpe / RMVPE
+/// v001 hop between output frames, in samples (10 ms at 16 kHz).
+const V001_HOP: u32 = 160;
+/// v001 lower pitch bound in Hz (C1 ≈ 32.7 Hz — the torchfcpe / RMVPE
 /// canonical cent-grid zero anchor).
-const DEFAULT_FMIN: f32 = 32.7;
-/// Default upper pitch bound in Hz (torchfcpe / RMVPE convention — ~ B6).
-const DEFAULT_FMAX: f32 = 1975.5;
-/// Default expected PCM sample rate.
-const DEFAULT_SAMPLE_RATE: u32 = 16_000;
-/// Default mel-channel count (matches upstream FCPE_v001).
-const DEFAULT_N_MELS: u32 = 128;
-/// Default STFT window / FFT size (matches upstream FCPE_v001).
-const DEFAULT_N_FFT: u32 = 1024;
-/// Default pitch class count on the log-frequency grid (RMVPE / torchfcpe
+const V001_FMIN: f32 = 32.7;
+/// v001 upper pitch bound in Hz (torchfcpe / RMVPE convention — ~ B6).
+const V001_FMAX: f32 = 1975.5;
+/// v001 expected PCM sample rate.
+const V001_SAMPLE_RATE: u32 = 16_000;
+/// v001 mel-channel count.
+const V001_N_MELS: u32 = 128;
+/// v001 STFT window / FFT size.
+const V001_N_FFT: u32 = 1024;
+/// v001 pitch class count on the log-frequency grid (RMVPE / torchfcpe
 /// convention).
-const DEFAULT_N_PITCH_BINS: u32 = 360;
-/// Default V/UV threshold on `max(sigmoid(logits))` — **upstream torchfcpe
-/// default** (`latent2cents_local_decoder(threshold=0.05)`). The prior
-/// value 0.006 pre-dated the 2026-07-30 CFNaiveMelPEInfer rewrite and did
-/// not match any upstream default.
-const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.05;
-/// Default model hidden width (`CFNaiveMelPE(hidden_dims=512)`).
-const DEFAULT_D_MODEL: u32 = 512;
-/// Default pre-GLU pointwise expansion width (the Conv1d `inner_dim * 2`
+const V001_N_PITCH_BINS: u32 = 360;
+/// v001 V/UV threshold on `max(sigmoid(logits))` — upstream
+/// `latent2cents_local_decoder(threshold=0.05)`. The value 0.006 that stood
+/// here before the 2026-07-30 CFNaiveMelPEInfer rewrite matched no upstream
+/// default.
+const V001_CONFIDENCE_THRESHOLD: f32 = 0.05;
+/// v001 model hidden width (`CFNaiveMelPE(hidden_dims=512)`).
+const V001_D_MODEL: u32 = 512;
+/// v001 pre-GLU pointwise expansion width (the Conv1d `inner_dim * 2`
 /// = `dim * expansion_factor * 2` in upstream `ConformerConvModule`).
 /// Upstream uses `expansion_factor=2`, so with `d_model=512` the pre-GLU
 /// width is `2*512*2 = 2048`. After `GLU(dim=1)` it halves to 1024.
-const DEFAULT_FFN_DIM: u32 = 2048;
-/// Default encoder block count (`CFNaiveMelPE(n_layers=6)`).
-const DEFAULT_N_LAYERS: u32 = 6;
-/// Default depthwise convolution kernel (upstream `ConformerConvModule(
+const V001_FFN_DIM: u32 = 2048;
+/// v001 encoder block count (`CFNaiveMelPE(n_layers=6)`).
+const V001_N_LAYERS: u32 = 6;
+/// v001 depthwise convolution kernel (upstream `ConformerConvModule(
 /// kernel_size=31)`). Must be odd for symmetric same-padding
 /// (`calc_same_padding` collapses to `(k//2, k//2)` when `k` is odd).
-const DEFAULT_CONV_KERNEL: u32 = 31;
-/// Default input-stack Conv1d kernel (upstream:
+const V001_CONV_KERNEL: u32 = 31;
+/// v001 input-stack Conv1d kernel (upstream:
 /// `nn.Conv1d(input_channels, hidden_dims, 3, 1, 1)` = kernel 3, stride 1,
 /// padding 1). Both convs in the stack share this kernel size.
-const DEFAULT_STEM_KERNEL: u32 = 3;
-/// Default input-stack GroupNorm group count (upstream:
-/// `nn.GroupNorm(4, hidden_dims)`). Requires `d_model % stem_groups == 0`.
-const DEFAULT_STEM_GROUPS: u32 = 4;
+const V001_STEM_KERNEL: u32 = 3;
+/// Input-stack GroupNorm group count.
+///
+/// Upstream writes the literal `nn.GroupNorm(4, hidden_dims)` — a constant of
+/// the architecture rather than a constructor parameter, which is why the
+/// converter asserts it instead of deriving it. Nothing in the checkpoint can
+/// confirm it: GroupNorm's gamma / beta are per-channel `[d_model]` whatever
+/// the group count is. It is still required in the metadata, because an
+/// artifact that does not say so out loud is one nobody can audit.
+const V001_STEM_GROUPS: u32 = 4;
 /// LeakyReLU negative slope (upstream `nn.LeakyReLU()` default — 0.01).
 const LEAKY_SLOPE: f32 = 0.01;
 /// LayerNorm / GroupNorm eps (upstream `nn.LayerNorm` / `nn.GroupNorm`
 /// default — 1e-5).
 const NORM_EPS: f32 = 1e-5;
 
+// -- `vokra.f0.fcpe.*` schema keys -------------------------------------------
+//
+// Kept in lock-step with the producer
+// `crates/vokra-convert/src/models/fcpe.rs`, which stamps the first seven
+// from the checkpoint's tensor shapes and the last seven from its v001
+// reference. Named by file path rather than by a Rust module path because
+// `mod models` is private in that crate: the module path is unnameable, not
+// unlanded, so it belongs in prose as a file path and not in the citation
+// gate's unlanded ledger. Matches the convention the sibling binders use.
+
+/// GGUF key: encoder hidden width.
+pub const GGUF_KEY_D_MODEL: &str = "vokra.f0.fcpe.d_model";
+/// GGUF key: mel channel count.
+pub const GGUF_KEY_N_MELS: &str = "vokra.f0.fcpe.n_mels";
+/// GGUF key: input-stack Conv1d kernel size.
+pub const GGUF_KEY_STEM_KERNEL: &str = "vokra.f0.fcpe.stem_kernel";
+/// GGUF key: pre-GLU pointwise expansion width.
+pub const GGUF_KEY_FFN_DIM: &str = "vokra.f0.fcpe.ffn_dim";
+/// GGUF key: depthwise convolution kernel size.
+pub const GGUF_KEY_CONV_KERNEL: &str = "vokra.f0.fcpe.conv_kernel";
+/// GGUF key: encoder block count.
+pub const GGUF_KEY_N_LAYERS: &str = "vokra.f0.fcpe.n_layers";
+/// GGUF key: output pitch-class count.
+pub const GGUF_KEY_N_PITCH_BINS: &str = "vokra.f0.fcpe.n_pitch_bins";
+/// GGUF key: mel-frame hop in samples.
+pub const GGUF_KEY_HOP: &str = "vokra.f0.fcpe.hop";
+/// GGUF key: STFT FFT / window size.
+pub const GGUF_KEY_N_FFT: &str = "vokra.f0.fcpe.n_fft";
+/// GGUF key: expected PCM sample rate.
+pub const GGUF_KEY_SAMPLE_RATE: &str = "vokra.f0.fcpe.sample_rate";
+/// GGUF key: lowest tracked pitch in Hz.
+pub const GGUF_KEY_FMIN: &str = "vokra.f0.fcpe.fmin";
+/// GGUF key: highest tracked pitch in Hz.
+pub const GGUF_KEY_FMAX: &str = "vokra.f0.fcpe.fmax";
+/// GGUF key: input-stack GroupNorm group count.
+pub const GGUF_KEY_STEM_GROUPS: &str = "vokra.f0.fcpe.stem_groups";
+/// GGUF key: V/UV confidence threshold.
+pub const GGUF_KEY_CONFIDENCE_THRESHOLD: &str = "vokra.f0.fcpe.confidence_threshold";
+
+/// Every key [`FcpeConfig::from_gguf`] requires, in the order it reads them.
+///
+/// Public so a converter, a publish gate, or a test can assert the full set
+/// without transcribing fourteen string literals and getting one wrong.
+pub const GGUF_REQUIRED_KEYS: [&str; 14] = [
+    GGUF_KEY_D_MODEL,
+    GGUF_KEY_N_MELS,
+    GGUF_KEY_STEM_KERNEL,
+    GGUF_KEY_FFN_DIM,
+    GGUF_KEY_CONV_KERNEL,
+    GGUF_KEY_N_LAYERS,
+    GGUF_KEY_N_PITCH_BINS,
+    GGUF_KEY_HOP,
+    GGUF_KEY_N_FFT,
+    GGUF_KEY_SAMPLE_RATE,
+    GGUF_KEY_FMIN,
+    GGUF_KEY_FMAX,
+    GGUF_KEY_STEM_GROUPS,
+    GGUF_KEY_CONFIDENCE_THRESHOLD,
+];
+
 // -- Config ------------------------------------------------------------------
 
 /// FCPE hyperparameters read from `vokra.f0.fcpe.*` metadata (see the module
-/// doc for the schema table + defaults).
-#[derive(Debug, Clone, Copy)]
+/// doc for the schema table).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FcpeConfig {
     /// Mel-frame hop, in samples.
     pub hop: u32,
@@ -231,74 +344,140 @@ pub struct FcpeConfig {
 }
 
 impl FcpeConfig {
-    /// The canonical default FCPE topology (matches `torchfcpe/assets/
-    /// fcpe_c_v001.pt` shipped with `torchfcpe-0.0.{1..4}`).
+    /// The topology of the released `torchfcpe/assets/fcpe_c_v001.pt`
+    /// (shipped with `torchfcpe-0.0.{1..4}`).
+    ///
+    /// This describes **one checkpoint**, not a default for an arbitrary
+    /// artifact. [`from_gguf`](Self::from_gguf) never falls back to it; it is
+    /// here for callers assembling a config by hand and for
+    /// [`from_gguf_metadata_only`](Self::from_gguf_metadata_only), whose
+    /// handle cannot run a forward.
     pub const fn default_v001() -> Self {
         Self {
-            hop: DEFAULT_HOP,
-            fmin: DEFAULT_FMIN,
-            fmax: DEFAULT_FMAX,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            n_mels: DEFAULT_N_MELS,
-            n_fft: DEFAULT_N_FFT,
-            n_pitch_bins: DEFAULT_N_PITCH_BINS,
-            confidence_threshold: DEFAULT_CONFIDENCE_THRESHOLD,
-            d_model: DEFAULT_D_MODEL,
-            ffn_dim: DEFAULT_FFN_DIM,
-            n_layers: DEFAULT_N_LAYERS,
-            conv_kernel: DEFAULT_CONV_KERNEL,
-            stem_kernel: DEFAULT_STEM_KERNEL,
-            stem_groups: DEFAULT_STEM_GROUPS,
+            hop: V001_HOP,
+            fmin: V001_FMIN,
+            fmax: V001_FMAX,
+            sample_rate: V001_SAMPLE_RATE,
+            n_mels: V001_N_MELS,
+            n_fft: V001_N_FFT,
+            n_pitch_bins: V001_N_PITCH_BINS,
+            confidence_threshold: V001_CONFIDENCE_THRESHOLD,
+            d_model: V001_D_MODEL,
+            ffn_dim: V001_FFN_DIM,
+            n_layers: V001_N_LAYERS,
+            conv_kernel: V001_CONV_KERNEL,
+            stem_kernel: V001_STEM_KERNEL,
+            stem_groups: V001_STEM_GROUPS,
         }
     }
 
-    /// Reads FCPE config from `vokra.f0.fcpe.*` metadata, defaulting each
-    /// absent key to [`Self::default_v001`].
+    /// Reads the FCPE config from `vokra.f0.fcpe.*` metadata, requiring
+    /// **every one** of [`GGUF_REQUIRED_KEYS`].
     ///
-    /// Returns [`LoadError::Gguf`] if a key is present with a non-numeric or
-    /// out-of-range type. Missing keys are honored silently (the design has
-    /// canonical defaults for the FCPE_v001 shape).
+    /// This is the reader for an artifact that carries weights. Nothing is
+    /// defaulted: an absent key is a refusal naming that key, because seven of
+    /// the fourteen axes are cross-checked by no tensor at all, and a
+    /// substituted value for any of them produces a forward that completes
+    /// with wrong numbers. See the module doc's schema table for which axes
+    /// have a cross-check and which do not.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Gguf`] when a key is absent (naming it, and saying how to
+    /// produce an artifact that carries it), or is present with a non-numeric
+    /// or out-of-range type.
     pub fn from_gguf(file: &GgufFile) -> Result<Self, LoadError> {
-        let hop = read_opt_u32(file, "vokra.f0.fcpe.hop")?.unwrap_or(DEFAULT_HOP);
-        let fmin = read_opt_f32(file, "vokra.f0.fcpe.fmin")?.unwrap_or(DEFAULT_FMIN);
-        let fmax = read_opt_f32(file, "vokra.f0.fcpe.fmax")?.unwrap_or(DEFAULT_FMAX);
-        let sample_rate =
-            read_opt_u32(file, "vokra.f0.fcpe.sample_rate")?.unwrap_or(DEFAULT_SAMPLE_RATE);
-        let n_mels = read_opt_u32(file, "vokra.f0.fcpe.n_mels")?.unwrap_or(DEFAULT_N_MELS);
-        let n_fft = read_opt_u32(file, "vokra.f0.fcpe.n_fft")?.unwrap_or(DEFAULT_N_FFT);
-        let n_pitch_bins =
-            read_opt_u32(file, "vokra.f0.fcpe.n_pitch_bins")?.unwrap_or(DEFAULT_N_PITCH_BINS);
-        let confidence_threshold = read_opt_f32(file, "vokra.f0.fcpe.confidence_threshold")?
-            .unwrap_or(DEFAULT_CONFIDENCE_THRESHOLD);
-        let d_model = read_opt_u32(file, "vokra.f0.fcpe.d_model")?.unwrap_or(DEFAULT_D_MODEL);
-        let ffn_dim = read_opt_u32(file, "vokra.f0.fcpe.ffn_dim")?.unwrap_or(DEFAULT_FFN_DIM);
-        let n_layers = read_opt_u32(file, "vokra.f0.fcpe.n_layers")?.unwrap_or(DEFAULT_N_LAYERS);
-        let conv_kernel =
-            read_opt_u32(file, "vokra.f0.fcpe.conv_kernel")?.unwrap_or(DEFAULT_CONV_KERNEL);
-        let stem_kernel =
-            read_opt_u32(file, "vokra.f0.fcpe.stem_kernel")?.unwrap_or(DEFAULT_STEM_KERNEL);
-        let stem_groups =
-            read_opt_u32(file, "vokra.f0.fcpe.stem_groups")?.unwrap_or(DEFAULT_STEM_GROUPS);
         Ok(Self {
-            hop,
-            fmin,
-            fmax,
-            sample_rate,
-            n_mels,
-            n_fft,
-            n_pitch_bins,
-            confidence_threshold,
-            d_model,
-            ffn_dim,
-            n_layers,
-            conv_kernel,
-            stem_kernel,
-            stem_groups,
+            d_model: require_u32(file, GGUF_KEY_D_MODEL)?,
+            n_mels: require_u32(file, GGUF_KEY_N_MELS)?,
+            stem_kernel: require_u32(file, GGUF_KEY_STEM_KERNEL)?,
+            ffn_dim: require_u32(file, GGUF_KEY_FFN_DIM)?,
+            conv_kernel: require_u32(file, GGUF_KEY_CONV_KERNEL)?,
+            n_layers: require_u32(file, GGUF_KEY_N_LAYERS)?,
+            n_pitch_bins: require_u32(file, GGUF_KEY_N_PITCH_BINS)?,
+            hop: require_u32(file, GGUF_KEY_HOP)?,
+            n_fft: require_u32(file, GGUF_KEY_N_FFT)?,
+            sample_rate: require_u32(file, GGUF_KEY_SAMPLE_RATE)?,
+            fmin: require_f32(file, GGUF_KEY_FMIN)?,
+            fmax: require_f32(file, GGUF_KEY_FMAX)?,
+            stem_groups: require_u32(file, GGUF_KEY_STEM_GROUPS)?,
+            confidence_threshold: require_f32(file, GGUF_KEY_CONFIDENCE_THRESHOLD)?,
+        })
+    }
+
+    /// Reads the config of an artifact that carries **no weights**, filling
+    /// absent keys from [`default_v001`](Self::default_v001).
+    ///
+    /// Only [`FCPE::from_gguf`] calls this, and only after establishing that
+    /// neither trigger tensor is present. The resulting handle cannot measure
+    /// pitch — [`FCPE::extract`] refuses it by name — so the substituted
+    /// values reach nothing but [`FCPE::frame_times`], which returns bare
+    /// seconds. They still describe nothing about a checkpoint, which is why
+    /// this reader is separate from [`from_gguf`](Self::from_gguf) rather than
+    /// a flag on it.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Gguf`] if a key is present with a non-numeric or
+    /// out-of-range type. Absent keys are the expected case here.
+    pub fn from_gguf_metadata_only(file: &GgufFile) -> Result<Self, LoadError> {
+        let d = Self::default_v001();
+        Ok(Self {
+            d_model: read_opt_u32(file, GGUF_KEY_D_MODEL)?.unwrap_or(d.d_model),
+            n_mels: read_opt_u32(file, GGUF_KEY_N_MELS)?.unwrap_or(d.n_mels),
+            stem_kernel: read_opt_u32(file, GGUF_KEY_STEM_KERNEL)?.unwrap_or(d.stem_kernel),
+            ffn_dim: read_opt_u32(file, GGUF_KEY_FFN_DIM)?.unwrap_or(d.ffn_dim),
+            conv_kernel: read_opt_u32(file, GGUF_KEY_CONV_KERNEL)?.unwrap_or(d.conv_kernel),
+            n_layers: read_opt_u32(file, GGUF_KEY_N_LAYERS)?.unwrap_or(d.n_layers),
+            n_pitch_bins: read_opt_u32(file, GGUF_KEY_N_PITCH_BINS)?.unwrap_or(d.n_pitch_bins),
+            hop: read_opt_u32(file, GGUF_KEY_HOP)?.unwrap_or(d.hop),
+            n_fft: read_opt_u32(file, GGUF_KEY_N_FFT)?.unwrap_or(d.n_fft),
+            sample_rate: read_opt_u32(file, GGUF_KEY_SAMPLE_RATE)?.unwrap_or(d.sample_rate),
+            fmin: read_opt_f32(file, GGUF_KEY_FMIN)?.unwrap_or(d.fmin),
+            fmax: read_opt_f32(file, GGUF_KEY_FMAX)?.unwrap_or(d.fmax),
+            stem_groups: read_opt_u32(file, GGUF_KEY_STEM_GROUPS)?.unwrap_or(d.stem_groups),
+            confidence_threshold: read_opt_f32(file, GGUF_KEY_CONFIDENCE_THRESHOLD)?
+                .unwrap_or(d.confidence_threshold),
         })
     }
 }
 
 // -- Weights -----------------------------------------------------------------
+
+/// First input-stack Conv1d weight. Presence of this AND [`TENSOR_HEAD_W`] is
+/// what distinguishes a real checkpoint from a metadata-only skeleton.
+const TENSOR_STEM_W: &str = "input_stack.0.weight";
+/// Output projection weight (weight-norm folded at prep time). See
+/// [`TENSOR_STEM_W`].
+const TENSOR_HEAD_W: &str = "output_proj.weight";
+
+/// Whether `file` carries either weight trigger tensor.
+///
+/// Decides which config reader [`FCPE::from_gguf`] uses: an artifact with
+/// weights must declare all fourteen axes, one without them cannot run a
+/// forward and so is read leniently. Deliberately `||` rather than `&&` — a
+/// half-populated artifact must reach [`FcpeWeights::try_from_gguf`]'s
+/// partial-set refusal, not slip into the lenient path.
+fn has_weight_tensors(file: &GgufFile) -> bool {
+    file.tensor_info(TENSOR_STEM_W).is_some() || file.tensor_info(TENSOR_HEAD_W).is_some()
+}
+
+/// Counts the encoder blocks the artifact actually carries, by walking
+/// `net.encoder_layers.{i}.conformer.net.0.weight` upward from 0 and stopping
+/// at the first absent index.
+///
+/// The same walk the converter uses to derive `n_layers`, so the two agree by
+/// construction on any artifact the converter produced.
+fn discovered_layer_count(file: &GgufFile) -> usize {
+    let mut n = 0usize;
+    while file
+        .tensor_info(&format!("net.encoder_layers.{n}.conformer.net.0.weight"))
+        .is_some()
+    {
+        n += 1;
+    }
+    n
+}
 
 /// One encoder block's tensors (upstream `CFNEncoderLayer` with
 /// `conv_only=True` — attention weights are absent). All tensors are stored
@@ -363,8 +542,9 @@ impl FcpeWeights {
     /// - `Ok(Some(weights))` — every canonical tensor is present and has
     ///   the expected shape.
     /// - `Ok(None)` — the GGUF is metadata-only (no tensor named
-    ///   `input_stack.0.weight` or `output_proj.weight`) — the caller runs
-    ///   the skeleton extract path.
+    ///   `input_stack.0.weight` or `output_proj.weight`). The handle still
+    ///   loads, but [`FCPE::extract`] then refuses it by name; only
+    ///   [`FCPE::frame_times`] works on such a handle.
     /// - `Err(LoadError::Gguf)` — a canonical tensor is partially present
     ///   or has a wrong shape (loud, per FR-EX-08 — never a silent
     ///   fallback).
@@ -372,17 +552,36 @@ impl FcpeWeights {
         // Trigger tensors — if either is missing, treat the GGUF as
         // metadata-only (skeleton mode). If ONE is present and the other
         // is not, that is inconsistent and is a loud error below.
-        let has_stem = file.tensor_info("input_stack.0.weight").is_some();
-        let has_head = file.tensor_info("output_proj.weight").is_some();
+        let has_stem = file.tensor_info(TENSOR_STEM_W).is_some();
+        let has_head = file.tensor_info(TENSOR_HEAD_W).is_some();
         if !has_stem && !has_head {
             return Ok(None);
         }
         if has_stem != has_head {
             return Err(LoadError::Gguf(format!(
                 "fcpe: partially populated weight set \
-                 (input_stack.0.weight={has_stem}, output_proj.weight={has_head}) — \
+                 ({TENSOR_STEM_W}={has_stem}, {TENSOR_HEAD_W}={has_head}) — \
                  either both trigger tensors must be present (real weights) or \
                  both absent (metadata-only skeleton)."
+            )));
+        }
+
+        // `n_layers` is the one topology axis the per-tensor length checks
+        // below cannot pin in both directions: too FEW declared layers and
+        // the loop simply stops early, binding a truncated encoder and
+        // dropping the surplus in silence. Compare the declaration against
+        // what the artifact actually carries, first, so the mismatch is named
+        // rather than executed. (Round 7 found the same shape in RMVPE: zero
+        // U-Net blocks discovered, mel handed straight to the BiGRU.)
+        let discovered = discovered_layer_count(file);
+        if discovered != cfg.n_layers as usize {
+            return Err(LoadError::Gguf(format!(
+                "fcpe: `{GGUF_KEY_N_LAYERS}` declares {} encoder blocks but this GGUF \
+                 carries {discovered} (counted by walking \
+                 `net.encoder_layers.{{i}}.conformer.net.0.weight` from 0). Running the \
+                 declared count would silently drop the surplus, or bind a layer set \
+                 that is not this checkpoint's (FR-EX-08).",
+                cfg.n_layers,
             )));
         }
 
@@ -398,6 +597,16 @@ impl FcpeWeights {
         if cfg.ffn_dim % 2 != 0 {
             return Err(LoadError::Gguf(format!(
                 "fcpe: ffn_dim ({ffn_dim}) must be even (GLU halves it)"
+            )));
+        }
+        // Zero groups would panic the `%` below, and then the forward's
+        // `ch / groups`. Now that `stem_groups` is read from metadata rather
+        // than defaulted to 4, a hand-forged artifact can reach it, and an
+        // arithmetic panic is a worse answer than a named refusal.
+        if cfg.stem_groups == 0 {
+            return Err(LoadError::Gguf(format!(
+                "fcpe: `{GGUF_KEY_STEM_GROUPS}` is 0, but GroupNorm needs at least one \
+                 group (upstream uses {V001_STEM_GROUPS})"
             )));
         }
         if cfg.d_model % cfg.stem_groups != 0 {
@@ -531,19 +740,36 @@ pub struct FCPE {
 impl FCPE {
     /// Binds an FCPE from a Vokra GGUF checkpoint.
     ///
-    /// Reads the `vokra.f0.fcpe.*` config chunk (see the module doc for the
-    /// schema table + defaults) and — if the file also carries the
-    /// canonical tensor set — binds the real weights.
+    /// Reads the `vokra.f0.fcpe.*` config chunk and — if the file also
+    /// carries the canonical tensor set — binds the real weights.
+    ///
+    /// Which config reader applies depends on whether the artifact carries
+    /// weights at all:
+    ///
+    /// - **With weights**, [`FcpeConfig::from_gguf`] requires all fourteen
+    ///   axes and names the first one absent. Seven of them are pinned by no
+    ///   tensor, so a substituted value there would produce a completed
+    ///   forward with wrong numbers.
+    /// - **Without weights** (a metadata-only skeleton), the lenient
+    ///   [`FcpeConfig::from_gguf_metadata_only`] applies. Such a handle
+    ///   cannot measure pitch — [`extract`](Self::extract) refuses it — so
+    ///   the config reaches nothing but [`frame_times`](Self::frame_times).
     ///
     /// # Errors
     ///
     /// - [`LoadError::FileNotFound`] if the path cannot be opened.
-    /// - [`LoadError::Gguf`] on any other GGUF parse / bind failure,
-    ///   including partial / mis-shaped tensor sets (never a silent
-    ///   fallback to skeleton — FR-EX-08).
+    /// - [`LoadError::Gguf`] on any other GGUF parse / bind failure: a
+    ///   required axis absent from a weight-carrying artifact, a declared
+    ///   `n_layers` that disagrees with the layer set actually present, or a
+    ///   partial / mis-shaped tensor set (never a silent fallback to
+    ///   skeleton — FR-EX-08).
     pub fn from_gguf(path: &Path) -> Result<Self, LoadError> {
         let gguf = GgufFile::open(path).map_err(|e| map_gguf_err(path, e))?;
-        let cfg = FcpeConfig::from_gguf(&gguf)?;
+        let cfg = if has_weight_tensors(&gguf) {
+            FcpeConfig::from_gguf(&gguf)?
+        } else {
+            FcpeConfig::from_gguf_metadata_only(&gguf)?
+        };
         let weights = FcpeWeights::try_from_gguf(&gguf, &cfg)?;
         let cent_grid = build_cent_grid(cfg.fmin, cfg.fmax, cfg.n_pitch_bins as usize);
         Ok(Self {
@@ -553,60 +779,144 @@ impl FCPE {
         })
     }
 
-    /// Extracts an F0 track from PCM samples.
+    /// Extracts an F0 track from PCM samples by running the real FCPE
+    /// forward.
+    ///
+    /// This is a straight delegation to [`extract_real`](Self::extract_real)
+    /// — identical behaviour, identical errors. It exists so the obvious
+    /// name on a loaded model is the one that measures pitch, matching
+    /// [`super::rmvpe::RMVPE::extract`] and [`super::crepe::CREPE::extract`].
+    ///
+    /// # History
+    ///
+    /// Before 2026-08-15 this name returned `Vec<F0Frame>` and answered two
+    /// different failures with the same all-zero track: no weights bound,
+    /// and a `compute_mel` error swallowed by an `Err(_) =>` arm — the
+    /// latter directly under a comment claiming "no silent success on
+    /// garbage weights". Downstream, a frame-count-correct zero track reads
+    /// as "this audio is entirely unvoiced" rather than "no measurement was
+    /// made". The timebase-only half now lives in
+    /// [`frame_times`](Self::frame_times).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`extract_real`](Self::extract_real)'s errors verbatim —
+    /// see that method for the list.
+    pub fn extract(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, vokra_core::VokraError> {
+        self.extract_real(pcm, sample_rate)
+    }
+
+    /// Runs the **real** FCPE forward on `pcm` and returns a per-hop F0
+    /// track.
     ///
     /// The output has exactly `pcm.len() / hop` frames (integer truncation;
     /// tail samples that do not fill a hop are dropped — the frame-count
-    /// contract callers align buffers against). When real weights are
-    /// bound the forward runs; otherwise each frame carries `hz=0.0,
-    /// voiced=false, confidence=0.0` (skeleton mode).
-    pub fn extract(&self, pcm: &[f32], sample_rate: u32) -> Vec<F0Frame> {
+    /// contract callers align buffers against).
+    ///
+    /// Reachable both under this name and as [`extract`](Self::extract),
+    /// which delegates here verbatim. It is fallible on purpose: every
+    /// failure below used to be answered with a frame-count-correct all-zero
+    /// track, and silently wrong pitch flows straight into a vocoder or a VC
+    /// pipeline (FR-EX-08). Call [`frame_times`](Self::frame_times) when
+    /// only the per-hop timestamps are wanted.
+    ///
+    /// # Errors
+    ///
+    /// - [`vokra_core::VokraError::ModelLoad`] when no weights were bound
+    ///   (a metadata-only GGUF — [`has_real_weights`](Self::has_real_weights)
+    ///   reports `false`), or when the bound config is unusable
+    ///   (`hop == 0` / `sample_rate == 0`, only reachable from a hand-forged
+    ///   GGUF).
+    /// - [`vokra_core::VokraError::InvalidArgument`] when `sample_rate` is
+    ///   not the rate this checkpoint declares in
+    ///   `vokra.f0.fcpe.sample_rate`; the error names both. Vokra never
+    ///   silently resamples — resample offline and call again.
+    /// - Whatever the STFT / mel front-end raises (propagated verbatim) when
+    ///   the front-end cannot run on this PCM. That error used to be
+    ///   discarded by an `Err(_) =>` arm that returned zeros.
+    pub fn extract_real(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, vokra_core::VokraError> {
+        let Some(weights) = &self.weights else {
+            return Err(vokra_core::VokraError::ModelLoad(
+                "fcpe: no weight tensors were bound from this GGUF (metadata-only \
+                 artifact — neither `input_stack.0.weight` nor `output_proj.weight` \
+                 is present), so there is nothing to run; convert a real CNChTu/FCPE \
+                 checkpoint, or call `frame_times` if only the per-hop timestamps \
+                 are wanted (FR-EX-08: never a zero-filled track)"
+                    .to_owned(),
+            ));
+        };
+        let hop = self.cfg.hop as usize;
+        if hop == 0 {
+            return Err(vokra_core::VokraError::ModelLoad(
+                "fcpe: `vokra.f0.fcpe.hop` is 0, so the per-frame timebase is \
+                 undefined and no track can be produced (FR-EX-08)"
+                    .to_owned(),
+            ));
+        }
+        if self.cfg.sample_rate == 0 {
+            return Err(vokra_core::VokraError::ModelLoad(
+                "fcpe: `vokra.f0.fcpe.sample_rate` is 0, so the mel filterbank is \
+                 undefined and no track can be produced (FR-EX-08)"
+                    .to_owned(),
+            ));
+        }
+        if sample_rate != self.cfg.sample_rate {
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "fcpe: got {sample_rate} Hz PCM but this checkpoint declares \
+                 {} Hz in `vokra.f0.fcpe.sample_rate` (its mel filterbank edges and \
+                 cent grid are anchored to that rate) — resample offline and call \
+                 again; Vokra never silently resamples (FR-EX-08)",
+                self.cfg.sample_rate,
+            )));
+        }
+
+        let n_frames = pcm.len() / hop;
+        if n_frames == 0 {
+            return Ok(Vec::new());
+        }
+        let sr = sample_rate as f32;
+        // Compute mel-spectrogram — the FCPE front-end. A failure here is
+        // propagated verbatim: it means the STFT could not run on this PCM
+        // (buffer shorter than one window, or a hand-forged GGUF with an
+        // unusable n_fft / hop), which is a fact the caller needs, not one
+        // to paper over with zeros.
+        let mel = self.compute_mel(pcm, n_frames)?;
+        let latents = self.forward(&mel, n_frames, weights);
+        Ok(self.decode(&latents, n_frames, sr, hop))
+    }
+
+    /// Returns the analysis timestamps [`extract`](Self::extract) will emit
+    /// for a PCM buffer of `pcm_len` samples, in seconds from the start of
+    /// the buffer.
+    ///
+    /// `result.len()` is the frame-count contract (`pcm_len / hop`,
+    /// integer-truncated); `result[i]` is the hop-aligned left edge of frame
+    /// `i`. A `hop` of 0 yields an empty slice (the timebase is undefined),
+    /// and a `sample_rate` of `0` is clamped to `1` so the column stays
+    /// finite rather than `NaN` / `±inf`.
+    ///
+    /// This runs no weights and cannot fail: it is pure arithmetic over the
+    /// config, for callers that need to size or align a buffer before (or
+    /// without) running the forward — including holders of a metadata-only
+    /// GGUF. It deliberately does **not** return [`F0Frame`]: a frame carries
+    /// `hz` / `voiced` / `confidence` columns this method has no evidence
+    /// for, and emitting zeros there is exactly the fabricated track the
+    /// 2026-08-15 fix removed. Mirrors [`super::rmvpe::RMVPE::frame_times`].
+    pub fn frame_times(&self, pcm_len: usize, sample_rate: u32) -> Vec<f32> {
         let hop = self.cfg.hop as usize;
         if hop == 0 {
             return Vec::new();
         }
-        let n_frames = pcm.len() / hop;
         let sr = sample_rate.max(1) as f32;
-
-        // Skeleton fast path when no real weights are bound. Deliberately
-        // matches RMVPE's contract so downstream consumers can size
-        // buffers before a real-weight WP lands.
-        let Some(weights) = &self.weights else {
-            return (0..n_frames)
-                .map(|i| F0Frame {
-                    time_sec: (i * hop) as f32 / sr,
-                    hz: 0.0,
-                    voiced: false,
-                    confidence: 0.0,
-                })
-                .collect();
-        };
-
-        if n_frames == 0 {
-            return Vec::new();
-        }
-        // Compute mel-spectrogram — the FCPE front-end. If the STFT / mel
-        // path errors out (short PCM, degenerate config), fall through to
-        // the skeleton **for the requested frame count** — no crash, no
-        // silent success on garbage weights. This branch cannot happen
-        // with a well-formed non-empty PCM under the canonical defaults;
-        // it guards against a hand-forged GGUF with an unusable config.
-        let mel = match self.compute_mel(pcm, n_frames) {
-            Ok(m) => m,
-            Err(_) => {
-                return (0..n_frames)
-                    .map(|i| F0Frame {
-                        time_sec: (i * hop) as f32 / sr,
-                        hz: 0.0,
-                        voiced: false,
-                        confidence: 0.0,
-                    })
-                    .collect();
-            }
-        };
-
-        let latents = self.forward(&mel, n_frames, weights);
-        self.decode(&latents, n_frames, sr, hop)
+        (0..pcm_len / hop).map(|i| (i * hop) as f32 / sr).collect()
     }
 
     /// Returns the configured hop length (samples per frame).
@@ -621,8 +931,13 @@ impl FCPE {
     pub fn fmax(&self) -> f32 {
         self.cfg.fmax
     }
-    /// Returns `true` when real weights are bound (i.e. `extract` runs the
-    /// real forward rather than the skeleton).
+    /// Returns `true` when real weights are bound — i.e.
+    /// [`extract`](Self::extract) / [`extract_real`](Self::extract_real) can
+    /// actually run rather than refusing with a "nothing bound" error.
+    ///
+    /// Callers that want to branch rather than handle the error can gate on
+    /// this first; [`frame_times`](Self::frame_times) is the entry point that
+    /// works either way.
     pub fn has_real_weights(&self) -> bool {
         self.weights.is_some()
     }
@@ -795,14 +1110,27 @@ impl FCPE {
     }
 
     /// Log-mel-spectrogram front-end (STFT power → Mel filterbank → log).
-    fn compute_mel(&self, pcm: &[f32], n_frames: usize) -> Result<Vec<f32>, ()> {
+    ///
+    /// Errors carry the reason rather than the `()` this used to return: the
+    /// sole caller now propagates them to the user, and "the STFT refused
+    /// this n_fft" and "the buffer is shorter than one window" are different
+    /// facts a caller needs to tell apart.
+    fn compute_mel(
+        &self,
+        pcm: &[f32],
+        n_frames: usize,
+    ) -> Result<Vec<f32>, vokra_core::VokraError> {
         let stft_attrs = StftAttrs::new(self.cfg.n_fft as usize, self.cfg.hop as usize);
-        let spec = match stft(pcm, &stft_attrs) {
-            Ok(s) => s,
-            Err(_) => return Err(()),
-        };
+        let spec = stft(pcm, &stft_attrs)?;
         if spec.frames == 0 {
-            return Err(());
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "fcpe: the STFT produced 0 frames from {} PCM sample(s) at n_fft={} / \
+                 hop={} — the buffer is shorter than one analysis window, so there is \
+                 no mel to run the encoder on (FR-EX-08)",
+                pcm.len(),
+                self.cfg.n_fft,
+                self.cfg.hop,
+            )));
         }
         let mel_attrs = MelAttrs::new(
             self.cfg.sample_rate,
@@ -1131,6 +1459,42 @@ fn hz_to_cent(hz: f32) -> f32 {
 
 // -- Metadata helpers --------------------------------------------------------
 
+/// Reads a REQUIRED `u32` axis, refusing an absent key by name.
+///
+/// The message says what is missing and how to get an artifact that carries
+/// it, because the most likely reader is someone holding a GGUF converted
+/// before 2026-08-15 — when the converter stamped none of these keys and this
+/// loader quietly supplied the v001 value for all fourteen.
+fn require_u32(file: &GgufFile, key: &str) -> Result<u32, LoadError> {
+    match read_opt_u32(file, key)? {
+        Some(v) => Ok(v),
+        None => Err(LoadError::Gguf(missing_axis_message(key))),
+    }
+}
+
+/// Reads a REQUIRED `f32` axis, refusing an absent key by name (see
+/// [`require_u32`]).
+fn require_f32(file: &GgufFile, key: &str) -> Result<f32, LoadError> {
+    match read_opt_f32(file, key)? {
+        Some(v) => Ok(v),
+        None => Err(LoadError::Gguf(missing_axis_message(key))),
+    }
+}
+
+/// The refusal text shared by [`require_u32`] and [`require_f32`].
+fn missing_axis_message(key: &str) -> String {
+    format!(
+        "fcpe: `{key}` is missing, and this GGUF carries weights. Every one of the \
+         {} `vokra.f0.fcpe.*` axes is required on a weight-carrying artifact: seven of \
+         them are cross-checked by no tensor at all, so substituting a value would run \
+         the forward to completion and return wrong pitch with nothing to signal it \
+         (FR-EX-08). An FCPE GGUF converted before 2026-08-15 carries none of these \
+         keys — re-run `vokra-cli convert --model fcpe`, which derives the topology \
+         from the checkpoint's tensor shapes.",
+        GGUF_REQUIRED_KEYS.len(),
+    )
+}
+
 fn read_opt_u32(file: &GgufFile, key: &str) -> Result<Option<u32>, LoadError> {
     match file.get(key) {
         Some(v) => match value_as_u64(v).and_then(|n| u32::try_from(n).ok()) {
@@ -1191,8 +1555,10 @@ mod tests {
         );
     }
 
-    /// Metadata-only GGUF: config parses, no real weights bound, `extract`
-    /// returns the frame-count-contract skeleton (RMVPE parity).
+    /// Metadata-only GGUF: config parses, no real weights bound.
+    /// `frame_times` still honors the frame-count contract (bare timestamps,
+    /// nothing readable as pitch), and `extract` refuses LOUDLY instead of
+    /// handing back an all-zero track (RMVPE parity).
     #[test]
     fn fcpe_extract_frame_count_matches_hop_metadata_only() {
         let tmp =
@@ -1200,31 +1566,61 @@ mod tests {
         let bytes = GgufBuilder::new().to_bytes().unwrap();
         std::fs::write(&tmp, &bytes).unwrap();
         let fcpe = FCPE::from_gguf(&tmp).expect("load metadata-only GGUF");
-        assert!(!fcpe.has_real_weights(), "no tensors → skeleton mode");
+        assert!(!fcpe.has_real_weights(), "no tensors → no bound weights");
         let hop = fcpe.hop() as usize;
         assert_eq!(hop, 160);
         let pcm = vec![0.0f32; hop * 10];
-        let frames = fcpe.extract(&pcm, 16_000);
-        assert_eq!(frames.len(), pcm.len() / hop);
-        assert!(frames.iter().all(|f| f.hz == 0.0 && !f.voiced));
+
+        let times = fcpe.frame_times(pcm.len(), 16_000);
+        assert_eq!(times.len(), pcm.len() / hop);
+        for (i, t) in times.iter().enumerate() {
+            let expected = (i * hop) as f32 / 16_000.0;
+            assert!(
+                (t - expected).abs() < 1e-9,
+                "frame {i}: timestamp {t} != {expected}",
+            );
+        }
+
+        let Err(err) = fcpe.extract(&pcm, 16_000) else {
+            panic!("expected an error when no weight tensors were bound, got a track");
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(err, vokra_core::VokraError::ModelLoad(_)),
+            "an unbound weight set is a model-load failure, got: {msg}",
+        );
+        assert!(
+            msg.contains("output_proj.weight"),
+            "the error must name a tensor whose absence it detected: {msg}",
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
     /// A partial weight set (stem but no head) must fail loudly — never a
     /// silent fallback to skeleton (FR-EX-08).
+    ///
+    /// All fourteen axes are stamped so this test still measures what it
+    /// claims: with an incomplete axis set the load would refuse for the
+    /// *other* reason and the partial-tensor path would go unexercised.
     #[test]
     fn fcpe_partial_weight_set_is_loud() {
         let mut b = GgufBuilder::new();
         let d_model = 4u32;
         let n_mels = 4u32;
         let stem_k = 3u32;
-        b.add_u32("vokra.f0.fcpe.d_model", d_model);
-        b.add_u32("vokra.f0.fcpe.n_mels", n_mels);
-        b.add_u32("vokra.f0.fcpe.ffn_dim", 8);
-        b.add_u32("vokra.f0.fcpe.n_layers", 1);
-        b.add_u32("vokra.f0.fcpe.conv_kernel", 3);
-        b.add_u32("vokra.f0.fcpe.stem_kernel", stem_k);
-        b.add_u32("vokra.f0.fcpe.stem_groups", 2);
+        let cfg = FcpeConfig {
+            d_model,
+            n_mels,
+            stem_kernel: stem_k,
+            ffn_dim: 8,
+            conv_kernel: 3,
+            // No layer tensors are emitted, so zero is the coherent stamp.
+            n_layers: 0,
+            n_pitch_bins: 16,
+            stem_groups: 2,
+            ..FcpeConfig::default_v001()
+        };
+        stamp_axes(&mut b, &cfg, None);
         // Emit `input_stack.0.weight` only — output_proj.weight
         // deliberately missing.
         let n = (d_model * n_mels * stem_k) as usize;
@@ -1239,17 +1635,112 @@ mod tests {
         let tmp =
             std::env::temp_dir().join(format!("vokra-fcpe-partial-{}.gguf", std::process::id()));
         std::fs::write(&tmp, b.to_bytes().unwrap()).unwrap();
-        let err = FCPE::from_gguf(&tmp).expect_err("partial weight set must be loud");
+        let Err(err) = FCPE::from_gguf(&tmp) else {
+            panic!("a stem with no head must not load");
+        };
+        let msg = err.to_string();
         assert!(matches!(err, LoadError::Gguf(_)));
+        assert!(
+            msg.contains(TENSOR_HEAD_W),
+            "the error must name the trigger tensor that is absent: {msg}",
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
-    /// Real-forward smoke test with a tiny synthetic FCPE checkpoint —
-    /// exercises the mel front-end + input stack + encoder + head + local-
-    /// argmax path end-to-end and asserts finite output + one frame per
-    /// hop.
-    #[test]
-    fn fcpe_forward_end_to_end_smoke() {
+    /// Stamps all fourteen `vokra.f0.fcpe.*` axes from `cfg`, optionally
+    /// omitting one by key so a test can prove that axis is required.
+    ///
+    /// Written out longhand rather than looped so that adding a key to
+    /// [`GGUF_REQUIRED_KEYS`] without adding it here is a compile-visible
+    /// omission caught by `every_required_axis_is_individually_required`,
+    /// which walks the constant.
+    fn stamp_axes(b: &mut GgufBuilder, cfg: &FcpeConfig, skip: Option<&str>) {
+        if skip != Some(GGUF_KEY_D_MODEL) {
+            b.add_u32(GGUF_KEY_D_MODEL, cfg.d_model);
+        }
+        if skip != Some(GGUF_KEY_N_MELS) {
+            b.add_u32(GGUF_KEY_N_MELS, cfg.n_mels);
+        }
+        if skip != Some(GGUF_KEY_STEM_KERNEL) {
+            b.add_u32(GGUF_KEY_STEM_KERNEL, cfg.stem_kernel);
+        }
+        if skip != Some(GGUF_KEY_FFN_DIM) {
+            b.add_u32(GGUF_KEY_FFN_DIM, cfg.ffn_dim);
+        }
+        if skip != Some(GGUF_KEY_CONV_KERNEL) {
+            b.add_u32(GGUF_KEY_CONV_KERNEL, cfg.conv_kernel);
+        }
+        if skip != Some(GGUF_KEY_N_LAYERS) {
+            b.add_u32(GGUF_KEY_N_LAYERS, cfg.n_layers);
+        }
+        if skip != Some(GGUF_KEY_N_PITCH_BINS) {
+            b.add_u32(GGUF_KEY_N_PITCH_BINS, cfg.n_pitch_bins);
+        }
+        if skip != Some(GGUF_KEY_HOP) {
+            b.add_u32(GGUF_KEY_HOP, cfg.hop);
+        }
+        if skip != Some(GGUF_KEY_N_FFT) {
+            b.add_u32(GGUF_KEY_N_FFT, cfg.n_fft);
+        }
+        if skip != Some(GGUF_KEY_SAMPLE_RATE) {
+            b.add_u32(GGUF_KEY_SAMPLE_RATE, cfg.sample_rate);
+        }
+        if skip != Some(GGUF_KEY_FMIN) {
+            b.add_f32(GGUF_KEY_FMIN, cfg.fmin);
+        }
+        if skip != Some(GGUF_KEY_FMAX) {
+            b.add_f32(GGUF_KEY_FMAX, cfg.fmax);
+        }
+        if skip != Some(GGUF_KEY_STEM_GROUPS) {
+            b.add_u32(GGUF_KEY_STEM_GROUPS, cfg.stem_groups);
+        }
+        if skip != Some(GGUF_KEY_CONFIDENCE_THRESHOLD) {
+            b.add_f32(GGUF_KEY_CONFIDENCE_THRESHOLD, cfg.confidence_threshold);
+        }
+    }
+
+    /// Knobs a synthetic-fixture test can turn. Defaults leave the fixture
+    /// coherent: every stamped axis matches the tensors actually emitted.
+    #[derive(Default, Clone, Copy)]
+    struct FixtureTweaks<'a> {
+        /// Stamp this `n_layers` instead of the number of layers emitted, to
+        /// exercise the declared-vs-discovered cross-check.
+        stamped_n_layers: Option<u32>,
+        /// Omit this axis key entirely.
+        skip_axis: Option<&'a str>,
+        /// Stamp this `n_fft` instead of the default 512.
+        n_fft: Option<u32>,
+        /// Emit a SECOND encoder layer while `n_layers` still stamps one, so
+        /// the artifact carries more depth than it declares.
+        extra_encoder_layer: bool,
+    }
+
+    /// Writes a tiny but structurally complete synthetic FCPE checkpoint to
+    /// `path`, stamping all fourteen axes, and returns the hop it encodes.
+    ///
+    /// Shared by every test that needs `has_real_weights() == true`. The
+    /// weights come from a fixed-seed SplitMix64 stream, so the forward's
+    /// output is reproducible.
+    fn write_synthetic_fcpe_gguf(path: &Path) -> u32 {
+        write_synthetic_fcpe_gguf_tweaked(path, FixtureTweaks::default())
+    }
+
+    /// [`write_synthetic_fcpe_gguf`] with the STFT size under the caller's
+    /// control, so a test can hand the front-end a config it must refuse.
+    /// No weight shape depends on `n_fft`, so the bind succeeds regardless.
+    fn write_synthetic_fcpe_gguf_with_n_fft(path: &Path, n_fft: u32) -> u32 {
+        write_synthetic_fcpe_gguf_tweaked(
+            path,
+            FixtureTweaks {
+                n_fft: Some(n_fft),
+                ..FixtureTweaks::default()
+            },
+        )
+    }
+
+    /// The fixture writer proper — see [`FixtureTweaks`].
+    fn write_synthetic_fcpe_gguf_tweaked(path: &Path, tweaks: FixtureTweaks<'_>) -> u32 {
+        let n_fft = tweaks.n_fft.unwrap_or(512);
         // Deterministic synthetic weights via SplitMix64.
         fn splitmix64(state: &mut u64) -> u64 {
             *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -1279,26 +1770,31 @@ mod tests {
         let stem_groups = 2u32;
         let n_bins = 16u32;
         let hop = 160u32;
-        let n_fft = 512u32;
 
         let mut b = GgufBuilder::new();
-        b.add_u32("vokra.f0.fcpe.hop", hop);
-        b.add_u32("vokra.f0.fcpe.n_mels", n_mels);
-        b.add_u32("vokra.f0.fcpe.n_fft", n_fft);
-        b.add_u32("vokra.f0.fcpe.n_pitch_bins", n_bins);
-        b.add_u32("vokra.f0.fcpe.d_model", d_model);
-        b.add_u32("vokra.f0.fcpe.ffn_dim", ffn_dim);
-        b.add_u32("vokra.f0.fcpe.n_layers", n_layers);
-        b.add_u32("vokra.f0.fcpe.conv_kernel", conv_k);
-        b.add_u32("vokra.f0.fcpe.stem_kernel", stem_k);
-        b.add_u32("vokra.f0.fcpe.stem_groups", stem_groups);
+        let cfg = FcpeConfig {
+            hop,
+            fmin: V001_FMIN,
+            fmax: V001_FMAX,
+            sample_rate: V001_SAMPLE_RATE,
+            n_mels,
+            n_fft,
+            n_pitch_bins: n_bins,
+            confidence_threshold: V001_CONFIDENCE_THRESHOLD,
+            d_model,
+            ffn_dim,
+            // The stamped depth, which `stamped_n_layers` can put out of step
+            // with the single layer this fixture actually emits.
+            n_layers: tweaks.stamped_n_layers.unwrap_or(n_layers),
+            conv_kernel: conv_k,
+            stem_kernel: stem_k,
+            stem_groups,
+        };
+        stamp_axes(&mut b, &cfg, tweaks.skip_axis);
 
         let n_mels_u = n_mels as usize;
         let d_model_u = d_model as usize;
-        let ffn_dim_u = ffn_dim as usize;
-        let inner_dim_u = ffn_dim_u / 2;
         let n_bins_u = n_bins as usize;
-        let conv_k_u = conv_k as usize;
         let stem_k_u = stem_k as usize;
 
         let mut rng = 0xCAFE_BABE_DEAD_BEEFu64;
@@ -1353,69 +1849,99 @@ mod tests {
         )
         .unwrap();
 
-        // Layer 0
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.0.weight",
-            GgmlType::F32,
-            vec![d_model as u64],
-            f32_bytes(&vec![1.0f32; d_model_u]),
-        )
-        .unwrap();
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.0.bias",
-            GgmlType::F32,
-            vec![d_model as u64],
-            f32_bytes(&vec![0.0f32; d_model_u]),
-        )
-        .unwrap();
-        let pw1_w = synth_vec(&mut rng, ffn_dim_u * d_model_u, scale);
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.2.weight",
-            GgmlType::F32,
-            vec![ffn_dim as u64, d_model as u64, 1u64],
-            f32_bytes(&pw1_w),
-        )
-        .unwrap();
-        let pw1_b = synth_vec(&mut rng, ffn_dim_u, scale);
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.2.bias",
-            GgmlType::F32,
-            vec![ffn_dim as u64],
-            f32_bytes(&pw1_b),
-        )
-        .unwrap();
-        let dw_w = synth_vec(&mut rng, inner_dim_u * conv_k_u, scale);
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.4.conv.weight",
-            GgmlType::F32,
-            vec![inner_dim_u as u64, 1u64, conv_k as u64],
-            f32_bytes(&dw_w),
-        )
-        .unwrap();
-        let dw_b = synth_vec(&mut rng, inner_dim_u, scale);
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.4.conv.bias",
-            GgmlType::F32,
-            vec![inner_dim_u as u64],
-            f32_bytes(&dw_b),
-        )
-        .unwrap();
-        let pw2_w = synth_vec(&mut rng, d_model_u * inner_dim_u, scale);
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.6.weight",
-            GgmlType::F32,
-            vec![d_model as u64, inner_dim_u as u64, 1u64],
-            f32_bytes(&pw2_w),
-        )
-        .unwrap();
-        let pw2_b = synth_vec(&mut rng, d_model_u, scale);
-        b.add_tensor(
-            "net.encoder_layers.0.conformer.net.6.bias",
-            GgmlType::F32,
-            vec![d_model as u64],
-            f32_bytes(&pw2_b),
-        )
-        .unwrap();
+        // Encoder layers. One is emitted by default, matching the stamped
+        // `n_layers`. `extra_encoder_layer` emits a SECOND one while the
+        // stamp still says one — the shape that used to pass silently,
+        // because the binder looped `0..n_layers` and dropped the surplus.
+        #[allow(clippy::too_many_arguments)]
+        fn emit_encoder_layer(
+            b: &mut GgufBuilder,
+            i: u32,
+            rng: &mut u64,
+            d_model: u32,
+            ffn_dim: u32,
+            inner_dim: u32,
+            conv_k: u32,
+            scale: f32,
+        ) {
+            let d_model_u = d_model as usize;
+            let ffn_dim_u = ffn_dim as usize;
+            let inner_dim_u = inner_dim as usize;
+            let conv_k_u = conv_k as usize;
+            let p = format!("net.encoder_layers.{i}.conformer.net");
+            b.add_tensor(
+                &format!("{p}.0.weight"),
+                GgmlType::F32,
+                vec![u64::from(d_model)],
+                f32_bytes(&vec![1.0f32; d_model_u]),
+            )
+            .unwrap();
+            b.add_tensor(
+                &format!("{p}.0.bias"),
+                GgmlType::F32,
+                vec![u64::from(d_model)],
+                f32_bytes(&vec![0.0f32; d_model_u]),
+            )
+            .unwrap();
+            let pw1_w = synth_vec(rng, ffn_dim_u * d_model_u, scale);
+            b.add_tensor(
+                &format!("{p}.2.weight"),
+                GgmlType::F32,
+                vec![u64::from(ffn_dim), u64::from(d_model), 1u64],
+                f32_bytes(&pw1_w),
+            )
+            .unwrap();
+            let pw1_b = synth_vec(rng, ffn_dim_u, scale);
+            b.add_tensor(
+                &format!("{p}.2.bias"),
+                GgmlType::F32,
+                vec![u64::from(ffn_dim)],
+                f32_bytes(&pw1_b),
+            )
+            .unwrap();
+            let dw_w = synth_vec(rng, inner_dim_u * conv_k_u, scale);
+            b.add_tensor(
+                &format!("{p}.4.conv.weight"),
+                GgmlType::F32,
+                vec![u64::from(inner_dim), 1u64, u64::from(conv_k)],
+                f32_bytes(&dw_w),
+            )
+            .unwrap();
+            let dw_b = synth_vec(rng, inner_dim_u, scale);
+            b.add_tensor(
+                &format!("{p}.4.conv.bias"),
+                GgmlType::F32,
+                vec![u64::from(inner_dim)],
+                f32_bytes(&dw_b),
+            )
+            .unwrap();
+            let pw2_w = synth_vec(rng, d_model_u * inner_dim_u, scale);
+            b.add_tensor(
+                &format!("{p}.6.weight"),
+                GgmlType::F32,
+                vec![u64::from(d_model), u64::from(inner_dim), 1u64],
+                f32_bytes(&pw2_w),
+            )
+            .unwrap();
+            let pw2_b = synth_vec(rng, d_model_u, scale);
+            b.add_tensor(
+                &format!("{p}.6.bias"),
+                GgmlType::F32,
+                vec![u64::from(d_model)],
+                f32_bytes(&pw2_b),
+            )
+            .unwrap();
+        }
+
+        let inner_dim = ffn_dim / 2;
+        emit_encoder_layer(
+            &mut b, 0, &mut rng, d_model, ffn_dim, inner_dim, conv_k, scale,
+        );
+        if tweaks.extra_encoder_layer {
+            emit_encoder_layer(
+                &mut b, 1, &mut rng, d_model, ffn_dim, inner_dim, conv_k, scale,
+            );
+        }
 
         // Head
         b.add_tensor(
@@ -1449,24 +1975,286 @@ mod tests {
         )
         .unwrap();
 
+        std::fs::write(path, b.to_bytes().unwrap()).unwrap();
+        hop
+    }
+
+    /// A deterministic 220 Hz sine, `n_hops` hops long at 16 kHz.
+    fn synthetic_sine_pcm(hop: u32, n_hops: usize) -> Vec<f32> {
+        let n_samp = hop as usize * n_hops;
+        (0..n_samp)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
+            .collect()
+    }
+
+    /// Real-forward smoke test with a tiny synthetic FCPE checkpoint —
+    /// exercises the mel front-end + input stack + encoder + head + local-
+    /// argmax path end-to-end and asserts finite output + one frame per
+    /// hop.
+    #[test]
+    fn fcpe_forward_end_to_end_smoke() {
         let tmp =
             std::env::temp_dir().join(format!("vokra-fcpe-forward-{}.gguf", std::process::id()));
-        std::fs::write(&tmp, b.to_bytes().unwrap()).unwrap();
+        let hop = write_synthetic_fcpe_gguf(&tmp);
         let fcpe = FCPE::from_gguf(&tmp).expect("load real weights");
         assert!(fcpe.has_real_weights(), "real weights should bind");
         // Sine input, 20 hops.
         let hop_u = hop as usize;
-        let n_samp = hop_u * 20;
-        let pcm: Vec<f32> = (0..n_samp)
-            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
-            .collect();
-        let frames = fcpe.extract(&pcm, 16_000);
-        assert_eq!(frames.len(), n_samp / hop_u);
+        let pcm = synthetic_sine_pcm(hop, 20);
+        let frames = fcpe
+            .extract(&pcm, 16_000)
+            .expect("bound weights at the declared rate must produce a real track");
+        assert_eq!(frames.len(), pcm.len() / hop_u);
         for f in &frames {
             assert!(f.hz.is_finite(), "hz must be finite (got {})", f.hz);
             assert!(f.hz >= 0.0);
             assert!(f.confidence >= 0.0 && f.confidence <= 1.0);
         }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Bound weights + a rate this checkpoint does not declare must be a
+    /// LOUD error naming both rates — never a frame-count-correct all-zero
+    /// track, and never a silent resample (FR-EX-08).
+    #[test]
+    fn fcpe_extract_refuses_rate_mismatch_with_bound_weights() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-rate-mismatch-{}.gguf",
+            std::process::id()
+        ));
+        let hop = write_synthetic_fcpe_gguf(&tmp);
+        let fcpe = FCPE::from_gguf(&tmp).expect("load real weights");
+        assert!(
+            fcpe.has_real_weights(),
+            "the synthetic fixture must bind weights for this test to mean anything",
+        );
+        assert_eq!(
+            fcpe.config().sample_rate,
+            16_000,
+            "the fixture stamps `vokra.f0.fcpe.sample_rate = 16000`, and the loader must \
+             read it rather than assume it",
+        );
+
+        let pcm = synthetic_sine_pcm(hop, 20);
+        let Err(err) = fcpe.extract(&pcm, 44_100) else {
+            panic!("expected an error at 44.1 kHz with weights bound, got a track");
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(err, vokra_core::VokraError::InvalidArgument(_)),
+            "a rate mismatch is a caller-argument failure, got: {msg}",
+        );
+        assert!(
+            msg.contains("44100"),
+            "the error must name the rate it received: {msg}",
+        );
+        assert!(
+            msg.contains("16000"),
+            "the error must name the rate it needs: {msg}",
+        );
+
+        // `extract_real` is the same refusal, verbatim — a lenient `extract`
+        // next to a strict `extract_real` would re-open the hole.
+        let Err(direct) = fcpe.extract_real(&pcm, 44_100) else {
+            panic!("`extract_real` must refuse what `extract` refuses");
+        };
+        assert_eq!(direct.to_string(), msg);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A front-end that cannot run must surface its OWN error, not a zero
+    /// track.
+    ///
+    /// Regression pin: the pre-2026-08-15 `extract` matched `compute_mel`
+    /// with `Err(_) =>` and returned `n_frames` all-zero rows — directly
+    /// under a comment claiming "no silent success on garbage weights". The
+    /// weights here are perfectly good; it is the STFT config that is not,
+    /// and the caller has to be told which.
+    ///
+    /// `n_fft = 0` is the deterministic trigger: `vokra_ops::stft::stft`
+    /// rejects it outright, no weight shape depends on it (so the bind still
+    /// succeeds), and `FcpeConfig::from_gguf` does not screen it — exactly
+    /// the "hand-forged GGUF with an unusable config" the old comment said
+    /// it was guarding against while quietly answering with zeros.
+    #[test]
+    fn fcpe_extract_propagates_front_end_error_instead_of_zeros() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-unusable-stft-{}.gguf",
+            std::process::id()
+        ));
+        let hop = write_synthetic_fcpe_gguf_with_n_fft(&tmp, 0);
+        let fcpe = FCPE::from_gguf(&tmp).expect("load real weights");
+        assert!(
+            fcpe.has_real_weights(),
+            "the weights are fine here — only the STFT config is broken",
+        );
+        assert_eq!(fcpe.config().n_fft, 0, "the fixture must carry n_fft = 0");
+
+        // 20 hops: the old code would have had 20 rows to fabricate.
+        let pcm = synthetic_sine_pcm(hop, 20);
+        let Err(err) = fcpe.extract(&pcm, 16_000) else {
+            panic!(
+                "expected the STFT's own error; an all-zero track here is the bug \
+                 (`Err(_) =>` swallowing the front-end failure)"
+            );
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("stft"),
+            "the front-end's own error must reach the caller verbatim, naming the op \
+             that refused: {msg}",
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Every one of the fourteen axes is individually required on a
+    /// weight-carrying artifact, and the refusal names the key it wants.
+    ///
+    /// Regression pin for the pre-2026-08-15 loader, which answered each
+    /// absent key with a `DEFAULT_*` constant while the converter stamped
+    /// none of them — so every FCPE GGUF Vokra produced was read as the
+    /// released v001 shape regardless of what it actually was. Seven of these
+    /// keys are cross-checked by no tensor, so for those the substitution
+    /// produced a completed forward and wrong pitch, with nothing to signal
+    /// it.
+    ///
+    /// Walking [`GGUF_REQUIRED_KEYS`] rather than listing keys here is what
+    /// makes the pin hold: a fifteenth axis added to the schema without being
+    /// enforced fails this test on the day it lands.
+    #[test]
+    fn every_required_axis_is_individually_required() {
+        for (i, key) in GGUF_REQUIRED_KEYS.iter().copied().enumerate() {
+            let tmp = std::env::temp_dir().join(format!(
+                "vokra-fcpe-missing-axis-{i}-{}.gguf",
+                std::process::id()
+            ));
+            write_synthetic_fcpe_gguf_tweaked(
+                &tmp,
+                FixtureTweaks {
+                    skip_axis: Some(key),
+                    ..FixtureTweaks::default()
+                },
+            );
+            let Err(err) = FCPE::from_gguf(&tmp) else {
+                panic!(
+                    "a weight-carrying GGUF without `{key}` must not load — a substituted \
+                     value there is a forward that completes and lies"
+                );
+            };
+            let msg = err.to_string();
+            assert!(
+                matches!(err, LoadError::Gguf(_)),
+                "an absent axis is a GGUF-level failure, got: {msg}",
+            );
+            assert!(
+                msg.contains(key),
+                "the refusal must name the axis it is missing (`{key}`), or the operator \
+                 cannot act on it: {msg}",
+            );
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    /// The same artifact loads once every axis is present — so
+    /// [`every_required_axis_is_individually_required`] is measuring the
+    /// missing key and not some unrelated defect in the fixture.
+    #[test]
+    fn a_fully_stamped_artifact_still_loads() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-fully-stamped-{}.gguf",
+            std::process::id()
+        ));
+        write_synthetic_fcpe_gguf(&tmp);
+        let fcpe = FCPE::from_gguf(&tmp).expect("a fully stamped artifact must load");
+        assert!(fcpe.has_real_weights());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A declared `n_layers` smaller than the layer set the artifact carries
+    /// must be refused, naming both counts.
+    ///
+    /// This is the direction no length check catches: the binder loops
+    /// `0..n_layers`, so the surplus layers were simply never bound and the
+    /// forward ran a truncated encoder to completion. Round 7 found the same
+    /// shape in RMVPE — zero U-Net blocks discovered, mel handed straight to
+    /// the BiGRU.
+    #[test]
+    fn fcpe_declared_depth_below_the_carried_depth_is_loud() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-truncated-depth-{}.gguf",
+            std::process::id()
+        ));
+        // Two layers emitted, one declared.
+        write_synthetic_fcpe_gguf_tweaked(
+            &tmp,
+            FixtureTweaks {
+                extra_encoder_layer: true,
+                ..FixtureTweaks::default()
+            },
+        );
+        let Err(err) = FCPE::from_gguf(&tmp) else {
+            panic!(
+                "an artifact carrying two encoder blocks under a declaration of one must \
+                 not load — binding only the first is a silently truncated encoder"
+            );
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains(GGUF_KEY_N_LAYERS),
+            "the refusal must name the axis that disagrees: {msg}",
+        );
+        assert!(
+            msg.contains('2'),
+            "the refusal must state how many blocks the artifact actually carries: {msg}",
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A declared `n_layers` larger than the layer set present is refused too
+    /// — and by the cross-check, which names the axis, rather than by a
+    /// downstream tensor lookup that only names one absent tensor.
+    #[test]
+    fn fcpe_declared_depth_above_the_carried_depth_is_loud() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-overstated-depth-{}.gguf",
+            std::process::id()
+        ));
+        write_synthetic_fcpe_gguf_tweaked(
+            &tmp,
+            FixtureTweaks {
+                stamped_n_layers: Some(3),
+                ..FixtureTweaks::default()
+            },
+        );
+        let Err(err) = FCPE::from_gguf(&tmp) else {
+            panic!("a declaration of three encoder blocks over one must not load");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains(GGUF_KEY_N_LAYERS),
+            "the refusal must name the axis that disagrees: {msg}",
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A metadata-only artifact keeps loading with no axes at all: it carries
+    /// no weights, so the v001 reference values reach nothing that could be
+    /// read as a measurement.
+    ///
+    /// The strict reader deliberately does not apply here — `frame_times` is
+    /// arithmetic over the timebase and `extract` refuses by name — but the
+    /// two paths must not drift, so this pins which one a weightless artifact
+    /// takes.
+    #[test]
+    fn metadata_only_artifact_uses_the_lenient_reader() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-lenient-skeleton-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, GgufBuilder::new().to_bytes().unwrap()).unwrap();
+        let fcpe = FCPE::from_gguf(&tmp).expect("a weightless GGUF must still load");
+        assert!(!fcpe.has_real_weights());
+        assert_eq!(*fcpe.config(), FcpeConfig::default_v001());
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1574,7 +2362,9 @@ mod tests {
         );
         let bytes = std::fs::read(&wav).expect("read WAV");
         let samples = parse_pcm16_wav_16k_mono(&bytes).expect("PCM16 mono @ 16 kHz");
-        let frames = fcpe.extract(&samples, 16_000);
+        let frames = fcpe
+            .extract(&samples, 16_000)
+            .expect("a real GGUF at its declared rate must produce a real track");
         assert!(!frames.is_empty(), "extract must emit frames");
         for f in frames {
             assert!(f.hz.is_finite() && f.hz >= 0.0);

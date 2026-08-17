@@ -2,9 +2,9 @@
 
 [English](README.md) | **日本語**
 
-**Vokra** は、音声 AI — TTS・ASR・Speech-to-Speech・ボイスコンバージョン・
-話者識別・VAD — に特化した Rust 製推論ランタイムです。音声ワークロード向けの
-ONNX / ONNX Runtime 代替として構築されています。
+**Vokra** は、オーディオ AI — TTS・ASR・Speech-to-Speech・話者識別・VAD・
+音楽生成・音源分離・音響理解 — に特化した Rust 製推論ランタイムです。
+オーディオワークロード向けの ONNX / ONNX Runtime 代替として構築されています。
 
 汎用推論ランタイムは音声モデルに対して慢性的に力不足です。STFT / iSTFT の
 ストリーミング状態、ボコーダの数値精度、ニューラルコーデック (RVQ / FSQ) の
@@ -58,8 +58,11 @@ VAD、話者エンベディング — こういった要素はどれもグラフ
   コーデックデコーダ（DAC、Mimi、WavTokenizer、X-Codec 2）、ビームサーチ /
   CTC / RNN-T デコーディング、ストリーミング KV キャッシュ（paged、
   3D `[time, stream, codebook]`）、VAD、音声強調（AEC / AGC / HPF /
-  loudness-norm / DeepFilterNet3）、話者エンベディング、F0 抽出、客観品質
-  メトリクスを一級 op として持ちます。
+  loudness-norm / DeepFilterNet3 / WPE 残響除去）、話者エンベディング、
+  F0 抽出（YIN / PyIN と neural extractor 群）、逆テキスト正規化、
+  自己教師ありエンコーダ群が共有する ViT 音響エンコーダプリミティブ、
+  客観品質メトリクス（UTMOS、SI-SNR / SI-SDR / SDR、STOI、WER / CER）を
+  一級 op として持ちます。
 - **一級バックエンドとしての CPU** とランタイム ISA ディスパッチ: x86-64 は
   SSE2 baseline から AVX2、AVX-512F/DQ/BW/VL、AVX-512 VNNI/BF16、AVX-VNNI
   256-bit、AMX まで。ARM64 は NEON、fp16 演算、dotprod (SDOT/UDOT)、i8mm、
@@ -89,9 +92,15 @@ VAD、話者エンベディング — こういった要素はどれもグラフ
 
 ## 対応モデル
 
-Vokra は以下のモデルのネイティブ実装を同梱します。Weight ローダとトークナイザ
-はランタイムに組み込まれており、GGUF ファイルを生成するコンバータは
-`vokra-convert` クレートに含まれます。
+Vokra は以下のモデルのネイティブ実装を同梱します。forward pass は Rust で、
+weight ローダとトークナイザはランタイムに組み込まれており、GGUF ファイルを
+生成するコンバータは `vokra-convert` クレートに含まれます。受け付ける
+`--model` kind の権威ある一覧は `vokra-cli convert --help` です。
+
+もう一つ、より大きなアーキテクチャ群は、コンバータ・GGUF ローダ・厳格な
+アーキテクチャ検証までが land 済みで forward pass のみ deferred です。これらは
+[loud partial](#forward-pass-が-deferred-のアーキテクチャ) として別掲しており、
+黙って誤答することはありません — 名前を挙げて拒否します。
 
 **ASR**
 - Whisper — `base`、`small`、`medium`、`large-v3`、`turbo`
@@ -100,6 +109,9 @@ Vokra は以下のモデルのネイティブ実装を同梱します。Weight �
 - omniASR-CTC — 300M / 7B バリアント
 - Charsiu（wav2vec2 CTC）
 - Kyutai STT
+- distil-whisper large-v3.5 / kotoba-whisper（Whisper large-v3 エンコーダ +
+  2 層蒸留デコーダ）
+- Parakeet — TDT-0.6B-v3 / CTC-1.1B（NVIDIA FastConformer）
 - Zipformer / E-Branchformer / Hybrid CTC-Attention デコーダ
 
 **TTS**
@@ -113,6 +125,10 @@ Vokra は以下のモデルのネイティブ実装を同梱します。Weight �
 - VoxCPM-0.5B / VoxCPM2-2B
 - Qwen3-TTS 1.7B
 - Fun-CosyVoice3-0.5B
+- Chatterbox-Multilingual（23 言語ゼロショット）と Turbo / Nano バリアント
+- StyleTTS 2、Dia-1.6B（text-to-dialog）、VibeVoice-1.5B（長尺・多話者）、
+  Zonos-v0.1
+- 日本語: Irodori-TTS（rectified-flow DiT）、ESPnet 系 VITS
 
 **Speech-to-speech（フルデュプレックス）**
 - Sesame CSM-1B
@@ -122,26 +138,71 @@ Vokra は以下のモデルのネイティブ実装を同梱します。Weight �
 - Silero VAD v5（デフォルト）/ v6.2.1
 - FSMN-VAD
 
+**キーワードスポッティング / ウェイクワード**
+- openWakeWord
+- microWakeWord — INT8 forward は `no_std` な `vokra-kws-micro` クレートで
+  動作（Cortex-M55 クロスビルド）。checkpoint からの chain ロードは未配線で、
+  未設定の detector は「何も起きなかった」ではなく拒否を返します
+
 **話者エンベディング / 検証**
 - CAM++（192 次元、ゼロショット音声クローンの入力）
 - TitaNet-L
 - ECAPA-TDNN
 
 **F0 / ピッチ**
-- RMVPE（フロントエンド + デコーダ。内部 U-Net + GRU forward は
-  loud-partial、実 checkpoint 検証待ち）
+- RMVPE（U-Net + BiGRU forward を実装済み。実 checkpoint に対する
+  テンソル名の走査は未検証で、ブロックを 1 つも見つけられなければ
+  loud に拒否します）
 - FCPE（実 Conformer forward）
 - CREPE（実 6-block CNN、5 モデルサイズ）
+- YIN / PyIN — weight 不要の DSP、checkpoint 不要
+  （`vokra-cli f0 --algo yin|pyin`）
 
 **ニューラルコーデック**
 - DAC（24 kHz）、Mimi、WavTokenizer、X-Codec 2（研究用途のみ、
   CC-BY-NC-4.0）
 
 **音声強調**
-- DeepFilterNet3、AEC、AGC、HPF、loudness normalization
+- DeepFilterNet3、NSNet2、DTLN-AEC、AGC、HPF、loudness normalization
+- WPE 残響除去（weight 不要、`fgnt/nara_wpe` からの転写）
+
+**ボコーダ**
+- HiFi-GAN、および `vokra-ops` 側の HiFTNet / iSTFT head・BigVGAN 系
+  anti-aliased upsampling プリミティブ
+
+**テキスト正規化・句読点復元**
+- CT-Transformer 句読点復元
+- WeTextProcessing — 逆テキスト正規化 / テキスト正規化
+
+**ダイアライゼーション**
+- pyannote segmentation-3.0（PyanNet VAD / 話者セグメンテーション backbone）
 
 **客観品質**
 - UTMOS22-strong
+
+### forward pass が deferred のアーキテクチャ
+
+以下のファミリはコンバータ・GGUF ローダ・厳格なアーキテクチャタグ検証まで
+land 済みで、forward pass は **loud partial** です。もっともらしい誤答では
+なく、欠けているプリミティブと、それを規定する上流ソースを名指しした
+エラーを返します。プリミティブが揃い実 checkpoint で検証された時点で利用可能に
+なります。黙って動くことはありません。
+
+- **音楽生成・解析** — MusicGen、MAGNeT、MelodyFlow、JASCO、AudioGen、
+  AudioLDM2、MT3 採譜、Beat-This ビートトラッキング
+- **音源分離** — Demucs、SepFormer、Conv-TasNet
+- **音響表現エンコーダ** — ATST / EAT / M2D / MAEST（Beat-This と併せて
+  `vokra_ops::vit` プリミティブを共有する 5 件）、および W2V-BERT-2
+  （Conformer 系で deferred 理由が別）、WavLM、CLAP
+- **音響タグ付け・分類** — PANNs、ディープフェイク検出、言語識別、emotion2vec
+- **品質評価** — UTMOSv2、NISQA、TorchAudio-SQUIM、DNSMOS P.808 / P.835
+- **ASR** — Canary-1B-Flash、Parakeet-TDT-1.1B、GigaAM、Whisper-Medusa、
+  FireRed-AED、Moonshine、SenseVoiceSmall
+- **VAD・ターンテイキング** — TEN-VAD、FireRed-VAD、smart-turn
+- **強調** — GTCRN、StoRM、facebook-denoiser
+- **話者** — ReDimNet、3D-Speaker ERes2Net、Sortformer ダイアライゼーション
+- **その他** — AudioSR 超解像、DiffSinger 歌声合成、ChatTTS、Voila、
+  SNAC / Vocos / BigVGAN のコーデック・ボコーダヘッド
 
 ライセンスの詳細は [`docs/license-audit.md`](docs/license-audit.md) を、
 そこから導かれる配布規則は [`docs/legal-compliance.md`](docs/legal-compliance.md)

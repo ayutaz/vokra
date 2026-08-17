@@ -49,8 +49,12 @@
 //! VibeVoice / WeSpeaker / emotion2vec / neucodec contract). Real-weight
 //! parity binding is a follow-up wave gated on the upstream tensor-name
 //! manifest fetch + license §3.1 sign-off (`docs/license-audit.md`);
-//! this converter passes every float tensor through unchanged so a
-//! future `FireredAsrAedLWeights::from_gguf` can walk the same names.
+//! this converter passes every float tensor through unchanged, and the
+//! runtime binder `vokra_models::firered_asr_aed` walks those names for
+//! real: it carries `ARCH = "firered_asr_aed_l"` matching this
+//! converter's stamp, and the weight entry point is
+//! `FireredAsrAedWeights::from_gguf` (note: no `L` in the type name).
+//! Its forward is loud-partial; the binder itself is not deferred.
 //!
 //! # Prep script bridge
 //!

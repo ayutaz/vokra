@@ -20,8 +20,9 @@
 //! 2026-08-01 — verified via `https://huggingface.co/api/models/
 //! charactr/vocos-mel-24khz` + `.../vocos-encodec-24khz`); callers
 //! pre-flatten to safetensors offline via
-//! `tools/parity/vocos_prepare_checkpoint.py` (a thin wrapper over
-//! `tools/parity/bin_to_safetensors.py` — the same pattern
+//! `tools/parity/bin_to_safetensors.py`. A dedicated
+//! `tools/parity/vocos_prepare_checkpoint.py` thin wrapper over it is
+//! **not yet written** — the same pattern
 //! SpeechT5-HiFi-GAN / DeBERTa v3 large / VoxCPM-0.5B use, and the
 //! reason is the same: Vokra's Rust converter is safetensors-only by
 //! design so the runtime never grows a pickle parser, keeping the

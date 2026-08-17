@@ -196,8 +196,10 @@ pub struct PyannoteSegmentationReport {
 /// upstream state_dict name; the `vokra.provenance.*` +
 /// `vokra.model.*` + `vokra.pyannote.*` chunk groups pin the upstream
 /// repo, weight license, model category and PyanNet hparams so the
-/// future runtime binder (`crates/vokra-models/src/pyannote/`) can
-/// bring the graph up without a side-car config lookup.
+/// runtime binder (`crates/vokra-models/src/pyannote/`) can bring the
+/// graph up without a side-car config lookup. That binder has landed:
+/// `PyanNetConfig::from_gguf`, `PyanNetWeights::from_gguf` and
+/// `PyanNet::from_gguf` all read these chunks for real.
 ///
 /// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
 /// mechanism `lib.rs::convert_file_licensed` uses when the

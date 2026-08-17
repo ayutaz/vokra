@@ -7,7 +7,10 @@
 //! - `convert` — delegate to the offline `vokra-convert` library
 //!   (checkpoint → GGUF);
 //! - `bench` — measure RTF / TTFA / jitter / p50-p95-p99 with `std::time` and,
-//!   with `--baseline`, a >5% relative regression gate (NFR-PF-13).
+//!   with `--baseline`, a >5% relative regression gate (NFR-PF-13);
+//! - `f0` — checkpoint-free pitch extraction (YIN / PyIN). Separate from
+//!   `run` because those two ops carry no weights, so there is no `--model`
+//!   for a caller to pass.
 //!
 //! Argument parsing is hand-written (no clap/getopts — external deps are
 //! forbidden, NFR-DS-02), mirroring `vokra-convert`. The whole crate is
@@ -16,6 +19,7 @@
 mod bench;
 mod convert;
 mod engine;
+mod f0;
 mod report;
 mod run;
 mod wav;
@@ -26,7 +30,7 @@ const USAGE: &str = "\
 vokra-cli — Vokra speech runtime CLI (M1-10a)
 
 USAGE:
-    vokra-cli <run|convert|bench> [options]
+    vokra-cli <run|convert|bench|f0> [options]
 
 SUBCOMMANDS:
     run       load a GGUF and run its task (VAD probs / ASR text / TTS audio,
@@ -34,6 +38,8 @@ SUBCOMMANDS:
     convert   convert an upstream checkpoint to a Vokra GGUF (offline tool,
               incl. --model sbv2 / deberta-v2 / deberta-v3)
     bench     measure RTF / TTFA / jitter / p50-p95-p99, optional regression gate
+    f0        checkpoint-free pitch extraction (YIN / PyIN — no --model, no
+              weights; the neural rmvpe / fcpe / crepe route is `run`)
 
 Run `vokra-cli <subcommand> --help` for that subcommand's options.
 ";
@@ -53,6 +59,9 @@ fn main() -> ExitCode {
         "run" => run::main(rest),
         "convert" => convert::main(rest),
         "bench" => bench::main(rest),
+        // Its own subcommand, not a `run --task`: `run` requires a `--model`
+        // GGUF, and YIN / PyIN carry no weights at all. See the module docs.
+        "f0" => f0::main(rest),
         other => {
             eprintln!("error: unknown subcommand `{other}`\n\n{USAGE}");
             return ExitCode::from(2);

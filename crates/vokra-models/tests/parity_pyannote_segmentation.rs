@@ -40,8 +40,9 @@
 //! dump of the upstream forward:
 //!
 //! ```text
-//! # tools/parity/pyannote_dump_reference.py (Wave 3 follow-up)
-//! # Runs the upstream pyannote-audio SpeakerDiarization pipeline on
+//! # a future tools/parity/pyannote_dump_reference.py (not yet written
+//! # — Wave 3 follow-up). It would run the upstream pyannote-audio
+//! # SpeakerDiarization pipeline on
 //! # a fixed reference clip (e.g. tests/fixtures/audio/jfk-10s.wav)
 //! # and dumps:
 //! #   - powerset_logits.npy  # [num_frames, 7] float32 pre-softmax

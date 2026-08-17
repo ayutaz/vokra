@@ -26,8 +26,10 @@
 //!
 //! GGUF tensor names are the **upstream HF safetensors keys verbatim**
 //! (sibling to musicgen_medium / audiogen_medium / audioldm2 — the
-//! runtime `vokra-models::jasco` future binder can rely on the
-//! upstream key set without a rename layer).
+//! runtime binder `vokra_models::jasco` relies on the upstream key set
+//! without a rename layer). That binder has landed: it carries
+//! `ARCH = "jasco_400m_chords_drums"` matching this converter's stamp,
+//! and `JascoWeights::from_gguf` walks these names for real.
 //!
 //! # No ONNX (permanent)
 //!

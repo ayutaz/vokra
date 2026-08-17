@@ -85,23 +85,22 @@
 //!
 //! [`convert_neucodec_file`] is the M0-era backward-compat entry
 //! that always writes [`NeucodecVariant::Base`] (thin wrapper over
-//! [`convert_neucodec_variant_file`] — byte-identical output).
-//! [`convert_neucodec_variant_file`] takes an explicit variant; the
-//! `vokra-cli convert` path picks it slug-driven via
-//! `convert_file_with_slug` (BigVGan / Focalcodec pattern). The
-//! module-level `#[allow(dead_code)]` below is temporary and removed
-//! once a caller starts using the newly-exposed `pub const`
-//! `DEFAULT_LICENSE_SPDX` / [`CATEGORY`] / [`KEY_NEUCODEC_VARIANT`]
-//! items.
-
-// Skeleton-only allowance: the public API (`convert_neucodec_file`,
-// `convert_neucodec_variant_file`, `NeucodecReport`, `NeucodecVariant`,
-// `KEY_*` / `MODEL_CATEGORY` / `UPSTREAM_HF` / `DEFAULT_LICENSE_SPDX`)
-// is exercised by the in-module tests + lib.rs `convert_file` /
-// `convert_file_with_slug` dispatch; this attribute is removed once
-// the runtime `NeucodecWeights::from_gguf` binding lands and starts
-// consuming the variant discriminator directly.
-#![allow(dead_code)]
+//! [`convert_neucodec_variant_file`] — byte-identical output). It is
+//! reached from `convert_file_licensed`. [`convert_neucodec_variant_file`]
+//! takes an explicit variant and is reached from `convert_file_with_slug`,
+//! which picks the variant slug-driven (BigVGan / Focalcodec pattern).
+//!
+//! Because both entry points are live, this module carries no
+//! module-wide dead-code allowance: a blanket one on a wired module
+//! would swallow a genuine regression instead of surfacing it at the
+//! workspace `-D warnings` gate. Two items are unreachable from
+//! non-test code **today** and carry an item-level allowance instead —
+//! the `NAME` and `UPSTREAM_HF` backward-compat aliases, superseded by
+//! [`NeucodecVariant::name`] and [`NeucodecVariant::upstream_hf`],
+//! which every live stamp site now goes through. (`super::focalcodec`
+//! holds the same posture for its own two aliases.) Drop each
+//! allowance when a caller starts reading that alias — or drop the
+//! alias.
 
 use std::path::Path;
 
@@ -127,6 +126,11 @@ pub const ARCH: &str = "neucodec";
 /// `vokra.model.name` value written for the canonical
 /// `neuphonic/neucodec` GGUF (backward-compat alias — new callers
 /// should use [`NeucodecVariant::name`]).
+///
+/// Unreachable from non-test code today: every stamp site goes through
+/// [`NeucodecVariant::name`]. Kept as the documented alias for the
+/// canonical release name (mirror of `super::focalcodec::NAME`).
+#[allow(dead_code)]
 pub(crate) const NAME: &str = "neucodec";
 
 /// `vokra.model.category` value written for every Neucodec GGUF.
@@ -154,6 +158,12 @@ pub const KEY_NEUCODEC_VARIANT: &str = "vokra.neucodec.variant";
 /// Upstream HF repository slug (`org/name`) for the canonical
 /// `NeucodecVariant::Base` release (backward-compat alias — new
 /// callers should use [`NeucodecVariant::upstream_hf`]).
+///
+/// Unreachable from non-test code today: the `vokra.provenance.upstream_hf`
+/// stamp goes through [`NeucodecVariant::upstream_hf`]. Kept as the
+/// documented alias for the canonical release slug (mirror of
+/// `super::focalcodec::UPSTREAM_HF`).
+#[allow(dead_code)]
 pub(crate) const UPSTREAM_HF: &str = "neuphonic/neucodec";
 
 /// Which Neucodec release the caller is converting. Selects the

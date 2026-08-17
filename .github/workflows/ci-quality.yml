@@ -234,6 +234,10 @@ jobs:
         run: |
           bash scripts/check-m5-residual-no-abi.sh --self-test
           bash scripts/check-m5-residual-no-abi.sh
+      - name: M5-residual blocker column honesty (self-test, then check)
+        run: |
+          bash scripts/check-m5-residual-blockers.sh --self-test
+          bash scripts/check-m5-residual-blockers.sh
       - name: Rust public-API surface (self-test, then snapshot compare)
         run: |
           bash scripts/rust-public-api-list.sh --self-test
@@ -970,6 +974,13 @@ jobs:
           run "publish/signoff_match"         python3 scripts/publish/signoff_match.py   --self-test
           run "publish/publish-one"           bash scripts/publish/publish-one.sh        --self-test
           run "publish/x10-mirror-librispeech" bash scripts/publish/x10-mirror-librispeech.sh --self-test
+          # A Claude Code PreToolUse hook rather than a repo gate, but its
+          # --self-test belongs here for a reason CI is uniquely able to give:
+          # the hook runs on the maintainer's macOS box and sizes files with
+          # BSD `stat -f`, falling back to GNU `stat -c`. Only a Linux runner
+          # exercises that fallback. If it ever breaks, every size check
+          # silently reports 0 bytes and the guard stops guarding.
+          run "claude-hooks/guard-local-memory" bash scripts/claude-hooks/guard-local-memory.sh --self-test
           echo
           if [ "${fail}" -ne 0 ]; then
               echo "One or more --self-test invocations FAILED (see per-block output above)."

@@ -46,8 +46,9 @@
 //! converter does not rename e.g. `deberta.encoder.layer.0.attention.self.
 //! query_proj.weight`-shaped HF names to the `bert.encoder.layer.0.attn.wq.
 //! weight`-shaped names `DebertaV2Encoder::from_gguf` reads. Building that
-//! mapping table honestly requires a real checkpoint header dump
-//! (`tools/parity/deberta_v2_prepare_checkpoint.py`, Task 30) — HF's actual
+//! mapping table honestly requires a real checkpoint header dump (a future
+//! `tools/parity/deberta_v2_prepare_checkpoint.py`, not yet written —
+//! Task 30) — HF's actual
 //! `DebertaV2Encoder` also computes `rel_embeddings` **once per encoder**
 //! rather than once per layer, which may or may not match what
 //! `DebertaV2Encoder::from_gguf` currently expects (a question Task 30's

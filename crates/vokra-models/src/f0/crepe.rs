@@ -27,17 +27,25 @@
 //!   folding the Keras `BatchNormalization` to a per-channel affine at load
 //!   (`scale = γ/√(σ² + ε)`, `shift = β − μ·scale`) — the same offline fold
 //!   posture as `crate::speaker::weights` and the DAC / UTMOS out-projections.
-//! - [`CREPE::extract`] runs the real forward: 512-sample zero-pad ("center"
-//!   frames), per-frame mean/std normalization, 6 × (Conv2D → BN → ReLU →
-//!   MaxPool), Permute + Flatten, Dense(360) + sigmoid, then local-average
-//!   cents decode → Hz.
+//! - [`CREPE::extract`] / [`CREPE::extract_real`] (the former delegates to
+//!   the latter) run the real forward: 512-sample zero-pad ("center" frames),
+//!   per-frame mean/std normalization, 6 × (Conv2D → BN → ReLU → MaxPool),
+//!   Permute + Flatten, Dense(360) + sigmoid, then local-average cents decode
+//!   → Hz. Both are fallible, and the two failure modes are distinct, named
+//!   errors: an unbound weight set is one, a non-[`NATIVE_SAMPLE_RATE`] input
+//!   is the other. Neither is ever answered with a zero-filled track
+//!   (FR-EX-08). This mirrors [`super::rmvpe`] exactly, so the F0 family
+//!   reads the same way at every call site.
+//! - [`CREPE::frame_times`] returns the per-hop timestamps **only**, as bare
+//!   `f32` seconds, for callers that just need to size or align a buffer. It
+//!   runs no model, measures no pitch, and cannot be mistaken for a track.
 //!
 //! # Frame-count contract
 //!
-//! `extract(&pcm, sr).len()` still equals `pcm.len() / hop` (hop=160 by
-//! default = 10 ms @ 16 kHz) — the skeleton contract every downstream
-//! consumer already sizes its buffers around is preserved by the real
-//! forward.
+//! `extract(&pcm, sr)?.len()` equals `pcm.len() / hop` (hop=160 by default =
+//! 10 ms @ 16 kHz), and `frame_times(pcm.len(), sr).len()` equals the same —
+//! the contract every downstream consumer already sizes its buffers around
+//! holds across both entry points.
 //!
 //! # No ONNX (permanent)
 //!
@@ -59,6 +67,16 @@ use crate::compute::Compute;
 /// `crepe.predict(..., step_size=10)` default at the canonical 16 kHz input
 /// rate (10 ms → 160 samples).
 pub const DEFAULT_HOP: u32 = 160;
+
+/// The only PCM sample rate the CREPE CNN is defined at.
+///
+/// Upstream `crepe/core.py` frames 1024 samples of **16 kHz** audio per
+/// estimate and maps the classifier's 360 bins onto a cent grid anchored to
+/// that rate, so the network is not rate-agnostic. `crepe.predict` hides this
+/// by resampling internally; Vokra refuses instead (FR-EX-08 — never a silent
+/// resample), which is why [`CREPE::extract_real`] takes the caller's rate and
+/// compares it against this constant.
+pub const NATIVE_SAMPLE_RATE: u32 = 16_000;
 
 /// Default lower bound of the pitch search grid (Hz). Matches the upstream
 /// CREPE classifier's low log-frequency edge.
@@ -296,11 +314,14 @@ impl CREPE {
     ///
     /// Weight tensors, if present, are bound and BN-folded (see
     /// `CrepeWeights::from_gguf`); an artifact carrying only the four
-    /// metadata keys but no weights loads with `weights = None` and
-    /// [`extract`](Self::extract) will emit an honest UNIMPLEMENTED frame track
-    /// (`hz = 0.0`, `voiced = false`, `confidence = 0.0`) preserving the
-    /// frame-count contract. This keeps the metadata-only GGUFs the earlier
-    /// skeleton wrote in valid.
+    /// metadata keys but no weights still loads, with `weights = None`, so the
+    /// metadata-only GGUFs the earlier skeleton wrote stay valid
+    /// ([`has_real_weights`](Self::has_real_weights) then reports `false`).
+    /// Such a handle cannot measure pitch:
+    /// [`extract`](Self::extract) / [`extract_real`](Self::extract_real)
+    /// refuse it loudly rather than answering with a zero-filled track, and
+    /// [`frame_times`](Self::frame_times) is the entry point for a caller
+    /// that only wants the per-hop timestamps.
     ///
     /// Returns [`LoadError`] if the path cannot be opened / parsed, or if a
     /// key is present with the wrong type / a weight tensor is malformed.
@@ -346,45 +367,134 @@ impl CREPE {
         })
     }
 
-    /// Extracts a per-hop F0 track from `pcm`.
+    /// Returns `true` when weight tensors were bound at load time — i.e.
+    /// [`extract_real`](Self::extract_real) can actually run.
     ///
-    /// The real forward runs when weights were bound at load time
-    /// ([`Self::from_gguf`] populated the [`CrepeWeights`] bundle); a
-    /// metadata-only GGUF stays in the honest UNIMPLEMENTED path and
-    /// emits `hz = 0.0` / `voiced = false` / `confidence = 0.0` frames on
-    /// the same per-hop timebase (the frame-count contract the skeleton
-    /// enforced).
+    /// A metadata-only GGUF (the pre-weights skeleton artifacts) binds with
+    /// `false`. Callers that want to branch rather than handle the error can
+    /// gate on this first.
+    pub fn has_real_weights(&self) -> bool {
+        self.weights.is_some()
+    }
+
+    /// Extracts a per-hop F0 track from `pcm` by running the real CREPE
+    /// forward.
     ///
-    /// Upstream `crepe.predict` accepts arbitrary sample rates and
-    /// resamples to 16 kHz first. This forward assumes `sample_rate ==
-    /// 16000` — a non-16 kHz caller is honest-refused when weights are
-    /// bound (no silent resample, FR-EX-08); the metadata-only path
-    /// ignores it (the frame timestamps still divide by `sr` so a
-    /// non-zero rate keeps `time_sec` finite).
-    pub fn extract(&self, pcm: &[f32], sample_rate: u32) -> Vec<F0Frame> {
+    /// This is a straight delegation to [`extract_real`](Self::extract_real)
+    /// — identical behaviour, identical errors. It exists so the obvious
+    /// name on a loaded model is the one that measures pitch, matching
+    /// [`super::rmvpe::RMVPE::extract`].
+    ///
+    /// # History
+    ///
+    /// Before 2026-08-15 this name returned `Vec<F0Frame>` and answered TWO
+    /// different failures with the same all-zero track: no weights bound,
+    /// and weights bound but `sample_rate != 16000`. A caller with a real
+    /// checkpoint handing it 44.1 kHz audio got a frame-count-correct track
+    /// of zeros — indistinguishable from "this audio is entirely unvoiced",
+    /// and silently wrong pitch flows downstream into a vocoder or a VC
+    /// pipeline. The timebase-only half of that behaviour now lives in
+    /// [`frame_times`](Self::frame_times), which returns timestamps and
+    /// nothing that could be read as a pitch estimate.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`extract_real`](Self::extract_real)'s errors verbatim —
+    /// see that method for the list.
+    pub fn extract(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, vokra_core::VokraError> {
+        self.extract_real(pcm, sample_rate)
+    }
+
+    /// Runs the **real** CREPE forward on `pcm` and returns a per-hop F0
+    /// track (`frames.len() == pcm.len() / hop`).
+    ///
+    /// Reachable both under this name and as [`extract`](Self::extract),
+    /// which delegates here verbatim.
+    ///
+    /// It is fallible on purpose: a frame-count-correct all-zero track is
+    /// indistinguishable downstream from "this audio is entirely unvoiced",
+    /// so neither failure mode below is ever answered with one (FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// - [`vokra_core::VokraError::ModelLoad`] when the GGUF carried no
+    ///   weight tensors — a metadata-only artifact, for which
+    ///   [`has_real_weights`](Self::has_real_weights) reports `false`. Use
+    ///   [`frame_times`](Self::frame_times) if the per-hop timestamps were
+    ///   all that was wanted.
+    /// - [`vokra_core::VokraError::InvalidArgument`] when `sample_rate` is
+    ///   not [`NATIVE_SAMPLE_RATE`]. Upstream `crepe.predict` resamples
+    ///   internally; Vokra names both the rate it received and the rate it
+    ///   needs, and asks the caller to resample offline.
+    ///
+    /// Each error names what it got versus what it needs, so the two are
+    /// never confused for one another at the call site.
+    pub fn extract_real(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, vokra_core::VokraError> {
+        let Some(weights) = self.weights.as_ref() else {
+            return Err(vokra_core::VokraError::ModelLoad(format!(
+                "crepe: no weight tensors were bound from this GGUF (metadata-only \
+                 artifact — `conv1.weight` is absent), so the {} CNN cannot run; \
+                 convert a real marl/crepe checkpoint with `vokra-cli convert --model \
+                 crepe --config <config.json>`, or call `frame_times` if only the \
+                 per-hop timestamps are wanted (FR-EX-08: never a zero-filled track)",
+                self.cfg.capacity.as_tag(),
+            )));
+        };
+        if sample_rate != NATIVE_SAMPLE_RATE {
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "crepe: got {sample_rate} Hz PCM but the CREPE CNN is defined only at \
+                 {NATIVE_SAMPLE_RATE} Hz (its 1024-sample analysis frame and 360-bin \
+                 cent grid are anchored to that rate) — resample offline and call \
+                 again; Vokra never silently resamples (FR-EX-08)"
+            )));
+        }
         let hop = self.cfg.hop.max(1) as usize;
-        // `sample_rate == 0` would be a nonsense input; guard it so the
-        // timestamp column stays finite (`0.0`) rather than NaN / ±inf.
-        let sr = (sample_rate as f32).max(1.0);
+        // `sample_rate` is pinned to NATIVE_SAMPLE_RATE above, so it is
+        // non-zero and the timestamp column cannot go NaN / ±inf here.
+        let sr = sample_rate as f32;
         let n_frames = pcm.len() / hop;
         let compute = Compute::cpu();
+        self.extract_full(pcm, weights, hop, sr, n_frames, &compute)
+    }
 
-        match self.weights.as_ref() {
-            Some(w) if sample_rate == 16_000 => {
-                self.extract_full(pcm, w, hop, sr, n_frames, &compute)
-            }
-            _ => (0..n_frames)
-                .map(|i| F0Frame {
-                    time_sec: (i * hop) as f32 / sr,
-                    hz: 0.0,
-                    voiced: false,
-                    confidence: 0.0,
-                })
-                .collect(),
-        }
+    /// Returns the analysis timestamps [`extract`](Self::extract) will emit
+    /// for a PCM buffer of `pcm_len` samples, in seconds from the start of
+    /// the buffer.
+    ///
+    /// `result.len()` is the frame-count contract (`pcm_len / hop`,
+    /// integer-truncated per [`CrepeConfig::hop`]); `result[i]` is the
+    /// hop-aligned left edge of frame `i`. A `sample_rate` of `0` is clamped
+    /// to `1` so the column stays finite rather than `NaN` / `±inf`.
+    ///
+    /// This runs no weights and cannot fail: it is pure arithmetic over the
+    /// config, for callers that need to size or align a buffer before (or
+    /// without) running the forward — including holders of a metadata-only
+    /// GGUF. It deliberately does **not** return [`F0Frame`]: a frame carries
+    /// `hz` / `voiced` / `confidence` columns this method has no evidence
+    /// for, and emitting zeros there is exactly the fabricated track the
+    /// 2026-08-15 fix removed. Mirrors
+    /// [`super::rmvpe::RMVPE::frame_times`].
+    pub fn frame_times(&self, pcm_len: usize, sample_rate: u32) -> Vec<f32> {
+        let hop = self.cfg.hop.max(1) as usize;
+        let n_frames = pcm_len / hop;
+        let sr = (sample_rate as f32).max(1.0);
+        (0..n_frames).map(|i| (i * hop) as f32 / sr).collect()
     }
 
     /// The real CNN forward — one frame per hop.
+    ///
+    /// Propagates any [`vokra_core::VokraError`] the per-frame forward
+    /// raises rather than panicking: the shape invariants are checked at
+    /// load time, but an error channel already exists here so there is no
+    /// reason to turn a surprise into an abort.
     fn extract_full(
         &self,
         pcm: &[f32],
@@ -393,7 +503,7 @@ impl CREPE {
         sr: f32,
         n_frames: usize,
         compute: &Compute,
-    ) -> Vec<F0Frame> {
+    ) -> Result<Vec<F0Frame>, vokra_core::VokraError> {
         // Pre-pad by FRAME_LEN/2 so frame 0 is centered on `pcm[0]`
         // (upstream `crepe.core.get_activation`, `center=True` default).
         // The frame count is derived from the ORIGINAL PCM length so the
@@ -408,9 +518,7 @@ impl CREPE {
         for i in 0..n_frames {
             let start = i * hop;
             let frame = &buf[start..start + FRAME_LEN];
-            let activation = self
-                .forward_one(frame, w, compute)
-                .expect("crepe forward: bounds errors are impossible on validated weights");
+            let activation = self.forward_one(frame, w, compute)?;
             let (cents, confidence) = local_average_cents(&activation, &self.cents_mapping);
             // cents == f32::NAN when the entire activation is zero — upstream
             // returns `nan_to_num(0)`; we mirror that so the caller sees
@@ -428,7 +536,7 @@ impl CREPE {
                 confidence,
             });
         }
-        frames
+        Ok(frames)
     }
 
     /// Runs the 6-block CNN + Dense classifier on a single 1024-sample frame.
@@ -850,8 +958,10 @@ mod tests {
         );
     }
 
-    /// A metadata-only GGUF (no weight tensors) still loads, staying in the
-    /// honest UNIMPLEMENTED path. The frame-count contract is preserved.
+    /// A metadata-only GGUF (no weight tensors) still loads, and
+    /// `frame_times` still honors the frame-count contract — but it hands
+    /// back bare timestamps, so nothing it returns can be read as a pitch
+    /// estimate (FR-EX-08).
     #[test]
     fn crepe_metadata_only_gguf_frame_count_matches_hop() {
         let tmp = std::env::temp_dir().join(format!(
@@ -862,66 +972,112 @@ mod tests {
         std::fs::write(&tmp, &bytes).unwrap();
 
         let crepe = CREPE::from_gguf(&tmp).expect("load metadata-only GGUF");
-        let pcm = vec![0.0f32; 1_600];
-        let frames = crepe.extract(&pcm, 16_000);
-        assert_eq!(frames.len(), pcm.len() / 160);
-        // Every metadata-only frame must be UNVOICED with 0 Hz — the
-        // fabricated-pass tripwire (FR-EX-08).
-        for f in &frames {
-            assert_eq!(f.hz, 0.0);
-            assert!(!f.voiced);
-            assert_eq!(f.confidence, 0.0);
+        assert!(
+            !crepe.has_real_weights(),
+            "a metadata-only GGUF must not report bound weights",
+        );
+        let pcm_len = 1_600usize;
+        let times = crepe.frame_times(pcm_len, 16_000);
+        assert_eq!(times.len(), pcm_len / 160);
+        for (i, t) in times.iter().enumerate() {
+            let expected = (i * 160) as f32 / 16_000.0;
+            assert!(
+                (t - expected).abs() < 1e-9,
+                "frame {i}: timestamp {t} != {expected}",
+            );
         }
         let _ = std::fs::remove_file(&tmp);
     }
 
-    /// The capacity tag round-trips through the GGUF metadata layer.
+    /// A metadata-only artifact must make `extract_real` fail LOUDLY, and
+    /// with the "nothing bound" class specifically — distinct from the rate
+    /// mismatch below, so a caller can tell the two apart.
     #[test]
-    fn capacity_tag_roundtrip() {
-        for c in [
-            CapacityFactor::Tiny,
-            CapacityFactor::Small,
-            CapacityFactor::Medium,
-            CapacityFactor::Large,
-            CapacityFactor::Full,
-        ] {
-            assert_eq!(CapacityFactor::from_tag(c.as_tag()), Some(c));
-        }
-        assert!(CapacityFactor::from_tag("colossal").is_none());
+    fn crepe_extract_real_refuses_unbound_weights() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-crepe-unbound-weights-{}.gguf",
+            std::process::id(),
+        ));
+        std::fs::write(&tmp, GgufBuilder::new().to_bytes().unwrap()).unwrap();
+        let crepe = CREPE::from_gguf(&tmp).expect("load metadata-only GGUF");
+
+        let pcm = vec![0.1f32; 16 * 160];
+        let Err(err) = crepe.extract_real(&pcm, 16_000) else {
+            panic!("expected an error when no weight tensors were bound, got a track");
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(err, vokra_core::VokraError::ModelLoad(_)),
+            "an unbound weight set is a model-load failure, got: {msg}",
+        );
+        assert!(
+            msg.contains("conv1.weight"),
+            "the error must name the tensor whose absence it detected: {msg}",
+        );
+        let _ = std::fs::remove_file(&tmp);
     }
 
-    /// Local-average-cents matches upstream on a delta activation and on a
-    /// tight symmetric bump.
-    #[test]
-    fn local_average_cents_matches_analytic() {
-        let mut cm = [0.0f32; N_BINS];
-        for (i, v) in cm.iter_mut().enumerate() {
-            *v = CENTS_OFFSET + CENTS_SPAN * (i as f32) / ((N_BINS - 1) as f32);
-        }
-        // Delta at bin 100 → cents == cm[100].
-        let mut a = vec![0.0f32; N_BINS];
-        a[100] = 1.0;
-        let (cents, conf) = local_average_cents(&a, &cm);
-        assert!((cents - cm[100]).abs() < 1e-3);
-        assert!((conf - 1.0).abs() < 1e-6);
-        // Tight symmetric bump at bin 200 → centroid == cm[200].
-        let mut b = vec![0.0f32; N_BINS];
-        b[199] = 0.5;
-        b[200] = 1.0;
-        b[201] = 0.5;
-        let (cents_b, _) = local_average_cents(&b, &cm);
-        assert!((cents_b - cm[200]).abs() < 1e-3);
-    }
-
-    /// Full end-to-end forward on a synthetic 1024-sample sinusoid + fabricated
-    /// weights: exercises every op (conv/BN/ReLU/pool/dense/sigmoid + local-
-    /// average-cents + Hz decode) so a regression in the plumbing is caught
-    /// on CI without a real GGUF.
+    /// Bound weights + a non-16 kHz rate must be a LOUD error naming both
+    /// rates — never a frame-count-correct all-zero track.
     ///
-    /// The fabricated bundle is written to a real GGUF and re-loaded so the
-    /// test also pins the tensor-name schema `from_gguf` expects.
+    /// Regression pin: the pre-2026-08-15 `extract` matched
+    /// `Some(w) if sample_rate == 16_000` and let its `_` arm swallow a
+    /// 44.1 kHz caller into zeros. Downstream (a vocoder, a VC pipeline)
+    /// reads that as "entirely unvoiced" rather than "not measured", so the
+    /// wrongness is silent and confident. Refusing is the point.
     #[test]
-    fn crepe_forward_synthetic_end_to_end() {
+    fn crepe_extract_real_refuses_non_16k_with_bound_weights() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-crepe-rate-mismatch-{}.gguf",
+            std::process::id(),
+        ));
+        write_synthetic_crepe_gguf(&tmp);
+        let crepe = CREPE::from_gguf(&tmp).expect("load synthetic-weight GGUF");
+        assert!(
+            crepe.has_real_weights(),
+            "the synthetic fixture must bind weights for this test to mean anything",
+        );
+
+        let pcm = vec![0.1f32; 16 * 160];
+        let Err(err) = crepe.extract_real(&pcm, 44_100) else {
+            panic!("expected an error at 44.1 kHz with weights bound, got a track");
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(err, vokra_core::VokraError::InvalidArgument(_)),
+            "a rate mismatch is a caller-argument failure, got: {msg}",
+        );
+        assert!(
+            msg.contains("44100"),
+            "the error must name the rate it received: {msg}",
+        );
+        assert!(
+            msg.contains("16000"),
+            "the error must name the rate it needs: {msg}",
+        );
+
+        // The obvious name must refuse too — a lenient `extract` sitting next
+        // to a strict `extract_real` would re-open the exact hole this fix
+        // closed, since `extract` is what a caller reaches for first.
+        let Err(via_extract) = crepe.extract(&pcm, 44_100) else {
+            panic!("`extract` must refuse the same input `extract_real` refuses");
+        };
+        assert_eq!(
+            via_extract.to_string(),
+            msg,
+            "`extract` must delegate to `extract_real` verbatim, not soften it",
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Writes a tiny but structurally complete CREPE GGUF (capacity `tiny`,
+    /// identity BN fold, all-zero classifier weight with the bias biased at
+    /// bin 180) to `path`, and returns the config it encodes.
+    ///
+    /// Shared by every test that needs `has_real_weights() == true`. The
+    /// fabricated bundle goes through a real GGUF round-trip so these tests
+    /// also pin the tensor-name schema `from_gguf` expects.
+    fn write_synthetic_crepe_gguf(path: &Path) -> CrepeConfig {
         let cfg = CrepeConfig::defaults(CapacityFactor::Tiny);
         let filters = cfg.filters();
         let mut b = GgufBuilder::new();
@@ -997,10 +1153,62 @@ mod tests {
         cbias[180] = 1.0;
         add_f32_tensor(&mut b, "classifier.bias", &[N_BINS as u64], cbias);
 
+        std::fs::write(path, b.to_bytes().unwrap()).unwrap();
+        cfg
+    }
+
+    /// The capacity tag round-trips through the GGUF metadata layer.
+    #[test]
+    fn capacity_tag_roundtrip() {
+        for c in [
+            CapacityFactor::Tiny,
+            CapacityFactor::Small,
+            CapacityFactor::Medium,
+            CapacityFactor::Large,
+            CapacityFactor::Full,
+        ] {
+            assert_eq!(CapacityFactor::from_tag(c.as_tag()), Some(c));
+        }
+        assert!(CapacityFactor::from_tag("colossal").is_none());
+    }
+
+    /// Local-average-cents matches upstream on a delta activation and on a
+    /// tight symmetric bump.
+    #[test]
+    fn local_average_cents_matches_analytic() {
+        let mut cm = [0.0f32; N_BINS];
+        for (i, v) in cm.iter_mut().enumerate() {
+            *v = CENTS_OFFSET + CENTS_SPAN * (i as f32) / ((N_BINS - 1) as f32);
+        }
+        // Delta at bin 100 → cents == cm[100].
+        let mut a = vec![0.0f32; N_BINS];
+        a[100] = 1.0;
+        let (cents, conf) = local_average_cents(&a, &cm);
+        assert!((cents - cm[100]).abs() < 1e-3);
+        assert!((conf - 1.0).abs() < 1e-6);
+        // Tight symmetric bump at bin 200 → centroid == cm[200].
+        let mut b = vec![0.0f32; N_BINS];
+        b[199] = 0.5;
+        b[200] = 1.0;
+        b[201] = 0.5;
+        let (cents_b, _) = local_average_cents(&b, &cm);
+        assert!((cents_b - cm[200]).abs() < 1e-3);
+    }
+
+    /// Full end-to-end forward on a synthetic 1024-sample sinusoid + fabricated
+    /// weights: exercises every op (conv/BN/ReLU/pool/dense/sigmoid + local-
+    /// average-cents + Hz decode) so a regression in the plumbing is caught
+    /// on CI without a real GGUF.
+    ///
+    /// The fabricated bundle is written to a real GGUF and re-loaded so the
+    /// test also pins the tensor-name schema `from_gguf` expects.
+    #[test]
+    fn crepe_forward_synthetic_end_to_end() {
         let path =
             std::env::temp_dir().join(format!("vokra-crepe-forward-{}.gguf", std::process::id(),));
-        std::fs::write(&path, b.to_bytes().unwrap()).unwrap();
+        write_synthetic_crepe_gguf(&path);
         let crepe = CREPE::from_gguf(&path).expect("load forward test GGUF");
+        assert!(crepe.has_real_weights(), "the fixture binds a weight set");
 
         // Non-trivial waveform (a chirp) so per-frame normalization is real.
         let mut pcm = vec![0.0f32; 16 * 160]; // 16 frames' worth
@@ -1008,7 +1216,9 @@ mod tests {
             let t = i as f32 / 16_000.0;
             *v = (2.0 * std::f32::consts::PI * (200.0 + 800.0 * t) * t).sin() * 0.3;
         }
-        let frames = crepe.extract(&pcm, 16_000);
+        let frames = crepe
+            .extract_real(&pcm, NATIVE_SAMPLE_RATE)
+            .expect("bound weights at the native rate must produce a real track");
         assert_eq!(frames.len(), 16);
         // sigmoid(1.0) ≈ 0.731. With classifier.weight = 0 the flat vector
         // never contributes, so every frame's peak activation ≈ sigmoid(1.0)

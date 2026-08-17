@@ -220,6 +220,13 @@ mod tests {
         use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
 
         let mut b = GgufBuilder::new();
+        // Arch stamp — `PyanNetWeights::from_gguf` gates on it before any
+        // tensor scan, and this fixture must reach `LinearStack::
+        // from_weights`'s missing-tensor error (FR-EX-08).
+        b.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            crate::pyannote::EXPECTED_ARCH,
+        );
         b.add_tensor(
             "sincnet.conv1d.0.weight",
             GgmlType::F32,

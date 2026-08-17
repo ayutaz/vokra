@@ -57,12 +57,62 @@
 
 use std::sync::Arc;
 
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{AsrEngine, BackendKind, Result, Transcription, VokraError};
 
 use super::asr_head::{MISTRAL_BOS_ID, MISTRAL_EOS_ID};
 use super::beam_search::{BeamConfig, BeamResult};
 use super::tokenizer::TranscriptionPrompt;
 use super::{AsrHead, VoxtralModel, VoxtralTokenizer};
+
+/// The `vokra.model.arch` value a Voxtral GGUF must carry.
+///
+/// Mirror of `crates/vokra-convert/src/models/voxtral.rs::ARCH` — the
+/// converter owns the writer contract, this module owns the reader
+/// contract (the deliberate two-copies convention [`crate::pyannote`]
+/// documents; a compile-time check would need `vokra-convert` in
+/// `vokra-models`'s dependency graph, which the workspace pins forbid).
+///
+/// **One tag covers both size variants.** The converter stamps this same
+/// string for Voxtral-Mini-3B and Voxtral-Small-24B (two `add_string`
+/// sites, one constant) — the size axes ride the `vokra.voxtral.*` hparam
+/// chunk, not the arch tag. What the tag *does* separate is the sibling
+/// "Whisper-encoder + LLM-decoder" family: `canary-qwen`,
+/// `llama-omni2`, `granite-speech`, `kimi-audio` all wrap a
+/// Whisper-shaped audio tower in a different text decoder and carry their
+/// own tags.
+pub const EXPECTED_ARCH: &str = "voxtral";
+
+/// Rejects a GGUF whose `vokra.model.arch` is absent or is not
+/// [`EXPECTED_ARCH`].
+///
+/// A *loud* validation step (FR-EX-08): the Voxtral audio tower shares
+/// Whisper's tensor shapes verbatim (it reuses
+/// `crate::whisper::scratch::encoder_block`), so a Whisper-lineage GGUF
+/// handed here would bind the encoder half and then decode against a
+/// decoder that was never populated — confident, meaningless transcript
+/// text rather than a load failure.
+fn verify_arch(file: &GgufFile) -> Result<()> {
+    match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+        Some(a) if a == EXPECTED_ARCH => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "voxtral: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` (was this GGUF \
+             produced by `vokra-cli convert --model voxtral`? Note that Voxtral's audio \
+             tower is Whisper-shaped and shares tensor geometry with `whisper` / \
+             `distil-whisper` / `kotoba-whisper`, and that sibling audio-LLMs — \
+             `canary-qwen`, `llama-omni2`, `granite-speech`, `kimi-audio` — wrap a similar \
+             tower in a different text decoder. Binding any of them here would populate the \
+             encoder and leave the Mistral decoder empty, producing confident nonsense \
+             instead of a load error (FR-EX-08 — no silent partial load). Both size \
+             variants, Voxtral-Mini-3B and Voxtral-Small-24B, stamp `{EXPECTED_ARCH}`."
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "voxtral: GGUF is missing `{}` — this is not a Vokra-native Voxtral GGUF (was \
+             it produced by `vokra-cli convert --model voxtral`?)",
+            chunks::KEY_MODEL_ARCH,
+        ))),
+    }
+}
 
 /// Prompt layout the audio-conditioned transcribe path uses (P2 cc-05/07
 /// follow-up). Only consulted when the loaded GGUF carries an ACTIVE audio
@@ -230,7 +280,28 @@ impl VoxtralAsr {
     /// `transcribe` time as an explicit [`VokraError::ModelLoad`] naming
     /// the missing chunk. Same posture as other model surfaces here (never
     /// a silent fabrication).
+    ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// `vokra.model.arch` is checked against [`EXPECTED_ARCH`] **before**
+    /// any tensor is bound. The dangerous case is a Whisper-lineage GGUF:
+    /// Voxtral's audio tower is Whisper-shaped (it reuses Whisper's
+    /// encoder block), so without the gate the encoder half would bind and
+    /// the Mistral decoder would stay empty — confident nonsense rather
+    /// than a load failure.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or is
+    ///   not [`EXPECTED_ARCH`];
+    /// - [`VokraError::ModelLoad`] from [`VoxtralModel::from_gguf`] for a
+    ///   missing hparam chunk / tensor, or from [`Self::new`] for an
+    ///   unknown declared `mode`.
     pub fn from_gguf(file: &vokra_core::gguf::GgufFile) -> Result<Self> {
+        // 1. Arch check — always first so a mis-typed model handed here
+        //    fails with a specific message instead of a downstream
+        //    missing-tensor error (or, worse, a half-bound model).
+        verify_arch(file)?;
         let model = VoxtralModel::from_gguf(file)?;
         let mut asr = Self::new(model)?;
         // Tokenizer load is optional at construction (see docstring).
@@ -247,8 +318,13 @@ impl VoxtralAsr {
     ///
     /// # Errors
     ///
-    /// As [`Self::from_gguf`], plus the mapped bind's per-layer validation.
+    /// As [`Self::from_gguf`] (the same [`EXPECTED_ARCH`] gate runs first),
+    /// plus the mapped bind's per-layer validation.
     pub fn from_gguf_mapped(file: Arc<vokra_core::gguf::GgufFile>) -> Result<Self> {
+        // Symmetric with [`Self::from_gguf`]: this is the entry point
+        // `vokra-cli` / `vokra-server` take for the real 3B / 24B
+        // checkpoints, so it must carry the identical arch contract.
+        verify_arch(&file)?;
         let model = VoxtralModel::from_gguf_mapped(Arc::clone(&file))?;
         let mut asr = Self::new(model)?;
         if let Ok(tok) = VoxtralTokenizer::from_gguf(&file, MISTRAL_EOS_ID) {
@@ -1318,6 +1394,79 @@ mod tests {
             text,
             audio_adapter: adapter,
         }
+    }
+
+    /// Builds a metadata-only GGUF carrying `arch` (or none when `arch` is
+    /// `None`) so the arch gate can be exercised without a weight manifest.
+    fn arch_only_gguf(arch: Option<&str>) -> GgufFile {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        if let Some(a) = arch {
+            b.add_string(chunks::KEY_MODEL_ARCH, a);
+        }
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    #[test]
+    fn from_gguf_rejects_gguf_without_arch_stamp() {
+        // FR-EX-08: an unstamped GGUF is not a Vokra-native Voxtral
+        // artifact. `VoxtralAsr` is `!Debug`, so `unwrap_err()` would not
+        // compile on the `Result` — use let-else.
+        let file = arch_only_gguf(None);
+        let Err(err) = VoxtralAsr::from_gguf(&file) else {
+            panic!("an unstamped GGUF must not build a Voxtral ASR engine");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(chunks::KEY_MODEL_ARCH),
+                    "message must name the missing key: {msg}",
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch: {msg}",
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_rejects_foreign_arch_naming_expected_and_actual() {
+        // A Whisper GGUF is the dangerous mis-route: Voxtral's audio tower
+        // is Whisper-shaped, so the encoder half would bind and the Mistral
+        // decoder would stay empty.
+        let file = arch_only_gguf(Some("whisper"));
+        let Err(err) = VoxtralAsr::from_gguf(&file) else {
+            panic!("a foreign-arch GGUF must not build a Voxtral ASR engine");
+        };
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("`whisper`"),
+                    "message must name the actual arch: {msg}",
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch: {msg}",
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_with_correct_arch_reaches_the_model_load() {
+        // The arch gate must not swallow the weight-manifest gate: a
+        // correctly-stamped but weightless GGUF must still fail, and must
+        // NOT fail by naming the arch key.
+        let file = arch_only_gguf(Some(EXPECTED_ARCH));
+        let Err(err) = VoxtralAsr::from_gguf(&file) else {
+            panic!("a weightless GGUF must not build a Voxtral ASR engine");
+        };
+        assert!(
+            !format!("{err}").contains(chunks::KEY_MODEL_ARCH),
+            "must reach the model load, not stop at the arch gate: {err}",
+        );
     }
 
     #[test]

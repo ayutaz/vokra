@@ -76,7 +76,13 @@ declare -a EXPECTED_GAPS=(
   # PR #24 (Wave A batch) at crates/vokra-convert/src/models/rnnoise.rs +
   # ModelKind::Rnnoise, published to vokra/rnnoise-v0.2. Runtime binder is a
   # separate follow-up (see PR #24 §Refuted target rnnoise-v0.2 → next wave).
-  "GTCRN|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
+  # GTCRN entry removed 2026-08-15: the BF16 pass-through converter
+  # (crates/vokra-convert/src/models/gtcrn.rs + ModelKind::Gtcrn) and the
+  # runtime binder (crates/vokra-models/src/gtcrn/mod.rs, real from_gguf +
+  # loud-partial denoise) both landed 2026-08-14. The ledger line outlived
+  # the gap and started failing this gate — which is the gate working: it
+  # catches a stale "we do not have this" claim as readily as a stale
+  # "we ship this" one.
   # AudioSeal (Meta) entry removed 2026-08-06: audioseal-real-weight converter
   # + publish landed in PR #24 (Wave A) at crates/vokra-convert/src/models/audioseal_real_weight.rs
   # + vokra/audioseal-real-weight (MIT, 178MB). Runtime watermark embedding
@@ -267,7 +273,10 @@ implemented() {
 
 in_ledger() {
   local name="$1" e
-  for e in "${EXPECTED_GAPS[@]}"; do
+  # `${arr[@]+"${arr[@]}"}` so an EMPTY ledger does not trip `set -u`.
+  # The ledger reaching zero entries is the goal state, not an error:
+  # it means every advertised row has a real implementation behind it.
+  for e in ${EXPECTED_GAPS[@]+"${EXPECTED_GAPS[@]}"}; do
     [[ "${e%%|*}" == "$name" ]] && return 0
   done
   return 1

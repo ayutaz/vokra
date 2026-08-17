@@ -120,6 +120,23 @@ use sincnet::SincNet;
 // models's dep graph which the workspace pins forbid).
 // ---------------------------------------------------------------------------
 
+/// The `vokra.model.arch` value a PyanNet (pyannote/segmentation-3.0)
+/// GGUF must carry.
+///
+/// Mirror of
+/// `crates/vokra-convert/src/models/pyannote_segmentation.rs::ARCH` —
+/// same deliberate two-copies convention as the `GGUF_KEY_*` block below.
+///
+/// Deliberately **not** `pyannote-speaker-diarization`
+/// (`…/pyannote_speaker_diarization_3_1.rs::ARCH`): that GGUF is a
+/// weightless *pipeline orchestrator* over this VAD backbone plus a
+/// WeSpeaker embedding backbone plus a clusterer. It carries clustering
+/// thresholds and sub-model references, no `sincnet.*` / `lstm.*` tensors
+/// at all — binding it here would refuse on the empty-manifest gate with
+/// a confusing "carries no PyanNet tensor" message instead of the honest
+/// "you handed me a pipeline, not a backbone".
+pub const EXPECTED_ARCH: &str = "pyannote-segmentation";
+
 /// `vokra.pyannote.sample_rate` — input sample rate the SincNet was
 /// tuned for (upstream PyanNet default 16000).
 pub const GGUF_KEY_SAMPLE_RATE: &str = "vokra.pyannote.sample_rate";
@@ -299,6 +316,37 @@ const REQUIRED_TENSOR_PREFIXES: &[&str] = &[
     "classifier.", // Terminal classifier (Linear(128, num_powerset_classes))
 ];
 
+/// Rejects a GGUF whose `vokra.model.arch` is absent or is not
+/// [`EXPECTED_ARCH`].
+///
+/// A *loud* validation step (FR-EX-08) — see
+/// [`PyanNetWeights::from_gguf`].
+pub(crate) fn verify_arch(gguf: &GgufFile) -> Result<(), VokraError> {
+    match gguf
+        .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+        .and_then(|v| v.as_str())
+    {
+        Some(a) if a == EXPECTED_ARCH => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "pyannote-segmentation: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` (was \
+             this GGUF produced by `vokra-cli convert --model pyannote-segmentation`? Note \
+             that `pyannote-speaker-diarization` is a *pipeline orchestrator* over this VAD \
+             backbone — it carries clustering thresholds and sub-model references, not \
+             `sincnet.*` / `lstm.*` weights — and that sibling VAD arches `silero-vad`, \
+             `fsmn-vad`, `firered-vad` are entirely different topologies. This binder \
+             matches on bare upstream state_dict prefixes, so a foreign checkpoint with an \
+             `lstm.*` tensor would clear the non-emptiness gate and bind a partial, \
+             meaningless model (FR-EX-08 — no silent partial load)."
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "pyannote-segmentation: GGUF is missing `{}` — this is not a Vokra-native \
+             pyannote/segmentation-3.0 GGUF (was it produced by `vokra-cli convert --model \
+             pyannote-segmentation`?)",
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+        ))),
+    }
+}
+
 /// Weight tensors bound from a PyanNet GGUF.
 ///
 /// Each field carries the flattened f32 payload of a tensor read from
@@ -328,8 +376,19 @@ impl PyanNetWeights {
     /// dequantizes each to f32. Refuses to bind if no tensor matches
     /// any `REQUIRED_TENSOR_PREFIXES` entry (FR-EX-08).
     ///
+    /// # Arch verification (FR-EX-08)
+    ///
+    /// `vokra.model.arch` is checked against [`EXPECTED_ARCH`] **before**
+    /// any tensor is scanned. The binder matches on bare upstream
+    /// `state_dict` prefixes (`sincnet.` / `lstm.` / `linear.` /
+    /// `classifier.`) — generic enough that a foreign checkpoint could
+    /// satisfy the non-emptiness gate on `lstm.*` alone and bind a
+    /// partial, meaningless model.
+    ///
     /// # Errors
     ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or
+    ///   is not [`EXPECTED_ARCH`].
     /// - [`VokraError::ModelLoad`] when the GGUF carries no
     ///   PyanNet-typical tensor. The error message names every prefix
     ///   the binder tried so the caller can validate the checkpoint's
@@ -338,6 +397,11 @@ impl PyanNetWeights {
     ///   unsupported dtype (only F32 / F16 / BF16 are accepted at this
     ///   seam — K-quants are rejected loudly).
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self, VokraError> {
+        // 1. Arch check — always first so a mis-typed model handed here
+        //    fails with a specific message instead of a downstream
+        //    "carries no PyanNet-typical tensor".
+        verify_arch(gguf)?;
+
         let mut tensors: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
 
         for info in gguf.tensors() {
@@ -634,10 +698,13 @@ impl PyanNet {
     ///
     /// 1. Be openable by the standard GGUF reader — errors surface as
     ///    [`VokraError::Io`] / [`VokraError::ModelLoad`].
-    /// 2. Carry at least one recognized PyanNet state_dict tensor
+    /// 2. Carry a `vokra.model.arch` equal to [`EXPECTED_ARCH`] — checked
+    ///    by [`PyanNetWeights::from_gguf`] before any tensor is scanned
+    ///    (FR-EX-08).
+    /// 3. Carry at least one recognized PyanNet state_dict tensor
     ///    (`REQUIRED_TENSOR_PREFIXES`) — otherwise
     ///    [`PyanNetWeights::from_gguf`] refuses the bind (FR-EX-08).
-    /// 3. Pass the load-time shape gate
+    /// 4. Pass the load-time shape gate
     ///    ([`PyanNetWeights::verify_core_shapes`]) — a GGUF that
     ///    carries the SincNet filterbank sentinel
     ///    (`sincnet.conv1d.0.filterbank.low_hz_`) must carry ALL four
@@ -1042,6 +1109,10 @@ mod tests {
     /// [`synthetic_full_pyannet_gguf`].
     fn synthetic_pyannet_gguf() -> Vec<u8> {
         let mut b = GgufBuilder::new();
+        // Arch stamp — `PyanNetWeights::from_gguf` gates on it before any
+        // tensor scan (FR-EX-08), so every fixture that expects to reach
+        // the tensor manifest must carry it.
+        b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         // Metadata chunks — the converter writes these, and the runtime
         // reads them via `PyanNetConfig::from_gguf`. Using the default
         // constants here lets us pin the fallback path AND the
@@ -1097,6 +1168,8 @@ mod tests {
             CONV_KERNEL_LATER, CONV1_IN_CH, CONV1_OUT_CH, CONV2_IN_CH, CONV2_OUT_CH, N_FILTERS_SINC,
         };
         let mut b = GgufBuilder::new();
+        // Arch stamp — required by the `PyanNetWeights::from_gguf` gate.
+        b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
         b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
         b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
@@ -1309,6 +1382,81 @@ mod tests {
     }
 
     #[test]
+    fn weights_from_gguf_rejects_gguf_without_arch_stamp() {
+        // FR-EX-08: an unstamped GGUF is not a Vokra-native PyanNet
+        // artifact. Without this gate a foreign checkpoint carrying an
+        // `lstm.*` tensor would clear the non-emptiness gate and bind a
+        // partial, meaningless model.
+        let mut b = GgufBuilder::new();
+        b.add_tensor(
+            "lstm.weight_ih_l0",
+            GgmlType::F32,
+            vec![2, 2],
+            vec![0u8; 16],
+        )
+        .unwrap();
+        let path = scratch_path("no-arch");
+        std::fs::write(&path, b.to_bytes().unwrap()).unwrap();
+        let g = GgufFile::open(&path).unwrap();
+
+        let err = PyanNetWeights::from_gguf(&g).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains(vokra_core::gguf::chunks::KEY_MODEL_ARCH),
+                    "message must name the missing key: {msg}"
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn weights_from_gguf_rejects_foreign_arch_naming_expected_and_actual() {
+        // `pyannote-speaker-diarization` is the most plausible mis-route:
+        // same upstream org, same `vokra.pyannote.*`-adjacent naming, but
+        // a weightless pipeline orchestrator rather than this backbone.
+        let mut b = GgufBuilder::new();
+        b.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            "pyannote-speaker-diarization",
+        );
+        b.add_tensor(
+            "lstm.weight_ih_l0",
+            GgmlType::F32,
+            vec![2, 2],
+            vec![0u8; 16],
+        )
+        .unwrap();
+        let path = scratch_path("foreign-arch");
+        std::fs::write(&path, b.to_bytes().unwrap()).unwrap();
+        let g = GgufFile::open(&path).unwrap();
+
+        let err = PyanNetWeights::from_gguf(&g).unwrap_err();
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("pyannote-speaker-diarization"),
+                    "message must name the actual arch: {msg}"
+                );
+                assert!(
+                    msg.contains(EXPECTED_ARCH),
+                    "message must name the expected arch: {msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn weights_from_gguf_binds_all_recognized_prefixes() {
         let bytes = synthetic_pyannet_gguf();
         let path = scratch_path("weights-bind");
@@ -1328,9 +1476,12 @@ mod tests {
 
     #[test]
     fn weights_from_gguf_refuses_empty_manifest_loudly() {
-        // A GGUF with a tensor whose name matches none of the required
-        // prefixes — the binder must refuse loudly (FR-EX-08).
+        // A correctly-stamped GGUF with a tensor whose name matches none
+        // of the required prefixes — the binder must refuse loudly
+        // (FR-EX-08). The arch stamp keeps this test on the *tensor*
+        // gate rather than short-circuiting at the arch gate.
         let mut b = GgufBuilder::new();
+        b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         b.add_tensor(
             "some_unrelated_name.weight",
             GgmlType::F32,
@@ -1572,6 +1723,9 @@ mod tests {
         override_shape: Option<Vec<u64>>,
     ) -> Vec<u8> {
         let mut b = GgufBuilder::new();
+        // Arch stamp — these fixtures must reach the *shape* gates, so
+        // they cannot short-circuit at the arch gate (FR-EX-08).
+        b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
         b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
         b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
@@ -1779,6 +1933,8 @@ mod tests {
         // silent-fake risk even in an "illustrative" fixture. This is
         // the belt-and-braces half of the sentinel gate.
         let mut b = GgufBuilder::new();
+        // Arch stamp — required to reach `verify_core_shapes` at all.
+        b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
         b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
         b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);

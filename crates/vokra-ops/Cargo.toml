@@ -71,5 +71,29 @@ harness = false
 name = "aec_bench"
 harness = false
 
+# Opt-in cfg-only features. Cargo features are Cargo's own primitive, not new
+# crates: no dependency is added here, so the zero-dep invariant (NFR-DS-02)
+# and the root `Cargo.lock` are unaffected — `./scripts/check-zero-deps.sh`
+# inspects that lock and is untouched by a feature toggle.
+[features]
+# ITN/TN (`src/itn/`): forwards `vokra-core/vokra-wfst` so the two FST stages
+# of the WeTextProcessing tagger -> verbalizer pipeline can reuse
+# `vokra_core::decode::wfst` (the tropical semiring, the `Fst` type and the
+# byte-verified `read_openfst_vector`). Default OFF, mirroring the
+# `vokra-core` flag it forwards.
+#
+# The gate covers ONLY `src/itn/compose.rs` and the two composition call
+# sites. The tagged-token parser, the per-language field-order tables, the
+# `Reorder` rewrite, the grammar container and the OpenFST header probe are
+# unconditional, so the default `cargo test --workspace` build compiles and
+# exercises them. With the feature off, every FST-touching entry point
+# returns a loud `VokraError::UnsupportedOp` naming the flag (FR-EX-08) —
+# it never silently degrades to the rule-based helper.
+#
+# CI runs the feature-ON leg explicitly (see the "WFST feature gate" step in
+# `.github/workflows/ci.yml`); without that, `src/itn/compose.rs` would
+# compile in no CI job at all and a break there would be a vacuous green.
+vokra-wfst = ["vokra-core/vokra-wfst"]
+
 [lints]
 workspace = true

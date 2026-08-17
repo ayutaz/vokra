@@ -150,7 +150,8 @@ actually measured (it has not been — see below).
 ### Blocker 5 — BERT tokenizer scheme dispatch (T7–T11)
 
 The SentencePiece / WordPiece parsers themselves
-(`crates/vokra-convert/src/models/sbv2_tokenizer.rs`) and the
+(`crates/vokra-convert/src/spm_proto.rs` and
+`crates/vokra-bert/src/wordpiece.rs`) and the
 `vokra.bert.tokenizer.*` GGUF metadata were **already implemented in
 Phase 1** — this wave's job was verification, not implementation, and the
 ledger records it that way ("Wave 1 SEALED = Blocker 5 fully verified").

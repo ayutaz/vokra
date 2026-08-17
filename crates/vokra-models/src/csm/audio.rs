@@ -178,11 +178,16 @@ impl CsmAudioDecodeChain {
     }
 
     /// Routes the **neural decoder** (features → PCM) through `backend`
-    /// (#12). The RVQ codebook lookup stays CPU-side: it is cheap array
-    /// indexing, and `HotOp::MimiRvq` has no GPU kernel through the Compute
-    /// seam today (the coverage gate pinned by
-    /// `mimi_rvq_hot_op_coverage_gate_is_consistent_with_this_chain`). Only
-    /// the neural seam ops (GEMM / GEMV / Softmax / LayerNorm / GELU) move.
+    /// (#12). The RVQ codebook lookup stays CPU-side because it is cheap
+    /// array indexing — **not** because no GPU kernel exists for it.
+    /// `HotOp::MimiRvq` has been Metal-covered since M3-06 T14 (2026-08-13,
+    /// MSL kernel `vokra_mimi_rvq_gather_fold_f32`); this chain simply has
+    /// not been ported to call the seam for the RVQ fold, and porting it is
+    /// a wiring change here, not a kernel to write. (CUDA / Vulkan / WebGPU
+    /// remain uncovered for that op.) The coverage gate is pinned by
+    /// `mimi_rvq_hot_op_coverage_gate_is_consistent_with_this_chain`, which
+    /// asserts the Metal flip has not regressed. Only the neural seam ops
+    /// (GEMM / GEMV / Softmax / LayerNorm / GELU) move today.
     /// An unsupported neural hot op on `backend` is a loud error at decode
     /// time (FR-EX-08 — no silent CPU fall back).
     #[must_use]
@@ -515,14 +520,40 @@ mod tests {
 
     #[test]
     fn mimi_rvq_hot_op_coverage_gate_is_consistent_with_this_chain() {
-        // The chain's RVQ stage is CPU-side (vokra-ops runtime fn); the
-        // Compute seam must therefore accept a MimiRvq listing on CPU and
-        // reject it on every GPU backend — either the coverage gate's
-        // `UnsupportedOp` (feature-on builds) or `BackendUnavailable`
-        // (feature-off builds). Both are explicit errors; a silent CPU
-        // fallback is impossible (FR-EX-08).
+        // The chain's RVQ stage is CPU-side (vokra-ops runtime fn) — CSM's
+        // audio decode chain has not been ported to use the `Compute` seam
+        // for the RVQ fold yet, so a MimiRvq listing must still be
+        // acceptable on the CPU dispatcher (a graph consumer that also
+        // needs the six Whisper hot ops keeps them separately).
+        //
+        // Backend availability at the coverage gate:
+        //
+        // - **CPU**: always accepts (the CPU dispatcher covers every op).
+        // - **Metal**: `MimiRvq` is Metal-covered as of M3-06 T14
+        //   (2026-08-13, MSL kernel `vokra_mimi_rvq_gather_fold_f32`).
+        //   On a Metal build with a Metal device present the gate accepts;
+        //   without a device the probe is `BackendUnavailable`; off the
+        //   Metal feature the gate is `BackendUnavailable`. All three are
+        //   explicit — silent CPU fall back is impossible (FR-EX-08).
+        // - **CUDA / Vulkan**: still uncovered — the coverage gate rejects
+        //   with `UnsupportedOp` (feature-on) or `BackendUnavailable`
+        //   (feature-off). Both explicit.
         assert!(Compute::for_backend(BackendKind::Cpu, &[HotOp::MimiRvq]).is_ok());
-        for backend in [BackendKind::Metal, BackendKind::Cuda, BackendKind::Vulkan] {
+
+        // Metal: post M3-06 T14 the acceptance is device-gated, not
+        // coverage-gated. `Ok` (device present + covered) and
+        // `BackendUnavailable` (no device / feature off) are both valid;
+        // an `UnsupportedOp` would indicate the coverage flip regressed.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::MimiRvq]) {
+            Ok(_) | Err(VokraError::BackendUnavailable(_)) => {}
+            Err(e) => panic!(
+                "Metal MimiRvq must be Ok (device present) or BackendUnavailable \
+                 (feature-off or no device) post M3-06 T14, got {e:?}"
+            ),
+        }
+
+        // CUDA / Vulkan: still uncovered — reject with an explicit error.
+        for backend in [BackendKind::Cuda, BackendKind::Vulkan] {
             assert!(
                 Compute::for_backend(backend, &[HotOp::MimiRvq]).is_err(),
                 "{backend:?} must not accept MimiRvq through the seam today"

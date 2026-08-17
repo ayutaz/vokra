@@ -3,8 +3,8 @@
 [English](cli.md) | **日本語**
 
 `vokra-cli` は umbrella コマンドラインツール（`FR-TL-01`, `FR-TL-02`）。
-同じ native runtime 上の 3 つの subcommand — `run` / `convert` / `bench` —
-を、手書きの引数パーサ・外部依存ゼロ（`NFR-DS-02`）で提供する。本ページは
+同じ native runtime 上の 4 つの subcommand — `run` / `convert` / `bench` /
+`f0` — を、手書きの引数パーサ・外部依存ゼロ（`NFR-DS-02`）で提供する。本ページは
 deep dive。5 分コースは [getting-started.md](../getting-started.ja.md) を参照。
 
 ## 1. ビルド
@@ -80,7 +80,39 @@ piper-plus voice には `config.json` も要る。モデルによっては `--to
   --baseline baseline.json
 ```
 
-## 5. バックエンド選択は明示的（`FR-EX-08`）
+## 5. `f0` — checkpoint 不要のピッチ抽出
+
+`f0` は WAV に対して YIN または PyIN を実行する。`run --task` ではなく独立
+subcommand なのは、`run` が `--model` GGUF を必須とする一方、この 2 つの
+extractor は重みを一切持たないため — checkpoint も license class も
+`docs/license-audit.md` §3.1 の行も無い。呼び出し側が渡せる `--model` が存在
+しない。
+
+```sh
+# YIN（デフォルト）
+./target/release/vokra-cli f0 --input speech.wav
+
+# PyIN、話声域に限定
+./target/release/vokra-cli f0 --input speech.wav --algo pyin \
+  --fmin 65 --fmax 400
+```
+
+出力行は tab 区切りで、neural F0 モデルに対して `run` が出す形と同一。
+extractor を切り替えてもパース側は変更不要:
+
+```
+time_sec<TAB>hz<TAB>voiced<TAB>confidence
+```
+
+無声フレームは `hz=0.000`, `voiced=false`。どちらの op もフレーム単位の
+confidence を持たないため、この列は捏造したスコアではなく `voiced` と同じ
+`1.0` / `0.0` を報告する。
+
+サンプルレートは**固定ではない**: 両 op とも WAV が持つレートから lag 探索
+範囲を導出するので、暗黙のリサンプルは発生しない。同じ family の neural
+メンバ — RMVPE / FCPE / CREPE — は checkpoint を要するため `run` 側に残る。
+
+## 6. バックエンド選択は明示的（`FR-EX-08`）
 
 `--backend` で計算バックエンドを選ぶ。Vokra は silent fallback をしない:
 GPU バックエンドが cover しない op、不在の device は明示エラーであり、CPU への
@@ -95,7 +127,7 @@ cargo build --release -p vokra-models --features metal   # macOS
 CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあなたが下す決定で
 あり、Vokra が裏で下す決定ではない。
 
-## 6. トラブルシューティング
+## 7. トラブルシューティング
 
 | 症状 | 原因 / 対処 |
 |---|---|
@@ -114,8 +146,8 @@ CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあな�
 
 ## Keeping this page current
 
-**最終確認日: 2026-07-21 — `crates/vokra-cli/src/` の `run` / `convert` /
-`bench` 引数パーサに対して確認。**
+**最終確認日: 2026-08-16 — `crates/vokra-cli/src/` の `run` / `convert` /
+`bench` / `f0` 引数パーサに対して確認。**
 
 - **更新責任**: CLI フラグを追加・改名した PR が、同一 PR で本ページと英語版を
   更新する。本ページの全 `vokra-cli` 呼び出しは `doc-examples` CI job が実
@@ -124,5 +156,5 @@ CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあな�
 - **フラグ surface の再取得**:
 
 ```sh
-grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs
+grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs crates/vokra-cli/src/f0.rs
 ```

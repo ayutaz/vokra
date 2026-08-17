@@ -105,7 +105,7 @@ fn run() -> Result<(), String> {
     }
 
     let audio = voice
-        .synthesize_full(&request, &g2p)
+        .synthesize_pseudo_streaming(&request, &g2p)
         .map_err(|e| format!("synthesize: {e}"))?;
     write_wav_mono(&args.out, &audio.samples, audio.sample_rate)?;
     eprintln!(

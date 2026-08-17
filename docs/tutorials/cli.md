@@ -2,10 +2,10 @@
 
 **English** | [日本語](cli.ja.md)
 
-`vokra-cli` is the umbrella command-line tool (`FR-TL-01`, `FR-TL-02`): three
-subcommands — `run`, `convert`, `bench` — over the same native runtime, with
-hand-written argument parsing and no external dependency (`NFR-DS-02`). This is
-the deep dive; for the 5-minute path see
+`vokra-cli` is the umbrella command-line tool (`FR-TL-01`, `FR-TL-02`): four
+subcommands — `run`, `convert`, `bench`, `f0` — over the same native runtime,
+with hand-written argument parsing and no external dependency (`NFR-DS-02`).
+This is the deep dive; for the 5-minute path see
 [getting-started.md](../getting-started.md).
 
 ## 1. Build
@@ -80,7 +80,40 @@ slowdown versus the recorded baseline exits non-zero (`NFR-PF-13`).
   --baseline baseline.json
 ```
 
-## 5. Backend selection is explicit (`FR-EX-08`)
+## 5. `f0` — pitch extraction with no checkpoint
+
+`f0` runs YIN or PyIN over a WAV. It is a separate subcommand rather than a
+`run --task` because `run` requires a `--model` GGUF, and these two extractors
+carry no weights at all — no checkpoint, no license class, no
+`docs/license-audit.md` §3.1 row. There is no `--model` a caller could supply.
+
+```sh
+# YIN (default)
+./target/release/vokra-cli f0 --input speech.wav
+
+# PyIN, restricted to a speaking range
+./target/release/vokra-cli f0 --input speech.wav --algo pyin \
+  --fmin 65 --fmax 400
+```
+
+Rows are tab-separated and identical in shape to what `run` prints for a
+neural F0 model, so whatever parses them does not change when you switch
+extractor:
+
+```
+time_sec<TAB>hz<TAB>voiced<TAB>confidence
+```
+
+An unvoiced frame is `hz=0.000`, `voiced=false`. Neither op exposes a
+per-frame confidence, so the column reports `1.0` / `0.0` alongside `voiced`
+rather than a fabricated score.
+
+The sample rate is **not** fixed: both ops derive their lag search from the
+rate the WAV carries, so nothing is silently resampled. The neural members of
+the same family — RMVPE, FCPE, CREPE — do need a checkpoint and stay on
+`run`.
+
+## 6. Backend selection is explicit (`FR-EX-08`)
 
 `--backend` chooses the compute backend. Vokra never silently falls back: an op
 a GPU backend does not cover, or a device that is absent, is an explicit error,
@@ -95,7 +128,7 @@ cargo build --release -p vokra-models --features metal   # macOS
 Use `--backend cpu` to choose the CPU *deliberately* — that is a decision you
 make, not one Vokra makes behind your back.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | symptom | cause / fix |
 |---|---|
@@ -114,8 +147,8 @@ make, not one Vokra makes behind your back.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — against the `run` / `convert` / `bench` argument
-parsers in `crates/vokra-cli/src/`.**
+**Last verified: 2026-08-16 — against the `run` / `convert` / `bench` / `f0`
+argument parsers in `crates/vokra-cli/src/`.**
 
 - **Update responsibility**: a PR that adds or renames a CLI flag updates this
   page and its Japanese twin in the same PR. Every `vokra-cli` invocation here
@@ -125,5 +158,5 @@ parsers in `crates/vokra-cli/src/`.**
 - **Re-fetch the flag surface**:
 
 ```sh
-grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs
+grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs crates/vokra-cli/src/f0.rs
 ```

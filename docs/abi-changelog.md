@@ -53,11 +53,12 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
   symbol.
 - The single hard rule is that **every such change lands with an entry in
   this file, dated on the day the PR is opened**. `scripts/check-abi-changelog.sh`
-  enforces this: if the current `include/vokra.h` differs from the active
-  gate anchor (`docs/abi/vokra.h.v0.9-baseline.symbols` during the v0.9
-  window, rotated to `docs/abi/vokra.h.v1.0-rc-baseline.symbols` at M4-12)
-  and this file does not have an entry dated today, the script exits
-  non-zero.
+  enforces the recorded-symbol part of this rule: if the current
+  `include/vokra.h` differs from the active gate anchor
+  (`docs/abi/vokra.h.v0.9-baseline.symbols` during the v0.9 window, rotated to
+  `docs/abi/vokra.h.v1.0-rc-baseline.symbols` at M4-12) and any changed symbol
+  has no changelog row, the script exits non-zero. The date remains historical
+  metadata for the PR entry rather than a wall-clock CI condition.
 - At v1.0 GA (M5-13; M4-12 before the 2026-07-14 reassignment) the baseline
   is re-anchored to that release, the freeze commitment is written into
   `include/vokra.h`, and post-1.0 breaking changes require a major bump.
@@ -66,8 +67,9 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
 
 `scripts/abi-diff.sh`, `scripts/check-abi-changelog.sh` and
 `scripts/rust-public-api-list.sh` were unwired from CI until X-08. They now run
-in the `abi-surface (advisory)` job of `.github/workflows/ci.yml`, which sets
-`continue-on-error: true`.
+in the `abi-surface (advisory)` job of `.github/workflows/ci-quality.yml`,
+which sets `continue-on-error: true`. (This said `ci.yml` until 2026-08-16;
+that file contains no `abi-surface` job, so the citation pointed at nothing.)
 
 **That job must stay advisory until M5-13.** Promoting these three from
 advisory to a branch-protection required check *is* the content of M5-13
@@ -78,12 +80,32 @@ promoted them, M5-13 would have had nothing left to execute. The cool-off
 posture mirrors `gpu-vulkan-parity.yml` and the platform-support drift step in
 the `license` job.
 
-Known state at wiring time: `rust-public-api-list.sh` is **already red** on
-`13a2a6e` (53 added / 13 removed lines vs.
-`docs/abi/vokra-rust-public-api.v1.0-rc.list`), from surface added in `ff12104`
-without a snapshot rotation. X-08 did not rotate it — that is M5-13/IF-01's
-call — and the advisory posture keeps the red from blocking PRs. See
-`docs/adr/X-08-ci-gate-completion.md` §2 and §7-(4).
+The v0.9-rc Rust snapshot was rotated on 2026-08-17 to record the intentional
+public surface accumulated by PR #29. Before rotation the gate measured **180
+additions / 5 removals** against the snapshot; after rotation it records
+**864 functions, 264 structs, 78 enums, 30 traits, 6 types, 104 constants,
+131 re-exports and 127 modules**. Reproduce the clean check with
+`bash scripts/rust-public-api-list.sh` (no flags).
+
+**The recorded delta is not purely additive.** It includes a source-BREAKING
+`vokra-core` change: `pub struct BeamSearchConfig` gained a `<'a>` lifetime
+for the FR-OP-41/42 shallow-fusion LM, alongside a changed `beam_search`
+signature and the new `LmScorer` / `LmFusionConfig` public items. Recording
+that fact before snapshot rotation keeps the breaking change visible to the
+M5-13 freeze review.
+
+The additions are dominated by `vokra-ops`: the `vit`, `itn` (grammar +
+token), `wpe`, `aec`, `moe_*` and `f0` (pyin / yin) modules landed across
+this campaign.
+
+### 2026-08-17 — 1.0.0-rc.1-dev (PR #29 Rust public-API snapshot rotation)
+
+The `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot was regenerated
+after the intentional PR #29 public-surface wave. The generated snapshot is
+the current reference for `vokra-core`, `vokra-ops`, and `vokra-capi`; the
+`#[non_exhaustive]` audit still passes for all six protected enums. This is
+an anchor update only: no additional Rust API is introduced by this entry,
+and the C ABI remains covered by the separate v1.0-rc header anchor.
 
 ## Entry schema
 
@@ -228,6 +250,674 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
+
+**Behaviour change** plus additive Rust surface. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+LLaMA-Omni2 is not cbindgen-exported, so `scripts/gen-c-abi.sh --check` sees
+no diff. The Rust public-API snapshot gate covers `vokra-core` / `vokra-ops`
+/ `vokra-capi` only, so `vokra-convert` and `vokra-models` changes do not
+move it. The GGUF chunk-prefix leg of `scripts/check-abi-changelog.sh` is
+satisfied: no new `vokra.<group>` prefix appears — `vokra.llama_omni2` was
+already stamped (by the one key that was) and is already named in this file.
+Recorded here because §Scope puts the `vokra.*` GGUF schema in scope, and
+because the pre-1.0 recording rule covers Rust `pub` items.
+
+**Motivation**: `crates/vokra-convert/src/models/llama_omni2.rs` stamped
+five strings — arch, name, category, `vokra.llama_omni2.variant`,
+upstream_hf — plus provenance, and none of the **ten** numeric keys
+`vokra_models::llama_omni2::LlamaOmni2Config::from_gguf` reads. Those ten go
+through `read_u32_or_zero` / `read_f32_or`, so every one decayed to its `0`
+placeholder and `validate_for_forward` refused the load with
+`InvalidArgument("backbone ill-formed (n_layer=0, d_model=0, n_head=0)")`.
+**Every GGUF `vokra-cli convert --model llama-omni2` produced failed to load
+in the binder written for it.** This is the same defect the
+`vokra.openwakeword.*` repair closed one round earlier; the sibling
+`kyutai_stt`, which this module's docs name as its precedent, does stamp its
+full group, so the precedent was real and simply was not carried over.
+
+Nothing caught it because both halves were tested against a mock of the
+other: the binder's unit tests hand-build their GGUF with `GgufBuilder`, and
+the converter's tests asserted only the five strings it did stamp. The new
+`crates/vokra-models/tests/llama_omni2_convert_bind.rs` runs the real
+converter into the real binder, fixture-free, so neither can drift again.
+
+**GGUF schema**: the `vokra.llama_omni2.*` group grows from 1 stamped key to
+11 (see the chunk-prefix table). Four are derived from the tensors —
+`arch.backbone.n_layer` from the contiguous layer run (a gap is a hard
+error), `arch.backbone.d_model` / `arch.backbone.vocab` from the token
+embedding axes, and `arch.backbone.intermediate_size` from the SwiGLU gate
+projection, whose second axis cross-checks `d_model`. Existing artifacts are
+unaffected in the only sense that matters: there are none that worked.
+
+**Rust surface** (`vokra-convert`):
+
+- **Breaking**: `convert_llama_omni2_file` and `convert_llama_omni2_bytes`
+  now always return `ConvertError::Usage`. Six axes (`n_head`,
+  `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim`,
+  `speech_decoder_dim`) cannot be read off any tensor shape, and the binder
+  refuses a `0` on every one, so no `--config`-less conversion can produce a
+  loadable artifact. Refusing is the `ModelKind::Crepe` /
+  `openwakeword_op` precedent; the alternative is to keep writing files that
+  cannot be opened. Both are kept as named refusals rather than deleted so an
+  existing caller gets a routing message instead of a link error.
+- **Breaking**: `ModelKind::LlamaOmni2` through `convert_file` /
+  `convert_file_licensed` / `convert_file_with_slug` likewise returns
+  `ConvertError::Usage` naming the side-car.
+- **Added**: `convert_llama_omni2_file_with_config(input, config, output,
+  variant, license)` — the working route.
+- **Added**: ten `pub const KEY_*` metadata-key constants plus
+  `DEFAULT_LAYER_PREFIX` / `DEFAULT_EMBEDDING_TENSOR` /
+  `DEFAULT_GATE_PROJ_SUFFIX`, mirroring the binder's own list.
+- **Added**: `LlamaOmni2Report` gains `n_layer` / `d_model` / `vocab` /
+  `intermediate_size`, so a caller can see what was derived rather than
+  re-deriving it.
+
+**CLI**: `--model llama-omni2[-<release>]` gains a dedicated arm and now
+requires `--config <config.json>`. It previously fell through the generic
+dispatch, which hard-codes `config_side_car = None` and would have dropped
+the flag silently.
+
+**Honest limits**: the upstream tensor manifest has still not been
+transcribed into this tree, so the names the derivation searches for
+(`layer_prefix`, `embedding_tensor`, `gate_proj_suffix`) are side-car knobs
+defaulting to the bare HuggingFace Qwen2 spelling. A default *search key* is
+admissible where a default *model axis* is not, because a key that matches
+nothing yields a hard error naming the knob rather than a plausible wrong
+number. The binder's weight store also remains `synthesized` — a successful
+load is not a claim that real ICTNLP weights are bound, and `converse` is
+still a loud-partial.
+
+### 2026-08-15 — 1.0.0-rc.1-dev (FCPE: the `vokra.f0.fcpe.*` chunk is now stamped by the converter and REQUIRED by the loader — GGUF schema break + Rust surface, advisory)
+
+**Breaking, for GGUF artifacts.** The C ABI (`include/vokra.h`, 33 fn + 11
+typedef, v1.0-rc baseline) is **untouched** — no F0 extractor is
+cbindgen-exported, so `scripts/gen-c-abi.sh --check` sees no diff. The Rust
+public-API snapshot gate covers `vokra-core` / `vokra-ops` / `vokra-capi`
+only, so `vokra-models` changes do not move it. The GGUF chunk-prefix leg of
+`scripts/check-abi-changelog.sh` is satisfied: no new `vokra.<group>` prefix
+is introduced (`vokra.f0` was already stamped by the CREPE converter, and is
+already named in this file). Recorded here because §Scope puts the GGUF
+metadata schema under `vokra.*` in scope, and because the pre-1.0 recording
+rule covers Rust `pub` items.
+
+**Motivation**: `crates/vokra-convert/src/models/fcpe.rs` stamped **none** of
+the `vokra.f0.fcpe.*` axes, while `vokra_models::f0::fcpe::FcpeConfig::
+from_gguf` read all of them with `.unwrap_or(DEFAULT_*)` and documented
+"Missing keys are honored silently". Every FCPE GGUF Vokra has ever produced
+therefore described no topology at all, and the loader supplied the released
+`fcpe_c_v001` shape for all fourteen axes. FCPE was alone in this among the F0
+siblings: the CREPE converter stamps its four axes from a required side-car
+config, and the RMVPE converter stamps all ten of its own.
+
+Seven axes are pinned by a tensor length the binder already checks, so a wrong
+value there was at least loud. The other seven — `hop`, `n_fft`,
+`sample_rate`, `fmin`, `fmax`, `stem_groups`, `confidence_threshold` — are
+cross-checked by nothing, and neither was `n_layers` in one direction: an
+artifact carrying **more** encoder blocks than the config declared had the
+surplus dropped by the `0..n_layers` bind loop and ran a truncated encoder to
+completion. Wrong pitch, full frame count, finite values, no error — the same
+failure shape round 7 found in RMVPE. `crates/vokra-convert/src/main.rs`
+carried a comment asserting the chunk was "written by the model, not the
+converter"; nothing wrote it.
+
+| Item | Kind | Signature | Rationale |
+| --- | --- | --- | --- |
+| GGUF `vokra.f0.fcpe.*` | Changed (schema) | 14 keys, all REQUIRED on a weight-carrying artifact | Seven axes have no cross-check; substituting any of them yields a completed forward and wrong numbers |
+| `f0::fcpe::GGUF_KEY_*` | Added | 14 × `pub const &str` | Lets producer, loader and tests name one key each instead of transcribing literals |
+| `f0::fcpe::GGUF_REQUIRED_KEYS` | Added | `pub const [&str; 14]` | The enforced set, walked by the test that proves each key is individually required |
+| `f0::fcpe::FcpeConfig::from_gguf` | Changed (behaviour) | signature unchanged | Every axis required; an absent key is a `LoadError::Gguf` naming it |
+| `f0::fcpe::FcpeConfig::from_gguf_metadata_only` | Added | `(&GgufFile) -> Result<Self, LoadError>` | The lenient reader, scoped to weightless artifacts that cannot run a forward |
+| `f0::fcpe::FcpeConfig` | Changed | now derives `PartialEq` | So a test can assert a whole config rather than field-by-field (matches `CrepeConfig`) |
+| `f0::fcpe::FcpeWeights::try_from_gguf` | Changed (behaviour) | signature unchanged | Declared `n_layers` is cross-checked against the layer set the artifact carries |
+| `vokra-convert models::fcpe::FcpeTopology` | Added | `pub struct` (crate-visible — `models::fcpe` is `pub(crate)`) | The seven axes derived from tensor shapes |
+| `vokra-convert models::fcpe::FCPE_V001_TOPOLOGY` | Added | `pub const FcpeTopology` | The gate deciding when the front-end constants may be asserted |
+| `vokra-convert models::fcpe::FcpeReport` | Changed | `+ topology`, `+ axes_stamped`, `+ front_end_withheld` | So the CLI note can say which axes were written and which were withheld |
+
+**What the converter now does**: it derives `d_model`, `n_mels`,
+`stem_kernel`, `ffn_dim`, `conv_kernel`, `n_layers` and `n_pitch_bins` from
+the checkpoint's own tensor shapes — measured, not assumed — and enforces
+every cross-check the shapes permit (head width against stem width, pointwise
+input against `d_model`, depthwise channels against the post-GLU width, mutual
+uniformity across layers, both kernels odd, `ffn_dim` even, at least one
+encoder block). The remaining seven live in upstream's Python config and are
+in no tensor: the prep script even drops `cent_table`, the one buffer that
+would have pinned `fmin` / `fmax`. Those are asserted from the documented
+`fcpe_c_v001` constants **only when the derived topology equals
+`FCPE_V001_TOPOLOGY` exactly**, and withheld otherwise, because a 16 kHz
+front-end asserted onto an unidentified variant is a fabricated axis.
+
+**Who this breaks**: every FCPE GGUF converted before today that carries
+weights. They stamp zero axes, so they no longer load; the error names the
+first absent key and says to re-run the converter. Nothing trustworthy is
+lost — such an artifact was being interpreted entirely by assumption, and if
+it was not v001 the pitch it produced was wrong with no way to tell. Nothing
+is published: FCPE has no `huggingface.co/vokra` repo and no model-zoo entry,
+so the blast radius is locally converted files. Metadata-only artifacts (no
+weights) still load, under the lenient reader, because they cannot run a
+forward at all.
+
+**Second break, narrower**: a *variant* checkpoint now converts to an artifact
+carrying 7 of 14 axes, which the loader then refuses. That is deliberate — the
+weights are preserved and correct, and the axes nobody can derive have to come
+from whoever knows the variant. The conversion note says so in full. A
+`--config` side-car for those seven, mirroring CREPE's, is the natural
+follow-up and is not in this change.
+
+**Correction to the 2026-07-30 entry below**: it records this chunk as "13
+keys" including `n_heads` and `kernel_size`, and describes it as "Additive —
+every key defaults if absent". The 2026-07-30 CFNaiveMelPEInfer rewrite
+superseded that shape (no attention, so no `n_heads`; `kernel_size` split into
+`conv_kernel` + `stem_kernel`; `stem_groups` added) without updating the
+entry, and the "defaults if absent" clause is exactly what this change
+removes. The historical entry is left as written; this note is the correction.
+
+**Verify**: no `cargo` run on this pass (16 GB host; sequential verification
+deferred to the integrating loop). Checked by hand: `rustfmt --edition 2024
+--check` parses all four touched files clean; the derived axes were traced
+against the tensor-name / shape contract in the prep script's docstring
+(`tools/parity/fcpe_prepare_checkpoint.py`) and the runtime module header; no
+`include/vokra.h` edit; no new third-party dependency (root `Cargo.lock`
+untouched, NFR-DS-02 preserved); no `docs/license-audit.md` §3.1 change.
+
+### 2026-08-15 — 1.0.0-rc.1-dev (RMVPE: a checkpoint whose U-Net is not discoverable is refused instead of running without it — Rust surface only, advisory)
+
+**Behaviour change** plus additive Rust surface. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+no F0 extractor is cbindgen-exported, so `scripts/gen-c-abi.sh --check` sees
+no diff and `scripts/check-abi-changelog.sh` does not fire. The Rust
+public-API snapshot gate covers `vokra-core` / `vokra-ops` / `vokra-capi`
+only, so `vokra-models` changes do not move it either. Recorded here
+because the pre-1.0 policy's recording rule covers Rust `pub` items.
+
+**Motivation**: `RMVPE::extract_real` discovered its U-Net by walking the
+literal upstream scheme `unet.encoder.block{i}.conv.weight` and breaking at
+the first gap, with no check that the walk found anything. Meanwhile the
+loader's acceptance filter, `REQUIRED_TENSOR_PREFIXES`, admits seven broad
+prefixes — including `encoder.`, `decoder.` and `cnn.`, annotated in-file as
+"fallback prefix used by some RMVPE forks". A fork-convention checkpoint
+therefore loaded successfully, discovered **zero** blocks, and fed the raw
+mel plane straight into the BiGRU. The result was a full-length, finite,
+in-band pitch track produced by a model missing its entire CNN, and nothing
+distinguished it from a real measurement: not the return type, not the frame
+count, not any assertion in the tree. The module header compounded it by
+claiming "Every tensor referenced by the CNN + GRU + head is required", which
+`from_gguf` never implemented — it requires one tensor matching one of seven
+prefixes.
+
+| Item | Kind | Signature | Rationale |
+| --- | --- | --- | --- |
+| `f0::rmvpe::CnnChainPolicy` | Added | `pub enum { Required, Optional }` (`Default` = `Required`) | Makes the CNN-less path something a caller names, never something a failed lookup selects |
+| `f0::rmvpe::RMVPE::from_gguf_with_cnn_policy` | Added | `(&Path, CnnChainPolicy) -> Result<Self, VokraError>` | The explicit constructor for structural fixtures |
+| `f0::rmvpe::RMVPE::cnn_policy` | Added | `(&self) -> CnnChainPolicy` | Lets a caller (and a test) see which posture a handle carries |
+| `f0::rmvpe::RMVPE::encoder_block_count` | Added | `(&self) -> usize` | Separates "the U-Net ran" from "the U-Net was skipped" — frame count and finiteness cannot |
+| `f0::rmvpe::RMVPE::decoder_block_count` | Added | `(&self) -> usize` | Decoder-side counterpart |
+| `f0::rmvpe::RMVPE::extract_real` | Changed (behaviour) | signature unchanged | Zero discoverable encoder *or* decoder blocks is now `ModelLoad` under `CnnChainPolicy::Required` |
+| `f0::rmvpe::RMVPE::extract` | Changed (behaviour) | signature unchanged | Delegates to `extract_real`, so it inherits the refusal |
+
+**Who this breaks**: a caller loading a checkpoint that does not name its
+U-Net the upstream way now gets a `ModelLoad` where it previously got a
+track. That track was wrong, so the break is the fix. The error names the
+scheme searched, the prefixes the artifact actually carries and a bounded
+sample of its tensor names, so a fork checkpoint is diagnosable from the
+message alone — and it names `CnnChainPolicy::Optional` for the one case
+where running without a CNN is intended.
+
+**The scheme is itself unverified.** `unet.encoder.block{i}.conv.weight` is
+this runtime's reading of the upstream layout; no real checkpoint has been
+through it. `vokra-convert`'s RMVPE converter passes `state_dict` keys
+through verbatim ("Tensor naming contract"), so whatever upstream emits is
+what lands in the GGUF — and that crate's own synthetic fixture uses a third
+shape again (`unet.encoder.layer0.weight`). If upstream turns out to name
+its blocks differently, the first real checkpoint will hit the new error
+rather than silently mis-running, and the error prints the artifact's actual
+names, which is what settles it. The correct response then is to fix the
+walker, not to relax the gate; both the enum docs and `extract_real` say so
+in as many words.
+
+**Honest scope — what did NOT change**: the decoder still omits upstream's
+`concat(paired encoder feature)` skip branch, so even a fully discovered
+U-Net does not reproduce upstream numerics. That divergence was previously
+disclosed only in a parenthetical inside a numbered pipeline step; it is now
+stated in the module header, in `extract_real`'s doc under "Where this
+forward is not upstream RMVPE", and in the Path A parity harness output. No
+real checkpoint has been through this path — the parity harness remains
+env-gated (`VOKRA_RMVPE_REAL_GGUF` / `VOKRA_RMVPE_REAL_HIDDEN`) and its Path
+A compares against no reference. Path A now additionally asserts non-zero
+encoder and decoder block counts, and its docstring stops describing the
+per-frame `hz` / `confidence` band checks as range validation: both columns
+are clamped by `decode_class_to_hz` before return, so those assertions fail
+only on `NaN`.
+
+**Verify**: no `cargo` run on this pass (16 GB host; sequential verification
+deferred to the integrating loop). Checked by hand: the new fixtures'
+shapes were traced against `conv2d_pad_same` / `maxpool2d_2x2` /
+`conv_transpose2d_stride2` / `collapse_nchw_to_frames`
+(mel `[1,1,101,128]` → encoder `[2,50,64]` → decoder `[2,100,128]` →
+BiGRU input 256 → 100 frames, matching the `frame_times` contract for 1 s at
+16 kHz); the three in-module tests that relied on the old silent
+fall-through now opt in via `from_gguf_with_cnn_policy`; no `include/vokra.h`
+edit and no new third-party dependency (root `Cargo.lock` untouched,
+NFR-DS-02 preserved).
+
+### 2026-08-15 — 1.0.0-rc.1-dev (F0 family: `CREPE` / `FCPE` gain a fallible `extract` + `extract_real` + `frame_times`, matching RMVPE — Rust surface only, advisory)
+
+**Breaking (Rust surface, pre-1.0 window)** plus additive. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+no F0 extractor is cbindgen-exported, so `scripts/gen-c-abi.sh --check`
+sees no diff and `scripts/check-abi-changelog.sh` does not fire. Recorded
+here because the pre-1.0 policy's recording rule covers Rust `pub` items.
+
+**Motivation**: `CREPE::extract` matched
+`Some(w) if sample_rate == 16_000` and let its `_` arm answer **two
+different failures with the same value** — "no weights bound" and "weights
+bound but the caller passed 44.1 kHz" both produced a frame-count-correct
+track of `hz = 0.0 / voiced = false / confidence = 0.0`. Downstream that is
+indistinguishable from "this audio is entirely unvoiced", so silently wrong
+pitch flowed into whatever consumed it (a vocoder, a VC pipeline). The
+docstring directly above claimed the opposite — "a non-16 kHz caller is
+honest-refused when weights are bound (no silent resample, FR-EX-08)" —
+which no code implemented, and could not have: `extract` returned
+`Vec<F0Frame>` with no error channel at all. `FCPE::extract` had the same
+shape plus a third case: a `compute_mel` failure discarded by `Err(_) =>`,
+under a comment claiming "no silent success on garbage weights".
+
+| Item | Kind | Signature | Rationale |
+| --- | --- | --- | --- |
+| `f0::crepe::CREPE::extract` | Changed | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` (was `-> Vec<F0Frame>`) | Delegates to `extract_real`; the obvious name is now the one that measures |
+| `f0::crepe::CREPE::extract_real` | Added | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` | The real forward, under the name the parity harnesses use |
+| `f0::crepe::CREPE::frame_times` | Added | `(&self, usize, u32) -> Vec<f32>` | Analysis timebase alone; bare seconds, never `F0Frame` |
+| `f0::crepe::CREPE::has_real_weights` | Added | `(&self) -> bool` | Lets a caller branch instead of handling the error |
+| `f0::crepe::NATIVE_SAMPLE_RATE` | Added | `pub const u32 = 16_000` | The rate the CNN is defined at, so the refusal can name it |
+| `f0::fcpe::FCPE::extract` | Changed | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` (was `-> Vec<F0Frame>`) | Same delegation |
+| `f0::fcpe::FCPE::extract_real` | Added | `(&self, &[f32], u32) -> Result<Vec<F0Frame>, VokraError>` | Real forward; propagates the STFT/mel error verbatim |
+| `f0::fcpe::FCPE::frame_times` | Added | `(&self, usize, u32) -> Vec<f32>` | Analysis timebase alone |
+
+**Errors are distinguished, not merged**: `VokraError::ModelLoad` for an
+unbound weight set (and, for FCPE, an unusable `hop` / `sample_rate`),
+`VokraError::InvalidArgument` for a rate the checkpoint is not defined at
+(naming both what it received and what it needs), and for FCPE the
+front-end's own error propagated verbatim. Neither extractor resamples on
+the caller's behalf — refusing is the point (FR-EX-08).
+
+**Shape**: deliberately identical to the `extract` / `extract_real` /
+`frame_times` split RMVPE received the same day, so the family reads the
+same way at every call site rather than carrying three different answers to
+one problem. `CREPE::extract_full` also stopped `.expect()`-ing on
+`forward_one` now that an error channel exists above it.
+
+**Callers updated**: `crates/vokra-models/tests/parity_crepe.rs` (now
+asserts `has_real_weights()` before comparing, so a weightless GGUF cannot
+silently "pass" a parity run against zeros); `crates/vokra-cli/src/engine.rs`
+(both `BOUND_ARCHES` rows move to `BoundReason::RealForwardNoCliTask`, and
+`BoundReason::SkeletonFallback` — whose only two users these were — is
+**removed** rather than left as a label no row could honestly carry; a
+`dead_code` warning under `-D warnings` would have caught it either way);
+`crates/vokra-cli/src/run.rs` and `crates/vokra-models/src/{lib.rs,f0/mod.rs}`
+doc corrections.
+
+**Verify**: no `cargo` run on this pass (16 GB host, sequential verification
+deferred to the integrating loop). Checked by hand: every workspace call
+site of the changed methods was re-grepped and updated; `SkeletonFallback`
+has zero remaining referents; no `include/vokra.h` edit and no new
+third-party dependency (root `Cargo.lock` untouched, NFR-DS-02 preserved).
+
+### 2026-08-14 — 1.0.0-rc.1-dev (WP-23 piper-plus landing: `PiperPlusTts::synthesize_streaming` + `PiperPlusTtsStream` single-chunk fallback + `TtsStreamHandle` re-export — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the FR-ST-04 streaming-surface
+unification on piper-plus (Vokra's first native TTS). The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is **untouched** —
+every change is Rust-surface, not cbindgen-exported (`scripts/gen-c-abi.sh
+--check` = no diff).
+
+**Motivation**: The `TtsEngine::synthesize_stream` trait method (WP-23,
+landed in the 2026-08-10 SBV2 v2 wave) loudly refused with
+`VokraError::UnsupportedOp` on every engine — including piper-plus — so
+downstream callers had to special-case full-utterance engines against
+future chunk-wise engines (piper-plus M4-03 chunked decode / SBV2
+streaming). This wave lands the piper-plus override as a **single-chunk
+fallback**: the full `TtsEngine::synthesize` path runs synchronously to
+produce the PCM, which is then wrapped in a `PiperPlusTtsStream` that
+yields the buffer once on `next_pcm_chunk()` and `None` afterwards. The
+generation time is unchanged — MB-iSTFT-VITS2 is a full-utterance
+synthesizer with no architectural chunk-boundary — and per FR-EX-08 this
+is stated in the docstring rather than hidden behind a name that
+promises incremental generation. A future chunk-boundary decoder (the
+WP-M4-03 piper streaming path) overrides this method to emit true
+incremental chunks; downstreams that already use `TtsStreamHandle` will
+pick up the improvement without an API change.
+
+**Backward compatibility**: Purely additive. The pre-existing
+`PiperPlusTts::synthesize_pseudo_streaming` inherent method (the honest
+name that FR-ST-04 mandates for the full-PCM route) is unchanged and
+still returns `SynthesizedAudio`. The new inherent methods return
+`Result<PiperPlusTtsStream>` (the stronger-typed variant). No existing
+call sites break.
+
+**Files touched**:
+- `crates/vokra-core/src/lib.rs`
+  — Added `TtsStreamHandle` to the `pub use engines::{...}` re-export
+    list, so downstream consumers can name the trait as
+    `vokra_core::TtsStreamHandle` (in addition to the pre-existing
+    `vokra_core::engines::TtsStreamHandle` path). The trait itself was
+    already `pub trait` and is present in
+    `docs/abi/vokra-rust-public-api.v1.0-rc.list` (line 1313); this
+    change adds a shorter re-export path, not a new symbol.
+- `crates/vokra-models/src/piper_plus/mod.rs`
+  — New top-level import `use vokra_core::{... TtsStreamHandle, ...};`.
+  — New `pub fn PiperPlusTts::synthesize_streaming(&self, request:
+    &SynthesisRequest) -> Result<PiperPlusTtsStream>` — mirrors
+    `TtsEngine::synthesize` (uses the placeholder `tokenize()` path)
+    and wraps the resulting `SynthesizedAudio` in the single-chunk
+    stream.
+  — New `pub fn PiperPlusTts::synthesize_streaming_with(&self, request:
+    &SynthesisRequest, phonemizer: &dyn Phonemizer) ->
+    Result<PiperPlusTtsStream>` — mirrors
+    `synthesize_pseudo_streaming` (takes an injected G2P) and wraps its
+    output.
+  — New `pub struct PiperPlusTtsStream { pcm: Option<Vec<f32>>,
+    sample_rate: u32 }` with a `pub(crate) fn new` constructor (only
+    the two `synthesize_streaming*` methods build one at runtime; the
+    crate-visible constructor exists for the wrapper-only unit tests).
+  — New `impl TtsStreamHandle for PiperPlusTtsStream` — drains the
+    buffer on the first `next_pcm_chunk()` call, returns `None`
+    afterwards, and reports the voice's sample rate.
+  — New `impl TtsEngine for PiperPlusTts { fn synthesize_stream(...)
+    -> Result<Box<dyn TtsStreamHandle + Send>> { ... } }` — overrides
+    the default (which loudly refuses per FR-EX-08) with a boxed
+    single-chunk wrapper.
+  — Six new tests in a new `stream_wrapper_tests` module:
+    `stream_yields_single_chunk_then_none`,
+    `stream_returns_first_chunk_bit_exact`,
+    `stream_reports_configured_sample_rate`,
+    `stream_handle_is_send`,
+    `stream_handles_empty_pcm_as_single_empty_chunk`,
+    `synthesize_streaming_symbol_shape_matches_wrapper`,
+    `tts_engine_stream_override_returns_boxed_handle_shape`.
+
+**Verification**: `scripts/gen-c-abi.sh --check` clean (no C ABI diff);
+zero-dep unchanged (root `Cargo.lock` still `vokra-*` only, NFR-DS-02);
+FR-ST-04 respected — the surface unification is documented as a
+single-chunk fallback and the existing `synthesize_pseudo_streaming`
+name is preserved so the honest full-PCM route stays reachable under
+its FR-ST-04-mandated name.
+
+### 2026-08-14 — 1.0.0-rc.1-dev (`AsrEngine` impl for `DistilWhisperAsr` — Rust surface only, advisory)
+
+Additive **Rust public API** entry that wires
+`vokra_models::distil_whisper::DistilWhisperAsr` into the
+[`vokra_core::engines::AsrEngine`] trait, so a distil-whisper handle can be
+injected via `vokra_core::Session::with_asr_engine` and drive
+`session.asr().transcribe()` end-to-end. The C ABI (`include/vokra.h`, 33 fn
++ 11 typedef, v1.0-rc baseline) is **untouched** — every change is
+Rust-surface, not cbindgen-exported (`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: `DistilWhisperAsr::from_gguf` had been landed as a Delegate-
+kind handle over the shared `WhisperAsr` load path (real weights, real
+greedy decode), but the type did not implement the `AsrEngine` trait, so
+`Session::with_asr_engine(distil).asr().transcribe(pcm)` would trip a
+`NotImplemented` from the facade instead of running the delegate. This
+wave adds the trait impl (verbatim the `WhisperAsr` composition pattern:
+inherent transcribe → `render_ids` → `Transcription::new`) so the same
+`session.asr()` surface every other ASR consumes also drives distil-whisper.
+
+**Backward compatibility**: Additive. The inherent
+`DistilWhisperAsr::transcribe(pcm) -> Result<Vec<u32>>` is unchanged and
+still wins method resolution when the receiver is a concrete
+`DistilWhisperAsr` (Rust prefers inherent methods with matching receiver +
+argument shape over trait methods, so callers of the inherent are
+unaffected). The trait method is reached via `dyn AsrEngine` dispatch or
+explicit UFCS (`<DistilWhisperAsr as AsrEngine>::transcribe(&asr, pcm)`).
+The empty-PCM `InvalidArgument` early return is honored by both entry
+points because the trait method delegates to the inherent one.
+
+**Files touched**:
+- `crates/vokra-models/src/distil_whisper/mod.rs`
+  — New top-level `use vokra_core::engines::AsrEngine;` and
+    `use vokra_core::tasks::Transcription;` imports.
+  — New `impl AsrEngine for DistilWhisperAsr { fn transcribe(&self,
+    pcm: &[f32]) -> Result<Transcription> { ... } }` (composition of the
+    two existing inherent helpers).
+  — New `#[cfg(test)] pub(crate) fn
+    DistilWhisperAsr::from_whisper_asr_for_test(WhisperAsr) -> Self`
+    (test-only constructor that wraps an already-loaded `WhisperAsr` into a
+    Delegate-kind handle without enforcing the distil invariant — required
+    for the trait-dispatch tests below; not exposed outside `#[cfg(test)]`
+    so production callers still go through `from_gguf`).
+  — Three new tests exercising the trait method end-to-end via the
+    Delegate arm: `asr_engine_transcribe_delegate_returns_finite_transcription`,
+    `asr_engine_transcribe_rejects_empty_pcm`,
+    `asr_engine_transcribe_composes_with_inherent_transcribe`.
+- `crates/vokra-models/src/whisper/decoder.rs`
+  — New `pub(crate) fn test_support::tiny_model_distil(n_audio_layer,
+    n_text_layer) -> Arc<WhisperModel>` and its private
+    `tiny_encoder_layer` helper. Whisper-shape (`n_audio_ctx = 1500`) so
+    the encoder path passes its post-conv2 length check; consumed by the
+    distil-whisper trait tests. Encoder-layer weights are deterministic
+    with the same `rect` / `tiny_attn` shape convention the decoder
+    `tiny_layer` uses. Adds `EncoderLayer` to the existing
+    `whisper::weights::{...}` import list.
+
+**Verification**: `scripts/gen-c-abi.sh --check` clean (no C ABI diff);
+zero-dep unchanged (root `Cargo.lock` still `vokra-*` only, NFR-DS-02);
+`use vokra_core::engines::AsrEngine` is an internal-crate trait import,
+not a new external dep.
+
+### 2026-08-13 — 1.0.0-rc.1-dev (M3-06 T14: `mimi_rvq` Metal MSL kernel + `Compute::mimi_rvq_f32` Metal arm wired — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M3-06 T14 landing that flips
+`HotOp::MimiRvq.covered_by_metal()` from `false` to `true` and swaps the
+Metal arm of `Compute::mimi_rvq_f32` from an explicit
+`VokraError::UnsupportedOp` to a real MSL kernel dispatch. The C ABI
+(`include/vokra.h`, 33 fn + 11 typedef, v1.0-rc baseline) is
+**untouched** — every change is Rust-surface, not cbindgen-exported
+(`scripts/gen-c-abi.sh --check` = no diff).
+
+**Motivation**: `mimi_rvq_decode` — the shape-generic FP32 gather + fold
+behind the Mimi (Kyutai) RVQ codec decode (and the M3-06 FR-OP-30
+op family — the still-deferred DAC / EnCodec siblings will reuse the
+same kernel shape once their per-quantizer projections are wired) — had
+no GPU implementation. The M3-06 T14 MSL kernel
+(`vokra_mimi_rvq_gather_fold_f32`) closes that gap for Metal; the CUDA
+half (M3-06 T15 NVRTC kernel) stays owner-track on vast.ai and remains a
+loud `UnsupportedOp` as before. FR-EX-08 no-silent-fallback posture is
+preserved by validating shape + per-index bounds on the host **before**
+dispatch (the MSL kernel itself has no per-element bound check; a stray
+index would be a silent OOB gather without the host-side guard).
+
+**Backward compatibility**: The public signature of
+`Compute::mimi_rvq_f32` is unchanged. Every prior caller that did
+`.expect_err("must be UnsupportedOp on Metal")` on a valid input must
+update — the Metal arm now returns `Ok(Vec<f32>)` when Metal is
+available and the input passes validation. Invalid inputs (shape
+mismatch, out-of-range codebook index, wrong table count / shape) are
+still explicit `VokraError::InvalidArgument`; the only removed error
+surface is the deferred-kernel `UnsupportedOp`.
+
+**Files touched**:
+- `crates/vokra-backend-metal/src/context.rs`
+  — New MSL kernel in `KERNELS_MSL`: `vokra_mimi_rvq_gather_fold_f32`
+    (naive gather + FP32 fold; grid `(d_model, time)` 2-D dispatch with
+    16×16 threadgroups; ragged-tail guard). Mirrors
+    `vokra_ops::mimi_rvq::rvq_fold_core` semantics.
+  — New `#[repr(C)] struct MimiRvqDims { n_codebooks, codebook_size,
+    d_model, time: u32 }` block for `setBytes:` at index 3.
+  — New `MetalContext` field: `mimi_rvq_gather_fold_pipeline: Id`,
+    compiled at `build`, released in `Drop` (LIFO order).
+  — New public method `MetalContext::mimi_rvq_gather_fold_f32(codes,
+    tables_flat, n_codebooks, codebook_size, d_model, time) ->
+    Result<Vec<f32>>` (heap-returning to match `Compute::mimi_rvq_f32`).
+  — New private helper `MetalContext::run_mimi_rvq_gather_fold` (mirror
+    of `run_dequant_gemv`).
+- `crates/vokra-models/src/compute.rs`
+  — `HotOp::covered_by_metal` flipped: MimiRvq is now Metal-covered;
+    DAC / EnCodec RVQ and FSQ siblings stay deferred (docstring +
+    lock-step test updated).
+  — `Compute::mimi_rvq_f32` Metal arm: was
+    `Err(VokraError::UnsupportedOp)`, now validates shape + per-index
+    bounds on the host, flattens `[n_codebooks][codebook_size, d_model]`
+    into one FP32 buffer, then delegates to
+    `MetalContext::mimi_rvq_gather_fold_f32`.
+  — `metal_coverage_is_consistent` test: MimiRvq moved into the
+    positive-cover list; removed the "MimiRvq must be uncovered"
+    assertion; kept the still-deferred DAC / EnCodec / FSQ negative
+    assertions.
+  — Renamed `metal_mimi_rvq_arm_is_unsupported_no_silent_fallback` →
+    `metal_mimi_rvq_arm_runs_kernel_and_rejects_oob_index`. New body
+    verifies (a) trivial (1,1,1) FP32 fold matches CPU, (b) OOB code
+    index → `InvalidArgument` (FR-EX-08), (c) shape mismatch →
+    `InvalidArgument`.
+  — `metal_mimi_rvq_off_metal_is_backend_unavailable` docstring updated
+    (behavior unchanged: off-feature Metal is still
+    `BackendUnavailable`).
+- `crates/vokra-ops/src/mimi_rvq.rs`
+  — Module docs updated: the "GPU seam" section now records the Metal
+    landing (kernel name, atol bound, FR-EX-08 host-side validation) and
+    narrows the still-deferred backend list to CUDA / Vulkan / WebGPU.
+- `crates/vokra-models/tests/mimi_rvq_metal_bit_identical.rs` (NEW)
+  — Off-feature band: `Compute::for_backend(Metal, [MimiRvq])` is
+    `BackendUnavailable`.
+  — Metal band (Apple + `--features metal`): tiny-shape CPU vs Metal
+    parity (atol ≤ 5e-4, plus `mimi_rvq_decode` bit-identical anchor on
+    CPU); canonical-shape (n_codebooks = 8, codebook_size = 32,
+    d_model = 64) parity with a **negative control** (a 0.1 codebook
+    perturbation moves CPU output past 5e-4, proving the bound is not
+    vacuous); OOB code → `InvalidArgument`; wrong table count / shape →
+    `InvalidArgument`; empty `time = 0` → empty `Vec<f32>`. Each Metal
+    test clean-skips on hosts without a Metal device (prints a reason —
+    never a fabricated pass).
+
+**GGUF metadata**: none added (this is a runtime kernel wire; the
+existing `vokra.mimi.n_codebooks` / `vokra.mimi.codebook_size` /
+`vokra.mimi.d_model` chunks that M3-09 will emit stay untouched).
+
+**Semver impact (0.9.x window)**: minor, additive. No public function
+signature changed. The `HotOp::MimiRvq` variant is `#[non_exhaustive]`
+in intent; downstream `match` arms that already handle the
+still-deferred DAC / EnCodec / FSQ variants continue to compile.
+
+**Verify (2026-08-13)**: `cargo check -p vokra-backend-metal` clean;
+`cargo check -p vokra-models --features metal` clean; `cargo test -p
+vokra-models --features metal mimi_rvq` — see PR body / commit message
+for the atol max on this M1 iMac. `scripts/check-zero-deps.sh`
+unaffected (no new external crate). `scripts/gen-c-abi.sh --check` no
+diff (Rust surface only).
+
+**Landing checkpoint**: One CC-wave landing (Vocoder Metal 先鋒 = P2
+sub-wave 1/11). The DAC / EnCodec RVQ kernels + M3-06 T15 CUDA NVRTC
+kernel remain follow-up waves.
+
+### 2026-08-13 — 1.0.0-rc.1-dev (RMVPE Wave 2: real U-Net + BiGRU forward + `forward_from_hidden` — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the RMVPE Wave 2 landing that
+resolves the loud-partial `extract_real` stub on
+`vokra_models::f0::rmvpe::RMVPE`. The C ABI (`include/vokra.h`, 33 fn
++ 11 typedef, v1.0-rc baseline) is **untouched** — every change is
+Rust-surface, not cbindgen-exported (`scripts/gen-c-abi.sh --check` =
+no diff).
+
+**Motivation**: `RMVPE::extract_real` had returned a loud
+`VokraError::UnsupportedOp` "kernel binding pending" stub since
+2026-07-30, alongside a real weight loader + rank-shape gate + real
+mel front-end + `decode_class_to_hz` primitive. The stub was honest
+(FR-EX-08 loud-partial posture) but blocked downstream VC / TTS
+consumers from wiring the API surface end-to-end against a real
+checkpoint. This wave binds the missing CNN + BiGRU + head + sigmoid
++ decoder chain against the already-bound weights, so a real GGUF
+converts straight through to a per-hop F0 track without the loud
+stub. Bit-exact numeric parity against the upstream `yxlllc/RMVPE`
+Python remains gated on the owner-side dumper wave (see below).
+
+**Backward compatibility**: `extract_real` still returns
+`Result<Vec<F0Frame>, VokraError>` — the signature is unchanged; only
+the error surface is narrowed (never returns `UnsupportedOp` under
+this landing; a mis-composed weight set is a
+`VokraError::ModelLoad`). Every prior caller that did
+`.expect_err("must be unsupported")` must update to
+`.expect("must run cleanly on a real GGUF")` — search for
+`extract_real_is_loud_pending_error` / `expect_err(_, ..., UnsupportedOp)`
+against RMVPE. Existing `RMVPE::extract` placeholder is preserved
+verbatim.
+
+**Files touched**:
+- `crates/vokra-models/src/f0/rmvpe.rs`
+  — New public methods:
+    - `RMVPE::forward_from_hidden(hidden, n_frames, feature_dim, sample_rate)`
+      — env-gated alternate entry point for the parity harness to feed
+      a dumped post-CNN hidden state directly (bypasses mel + CNN).
+  — Rewritten (previously stub):
+    - `RMVPE::extract_real(pcm, sample_rate)` — real forward through
+      `mel_spectrogram` + discoverable U-Net encoder / decoder blocks
+      + bidirectional PyTorch-native GRU + Linear (or Conv1d/Conv2d
+      with kernel=1) head + sigmoid + `decode_class_to_hz` per frame.
+  — New private forward primitives (file-scope, no `vokra-ops`
+    dependency to preserve NFR-DS-02 at the RMVPE seam):
+    `conv2d_pad_same`, `batchnorm2d_apply`, `maxpool2d_2x2`,
+    `conv_transpose2d_stride2`, `leaky_relu_inplace`,
+    `sigmoid_inplace`, `linear_forward`, `gru_cell_step`,
+    `collapse_nchw_to_frames`, `head_shape`.
+  — New private weight-discovery helpers on `RmvpeWeights`:
+    `encoder_block(i)`, `decoder_block(i)`, `discover_gru_shape()`,
+    `apply_bigru(...)`, `head_shape_and_slices()`. All return
+    `RmvpeBlock<'_>` / `RmvpeHead<'_>` view structs.
+  — `RMVPE::weights` field's `#[allow(dead_code)]` removed (the
+    forward now consumes it).
+- `crates/vokra-models/tests/parity_rmvpe.rs`
+  — `parity_rmvpe_gguf_smoke` (env-gated) upgraded from "expect
+    UnsupportedOp" to "assert real frames + shape / finite /
+    sigmoid-range contract".
+  — New env-gated `parity_rmvpe_from_hidden_argmax_match_rate` —
+    Path B parity harness feeding `VOKRA_RMVPE_REAL_HIDDEN` +
+    `VOKRA_RMVPE_REAL_ARGMAX` + `VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM`
+    against the argmax-match-rate ≥ 99 % gate.
+- Unit tests in `f0::rmvpe::tests`:
+  — Removed `extract_real_is_loud_pending_error` (superseded).
+  — Added `extract_real_refuses_gguf_missing_required_tensors`
+    (FR-EX-08 loud-error contract).
+  — Added `extract_real_returns_real_frames_with_synthetic_weights`
+    (positive smoke on a self-consistent no-CNN fixture).
+  — Added `forward_from_hidden_returns_real_frames_with_synthetic_weights`
+    (positive smoke on the hidden-driven path).
+  — Added `forward_from_hidden_refuses_wrong_length` (FR-EX-08 length
+    check).
+
+**Zero-dep** (NFR-DS-02): every forward primitive is inline
+(`crates/vokra-models/src/f0/rmvpe.rs` file scope). No new
+dependencies, no vokra-ops seam changes; root `Cargo.lock` unchanged.
+
+**No new C ABI surface** — RMVPE is a Rust-only model surface (the
+consumer is `vokra_models::VoiceClonePipeline` in
+`vokra-voiceclone-experimental`, which is out-of-tree per the ELVIS
+Act separation). `include/vokra.h` byte-for-byte unchanged;
+`docs/abi/vokra.h.v1.0-rc-baseline.symbols` untouched.
+
+**M5-13 relevance**: additive Rust surface only, so
+`scripts/check-abi-changelog.sh` does not gate on this entry.
+`abi-diff.sh --gate` is still non-firing (v1.0-rc pre-release policy;
+IF-01 semver freeze is M5-13/v1.0 GA).
+
+**Parity gate — env-gated, owner action**: bit-exact numeric parity
+against the upstream `yxlllc/RMVPE` Python is gated on the owner-side
+dumper `tools/parity/rmvpe/dump_reference.py`. That dumper **has since
+landed** (this entry originally called it a future WP at path
+`tools/parity/rmvpe_dump_reference.py`, which never existed); its real
+invocation is `--pt-path` / `--upstream-src` / `--out-dir` plus exactly
+one of `--pcm | --canned`, and it emits raw little-endian
+`hidden.f32` + `argmax.u32` alongside a `meta.json` carrying
+`feature_dim` — **not** `.npy` files. See
+`tools/parity/rmvpe/README.md` for the owner walkthrough. Env vars
+gate the harness:
+
+- `VOKRA_RMVPE_REAL_GGUF` — Path A (full end-to-end shape / finite /
+  sigmoid-range contract).
+- `VOKRA_RMVPE_REAL_HIDDEN` + `VOKRA_RMVPE_REAL_ARGMAX` +
+  `VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM` — Path B (argmax-match-rate
+  ≥ 99 % against dumped reference indices, isolates numerical parity
+  from CNN topology drift).
+
+Absent either env var, the harness skips cleanly — never a fabricated
+pass. See `crates/vokra-models/tests/parity_rmvpe.rs` for both fixture
+recipes.
 ### 2026-08-14 — 1.0.0-rc.1-dev (C ABI: GPU backend selection + speaker embedding — 8 new functions, 2 new typedefs)
 
 The first **real C ABI addition** since the v1.0-rc baseline snapshot: the
@@ -1662,17 +2352,37 @@ Forward reservations recorded **before** the IF-01 freeze (M5-13; ADR M4-20
 shape break. These are `vokra-core::m5_residual_ops` `&'static str` constants —
 **declared, never registered** (the `KOKORO_ISTFT_HEAD_OP` pattern; guarded by
 `m5_residual_ops::tests::new_anchors_are_reserved_but_unregistered`). They add
-**no** C ABI symbol and are **not** inserted into `MinDtypeRegistry` / `OpKind`.
+**no** C ABI symbol (machine-gated by `scripts/check-m5-residual-no-abi.sh`)
+and are **not** `OpKind` variants. They are also absent from `MinDtypeRegistry`
+with one documented exception: `bigvgan_generator`'s min-dtype anchor *is*
+registered (M2-08, fp16 minimum) — only its op landing is M5, which is exactly
+what `m5_residual_ops::tests::bigvgan_min_dtype_anchor_is_registered_but_op_is_m5`
+pins.
 
-| Reserved op-kind id          | FR-OP    | M5 blocker (why deferred)                                     |
+Read the blocker column as **what is still reserved**, not as "what does not
+exist". Per ADR M4-20 §D-5 these decoders / generators are deliberately
+*runtime functions* rather than `OpKind` variants, so a landed runtime
+primitive and a still-reserved graph-side id coexist by design — the
+reservation stays valid after the primitive ships, and only the graph-side
+variant + C ABI export are actually deferred to the M5-13 freeze policy.
+
+**Updated 2026-08-15** — the `bigvgan_generator` / `ctc_decode` / `rnnt_decode`
+rows previously asserted a missing trigger model. That is no longer true (all
+three runtime primitives landed, and `rnnt_decode` has a live consumer), so the
+rows now name what is genuinely reserved. `titanet_speaker_encode` and
+`diarize` are synced to the license decisions already recorded in
+`crates/vokra-core/src/m5_residual_ops.rs`. The new gate
+`scripts/check-m5-residual-blockers.sh` keeps this column from drifting back.
+
+| Reserved op-kind id          | FR-OP    | M5 blocker (what is still reserved)                           |
 | ---------------------------- | -------- | ------------------------------------------------------------ |
-| `bigvgan_generator` (op)     | FR-OP-11 | no trigger model; min-dtype anchor already registered (M2-08), only the generator **op landing** is M5 |
-| `ctc_decode`                 | FR-OP-41 | NeMo-family trigger pending                                  |
-| `rnnt_decode`                | FR-OP-42 | NeMo-family trigger pending                                  |
+| `bigvgan_generator` (op)     | FR-OP-11 | graph-side `OpKind` variant + C ABI export. Runtime vocoder landed (`vokra_ops::bigvgan_generator` + the `vokra_models::bigvgan` arch binder); min-dtype anchor registered (M2-08). `BigVGan::from_gguf` is separately still loud-partial |
+| `ctc_decode`                 | FR-OP-41 | graph-side `OpKind` variant + C ABI export. Runtime primitives landed (`ctc_decode_greedy` / `ctc_decode_beam`, LM shallow fusion + hotwords); NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`) but no live call site yet |
+| `rnnt_decode`                | FR-OP-42 | graph-side `OpKind` variant + C ABI export. Runtime primitive landed, live consumer `ParakeetTdt11b::decode_tdt` (`parakeet_tdt_1_1b/mod.rs:621`); e2e `transcribe` still loud-partial |
 | `ecapa_tdnn_speaker_encode`  | FR-OP-80 | CAM++ already covers speaker embedding                       |
 | `wespeaker_speaker_encode`   | FR-OP-80 | CAM++ already covers speaker embedding                       |
-| `titanet_speaker_encode`     | FR-OP-80 | CAM++ covers it; TitaNet NVIDIA NC restriction unconfirmed   |
-| `diarize`                    | FR-OP-82 | trigger + license (pyannote HF-gated) double blocker         |
+| `titanet_speaker_encode`     | FR-OP-80 | CAM++ covers it; the converter side landed 2026-07-30 with a CC-BY-4.0 sign-off (the earlier "NVIDIA NC restriction unconfirmed" is resolved), runtime op landing is M5 |
+| `diarize`                    | FR-OP-82 | trigger only — the license half unblocked 2026-07-30: pyannote is MIT by primary source (`gated: auto` is access control, no extra terms), `docs/license-audit.md` §3.1 row 263 |
 
 ### 2026-08-09 — 1.0.0-rc.1-dev (Wave 7 Part C: Moshi head mapped-lazy, MOSHI-16GB-STRATEGY residual)
 
@@ -1851,6 +2561,122 @@ Notes:
 | `vokra-core:license_class`      | `voxcpm2-0.5b` / `voxcpm2-2b` / `voxcpm2-` prefix     | Added   | `LicenseClass::Permissive` (apache-2.0 end-to-end)                                                                                                                                                                | The registry accepts every canonical + underscore + `-base` spelling of both variants, plus the `voxcpm2-` prefix guard for future 2B-lineage variants. The pre-existing `voxcpm-` prefix + `voxcpm-0.5b` explicit entries stay live for backward compat with legacy GGUFs.                                                                                                                                                                              | no        | —    |
 
 Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS is license fail-closed until the owner's M4-18 T03 verification (no keys are invented ahead of it).
+
+### 2026-08-15 — model-converter chunk backfill (50 prefixes, retroactive)
+
+Fifty `vokra.<model>.*` chunk groups were being stamped by converters in
+`crates/vokra-convert/src/models/` with **no row anywhere in this file**.
+Under §"Scope: what belongs in this file" the GGUF metadata schema is
+in-scope precisely because model files are content-addressed by these
+chunks: a consumer who converted last month and one who converts today got
+different metadata with nothing on disk recording the difference. This
+section closes that, and `scripts/check-abi-changelog.sh
+--check-gguf-prefixes` (added the same day) keeps it closed mechanically.
+
+Read this as a **record, not a change**: nothing here alters a shipped key.
+Every group listed is new in its entirety, so the "no pre-existing key
+changed meaning" claim in each row is a statement about the whole group,
+not a per-key diff against an earlier schema.
+
+Scope limits, stated rather than implied:
+
+- **The `WP` column reads `backfill`** because the work-package that
+  introduced each group is not recoverable from the converter source, and
+  inventing one would be worse than omitting it. The `Introducing wave /
+  commit` column carries the real traceability — each SHA is the
+  `--diff-filter=A` commit that added the converter file.
+- **`Keys` is truncated to the first four leaf names plus an exact count.**
+  The converter file named in the row is the authority for the full set;
+  transcribing 500-odd leaf names here would be a second copy to drift.
+- **`Kind` is the observed writer call** (`add_u32` / `add_f32` /
+  `add_bool` / `add_string`), and for the four groups that go through
+  `GgufBuilder::add_metadata` the concrete `GgufMetadataValue` variant
+  (`vokra.kokoro.*` / `vokra.ct_punc.*` string arrays, `vokra.maest.*`
+  `F64`, `vokra.itn.*` `U8` array + `U64` + `I64`).
+- **`vokra.voila.*` is deliberately NOT in this table.** An audit listed it
+  as an unrecorded stamped prefix; it is not stamped at all.
+  `models/voila.rs` mentions the string only in a refusal message and in a
+  test (`no vokra.voila.* axis may be stamped without a primary source`)
+  that asserts the emitted GGUF carries zero such keys. Adding a row for it
+  would document a chunk group that does not exist.
+- **Converter-crate scope.** These rows, and the gate, cover
+  `crates/vokra-convert/src/`. Two writers live elsewhere and are already
+  recorded: `vokra.denoise.*` (`DenoiseModel::to_gguf_bytes` in
+  `vokra-ops`) and the unconditional `vokra.schema.*` / `vokra.provenance.*`
+  / `vokra.model.*` stamp in `GgufBuilder::effective_metadata`
+  (`vokra-core`).
+
+| WP    | Chunk prefix | Keys | Kind | Status | Rationale | Introducing wave / commit |
+| ----- | ------------ | ---- | ---- | ------ | --------- | -------------------------- |
+| backfill | `vokra.atst.*` | **34** keys — `act_layer`, `amp_to_db_stype`, `amp_to_db_top_db`, `depth`, …  | `u32` + `f32` + `bool` + `string` | persisted | `atst-base`, `github.com/Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst` — written by `crates/vokra-convert/src/models/atst.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `a8867cf` (2026-08-13) |
+| backfill | `vokra.audiosr.*` | **32** keys — `attention_resolution_`, `attention_resolutions_count`, `beta_schedule`, `channel_mult_`, …  | `u32` + `string` | persisted | `audiosr` — written by `crates/vokra-convert/src/models/audiosr.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.bark.*` | **15** keys — `block_size`, `coarse.input_vocab_size`, `coarse.output_vocab_size`, `codec.sample_rate`, …  | `u32` + `string` | persisted | `bark` — written by `crates/vokra-convert/src/models/bark.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.beat_this.*` | **6** keys — `d_model`, `n_classes`, `n_frames`, `n_head`, …  | `u32` | persisted | `beat-this`, `github.com/CPJKU/beat_this` — written by `crates/vokra-convert/src/models/beat_this.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `173fea8` (2026-08-14) |
+| backfill | `vokra.bigvgan.*` | **1** keys — `variant` | `string` | persisted | `bigvgan` — written by `crates/vokra-convert/src/models/bigvgan.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.canary_qwen.*` | **22** keys — `arch.cross_attn.hidden_dim`, `arch.decoder.ffn_dim`, `arch.decoder.head_dim`, `arch.decoder.hidden_dim`, …  | `u32` + `f32` | persisted | `canary-qwen-2.5b` — written by `crates/vokra-convert/src/models/canary_qwen.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.chatterbox_nano.*` | **25** keys — `arch.ffn_dim`, `arch.head_dim`, `arch.hidden_dim`, `arch.hop_size`, …  | `u32` + `f32` + `string` | persisted | `chatterbox_nano` — written by `crates/vokra-convert/src/models/chatterbox_nano.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.chatterbox_turbo.*` | **21** keys — `arch.head_dim`, `arch.hidden_dim`, `arch.hop_size`, `arch.max_speech_tokens`, …  | `u32` + `string` | persisted | `chatterbox_turbo` — written by `crates/vokra-convert/src/models/chatterbox_turbo.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.ct_punc.*` | **11** keys — `att_unit`, `attention_heads`, `embed_unit`, `kernel_size`, …  | `u32` + `f32` + `string[]` | persisted | `ct-punc`, `funasr/ct-punc` — written by `crates/vokra-convert/src/models/ct_punc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.openwakeword.*` | **7** keys — `n_wakewords`, `embedding_dim`, `window_frames`, `mel_bins`, `sample_rate`, `hop_samples`, `wakeword_names` | `u32` + `string[]` | persisted | `openwakeword-op` — written by `crates/vokra-convert/src/models/openwakeword_op.rs`. **Additive**, but note the repair it belongs to: the binder (`vokra-models/src/kws/openwakeword/mod.rs`) had required all seven since it landed, while the converter stamped none, so every GGUF it produced failed to load. Nothing caught it — the unit tests hand-build their GGUF and the parity harness is env-gated. Stamping the group is what makes the documented convert-then-run recipe work for the first time. **Behaviour change**: `--model openwakeword-op` now REFUSES without `--config`, because `wakeword_names` is a user-facing label that cannot be derived from tensors and must not be synthesised (the `ModelKind::Crepe` refusal precedent). The config-less form previously "succeeded" and wrote an unloadable artifact. | `173a811` (2026-08-15) |
+| backfill | `vokra.dia.*` | **28** keys — `arch.decoder.cross_head_dim`, `arch.decoder.cross_query_heads`, `arch.decoder.gqa_head_dim`, `arch.decoder.gqa_query_heads`, …  | `u32` + `f32` | persisted | `dia-1.6b` — written by `crates/vokra-convert/src/models/dia.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.diffsinger.*` | **24** keys — `backbone_type`, `diff_accelerator`, `enc_layers`, `f0_max`, …  | `u32` + `f32` + `string` | persisted | `diffsinger`, `github.com/openvpi/DiffSinger` — written by `crates/vokra-convert/src/models/diffsinger.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.dtln_aec.*` | **5** keys — `block_len`, `hop`, `lstm_units`, `n_fft`, …  | `u32` | persisted | `dtln-aec`, `github.com/breizhn/DTLN-aec` — written by `crates/vokra-convert/src/models/dtln_aec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `c8320f0` (2026-08-14) |
+| backfill | `vokra.eat.*` | **38** keys — `decoder_dim`, `decoder_groups`, `decoder_kernel`, `decoder_layers`, …  | `u32` + `f32` + `bool` + `string` | persisted | `eat-base`, `github.com/cwx-worst-one/EAT` — written by `crates/vokra-convert/src/models/eat.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `ca04c1b` (2026-08-13) |
+| backfill | `vokra.facodec.*` | **6** keys — `hop_size`, `n_quantizers_content`, `n_quantizers_detail`, `n_quantizers_prosody`, …  | `u32` + `string` | persisted | `naturalspeech3-facodec-v2`, `amphion/naturalspeech3_facodec` — written by `crates/vokra-convert/src/models/naturalspeech3_facodec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.focalcodec.*` | **1** keys — `variant` | `string` | persisted | `focalcodec-50hz`, `lucadellalib/focalcodec_50hz` — written by `crates/vokra-convert/src/models/focalcodec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.granite_speech.*` | **36** keys — `arch.decoder.attention_multiplier`, `arch.decoder.embedding_multiplier`, `arch.decoder.ffn_dim`, `arch.decoder.hidden_dim`, …  | `u32` + `f32` | persisted | `granite-speech-4.1-2b`, `ibm-granite/granite-speech-4.1-2b` — written by `crates/vokra-convert/src/models/granite_speech.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.gtcrn.*` | **5** keys — `gru_hidden`, `hop`, `n_bands`, `n_fft`, …  | `u32` | persisted | `gtcrn`, `github.com/Xiaobin-Rong/gtcrn` — written by `crates/vokra-convert/src/models/gtcrn.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `c8320f0` (2026-08-14) |
+| backfill | `vokra.itn.*` | **12** keys — `direction`, `language`, `prefix`, `tagger_bytes`, …  | `u32` + `bool` + `string` + `u8[]` + `u64` + `i64` | persisted | `wetextprocessing`, `github.com/wenet-e2e/WeTextProcessing` — written by `crates/vokra-convert/src/models/wetextprocessing.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
+| backfill | `vokra.kokoro.*` | **11** keys — `hidden_dim`, `istft.hop`, `istft.n_fft`, `istft.win_length`, …  | `u32` + `string[]` | persisted | `kokoro-82m` — written by `crates/vokra-convert/src/models/kokoro.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `e294034` (2026-07-06) |
+| backfill | `vokra.kyutai_stt.*` | **24** keys — `arch.backbone.causal`, `arch.backbone.context`, `arch.backbone.d_model`, `arch.backbone.ffn_hidden`, …  | `u32` + `f32` | persisted | `kyutai-stt-2.6b-en` — written by `crates/vokra-convert/src/models/kyutai_stt.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.llama_omni2.*` | **11** keys — `variant`, `sample_rate`, `arch.backbone.{n_layer, d_model, n_head, vocab, intermediate_size, rope_max_period, rms_norm_eps}`, `arch.speech_encoder.dim`, `arch.speech_decoder.dim` | `u32` + `f32` + `string` | persisted | `llama_omni2` — written by `crates/vokra-convert/src/models/llama_omni2.rs`. **Additive**, but note the repair it belongs to — the same defect class as the `vokra.openwakeword.*` row above, found one round later. The binder (`vokra-models/src/llama_omni2/mod.rs`) has declared all eleven since it landed; the converter stamped only `variant`, so the other ten decayed to `0` through `read_u32_or_zero` / `read_f32_or` and `validate_for_forward` refused every artifact with "backbone ill-formed (n_layer=0, d_model=0, n_head=0)". Nothing caught it: both halves were tested against a mock of the other, and no test ran the real converter into the real binder until `crates/vokra-models/tests/llama_omni2_convert_bind.rs`. Four of the ten are derived from the tensors (`n_layer` from the contiguous layer run, `d_model` / `vocab` from the embedding axes, `intermediate_size` from the SwiGLU gate projection, whose second axis cross-checks `d_model`). **Behaviour change**: `--model llama-omni2` now REFUSES without `--config`, because the other six (`n_head`, `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim`, `speech_decoder_dim`) cannot be read off any tensor shape and must not be synthesised (the `ModelKind::Crepe` refusal precedent). The config-less form previously "succeeded" and wrote an unloadable artifact. | `9346982` (2026-08-14), repaired 2026-08-15 |
+| backfill | `vokra.m2d.*` | **8** keys — `hidden_size`, `inference_branch`, `n_mels`, `num_attention_heads`, …  | `u32` + `string` | persisted | `m2d-base`, `github.com/nttcslab/m2d` — written by `crates/vokra-convert/src/models/m2d.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `bdce8c3` (2026-08-13) |
+| backfill | `vokra.maest.*` | **33** keys — `attention_dropout_scaled_1e3`, `do_normalize`, `fmax_hz`, `fmin_hz`, …  | `u32` + `bool` + `string` + `f64` | persisted | `maest-30s-pw-129e`, `mtg-upf/discogs-maest-30s-pw-129e` — written by `crates/vokra-convert/src/models/maest.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `79c3691` (2026-08-13) |
+| backfill | `vokra.melotts.*` | **18** keys — `filter_channels`, `gin_channels`, `hidden_channels`, `hop_length`, …  | `u32` + `string` | persisted | `melotts` — written by `crates/vokra-convert/src/models/melotts.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.moss_audio_tokenizer.*` | **1** keys — `variant` | `string` | persisted | `moss-audio-tokenizer`, `OpenMOSS-Team/MOSS-Audio-Tokenizer` — written by `crates/vokra-convert/src/models/moss_audio_tokenizer.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.moss_tts.*` | **14** keys — `audio_vocab_size`, `llm.family`, `llm.ffn_dim`, `llm.head_dim`, …  | `u32` + `f32` + `string` | persisted | `moss_tts` — written by `crates/vokra-convert/src/models/moss_tts.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.mt3.*` | **9** keys — `d_ff`, `d_kv`, `d_model`, `music_vocab_size`, …  | `u32` | persisted | `mt3-multitrack`, `github.com/magenta/mt3` — written by `crates/vokra-convert/src/models/mt3.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `382addc` (2026-08-14) |
+| backfill | `vokra.neucodec.*` | **1** keys — `variant` | `string` | persisted | `neucodec`, `neuphonic/neucodec` — written by `crates/vokra-convert/src/models/neucodec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.nsnet2.*` | **8** keys — `fc1_dim`, `fc2_dim`, `hidden_dim`, `hop`, …  | `u32` | persisted | `nsnet2-20ms-baseline`, `github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline` — written by `crates/vokra-convert/src/models/nsnet2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.omniasr_ctc.*` | **20** keys — `arch.encoder.feature_dim`, `arch.encoder.feature_extractor_bias`, `arch.encoder.feature_extractor_kernel.`, `arch.encoder.feature_extractor_layer_count`, …  | `u32` | persisted | `omniasr-ctc-1b` — written by `crates/vokra-convert/src/models/omniasr_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.parakeet_ctc.*` | **18** keys — `arch.encoder.attention_bias`, `arch.encoder.conv_kernel_size`, `arch.encoder.convolution_bias`, `arch.encoder.d_model`, …  | `u32` | persisted | `parakeet-ctc-1.1b` — written by `crates/vokra-convert/src/models/parakeet_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| backfill | `vokra.parler.*` | **17** keys — `audio_encoder.codebook_size`, `audio_encoder.sampling_rate`, `decoder.ffn_dim`, `decoder.hidden_size`, …  | `u32` + `bool` + `string` | persisted | `parler_tts` — written by `crates/vokra-convert/src/models/parler.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.pyannote.*` | **9** keys — `linear.hidden_size`, `linear.num_layers`, `lstm.bidirectional`, `lstm.hidden_size`, …  | `u32` + `bool` | persisted | `pyannote-segmentation-3.0`, `pyannote/segmentation-3.0` — written by `crates/vokra-convert/src/models/pyannote_segmentation.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.pyannote_pipeline.*` | **13** keys — `clustering.algorithm`, `clustering.method`, `clustering.min_cluster_size`, `clustering.threshold`, …  | `u32` + `f32` + `bool` + `string` | persisted | `pyannote-speaker-diarization-3.1`, `pyannote/speaker-diarization-3.1` — written by `crates/vokra-convert/src/models/pyannote_speaker_diarization_3_1.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.qwen3_asr.*` | **26** keys — `audio.conv_chunksize`, `audio.d_model`, `audio.downsample_hidden_size`, `audio.ffn_dim`, …  | `u32` + `f32` + `bool` | persisted | `qwen3_asr` — written by `crates/vokra-convert/src/models/qwen3_asr.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.redimnet.*` | **12** keys — `c`, `do_preemph`, `embed_dim`, `f`, …  | `u32` | persisted | `wespeaker-voxceleb-redimnet2-b6-lm`, `Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM` — written by `crates/vokra-convert/src/models/redimnet.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `56581d7` (2026-08-14) |
+| backfill | `vokra.rmvpe.*` | **10** keys — `base_hz`, `cents_per_class`, `fmax`, `fmin`, …  | `u32` + `f32` | persisted | `rmvpe`, `yxlllc/RMVPE` — written by `crates/vokra-convert/src/models/rmvpe.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.sbv2.*` | **32** keys — `converter_zero_defaults`, `d_bert`, `d_ff`, `d_model`, …  | `u32` + `f32` + `bool` + `string` | persisted | `sbv2-v2-multilingual-base`, `litagin02/style_bert_vits2` — written by `crates/vokra-convert/src/models/sbv2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `f7af1ba` (2026-07-28) |
+| backfill | `vokra.sepformer.*` | **2** keys — `n_out`, `variant` | `u32` + `string` | persisted | `sepformer` — written by `crates/vokra-convert/src/models/sepformer.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.snac.*` | **1** keys — `variant` | `string` | persisted | `snac-24khz`, `hubertsiuzdak/snac_24khz` — written by `crates/vokra-convert/src/models/snac.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.speecht5.*` | **13** keys — `decoder_attention_heads`, `decoder_ffn_dim`, `decoder_layers`, `encoder_attention_heads`, …  | `u32` | persisted | `speecht5-tts`, `microsoft/speecht5_tts` — written by `crates/vokra-convert/src/models/speecht5.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.storm.*` | **6** keys — `d_model`, `hop`, `n_fft`, `n_stages`, …  | `u32` | persisted | `storm`, `github.com/sp-uhh/storm` — written by `crates/vokra-convert/src/models/storm.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `82cbd3c` (2026-08-14) |
+| backfill | `vokra.styletts2.*` | **12** keys — `decoder.dim_in`, `decoder.gen_istft_hop_size`, `decoder.gen_istft_n_fft`, `diffusion.steps`, …  | `u32` + `bool` + `string` | persisted | `styletts2-ljspeech-24khz` — written by `crates/vokra-convert/src/models/styletts2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.tiger.*` | **1** keys — `variant` | `string` | persisted | `tiger_separator` — written by `crates/vokra-convert/src/models/tiger.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.vieneu.*` | **35** keys — `audio_pad_token_id`, `audio_ref_slot_token_id`, `audio_sample_rate`, `audio_tokenizer_ref`, …  | `u32` + `f32` + `bool` + `string` | persisted | `vieneu-tts-v3-turbo`, `pnnbao-ump/VieNeu-TTS-v3-Turbo` — written by `crates/vokra-convert/src/models/vieneu.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.vocos.*` | **1** keys — `variant` | `string` | persisted | `vocos` — written by `crates/vokra-convert/src/models/vocos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.wav2vec2_ctc.*` | **16** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `do_stable_layer_norm`, …  | `u32` + `f32` + `bool` + `string` | persisted | `wav2vec2_ctc` — written by `crates/vokra-convert/src/models/wav2vec2_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.wavlm.*` | **19** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `feat_extract_norm_group`, …  | `u32` | persisted | `wavlm-base-plus-sv`, `microsoft/wavlm-base-plus-sv` — written by `crates/vokra-convert/src/models/wavlm_sv.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7a0f823` (2026-08-14) |
+| backfill | `vokra.yue_bundle.*` | **1** keys — `variant` | `string` | persisted | YuE bundle (`yue-upsampler` + `yue-xcodec-mini`, `m-a-p/YuE-upsampler` / `m-a-p/xcodec_mini_infer`) — written by `crates/vokra-convert/src/models/yue_bundle.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.zonos.*` | **22** keys — `arch.backbone.causal`, `arch.backbone.d_intermediate`, `arch.backbone.d_model`, `arch.backbone.n_layer`, …  | `u32` + `f32` + `bool` | persisted | `zonos-v0.1` — written by `crates/vokra-convert/src/models/zonos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+
+**Broken cross-reference repaired by this table**: the 2026-07-24 "SoTA
+Phase 2/3/4 + JA" entry above says its model chunks are "recorded here in
+the GGUF metadata additions block at the bottom of this file". They were
+not, and no such rows were ever added. The twelve prefixes that entry names
+in its own prose are findable by grep only because it names them; its
+siblings from the same waves — `vokra.chatterbox_nano.*`,
+`vokra.chatterbox_turbo.*`, `vokra.parakeet_ctc.*`, `vokra.omniasr_ctc.*`,
+`vokra.kyutai_stt.*` — were named nowhere at all. The rows above supply
+what that entry promised.
+
+Three prefixes that entry names are the opposite error and get **no** row
+here, because no converter stamps them: `vokra.distil_whisper.*`,
+`vokra.kotoba_whisper.*` and `vokra.voxcpm.*` (the shipped chunk is
+`vokra.voxcpm2.*`, recorded in the 2026-07-30 VoxCPM2 section above).
+Verified with `scripts/check-abi-changelog.sh --list-gguf-prefixes`, which
+reports zero stamped keys under each. A row for a chunk group nothing
+writes would be the same kind of defect this section exists to fix.
 
 <!-- Template — copy into an `### YYYY-MM-DD — vX.Y.Z-dev` section per PR-day:
 

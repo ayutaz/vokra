@@ -97,8 +97,9 @@
 //! re-implemented natively in `vokra-models/src/parakeet_ctc/`
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
 
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{Result, VokraError};
+use vokra_core::{LicenseClass, Result, VokraError};
 
 /// `vokra.model.arch` a Parakeet-CTC GGUF must carry. Written by
 /// `vokra-convert::models::parakeet_ctc::ARCH`; the compliance registry
@@ -112,6 +113,42 @@ pub const EXPECTED_ARCH: &str = "parakeet-ctc";
 /// PCM sample rate Parakeet-CTC expects. Not written in the upstream
 /// `config.json`; taken from the model card (16 kHz mono `.wav` / `.flac`).
 pub const PARAKEET_CTC_SAMPLE_RATE: u32 = 16_000;
+
+// ---------------------------------------------------------------------------
+// `vokra.parakeet_ctc.*` chunk-key mirrors — duplicated verbatim from the
+// converter (`crates/vokra-convert/src/models/parakeet_ctc.rs`) so
+// `vokra-models` does not gain a dependency edge onto `vokra-convert`.
+// This is the same layered-convention rule sibling BF16 pass-through
+// binders (`pyannote` / `snac` / `hifigan` / `beat_this` / `mt3`) use.
+//
+// Booleans (`attention_bias`, `convolution_bias`, `scale_input`) are
+// stamped by the converter as `u32` via `u32::from(bool)` (0 / 1); the
+// read side inverts with `!= 0`.
+// ---------------------------------------------------------------------------
+
+const KEY_SAMPLE_RATE: &str = "vokra.parakeet_ctc.sample_rate";
+
+// Encoder (FastConformer)
+const KEY_ENC_N_LAYER: &str = "vokra.parakeet_ctc.arch.encoder.n_layer";
+const KEY_ENC_D_MODEL: &str = "vokra.parakeet_ctc.arch.encoder.d_model";
+const KEY_ENC_N_HEAD: &str = "vokra.parakeet_ctc.arch.encoder.n_head";
+const KEY_ENC_N_HEAD_KV: &str = "vokra.parakeet_ctc.arch.encoder.n_head_kv";
+const KEY_ENC_FFN_DIM: &str = "vokra.parakeet_ctc.arch.encoder.ffn_dim";
+const KEY_ENC_CONV_KERNEL: &str = "vokra.parakeet_ctc.arch.encoder.conv_kernel_size";
+const KEY_ENC_IN_DIM: &str = "vokra.parakeet_ctc.arch.encoder.in_dim";
+const KEY_ENC_SUBSAMPLING_FACTOR: &str = "vokra.parakeet_ctc.arch.encoder.subsampling_factor";
+const KEY_ENC_SUB_CONV_KERNEL: &str =
+    "vokra.parakeet_ctc.arch.encoder.subsampling_conv_kernel_size";
+const KEY_ENC_SUB_CONV_STRIDE: &str = "vokra.parakeet_ctc.arch.encoder.subsampling_conv_stride";
+const KEY_ENC_SUB_CONV_CHANNELS: &str = "vokra.parakeet_ctc.arch.encoder.subsampling_conv_channels";
+const KEY_ENC_MAX_POS: &str = "vokra.parakeet_ctc.arch.encoder.max_position_embeddings";
+const KEY_ENC_ATTN_BIAS: &str = "vokra.parakeet_ctc.arch.encoder.attention_bias";
+const KEY_ENC_CONV_BIAS: &str = "vokra.parakeet_ctc.arch.encoder.convolution_bias";
+const KEY_ENC_SCALE_INPUT: &str = "vokra.parakeet_ctc.arch.encoder.scale_input";
+
+// CTC head + vocab
+const KEY_HEAD_VOCAB_SIZE: &str = "vokra.parakeet_ctc.head.vocab_size";
+const KEY_HEAD_PAD_ID: &str = "vokra.parakeet_ctc.head.pad_token_id";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -384,6 +421,68 @@ impl ParakeetCtcConfig {
         }
         Ok(())
     }
+
+    /// Reads every `vokra.parakeet_ctc.*` chunk from `gguf`. Missing
+    /// axis = loud [`VokraError::ModelLoad`] naming the absent key
+    /// (FR-EX-08 — no primary-source constant fallback because a
+    /// converter that fails to stamp an axis is a converter bug, not a
+    /// runtime silent-default).
+    ///
+    /// Primary source for the axis table:
+    /// `huggingface.co/nvidia/parakeet-ctc-1.1b/raw/main/config.json`
+    /// (fetched 2026-07-24 by the converter, transcribed verbatim into
+    /// [`Self::parakeet_ctc_1_1b`]).
+    ///
+    /// Booleans (`attention_bias`, `convolution_bias`, `scale_input`)
+    /// are stamped by the converter as u32 (0 / 1); this reader
+    /// inverts back to `bool` with `!= 0`, mirroring the Zonos / CSM /
+    /// Kyutai STT / Parakeet-TDT convention.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when any mandatory
+    ///   `vokra.parakeet_ctc.*` u32 chunk is absent.
+    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        fn req_u32(gguf: &GgufFile, key: &str) -> Result<u32> {
+            gguf.get(key)
+                .and_then(vokra_core::gguf::GgufMetadataValue::as_u64)
+                .map(|v| v as u32)
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "parakeet-ctc: GGUF is missing required u32 chunk `{key}` — the \
+                         upstream `nvidia/parakeet-ctc-1.1b` `config.json` (fetched \
+                         2026-07-24) has every FastConformer axis; a converter that \
+                         fails to stamp one is a converter bug, not a runtime silent-default \
+                         (FR-EX-08). Re-run `vokra-cli convert --model parakeet-ctc` \
+                         against `nvidia/parakeet-ctc-1.1b` safetensors."
+                    ))
+                })
+        }
+        Ok(Self {
+            encoder: ParakeetCtcEncoderConfig {
+                n_layer: req_u32(gguf, KEY_ENC_N_LAYER)? as usize,
+                d_model: req_u32(gguf, KEY_ENC_D_MODEL)? as usize,
+                n_head: req_u32(gguf, KEY_ENC_N_HEAD)? as usize,
+                n_head_kv: req_u32(gguf, KEY_ENC_N_HEAD_KV)? as usize,
+                ffn_dim: req_u32(gguf, KEY_ENC_FFN_DIM)? as usize,
+                conv_kernel_size: req_u32(gguf, KEY_ENC_CONV_KERNEL)? as usize,
+                in_dim: req_u32(gguf, KEY_ENC_IN_DIM)? as usize,
+                subsampling_factor: req_u32(gguf, KEY_ENC_SUBSAMPLING_FACTOR)? as usize,
+                subsampling_conv_kernel_size: req_u32(gguf, KEY_ENC_SUB_CONV_KERNEL)? as usize,
+                subsampling_conv_stride: req_u32(gguf, KEY_ENC_SUB_CONV_STRIDE)? as usize,
+                subsampling_conv_channels: req_u32(gguf, KEY_ENC_SUB_CONV_CHANNELS)? as usize,
+                max_position_embeddings: req_u32(gguf, KEY_ENC_MAX_POS)? as usize,
+                attention_bias: req_u32(gguf, KEY_ENC_ATTN_BIAS)? != 0,
+                convolution_bias: req_u32(gguf, KEY_ENC_CONV_BIAS)? != 0,
+                scale_input: req_u32(gguf, KEY_ENC_SCALE_INPUT)? != 0,
+            },
+            head: ParakeetCtcHeadConfig {
+                vocab_size: req_u32(gguf, KEY_HEAD_VOCAB_SIZE)? as usize,
+                pad_token_id: req_u32(gguf, KEY_HEAD_PAD_ID)?,
+            },
+            sample_rate: req_u32(gguf, KEY_SAMPLE_RATE)?,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -598,10 +697,23 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// the module docstring) it returns [`VokraError::NotImplemented`] with a
 /// message naming the blocker (FR-EX-08 — never a silent zero-fill or
 /// empty transcript).
+///
+/// # Weight license surfacing
+///
+/// The `weight_license` field carries the compliance class surfaced from
+/// the GGUF's `vokra.provenance.weight_license` chunk (populated by
+/// [`Self::from_gguf`]) or defaults to [`LicenseClass::AttributionRequired`]
+/// under [`Self::new`] (the CC-BY 4.0 class that is the only legitimate
+/// class for real Parakeet-CTC weights per the compliance registry —
+/// `vokra_core::compliance::license_class` maps `parakeet-ctc` /
+/// `parakeet-ctc-1.1b` to [`LicenseClass::AttributionRequired`]). The
+/// M2-13 outer compliance gate does the strict enforcement; this handle
+/// simply surfaces the class so callers can cross-check.
 #[derive(Debug, Clone)]
 pub struct ParakeetCtcAsr {
     cfg: ParakeetCtcConfig,
     weights: ParakeetCtcWeights,
+    weight_license: LicenseClass,
 }
 
 impl ParakeetCtcAsr {
@@ -758,7 +870,142 @@ impl ParakeetCtcAsr {
             )));
         }
 
-        Ok(Self { cfg, weights })
+        Ok(Self {
+            cfg,
+            weights,
+            // Default weight-license class under `new()` mirrors the
+            // compliance registry (`vokra_core::compliance::license_class`
+            // maps `parakeet-ctc` / `parakeet-ctc-1.1b` to CC-BY 4.0 =
+            // AttributionRequired). `from_gguf` overrides with whatever
+            // the provenance chunk carries (or `Unknown` if absent).
+            weight_license: LicenseClass::AttributionRequired,
+        })
+    }
+
+    /// Binds a Parakeet-CTC GGUF: validates arch, reads the strict
+    /// `vokra.parakeet_ctc.*` topology chunk group, builds a
+    /// deterministic synthesized weight fixture matching the resolved
+    /// config, and surfaces the stamped weight-license class for
+    /// compliance gate cross-checks.
+    ///
+    /// This binder is a *loud* validation step. Every failure is a
+    /// distinct [`VokraError::ModelLoad`] naming the missing / wrong
+    /// key so a reader diagnosing a mis-produced GGUF has exactly one
+    /// place to walk (FR-EX-08 — never a silent partial bind).
+    ///
+    /// # Loud-partial contract
+    ///
+    /// After this returns `Ok(_)`, the resulting engine is a
+    /// **synthesized-weight** handle — the shape / dtype / size flow is
+    /// exercised end-to-end (config chunk validation, weight-store
+    /// construction, PCM boundary check), but calling
+    /// [`Self::transcribe`] still returns [`VokraError::NotImplemented`]
+    /// naming the real-checkpoint tensor-name manifest binding
+    /// (T29-equivalent — the Moshi / CSM / Zonos / Kyutai STT /
+    /// Parakeet-TDT pattern) as the follow-up wave's anchor. The
+    /// primitives named in that message ([`vokra_ops::conformer`] +
+    /// [`vokra_ops::ctc_decode`]) already exist; the missing piece is
+    /// the HF safetensors tensor-name → [`ParakeetCtcWeights`] mapping
+    /// plus SentencePiece detokenize (model-specific, not a shared op).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or
+    ///   not `"parakeet-ctc"` (a `parakeet-tdt` GGUF handed to us by
+    ///   mistake fails with a hint pointing at the TDT binder, matching
+    ///   the sibling-arch disambiguation pattern used by
+    ///   `Mt3::from_gguf` and `Snac::from_gguf`).
+    /// - [`VokraError::ModelLoad`] when any `vokra.parakeet_ctc.*` chunk
+    ///   is absent ([`ParakeetCtcConfig::from_gguf`] is strict).
+    /// - [`VokraError::InvalidArgument`] from
+    ///   [`ParakeetCtcConfig::validate_for_forward`] +
+    ///   [`ParakeetCtcAsr::new`] shape gates.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        // 1. Arch check — always first so a mis-typed model handed here
+        //    fails with a specific message instead of a downstream
+        //    "vokra.parakeet_ctc.arch.encoder.n_layer missing".
+        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+            Some(a) if a == EXPECTED_ARCH => {}
+            // Wave C1 (2026-08-15): `parakeet-tdt-1_1b` (UNDERSCORE) added —
+            // that is the spelling `vokra-convert::models::parakeet_tdt_1_1b`
+            // actually stamps, so before this the dedicated TDT hint never
+            // fired for a real 1.1B TDT artifact (it fell through to the
+            // generic `Some(other)` arm). The dotted `parakeet-tdt-1.1b` is
+            // retained: it is the model NAME spelling and a plausible
+            // hand-authored value.
+            Some("parakeet-tdt")
+            | Some("parakeet-tdt-0.6b-v3")
+            | Some("parakeet-tdt-1.1b")
+            | Some("parakeet-tdt-1_1b") => {
+                return Err(VokraError::ModelLoad(format!(
+                    "parakeet-ctc: GGUF arch is a Parakeet-TDT variant (RNN-T + TDT \
+                     joint / duration head), expected `{EXPECTED_ARCH}` (FastConformer \
+                     + single CTC vocab head). These are different topologies — TDT \
+                     has a prediction network + joint projection + duration bins that \
+                     the CTC binder cannot dispatch. Route the GGUF through the \
+                     sibling `parakeet::ParakeetAsr::from_gguf` TDT binder \
+                     (`crates/vokra-models/src/parakeet/mod.rs`) instead — or, for the \
+                     1.1B TDT SKU (arch `parakeet-tdt-1_1b`), through \
+                     `parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf` \
+                     (`crates/vokra-models/src/parakeet_tdt_1_1b/mod.rs`)."
+                )));
+            }
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "parakeet-ctc: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
+                     (was this GGUF produced by `vokra-cli convert --model parakeet-ctc`? \
+                     Sibling ASR arches — `whisper`, `voxtral`, `canary`, \
+                     `parakeet-tdt` — are completely different topologies)"
+                )));
+            }
+            None => {
+                return Err(VokraError::ModelLoad(
+                    "parakeet-ctc: GGUF is missing `vokra.model.arch` (converter did \
+                     not stamp it — this is not a Vokra-native parakeet-ctc GGUF)"
+                        .to_owned(),
+                ));
+            }
+        }
+
+        // 2. Strict topology axes from the `vokra.parakeet_ctc.*` chunk
+        //    group.
+        let cfg = ParakeetCtcConfig::from_gguf(file)?;
+
+        // 3. Provenance surfacing — read the stamped weight-license class
+        //    for compliance gate cross-checks (defaults to `Unknown` if
+        //    absent, which is fail-closed at the outer M2-13 gate).
+        //    Matches the MT3 / SNAC precedent — surface the class here,
+        //    let the outer gate do the strict enforcement.
+        let weight_license = file
+            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+            .and_then(|v| v.as_str())
+            .and_then(LicenseClass::from_class_str)
+            .unwrap_or(LicenseClass::Unknown);
+
+        // 4. Build synthesized weights against the freshly-read config
+        //    so the engine is constructible. `transcribe` still loud-
+        //    partials with the synthesized-weight blocker message —
+        //    binding real HF checkpoint tensor names is the follow-up
+        //    wave (T29-equivalent).
+        let weights = ParakeetCtcWeights::synthesized(&cfg, /* seed */ 0)?;
+        let mut asr = Self::new(cfg, weights)?;
+        asr.weight_license = weight_license;
+        Ok(asr)
+    }
+
+    /// The stamped weight-license class surfaced from the GGUF's
+    /// `vokra.provenance.weight_license` chunk. For real Parakeet-CTC
+    /// checkpoints the compliance registry
+    /// (`vokra_core::compliance::license_class`) maps `parakeet-ctc` /
+    /// `parakeet-ctc-1.1b` to [`LicenseClass::AttributionRequired`]
+    /// (CC-BY 4.0). A GGUF missing the stamp reads back as
+    /// [`LicenseClass::Unknown`] (fail-closed at the outer M2-13 gate);
+    /// [`Self::new`] defaults to [`LicenseClass::AttributionRequired`]
+    /// (the only legitimate class for real weights).
+    #[inline]
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
     }
 
     /// The resolved configuration.
@@ -1283,5 +1530,275 @@ mod tests {
     fn sample_rate_matches_model_card_boundary() {
         // 16 kHz — per the model card (`.wav` / `.flac` mono @ 16 kHz).
         assert_eq!(PARAKEET_CTC_SAMPLE_RATE, 16_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // Wave 4: `from_gguf` loud-partial contract (real config validation,
+    // arch + provenance surface, license class round-trip, engine
+    // constructibility from GGUF, `transcribe` still loud-partials on the
+    // synthesized-weight blocker so a follow-up wave has exactly one place
+    // to walk — mirror of MT3 / SNAC / vocos / bigvgan wave-3 precedent).
+    // -----------------------------------------------------------------------
+
+    /// Builds a minimal Parakeet-CTC GGUF carrying the arch tag + full
+    /// `vokra.parakeet_ctc.*` chunk group matching the primary-source
+    /// CTC-1.1B config. `weight_license_class` is written under
+    /// `vokra.provenance.weight_license` (or omitted if `None`).
+    fn parakeet_ctc_gguf(
+        cfg: &ParakeetCtcConfig,
+        weight_license_class: Option<LicenseClass>,
+    ) -> vokra_core::gguf::GgufFile {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, "parakeet-ctc-1.1b");
+        // Chunk group — mirrors the converter (`write_hparams`).
+        b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        // Encoder
+        b.add_u32(KEY_ENC_N_LAYER, cfg.encoder.n_layer as u32);
+        b.add_u32(KEY_ENC_D_MODEL, cfg.encoder.d_model as u32);
+        b.add_u32(KEY_ENC_N_HEAD, cfg.encoder.n_head as u32);
+        b.add_u32(KEY_ENC_N_HEAD_KV, cfg.encoder.n_head_kv as u32);
+        b.add_u32(KEY_ENC_FFN_DIM, cfg.encoder.ffn_dim as u32);
+        b.add_u32(KEY_ENC_CONV_KERNEL, cfg.encoder.conv_kernel_size as u32);
+        b.add_u32(KEY_ENC_IN_DIM, cfg.encoder.in_dim as u32);
+        b.add_u32(
+            KEY_ENC_SUBSAMPLING_FACTOR,
+            cfg.encoder.subsampling_factor as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_KERNEL,
+            cfg.encoder.subsampling_conv_kernel_size as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_STRIDE,
+            cfg.encoder.subsampling_conv_stride as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_CHANNELS,
+            cfg.encoder.subsampling_conv_channels as u32,
+        );
+        b.add_u32(KEY_ENC_MAX_POS, cfg.encoder.max_position_embeddings as u32);
+        b.add_u32(KEY_ENC_ATTN_BIAS, u32::from(cfg.encoder.attention_bias));
+        b.add_u32(KEY_ENC_CONV_BIAS, u32::from(cfg.encoder.convolution_bias));
+        b.add_u32(KEY_ENC_SCALE_INPUT, u32::from(cfg.encoder.scale_input));
+        // Head
+        b.add_u32(KEY_HEAD_VOCAB_SIZE, cfg.head.vocab_size as u32);
+        b.add_u32(KEY_HEAD_PAD_ID, cfg.head.pad_token_id);
+        if let Some(cls) = weight_license_class {
+            b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
+        }
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    /// A `whisper` / `voxtral` / `parakeet-tdt` GGUF handed to the
+    /// Parakeet-CTC binder by mistake must fail loud with a specific
+    /// message rather than silently mis-binding (FR-EX-08). The TDT case
+    /// gets a dedicated hint pointing at the sibling `ParakeetAsr`
+    /// binder.
+    #[test]
+    fn from_gguf_rejects_wrong_arch() {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        // Generic wrong arch — names both got + expected + sibling
+        // ASR arches.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "whisper");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = ParakeetCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on wrong arch");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("`whisper`") && m.contains("`parakeet-ctc`"),
+                    "message must name both got + expected arch tags, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+
+        // Parakeet-TDT sibling — dedicated hint pointing at the TDT
+        // binder so a reader diagnosing this mis-route has exactly one
+        // place to walk.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "parakeet-tdt");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = ParakeetCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on parakeet-tdt");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("Parakeet-TDT") && m.contains("parakeet::ParakeetAsr"),
+                    "message must name the TDT sibling + point at the TDT binder, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// A GGUF that omits `vokra.model.arch` entirely fails loud
+    /// (converter did not stamp it — the GGUF is not Vokra-native).
+    #[test]
+    fn from_gguf_rejects_missing_arch() {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        // No arch chunk at all — but we need at least one metadata key
+        // to build a valid GGUF, so include a benign name.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_NAME, "unknown");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(err) = ParakeetCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing arch");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains("`vokra.model.arch`") && m.contains("did not stamp"),
+                    "message must name the missing arch key + fingerprint the converter, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// Every mandatory `vokra.parakeet_ctc.*` chunk is required — a
+    /// converter that fails to stamp any one is a converter bug, not a
+    /// runtime silent-default (FR-EX-08). The loud error names the
+    /// exact absent chunk key.
+    #[test]
+    fn from_gguf_rejects_missing_encoder_axis() {
+        use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+        let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        // Deliberately omit KEY_ENC_N_LAYER — every other encoder axis
+        // is stamped so the loud error must fire on `n_layer`.
+        b.add_u32(KEY_ENC_D_MODEL, cfg.encoder.d_model as u32);
+        b.add_u32(KEY_ENC_N_HEAD, cfg.encoder.n_head as u32);
+        b.add_u32(KEY_ENC_N_HEAD_KV, cfg.encoder.n_head_kv as u32);
+        b.add_u32(KEY_ENC_FFN_DIM, cfg.encoder.ffn_dim as u32);
+        b.add_u32(KEY_ENC_CONV_KERNEL, cfg.encoder.conv_kernel_size as u32);
+        b.add_u32(KEY_ENC_IN_DIM, cfg.encoder.in_dim as u32);
+        b.add_u32(
+            KEY_ENC_SUBSAMPLING_FACTOR,
+            cfg.encoder.subsampling_factor as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_KERNEL,
+            cfg.encoder.subsampling_conv_kernel_size as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_STRIDE,
+            cfg.encoder.subsampling_conv_stride as u32,
+        );
+        b.add_u32(
+            KEY_ENC_SUB_CONV_CHANNELS,
+            cfg.encoder.subsampling_conv_channels as u32,
+        );
+        b.add_u32(KEY_ENC_MAX_POS, cfg.encoder.max_position_embeddings as u32);
+        b.add_u32(KEY_ENC_ATTN_BIAS, u32::from(cfg.encoder.attention_bias));
+        b.add_u32(KEY_ENC_CONV_BIAS, u32::from(cfg.encoder.convolution_bias));
+        b.add_u32(KEY_ENC_SCALE_INPUT, u32::from(cfg.encoder.scale_input));
+        b.add_u32(KEY_HEAD_VOCAB_SIZE, cfg.head.vocab_size as u32);
+        b.add_u32(KEY_HEAD_PAD_ID, cfg.head.pad_token_id);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        let Err(err) = ParakeetCtcAsr::from_gguf(&file) else {
+            panic!("expected ModelLoad on missing encoder axis");
+        };
+        match err {
+            VokraError::ModelLoad(m) => {
+                assert!(
+                    m.contains(KEY_ENC_N_LAYER),
+                    "message must name the exact missing chunk key `{KEY_ENC_N_LAYER}`, got `{m}`"
+                );
+            }
+            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        }
+    }
+
+    /// The full CTC-1.1B primary-source config round-trips: stamp every
+    /// chunk with the transcribed values, read them back with
+    /// `from_gguf`, assert every field of the resulting
+    /// `ParakeetCtcConfig` equals `parakeet_ctc_1_1b()`.
+    #[test]
+    fn from_gguf_reads_full_ctc_1_1b_config() {
+        let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
+        let file = parakeet_ctc_gguf(&cfg, None);
+        let round_trip = ParakeetCtcConfig::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            round_trip, cfg,
+            "every field of the resolved config must round-trip verbatim"
+        );
+    }
+
+    /// A GGUF carrying `vokra.provenance.weight_license = "attribution-required"`
+    /// (the CC-BY 4.0 class the Parakeet-CTC converter stamps) surfaces
+    /// back through `Self::weight_license()` — the outer M2-13 gate can
+    /// then enforce.
+    #[test]
+    fn from_gguf_surfaces_stamped_attribution_required() {
+        let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
+        let file = parakeet_ctc_gguf(&cfg, Some(LicenseClass::AttributionRequired));
+        let asr = ParakeetCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            asr.weight_license(),
+            LicenseClass::AttributionRequired,
+            "CC-BY 4.0 = AttributionRequired must surface"
+        );
+    }
+
+    /// A GGUF that omits `vokra.provenance.weight_license` reads back
+    /// as `LicenseClass::Unknown` (fail-closed at the outer M2-13 gate,
+    /// matching MT3 / SNAC precedent).
+    #[test]
+    fn from_gguf_defaults_missing_provenance_to_unknown() {
+        let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
+        let file = parakeet_ctc_gguf(&cfg, None);
+        let asr = ParakeetCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
+        assert_eq!(
+            asr.weight_license(),
+            LicenseClass::Unknown,
+            "missing provenance must default to Unknown (fail-closed at outer gate)"
+        );
+    }
+
+    /// After a full CTC-1.1B GGUF round-trip, `transcribe` still
+    /// returns `NotImplemented` naming the synthesized-weight blocker
+    /// (loud-partial contract preserved — the follow-up wave binds real
+    /// HF checkpoint tensor names via `tools/parity/
+    /// parakeet_ctc_prepare_checkpoint.py`, T29-equivalent).
+    #[test]
+    fn from_gguf_engine_transcribe_is_loud_not_implemented() {
+        let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
+        let file = parakeet_ctc_gguf(&cfg, Some(LicenseClass::AttributionRequired));
+        let asr = ParakeetCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
+        // Round-tripped engine is still synthesized-weight; the primary
+        // NotImplemented path fires (not the "real weights bound but
+        // forward path not landed" path — because the follow-up wave
+        // will replace the synthesized weights with real ones and flip
+        // the message).
+        assert!(asr.is_synthesized(), "from_gguf builds synthesized weights");
+
+        // 1 second of 16 kHz mono silence — legitimate input shape, so
+        // the loud-partial gate fires (not the empty-pcm gate).
+        let pcm = vec![0.0f32; 16_000];
+        let err = asr.transcribe(&pcm).unwrap_err();
+        match err {
+            VokraError::NotImplemented(msg) => {
+                assert!(
+                    msg.contains("synthesized")
+                        && (msg.contains("nvidia/parakeet-ctc-1.1b")
+                            || msg.contains("real Parakeet-CTC-1.1B")),
+                    "message must name the synthesized-weight blocker + primary-source anchor: {msg}"
+                );
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
     }
 }

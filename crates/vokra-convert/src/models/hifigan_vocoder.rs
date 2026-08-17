@@ -6,9 +6,10 @@
 //! a HiFi-GAN generator (Kong et al. 2020, arXiv:2010.05646) trained on
 //! LibriTTS at 22 050 Hz. The upstream repo ships a torch-pickle
 //! `generator.ckpt` + `hyperparams.yaml`; callers pre-flatten to
-//! safetensors offline via
-//! `tools/parity/hifigan_prepare_checkpoint.py` (the DAC / DFN3 /
-//! Parakeet-CTC pattern — upstream release form is torch pickle,
+//! safetensors offline via a future
+//! `tools/parity/hifigan_prepare_checkpoint.py` (**not yet written** —
+//! the DAC / DFN3 / Parakeet-CTC pattern; upstream release form is
+//! torch pickle,
 //! converter refuses to touch pickle because that would require
 //! embedding a Python interpreter and rebreaking the NFR-DS-02 zero-dep
 //! posture). Output: a GGUF carrying every float tensor verbatim under

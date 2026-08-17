@@ -312,7 +312,7 @@ that expanded the sbv2 family row from 3 → 4 fixtures:
   earlier in the same wave and expand the tokenizer surface all
   four BERTs consume:
   - `cb2cd7b` — SentencePiece ModelProto proto3 parser
-    (`crates/vokra-bert/src/sentencepiece.rs`, self-implemented
+    (`crates/vokra-convert/src/spm_proto.rs`, self-implemented
     zero-dep, feeds the DeBERTa v3 EN BERT path).
   - `e7dc2e4` — WordPiece tokenizer +
     `SbertTokenizer::from_gguf` scheme-dispatch (SentencePiece

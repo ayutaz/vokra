@@ -54,6 +54,15 @@
 ##     wall = 48s; dev-profile 予想 300s+ (unoptimized ×5-10)。CI 側
 ##     parity-sbv2-real.yml が real-weight full leg を担保。追加 2026-08-12
 ##     push #1 実測 = pre-push nextest が 135s で SIGTERM kill。
+##
+## 除外したが REVERTED (2026-08-16 同日):
+##   * kyutai_stt::tests の 3 本を一度ここに列挙した (155s 実測 / 180s
+##     slow-timeout 接触)。**根本原因を直したので除外は撤回**した — あの 3 本は
+##     metadata-only fixture から `from_gguf` に入り、tensor 不在で
+##     `KyutaiSttWeights::synthesized` に落ちて `stt_2_6b_en` (48 層 x d_model
+##     2048 ≈ 2.5 G param ≈ **10 GB の f32**) を毎回確保していた。
+##     fixture を `tiny_for_tests` scale に変えて **155.09s -> 0.01s**。
+##     遅いテストを隠すのではなく、遅い理由を消すのが正しい修正だった。
 default-filter = "not (package(vokra-backend-metal) + package(vokra-backend-cuda) + package(vokra-backend-vulkan) + package(vokra-backend-webgpu) + package(vokra-backend-coreml) + package(vokra-backend-qnn) + package(vokra-wasm-harness) + package(vokra-parity) + package(vokra-eval)) - test(/^waveform_frontend::tests::forward_wav2vec2_base_16khz/) - test(/^waveform_frontend::tests::forward_zero_input_zero_weights/) - test(/^waveform_frontend::tests::validate_and_forward_large_lv60k/) - test(/^parity_sbv2_real_waveform_matches_reference_dump/)"
 
 ## Fail fast: 1 本失敗したら stop (local iteration では詳細より速報優先)

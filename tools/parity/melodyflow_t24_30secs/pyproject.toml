@@ -1,0 +1,33 @@
+[project]
+name = "melodyflow-t24-30secs-prep"
+version = "0.1.0"
+description = "Offline sidecar: facebook/melodyflow-t24-30secs upstream checkpoint → flat safetensors (torch pickle bridge + dedup + int/f64/bool strip). Bridges the upstream Meta AudioCraft MelodyFlow release (~4.0 GB bundle = 1B flow-matching DiT transformer + 48 kHz RVQ codec + T5-base text encoder, dual text + audio prefix conditioning for music editing, Le Lan et al. 2024 arXiv:2407.03648) to the Rust converter (crates/vokra-convert/src/models/melodyflow_t24_30secs.rs), which consumes single-file safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
+requires-python = ">=3.12"
+dependencies = [
+    # torch: unwraps the audiocraft-published .th torch pickle bundle
+    #        (or a mirror-hosted safetensors) via `torch.load` + explicit
+    #        pickle_module gate, plus data-pointer tracking for the
+    #        shared-storage dedup pass (memory
+    #        `[[reference-safetensors-shared-tensor-dedup]]`) that
+    #        `safetensors.torch.save_file` demands. Range mirrors the
+    #        sibling `magnet_small_10secs/pyproject.toml` /
+    #        `magnet_medium_30secs/pyproject.toml`.
+    "torch>=2.0",
+    # safetensors: canonical Python writer for the flat output the Rust
+    #        converter consumes.
+    "safetensors>=0.4",
+    # huggingface-hub: convenience for the download path the README
+    #        documents (`hf download facebook/melodyflow-t24-30secs
+    #        --local-dir ...`). Per phase task the ~4.0 GB scale is
+    #        vast.ai-flagged (owner path for weights ≥ 2 GB per memory
+    #        `[[feedback-large-models-on-vast-ai]]`); the huggingface-hub
+    #        pin `<0.30` used by the vast.ai runbook (memory
+    #        `[[reference-huggingface-hub-lt-030-vast-ai]]`) is NOT
+    #        applied here — `uv sync` locks whatever the machine picks,
+    #        and vast.ai's provision.sh Wave 12 re-pins the sibling
+    #        constraint at run time. Local convert (~4 GB) can technically
+    #        run on M1 iMac 16 GB but the phase task pins vast.ai as the
+    #        conservative default for weights at this scale to avoid the
+    #        Voxtral-Small-24B / hf_config.pth shim class of surprises.
+    "huggingface-hub>=0.26",
+]

@@ -146,6 +146,22 @@ vokra-eval = { path = "../vokra-eval" }
 # using it from there.
 
 [features]
+# Off by default: enable with `--features vokra-wfst` to make the two FST
+# stages of the WeTextProcessing ITN/TN pipeline real. Forwards
+# `vokra-ops/vokra-wfst`, which in turn forwards `vokra-core/vokra-wfst`
+# (the M5-06 OpenFST decode port: tropical semiring, `Fst`, and the
+# byte-verified `read_openfst_vector`).
+#
+# cfg-only — Cargo features are Cargo's own primitive, not new crates: no
+# dependency is added, the root `Cargo.lock` is unchanged, and the zero-dep
+# invariant (NFR-DS-02) holds. `./scripts/check-zero-deps.sh` audits that lock
+# and is untouched by a feature toggle.
+#
+# With the feature OFF, `WeTextProcessing::from_gguf` / `reorder_tagged` /
+# `reader_gap` stay fully real and `pipeline()` / `normalize()` return a loud
+# `VokraError::UnsupportedOp` naming the flag — never a silent degradation
+# (FR-EX-08).
+vokra-wfst = ["vokra-ops/vokra-wfst"]
 # Off by default: enable with `--features metal` on macOS / iOS to route the
 # model GEMM hot path onto the GPU (and to build/run the Metal parity tests).
 metal = ["dep:vokra-backend-metal"]

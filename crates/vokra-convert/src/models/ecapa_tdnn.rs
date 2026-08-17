@@ -40,21 +40,6 @@
 //!
 //! SpeechBrain ships PyTorch checkpoints (safetensors); this converter
 //! **never** touches ONNX (FR-LD-05).
-//!
-//! # Wiring status
-//!
-//! The module is a **landing pad**: [`convert_ecapa_tdnn_file`] is `pub`
-//! but not yet re-exported at the crate root or dispatched from
-//! [`crate::convert_file_licensed`] (a follow-up commit wires the
-//! `ModelKind::EcapaTdnn` arm + `vokra-cli` selector). Until that
-//! commit lands the constants below are only reached through this
-//! module's own tests, so a module-level `#![allow(dead_code)]` prevents
-//! the "never used" warnings from tripping the workspace's
-//! `-D warnings` clippy gate. Removing the attribute is the tell-tale
-//! for the wiring commit landing (`ModelKind::EcapaTdnn` will reach
-//! [`convert_ecapa_tdnn_file`] from `convert_file_licensed`).
-
-#![allow(dead_code)]
 
 use std::path::Path;
 

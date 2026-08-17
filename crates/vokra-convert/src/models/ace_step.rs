@@ -9,9 +9,10 @@
 //! - `vae/diffusion_pytorch_model.safetensors` (VAE decoder)
 //! - `silence_latent.pt` (silence latent bootstrap)
 //!
-//! Multi-file merge via `tools/parity/ace_step_prepare_checkpoint.py`
-//! with per-component prefix (`qwen3_emb.` / `lm.` / `turbo.` / `vae.`
-//! / `silence.`).
+//! Multi-file merge via a future
+//! `tools/parity/ace_step_prepare_checkpoint.py` (not yet written) with
+//! per-component prefix (`qwen3_emb.` / `lm.` / `turbo.` / `vae.` /
+//! `silence.`).
 //!
 //! # License — MIT (clean permissive, top MIT music-gen with 810 likes)
 //!

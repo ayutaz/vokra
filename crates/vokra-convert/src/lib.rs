@@ -257,10 +257,13 @@ pub enum ModelKind {
     /// transcribed from the shared FastConformer-Transformer AED
     /// reference config
     /// (`github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/speech_multitask/fast-conformer_aed.yaml`).
-    /// Reuses the shared `vokra_ops::conformer` (FastConformer encoder
-    /// body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
-    /// (attention-decoder search — OP-3) primitives — no per-model op
-    /// duplication.
+    /// Targets the shared `vokra_ops::conformer` (FastConformer encoder
+    /// body via `Stacking { factor: 8 }`) and
+    /// `vokra_core::decode::beam_search` (attention-decoder search —
+    /// OP-3) primitives — no per-model op duplication. The beam search
+    /// lives in `vokra-core`, not in `vokra-ops`. The runtime binder's
+    /// `CanaryAsr::transcribe` is still `NotImplemented`, so this is the
+    /// target wiring, not landed wiring.
     Canary,
     /// NVIDIA **Canary-Qwen-2.5B** safetensors checkpoint (SoTA plan
     /// reuse bundle, 2026-07-30). Multimodal ASR + LLM head-swap on top
@@ -1048,6 +1051,38 @@ pub enum ModelKind {
     /// `docs/license-audit.md §3.1`. Provenance = **MIT**
     /// (Permissive — `Copyright (c) 2022 Fei Jiang`).
     NkfAec,
+    /// **DTLN-AEC** dual-signal LSTM neural AEC
+    /// (post-audit-cc-gap-2026-08-14 Wave 6 loud-partial land).
+    /// Category = `aec`. Distinct arch tag from [`Self::NkfAec`]
+    /// because DTLN's dual-signal LSTM topology (STFT-domain LSTM
+    /// mask + time-domain LSTM residual) has no shared shape with
+    /// NKF-AEC's per-bin neural Kalman filter — silently sharing
+    /// would mis-route runtime dispatch (an NKF-AEC loader would try
+    /// to interpret DTLN's LSTM tensors as ComplexGRU tensors, a
+    /// wrong-topology bug not a wrong-shape bug). Upstream
+    /// (`github.com/breizhn/DTLN-aec`, MIT, `Copyright (c) 2021 Nils
+    /// L. Westhausen` — Westhausen & Meyer INTERSPEECH 2021,
+    /// arXiv:2010.15754) ships THREE fixed-width variants
+    /// (`dtln_aec_128.tflite` / `dtln_aec_256.tflite` /
+    /// `dtln_aec_512.tflite`) as TensorFlow-Lite files ONLY (no `.h5`
+    /// / `.onnx`); callers pre-flatten the TFLite to safetensors
+    /// offline via a future
+    /// `tools/parity/dtln_aec_prepare_checkpoint.py` (not yet written —
+    /// the DFN3 / NKF-AEC / Kokoro pickle-bridge pattern, where TFLite
+    /// is a Python-side tool that never enters the runtime, FR-LD-05,
+    /// NFR-DS-02 zero-dep). BF16 pass-through skeleton — every F32 /
+    /// F16 / BF16 tensor passes through verbatim under its upstream
+    /// tensor key; the variant is detected from the LSTM kernel
+    /// shape (second dim / 4) and stamped as
+    /// `vokra.dtln_aec.lstm_units` so the runtime loader recovers
+    /// hparams from metadata (never from tensor-shape probing at
+    /// load time). Runtime binder (`crates/vokra-models/src/aec/
+    /// dtln_aec/`) ships as loud-partial (`DtlnAec::process()`
+    /// returns `VokraError::UnsupportedOp` naming the generic LSTM
+    /// primitive gap in `vokra_ops` + the four wiring pieces still
+    /// owed) pending the primitive landing. Provenance = **MIT**
+    /// (Permissive — `Copyright (c) 2021 Nils L. Westhausen`).
+    DtlnAec,
     /// **Xiph RNNoise v0.2** weight blob (coverage-audit 2026-08-03
     /// Wave A ticket). Category = `denoise`. Real-time noise
     /// reduction — a compact GRU stack (`input_dense` 42→24 →
@@ -1100,9 +1135,13 @@ pub enum ModelKind {
     /// group carries the bundle inventory and the two upstream
     /// checkpoint filenames for auditability. MIT weight + code
     /// (`microsoft/DNS-Challenge/LICENSE`, verified 2026-08-03). The
-    /// runtime binder lives in the `vokra-eval` crate
-    /// (`vokra_eval::dnsmos::{p808_score, p835_score}` — follow-up CC
-    /// ticket, not implemented by this converter).
+    /// runtime binder is `vokra_models::dnsmos_p808_p835` (landed
+    /// 2026-08-05), not anything in `vokra-eval` (that crate has no
+    /// `dnsmos` module). `Dnsmos::from_gguf` is real and binds both
+    /// sub-models from this one artifact; only `Dnsmos::score_p808` /
+    /// `Dnsmos::score_p835` are loud-partial, returning
+    /// `VokraError::UnsupportedOp` until the CNN topology extension
+    /// their own error text names lands.
     Dnsmos,
     /// **FRCRN** — Frequency Recurrent Convolutional Recurrent Network
     /// (Zhao et al. ICASSP 2022, `arXiv:2206.07293`) safetensors
@@ -1127,6 +1166,22 @@ pub enum ModelKind {
     /// a Moshi loader onto a Hibiki checkpoint. Convert with
     /// `convert_hibiki_file`.
     Hibiki,
+    /// BosonAI **Higgs-Audio v3 TTS 4B** (`bosonai/higgs-audio-v3-tts-4b`,
+    /// Apache-2.0, ~8 GB BF16) — 100+ language multilingual zero-shot
+    /// TTS with emotion inline tags (`[happy]` / `[sad]` / ...). LM
+    /// backbone (4B) + speaker embedding + audio codec decoder;
+    /// upstream reference uses SGLang sampler on the LM decoder side,
+    /// Vokra runtime substitutes its `sampler.rs` primitive at
+    /// runtime-binder time (voxtral / cosyvoice2 / canary_qwen
+    /// precedent — this converter is byte-identical to
+    /// `magpietts_v2602` in stamping posture). Distinct arch tag
+    /// `higgs_audio_v3_tts_4b` from every sibling TTS module.
+    /// **vast.ai required** per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (>2 GB threshold; ~8 GB
+    /// weights are fetched + converted on a rented GPU box, not on
+    /// the M1 iMac 16 GB machine). Convert with
+    /// `convert_higgs_audio_v3_tts_4b_file`.
+    HiggsAudioV3Tts4b,
     /// Sber **GigaAM v3** (MIT, ~500 MB–1.2 GB) — Russian SoTA ASR,
     /// Conformer + CTC/RNN-T seam. Convert with `convert_sber_gigaam_v3_file`.
     SberGigaamV3,
@@ -1160,6 +1215,23 @@ pub enum ModelKind {
     /// SoTA ASR, AED (Whisper-like encoder-decoder). Convert with
     /// `convert_firered_asr_aed_l_file`.
     FireredAsrAedL,
+    /// FireRedTeam **FireRedASR-LLM-L** (Apache-2.0, ~16.6 GB BF16 =
+    /// 8.3B params) — Chinese SoTA ASR (AISHELL-1) with **Conformer
+    /// encoder + audio-to-text adapter + Qwen2 LM decoder**. Same
+    /// "encoder + adapter + LLM decoder" mold as sibling
+    /// [`ModelKind::CanaryQwen`] (Canary FastConformer + Voxtral-style
+    /// Qwen decoder). A shared `vokra_ops::qwen2` op is a PROPOSED
+    /// consolidation, not a landed module — no such module exists
+    /// today. The only landed Qwen2-family forward is the inline one in
+    /// `vokra-models/src/voxtral/text_decoder.rs`; `canary_qwen` reuses
+    /// it, `kyutai_stt` does not, and this model has no runtime binder
+    /// at all yet. Distinct arch tag from the sibling FireRedTeam
+    /// AED release ([`ModelKind::FireredAsrAedL`], Whisper-topology).
+    /// Convert with `convert_firered_asr_llm_l_file`. vast.ai required
+    /// for the actual weight fetch + convert per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (>2 GB CC-workflow
+    /// threshold).
+    FireredAsrLlmL,
     /// NVIDIA **Sortformer diar 4spk v1** (CC-BY-4.0, ~1 GB) — e2e
     /// speaker diarization with arrival-order sort loss. Convert with
     /// `convert_sortformer_diar_4spk_v1_file`.
@@ -1262,7 +1334,12 @@ pub enum ModelKind {
     /// base `Openwakeword` ModelKind — the `_op` variant is where
     /// user-provided weights route (Vokra does NOT redistribute the
     /// upstream official CC-BY-NC-SA-4.0 weights). Category =
-    /// `vad-kws`. Convert with `convert_openwakeword_op_file`.
+    /// `vad-kws`. Convert with
+    /// [`convert_openwakeword_op_file_with_config`], which needs a
+    /// `--config` side-car: the runtime binder requires a
+    /// `wakeword_names` list that exists nowhere in the safetensors, so
+    /// the config-less [`convert_openwakeword_op_file`] refuses rather
+    /// than invent labels (the [`ModelKind::Crepe`] precedent).
     OpenwakewordOp,
     /// **MossFormer2-SS-16K** (`alibabasglab/MossFormer2_SS_16K`,
     /// Apache-2.0, coverage-audit-2026-08-03 Wave A permissive
@@ -1779,7 +1856,8 @@ pub enum ModelKind {
     /// generator (Kong et al. 2020, arXiv:2010.05646) trained on
     /// LibriTTS at 22 050 Hz. Ships torch-pickle generator.ckpt +
     /// hyperparams.yaml; callers pre-flatten to safetensors offline via
-    /// `tools/parity/hifigan_prepare_checkpoint.py`. BF16 pass-through
+    /// a future `tools/parity/hifigan_prepare_checkpoint.py` (not yet
+    /// written, so that step is manual today). BF16 pass-through
     /// skeleton — every F32 / F16 / BF16 tensor passes through
     /// verbatim under its upstream safetensors name; runtime binding +
     /// real-weight parity are deferred to owner
@@ -2229,9 +2307,10 @@ pub enum ModelKind {
     /// upstream releases ship torch pickle `pytorch_model.bin` +
     /// `config.yaml` only (no `model.safetensors` mirror, verified
     /// 2026-08-01 via HF cardData API); callers pre-flatten to
-    /// safetensors offline via
-    /// `tools/parity/vocos_prepare_checkpoint.py` (thin bridge over
-    /// `bin_to_safetensors.py` — the SpeechT5-HiFi-GAN pattern). BF16
+    /// safetensors offline via `tools/parity/bin_to_safetensors.py` —
+    /// a dedicated `tools/parity/vocos_prepare_checkpoint.py` thin
+    /// bridge over it (the SpeechT5-HiFi-GAN pattern) is **not yet
+    /// written**. BF16
     /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
     /// through verbatim under its upstream state-dict name; runtime
     /// binding + real-weight parity are deferred to owner
@@ -2682,6 +2761,74 @@ pub enum ModelKind {
     /// binder deferred to owner sign-off (`docs/license-audit.md`
     /// §3.1 sign-off queue).
     AudioLdm2Large,
+    /// **AudioSR** (`haoheliu/audiosr_basic`, **MIT**) — versatile audio
+    /// **super-resolution / bandwidth extension**, safetensors → GGUF.
+    ///
+    /// **Opens a brand-new capability category.** Vokra had no audio
+    /// super-resolution model before this landing, so the converter
+    /// stamps a new `vokra.model.category = "super-resolution"` tag —
+    /// deliberately NOT the existing `enhancement` cohort (`denoise` /
+    /// `gtcrn` / `nsnet2` / `rnnoise` / `storm`), which *removes additive
+    /// noise within a fixed bandwidth*, whereas AudioSR *synthesises new
+    /// spectral content above the input cutoff*.
+    ///
+    /// Per arXiv:2309.07314 (Liu, Chen, Tian, Wang & Plumbley,
+    /// *"AudioSR: Versatile Audio Super-resolution at Scale"*), the model
+    /// accepts an input bandwidth **between 2 kHz and 16 kHz** and
+    /// upsamples to a **24 kHz bandwidth at a 48 kHz sample rate**,
+    /// across sound effects, music and speech.
+    ///
+    /// **Distinct arch tag `audiosr`** — the dangerous neighbour is
+    /// [`Self::AudioLdm2`]: same first author, same latent-diffusion
+    /// family, but the opposite task (text-to-audio GENERATION with
+    /// T5 + CLAP + GPT-2 cross-attention conditioning at 16 kHz, versus
+    /// AudioSR's RESTORATION with a low-pass latent concatenated
+    /// channel-wise at 48 kHz over a 256-band mel). The tensor shapes are
+    /// incompatible; silently sharing an arch tag would misroute runtime
+    /// dispatch (FR-EX-08).
+    ///
+    /// Full `vokra.audiosr.*` topology chunk group stamped, every axis
+    /// transcribed verbatim from upstream on 2026-08-15 (mel front-end
+    /// n_fft 2048 / hop 480 / win 2048 / 256 bands / 20 Hz–24 kHz;
+    /// latent [16, 128, 32]; U-Net model_channels 128, channel_mult
+    /// [1,2,3,5], attention_resolutions [8,4,2]; cosine β schedule over
+    /// 1000 train timesteps).
+    ///
+    /// License: **MIT** per the upstream repo `LICENSE`
+    /// ([`LicenseClass::Permissive`]). The `haoheliu/audiosr_basic` HF
+    /// card tags `apache-2.0` instead — a documented discrepancy that
+    /// does **not** change the class, since both normalise to
+    /// `Permissive`. §3.1 sign-off BLANK (fail-closed, owner-only);
+    /// publish blocked until signed.
+    ///
+    /// Runtime binder: `crates/vokra-models/src/audiosr/mod.rs` — real
+    /// strict `from_gguf` + a real mel filterbank and cosine-schedule ᾱ
+    /// table wired to `vokra_ops`, with `super_resolve()` loud-partial
+    /// pending the 2-D U-Net body plus the VAE / vocoder tensor-name
+    /// walks (upstream ships pickle, so no manifest is pinned).
+    AudioSr,
+    /// **AudioSR (speech)** (`haoheliu/audiosr_speech`, **MIT**) — the
+    /// speech-specialised sibling of [`Self::AudioSr`].
+    ///
+    /// Upstream ships exactly two checkpoints
+    /// (`audiosr --model_name` has `choices=["basic","speech"]`,
+    /// `default="basic"`). The **topology is identical** — upstream
+    /// `audiosr/utils.py::get_basic_config()` takes no `model_name`
+    /// argument — so this variant rides the shared
+    /// `models::audiosr::convert_audiosr_family_file` helper and only the
+    /// `vokra.model.name` + `vokra.provenance.{model_id,source,
+    /// upstream_hf}` chunks flip. No separate `audiosr_speech.rs` module
+    /// (the sibling-in-place pattern, mirror of
+    /// [`Self::AudioLdm2Large`]).
+    ///
+    /// Shares the `audiosr` arch tag with the basic checkpoint; the
+    /// runtime binder discriminates on `vokra.model.name`.
+    ///
+    /// Note `haoheliu/audiosr_speech` carries **no HF model card and no
+    /// license tag**, so the stamped default falls back to the upstream
+    /// code repo's MIT `LICENSE` exactly as for the basic checkpoint.
+    /// §3.1 sign-off BLANK (fail-closed, owner-only).
+    AudioSrSpeech,
     /// **BS-Roformer / Mel-Band Roformer** (upstream `chenmozhijin/BSRoformer-
     /// GGUF` third-party mirror, **weight provenance unclear**) safetensors
     /// checkpoint (Wave 5 candidate, 2026-08-01). First **music source
@@ -2924,6 +3071,227 @@ pub enum ModelKind {
     /// parity + a native `ConvTasNet::from_gguf` forward path are
     /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
     ConvTasnetLibri1mix,
+    /// **GTCRN** (`Xiaobin-Rong/gtcrn`, **MIT**) safetensors → GGUF
+    /// converter (Wave 6 2026-08-14 audit follow-up, denoise
+    /// alternative sibling to DFN3 / NSNet2 / RNNoise). Rong et al.
+    /// arXiv:2211.02063 "GTCRN: A Speech Enhancement Model Requiring
+    /// Ultralow Computational Resources" — a ~23K parameter
+    /// STFT-domain enhancement model designed for embedded / streaming
+    /// applications: grouped 2D Conv encoder + PReLU + SB-TF-LSTM
+    /// (sub-band time-frequency LSTM) bottleneck + ERB (equivalent
+    /// rectangular bandwidth) frequency-band grouping + grouped 2D
+    /// Conv decoder.
+    ///
+    /// **Distinct arch tag `gtcrn`** — sibling enhancement / separator
+    /// families (`denoise` (DFN3 ERB analysis/synthesis + CRN),
+    /// `rnnoise` (Xiph GRU + BFCC), `nsnet2` (Microsoft DNS baseline,
+    /// 2-layer GRU + 3-Linear mask over 257-bin STFT), `dnsmos`
+    /// (P.808/P.835 metric only), `metricgan_plus`, `mp_senet_dns`,
+    /// `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
+    /// `mossformer2_ss_16k`, `facebook_denoiser`) all have distinct
+    /// topologies from GTCRN's grouped Conv2D + SB-TF-LSTM + ERB
+    /// grouping stack. FR-EX-08 forbids silent shape misroute across
+    /// enhancement / separator families. In particular, GTCRN's ERB
+    /// grouping (efficiency-preserving frequency-axis pooler) is
+    /// **NOT compatible** with DeepFilterNet3's ERB analysis /
+    /// synthesis pair — the two ERB usages cannot be silently aliased.
+    /// Category `enhancement` (single-mask denoise head — mirrors the
+    /// sibling DFN3 / NSNet2 / RNNoise enhancement family posture).
+    ///
+    /// **License**: MIT per the upstream GitHub repo LICENSE
+    /// (`github.com/Xiaobin-Rong/gtcrn/blob/main/LICENSE`, per task
+    /// scout input 2026-08-14 — owner must primary-source confirm at
+    /// sign-off time). MIT = `LicenseClass::Permissive` T1 tier
+    /// (redistributable OK, no runtime-side attribution obligation).
+    /// GitHub-only upstream (no HF mirror as of 2026-08-14) — mirror
+    /// of NSNet2 / RNNoise / facebook_denoiser / NKF-AEC provenance
+    /// posture (`vokra.provenance.upstream_url` rather than
+    /// `upstream_hf`).
+    ///
+    /// **Upstream format**: PyTorch state dict (~90 KB F32, the
+    /// smallest converter footprint in the catalogue since GTCRN is
+    /// ~23K parameters). Owners run the standard
+    /// `nemo_pt_to_safetensors.py` prep step (uv-managed Python 3.12
+    /// sidecar) before pointing this converter at the resulting
+    /// `.safetensors` — pickle deserialization inside the Rust
+    /// runtime would violate the FR-LD-05 "no arbitrary code
+    /// execution at load" rule.
+    ///
+    /// Scale ~0.09 MB = local convert safe on M1 iMac (well below the
+    /// vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
+    /// skeleton mirror of `sepformer` / `conv_tasnet_libri1mix` /
+    /// `demucs_htdemucs`. Runtime binder `crates/vokra-models/src/
+    /// gtcrn/mod.rs` real `from_gguf` (strict 5-axis chunk group +
+    /// arch check + tensor non-emptiness gate + license class surface)
+    /// + `denoise()` loud-partial pending grouped Conv2D + PReLU +
+    /// SB-TF-LSTM + ERB grouping primitives per Wave 5 sepformer /
+    /// conv_tasnet / demucs loud-partial precedent. §3.1 sign-off
+    /// BLANK (fail-closed) — publish blocked until owner signs.
+    Gtcrn,
+    /// **StoRM** (`sp-uhh/storm`, **MIT**) safetensors → GGUF
+    /// converter (Wave 7 2026-08-14 audit follow-up RETRY of a Wave 6
+    /// lost item — workflow silently swallowed the result last time,
+    /// see WAVE 6 LESSON). Lay et al. 2023 arXiv:2312.09386 "StoRM:
+    /// A Diffusion-based Stochastic Regeneration Model for Speech
+    /// Enhancement and Dereverberation" — two-stage diffusion-based
+    /// speech enhancement + dereverberation model: (i) initial
+    /// deterministic predictive estimator (NCSN++ v2 U-Net variant,
+    /// MSE objective) → (ii) NCSN++ v2 score-network refinement via
+    /// OUVE-SDE (Ornstein-Uhlenbeck Variance-Exploding SDE)
+    /// predictor-corrector sampler.
+    ///
+    /// **Distinct arch tag `storm`** — sibling enhancement / separator
+    /// families (`denoise` (DFN3 ERB analysis/synthesis + CRN),
+    /// `rnnoise` (Xiph GRU + BFCC), `nsnet2` (Microsoft DNS baseline,
+    /// 2-layer GRU + 3-Linear mask over 257-bin STFT), `dnsmos`
+    /// (P.808/P.835 metric only), `gtcrn` (grouped Conv2D + SB-TF-LSTM
+    /// + ERB grouping ~23K params), `metricgan_plus`, `mp_senet_dns`,
+    /// `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
+    /// `mossformer2_ss_16k`, `facebook_denoiser`) all have distinct
+    /// topologies from StoRM's NCSN++ v2 score-network + OUVE-SDE
+    /// predictor-corrector diffusion-based two-stage stack. FR-EX-08
+    /// forbids silent shape misroute across enhancement / separator
+    /// families. **StoRM is the FIRST diffusion-based entry on the
+    /// enhancement arm** — no near-neighbor exists in the catalogue.
+    /// Category `enhancement` (single-mask enhancement + dereverb head
+    /// — mirrors the sibling DFN3 / NSNet2 / GTCRN enhancement family
+    /// posture).
+    ///
+    /// **License**: MIT per the upstream GitHub repo LICENSE
+    /// (`github.com/sp-uhh/storm/blob/main/LICENSE`, per task scout
+    /// input 2026-08-14 — owner must primary-source confirm at
+    /// sign-off time). MIT = `LicenseClass::Permissive` T1 tier
+    /// candidate (redistributable OK, no runtime-side attribution
+    /// obligation). GitHub-only upstream (no HF mirror as of
+    /// 2026-08-14 — Google Drive distribution) — same posture as
+    /// NSNet2 / RNNoise / facebook_denoiser / NKF-AEC / GTCRN
+    /// provenance (`vokra.provenance.upstream_url` rather than
+    /// `upstream_hf`). **Publish path gated on owner ADR** — no HF
+    /// mirror means the existing publish pipe is not directly
+    /// applicable; owner must decide between T4 Research-only
+    /// precedent vs new T1 Permissive GitHub-source precedent.
+    ///
+    /// **Upstream format**: PyTorch state dict (typical <100 MB per
+    /// sub-model per sp-uhh/storm README). Owners run the standard
+    /// `nemo_pt_to_safetensors.py` prep step (uv-managed Python 3.12
+    /// sidecar) before pointing this converter at the resulting
+    /// `.safetensors` — pickle deserialization inside the Rust
+    /// runtime would violate the FR-LD-05 "no arbitrary code
+    /// execution at load" rule.
+    ///
+    /// Scale <100 MB = local convert safe on M1 iMac (well below the
+    /// vast.ai ≥8 GB cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
+    /// skeleton mirror of `sepformer` / `conv_tasnet_libri1mix` /
+    /// `demucs_htdemucs` / `gtcrn`. Runtime binder `crates/vokra-
+    /// models/src/storm/mod.rs` real `from_gguf` (strict 6-axis chunk
+    /// group + arch check + tensor non-emptiness gate + license class
+    /// surface) + `enhance()` loud-partial pending NCSN++ v2 U-Net
+    /// score-network with sigma FiLM + OUVE-SDE predictor-corrector
+    /// sampler primitives per Wave 5-6 sepformer / conv_tasnet /
+    /// demucs / gtcrn loud-partial precedent. §3.1 sign-off BLANK
+    /// (fail-closed) — publish blocked until owner signs.
+    Storm,
+    /// **WavLM Base+ SV** (`microsoft/wavlm-base-plus-sv`,
+    /// **CC-BY-SA-3.0** → Copyleft) safetensors → GGUF converter
+    /// (Wave 7 2026-08-14 audit follow-up). Speaker-verification
+    /// checkpoint = HuBERT-lineage SSL encoder + **gated relative
+    /// position bias + convolutional position-bias fusion**
+    /// (Chen et al. 2022 arXiv:2110.13900 "WavLM: Large-Scale
+    /// Self-Supervised Pre-Training for Full Stack Speech
+    /// Processing") + fine-tuned on VoxCeleb1 with an **XVector head
+    /// + Additive Margin Softmax** for a 512-d speaker embedding
+    /// (EER ~0.84% on VoxCeleb1). Category = `speaker`. Distinct
+    /// arch tag `wavlm_sv` from every sibling speaker-fleet arch
+    /// (`campplus` CAM++ D-TDNN / `wespeaker` ResNet-34 /
+    /// `ecapa_tdnn` TDNN stack / `titanet` depth-wise separable
+    /// Conv1D / `speaker_3d` ERes2Net / `redimnet` 2D dim-reduction
+    /// + 1D conv+att + ASTP) — silently sharing an arch would
+    /// misroute runtime dispatch (FR-EX-08). BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name; the topology
+    /// axes (13 scalar + 6 axis-array chunk groups) are stamped from
+    /// the primary-source `config.json`. Runtime binder in
+    /// `crates/vokra-models/src/wavlm/mod.rs` ships as loud-partial
+    /// (`encode()` = `UnsupportedOp` naming the 7-layer conv stem +
+    /// WavLM Transformer encoder + XVector head + AM-Softmax gaps
+    /// with primary-source URLs `huggingface.co/microsoft/wavlm-base-plus-sv`
+    /// + `github.com/microsoft/UniSpeech` + arXiv:2110.13900).
+    /// **License**: CC-BY-SA-3.0 primary source = HF card LICENSE
+    /// link to `github.com/microsoft/UniSpeech/blob/main/LICENSE`
+    /// (Attribution-ShareAlike 3.0 Unported) — resolves to
+    /// `LicenseClass::Copyleft` via `has_sa` arm in
+    /// `LicenseClass::from_license_str` (share-alike ordering pin
+    /// tested before plain `cc-by`). Downstream redistribution must
+    /// preserve the SA license. §3.1 sign-off BLANK (fail-closed) —
+    /// Copyleft share-alike propagation is an owner-scope legal
+    /// decision. Convert with [`convert_wavlm_sv_file`].
+    WavlmSv,
+    /// **DiffSinger** (`openvpi/DiffSinger`, **Apache-2.0**) safetensors →
+    /// GGUF converter (Wave D 2026-08-15) — the **first singing voice
+    /// synthesis (SVS) entry in the whole catalogue**, opening the
+    /// brand-new `svs` category.
+    ///
+    /// Liu, Li, Ren, Chen & Zhao 2021, arXiv:2105.02446 "DiffSinger:
+    /// Singing Voice Synthesis via Shallow Diffusion Mechanism" — a
+    /// score-to-singing acoustic model that (abstract, verbatim) "is a
+    /// parameterized Markov chain that iteratively converts the noise into
+    /// mel-spectrogram conditioned on the music score". The title
+    /// contribution, the **shallow diffusion mechanism**, has generation
+    /// "start at a shallow step smaller than the total number of diffusion
+    /// steps" — upstream `K_step: 400` against `timesteps: 1000`.
+    ///
+    /// **SVS is score-to-singing, NOT singing-voice conversion.** Inputs
+    /// are a music score (phonemes + per-note MIDI pitch + durations);
+    /// there is **no source singer recording anywhere in the signal
+    /// path**. It is therefore **not** an ELVIS Act voice-clone trigger
+    /// and belongs in this repo — unlike RVC v2 / GPT-SoVITS, which are
+    /// confined to `vokra-voiceclone-experimental` (CLAUDE.md 設計判断 8).
+    /// Do not relocate it; the same reasoning kept the F0 family
+    /// (`rmvpe` / `fcpe` / `crepe`) in-repo.
+    ///
+    /// **Emits a mel, not a waveform.** The vocoder stage is deliberately
+    /// separate — upstream lists HiFi-GAN / NSF / pc-ddsp as
+    /// interchangeable options — and Vokra already carries that half as
+    /// the landed `hifigan` / `bigvgan` / `vocos` binders. Embedding one
+    /// here would duplicate three binders and hard-wire a choice the
+    /// voicebank author owns.
+    ///
+    /// **Distinct arch tag `diffsinger`** from every speech-TTS sibling
+    /// (`piper` / `kokoro` / `cosyvoice2` / `qwen3_tts` / `xtts_v2` /
+    /// `sbv2` / `vits` — all text-driven with no note/pitch score axis)
+    /// and every vocoder sibling (`hifigan` / `bigvgan` / `vocos` / `nsf`
+    /// — which consume a mel rather than produce one). FR-EX-08 forbids
+    /// the silent shape misroute.
+    ///
+    /// 19-axis `vokra.diffsinger.*` topology chunk group transcribed from
+    /// upstream `configs/acoustic.yaml` + `configs/base.yaml` (fetched
+    /// 2026-08-15): 44.1 kHz / n_fft 2048 / hop 512 / win 2048 / 128 mel
+    /// bins / fmin 40 / fmax 16000 / hidden 384 / enc_layers 4 / heads 2 /
+    /// timesteps 1000 / K_step 400 / f0 65–1100 Hz / max_beta 0.02 /
+    /// mel range [-14, 4] / schedule linear / accelerator ddim / backbone
+    /// lynxnet2. Note the openvpi README calls out 44.1 kHz as an
+    /// improvement over the original paper's 24 kHz.
+    ///
+    /// Default license `apache-2.0` per the upstream README — but that is
+    /// the **framework** grant. Individual singer voicebanks ship under
+    /// their own, frequently non-commercial or consent-bound, terms:
+    /// pass `--license <spdx>` so the artifact stamps the voicebank's own
+    /// class instead of inheriting Permissive. §3.1 sign-off BLANK
+    /// (fail-closed) — publish blocked until the owner signs, and the
+    /// per-voicebank weight question is separate from the framework grant.
+    ///
+    /// Runtime binder `crates/vokra-models/src/diffsinger/mod.rs`: real
+    /// `from_gguf` (strict 19-axis parse + arch verify + tensor gate +
+    /// license surface), a real `Score` input type with real validation,
+    /// and real score-to-frame expansion via the landed
+    /// `vokra_ops::length_conditioning`; `synthesize_mel()` is
+    /// loud-partial pending the FFT-block phoneme encoder + LynxNet2
+    /// shallow-diffusion denoiser backbone (the `vokra_ops::ddpm_sampler`
+    /// loop itself is landed — what is missing is the denoiser closure it
+    /// drives). Convert with [`models::diffsinger::convert_diffsinger_file`].
+    DiffSinger,
     /// **Seamless-M4T-v2-Large** (`facebook/seamless-m4t-v2-large`,
     /// **cc-by-nc-4.0**) safetensors (Wave residual, 2026-08-02). Meta
     /// SeamlessM4T v2 flagship 2.3B parameter unified any-to-any speech-
@@ -2954,6 +3322,620 @@ pub enum ModelKind {
     /// binder (4-subgraph forward + T2U dispatch + vocoder chain)
     /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
     SeamlessM4tV2Large,
+    /// **YAMNet** (`thelou1s/yamnet`, apache-2.0 default,
+    /// music-understanding wave 2026-08-13) — Google Research's
+    /// MobileNetV1 audio-event classifier (521-class AudioSet, ~15 MB
+    /// edge model, 16 kHz mono log-mel input at 96 mel bins × 0.96 s
+    /// frames). Category = `audio-tagging` (sibling of `panns` / `ast`
+    /// / `clap`). Distinct arch tag `yamnet` because the MobileNetV1
+    /// depthwise-separable Conv2D backbone differs from residual Cnn14
+    /// (PANNs), patch-embed Transformer (AST), and contrastive
+    /// text-audio (CLAP) — silently sharing would misroute the runtime
+    /// dispatch (FR-EX-08). Scale = **local safe** (~15 MB, well below
+    /// vast.ai threshold, memory `[[feedback-large-models-on-vast-ai]]`).
+    /// Upstream HF mirror carries no `license:` tag as of 2026-08-13;
+    /// reference implementation is Apache-2.0 (Google Research
+    /// `tensorflow/models`), so default SPDX = `apache-2.0`. Convert
+    /// with `convert_yamnet_file`.
+    Yamnet,
+    /// **MERT-v1-330M** (`m-a-p/MERT-v1-330M`, cc-by-nc-4.0 default,
+    /// music-understanding wave 2026-08-13) — Music undERstanding
+    /// model with large-scale self-supervised Training
+    /// (HuBERT-derived Conv1D + 24-layer Transformer, ~330M params,
+    /// 24 kHz mono waveform in, RVQ-VAE reconstruction target + CQT
+    /// teacher). Li et al. 2023 arXiv:2306.00107 = MIREX-benchmark
+    /// SoTA for music tagging / similarity / cover-song ID.
+    /// Category = `music-embedding` (sibling of `muq` / `dasheng`).
+    /// Distinct arch tag `mert` because the HuBERT-derived encoder +
+    /// music-specific reconstruction heads differ from Dasheng
+    /// (MAE ConvNeXt/ViT) and MuQ (Mel-RVQ + BEATs teacher) —
+    /// silently sharing an arch tag would misroute the runtime
+    /// dispatch and try to bind an MPM decoder over a MAE checkpoint
+    /// (FR-EX-08). Scale = **local safe** (~0.3 GB, well below
+    /// vast.ai threshold). License default = `cc-by-nc-4.0` = **T4
+    /// tier (NonCommercial)** per X-Codec 2 (2026-07-28) / MusicGen
+    /// family (2026-08-01) precedent — publish requires
+    /// `publish-one.sh --allow-noncommercial`. Convert with
+    /// `convert_mert_file`.
+    Mert,
+    /// **MuQ** (`OpenMuQ/MuQ-large-msd-iter`, license unknown default,
+    /// music-understanding wave 2026-08-13) — Self-supervised music
+    /// representation learner using **Mel-Residual Vector
+    /// Quantization** targets and a **BEATs** acoustic teacher
+    /// (Zhu et al. 2025 arXiv:2501.01108). Trained on the Million
+    /// Song Dataset with iterative refinement, ~500M params.
+    /// Positioned as a direct MERT alternative for music-tagging /
+    /// genre / MIR downstream tasks. Category = `music-embedding`
+    /// (sibling of `mert` / `dasheng`). Distinct arch tag `muq`
+    /// because the Mel-RVQ + BEATs-teacher training target is a
+    /// distinct topology from MERT (HuBERT-derived) and Dasheng
+    /// (MAE ConvNeXt/ViT) — silently sharing an arch tag would
+    /// misroute the runtime dispatch (FR-EX-08). Scale = **local
+    /// safe** (~0.5 GB, well below vast.ai threshold). License
+    /// default = `unknown` = **fail-closed** ([`vokra_core::LicenseClass::Unknown`],
+    /// M2-13 runtime gate refuses to load without a research flag).
+    /// Upstream HF cardData carries no `license:` tag as of
+    /// 2026-08-13 — owner must complete primary-source
+    /// confirmation before publish is unblocked. Convert with
+    /// `convert_muq_file`.
+    Muq,
+    /// **Dasheng** (`mispeech/dasheng-base`, apache-2.0 default,
+    /// music-understanding wave 2026-08-13) — "Deep Audio-Signal
+    /// Holistic Embeddings", Xiaomi mispeech group's universal audio
+    /// encoder trained via masked autoencoding on ~272 000 hours
+    /// across speech, music, and environmental audio (Dinkel et al.
+    /// 2024 arXiv:2406.06992 Interspeech 2024). Unlike MERT / MuQ
+    /// (music-only) or wav2vec2 / HuBERT (speech-only), Dasheng
+    /// targets all three domains from a single ViT/ConvNeXt backbone
+    /// (~86M params base, ~340 MB single safetensors). Category =
+    /// `audio-embedding` (superset of `music-embedding` — universal
+    /// encoder consumed by speech AND music downstream heads).
+    /// Distinct arch tag `dasheng` because the masked-autoencoder
+    /// ViT/ConvNeXt backbone spans speech + music + environmental
+    /// audio uniformly, unlike the music-only siblings (`mert` /
+    /// `muq`) — silently sharing would misroute the runtime dispatch
+    /// (FR-EX-08). Scale = **local safe** (~0.4 GB, well below
+    /// vast.ai threshold). License default = `apache-2.0` = **T1
+    /// tier Permissive** (HF cardData primary source per task
+    /// input). Convert with `convert_dasheng_file`.
+    Dasheng,
+    /// **PANNs Cnn14** (`nicofarr/panns_Cnn14`, license unknown
+    /// default, music-understanding wave 2026-08-13) — Pretrained
+    /// Audio Neural Networks Cnn14 checkpoint (Kong et al. 2020
+    /// arXiv:1912.10211). VGG-style 14-layer 2D-CNN over 64-mel
+    /// log-spectrogram, trained on AudioSet for a **527-class**
+    /// ontology output (~80M params). Widely used as a music-tagging
+    /// / sound-event-detection backbone; produces frame-level
+    /// embeddings (2048-d) or clip-level 527-way probabilities.
+    /// Category = `audio-tagging` (sibling of `yamnet` / `ast` /
+    /// `clap`). Distinct arch tag `panns` from `yamnet` because the
+    /// residual Cnn14 backbone is a distinct topology from
+    /// MobileNetV1 depthwise-separable — silently sharing would
+    /// misroute the runtime dispatch (FR-EX-08). Scale = **local
+    /// safe** (~0.35 GB, well below vast.ai threshold). License
+    /// default = `unknown` = **fail-closed** — HF mirror
+    /// `nicofarr/panns_Cnn14` carries no cardData `license:` tag
+    /// as of 2026-08-13; the upstream reference
+    /// `qiuqiangkong/audioset_tagging_cnn` is MIT but the mirror
+    /// LICENSE is un-verified. Owner must complete primary-source
+    /// confirmation before publish is unblocked. Convert with
+    /// `convert_panns_file`.
+    Panns,
+    /// **Basic-Pitch** (`spotify/basic-pitch`, apache-2.0 default,
+    /// music-understanding wave 2026-08-13) — Spotify Research's
+    /// polyphonic audio-to-MIDI pitch-detection model (Bittner et al.
+    /// 2022 ICASSP "A Lightweight Instrument-Agnostic Model for
+    /// Polyphonic Note Transcription"). ~6 MB CNN over CQT input
+    /// producing 3-head posteriorgram output (frame-level note
+    /// activation + note onset detection + contour multi-pitch F0),
+    /// post-processed into MIDI notes. Instrument-agnostic, covers
+    /// polyphonic music (piano / guitar / vocals) at 22.05 kHz mono.
+    /// Category = `pitch-transcription` — **distinct from the
+    /// monophonic `f0` category** owned by `crepe` / `fcpe` /
+    /// `rmvpe` because Basic-Pitch outputs polyphonic MIDI notes,
+    /// not a single-voice F0 contour. Distinct arch tag
+    /// `basic-pitch` from every sibling F0 extractor because the
+    /// 3-head polyphonic posteriorgram output is a distinct topology
+    /// from single-head monophonic pitch grid (FR-EX-08). Scale =
+    /// **smallest of the batch** (~6 MB, well below vast.ai
+    /// threshold). License default = `apache-2.0` = **T1 tier
+    /// Permissive** (HF cardData primary source per task input +
+    /// Apache-2.0 reference GitHub repo). Convert with
+    /// `convert_basic_pitch_file`.
+    BasicPitch,
+    /// **BEATs** (`microsoft/unilm/tree/master/beats`, mit default,
+    /// SSL audio-encoder wave 2026-08-13) — "Bidirectional Encoder
+    /// representation from Audio Transformers", Chen et al. 2023
+    /// ICML arXiv:2212.09058. Foundational self-supervised audio
+    /// encoder trained via **iterative acoustic tokenizer + mask
+    /// acoustic modeling**; the iter3_plus checkpoint is the third
+    /// refinement round (~90M params, ~340 MB `.pt`). Serves as
+    /// (a) a general audio-embedding backbone for downstream
+    /// tagging / classification, and (b) the **acoustic teacher**
+    /// for other SSL releases (notably MuQ). Category =
+    /// `audio-embedding` (sibling of `dasheng` — future siblings
+    /// `eat` / `atst` / `m2d` land in later commits of this same
+    /// SSL wave). Distinct arch tag `beats` because the iterative
+    /// tokenizer + MAM training target is a distinct topology from
+    /// sibling SSL encoders (`dasheng` = MAE ViT/ConvNeXt, `mert` =
+    /// HuBERT-derived) — silently sharing would misroute the
+    /// runtime dispatch and try to bind e.g. a MAE decoder over
+    /// an iterative-tokenizer checkpoint (FR-EX-08). Scale =
+    /// **local safe** (~0.34 GB, well below vast.ai threshold,
+    /// memory `[[feedback-large-models-on-vast-ai]]`). License
+    /// default = `mit` = **T1 tier Permissive** (upstream
+    /// `microsoft/unilm` root LICENSE `spdx_id: MIT` via GitHub
+    /// API `/repos/microsoft/unilm/license` per task input
+    /// 2026-08-13; the `beats/` subdirectory inherits the root
+    /// umbrella). **HF community mirrors do not carry `license:`
+    /// tags** ge no first-party Microsoft HF org release exists as
+    /// of 2026-08-13. Convert with `convert_beats_file`.
+    Beats,
+    /// **EAT** (`cwx-worst-one/EAT`, mit default, SSL audio-encoder
+    /// wave 2026-08-13) — "Effective Audio Transformer", an
+    /// utterance-level SSL audio encoder with efficient inverse
+    /// block masking (Chen et al. 2024, arXiv:2401.03497). ~86M
+    /// parameters base variant (~350 MB). Trained via MAE-style
+    /// masked reconstruction on AudioSet-2M; targets audio tagging
+    /// / general audio-embedding downstream. Category =
+    /// `audio-embedding` (sibling of `dasheng` / `beats` — future
+    /// SSL wave siblings `atst` / `m2d` land in later commits).
+    /// Distinct arch tag `eat` because the utterance-level
+    /// Transformer + inverse-block-masking topology is a distinct
+    /// axis from every sibling SSL encoder (FR-EX-08 boundary).
+    /// Scale = **local safe** (~0.35 GB). License default = `mit` =
+    /// **T1 tier Permissive** (GitHub API
+    /// `/repos/cwx-worst-one/EAT/license` returns
+    /// `spdx_id: MIT` per task input 2026-08-13). No HF mirror.
+    /// Convert with `convert_eat_file`.
+    Eat,
+    /// **ATST** (`Audio-WestlakeU/audiossl/tree/main/audiossl/
+    /// methods/atst`, **cc-by-4.0 default**, SSL audio-encoder wave
+    /// 2026-08-13) — "Audio Teacher-Student Transformer", Li et al.
+    /// 2022 INTERSPEECH arXiv:2204.12076 (+ 2023 TASLP frame-level
+    /// extension arXiv:2306.04186). Teacher-student patchout SSL
+    /// audio encoder over log-mel spectrogram. ~86M parameter
+    /// class (~200 MB base checkpoint). Category = `audio-embedding`
+    /// (sibling of `dasheng` / `beats` / `eat` — future SSL wave
+    /// sibling `m2d` lands in a later commit). Distinct arch tag
+    /// `atst` because the teacher-student patchout (BYOL-style EMA
+    /// teacher + student patch dropout) topology is a distinct
+    /// axis from every sibling SSL encoder (FR-EX-08). Scale =
+    /// **local safe** (~0.2 GB). **License default = `cc-by-4.0`
+    /// (weight-only)** — the upstream README explicitly separates
+    /// code (MIT) from pretrained checkpoints:
+    /// > "The pretrained checkpoints hyper-linked in this repo are
+    /// > licensed under CC BY 4.0."
+    /// so the weight redistribution posture is `AttributionRequired`
+    /// (BY 4.0 attribution required on any downstream distribution).
+    /// The code SPDX would be `mit` but is not what a weight-provenance
+    /// stamp records. Convert with `convert_atst_file`.
+    Atst,
+    /// **MAEST** (`mtg-upf/discogs-maest-30s-pw-129e`, **cc-by-nc-sa-
+    /// 4.0**, SSL audio-encoder wave 2026-08-13) — "Music
+    /// **A**udio **E**fficient **S**pectrogram **T**ransformer"
+    /// (Alonso-Jiménez et al. 2023, arXiv:2309.16418). Discogs-
+    /// pretrained self-supervised music-tagger built on **Audio
+    /// Spectrogram Transformer** (AST) backbone (HF `config`:
+    /// `model_type: audio-spectrogram-transformer`, `architectures:
+    /// ["ASTForAudioClassification"]`); ~87M F32 parameters
+    /// (safetensors 86,858,128 params per HF API 2026-08-13).
+    /// The 30s-pw-129e variant is 30-second patch-wise pretrained
+    /// for 129 epochs on the MTG Discogs4All music-tagger dataset.
+    /// Category = `music-embedding` (sibling of `mert` / `muq`;
+    /// downstream music-tagging heads consume the encoder's
+    /// hidden states). Distinct arch tag `maest` from every sibling
+    /// music-embedding model — MAEST is AST-backbone (patch-wise
+    /// Transformer over log-mel) with a Discogs-tagger SSL
+    /// pretraining objective, distinct from MERT (HuBERT-derived
+    /// MPM) and MuQ (Mel-RVQ + BEATs teacher) — silently sharing an
+    /// arch tag would misroute the runtime dispatch (FR-EX-08).
+    /// Scale = **local safe** (~0.15 GB). License default =
+    /// `cc-by-nc-sa-4.0` = **T4 tier NonCommercialShareAlike**
+    /// (HF cardData primary source `license: cc-by-nc-sa-4.0` per
+    /// task input 2026-08-13 + HF tag `license:cc-by-nc-sa-4.0`).
+    /// **Publish path**: T4 + SA cascade — `publish-one.sh
+    /// --allow-noncommercial` gate + share-alike obligation on any
+    /// downstream distribution (`fetch_license.sh --spdx
+    /// cc-by-nc-sa-4.0` canonical LICENSE 実文書同梱).
+    /// Convert with `convert_maest_file`.
+    Maest,
+    /// **M2D** (`nttcslab/m2d`, **unknown default**, SSL audio-
+    /// encoder wave 2026-08-13) — "Masked Modeling Duo", Niizumi
+    /// et al. 2023 arXiv:2210.14648 + 2024 sibling papers. NTT
+    /// Communication Science Laboratories dual-branch SSL audio
+    /// encoder that jointly predicts masked patches from a target
+    /// online branch AND its predictive representation. ~86M
+    /// parameter class base variant (~200 MB). Category =
+    /// `audio-embedding` (sibling of `dasheng` / `beats` / `eat` /
+    /// `atst`). Distinct arch tag `m2d` because the masked-
+    /// modeling-**duo** (dual online + target branch, joint prediction
+    /// of masked patches and their online-branch representation)
+    /// topology is a distinct axis from every sibling SSL encoder
+    /// (single-branch MAE = Dasheng / EAT, teacher-student patchout
+    /// = ATST, iterative tokenizer = BEATs). Silently sharing would
+    /// misroute the runtime dispatch (FR-EX-08). Scale = **local
+    /// safe** (~0.2 GB). License default = `unknown` = **fail-
+    /// closed** ([`vokra_core::LicenseClass::Unknown`], M2-13 runtime
+    /// gate refuses to load without a research flag) — upstream
+    /// `github.com/nttcslab/m2d` LICENSE is a **PDF file**
+    /// (`LICENSE.pdf`) that GitHub license API returns as
+    /// `spdx_id: NOASSERTION` (non-machine-readable primary source),
+    /// and no HF mirror exists as of 2026-08-13. Owner must
+    /// download `LICENSE.pdf`, read it, complete primary-source
+    /// confirmation, then override via `--license <spdx>` at the
+    /// outer boundary. Convert with `convert_m2d_file`.
+    M2d,
+    /// **Meta MAGNeT Small 10secs** (`facebook/magnet-small-10secs`,
+    /// **cc-by-nc-4.0**, post-audit CC-gap Wave D 2026-08-13) — Meta
+    /// AudioCraft's Masked Audio Generation using a Single Non-
+    /// Autoregressive Transformer, 500M parameter variant that emits
+    /// 10-second music clips via parallel masked-LM decoding (Ziv
+    /// et al. 2024 arXiv:2401.04577). Category = `music`, distinct
+    /// arch tag from sibling `musicgen` (AR-over-EnCodec) /
+    /// `audiogen_medium` / `audioldm2` / `stable_audio_open_small` /
+    /// `jasco_400m_chords_drums` / `ace_step` / `bs_roformer` (silent
+    /// share = FR-EX-08 mis-route: MAGNeT non-autoregressive masked-LM
+    /// decoding is a different code path from MusicGen AR). Convert
+    /// with `convert_magnet_small_10secs_file` — publish requires
+    /// `--allow-noncommercial` per MusicGen family T4 precedent.
+    /// Scale ~2 GB = local-safe on M1 iMac 16 GB per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (below 8 GB threshold).
+    /// Runtime binder (`magnet_masked_decode` + `span_masking_scheduler`
+    /// ops) deferred to a follow-up wave (owner ADR judgement, RMVPE
+    /// loud-partial precedent).
+    MagnetSmall10secs,
+    /// **Meta MAGNeT Medium 30secs** (`facebook/magnet-medium-30secs`,
+    /// **cc-by-nc-4.0**, post-audit CC-gap Wave D remaining WF7
+    /// 2026-08-13) — Meta AudioCraft's Masked Audio Generation using a
+    /// Single Non-Autoregressive Transformer, **1.5B parameter medium**
+    /// variant that emits **30-second music clips** via parallel
+    /// masked-LM decoding (Ziv et al. 2024 arXiv:2401.04577). Sibling
+    /// of `MagnetSmall10secs` (500 M / 10 sec) — same non-autoregressive
+    /// masked-LM decoding op path, but distinct hparams (wider hidden /
+    /// more layers / 30 sec max span matching MusicGen family's max
+    /// horizon). Category = `music`, distinct arch tag
+    /// `magnet_medium_30secs` from BOTH sibling `magnet_small_10secs`
+    /// (silently sharing would let the runtime binder load small hparams
+    /// into medium weights) AND sibling MusicGen AR family
+    /// (`musicgen_small` / `musicgen_medium` / `musicgen_large` — AR
+    /// over EnCodec token-by-token generation, entirely different
+    /// decoder loop) / `audiogen_medium` / `audioldm2` /
+    /// `stable_audio_open_small` / `jasco_400m_chords_drums` /
+    /// `ace_step` / `bs_roformer` (silent share = FR-EX-08 mis-route
+    /// at coarser topology). Convert with
+    /// `convert_magnet_medium_30secs_file` — publish requires
+    /// `--allow-noncommercial` per MusicGen family / sibling small T4
+    /// precedent. Scale ~5.7 GB (1.5B LM + bundled EnCodec 32 kHz +
+    /// T5-base text encoder) = **local-safe** on M1 iMac 16 GB per
+    /// memory `[[feedback-large-models-on-vast-ai]]` (below 8 GB owner
+    /// cutoff). Runtime binder (`magnet_masked_decode` +
+    /// `span_masking_scheduler` ops, FR-OP-85 anchor) deferred to a
+    /// follow-up wave (owner ADR judgement, sibling small / RMVPE /
+    /// Charsiu loud-partial precedent).
+    MagnetMedium30secs,
+    /// **Meta MelodyFlow T24 30secs** (`facebook/melodyflow-t24-30secs`,
+    /// **cc-by-nc-4.0**, post-audit CC-gap Wave D remaining WF8
+    /// 2026-08-13) — Meta AudioCraft's flow-matching music **editing**
+    /// model, **1 B parameter DiT-style backbone** with **24 timesteps**
+    /// and a **30 second** max horizon at **48 kHz** (Le Lan et al. 2024
+    /// arXiv:2407.03648). Primary use-case = **text-conditioned music
+    /// editing** (an existing audio clip is inverted through the ODE,
+    /// then regenerated under a new text prompt) — a distinct code path
+    /// from text-to-music sibling releases. Category = `music`, distinct
+    /// arch tag `melodyflow_t24_30secs` from every sibling music-gen
+    /// family: `magnet_small_10secs` / `magnet_medium_30secs`
+    /// (non-autoregressive masked-LM), `musicgen_small` /
+    /// `musicgen_medium` / `musicgen_large` / `audiogen_medium`
+    /// (AR-over-EnCodec), `jasco_400m_chords_drums` (flow-matching but
+    /// with joint audio-symbolic chord/drum conditioning stack rather
+    /// than dual text + audio editing prefix), `audioldm2` (score-based
+    /// latent diffusion), `stable_audio_open_small` (DiT + VAE),
+    /// `ace_step`, `yue_bundle`, or `bs_roformer` (music-source
+    /// separation) — silent share = FR-EX-08 mis-route (MelodyFlow's
+    /// flow-matching editing stack with ODE inversion for existing-audio
+    /// editing is a distinct topology). Convert with
+    /// `convert_melodyflow_t24_30secs_file` — publish requires
+    /// `--allow-noncommercial` per MusicGen family / sibling MAGNeT /
+    /// JASCO T4 precedent. Scale ~1 B params ~4.0 GB bundle
+    /// (flow-matching transformer + 48 kHz RVQ codec + T5-base text
+    /// encoder) — **vast.ai-flagged per phase task** to stay
+    /// conservative at the CC / owner cutoff per memory
+    /// `[[feedback-large-models-on-vast-ai]]` (~4 GB sits below the 8 GB
+    /// local ceiling but the phase task pins vast.ai as the owner path
+    /// for weights ≥ 2 GB). Runtime binder (`flow_editing_inversion` +
+    /// `t24_transformer` ops, FR-OP-86 anchor) reuses
+    /// `vokra_ops::flow_sampler` from M3-05 for the ODE integrator, but
+    /// the editing-specific inversion path and the 48 kHz RVQ codec
+    /// bundle need explicit ADR judgement — deferred to a follow-up
+    /// wave (owner ADR judgement, sibling MAGNeT / RMVPE / Charsiu
+    /// loud-partial precedent).
+    MelodyflowT2430secs,
+    /// **CT-Transformer punctuation restoration** (`funasr/ct-punc`,
+    /// **apache-2.0**, Wave D 2026-08-15) — the **first `punctuation`
+    /// category entry in the tree**. FunASR's Controllable Time-delay
+    /// Transformer (Chen et al. 2020 arXiv:2003.01309) restores
+    /// punctuation over an unpunctuated ASR token stream and performs
+    /// disfluency removal; paired with the ITN stage it is what turns a
+    /// raw Vokra ASR transcript into readable text. Chinese + English
+    /// per the model card.
+    ///
+    /// **Topology**: `nn.Embedding(vocab_size, 516)` → `x * sqrt(516)`
+    /// → `SinusoidalPositionEncoder` (1-based positions) → a **SANM
+    /// encoder** of `num_blocks` pre-norm `EncoderLayerSANM` blocks →
+    /// `encoder.after_norm` → `nn.Linear(516, punc_size)`. Each block is
+    /// `x += self_attn(norm1(x))` then `x += w_2(relu(w_1(norm2(x))))`,
+    /// and `MultiHeadedAttentionSANM` is what makes this **not** a plain
+    /// BERT block: one fused `linear_q_k_v` projection (3× width) plus a
+    /// **parallel depthwise `nn.Conv1d(D, D, k, groups=D, bias=False)`
+    /// FSMN memory branch over `v`** whose output is *added* to the
+    /// attention output. Upstream splits the stack into `encoders0`
+    /// (exactly 1 block) + `encoders` (`num_blocks - 1`) — that is real
+    /// structure, not a typo, and the tensor names follow it.
+    ///
+    /// **Distinct arch tag `ct_punc`** from `bert_base` (post-norm,
+    /// learned absolute positions, separate q/k/v projections, no FSMN
+    /// branch), `deberta_v2` / `deberta_v3` (disentangled relative
+    /// position attention), `sensevoicesmall` (SAN-M as well, but a
+    /// *speech* encoder over fbank frames with four per-task heads) and
+    /// `fsmn-vad` (FSMN memory blocks but no self-attention, 2-class
+    /// frame output). Silently sharing an arch tag would misroute the
+    /// runtime dispatch onto a wrong-topology loader (FR-EX-08).
+    ///
+    /// **Label inventory**: 6 entries
+    /// `["<unk>", "_", "，", "。", "？", "、"]`, transcribed verbatim
+    /// from the upstream `config.yaml` `model_conf.punc_list` and
+    /// stamped as an `Array<String>` chunk so the runtime binder READS
+    /// the inventory rather than hardcoding it. Index order is
+    /// load-bearing (`argmax` indexes straight back into the list);
+    /// `"_"` = "no punctuation here"; `sentence_end_id: 3` selects
+    /// `"。"`. The converter **refuses** to write a GGUF whose
+    /// `decoder.weight` row count disagrees with the inventory.
+    ///
+    /// **Topology axes are derived from the checkpoint** wherever a
+    /// tensor shape determines them (`vocab_size` / `embed_unit` from
+    /// `embed.weight`; `att_unit` / `punc_size` from `decoder.weight`;
+    /// `linear_units` from `…feed_forward.w_1.weight`; `kernel_size`
+    /// from the depthwise `…fsmn_block.weight`; `num_blocks` by walking
+    /// `encoder.encoders.{i}`). Only `attention_heads` (12),
+    /// `sanm_shfit` (0) and `sentence_end_id` (3) come from the upstream
+    /// `config.yaml`, because no tensor shape determines them.
+    ///
+    /// **License**: `apache-2.0` per the model-card front-matter AND the
+    /// HF model API `cardData.license` (both read 2026-08-15) →
+    /// [`vokra_core::LicenseClass::Permissive`]. Note this is **not** the
+    /// bespoke FunASR `MODEL_LICENSE` ("FunASR Model Open Source License
+    /// Agreement" v1.1, Alibaba Group) that the sibling
+    /// `FunAudioLLM/SenseVoiceSmall` release carries — the `ct-punc` repo
+    /// ships no `MODEL_LICENSE` file, so the fail-closed
+    /// `LicenseClass::Unknown` posture that `sensevoicesmall` correctly
+    /// takes does not apply here. `docs/license-audit.md` §3.1 sign-off
+    /// stays **BLANK** (fail-closed, owner-only) — publish blocked until
+    /// the owner signs.
+    ///
+    /// **Scale**: `model.pt` = 1 125 507 622 bytes (~1.05 GiB, dominated
+    /// by the 471 067 × 516 embedding table) = local convert safe on the
+    /// M1 iMac 16 GB, well under the ≥8 GB vast.ai cutoff (memory
+    /// `[[feedback-large-models-on-vast-ai]]`). Upstream ships `model.pt`
+    /// (torch pickle) — run `tools/parity/nemo_pt_to_safetensors.py`
+    /// first, keeping the `state_dict` names verbatim (FR-LD-05 forbids
+    /// pickle in the runtime).
+    ///
+    /// Runtime binder `crates/vokra-models/src/ct_punc/mod.rs` is a
+    /// **real forward** (embedding → sqrt scale → sinusoidal PE → SANM
+    /// blocks → after_norm → linear head → per-token label), not a
+    /// loud-partial: every primitive it needs already exists. The
+    /// **tokenizer** is deliberately out of scope (upstream `CharTokenizer`
+    /// is fronted by jieba word segmentation over a 471 067-entry
+    /// `tokens.json`), so the forward takes **token ids**.
+    CtPunc,
+    /// **WeTextProcessing** (`wenet-e2e/WeTextProcessing`, **Apache-2.0**)
+    /// — inverse text normalization (ITN) and text normalization (TN)
+    /// grammar bundles (Wave D 2026-08-15, a brand-new
+    /// `text-normalization` category).
+    ///
+    /// **The first weightless converter in the tree.** A bundle is two
+    /// compiled OpenFST transducers — `tagger.fst` + `verbalizer.fst` —
+    /// plus the language/direction prefix (`zh_tn` / `zh_itn` / `en_tn` /
+    /// `en_itn` / `ja_tn` / `ja_itn`) that selects a field-order table.
+    /// There is no `state_dict`, no safetensors, and no tensor: the
+    /// converter routes **before** the whole-file safetensors read (same
+    /// posture as the weightless `PyannoteSpeakerDiarization31` pipeline
+    /// arm) and emits the grammars as GGUF `U8` metadata arrays, the
+    /// `vokra.tokenizer.model` precedent.
+    ///
+    /// **Why this exists**: every ASR model in the catalogue emits
+    /// normalized, unpunctuated text — an utterance spoken as *"one
+    /// hundred fourteen thousand five"* comes back as those words, while
+    /// a production transcript needs `114005`. ITN is the missing back
+    /// half of the ASR pipeline; TN is the same machine run the other way
+    /// for a TTS front-end.
+    ///
+    /// **Runtime**: `vokra-ops::itn` — mostly *reuse* rather than new
+    /// machinery. `vokra_core::decode::wfst` (M5-06) already ships the
+    /// tropical semiring, the `Fst` type, structural validation and a
+    /// byte-verified `read_openfst_vector` for exactly the
+    /// `VectorFst<StdArc>` binary the upstream C++ runtime reads with
+    /// `StdVectorFst::Read`. The only new algorithm is composing a linear
+    /// input string with a transducer and taking the best path.
+    ///
+    /// **License**: Apache-2.0 per the GitHub repository API
+    /// (`license.spdx_id = "Apache-2.0"`, verified 2026-08-15) =
+    /// `LicenseClass::Permissive`. `docs/license-audit.md` §3.1 sign-off
+    /// stays **BLANK** (fail-closed, owner-only).
+    ///
+    /// **Scale**: single-digit megabytes per grammar = local convert safe
+    /// on the M1 iMac, far under the ≥8 GB vast.ai cutoff (memory
+    /// `[[feedback-large-models-on-vast-ai]]`). The converter caps a
+    /// single grammar at 64 MiB with an explanatory refusal, because the
+    /// `U8` metadata-array encoding costs one enum per byte while the
+    /// builder assembles.
+    WeTextProcessing,
+    /// **Voila** (`maitrix-org/Voila`, **MIT**, 2025) — Maitrix's
+    /// full-duplex speech-to-speech dialog family. Category = `s2s`,
+    /// alongside the sibling `Moshi` / `Csm` full-duplex pair and the
+    /// streaming half-duplex LLaMA-Omni2 family.
+    ///
+    /// **Why this variant exists**: the runtime binder
+    /// `vokra-models::voila` landed with a strict `vokra.model.arch ==
+    /// "voila"` load gate, a `vokra-cli convert --model voila` repro
+    /// command inside two of its error messages, and a
+    /// `crates/vokra-cli/src/engine.rs` `BOUND_ARCHES` row advertising the
+    /// model as bound — while **no converter anywhere in the tree could
+    /// emit a GGUF that binder accepts**. This arm makes those three
+    /// statements true.
+    ///
+    /// BF16 pass-through skeleton: every F32 / F16 / BF16 tensor is
+    /// emitted verbatim under its upstream `state_dict` name. **No
+    /// `vokra.voila.*` topology chunk is stamped** — the per-release
+    /// speech-encoder / LLM-backbone axes shift across `Voila-base` /
+    /// `Voila-chat` / `Voila-audio-alpha` / `Voila-autonomous-preview` and
+    /// are not transcribable from the primary sources, so a guessed axis
+    /// in a redistributed artifact would be a fabrication (CLAUDE.md
+    /// 「ハルシネーション厳禁」). The binder reads none of them: it gates
+    /// on arch plus a non-empty tensor manifest, so a pass-through GGUF
+    /// binds end to end and `Voila::converse` remains the documented
+    /// loud-partial. One `ModelKind` covers the whole family for the same
+    /// reason — with no per-release axes stamped there is nothing to tell
+    /// the releases apart; a variant-aware landing would add a
+    /// `vokra.voila.variant` chunk the way [`Self::MossTts`] does.
+    ///
+    /// Provenance rides `vokra.provenance.upstream_url`
+    /// (`github.com/maitrix-org/Voila`, the MIT reference-code tree)
+    /// rather than `upstream_hf`, so `verify()` routes this kind through
+    /// the GitHub-native arm. No HF repo id is stamped: the per-release
+    /// weight repos are owner-verified at bind time.
+    ///
+    /// Provenance = **mit** ([`vokra_core::LicenseClass::Permissive`]) by
+    /// default, overridable at `--license <spdx>`. `docs/license-audit.md`
+    /// §3.1 carries **no Voila row**, so redistribution stays fail-closed
+    /// on the sign-off gate — adding and signing that row is owner-only
+    /// work (memory `[[feedback-license-signoff-primary-source]]`).
+    Voila,
+    /// **Magenta MT3** (`magenta/mt3`, code **Apache-2.0**) — multi-track
+    /// / multi-instrument automatic music transcription (audio → MIDI) on
+    /// a T5-small encoder-decoder backbone with a music-event vocabulary.
+    /// Category = `music-transcription`, distinct arch tag `mt3` from
+    /// every sibling music-tree arch (`basic-pitch` Spotify polyphonic
+    /// CNN posteriorgram, `beat-this` Transformer beat + downbeat
+    /// tracker, `musicgen` text-to-music AR LM).
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): the
+    /// runtime binder `vokra-models::mt3` shipped with four error
+    /// messages telling the operator to re-run
+    /// `vokra-cli convert --model mt3`, while `ModelKind::from_arg`
+    /// accepted no such spelling — the promised recovery command
+    /// answered `unknown model`. This arm makes the promise true. The
+    /// converter function ([`convert_mt3_file`]) already existed; only
+    /// the CLI wiring was missing.
+    ///
+    /// **License**: the *code* is Apache-2.0, but the weight bucket
+    /// (`gs://mt3/checkpoints/`) carries no per-bucket LICENSE file and
+    /// no HuggingFace mirror exists, so [`convert_mt3_file`] hard-maps
+    /// the stamped class to [`vokra_core::LicenseClass::Unknown`]
+    /// regardless of `--license`. That is fail-closed at the M2-13
+    /// runtime compliance gate: the artifact will not load in commercial
+    /// mode until the owner completes primary-source confirmation.
+    /// `docs/license-audit.md` §3.1 sign-off stays **BLANK** (owner-only).
+    ///
+    /// Provenance rides `vokra.provenance.upstream_url`
+    /// (`github.com/magenta/mt3`) rather than `upstream_hf`, so
+    /// `verify()` routes this kind through the GitHub-native arm.
+    Mt3,
+    /// **Beat This!** (`CPJKU/beat_this`, **MIT**, ISMIR 2024) — joint
+    /// beat + downbeat tracking on a Transformer encoder over log-mel
+    /// frames. Category = `beat-tracking`, arch tag `beat-this`
+    /// (deliberately hyphenated to stay distinct from the sibling `beats`
+    /// arch, which is the Microsoft SSL audio encoder — sharing the tag
+    /// would let runtime dispatch mis-route across two unrelated
+    /// topologies, FR-EX-08).
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): the
+    /// runtime binder `vokra-models::beat_this` names
+    /// `vokra-cli convert --model beat-this` in four places while
+    /// `ModelKind::from_arg` accepted no such spelling. This arm makes
+    /// the promise true.
+    ///
+    /// **Requires `--config <side-car.json>`**: [`convert_beat_this_file`]
+    /// takes its six topology axes from the caller and deliberately
+    /// fabricates none of them — the upstream `.pt` release stores them
+    /// implicitly in tensor shapes rather than in a first-class
+    /// `config.yaml` (CLAUDE.md 「ハルシネーション厳禁」). The dispatch
+    /// therefore refuses a bare invocation with a
+    /// [`ConvertError::Usage`] naming the flag and every required key,
+    /// rather than stamping guessed axes into a redistributable
+    /// artifact. See [`convert_beat_this_with_config`] for the side-car
+    /// schema.
+    ///
+    /// Provenance rides `vokra.provenance.upstream_url`
+    /// (`github.com/CPJKU/beat_this`) — the GitHub tree is the release
+    /// channel, there is no HF mirror.
+    BeatThis,
+    /// **ReDimNet** (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`,
+    /// **apache-2.0**) — the "reshaped dimensions network" speaker
+    /// verification backbone, B6-LM release (192-d embedding).
+    /// Category = `speaker`, distinct arch tag `redimnet` from every
+    /// sibling speaker-fleet arch — never `wespeaker` (ResNet-34), never
+    /// `ecapa_tdnn` (TDNN stack), never `titanet` (depth-wise separable
+    /// Conv1D), never `speaker_3d` (ERes2Net), never `campplus` (CAM++).
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): this was
+    /// the worst of the four unreachable converters. The binder
+    /// `vokra-models::redimnet` named `vokra-cli convert --model
+    /// redimnet` in four messages; `ModelKind::from_arg` accepted no such
+    /// spelling; `convert_redimnet_file` had no `pub use` re-export out
+    /// of the private `mod models`; and the resulting `dead_code`
+    /// warnings were silenced by a module-level `#![allow(dead_code)]`.
+    /// There was no route at all — from any entry point — to produce the
+    /// GGUF the binder demanded. This arm, the paired re-export, and the
+    /// deletion of that allow attribute close the loop.
+    ///
+    /// **License**: apache-2.0 confirmed through HF cardData primary
+    /// source; the class resolves via
+    /// [`vokra_core::LicenseClass::from_license_str`] for whatever SPDX
+    /// `--license` passes. `docs/license-audit.md` §3.1 sign-off stays
+    /// **BLANK** (fail-closed, owner-only). Provenance rides
+    /// `vokra.provenance.upstream_hf`.
+    Redimnet,
+    /// **LLaMA-Omni2** (`ICTNLP/LLaMA-Omni2-*`, **apache-2.0**, ACL 2025)
+    /// — streaming half-duplex speech-to-speech: a Whisper-style speech
+    /// encoder feeding a Qwen2 LM backbone with an autoregressive speech
+    /// decoder. Category = `s2s`, distinct arch tag `llama_omni2` from
+    /// the sibling Qwen2-family ASR / S2S arches (`voxtral`,
+    /// `canary_qwen`, `kyutai_stt`, `firered_asr_llm_l`) and from the
+    /// full-duplex `moshi` / `csm` / `voila` trio.
+    ///
+    /// **Why this variant exists** (2026-08-15 audit follow-up): the
+    /// binder `vokra_models::llama_omni2` names
+    /// `vokra-cli convert --model llama-omni2 --config <config.json>` in
+    /// its arch-mismatch message while `ModelKind::from_arg` accepted no
+    /// such spelling.
+    ///
+    /// **Requires `--config`** (2026-08-15 handshake repair): this kind
+    /// refuses through the plain [`convert_file`] /
+    /// [`convert_file_with_slug`] routes and converts only through
+    /// [`convert_llama_omni2_file_with_config`]. Six of the eleven
+    /// `vokra.llama_omni2.*` axes the binder reads exist only in the
+    /// upstream `config.json`, so a side-car-less conversion cannot
+    /// produce a loadable artifact — it previously produced an unloadable
+    /// one instead of saying so.
+    ///
+    /// **One arm, four releases**: 7B (default) / 3B-Bilingual / 1.5B /
+    /// 32B share this variant, and the raw `--model` slug picks the
+    /// release through [`convert_file_with_slug`] — the BigVGan / Snac /
+    /// Qwen3Asr precedent. The variant is a real discriminator here (it
+    /// is stamped into `vokra.llama_omni2.variant` and decides the
+    /// `vokra.model.name` suffix and the `upstream_hf` repo id), so the
+    /// plain [`convert_file`] path lands the 7B default that the ACL 2025
+    /// paper anchors to rather than guessing from tensor shapes.
+    ///
+    /// **Scale**: 7B ≈ 14 GB and 32B ≈ 64 GB both exceed the local
+    /// convert threshold — those two run on vast.ai per memory
+    /// `[[feedback-large-models-on-vast-ai]]`. 1.5B (≈ 3 GB) and
+    /// 3B-Bilingual (≈ 6 GB) are local-safe. Provenance rides
+    /// `vokra.provenance.upstream_hf`; `docs/license-audit.md` §3.1
+    /// sign-off stays **BLANK** (fail-closed, owner-only).
+    LlamaOmni2,
 }
 
 impl ModelKind {
@@ -2973,7 +3955,15 @@ impl ModelKind {
             "utmos" => Some(Self::Utmos),
             "piper-plus" => Some(Self::PiperPlus),
             "campplus" => Some(Self::CamPlus),
-            "kokoro" => Some(Self::Kokoro),
+            // `kokoro-82m` is not decoration: `vokra-models::kokoro`
+            // prints "`vokra-cli convert --model kokoro-82m ...` first"
+            // from four call sites, and until 2026-08-15 that command
+            // answered `unknown model` because only the bare `kokoro`
+            // spelling parsed. It is also the published repo name
+            // (`huggingface.co/vokra/kokoro-82m`), so it is what an
+            // operator has in hand. Both spellings land the same kind —
+            // there is one Kokoro release.
+            "kokoro" | "kokoro-82m" | "kokoro_82m" | "hexgrad/kokoro-82m" => Some(Self::Kokoro),
             "cosyvoice2" => Some(Self::CosyVoice2),
             "cosyvoice3"
             | "cosyvoice-3"
@@ -3305,6 +4295,14 @@ impl ModelKind {
             // spelling, and the canonical GitHub `<user>/<repo>`
             // release id (no HF mirror ships today).
             "nkf-aec" | "nkf_aec" | "fjiang9/nkf-aec" | "fjiang9/NKF-AEC" => Some(Self::NkfAec),
+            // Wave 6 2026-08-14 audit follow-up: DTLN-AEC. Accept the
+            // arch tag (underscore == the `vokra.model.arch` string the
+            // converter stamps), the CLI-friendly hyphenated spelling,
+            // and the canonical GitHub `<user>/<repo>` release id
+            // (no HF mirror ships today).
+            "dtln-aec" | "dtln_aec" | "breizhn/dtln-aec" | "breizhn/DTLN-aec" => {
+                Some(Self::DtlnAec)
+            }
             // Coverage-audit 2026-08-03 Wave A: Xiph RNNoise v0.2.
             // Accept the canonical short arch tag, the versioned publish
             // slug (matches `huggingface.co/vokra/rnnoise-v0.2`), and the
@@ -3346,6 +4344,16 @@ impl ModelKind {
             "hibiki" | "hibiki-2b" | "hibiki_2b" | "kyutai/hibiki-2b-pytorch-bf16" => {
                 Some(Self::Hibiki)
             }
+            // coverage-audit 2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): BosonAI Higgs-Audio v3 TTS 4B. Accept the
+            // canonical arch tag, the hyphen / underscore variants, and
+            // the raw HF release id.
+            "higgs-audio-v3"
+            | "higgs-audio-v3-tts-4b"
+            | "higgs_audio_v3_tts_4b"
+            | "higgs-audio-v3-tts"
+            | "higgs_audio_v3"
+            | "bosonai/higgs-audio-v3-tts-4b" => Some(Self::HiggsAudioV3Tts4b),
             "sber-gigaam-v3"
             | "sber_gigaam_v3"
             | "gigaam-v3"
@@ -3398,6 +4406,23 @@ impl ModelKind {
             | "fireredteam/firered_asr_aed_l"
             | "fireredteam/fireredasr-aed-l"
             | "FireRedTeam/FireRedASR-AED-L" => Some(Self::FireredAsrAedL),
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): FireRedASR-LLM-L is the FireRedTeam LLM-based
+            // sibling of FireRedASR-AED-L (Whisper-topology). Distinct
+            // arch tag / model / dispatch path (Conformer + audio-text
+            // adapter + Qwen2 LM decoder vs Whisper-topology AED) — the
+            // AED / LLM aliases MUST NOT collide (silently sharing
+            // would mis-route the runtime dispatch).
+            "firered-asr-llm-l"
+            | "firered_asr_llm_l"
+            | "fireredasr-llm-l"
+            | "fireredasr_llm_l"
+            | "firered-asr-llm"
+            | "firered_asr_llm"
+            | "fireredteam/firered-asr-llm-l"
+            | "fireredteam/firered_asr_llm_l"
+            | "fireredteam/fireredasr-llm-l"
+            | "FireRedTeam/FireRedASR-LLM-L" => Some(Self::FireredAsrLlmL),
             "sortformer-diar-4spk-v1"
             | "sortformer_diar_4spk_v1"
             | "nvidia/diar_sortformer_4spk-v1" => Some(Self::SortformerDiar4spkV1),
@@ -3489,6 +4514,102 @@ impl ModelKind {
             | "audioseal"
             | "audio-seal"
             | "facebook/audioseal" => Some(Self::AudiosealRealWeight),
+            // Music-understanding wave (2026-08-13). YAMNet — Google Research
+            // 521-class AudioSet audio-event classifier (MobileNetV1 backbone,
+            // ~15 MB edge model). apache-2.0 default (Permissive).
+            "yamnet"
+            | "google-yamnet"
+            | "google/yamnet"
+            | "thelou1s/yamnet" => Some(Self::Yamnet),
+            // Music-understanding wave (2026-08-13). MERT-v1-330M — Music
+            // undERstanding model, HuBERT-derived Conv1D + 24-layer
+            // Transformer, ~330M params. cc-by-nc-4.0 default (NonCommercial).
+            "mert"
+            | "mert-v1-330m"
+            | "mert-v1"
+            | "mert-330m"
+            | "m-a-p/mert-v1-330m"
+            | "m-a-p/MERT-v1-330M" => Some(Self::Mert),
+            // Music-understanding wave (2026-08-13). MuQ — Self-supervised
+            // music representation learner with Mel-RVQ + BEATs teacher.
+            // License unknown (fail-closed default).
+            "muq"
+            | "muq-large-msd-iter"
+            | "muq-large"
+            | "openmuq/muq-large-msd-iter"
+            | "OpenMuQ/MuQ-large-msd-iter" => Some(Self::Muq),
+            // Music-understanding wave (2026-08-13). Dasheng — Universal
+            // audio encoder (speech + music + environmental), MAE
+            // ViT/ConvNeXt backbone, ~86M params base. apache-2.0 default.
+            "dasheng"
+            | "dasheng-base"
+            | "mispeech/dasheng-base"
+            | "mispeech-dasheng-base" => Some(Self::Dasheng),
+            // Music-understanding wave (2026-08-13). PANNs Cnn14 — 527-class
+            // AudioSet audio-tagging backbone (VGG-flavour 14-layer 2D-CNN,
+            // ~80M params). License unknown (fail-closed default).
+            "panns"
+            | "panns-cnn14"
+            | "panns_cnn14"
+            | "cnn14"
+            | "nicofarr/panns_cnn14"
+            | "nicofarr/panns_Cnn14" => Some(Self::Panns),
+            // Music-understanding wave (2026-08-13). Basic-Pitch — Spotify
+            // polyphonic audio-to-MIDI pitch-detection (~6 MB CNN over CQT
+            // with 3-head posteriorgram). apache-2.0 default (Permissive).
+            "basic-pitch"
+            | "basic_pitch"
+            | "basicpitch"
+            | "spotify/basic-pitch"
+            | "spotify-basic-pitch" => Some(Self::BasicPitch),
+            // SSL audio-encoder wave (2026-08-13). BEATs — foundational
+            // self-supervised audio encoder with iterative acoustic
+            // tokenizer + mask acoustic modeling, ~90M params
+            // iter3_plus_AS2M. mit default (T1 Permissive).
+            "beats"
+            | "beats-iter3"
+            | "beats-iter3-plus"
+            | "beats-iter3-plus-as2m"
+            | "microsoft/beats"
+            | "microsoft-beats"
+            | "unilm-beats" => Some(Self::Beats),
+            // SSL audio-encoder wave (2026-08-13). EAT — Effective Audio
+            // Transformer, utterance-level Transformer + inverse block
+            // masking SSL, ~86M params base. mit default (T1 Permissive).
+            "eat"
+            | "eat-base"
+            | "cwx-worst-one/eat"
+            | "cwx-worst-one-eat" => Some(Self::Eat),
+            // SSL audio-encoder wave (2026-08-13). ATST — Audio
+            // Teacher-Student Transformer, BYOL-style EMA teacher +
+            // student patch dropout, ~86M params base. cc-by-4.0 weight
+            // default (AttributionRequired; code MIT umbrella but that
+            // is not what a weight-provenance stamp records).
+            "atst"
+            | "atst-base"
+            | "atst-frame"
+            | "audio-westlakeu/audiossl-atst"
+            | "audiossl-atst"
+            | "audiossl/atst" => Some(Self::Atst),
+            // SSL audio-encoder wave (2026-08-13). MAEST — Music AEST
+            // (Discogs-pretrained AST self-supervised music-tagger),
+            // ~87M F32 params 30s-pw-129e. cc-by-nc-sa-4.0 default
+            // (T4 tier NonCommercialShareAlike; T4 + SA cascade).
+            "maest"
+            | "maest-30s"
+            | "maest-30s-pw-129e"
+            | "discogs-maest"
+            | "discogs-maest-30s-pw-129e"
+            | "mtg-upf/discogs-maest-30s-pw-129e" => Some(Self::Maest),
+            // SSL audio-encoder wave (2026-08-13). M2D — Masked Modeling
+            // Duo, dual online + target branch joint prediction, ~86M
+            // params base. unknown default (fail-closed;
+            // upstream LICENSE.pdf non-machine-readable, HF NA).
+            "m2d"
+            | "m2d-base"
+            | "m2d-eat"
+            | "nttcslab/m2d"
+            | "nttcslab-m2d" => Some(Self::M2d),
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder
             // complement wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2.
             // Accept the canonical arch tag, the underscore variant, the
@@ -3534,8 +4655,17 @@ impl ModelKind {
             | "we_speaker"
             | "wespeaker-voxceleb-resnet34-lm"
             | "wespeaker/wespeaker-voxceleb-resnet34-lm" => Some(Self::Wespeaker),
+            // `speaker-3d-eres2net` is the spelling the runtime binder
+            // `vokra-models::speaker_3d_eres2net` prints in three recovery
+            // messages (and pins with its own `m.contains(...)` test), so
+            // it has to parse — until 2026-08-15 it did not. That binder
+            // reads `vokra.model.arch == "speaker_3d"`, the exact tag this
+            // converter stamps, so the alias lands on the same kind rather
+            // than needing a variant of its own.
             "speaker-3d"
             | "speaker_3d"
+            | "speaker-3d-eres2net"
+            | "speaker_3d_eres2net"
             | "3d-speaker"
             | "eres2net"
             | "speech_eres2net_sv_zh-cn_16k-common"
@@ -4355,6 +5485,23 @@ impl ModelKind {
             | "audioldm_2_large"
             | "cvssp-audioldm2-large"
             | "cvssp/audioldm2-large" => Some(Self::AudioLdm2Large),
+            // AudioSR (Wave D 2026-08-15, brand-new `super-resolution`
+            // category). Accept the arch tag (`audiosr`), the explicit
+            // basic spelling (`audiosr-basic` / `audiosr_basic`, which
+            // is what `vokra.model.name` carries), and the upstream HF
+            // repo id. The speech sibling is a separate arm below —
+            // matched FIRST is irrelevant here because the literals are
+            // disjoint, but note `audiosr-speech` must NOT fall into
+            // this arm (it does not: no prefix matching is used).
+            "audiosr" | "audiosr-basic" | "audiosr_basic" | "AudioSR" | "audio-sr"
+            | "audio_sr" | "haoheliu/audiosr_basic" | "haoheliu-audiosr-basic"
+            | "versatile_audio_super_resolution" => Some(Self::AudioSr),
+            // AudioSR speech-specialised sibling. Same arch + same
+            // topology; only the weights and the name/provenance stamps
+            // differ (upstream `get_basic_config()` takes no model_name
+            // argument).
+            "audiosr-speech" | "audiosr_speech" | "audiosr-speech-48k"
+            | "haoheliu/audiosr_speech" | "haoheliu-audiosr-speech" => Some(Self::AudioSrSpeech),
             // BS-Roformer / Mel-Band Roformer (Wave 5 candidate,
             // 2026-08-01, `chenmozhijin/BSRoformer-GGUF`, weight
             // provenance unclear). Accept the arch tag (both
@@ -4481,6 +5628,59 @@ impl ModelKind {
             | "conv_tasnet_libri1mix_enhsingle_16k"
             | "joriscos/convtasnet_libri1mix_enhsingle_16k"
             | "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k" => Some(Self::ConvTasnetLibri1mix),
+            // GTCRN (Xiaobin-Rong/gtcrn, MIT — Wave 6 2026-08-14 audit
+            // follow-up, denoise alternative sibling to DFN3 / NSNet2 /
+            // RNNoise). Distinct arch tag `gtcrn` from every sibling
+            // enhancement / separator family — FR-EX-08 forbids silent
+            // shape misroute. Aliases cover the kebab-case + explicit
+            // 16k-suffix variants + the full upstream GitHub slug
+            // (case-insensitive lookup handled by whatever normalisation
+            // the caller applies before dispatch).
+            "gtcrn"
+            | "GTCRN"
+            | "gtcrn-16k"
+            | "gtcrn_16k"
+            | "Xiaobin-Rong/gtcrn"
+            | "xiaobin-rong/gtcrn" => Some(Self::Gtcrn),
+            // StoRM (sp-uhh/storm, MIT — Wave 7 2026-08-14 audit
+            // follow-up RETRY, score-based diffusion speech enhancement
+            // + dereverberation, distinct arch tag `storm`). Aliases
+            // cover kebab-case + explicit release variant + upstream
+            // GitHub slug (Signal Processing group @ Universität
+            // Hamburg).
+            "storm"
+            | "STORM"
+            | "storm-se"
+            | "storm-16k"
+            | "sp-uhh/storm"
+            | "sp_uhh/storm" => Some(Self::Storm),
+            // Wave 7 2026-08-14 audit follow-up: WavLM Base+ SV
+            // (`microsoft/wavlm-base-plus-sv`, CC-BY-SA-3.0 → Copyleft).
+            // Accept the arch tag, both underscore / hyphen variants of the
+            // release name, and the canonical HF slug.
+            "wavlm_sv"
+            | "wavlm-sv"
+            | "wavlm-base-plus-sv"
+            | "wavlm_base_plus_sv"
+            | "microsoft/wavlm-base-plus-sv"
+            | "wavlm-base-plus-sv-microsoft" => Some(Self::WavlmSv),
+            // DiffSinger (openvpi/DiffSinger, Apache-2.0 — Wave D
+            // 2026-08-15, the first singing voice synthesis (SVS) entry in
+            // the catalogue). Score-to-singing shallow-diffusion acoustic
+            // model (arXiv:2105.02446) emitting a mel for a SEPARATE
+            // vocoder. Distinct arch tag `diffsinger` from every speech-TTS
+            // and vocoder sibling — FR-EX-08. Aliases cover the arch tag,
+            // the kebab/underscore/lower-case spellings, the community-fork
+            // slug, and the upstream GitHub slug (the openvpi fork is the
+            // maintained one; the original MoonInTheRiver repo is accepted
+            // as an alias since checkpoints circulate under both names).
+            "diffsinger"
+            | "DiffSinger"
+            | "diff-singer"
+            | "diff_singer"
+            | "openvpi/DiffSinger"
+            | "openvpi/diffsinger"
+            | "MoonInTheRiver/DiffSinger" => Some(Self::DiffSinger),
             // Seamless-M4T-v2-Large (Wave residual, 2026-08-02,
             // `facebook/seamless-m4t-v2-large`, cc-by-nc-4.0). 2.3B unified
             // any-to-any speech-and-text translation, unity-2 arch (4
@@ -4499,6 +5699,173 @@ impl ModelKind {
             | "unity2"
             | "facebook-seamless-m4t-v2-large"
             | "facebook/seamless-m4t-v2-large" => Some(Self::SeamlessM4tV2Large),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13): Meta
+            // MAGNeT Small 10secs (`facebook/magnet-small-10secs`,
+            // cc-by-nc-4.0, non-autoregressive masked-LM parallel decoding
+            // for 10-second music generation, Ziv et al. 2024
+            // arXiv:2401.04577). Accept the canonical + underscore +
+            // short-slug + upstream HF slug variants; the bare `"magnet"`
+            // alias is intentionally NOT claimed here so a future sibling
+            // WF (magnet-medium-30secs / magnet-small-audio /
+            // magnet-medium-audio) can either claim it as a family-level
+            // dispatch alias or add its own variant-specific alias — the
+            // ticket suggested a family enum but the phase followed the
+            // jasco_400m_chords_drums variant-per-ModelKind precedent.
+            "magnet-small-10secs"
+            | "magnet_small_10secs"
+            | "magnet-small-10s"
+            | "magnet-small"
+            | "facebook/magnet-small-10secs" => Some(Self::MagnetSmall10secs),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs
+            // (`facebook/magnet-medium-30secs`, cc-by-nc-4.0, 1.5B
+            // parameter non-autoregressive masked-LM decoding for
+            // 30-second music generation — sibling of magnet-small-10secs
+            // with wider hidden / more layers / longer span). Accept the
+            // canonical + underscore + short-slug + upstream HF slug
+            // variants; the bare `"magnet"` alias is intentionally NOT
+            // claimed here so future variant additions or a family-level
+            // dispatch alias can either claim it or add their own
+            // variant-specific alias — same posture as sibling small.
+            "magnet-medium-30secs"
+            | "magnet_medium_30secs"
+            | "magnet-medium-30s"
+            | "magnet-medium"
+            | "facebook/magnet-medium-30secs" => Some(Self::MagnetMedium30secs),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs
+            // (`facebook/melodyflow-t24-30secs`, cc-by-nc-4.0) — 1 B
+            // flow-matching music **editing** model (DiT backbone, 24
+            // timesteps, 30 sec / 48 kHz, Le Lan et al. 2024
+            // arXiv:2407.03648). Accept the canonical + underscore +
+            // short-slug + bare-family + upstream HF slug variants; the
+            // bare `"melodyflow"` alias IS claimed here because there
+            // is currently exactly one MelodyFlow release in the
+            // catalog (T24 30secs). A future sibling
+            // (`melodyflow-t12-30secs` / `melodyflow-t48-30secs`) that
+            // wants to claim the bare `"melodyflow"` alias for a
+            // family-level dispatch would need to reroute this entry
+            // to a variant-specific alias explicitly (an ADR moment).
+            "melodyflow-t24-30secs"
+            | "melodyflow_t24_30secs"
+            | "melodyflow-t24-30s"
+            | "melodyflow-t24"
+            | "melodyflow"
+            | "facebook/melodyflow-t24-30secs" => Some(Self::MelodyflowT2430secs),
+            // Wave D 2026-08-15: CT-Transformer punctuation restoration
+            // (`funasr/ct-punc`, apache-2.0) — first `punctuation`
+            // category entry. Accept the arch tag, both hyphen /
+            // underscore spellings, the bare `"punc"` family alias
+            // (there is exactly one punctuation model in the catalogue
+            // today; a second one claiming the bare alias would be an
+            // ADR moment), the upstream HF slug, and the ModelScope
+            // mirror id the repo's own `configuration.json` names.
+            "ct-punc"
+            | "ct_punc"
+            | "ctpunc"
+            | "ct-transformer"
+            | "ct_transformer"
+            | "punc"
+            | "punctuation"
+            | "funasr/ct-punc"
+            | "iic/punc_ct-transformer_cn-en-common-vocab471067-large" => Some(Self::CtPunc),
+            // Wave D 2026-08-15: WeTextProcessing ITN/TN grammar bundles
+            // (`wenet-e2e/WeTextProcessing`, apache-2.0) — first
+            // `text-normalization` category entry, and the first
+            // weightless converter. Accept the arch tag, the hyphenated
+            // and underscored spellings, the two family aliases `itn` /
+            // `tn` (there is exactly one ITN/TN implementation in the
+            // catalogue today; a second claiming the bare aliases would
+            // be an ADR moment), the short `wetext` name the upstream
+            // CLI entry points use (`weitn` / `wetn`), and the upstream
+            // GitHub slug.
+            //
+            // The language/direction is NOT part of the slug: one enum
+            // arm serves all six bundles, and the prefix is resolved from
+            // the input path exactly as the upstream C++ runtime does
+            // (`wetext_processor.cc` probes the tagger path for
+            // `zh_itn_` / `en_tn_` / …).
+            "wetextprocessing"
+            | "wetext-processing"
+            | "wetext_processing"
+            | "wetext"
+            | "itn"
+            | "tn"
+            | "text-normalization"
+            | "wenet-e2e/wetextprocessing" => Some(Self::WeTextProcessing),
+            // Voila (`maitrix-org/Voila`, mit) — full-duplex S2S dialog
+            // family. Accept the arch tag and the upstream `org/repo`
+            // slug only.
+            //
+            // The per-release spellings (`voila-base` / `voila-chat` /
+            // `voila-audio-alpha` / `voila-autonomous-preview`) are
+            // deliberately NOT accepted. This converter stamps no
+            // per-release axes, so honouring a variant spelling would
+            // silently collapse it to the generic `voila` name stamp and
+            // hand the caller an artifact that does not say what they
+            // asked for. A variant-aware landing adds those spellings
+            // together with the `vokra.voila.variant` chunk that makes
+            // them mean something (FR-EX-08 — no silent collapse).
+            "voila" | "maitrix-org/voila" => Some(Self::Voila),
+            // MT3 (magenta/mt3) — 2026-08-15 audit follow-up. The runtime
+            // binder's own recovery text is `vokra-cli convert --model
+            // mt3`, so the bare `mt3` spelling is load-bearing: it is the
+            // exact string four error messages promise. The remaining
+            // aliases cover the `vokra.model.name` stamp and the upstream
+            // GitHub slug.
+            "mt3" | "MT3" | "mt3-multitrack" | "magenta/mt3" => Some(Self::Mt3),
+            // Beat This! (CPJKU/beat_this) — 2026-08-15 audit follow-up.
+            // `beat-this` is the spelling the binder's four messages
+            // promise AND the arch tag; the underscore form matches the
+            // upstream repo name, which is what an operator copying from
+            // GitHub types first.
+            "beat-this" | "beat_this" | "beatthis" | "CPJKU/beat_this" | "cpjku/beat_this" => {
+                Some(Self::BeatThis)
+            }
+            // ReDimNet (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM) —
+            // 2026-08-15 audit follow-up. `redimnet` is the spelling the
+            // binder's four messages promise and the arch tag. Aliases
+            // cover the release id + the full upstream HF slug in both
+            // the upstream mixed case and lower case.
+            "redimnet"
+            | "redimnet2"
+            | "redimnet2-b6-lm"
+            | "redimnet2_b6_lm"
+            | "wespeaker-voxceleb-redimnet2-b6-lm"
+            | "Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM"
+            | "wespeaker/wespeaker-voxceleb-redimnet2-b6-lm" => Some(Self::Redimnet),
+            // LLaMA-Omni2 (ICTNLP/LLaMA-Omni2-*) — 2026-08-15 audit
+            // follow-up. `llama-omni2` is the spelling the binder's
+            // arch-mismatch message promises. Every per-release spelling
+            // lands on this same kind and is resolved to a
+            // `LlamaOmni2Variant` by `convert_file_with_slug`; the list
+            // below mirrors `LlamaOmni2Variant::from_arg` exactly, so a
+            // slug that parses here always resolves there (a spelling
+            // accepted here but unknown there would silently collapse to
+            // the 7B default — FR-EX-08).
+            "llama-omni2"
+            | "llama_omni2"
+            | "llamaomni2"
+            | "llama-omni2-7b"
+            | "llama_omni2_7b"
+            | "llamaomni2-7b"
+            | "llama-omni2-7b-english"
+            | "ictnlp/llama-omni2-7b"
+            | "llama-omni2-3b-bilingual"
+            | "llama_omni2_3b_bilingual"
+            | "llamaomni2-3b-bilingual"
+            | "llama-omni2-3b"
+            | "llama_omni2_3b"
+            | "ictnlp/llama-omni2-3b-bilingual"
+            | "llama-omni2-1.5b"
+            | "llama-omni2-1_5b"
+            | "llama_omni2_1_5b"
+            | "llamaomni2-1.5b"
+            | "ictnlp/llama-omni2-1.5b"
+            | "llama-omni2-32b"
+            | "llama_omni2_32b"
+            | "llamaomni2-32b"
+            | "ictnlp/llama-omni2-32b" => Some(Self::LlamaOmni2),
             _ => None,
         }
     }
@@ -4559,6 +5926,13 @@ impl ModelKind {
             Self::Bicodec => "bicodec",
             Self::Neucodec => "neucodec",
             Self::NkfAec => "nkf-aec",
+            // Wave 6 2026-08-14: DTLN-AEC — canonical CLI slug is the
+            // hyphenated form (mirror of nkf-aec posture, matches the
+            // future `huggingface.co/vokra/dtln-aec-{units128,units256,
+            // units512}` publish repos). The arch tag stamped in
+            // `vokra.model.arch` (`"dtln_aec"` — see
+            // `models::dtln_aec::ARCH`) is the underscore form.
+            Self::DtlnAec => "dtln-aec",
             // Coverage-audit 2026-08-03 Wave A: canonical CLI slug is
             // the versioned form (matches the `huggingface.co/vokra/
             // rnnoise-v0.2` publish repo). The arch tag stamped in
@@ -4573,6 +5947,7 @@ impl ModelKind {
             Self::Frcrn => "frcrn",
             // coverage-audit 2026-08-03 Wave B fast-track (13 variants).
             Self::Hibiki => "hibiki-2b",
+            Self::HiggsAudioV3Tts4b => "higgs-audio-v3-tts-4b",
             Self::SberGigaamV3 => "sber-gigaam-v3",
             Self::SberGigaamMultilingual => "sber-gigaam-multilingual",
             Self::ReazonspeechNemoV2 => "reazonspeech-nemo-v2",
@@ -4582,6 +5957,7 @@ impl ModelKind {
             Self::OwsmV4Medium1b => "owsm-v4-medium-1b",
             Self::ParakeetTdt11b => "parakeet-tdt-1.1b",
             Self::FireredAsrAedL => "firered-asr-aed-l",
+            Self::FireredAsrLlmL => "firered-asr-llm-l",
             Self::SortformerDiar4spkV1 => "sortformer-diar-4spk-v1",
             Self::SenseVoiceSmall => "sensevoicesmall",
             Self::WhisperMedusaV1 => "whisper-medusa-v1",
@@ -4598,6 +5974,41 @@ impl ModelKind {
             Self::Mossformer2Ss16k => "mossformer2-ss-16k",
             Self::TenVad => "ten-vad",
             Self::AudiosealRealWeight => "audioseal-real-weight",
+            // Music-understanding wave (2026-08-13). YAMNet canonical CLI slug
+            // matches the shared arch tag stamped in `vokra.model.arch`.
+            Self::Yamnet => "yamnet",
+            // Music-understanding wave (2026-08-13). MERT canonical CLI slug
+            // matches the shared arch tag stamped in `vokra.model.arch`.
+            Self::Mert => "mert",
+            // Music-understanding wave (2026-08-13). MuQ canonical CLI slug.
+            Self::Muq => "muq",
+            // Music-understanding wave (2026-08-13). Dasheng canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::Dasheng => "dasheng-base",
+            // Music-understanding wave (2026-08-13). PANNs canonical CLI slug
+            // = variant-prefixed short name.
+            Self::Panns => "panns-cnn14",
+            // Music-understanding wave (2026-08-13). Basic-Pitch canonical CLI
+            // slug matches the publish repo tail token and shared arch tag.
+            Self::BasicPitch => "basic-pitch",
+            // SSL audio-encoder wave (2026-08-13). BEATs canonical CLI slug
+            // = variant-prefixed short name (`beats-iter3-plus-as2m` mirrors
+            // the primary-source checkpoint name from the unilm README).
+            Self::Beats => "beats-iter3-plus-as2m",
+            // SSL audio-encoder wave (2026-08-13). EAT canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::Eat => "eat-base",
+            // SSL audio-encoder wave (2026-08-13). ATST canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::Atst => "atst-base",
+            // SSL audio-encoder wave (2026-08-13). MAEST canonical CLI slug
+            // = variant-prefixed short name (`maest-30s-pw-129e` mirrors
+            // the upstream HF release slug for the 30s / patch-wise / 129
+            // epochs pretraining point).
+            Self::Maest => "maest-30s-pw-129e",
+            // SSL audio-encoder wave (2026-08-13). M2D canonical CLI slug
+            // matches the publish repo tail token and shared arch tag.
+            Self::M2d => "m2d-base",
             // hf-audio-gap-comprehensive-2026-07-30 §3.8 (2026-08-04):
             // canonical CLI slug matches the publish repo tail token
             // (`huggingface.co/vokra/miocodec-25hz-44khz-v2` — HF repo
@@ -4711,6 +6122,12 @@ impl ModelKind {
             Self::W2vBert2 => "w2v-bert-2-0",
             Self::AudioLdm2 => "audioldm2",
             Self::AudioLdm2Large => "audioldm2-large",
+            // AudioSR (Wave D 2026-08-15). The canonical CLI slug is the
+            // bare `audiosr` (matching the upstream `--model_name basic`
+            // default); `from_arg` also accepts `audiosr-basic` so the
+            // `vokra.model.name` spelling round-trips.
+            Self::AudioSr => "audiosr",
+            Self::AudioSrSpeech => "audiosr-speech",
             Self::BsRoformer => "bs-roformer",
             Self::Openwakeword => "openwakeword",
             Self::MoonshineTiny => "moonshine-tiny",
@@ -4719,7 +6136,70 @@ impl ModelKind {
             Self::UltravoxV05Llama321b => "ultravox-v0-5-llama-3-2-1b",
             Self::XttsV2 => "xtts-v2",
             Self::ConvTasnetLibri1mix => "conv-tasnet-libri1mix",
+            // GTCRN (Xiaobin-Rong/gtcrn, MIT — Wave 6 2026-08-14 audit
+            // follow-up, denoise alternative sibling to DFN3 / NSNet2 /
+            // RNNoise). Distinct arch tag `gtcrn` — single 16 kHz
+            // release, canonical slug `gtcrn` (no `-16k` suffix needed
+            // since there is only one variant).
+            Self::Gtcrn => "gtcrn",
+            // StoRM (sp-uhh/storm, MIT — Wave 7 2026-08-14 audit
+            // follow-up RETRY, diffusion-based two-stage speech
+            // enhancement + dereverberation). Distinct arch tag
+            // `storm` — single 16 kHz release, canonical slug `storm`.
+            Self::Storm => "storm",
+            // Wave 7 2026-08-14 audit follow-up: WavLM Base+ SV
+            // (microsoft/wavlm-base-plus-sv, CC-BY-SA-3.0). Canonical CLI
+            // slug matches upstream release tail token.
+            Self::WavlmSv => "wavlm-base-plus-sv",
+            // Wave D 2026-08-15: DiffSinger (openvpi/DiffSinger,
+            // Apache-2.0) — first singing voice synthesis (SVS) entry.
+            // Canonical slug matches the upstream project name.
+            Self::DiffSinger => "diffsinger",
             Self::SeamlessM4tV2Large => "seamless-m4t-v2-large",
+            // Meta music-gen post-audit CC-gap wave (2026-08-13).
+            Self::MagnetSmall10secs => "magnet-small-10secs",
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs — 1.5B / 30 sec
+            // medium sibling of magnet-small-10secs.
+            Self::MagnetMedium30secs => "magnet-medium-30secs",
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs — 1 B DiT
+            // flow-matching music **editing** model (24 timesteps, 30
+            // sec / 48 kHz). Distinct from every sibling music-gen
+            // family; the bare `melodyflow` alias in `from_arg` maps
+            // here today because this is the only MelodyFlow release
+            // in the catalog.
+            Self::MelodyflowT2430secs => "melodyflow-t24-30secs",
+            // Wave D 2026-08-15: CT-Transformer punctuation restoration.
+            // Canonical slug is the hyphenated release name `ct-punc`
+            // (the arch tag itself is the underscored `ct_punc`, matching
+            // the sibling `bert_base` / `wavlm_sv` convention where the
+            // CLI alias and the arch tag differ in separator).
+            Self::CtPunc => "ct-punc",
+            // Wave D 2026-08-15: WeTextProcessing ITN/TN grammar bundles.
+            // Canonical slug is the arch tag itself; the six bundles
+            // (zh/en/ja × itn/tn) share this one arm and are told apart
+            // by the input path, so there is nothing per-language to put
+            // in the slug.
+            Self::WeTextProcessing => "wetextprocessing",
+            // Voila full-duplex S2S dialog family. Canonical slug is the
+            // arch tag itself; one arm serves the whole family because no
+            // per-release axis is stamped to tell the releases apart.
+            Self::Voila => "voila",
+            // 2026-08-15 audit follow-up: four converters whose runtime
+            // binders named a `--model` spelling that `from_arg` did not
+            // accept. Each canonical slug below is the exact string those
+            // binders print in their recovery text — keep them byte-equal
+            // or the promise breaks again (the `check-arch-handshake.sh`
+            // leg (c) added in the same commit fails the build if they
+            // drift apart).
+            Self::Mt3 => "mt3",
+            Self::BeatThis => "beat-this",
+            Self::Redimnet => "redimnet",
+            // Canonical slug is the 7B default's family spelling; the
+            // per-release slugs round-trip back to this same kind and are
+            // resolved to a variant by `convert_file_with_slug`.
+            Self::LlamaOmni2 => "llama-omni2",
         }
     }
 }
@@ -5272,8 +6752,158 @@ pub fn convert_file_with_slug(
                 notes,
             })
         }
+        ModelKind::LlamaOmni2 => {
+            // 2026-08-15 handshake repair. This arm used to call
+            // `convert_llama_omni2_file`, which stamped five strings and
+            // none of the ten numeric `vokra.llama_omni2.*` keys the
+            // runtime binder reads — so every artifact it produced failed
+            // to load. Six of those axes cannot be derived from any
+            // tensor shape, so there is no `--config`-less conversion
+            // that would load: this path refuses and routes to
+            // [`convert_llama_omni2_file_with_config`], mirroring the
+            // Crepe / openwakeword-op precedent.
+            //
+            // The variant is still resolved from the slug here so the
+            // error can say which release was asked for, and so the
+            // resolution stays exercised by the sibling
+            // `every_llama_omni2_slug_resolves_to_a_variant` test.
+            let variant =
+                models::llama_omni2::LlamaOmni2Variant::from_arg(slug).unwrap_or_default();
+            let _ = (input, output, license);
+            Err(ConvertError::Usage(format!(
+                "llama-omni2 ({}) needs a --config config.json: `n_head`, \
+                 `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim` and \
+                 `speech_decoder_dim` cannot be read off any tensor shape, and the runtime \
+                 binder refuses a 0 on every one of them. Use \
+                 convert_llama_omni2_file_with_config (or `vokra-cli convert --model {slug} \
+                 --config <config.json>`). Upstream repo {}.",
+                variant.tag(),
+                variant.as_repo_id(),
+            )))
+        }
         _ => convert_file_licensed(model, input, output, license),
     }
+}
+
+/// Converts a `CPJKU/beat_this` checkpoint, taking the six required
+/// topology axes from a JSON side-car at `config`.
+///
+/// # Why a side-car rather than defaults
+///
+/// [`convert_beat_this_file`] takes its axes from the caller and invents
+/// none of them. The upstream `.pt` release ships no `config.yaml` — the
+/// axes are implicit in tensor shapes — so a default baked in here would
+/// be a fabricated number stamped into a redistributable artifact
+/// (CLAUDE.md 「ハルシネーション厳禁」). Both CLI front-ends route
+/// `--model beat-this` through this entry so `--config` is not silently
+/// dropped, the same fix the `SbV2` arm carries in
+/// `vokra-convert/src/main.rs`.
+///
+/// # Side-car schema
+///
+/// A flat JSON object; every key is required and must be a non-negative
+/// integer. Missing or non-integer keys are a
+/// [`ConvertError::Usage`] naming the offender — never a silent default.
+///
+/// ```json
+/// {
+///   "sample_rate": 22050,
+///   "n_frames": 1500,
+///   "d_model": 512,
+///   "n_layers": 6,
+///   "n_head": 8,
+///   "n_classes": 2
+/// }
+/// ```
+///
+/// The values above are an *illustrative shape*, not transcribed
+/// upstream constants: source them from the checkpoint being converted.
+///
+/// # Errors
+///
+/// - [`ConvertError::Usage`] when `config` is `None`, when a key is
+///   missing, when a value is not a non-negative integer, or when a
+///   value does not fit in a `u32`.
+/// - [`ConvertError::Io`] when the side-car or the checkpoint cannot be
+///   read, or the output cannot be written.
+/// - [`ConvertError::Parse`] on malformed JSON or malformed safetensors.
+/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+pub fn convert_beat_this_with_config(
+    input: &Path,
+    output: &Path,
+    config: Option<&Path>,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let Some(config) = config else {
+        return Err(ConvertError::Usage(
+            "--model beat-this requires --config <side-car.json>: the upstream \
+             CPJKU/beat_this `.pt` release ships no config.yaml, so the six topology axes \
+             must come from the caller rather than be invented here. Required keys: \
+             sample_rate, n_frames, d_model, n_layers, n_head, n_classes (all unsigned \
+             integers)."
+                .to_owned(),
+        ));
+    };
+    let bytes = std::fs::read(config).map_err(ConvertError::Io)?;
+    let root = vokra_core::json::parse(&bytes)
+        .map_err(|e| ConvertError::Parse(format!("--config {}: {e}", config.display())))?;
+
+    // Every axis is read the same way, and a missing / non-integer / out
+    // of range value is a loud usage error naming the key. `as_u64`
+    // rejects floats and strings, so `"d_model": 512.5` fails here rather
+    // than being silently truncated into the artifact.
+    let axis = |key: &str| -> Result<u32, ConvertError> {
+        let raw = root.get(key).and_then(vokra_core::json::JsonValue::as_u64);
+        let Some(raw) = raw else {
+            return Err(ConvertError::Usage(format!(
+                "--config {}: key `{key}` is missing or is not a non-negative integer. \
+                 beat-this requires all six axes (sample_rate, n_frames, d_model, n_layers, \
+                 n_head, n_classes) — this path will not default any of them.",
+                config.display()
+            )));
+        };
+        u32::try_from(raw).map_err(|_| {
+            ConvertError::Usage(format!(
+                "--config {}: key `{key}` = {raw} does not fit in a u32 (the \
+                 vokra.beat_this.* chunk group is u32-typed)",
+                config.display()
+            ))
+        })
+    };
+    let hparams = models::beat_this::BeatThisHparams {
+        sample_rate: axis("sample_rate")?,
+        n_frames: axis("n_frames")?,
+        d_model: axis("d_model")?,
+        n_layers: axis("n_layers")?,
+        n_head: axis("n_head")?,
+        n_classes: axis("n_classes")?,
+    };
+
+    let report = models::beat_this::convert_beat_this_file(input, output, license, hparams)?;
+    let notes = vec![format!(
+        "beat-this: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+         skipped, {} tensors read; vokra.beat_this.* axes taken from {} (sample_rate={} \
+         n_frames={} d_model={} n_layers={} n_head={} n_classes={}); docs/license-audit.md \
+         §3.1 sign-off is BLANK (fail-closed) until the owner signs, so publish stays blocked",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.read,
+        config.display(),
+        hparams.sample_rate,
+        hparams.n_frames,
+        hparams.d_model,
+        hparams.n_layers,
+        hparams.n_head,
+        hparams.n_classes,
+    )];
+    Ok(ConvertSummary {
+        model: ModelKind::BeatThis,
+        tensor_count: report.written,
+        metadata_count: 0,
+        output_bytes: std::fs::metadata(output)?.len(),
+        notes,
+    })
 }
 
 /// [`convert_file`] with an explicit weight-licence override.
@@ -5329,6 +6959,98 @@ pub fn convert_file_licensed(
         return Ok(ConvertSummary {
             model: ModelKind::PyannoteSpeakerDiarization31,
             tensor_count: report.written,
+            metadata_count: 0,
+            output_bytes: std::fs::metadata(output)?.len(),
+            notes,
+        });
+    }
+    // CT-Punc (`funasr/ct-punc`, apache-2.0) — Wave D 2026-08-15, the first
+    // `punctuation` category entry. Routed BEFORE the whole-file read below
+    // because `convert_ct_punc_file` opens the checkpoint itself: the real
+    // release is ~1.05 GiB (dominated by the 471 067 x 516 embedding table),
+    // so letting the shared prologue read it and then reading it a second
+    // time inside the converter would double the transient footprint for no
+    // benefit. Same posture as the Moshi / pyannote early routes above.
+    //
+    // The converter derives its topology axes from the checkpoint's own
+    // tensor shapes and refuses (loudly) a `decoder.weight` row count that
+    // disagrees with the upstream 6-entry `punc_list` — a mislabelled
+    // artifact would silently mis-punctuate every downstream transcript
+    // (FR-EX-08).
+    if matches!(model, ModelKind::CtPunc) {
+        let report = models::ct_punc::convert_ct_punc_file(input, output, license)?;
+        let notes = vec![format!(
+            "ct-punc: {} float weights written verbatim ({} BF16 passthrough), \
+             {} non-float skipped; topology DERIVED from the checkpoint \
+             (vocab_size={} att_unit={} num_blocks={} punc_size={}); \
+             apache-2.0 default per the funasr/ct-punc model card + HF API \
+             (NOT the FunASR MODEL_LICENSE that SenseVoiceSmall carries), \
+             Permissive T1 tier; punctuation labels stamped as an Array<String> \
+             chunk so the runtime binder reads the inventory instead of \
+             hardcoding it; tokenizer deliberately out of scope (upstream \
+             CharTokenizer is fronted by jieba over a 471067-entry tokens.json) \
+             so the runtime forward takes token ids; §3.1 sign-off BLANK \
+             fail-closed until owner signs",
+            report.written,
+            report.bf16_passthrough,
+            report.skipped_non_float,
+            report.vocab_size,
+            report.att_unit,
+            report.num_blocks,
+            report.punc_size,
+        )];
+        return Ok(ConvertSummary {
+            model: ModelKind::CtPunc,
+            tensor_count: report.written,
+            metadata_count: 0,
+            output_bytes: std::fs::metadata(output)?.len(),
+            notes,
+        });
+    }
+    // WeTextProcessing (`wenet-e2e/WeTextProcessing`, apache-2.0) — Wave D
+    // 2026-08-15, the first `text-normalization` category entry and the first
+    // **weightless** converter in the tree. Routed BEFORE the whole-file read
+    // below because `--input` is a *bundle* (a directory holding `tagger.fst`
+    // + `verbalizer.fst`, or a `<prefix>_tagger.fst` whose sibling sits next to
+    // it), not a single checkpoint file — the shared `std::fs::read(input)`
+    // prologue would fail outright on a directory. Same posture as the
+    // pyannote / Moshi / ct-punc early routes above.
+    //
+    // The language/direction prefix is resolved from the path exactly as the
+    // upstream C++ runtime does (`runtime/processor/wetext_processor.cc` probes
+    // the tagger path for `zh_itn_` / `en_tn_` / …), and an AMBIGUOUS path is
+    // refused rather than guessed: picking the wrong bundle would silently
+    // apply the wrong field-order table at verbalize time (FR-EX-08).
+    if matches!(model, ModelKind::WeTextProcessing) {
+        let report =
+            models::wetextprocessing::convert_wetextprocessing_file(input, output, license)?;
+        let mut notes = vec![format!(
+            "wetextprocessing: `{}` bundle packaged weightlessly (0 tensors by design) — \
+             tagger {} bytes / {} states, verbalizer {} bytes / {} states, both embedded as \
+             GGUF U8 metadata arrays (the vokra.tokenizer.model precedent, since GgmlType \
+             has no byte dtype); apache-2.0 default per the GitHub repository API \
+             (license.spdx_id = \"Apache-2.0\", verified 2026-08-15), Permissive T1 tier; \
+             runtime side is vokra-ops::itn, reusing the M5-06 vokra_core::decode::wfst \
+             machinery; §3.1 sign-off BLANK fail-closed until owner signs",
+            report.prefix,
+            report.tagger_bytes,
+            report.tagger_states,
+            report.verbalizer_bytes,
+            report.verbalizer_states,
+        )];
+        // Never silently ship a bundle the runtime cannot actually parse: the
+        // artifact is faithful, but the note says so out loud and repeats the
+        // developer-side fix (FR-EX-08).
+        if let Some(gap) = &report.reader_gap {
+            notes.push(format!(
+                "wetextprocessing: WARNING — vokra.itn.vokra_readable=false. Vokra's \
+                 read_openfst_vector cannot parse this bundle as stored, so the runtime will \
+                 loud-partial on use. {gap}"
+            ));
+        }
+        return Ok(ConvertSummary {
+            model: ModelKind::WeTextProcessing,
+            tensor_count: 0,
             metadata_count: 0,
             output_bytes: std::fs::metadata(output)?.len(),
             notes,
@@ -5458,6 +7180,41 @@ pub fn convert_file_licensed(
                 "ModelKind::PyannoteSpeakerDiarization31 routes through \
                  convert_pyannote_speaker_diarization_3_1_file"
             )
+        }
+        ModelKind::CtPunc => {
+            // Handled by the early-return above, which lets
+            // `convert_ct_punc_file` open the ~1.05 GiB checkpoint itself
+            // instead of paying for a second whole-file read here;
+            // reaching this arm would mean the outer bypass was removed.
+            unreachable!("ModelKind::CtPunc routes through convert_ct_punc_file")
+        }
+        ModelKind::WeTextProcessing => {
+            // The one WEIGHTLESS entry in the catalogue: WeTextProcessing
+            // ships compiled OpenFST `tagger.fst` / `verbalizer.fst`
+            // grammars, not tensors, so this shared safetensors-driven
+            // dispatch has nothing to hand it. `convert_file_licensed`
+            // early-routes this kind to `convert_wetextprocessing_file`
+            // BEFORE the shared `std::fs::read(input)` above (which would
+            // fail outright on a bundle *directory*), so this arm is
+            // defence-in-depth for a caller that reaches the shared match by
+            // another path.
+            //
+            // The grammars are embedded as GGUF `U8` metadata arrays — the
+            // `vokra.tokenizer.model` precedent — because `GgmlType` has no
+            // byte dtype; every float dtype it does have would reinterpret
+            // the FST bytes as numbers.
+            //
+            // A loud refusal rather than a silent no-op: `--model
+            // wetextprocessing` against a safetensors input is a real
+            // mistake about what this converter consumes, and saying so is
+            // more useful than emitting an empty GGUF (FR-EX-08).
+            return Err(ConvertError::Usage(
+                "wetextprocessing converts compiled OpenFST grammars, not \
+                 safetensors weights — call convert_wetextprocessing_file \
+                 with the upstream tagger.fst / verbalizer.fst pair instead \
+                 of routing it through the weight-conversion path"
+                    .to_owned(),
+            ));
         }
         ModelKind::Csm => {
             // Tokenizer-less path (M4-05-T03/T04): every float tensor
@@ -6274,6 +8031,39 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        ModelKind::DtlnAec => {
+            // Wave 6 2026-08-14 audit follow-up: pass every F32 / F16 /
+            // BF16 tensor through verbatim (flattened safetensors — a
+            // future `tools/parity/dtln_aec_prepare_checkpoint.py` is
+            // not yet written, and the upstream ships .tflite only, so
+            // that flattening is an owner-side step today) and stamp
+            // `vokra.model.*`
+            // (arch = "dtln_aec", name = "dtln-aec", category = "aec") +
+            // `vokra.provenance.upstream_url = github.com/breizhn/DTLN-aec`
+            // (GitHub-only release, no HF mirror) +
+            // `vokra.dtln_aec.{lstm_units,n_fft,hop,block_len,sample_rate}`
+            // (variant width detected from LSTM kernel shape,
+            // fixed dims stamped unconditionally) + the standard
+            // `vokra.provenance.{weight_license,license,model_id,source}`
+            // chunk via `stamp_provenance`. Provenance = **MIT**
+            // (Permissive — `Copyright (c) 2021 Nils L. Westhausen`).
+            let report = models::dtln_aec::convert_dtln_aec_file(input, output, license)?;
+            let notes = vec![format!(
+                "dtln-aec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, variant = {}-unit LSTM",
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+                report.variant.lstm_units(),
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::DtlnAec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // Coverage-audit 2026-08-03 Wave A: Xiph RNNoise v0.2. BF16
         // pass-through skeleton (mirror of neucodec / emotion2vec) —
         // real-weight parity deferred to owner. The upstream weight
@@ -6380,6 +8170,23 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Hibiki,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::HiggsAudioV3Tts4b => {
+            let report = models::higgs_audio_v3_tts_4b::convert_higgs_audio_v3_tts_4b_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "higgs-audio-v3-tts-4b: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::HiggsAudioV3Tts4b,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -6526,6 +8333,31 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::FireredAsrAedL,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::FireredAsrLlmL => {
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): BF16 pass-through skeleton for
+            // FireRedTeam/FireRedASR-LLM-L (Conformer + audio-text
+            // adapter + Qwen2 LM decoder, ~16.6 GB BF16, Apache-2.0).
+            // Real convert runs on vast.ai per memory
+            // `[[feedback-large-models-on-vast-ai]]`; the sharded
+            // safetensors input is merged offline by
+            // `tools/parity/firered_asr_llm_l/prepare_checkpoint.py`
+            // (uv-managed Python 3.12) before it reaches this arm.
+            let report =
+                models::firered_asr_llm_l::convert_firered_asr_llm_l_file(input, output, license)?;
+            let notes = vec![format!(
+                "firered-asr-llm-l: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::FireredAsrLlmL,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -6726,22 +8558,27 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::OpenwakewordOp => {
-            let report =
-                models::openwakeword_op::convert_openwakeword_op_file(input, output, license)?;
-            let notes = vec![format!(
-                "openwakeword-op: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped (apache-2.0 code default, Permissive; official upstream \
-                 weights are CC-BY-NC-SA-4.0 — override via --license cc-by-nc-sa-4.0 to flip to \
-                 NonCommercialShareAlike when distributing official weights)",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
-            )];
-            return Ok(ConvertSummary {
-                model: ModelKind::OpenwakewordOp,
-                tensor_count: report.written,
-                metadata_count: 0,
-                output_bytes: std::fs::metadata(output)?.len(),
-                notes,
-            });
+            // 2026-08-15 handshake repair. Until this wave the arm called
+            // `convert_openwakeword_op_file`, which stamped only
+            // `vokra.model.*` + `vokra.provenance.*`. The runtime binder
+            // `OpenwakewordConfig::from_gguf` requires SEVEN
+            // `vokra.openwakeword.*` keys, so every GGUF produced here
+            // failed to load in the binder written for it — and nothing
+            // caught it, because the binder's unit tests hand-build their
+            // GGUF with `GgufBuilder` and the parity harness is env-gated.
+            //
+            // Six of the seven are derivable or mirrorable; the seventh,
+            // `wakeword_names`, is a per-checkpoint label that exists
+            // nowhere in the safetensors. Refuse rather than invent it
+            // (the `ModelKind::Crepe` precedent immediately below).
+            return Err(ConvertError::Usage(
+                "openwakeword-op needs a --config config.json carrying `wakeword_names` \
+                 (emitted by tools/parity/openwakeword_prepare_checkpoint.py alongside the \
+                 flattened safetensors); the per-wake-word labels the runtime binder returns \
+                 are not present in the checkpoint and will not be invented. Use \
+                 convert_openwakeword_op_file_with_config"
+                    .to_owned(),
+            ));
         }
         ModelKind::Mossformer2Ss16k => {
             let report = models::mossformer2_ss_16k::convert_mossformer2_ss_16k_file(
@@ -6789,6 +8626,252 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::AudiosealRealWeight,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Music-understanding wave (2026-08-13) ===
+        // YAMNet — Google Research MobileNetV1 audio-event classifier
+        // (521-class AudioSet, ~15 MB edge model). apache-2.0 default
+        // (Permissive). Sibling of `panns` / `ast` / `clap` under
+        // `audio-tagging` category with a distinct arch tag so silent
+        // runtime dispatch cannot misroute a depthwise-separable
+        // checkpoint through a residual Cnn14 loader (FR-EX-08).
+        ModelKind::Yamnet => {
+            let report = models::yamnet::convert_yamnet_file(input, output, license)?;
+            let notes = vec![format!(
+                "yamnet: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (apache-2.0 default, Permissive; upstream HF mirror carries no license \
+                 tag as of 2026-08-13 — reference impl `github.com/tensorflow/models/tree/master/\
+                 research/audioset/yamnet` is Google Research Apache-2.0)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Yamnet,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // MERT-v1-330M — Music undERstanding self-supervised encoder.
+        // HuBERT-derived Conv1D + 24-layer Transformer, ~330M params.
+        // cc-by-nc-4.0 default (NonCommercial, T4 tier — publish requires
+        // `--allow-noncommercial`). Sibling of `muq` / `dasheng` under
+        // `music-embedding` category with a distinct arch tag so silent
+        // runtime dispatch cannot misroute an MPM checkpoint through a
+        // MAE loader (FR-EX-08).
+        ModelKind::Mert => {
+            let report = models::mert::convert_mert_file(input, output, license)?;
+            let notes = vec![format!(
+                "mert: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — publish requires \
+                 `publish-one.sh --allow-noncommercial` per X-Codec 2 T4 precedent)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Mert,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // MuQ — Self-supervised music representation learner with Mel-RVQ
+        // + BEATs teacher (MERT alternative). License unknown default =
+        // fail-closed; runtime M2-13 gate refuses to load without a
+        // research flag or explicit --license SPDX override.
+        ModelKind::Muq => {
+            let report = models::muq::convert_muq_file(input, output, license)?;
+            let notes = vec![format!(
+                "muq: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (unknown default, LicenseClass::Unknown fail-closed — upstream \
+                 `OpenMuQ/MuQ-large-msd-iter` HF cardData carries no `license:` tag as of \
+                 2026-08-13; owner must complete primary-source LICENSE confirmation before \
+                 publish is unblocked)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Muq,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // Dasheng — Universal audio encoder (speech + music + environmental)
+        // trained via masked autoencoding on ~272 000 hours. Superset of
+        // `music-embedding` category (`audio-embedding`) with distinct arch
+        // tag from music-only siblings (`mert` / `muq`) so runtime dispatch
+        // cannot misroute across scope boundaries (FR-EX-08).
+        ModelKind::Dasheng => {
+            let report = models::dasheng::convert_dasheng_file(input, output, license)?;
+            let notes = vec![format!(
+                "dasheng: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (apache-2.0 default, Permissive; universal audio encoder = speech + \
+                 music + environmental in a single MAE ViT/ConvNeXt backbone, ~86M params base)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Dasheng,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // PANNs Cnn14 — 527-class AudioSet audio-tagging backbone (VGG-flavour
+        // 14-layer 2D-CNN, ~80M params). License unknown default (mirror
+        // repo does not declare a `license:` tag; upstream reference is MIT
+        // but the mirror LICENSE is un-verified). Fail-closed under M2-13.
+        ModelKind::Panns => {
+            let report = models::panns::convert_panns_file(input, output, license)?;
+            let notes = vec![format!(
+                "panns-cnn14: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (unknown default, LicenseClass::Unknown fail-closed — HF \
+                 mirror `nicofarr/panns_Cnn14` cardData carries no `license:` tag as of \
+                 2026-08-13; upstream reference `qiuqiangkong/audioset_tagging_cnn` is MIT \
+                 but the mirror LICENSE is un-verified)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Panns,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // Basic-Pitch — Spotify polyphonic audio-to-MIDI pitch-detection.
+        // 3-head posteriorgram output (frame / onset / contour) → distinct
+        // arch tag from monophonic F0 siblings (`crepe` / `fcpe` / `rmvpe`),
+        // distinct category `pitch-transcription` from their `f0`. Smallest
+        // of the music-understanding wave (~6 MB).
+        ModelKind::BasicPitch => {
+            let report = models::basic_pitch::convert_basic_pitch_file(input, output, license)?;
+            let notes = vec![format!(
+                "basic-pitch: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped (apache-2.0 default, Permissive; polyphonic audio-to-MIDI, \
+                 3-head posteriorgram output, ~6 MB CNN — smallest of the music-understanding \
+                 wave)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BasicPitch,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // BEATs — foundational SSL audio encoder with iterative acoustic
+        // tokenizer + mask acoustic modeling, ~90M params iter3_plus_AS2M.
+        // mit default (T1 Permissive; upstream `microsoft/unilm` root
+        // LICENSE `spdx_id: MIT` via GitHub API per task input 2026-08-13).
+        // Also serves as the acoustic teacher for MuQ (which explicitly
+        // names BEATs as its teacher).
+        ModelKind::Beats => {
+            let report = models::beats::convert_beats_file(input, output, license)?;
+            let notes = vec![format!(
+                "beats: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (mit default, Permissive; foundational SSL audio encoder with iterative \
+                 acoustic tokenizer + mask acoustic modeling, ~90M params iter3_plus_AS2M, upstream \
+                 microsoft/unilm/tree/master/beats — no first-party HF mirror, community mirrors \
+                 carry no license: tag as of 2026-08-13)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Beats,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // EAT — Effective Audio Transformer, utterance-level SSL encoder
+        // with inverse block masking, ~86M params base. mit default
+        // (T1 Permissive; GitHub API returns spdx_id: MIT).
+        ModelKind::Eat => {
+            let report = models::eat::convert_eat_file(input, output, license)?;
+            let notes = vec![format!(
+                "eat: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (mit default, Permissive; utterance-level Transformer + inverse block \
+                 masking SSL, ~86M params base, upstream github.com/cwx-worst-one/EAT — no HF \
+                 mirror)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Eat,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // ATST — Audio Teacher-Student Transformer, BYOL-style EMA teacher
+        // + student patch dropout, ~86M params base. cc-by-4.0 weight
+        // default (AttributionRequired) — upstream README explicitly
+        // separates code (MIT) from pretrained checkpoints (CC-BY-4.0).
+        ModelKind::Atst => {
+            let report = models::atst::convert_atst_file(input, output, license)?;
+            let notes = vec![format!(
+                "atst: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (cc-by-4.0 weight default, AttributionRequired — upstream README declares \
+                 code MIT / pretrained checkpoints CC-BY-4.0 explicitly, weight-provenance stamp \
+                 tracks the weight tier; ~86M params base, upstream Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst \
+                 — no HF mirror)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Atst,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // MAEST — Music AEST (Discogs-pretrained AST SSL music-tagger,
+        // ~87M F32 params 30s-pw-129e). cc-by-nc-sa-4.0 default (T4 tier
+        // NonCommercialShareAlike; T4 + SA cascade — publish-one.sh
+        // --allow-noncommercial required + share-alike obligation).
+        ModelKind::Maest => {
+            let report = models::maest::convert_maest_file(input, output, license)?;
+            let notes = vec![format!(
+                "maest: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (cc-by-nc-sa-4.0 default, NonCommercialShareAlike; T4 tier + SA cascade \
+                 = publish-one.sh --allow-noncommercial required + share-alike obligation; \
+                 Discogs-pretrained AST SSL music-tagger, ~87M F32 params 30s-pw-129e, upstream \
+                 mtg-upf/discogs-maest-30s-pw-129e HF cardData primary source)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Maest,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // M2D — Masked Modeling Duo, NTT CS Lab dual-branch SSL audio
+        // encoder, ~86M params base. unknown default (fail-closed) —
+        // upstream LICENSE is a PDF file, GitHub API returns
+        // spdx_id: NOASSERTION, no HF mirror. Owner ADR / primary source
+        // download required before publish.
+        ModelKind::M2d => {
+            let report = models::m2d::convert_m2d_file(input, output, license)?;
+            let notes = vec![format!(
+                "m2d: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped (unknown default, LicenseClass::Unknown fail-closed — upstream \
+                 github.com/nttcslab/m2d LICENSE is a PDF file, GitHub API returns \
+                 spdx_id: NOASSERTION as of 2026-08-13, no HF mirror; owner must download \
+                 LICENSE.pdf and override via --license <spdx>; dual-branch masked-modeling-duo \
+                 SSL audio encoder, ~86M params base, Niizumi et al. arXiv:2210.14648)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::M2d,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -7708,7 +9791,9 @@ pub fn convert_file_licensed(
             // mirror of speecht5_hifigan / bigvgan / focalcodec;
             // runtime binding is deferred to owner. Upstream ships
             // torch pickle only — pre-flatten via
-            // tools/parity/vocos_prepare_checkpoint.py.
+            // tools/parity/bin_to_safetensors.py; a dedicated
+            // tools/parity/vocos_prepare_checkpoint.py is not yet
+            // written.
             //
             // This path is the enum-arm default (Mel24khz); the
             // encodec-24khz variant is picked from the raw `--model`
@@ -8149,6 +10234,101 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === AudioSr (Wave D 2026-08-15, brand-new `super-resolution` category) ===
+        ModelKind::AudioSr => {
+            // AudioSR (`haoheliu/audiosr_basic`, **MIT**). Liu, Chen,
+            // Tian, Wang & Plumbley arXiv:2309.07314 "AudioSR:
+            // Versatile Audio Super-resolution at Scale" — latent-
+            // diffusion audio super-resolution / bandwidth extension:
+            // 2-16 kHz input bandwidth -> 24 kHz bandwidth at 48 kHz,
+            // across sound effects, music and speech.
+            //
+            // **Opens a brand-new capability category** — Vokra had no
+            // audio super-resolution model before this landing, hence
+            // `vokra.model.category = "super-resolution"` rather than
+            // reusing the `enhancement` cohort (which removes additive
+            // noise within a fixed bandwidth; AudioSR synthesises new
+            // spectral content above the input cutoff — advertising a
+            // bandwidth extender as a denoiser would mislead the zoo
+            // manifest).
+            //
+            // Distinct arch tag `audiosr` from `audioldm2` (same first
+            // author + same latent-diffusion family, but generation vs
+            // restoration with incompatible tensor shapes) and from
+            // every enhancement / separation / generation / vocoder
+            // sibling — FR-EX-08.
+            //
+            // Upstream ships `pytorch_model.bin` (torch pickle), so the
+            // caller bridges to safetensors offline via
+            // `tools/parity/nemo_pt_to_safetensors.py` first — pickle
+            // never enters the runtime (FR-LD-05 / NFR-DS-02). Single-
+            // file checkpoint well under the 8 GB M1 iMac threshold, so
+            // local convert is expected to be viable (no vast.ai
+            // handoff, unlike sibling audioldm2 at ~8.5 GB).
+            //
+            // Runtime binder `crates/vokra-models/src/audiosr/mod.rs`
+            // lands the mel filterbank + the cosine-schedule cumulative-
+            // alpha table as REAL wired computations over `vokra_ops`;
+            // `super_resolve()` is loud-partial pending the 2-D U-Net
+            // body (greenfield) plus the VAE / vocoder tensor-name walks.
+            let report = models::audiosr::convert_audiosr_file(input, output, license)?;
+            let notes = vec![format!(
+                "audiosr-basic: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read (mit default per the upstream repo \
+                 LICENSE, Permissive T1 tier — note the haoheliu/audiosr_basic HF card \
+                 tags apache-2.0 instead, a documented discrepancy that does NOT change \
+                 the class since both normalise to Permissive; use --license apache-2.0 \
+                 to match the card. Full vokra.audiosr.* topology chunk group stamped. \
+                 Runtime binder ships a real mel filterbank + real cosine-schedule \
+                 alpha-bar table; super_resolve() loud-partial pending the 2-D U-Net \
+                 forward plus the VAE / vocoder tensor-name walks. §3.1 sign-off BLANK \
+                 fail-closed until owner signs — publish blocked)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === AudioSrSpeech (Wave D 2026-08-15 sibling) ===
+        ModelKind::AudioSrSpeech => {
+            // AudioSR speech-specialised checkpoint
+            // (`haoheliu/audiosr_speech`, **MIT**). Upstream ships
+            // exactly two checkpoints (`--model_name` has
+            // `choices=["basic","speech"]`); the **topology is
+            // identical** because `audiosr/utils.py::get_basic_config()`
+            // takes no `model_name` argument, so this arm reuses the
+            // shared `convert_audiosr_family_file` helper and only the
+            // `vokra.model.name` + `vokra.provenance.{model_id,source,
+            // upstream_hf}` chunks flip (the sibling-in-place pattern,
+            // mirror of AudioLdm2Large — no new module).
+            //
+            // `haoheliu/audiosr_speech` carries no HF model card and no
+            // license tag, so the stamped default falls back to the
+            // upstream code repo's MIT LICENSE exactly as for the basic
+            // checkpoint.
+            let report = models::audiosr::convert_audiosr_speech_file(input, output, license)?;
+            let notes = vec![format!(
+                "audiosr-speech: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read (mit default per the upstream repo \
+                 LICENSE, Permissive T1 tier — the HF repo carries no model card and no \
+                 license tag of its own. Same topology as audiosr-basic: upstream \
+                 get_basic_config() takes no model_name argument, so only the weights and \
+                 the name/provenance stamps differ. §3.1 sign-off BLANK fail-closed until \
+                 owner signs — publish blocked)",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === BsRoformer (2026-08-01 Wave 5 music-separation add) ===
         ModelKind::BsRoformer => {
             // BS-Roformer / Mel-Band Roformer (third-party mirror
@@ -8407,6 +10587,204 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        // === Gtcrn (Wave 6 2026-08-14 audit follow-up, denoise alternative sibling) ===
+        ModelKind::Gtcrn => {
+            // GTCRN (Xiaobin-Rong/gtcrn, MIT). Rong et al.
+            // arXiv:2211.02063 "GTCRN: A Speech Enhancement Model
+            // Requiring Ultralow Computational Resources" — ~23K
+            // parameter STFT-domain enhancement model for embedded /
+            // streaming applications: grouped 2D Conv encoder + PReLU
+            // + SB-TF-LSTM (sub-band time-frequency LSTM) bottleneck +
+            // ERB (equivalent rectangular bandwidth) frequency-band
+            // grouping + grouped 2D Conv decoder.
+            //
+            // Distinct arch tag `gtcrn` from every sibling denoise /
+            // separator family (`denoise` (DFN3), `rnnoise`, `nsnet2`,
+            // `dnsmos`, `metricgan_plus`, `mp_senet_dns`, `sepformer`,
+            // `conv_tasnet`, `demucs`, `frcrn`, `mossformer2_ss_16k`,
+            // `facebook_denoiser`) — FR-EX-08 forbids silent shape
+            // misroute across enhancement / separator families.
+            //
+            // First entry on the MIT (Permissive T1 tier) denoise
+            // alternative arm from the Wave 6 audit follow-up.
+            // Runtime binder (`crates/vokra-models/src/gtcrn/mod.rs`)
+            // ships as loud-partial per Wave 5 sepformer /
+            // conv_tasnet / demucs precedent — `from_gguf` real,
+            // `denoise()` returns `UnsupportedOp` pending grouped
+            // Conv2D + PReLU + SB-TF-LSTM + ERB grouping primitives.
+            // Scale ~90 KB = local convert safe on M1 iMac.
+            let report = models::gtcrn::convert_gtcrn_file(input, output, license)?;
+            let notes = vec![format!(
+                "gtcrn: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive T1 tier — \
+                 redistributable OK, no runtime-side attribution obligation; \
+                 runtime binder loud-partial pending grouped Conv2D + PReLU + \
+                 SB-TF-LSTM + ERB grouping primitives; §3.1 sign-off BLANK \
+                 fail-closed until owner signs)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === Storm (Wave 7 2026-08-14 audit follow-up RETRY, first diffusion-based enhancement entry) ===
+        ModelKind::Storm => {
+            // StoRM (sp-uhh/storm, MIT). Lay et al. 2023
+            // arXiv:2312.09386 "StoRM: A Diffusion-based Stochastic
+            // Regeneration Model for Speech Enhancement and
+            // Dereverberation" — two-stage diffusion-based speech
+            // enhancement + dereverberation model: (i) initial
+            // deterministic predictive estimator (NCSN++ v2 U-Net
+            // variant, MSE objective) → (ii) NCSN++ v2 score-network
+            // refinement via OUVE-SDE (Ornstein-Uhlenbeck Variance-
+            // Exploding SDE) predictor-corrector sampler.
+            //
+            // Distinct arch tag `storm` from every sibling denoise /
+            // separator family (`denoise` (DFN3), `rnnoise`, `nsnet2`,
+            // `dnsmos`, `gtcrn`, `metricgan_plus`, `mp_senet_dns`,
+            // `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
+            // `mossformer2_ss_16k`, `facebook_denoiser`) — FR-EX-08
+            // forbids silent shape misroute across enhancement /
+            // separator families. StoRM is the FIRST diffusion-based
+            // entry on the enhancement arm.
+            //
+            // First entry on the MIT (Permissive T1 tier candidate)
+            // diffusion-based enhancement arm from the Wave 7 audit
+            // follow-up RETRY (Wave 6 workflow silently swallowed the
+            // result last time — see WAVE 6 LESSON). Runtime binder
+            // (`crates/vokra-models/src/storm/mod.rs`) ships as
+            // loud-partial per Wave 5-6 sepformer / conv_tasnet /
+            // demucs / gtcrn precedent — `from_gguf` real, `enhance()`
+            // returns `UnsupportedOp` pending NCSN++ v2 U-Net
+            // score-network with sigma FiLM + OUVE-SDE predictor-
+            // corrector sampler primitives. Scale <100 MB = local
+            // convert safe on M1 iMac.
+            let report = models::storm::convert_storm_file(input, output, license)?;
+            let notes = vec![format!(
+                "storm: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (mit default, Permissive T1 tier candidate — \
+                 redistributable OK pending owner ADR on GitHub-source publish path, \
+                 no runtime-side attribution obligation; runtime binder loud-partial \
+                 pending NCSN++ v2 U-Net score-network + OUVE-SDE predictor-corrector \
+                 sampler primitives; §3.1 sign-off BLANK fail-closed until owner signs)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === WavlmSv (Wave 7 2026-08-14 audit follow-up, speaker-fleet extension) ===
+        ModelKind::WavlmSv => {
+            // WavLM Base+ SV (microsoft/wavlm-base-plus-sv, CC-BY-SA-3.0).
+            // Chen et al. 2022 arXiv:2110.13900 "WavLM: Large-Scale
+            // Self-Supervised Pre-Training for Full Stack Speech Processing"
+            // — HuBERT-lineage SSL encoder + gated relative position bias
+            // + convolutional position-bias fusion + fine-tuned on VoxCeleb1
+            // with an XVector head + Additive Margin Softmax (512-d
+            // embedding). Distinct arch tag `wavlm_sv` from every sibling
+            // speaker-fleet arch (`campplus` / `wespeaker` / `ecapa_tdnn` /
+            // `titanet` / `speaker_3d` / `redimnet`) — FR-EX-08 forbids
+            // silent shape misroute across speaker-embedding families.
+            // BF16 pass-through skeleton + full scalar + axis-array
+            // topology chunk group. Default license cc-by-sa-3.0 resolves
+            // to `LicenseClass::Copyleft` (share-alike arm before plain
+            // cc-by per ordering pin). Runtime binder
+            // (`crates/vokra-models/src/wavlm/mod.rs`) ships as
+            // loud-partial per Wave 4 redimnet precedent — `from_gguf` real,
+            // `encode()` returns `UnsupportedOp` pending 7-layer conv stem +
+            // WavLM Transformer encoder (gated relative position bias +
+            // convolutional position-bias fusion) + XVector head +
+            // AM-Softmax primitives. Scale ~377 MB = local convert safe on
+            // M1 iMac.
+            let report = models::wavlm_sv::convert_wavlm_sv_file(input, output, license)?;
+            let notes = vec![format!(
+                "wavlm-base-plus-sv: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped (cc-by-sa-3.0 default → Copyleft \
+                 — share-alike propagates to downstream consumers; runtime binder \
+                 loud-partial pending 7-layer conv stem + WavLM Transformer encoder \
+                 (gated relative position bias + convolutional position-bias fusion) \
+                 + XVector head + Additive Margin Softmax primitives; §3.1 sign-off \
+                 BLANK fail-closed until owner signs — Copyleft share-alike \
+                 propagation is an owner-scope legal decision)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === DiffSinger (Wave D 2026-08-15, first singing voice synthesis entry) ===
+        ModelKind::DiffSinger => {
+            // DiffSinger (openvpi/DiffSinger, Apache-2.0). Liu, Li, Ren,
+            // Chen & Zhao 2021 arXiv:2105.02446 "DiffSinger: Singing Voice
+            // Synthesis via Shallow Diffusion Mechanism" — a score-to-
+            // singing acoustic model that (abstract, verbatim) "is a
+            // parameterized Markov chain that iteratively converts the
+            // noise into mel-spectrogram conditioned on the music score",
+            // with generation starting "at a shallow step smaller than the
+            // total number of diffusion steps" (upstream K_step 400 of
+            // timesteps 1000).
+            //
+            // FIRST SVS ENTRY in the catalogue — opens the `svs` category.
+            // SVS is score-to-singing (phonemes + per-note MIDI pitch +
+            // durations in), NOT singing-voice conversion: no source singer
+            // recording is in the signal path, so this is not an ELVIS Act
+            // voice-clone trigger and belongs in this repo, unlike RVC v2 /
+            // GPT-SoVITS which live in `vokra-voiceclone-experimental`
+            // (CLAUDE.md 設計判断 8). Do not relocate.
+            //
+            // Emits a MEL, not a waveform: the vocoder half is deliberately
+            // separate (upstream lists HiFi-GAN / NSF / pc-ddsp as
+            // interchangeable) and is already landed as the `hifigan` /
+            // `bigvgan` / `vocos` binders.
+            //
+            // Distinct arch tag `diffsinger` from every speech-TTS sibling
+            // (`piper`, `kokoro`, `cosyvoice2`, `qwen3_tts`, `xtts_v2`,
+            // `sbv2`, `vits` — text-driven, no score axis) and every
+            // vocoder sibling (`hifigan`, `bigvgan`, `vocos`, `nsf` — they
+            // consume a mel rather than produce one). FR-EX-08 forbids the
+            // silent shape misroute.
+            //
+            // Runtime binder (`crates/vokra-models/src/diffsinger/mod.rs`)
+            // is real for config + `from_gguf` + the `Score` input type +
+            // score-to-frame expansion (through the landed
+            // `vokra_ops::length_conditioning`); `synthesize_mel()` is
+            // loud-partial pending the FFT-block phoneme encoder + LynxNet2
+            // shallow-diffusion denoiser backbone. Scale is a few hundred MB
+            // = local convert safe on M1 iMac.
+            let report = models::diffsinger::convert_diffsinger_file(input, output, license)?;
+            let notes = vec![format!(
+                "diffsinger: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (apache-2.0 default, Permissive T1 tier). \
+                 NOTE: apache-2.0 is the openvpi FRAMEWORK grant — individual singer \
+                 voicebanks ship under their own, frequently non-commercial or \
+                 consent-bound, terms, so pass `--license <spdx>` when converting a \
+                 voicebank rather than inheriting Permissive. Emits a mel for a \
+                 SEPARATE vocoder (hifigan / bigvgan / vocos), not a waveform. \
+                 Runtime binder loud-partial pending FFT-block phoneme encoder + \
+                 LynxNet2 shallow-diffusion denoiser backbone; §3.1 sign-off BLANK \
+                 fail-closed until owner signs",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         // === SeamlessM4tV2Large (2026-08-02 Wave residual, unity-2 4-subgraph any-to-any) ===
         ModelKind::SeamlessM4tV2Large => {
             // Meta SeamlessM4T v2 (facebook/seamless-m4t-v2-large,
@@ -8434,6 +10812,135 @@ pub fn convert_file_licensed(
                  {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — \
                  publish requires --allow-noncommercial per T4 precedent; runtime binder for \
                  the 4-subgraph unity-2 arch deferred to owner sign-off)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MagnetSmall10secs (Meta music-gen post-audit CC-gap Wave D 2026-08-13) ===
+        ModelKind::MagnetSmall10secs => {
+            // Meta AudioCraft MAGNeT Small 10secs (facebook/magnet-small-10secs,
+            // cc-by-nc-4.0). ~500M params ~2 GB. Non-autoregressive masked-LM
+            // parallel decoding for 10-second music generation (Ziv et al. 2024
+            // arXiv:2401.04577), ~7x faster than AR baselines. Distinct arch
+            // tag `magnet_small_10secs` from sibling MusicGen AR family
+            // (musicgen_small / musicgen_medium / musicgen_large) — FR-EX-08
+            // silent share = wrong-decoder mis-route (masked_decode vs
+            // AR token-by-token). BF16 pass-through skeleton mirror of
+            // jasco_400m_chords_drums / musicgen_medium / audiogen_medium.
+            // Default license cc-by-nc-4.0 + NonCommercial (X-Codec 2 /
+            // MusicGen family T4 precedent). Scale ~2 GB = **local-safe** on
+            // M1 iMac 16 GB per memory `[[feedback-large-models-on-vast-ai]]`
+            // (below the 8 GB threshold), no vast.ai handoff needed. Runtime
+            // binder (`magnet_masked_decode` + `span_masking_scheduler` ops)
+            // deferred to a follow-up wave per RMVPE / Charsiu /
+            // MOSS-Audio-Tokenizer / MioCodec loud-partial precedent.
+            let report = models::magnet_small_10secs::convert_magnet_small_10secs_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "magnet-small-10secs: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — \
+                 publish requires --allow-noncommercial per MusicGen family T4 precedent; \
+                 runtime binder for magnet_masked_decode + span_masking_scheduler deferred \
+                 to owner ADR judgement — loud-partial per RMVPE / Charsiu precedent)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MagnetMedium30secs (Meta music-gen post-audit CC-gap Wave D remaining WF7 2026-08-13) ===
+        ModelKind::MagnetMedium30secs => {
+            // Meta AudioCraft MAGNeT Medium 30secs (facebook/magnet-medium-30secs,
+            // cc-by-nc-4.0). ~1.5B params ~5.7 GB (LM + bundled EnCodec 32 kHz +
+            // T5-base text encoder). Non-autoregressive masked-LM parallel decoding
+            // for 30-second music generation (Ziv et al. 2024 arXiv:2401.04577),
+            // ~7x faster than AR baselines. Distinct arch tag
+            // `magnet_medium_30secs` from BOTH sibling `magnet_small_10secs` (same
+            // op path but different hparams — silently sharing would let the
+            // runtime binder load small hparams into medium weights) AND sibling
+            // MusicGen AR family (musicgen_small / musicgen_medium /
+            // musicgen_large) — FR-EX-08 silent share = wrong-decoder mis-route
+            // (masked_decode vs AR token-by-token). BF16 pass-through skeleton
+            // mirror of sibling `magnet_small_10secs` / jasco_400m_chords_drums /
+            // musicgen_medium / audiogen_medium. Default license cc-by-nc-4.0 +
+            // NonCommercial (X-Codec 2 / MusicGen family / sibling small T4
+            // precedent). Scale ~5.7 GB = **local-safe** on M1 iMac 16 GB per
+            // memory `[[feedback-large-models-on-vast-ai]]` (below 8 GB owner
+            // cutoff), no vast.ai handoff needed. Runtime binder
+            // (`magnet_masked_decode` + `span_masking_scheduler` ops) deferred to
+            // a follow-up wave per sibling small / RMVPE / Charsiu /
+            // MOSS-Audio-Tokenizer / MioCodec loud-partial precedent.
+            let report = models::magnet_medium_30secs::convert_magnet_medium_30secs_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "magnet-medium-30secs: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — \
+                 publish requires --allow-noncommercial per MusicGen family / sibling small \
+                 T4 precedent; runtime binder for magnet_masked_decode + span_masking_scheduler \
+                 deferred to owner ADR judgement — loud-partial per sibling small / RMVPE / \
+                 Charsiu precedent)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MelodyflowT2430secs (Meta music-gen post-audit CC-gap Wave D remaining WF8 2026-08-13) ===
+        ModelKind::MelodyflowT2430secs => {
+            // Meta AudioCraft MelodyFlow T24 30secs (facebook/melodyflow-t24-30secs,
+            // cc-by-nc-4.0). ~1 B params ~4.0 GB bundle (flow-matching transformer +
+            // 48 kHz RVQ codec + T5-base text encoder). DiT-style backbone with 24
+            // timesteps, 30 sec max horizon, 48 kHz sample rate — text-conditioned
+            // music **editing** (existing audio inverted through the ODE then
+            // regenerated under a new text prompt, Le Lan et al. 2024
+            // arXiv:2407.03648). Distinct arch tag `melodyflow_t24_30secs` from
+            // every sibling music-gen family (magnet_small_10secs /
+            // magnet_medium_30secs / musicgen_small / musicgen_medium /
+            // musicgen_large / audiogen_medium / jasco_400m_chords_drums /
+            // audioldm2 / stable_audio_open_small / ace_step / bs_roformer) —
+            // FR-EX-08 silent share = wrong-sampler / wrong-conditioning
+            // mis-route (flow-matching ODE integrator vs masked-LM decoder vs
+            // AR token-by-token). BF16 pass-through skeleton mirror of sibling
+            // magnet_medium_30secs / magnet_small_10secs / jasco_400m_chords_drums.
+            // Default license cc-by-nc-4.0 + NonCommercial (X-Codec 2 / MusicGen
+            // family / sibling MAGNeT / JASCO T4 precedent). Scale ~4.0 GB is
+            // **vast.ai-flagged per phase task** to stay conservative at the
+            // CC / owner cutoff per memory `[[feedback-large-models-on-vast-ai]]`
+            // (~4 GB sits below the 8 GB local ceiling but the phase task pins
+            // vast.ai as the owner path for weights ≥ 2 GB). Runtime binder
+            // (`flow_editing_inversion` + `t24_transformer` ops, FR-OP-86 anchor)
+            // reuses `vokra_ops::flow_sampler` from M3-05 for the ODE integrator
+            // but the editing-specific inversion path and the 48 kHz RVQ codec
+            // bundle need explicit ADR judgement — deferred to a follow-up wave
+            // per sibling MAGNeT / RMVPE / Charsiu / MOSS-Audio-Tokenizer /
+            // MioCodec loud-partial precedent.
+            let report = models::melodyflow_t24_30secs::convert_melodyflow_t24_30secs_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "melodyflow-t24-30secs: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — \
+                 publish requires --allow-noncommercial per MusicGen family / sibling MAGNeT / \
+                 JASCO T4 precedent; runtime binder for flow_editing_inversion + \
+                 t24_transformer (FR-OP-86 anchor, reuses vokra_ops::flow_sampler from M3-05) \
+                 deferred to owner ADR judgement — loud-partial per sibling MAGNeT / RMVPE / \
+                 Charsiu precedent; weights ≥ 2 GB per phase task = vast.ai handoff for owner)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -9199,11 +11706,55 @@ pub fn convert_file_licensed(
         // overrides at the outer `--license <spdx>` boundary below.
         ModelKind::Fcpe => {
             let report = models::fcpe::convert_fcpe_file(input, output, license)?;
-            let notes = vec![format!(
+            let mut notes = vec![format!(
                 "fcpe: {} float weights written verbatim ({} BF16 passthrough — runtime widens \
                  to f32 exactly at load), {} non-float skipped, {} tensors read",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
+            // The `vokra.f0.fcpe.*` state is reported out loud because it
+            // decides whether the artifact will load at all: the runtime
+            // requires all fourteen axes on a weight-carrying GGUF, and a
+            // variant topology gets only the seven that are derivable.
+            match report.topology {
+                Some(t) => {
+                    notes.push(format!(
+                        "fcpe: topology derived from tensor shapes — d_model={} n_mels={} \
+                         stem_kernel={} ffn_dim={} conv_kernel={} n_layers={} n_pitch_bins={}",
+                        t.d_model,
+                        t.n_mels,
+                        t.stem_kernel,
+                        t.ffn_dim,
+                        t.conv_kernel,
+                        t.n_layers,
+                        t.n_pitch_bins,
+                    ));
+                    if report.front_end_withheld {
+                        notes.push(format!(
+                            "fcpe: WITHHELD the 7 front-end / decode axes (hop, n_fft, \
+                             sample_rate, fmin, fmax, stem_groups, confidence_threshold) — this \
+                             topology is not the released fcpe_c_v001, and those values live in \
+                             upstream's config rather than the checkpoint, so asserting them \
+                             here would be a guess. {} of 14 axes stamped; the runtime will \
+                             refuse to bind this artifact until they are supplied by whoever \
+                             knows the variant.",
+                            report.axes_stamped,
+                        ));
+                    } else {
+                        notes.push(format!(
+                            "fcpe: topology matches the released fcpe_c_v001, so the 7 \
+                             front-end / decode axes were asserted from that reference — \
+                             {} of 14 axes stamped",
+                            report.axes_stamped,
+                        ));
+                    }
+                }
+                None => notes.push(
+                    "fcpe: no `input_stack.0.weight` / `output_proj.weight`, so no topology \
+                     could be derived and NO `vokra.f0.fcpe.*` axes were stamped — this is \
+                     not an FCPE checkpoint"
+                        .to_owned(),
+                ),
+            }
             return Ok(ConvertSummary {
                 model: ModelKind::Fcpe,
                 tensor_count: report.written,
@@ -9211,6 +11762,151 @@ pub fn convert_file_licensed(
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
+        }
+        // Voila (`maitrix-org/Voila`, mit) — full-duplex S2S dialog family.
+        // Pass every F32 / F16 / BF16 tensor through verbatim and stamp
+        // `vokra.model.arch = "voila"` + `vokra.model.category = "s2s"` +
+        // `vokra.provenance.upstream_url = "github.com/maitrix-org/Voila"`.
+        //
+        // Deliberately stamps NO `vokra.voila.*` topology chunk (the
+        // per-release axes are not transcribable — see the module doc) and
+        // NO `upstream_hf` (the per-release HF weight repo ids are
+        // owner-verified at bind time). The note below says both out loud
+        // so an operator reading converter output learns the artifact's
+        // limits without opening the source.
+        ModelKind::Voila => {
+            let report = models::voila::convert_voila_file(input, output, license)?;
+            let notes = vec![format!(
+                "voila: {} float weights written verbatim ({} BF16 passthrough — runtime widens \
+                 to f32 exactly at load), {} non-float skipped, {} tensors read; no \
+                 vokra.voila.* topology axes stamped (per-release encoder / LLM-backbone axes \
+                 are not transcribable from the primary sources — the runtime binder gates on \
+                 arch + a non-empty tensor manifest and reads none of them); provenance rides \
+                 vokra.provenance.upstream_url = {} (no HF repo id asserted); \
+                 docs/license-audit.md §3.1 has no `{}` row, so redistribution stays \
+                 fail-closed until the owner adds and signs one",
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+                report.read,
+                models::voila::UPSTREAM_URL,
+                models::voila::UPSTREAM_HF,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Voila,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === 2026-08-15 audit follow-up: the four unreachable converters ===
+        //
+        // `convert_mt3_file` / `convert_beat_this_file` /
+        // `convert_redimnet_file` / `convert_llama_omni2_file` all
+        // existed and all had runtime binders whose error messages named
+        // a `vokra-cli convert --model <slug>` recovery command — but no
+        // `ModelKind` variant carried those slugs, so every one of those
+        // commands answered `unknown model`. These arms are the wiring
+        // that makes the promised commands real.
+        ModelKind::Mt3 => {
+            // MT3 (magenta/mt3, code apache-2.0). Multi-instrument
+            // audio-to-MIDI on a T5-small backbone; the converter stamps
+            // the nine `vokra.mt3.*` T5 / music-vocab axes it transcribes
+            // from `mt3/network.py` + Raffel et al. 2020.
+            //
+            // The weight license is UNCLEAR (no LICENSE on the
+            // `gs://mt3/checkpoints/` bucket, no HF mirror), so
+            // `convert_mt3_file` hard-maps `LicenseClass::Unknown`
+            // regardless of `--license`. That is deliberate fail-closed
+            // behaviour at the M2-13 runtime gate, and the note below
+            // says so out loud rather than letting a caller discover it
+            // only when the artifact refuses to load.
+            let report = models::mt3::convert_mt3_file(input, output, license)?;
+            let notes = vec![format!(
+                "mt3: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
+                 skipped, {} tensors read; weight_license is hard-mapped to Unknown \
+                 (fail-closed) — the gs://mt3/checkpoints bucket carries no LICENSE and there \
+                 is no HF mirror, so --license changes only the raw SPDX string, not the \
+                 class. docs/license-audit.md §3.1 has no signed mt3 row, so redistribution \
+                 stays blocked until the owner adds and signs one",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Mt3,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::BeatThis => {
+            // Beat This! (CPJKU/beat_this, MIT). Unlike its three
+            // siblings in this group, `convert_beat_this_file` needs six
+            // caller-supplied topology axes and deliberately fabricates
+            // none of them: the upstream `.pt` release keeps them
+            // implicit in tensor shapes rather than in a `config.yaml`,
+            // so any default written here would be an invented number in
+            // a redistributable artifact (CLAUDE.md 「ハルシネーション
+            // 厳禁」).
+            //
+            // This signature has no `--config` parameter to forward, so
+            // refuse loudly and name the entry point that does — exactly
+            // the posture `convert_file_quantized` takes for Voxtral.
+            // Both CLI front-ends route `--model beat-this` to
+            // `convert_beat_this_with_config` before reaching here, so
+            // this arm is what a *library* caller sees.
+            return Err(ConvertError::Usage(
+                "beat-this needs its six topology axes from a side-car: use \
+                 `vokra-cli convert --model beat-this --config <side-car.json>` (or call \
+                 `convert_beat_this_with_config` / `convert_beat_this_file` directly). The \
+                 upstream CPJKU/beat_this `.pt` release ships no config.yaml — the axes live \
+                 implicitly in tensor shapes — so this path will not invent them. Required \
+                 JSON keys: sample_rate, n_frames, d_model, n_layers, n_head, n_classes (all \
+                 unsigned integers)."
+                    .to_owned(),
+            ));
+        }
+        ModelKind::Redimnet => {
+            // ReDimNet B6-LM (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM,
+            // apache-2.0). Speaker-verification backbone; the converter
+            // transcribes all twelve `vokra.redimnet.*` axes from the
+            // upstream config.yaml, and the binder is a strict loader
+            // that requires every one of them (FR-EX-08 — a partial stamp
+            // would fabricate axes without primary-source backing).
+            let report = models::redimnet::convert_redimnet_file(input, output, license)?;
+            let notes = vec![format!(
+                "redimnet: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped, {} tensors read (apache-2.0 default, Permissive T1 tier — \
+                 redistributable OK, no runtime-side attribution obligation); \
+                 docs/license-audit.md §3.1 sign-off is BLANK (fail-closed) until the owner \
+                 signs, so publish stays blocked",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Redimnet,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::LlamaOmni2 => {
+            // 2026-08-15 handshake repair — the slug-less twin of the
+            // arm in `convert_file_with_slug`. Same reason to refuse:
+            // six of the eleven `vokra.llama_omni2.*` axes the runtime
+            // binder reads exist only in the upstream config.json, and
+            // this entry point has nowhere to get them from. It used to
+            // emit an artifact anyway, and that artifact could not load.
+            let _ = (input, output, license);
+            return Err(ConvertError::Usage(
+                "llama-omni2 needs a --config config.json carrying `n_head`, \
+                 `rope_max_period`, `rms_norm_eps`, `sample_rate`, `speech_encoder_dim` and \
+                 `speech_decoder_dim`; use convert_llama_omni2_file_with_config. This \
+                 slug-less entry point also cannot pick a release variant, so prefer \
+                 `vokra-cli convert --model llama-omni2-<release> --config <config.json>`."
+                    .to_owned(),
+            ));
         }
     };
 
@@ -9655,6 +12351,177 @@ pub fn convert_crepe_file(
     })
 }
 
+/// Convert an openWakeWord op-wiring safetensors checkpoint into a Vokra
+/// GGUF that the runtime `OpenwakewordSession::from_gguf` binder can
+/// actually load (2026-08-15 handshake repair).
+///
+/// `input` is the flattened safetensors and `config` the JSON side-car,
+/// both produced offline by
+/// `tools/parity/openwakeword_prepare_checkpoint.py` (the upstream ONNX
+/// never enters the runtime — FR-LD-05 / NFR-DS-02).
+///
+/// # Why the side-car is required
+///
+/// `OpenwakewordConfig::from_gguf` reads seven `vokra.openwakeword.*`
+/// keys and treats every one as required. Two of them (`n_wakewords`,
+/// `embedding_dim`) are derived here from the classifier tensors, and
+/// four (`window_frames`, `mel_bins`, `sample_rate`, `hop_samples`) fall
+/// back to mirrored constants documented in
+/// `crates/vokra-convert/src/models/openwakeword_op.rs`. The seventh,
+/// `wakeword_names`, is a per-checkpoint label that exists nowhere in the
+/// safetensors — the prepare script indexes classifier tensors
+/// positionally and keeps the names only in its reference JSON, having
+/// explicitly declined to infer them. Rather than synthesise
+/// `wakeword_0`, the plain [`convert_openwakeword_op_file`] refuses and
+/// this entry point takes the names from the side-car (the
+/// [`ModelKind::Crepe`] precedent).
+///
+/// The side-car's only required field is `wakeword_names`:
+///
+/// ```json
+/// { "wakeword_names": ["alexa", "hey_jarvis"] }
+/// ```
+///
+/// # Errors
+///
+/// - [`ConvertError::Io`] on read/write failure.
+/// - [`ConvertError::Parse`] on malformed safetensors / JSON input, or
+///   on any classifier group whose shapes do not satisfy the contract
+///   the runtime binder enforces (checked here so the failure names the
+///   offending tensor at convert time rather than at first load).
+/// - [`ConvertError::Usage`] when the side-car's `wakeword_names` count
+///   disagrees with the number of classifier groups in the checkpoint.
+/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+pub fn convert_openwakeword_op_file_with_config(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::openwakeword_op::OpenwakewordOpConvertConfig::parse(&config_bytes)?;
+    let (builder, report) = models::openwakeword_op::convert(bytes, &cfg, license)?;
+
+    let notes = vec![format!(
+        "openwakeword-op: {} float weights written verbatim ({} BF16 passthrough), {} \
+         non-float skipped; vokra.openwakeword.* stamped with n_wakewords={} \
+         embedding_dim={} (both derived from the classifier tensors)",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.n_wakewords,
+        report.embedding_dim,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::OpenwakewordOp,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a merged LLaMA-Omni2 safetensors checkpoint into a Vokra GGUF
+/// that the runtime `LlamaOmni2::from_path` binder can actually load
+/// (2026-08-15 handshake repair).
+///
+/// `input` is the merged safetensors (the upstream release ships shards;
+/// the merge is an owner-side step today) and `config` the JSON side-car
+/// the operator transcribes from the upstream `config.json`.
+///
+/// # Why the side-car is required
+///
+/// The runtime binder declares eleven `vokra.llama_omni2.*` keys. Until
+/// this repair the converter stamped exactly one of them — the variant
+/// tag — so the other ten decayed to `0` placeholders and
+/// `LlamaOmni2Config::validate_for_forward` refused every artifact the
+/// converter produced.
+///
+/// Four of the ten are now derived from the tensors themselves
+/// (`backbone.n_layer` from the contiguous layer run, `backbone.d_model`
+/// and `backbone.vocab` from the embedding axes, and
+/// `backbone.intermediate_size` from the SwiGLU gate projection, whose
+/// second axis cross-checks `d_model`). The remaining six cannot be read
+/// off any tensor shape and come from the side-car, because inventing
+/// them would produce a GGUF that loads and is silently wrong:
+///
+/// ```json
+/// {
+///   "n_head": 32,
+///   "rope_max_period": 1000000.0,
+///   "rms_norm_eps": 1e-6,
+///   "sample_rate": 16000,
+///   "speech_encoder_dim": 1280,
+///   "speech_decoder_dim": 3584
+/// }
+/// ```
+///
+/// The upstream tensor manifest has not been transcribed into this tree,
+/// so the names the derivation searches for are themselves overridable
+/// (`layer_prefix`, `embedding_tensor`, `gate_proj_suffix`), defaulting
+/// to the bare HuggingFace Qwen2 spelling. A name that matches nothing is
+/// a hard error naming the knob — never a silent zero.
+///
+/// # Errors
+///
+/// - [`ConvertError::Io`] on read/write failure.
+/// - [`ConvertError::Parse`] on malformed safetensors / JSON input, on a
+///   required side-car field being absent, on a derivation whose tensors
+///   are missing or mis-shaped, or on an `n_head` that fails the binder's
+///   own head-split rules (checked here so the failure names the field at
+///   convert time rather than at first load).
+/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+pub fn convert_llama_omni2_file_with_config(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+    variant: LlamaOmni2Variant,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::llama_omni2::LlamaOmni2ConvertConfig::parse(&config_bytes)?;
+    let (builder, report) = models::llama_omni2::convert(bytes, &cfg, variant, license)?;
+
+    let notes = vec![format!(
+        "llama-omni2 ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+         non-float skipped, {} tensors read; upstream repo {}. vokra.llama_omni2.* stamped \
+         with n_layer={} d_model={} vocab={} intermediate_size={} (all four derived from \
+         the tensors). docs/license-audit.md §3.1 sign-off is BLANK (fail-closed) until the \
+         owner signs, so publish stays blocked",
+        report.variant.tag(),
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.read,
+        variant.as_repo_id(),
+        report.n_layer,
+        report.d_model,
+        report.vocab,
+        report.intermediate_size,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::LlamaOmni2,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
 /// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
 /// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
 /// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
@@ -10019,6 +12886,70 @@ pub use models::titanet::{TitaNetReport, convert_titanet_file};
 // than `upstream_hf`. File-based entry mirroring the speaker_3d /
 // ecapa_tdnn re-export pattern.
 pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
+// LLaMA-Omni2 streaming speech-to-speech (ictnlp/LLaMA-Omni2-*, apache-2.0,
+// ACL 2025). Landed alongside its `vokra-models::llama_omni2` runtime binder,
+// which mirrors this module's `ARCH` / `NAME_PREFIX` / `CATEGORY` /
+// `DEFAULT_LICENSE` consts. Re-exported for the same reason as the
+// speaker_3d / titanet / nkf_aec entries above: `mod models` is private, so
+// the module's `pub` surface is unreachable — and therefore `dead_code` under
+// `-D warnings` — without a re-export here.
+//
+// 2026-08-15: `--model llama-omni2` is no longer a follow-up — the CLI
+// spelling landed (`ModelKind::LlamaOmni2`), and `LlamaOmni2Variant` joins
+// the re-export because a library caller of
+// `convert_llama_omni2_file_with_config` needs to be able to NAME the variant
+// argument it takes.
+//
+// `convert_llama_omni2_file` / `convert_llama_omni2_bytes` are still exported,
+// but both now REFUSE: six of the eleven `vokra.llama_omni2.*` axes the
+// runtime binder reads live only in the upstream config.json, so a
+// `--config`-less conversion cannot produce a loadable artifact. They are kept
+// as named refusals rather than deleted so an existing caller gets a message
+// routing it to `convert_llama_omni2_file_with_config` instead of a link
+// error. See the 2026-08-15 handshake-repair section of the module doc in
+// `crates/vokra-convert/src/models/llama_omni2.rs`.
+pub use models::llama_omni2::{
+    LlamaOmni2Report, LlamaOmni2Variant, convert_llama_omni2_bytes, convert_llama_omni2_file,
+};
+// Converters whose only reachable surface is this re-export — `mod models` is
+// private, so omitting it makes every `pub` item in them `dead_code` under
+// `-D warnings`:
+//
+// - beat_this: CPJKU/beat_this joint beat + downbeat tracker (MIT, ISMIR
+//   2024). `BeatThisHparams` is re-exported alongside the converter fn
+//   because that fn takes one by value: without the type in scope the entry
+//   point is unnameable from outside the crate;
+// - mt3: Magenta MT3 multi-instrument audio-to-MIDI transcription (code
+//   Apache-2.0; the `gs://mt3/checkpoints` weights carry no LICENSE, so the
+//   converter hard-maps `LicenseClass::Unknown` and fails closed);
+// - redimnet: Wespeaker ReDimNet2 B6-LM speaker backbone (apache-2.0). This
+//   re-export was MISSING until 2026-08-15, and the resulting `dead_code`
+//   warnings were papered over by a module-level `#![allow(dead_code)]` in
+//   `models/redimnet.rs` — so the module was unreachable from every entry
+//   point while its runtime binder told operators to run a converter for it.
+//   Both halves are fixed together: the allow attribute is deleted in the
+//   same commit that adds this line and the `ModelKind::Redimnet` arm;
+// - dtln_aec: breizhn/DTLN-aec acoustic echo cancellation (MIT).
+pub use models::beat_this::{BeatThisHparams, BeatThisReport, convert_beat_this_file};
+pub use models::mt3::{Mt3Report, convert_mt3_file};
+pub use models::redimnet::{RedimnetReport, convert_redimnet_file};
+// WeTextProcessing (wenet-e2e, Apache-2.0) — packs the upstream compiled
+// `tagger.fst` / `verbalizer.fst` grammars into a GGUF for the
+// `vokra_ops::itn` inverse-text-normalization pipeline. Same re-export
+// rationale as the entries above: `mod models` is private, so without this
+// the module's whole `pub` surface is `dead_code` under `-D warnings`.
+//
+// `ModelKind::WeTextProcessing` exists for CLI spelling resolution, but the
+// shared safetensors dispatch refuses it loudly: this is the one weightless
+// entry in the catalogue, so these entry points are the real interface.
+pub use models::wetextprocessing::{
+    WeTextProcessingReport, convert_wetextprocessing_file, convert_wetextprocessing_file_with_type,
+};
+// Wave 6 2026-08-14 audit follow-up: breizhn/DTLN-aec (MIT). GitHub-only
+// release (no HF mirror) so provenance stamps `upstream_url` rather
+// than `upstream_hf`. File-based entry mirroring the nkf_aec /
+// speaker_3d / ecapa_tdnn re-export pattern.
+pub use models::dtln_aec::{DtlnAecReport, DtlnVariant, convert_dtln_aec_file};
 // coverage-audit-2026-08-03 Wave A: Xiph RNNoise v0.2 (BSD-3-Clause).
 // GitHub-only release (no HF mirror) so provenance stamps
 // `upstream_url` rather than `upstream_hf`. File-based entry mirroring
@@ -10053,7 +12984,21 @@ pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
 // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
 pub use models::canary_1b_flash::{Canary1bFlashReport, convert_canary_1b_flash_file};
 pub use models::firered_asr_aed_l::{FireredAsrAedLReport, convert_firered_asr_aed_l_file};
+// coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+// FireRedTeam/FireRedASR-LLM-L — public re-export for downstream callers
+// that reach past the `ModelKind::FireredAsrLlmL` dispatch (mirror of
+// the sibling BF16 pass-through public API surface). vast.ai required
+// for the actual weight fetch + convert per memory
+// `[[feedback-large-models-on-vast-ai]]`.
+pub use models::firered_asr_llm_l::{FireredAsrLlmLReport, convert_firered_asr_llm_l_file};
 pub use models::hibiki::{HibikiReport, convert_hibiki_file};
+// coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
+// BosonAI Higgs-Audio v3 TTS 4B — public re-export for downstream
+// callers that reach past the `ModelKind::HiggsAudioV3Tts4b` dispatch
+// (mirror of the sibling BF16 pass-through public API surface).
+pub use models::higgs_audio_v3_tts_4b::{
+    HiggsAudioV3Tts4bReport, convert_higgs_audio_v3_tts_4b_file,
+};
 pub use models::magpietts_v2602::{MagpiettsV2602Report, convert_magpietts_v2602_file};
 pub use models::nemotron_speech_streaming_v2603::{
     NemotronSpeechStreamingV2603Report, convert_nemotron_speech_streaming_v2603_file,
@@ -10113,15 +13058,92 @@ pub use models::miocodec::{MioCodecReport, convert_miocodec_file};
 // same bytes.
 pub use models::mossformer2_ss_16k::{Mossformer2Ss16kReport, convert_mossformer2_ss_16k_file};
 pub use models::neutts_air::{NeuTtsAirReport, convert_neutts_air_file};
+// openWakeWord op wiring: `convert_openwakeword_op_file` is the plain
+// path and REFUSES (the per-wake-word labels the runtime binder requires
+// are not in the safetensors, so it will not invent them — the
+// `ModelKind::Crepe` precedent). The working entry point is
+// [`convert_openwakeword_op_file_with_config`] below.
 pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_file};
 pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
 pub use models::torchaudio_squim::{TorchaudioSquimReport, convert_torchaudio_squim_file};
 pub use models::utmosv2::{Utmosv2Report, convert_utmosv2_file};
+// Music-understanding wave (2026-08-13): YAMNet — Google Research
+// 521-class AudioSet audio-event classifier (MobileNetV1 backbone,
+// ~15 MB edge model, apache-2.0 default). Standalone file-based entry
+// point mirrors the utmosv2 / musicgen_medium re-export pattern for
+// direct callers who prefer `convert_yamnet_file` over the
+// `ModelKind::Yamnet` slug dispatch.
+pub use models::yamnet::{YamnetReport, convert_yamnet_file};
+// Music-understanding wave (2026-08-13): MERT — Music undERstanding
+// self-supervised encoder (HuBERT-derived Conv1D + 24-layer Transformer,
+// ~330M params, cc-by-nc-4.0 default). Standalone file-based entry
+// point mirrors the yamnet / musicgen_medium re-export pattern.
+pub use models::mert::{MertReport, convert_mert_file};
+// Music-understanding wave (2026-08-13): MuQ — Self-supervised music
+// representation learner (Mel-RVQ + BEATs teacher, MERT alternative,
+// ~500M params, license unknown default). Standalone file-based entry
+// point mirrors the mert / yamnet re-export pattern.
+pub use models::muq::{MuqReport, convert_muq_file};
+// Music-understanding wave (2026-08-13): Dasheng — Universal audio
+// encoder (speech + music + environmental, MAE ViT/ConvNeXt backbone,
+// ~86M params base, apache-2.0 default). Standalone file-based entry
+// point mirrors the muq / mert / yamnet re-export pattern.
+pub use models::dasheng::{DashengReport, convert_dasheng_file};
+// Music-understanding wave (2026-08-13): PANNs Cnn14 — 527-class
+// AudioSet audio-tagging backbone (VGG-flavour 14-layer 2D-CNN, ~80M
+// params, license unknown default). Standalone file-based entry
+// point mirrors the dasheng / muq / mert / yamnet re-export pattern.
+pub use models::panns::{PannsReport, convert_panns_file};
+// Music-understanding wave (2026-08-13): Basic-Pitch — Spotify
+// polyphonic audio-to-MIDI pitch-detection (~6 MB CNN over CQT with
+// 3-head posteriorgram output, apache-2.0 default). Standalone
+// file-based entry point mirrors the panns / dasheng / muq / mert /
+// yamnet re-export pattern.
+pub use models::basic_pitch::{BasicPitchReport, convert_basic_pitch_file};
+// SSL audio-encoder wave (2026-08-13): BEATs — foundational
+// self-supervised audio encoder with iterative acoustic tokenizer +
+// mask acoustic modeling (~90M params iter3_plus_AS2M, mit default).
+// Standalone file-based entry point mirrors the dasheng / mert /
+// muq / yamnet re-export pattern. First member of the SSL audio-
+// encoder wave (siblings EAT / ATST / MAEST / M2D land in
+// subsequent commits).
+pub use models::beats::{BeatsReport, convert_beats_file};
+// SSL audio-encoder wave (2026-08-13): EAT — Effective Audio
+// Transformer, utterance-level SSL encoder with inverse block
+// masking (~86M params base, mit default). Standalone file-based
+// entry point mirrors the beats re-export pattern.
+pub use models::eat::{EatReport, convert_eat_file};
+// SSL audio-encoder wave (2026-08-13): ATST — Audio Teacher-Student
+// Transformer, BYOL-style EMA teacher + student patch dropout SSL
+// audio encoder (~86M params base, cc-by-4.0 weight default =
+// AttributionRequired). Standalone file-based entry point mirrors
+// the eat / beats re-export pattern.
+pub use models::atst::{AtstReport, convert_atst_file};
+// SSL audio-encoder wave (2026-08-13): MAEST — Music AEST
+// (Discogs-pretrained AST self-supervised music-tagger, ~87M F32
+// params 30s-pw-129e, cc-by-nc-sa-4.0 default = T4 tier
+// NonCommercialShareAlike). Standalone file-based entry point
+// mirrors the mert / muq re-export pattern (HF-hosted music-
+// embedding sibling posture).
+pub use models::maest::{MaestReport, convert_maest_file};
+// SSL audio-encoder wave (2026-08-13): M2D — Masked Modeling Duo
+// (dual online + target branch SSL audio encoder, ~86M params base,
+// unknown default = fail-closed). Standalone file-based entry
+// point mirrors the atst / beats / eat re-export pattern.
+pub use models::m2d::{M2dReport, convert_m2d_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
 // exposes its `pub` API to external callers.
 pub use models::emotion2vec::{Emotion2vecReport, convert_emotion2vec_file};
+// Post-audit CC-gap 2026-08-15: Voila (`maitrix-org/Voila`, mit) —
+// full-duplex speech-to-speech dialog family. Closes the gap where the
+// `vokra-models::voila` binder, its `vokra-cli convert --model voila` repro
+// text and its `BOUND_ARCHES` row all advertised a converter that did not
+// exist. Standalone file-based entry point mirrors the llama_omni2 /
+// facebook_denoiser / clap re-export pattern; also reachable through
+// `convert_file_licensed(ModelKind::Voila, ..)`.
+pub use models::voila::{VoilaReport, convert_voila_file};
 // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD — first-class
 // audio-dialect op posture (distinct from Silero VAD v5's FR-LD-06
 // 1:1 subgraph). Self-contained file-based entry point with SPDX
@@ -10184,6 +13206,38 @@ pub use models::rmvpe::{RmvpeReport, convert_rmvpe_file};
 // prefers `--model bs-roformer` via `convert_file_licensed` and a caller
 // who calls `convert_bs_roformer_file` directly land the same bytes.
 pub use models::bs_roformer::{BsRoformerReport, convert_bs_roformer_file};
+
+// Meta music-gen post-audit CC-gap wave (2026-08-13): Meta MAGNeT Small 10secs
+// (`facebook/magnet-small-10secs`, cc-by-nc-4.0) — public re-export for
+// downstream callers that reach past the `ModelKind::MagnetSmall10secs`
+// dispatch (mirror of the sibling BF16 pass-through public API surface).
+// Local-safe convert (~2 GB) on M1 iMac per memory
+// `[[feedback-large-models-on-vast-ai]]`.
+pub use models::magnet_small_10secs::{MagnetSmall10secsReport, convert_magnet_small_10secs_file};
+
+// Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining WF7):
+// Meta MAGNeT Medium 30secs (`facebook/magnet-medium-30secs`, cc-by-nc-4.0) —
+// public re-export for downstream callers that reach past the
+// `ModelKind::MagnetMedium30secs` dispatch (mirror of the sibling
+// magnet_small_10secs / jasco_400m_chords_drums BF16 pass-through public
+// API surface). Local-safe convert (~5.7 GB, below 8 GB threshold) on
+// M1 iMac per memory `[[feedback-large-models-on-vast-ai]]`.
+pub use models::magnet_medium_30secs::{
+    MagnetMedium30secsReport, convert_magnet_medium_30secs_file,
+};
+
+// Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D remaining WF8):
+// Meta MelodyFlow T24 30secs (`facebook/melodyflow-t24-30secs`, cc-by-nc-4.0)
+// — public re-export for downstream callers that reach past the
+// `ModelKind::MelodyflowT2430secs` dispatch (mirror of the sibling
+// magnet_medium_30secs / magnet_small_10secs / jasco_400m_chords_drums BF16
+// pass-through public API surface). Scale ~4.0 GB bundle (~1 B flow-matching
+// transformer + 48 kHz RVQ codec + T5-base text encoder) is vast.ai-flagged
+// per phase task to stay conservative at the CC / owner cutoff per memory
+// `[[feedback-large-models-on-vast-ai]]`.
+pub use models::melodyflow_t24_30secs::{
+    MelodyflowT2430secsReport, convert_melodyflow_t24_30secs_file,
+};
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
@@ -11703,6 +14757,11 @@ mod modelkind_alias_and_roundtrip_tests {
             Frcrn,
             // Coverage-audit 2026-08-03 Wave B fast-track (13 variants).
             Hibiki,
+            // post-audit 2026-08-13 wave-B fast-track add — BosonAI
+            // Higgs-Audio v3 TTS 4B — canonical `--model
+            // higgs-audio-v3-tts-4b` must round-trip through
+            // `as_arg → from_arg` so a dropped alias fails loudly here.
+            HiggsAudioV3Tts4b,
             SberGigaamV3,
             SberGigaamMultilingual,
             ReazonspeechNemoV2,
@@ -11712,6 +14771,13 @@ mod modelkind_alias_and_roundtrip_tests {
             OwsmV4Medium1b,
             ParakeetTdt11b,
             FireredAsrAedL,
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): canonical `--model firered-asr-llm-l` must
+            // round-trip through as_arg → from_arg so a dropped alias
+            // fails loudly here. Distinct from sibling
+            // FireredAsrAedL (Whisper-topology AED) — the LLM release
+            // is Conformer + audio-text adapter + Qwen2 LM decoder.
+            FireredAsrLlmL,
             SortformerDiar4spkV1,
             SenseVoiceSmall,
             WhisperMedusaV1,
@@ -11730,6 +14796,108 @@ mod modelkind_alias_and_roundtrip_tests {
             Mossformer2Ss16k,
             TenVad,
             AudiosealRealWeight,
+            // Music-understanding wave (2026-08-13): YAMNet — canonical
+            // `--model yamnet` must round-trip through as_arg → from_arg
+            // so a dropped alias fails loudly here.
+            Yamnet,
+            // Music-understanding wave (2026-08-13): MERT — canonical
+            // `--model mert` must round-trip through as_arg → from_arg
+            // so a dropped alias fails loudly here.
+            Mert,
+            // Music-understanding wave (2026-08-13): MuQ — canonical
+            // `--model muq` must round-trip through as_arg → from_arg
+            // so a dropped alias fails loudly here.
+            Muq,
+            // Music-understanding wave (2026-08-13): Dasheng — canonical
+            // `--model dasheng-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Dasheng,
+            // Music-understanding wave (2026-08-13): PANNs — canonical
+            // `--model panns-cnn14` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Panns,
+            // Music-understanding wave (2026-08-13): Basic-Pitch — canonical
+            // `--model basic-pitch` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            BasicPitch,
+            // SSL audio-encoder wave (2026-08-13): BEATs — canonical
+            // `--model beats-iter3-plus-as2m` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            Beats,
+            // SSL audio-encoder wave (2026-08-13): EAT — canonical
+            // `--model eat-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Eat,
+            // SSL audio-encoder wave (2026-08-13): ATST — canonical
+            // `--model atst-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            Atst,
+            // SSL audio-encoder wave (2026-08-13): MAEST — canonical
+            // `--model maest-30s-pw-129e` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            Maest,
+            // SSL audio-encoder wave (2026-08-13): M2D — canonical
+            // `--model m2d-base` must round-trip through as_arg →
+            // from_arg so a dropped alias fails loudly here.
+            M2d,
+            // Meta music-gen post-audit CC-gap wave (2026-08-13): Meta
+            // MAGNeT Small 10secs — canonical `--model magnet-small-10secs`
+            // must round-trip through as_arg → from_arg so a dropped alias
+            // fails loudly here. Distinct from sibling MusicGen AR family
+            // (silent share would mis-route runtime dispatch = masked-LM
+            // parallel decoding vs AR token-by-token generation).
+            MagnetSmall10secs,
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs — canonical
+            // `--model magnet-medium-30secs` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            // Distinct from sibling `magnet_small_10secs` (same op path
+            // but different hparams = wider hidden / more layers / longer
+            // span) AND sibling MusicGen AR family (silent share = coarser
+            // FR-EX-08 mis-route to token-by-token AR path).
+            MagnetMedium30secs,
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs — canonical
+            // `--model melodyflow-t24-30secs` must round-trip through
+            // as_arg → from_arg so a dropped alias fails loudly here.
+            // Distinct from every sibling music-gen family — flow-matching
+            // ODE integrator with editing-specific inversion path vs
+            // MAGNeT masked-LM decoding vs MusicGen AR token-by-token vs
+            // JASCO joint symbolic conditioning stack.
+            MelodyflowT2430secs,
+            // AudioSR (Wave D 2026-08-15) — the first audio
+            // super-resolution / bandwidth-extension entry in the
+            // catalogue. The canonical `--model audiosr` must round-trip
+            // through as_arg → from_arg, and the speech sibling must land
+            // on its OWN variant rather than collapsing onto the basic
+            // one: they share the `audiosr` arch tag and the whole
+            // topology chunk group (upstream `get_basic_config()` takes
+            // no model_name argument), so `vokra.model.name` is the only
+            // discriminator and a dropped alias here would silently stamp
+            // the wrong checkpoint identity onto a converted artifact.
+            AudioSr,
+            AudioSrSpeech,
+            // Voila (post-audit CC-gap 2026-08-15) — full-duplex S2S
+            // dialog family. The canonical `--model voila` must
+            // round-trip through as_arg → from_arg: the runtime binder's
+            // own error messages tell an operator to run exactly that
+            // command, so a dropped alias here would put the repro text
+            // back into the state this converter landed to fix.
+            Voila,
+            // 2026-08-15 audit follow-up — the four converters whose
+            // runtime binders printed a `vokra-cli convert --model
+            // <slug>` recovery command that `from_arg` did not accept.
+            // Each canonical slug below is byte-identical to the string
+            // those binders print, and that is the whole point of pinning
+            // them here: the failure being fixed was not "a slug is
+            // missing", it was "the error message and the parser
+            // disagree". `scripts/check-arch-handshake.sh` leg (c) checks
+            // the same invariant from the binder side; this test checks
+            // it from the parser side.
+            Mt3,
+            BeatThis,
+            Redimnet,
+            LlamaOmni2,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -11743,6 +14911,164 @@ mod modelkind_alias_and_roundtrip_tests {
                 "from_arg({arg:?}) = {parsed:?} but round-trip target was {kind:?}"
             );
         }
+    }
+
+    /// The four slugs the 2026-08-15 audit found unparseable — each one
+    /// quoted verbatim from a runtime binder's recovery text — parse.
+    ///
+    /// This is a regression pin on a specific past defect, not a generic
+    /// alias walk: `crates/vokra-models/src/{mt3,beat_this,redimnet,
+    /// llama_omni2}/mod.rs` printed "re-run `vokra-cli convert --model
+    /// X`" from ten call sites while `from_arg` accepted none of the four
+    /// spellings, so every operator who followed the instruction got
+    /// `unknown model` and learned to distrust the error text. If a
+    /// future refactor renames one of these slugs without updating the
+    /// binder message, this test is what fails.
+    #[test]
+    fn slugs_named_by_runtime_binder_error_messages_parse() {
+        // (slug as printed by the binder, expected kind, one binder site)
+        let cases: &[(&str, ModelKind, &str)] = &[
+            ("mt3", ModelKind::Mt3, "vokra-models/src/mt3/mod.rs:496"),
+            (
+                "beat-this",
+                ModelKind::BeatThis,
+                "vokra-models/src/beat_this/mod.rs:428",
+            ),
+            (
+                "redimnet",
+                ModelKind::Redimnet,
+                "vokra-models/src/redimnet/mod.rs:401",
+            ),
+            (
+                "llama-omni2",
+                ModelKind::LlamaOmni2,
+                "vokra-models/src/llama_omni2/mod.rs:800",
+            ),
+        ];
+        for (slug, want, site) in cases {
+            let got = ModelKind::from_arg(slug).unwrap_or_else(|| {
+                panic!(
+                    "`vokra-cli convert --model {slug}` is printed as a recovery command at \
+                     {site}, so from_arg({slug:?}) must parse — an unparseable slug makes that \
+                     message actively misleading"
+                )
+            });
+            assert_eq!(got, *want, "from_arg({slug:?}) landed on the wrong kind");
+        }
+    }
+
+    /// Every spelling `ModelKind::from_arg` maps to
+    /// [`ModelKind::LlamaOmni2`] must also resolve through
+    /// [`LlamaOmni2Variant::from_arg`].
+    ///
+    /// The two tables are maintained separately (one picks the kind, the
+    /// other picks the release), and `convert_file_with_slug` closes over
+    /// the gap with `unwrap_or_default()`. A spelling accepted by the
+    /// first table but not the second would therefore silently stamp the
+    /// 7B identity — repo id, `vokra.model.name` suffix and
+    /// `vokra.llama_omni2.variant` chunk all wrong — onto whatever
+    /// checkpoint the caller supplied. That is exactly the silent
+    /// mis-stamp FR-EX-08 forbids, so the two tables are pinned together
+    /// here rather than trusted to stay in sync.
+    #[test]
+    fn every_llama_omni2_slug_resolves_to_a_variant() {
+        use super::LlamaOmni2Variant;
+
+        let spellings = [
+            "llama-omni2",
+            "llama_omni2",
+            "llamaomni2",
+            "llama-omni2-7b",
+            "llama_omni2_7b",
+            "llamaomni2-7b",
+            "llama-omni2-7b-english",
+            "ictnlp/llama-omni2-7b",
+            "llama-omni2-3b-bilingual",
+            "llama_omni2_3b_bilingual",
+            "llamaomni2-3b-bilingual",
+            "llama-omni2-3b",
+            "llama_omni2_3b",
+            "ictnlp/llama-omni2-3b-bilingual",
+            "llama-omni2-1.5b",
+            "llama-omni2-1_5b",
+            "llama_omni2_1_5b",
+            "llamaomni2-1.5b",
+            "ictnlp/llama-omni2-1.5b",
+            "llama-omni2-32b",
+            "llama_omni2_32b",
+            "llamaomni2-32b",
+            "ictnlp/llama-omni2-32b",
+        ];
+        for spelling in spellings {
+            assert_eq!(
+                ModelKind::from_arg(spelling),
+                Some(ModelKind::LlamaOmni2),
+                "--model {spelling} must land on ModelKind::LlamaOmni2"
+            );
+            assert!(
+                LlamaOmni2Variant::from_arg(spelling).is_some(),
+                "--model {spelling} parses as ModelKind::LlamaOmni2 but \
+                 LlamaOmni2Variant::from_arg does not recognise it, so convert_file_with_slug \
+                 would fall back to the 7B default and stamp the wrong release identity"
+            );
+        }
+
+        // The three non-default releases must each resolve to their OWN
+        // variant. Without this the previous assertion would still pass
+        // if every spelling collapsed onto 7B.
+        assert_eq!(
+            LlamaOmni2Variant::from_arg("llama-omni2-32b"),
+            Some(LlamaOmni2Variant::_32B)
+        );
+        assert_eq!(
+            LlamaOmni2Variant::from_arg("llama-omni2-1.5b"),
+            Some(LlamaOmni2Variant::_1_5B)
+        );
+        assert_eq!(
+            LlamaOmni2Variant::from_arg("llama-omni2-3b-bilingual"),
+            Some(LlamaOmni2Variant::_3BBilingual)
+        );
+    }
+
+    /// `--model beat-this` without `--config` refuses loudly, and the
+    /// refusal names both the flag and every required key.
+    ///
+    /// The point of the loud-partial is an actionable next step. "beat
+    /// this needs hparams" would be as useless as the unparseable slug
+    /// this wave removed, so the message is asserted to carry the flag
+    /// spelling and all six key names.
+    #[test]
+    fn beat_this_without_config_names_the_flag_and_every_key() {
+        let input = std::path::Path::new("does-not-exist.safetensors");
+        let output = std::path::Path::new("does-not-exist.gguf");
+        let Err(err) = super::convert_beat_this_with_config(input, output, None, None) else {
+            panic!("beat-this without --config must refuse rather than default its axes");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--config"),
+            "refusal must name the flag; got: {msg}"
+        );
+        for key in [
+            "sample_rate",
+            "n_frames",
+            "d_model",
+            "n_layers",
+            "n_head",
+            "n_classes",
+        ] {
+            assert!(
+                msg.contains(key),
+                "refusal must name the required key `{key}`; got: {msg}"
+            );
+        }
+        // The refusal must land before any file I/O: neither path above
+        // exists, so an `Io` error here would mean the check ran too late
+        // to be the reason for the failure.
+        assert!(
+            !msg.contains("I/O error"),
+            "the missing-config refusal must precede reading the checkpoint; got: {msg}"
+        );
     }
 
     /// Every SoTA-plan alias spelling the CLI accepts must dispatch to
@@ -12125,6 +15451,22 @@ mod modelkind_alias_and_roundtrip_tests {
                 ],
             ),
             (
+                // post-audit 2026-08-13 wave-B fast-track add: BosonAI
+                // Higgs-Audio v3 TTS 4B — every canonical spelling routed
+                // through the CLI must resolve to HiggsAudioV3Tts4b, and
+                // the round-trip `as_arg` back to the canonical string
+                // is asserted by the enum-list pin below.
+                ModelKind::HiggsAudioV3Tts4b,
+                &[
+                    "higgs-audio-v3",
+                    "higgs-audio-v3-tts-4b",
+                    "higgs_audio_v3_tts_4b",
+                    "higgs-audio-v3-tts",
+                    "higgs_audio_v3",
+                    "bosonai/higgs-audio-v3-tts-4b",
+                ],
+            ),
+            (
                 ModelKind::SberGigaamV3,
                 &[
                     "sber-gigaam-v3",
@@ -12198,6 +15540,23 @@ mod modelkind_alias_and_roundtrip_tests {
                     "firered-asr-aed-l",
                     "firered_asr_aed_l",
                     "fireredteam/fireredasr-aed-l",
+                ],
+            ),
+            // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+            // 2026-08-13): every FireRedASR-LLM-L alias spelling must
+            // dispatch to `ModelKind::FireredAsrLlmL`, NOT to the
+            // sibling `FireredAsrAedL`. A silent mis-dispatch across
+            // the two would map the wrong loader onto a caller's ckpt
+            // (Whisper-topology vs Conformer + Qwen2 LM decoder) and
+            // silently produce a wrong-shape GGUF at the runtime side.
+            (
+                ModelKind::FireredAsrLlmL,
+                &[
+                    "firered-asr-llm-l",
+                    "firered_asr_llm_l",
+                    "fireredasr-llm-l",
+                    "fireredteam/fireredasr-llm-l",
+                    "FireRedTeam/FireRedASR-LLM-L",
                 ],
             ),
             (
@@ -12369,6 +15728,198 @@ mod modelkind_alias_and_roundtrip_tests {
                     "neu-tts-air",
                     "neu_tts_air",
                     "neuphonic/neutts-air",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): YAMNet.
+            (
+                ModelKind::Yamnet,
+                &[
+                    "yamnet",
+                    "google-yamnet",
+                    "google/yamnet",
+                    "thelou1s/yamnet",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): MERT.
+            (
+                ModelKind::Mert,
+                &[
+                    "mert",
+                    "mert-v1-330m",
+                    "mert-v1",
+                    "mert-330m",
+                    "m-a-p/mert-v1-330m",
+                    "m-a-p/MERT-v1-330M",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): MuQ.
+            (
+                ModelKind::Muq,
+                &[
+                    "muq",
+                    "muq-large-msd-iter",
+                    "muq-large",
+                    "openmuq/muq-large-msd-iter",
+                    "OpenMuQ/MuQ-large-msd-iter",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): Dasheng.
+            (
+                ModelKind::Dasheng,
+                &[
+                    "dasheng",
+                    "dasheng-base",
+                    "mispeech/dasheng-base",
+                    "mispeech-dasheng-base",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): PANNs.
+            (
+                ModelKind::Panns,
+                &[
+                    "panns",
+                    "panns-cnn14",
+                    "panns_cnn14",
+                    "cnn14",
+                    "nicofarr/panns_cnn14",
+                    "nicofarr/panns_Cnn14",
+                ],
+            ),
+            // Music-understanding wave (2026-08-13): Basic-Pitch.
+            (
+                ModelKind::BasicPitch,
+                &[
+                    "basic-pitch",
+                    "basic_pitch",
+                    "basicpitch",
+                    "spotify/basic-pitch",
+                    "spotify-basic-pitch",
+                ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): BEATs.
+            (
+                ModelKind::Beats,
+                &[
+                    "beats",
+                    "beats-iter3",
+                    "beats-iter3-plus",
+                    "beats-iter3-plus-as2m",
+                    "microsoft/beats",
+                    "microsoft-beats",
+                    "unilm-beats",
+                ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): EAT.
+            (
+                ModelKind::Eat,
+                &["eat", "eat-base", "cwx-worst-one/eat", "cwx-worst-one-eat"],
+            ),
+            // SSL audio-encoder wave (2026-08-13): ATST.
+            (
+                ModelKind::Atst,
+                &[
+                    "atst",
+                    "atst-base",
+                    "atst-frame",
+                    "audio-westlakeu/audiossl-atst",
+                    "audiossl-atst",
+                    "audiossl/atst",
+                ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): MAEST.
+            (
+                ModelKind::Maest,
+                &[
+                    "maest",
+                    "maest-30s",
+                    "maest-30s-pw-129e",
+                    "discogs-maest",
+                    "discogs-maest-30s-pw-129e",
+                    "mtg-upf/discogs-maest-30s-pw-129e",
+                ],
+            ),
+            // SSL audio-encoder wave (2026-08-13): M2D.
+            (
+                ModelKind::M2d,
+                &["m2d", "m2d-base", "m2d-eat", "nttcslab/m2d", "nttcslab-m2d"],
+            ),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13): Meta MAGNeT
+            // Small 10secs — canonical `--model magnet-small-10secs` must
+            // round-trip through as_arg → from_arg so a dropped alias fails
+            // loudly here. Distinct from sibling MusicGen AR family
+            // (musicgen_small / musicgen_medium / musicgen_large) — silently
+            // sharing would mis-route runtime dispatch (masked-LM parallel
+            // decoding vs AR token-by-token generation).
+            (
+                ModelKind::MagnetSmall10secs,
+                &[
+                    "magnet-small-10secs",
+                    "magnet_small_10secs",
+                    "magnet-small-10s",
+                    "magnet-small",
+                    "facebook/magnet-small-10secs",
+                ],
+            ),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF7): Meta MAGNeT Medium 30secs — canonical
+            // `--model magnet-medium-30secs` must round-trip. Distinct
+            // from sibling `magnet_small_10secs` (different HF slug +
+            // different hparams for the 30 sec horizon) and distinct
+            // from sibling MusicGen AR family (silent share would
+            // mis-route runtime dispatch = masked-LM parallel decoding
+            // vs AR token-by-token generation).
+            (
+                ModelKind::MagnetMedium30secs,
+                &[
+                    "magnet-medium-30secs",
+                    "magnet_medium_30secs",
+                    "magnet-medium-30s",
+                    "magnet-medium",
+                    "facebook/magnet-medium-30secs",
+                ],
+            ),
+            // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+            // remaining WF8): Meta MelodyFlow T24 30secs — canonical
+            // `--model melodyflow-t24-30secs` must round-trip. Distinct
+            // from every sibling music-gen family (MAGNeT masked-LM,
+            // MusicGen AR, JASCO joint-symbolic, AudioLDM2 latent
+            // diffusion, Stable Audio Open, ACE-Step, BS-RoFormer) —
+            // silent share = FR-EX-08 wrong-sampler / wrong-conditioning
+            // mis-route. The bare `melodyflow` alias in `from_arg` maps
+            // here today because this is the only MelodyFlow release in
+            // the catalog; a future T12 / T48 sibling would need an ADR
+            // to route the bare alias to a family-level dispatch.
+            (
+                ModelKind::MelodyflowT2430secs,
+                &[
+                    "melodyflow-t24-30secs",
+                    "melodyflow_t24_30secs",
+                    "melodyflow-t24-30s",
+                    "melodyflow-t24",
+                    "melodyflow",
+                    "facebook/melodyflow-t24-30secs",
+                ],
+            ),
+            // Wave D 2026-08-15: CT-Transformer punctuation restoration —
+            // canonical `--model ct-punc` must round-trip, along with the
+            // arch-tag spelling, the family aliases and the two upstream
+            // ids (HF slug + the ModelScope mirror id the repo's own
+            // `configuration.json` names). The bare `punc` / `punctuation`
+            // aliases map here because this is the only punctuation model
+            // in the catalogue today; a second one claiming them would be
+            // an ADR moment (mirror of the `melodyflow` bare-alias note).
+            (
+                ModelKind::CtPunc,
+                &[
+                    "ct-punc",
+                    "ct_punc",
+                    "ctpunc",
+                    "ct-transformer",
+                    "ct_transformer",
+                    "punc",
+                    "punctuation",
+                    "funasr/ct-punc",
+                    "iic/punc_ct-transformer_cn-en-common-vocab471067-large",
                 ],
             ),
         ];

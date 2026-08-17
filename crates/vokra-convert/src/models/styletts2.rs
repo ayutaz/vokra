@@ -244,8 +244,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, StyleTts2Report), 
         report.notes.push(
             "no float tensors passed through — this GGUF is metadata-only and the runtime will \
              refuse to bind any weights (FR-EX-08). StyleTTS 2 upstream ships PyTorch `.pth`; \
-             callers must first flatten with `tools/parity/pytorch_to_safetensors.py` (or the \
-             CSM / DAC pattern) before invoking this converter."
+             callers must first flatten it to safetensors before invoking this converter (a \
+             future `tools/parity/pytorch_to_safetensors.py` is not yet written — today use \
+             `tools/parity/bin_to_safetensors.py` or the CSM / DAC pattern)."
                 .into(),
         );
     }

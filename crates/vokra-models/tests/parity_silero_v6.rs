@@ -86,7 +86,9 @@ fn silero_variant_reexport_is_live_from_models_wrapper() {
 /// Fixture-free: the model wrapper exposes the loaded artifact's release
 /// tag through [`SileroVadV5::variant`]. Uses the committed pre-tagging v5
 /// fixture — asserted to default to V5 through the model wrapper (the
-/// binder-level default is pinned in `vokra_vad_micro::weights::tests`;
+/// binder-level default is pinned in the `tests` module of
+/// `crates/vokra-vad-micro/src/weights.rs`, whose `weights` module is
+/// private so it has no importable path;
 /// this test pins the wrapper's re-exposed accessor).
 #[test]
 fn committed_v5_fixture_reports_v5_variant_through_wrapper() {

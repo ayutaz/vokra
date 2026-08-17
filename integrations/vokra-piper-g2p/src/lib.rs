@@ -5,7 +5,7 @@
 //! contain. It turns text into the exact `(phoneme ids, per-phoneme prosody,
 //! language id)` triple the multilingual piper-plus models consume, then hands
 //! it to Vokra's native TTS via [`vokra_piper_plus::Phonemizer::phonemize_full`]
-//! → [`vokra_models::piper_plus::PiperPlusTts::synthesize_full`].
+//! → [`vokra_models::piper_plus::PiperPlusTts::synthesize_pseudo_streaming`].
 //!
 //! # Faithfulness to piper-plus
 //!

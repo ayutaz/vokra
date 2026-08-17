@@ -26,6 +26,57 @@ milestone below.
 
 ### Added
 
+#### Audio-wide coverage expansion (2026-07-24 → 2026-08-16)
+
+Vokra's scope widened from speech to audio: music generation, source
+separation and audio understanding joined TTS / ASR / S2S / speaker / VAD.
+Most of this arrives as **converter + GGUF loader + strict architecture
+verification**, with the forward pass landing per family. Where a forward is
+still deferred it is a **loud partial** — an error naming the missing
+primitive and the upstream source that specifies it, never a plausible wrong
+answer.
+
+- **New domains**: music generation and analysis (MusicGen, MAGNeT,
+  MelodyFlow, JASCO, AudioGen, AudioLDM2, MT3 transcription, Beat-This),
+  source separation (Demucs, SepFormer, Conv-TasNet), self-supervised audio
+  encoders (ATST, EAT, M2D, MAEST, W2V-BERT-2, WavLM, CLAP), audio tagging
+  and classification (PANNs, deepfake detection, language ID, emotion2vec),
+  quality assessment (UTMOSv2, NISQA, TorchAudio-SQUIM, DNSMOS P.808/P.835),
+  diarization (pyannote segmentation-3.0, Sortformer), audio super-resolution
+  (AudioSR) and singing synthesis (DiffSinger).
+- **New ASR / TTS**: distil-whisper large-v3.5, kotoba-whisper, Parakeet
+  TDT-0.6B-v3 and CTC-1.1B, Canary-1B-Flash, GigaAM, Whisper-Medusa,
+  FireRed-AED, Moonshine, SenseVoiceSmall; Chatterbox-Multilingual (+ Turbo,
+  Nano), StyleTTS 2, Dia-1.6B, VibeVoice-1.5B, Zonos-v0.1, Irodori-TTS,
+  ESPnet-family Japanese VITS, ChatTTS, Voila, LLaMA-Omni2.
+- **Style-Bert-VITS2 v2** completed end to end, including the per-language
+  conditioning encoders (DeBERTa v2 / v3, Chinese-RoBERTa-wwm-ext).
+- **Text processing**: CT-Transformer punctuation restoration and
+  WeTextProcessing inverse text normalization / text normalization, with the
+  ITN grammar and rule-fallback pipeline in `vokra-ops`.
+- **Shared operators** rather than per-model copies: a ViT audio encoder
+  (2-D patch embedding + pre-norm Transformer) shared by five binders —
+  ATST, EAT, M2D, MAEST and Beat-This — WPE dereverberation transcribed
+  from `fgnt/nara_wpe`,
+  YIN and PyIN, Snake activation, anti-aliased upsampling, MoE dispatch and
+  expert GEMM, and shallow-fusion LM scoring.
+- **`vokra-cli f0`** — a fourth subcommand for checkpoint-free pitch
+  extraction. YIN and PyIN carry no weights, so they get an entry point with
+  no `--model`; rows are identical in shape to the neural F0 route.
+- **Evaluation metrics**: SI-SNR, SI-SDR, SDR and STOI join mel loss, WER,
+  CER and UTMOS. PESQ is deliberately absent — ITU-T P.862's redistribution
+  terms are incompatible with Apache-2.0, and the reason is recorded beside
+  the metrics that shipped.
+- **Android integration crate** (`integrations/vokra-android`) with a JNI
+  bridge and Kotlin session wrapper, in its own isolated workspace.
+- **Six CI gates**, each with a `--self-test` that plants a defect where the
+  gate must see it: converter ⇄ binder architecture-tag and metadata-key
+  handshakes (`check-arch-handshake.sh`), CLI reachability for every bound
+  architecture, and four citation gates that fail when documentation names a
+  crate path, an ops path, a parity sidecar or a runbook path that does not
+  exist. Their ledgers are double-sided: an undeclared gap fails, and so does
+  a ledger entry whose gap has closed.
+
 #### Real-weight verification + Hugging Face publication (2026-07-22 / -23)
 
 - **`huggingface.co/vokra` — 16 models live**: this org now distributes
@@ -588,6 +639,36 @@ chain; no parity tolerance changed anywhere; Kokoro stays 8/8):
   arbitrary-code-execution-prone).
 
 ### Fixed
+
+#### Silently-wrong outputs found by the 2026-08 audit rounds
+
+Each of these returned a plausible answer rather than an error, which is the
+failure mode this project treats as worse than a crash:
+
+- **CREPE fabricated a pitch track.** With real weights and non-16 kHz audio
+  it returned an all-zero track — indistinguishable from "this audio is
+  entirely unvoiced" — through a catch-all arm that also swallowed unbound
+  weights. Its docstring claimed the opposite. Wrong pitch flows into a
+  vocoder and produces confidently wrong audio. Unbound weights and a wrong
+  sample rate are now separate, loud errors. FCPE had the same shape.
+- **RMVPE silently skipped its entire U-Net.** A fork-convention checkpoint
+  passed the loader, discovered zero blocks, and fed the raw mel plane
+  straight to the BiGRU; nothing distinguished a full forward from none of
+  it. Discovering no blocks is now an error.
+- **`KwsMicro::detect` answered `Ok(Idle)` while unconfigured**, and `Idle`
+  legitimately means "no wake word in this frame" — so an unconfigured
+  detector was indistinguishable from a working one hearing silence. It now
+  refuses with `ModelLoad`.
+- **Two converter/binder handshake failures shipped**: openWakeWord's binder
+  required seven `vokra.openwakeword.*` metadata keys its converter stamped
+  none of, and `llama_omni2` had the same shape across ten keys. Every GGUF
+  either produced failed to load, and neither was visible to the test suite,
+  which hand-builds its GGUFs. Convert-then-bind tests now exercise the real
+  converter into the real binder.
+- **A `docs/license-audit.md` §3.1 row contained unescaped pipes**, so
+  Markdown split one cell into five and shifted the approver and decision
+  columns. That row was invisible to the sign-off machinery — and would have
+  stayed invisible after an owner ticked its box.
 
 - **Whisper decoder tokenizer**: large-v3 previously emitted the base
   vocab's text through the special-token id space. The converter now

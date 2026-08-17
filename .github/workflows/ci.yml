@@ -246,10 +246,61 @@ jobs:
           cargo test -p vokra-core --features vokra-wfst --lib
           ./scripts/check-zero-deps.sh
           # Feature ON must pull in no non-vokra crate.
-          extra=$(cargo tree -p vokra-core --features vokra-wfst \
+          extra=$(cargo tree --color never -p vokra-core --features vokra-wfst \
             | grep -vE 'vokra-|^\[|^$' || true)
           if [ -n "$extra" ]; then
             echo "M5-06 regression: vokra-wfst pulled in non-vokra deps:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
+      # Wave D 2026-08-15: `vokra-ops` and `vokra-models` FORWARD the same
+      # opt-in flag for the ITN/TN pipeline (`vokra-ops/src/itn/`). Only the two
+      # FST compositions are gated — the tagged-token parser, the field-order
+      # tables, the `Reorder` rewrite, the grammar container and the OpenFST
+      # header probe all compile in the default build and are covered by the
+      # normal `cargo test --workspace`.
+      #
+      # But `src/itn/compose.rs` is `#[cfg(feature = "vokra-wfst")]`, so
+      # WITHOUT this step it compiles in NO CI job at all and a break there
+      # would be a vacuous green — exactly the failure mode the M5-06 step above
+      # was written to prevent. The flag is spelled out LITERALLY here for the
+      # same reason.
+      #
+      # `vokra-cli` joined that forwarding chain on 2026-08-15
+      # (`vokra-wfst = ["vokra-models/vokra-wfst"]`). Until then the chain
+      # stopped one crate short of every shipped binary, so the loud-partial
+      # the ITN pipeline prints told a CLI user to "rebuild with --features
+      # vokra-wfst" and cargo answered "package `vokra-cli` does not contain
+      # this feature". A third manifest edge left unbuilt is the same vacuous
+      # green this comment exists to prevent, so it gets its own leg.
+      # `--all-targets` is what makes that leg worth having: it reaches the
+      # `#[cfg(test)]` registry in `crates/vokra-cli/src/engine.rs`, whose
+      # `wetextprocessing` row asserts the feature-ON forward is real.
+      - name: ITN/TN feature gate (Wave D, vokra-ops + vokra-models + vokra-cli, feature ON)
+        if: matrix.fusion == '0'
+        run: |
+          set -euo pipefail
+          cargo clippy -p vokra-ops --features vokra-wfst --all-targets -- -D warnings
+          cargo test -p vokra-ops --features vokra-wfst --lib itn
+          cargo clippy -p vokra-models --features vokra-wfst --all-targets -- -D warnings
+          cargo test -p vokra-models --features vokra-wfst --lib wetextprocessing
+          cargo clippy -p vokra-cli --features vokra-wfst --all-targets -- -D warnings
+          ./scripts/check-zero-deps.sh
+          # Forwarding the flag must still pull in no non-vokra crate.
+          extra=$(cargo tree --color never -p vokra-ops --features vokra-wfst \
+            | grep -vE 'vokra-|^\[|^$' || true)
+          if [ -n "$extra" ]; then
+            echo "Wave D regression: vokra-ops/vokra-wfst pulled in non-vokra deps:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
+          # Same assertion for the CLI passthrough — the binary is what ships,
+          # so it is the edge where a third-party dep would actually reach a
+          # user (NFR-DS-02).
+          extra=$(cargo tree --color never -p vokra-cli --features vokra-wfst \
+            | grep -vE 'vokra-|^\[|^$' || true)
+          if [ -n "$extra" ]; then
+            echo "Wave D regression: vokra-cli/vokra-wfst pulled in non-vokra deps:" >&2
             echo "$extra" >&2
             exit 1
           fi
@@ -323,6 +374,50 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
+      - name: "vokra_ops:: citation resolution (phantom-primitive tripwire)"
+        # CLAUDE.md ハルシネーション厳禁, enforced mechanically. Five consecutive
+        # audit rounds found comments citing `vokra_ops::` modules that have
+        # never existed (`qwen2`, `beam_search`, ...), each sending the next
+        # reader hunting for a module to bind against. Round 4 swept for the
+        # class by hand and still missed four sites, because it covered
+        # vokra-models only. A manual sweep is evidently not the control.
+        #
+        # Structural invariant, same family as check-zero-deps.sh — it asserts
+        # that prose may not claim an op exists when it does not. Naming a
+        # not-yet-landed op stays legal via the script's EXPECTED_UNLANDED
+        # ledger, but every such mention must carry an honesty marker.
+        # The self-test proves detection power in both directions, including a
+        # regression case pinned to the verbatim historical wording (an earlier
+        # draft of the gate passed it). Pure python3 + bash, no cargo.
+        run: |
+          bash scripts/check-ops-path-citations.sh --self-test
+          bash scripts/check-ops-path-citations.sh
+      - name: "vokra_<crate>:: citation resolution (all other namespaces)"
+        # The sibling step above covers exactly ONE of the 21 crate namespaces.
+        # Round 6 found the same defect class living in the others, unchecked:
+        # `vokra_models::rnnoise_v02` (no such module, ever), five sites naming
+        # `vokra_eval::dnsmos::{p808_score, p835_score}` when the binder landed
+        # at `vokra_models::dnsmos_p808_p835`, and `vokra_core::restamp_provenance`
+        # — wrong crate (it is in vokra-convert) AND structurally unable to do
+        # the job the comment claimed for it.
+        #
+        # Widening also exposed a second shape the ops gate never had to model:
+        # a first segment that IS a real file but a PRIVATE module, so the path
+        # is unnameable from outside (`vokra_backend_cpu::dispatch`,
+        # `vokra_vad_micro::math` / `::weights`, `vokra_convert::models` /
+        # `::safetensors`), plus `vokra_cli::` — a binary-only crate with no
+        # importable namespace at all. Resolving against the PUBLIC surface,
+        # rather than "does a file of that name exist", is what finds those.
+        #
+        # Namespaces are discovered from the filesystem, so `vokra_status_t::`
+        # and the other C ABI enum types are never mistaken for crates. The two
+        # gates split the namespace set so they can never hold contradictory
+        # ledgers for one identifier; this one hard-fails if its sibling goes
+        # missing, so the split cannot silently become a hole again.
+        # Pure python3 + bash, no cargo.
+        run: |
+          bash scripts/check-crate-path-citations.sh --self-test
+          bash scripts/check-crate-path-citations.sh
       - name: no_std subset tripwire (Cortex-M55 Tier 3, M5-03-T15)
         # NFR-PT-03 / NFR-DS-02: the no_std(+alloc) subset (vokra-core error +
         # GGUF reader, and the vokra-vad-micro Silero forward core) must keep
@@ -376,6 +471,164 @@ jobs:
         run: |
           bash scripts/check-find-hygiene.sh --self-test
           bash scripts/check-find-hygiene.sh
+      - name: Bound-arch registry completeness gate (vokra-cli run diagnostics)
+        # crates/vokra-cli/src/engine.rs BOUND_ARCHES turns "unsupported model
+        # arch `X`" — a lie whenever vokra-models has a binder for X — into a
+        # diagnostic naming the binding module, the library entry point and the
+        # blocker class. Its doc comment says "Adding a binder? Add a row here
+        # in the same commit"; nothing enforced it, and five binders (chattts,
+        # deepfake_detection, lang_id_ecapa, dtln_aec, nkf_aec) went missing
+        # that way — three of them in the commit that wrote the rule. The
+        # in-crate test can only inspect rows that EXIST, so it cannot see a row
+        # that was never written; this gate starts from the BINDERS instead and
+        # fails unless every arch-shaped `&str` constant under vokra-models/src
+        # is either routed by the dispatch or present in the registry. That
+        # population is `pub const ARCH`, `pub const ARCH_<SUFFIX>` AND
+        # `pub const EXPECTED_ARCH` — the last spelling was added 2026-08-15 and
+        # is not a rounding error: 29 of the 89 constants use it, so while the
+        # scan read `ARCH…` alone this gate reported a confident green over a
+        # third of the binders (that is how `charsiu`, a binder with no
+        # converter at all, survived four audit rounds behind it). A
+        # discovery-coverage guard now fails the run if any arch-shaped
+        # constant on disk falls outside the scan, so the next new spelling is
+        # a loud one-time failure rather than a silently smaller
+        # population. Self-test
+        # runs RED (missing row) and GREEN (complete) cases plus two
+        # parser guards against a synthetic tree, so a checker bug cannot
+        # manufacture a passing run. HARD FAIL, like its check-find-hygiene /
+        # check-workflow-advisory-suffix siblings above — a source-to-source
+        # invariant of Vokra's own, not upstream drift. python3 stdlib only,
+        # no cargo, so it costs nothing in this job.
+        run: |
+          bash scripts/check-bound-arch-coverage.sh --self-test
+          bash scripts/check-bound-arch-coverage.sh
+      - name: Converter <-> binder arch handshake gate
+        # A model arch tag is a contract between two crates: vokra-convert
+        # STAMPS `vokra.model.arch = "X"`, vokra-models READS it back with a
+        # strict equality check so a foreign GGUF fails loudly instead of
+        # misrouting into a wrong-shape forward (FR-EX-08). Either half alone
+        # is a dead end — a converter with no reader emits GGUFs nothing can
+        # load, a binder with no converter can only be fed a GGUF this repo
+        # cannot produce. The sibling gate above watches a DIFFERENT edge
+        # (binder -> engine.rs BOUND_ARCHES); neither direction of the
+        # converter/binder handshake was watched by anything, which is how a
+        # converterless `voila` binder and 21 reader-less converter arch tags
+        # all survived. Several of those 21 are legitimately converter-only
+        # (publish-only pass-throughs, an ELVIS-Act voice-clone bound for a
+        # separate repo, a redistribution-forbidden weight, vast.ai-gated
+        # multi-shard giants) — fine, but recorded NOWHERE, so every audit
+        # rediscovered them as "gaps" and a real regression would drown in the
+        # noise. The NO_READER / NO_CONVERTER ledgers record them with a reason
+        # each and are DOUBLE-SIDED like EXPECTED_GAPS in
+        # scripts/publish/check-catalog-reality.sh: an undeclared gap fails,
+        # and a ledger entry whose gap has since closed also fails, so the file
+        # cannot rot in either direction.
+        #
+        # FOUR legs now, not two. Leg (c) checks that a `convert --model
+        # <slug>` printed in a binder's error text actually parses through
+        # `ModelKind::from_arg` — six messages named slugs that had never been
+        # accepted, which is worse than printing no recovery step. Leg (d)
+        # closes the blind spot the openwakeword NO_READER entry admits in its
+        # own text: matching on the arch tag proves nothing about the REST of
+        # the handshake. That binder also required seven `vokra.openwakeword.*`
+        # metadata keys the converter stamped none of, so every GGUF it wrote
+        # failed to load while this gate stayed green — it only ever compared
+        # arch literals. Round 8 fixed that instance, round 9 found a second
+        # (llama_omni2), and neither the sibling gate above nor the in-crate
+        # registry test can see the class. Leg (d) asserts every
+        # `vokra.<group>.<key>` a REQUIRED reader looks up is stamped by some
+        # converter, where "required" means the reader has no escape for its
+        # absence — five suppression categories (all-or-nothing `Ok(None)`
+        # groups, caller defaults, string-literal mentions, runtime-assembled
+        # PREFIX constants, dead-code reserved constants) keep the 172 raw
+        # literal mismatches from drowning the real ones, and every
+        # suppression is counted in the output so the leg cannot go quiet
+        # unnoticed. Self-test covers all four legs RED+GREEN, every stale
+        # direction, each suppression category, a zero-sentinel read that must
+        # NOT count as a default (the llama_omni2 discriminator), a
+        # commented-out stamp, a malformed ledger line and four parser guards,
+        # so a checker bug cannot manufacture a passing run. HARD FAIL, like
+        # its siblings above — a source-to-source invariant of Vokra's own.
+        # python3 stdlib only, no cargo, so it costs nothing in this job.
+        run: |
+          bash scripts/check-arch-handshake.sh --self-test
+          bash scripts/check-arch-handshake.sh
+      - name: Parity sidecar citation gate (cited tools/parity/*.py must exist)
+        # Source under crates/ names `tools/parity/*.py` bridges constantly —
+        # converter docs on flattening a torch pickle, binder error strings
+        # naming which bridge to re-run, parity harnesses printing a numbered
+        # fixture recipe. Those are INSTRUCTIONS: an operator types one, gets
+        # `No such file or directory`, and stops trusting every other docstring
+        # in the tree. Measured 2026-08-15: 109 distinct paths cited, 47 not on
+        # disk, most phrased in the present tense as existing tools.
+        #
+        # The sharpest instance had made a parity gate permanently vacuous:
+        # parity_dnsmos.rs step 3 ran `dnsmos_score_reference.py`, which has
+        # never existed, so VOKRA_DNSMOS_REFERENCE_JSONL could not be produced
+        # by anything, so the MOS comparison always skipped — while the module
+        # doc asserted a skip is "never a fabricated pass". Its sibling
+        # `dnsmos_prepare_checkpoint.py` DOES exist, so the recipe was
+        # half-runnable, which is why it went unnoticed.
+        #
+        # The fix for a missing bridge is to correct the SENTENCE, never to
+        # write the Python file — ~35 sidecars invented from unread upstream
+        # formats would be fabrication at a larger scale. So this gate carries
+        # no exception ledger, unlike its check-arch-handshake sibling above:
+        # the exception here IS the sentence the reader sees ("a future
+        # `tools/parity/x.py` (not yet written)"), and parking it in a shell
+        # array would put the honesty where no operator ever looks.
+        #
+        # scripts/check-doc-references.sh is the wrong home — it only reads
+        # published docs under docs/ and never opens crates/. Self-test covers
+        # RED (unmarked missing citation, out-of-window marker, distant
+        # "future", missing nested path) and GREEN (existing file, canonical
+        # hedge, wrapped hedge, doc-block hedge, all 8 in-tree phrasings) plus
+        # two parser guards, so a checker bug cannot manufacture a passing run.
+        # HARD FAIL, like its siblings above — a source-to-source invariant of
+        # Vokra's own, not upstream drift. python3 stdlib only, no cargo.
+        run: |
+          bash scripts/check-parity-sidecar-citations.sh --self-test
+          bash scripts/check-parity-sidecar-citations.sh
+      - name: Runbook path citation gate (cited paths in runbooks must exist)
+        # Sibling of the parity-sidecar gate above, pointed the other way:
+        # that one scans crates/ for citations OF tools/parity/*.py; this one
+        # scans the RUNBOOKS (tools/parity/**/README.md, docs/handoff/*.md)
+        # for citations of anything in the repo.
+        #
+        # Why a runbook is worth its own hard gate: the reader is an owner
+        # with a rented vast.ai box billing by the minute, midway through a
+        # multi-GB convert. A wrong path there costs money and an interrupted
+        # job, not just confusion. Measured 2026-08-15: THREE runbooks sent
+        # the owner to `scripts/vast-ai/provision.sh` (real path:
+        # scripts/publish/vast-ai/provision.sh) at step 2 of an 8-step paid
+        # walkthrough. The sweep that followed found the same class in
+        # `sentencepiece.rs` (really spm_proto.rs), `campplus.rs` (really
+        # camplus.rs — one `p`), `host_parity.rs` (renamed), and a
+        # `src/kernels/*.metal` layout that has never existed in either GPU
+        # backend, where kernels are inline const strings in context.rs.
+        #
+        # Scope is narrowed on purpose, because a gate that cries wolf on
+        # placeholders gets ignored — which is worse than no gate. Only
+        # repo-ANCHORED paths (scripts/ tools/ crates/ docs/ integrations/
+        # .github/) are checked; globs, <angle> placeholders, YYYY-MM-DD
+        # bakeoff templates, bare basenames, /root/... paths on the rented
+        # box, and URLs are all out of scope by construction rather than by
+        # an exception ledger. Gitignore-local citations (docs/tickets/,
+        # docs/adr/) are skipped via `git check-ignore`, so the gate cannot
+        # pass locally and fail in CI on citations that are perfectly correct.
+        #
+        # Like its sibling, it carries no exception ledger: the exception IS
+        # the sentence the reader sees ("a future `path` (not yet written)").
+        # Self-test covers RED (the real provision.sh defect, out-of-window
+        # marker, absent directory, non-ignored absent docs/ path) and GREEN
+        # (existing path, canonical/wrapped hedges, all 12 in-tree bilingual
+        # phrasings, placeholders, basenames/remote paths/URLs, gitignored
+        # paths) plus two parser guards, so a checker bug cannot manufacture
+        # a passing run. HARD FAIL, like its siblings. python3 stdlib + git
+        # only, no cargo.
+        run: |
+          bash scripts/check-runbook-path-citations.sh --self-test
+          bash scripts/check-runbook-path-citations.sh
       - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
         id: platform-support-drift
         # Verifies that every evidence anchor cited by

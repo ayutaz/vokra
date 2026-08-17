@@ -67,6 +67,16 @@ pub mod hpf;
 pub mod loudness_norm;
 // -------------------------------------------------------------------------
 pub mod attrs;
+// ---- Vocoder Metal wave — polyphase anti-aliased upsample primitive ------
+// The multiply-add core of BigVGAN's `UpSample1d` (`alias_free_activation
+// .torch.act`) and every HiFTNet-family alias-free activation chain. Consumes
+// a caller-supplied Kaiser-window filter kernel (the design step lives on
+// the host — see module docs), so the runtime op signature is narrow (three
+// tensor inputs + one scalar ratio), a good fit for a GPU dispatch. Runtime
+// function, NOT an OpKind variant (same posture as `snake_activation_f32` /
+// `snake_beta_f32` / `sinegen_deterministic_f32` — see the localized re-
+// export block below).
+pub mod anti_aliased_upsample;
 // ---- SoTA plan Phase 3 BigVGAN vocoder (TTS bigvgan_generator primitive) ---
 // Anti-aliased periodic-activation vocoder — verbatim port of upstream
 // NVIDIA/BigVGAN (MIT, Copyright (c) 2024 NVIDIA CORPORATION). AMPBlock1 +
@@ -176,8 +186,18 @@ pub mod istft;
 pub mod istft_streaming;
 pub mod kaldi_fbank;
 pub mod length_conditioning;
+// Wave 1 2026-08-14 audit follow-up: shallow-fusion n-gram LM for
+// CTC / RNN-T / attention decoders (FR-OP-41 / FR-OP-42). Consumed via
+// `vokra_core::decode::LmScorer` trait; the fusion arithmetic lives one
+// indirection above in `vokra_core::decode::BeamSearchConfig::lm_fusion`.
+pub mod lm_fusion;
 pub mod mel;
 pub mod mfcc;
+// Wave 4 2026-08-14 audit follow-up: unified VoiceRef API for TTS
+// engines (Kokoro voice_id / piper-plus fixed voice / CosyVoice2
+// reference audio) — API surface only; adapter wiring per-engine is
+// follow-up.
+pub mod voice_ref;
 // ---- SoTA plan KWS binder (openwakeword classifier MLP, 2026-08-05) -----
 // Per-wake-word `Linear → ReLU → Linear → Sigmoid` classifier over a shared
 // 96-d speech embedding. First consumer is `vokra-models::kws::openwakeword`
@@ -199,6 +219,27 @@ pub mod openwakeword;
 // model zoo (FR-OP-32 — enforced by the M2-13 compliance gate and the
 // `scripts/compliance/check-encodec-exclusion.sh` release-side script).
 pub mod mimi_rvq;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE dispatch primitive (2026-08-13) ---------------
+// Top-k expert routing + capacity-factor gating for Mixture-of-Experts
+// audio-LLMs (`qwen3-omni-30b-a3b-moe`, `zonos2-8b-moe`, plus the
+// future Kimi-Audio-A28B family — see
+// docs/tickets/coverage-audit-2026-08-03/IMPL-PLAN.md §2.3). Runtime
+// function, NOT an `OpKind` variant (same posture as `flow_sampler` /
+// `mimi_rvq` — ADR M3-06 §D-b): the heterogeneous inputs (router
+// logits, per-expert weight bundles, dispatch plan) do not fit the
+// `OpValue` dispatch surface. Localised re-export block for clean
+// parallel-wave rebases.
+pub mod moe_dispatch;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE expert GEMM primitive (2026-08-13) ------------
+// Per-expert weight reduction that consumes a plan from `moe_dispatch`
+// and folds each expert's contribution back into the per-token output.
+// Split from `moe_dispatch` so the routing decision is independently
+// testable and so a later SIMD / GPU / Metal kernel can replace this
+// inner loop without redoing the softmax + top-k math. Runtime
+// function, NOT an `OpKind` variant (same posture as `moe_dispatch`).
+pub mod moe_expert_gemm;
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 1-2 NSF (HiFTNet source-filter core) ---------------
 // Neural Source Filter (SineGen + SourceModuleHnNSF) — verbatim port of the
@@ -226,7 +267,11 @@ pub mod resample;
 // ---- SoTA plan denoise Wave A rnnoise primitives (2026-08-05) -----------
 // Xiph RNNoise v0.2 primitives (Vorbis window, Bark filterbank, 3-gate GRU
 // forward, feature packer, DCT-II) plus the loud-partial pitch_analysis
-// stub. Consumed by `vokra_models::rnnoise_v02`. Runtime function set,
+// stub. No RNNoise runtime binder exists yet: outside this crate the full
+// primitive set is exercised only by the env-gated harness
+// `crates/vokra-models/tests/parity_rnnoise_v02.rs`, and the sole
+// production consumer is `vokra_models::nsnet2`, which reuses
+// `rnnoise_gru_forward` alone. Runtime function set,
 // NOT `OpKind` variants (same posture as `openwakeword_classifier_forward`
 // / `denoise` / `fsmn_vad_forward` — ADR M3-06 §D-b).
 pub mod rnnoise;
@@ -247,6 +292,19 @@ pub mod rnnt_decode;
 // `WNConv1d(codebook_dim, input_dim)` folds identically to DAC's. Consumed
 // by Orpheus and Maya1 (upstream `hubertsiuzdak/snac`, MIT / Apache-2.0).
 pub mod snac_decode;
+// -------------------------------------------------------------------------
+// ---- Vocoder Metal wave WF2 snake activation primitive (2026-08-13) -----
+// Snake activation (Ziyin et al. 2020; upstream `activations.py`) — the
+// per-channel periodic activation `y = x + (1/(α+ε))·sin(α·x)²` used by the
+// BigVGAN / HiFTNet / Kokoro-82M vocoder lineage. Exposes a stateless
+// out-of-place free function `snake_activation_f32` that the
+// `vokra_models::compute::Compute` seam dispatches through (CPU / Metal /
+// deferred CUDA), mirroring the silu / gelu / softmax family. The stateful
+// [`hiftnet::Snake`] (with optional `alpha_logscale`) and
+// [`bigvgan_generator::SnakeBeta`] (two-vector variant) stay as-is and are
+// unrelated to this module — this is a narrower, lower-level entry for a
+// GPU dispatch.
+pub mod snake;
 // -------------------------------------------------------------------------
 pub mod stft;
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend (raw-waveform 7-layer
@@ -295,6 +353,88 @@ pub mod ebranchformer;
 // parallel-wave rebases.
 pub mod hybrid_ctc_attention;
 // -------------------------------------------------------------------------
+// Wave 7 2026-08-14 audit follow-up: classical DSP F0 extractors (YIN —
+// de Cheveigné & Kawahara 2002 JASA; PyIN — Mauch & Dixon 2014 ICASSP).
+// Weight-free algorithm implementations sitting one level below the
+// neural F0 subgraphs in `vokra-models::f0` (RMVPE / FCPE / CREPE);
+// together they form the FR-OP-83 unified `f0_extract` API (landing WP
+// M5-16 — dormant per owner ADR 2026-07-22 until the M3-17 prosody /
+// voice-clone consumer arrives). Runtime functions, NOT `OpKind`
+// variants (same posture as `resample` / `agc` / `hpf` — ADR M4-20 §D-5).
+// Implemented from the paper spec — no code lifted from aubio (GPL-3.0)
+// or librosa (mirroring resample.rs's soxr/rubberband disclaimer,
+// NFR-LC-03/04).
+pub mod f0;
+// -------------------------------------------------------------------------
+
+// ---- Wave A (2026-08-15) WPE dereverberation ----------------------------
+// Weighted Prediction Error blind dereverberation — the first *executable*
+// dereverberation path in the tree.
+//
+// Placement vs the existing enhancement arm: DeepFilterNet3 / GTCRN /
+// RNNoise / NSNet2 all target additive noise, which is a different
+// degradation from late reverberation. `vokra-models::storm` (StoRM,
+// arXiv:2312.09386) does cover dereverberation, but it is a neural model
+// whose `enhance()` is currently a loud-partial (pending an NCSN++ v2 U-Net
+// score network + OUVE-SDE sampler) and whose §3.1 sign-off row is blank
+// and fail-closed, so it cannot run today. WPE is complementary rather than
+// redundant.
+//
+// Transcribed from the algorithm in `github.com/fgnt/nara_wpe` (MIT). Being
+// pure DSP it carries no weights, so unlike every neural entry on the
+// enhancement arm there is no checkpoint, no license class and no §3.1 row
+// to gate on — it is available unconditionally, like `resample`. Runtime
+// functions, NOT `OpKind` variants (same posture as `resample` / `agc` /
+// `hpf` — ADR M4-20 §D-5).
+pub mod wpe;
+// -------------------------------------------------------------------------
+
+// ---- Wave E (2026-08-15) ViT audio encoder ------------------------------
+// 2-D patch embedding over a mel plane + plain pre-norm Transformer encoder.
+//
+// This is the ONE primitive the whole SSL audio-embedding fleet was missing.
+// The `atst` / `eat` / `m2d` / `maest` binders (and the `dasheng` / `beats` /
+// `ast` converters behind them) each loud-partialled for the same reason:
+// `conformer` / `ebranchformer` / `zipformer` are conv-augmented ASR encoders
+// over a 1-D frame sequence, which is a different architecture, not a
+// substitute for a patch-grid ViT.
+//
+// Pre-norm, not post-norm — getting that backwards is silently wrong rather
+// than loud, so it is stated here as well as in the module docs. Every axis
+// is caller-supplied: five models use this with five different axis sets, so
+// there is deliberately no "upstream default" to invent.
+//
+// Runtime functions, NOT `OpKind` variants (same posture as `resample` /
+// `agc` / `hpf` / `wpe` — ADR M4-20 §D-5).
+pub mod vit;
+// -------------------------------------------------------------------------
+
+// ---- Wave D (2026-08-15) inverse text normalization / text normalization -
+// `itn` — the WeTextProcessing (Apache-2.0) two-stage tagger -> verbalizer
+// pipeline over compiled OpenFST grammars.
+//
+// A brand-new category: every ASR model here emits normalized, unpunctuated
+// text ("one hundred fourteen thousand five"); production transcripts need
+// "114005". This is the missing back half.
+//
+// It is mostly REUSE, not new machinery: `vokra_core::decode::wfst` (M5-06)
+// already ships the tropical semiring, the `Fst` type, structural validation
+// and a byte-verified `read_openfst_vector` for exactly the
+// `VectorFst<StdArc>` binary the upstream C++ runtime reads with
+// `StdVectorFst::Read`. The only new algorithm is composing a LINEAR input
+// string with a transducer and taking the best path — which does not need
+// the general `compose` that ADR M5-06 §1 deliberately omits.
+//
+// Feature-gated in HALVES: `vokra-ops/vokra-wfst` forwards to
+// `vokra-core/vokra-wfst` and gates only the two FST compositions. The
+// tagged-token parser, the per-language field-order tables, the `Reorder`
+// rewrite, the grammar container and the OpenFST header probe are all in the
+// DEFAULT build, so `cargo test --workspace` actually exercises them.
+//
+// Runtime functions, NOT `OpKind` variants (same posture as `resample` /
+// `agc` / `hpf` / `wpe` / `vit` — ADR M4-20 §D-5).
+pub mod itn;
+// -------------------------------------------------------------------------
 
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
@@ -320,7 +460,7 @@ pub use dac_rvq::{
 // ---- M4-20 (c) speech-enhancement re-exports ----------------------------
 pub use agc::{AgcAttrs, AgcState, agc};
 pub use denoise::{
-    DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise,
+    DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise, denoise_apply_mask_f32,
     denoise_skipped_checkpoint_tensors, denoise_synthesized_tensors, denoise_tensor_manifest,
 };
 pub use hpf::{HpfAttrs, HpfState, hpf};
@@ -380,6 +520,12 @@ pub use mimi_rvq::{
     mimi_rvq_decode_paged, mimi_rvq_read_summed, mimi_rvq_read_summed_range,
 };
 // -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE dispatch primitive (2026-08-13) ---------------
+pub use moe_dispatch::{MoeAssignment, MoeDispatchAttrs, MoeDispatchPlan, moe_dispatch};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Wave C MoE expert GEMM primitive (2026-08-13) ------------
+pub use moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm};
+// -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 pub use prosody::{ApplyProsody, ProsodyControl};
 // ---- SoTA plan Phase 3 qwen3_tts_codec re-exports -----------------------
@@ -401,6 +547,18 @@ pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 // ---- SoTA plan Phase 3 snac_decode re-exports ---------------------------
 pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
 // -------------------------------------------------------------------------
+// ---- Vocoder Metal wave WF2 snake activation re-exports (2026-08-13) ----
+pub use snake::snake_activation_f32;
+// ---- Vocoder Metal wave — common vocoder primitives re-exports ----------
+// Stateless out-of-place free functions that mirror the shape the
+// `vokra_models::compute::Compute` seam dispatches through (mirroring the
+// silu / gelu / softmax family — read inputs, write out). Consumed by the
+// BigVGAN / HiFTNet / Kokoro-82M vocoder lineage. Each has its own module
+// with rationale + upstream refs.
+pub use anti_aliased_upsample::anti_aliased_upsample_f32;
+pub use nsf::sinegen_deterministic_f32;
+pub use snake::snake_beta_f32;
+// -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend re-exports -----------
 pub use waveform_frontend::{
@@ -413,6 +571,23 @@ pub use vae_continuous::{
     ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder,
     ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode,
 };
+// -------------------------------------------------------------------------
+// ---- Wave 4 2026-08-14 audit follow-up voice_ref re-exports -------------
+pub use voice_ref::{VoiceRef, VoiceRefSource};
+// -------------------------------------------------------------------------
+// ---- Wave 7 2026-08-14 audit follow-up classical DSP F0 re-exports ------
+// YIN / PyIN weight-free extractors. See the `pub mod f0` block above for
+// placement / red-line rationale.
+pub use f0::{pyin, yin};
+// -------------------------------------------------------------------------
+// ---- Wave A (2026-08-15) WPE dereverberation re-exports -----------------
+// See the `pub mod wpe` block above for placement / licence rationale.
+// Localised re-export block for clean parallel-wave rebases.
+//
+// The upstream-default constants (DEFAULT_TAPS / DEFAULT_DELAY / ...) are
+// deliberately NOT hoisted to the crate root: those names are generic enough
+// to collide with a future op's defaults. Reach them as `wpe::DEFAULT_TAPS`.
+pub use wpe::{StatisticsMode, WpeAttrs, wpe, wpe_dereverb_pcm, wpe_dereverb_pcm_multi, wpe_mono};
 // -------------------------------------------------------------------------
 pub use vokra_core::Complex32;
 

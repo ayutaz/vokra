@@ -16,10 +16,10 @@
 //! Detector state-dicts through the same tensor-verbatim posture the
 //! sibling BF16-passthrough converters use. Callers pre-flatten the
 //! upstream torch pickles (`generator_base.pth` + `detector_base.pth`)
-//! to a single safetensors offline via
-//! `tools/parity/audioseal_prepare_checkpoint.py` (the DFN3 / DAC /
-//! CSM pickle-bridge pattern — no pickle enters the runtime,
-//! FR-LD-05).
+//! to a single safetensors offline via a future
+//! `tools/parity/audioseal_prepare_checkpoint.py` (not yet written —
+//! the DFN3 / DAC / CSM pickle-bridge pattern, so no pickle enters the
+//! runtime, FR-LD-05).
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
 //! and `vokra.provenance.*` metadata chunks the runtime watermark
@@ -139,9 +139,10 @@ pub struct AudiosealRealWeightReport {
 
 /// Converts an AudioSeal real-weight safetensors checkpoint at `input`
 /// (pre-flattened from the paired upstream `generator_base.pth` +
-/// `detector_base.pth` torch pickles by
-/// `tools/parity/audioseal_prepare_checkpoint.py`) into a Vokra-native
-/// GGUF at `output`, returning an [`AudiosealRealWeightReport`].
+/// `detector_base.pth` torch pickles — by a future
+/// `tools/parity/audioseal_prepare_checkpoint.py`, not yet written, so
+/// the flattening is an owner-side step today) into a Vokra-native GGUF
+/// at `output`, returning an [`AudiosealRealWeightReport`].
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream
 /// state-dict key; the `vokra.model.*` (arch / name / category) and

@@ -18,7 +18,15 @@ runtime binder at `crates/vokra-models/src/kws/openwakeword` by:
      (optionally) the shared `embedding_model.onnx` extractor into a
      single safetensors buffer that `vokra-cli convert --model
      openwakeword-op` consumes.
-  2. Running the upstream `openwakeword` + `onnxruntime` pipeline over a
+  2. Writing the `--output-config` side-car that same convert step
+     REQUIRES. It carries `wakeword_names`, the per-wake-word labels the
+     runtime returns to callers. Those labels are the one axis that
+     exists nowhere in the safetensors — tensors are indexed
+     positionally (`openwakeword.classifier.{idx}.…`) — and the
+     converter refuses to invent them, consistent with this script's own
+     refusal to infer a name from a path basename (see
+     `_parse_wakeword_spec`).
+  3. Running the upstream `openwakeword` + `onnxruntime` pipeline over a
      16 kHz mono WAV to emit per-hop wake-word probabilities as a JSON
      reference the Vokra parity harness at
      `crates/vokra-models/tests/parity_openwakeword.rs` compares against
@@ -33,16 +41,38 @@ Usage
 -----
 
     uv run python tools/parity/openwakeword_prepare_checkpoint.py \\
-        --embedding    ~/openwakeword/embedding_model.onnx \\
-        --wakeword     alexa=~/openwakeword/alexa_v0.1.onnx \\
-        --wakeword     hey_jarvis=~/openwakeword/hey_jarvis_v0.1.onnx \\
-        --input-wav    ~/test-speech.wav \\
-        --output-st    ~/openwakeword.safetensors \\
-        --output-ref   ~/openwakeword_reference.json \\
-        --output-wav   ~/openwakeword-16k.wav
+        --embedding     ~/openwakeword/embedding_model.onnx \\
+        --wakeword      alexa=~/openwakeword/alexa_v0.1.onnx \\
+        --wakeword      hey_jarvis=~/openwakeword/hey_jarvis_v0.1.onnx \\
+        --input-wav     ~/test-speech.wav \\
+        --output-st     ~/openwakeword.safetensors \\
+        --output-config ~/openwakeword_config.json \\
+        --output-ref    ~/openwakeword_reference.json \\
+        --output-wav    ~/openwakeword-16k.wav
+
+Then convert (the `--config` side-car is required):
+
+    vokra-cli convert --model openwakeword-op \\
+        --input  ~/openwakeword.safetensors \\
+        --config ~/openwakeword_config.json \\
+        --output ~/openwakeword.gguf
 
 Every `--wakeword` argument is `name=path`; ordering is preserved into
-the merged safetensors + the reference JSON's `hop_probs` keys.
+the merged safetensors, the config side-car's `wakeword_names`, and the
+reference JSON's `hop_probs` keys. That single ordering is what ties a
+positionally-indexed classifier tensor back to its label.
+
+Front-end axes
+--------------
+
+The config side-car deliberately does NOT write `window_frames`,
+`mel_bins`, `sample_rate` or `hop_samples`. This script has no
+primary source for them, and the converter already carries documented
+mirrors of the runtime binder's constants (76 / 32 / 16000 / 160) that
+apply when the key is absent. Writing them here would put the same
+numbers in a third place to drift. If you are converting a self-trained
+checkpoint whose front-end differs, add the keys to the emitted JSON by
+hand — the converter honours any that are present.
 
 License / distribution note
 ---------------------------
@@ -99,6 +129,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Output safetensors path (fed to `vokra-cli convert --model openwakeword-op`).",
+    )
+    p.add_argument(
+        "--output-config",
+        type=Path,
+        required=True,
+        help="Output config side-car path (fed to `vokra-cli convert --model "
+        "openwakeword-op --config`). Carries `wakeword_names` — the per-wake-word "
+        "labels the runtime returns to callers, which exist nowhere in the "
+        "safetensors and which the converter refuses to invent. Required, so the "
+        "artifact chain from ONNX to a loadable GGUF cannot be left incomplete.",
     )
     p.add_argument(
         "--output-ref",
@@ -309,6 +349,31 @@ def main() -> int:
     save_file(tensors, str(args.output_st))
     print(f"wrote {args.output_st} ({len(tensors)} tensors)", file=sys.stderr)
 
+    # ---- config side-car half -----------------------------------------------
+    #
+    # `wakeword_names` only. The four front-end axes (window_frames /
+    # mel_bins / sample_rate / hop_samples) are deliberately omitted: this
+    # script has no primary source for them, and the converter carries
+    # documented mirrors of the runtime binder's constants that apply when
+    # a key is absent. Emitting them here would be a third copy of the
+    # same numbers, free to drift from both.
+    #
+    # The ordering below is the SAME ordering used for the positional
+    # `openwakeword.classifier.{idx}.*` tensor names above, which is what
+    # lets the converter pair label i with classifier group i.
+    config: dict[str, Any] = {
+        "wakeword_names": [name for name, _ in wakeword_paths],
+    }
+    args.output_config.parent.mkdir(parents=True, exist_ok=True)
+    with args.output_config.open("w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+    print(
+        f"wrote {args.output_config} "
+        f"({len(config['wakeword_names'])} wake-word name(s)); pass it as "
+        f"`vokra-cli convert --model openwakeword-op --config {args.output_config}`",
+        file=sys.stderr,
+    )
+
     # ---- reference JSON half ------------------------------------------------
 
     samples, _sr = _read_wav_16k_mono_f32(args.input_wav)
@@ -318,9 +383,23 @@ def main() -> int:
 
     hop_probs = _emit_reference_probs(args.embedding, wakeword_paths, samples)
 
+    # NOTE ON THE TWO DIFFERENT "HOPS" (2026-08-15)
+    #
+    # This key used to be called `hop_samples`, which collided with
+    # `vokra.openwakeword.hop_samples` in the GGUF while meaning something
+    # else entirely, and 1280 vs 160 is an eight-fold difference that
+    # would look plausible in either slot:
+    #
+    #   - 1280 samples (80 ms) is the chunk `openwakeword.Model.predict`
+    #     consumes per call, i.e. how often a probability is emitted.
+    #     That is what this reference JSON steps by, so it belongs here.
+    #   - 160 samples (10 ms) is the mel ANALYSIS hop between melspec
+    #     frames, which is what the GGUF key means.
+    #
+    # Renamed so nobody can copy the wrong one into a converter side-car.
     reference: dict[str, Any] = {
         "sample_rate": 16_000,
-        "hop_samples": 1_280,
+        "predict_chunk_samples": 1_280,
         "wav_path": str(ref_wav),
         "wakeword_names": [name for name, _ in wakeword_paths],
         "hop_probs": hop_probs,

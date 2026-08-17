@@ -12,9 +12,10 @@
 //! upgrade path so the ModelKind is separate (existing UTMOS22-strong
 //! stays landed for reproducibility and the M5-15 UTMOS un-defer
 //! judgement path). Callers pre-flatten the upstream torch pickle to
-//! safetensors offline via
-//! `tools/parity/utmosv2_prepare_checkpoint.py` (the UTMOS22-strong
-//! pickle-bridge pattern — no pickle enters the runtime, FR-LD-05).
+//! safetensors offline via a future
+//! `tools/parity/utmosv2_prepare_checkpoint.py` (**not yet written** —
+//! the UTMOS22-strong pickle-bridge pattern, so no pickle enters the
+//! runtime, FR-LD-05; the binder records the same absence).
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
 //! and `vokra.provenance.*` metadata chunks the runtime eval path binds
@@ -147,8 +148,9 @@ pub struct Utmosv2Report {
 }
 
 /// Converts a UTMOSv2 safetensors checkpoint at `input` (pre-flattened
-/// from the upstream torch pickle by
-/// `tools/parity/utmosv2_prepare_checkpoint.py`) into a Vokra-native
+/// from the upstream torch pickle — a future
+/// `tools/parity/utmosv2_prepare_checkpoint.py` is not yet written, so
+/// that flattening is an owner-side step today) into a Vokra-native
 /// GGUF at `output`, returning a [`Utmosv2Report`].
 ///
 /// Every F32 / F16 / BF16 tensor passes through under its upstream

@@ -18,9 +18,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ConvertError, ConvertSummary, ModelKind, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_csm_file, convert_dac_file, convert_file_licensed, convert_file_quantized,
-    convert_moshi_file, convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
+    ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
+    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
+    convert_file_licensed, convert_file_quantized, convert_moshi_file, convert_piper_plus_file,
+    convert_sbv2_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -283,6 +284,24 @@ fn main() -> ExitCode {
             // directly instead, mirroring the `Csm` / `Moshi` /
             // `CosyVoice2` / `CosyVoice3` arms above.
             convert_sbv2(&input, config.as_deref(), &output, license.as_deref())
+        }
+        ModelKind::BeatThis => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // Same reason as the `SbV2` arm above: `convert_file_licensed`
+            // has no `--config` parameter to forward, so routing through
+            // the generic `_ =>` arm would drop this flag on the floor.
+            // (Its `BeatThis` branch refuses loudly rather than silently
+            // defaulting, so nothing would be *mis-stamped* — but the
+            // command would be unusable from this binary.)
+            //
+            // The upstream `CPJKU/beat_this` `.pt` release ships no
+            // config.yaml, so the six `vokra.beat_this.*` axes have to
+            // come from the caller; `convert_beat_this_with_config`
+            // documents the schema and refuses every missing key by name.
+            convert_beat_this_with_config(&input, &output, config.as_deref(), license.as_deref())
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
@@ -2283,10 +2302,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::GraniteSpeech
         // M5-16 / FR-OP-83: FCPE — pass-through BF16 skeleton verify shares
         // the same shape as the Phase 5 fleet (arch/name/category +
-        // upstream_hf + license triple). The FCPE-specific `vokra.f0.fcpe.*`
-        // config chunk is written by the model, not the converter, so this
-        // verify path deliberately does not readback it (a follow-up if a
-        // future variant lands a converter-written config).
+        // upstream_hf + license triple), plus a `vokra.f0.fcpe.*` config
+        // chunk this uniform verify arm does not read back.
+        //
+        // Until 2026-08-15 this comment claimed the chunk was "written by the
+        // model, not the converter". Nothing wrote it: the converter stamped
+        // none of the fourteen axes and the runtime silently defaulted every
+        // one of them to the released v001 shape. The converter now derives
+        // seven from the checkpoint's tensor shapes and asserts the other
+        // seven only when those shapes prove the artifact is v001; its own
+        // unit tests read the chunk back, so this shape-lookup arm stays a
+        // shape lookup rather than growing a per-model switch.
         | ModelKind::Fcpe
         // 2026-08-01 Wave 3: SNAC — Multi-Scale Neural Audio Codec
         // (hubertsiuzdak/snac_{24khz,44khz}, MIT). Same verify shape as
@@ -2422,6 +2448,21 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // still applies because the runtime-side lookup does not
         // depend on the publish gate.
         | ModelKind::AudioLdm2Large
+        // Wave D 2026-08-15: AudioSR (`haoheliu/audiosr_basic` /
+        // `haoheliu/audiosr_speech`, MIT — arXiv:2309.07314). Audio
+        // super-resolution / bandwidth extension, a **brand-new
+        // capability category** for Vokra: `category =
+        // "super-resolution"`, deliberately NOT the `enhancement`
+        // cohort. Both checkpoints stamp
+        // `vokra.provenance.upstream_hf` (the weights live on HF) so
+        // they join this group rather than the GitHub-only
+        // `upstream_url` arm — note the converter ALSO stamps
+        // `vokra.provenance.upstream_url` with the MIT code repo,
+        // because the GitHub tree is the config authority; this arm
+        // simply reports the HF anchor, which is the one that
+        // identifies the weights.
+        | ModelKind::AudioSr
+        | ModelKind::AudioSrSpeech
         // 2026-08-01 Wave 5 music-separation add: BS-Roformer /
         // Mel-Band Roformer (`chenmozhijin/BSRoformer-GGUF`, **weight
         // provenance unclear**). First music-source-separation
@@ -2526,6 +2567,13 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // vokra.model.{arch,name,category} + vokra.provenance.{upstream_hf,
         // license,weight_license}, so verify() surfaces the same 5-slot line.
         | ModelKind::Hibiki
+        // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+        // 2026-08-13): BosonAI Higgs-Audio v3 TTS 4B — same BF16
+        // pass-through skeleton contract as sibling wave-B models
+        // (vokra.model.{arch,name,category} + vokra.provenance.
+        // {upstream_hf,license,weight_license}), verifies through the
+        // same shared 5-slot line.
+        | ModelKind::HiggsAudioV3Tts4b
         | ModelKind::SberGigaamV3
         | ModelKind::SberGigaamMultilingual
         | ModelKind::ReazonspeechNemoV2
@@ -2535,6 +2583,16 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::OwsmV4Medium1b
         | ModelKind::ParakeetTdt11b
         | ModelKind::FireredAsrAedL
+        // coverage-audit-2026-08-03 Wave B fast-track (post-audit
+        // 2026-08-13): FireRedTeam/FireRedASR-LLM-L — same BF16
+        // pass-through skeleton contract (vokra.model.{arch,name,
+        // category} + vokra.provenance.{upstream_hf,license,
+        // weight_license}) as sibling wave-B models, verifies through
+        // the same shared 5-slot line. Distinct arch tag from the
+        // sibling FireredAsrAedL (Whisper-topology AED) because the
+        // LLM release is Conformer + audio-text adapter + Qwen2 LM
+        // decoder.
+        | ModelKind::FireredAsrLlmL
         | ModelKind::SortformerDiar4spkV1
         | ModelKind::SenseVoiceSmall
         | ModelKind::WhisperMedusaV1
@@ -2597,6 +2655,103 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // upstream/license triple readback and the artifact is
         // HF-hosted (upstream_hf stamped, not upstream_url).
         | ModelKind::Sgmse
+        // Music-understanding wave (2026-08-13, post-audit CC-gap): YAMNet
+        // — Google Research 521-class AudioSet audio-event classifier
+        // (MobileNetV1 depthwise-separable Conv2D backbone, ~15 MB edge
+        // model, apache-2.0 default). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = thelou1s/yamnet` — grouped
+        // here since the verify surface is a uniform arch/name/category/
+        // upstream/license triple readback.
+        | ModelKind::Yamnet
+        // Music-understanding wave (2026-08-13): MERT — Music undERstanding
+        // self-supervised encoder (HuBERT-derived Conv1D + 24-layer
+        // Transformer, ~330M params, cc-by-nc-4.0 default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = m-a-p/MERT-v1-330M`.
+        | ModelKind::Mert
+        // Music-understanding wave (2026-08-13): MuQ — Mel-RVQ + BEATs
+        // teacher self-supervised music encoder (~500M params, license
+        // unknown fail-closed default). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = OpenMuQ/MuQ-large-msd-iter`.
+        | ModelKind::Muq
+        // Music-understanding wave (2026-08-13): Dasheng — Universal audio
+        // encoder (speech + music + environmental, MAE ViT/ConvNeXt
+        // backbone, ~86M params base, apache-2.0 default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = mispeech/dasheng-base`.
+        | ModelKind::Dasheng
+        // Music-understanding wave (2026-08-13): PANNs Cnn14 — 527-class
+        // AudioSet audio-tagging backbone (VGG-flavour 14-layer 2D-CNN,
+        // ~80M params, license unknown fail-closed default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = nicofarr/panns_Cnn14`.
+        | ModelKind::Panns
+        // Music-understanding wave (2026-08-13): Basic-Pitch — Spotify
+        // polyphonic audio-to-MIDI pitch-detection (~6 MB CNN over CQT,
+        // 3-head posteriorgram output, apache-2.0 default). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = spotify/basic-pitch`.
+        | ModelKind::BasicPitch
+        // SSL audio-encoder wave (2026-08-13): MAEST — Music AEST
+        // (Discogs-pretrained AST SSL music-tagger, ~87M F32 params
+        // 30s-pw-129e, cc-by-nc-sa-4.0 default). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = mtg-upf/discogs-maest-30s-pw-129e`.
+        | ModelKind::Maest
+        // Meta music-gen post-audit CC-gap wave (2026-08-13): MAGNeT
+        // Small 10secs — Meta AudioCraft non-autoregressive masked-LM
+        // 10-second music generator (~500M params ~2 GB,
+        // cc-by-nc-4.0 default = T4 fail-closed). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = facebook/magnet-small-10secs`.
+        | ModelKind::MagnetSmall10secs
+        // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+        // remaining WF7): MAGNeT Medium 30secs — Meta AudioCraft
+        // non-autoregressive masked-LM 30-second music generator sibling
+        // of `MagnetSmall10secs` (~1.5B params ~5.7 GB = wider hidden +
+        // more layers than small + 30 sec span matching MusicGen family
+        // max, cc-by-nc-4.0 default = T4 fail-closed). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = facebook/magnet-medium-30secs`.
+        | ModelKind::MagnetMedium30secs
+        // Meta music-gen post-audit CC-gap wave (2026-08-13, Wave D
+        // remaining WF8): MelodyFlow T24 30secs — Meta AudioCraft
+        // flow-matching music **editing** model (DiT backbone, 24
+        // timesteps, 30 sec / 48 kHz, ~1 B params ~4.0 GB bundle =
+        // flow-matching transformer + 48 kHz RVQ codec + T5-base text
+        // encoder, cc-by-nc-4.0 default = T4 fail-closed). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = facebook/melodyflow-t24-30secs`.
+        | ModelKind::MelodyflowT2430secs
+        // Wave 7 2026-08-14 audit follow-up: WavLM-Base-Plus-SV speaker
+        // verification (Microsoft, apache-2.0 code, weight license
+        // fail-closed BLANK for Copyleft/Unknown sign-off). HF-hosted,
+        // stamps `vokra.provenance.upstream_hf = microsoft/wavlm-base-plus-sv`.
+        // Speaker-fleet extension over campplus / wespeaker / ecapa_tdnn /
+        // titanet / speaker_3d / redimnet.
+        | ModelKind::WavlmSv
+        // Wave D 2026-08-15: CT-Transformer punctuation restoration
+        // (`funasr/ct-punc`, apache-2.0) — the first `punctuation`
+        // category entry. HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = funasr/ct-punc`, so it belongs
+        // on the `upstream_hf` arm rather than the GitHub-only
+        // `upstream_url` arm below. The arch-specific `vokra.ct_punc.*`
+        // chunk group (including the `punc_list` Array<String>) is
+        // deliberately NOT read back here — this arm is the uniform
+        // provenance-triple lookup; `vokra-models::ct_punc::CtPunc::from_gguf`
+        // is what validates the full topology.
+        | ModelKind::CtPunc
+        // 2026-08-15 audit follow-up: ReDimNet2 B6-LM speaker backbone
+        // (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`, apache-2.0).
+        // HF-hosted, stamps `vokra.provenance.upstream_hf`, so it belongs
+        // on this arm rather than the GitHub-only `upstream_url` arm
+        // below. Speaker-fleet sibling of campplus / wespeaker /
+        // ecapa_tdnn / titanet / speaker_3d / wavlm_sv. The twelve
+        // `vokra.redimnet.*` topology axes are deliberately NOT read back
+        // here — that is `vokra-models::redimnet`'s strict-loader job;
+        // this arm is the uniform provenance-triple lookup.
+        | ModelKind::Redimnet
+        // 2026-08-15 audit follow-up: LLaMA-Omni2 streaming S2S
+        // (`ICTNLP/LLaMA-Omni2-*`, apache-2.0). HF-hosted, stamps
+        // `vokra.provenance.upstream_hf = ICTNLP/LLaMA-Omni2-<variant>`
+        // — the repo id is per-release, which is exactly why printing it
+        // back matters: it is how an operator confirms that `--model
+        // llama-omni2-32b` stamped the 32B identity and not the 7B
+        // default. The `vokra.llama_omni2.variant` chunk is validated by
+        // `vokra-models::llama_omni2`, not here.
+        | ModelKind::LlamaOmni2
         | ModelKind::Wavtokenizer => {
             let arch = file
                 .get("vokra.model.arch")
@@ -2754,7 +2909,42 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // `vokra.provenance.upstream_url` per the NKF-AEC / RNNoise /
         // NSNet2 / facebook_denoiser precedent.
         | ModelKind::TorchaudioSquim
-        | ModelKind::TenVad => {
+        | ModelKind::TenVad
+        // SSL audio-encoder wave (2026-08-13): BEATs — no first-party
+        // HF mirror as of 2026-08-13, stamps
+        // `vokra.provenance.upstream_url = github.com/microsoft/unilm/
+        // tree/master/beats` per the NKF-AEC / RNNoise / NSNet2 /
+        // facebook_denoiser precedent. Reading the wrong key would
+        // print `<none>` for the URL and hide the actual upstream in
+        // the verify output, which is exactly what FR-EX-08 forbids
+        // for provenance.
+        | ModelKind::Beats
+        // SSL audio-encoder wave (2026-08-13): EAT — no HF mirror as
+        // of 2026-08-13, stamps
+        // `vokra.provenance.upstream_url = github.com/cwx-worst-one/EAT`
+        // per the sibling-BEATs precedent.
+        | ModelKind::Eat
+        // SSL audio-encoder wave (2026-08-13): ATST — no HF mirror as
+        // of 2026-08-13, stamps
+        // `vokra.provenance.upstream_url = github.com/Audio-WestlakeU/
+        // audiossl/tree/main/audiossl/methods/atst` per the
+        // sibling-BEATs precedent.
+        | ModelKind::Atst
+        // SSL audio-encoder wave (2026-08-13): M2D — no HF mirror as
+        // of 2026-08-13, upstream LICENSE.pdf non-machine-readable.
+        // Stamps `vokra.provenance.upstream_url =
+        // github.com/nttcslab/m2d` per the sibling-BEATs precedent.
+        | ModelKind::M2d
+        // Post-audit CC-gap 2026-08-15: Voila (`maitrix-org/Voila`, mit)
+        // — full-duplex S2S dialog family. Stamps
+        // `vokra.provenance.upstream_url = github.com/maitrix-org/Voila`
+        // (the MIT reference-code tree) rather than `upstream_hf`,
+        // because the per-release HF weight repo ids are owner-verified
+        // at bind time and the converter asserts none of them. Reading
+        // the wrong key here would print `<none>` for the URL and hide
+        // the only upstream anchor the artifact carries, which is exactly
+        // what FR-EX-08 forbids for provenance.
+        | ModelKind::Voila => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())
@@ -2829,6 +3019,80 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
             println!(
                 "; arch={arch} name={name} category={category} upstream_url={upstream} \
                  license={license} bundle=[{bundle}] sample_rate={sr}"
+            );
+        }
+        // Wave 6 2026-08-14 audit follow-up: DTLN-AEC + GTCRN. Both
+        // ship with `vokra.provenance.upstream_url` (GitHub, not
+        // HuggingFace) same as sibling `NkfAec` / `Rnnoise` / `Nsnet2`
+        // fleet — dedicated arms keep the verify output honest instead
+        // of falling into a wildcard that would print `<none>` for the
+        // upstream URL. Wave 7 2026-08-14 RETRY: StoRM ships identical
+        // provenance/upstream_url/category surface (MIT, GitHub-only
+        // upstream via Google Drive distribution, category
+        // `enhancement`), so it joins the shared arm.
+        // Wave D 2026-08-15: DiffSinger joins the same arm — it also ships
+        // `vokra.provenance.upstream_url` (GitHub, `openvpi/DiffSinger`;
+        // the framework has no canonical HF mirror, individual voicebanks
+        // are scattered across hosts). Printing the upstream URL and the
+        // weight-license class is doubly load-bearing here: the apache-2.0
+        // default is the FRAMEWORK grant, so an operator verifying a
+        // converted singer voicebank needs to see at a glance whether the
+        // artifact inherited Permissive or carries the voicebank's own
+        // (often non-commercial) class from a `--license` override.
+        // WeTextProcessing joins this group for its provenance shape only
+        // (GitHub `upstream_url`, no HF mirror). It is the one weightless
+        // entry in the catalogue: the GGUF holds the compiled OpenFST
+        // `tagger.fst` / `verbalizer.fst` grammars as `U8` METADATA ARRAYS
+        // (the `vokra.tokenizer.model` precedent — `GgmlType` has no byte
+        // dtype), so its tensor count is legitimately 0 and the grammar
+        // detail lives in the `vokra.itn.*` chunk group.
+        // 2026-08-15 audit follow-up: MT3 and Beat This! join this arm.
+        // Both are GitHub-native releases with no HF mirror, so both
+        // stamp `vokra.provenance.upstream_url` (`github.com/magenta/mt3`
+        // and `github.com/CPJKU/beat_this`) and would print `<none>` for
+        // the upstream if they fell onto the `upstream_hf` arm above.
+        //
+        // Printing `weight_license` back is doubly load-bearing for MT3:
+        // its converter hard-maps the class to `Unknown` no matter what
+        // `--license` says, because the `gs://mt3/checkpoints/` bucket
+        // ships no LICENSE. An operator who passed `--license apache-2.0`
+        // and saw only the raw SPDX echoed would reasonably conclude the
+        // artifact is cleared for redistribution; the class column is
+        // where the fail-closed verdict is visible.
+        ModelKind::DtlnAec
+        | ModelKind::Gtcrn
+        | ModelKind::Storm
+        | ModelKind::DiffSinger
+        | ModelKind::Mt3
+        | ModelKind::BeatThis
+        | ModelKind::WeTextProcessing => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_url={upstream} \
+                 license={license} weight_license={class}"
             );
         }
     }

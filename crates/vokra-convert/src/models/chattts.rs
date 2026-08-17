@@ -22,8 +22,11 @@
 //!
 //! GGUF tensor names are the **upstream HF safetensors keys verbatim**
 //! (sibling to sensevoicesmall / xtts_v2 / chatterbox — the runtime
-//! `vokra-models::chattts` future binder can rely on the upstream key
-//! set without a rename layer).
+//! binder `vokra_models::chattts` relies on the upstream key set
+//! without a rename layer). That binder has landed: it carries
+//! `ARCH = "chattts"` matching this converter's stamp, and both
+//! `ChatTtsWeights::from_gguf` and `ChatTts::from_gguf` walk these
+//! names for real.
 //!
 //! # No ONNX (permanent)
 //!

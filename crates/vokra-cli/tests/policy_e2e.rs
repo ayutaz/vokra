@@ -59,8 +59,11 @@ use vokra_eval::check_degradation;
 
 /// Builds an F32 safetensors checkpoint from `(name, shape)` descriptors.
 ///
-/// Matches the format that `vokra_convert::safetensors::SafetensorsFile::parse`
-/// expects: `u64 header_len | header_json | packed_f32_le`. Payloads are
+/// Matches the format that `vokra_core::safetensors::SafetensorsFile::parse`
+/// expects: `u64 header_len | header_json | packed_f32_le`. (The reader was
+/// promoted out of `vokra-convert` in M1-02; `vokra-convert`'s own
+/// `safetensors` module is now a private `pub(crate) use` re-export of the
+/// `vokra-core` one, so `vokra-core` is the only public path.) Payloads are
 /// deterministic sinusoidal patterns (bounded in `[-1, 1]`) so K-quant super-
 /// block scales are non-degenerate — a whisper checkpoint of zeros would round-
 /// trip to bit-identical `Q4_K` blocks (`d=0`, all sub-scales=0) and skip the

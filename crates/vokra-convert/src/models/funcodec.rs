@@ -54,23 +54,6 @@
 //! **never** touches ONNX (FR-LD-05); the pipeline is re-implemented
 //! natively in `crates/vokra-models/src/…` when the codec lands
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
-//!
-//! # Scaffold visibility
-//!
-//! The module is a **TDD skeleton**: its `pub` surface
-//! ([`convert_funcodec_file`] + [`FuncodecReport`] + the transcribed
-//! constants) is exercised end-to-end by the module's own `#[cfg(test)]`
-//! tests, but the crate-root `pub use` re-export and the
-//! `convert_file_licensed` umbrella-dispatch arm both land on a follow-up
-//! wave. Until then the library target's `#[warn(dead_code)]` lint would
-//! flag every item as unused (test binaries are a separate compilation
-//! unit, so their usage does not count toward the library's dead-code
-//! analysis). The scoped `#![allow(dead_code)]` below is intentional
-//! and must be removed when the umbrella-dispatch arm lands — a stale
-//! `allow` on an actually-wired module would let a real regression slip
-//! in undetected.
-
-#![allow(dead_code)]
 
 use std::path::Path;
 

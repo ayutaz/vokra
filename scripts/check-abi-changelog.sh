@@ -8,21 +8,38 @@
 #   include/vokra.h). During this window we still want every symbol delta
 #   to be *observable* on-disk: this script diffs the working-tree
 #   include/vokra.h against a committed anchor snapshot and, if it finds a
-#   delta, requires docs/abi-changelog.md to have an entry dated today.
+#   delta, requires every changed symbol to have a row in
+#   docs/abi-changelog.md. The entry's date is historical metadata (the PR
+#   opening date), so a later CI run must not make an already documented delta
+#   fail merely because the calendar moved on.
 #
 # ARTEFACTS
 #   include/vokra.h                                 -- current C header (cbindgen)
 #   docs/abi/vokra.h.v1.0-rc-baseline.symbols       -- anchor snapshot
 #   docs/abi-changelog.md                           -- narrative + entries
 #
+# SECOND LEG: GGUF CHUNK PREFIXES
+#   docs/abi-changelog.md §Scope puts the GGUF metadata schema under the
+#   `vokra.*` prefix IN scope, on the grounds that model files are content-
+#   addressed by these chunks. Nothing enforced that, and 50 converter-
+#   stamped prefixes accumulated with no entry. The verify mode now also
+#   asserts: every `vokra.<group>` a converter stamps a key under must
+#   appear somewhere in docs/abi-changelog.md, unless it is listed in the
+#   declared-exception ledger below with a reason.
+#
 # MODES
-#   scripts/check-abi-changelog.sh                  -- verify (default)
+#   scripts/check-abi-changelog.sh                  -- verify (both legs)
 #   scripts/check-abi-changelog.sh --list           -- print current symbols
 #   scripts/check-abi-changelog.sh --update-snapshot-- rewrite the anchor
 #                                                     (owner action, requires
-#                                                     a paired changelog
-#                                                     entry dated today)
-#   scripts/check-abi-changelog.sh --self-test      -- unit-test the extractor
+#                                                     a paired changelog entry)
+#   scripts/check-abi-changelog.sh --check-gguf-prefixes
+#                                                  -- run only the GGUF
+#                                                     chunk-prefix leg
+#   scripts/check-abi-changelog.sh --list-gguf-prefixes
+#                                                  -- print the prefixes the
+#                                                     converter crate stamps
+#   scripts/check-abi-changelog.sh --self-test      -- unit-test both scanners
 #   scripts/check-abi-changelog.sh --help           -- this text
 #
 # NOT WIRED INTO CI YET
@@ -37,10 +54,13 @@
 #   header — call `scripts/gen-c-abi.sh` first if you touched the FFI.
 #
 # EXIT CODES
-#   0  clean (no delta, or delta covered by a today-dated changelog entry,
+#   0  clean (no delta, or delta covered by recorded symbol rows,
 #      or a --list / --self-test / --update-snapshot success)
-#   1  delta detected AND no today-dated changelog entry
-#   2  usage / setup error (missing header, missing anchor, bad flag)
+#   1  delta detected AND one or more symbols have no changelog row, OR a converter
+#      stamps a `vokra.<group>.*` chunk prefix with no mention in
+#      docs/abi-changelog.md and no ledger exception
+#   2  usage / setup error (missing header, missing anchor, missing
+#      converter tree, scanner returned nothing, bad flag)
 
 set -euo pipefail
 
@@ -50,7 +70,12 @@ ANCHOR="$ROOT/docs/abi/vokra.h.v1.0-rc-baseline.symbols"
 CHANGELOG="$ROOT/docs/abi-changelog.md"
 
 usage() {
-    sed -n '3,32p' "$0" | sed 's/^# \{0,1\}//'
+    # Print the whole banner (line 3 .. the last `#` line before `set -e`)
+    # rather than a hard-coded upper bound, so adding a section to the
+    # header cannot silently truncate --help.
+    local last
+    last="$(grep -nE '^set -euo pipefail' "$0" | head -1 | cut -d: -f1)"
+    sed -n "3,$((last - 2))p" "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------- extract ---
@@ -253,32 +278,227 @@ EOF
         diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") >&2 || true
         return 1
     fi
+    echo "check-abi-changelog --self-test: extractor OK"
+    self_test_gguf_prefixes || return 1
     echo "check-abi-changelog --self-test: OK"
     return 0
 }
 
+# self_test_gguf_prefixes — drive converter_gguf_prefixes over a synthetic
+# converter tree. Pins the two narrowings that keep the leg from crying
+# wolf, so a future edit to the grep/sed pipeline cannot quietly widen it.
+self_test_gguf_prefixes() {
+    local dir
+    dir="$(mktemp -d -t vokra-abi-gguf.XXXXXX)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$dir'" RETURN
+
+    mkdir -p "$dir/models"
+    cat >"$dir/models/fixture.rs" <<'EOF'
+//! Doc comment naming "vokra.ghost.beta" — prose must never invent a group.
+/// Another doc line with "vokra.phantom.gamma".
+// A plain comment with "vokra.spectre.delta".
+
+const KEY_DEMO_ALPHA: &str = "vokra.demo.alpha";
+const KEY_DEMO_NESTED: &str = "vokra.demo.arch.width";
+
+fn stamp(b: &mut GgufBuilder) {
+    b.add_u32(KEY_DEMO_ALPHA, 1);
+    b.add_u32(KEY_DEMO_NESTED, 2);
+    b.add_string("vokra.inline.gamma", "x");
+    b.add_u32(&format!("vokra.indexed.ratio_{i}"), 3);
+    b.add_string("general.name", "not-a-vokra-chunk");
+}
+
+#[cfg(test)]
+mod tests {
+    // The voila shape: a bare prefix used as a starts_with guard, in a test
+    // that asserts NO such key is emitted. Must NOT be reported as stamped.
+    fn guard(key: &str) -> bool {
+        key.starts_with("vokra.voila.")
+    }
+}
+EOF
+
+    local got want
+    got="$(converter_gguf_prefixes "$dir")"
+    want="$(printf '%s\n' 'vokra.demo' 'vokra.indexed' 'vokra.inline' | LC_ALL=C sort -u)"
+
+    if [ "$got" != "$want" ]; then
+        echo "self-test FAILED — GGUF prefix scanner drift:" >&2
+        diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") >&2 || true
+        return 1
+    fi
+    echo "check-abi-changelog --self-test: gguf prefix scanner OK"
+    return 0
+}
+
 # --------------------------------------------------------- changelog gate ---
-# has_today_entry — echo `yes` iff docs/abi-changelog.md contains an
-# `### YYYY-MM-DD ...` header dated today. We use `date -u +%F` so the gate
-# does not flake across time zones. UTC is the canonical date for the file.
-has_today_entry() {
-    local today
-    today="$(date -u +%F)"
+# changelog_mentions_symbol <symbol>
+# True iff docs/abi-changelog.md contains a table row for the exact ABI symbol.
+# Dates describe when a PR was opened; they are not a valid proxy for whether
+# the symbol itself has already been documented when CI runs later.
+changelog_mentions_symbol() {
+    local symbol="$1"
     if [ ! -f "$CHANGELOG" ]; then
-        echo "no"
         return 0
     fi
-    if grep -qE "^### ${today}( |—|$)" "$CHANGELOG"; then
-        echo "yes"
-    else
-        echo "no"
+    grep -qF "| \`$symbol\` |" "$CHANGELOG"
+}
+
+# ------------------------------------------------ GGUF chunk-prefix gate ---
+# Declared-exception ledger for the GGUF chunk-prefix leg.
+#
+# A prefix listed here is one the converter crate mentions in a key literal
+# but which legitimately needs no docs/abi-changelog.md row. Every line MUST
+# carry a reason: an undocumented exception is a hole in the gate, and a
+# ledger nobody has to justify is how the 50-prefix backlog happened in the
+# first place.
+#
+# Format: `vokra.<group>` then whitespace then `# <reason>`. `#`-only lines
+# and blanks are comments.
+#
+# EMPTY BY DESIGN as of 2026-08-15 — every prefix the converter crate stamps
+# now has a row. The plausible future entry is a key that exists only inside
+# a `#[cfg(test)]` fixture and never reaches a shipped `.gguf`; the scanner
+# cannot tell that from a real stamp, so such a case belongs here with the
+# test named.
+GGUF_PREFIX_EXCEPTIONS="$(
+    cat <<'LEDGER'
+LEDGER
+)"
+
+# converter_gguf_prefixes [dir]
+#
+# Emits the sorted, unique set of `vokra.<group>` chunk prefixes that the
+# converter crate stamps a key under. `dir` defaults to the converter source
+# tree and exists so --self-test can drive the same code over a fixture.
+#
+# Two deliberate narrowings keep this from crying wolf:
+#
+#   1. Whole-line comments are dropped BEFORE the literal scan, so prose in
+#      a rustdoc block cannot invent a chunk group.
+#   2. A key literal must have a LEAF: `"vokra.foo.bar"` counts,
+#      `"vokra.foo."` does not. That bare form is the `starts_with` guard
+#      shape, and matching it would flag `models/voila.rs` — which mentions
+#      `vokra.voila.` only to assert in a test that no such key is ever
+#      emitted. Flagging a converter for refusing to stamp axes would be
+#      exactly backwards.
+#
+# Known scope limit (documented, not hidden): this covers
+# crates/vokra-convert only. `vokra.denoise.*` is written by
+# `DenoiseModel::to_gguf_bytes` in vokra-ops, and `vokra.schema.*` /
+# `vokra.provenance.*` / `vokra.model.*` by `GgufBuilder::effective_metadata`
+# in vokra-core. Both are already recorded in docs/abi-changelog.md; widening
+# the scan to those crates would also sweep up every READER of a key (the
+# `from_gguf` side in vokra-models names the same strings), which is a false
+# positive the ledger would have to absorb wholesale.
+converter_gguf_prefixes() {
+    local src="${1:-$ROOT/crates/vokra-convert/src}"
+    if [ ! -d "$src" ]; then
+        echo "error: converter source tree not found: $src" >&2
+        return 2
     fi
+    grep -rhE --include='*.rs' -v '^[[:space:]]*(//|\*|/\*)' "$src" 2>/dev/null \
+        | grep -ohE '"vokra\.[a-z0-9_]+\.[a-z0-9_][a-z0-9_.{}]*"' \
+        | sed -E 's/^"(vokra\.[a-z0-9_]+)\..*$/\1/' \
+        | LC_ALL=C sort -u \
+        || true
+}
+
+# changelog_mentions_prefix <vokra.group>
+#
+# True iff docs/abi-changelog.md names the prefix. The trailing character
+# class stops `vokra.canary` from being satisfied by a `vokra.canary_qwen`
+# mention (and vice versa) — the two are different chunk groups and each
+# needs its own record.
+changelog_mentions_prefix() {
+    local esc
+    esc="$(printf '%s' "$1" | sed 's/\./\\./g')"
+    grep -qE "${esc}([^A-Za-z0-9_]|\$)" "$CHANGELOG"
+}
+
+# check_gguf_prefixes [dir] — the leg itself. 0 = clean, 1 = unrecorded
+# prefix found, 2 = setup problem.
+check_gguf_prefixes() {
+    local src="${1:-$ROOT/crates/vokra-convert/src}"
+    local prefixes exceptions missing=() skipped=0 pre total
+
+    if [ ! -f "$CHANGELOG" ]; then
+        echo "error: changelog not found: $CHANGELOG" >&2
+        return 2
+    fi
+
+    prefixes="$(converter_gguf_prefixes "$src")" || return 2
+    if [ -z "$prefixes" ]; then
+        # A scanner that quietly matches nothing is worse than no scanner:
+        # it reports success forever. Treat an empty sweep of the real tree
+        # as a setup error, not a pass.
+        echo "error: no vokra.* chunk prefix found under $src" >&2
+        echo "       the scanner regressed, or the tree moved — not a pass" >&2
+        return 2
+    fi
+
+    exceptions="$(printf '%s\n' "$GGUF_PREFIX_EXCEPTIONS" \
+        | grep -Ev '^[[:space:]]*(#|$)' \
+        | awk '{print $1}' || true)"
+
+    total=0
+    while IFS= read -r pre; do
+        [ -n "$pre" ] || continue
+        total=$((total + 1))
+        if [ -n "$exceptions" ] && printf '%s\n' "$exceptions" | grep -qx "$pre"; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        changelog_mentions_prefix "$pre" || missing+=("$pre")
+    done <<EOF
+$prefixes
+EOF
+
+    echo "  gguf    : $total converter-stamped chunk prefixes, ${skipped} ledger exception(s)"
+
+    if [ ${#missing[@]} -eq 0 ]; then
+        echo "  gguf    : OK (every prefix appears in docs/abi-changelog.md)"
+        return 0
+    fi
+
+    {
+        echo ""
+        echo "check-abi-changelog: FAIL — ${#missing[@]} GGUF chunk prefix(es)"
+        echo "are stamped by a converter but appear nowhere in"
+        echo "docs/abi-changelog.md:"
+        printf '  %s.*\n' "${missing[@]}"
+        echo ""
+        echo "docs/abi-changelog.md §\"Scope: what belongs in this file\" puts the"
+        echo "GGUF metadata schema in scope — model files are content-addressed by"
+        echo "these chunks, so an unrecorded group is an undocumented on-disk"
+        echo "compatibility surface."
+        echo ""
+        echo "Fix (pick one, honestly):"
+        echo "  1. Add a row to the GGUF metadata additions block naming the"
+        echo "     prefix, the converter that stamps it, and whether it is"
+        echo "     additive. Follow the existing table columns."
+        echo "  2. If the prefix genuinely needs no row (e.g. it only exists in"
+        echo "     a #[cfg(test)] fixture), add it to GGUF_PREFIX_EXCEPTIONS in"
+        echo "     this script WITH a reason naming the test."
+    } >&2
+    return 1
 }
 
 # ------------------------------------------------------------------ main ---
 mode="${1:-verify}"
 case "$mode" in
     verify|"")
+        # Leg 2 (GGUF chunk prefixes) runs first and its status is carried
+        # to the end, so a C-ABI-clean tree still fails on an unrecorded
+        # chunk group instead of exiting 0 before the leg is reached.
+        prefix_rc=0
+        check_gguf_prefixes || prefix_rc=$?
+        if [ "$prefix_rc" -eq 2 ]; then
+            exit 2
+        fi
+
         # Extract fresh, compare against anchor.
         if [ ! -f "$ANCHOR" ]; then
             echo "error: anchor snapshot missing: $ANCHOR" >&2
@@ -304,7 +524,7 @@ case "$mode" in
         if diff_out="$(diff -u <(printf '%s\n' "$anchor") <(printf '%s\n' "$current"))"; then
             echo ""
             echo "check-abi-changelog: OK (baseline unchanged)"
-            exit 0
+            exit "$prefix_rc"
         fi
 
         echo ""
@@ -312,26 +532,39 @@ case "$mode" in
         printf '%s\n' "$diff_out" | sed 's/^/  /'
         echo ""
 
-        if [ "$(has_today_entry)" = "yes" ]; then
-            today="$(date -u +%F)"
-            echo "check-abi-changelog: OK (delta covered by a $today entry in docs/abi-changelog.md)"
+        # The anchor is intentionally long-lived through the rc window. Do
+        # not require a heading dated *today*: that made a documented ABI
+        # addition fail on every subsequent CI day. Extract the symbols from
+        # the delta and require each one to have an explicit changelog row.
+        delta_symbols="$(printf '%s' "$diff_out" | awk '/^[+-](FUNC|TYPEDEF) / { line = substr($0, 2); sub(/^(FUNC|TYPEDEF) /, "", line); sub(/\|.*/, "", line); print line }' | LC_ALL=C sort -u)"
+        missing_symbols=()
+        while IFS= read -r symbol; do
+            [ -n "$symbol" ] || continue
+            if ! changelog_mentions_symbol "$symbol"; then
+                missing_symbols+=("$symbol")
+            fi
+        done <<< "$delta_symbols"
+
+        if [ "${#missing_symbols[@]}" -eq 0 ]; then
+            echo "check-abi-changelog: OK (every changed C ABI symbol has a changelog row)"
             echo ""
             echo "reminder: once the change is merged into the release cut,"
             echo "run 'scripts/check-abi-changelog.sh --update-snapshot' to"
             echo "advance the anchor and drop the entries into the immutable"
             echo "release section."
-            exit 0
+            exit "$prefix_rc"
         fi
 
         cat >&2 <<EOF
-check-abi-changelog: FAIL — the C ABI moved but docs/abi-changelog.md has
-no entry dated $(date -u +%F).
+check-abi-changelog: FAIL — the C ABI moved but these changed symbols have
+no row in docs/abi-changelog.md:
+
+$(printf '  %s\n' "${missing_symbols[@]}")
 
 Fix:
-  1. If the change is intentional, add a section
-       ### $(date -u +%F) — 1.0.0-rc.1-dev
-     to docs/abi-changelog.md following the schema at the top of that file
-     (one row per symbol, with rationale + WP/PR id).
+  1. If the change is intentional, add one table row per missing symbol to
+     docs/abi-changelog.md following the schema at the top of that file
+     (inside a dated section, with rationale + WP/PR id).
   2. If the change is accidental (e.g. cbindgen drift on an unrelated
      refactor), revert the include/vokra.h diff or fix the vokra-capi Rust
      source that produced it.
@@ -345,6 +578,16 @@ EOF
 
     --list)
         extract_symbols "$HEADER"
+        ;;
+
+    --check-gguf-prefixes)
+        set +e
+        check_gguf_prefixes
+        exit $?
+        ;;
+
+    --list-gguf-prefixes)
+        converter_gguf_prefixes
         ;;
 
     --update-snapshot)

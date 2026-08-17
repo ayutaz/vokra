@@ -14,7 +14,8 @@
 //! 7B params + Whisper encoder = ~16 GB. Above M1 iMac safe threshold
 //! per memory `[[feedback-large-models-on-vast-ai]]`; vast.ai runbook
 //! required per owner 2026-08-01 directive「重いモデルはローカルで変換
-//! しない」. Shard-merge via `tools/parity/qwen2_audio_prepare_checkpoint.py`.
+//! しない」. Shard-merge via a future
+//! `tools/parity/qwen2_audio_prepare_checkpoint.py` (not yet written).
 
 use std::path::Path;
 

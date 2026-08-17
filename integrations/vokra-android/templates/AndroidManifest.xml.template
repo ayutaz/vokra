@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AndroidManifest.xml — template snippet for an app that consumes the Vokra
+  Android JNI binding (`libvokra_android.so`).
+
+  Drop the two <uses-permission> lines and the <application> block into your
+  real app manifest; the <application> tag stays required (Android needs the
+  application context to resolve `Context.filesDir` for GGUF model paths).
+
+  ADR reference: docs/adr/M4-kotlin-binding-jni-vs-jna.md (Proposed).
+  Vokra runtime NFR: NFR-RL-04 (Android `StreamingAssets` → `persistentDataPath`
+  expansion; use the future `Vokra.assetToFile(context, "model.gguf")` helper).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Vokra runtime performs no network I/O by itself. If your app fetches
+      GGUFs from a CDN, keep INTERNET; if you ship them in the APK / OBB,
+      you can remove it.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      Only needed if the app records microphone audio to feed a VAD / ASR
+      / S2S session. Not required to load a TTS-only model.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:label="@string/app_name"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="false">
+        <!--
+          Your app activities go here. The Vokra JNI binding does not add
+          any own <activity> / <service> — everything runs in your process
+          via `System.loadLibrary("vokra_android")` at Kotlin class load.
+        -->
+    </application>
+
+</manifest>

@@ -50,10 +50,42 @@
 //! - `vokra.openwakeword.wakeword_names` (`Array<String>` of length
 //!   `n_wakewords`): human-readable per-wake-word names in the order
 //!   the classifier weights are indexed.
-//! - `vokra.openwakeword.classifier.{i}.linear{1,2}.{weight,bias}`
-//!   (F32 tensors): per-wake-word MLP weights.
 //!
-//! Every hparam is required and validated loudly at load time (FR-EX-08).
+//! All seven are required and validated loudly at load time (FR-EX-08):
+//! [`OpenwakewordConfig::from_gguf`] errors with
+//! [`VokraError::ModelLoad`] on any absent key, and
+//! [`OpenwakewordConfig::validate`] then refuses a `0` sentinel on every
+//! numeric hparam.
+//!
+//! # Tensors (NOT part of the chunk group above)
+//!
+//! - `openwakeword.classifier.{i}.linear{1,2}.{weight,bias}`:
+//!   per-wake-word MLP weights, `i` in `0..n_wakewords`. Read through
+//!   `GgufFile::tensor_f32`, so F32 / F16 / BF16 all bind (BF16 widens
+//!   losslessly at load).
+//! - `openwakeword.embedding.*`: the shared Google `speech_embedding`
+//!   extractor weights, when present. Currently unread — see the
+//!   loud-partial section above.
+//!
+//! These names carry **no `vokra.` prefix** — they are tensor names, not
+//! metadata keys, and the canonical spellings are the
+//! [`tensor_classifier_linear1_weight`] family below. Until 2026-08-15
+//! this section listed them inside the chunk group with a
+//! `vokra.openwakeword.` prefix they have never had, which is a plausible
+//! way for a converter author reading these docs to emit tensor names the
+//! binder cannot find.
+//!
+//! # Producer
+//!
+//! `vokra-cli convert --model openwakeword-op --config <config.json>`
+//! (`crates/vokra-convert/src/models/openwakeword_op.rs`). The `--config`
+//! side-car is required because `wakeword_names` cannot be derived from
+//! the tensors; the other six keys the converter derives or mirrors. The
+//! two halves are held together by
+//! `crates/vokra-models/tests/openwakeword_convert_bind.rs`, which runs
+//! that converter into this binder — added after a 2026-08-15 audit found
+//! the converter had never stamped this chunk group at all, so no GGUF it
+//! produced could load here.
 //!
 //! # Wake-word threshold
 //!

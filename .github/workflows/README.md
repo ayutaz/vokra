@@ -4,7 +4,18 @@
 cron 時刻・required check name・trigger の記述に各 workflow file の comment との差異が
 あった場合、**本 file が真** とみなし、各 workflow file 側を後追いで揃えます。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（2026-07-23 時点で 20 file）
+- 対象範囲: `.github/workflows/*.yml` 全件（**実数 40 file**。旧記載「2026-07-23 時点で 20 file」は
+  その後の parity workflow 増設で陳腐化していたため実測値に更新）
+- **⚠ 既知の網羅 gap (owner follow-up)**: 本 file は SoT を称するが、現時点で下記 16 workflow が
+  どの節にも記載されていない — `coverage.yml` / `secret-scan.yml` / `nightly-full-parity.yml` /
+  `parity-cosyvoice2-real.yml` / `parity-deberta-v3-large-real.yml` /
+  `parity-deepfilternet3-real.yml` / `parity-nemo-asr-real.yml` / `parity-qwen3-tts-real.yml` /
+  `parity-rmvpe-real.yml` / `parity-sbv2-real.yml` / `parity-tts-continuous-vae-real.yml` /
+  `parity-tts-dac-real.yml` / `parity-tts-hiftnet-real.yml` / `parity-tts-japanese-real.yml` /
+  `parity-voxtral-real.yml` / `parity-whisper-extras-real.yml`。
+  §3 の cron stagger table に追記するには各 file の実 `schedule:` を読む必要があるため、
+  **推測で埋めず gap として明示**する（記載のない workflow は「本 file が真」の対象外＝
+  各 file 側 comment が唯一の記述になる）
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
   を primary source として取得し、本 file の §1 に転記
 - cron 時刻の実態: 各 workflow file 内の `schedule: - cron: '...'` 実定義から抽出。
@@ -45,28 +56,44 @@ merge を gate しない informational check。定期監視で赤化を検知し
 required 昇格するかを判断する（初期 promotion 方針: 連続数週の緑が確認できた時点で
 owner に昇格提案）。
 
-### 2.1 ci.yml 内 (PR/push で常時走行、advisory)
+### 2.1 ci*.yml 内 (PR/push で常時走行、advisory)
+
+**2026-07-23 の CI 分割 (`chore/ci-cd-reorg-2026-07-23`) 反映済**: advisory job の大半は `ci.yml`
+から `ci-quality.yml` (lint / audit / doc-drift / server-compat) と `ci-platform.yml`
+(platform build target / GPU backend / RTF regression / server-deployment) へ移動した。
+`ci.yml` に残る advisory は required 中核と artifact chain を共有する 4 件のみ。
+**`定義 file` 列は分割後の実ファイルを指す** (下表は
+`awk '/^jobs:/{i=1;next} i&&/^[^ ]/{i=0} i&&/^  [A-Za-z0-9_-]+:$/' .github/workflows/ci*.yml`
+の実出力と一致することを確認済)。
 
 | check name | 定義 file | 目的 |
 |---|---|---|
-| repo-hygiene | .github/workflows/ci.yml | tracked file の scratch/gitignore drift 検査 |
-| unity-capi-lints | .github/workflows/ci.yml | Unity C# 側 P/Invoke lint |
-| capi-smoke | .github/workflows/ci.yml | C ABI smoke test (bytes error-path / session / stream / aec / s2s) |
-| msrv | .github/workflows/ci.yml | Minimum Supported Rust Version 追随 |
-| abi-surface | .github/workflows/ci.yml | `include/vokra.h` drift + Rust public-api snapshot + m0 anchor 差分 |
-| doc-examples | .github/workflows/ci.yml | rustdoc code fence の compile & run |
-| rustdoc | .github/workflows/ci.yml | `cargo doc --workspace` warn-as-error |
-| fa-v3-confinement | .github/workflows/ci.yml | FlashAttention v3 が v1.5+ 前倒し禁止に閉じ込められていることの assert |
-| gpu-backends | .github/workflows/ci.yml | macos=metal / ubuntu=cuda opt-in feature の build/clippy/test |
-| build-target-vulkan-only | .github/workflows/ci.yml | M4-15 CPU+Vulkan-only SKU build target 検証 |
-| riscv-cross-build | .github/workflows/ci.yml | RVV 1.0 (M3-13) cross build + ISA dispatch asm 検査 |
-| cpu-isa-server-tier | .github/workflows/ci.yml | M4-17 AVX-512/VNNI/BF16 + ARM64 dotprod/i8mm/bf16 dispatch build |
+| repo-hygiene | .github/workflows/ci-quality.yml | tracked file の scratch/gitignore drift 検査 |
+| catalog-audit | .github/workflows/ci-quality.yml | model catalog の実在性 audit (catalog-reality gate) |
+| unity-capi-lints | .github/workflows/ci-quality.yml | Unity C# 側 P/Invoke lint |
+| capi-smoke | .github/workflows/ci-quality.yml | C ABI smoke test (bytes error-path / session / stream / aec / s2s) |
+| msrv | .github/workflows/ci-quality.yml | Minimum Supported Rust Version 追随 |
+| abi-surface | .github/workflows/ci-quality.yml | `include/vokra.h` drift + Rust public-api snapshot + m0 anchor 差分 |
+| doc-examples | .github/workflows/ci-quality.yml | rustdoc code fence の compile & run |
+| doctests | .github/workflows/ci-quality.yml | `cargo test --doc` |
+| rustdoc | .github/workflows/ci-quality.yml | `cargo doc --workspace` warn-as-error |
+| fa-v3-confinement | .github/workflows/ci-quality.yml | FlashAttention v3 が v1.5+ 前倒し禁止に閉じ込められていることの assert |
+| python-license-audit | .github/workflows/ci-quality.yml | Python 補助 tool の pip-licenses audit |
+| server-compat | .github/workflows/ci-quality.yml | OpenAI / vLLM / Wyoming プロトコル互換 leg (3-OS cross-build) |
+| cargo-audit | .github/workflows/ci-quality.yml | RustSec advisory audit |
+| typos | .github/workflows/ci-quality.yml | typo checker |
+| vokra-piper-g2p | .github/workflows/ci-quality.yml | 除外 workspace `integrations/vokra-piper-g2p` の build/test |
+| python-parity-oracles | .github/workflows/ci-quality.yml | Python 側 parity oracle script の self-test |
+| shell-self-tests | .github/workflows/ci-quality.yml | `scripts/*.sh` の `--self-test` 集約 |
+| gpu-backends | .github/workflows/ci-platform.yml | macos=metal / ubuntu=cuda opt-in feature の build/clippy/test (+ coreml/qnn delegate scaffold arm) |
+| build-target-vulkan-only | .github/workflows/ci-platform.yml | M4-15 CPU+Vulkan-only SKU build target 検証 |
+| riscv-cross-build | .github/workflows/ci-platform.yml | RVV 1.0 (M3-13) cross build + ISA dispatch asm 検査 |
+| build-windows-arm64 | .github/workflows/ci-platform.yml | `aarch64-pc-windows-msvc` cross build |
+| cpu-isa-server-tier | .github/workflows/ci-platform.yml | M4-17 AVX-512/VNNI/BF16 + ARM64 dotprod/i8mm/bf16 dispatch build |
+| bench-regression | .github/workflows/ci-platform.yml | 5% regression gate (M3-01 defer 分は M2-14 self-hosted runner まで aspirational) |
+| server-deployment | .github/workflows/ci-platform.yml | vokra-server musl 静的リンク + runtime workspace 非汚染 (FR-SV-01 / NFR-DS-02) |
 | ios-build | .github/workflows/ci.yml | iOS `libvokra.a` static build + `verify-xcframework.sh` |
 | parity-matrix | .github/workflows/ci.yml | fixture parity matrix leg (aggregator `parity` の元) |
-| bench-regression | .github/workflows/ci.yml | 5% regression gate (M3-01 defer 分は M2-14 self-hosted runner まで aspirational) |
-| server-deployment | .github/workflows/ci.yml | vokra-server (excluded workspace) build/test |
-| server-compat | .github/workflows/ci.yml | OpenAI / vLLM / Wyoming プロトコル互換 leg |
-| python-license-audit | .github/workflows/ci.yml | Python 補助 tool の pip-licenses audit |
 | unity-package | .github/workflows/ci.yml | Unity plugin package audit (M2-11、UNITY_LICENSE 未 provisioning ゆえ WARN skip) |
 | python-wheel-build | .github/workflows/ci.yml | cibuildwheel v2.23.4 + hatchling custom build hook (`vokra` wheel) |
 

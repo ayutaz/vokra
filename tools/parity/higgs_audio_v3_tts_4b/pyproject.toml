@@ -1,0 +1,29 @@
+[project]
+name = "higgs-audio-v3-tts-4b-prep"
+version = "0.1.0"
+description = "Offline sidecar: bosonai/higgs-audio-v3-tts-4b sharded safetensors → flat safetensors (dedup + int/f64/bool strip). Bridges the upstream sharded HF release to the Rust converter (crates/vokra-convert/src/models/higgs_audio_v3_tts_4b.rs), which consumes safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
+requires-python = ">=3.12"
+dependencies = [
+    # torch: unwraps the sharded safetensors state dict via `safetensors.torch.load_file`
+    #        (or the plain `.load` low-level reader), plus data-pointer tracking for
+    #        the shared-storage dedup pass (memory `[[reference-safetensors-shared-tensor-dedup]]`)
+    #        that `safetensors.torch.save_file` demands. Range mirrors the parent
+    #        workspace (tools/parity/pyproject.toml).
+    "torch>=2.0",
+    # safetensors: canonical Python reader / writer for the upstream sharded
+    #        release (`model-00001-of-000NN.safetensors` + `model.safetensors.index.json`)
+    #        and the flat output the Rust converter consumes.
+    "safetensors>=0.4",
+    # huggingface-hub: convenience for the download path the README documents
+    #        (`hf download bosonai/higgs-audio-v3-tts-4b --local-dir ...`).
+    #        The download step is a shell one-liner in the README; keeping the
+    #        library dep here lets the future dumper `.py` reach for
+    #        `huggingface_hub.snapshot_download` without a second env sync.
+    #        vast.ai runbook `docs/handoff/vast-ai-large-model-publish.md`
+    #        pins `<0.30` when running on vast.ai due to a xet-token routing
+    #        latent 404 (see `[[reference-huggingface-hub-lt-030-vast-ai]]`);
+    #        local M1 iMac has no such constraint but the sidecar still runs
+    #        on the CC laptop today so the constraint is documented, not
+    #        enforced here.
+    "huggingface-hub>=0.26",
+]

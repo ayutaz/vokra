@@ -87,11 +87,93 @@ pub use weights::{QuantBindReport, WhisperLoadOptions, WhisperWeights};
 
 use std::sync::Arc;
 
-use vokra_core::gguf::GgufFile;
-use vokra_core::{BackendKind, FrontendPolicy, Result};
+use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::{BackendKind, FrontendPolicy, Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
 use encoder::EncoderOutput;
+
+/// Every `vokra.model.arch` value the Whisper binder legitimately serves.
+///
+/// Whisper is one of the few binders that **correctly** accepts more than
+/// one arch tag: four distinct upstream release families share the vanilla
+/// Whisper tensor topology, the `vokra.whisper.*` hparam schema and the
+/// detokenizer verbatim, differing only in provenance / license / decoder
+/// depth. All four therefore load through the same code path:
+///
+/// - `whisper` — vanilla `openai/whisper` (MIT).
+///   (`crates/vokra-convert/src/models/whisper.rs::ARCH`)
+/// - `crisper-whisper` — `nyrahealth/CrisperWhisper`, a large-v3
+///   verbatim-word-timestamps fine-tune (cc-by-nc-4.0). Byte-identical
+///   architecture to whisper-large-v3; only the stamp, license class and
+///   provenance differ.
+///   (`…/whisper.rs::ARCH_CRISPERWHISPER`, via `WhisperVariant`)
+/// - `distil-whisper` — `distil-whisper/distil-large-v3.5`. Architecturally
+///   a Whisper checkpoint whose only difference is
+///   `n_text_layer < n_audio_layer`; [`crate::distil_whisper::DistilWhisperAsr::from_gguf`]
+///   delegates the whole load to [`WhisperAsr::from_gguf`] and then enforces
+///   that distil invariant on top.
+///   (`crates/vokra-convert/src/models/distil_whisper.rs::ARCH`)
+/// - `kotoba-whisper` — `kotoba-tech/kotoba-whisper-v2.0` (Apache-2.0),
+///   the same shallow-decoder shape distilled on a Japanese corpus.
+///   [`crate::kotoba_whisper::KotobaWhisperAsr::from_gguf`] delegates
+///   identically.
+///   (`crates/vokra-convert/src/models/kotoba_whisper.rs::ARCH`)
+///
+/// Deliberately **excluded**: `whisper-medusa-v1`
+/// (`crates/vokra-convert/src/models/whisper_medusa_v1.rs::ARCH`) — it
+/// carries extra Medusa speculative-decoding heads that this binder has no
+/// runtime module for, so admitting it would bind the base tower and
+/// silently drop the heads.
+///
+/// These strings mirror the converter constants — the converter owns the
+/// writer contract, this module owns the reader contract (the deliberate
+/// two-copies convention [`crate::pyannote`] documents; a compile-time
+/// check would need `vokra-convert` in `vokra-models`'s dependency graph,
+/// which the workspace pins forbid).
+pub const ACCEPTED_ARCHS: &[&str] = &[
+    "whisper",
+    "crisper-whisper",
+    "distil-whisper",
+    "kotoba-whisper",
+];
+
+/// Rejects a GGUF whose `vokra.model.arch` is absent or is not one of
+/// [`ACCEPTED_ARCHS`].
+///
+/// A *loud* validation step (FR-EX-08): the Whisper weight binder matches
+/// on HF-verbatim tensor names, so a foreign checkpoint that happens to
+/// share some of them would bind a partial model and transcribe noise.
+///
+/// # Scope note (follow-up)
+///
+/// This is currently called from [`WhisperSession::from_gguf`] /
+/// [`WhisperSession::from_gguf_on`]. Extending it to
+/// [`WhisperModel::from_gguf`] and [`WhisperAsr::from_gguf`] — the paths
+/// `vokra-cli` / `vokra-capi` / `vokra-server` take — is a follow-up that
+/// also has to stamp the synthetic fixtures in
+/// [`crate::distil_whisper`]'s and [`crate::kotoba_whisper`]'s delegation
+/// tests, which today build unstamped shape-only GGUFs and assert on the
+/// *front-end chunk* message they currently get.
+pub(crate) fn verify_arch(file: &GgufFile) -> Result<()> {
+    match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
+        Some(a) if ACCEPTED_ARCHS.contains(&a) => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "whisper: GGUF arch is `{other}`, expected one of {ACCEPTED_ARCHS:?}. Those four \
+             families share the vanilla Whisper topology + `vokra.whisper.*` schema verbatim \
+             and are the only ones this binder serves. `whisper-medusa-v1` is deliberately \
+             NOT accepted (its Medusa speculative-decoding heads have no runtime module — \
+             binding it would silently drop them). Any other arch would bind whatever \
+             HF-verbatim tensor names happen to overlap and transcribe noise (FR-EX-08 — no \
+             silent partial load)."
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "whisper: GGUF is missing `{}` — this is not a Vokra-native Whisper GGUF (was it \
+             produced by `vokra-cli convert --model whisper`?)",
+            chunks::KEY_MODEL_ARCH,
+        ))),
+    }
+}
 
 /// The backend hot ops the Whisper forward dispatches. Unlike CAM++ / piper
 /// (GEMM only), Whisper also routes softmax / layer-norm / GELU / conv1d / GEMV
@@ -276,7 +358,13 @@ mod quant_load {
     /// first; so the public surface test we run is a compilable-shape check
     /// on the constructor error type — the deep behaviour is covered under
     /// [`session::quant_load`].
+    ///
+    /// Carries the `vokra.model.arch` stamp: the session ctor gates arch
+    /// before the model load (FR-EX-08), so an unstamped fixture would
+    /// short-circuit there and the ordering assertion below would pass for
+    /// the wrong reason.
     fn write_valid_config(b: &mut GgufBuilder) {
+        b.add_string(chunks::KEY_MODEL_ARCH, "whisper");
         b.add_u32("vokra.whisper.n_mels", 80);
         b.add_u32("vokra.whisper.n_audio_ctx", 1500);
         b.add_u32("vokra.whisper.n_audio_state", 512);

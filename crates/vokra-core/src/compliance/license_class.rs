@@ -416,6 +416,29 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "pyannote-speaker-diarization-3_1" => LicenseClass::Permissive,
         "kokoro" | "kokoro-82m" | "cosyvoice" | "cosyvoice2" | "sesame-csm" | "csm-1b"
         | "voxtral" | "openwakeword" => LicenseClass::Permissive,
+        // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up:
+        // ICTNLP LLaMA-Omni2 streaming S2S family. Weight license =
+        // apache-2.0 (Qwen2.5 派生 chain) per the audit ticket + HF
+        // sibling repo cardData. Four sibling HF repos (`ICTNLP/
+        // LLaMA-Omni2-{7B,3B-Bilingual,1.5B,32B}`) — every canonical id
+        // + hyphen/underscore spelling maps here. §3.1 sign-off column
+        // remains BLANK (fail-closed) until owner primary-source
+        // verifies (memory `[[feedback-license-signoff-primary-source]]`).
+        "llama-omni2"
+        | "llama_omni2"
+        | "llama-omni2-7b"
+        | "llama_omni2_7b"
+        | "llama-omni2-3b-bilingual"
+        | "llama_omni2_3b_bilingual"
+        | "llama-omni2-1.5b"
+        | "llama-omni2-1_5b"
+        | "llama_omni2_1_5b"
+        | "llama-omni2-32b"
+        | "llama_omni2_32b"
+        | "ictnlp/llama-omni2-7b"
+        | "ictnlp/llama-omni2-3b-bilingual"
+        | "ictnlp/llama-omni2-1.5b"
+        | "ictnlp/llama-omni2-32b" => LicenseClass::Permissive,
         // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors, MIT).
         // 27M raw-audio transformer enc-dec ASR (arXiv:2410.15608). Weight
         // license = **MIT** per upstream `UsefulSensors/moonshine-tiny`
@@ -777,6 +800,25 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
             LicenseClass::Permissive
         }
+        // Wave 4 2026-08-14 audit follow-up: ReDimNet2 speaker
+        // encoder (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`).
+        // HF cardData primary source declares `license: apache-2.0`
+        // (scout-time WebFetch, 2026-08-14). WeSpeaker-family
+        // sibling of `wespeaker-voxceleb-resnet34-LM` at line 777
+        // above (same Wespeaker/ HF org, VoxCeleb + Large-Margin
+        // fine-tune). arXiv:2402.01049 "Reshape Dimensions Network
+        // for Speaker Recognition". Belt-and-suspenders arm — the
+        // sibling `wespeaker` line above uses strict equality (no
+        // prefix walk), so id-lookup callers on the redimnet ids
+        // need an explicit registration to resolve without depending
+        // on the class-as-string stamp being present. Matches sibling
+        // `whisper-large-v3-turbo-german` /
+        // `speechbrain-spkrec-ecapa-voxceleb` id-registration pattern
+        // (Wave 8, 2026-08-01, lines 609-612).
+        "redimnet"
+        | "redimnet2"
+        | "wespeaker-voxceleb-redimnet2-b6-lm"
+        | "wespeaker/wespeaker-voxceleb-redimnet2-b6-lm" => LicenseClass::Permissive,
         "speaker-3d"
         | "speaker_3d"
         | "3d-speaker"
@@ -987,6 +1029,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "melband-roformer"
         | "melband_roformer"
         | "chenmozhijin/bsroformer-gguf" => LicenseClass::RedistributionForbidden,
+        // BosonAI Higgs-Audio v3 TTS 4B — CC 2026-08-13 primary-source
+        // curl verification found the upstream license is a bespoke
+        // `LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial`
+        // (SPDX-style LicenseRef, not a registered SPDX id) with §II-A(c)
+        // explicitly forbidding redistribution / hosting / TTS product
+        // embedding. Prior audit-ticket default `apache-2.0` was a
+        // pre-primary-source estimate; the slug hardmap here plus the
+        // converter's `DEFAULT_LICENSE_SPDX` rescission
+        // (`crates/vokra-convert/src/models/higgs_audio_v3_tts_4b.rs`)
+        // form the two-side fix so `publish-one.sh` gate 2 refuses by
+        // construction (mirror of `vits-ja` / `bs-roformer` posture).
+        // See `docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md`
+        // §0.1-0.2 for the CC-verified LICENSE clause quotes.
+        "higgs-audio-v3-tts-4b"
+        | "higgs_audio_v3_tts_4b"
+        | "bosonai/higgs-audio-v3-tts-4b" => LicenseClass::RedistributionForbidden,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         //
         // X-Codec 2 (`x-codec-2` / `xcodec2`, SoTA plan Phase 5 codec)
@@ -1424,6 +1482,12 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // this arm resolves to CC-BY 4.0, not the Apache-2.0 permissive
         // one — Kyutai's audio/text checkpoints ship CC-BY 4.0.
         _ if id.starts_with("kyutai-stt-") => LicenseClass::AttributionRequired,
+        // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up:
+        // ICTNLP LLaMA-Omni2 family prefix walk — a hypothetical future
+        // variant id (`llama-omni2-<something>`) still resolves
+        // Permissive by walking the dash. Guarded on the dash so an
+        // unrelated id (`llama-omni2xxx`) cannot slip through.
+        _ if id.starts_with("llama-omni2-") => LicenseClass::Permissive,
         // Parakeet family (SoTA plan Phase 2, 2026-07-24): a specific
         // variant id like `parakeet-tdt-1.1b` or `parakeet-rnnt-1.1b`
         // still resolves attribution-required. Guarded on the dash so
@@ -1926,6 +1990,18 @@ mod tests {
             // and the short form the CLI accepts.
             "zonos",
             "zonos-v0.1",
+            // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b
+            // follow-up — ICTNLP LLaMA-Omni2 streaming S2S family.
+            // Canonical arch tag + every sibling repo + the family
+            // prefix walk all resolve Permissive (apache-2.0 default).
+            "llama-omni2",
+            "llama-omni2-7b",
+            "llama-omni2-3b-bilingual",
+            "llama-omni2-1.5b",
+            "llama-omni2-32b",
+            // Family prefix — a hypothetical future variant still
+            // resolves Permissive by the walk.
+            "llama-omni2-70b",
         ] {
             assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
         }

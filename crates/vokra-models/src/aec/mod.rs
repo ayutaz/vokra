@@ -24,6 +24,14 @@
 //!   network (small `ComplexGRU` + `ComplexDense`); 5.3 KB checkpoint,
 //!   real-time causal by construction. Runtime binder for the
 //!   `nkf_aec` converter arch (2026-08-05).
+//! - [`dtln_aec`] — **DTLN-AEC**
+//!   (`breizhn/DTLN-aec`, MIT — Westhausen & Meyer,
+//!   "Acoustic Echo Cancellation with the Dual-Signal Transformation
+//!   LSTM Network", INTERSPEECH 2021, arXiv:2010.15754). Dual-signal
+//!   (STFT-domain LSTM mask over |mic|⊕|farend| + time-domain LSTM
+//!   residual) neural AEC; 128 / 256 / 512-unit variants; 16 kHz.
+//!   Loud-partial scaffold pending the generic LSTM primitive in
+//!   `vokra_ops` (2026-08-14).
 //!
 //! Members implement [`vokra_core::engines::AecEngine`] and hand out
 //! [`vokra_core::engines::AecStreamHandle`] instances (mirror of the
@@ -31,3 +39,9 @@
 //! streaming with mic + far-end frames aligned sample-for-sample).
 
 pub mod nkf_aec;
+// Wave 6 (2026-08-14 post-audit-cc-gap): DTLN-AEC dual-signal LSTM
+// neural AEC (`breizhn/DTLN-aec`, MIT — Westhausen & Meyer INTERSPEECH
+// 2021 arXiv:2010.15754). Loud-partial pending the generic LSTM
+// primitive in `vokra_ops` (LIB.RS RULE — appended at end of members
+// list with the Wave 6 comment marker).
+pub mod dtln_aec;

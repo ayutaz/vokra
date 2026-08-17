@@ -25,10 +25,11 @@
 //!
 //! GGUF tensor names are the **upstream torch state-dict keys
 //! verbatim** — the `.tar` bundle is pre-flattened offline to
-//! safetensors by
-//! `tools/parity/nisqa_v2_weight_prepare_checkpoint.py` and this
-//! converter accepts safetensors only (the DFN3 / DAC / DNSMOS
-//! precedent — pickles never enter the runtime, FR-LD-05).
+//! safetensors and this converter accepts safetensors only (the DFN3 /
+//! DAC / DNSMOS precedent — pickles never enter the runtime,
+//! FR-LD-05). A future
+//! `tools/parity/nisqa_v2_weight_prepare_checkpoint.py` would do that
+//! flattening; it is **not yet written**, so the step is manual today.
 //!
 //! # No ONNX (permanent)
 //!
@@ -93,8 +94,9 @@ pub struct NisqaV2WeightReport {
 }
 
 /// Converts a NISQA v2 safetensors checkpoint at `input`
-/// (pre-flattened from the upstream torch `.tar` pickle by
-/// `tools/parity/nisqa_v2_weight_prepare_checkpoint.py`) into a
+/// (pre-flattened from the upstream torch `.tar` pickle — a future
+/// `tools/parity/nisqa_v2_weight_prepare_checkpoint.py` is not yet
+/// written, so that flattening is an owner-side step today) into a
 /// Vokra-native GGUF at `output`, returning a [`NisqaV2WeightReport`].
 ///
 /// `license` optionally overrides the stamped weight license (raw SPDX

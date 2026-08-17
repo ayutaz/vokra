@@ -12,10 +12,10 @@
 //! (Feed-forward Sequential Memory Network) blocks with gated
 //! attention. The upstream release is distributed on HF; callers
 //! pre-flatten the torch checkpoint (Lightning `.ckpt` or bare
-//! `state_dict.pt`) to safetensors offline via
-//! `tools/parity/mossformer2_ss_prepare_checkpoint.py` (the DFN3 /
-//! DAC / CSM pickle-bridge pattern — no pickle enters the runtime,
-//! FR-LD-05).
+//! `state_dict.pt`) to safetensors offline via a future
+//! `tools/parity/mossformer2_ss_prepare_checkpoint.py` (not yet
+//! written — the DFN3 / DAC / CSM pickle-bridge pattern, so no pickle
+//! enters the runtime, FR-LD-05).
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
 //! and `vokra.provenance.*` metadata chunks the runtime source-
@@ -143,8 +143,9 @@ pub struct Mossformer2Ss16kReport {
 
 /// Converts a MossFormer2-SS-16K safetensors checkpoint at `input`
 /// (pre-flattened from the upstream ClearerVoice-Studio Lightning
-/// `.ckpt` / `state_dict.pt` by
-/// `tools/parity/mossformer2_ss_prepare_checkpoint.py`) into a
+/// `.ckpt` / `state_dict.pt` — a future
+/// `tools/parity/mossformer2_ss_prepare_checkpoint.py` is not yet
+/// written, so that flattening is an owner-side step today) into a
 /// Vokra-native GGUF at `output`, returning a
 /// [`Mossformer2Ss16kReport`].
 ///

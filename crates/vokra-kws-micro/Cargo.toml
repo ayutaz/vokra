@@ -5,11 +5,15 @@
 # NFR-PT-03) can name this crate directly without pulling std-only
 # `vokra-ops` / `vokra-backend-cpu`.
 #
-# SCAFFOLD ONLY — `KwsMicro::detect()` returns `KwsEvent::Idle` unconditionally.
-# Real inference (a TFLite-Micro forward pass on the microWakeWord model,
-# Apache 2.0, https://github.com/kahrendt/microWakeWord) is a follow-up WP.
-# `publish = false` because a skeleton that never wakes must NOT be released to
-# crates.io as if it detected wakewords.
+# `KwsMicro::detect()` runs a real forward (log-mel -> INT8 quantise -> INT8
+# chain -> threshold) for any chain attached via `set_chain`, and refuses
+# loudly when none is. What is still missing is the join to an upstream
+# checkpoint: nothing builds a `ChainConfig` from a loaded `Model`, because the
+# offline sidecar emits dequantised F32 tensors with no per-tensor
+# (scale, zero_point). See `src/lib.rs`'s crate docs.
+# `publish = false` until that lands — the crate cannot yet load the
+# microWakeWord models (Apache 2.0, https://github.com/kahrendt/microWakeWord)
+# its name implies.
 [package]
 name = "vokra-kws-micro"
 version = "0.1.0"
@@ -19,9 +23,9 @@ publish = false
 
 # ZERO external dependencies (NFR-DS-02): only `vokra-core`, with
 # `default-features = false` so the no_std subset (error + GGUF reader) is what
-# compiles. The self-contained scalar transcendentals from the sister crate
-# will be reused when the real forward lands (planned; no `libm` — deny.toml
-# bans it). Root Cargo.lock stays `vokra-*` only.
+# compiles. Transcendentals come from the crate-local `scalar` module, a
+# self-contained mirror of the sister crate's (no `libm` — deny.toml bans it).
+# Root Cargo.lock stays `vokra-*` only.
 # A DIRECT path dep (not `vokra-core.workspace = true`) because cargo forbids
 # a workspace-inherited dep from overriding `default-features`, and the no_std
 # subset requires `default-features = false`. Still a first-party `vokra-*`

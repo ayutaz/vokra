@@ -43,7 +43,7 @@ use vokra_core::gguf::GgufFile;
 use vokra_core::rng::GaussianSplitMix64;
 use vokra_core::{
     BackendKind, CompliancePolicy, Result, SynthesisRequest, SynthesizedAudio, TtsEngine,
-    VokraError, check_weight_license,
+    TtsStreamHandle, VokraError, check_weight_license,
 };
 use vokra_ops::{KaldiFbankOpts, kaldi_fbank, resample};
 use vokra_piper_plus::{PhonemeTable, Phonemizer};
@@ -619,10 +619,26 @@ impl PiperPlusTts {
     /// `request.text`: the injected [`Phonemizer`] returns not just phoneme ids
     /// but the per-phoneme prosody triples and detected language id
     /// ([`Phonemizer::phonemize_full`]) that the multilingual piper-plus models
-    /// (e.g. the zero-shot 6-language v7) consume. This is the full text→speech
+    /// (e.g. the zero-shot 6-language v7) consume. This is the text→speech
     /// entry point for the out-of-workspace `piper-plus-g2p` reuse; the
     /// zero-dependency core still never links a non-`vokra-*` crate — the G2P is
     /// injected across the trait boundary (NFR-DS-02).
+    ///
+    /// # Why "pseudo-streaming" and not "streaming" (FR-ST-04)
+    ///
+    /// MB-iSTFT-VITS2 (piper-plus) is a **full-utterance** synthesizer: the
+    /// text encoder → duration predictor → flow → MB-iSTFT decoder chain
+    /// produces the entire waveform in one forward pass, and there is no
+    /// architectural chunk-boundary that would let the model emit audio while
+    /// still generating later frames. Wrapping the returned buffer in a
+    /// chunk-emitting adapter reduces first-byte latency to the caller, but
+    /// the **generation** time is unchanged — the model has already finished
+    /// by the time the first chunk is emitted. To keep this honest at the API
+    /// boundary (SRS §FR-ST-04, FR-EX-08) the method is named
+    /// `synthesize_pseudo_streaming` rather than `synthesize_streaming`; a
+    /// truly incremental TTS (e.g. Kokoro's per-phoneme downgrade path, or a
+    /// CosyVoice2-style chunk-aware CFM) exposes a distinct API and does not
+    /// live on this type.
     ///
     /// Overrides applied to the phonemizer's output:
     /// - `request.language`, when it names a known language, pins `lid` over the
@@ -638,7 +654,7 @@ impl PiperPlusTts {
     /// Propagates phonemization errors, and [`VokraError::InvalidArgument`] if a
     /// phoneme / language id is out of range or a prosody length disagrees with
     /// the phoneme count (see [`synthesize_phonemes`](Self::synthesize_phonemes)).
-    pub fn synthesize_full(
+    pub fn synthesize_pseudo_streaming(
         &self,
         request: &SynthesisRequest,
         phonemizer: &dyn Phonemizer,
@@ -675,6 +691,73 @@ impl PiperPlusTts {
             self.config.length_scale,
             noise_w,
         )
+    }
+
+    /// Streaming synthesis surface — the **single-chunk fallback wrapper**
+    /// (FR-ST-04 surface unification, WP-23 landing for piper-plus).
+    ///
+    /// # Why "streaming" that emits one chunk
+    ///
+    /// MB-iSTFT-VITS2 (piper-plus) is a **full-utterance** synthesizer: the
+    /// text encoder → duration predictor → flow → MB-iSTFT decoder chain
+    /// produces the entire waveform in one forward pass, and there is no
+    /// architectural chunk-boundary that would let the model emit audio while
+    /// still generating later frames — the identical property called out on
+    /// [`synthesize_pseudo_streaming`](Self::synthesize_pseudo_streaming). This
+    /// method exists to give piper-plus the same [`TtsStreamHandle`] surface
+    /// as future truly-chunked TTS engines (piper-plus M4-03 chunked decode /
+    /// SBV2 streaming), so callers can code against the single incremental
+    /// API without a special case for full-utterance engines.
+    ///
+    /// Concretely: this method runs the full [`TtsEngine::synthesize`]
+    /// synchronously and returns a [`PiperPlusTtsStream`] that yields the
+    /// resulting PCM as **one chunk** on the first
+    /// [`TtsStreamHandle::next_pcm_chunk`] call and `None` afterwards. The
+    /// **generation** time is unchanged — the model has already finished by
+    /// the time the first chunk is emitted — and per FR-EX-08 this is stated
+    /// in the docstring rather than hidden behind a name that promises
+    /// incremental generation. A future chunk-boundary decoder (the WP-M4-03
+    /// piper streaming path) overrides this method to emit true incremental
+    /// chunks; downstreams that already use [`TtsStreamHandle`] will pick up
+    /// the improvement without an API change.
+    ///
+    /// # Errors
+    ///
+    /// Propagates every error that [`TtsEngine::synthesize`] would produce
+    /// (a wrong language code, an empty tokenizer output, etc.) — surfaced
+    /// synchronously here rather than deferred into the stream, because the
+    /// full synthesis must succeed before the single chunk can be emitted.
+    /// A caller iterating over [`TtsStreamHandle::next_pcm_chunk`] will
+    /// therefore never see the error mid-stream (there is no "mid" — one
+    /// chunk).
+    pub fn synthesize_streaming(&self, request: &SynthesisRequest) -> Result<PiperPlusTtsStream> {
+        let audio = TtsEngine::synthesize(self, request)?;
+        Ok(PiperPlusTtsStream::new(audio.samples, audio.sample_rate))
+    }
+
+    /// The G2P-injecting variant of [`synthesize_streaming`](Self::synthesize_streaming)
+    /// — runs the full [`synthesize_pseudo_streaming`](Self::synthesize_pseudo_streaming)
+    /// path (a real 8-language `piper-plus-g2p` bridge or a mock/passthrough
+    /// [`Phonemizer`]) and wraps its PCM in the same single-chunk
+    /// [`PiperPlusTtsStream`] surface.
+    ///
+    /// Same honesty caveat as [`synthesize_streaming`](Self::synthesize_streaming):
+    /// the underlying synthesizer is full-utterance, so the stream is a
+    /// single-chunk surface unification, not a chunk-wise generation path.
+    ///
+    /// # Errors
+    ///
+    /// Propagates every error that
+    /// [`synthesize_pseudo_streaming`](Self::synthesize_pseudo_streaming)
+    /// would produce (phonemization errors, out-of-range ids, prosody
+    /// length mismatch).
+    pub fn synthesize_streaming_with(
+        &self,
+        request: &SynthesisRequest,
+        phonemizer: &dyn Phonemizer,
+    ) -> Result<PiperPlusTtsStream> {
+        let audio = self.synthesize_pseudo_streaming(request, phonemizer)?;
+        Ok(PiperPlusTtsStream::new(audio.samples, audio.sample_rate))
     }
 
     /// A placeholder tokenizer: maps each input character to a phoneme id via
@@ -786,6 +869,57 @@ impl PiperPlusTts {
     }
 }
 
+/// A [`TtsStreamHandle`] for piper-plus that emits a **single chunk** of
+/// pre-computed PCM.
+///
+/// The full [`PiperPlusTts::synthesize_streaming`] pass runs synchronously
+/// before this stream is returned, so the whole waveform is already in
+/// memory. On the first [`TtsStreamHandle::next_pcm_chunk`] call the stream
+/// yields the buffer once (`Some(pcm)`); every subsequent call returns
+/// `None`. This exists to give piper-plus the same `TtsStreamHandle` surface
+/// as future chunk-wise engines (FR-ST-04 surface unification) — never as a
+/// pretense of incremental generation. See
+/// [`PiperPlusTts::synthesize_streaming`] for the full honesty argument.
+///
+/// The type is `Send` (only `Vec<f32>` + `u32` inside), so the trait's
+/// `Box<dyn TtsStreamHandle + Send>` bound holds without ceremony.
+pub struct PiperPlusTtsStream {
+    /// `Some(pcm)` until [`TtsStreamHandle::next_pcm_chunk`] drains it via
+    /// [`Option::take`]; `None` on every call after the first.
+    pcm: Option<Vec<f32>>,
+    sample_rate: u32,
+}
+
+impl PiperPlusTtsStream {
+    /// Wraps a pre-computed PCM buffer + its sample rate into the
+    /// single-chunk stream. Only [`PiperPlusTts`] constructs one at runtime
+    /// (via [`PiperPlusTts::synthesize_streaming`] /
+    /// [`PiperPlusTts::synthesize_streaming_with`]); the constructor is
+    /// crate-visible so the wrapper-only unit tests can build fixtures
+    /// without a real GGUF voice.
+    pub(crate) fn new(pcm: Vec<f32>, sample_rate: u32) -> Self {
+        Self {
+            pcm: Some(pcm),
+            sample_rate,
+        }
+    }
+}
+
+impl TtsStreamHandle for PiperPlusTtsStream {
+    /// Drains the pre-computed PCM buffer once (`Some(pcm)`), then returns
+    /// `None` on every subsequent call — the single-chunk emission pattern.
+    /// Never errors: the underlying synthesis has already succeeded by the
+    /// time this stream exists (any generation error was returned
+    /// synchronously from [`PiperPlusTts::synthesize_streaming`]).
+    fn next_pcm_chunk(&mut self) -> Result<Option<Vec<f32>>> {
+        Ok(self.pcm.take())
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+}
+
 impl TtsEngine for PiperPlusTts {
     /// Text → PCM via the placeholder [`tokenize`](Self::tokenize) then the
     /// native path (M0-07-T20). `request.deterministic` disables the VITS noise
@@ -822,6 +956,23 @@ impl TtsEngine for PiperPlusTts {
             self.config.length_scale,
             noise_w,
         )
+    }
+
+    /// Overrides the default `synthesize_stream` (which loudly refuses per
+    /// FR-EX-08) to return a **single-chunk** [`PiperPlusTtsStream`] — the
+    /// piper-plus surface unification landing for WP-23 / M4-03. The full
+    /// [`synthesize`](Self::synthesize) path runs synchronously to produce
+    /// the PCM, which is then wrapped in the streaming surface; there is no
+    /// incremental generation because MB-iSTFT-VITS2 is a full-utterance
+    /// architecture (see [`synthesize_streaming`](Self::synthesize_streaming)
+    /// for the honesty argument). A future chunk-boundary decoder swaps in
+    /// without an API change.
+    fn synthesize_stream(
+        &self,
+        request: &SynthesisRequest,
+    ) -> Result<Box<dyn TtsStreamHandle + Send>> {
+        let stream = self.synthesize_streaming(request)?;
+        Ok(Box::new(stream))
     }
 }
 
@@ -930,6 +1081,149 @@ mod tests {
         // channel-major: o0=[101,110], o1=[202,220], o2=[303,330].
         let on = proj.channels(Some(&feats), super::config::PROSODY_LANG_ID, 2);
         assert_eq!(on, [101.0, 110.0, 202.0, 220.0, 303.0, 330.0]);
+    }
+
+    // ---- FR-ST-04: pseudo-streaming API name is exposed (rename smoke) -----
+    //
+    // MB-iSTFT-VITS2 (piper-plus) is a **full-utterance** synthesizer — it does
+    // not support true chunk-wise generation. FR-ST-04 requires that the
+    // public entry-point makes this explicit by name so callers cannot mistake
+    // it for a real streaming API (docs/system-requirements.md §FR-ST-04).
+    //
+    // The compile-time reference below is the whole test: it fails to compile
+    // if the method is missing (or if a stale `synthesize_full` name creeps
+    // back in). Runtime behavior is unchanged from the pre-rename entry point
+    // and is covered by the parity tests in `parity` / `parity_v7` /
+    // `parity_v7_prosody` (they exercise the same code path via the injected
+    // `Phonemizer`).
+    #[test]
+    fn synthesize_pseudo_streaming_symbol_exists() {
+        // Bind the fn pointer through the fully-qualified path so this test
+        // is a strict compile-time gate on the rename (no dyn dispatch).
+        let _fn_ptr: fn(
+            &super::PiperPlusTts,
+            &vokra_core::SynthesisRequest,
+            &dyn super::Phonemizer,
+        ) -> vokra_core::Result<vokra_core::SynthesizedAudio> =
+            super::PiperPlusTts::synthesize_pseudo_streaming;
+    }
+}
+
+/// Unit tests for the single-chunk [`PiperPlusTtsStream`] wrapper (FR-ST-04
+/// surface unification / WP-23 / piper-plus M4-03 seam).
+///
+/// These tests exercise the wrapper struct in isolation from the real
+/// synthesizer — a live [`PiperPlusTts`] needs a converted voice GGUF
+/// (`VOKRA_PIPER_GGUF` gated) and covering the drain/sample-rate/Send-ness
+/// contract of the stream itself does not need one. End-to-end tests that
+/// drive the full [`PiperPlusTts::synthesize_streaming`] path against a
+/// real voice live alongside `parity` / `parity_v7`.
+#[cfg(test)]
+mod stream_wrapper_tests {
+    use super::{PiperPlusTts, PiperPlusTtsStream};
+    use vokra_core::{SynthesisRequest, TtsEngine, TtsStreamHandle};
+
+    #[test]
+    fn stream_yields_single_chunk_then_none() {
+        // First `next_pcm_chunk` drains the buffer verbatim; the second
+        // returns `None` (the single-chunk contract).
+        let pcm = vec![0.1, -0.2, 0.3, -0.4, 0.5];
+        let mut stream = PiperPlusTtsStream::new(pcm.clone(), 22_050);
+
+        let first = stream.next_pcm_chunk().expect("stream never errors");
+        assert_eq!(first.as_deref(), Some(pcm.as_slice()));
+
+        let second = stream.next_pcm_chunk().expect("stream never errors");
+        assert!(
+            second.is_none(),
+            "stream must be exhausted after the single chunk (got {second:?})"
+        );
+
+        // A third pull stays exhausted — the drain is idempotent, not a
+        // repeating iterator.
+        let third = stream.next_pcm_chunk().expect("stream never errors");
+        assert!(third.is_none(), "stream must stay exhausted");
+    }
+
+    #[test]
+    fn stream_returns_first_chunk_bit_exact() {
+        // The single chunk is the constructed PCM verbatim — no offset,
+        // no truncation, no allocation-round-trip mutation. This pins the
+        // "surface unification, not transformation" contract: whatever the
+        // full synthesizer produced flows through unmodified.
+        let pcm: Vec<f32> = (0..1024).map(|i| (i as f32) * 1e-3 - 0.5).collect();
+        let mut stream = PiperPlusTtsStream::new(pcm.clone(), 24_000);
+
+        let chunk = stream.next_pcm_chunk().unwrap().unwrap();
+        assert_eq!(chunk.len(), pcm.len());
+        // Byte-for-byte equality (no tolerance): the wrapper stores the
+        // caller's Vec and hands it back on the first drain.
+        assert_eq!(chunk, pcm);
+    }
+
+    #[test]
+    fn stream_reports_configured_sample_rate() {
+        // The `sample_rate()` getter returns the value the stream was
+        // built with (the voice's `PiperConfig::sample_rate`) and never
+        // synthesizes / rounds / defaults it.
+        for sr in [16_000_u32, 22_050, 24_000, 44_100, 48_000] {
+            let stream = PiperPlusTtsStream::new(vec![0.0; 4], sr);
+            assert_eq!(stream.sample_rate(), sr);
+        }
+    }
+
+    #[test]
+    fn stream_handle_is_send() {
+        // Compile-time gate: the trait's `Box<dyn TtsStreamHandle + Send>`
+        // return type requires `Send`, and only `Vec<f32>` + `u32` live in
+        // the struct so this must hold. A future refactor that adds a
+        // `!Send` field breaks this.
+        fn assert_send<T: Send>() {}
+        assert_send::<PiperPlusTtsStream>();
+    }
+
+    #[test]
+    fn stream_handles_empty_pcm_as_single_empty_chunk() {
+        // An empty PCM is still one chunk (a zero-length `Vec<f32>`), not
+        // a zero-chunk stream. This matches the semantic that "one chunk
+        // is emitted per full synthesize call"; the caller has to decide
+        // whether they treat an empty chunk as end-of-utterance or as a
+        // silent frame — the wrapper does not pre-empt them.
+        let mut stream = PiperPlusTtsStream::new(Vec::new(), 22_050);
+        let first = stream.next_pcm_chunk().unwrap();
+        assert_eq!(first.as_deref(), Some(&[][..]));
+        let second = stream.next_pcm_chunk().unwrap();
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn synthesize_streaming_symbol_shape_matches_wrapper() {
+        // Compile-time gate: the two inherent streaming entries return
+        // `Result<PiperPlusTtsStream>` (not `Result<SynthesizedAudio>` and
+        // not `Result<Box<dyn TtsStreamHandle + Send>>`). This pins the
+        // stronger-typed return so downstream callers can name the
+        // concrete stream without an owned trait object.
+        let _plain: fn(&PiperPlusTts, &SynthesisRequest) -> vokra_core::Result<PiperPlusTtsStream> =
+            PiperPlusTts::synthesize_streaming;
+        let _with_g2p: fn(
+            &PiperPlusTts,
+            &SynthesisRequest,
+            &dyn super::Phonemizer,
+        ) -> vokra_core::Result<PiperPlusTtsStream> = PiperPlusTts::synthesize_streaming_with;
+    }
+
+    #[test]
+    fn tts_engine_stream_override_returns_boxed_handle_shape() {
+        // Compile-time gate: `PiperPlusTts` overrides
+        // `TtsEngine::synthesize_stream` with the wrapper (not the trait
+        // default which loudly refuses). Fully-qualified fn-pointer bind
+        // proves the override is in scope; runtime behavior needs a live
+        // voice and is exercised by the parity suite.
+        let _fn_ptr: fn(
+            &PiperPlusTts,
+            &SynthesisRequest,
+        ) -> vokra_core::Result<Box<dyn TtsStreamHandle + Send>> =
+            <PiperPlusTts as TtsEngine>::synthesize_stream;
     }
 }
 

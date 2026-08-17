@@ -574,7 +574,11 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
-        ModelTask::Vad => {
+        // Wave G (2026-08-15): FSMN-VAD shares this arm verbatim — its binder
+        // implements the same `VadEngine` trait Silero does and is injected
+        // into the same session slot, so the Silero measurement path is
+        // untouched.
+        ModelTask::Vad | ModelTask::VadFsmn => {
             let path = args
                 .input
                 .as_deref()
@@ -589,6 +593,63 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("vad", audio_seconds, samples)
+        }
+        // Wave G (2026-08-15): NSNet2 has a real forward, so this is a real
+        // measurement — the same shape as the VAD arm above, timing
+        // `denoise_pcm` over the whole clip.
+        ModelTask::Denoise => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (denoise): --input <in.wav> is required")?;
+            let model = vokra_models::nsnet2::Nsnet2V1::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?;
+            let rate = model.config().sample_rate;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (denoise): {path}: expected a {rate} Hz mono WAV (the NSNet2 \
+                     STFT front-end is fixed at the trained rate), got {} Hz — resample \
+                     offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model.denoise_pcm(&pcm).map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+            ("denoise", audio_seconds, samples)
+        }
+        // pyannote's forward is real but sits behind the binder's own
+        // `VOKRA_PYANNET_ENABLE_FORWARD` opt-in (its BiLSTM stack has not been
+        // byte-compared against PyTorch cuDNN yet). Timing a numeric path that
+        // is not yet validated would publish an RTF for a result nobody has
+        // signed off on, so reject and point at `run` — which surfaces the
+        // binder's own explanation (FR-EX-08).
+        ModelTask::Segment => {
+            return Err(
+                "bench: arch `pyannote-segmentation` has no bench task — its forward is \
+                 still behind the binder's `VOKRA_PYANNET_ENABLE_FORWARD` opt-in (the \
+                 BiLSTM stack is not byte-compared against PyTorch cuDNN yet), and an RTF \
+                 for an unvalidated numeric path would be a misleading number. Use \
+                 `vokra-cli run --model <pyannote.gguf> --input <in.wav>`"
+                    .to_owned(),
+            );
+        }
+        // RMVPE runs for real through `run`, but a pitch-track RTF needs a
+        // settled window definition (hop vs. centered-STFT frame count) before
+        // the number means anything comparable. No bench arm rather than a
+        // number whose denominator is undefined (FR-EX-08).
+        ModelTask::F0Rmvpe => {
+            return Err(
+                "bench: arch `rmvpe` has no bench task yet — the F0 RTF denominator (hop \
+                 timebase vs. centered-STFT frame count) is not settled, so the number \
+                 would not be comparable across extractors. Use `vokra-cli run --model \
+                 <rmvpe.gguf> --input <in.wav>` for the pitch track itself"
+                    .to_owned(),
+            );
         }
         ModelTask::Asr => {
             let path = args
@@ -824,13 +885,13 @@ fn execute_mel_frontend_standalone(args: &BenchArgs) -> Result<BenchOutcome, Str
 
 // ---- CosyVoice2 synthetic bench (M3-09-T24 scaffold) ---------------------
 
-/// Runtime CosyVoice2 audio sample rate (Hz). Matches the Mimi codec native
-/// rate + the CosyVoice2 model card constant (24 kHz).
+/// Runtime CosyVoice2 audio sample rate (Hz). Matches the CosyVoice2 model
+/// card constant (24 kHz).
 const COSYVOICE2_SYNTHETIC_SAMPLE_RATE: u32 = 24_000;
 
 /// Target audio duration for the standalone synthetic bench. Fixed at 1 s
-/// so the RTF measurement path exercises multiple chunk boundaries (mimi
-/// native rate 12.5–50 Hz → 12–50 chunks per second in typical use).
+/// so the RTF measurement path exercises multiple chunk boundaries (audio
+/// token rates of 12.5–50 Hz → 12–50 chunks per second in typical use).
 const COSYVOICE2_SYNTHETIC_TARGET_SECONDS: f64 = 1.0;
 
 /// Chunk size (frames per chunk boundary) for the synthetic bench. Chosen

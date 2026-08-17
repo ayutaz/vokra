@@ -481,8 +481,9 @@ fn hgan_03_pre_conv_post_leaky_slope_ignores_attrs_slope() {
 
 // ---- HGAN-04: conv_post_bias may be absent (upstream sets bias=False) --------
 //
-// VITS/SBV2 HiFi-GAN `conv_post` per `tools/parity/vendor/vits/models.py`
-// (`Conv1d(ch, 1, 7, 1, padding=3, bias=False)`) has NO bias — the
+// VITS/SBV2 HiFi-GAN `conv_post` per `tools/parity/vendor/vits/decoder.py:76`
+// — the vendored byte-identical extract of upstream `models.py` lines
+// 244-296 — (`Conv1d(ch, 1, 7, 1, padding=3, bias=False)`) has NO bias — the
 // upstream ships nothing. Vokra pre-fix required `conv_post_bias.len()
 // == 1` unconditionally, forcing SBV2 (+ any bias-less-conv_post
 // upstream) converters to fabricate a zero placeholder. Post-fix an
@@ -528,8 +529,8 @@ fn hgan_04_conv_post_bias_absent_is_accepted_and_bit_identical_to_zero_bias() {
 
 // ---- HGAN-05: gin conditioning path ------------------------------------------
 //
-// Upstream reference (`tools/parity/vendor/vits/models.py`
-// `Generator.forward`):
+// Upstream reference (`tools/parity/vendor/vits/decoder.py:85`, the
+// vendored extract of upstream `models.py`, `Generator.forward`):
 //
 // ```python
 // x = self.conv_pre(x)

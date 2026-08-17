@@ -2,9 +2,10 @@
 
 **English** | [日本語](README.ja.md)
 
-**Vokra** is a Rust inference runtime specialized for speech AI — TTS, ASR,
-speech-to-speech, voice conversion, speaker identification, and VAD — built
-as an alternative to ONNX / ONNX Runtime for speech workloads.
+**Vokra** is a Rust inference runtime specialized for audio AI — TTS, ASR,
+speech-to-speech, speaker identification, VAD, music generation, source
+separation, and audio understanding — built as an alternative to ONNX / ONNX
+Runtime for audio workloads.
 
 General-purpose runtimes chronically underserve speech models: STFT/iSTFT and
 streaming state, vocoder numerics, neural codec (RVQ/FSQ) decoding,
@@ -55,8 +56,11 @@ them first-class native operators instead.
   flow-matching samplers with configurable CFG modes and schedules, neural
   codec decoders (DAC, Mimi, WavTokenizer, X-Codec 2), beam search / CTC /
   RNN-T decoding, streaming KV cache (paged, 3D `[time, stream, codebook]`),
-  VAD, speech enhancement (AEC / AGC / HPF / loudness-norm / DeepFilterNet3),
-  speaker embedding, F0 extraction, and objective quality metrics.
+  VAD, speech enhancement (AEC / AGC / HPF / loudness-norm / DeepFilterNet3 /
+  WPE dereverberation), speaker embedding, F0 extraction (YIN / PyIN plus the
+  neural extractors), inverse text normalization, a shared ViT audio-encoder
+  primitive behind the self-supervised encoders, and objective quality
+  metrics (UTMOS, SI-SNR / SI-SDR / SDR, STOI, WER / CER).
 - **CPU as a first-class backend** with runtime ISA dispatch — x86-64 SSE2
   baseline through AVX2, AVX-512F/DQ/BW/VL, AVX-512 VNNI/BF16, AVX-VNNI
   256-bit, and AMX; ARM64 NEON through fp16 arithmetic, dotprod (SDOT/UDOT),
@@ -87,9 +91,17 @@ them first-class native operators instead.
 
 ## Supported models
 
-Vokra ships native implementations of the models below. Weight loading and
-tokenization are built into the runtime; converters producing the GGUF
-files live in the `vokra-convert` crate.
+Vokra ships native implementations of the models below — the forward pass is
+Rust, weight loading and tokenization are built into the runtime, and the
+converters producing the GGUF files live in the `vokra-convert` crate.
+`vokra-cli convert --help` enumerates every accepted `--model` kind, which is
+the authoritative list.
+
+A second, larger group of architectures has its converter, GGUF loader and
+strict architecture verification landed while the forward pass is still
+deferred; those are listed separately under
+[loud partials](#architectures-with-a-deferred-forward-pass) and are never
+silently wrong — they refuse by name.
 
 **ASR**
 - Whisper — `base`, `small`, `medium`, `large-v3`, `turbo`
@@ -98,6 +110,9 @@ files live in the `vokra-convert` crate.
 - omniASR-CTC — 300M and 7B variants
 - Charsiu (wav2vec2 CTC)
 - Kyutai STT
+- distil-whisper large-v3.5 and kotoba-whisper (Whisper large-v3 encoder +
+  2-layer distilled decoder)
+- Parakeet — TDT-0.6B-v3 and CTC-1.1B (NVIDIA FastConformer)
 - Zipformer / E-Branchformer / Hybrid CTC-Attention decoders
 
 **TTS**
@@ -111,6 +126,10 @@ files live in the `vokra-convert` crate.
 - VoxCPM-0.5B and VoxCPM2-2B
 - Qwen3-TTS 1.7B
 - Fun-CosyVoice3-0.5B
+- Chatterbox-Multilingual (23 languages, zero-shot) with Turbo and Nano variants
+- StyleTTS 2, Dia-1.6B (text-to-dialog), VibeVoice-1.5B (long-form
+  multi-speaker), Zonos-v0.1
+- Japanese: Irodori-TTS (rectified-flow DiT) and ESPnet-family VITS
 
 **Speech-to-speech (full-duplex)**
 - Sesame CSM-1B
@@ -120,25 +139,72 @@ files live in the `vokra-convert` crate.
 - Silero VAD v5 (default) and v6.2.1
 - FSMN-VAD
 
+**Keyword spotting / wake word**
+- openWakeWord
+- microWakeWord — the INT8 forward runs in the `no_std` `vokra-kws-micro`
+  crate (Cortex-M55 cross-build); loading a chain from a checkpoint is not
+  wired yet, and an unconfigured detector refuses rather than reporting
+  "nothing woke"
+
 **Speaker embedding / verification**
 - CAM++ (192-d, zero-shot voice cloning input)
 - TitaNet-L
 - ECAPA-TDNN
 
 **F0 / pitch**
-- RMVPE (front-end + decoder; internal U-Net + GRU forward is a
-  loud-partial, awaiting real-checkpoint verification)
+- RMVPE (full U-Net + BiGRU forward; the tensor-name walk over a real
+  checkpoint is still unverified and refuses loudly if it finds no blocks)
 - FCPE (real Conformer forward)
 - CREPE (real 6-block CNN, 5 model sizes)
+- YIN and PyIN — weight-free DSP, no checkpoint required
+  (`vokra-cli f0 --algo yin|pyin`)
 
 **Neural codecs**
 - DAC (24 kHz), Mimi, WavTokenizer, X-Codec 2 (research-only, CC-BY-NC-4.0)
 
 **Speech enhancement**
-- DeepFilterNet3, AEC, AGC, HPF, loudness normalization
+- DeepFilterNet3, NSNet2, DTLN-AEC, AGC, HPF, loudness normalization
+- WPE dereverberation (weight-free, transcribed from `fgnt/nara_wpe`)
+
+**Vocoders**
+- HiFi-GAN, plus the HiFTNet / iSTFT-head and BigVGAN-style anti-aliased
+  upsampling primitives in `vokra-ops`
+
+**Text normalization and punctuation**
+- CT-Transformer punctuation restoration
+- WeTextProcessing — inverse text normalization / text normalization
+
+**Diarization**
+- pyannote segmentation-3.0 (PyanNet VAD / speaker-segmentation backbone)
 
 **Objective quality**
 - UTMOS22-strong
+
+### Architectures with a deferred forward pass
+
+For the families below the converter, the GGUF loader and strict
+architecture-tag verification are landed, and the forward pass is a
+**loud partial**: it returns an error naming the exact primitive that is
+missing and the upstream source that specifies it, rather than a plausible
+wrong answer. They become usable as those primitives land and a real
+checkpoint verifies them; nothing about them is silent.
+
+- **Music generation and analysis** — MusicGen, MAGNeT, MelodyFlow, JASCO,
+  AudioGen, AudioLDM2, MT3 transcription, Beat-This beat tracking
+- **Source separation** — Demucs, SepFormer, Conv-TasNet
+- **Audio representation encoders** — ATST, EAT, M2D and MAEST, which share
+  one `vokra_ops::vit` primitive with Beat-This; plus W2V-BERT-2 (Conformer,
+  deferred for a different reason), WavLM and CLAP
+- **Audio tagging and classification** — PANNs, deepfake detection,
+  language identification, emotion2vec
+- **Quality assessment** — UTMOSv2, NISQA, TorchAudio-SQUIM, DNSMOS P.808 / P.835
+- **ASR** — Canary-1B-Flash, Parakeet-TDT-1.1B, GigaAM, Whisper-Medusa,
+  FireRed-AED, Moonshine, SenseVoiceSmall
+- **VAD and turn-taking** — TEN-VAD, FireRed-VAD, smart-turn
+- **Enhancement** — GTCRN, StoRM, facebook-denoiser
+- **Speaker** — ReDimNet, 3D-Speaker ERes2Net, Sortformer diarization
+- **Other** — AudioSR super-resolution, DiffSinger singing synthesis,
+  ChatTTS, Voila, SNAC / Vocos / BigVGAN codec and vocoder heads
 
 See [`docs/license-audit.md`](docs/license-audit.md) for the licensing
 audit and [`docs/legal-compliance.md`](docs/legal-compliance.md) for the

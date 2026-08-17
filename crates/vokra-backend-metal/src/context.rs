@@ -763,6 +763,825 @@ kernel void vokra_swiglu_f32(
     const float sig = 1.0f / (1.0f + exp(-g));
     out[i] = (g * sig) * up[i];
 }
+
+// ---- M3-06 T14 mimi_rvq gather + FP32 fold ----------------------------------
+//
+// Semantics identical to `vokra_ops::mimi_rvq::rvq_fold_core` (the shape-
+// generic core behind `mimi_rvq_decode`):
+//
+//     out[t, d] = Σ_cb tables[cb].row(codes[t, cb])[d]
+//
+// * `codes`       — [time, n_codebooks] row-major u32 codebook indices.
+// * `tables`      — [n_codebooks, codebook_size, d_model] row-major FP32,
+//                   codebook `cb` starts at `cb * codebook_size * d_model`.
+// * `out`         — [time, d_model] row-major FP32.
+//
+// Naive layout per the module docs on `vokra_ops::mimi_rvq`: one thread per
+// output element `(t, d)`, each iterating over `n_codebooks` gather-and-add
+// steps. FP32 accumulator throughout — the "BF16 mantissa loss is the real
+// problem" note in CLAUDE.md applies to every codec-side fold. Index bound
+// checks are done on the host before dispatch (FR-EX-08 — the kernel itself
+// has no per-element bound check, so silent OOB reads would be the failure
+// mode without host-side validation).
+//
+// Grid: `(d_model, time)` — same 2D launch as the GEMM kernel; the shader
+// guards the ragged tail against both bounds. Threadgroup 16x16 (the
+// `grid_2d` default), which is sized for the canonical Mimi
+// [d_model=512, time≈750] envelope and small enough to not waste threads on
+// the tiny [d_model=5, time=3] parity fixtures.
+struct MimiRvqDims {
+    uint n_codebooks;
+    uint codebook_size;
+    uint d_model;
+    uint time;
+};
+
+kernel void vokra_mimi_rvq_gather_fold_f32(
+    device const uint*      codes  [[buffer(0)]],
+    device const float*     tables [[buffer(1)]],
+    device float*           out    [[buffer(2)]],
+    constant MimiRvqDims&   d      [[buffer(3)]],
+    uint2                   gid    [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+    const uint code_base = t * d.n_codebooks;
+    const uint cb_stride = d.codebook_size * d.d_model;
+    // FP32 accumulator — matches `rvq_fold_core`'s `out[..]` FP32 fold order
+    // (bit-identical when the same operands are added in the same sequence;
+    // MSL fast-math may re-associate, so the parity bound is FP32 GEMV-scale
+    // rather than a bit-for-bit assertion).
+    float acc = 0.0f;
+    for (uint cb = 0; cb < d.n_codebooks; ++cb) {
+        const uint idx       = codes[code_base + cb];
+        const uint table_off = cb * cb_stride + idx * d.d_model + delem;
+        acc += tables[table_off];
+    }
+    out[t * d.d_model + delem] = acc;
+}
+
+// ---- M4-04 dac_rvq gather + factorized projection + FP32 fold ---------------
+//
+// Semantics identical to `vokra_ops::dac_rvq::dac_rvq_decode` (the DAC
+// factorized RVQ decode: each quantizer owns a low-dim codebook plus a per-
+// quantizer 1x1 projection with bias applied *before* the residual sum):
+//
+//     out[t, d] = Σ_cb (
+//         proj_biases[cb, d]
+//       + Σ_c proj_weights[cb, d, c] * low_tables[cb, codes[t, cb], c]
+//     )
+//
+// * `codes`         — [time, n_codebooks] row-major u32 codebook indices.
+// * `low_tables`    — [n_codebooks, codebook_size, codebook_dim] row-major FP32;
+//                     codebook `cb` starts at `cb * codebook_size *
+//                     codebook_dim`.
+// * `proj_weights`  — [n_codebooks, d_model, codebook_dim] row-major FP32;
+//                     quantizer `cb`'s W row `d` starts at
+//                     `cb * d_model * codebook_dim + d * codebook_dim`.
+// * `proj_biases`   — [n_codebooks, d_model] row-major FP32; quantizer `cb`'s
+//                     bias for output `d` at `cb * d_model + d`.
+// * `out`           — [time, d_model] row-major FP32.
+//
+// Same naive one-thread-per-output-element layout as `mimi_rvq`, extended with
+// the per-quantizer GEMV + bias fold. Host-side range checks on `codes[..]`
+// (FR-EX-08 — the kernel does no per-element bound check). FP32 accumulator
+// throughout — the "BF16 mantissa loss is the real problem" audio-dialect rule
+// applies (CLAUDE.md).
+//
+// Grid: `(d_model, time)` — same 2D launch as mimi_rvq. Threadgroup 16x16 (the
+// `grid_2d` default). The ragged tail is guarded against both bounds.
+struct DacRvqDims {
+    uint n_codebooks;
+    uint codebook_size;
+    uint codebook_dim;
+    uint d_model;
+    uint time;
+};
+
+kernel void vokra_dac_rvq_gather_project_fold_f32(
+    device const uint*      codes        [[buffer(0)]],
+    device const float*     low_tables   [[buffer(1)]],
+    device const float*     proj_weights [[buffer(2)]],
+    device const float*     proj_biases  [[buffer(3)]],
+    device float*           out          [[buffer(4)]],
+    constant DacRvqDims&    d            [[buffer(5)]],
+    uint2                   gid          [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+    const uint code_base   = t * d.n_codebooks;
+    const uint low_stride  = d.codebook_size * d.codebook_dim;
+    const uint w_stride    = d.d_model * d.codebook_dim;
+    // FP32 accumulator — matches `vokra_ops::dac_rvq::dac_rvq_decode`'s
+    // `out[..]` FP32 fold order over quantizers. MSL fast-math may re-associate
+    // the inner (W · low) dot product, so the parity bound is FP32 GEMV-scale
+    // rather than bit-for-bit.
+    float acc = 0.0f;
+    for (uint cb = 0; cb < d.n_codebooks; ++cb) {
+        const uint idx     = codes[code_base + cb];
+        const uint low_off = cb * low_stride + idx * d.codebook_dim;
+        const uint w_off   = cb * w_stride + delem * d.codebook_dim;
+        float y = proj_biases[cb * d.d_model + delem];
+        for (uint c = 0; c < d.codebook_dim; ++c) {
+            y += proj_weights[w_off + c] * low_tables[low_off + c];
+        }
+        acc += y;
+    }
+    out[t * d.d_model + delem] = acc;
+}
+
+// ---- M4-16 wavtokenizer_vq single-codebook gather --------------------------
+//
+// Semantics identical to `vokra_ops::fsq_codec::wavtokenizer_vq_decode` — the
+// FSQ family's single-stage large-vocab lookup (FR-OP-31, *separate subgraph
+// from the RVQ family* — module docs in `vokra_ops::fsq_codec`):
+//
+//     out[t, d] = codebook_table[codes[t]].row[d]
+//
+// * `codes` — [time] u32 codebook indices (one code per timestep — the RVQ
+//             family's [time, n_codebooks] layout does NOT apply here; the
+//             signature-level distinction that the CPU op takes a *singular*
+//             `&CodebookTable` mirrors here as a single flat table buffer).
+// * `table` — [vocab_size, d_model] row-major FP32 codebook.
+// * `out`   — [time, d_model] row-major FP32.
+//
+// Pure gather — no residual sum, no per-dim decompose, no arithmetic (upstream
+// decodes via a raw `F.embedding` lookup — module docs). CPU vs GPU is
+// bit-identical (no fold to re-associate), so the parity test is tight; the
+// atol budget is kept in sync with the sibling mimi/dac kernels for
+// consistency (both would trivially pass at atol=0).
+//
+// Host-side per-index bound check on `codes[..]` (FR-EX-08 — the kernel does
+// no per-element bound check; the caller validates upstream of the dispatch).
+//
+// Grid: `(d_model, time)` — same 2D launch pattern as mimi_rvq / dac_rvq for a
+// consistent launch geometry across the codec family; threadgroup 16x16 (the
+// `grid_2d` default), which is small enough not to waste threads on the tiny
+// parity fixtures and big enough to keep the canonical WavTokenizer shape
+// (vocab_size=4096, d_model=512) memory-bound-optimal.
+struct WavTokenizerVqDims {
+    uint vocab_size;
+    uint d_model;
+    uint time;
+};
+
+kernel void vokra_wavtokenizer_vq_gather_f32(
+    device const uint*              codes  [[buffer(0)]],
+    device const float*             table  [[buffer(1)]],
+    device float*                   out    [[buffer(2)]],
+    constant WavTokenizerVqDims&    d      [[buffer(3)]],
+    uint2                           gid    [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+    const uint idx = codes[t];
+    out[t * d.d_model + delem] = table[idx * d.d_model + delem];
+}
+
+// ---- M4-16 xcodec2_fsq grid-decompose + optional GEMV ----------------------
+//
+// Semantics identical to `vokra_ops::fsq_codec::xcodec2_fsq_decode` — the FSQ
+// family's grid-based decode (FR-OP-31 single-stage GEMV bound; no codebook
+// tensor, implicit per-dimension grid + one out-projection GEMV per timestep):
+//
+//   For each timestep t:
+//     rem = codes[t]
+//     for k in 0..n_dims:
+//       level_index[k] = rem % levels[k]
+//       rem            = rem / levels[k]
+//       half_width[k]  = levels[k] / 2                     (integer division)
+//       grid[k]        = (level_index[k] − half_width[k]) / half_width[k]
+//     out[t, o] = has_projection
+//                 ? proj_bias[o] + Σ_k proj_weight[o, k] · grid[k]
+//                 : grid[o]                                (Identity requires
+//                                                          d_model == n_dims)
+//
+// * `codes`       — [time] u32 FSQ indices, each < Π levels.
+// * `levels`      — [n_dims] u32 mixed-radix bases (each ≥ 2 — validated on
+//                   the host; the kernel assumes this so `half_width ≥ 1`,
+//                   preventing a divide-by-zero in the grid formula).
+// * `proj_weight` — [d_model, n_dims] row-major FP32, or a dummy [0.0] buffer
+//                   when `has_projection == 0`.
+// * `proj_bias`   — [d_model] FP32, or a dummy [0.0] buffer when
+//                   `has_projection == 0`.
+// * `out`         — [time, d_model] row-major FP32.
+//
+// FP32 accumulator throughout (the "BF16 mantissa loss is the real problem"
+// audio-dialect rule; CLAUDE.md). MSL fast-math may re-associate the inner
+// `Σ_k proj_weight[o, k] · grid[k]` GEMV, so the parity bound is FP32
+// GEMV-scale rather than bit-for-bit — the same 5e-4 budget the sibling
+// mimi_rvq / dac_rvq kernels use.
+//
+// Grid: `(d_model, time)` — same 2D launch pattern as mimi_rvq / dac_rvq for a
+// consistent codec-family launch geometry. Each thread recomputes the whole
+// `grid[0..n_dims]` (cheap: n_dims = 8 on the released X-Codec 2) rather than
+// staging it through threadgroup memory — the FSQ decode is single-stage
+// GEMV bound (module docs), the n_dims scan is O(n_dims) and cache-friendly
+// on the register file. Identity path (`has_projection == 0`) walks the same
+// scan and takes the value at `k == delem` (mixed-radix decompose can't be
+// short-circuited before dim `delem` — the `rem` state carries forward).
+struct Xcodec2FsqDims {
+    uint d_model;         // output width (= FsqOutProj::d_model, or = n_dims for Identity)
+    uint n_dims;          // len(levels) (= X-Codec 2's 8)
+    uint time;
+    uint has_projection;  // 0 = Identity (d_model == n_dims), 1 = GEMV
+};
+
+kernel void vokra_xcodec2_fsq_decode_f32(
+    device const uint*          codes        [[buffer(0)]],
+    device const uint*          levels       [[buffer(1)]],
+    device const float*         proj_weight  [[buffer(2)]],
+    device const float*         proj_bias    [[buffer(3)]],
+    device float*               out          [[buffer(4)]],
+    constant Xcodec2FsqDims&    d            [[buffer(5)]],
+    uint2                       gid          [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.d_model) {
+        return;
+    }
+
+    if (d.has_projection != 0u) {
+        // GEMV path: decompose `codes[t]` onto the grid and do a single
+        // Linear(n_dims → d_model)+bias dot product per output column.
+        uint rem = codes[t];
+        float acc = proj_bias[delem];
+        const uint w_base = delem * d.n_dims;
+        for (uint k = 0; k < d.n_dims; ++k) {
+            const uint level = levels[k];
+            const uint level_index = rem % level;
+            rem /= level;
+            const uint half_width = level / 2u;  // >= 1: host validates level >= 2
+            const float grid_val =
+                (float)((int)level_index - (int)half_width) / (float)half_width;
+            acc += proj_weight[w_base + k] * grid_val;
+        }
+        out[t * d.d_model + delem] = acc;
+    } else {
+        // Identity path (d_model == n_dims): each thread walks the mixed-
+        // radix decompose from dim 0 up to `delem` (the `rem` state carries
+        // forward — dim `delem`'s level_index depends on rem after dividing
+        // by every earlier level). Cost is O(delem+1) integer ops per thread;
+        // for the released X-Codec 2 Identity case is unreachable
+        // (`requires_projection = true`; d_model=2048 != n_dims=8), so this
+        // path exists for the small parity fixtures and callers whose codebook
+        // dim equals the FSQ n_dims.
+        uint rem = codes[t];
+        for (uint k = 0; k <= delem; ++k) {
+            const uint level = levels[k];
+            const uint level_index = rem % level;
+            if (k == delem) {
+                const uint half_width = level / 2u;
+                out[t * d.d_model + delem] =
+                    (float)((int)level_index - (int)half_width) / (float)half_width;
+                return;
+            }
+            rem /= level;
+        }
+    }
+}
+
+// ---- Vocoder Metal wave WF5 snac_decode (2026-08-13) ------------------------
+//
+// Semantics identical to `vokra_ops::snac_decode::SnacDecoder::decode` (the
+// upstream `ResidualVectorQuantize.from_codes` algorithm, `hubertsiuzdak/snac
+// /blob/main/snac/vq.py` L61-71):
+//
+//     For each stage s in 0..3:
+//       z_p_s = codebooks[s].row(codes[s][t_stage])                # embed lookup
+//       z_q_s = W_s @ z_p_s + b_s                                   # WNConv1d(codebook_dim → d_model)
+//       z_q_s = repeat_interleave(z_q_s, stride=strides[s], dim=-1) # temporal upsample
+//       z_q  += z_q_s                                                # residual sum
+//
+// SNAC is a **hierarchical / multi-scale** residual VQ: unlike Mimi / DAC where
+// every quantizer shares the same time axis, SNAC's `k`th stage runs at frame
+// rate `base / vq_strides[k]`. The 24 kHz variant used by Orpheus and Maya1
+// has `vq_strides = [4, 2, 1]` giving per-stage rates ~12 / 23 / 47 Hz.
+//
+// * `codes`         — u32 codebook indices, concatenated across the 3 stages:
+//                     `codes[stage_offsets[s] + t_stage]` for stage `s`,
+//                     stage frame `t_stage in 0..codes[s].len()`. Every stage
+//                     must satisfy `codes[s].len() * strides[s] == t_expanded`
+//                     (host-validated, FR-EX-08).
+// * `codebooks`     — [3, codebook_size, codebook_dim] row-major FP32; stage
+//                     `s` starts at `s * codebook_size * codebook_dim`. The
+//                     three stages share `codebook_size` and `codebook_dim`
+//                     (validated on the host).
+// * `proj_weights`  — [3, d_model, codebook_dim] row-major FP32; stage `s`'s
+//                     W row `o` starts at `s * d_model * codebook_dim + o *
+//                     codebook_dim`.
+// * `proj_biases`   — [3, d_model] row-major FP32; stage `s`'s bias for
+//                     output `o` at `s * d_model + o`.
+// * `out`           — [t_expanded, d_model] row-major FP32.
+//
+// For each output element `(t_out, d_out)` and each stage `s`, look up the
+// stage frame `t_stage = t_out / strides[s]`, then compute `W_s @ low_s + b_s`
+// for that stage and accumulate into the FP32 output. The temporal upsample
+// (`repeat_interleave(stride)`) is baked into `t_stage = t_out / stride` so
+// contiguous output timesteps within one stage frame share the same projected
+// row — bit-identical to the CPU fold's `t_start..t_start + stride` inner
+// loop.
+//
+// FP32 accumulator throughout (the "BF16 mantissa loss is the real problem"
+// audio-dialect rule; CLAUDE.md). MSL fast-math may re-associate the inner
+// `Σ_c W[o, c] · low[c]` dot product, so the parity bound is FP32 GEMV-scale
+// rather than bit-for-bit — the same 5e-4 budget the sibling mimi_rvq /
+// dac_rvq / fsq_codec / snake_activation kernels use.
+//
+// Host-side per-index bound check on `codes[..]` (FR-EX-08 — the kernel does
+// no per-element bound check; the caller validates upstream of the dispatch).
+//
+// Grid: `(d_model, t_expanded)` — same 2D launch pattern as the sibling
+// mimi_rvq / dac_rvq kernels for a consistent codec-family launch geometry.
+// Threadgroup 16x16 (the `grid_2d` default); the ragged tail is guarded
+// against both bounds.
+//
+// The 3-stage loop is unrolled by fixing `const uint N_STAGES = 3` (SNAC's
+// architecture pins exactly three quantizers; upstream `snac/vq.py` L15-25).
+struct SnacDecodeDims {
+    uint d_model;
+    uint codebook_dim;
+    uint codebook_size;
+    uint t_expanded;
+    // Per-stage temporal strides (SNAC 24 kHz canonical = [4, 2, 1]).
+    uint strides[3];
+    // Start of each stage in the flat `codes` buffer. `codes[stage_offsets[s]
+    // + t_stage]` for stage `s`. stage_offsets[0] is always 0; stage_offsets[1]
+    // = len(codes[0]); stage_offsets[2] = len(codes[0]) + len(codes[1]).
+    uint stage_offsets[3];
+};
+
+kernel void vokra_snac_decode_f32(
+    device const uint*         codes         [[buffer(0)]],
+    device const float*        codebooks     [[buffer(1)]],
+    device const float*        proj_weights  [[buffer(2)]],
+    device const float*        proj_biases   [[buffer(3)]],
+    device float*              out           [[buffer(4)]],
+    constant SnacDecodeDims&   d             [[buffer(5)]],
+    uint2                      gid           [[thread_position_in_grid]])
+{
+    const uint t_out = gid.y;
+    const uint d_out = gid.x;
+    if (t_out >= d.t_expanded || d_out >= d.d_model) {
+        return;
+    }
+    const uint cb_stride = d.codebook_size * d.codebook_dim;
+    const uint w_stride  = d.d_model * d.codebook_dim;
+    // FP32 accumulator — matches `SnacDecoder::decode`'s outer stage fold in
+    // left-to-right stage order. MSL fast-math may re-associate the inner
+    // GEMV over `codebook_dim`, so the parity bound is FP32 GEMV-scale
+    // rather than bit-for-bit.
+    float acc = 0.0f;
+    for (uint s = 0; s < 3u; ++s) {
+        const uint stride_s = d.strides[s];
+        const uint t_stage  = t_out / stride_s;
+        const uint idx      = codes[d.stage_offsets[s] + t_stage];
+        const uint low_off  = s * cb_stride + idx * d.codebook_dim;
+        const uint w_off    = s * w_stride + d_out * d.codebook_dim;
+        float y = proj_biases[s * d.d_model + d_out];
+        for (uint c = 0; c < d.codebook_dim; ++c) {
+            y += proj_weights[w_off + c] * codebooks[low_off + c];
+        }
+        acc += y;
+    }
+    out[t_out * d.d_model + d_out] = acc;
+}
+
+// ---- Vocoder Metal wave WF2 snake activation (2026-08-13) -------------------
+//
+// Semantics identical to `vokra_ops::snake::snake_activation_f32` (the
+// stateless out-of-place free function that mirrors
+// `vokra_ops::hiftnet::Snake::forward_in_place` under `alpha_logscale = false`
+// and the private `kokoro::nn::snake_activation` helper in vokra-models):
+//
+//     out[c, t] = x[c, t] + (1 / (alpha[c] + eps)) * sin(alpha[c] * x[c, t])^2
+//
+// with `eps = 1.0e-9f` (upstream `no_div_by_zero` — `activations.py:97` and
+// every downstream port: HiFTNet, BigVGAN, Kokoro-82M).
+//
+// * `x`     — [channels, time] row-major FP32 (channel-outer).
+// * `alpha` — [channels] FP32 per-channel scale (already the "effective" α;
+//             the `alpha_logscale = true` case is expected to have the
+//             `exp(alpha_raw)` applied on the host by the converter, matching
+//             the way the CPU free function is called — no in-kernel branch).
+// * `out`   — [channels, time] row-major FP32.
+//
+// Trivially element-wise (no reduction, no gather) — CPU and GPU agree
+// bit-for-bit when the MSL fast-math `sin` matches the host `f32::sin` for
+// the tested inputs. The parity bound is `atol ≤ 5e-4` to match the sibling
+// codec-family bound (`mimi_rvq`, `dac_rvq`, `fsq_codec`); a transcendental
+// re-implementation gap between MSL's `sin` and Rust's `f32::sin` would
+// still fall well inside 5e-4 for finite inputs.
+//
+// Precision: FP32 throughout (BF16 mantissa loss is the real problem —
+// CLAUDE.md audio-dialect activation attribute rule of thumb). The kernel
+// takes an FP32 `alpha` and an FP32 `x`; the intermediate `sin(a*v)` and the
+// `inv_a * s * s` term are computed in FP32.
+//
+// Grid: `(time, channels)` 2-D dispatch — same 16x16 threadgroup shape as
+// the codec kernels. `time` on the fast axis (grid.x) matches the row-major
+// stride and keeps adjacent threads reading adjacent floats. The ragged
+// tail is guarded against both bounds.
+struct SnakeActivationDims {
+    uint channels;
+    uint time;
+};
+
+kernel void vokra_snake_activation_f32(
+    device const float*                x     [[buffer(0)]],
+    device const float*                alpha [[buffer(1)]],
+    device float*                      out   [[buffer(2)]],
+    constant SnakeActivationDims&      d     [[buffer(3)]],
+    uint2                              gid   [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t >= d.time) {
+        return;
+    }
+    const float a     = alpha[c];
+    const float inv_a = 1.0f / (a + 1.0e-9f);
+    const uint  idx   = c * d.time + t;
+    const float v     = x[idx];
+    const float s     = sin(a * v);
+    out[idx] = v + inv_a * s * s;
+}
+
+// ---- Vocoder Metal wave common vocoder primitive: snake_beta ---------------
+//
+// Semantics identical to `vokra_ops::snake_beta_f32` — the two-vector
+// SnakeBeta closed form consumed by the BigVGAN family (upstream
+// `activations.py:62-114`, MIT / NVIDIA):
+//
+//     out[c, t] = x[c, t] + (1 / (beta[c] + eps)) * sin(alpha[c] * x[c, t])^2
+//
+// with `eps = 1.0e-9f` (upstream `no_div_by_zero`, matching the sibling
+// snake_activation kernel).
+//
+// Distinct from `vokra_snake_activation_f32` because SnakeBeta separates
+// frequency (`alpha`) from magnitude (`beta`) — the plain-Snake kernel
+// couples both to a single per-channel alpha and would silently squash the
+// beta axis. Kept as its own MSL kernel so the coverage seam can dispatch
+// SnakeBeta directly (BigVGAN's terminal activation + every AMP block that
+// asks for SnakeBeta).
+//
+// * `x`     — [channels, time] row-major FP32 (channel-outer).
+// * `alpha` — [channels] FP32 per-channel frequency scale (already effective;
+//             the `alpha_logscale = true` case pre-exponentiates on the host,
+//             mirroring the CPU free function's contract).
+// * `beta`  — [channels] FP32 per-channel magnitude scale (same convention).
+// * `out`   — [channels, time] row-major FP32.
+//
+// Trivially element-wise (no reduction, no gather) — CPU and GPU agree
+// within the FP32 `sin` transcendental gap. The parity bound is
+// `atol ≤ 5e-4` (same sibling codec-family / snake_activation envelope).
+//
+// Grid: `(time, channels)` 2-D dispatch — same 16×16 threadgroup shape as
+// the sibling snake_activation kernel. `time` on the fast axis (grid.x)
+// matches the row-major stride and keeps adjacent threads reading adjacent
+// floats. The ragged tail is guarded against both bounds.
+struct SnakeBetaDims {
+    uint channels;
+    uint time;
+};
+
+kernel void vokra_snake_beta_f32(
+    device const float*        x     [[buffer(0)]],
+    device const float*        alpha [[buffer(1)]],
+    device const float*        beta  [[buffer(2)]],
+    device float*              out   [[buffer(3)]],
+    constant SnakeBetaDims&    d     [[buffer(4)]],
+    uint2                      gid   [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t >= d.time) {
+        return;
+    }
+    const float a     = alpha[c];
+    const float b     = beta[c];
+    const float inv_b = 1.0f / (b + 1.0e-9f);
+    const uint  idx   = c * d.time + t;
+    const float v     = x[idx];
+    const float s     = sin(a * v);
+    out[idx] = v + inv_b * s * s;
+}
+
+// ---- Vocoder Metal wave common vocoder primitive: sinegen_deterministic ----
+//
+// Semantics identical to `vokra_ops::sinegen_deterministic_f32` — the
+// deterministic-only path of `vokra_ops::nsf::SineGen::forward` (upstream
+// CosyVoice `cosyvoice/hifigan/generator.py:200-214`, `NsfEntropy::
+// Deterministic`). Under that mode the per-harmonic phase and Gaussian
+// noise both collapse to zero, and the CPU forward reduces to (for
+// `i ∈ [0, harmonic_num]`, `j ∈ [0, T)`):
+//
+//     cs_i(j) = cs_i(j-1) + f0[j] * (i+1) / samp_rate       (per-harmonic cumsum)
+//     theta   = 2π * (cs_i(j) - floor(cs_i(j)))              (cs mod 1)
+//     sine    = sine_amp * sin(theta)
+//     uv      = f0[j] > voiced_threshold ? 1.0 : 0.0
+//     out[j * (H+1) + i] = sine * uv                         (transposed layout)
+//
+// # Per-harmonic sequential cumsum → one thread per harmonic
+//
+// The cumsum is a sequential dependency across time (`cs_i(j)` depends on
+// `cs_i(j-1)`), so we can only parallelise across harmonics. The kernel
+// launches ONE thread per harmonic (grid.x = harmonic_num + 1, grid.y = 1);
+// each thread walks the full time axis in-kernel, accumulating its own cs
+// in a private register. Every write is to the transposed layout directly
+// (`out[j * h1 + i] = sine * uv`), so no scratch buffer is needed and no
+// follow-up transpose pass is dispatched.
+//
+// The `cs += f0[j] * harmonic_gain` accumulation matches the CPU forward's
+// per-harmonic reduction order exactly, so under MSL fast-math the only
+// bit-level source of divergence is `sin(theta)` — well inside the
+// `atol ≤ 5e-4` codec-family bound for finite inputs.
+//
+// * `f0`               — [T] FP32 fundamental frequency per sample.
+// * `out`              — [T * (H+1)] FP32 row-major (time-outer / harmonic-
+//                        inner, upstream `sine_wavs.transpose(1, 2)`).
+// * `samp_rate`        — audio sample rate (Hz).
+// * `harmonic_num`     — number of harmonics beyond the fundamental.
+// * `sine_amp`         — sinusoid amplitude scale.
+// * `voiced_threshold` — F0 threshold above which a frame is voiced.
+// * `t`                — number of input timesteps (== f0.len()).
+//
+// Grid: `(H+1, 1)` 1-D dispatch. Threadgroup 256; the kernel's `i >= h1`
+// guard covers the ragged tail (H+1 is typically ~1-10, far below 256, so
+// most threads in the block early-return — that is acceptable for a
+// once-per-utterance vocoder-front op).
+struct SinegenDeterministicDims {
+    uint t;
+    uint h1;                 // harmonic_num + 1
+    float samp_rate_f;
+    float sine_amp;
+    float voiced_threshold;
+};
+
+kernel void vokra_sinegen_deterministic_f32(
+    device const float*                  f0    [[buffer(0)]],
+    device float*                        out   [[buffer(1)]],
+    constant SinegenDeterministicDims&   d     [[buffer(2)]],
+    uint                                 gid   [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.h1) {
+        return;
+    }
+    const float harmonic_gain = (float(i) + 1.0f) / d.samp_rate_f;
+    const float two_pi = 6.28318530717958647692f;
+    float cs = 0.0f;
+    for (uint j = 0; j < d.t; ++j) {
+        const float f0_j = f0[j];
+        cs += f0_j * harmonic_gain;
+        const float modded = cs - floor(cs);
+        const float theta  = two_pi * modded;
+        const float sine   = d.sine_amp * sin(theta);
+        const float uv     = (f0_j > d.voiced_threshold) ? 1.0f : 0.0f;
+        // Transposed layout: (j, i) → out[j * h1 + i].
+        out[j * d.h1 + i] = sine * uv;
+    }
+}
+
+// ---- Vocoder Metal wave common vocoder primitive: anti_aliased_upsample ---
+//
+// Semantics identical to `vokra_ops::anti_aliased_upsample_f32` — polyphase
+// decomposition of "upsample by `ratio` then convolve with a causal FIR
+// low-pass". The Kaiser-window filter design lives on the host (see the
+// vokra-ops module docstring); this kernel consumes the already-designed
+// `kernel` taps and does the per-timestep multiply-add.
+//
+//     out[c, t_out] = Σ_j kernel[j * ratio + r] * x[c, t - j]
+//
+// with `t = t_out / ratio`, `r = t_out % ratio` (polyphase branch), and the
+// sum running over every `j >= 0` where `t - j >= 0` and
+// `j * ratio + r < taps` (the `k_idx >= taps { break; }` guard on the CPU
+// side, transliterated into a bounded C-style `for` loop here).
+//
+// # No reduction across taps → FMA divergence is bounded
+//
+// Under MSL fast-math the compiler may fuse `acc += x * k` to `fma`. The
+// CPU op runs the same reduction in strict left-fold FP32 order (no FMA in
+// rustc for a plain `+= x * k` pattern), so there is a fused-vs-unfused
+// gap of ~1 ULP per tap. For a typical Kaiser kernel of length 12-64 taps
+// the accumulated divergence stays well inside the parity bound
+// `atol ≤ 1e-4`.
+//
+// * `x`      — [channels, time_in] row-major FP32.
+// * `kernel` — [taps] causal FIR taps (kernel[0] multiplies x[c, t],
+//              kernel[1] multiplies x[c, t-1], …).
+// * `out`    — [channels, time_in * ratio] row-major FP32.
+//
+// Grid: `(time_in * ratio, channels)` 2-D dispatch — same 16×16
+// threadgroup shape as the sibling snake / codec kernels. The ragged tail
+// is guarded against both bounds.
+struct AntiAliasedUpsampleDims {
+    uint channels;
+    uint time_in;
+    uint time_out;   // == time_in * ratio
+    uint ratio;
+    uint taps;       // == kernel.len()
+};
+
+kernel void vokra_anti_aliased_upsample_f32(
+    device const float*                  x      [[buffer(0)]],
+    device const float*                  kernel_ [[buffer(1)]],
+    device float*                        out    [[buffer(2)]],
+    constant AntiAliasedUpsampleDims&    d      [[buffer(3)]],
+    uint2                                gid    [[thread_position_in_grid]])
+{
+    const uint t_out = gid.x;
+    const uint c     = gid.y;
+    if (c >= d.channels || t_out >= d.time_out) {
+        return;
+    }
+    const uint t = t_out / d.ratio;
+    const uint r = t_out % d.ratio;
+    const uint x_row_off   = c * d.time_in;
+    const uint out_row_off = c * d.time_out;
+    float acc = 0.0f;
+    // Bounded per-branch tap walk: `k_idx = j * ratio + r`; break as soon
+    // as either `k_idx >= taps` or `j > t` (which would step past the
+    // input's causal end). `j` cannot overflow because both `t` and
+    // `taps / ratio` are bounded by the CPU host-side length check.
+    for (uint j = 0u; ; ++j) {
+        const uint k_idx = j * d.ratio + r;
+        if (k_idx >= d.taps) {
+            break;
+        }
+        if (j > t) {
+            break;
+        }
+        const uint src = t - j;
+        acc += x[x_row_off + src] * kernel_[k_idx];
+    }
+    out[out_row_off + t_out] = acc;
+}
+
+// ---- Vocoder Metal wave WF5 denoise spectral-gate primitive (2026-08-13) ----
+//
+// Semantics identical to `vokra_ops::denoise::denoise_apply_mask_f32` — the
+// element-wise complex × real-gain multiply extracted from the
+// [`DenoiseModel::enhance_inner`] output-stage loop (denoise.rs L1852-1870).
+// GTCRN / RNNoise / any per-freq-per-time mask trainer that emits per-position
+// real gains can dispatch through this kernel; DFN3 pre-expands its ERB mask
+// through `erb_inv_fb` to per-position gains upstream of the call.
+//
+//     out_re[t, f] = spec_re[t, f] * gain[t, f]
+//     out_im[t, f] = spec_im[t, f] * gain[t, f]
+//
+// * `spec_re` / `spec_im` — [n_frames, n_bins] row-major FP32 (bins on the
+//                           inner stride — the layout `Spectrogram { re, im }`
+//                           uses in vokra_ops::denoise).
+// * `gain`               — [n_frames, n_bins] row-major FP32 per-position
+//                           real gain (already expanded from whatever mask
+//                           the upstream front-end produced).
+// * `out_re` / `out_im`  — [n_frames, n_bins] row-major FP32 outputs.
+//
+// Phase preservation is exact (`atan2(im · g, re · g) = atan2(im, re)` for
+// every finite g ≥ 0, and a global π flip for g < 0 — never a per-bin phase
+// distortion). Multiplication is IEEE-754 correctly-rounded on every finite
+// input; there is no reduction, no transcendental, no FMA opportunity, so
+// CPU and GPU produce **bit-for-bit identical** FP32 outputs. The parity
+// harness allows the sibling `atol ≤ 5e-4` codec-family bound to keep a
+// discriminating negative control while logging the actual max |Δ| (0 in
+// practice — any future drift immediately visible).
+//
+// Precision: FP32 throughout (BF16 mantissa loss is the real problem —
+// CLAUDE.md audio-dialect rule; denoise is FP32 by construction upstream too).
+//
+// Grid: `(n_bins, n_frames)` 2-D dispatch — same 16×16 threadgroup shape as
+// the sibling snake_activation / codec kernels. `n_bins` on the fast axis
+// (grid.x) matches the row-major stride and keeps adjacent threads reading
+// adjacent floats. The ragged tail is guarded against both bounds.
+struct DenoiseApplyMaskDims {
+    uint n_bins;
+    uint n_frames;
+};
+
+kernel void vokra_denoise_apply_mask_f32(
+    device const float*                spec_re [[buffer(0)]],
+    device const float*                spec_im [[buffer(1)]],
+    device const float*                gain    [[buffer(2)]],
+    device float*                      out_re  [[buffer(3)]],
+    device float*                      out_im  [[buffer(4)]],
+    constant DenoiseApplyMaskDims&     d       [[buffer(5)]],
+    uint2                              gid     [[thread_position_in_grid]])
+{
+    const uint f = gid.x;
+    const uint t = gid.y;
+    if (f >= d.n_bins || t >= d.n_frames) {
+        return;
+    }
+    const uint  idx = t * d.n_bins + f;
+    const float g   = gain[idx];
+    out_re[idx] = spec_re[idx] * g;
+    out_im[idx] = spec_im[idx] * g;
+}
+
+// ---- Vocoder Metal wave WF5 qwen3_tts_codec RVQ decode ---------------------
+//
+// Semantics identical to `vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode`
+// (the Qwen3-TTS-12Hz codec's per-quantizer summed feature decode step
+// consumed by every released Qwen3-TTS-12Hz voice —
+// `Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-{Base,CustomVoice,VoiceDesign}`,
+// Apache-2.0). Given `[time, num_quantizers]` row-major `u32` codes and the
+// per-quantizer codebook tables, the primitive gathers the corresponding
+// codebook rows and FP32-sums them into `out[t, :]`:
+//
+//     out[t, d] = Σ_q tables[q].row(codes[t, q])[d]
+//
+// # Semantic vs acoustic vocab split (why two table buffers)
+//
+// Qwen3-TTS-Codec is a hybrid semantic + acoustic RVQ: the first
+// `num_semantic_quantizers` quantizers use a **larger** `semantic_codebook_size`
+// vocab (canonical 4096); the remaining acoustic quantizers use
+// `codebook_size` (canonical 2048). Every codebook still emits the same
+// `codebook_dim`-wide row (canonical 512), so the FP32 fold is
+// well-defined — but the per-quantizer stride differs between the two
+// families. Rather than fake a shared vocab (which would either waste memory
+// or silently clamp the semantic index; both violate FR-EX-08 / the module
+// docs' "no silent clamp" rule), the kernel takes TWO flat table buffers:
+//
+//   * `semantic_tables` — `[num_semantic_quantizers, semantic_codebook_size,
+//     codebook_dim]` row-major FP32; quantizer `q < num_semantic_quantizers`
+//     starts at `q * semantic_codebook_size * codebook_dim`.
+//   * `acoustic_tables` — `[num_acoustic_quantizers, codebook_size,
+//     codebook_dim]` row-major FP32; quantizer `q >= num_semantic_quantizers`
+//     is `q - num_semantic_quantizers` within this buffer.
+//
+// The host guards `codes[t, q] < per_quantizer_vocab(q)` before dispatch
+// (FR-EX-08 — the kernel does no per-element bound check, so silent OOB reads
+// would be the failure mode). An empty semantic (or acoustic) side is legal —
+// the dispatch allocates a zeroed 4-byte placeholder via
+// `newBufferWithLength:` in that case (Metal requires a non-null buffer
+// binding at every declared `[[buffer(N)]]` slot even when the kernel never
+// reads through it).
+//
+// # FP32 accumulator (audio-dialect rule)
+//
+// The residual sum is FP32-accumulated even if a future variant stores
+// codebook tables in FP16 / BF16 — same rule as mimi_rvq / dac_rvq (audio-
+// dialect: "BF16 mantissa loss is the real problem", CLAUDE.md).
+//
+// Grid: `(codebook_dim, time)` — same 2D launch as mimi_rvq / dac_rvq; the
+// shader guards the ragged tail against both bounds. Threadgroup 16x16 (the
+// `grid_2d` default), sized for the canonical Qwen3-TTS
+// [codebook_dim=512, time≈37 (3 s at 12.5 Hz)] envelope and small enough to
+// not waste threads on the tiny parity fixtures.
+struct Qwen3TtsCodecDims {
+    uint num_quantizers;
+    uint num_semantic_quantizers;
+    uint semantic_codebook_size;
+    uint codebook_size;
+    uint codebook_dim;
+    uint time;
+};
+
+kernel void vokra_qwen3_tts_codec_decode_f32(
+    device const uint*                 codes            [[buffer(0)]],
+    device const float*                semantic_tables  [[buffer(1)]],
+    device const float*                acoustic_tables  [[buffer(2)]],
+    device float*                      out              [[buffer(3)]],
+    constant Qwen3TtsCodecDims&        d                [[buffer(4)]],
+    uint2                              gid              [[thread_position_in_grid]])
+{
+    const uint t     = gid.y;
+    const uint delem = gid.x;
+    if (t >= d.time || delem >= d.codebook_dim) {
+        return;
+    }
+    const uint code_base     = t * d.num_quantizers;
+    const uint sem_cb_stride = d.semantic_codebook_size * d.codebook_dim;
+    const uint ac_cb_stride  = d.codebook_size          * d.codebook_dim;
+    // FP32 accumulator — matches `qwen3_tts_codec_decode`'s `out[..]` FP32
+    // fold order over quantizers (bit-identical when the same operands are
+    // added in the same sequence; MSL fast-math may re-associate, so the
+    // parity bound is FP32 GEMV-scale rather than a bit-for-bit assertion).
+    float acc = 0.0f;
+    for (uint q = 0; q < d.num_quantizers; ++q) {
+        const uint idx = codes[code_base + q];
+        if (q < d.num_semantic_quantizers) {
+            const uint off = q * sem_cb_stride + idx * d.codebook_dim + delem;
+            acc += semantic_tables[off];
+        } else {
+            const uint ac_q = q - d.num_semantic_quantizers;
+            const uint off  = ac_q * ac_cb_stride + idx * d.codebook_dim + delem;
+            acc += acoustic_tables[off];
+        }
+    }
+    out[t * d.codebook_dim + delem] = acc;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -925,6 +1744,223 @@ struct SiluDims {
 #[derive(Clone, Copy)]
 struct SwigluDims {
     n: u32,
+}
+
+/// M3-06 T14 mimi_rvq gather + FP32 fold dims (`setBytes:` index 3). Field
+/// order / `u32` widths mirror the MSL `struct MimiRvqDims`.
+///
+/// - `n_codebooks` — number of codebooks (Mimi canonical = 8).
+/// - `codebook_size` — entries per codebook (Mimi canonical = 2048).
+/// - `d_model` — feature dim per codebook entry (Mimi canonical = 512).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MimiRvqDims {
+    n_codebooks: u32,
+    codebook_size: u32,
+    d_model: u32,
+    time: u32,
+}
+
+/// M4-04 dac_rvq gather + factorized projection + FP32 fold dims (`setBytes:`
+/// index 5). Field order / `u32` widths mirror the MSL `struct DacRvqDims`.
+///
+/// The extra `codebook_dim` axis vs [`MimiRvqDims`] is the DAC factorized
+/// design (module docs `vokra_ops::dac_rvq`): codebook rows live in the
+/// low-dim space and are projected up to `d_model` per quantizer.
+///
+/// - `n_codebooks` — number of quantizers (DAC 24 kHz canonical = 32).
+/// - `codebook_size` — entries per codebook (DAC canonical = 1024).
+/// - `codebook_dim` — factorized codebook row width (DAC canonical = 8).
+/// - `d_model` — output feature dim per timestep (DAC 24 kHz canonical = 1024).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DacRvqDims {
+    n_codebooks: u32,
+    codebook_size: u32,
+    codebook_dim: u32,
+    d_model: u32,
+    time: u32,
+}
+
+/// M4-16 wavtokenizer_vq single-codebook gather dims (`setBytes:` index 3).
+/// Field order / `u32` widths mirror the MSL `struct WavTokenizerVqDims`.
+///
+/// - `vocab_size` — number of codebook entries (released WavTokenizer = 4096;
+///   FR-OP-31 "65k+ vocab embedding" scale pinned by the vokra-ops synthetic
+///   test in `fsq_codec::tests::wavtokenizer_65k_plus_vocab_path_is_exact`).
+/// - `d_model` — embedding width per entry (released WavTokenizer = 512).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WavTokenizerVqDims {
+    vocab_size: u32,
+    d_model: u32,
+    time: u32,
+}
+
+/// M4-16 xcodec2_fsq grid-decompose + optional GEMV dims (`setBytes:` index 5).
+/// Field order / `u32` widths mirror the MSL `struct Xcodec2FsqDims`.
+///
+/// - `d_model` — output width (canonical released X-Codec 2 = 2048; for the
+///   Identity path this must equal `n_dims`).
+/// - `n_dims` — `len(levels)` (canonical = 8; the mixed-radix decompose
+///   walks `levels[0..n_dims]` per timestep).
+/// - `time` — number of timesteps in this decode chunk.
+/// - `has_projection` — 0 = Identity (`d_model == n_dims`, copy grid to out),
+///   1 = GEMV (Linear `n_dims → d_model` + bias per timestep). Canonical
+///   released X-Codec 2 is `has_projection = 1`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Xcodec2FsqDims {
+    d_model: u32,
+    n_dims: u32,
+    time: u32,
+    has_projection: u32,
+}
+
+/// Vocoder Metal wave WF2 snake activation dims (`setBytes:` index 3). Field
+/// order / `u32` widths mirror the MSL `struct SnakeActivationDims`.
+///
+/// - `channels` — number of channels (== `alpha.len()`; Kokoro-82M decoder =
+///   512 for the terminal decoder Snake, BigVGAN AMP blocks vary
+///   32〜1024).
+/// - `time` — number of frames per channel in this call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SnakeActivationDims {
+    channels: u32,
+    time: u32,
+}
+
+/// Vocoder Metal wave common vocoder primitive: SnakeBeta dims
+/// (`setBytes:` index 4). Field order / `u32` widths mirror the MSL
+/// `struct SnakeBetaDims`. Semantically identical to
+/// [`SnakeActivationDims`] but a distinct type so the wrong-op dispatch
+/// (a callsite that binds a snake_beta buffer set to the snake_activation
+/// pipeline) is a Rust-side type error.
+///
+/// - `channels` — number of channels (== `alpha.len() == beta.len()`).
+/// - `time`     — number of frames per channel in this call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SnakeBetaDims {
+    channels: u32,
+    time: u32,
+}
+
+/// Vocoder Metal wave common vocoder primitive: SineGen deterministic dims
+/// (`setBytes:` index 2). Field order / widths mirror the MSL
+/// `struct SinegenDeterministicDims`.
+///
+/// - `t`                — number of input timesteps (== `f0.len()`).
+/// - `h1`               — harmonics + fundamental (== `harmonic_num + 1`).
+/// - `samp_rate_f`      — audio sample rate as FP32 (`samp_rate as f32`).
+/// - `sine_amp`         — sinusoid amplitude scale.
+/// - `voiced_threshold` — F0 threshold above which a frame is voiced.
+///
+/// FP32 fields keep the arithmetic in the same precision the CPU op runs
+/// (BF16 mantissa loss is the audio-dialect rule of thumb — CLAUDE.md).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SinegenDeterministicDims {
+    t: u32,
+    h1: u32,
+    samp_rate_f: f32,
+    sine_amp: f32,
+    voiced_threshold: f32,
+}
+
+/// Vocoder Metal wave common vocoder primitive: anti_aliased_upsample dims
+/// (`setBytes:` index 3). Field order / `u32` widths mirror the MSL
+/// `struct AntiAliasedUpsampleDims`.
+///
+/// - `channels` — number of channels in `x` / `out` (channel-outer layout).
+/// - `time_in`  — number of input timesteps.
+/// - `time_out` — number of output timesteps (== `time_in * ratio`, kept
+///   explicitly to avoid recomputing per thread).
+/// - `ratio`    — integer upsample factor.
+/// - `taps`     — number of filter taps (== `kernel.len()`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AntiAliasedUpsampleDims {
+    channels: u32,
+    time_in: u32,
+    time_out: u32,
+    ratio: u32,
+    taps: u32,
+}
+
+/// Vocoder Metal wave WF5 denoise spectral-gate dims (`setBytes:` index 5).
+/// Field order / `u32` widths mirror the MSL `struct DenoiseApplyMaskDims`.
+///
+/// - `n_bins`   — number of frequency bins per frame (STFT `n_fft/2 + 1`).
+///   For DFN3 24 kHz canonical this is 481 (`n_fft = 960`), for GTCRN 16 kHz
+///   canonical 257 (`n_fft = 512`).
+/// - `n_frames` — number of time frames in this decode chunk (the
+///   [`vokra_ops::denoise::Spectrogram::frames`] axis).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DenoiseApplyMaskDims {
+    n_bins: u32,
+    n_frames: u32,
+}
+
+/// Vocoder Metal wave WF5 snac_decode dims (`setBytes:` index 5). Field
+/// order / `u32` widths mirror the MSL `struct SnacDecodeDims`.
+///
+/// - `d_model` — output feature width per timestep (SNAC 24 kHz canonical =
+///   768 — the shared decoder input dim for Orpheus / Maya1's model config).
+/// - `codebook_dim` — factorized codebook row width (SNAC 24 kHz canonical =
+///   8, mirror of DAC's factorization).
+/// - `codebook_size` — entries per codebook (SNAC 24 kHz canonical = 4096;
+///   equal across the three stages by construction).
+/// - `t_expanded` — number of output timesteps (`codes[s].len() *
+///   strides[s]`, same for every stage — the "co-aligned base frames"
+///   invariant `SnacDecoder::check_and_measure` enforces).
+/// - `strides` — per-stage temporal strides `[u32; 3]` (SNAC 24 kHz canonical
+///   = `[4, 2, 1]` giving per-stage rates ~12 / 23 / 47 Hz).
+/// - `stage_offsets` — start of each stage in the flat `codes` buffer, so
+///   stage `s`'s frame `t_stage` is `codes[stage_offsets[s] + t_stage]`. By
+///   construction `stage_offsets[0] = 0`; `stage_offsets[1] = len(codes[0])`;
+///   `stage_offsets[2] = len(codes[0]) + len(codes[1])`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SnacDecodeDims {
+    d_model: u32,
+    codebook_dim: u32,
+    codebook_size: u32,
+    t_expanded: u32,
+    strides: [u32; 3],
+    stage_offsets: [u32; 3],
+}
+
+/// Vocoder Metal wave WF5 qwen3_tts_codec dims (`setBytes:` index 4). Field
+/// order / `u32` widths mirror the MSL `struct Qwen3TtsCodecDims`.
+///
+/// - `num_quantizers` — total quantizers (Qwen3-TTS-12Hz canonical = 16).
+/// - `num_semantic_quantizers` — number of semantic-vocab quantizers at the
+///   head of the RVQ stack (Qwen3-TTS-12Hz canonical = 1). Quantizers
+///   `[0, num_semantic_quantizers)` read from `semantic_tables` with vocab
+///   `semantic_codebook_size`; the rest read from `acoustic_tables` with
+///   vocab `codebook_size`.
+/// - `semantic_codebook_size` — entries per semantic codebook (Qwen3-TTS-12Hz
+///   canonical = 4096).
+/// - `codebook_size` — entries per acoustic codebook (Qwen3-TTS-12Hz canonical
+///   = 2048).
+/// - `codebook_dim` — feature width per codebook entry (= the codec latent
+///   width, Qwen3-TTS-12Hz canonical = 512).
+/// - `time` — number of timesteps in this decode chunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Qwen3TtsCodecDims {
+    num_quantizers: u32,
+    num_semantic_quantizers: u32,
+    semantic_codebook_size: u32,
+    codebook_size: u32,
+    codebook_dim: u32,
+    time: u32,
 }
 
 /// Scalar shape of one fused-MLP pass chain, shared by the host-in/out
@@ -1199,6 +2235,116 @@ pub struct MetalContext {
     rope_adjacent_pipeline: Id,
     silu_pipeline: Id,
     swiglu_pipeline: Id,
+    /// M3-06 T14 mimi_rvq gather + FP32 fold (`vokra_mimi_rvq_gather_fold_f32`),
+    /// the GPU implementation of `vokra_ops::mimi_rvq::rvq_fold_core`. Also the
+    /// current M4-04 GPU seam target for DAC / EnCodec siblings after their
+    /// respective factorized-projection / plain-fold arms are wired (each will
+    /// land its own kernel or reuse this one — coverage flags stay per-op).
+    mimi_rvq_gather_fold_pipeline: Id,
+    /// M4-04 dac_rvq gather + factorized projection + FP32 fold
+    /// (`vokra_dac_rvq_gather_project_fold_f32`), the GPU implementation of
+    /// `vokra_ops::dac_rvq::dac_rvq_decode`. Distinct from
+    /// [`Self::mimi_rvq_gather_fold_pipeline`] because DAC's per-quantizer
+    /// factorized projection (W · low + b) folds into the same kernel as the
+    /// gather — a plain gather-only reuse of the Mimi pipeline would need a
+    /// second GEMV pass per timestep. See `vokra_ops::dac_rvq` module docs for
+    /// the factorization rationale.
+    dac_rvq_gather_project_fold_pipeline: Id,
+    /// M4-16 wavtokenizer_vq single-codebook gather
+    /// (`vokra_wavtokenizer_vq_gather_f32`), the GPU implementation of
+    /// `vokra_ops::wavtokenizer_vq_decode`. **Distinct from every RVQ
+    /// pipeline**: the FSQ family is deliberately a *separate subgraph* from
+    /// the RVQ family (FR-OP-31 — module docs on `vokra_ops::fsq_codec`); the
+    /// signature-level distinction that the CPU op takes a *singular*
+    /// `&CodebookTable` (not a slice) is mirrored on the GPU by a dedicated
+    /// pipeline that expects a single flat table buffer. Pure gather — no
+    /// residual fold, no per-dim decompose.
+    wavtokenizer_vq_gather_pipeline: Id,
+    /// M4-16 xcodec2_fsq grid-decompose + optional GEMV
+    /// (`vokra_xcodec2_fsq_decode_f32`), the GPU implementation of
+    /// `vokra_ops::xcodec2_fsq_decode`. FSQ-family sibling of
+    /// [`Self::wavtokenizer_vq_gather_pipeline`]. Handles both the
+    /// `requires_projection = true` (canonical released X-Codec 2: Linear
+    /// n_dims → d_model + bias) and the `requires_projection = false`
+    /// (Identity, d_model == n_dims) paths through a `has_projection` flag
+    /// in the dims struct.
+    xcodec2_fsq_decode_pipeline: Id,
+    /// Vocoder Metal wave WF2 snake activation
+    /// (`vokra_snake_activation_f32`), the GPU implementation of
+    /// [`vokra_ops::snake_activation_f32`]. Per-channel closed-form periodic
+    /// activation `y = x + (1/(α+ε))·sin(α·x)²` shared by the BigVGAN /
+    /// HiFTNet / Kokoro-82M vocoder lineage. Trivially element-wise (no
+    /// gather, no fold), so CPU vs GPU is bit-identical for finite inputs
+    /// within the FP32 transcendental gap (atol ≤ 5e-4 — the same
+    /// codec-family bound). SnakeBeta ([`vokra_ops::bigvgan_generator::SnakeBeta`])
+    /// is a **distinct** two-vector closed form and would land its own
+    /// pipeline separately.
+    snake_activation_pipeline: Id,
+    /// Vocoder Metal wave common vocoder primitive: SnakeBeta
+    /// (`vokra_snake_beta_f32`), the GPU implementation of
+    /// [`vokra_ops::snake_beta_f32`]. Per-channel two-vector closed-form
+    /// periodic activation `y = x + (1/(β+ε))·sin(α·x)²` consumed by the
+    /// BigVGAN family (upstream `activations.py:62-114`, MIT). Distinct
+    /// pipeline from [`Self::snake_activation_pipeline`] because SnakeBeta
+    /// separates frequency (α) from magnitude (β) — a shared pipeline
+    /// would silently squash one of the two axes.
+    snake_beta_pipeline: Id,
+    /// Vocoder Metal wave common vocoder primitive: SineGen deterministic
+    /// (`vokra_sinegen_deterministic_f32`), the GPU implementation of
+    /// [`vokra_ops::sinegen_deterministic_f32`]. Deterministic-only path
+    /// (zero phase, zero noise) of `SineGen::forward` from upstream
+    /// CosyVoice `generator.py:200-214`. Consumed by every HiFTNet-family
+    /// vocoder (CosyVoice2/3, Chatterbox family). One thread per harmonic
+    /// walking the full time axis sequentially; grid launches
+    /// `(H+1, 1)` threadgroups.
+    sinegen_deterministic_pipeline: Id,
+    /// Vocoder Metal wave common vocoder primitive: polyphase anti-aliased
+    /// upsample (`vokra_anti_aliased_upsample_f32`), the GPU implementation
+    /// of [`vokra_ops::anti_aliased_upsample_f32`]. Multiply-add core of
+    /// BigVGAN's `UpSample1d` (upstream `alias_free_activation.torch.act`,
+    /// MIT). Consumes a caller-supplied Kaiser-window filter kernel; the
+    /// Kaiser design lives on the host (once per model load), keeping the
+    /// runtime op signature narrow. Ordinary FIR reduction — the FMA-vs-
+    /// non-FMA gap between MSL fast-math and the CPU strict-left-fold is
+    /// well inside the parity bound `atol ≤ 1e-4`.
+    anti_aliased_upsample_pipeline: Id,
+    /// Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode
+    /// (`vokra_snac_decode_f32`), the GPU implementation of
+    /// `vokra_ops::snac_decode::SnacDecoder::decode` (upstream
+    /// `hubertsiuzdak/snac`, MIT / Apache-2.0). **Distinct from every RVQ
+    /// pipeline**: SNAC's multi-scale structure (each stage runs at
+    /// `base / vq_strides[s]`) is baked into the kernel via a
+    /// `t_stage = t_out / strides[s]` lookup per stage, which no other RVQ /
+    /// FSQ codec kernel does. Reuses the [`DacRvqDims`] factorized shape
+    /// (per-stage `WNConv1d(codebook_dim → d_model)` + bias) but folds
+    /// `repeat_interleave(stride)` into the temporal indexing instead of the
+    /// per-output copy loop the CPU fold does.
+    snac_decode_pipeline: Id,
+    /// Vocoder Metal wave WF5 denoise spectral-gate primitive
+    /// (`vokra_denoise_apply_mask_f32`), the GPU implementation of
+    /// [`vokra_ops::denoise_apply_mask_f32`]. Element-wise complex × real
+    /// gain multiply extracted from the [`DenoiseModel::enhance_inner`]
+    /// output-stage loop; the primitive shared with any per-freq-per-time
+    /// mask trainer (GTCRN / RNNoise). Trivially per-element (no reduction,
+    /// no transcendental, no FMA opportunity), so CPU vs GPU is
+    /// bit-for-bit identical on every finite input — the parity harness
+    /// still enforces the sibling `atol ≤ 5e-4` codec-family bound to keep
+    /// a discriminating negative control, but logs the measured max |Δ|
+    /// (0 in practice) so any future drift is immediately visible.
+    denoise_apply_mask_pipeline: Id,
+    /// Vocoder Metal wave WF5 Qwen3-TTS-Codec RVQ decode
+    /// (`vokra_qwen3_tts_codec_decode_f32`), the GPU implementation of
+    /// `vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode`. **Distinct from
+    /// every other RVQ pipeline**: Qwen3-TTS-Codec is a **hybrid semantic +
+    /// acoustic RVQ** where the first `num_semantic_quantizers` quantizers use
+    /// a larger `semantic_codebook_size` vocab (canonical 4096) than the
+    /// remaining acoustic quantizers use `codebook_size` (canonical 2048).
+    /// The kernel takes TWO flat table buffers (semantic + acoustic) so
+    /// per-quantizer strides differ correctly — a silent shared-vocab clamp
+    /// would violate FR-EX-08 and the CPU op's "no silent clamp" rule. FP32
+    /// accumulator throughout (audio-dialect rule); host-side per-index bound
+    /// check upstream of the dispatch.
+    qwen3_tts_codec_decode_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1329,6 +2475,67 @@ impl MetalContext {
         let silu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_silu_f32") }?;
         // SAFETY: as above.
         let swiglu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_swiglu_f32") }?;
+        // M3-06 T14 mimi_rvq gather + FP32 fold; shares the same library.
+        // SAFETY: as above.
+        let mimi_rvq_gather_fold_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_mimi_rvq_gather_fold_f32") }?;
+        // M4-04 dac_rvq gather + factorized projection + FP32 fold; shares the
+        // same library. Distinct kernel because DAC folds W · low + b per
+        // quantizer into the gather (see `KERNELS_MSL` module docs).
+        // SAFETY: as above.
+        let dac_rvq_gather_project_fold_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_dac_rvq_gather_project_fold_f32") }?;
+        // M4-16 FSQ family: single-codebook gather + grid-decompose GEMV; both
+        // share the same library. Separate pipelines because the FSQ family
+        // is a deliberately-separate subgraph from the RVQ family (FR-OP-31 —
+        // no cross-family kernel reuse, matching the CPU op's singular
+        // `&CodebookTable` signature).
+        // SAFETY: as above.
+        let wavtokenizer_vq_gather_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_wavtokenizer_vq_gather_f32") }?;
+        // SAFETY: as above.
+        let xcodec2_fsq_decode_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_xcodec2_fsq_decode_f32") }?;
+        // Vocoder Metal wave WF2 snake activation; shares the same library.
+        // SAFETY: as above.
+        let snake_activation_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_snake_activation_f32") }?;
+        // Vocoder Metal wave common vocoder primitives (2026-08-14):
+        // SnakeBeta / SineGen deterministic / anti-aliased upsample. All
+        // three share the same library as the sibling snake_activation /
+        // codec kernels.
+        // SAFETY: as above.
+        let snake_beta_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_snake_beta_f32") }?;
+        // SAFETY: as above.
+        let sinegen_deterministic_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_sinegen_deterministic_f32") }?;
+        // SAFETY: as above.
+        let anti_aliased_upsample_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_anti_aliased_upsample_f32") }?;
+        // Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode; shares
+        // the same library. Distinct kernel from the RVQ / FSQ family because
+        // SNAC's multi-scale structure requires a per-stage
+        // `t_stage = t_out / strides[s]` lookup that no other codec kernel
+        // needs.
+        // SAFETY: as above.
+        let snac_decode_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_snac_decode_f32") }?;
+        // Vocoder Metal wave WF5 denoise spectral-gate primitive; shares the
+        // same library. Element-wise complex × real gain multiply — the
+        // primitive extracted from `DenoiseModel::enhance_inner`'s output
+        // stage, shared with any per-freq-per-time mask denoiser.
+        // SAFETY: as above.
+        let denoise_apply_mask_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_denoise_apply_mask_f32") }?;
+        // Vocoder Metal wave WF5 Qwen3-TTS-Codec RVQ decode; shares the same
+        // library. Distinct kernel from the RVQ / FSQ family because Qwen3-
+        // TTS-Codec is a **hybrid semantic + acoustic RVQ** (two flat table
+        // buffers with different per-quantizer strides) — a shared-vocab
+        // clamp would violate FR-EX-08 / the CPU op's "no silent clamp" rule.
+        // SAFETY: as above.
+        let qwen3_tts_codec_decode_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_qwen3_tts_codec_decode_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -1354,6 +2561,17 @@ impl MetalContext {
             rope_adjacent_pipeline: rope_adjacent_pipeline.into_raw(),
             silu_pipeline: silu_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
+            mimi_rvq_gather_fold_pipeline: mimi_rvq_gather_fold_pipeline.into_raw(),
+            dac_rvq_gather_project_fold_pipeline: dac_rvq_gather_project_fold_pipeline.into_raw(),
+            wavtokenizer_vq_gather_pipeline: wavtokenizer_vq_gather_pipeline.into_raw(),
+            xcodec2_fsq_decode_pipeline: xcodec2_fsq_decode_pipeline.into_raw(),
+            snake_activation_pipeline: snake_activation_pipeline.into_raw(),
+            snake_beta_pipeline: snake_beta_pipeline.into_raw(),
+            sinegen_deterministic_pipeline: sinegen_deterministic_pipeline.into_raw(),
+            anti_aliased_upsample_pipeline: anti_aliased_upsample_pipeline.into_raw(),
+            snac_decode_pipeline: snac_decode_pipeline.into_raw(),
+            denoise_apply_mask_pipeline: denoise_apply_mask_pipeline.into_raw(),
+            qwen3_tts_codec_decode_pipeline: qwen3_tts_codec_decode_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -2184,6 +3402,1776 @@ impl MetalContext {
             "swiglu",
         )?;
         read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave WF2: Snake activation
+    /// (`vokra_snake_activation_f32`) — per-channel closed-form periodic
+    /// activation on the GPU.
+    ///
+    /// Applies `out[c, t] = x[c, t] + (1 / (alpha[c] + ε)) · sin(alpha[c] ·
+    /// x[c, t])²` for a `[channels, time]` row-major FP32 tensor (channel-
+    /// outer). `alpha` is length-`channels`; `x` and `out` are both length
+    /// `channels · time`. The exact contract of
+    /// [`vokra_ops::snake_activation_f32`], which itself is bit-identical to
+    /// [`vokra_ops::hiftnet::Snake::forward_in_place`] under
+    /// `alpha_logscale = false` and the private `kokoro::nn::snake_activation`
+    /// helper in vokra-models (same eps, same primitives, same reduction
+    /// order — trivial per-element, no reduction).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults, and the intrinsic `sin` may differ from Rust's `f32::sin`
+    /// in the low bits. The CPU vs GPU bound is `atol ≤ 5e-4` (the same
+    /// codec-family bound used by [`Self::mimi_rvq_gather_fold_f32`] /
+    /// [`Self::dac_rvq_gather_project_fold_f32`] / the FSQ family) — not a
+    /// bit-for-bit equality, because that would over-constrain the
+    /// transcendental. In practice max |Δ| stays well inside 5e-4 for
+    /// finite inputs (see `tests/snake_activation_metal_bit_identical.rs`).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on `alpha.len() != channels`,
+    ///   `x.len() != channels * time`, `out.len() != channels * time`, or a
+    ///   `channels * time` overflow. Mirrors the CPU
+    ///   [`vokra_ops::snake_activation_f32`] guards.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn snake_activation_f32(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        // Mirror the CPU op's shape guards on the host side (the MSL kernel
+        // guards `c >= channels` and `t >= time` but assumes the buffers
+        // have the expected element counts, so a wrong-shape upload would be
+        // an OOB read — FR-EX-08 forbids silent OOB).
+        let expected = checked_mul(channels, time, "snake_activation channels*time")?;
+        expect_len("snake_activation alpha", alpha.len(), channels)?;
+        expect_len("snake_activation x", x.len(), expected)?;
+        expect_len("snake_activation out", out.len(), expected)?;
+        if channels == 0 || time == 0 {
+            // Nothing to write — mirrors the CPU no-op path; both buffers
+            // are already empty per the length checks above.
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_snake_activation(x, alpha, channels, time, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_snake_activation(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let alpha_buf = self.new_buffer_from_slice(alpha)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SnakeActivationDims {
+            channels: channels as u32,
+            time: time as u32,
+        };
+        // One thread per (t, c). `time` on the fast axis (grid.x) matches the
+        // row-major stride and keeps adjacent threads reading adjacent
+        // floats. The kernel guards the ragged tail against both bounds so
+        // `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(time, channels);
+        self.dispatch_compute(
+            self.snake_activation_pipeline,
+            &[&x_buf, &alpha_buf, &out_buf],
+            (&dims as *const SnakeActivationDims).cast::<c_void>(),
+            size_of::<SnakeActivationDims>(),
+            grid,
+            tg,
+            "snake_activation",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave common vocoder primitive: SnakeBeta activation
+    /// (`vokra_snake_beta_f32`) — the per-channel two-vector closed-form
+    /// periodic activation on the GPU.
+    ///
+    /// Applies `out[c, t] = x[c, t] + (1 / (beta[c] + ε)) · sin(alpha[c] ·
+    /// x[c, t])²` for a `[channels, time]` row-major FP32 tensor (channel-
+    /// outer). `alpha` and `beta` are length-`channels`; `x` and `out` are
+    /// both length `channels · time`. The exact contract of
+    /// [`vokra_ops::snake_beta_f32`], which itself matches
+    /// [`vokra_ops::bigvgan_generator::SnakeBeta::forward_in_place`] under
+    /// `alpha_logscale = false` (same eps, same primitives, trivial per-
+    /// element).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults, and the intrinsic `sin` may differ from Rust's `f32::sin`
+    /// in the low bits. The CPU vs GPU bound is `atol ≤ 5e-4` (same
+    /// codec-family bound as the sibling snake_activation kernel).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on `alpha.len() != channels`,
+    ///   `beta.len() != channels`, `x.len() != channels * time`,
+    ///   `out.len() != channels * time`, or a `channels * time` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn snake_beta_f32(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let expected = checked_mul(channels, time, "snake_beta channels*time")?;
+        expect_len("snake_beta alpha", alpha.len(), channels)?;
+        expect_len("snake_beta beta", beta.len(), channels)?;
+        expect_len("snake_beta x", x.len(), expected)?;
+        expect_len("snake_beta out", out.len(), expected)?;
+        if channels == 0 || time == 0 {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_snake_beta(x, alpha, beta, channels, time, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to the two-vector SnakeBeta shape
+    fn run_snake_beta(
+        &self,
+        x: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let alpha_buf = self.new_buffer_from_slice(alpha)?;
+        let beta_buf = self.new_buffer_from_slice(beta)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SnakeBetaDims {
+            channels: channels as u32,
+            time: time as u32,
+        };
+        let (grid, tg) = grid_2d(time, channels);
+        self.dispatch_compute(
+            self.snake_beta_pipeline,
+            &[&x_buf, &alpha_buf, &beta_buf, &out_buf],
+            (&dims as *const SnakeBetaDims).cast::<c_void>(),
+            size_of::<SnakeBetaDims>(),
+            grid,
+            tg,
+            "snake_beta",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave common vocoder primitive: SineGen deterministic
+    /// forward (`vokra_sinegen_deterministic_f32`) — the F0-driven multi-
+    /// harmonic sinusoid source of HiFTNet-family vocoders, on the GPU.
+    ///
+    /// Writes `t * (harmonic_num + 1)` FP32 samples to `out`, matching the
+    /// deterministic path of [`vokra_ops::nsf::SineGen::forward`]
+    /// bit-for-bit modulo the MSL `sin` transcendental gap
+    /// (`atol ≤ 5e-4`). Output layout is `[T, H+1]` row-major
+    /// (time-outer / harmonic-inner — upstream
+    /// `sine_wavs.transpose(1, 2)`).
+    ///
+    /// # Parameters
+    ///
+    /// - `f0`               — length-`t` FP32 fundamental frequency per sample.
+    /// - `samp_rate`        — audio sample rate (Hz); `> 0`.
+    /// - `harmonic_num`     — number of harmonics beyond the fundamental.
+    /// - `sine_amp`         — sinusoid amplitude scale.
+    /// - `voiced_threshold` — F0 threshold above which a frame is voiced.
+    /// - `out`              — output buffer of length `t * (harmonic_num + 1)`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on empty `f0`, `samp_rate == 0`, or
+    ///   `out.len() != t * (harmonic_num + 1)`.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn sinegen_deterministic_f32(
+        &self,
+        f0: &[f32],
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let t = f0.len();
+        if t == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_f32: empty f0 sequence".to_owned(),
+            ));
+        }
+        if samp_rate == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_f32: samp_rate must be > 0".to_owned(),
+            ));
+        }
+        let h1 = harmonic_num as usize + 1;
+        let expected = checked_mul(t, h1, "sinegen_deterministic t*(H+1)")?;
+        expect_len("sinegen_deterministic out", out.len(), expected)?;
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_sinegen_deterministic(
+            f0,
+            samp_rate,
+            harmonic_num,
+            sine_amp,
+            voiced_threshold,
+            out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_sinegen_deterministic(
+        &self,
+        f0: &[f32],
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let f0_buf = self.new_buffer_from_slice(f0)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let h1 = harmonic_num + 1;
+        let dims = SinegenDeterministicDims {
+            t: f0.len() as u32,
+            h1,
+            samp_rate_f: samp_rate as f32,
+            sine_amp,
+            voiced_threshold,
+        };
+        // 1-D launch: one thread per harmonic. `grid_1d` uses TG=256, so a
+        // typical H+1 = 1..10 vocoder produces a single threadgroup with a
+        // very short active prefix (the kernel guards `i >= h1` for the tail).
+        let (grid, tg) = grid_1d(h1 as usize);
+        self.dispatch_compute(
+            self.sinegen_deterministic_pipeline,
+            &[&f0_buf, &out_buf],
+            (&dims as *const SinegenDeterministicDims).cast::<c_void>(),
+            size_of::<SinegenDeterministicDims>(),
+            grid,
+            tg,
+            "sinegen_deterministic",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave common vocoder primitive: polyphase anti-aliased
+    /// upsample (`vokra_anti_aliased_upsample_f32`) — the multiply-add core
+    /// of BigVGAN's `UpSample1d` and every HiFTNet-family alias-free
+    /// activation chain, on the GPU.
+    ///
+    /// Writes `channels * time_in * ratio` FP32 samples to `out`, matching
+    /// [`vokra_ops::anti_aliased_upsample_f32`] within `atol ≤ 1e-4` (the
+    /// FMA-vs-non-FMA gap between MSL fast-math and the CPU strict-left-fold
+    /// FIR accumulator; see the module docstring).
+    ///
+    /// # Parameters
+    ///
+    /// - `x`         — `[channels, time_in]` row-major FP32 input.
+    /// - `kernel`    — `[taps]` FP32 causal low-pass filter taps.
+    /// - `ratio`     — integer upsample factor (`>= 1`).
+    /// - `channels`  — number of channels in `x` / `out`.
+    /// - `time_in`   — number of input timesteps.
+    /// - `out`       — `[channels, time_in * ratio]` row-major FP32 output.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on `ratio == 0`, empty `kernel`,
+    ///   `x.len() != channels * time_in`, `out.len() != channels * time_in
+    ///   * ratio`, or a dimension overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to the polyphase upsample shape
+    pub fn anti_aliased_upsample_f32(
+        &self,
+        x: &[f32],
+        kernel: &[f32],
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        if ratio == 0 {
+            return Err(VokraError::InvalidArgument(
+                "anti_aliased_upsample_f32: ratio must be >= 1".to_owned(),
+            ));
+        }
+        if kernel.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "anti_aliased_upsample_f32: kernel must not be empty".to_owned(),
+            ));
+        }
+        let expected_x = checked_mul(channels, time_in, "anti_aliased_upsample channels*time_in")?;
+        let time_out = checked_mul(time_in, ratio, "anti_aliased_upsample time_in*ratio")?;
+        let expected_out = checked_mul(
+            channels,
+            time_out,
+            "anti_aliased_upsample channels*(time_in*ratio)",
+        )?;
+        expect_len("anti_aliased_upsample x", x.len(), expected_x)?;
+        expect_len("anti_aliased_upsample out", out.len(), expected_out)?;
+        if channels == 0 || time_in == 0 {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_anti_aliased_upsample(x, kernel, ratio, channels, time_in, time_out, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to the polyphase upsample shape
+    fn run_anti_aliased_upsample(
+        &self,
+        x: &[f32],
+        kernel: &[f32],
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        time_out: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let kernel_buf = self.new_buffer_from_slice(kernel)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = AntiAliasedUpsampleDims {
+            channels: channels as u32,
+            time_in: time_in as u32,
+            time_out: time_out as u32,
+            ratio: ratio as u32,
+            taps: kernel.len() as u32,
+        };
+        // 2-D launch: one thread per (t_out, c). `time_out` on the fast axis
+        // (grid.x) matches the row-major stride and keeps adjacent threads
+        // reading adjacent output floats. The kernel guards the ragged tail
+        // against both bounds.
+        let (grid, tg) = grid_2d(time_out, channels);
+        self.dispatch_compute(
+            self.anti_aliased_upsample_pipeline,
+            &[&x_buf, &kernel_buf, &out_buf],
+            (&dims as *const AntiAliasedUpsampleDims).cast::<c_void>(),
+            size_of::<AntiAliasedUpsampleDims>(),
+            grid,
+            tg,
+            "anti_aliased_upsample",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Vocoder Metal wave WF5: SNAC 3-stage hierarchical RVQ decode —
+    /// per-stage gather + factorized projection + temporal upsample + FP32
+    /// residual sum on the GPU.
+    ///
+    /// Returns a fresh `[t_expanded × d_model]` row-major `Vec<f32>` where
+    /// `out[t, :] = Σ_s (W_s @ codebooks[s].row(codes[s][t / strides[s]]) +
+    /// b_s)` — the exact contract of
+    /// `vokra_ops::snac_decode::SnacDecoder::decode` (upstream
+    /// `ResidualVectorQuantize.from_codes` at `hubertsiuzdak/snac/blob/main
+    /// /snac/vq.py` L61-71). Heap-returning (not `out: &mut [f32]`) for the
+    /// same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`] / the DAC / FSQ family — this is a
+    /// codec-side chunk op, not a per-token hot path.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes_flat` — `[Σ codes[s].len()]` row-major `u32` codebook indices
+    ///   concatenated across the 3 stages. Stage `s`'s frame `t_stage`
+    ///   is `codes_flat[stage_offsets[s] + t_stage]`. Every entry must
+    ///   satisfy `idx < codebook_size` — the caller validates on the host
+    ///   before dispatch (FR-EX-08 — the MSL kernel has no per-element
+    ///   bound check, so silent OOB reads are the failure mode we prevent
+    ///   by delegating to explicit host-side validation).
+    /// - `stage_offsets` — `[3]` start of each stage in `codes_flat`. By
+    ///   construction `stage_offsets[0] = 0`; `stage_offsets[1] =
+    ///   len(codes[0])`; `stage_offsets[2] = len(codes[0]) + len(codes[1])`.
+    /// - `strides` — `[3]` per-stage temporal strides. Every entry must be
+    ///   `> 0` (upstream `SnacDecoder::new` rejects `stride = 0` because it
+    ///   would divide the base frame rate by zero — FR-EX-08).
+    /// - `codebooks_flat` — `[3 × codebook_size × codebook_dim]` row-major
+    ///   FP32; stage `s` starts at `s * codebook_size * codebook_dim`.
+    /// - `proj_weights_flat` — `[3 × d_model × codebook_dim]` row-major
+    ///   FP32; stage `s`'s W row `o` starts at `s * d_model * codebook_dim
+    ///   + o * codebook_dim`.
+    /// - `proj_biases_flat` — `[3 × d_model]` row-major FP32; stage `s`'s
+    ///   bias for output `o` at `s * d_model + o`.
+    /// - `codebook_size` / `codebook_dim` / `d_model` — decode shape,
+    ///   shared across the three stages by construction. All must be `> 0`
+    ///   (an empty `t_expanded` short-circuits at the caller with an empty
+    ///   `Vec<f32>`; every other zero axis is an explicit
+    ///   `InvalidArgument`).
+    /// - `t_expanded` — number of output timesteps (== `codes[s].len() *
+    ///   strides[s]` for every stage — the "co-aligned base frames"
+    ///   invariant `SnacDecoder::check_and_measure` enforces).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults which permit re-association of the inner
+    /// `Σ_c W[o, c] · low[c]` GEMV, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` (the same FP32 GEMV-scale bound used by the sibling
+    /// [`Self::mimi_rvq_gather_fold_f32`] /
+    /// [`Self::dac_rvq_gather_project_fold_f32`] / the FSQ family) — not
+    /// bit-for-bit equality. The temporal-upsample step
+    /// (`t_stage = t_out / stride`) is exact integer division and adds no
+    /// numeric slack.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `codebook_size` / `codebook_dim` / `d_model`, a zero stride, or any
+    ///   overflow in the size / offset math.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to SNAC's 3-stage factorized shape
+    pub fn snac_decode_f32(
+        &self,
+        codes_flat: &[u32],
+        stage_offsets: [u32; 3],
+        strides: [u32; 3],
+        codebooks_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        t_expanded: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= t_expanded`
+        // and `d >= d_model` but assumes every buffer has the expected
+        // element count, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the vokra_ops::snac_decode shape checks.
+        if codebook_size == 0 || codebook_dim == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: codebook_size / codebook_dim / d_model must all be > 0, got \
+                 codebook_size={codebook_size} codebook_dim={codebook_dim} d_model={d_model}"
+            )));
+        }
+        for (s, &stride) in strides.iter().enumerate() {
+            if stride == 0 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: strides[{s}] = 0 (would divide base frame rate by zero; \
+                     FR-EX-08 catches it upstream)"
+                )));
+            }
+        }
+        // Codebook / projection buffer size checks (per-stage sizes multiplied
+        // by 3 stages).
+        let per_stage_cb = codebook_size.checked_mul(codebook_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "snac_decode_f32: codebook_size * codebook_dim overflows usize \
+                         (codebook_size={codebook_size} codebook_dim={codebook_dim})"
+            ))
+        })?;
+        let expected_cb = per_stage_cb.checked_mul(3).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "snac_decode_f32: 3 * codebook_size * codebook_dim overflows usize".to_owned(),
+            )
+        })?;
+        if codebooks_flat.len() != expected_cb {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: codebooks_flat.len() {} != 3 * codebook_size * codebook_dim \
+                 {expected_cb}",
+                codebooks_flat.len()
+            )));
+        }
+        let per_stage_w = d_model.checked_mul(codebook_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "snac_decode_f32: d_model * codebook_dim overflows usize \
+                 (d_model={d_model} codebook_dim={codebook_dim})"
+            ))
+        })?;
+        let expected_w = per_stage_w.checked_mul(3).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "snac_decode_f32: 3 * d_model * codebook_dim overflows usize".to_owned(),
+            )
+        })?;
+        if proj_weights_flat.len() != expected_w {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: proj_weights_flat.len() {} != 3 * d_model * codebook_dim \
+                 {expected_w}",
+                proj_weights_flat.len()
+            )));
+        }
+        let expected_b = d_model.checked_mul(3).ok_or_else(|| {
+            VokraError::InvalidArgument("snac_decode_f32: 3 * d_model overflows usize".to_owned())
+        })?;
+        if proj_biases_flat.len() != expected_b {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: proj_biases_flat.len() {} != 3 * d_model {expected_b}",
+                proj_biases_flat.len()
+            )));
+        }
+        // Per-stage code count check: `codes[s].len() * strides[s]` must
+        // equal `t_expanded` for every stage (SnacDecoder::check_and_measure
+        // invariant). We reconstruct `codes[s].len()` from
+        // `stage_offsets` + `codes_flat.len()`.
+        let stage_lens: [usize; 3] = [
+            (stage_offsets[1] as usize)
+                .checked_sub(stage_offsets[0] as usize)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "snac_decode_f32: stage_offsets[1] {} < stage_offsets[0] {}",
+                        stage_offsets[1], stage_offsets[0]
+                    ))
+                })?,
+            (stage_offsets[2] as usize)
+                .checked_sub(stage_offsets[1] as usize)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "snac_decode_f32: stage_offsets[2] {} < stage_offsets[1] {}",
+                        stage_offsets[2], stage_offsets[1]
+                    ))
+                })?,
+            codes_flat
+                .len()
+                .checked_sub(stage_offsets[2] as usize)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "snac_decode_f32: codes_flat.len() {} < stage_offsets[2] {}",
+                        codes_flat.len(),
+                        stage_offsets[2]
+                    ))
+                })?,
+        ];
+        for (s, &len) in stage_lens.iter().enumerate() {
+            let expanded = len.checked_mul(strides[s] as usize).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage {s} codes.len() ({len}) * strides[{s}] ({}) \
+                     overflows usize",
+                    strides[s]
+                ))
+            })?;
+            if expanded != t_expanded {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage {s} expands to T={expanded}, but t_expanded={t_expanded} \
+                     (SNAC's co-aligned base frames invariant — every stage must expand to the \
+                     same T)"
+                )));
+            }
+        }
+        // Per-index bound check — the MSL kernel does NOT range-check
+        // `codes[..]`. Cheap: O(Σ codes[s].len()) unpredictable branches,
+        // dwarfed by the GPU dispatch.
+        for (i, &idx) in codes_flat.iter().enumerate() {
+            if (idx as usize) >= codebook_size {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: codes_flat[{i}] = {idx} >= codebook_size {codebook_size} \
+                     (no silent clamp — FR-EX-08)"
+                )));
+            }
+        }
+        // Empty output → return an empty Vec, mirroring
+        // `SnacDecoder::decode` (zero-`t_expanded` decode is well-defined
+        // and returns an empty `Vec`; every other empty axis is a shape
+        // error above).
+        if t_expanded == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_snac_decode(
+            codes_flat,
+            stage_offsets,
+            strides,
+            codebooks_flat,
+            proj_weights_flat,
+            proj_biases_flat,
+            codebook_size,
+            codebook_dim,
+            d_model,
+            t_expanded,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to SNAC's 3-stage factorized shape
+    fn run_snac_decode(
+        &self,
+        codes_flat: &[u32],
+        stage_offsets: [u32; 3],
+        strides: [u32; 3],
+        codebooks_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        t_expanded: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes_flat` is a valid read-only slice of `u32`; reinterpret
+        // its backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow scope
+        // of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                codes_flat.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(codes_flat),
+            )
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let cb_buf = self.new_buffer_from_slice(codebooks_flat)?;
+        let w_buf = self.new_buffer_from_slice(proj_weights_flat)?;
+        let b_buf = self.new_buffer_from_slice(proj_biases_flat)?;
+        let out_len = t_expanded * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = SnacDecodeDims {
+            d_model: d_model as u32,
+            codebook_dim: codebook_dim as u32,
+            codebook_size: codebook_size as u32,
+            t_expanded: t_expanded as u32,
+            strides,
+            stage_offsets,
+        };
+        // One thread per (d_model column, t_expanded row) — same launch
+        // geometry as the sibling mimi_rvq / dac_rvq kernels for a
+        // consistent codec-family shape. The kernel guards the ragged tail
+        // against both bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, t_expanded);
+        self.dispatch_compute(
+            self.snac_decode_pipeline,
+            &[&codes_buf, &cb_buf, &w_buf, &b_buf, &out_buf],
+            (&dims as *const SnacDecodeDims).cast::<c_void>(),
+            size_of::<SnacDecodeDims>(),
+            grid,
+            tg,
+            "snac_decode",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// Vocoder Metal wave WF5: denoise spectral-gate primitive
+    /// (`vokra_denoise_apply_mask_f32`) — element-wise complex × real gain
+    /// multiply on the GPU (phase-preserving spectral gate).
+    ///
+    /// Applies `out_re[t, f] = spec_re[t, f] · gain[t, f]` and
+    /// `out_im[t, f] = spec_im[t, f] · gain[t, f]` for a `[n_frames, n_bins]`
+    /// row-major FP32 complex spectrogram (bins on the inner stride — the
+    /// layout `Spectrogram { re, im }` uses in `vokra_ops::denoise`). The
+    /// exact contract of [`vokra_ops::denoise_apply_mask_f32`], which itself
+    /// reproduces the [`vokra_ops::denoise::DenoiseModel::enhance_inner`]
+    /// output-stage loop (denoise.rs L1852-1870) when the caller
+    /// pre-expands the ERB mask through `erb_inv_fb` to per-position gains.
+    ///
+    /// # Numerics
+    ///
+    /// FP32 throughout on both sides. Multiplication is IEEE-754
+    /// correctly-rounded on every finite input; there is no reduction, no
+    /// transcendental, and no FMA opportunity (a single `re * g` cannot be
+    /// fused with anything), so CPU and GPU produce **bit-for-bit identical**
+    /// outputs. The sibling `atol ≤ 5e-4` codec-family bound in the parity
+    /// harness keeps a discriminating negative control while the measured
+    /// max |Δ| is logged (0 in practice — any future drift becomes visible).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on any of `spec_re.len()`,
+    ///   `spec_im.len()`, `gain.len()`, `out_re.len()`, `out_im.len()` !=
+    ///   `n_frames * n_bins`, or an overflow in `n_frames * n_bins`. Mirrors
+    ///   the CPU [`vokra_ops::denoise_apply_mask_f32`] guards; the MSL
+    ///   kernel guards the ragged grid tail but assumes the buffers have
+    ///   the expected element counts, so a wrong-shape upload would be a
+    ///   silent OOB (FR-EX-08 forbids).
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to the two-output complex-multiply shape
+    pub fn denoise_apply_mask_f32(
+        &self,
+        spec_re: &[f32],
+        spec_im: &[f32],
+        gain: &[f32],
+        n_frames: usize,
+        n_bins: usize,
+        out_re: &mut [f32],
+        out_im: &mut [f32],
+    ) -> Result<()> {
+        // Mirror the CPU op's shape guards on the host side. The MSL kernel
+        // guards `f >= n_bins` and `t >= n_frames` but assumes the buffers
+        // have the expected element counts, so a wrong-shape upload would be
+        // an OOB read — FR-EX-08 forbids silent OOB.
+        let expected = checked_mul(n_frames, n_bins, "denoise_apply_mask n_frames*n_bins")?;
+        expect_len("denoise_apply_mask spec_re", spec_re.len(), expected)?;
+        expect_len("denoise_apply_mask spec_im", spec_im.len(), expected)?;
+        expect_len("denoise_apply_mask gain", gain.len(), expected)?;
+        expect_len("denoise_apply_mask out_re", out_re.len(), expected)?;
+        expect_len("denoise_apply_mask out_im", out_im.len(), expected)?;
+        if n_frames == 0 || n_bins == 0 {
+            // Nothing to write — mirrors the CPU no-op path; every buffer
+            // is already empty per the length checks above.
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r =
+            self.run_denoise_apply_mask(spec_re, spec_im, gain, n_frames, n_bins, out_re, out_im);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to the two-output complex-multiply shape
+    fn run_denoise_apply_mask(
+        &self,
+        spec_re: &[f32],
+        spec_im: &[f32],
+        gain: &[f32],
+        n_frames: usize,
+        n_bins: usize,
+        out_re: &mut [f32],
+        out_im: &mut [f32],
+    ) -> Result<()> {
+        let spec_re_buf = self.new_buffer_from_slice(spec_re)?;
+        let spec_im_buf = self.new_buffer_from_slice(spec_im)?;
+        let gain_buf = self.new_buffer_from_slice(gain)?;
+        let out_re_buf = self.new_buffer_output(out_re.len())?;
+        let out_im_buf = self.new_buffer_output(out_im.len())?;
+        let dims = DenoiseApplyMaskDims {
+            n_bins: n_bins as u32,
+            n_frames: n_frames as u32,
+        };
+        // One thread per (bin, frame). `n_bins` on the fast axis (grid.x)
+        // matches the row-major stride and keeps adjacent threads reading
+        // adjacent floats. The kernel guards the ragged tail against both
+        // bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(n_bins, n_frames);
+        self.dispatch_compute(
+            self.denoise_apply_mask_pipeline,
+            &[
+                &spec_re_buf,
+                &spec_im_buf,
+                &gain_buf,
+                &out_re_buf,
+                &out_im_buf,
+            ],
+            (&dims as *const DenoiseApplyMaskDims).cast::<c_void>(),
+            size_of::<DenoiseApplyMaskDims>(),
+            grid,
+            tg,
+            "denoise_apply_mask",
+        )?;
+        read_back(&out_re_buf, out_re)?;
+        read_back(&out_im_buf, out_im)
+    }
+
+    /// Vocoder Metal wave WF5: Qwen3-TTS-Codec RVQ decode — gather (semantic +
+    /// acoustic) + FP32 fold on the GPU.
+    ///
+    /// Returns a fresh `[time × codebook_dim]` row-major `Vec<f32>` where
+    /// `out[t, d] = Σ_q tables[q].row(codes[t, q])[d]` — the exact contract of
+    /// `vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode`. Heap-returning
+    /// for the same chunk-granularity reason as `mimi_rvq_gather_fold_f32` /
+    /// `dac_rvq_gather_project_fold_f32` (this is a codec-side chunk op, not
+    /// a per-token hot path).
+    ///
+    /// # Semantic vs acoustic vocab split
+    ///
+    /// Qwen3-TTS-Codec is a hybrid semantic + acoustic RVQ: the first
+    /// `num_semantic_quantizers` quantizers read from `semantic_tables_flat`
+    /// with vocab `semantic_codebook_size` (canonical 4096); the remaining
+    /// acoustic quantizers read from `acoustic_tables_flat` with vocab
+    /// `codebook_size` (canonical 2048). Every codebook still emits the same
+    /// `codebook_dim`-wide row (canonical 512), so the FP32 fold is
+    /// well-defined. Rather than fake a shared vocab (which would either
+    /// waste memory or silently clamp the semantic index; both violate
+    /// FR-EX-08 / the CPU op's "no silent clamp" rule) the kernel takes TWO
+    /// flat table buffers.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time × num_quantizers]` row-major `u32` codebook indices.
+    ///   Every entry must satisfy `idx < per_quantizer_vocab(q)` — the caller
+    ///   validates on the host before dispatch (FR-EX-08 — the MSL kernel has
+    ///   no per-element bound check, so silent OOB reads are the failure mode
+    ///   we prevent by delegating to explicit host-side validation, mirror of
+    ///   the mimi_rvq contract).
+    /// - `semantic_tables_flat` — `[num_semantic_quantizers × semantic_codebook_size × codebook_dim]`
+    ///   row-major FP32; quantizer `q < num_semantic_quantizers` starts at
+    ///   `q * semantic_codebook_size * codebook_dim` (the caller concatenates
+    ///   the per-codebook `CodebookTable::data` slices verbatim, matching the
+    ///   MSL kernel's stride math). If `num_semantic_quantizers == 0` an
+    ///   empty slice is legal — the dispatch allocates a zeroed 4-byte
+    ///   placeholder via `newBufferWithLength:` (never a
+    ///   `newBufferWithBytes:` on a dangling empty-slice pointer, which would
+    ///   SIGSEGV) and the kernel never reads it because the loop skips the
+    ///   semantic branch entirely.
+    /// - `acoustic_tables_flat` — `[(num_quantizers - num_semantic_quantizers) × codebook_size × codebook_dim]`
+    ///   row-major FP32; the acoustic quantizer `q_ac = q - num_semantic_quantizers`
+    ///   starts at `q_ac * codebook_size * codebook_dim`. Symmetric empty-side
+    ///   treatment when `num_semantic_quantizers == num_quantizers`.
+    /// - `num_quantizers` / `num_semantic_quantizers` / `semantic_codebook_size`
+    ///   / `codebook_size` / `codebook_dim` / `time` — decode shape. All must
+    ///   be non-zero except `num_semantic_quantizers` (which may be 0 or up
+    ///   to `num_quantizers`) and `time` (which short-circuits at the caller
+    ///   with an empty `Vec<f32>`).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults which permit re-association, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` (the same FP32 GEMV-scale bound used by
+    /// [`Self::mimi_rvq_gather_fold_f32`] — see
+    /// `tests/qwen3_tts_codec_metal_bit_identical.rs`), not bit-for-bit
+    /// equality.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `num_quantizers` / `semantic_codebook_size` / `codebook_size` /
+    ///   `codebook_dim`, `num_semantic_quantizers > num_quantizers`, or any of
+    ///   the `num_quantizers * ...` / `time * num_quantizers` overflows.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to Qwen3-TTS-Codec's hybrid-vocab shape
+    pub fn qwen3_tts_codec_decode_f32(
+        &self,
+        codes: &[u32],
+        semantic_tables_flat: &[f32],
+        acoustic_tables_flat: &[f32],
+        num_quantizers: usize,
+        num_semantic_quantizers: usize,
+        semantic_codebook_size: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `delem >= codebook_dim` but assumes every buffer has the expected
+        // element count, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the vokra_ops::qwen3_tts_codec shape
+        // checks.
+        if num_quantizers == 0
+            || semantic_codebook_size == 0
+            || codebook_size == 0
+            || codebook_dim == 0
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: num_quantizers / semantic_codebook_size / \
+                 codebook_size / codebook_dim must all be > 0, got num_quantizers={num_quantizers} \
+                 semantic_codebook_size={semantic_codebook_size} codebook_size={codebook_size} \
+                 codebook_dim={codebook_dim}"
+            )));
+        }
+        if num_semantic_quantizers > num_quantizers {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: num_semantic_quantizers {num_semantic_quantizers} > \
+                 num_quantizers {num_quantizers}"
+            )));
+        }
+        let num_acoustic_quantizers = num_quantizers - num_semantic_quantizers;
+        let expected_semantic = num_semantic_quantizers
+            .checked_mul(semantic_codebook_size)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "qwen3_tts_codec_decode_f32: num_semantic_quantizers * \
+                     semantic_codebook_size * codebook_dim overflows usize \
+                     (num_semantic_quantizers={num_semantic_quantizers} \
+                     semantic_codebook_size={semantic_codebook_size} \
+                     codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if semantic_tables_flat.len() != expected_semantic {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: semantic_tables_flat.len() {} != \
+                 num_semantic_quantizers * semantic_codebook_size * codebook_dim \
+                 {expected_semantic}",
+                semantic_tables_flat.len()
+            )));
+        }
+        let expected_acoustic = num_acoustic_quantizers
+            .checked_mul(codebook_size)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "qwen3_tts_codec_decode_f32: num_acoustic_quantizers * codebook_size * \
+                     codebook_dim overflows usize \
+                     (num_acoustic_quantizers={num_acoustic_quantizers} \
+                     codebook_size={codebook_size} codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if acoustic_tables_flat.len() != expected_acoustic {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: acoustic_tables_flat.len() {} != \
+                 num_acoustic_quantizers * codebook_size * codebook_dim {expected_acoustic}",
+                acoustic_tables_flat.len()
+            )));
+        }
+        let expected_codes = time.checked_mul(num_quantizers).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: time ({time}) * num_quantizers ({num_quantizers}) \
+                 overflows usize"
+            ))
+        })?;
+        if codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "qwen3_tts_codec_decode_f32: codes.len() {} != time * num_quantizers \
+                 {expected_codes}",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `qwen3_tts_codec_decode`
+        // (a zero-`time` decode is well-defined; every other empty axis is a
+        // shape error above).
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_qwen3_tts_codec_decode(
+            codes,
+            semantic_tables_flat,
+            acoustic_tables_flat,
+            num_quantizers,
+            num_semantic_quantizers,
+            semantic_codebook_size,
+            codebook_size,
+            codebook_dim,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to Qwen3-TTS-Codec's hybrid-vocab shape
+    fn run_qwen3_tts_codec_decode(
+        &self,
+        codes: &[u32],
+        semantic_tables_flat: &[f32],
+        acoustic_tables_flat: &[f32],
+        num_quantizers: usize,
+        num_semantic_quantizers: usize,
+        semantic_codebook_size: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        // Empty semantic / acoustic side: `new_buffer_from_slice` would ask
+        // Metal to copy 4 bytes from an empty slice's dangling pointer
+        // (SIGSEGV on macOS), so we allocate a zeroed 4-byte placeholder via
+        // `new_buffer_output(1)` instead. The kernel never reads the
+        // corresponding buffer because the loop's `q <
+        // num_semantic_quantizers` branch is dead when
+        // `num_semantic_quantizers == 0` (and symmetric for the acoustic
+        // side when `num_acoustic_quantizers == 0`) — the placeholder is
+        // there only to satisfy Metal's non-null buffer binding requirement.
+        let semantic_buf = if semantic_tables_flat.is_empty() {
+            self.new_buffer_output(1)?
+        } else {
+            self.new_buffer_from_slice(semantic_tables_flat)?
+        };
+        let acoustic_buf = if acoustic_tables_flat.is_empty() {
+            self.new_buffer_output(1)?
+        } else {
+            self.new_buffer_from_slice(acoustic_tables_flat)?
+        };
+        let out_len = time * codebook_dim;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = Qwen3TtsCodecDims {
+            num_quantizers: num_quantizers as u32,
+            num_semantic_quantizers: num_semantic_quantizers as u32,
+            semantic_codebook_size: semantic_codebook_size as u32,
+            codebook_size: codebook_size as u32,
+            codebook_dim: codebook_dim as u32,
+            time: time as u32,
+        };
+        // One thread per (codebook_dim column, timestep row) — same
+        // `(codebook_dim, time)` 2D dispatch as mimi_rvq / dac_rvq. The
+        // kernel guards the ragged tail against both bounds so `grid_2d`'s
+        // round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(codebook_dim, time);
+        self.dispatch_compute(
+            self.qwen3_tts_codec_decode_pipeline,
+            &[&codes_buf, &semantic_buf, &acoustic_buf, &out_buf],
+            (&dims as *const Qwen3TtsCodecDims).cast::<c_void>(),
+            size_of::<Qwen3TtsCodecDims>(),
+            grid,
+            tg,
+            "qwen3_tts_codec_decode",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// M3-06 T14: Mimi RVQ codec decode — gather + FP32 fold on the GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where
+    /// `out[t, d] = Σ_cb tables[cb].row(codes[t, cb])[d]` — the exact
+    /// contract of `vokra_ops::mimi_rvq::rvq_fold_core` (the shape-generic
+    /// core behind `mimi_rvq_decode`). Heap-returning (not `out: &mut [f32]`)
+    /// for the same reason `Compute::mimi_rvq_f32` is heap-returning — this
+    /// is a chunk-granularity op, not a per-token hot path.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time × n_codebooks]` row-major `u32` codebook indices.
+    ///   Every entry must satisfy `idx < codebook_size` — the caller
+    ///   validates on the host before dispatch (FR-EX-08 — the MSL kernel has
+    ///   no per-element bound check, so silent OOB reads are the failure
+    ///   mode we prevent by delegating to explicit host-side validation).
+    /// - `tables_flat` — `[n_codebooks × codebook_size × d_model]` row-major
+    ///   FP32; codebook `cb` starts at `cb * codebook_size * d_model` (the
+    ///   caller concatenates the per-codebook `CodebookTable::data` slices
+    ///   verbatim, no re-layout — matches the MSL kernel's stride math).
+    /// - `n_codebooks` / `codebook_size` / `d_model` / `time` — decode
+    ///   shape. All must be non-zero (an empty `time` short-circuits at the
+    ///   caller with an empty `Vec<f32>`; we still refuse
+    ///   `n_codebooks = 0` / `codebook_size = 0` / `d_model = 0` here as an
+    ///   explicit `InvalidArgument`).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math
+    /// defaults which permit re-association, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` (the M4-05 CSM / Moshi Metal parity band, mirrored
+    /// here — see `tests/mimi_rvq_metal_bit_identical.rs`), not a
+    /// bit-for-bit equality. The gather-only ordering with unit weights keeps
+    /// max |Δ| well inside that bound on the canonical Mimi shape
+    /// (n_codebooks=8, codebook_size=2048, d_model=512).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `n_codebooks` / `codebook_size` / `d_model`, or a
+    ///   `time * n_codebooks` / `n_codebooks * codebook_size * d_model`
+    ///   overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn mimi_rvq_gather_fold_f32(
+        &self,
+        codes: &[u32],
+        tables_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `d >= d_model` but assumes the buffers have the expected element
+        // counts, so a wrong-shape upload would be an OOB read (silent —
+        // FR-EX-08 forbids). Mirror the vokra_ops::mimi_rvq shape checks.
+        if n_codebooks == 0 || codebook_size == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: n_codebooks / codebook_size / d_model \
+                 must all be > 0, got n_codebooks={n_codebooks} \
+                 codebook_size={codebook_size} d_model={d_model}"
+            )));
+        }
+        let expected_tables = n_codebooks
+            .checked_mul(codebook_size)
+            .and_then(|v| v.checked_mul(d_model))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "mimi_rvq_gather_fold_f32: n_codebooks * codebook_size * d_model overflows \
+                     usize (n_codebooks={n_codebooks} codebook_size={codebook_size} d_model={d_model})"
+                ))
+            })?;
+        if tables_flat.len() != expected_tables {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: tables_flat.len() {} != n_codebooks * codebook_size * \
+                 d_model {expected_tables}",
+                tables_flat.len()
+            )));
+        }
+        let expected_codes = time.checked_mul(n_codebooks).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: time ({time}) * n_codebooks ({n_codebooks}) \
+                 overflows usize"
+            ))
+        })?;
+        if codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_gather_fold_f32: codes.len() {} != time * n_codebooks {expected_codes}",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `mimi_rvq_decode`
+        // (a zero-`time` decode is well-defined; every other empty axis is a
+        // shape error above).
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_mimi_rvq_gather_fold(
+            codes,
+            tables_flat,
+            n_codebooks,
+            codebook_size,
+            d_model,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_mimi_rvq_gather_fold(
+        &self,
+        codes: &[u32],
+        tables_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let tables_buf = self.new_buffer_from_slice(tables_flat)?;
+        let out_len = time * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = MimiRvqDims {
+            n_codebooks: n_codebooks as u32,
+            codebook_size: codebook_size as u32,
+            d_model: d_model as u32,
+            time: time as u32,
+        };
+        // One thread per (d_model column, timestep row). The kernel guards the
+        // ragged tail against both bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.mimi_rvq_gather_fold_pipeline,
+            &[&codes_buf, &tables_buf, &out_buf],
+            (&dims as *const MimiRvqDims).cast::<c_void>(),
+            size_of::<MimiRvqDims>(),
+            grid,
+            tg,
+            "mimi_rvq_gather_fold",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// M4-04: DAC (Descript) factorized RVQ decode — gather + per-quantizer
+    /// projection + FP32 fold on the GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where
+    /// `out[t, :] = Σ_cb (W_cb @ codebook_cb[codes[t, cb]] + b_cb)` — the exact
+    /// contract of `vokra_ops::dac_rvq::dac_rvq_decode`. Heap-returning for
+    /// the same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`] (this is a codec-side chunk op, not
+    /// a per-token hot path).
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time × n_codebooks]` row-major `u32` codebook indices.
+    ///   Every entry must satisfy `idx < codebook_size` — the caller validates
+    ///   on the host before dispatch (FR-EX-08 — the MSL kernel has no per-
+    ///   element bound check, so silent OOB reads are the failure mode we
+    ///   prevent by delegating to explicit host-side validation, mirror of
+    ///   the mimi_rvq contract).
+    /// - `low_tables_flat` — `[n_codebooks × codebook_size × codebook_dim]`
+    ///   row-major FP32; codebook `cb` starts at
+    ///   `cb * codebook_size * codebook_dim` (the caller concatenates the
+    ///   per-codebook `CodebookTable::data` slices verbatim, matching the MSL
+    ///   kernel's stride math).
+    /// - `proj_weights_flat` — `[n_codebooks × d_model × codebook_dim]`
+    ///   row-major FP32; quantizer `cb`'s weight `W_cb[d, :]` at
+    ///   `cb * d_model * codebook_dim + d * codebook_dim` (concat of the
+    ///   per-quantizer `DacOutProj::weight` slices verbatim).
+    /// - `proj_biases_flat` — `[n_codebooks × d_model]` row-major FP32;
+    ///   quantizer `cb`'s bias `b_cb[d]` at `cb * d_model + d` (concat of the
+    ///   per-quantizer `DacOutProj::bias` slices verbatim).
+    /// - `n_codebooks` / `codebook_size` / `codebook_dim` / `d_model` /
+    ///   `time` — decode shape. All must be non-zero (an empty `time` short-
+    ///   circuits at the caller with an empty `Vec<f32>`; we still refuse
+    ///   any other zero axis here as an explicit `InvalidArgument`).
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator on both sides; MSL is compiled with fast-math defaults
+    /// which permit re-association, so the CPU vs GPU bound is `atol ≤ 5e-4`
+    /// (the same FP32 GEMV-scale bound used by
+    /// [`Self::mimi_rvq_gather_fold_f32`] — see
+    /// `tests/dac_rvq_metal_bit_identical.rs`), not bit-for-bit equality.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `n_codebooks` / `codebook_size` / `codebook_dim` / `d_model`, or a
+    ///   `time * n_codebooks` /
+    ///   `n_codebooks * codebook_size * codebook_dim` /
+    ///   `n_codebooks * d_model * codebook_dim` /
+    ///   `n_codebooks * d_model` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to DAC's factorized-RVQ shape
+    pub fn dac_rvq_gather_project_fold_f32(
+        &self,
+        codes: &[u32],
+        low_tables_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `d >= d_model` but assumes every buffer has the expected element
+        // count, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the vokra_ops::dac_rvq shape checks.
+        if n_codebooks == 0 || codebook_size == 0 || codebook_dim == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: n_codebooks / codebook_size / codebook_dim / \
+                 d_model must all be > 0, got n_codebooks={n_codebooks} \
+                 codebook_size={codebook_size} codebook_dim={codebook_dim} d_model={d_model}"
+            )));
+        }
+        let expected_low = n_codebooks
+            .checked_mul(codebook_size)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "dac_rvq_gather_project_fold_f32: n_codebooks * codebook_size * codebook_dim \
+                     overflows usize (n_codebooks={n_codebooks} codebook_size={codebook_size} \
+                     codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if low_tables_flat.len() != expected_low {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: low_tables_flat.len() {} != n_codebooks * \
+                 codebook_size * codebook_dim {expected_low}",
+                low_tables_flat.len()
+            )));
+        }
+        let expected_w = n_codebooks
+            .checked_mul(d_model)
+            .and_then(|v| v.checked_mul(codebook_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "dac_rvq_gather_project_fold_f32: n_codebooks * d_model * codebook_dim \
+                     overflows usize (n_codebooks={n_codebooks} d_model={d_model} \
+                     codebook_dim={codebook_dim})"
+                ))
+            })?;
+        if proj_weights_flat.len() != expected_w {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: proj_weights_flat.len() {} != n_codebooks * \
+                 d_model * codebook_dim {expected_w}",
+                proj_weights_flat.len()
+            )));
+        }
+        let expected_b = n_codebooks.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: n_codebooks * d_model overflows usize \
+                 (n_codebooks={n_codebooks} d_model={d_model})"
+            ))
+        })?;
+        if proj_biases_flat.len() != expected_b {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: proj_biases_flat.len() {} != n_codebooks * \
+                 d_model {expected_b}",
+                proj_biases_flat.len()
+            )));
+        }
+        let expected_codes = time.checked_mul(n_codebooks).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: time ({time}) * n_codebooks ({n_codebooks}) \
+                 overflows usize"
+            ))
+        })?;
+        if codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "dac_rvq_gather_project_fold_f32: codes.len() {} != time * n_codebooks \
+                 {expected_codes}",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `dac_rvq_decode`
+        // (a zero-`time` decode is well-defined; every other empty axis is a
+        // shape error above).
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_dac_rvq_gather_project_fold(
+            codes,
+            low_tables_flat,
+            proj_weights_flat,
+            proj_biases_flat,
+            n_codebooks,
+            codebook_size,
+            codebook_dim,
+            d_model,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to DAC's factorized-RVQ shape
+    fn run_dac_rvq_gather_project_fold(
+        &self,
+        codes: &[u32],
+        low_tables_flat: &[f32],
+        proj_weights_flat: &[f32],
+        proj_biases_flat: &[f32],
+        n_codebooks: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let low_buf = self.new_buffer_from_slice(low_tables_flat)?;
+        let w_buf = self.new_buffer_from_slice(proj_weights_flat)?;
+        let b_buf = self.new_buffer_from_slice(proj_biases_flat)?;
+        let out_len = time * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = DacRvqDims {
+            n_codebooks: n_codebooks as u32,
+            codebook_size: codebook_size as u32,
+            codebook_dim: codebook_dim as u32,
+            d_model: d_model as u32,
+            time: time as u32,
+        };
+        // One thread per (d_model column, timestep row). The kernel guards the
+        // ragged tail against both bounds so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.dac_rvq_gather_project_fold_pipeline,
+            &[&codes_buf, &low_buf, &w_buf, &b_buf, &out_buf],
+            (&dims as *const DacRvqDims).cast::<c_void>(),
+            size_of::<DacRvqDims>(),
+            grid,
+            tg,
+            "dac_rvq_gather_project_fold",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// M4-16: WavTokenizer single-codebook VQ decode — pure gather on the GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where
+    /// `out[t, :] = table.row(codes[t])` — the exact contract of
+    /// `vokra_ops::wavtokenizer_vq_decode`. Heap-returning (not
+    /// `out: &mut [f32]`) for the same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`] — this is a codec-side chunk op, not
+    /// a per-token hot path.
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time]` row-major `u32` codebook indices (single-stage —
+    ///   one code per timestep; the RVQ family's `[time, n_codebooks]`
+    ///   layout does NOT apply here). Every entry must satisfy
+    ///   `idx < vocab_size` — the caller validates on the host before
+    ///   dispatch (FR-EX-08 — the MSL kernel has no per-element bound check,
+    ///   so silent OOB reads are the failure mode we prevent by delegating to
+    ///   explicit host-side validation).
+    /// - `table_flat` — `[vocab_size × d_model]` row-major FP32 codebook (the
+    ///   caller passes `CodebookTable::data` verbatim — the flat layout
+    ///   matches the MSL kernel's `idx * d_model + delem` stride math).
+    /// - `vocab_size` — number of codebook entries (released WavTokenizer =
+    ///   4096; the op is shape-generic and handles the FR-OP-31 "65k+ vocab"
+    ///   scale pinned by the vokra-ops synthetic test).
+    /// - `d_model` — embedding width per entry (released WavTokenizer = 512).
+    /// - `time` — number of timesteps in this decode chunk.
+    ///
+    /// # Numerics
+    ///
+    /// Pure gather — no arithmetic, no fold. CPU and GPU are bit-identical
+    /// (no re-association possible in a raw row copy), so the parity bound is
+    /// trivially tight. The parity test asserts the same 5e-4 budget as the
+    /// sibling mimi_rvq / dac_rvq kernels for a consistent codec-family
+    /// bound.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `vocab_size` / `d_model`, or a `vocab_size * d_model` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    pub fn wavtokenizer_vq_gather_f32(
+        &self,
+        codes: &[u32],
+        table_flat: &[f32],
+        vocab_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. The MSL kernel guards `t >= time` and
+        // `d >= d_model` but assumes the buffers have the expected element
+        // counts, so a wrong-shape upload would be a silent OOB read
+        // (FR-EX-08 forbids). Mirror the
+        // vokra_ops::fsq_codec::wavtokenizer_vq_decode shape checks
+        // (`wavtokenizer_vq` is the op name, not a module path).
+        if vocab_size == 0 || d_model == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: vocab_size / d_model must both be > 0, got \
+                 vocab_size={vocab_size} d_model={d_model}"
+            )));
+        }
+        let expected_table = vocab_size.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: vocab_size * d_model overflows usize \
+                 (vocab_size={vocab_size} d_model={d_model})"
+            ))
+        })?;
+        if table_flat.len() != expected_table {
+            return Err(VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: table_flat.len() {} != vocab_size * d_model \
+                 {expected_table}",
+                table_flat.len()
+            )));
+        }
+        if codes.len() != time {
+            return Err(VokraError::InvalidArgument(format!(
+                "wavtokenizer_vq_gather_f32: codes.len() {} != time {time} (single codebook — \
+                 one code per timestep; the [time, n_codebooks] layout is the RVQ family's)",
+                codes.len()
+            )));
+        }
+        // Empty output → return an empty Vec, mirroring `wavtokenizer_vq_decode`.
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_wavtokenizer_vq_gather(codes, table_flat, vocab_size, d_model, time);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_wavtokenizer_vq_gather(
+        &self,
+        codes: &[u32],
+        table_flat: &[f32],
+        vocab_size: usize,
+        d_model: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice of the same byte length for the
+        // byte-oriented shared MTLBuffer upload. `u32` alignment is stricter
+        // than `u8`, so the pointer cast is well-defined, and the borrow
+        // scope of `codes_bytes` is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        let table_buf = self.new_buffer_from_slice(table_flat)?;
+        let out_len = time * d_model;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = WavTokenizerVqDims {
+            vocab_size: vocab_size as u32,
+            d_model: d_model as u32,
+            time: time as u32,
+        };
+        // One thread per (d_model column, timestep row). The kernel guards the
+        // ragged tail against both bounds so `grid_2d`'s round-up-to-16 is
+        // safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.wavtokenizer_vq_gather_pipeline,
+            &[&codes_buf, &table_buf, &out_buf],
+            (&dims as *const WavTokenizerVqDims).cast::<c_void>(),
+            size_of::<WavTokenizerVqDims>(),
+            grid,
+            tg,
+            "wavtokenizer_vq_gather",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
+    /// M4-16: X-Codec 2 FSQ decode — grid decompose + optional GEMV on the
+    /// GPU.
+    ///
+    /// Returns a fresh `[time × d_model]` row-major `Vec<f32>` where per
+    /// timestep the index is decomposed onto the implicit per-dimension grid
+    /// and (when `proj_weight.is_some()`) projected by one GEMV `out[t, :] =
+    /// W @ grid + b` — the exact contract of `vokra_ops::xcodec2_fsq_decode`.
+    /// Heap-returning for the same chunk-granularity reason as
+    /// [`Self::mimi_rvq_gather_fold_f32`].
+    ///
+    /// # Parameters
+    ///
+    /// - `codes` — `[time]` row-major `u32` FSQ indices. Every entry must
+    ///   satisfy `idx < Π levels` — the caller validates on the host before
+    ///   dispatch (FR-EX-08 — the MSL kernel has no per-element bound check).
+    /// - `levels` — `[n_dims]` `u32` mixed-radix bases (each ≥ 2 — the
+    ///   caller validates this so the kernel's `half_width = levels[k] / 2`
+    ///   is `≥ 1`, preventing a divide-by-zero in the grid formula).
+    /// - `proj_weight` — `Some([d_model × n_dims])` row-major FP32 out-
+    ///   projection weight, or `None` for the Identity path (which requires
+    ///   `d_model == n_dims`).
+    /// - `proj_bias` — `Some([d_model])` FP32 bias (must be `Some` iff
+    ///   `proj_weight.is_some()`), or `None` for Identity.
+    /// - `d_model` — output width per timestep (canonical released X-Codec 2
+    ///   = 2048; must equal `n_dims` when `proj_weight.is_none()`).
+    /// - `n_dims` — `len(levels)` (canonical = 8).
+    /// - `time` — number of timesteps in this decode chunk.
+    ///
+    /// # Numerics
+    ///
+    /// FP32 accumulator throughout (audio-dialect rule — no FP16/BF16 fold);
+    /// MSL is compiled with fast-math defaults which permit re-association of
+    /// the inner `Σ_k W[o, k] · grid[k]` GEMV, so the CPU vs GPU bound is
+    /// `atol ≤ 5e-4` — the same FP32 GEMV-scale bound used by
+    /// [`Self::mimi_rvq_gather_fold_f32`] / [`Self::dac_rvq_gather_project_fold_f32`].
+    /// The Identity path is bit-identical (pure grid decompose, no fold).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, a zero axis in
+    ///   `d_model` / `n_dims`, `proj_weight.is_some() != proj_bias.is_some()`,
+    ///   the Identity path with `d_model != n_dims`, or a
+    ///   `d_model * n_dims` / `time * d_model` overflow.
+    /// - [`VokraError::BackendUnavailable`] on a Metal buffer / command-
+    ///   buffer / pipeline dispatch failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic to FSQ's optional-projection shape
+    pub fn xcodec2_fsq_decode_f32(
+        &self,
+        codes: &[u32],
+        levels: &[u32],
+        proj_weight: Option<&[f32]>,
+        proj_bias: Option<&[f32]>,
+        d_model: usize,
+        n_dims: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // Explicit shape validation. Mirrors the
+        // vokra_ops::fsq_codec::xcodec2_fsq_decode shape checks
+        // (`xcodec2_fsq` is the op name, not a module path)
+        // (FR-EX-08 — no silent OOB or CPU fall back).
+        if d_model == 0 || n_dims == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: d_model / n_dims must both be > 0, got \
+                 d_model={d_model} n_dims={n_dims}"
+            )));
+        }
+        if levels.len() != n_dims {
+            return Err(VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: levels.len() {} != n_dims {n_dims}",
+                levels.len()
+            )));
+        }
+        // Match host-side validation to CPU: `proj_weight.is_some() ==
+        // proj_bias.is_some()` and shape agrees with attrs.
+        match (proj_weight, proj_bias) {
+            (Some(w), Some(b)) => {
+                let expected_w = d_model.checked_mul(n_dims).ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: d_model * n_dims overflows usize \
+                         (d_model={d_model} n_dims={n_dims})"
+                    ))
+                })?;
+                if w.len() != expected_w {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: proj_weight.len() {} != d_model * n_dims \
+                         {expected_w}",
+                        w.len()
+                    )));
+                }
+                if b.len() != d_model {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: proj_bias.len() {} != d_model {d_model}",
+                        b.len()
+                    )));
+                }
+            }
+            (None, None) => {
+                // Identity path: d_model must equal n_dims (upstream
+                // `requires_projection = false` invariant).
+                if d_model != n_dims {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "xcodec2_fsq_decode_f32: Identity path (proj_weight = None) requires \
+                         d_model == n_dims, got d_model={d_model} n_dims={n_dims}"
+                    )));
+                }
+            }
+            _ => {
+                return Err(VokraError::InvalidArgument(
+                    "xcodec2_fsq_decode_f32: proj_weight and proj_bias must both be Some or \
+                     both None (partial projection is not a valid X-Codec 2 shape)"
+                        .to_owned(),
+                ));
+            }
+        }
+        // Per-level validation: each level ≥ 2 (host contract for the MSL
+        // kernel's `half_width = levels[k] / 2` ≥ 1; else divide-by-zero).
+        for (k, &level) in levels.iter().enumerate() {
+            if level < 2 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "xcodec2_fsq_decode_f32: levels[{k}] = {level} < 2 (half_width would be 0 \
+                     — divide-by-zero in the grid formula; FR-EX-08 catches it upstream)"
+                )));
+            }
+        }
+        if codes.len() != time {
+            return Err(VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: codes.len() {} != time {time} (single-stage — one code \
+                 per timestep; the [time, n_codebooks] layout is the RVQ family's)",
+                codes.len()
+            )));
+        }
+        // Effective vocab = Π levels — per-code bound check. Overflow of the
+        // product is an explicit error (FR-EX-08 — no silent wrap).
+        let mut vocab: usize = 1;
+        for (k, &level) in levels.iter().enumerate() {
+            vocab = vocab.checked_mul(level as usize).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "xcodec2_fsq_decode_f32: Π levels overflows usize at levels[{k}] = {level}"
+                ))
+            })?;
+        }
+        for (t, &idx) in codes.iter().enumerate() {
+            if (idx as usize) >= vocab {
+                return Err(VokraError::InvalidArgument(format!(
+                    "xcodec2_fsq_decode_f32: codes[{t}] = {idx} >= Π levels {vocab} (no silent \
+                     clamp — FR-EX-08)"
+                )));
+            }
+        }
+        if time == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_xcodec2_fsq_decode(
+            codes,
+            levels,
+            proj_weight,
+            proj_bias,
+            d_model,
+            n_dims,
+            time,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic to FSQ's optional-projection shape
+    fn run_xcodec2_fsq_decode(
+        &self,
+        codes: &[u32],
+        levels: &[u32],
+        proj_weight: Option<&[f32]>,
+        proj_bias: Option<&[f32]>,
+        d_model: usize,
+        n_dims: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        // SAFETY: `codes` is a valid read-only slice of `u32`; reinterpret its
+        // backing storage as a `u8` slice for the byte-oriented shared
+        // MTLBuffer upload. `u32` alignment is stricter than `u8`, so the
+        // pointer cast is well-defined, and the borrow scope of `codes_bytes`
+        // is limited to this function.
+        let codes_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(codes.as_ptr().cast::<u8>(), core::mem::size_of_val(codes))
+        };
+        let codes_buf = self.new_buffer_from_bytes(codes_bytes)?;
+        // Same trick for `levels: &[u32]`.
+        // SAFETY: same rationale as `codes_bytes` above.
+        let levels_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                levels.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(levels),
+            )
+        };
+        let levels_buf = self.new_buffer_from_bytes(levels_bytes)?;
+        // Bind a `[0.0]` dummy buffer when the projection is absent (same
+        // convention as `conv1d_f32`'s optional bias — MSL requires all
+        // bindings to be non-nil, so a dummy stand-in is uploaded but never
+        // read because the kernel's `has_projection == 0` arm doesn't touch
+        // `proj_weight` / `proj_bias`).
+        let dummy = [0.0f32];
+        let w_buf = self.new_buffer_from_slice(proj_weight.unwrap_or(&dummy))?;
+        let b_buf = self.new_buffer_from_slice(proj_bias.unwrap_or(&dummy))?;
+        let out_len = time.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "xcodec2_fsq_decode_f32: time ({time}) * d_model ({d_model}) overflows usize"
+            ))
+        })?;
+        let out_buf = self.new_buffer_output(out_len)?;
+        let dims = Xcodec2FsqDims {
+            d_model: d_model as u32,
+            n_dims: n_dims as u32,
+            time: time as u32,
+            has_projection: u32::from(proj_weight.is_some()),
+        };
+        // One thread per (d_model column, timestep row) — same launch geometry
+        // as the sibling mimi_rvq / dac_rvq kernels for a consistent codec-
+        // family shape. The kernel guards the ragged tail against both bounds
+        // so `grid_2d`'s round-up-to-16 is safe.
+        let (grid, tg) = grid_2d(d_model, time);
+        self.dispatch_compute(
+            self.xcodec2_fsq_decode_pipeline,
+            &[&codes_buf, &levels_buf, &w_buf, &b_buf, &out_buf],
+            (&dims as *const Xcodec2FsqDims).cast::<c_void>(),
+            size_of::<Xcodec2FsqDims>(),
+            grid,
+            tg,
+            "xcodec2_fsq_decode",
+        )?;
+        let mut out = vec![0.0_f32; out_len];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
     }
 
     /// 1-D convolution (`input` is `in_ch × in_len`, `weight` is
@@ -4138,6 +7126,20 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.qwen3_tts_codec_decode_pipeline);
+            release(self.denoise_apply_mask_pipeline);
+            release(self.snac_decode_pipeline);
+            // Vocoder Metal wave common vocoder primitives — released after
+            // the WF5 codec siblings and before the WF2 snake_activation so
+            // the LIFO order matches the construction order in `build`.
+            release(self.anti_aliased_upsample_pipeline);
+            release(self.sinegen_deterministic_pipeline);
+            release(self.snake_beta_pipeline);
+            release(self.snake_activation_pipeline);
+            release(self.xcodec2_fsq_decode_pipeline);
+            release(self.wavtokenizer_vq_gather_pipeline);
+            release(self.dac_rvq_gather_project_fold_pipeline);
+            release(self.mimi_rvq_gather_fold_pipeline);
             release(self.swiglu_pipeline);
             release(self.silu_pipeline);
             release(self.rope_adjacent_pipeline);

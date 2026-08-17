@@ -1,0 +1,57 @@
+# vokra-android — OUT-OF-WORKSPACE integration (opt-in Android JNI binding).
+#
+# Same isolation pattern as `integrations/vokra-godot/`, `integrations/vokra-piper-g2p/`
+# and `integrations/vokra-server/`: this crate is deliberately NOT a member of the
+# Vokra root workspace. It exposes JNI wrappers (cdylib) around the Vokra C ABI
+# (`crates/vokra-capi`, exported as `libvokra` symbols) so a Kotlin/Java Android
+# app can call the runtime via `System.loadLibrary("vokra_android")` +
+# `external fun` declarations.
+#
+# The empty `[workspace]` table below makes this directory its own workspace
+# root with its own `Cargo.lock`, fully isolated from the root graph; the
+# zero-dependency invariant on the root `Cargo.lock` (NFR-DS-02, enforced
+# by scripts/check-zero-deps.sh) is untouched.
+#
+# ADR gate: docs/adr/M4-kotlin-binding-jni-vs-jna.md — **Proposed**. This
+# crate implements the (B) raw JNI branch as the CC-side scaffold; the
+# owner may re-approve (A) JNA in the ADR §7 sign-off (in which case this
+# crate becomes docs-only demonstrating the raw-JNI baseline the ADR
+# compares against). Rust surface is a minimal 5-fn wrapper set covering
+# the Session lifecycle + error read-back; ASR / TTS / VAD wrappers are a
+# rolling follow-up (mirrors the "5-fn scaffold, expand later" cadence
+# used for M2-12 Python bindings).
+#
+# See docs/adr/M4-kotlin-binding-jni-vs-jna.md §4 for the JNI vs JNA
+# trade-off analysis; the Kotlin/Java surface is under `kotlin/` in this
+# same directory (not built by Cargo; a Gradle project template is
+# under `templates/`).
+[package]
+name = "vokra-android"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+description = "Vokra Android JNI binding — hand-written extern \"system\" bridge over the Vokra C ABI (NOT part of the zero-dependency runtime)."
+
+# Own workspace root — isolates this crate from the Vokra root workspace and
+# gives it a separate `Cargo.lock`.
+[workspace]
+
+[lib]
+name = "vokra_android"
+# `cdylib` is the shared library shape (`libvokra_android.so`) that Android
+# loads via `System.loadLibrary("vokra_android")` at JVM startup. `rlib` is
+# also produced so this crate can be consumed by other Rust code (tests /
+# host-side unit tests running off-device).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# First-party runtime crate, by path. The `vokra-capi` rlib contributes the
+# `#[no_mangle] extern "C" fn vokra_*` symbols documented in `include/vokra.h`;
+# our `extern "C"` declarations in `src/capi.rs` reference them so the
+# linker keeps them in the produced cdylib.
+#
+# NOTE: This directory is an EXCLUDED workspace (its own Cargo.lock). Adding
+# `vokra-capi` here does NOT touch the root `Cargo.lock` (NFR-DS-02 preserved).
+vokra-capi = { path = "../../crates/vokra-capi" }

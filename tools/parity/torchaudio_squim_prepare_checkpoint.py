@@ -25,9 +25,13 @@ consumes safetensors only. This script bridges the two by:
 2. Extracting each ``.state_dict()``, prefixing every key with the
    sub-model tag (``objective.<upstream_name>`` /
    ``subjective.<upstream_name>``) — analogous to the DNSMOS
-   ``p808.`` / ``p835.`` prefix convention. The future
-   ``vokra_eval::squim::from_gguf`` binder walks these prefixes to
-   route each tensor to the right sub-model without a graph load.
+   ``p808.`` / ``p835.`` prefix convention. The runtime binder
+   ``vokra_models::squim::SquimWeights::from_gguf`` walks these prefixes
+   to route each tensor to the right sub-model without a graph load. It
+   landed in ``vokra-models``, not ``vokra-eval`` — there is no
+   ``vokra_eval::squim`` module; see the "Why this binder lives in
+   `vokra-models`, not `vokra-eval`" section of
+   ``crates/vokra-models/src/squim/mod.rs``.
 3. Emitting a single merged safetensors + a sha256 manifest line + a
    config JSON side-car (sample_rate, sub-model factory defaults from
    ``squim_objective_base()`` / ``squim_subjective_base()``).
