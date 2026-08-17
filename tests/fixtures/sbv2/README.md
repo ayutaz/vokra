@@ -238,27 +238,38 @@ exactly what's absent — never a silent skip-and-pass (FR-EX-08).
 
 This is separate from the end-to-end `reference_dump/sdp_sample.bin`: it
 isolates the deterministic `pre -> +cond(g) -> DDSConv -> proj` body from
-the random latent and flow inverse. On the VAST instance, after the main
-checkpoint has been staged, run:
+the random latent and flow inverse. The canonical path is the fail-closed VAST
+worker, which pins all three upstream revisions, stages and converts all three
+GGUFs, checks their committed sidecar hashes, records the execution
+environment, generates the independent fixture, and runs the explicit ignored
+test:
 
 ```bash
-cd ~/vokra/tools/parity
-uv run python sbv2_sdp_body_dump.py \
-    --checkpoint /root/sbv2-checkpoint \
-    --output-dir ~/vokra/tests/fixtures/sbv2 \
-    --seed 0 --T 50
+cd ~/vokra
+bash scripts/publish/vast-ai/run-sbv2-sdp-parity.sh
 ```
+
+See `docs/handoff/sbv2-sdp-vast-parity.md` for the rent → provision → work →
+collect logs → destroy lifecycle. Its `--self-test` is checkpoint-free and may
+run locally; the actual path refuses macOS and an unmarked Linux host.
 
 The tool uses the vendored MIT upstream `StochasticDurationPredictor`, not
 the Rust implementation, and writes two raw input fixtures plus the
 channel-major output and JSON provenance. These, like the real GGUFs, are
 derived from the AGPL checkpoint and are gitignored; do not commit or copy
-them into the Apache-2.0 source tree. Do not generate or load them on the
-Mac. Run the explicitly ignored test only on that VAST instance:
+them into the Apache-2.0 source tree. Do not generate or load them on the Mac.
+For debugging the worker, its underlying fixture command is:
 
 ```bash
-cargo test -p vokra-models --test sbv2_sdp_torch_parity -- --ignored --nocapture
+cd ~/vokra/tools/parity
+uv run python sbv2_sdp_body_dump.py \
+    --checkpoint <VAST-staged-sbv2-dir> \
+    --output-dir ~/vokra/tests/fixtures/sbv2 \
+    --seed 0 --T 50
 ```
+
+Do not treat that isolated command as a complete gate: the worker's GGUF hash,
+environment-provenance, and Rust-test steps are also required.
 
 The first recorded run (2026-08-18, public JP-Extra v2 checkpoint) passed
 with `max |Δ| = 9.536743164e-6` at channel 96 / time 31, below the strict
