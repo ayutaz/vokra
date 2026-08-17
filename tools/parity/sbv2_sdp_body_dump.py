@@ -158,7 +158,12 @@ def _build_upstream_sdp(state: dict[str, object], torch):
             f"{(cond_out, gin, cond_kernel)}"
         )
 
-    conv_kernel_shape = _require_rank3_weight(state, "convs.convs1.0.weight")
+    # ``DDSConv``'s pointwise stack is named ``convs_1x1`` in the pinned
+    # upstream MIT module (not ``convs1``, which belongs to HiFi-GAN's
+    # separate residual blocks). Keep this an exact checkpoint key so a
+    # topology drift fails loudly instead of deriving a kernel from a
+    # semantically unrelated tensor.
+    conv_kernel_shape = _require_rank3_weight(state, "convs.convs_1x1.0.weight")
     conv_kernel = conv_kernel_shape[2]
     if conv_kernel <= 0:
         _die(f"invalid DDS kernel width {conv_kernel}")
