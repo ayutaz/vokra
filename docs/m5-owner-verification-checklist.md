@@ -349,7 +349,11 @@ destination-gated publish remain**:
   4,960,621,760 bytes (`1cdea939…`). Independent header verification confirmed
   577 BF16 + 311 F32, all AudioVAE sentinels, tokenizer length 3,676,772, exact
   upstream revision, and Apache-2.0 provenance. The raw 577-tensor checkpoint
-  now fails with no output. `publish-one.sh` was run without `--push` and stopped
+  now fails with no output. The real Rust structural parity leg initially found
+  a BOOL-vs-integer bug in its own `residual_lm.no_rope` assertion; `e8d016f`
+  corrected it and the VAST rerun passed (888 tensors / 2B runtime config /
+  explicit synthesize refusal). No `REFDIR` or native forward was present, so
+  numerical-output parity remains open. `publish-one.sh` was run without `--push` and stopped
   at `UNKNOWN_REPO`: the signed license row permits redistribution, but the
   official voice-cloning positioning still needs an owner decision against the
   M5-05 separate-repository policy before any destination slug is registered.

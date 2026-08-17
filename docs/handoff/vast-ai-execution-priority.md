@@ -2,6 +2,9 @@
 
 **Execution update**: VoxCPM2-2B's VAST download, two-file preparation,
 conversion, and structural real-weight verification are complete at `5bc62ae`.
+The real Rust structural parity leg also passes after the BOOL metadata test fix
+at `e8d016f`; numerical forward parity remains unavailable because the native
+weight binder/forward has not landed.
 Its publish dry-run is intentionally stopped at `UNKNOWN_REPO` pending the
 voice-clone destination/legal decision. It is no longer a block-free publish
 job. Instance `47955178` is stopped with both VoxCPM2 and corrected Voxtral

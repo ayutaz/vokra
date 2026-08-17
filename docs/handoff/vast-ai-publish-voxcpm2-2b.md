@@ -21,6 +21,12 @@ Conversion and real-weight structural verification are complete on VAST instance
   tokenizer length 3,676,772 bytes, and exact upstream repo/revision metadata.
 - The raw main-only checkpoint is now refused (`577/888`, no output file), so
   the former success-shaped but non-decodable conversion path is closed.
+- The real GGUF then exercised the Rust `parity_voxcpm2` structural leg. Its
+  first run found that the harness incorrectly read the BOOL
+  `vokra.voxcpm2.residual_lm.no_rope` as an integer; commit `e8d016f` fixed the
+  test contract. The rerun passed with 888 tensors and the 2B runtime config.
+  `VOKRA_VOXCPM2_REFDIR` was unset and native forward remains unimplemented, so
+  this is explicitly not a numerical-output parity claim.
 - `publish-one.sh` was run without `--push`. It stopped fail-closed at owner
   sign-off mapping with `UNKNOWN_REPO` (exit 5): the license audit row is signed,
   but the public slug `vokra/voxcpm2-2b` is intentionally not registered while
@@ -291,7 +297,9 @@ Runtime/converter factories are already landed. Remaining CI activation work:
    longer need the volume.
 6. Activate the real parity workflow with an independently generated upstream
    reference. Structural real-weight verification is complete, but numerical
-   output parity has not been claimed.
+   output parity has not been claimed. A weight-byte mirror is not an adequate
+   independent reference; the future fixture must tap an actual upstream
+   forward stage and compare it with a landed native Rust forward.
 
 ## 9. Notes
 
