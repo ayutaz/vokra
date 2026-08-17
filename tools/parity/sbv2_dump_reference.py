@@ -4,7 +4,8 @@ encoders + a vendored ``jaywalnut310/vits`` VITS core (Task 30, SBV2 v2
 plan).
 
 Runs the Style-Bert-VITS2 v2 forward pass using **only permissive Python
-reference implementations** and dumps the 11 intermediate tensors
+reference implementations** and dumps the 11 JA/EN intermediate tensors,
+plus a twelfth independent ZH BERT tensor for a ZH run,
 ``docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`` §10 pins, so
 ``crates/vokra-models/tests/parity_sbv2_real.rs`` (Task 28) can diff a real
 Rust forward pass against them, tensor by tensor, at
@@ -49,7 +50,7 @@ This dumper has two modes:
 * **Schema preview** (default, no ``--do-dump``): builds and prints the
   ``reference_dump.manifest.json`` this tool *would* write, with the 8
   request fields fully resolved from the CLI (nothing about those needs a
-  real checkpoint or forward pass), and the 11 ``tensors[].shape`` entries
+  real checkpoint or forward pass), and the 11 or 12 ``tensors[].shape`` entries
   left as symbolic placeholders (``"T_text"`` / ``"T_bert"`` / ``"T_mel"`` /
   ``"samples"``) since real dimensions only exist after a real forward pass
   runs. Nothing is written to ``--output-dir`` in this mode — printing a
@@ -58,7 +59,7 @@ This dumper has two modes:
   so it (like ``--help``) works in a bare interpreter.
 * **Real dump** (``--do-dump``): runs the design-doc §7 forward pipeline
   end-to-end (G2P -> ``SbV2TextEncoder`` -> DeBERTa-bridge -> SDP -> flow
-  -> HiFi-GAN) and writes 11 ``reference_dump/*.bin`` files + 4 fixture
+  -> HiFi-GAN) and writes 11 ``reference_dump/*.bin`` files (12 for ZH) + 4 fixture
   side files (phoneme_ids/tones/word_boundaries/language_id) + N
   per-layer acoustic-flow intermediate files
   (``flow_layer_<i>_output.bin``, Wave 3 / Task 15 — ``N`` is the real
@@ -94,7 +95,7 @@ This dumper has two modes:
      ``tools/parity/utmos_dump_reference.py``'s own module doc draws
      from the Kokoro ``92dbc92`` incident.
 
-# The 11 dumped tensors (design doc §10 / ``parity_sbv2_real.rs`` contract)
+# The 11 base tensors plus the opt-in ZH tensor
 
 ======================= ================= ========================
 name                    shape             purpose
@@ -103,6 +104,7 @@ name                    shape             purpose
 ``text_hidden``         [T_text, 192]     text encoder output
 ``bert_hidden_ja``      [T_bert, 1024]    DeBERTa v2 output (JA)
 ``bert_hidden_en``      [T_bert, 1024]    DeBERTa v3 output (EN)
+``bert_hidden_zh``      [T_bert, 1024]    plain BERT output (ZH run only)
 ``bert_bridge_out``     [T_text, 192]     BERT bridge conv output
 ``speaker_embed``       [1, 512]          speaker embedding
 ``style_projected``     [1, 192]          style vector projection
@@ -112,13 +114,10 @@ name                    shape             purpose
 ``waveform``            [1, samples]      final PCM
 ======================= ================= ========================
 
-Only ``T_bert`` differs per language (JA uses the DeBERTa v2 tokenizer's
-sequence length for the input ``text``, EN the DeBERTa v3 tokenizer's) —
-one of ``bert_hidden_ja``/``bert_hidden_en`` is the *active* path for a
-given ``--language``; the other is dumped too (both BERT encoders run
-regardless of which language's SBV2 acoustic path consumes the result) so
-the fixture set is complete regardless of which language a future
-``parity_sbv2_real.rs`` run exercises. All 11 ``.bin`` files are raw
+Only ``T_bert`` differs per encoder. JA and EN dumps always run their real
+DeBERTa encoders; an explicit ZH run additionally loads the real upstream
+WordPiece + plain-BERT encoder and routes ``bert_hidden_zh`` into the bridge.
+All tensor ``.bin`` files are raw
 little-endian ``float32`` (including ``sdp_sample``, whose semantic values
 are discrete durations — see
 ``crates/vokra-models/src/sbv2/parity.rs``'s ``PER_TENSOR_ATOL`` doc comment
@@ -126,12 +125,12 @@ for why that tensor is still compared as float with an atol that has an
 explicit +/-1 discrete-step allowance, rather than as an exact integer
 match).
 
-Task 7 (SBV2 v2 plan) adds four **side files** alongside the 11-tensor
+Task 7 (SBV2 v2 plan) adds four **side files** alongside the tensor
 list — ``phoneme_ids.bin`` (``uint16``), ``tones.bin`` (``uint8``),
 ``word_boundaries.bin`` (``uint8``), all of length ``T_text``, plus
 ``language_id.bin`` (``uint8`` scalar, count 1) — under the manifest's own
 ``phonemize_fixture`` block (not inside ``tensors[]``, so the design-doc
-§10 "11 dumped tensors" contract stays intact). They are the G2P *inputs*
+§10 tensor contract). They are the G2P *inputs*
 to the reference forward pass, replayed on the Rust side by
 ``SbV2Phonemizer::from_fixture`` +
 ``SbV2Model::from_gguf_with_phonemizer`` — see this file's manifest
@@ -271,7 +270,7 @@ from pathlib import Path
 
 LOG_PREFIX = "[sbv2-dump]"
 GENERATOR_ID = "tools/parity/sbv2_dump_reference.py"
-GENERATOR_VERSION = "1.0"
+GENERATOR_VERSION = "1.1"
 
 # Matches Task 34's planned `Files:` list verbatim (design doc §10 / Task 28
 # module doc) — bare filenames, siblings of the manifest inside
@@ -280,13 +279,15 @@ GENERATOR_VERSION = "1.0"
 DEFAULT_SBV2_MAIN_FILENAME = "sbv2-v2-multilingual-base.gguf"
 DEFAULT_BERT_JA_FILENAME = "deberta-v2-large-japanese-char-wwm.gguf"
 DEFAULT_BERT_EN_FILENAME = "deberta-v3-large.gguf"
+DEFAULT_BERT_ZH_FILENAME = "chinese-roberta-wwm-ext-large.gguf"
 
-# HF transformers repo ids for the two BERT encoders (design doc §9 SKU
-# table / §16 References). Verified to exist via the public HF Hub API
-# (2026-07-26): ku-nlp/deberta-v2-large-japanese-char-wwm is tagged
-# license=cc-by-sa-4.0, microsoft/deberta-v3-large is tagged license=mit.
+# HF transformers repo ids for the three BERT encoders. JA/EN were verified
+# via the public HF Hub API on 2026-07-26. The ZH checkpoint was selected by
+# the owner on 2026-08-09 and re-verified against the official API on
+# 2026-08-18 (Apache-2.0, ungated, commit pinned by the workflow).
 DEFAULT_BERT_JA_REPO = "ku-nlp/deberta-v2-large-japanese-char-wwm"
 DEFAULT_BERT_EN_REPO = "microsoft/deberta-v3-large"
+DEFAULT_BERT_ZH_REPO = "hfl/chinese-roberta-wwm-ext-large"
 
 # design doc §7 "主要 hparams" table.
 DEFAULT_STYLE_DIM = 256
@@ -349,17 +350,18 @@ SDP_DDS_N_LAYERS = 3  # jaywalnut310/vits (MIT) SDP.__init__ n_layers=3 default
 DEFAULT_TEXT_BY_LANGUAGE = {
     "ja": "テスト",
     "en": "This is a test.",
+    "zh": "你好。",
 }
 
-# The 11-tensor dump contract (design doc §10, reproduced verbatim in
-# parity_sbv2_real.rs's module doc). `shape_template` uses the same
-# symbolic placeholders as that Rust file's own illustrative sketch —
-# real integers only appear once a real forward pass supplies them.
+# The original 11-tensor dump contract plus the additive ZH BERT hidden
+# tensor. `shape_template` uses the same symbolic placeholders as the Rust
+# harness; real integers only appear once a real forward pass supplies them.
 TENSOR_SCHEMA: "list[dict]" = [
     {"name": "phoneme_embed", "shape_template": ["T_text", 192]},
     {"name": "text_hidden", "shape_template": ["T_text", 192]},
     {"name": "bert_hidden_ja", "shape_template": ["T_bert", 1024]},
     {"name": "bert_hidden_en", "shape_template": ["T_bert", 1024]},
+    {"name": "bert_hidden_zh", "shape_template": ["T_bert", 1024]},
     {"name": "bert_bridge_out", "shape_template": ["T_text", 192]},
     {"name": "speaker_embed", "shape_template": [1, 512]},
     {"name": "style_projected", "shape_template": [1, 192]},
@@ -441,10 +443,9 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
                    flow_layer_shape: "list | None" = None) -> dict:
     """Builds the ``reference_dump.manifest.json`` contents.
 
-    ``tensor_shapes``, when given, maps a subset of the 11 tensor names to
+    ``tensor_shapes``, when given, maps a subset of the tensor names to
     their *real*, already-known integer shape (only available once a real
-    forward pass has run) — used by the (not-yet-implemented) real-dump
-    path once vendoring lands. When ``None`` (schema-preview mode), every
+    forward pass has run). When ``None`` (schema-preview mode), every
     tensor falls back to its symbolic [`TENSOR_SCHEMA`] placeholder shape.
 
     ``phonemize_counts``, when given, maps a subset of the 4 Task-7
@@ -474,6 +475,8 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
     tensors = []
     for spec in TENSOR_SCHEMA:
         name = spec["name"]
+        if name == "bert_hidden_zh" and args.language.lower() != "zh":
+            continue
         shape = tensor_shapes.get(name, spec["shape_template"])
         tensors.append(
             {
@@ -525,14 +528,18 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
     )
     style_vec = [0.0] * effective_style_dim
 
+    checkpoint = {
+        "sbv2_main": args.sbv2_main_filename,
+        "bert_ja": args.bert_ja_filename,
+        "bert_en": args.bert_en_filename,
+    }
+    if args.language.lower() == "zh":
+        checkpoint["bert_zh"] = args.bert_zh_filename
+
     return {
         "generator_version": GENERATOR_VERSION,
         "generator": GENERATOR_ID,
-        "checkpoint": {
-            "sbv2_main": args.sbv2_main_filename,
-            "bert_ja": args.bert_ja_filename,
-            "bert_en": args.bert_en_filename,
-        },
+        "checkpoint": checkpoint,
         "request": {
             "text": args.text,
             "language": args.language.upper(),
@@ -713,9 +720,26 @@ class MinimalG2P:
             "word_boundaries": [1,  0,  0,  0,  0,  1,  0,  1,  1,  0,  0,  0,  0,  0,  0, 0],
         },
     }
+    # Fixture-only ZH row. As with the JA/EN rows above, these are valid
+    # checkpoint vocabulary/tone indices replayed byte-for-byte by Rust; this
+    # row deliberately does not claim production Mandarin G2P correctness.
+    # The independent part of this leg is the real HF WordPiece+BERT forward
+    # and every downstream SBV2 tensor, not this hand-authored input fixture.
+    _ZH_TABLE: "dict[str, dict[str, list[int]]]" = {
+        "你好。": {
+            "phoneme_ids":     [1, 30, 31, 32, 2],
+            "tones":           [0,  3,  3,  0, 0],
+            "word_boundaries": [1,  0,  1,  0, 0],
+        },
+    }
 
     def phonemize(self, text: str, language: str) -> dict:
-        table = self._JA_TABLE if language.upper() == "JA" else self._EN_TABLE
+        tables = {
+            "JA": self._JA_TABLE,
+            "EN": self._EN_TABLE,
+            "ZH": self._ZH_TABLE,
+        }
+        table = tables[language.upper()]
         if text not in table:
             raise NotImplementedError(
                 f"{LOG_PREFIX} MinimalG2P has no entry for "
@@ -859,14 +883,13 @@ def load_sbv2_checkpoint(args: argparse.Namespace):
 
 
 def load_bert_encoders(args: argparse.Namespace, transformers):
-    """Step 2. Both encoders are loaded regardless of `--language`
-    (design doc §10: both `bert_hidden_ja` and `bert_hidden_en` are
-    always dumped — the fixture set stays complete no matter which
-    language a future parity test exercises).
+    """Step 2. Load JA/EN and, for a ZH run, the third real encoder.
 
-    Both DeBERTa v2 (JA) and DeBERTa v3 (EN) load through
-    `transformers.AutoModel` / `AutoTokenizer` — v3 is an attention-
-    mechanism delta on the same class hierarchy.
+    DeBERTa v2 (JA), DeBERTa v3 (EN), and plain BERT (ZH) all load through
+    the actual upstream `transformers.AutoModel` / `AutoTokenizer` classes.
+    There is no local mirror fallback: import/load failure aborts the dump.
+    Keeping ZH conditional preserves the existing JA/EN workflow's download
+    and memory footprint until the explicit four-file leg is requested.
     """
     from transformers import AutoModel, AutoTokenizer
 
@@ -874,7 +897,12 @@ def load_bert_encoders(args: argparse.Namespace, transformers):
     model_ja = AutoModel.from_pretrained(args.bert_ja_repo).eval()
     tok_en = AutoTokenizer.from_pretrained(args.bert_en_repo)
     model_en = AutoModel.from_pretrained(args.bert_en_repo).eval()
-    return (tok_ja, model_ja), (tok_en, model_en)
+    zh = None
+    if args.language.lower() == "zh":
+        tok_zh = AutoTokenizer.from_pretrained(args.bert_zh_repo)
+        model_zh = AutoModel.from_pretrained(args.bert_zh_repo).eval()
+        zh = (tok_zh, model_zh)
+    return (tok_ja, model_ja), (tok_en, model_en), zh
 
 
 def _load_tensor(state_dict: dict, candidates: "list[str]", role: str, torch):
@@ -1098,7 +1126,7 @@ def run_bert(tok, model, text: str, torch):
 
 
 class BertBridge:
-    """Step 7. SBV2's `enc_p.bert_proj_{ja,en}` — a single Conv1d(D_BERT,
+    """Step 7. SBV2's language projection — a single Conv1d(D_BERT,
     D_MODEL, kernel=1) applied to the ACTIVE language's DeBERTa hidden
     state, aligned from `T_bert` to `T_text` and added to `text_hidden`.
 
@@ -1116,22 +1144,21 @@ class BertBridge:
     """
 
     def __init__(self, state_dict: dict, language: str, torch):
-        prefix = (
-            "enc_p.bert_proj_ja" if language.upper() == "JA" else "enc_p.bert_proj_en"
-        )
-        # Some SBV2 SKUs collapse the two proj tables into a single
+        language_upper = language.upper()
+        prefix = f"enc_p.bert_proj_{language_upper.lower()}"
+        # The real JP-Extra fixture collapses the language projections into a single
         # `enc_p.bert_proj` — try that as a fallback (design doc §7 does
         # not pin the exact SKU-vs-name choice, so we try both honestly).
         self.weight = _load_tensor(
             state_dict,
             [f"{prefix}.weight", "enc_p.bert_proj.weight"],
-            f"bert_bridge.{language.upper()}.weight",
+            f"bert_bridge.{language_upper}.weight",
             torch,
         )  # [D_MODEL, D_BERT, 1]
         self.bias = _load_tensor(
             state_dict,
             [f"{prefix}.bias", "enc_p.bert_proj.bias"],
-            f"bert_bridge.{language.upper()}.bias",
+            f"bert_bridge.{language_upper}.bias",
             torch,
         )  # [D_MODEL]
 
@@ -2042,7 +2069,7 @@ def write_u8_bin(path, values) -> None:
 def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     """Design doc §7 forward-pass pipeline, all 15 steps. Called from
     `run_dump()` after every dependency tier has passed. On success,
-    writes 11 tensor `.bin` files + 4 fixture side files
+    writes 11 tensor `.bin` files, or 12 for ZH, + 4 fixture side files
     (phoneme_ids/tones/word_boundaries all `[T_text]`, plus language_id
     scalar `[1]` — M6 addition) + a fully-resolved
     `reference_dump.manifest.json` to `args.output_dir`. On any failure,
@@ -2056,9 +2083,14 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     config, state_dict = load_sbv2_checkpoint(args)
     print(f"{LOG_PREFIX} loaded SBV2 v2 checkpoint: {len(state_dict)} tensors")
 
-    # ---- Step 2: DeBERTa v2 (JA) + DeBERTa v3 (EN) ----
-    (tok_ja, model_ja), (tok_en, model_en) = load_bert_encoders(args, transformers)
-    print(f"{LOG_PREFIX} loaded DeBERTa v2 (JA) + v3 (EN)")
+    # ---- Step 2: DeBERTa v2 (JA) + DeBERTa v3 (EN) + BERT (ZH) ----
+    (tok_ja, model_ja), (tok_en, model_en), zh_pair = load_bert_encoders(
+        args, transformers
+    )
+    loaded = "DeBERTa v2 (JA) + v3 (EN)"
+    if zh_pair is not None:
+        loaded += " + plain BERT (ZH)"
+    print(f"{LOG_PREFIX} loaded {loaded}")
 
     # ---- Step 3: G2P (fixture-only per Task 7) ----
     g2p = MinimalG2P()
@@ -2071,11 +2103,7 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     tone_emb, lang_emb = build_sbv2_extras(state_dict, torch)
     # Resolve per-utterance `language_id: u8` from `--language`. Matches
     # `crates/vokra-models/src/sbv2/g2p.rs` `Language::language_id` ordering
-    # (`JA = 0`, `EN = 1`, `ZH = 2`) 1:1. `--language` is validated by
-    # argparse against `sorted(DEFAULT_TEXT_BY_LANGUAGE)` = {"ja", "en"};
-    # ZH is not exposed via CLI (Vokra ZH G2P is out of scope for M6, see
-    # Rust `Language::ZH` docstring) but the mapping table below carries a
-    # `zh` entry so a future CLI extension does not silently misroute.
+    # (`JA = 0`, `EN = 1`, `ZH = 2`) 1:1.
     _LANGUAGE_ID_BY_CLI: "dict[str, int]" = {"ja": 0, "en": 1, "zh": 2}
     language_id = _LANGUAGE_ID_BY_CLI[args.language.lower()]
     phoneme_embed, text_hidden, x_mask_text = run_text_encoder(
@@ -2086,14 +2114,25 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     print(f"{LOG_PREFIX} text encoder: phoneme_embed {tuple(phoneme_embed.shape)}, "
           f"text_hidden {tuple(text_hidden.shape)}, language_id={language_id}")
 
-    # ---- Steps 5+6: both BERT paths, always dumped ----
+    # ---- Steps 5+6: JA/EN always; ZH on the explicit four-file leg ----
     bert_ja = run_bert(tok_ja, model_ja, args.text, torch)  # [T_bert_ja, H_ja]
     bert_en = run_bert(tok_en, model_en, args.text, torch)  # [T_bert_en, H_en]
-    print(f"{LOG_PREFIX} bert_ja {tuple(bert_ja.shape)}, "
-          f"bert_en {tuple(bert_en.shape)}")
+    bert_zh = None
+    if zh_pair is not None:
+        tok_zh, model_zh = zh_pair
+        bert_zh = run_bert(tok_zh, model_zh, args.text, torch)
+    bert_shapes = (
+        f"bert_ja {tuple(bert_ja.shape)}, bert_en {tuple(bert_en.shape)}"
+    )
+    if bert_zh is not None:
+        bert_shapes += f", bert_zh {tuple(bert_zh.shape)}"
+    print(f"{LOG_PREFIX} {bert_shapes}")
 
     # ---- Step 7: BertBridge (active language only feeds text_hidden) ----
-    active_bert = bert_ja if args.language.upper() == "JA" else bert_en
+    active_by_language = {"JA": bert_ja, "EN": bert_en}
+    if bert_zh is not None:
+        active_by_language["ZH"] = bert_zh
+    active_bert = active_by_language[args.language.upper()]
     bridge = BertBridge(state_dict, args.language, torch)
     text_hidden_transposed = text_hidden.transpose(0, 1)  # [D_MODEL, T_text]
     bert_bridge_out = bridge.forward(
@@ -2208,6 +2247,8 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     write_f32_bin(dump_dir / "text_hidden.bin",     text_hidden,     torch)
     write_f32_bin(dump_dir / "bert_hidden_ja.bin",  bert_ja,         torch)
     write_f32_bin(dump_dir / "bert_hidden_en.bin",  bert_en,         torch)
+    if bert_zh is not None:
+        write_f32_bin(dump_dir / "bert_hidden_zh.bin", bert_zh, torch)
     write_f32_bin(dump_dir / "bert_bridge_out.bin", bert_bridge_out, torch)
     write_f32_bin(dump_dir / "speaker_embed.bin",   speaker_embed,   torch)
     write_f32_bin(dump_dir / "style_projected.bin", style_projected, torch)
@@ -2229,21 +2270,25 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     write_u8_bin(dump_dir / "language_id.bin",      [language_id])
 
     # ---- Step 15: fully-resolved manifest ----
+    tensor_shapes = {
+        "phoneme_embed":   [t_text, D_MODEL],
+        "text_hidden":     [t_text, D_MODEL],
+        "bert_hidden_ja":  list(bert_ja.shape),
+        "bert_hidden_en":  list(bert_en.shape),
+        "bert_bridge_out": [t_text, D_MODEL],
+        "speaker_embed":   list(speaker_embed.shape),
+        "style_projected": list(style_projected.shape),
+        "sdp_sample":      [t_text],
+        "mel_hidden":      [t_mel, D_MODEL],
+        "z_latent":        [t_mel, D_MODEL],
+        "waveform":        [1, samples],
+    }
+    if bert_zh is not None:
+        tensor_shapes["bert_hidden_zh"] = list(bert_zh.shape)
+
     manifest = build_manifest(
         args,
-        tensor_shapes={
-            "phoneme_embed":   [t_text, D_MODEL],
-            "text_hidden":     [t_text, D_MODEL],
-            "bert_hidden_ja":  list(bert_ja.shape),
-            "bert_hidden_en":  list(bert_en.shape),
-            "bert_bridge_out": [t_text, D_MODEL],
-            "speaker_embed":   list(speaker_embed.shape),
-            "style_projected": list(style_projected.shape),
-            "sdp_sample":      [t_text],
-            "mel_hidden":      [t_mel, D_MODEL],
-            "z_latent":        [t_mel, D_MODEL],
-            "waveform":        [1, samples],
-        },
+        tensor_shapes=tensor_shapes,
         phonemize_counts={
             "phoneme_ids":     t_text,
             "tones":           t_text,
@@ -2263,7 +2308,7 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
         json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=False)
 
     print(
-        f"{LOG_PREFIX} OK: wrote 11 tensor .bin + 4 fixture .bin + "
+        f"{LOG_PREFIX} OK: wrote {len(tensor_shapes)} tensor .bin + 4 fixture .bin + "
         f"{n_flow_layers_dumped} flow_layer_*_output.bin + manifest "
         f"to {args.output_dir}"
     )
@@ -2378,7 +2423,8 @@ def run_dump(args: argparse.Namespace) -> int:
     # vendor.vits + vendor.vits2 import / this dumper's own architectural
     # body). Hand off to the pipeline body, which drives all 15 steps
     # documented in `run_pipeline_body`'s docstring. On success, writes
-    # 11 tensor .bin + 4 fixture .bin (phoneme_ids/tones/word_boundaries
+    # 11 tensor .bin (12 for ZH) + 4 fixture .bin
+    # (phoneme_ids/tones/word_boundaries
     # + M6 language_id) + N flow_layer_<i>_output.bin (Task 15, Wave 3) +
     # reference_dump.manifest.json to `args.output_dir`. On failure,
     # raises loudly — NEVER silently returns 0 or writes a partial
@@ -2417,7 +2463,8 @@ def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
         help=(
             "Text to synthesize. Default depends on --language: "
             f"{DEFAULT_TEXT_BY_LANGUAGE['ja']!r} for ja, "
-            f"{DEFAULT_TEXT_BY_LANGUAGE['en']!r} for en."
+            f"{DEFAULT_TEXT_BY_LANGUAGE['en']!r} for en, and "
+            f"{DEFAULT_TEXT_BY_LANGUAGE['zh']!r} for zh."
         ),
     )
     parser.add_argument(
@@ -2477,6 +2524,11 @@ def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
         help=f"HF transformers repo id for the EN BERT encoder (default: {DEFAULT_BERT_EN_REPO}).",
     )
     parser.add_argument(
+        "--bert-zh-repo",
+        default=DEFAULT_BERT_ZH_REPO,
+        help=f"HF transformers repo id for the ZH BERT encoder (default: {DEFAULT_BERT_ZH_REPO}).",
+    )
+    parser.add_argument(
         "--sbv2-main-filename",
         default=DEFAULT_SBV2_MAIN_FILENAME,
         help=f"Manifest checkpoint.sbv2_main filename (default: {DEFAULT_SBV2_MAIN_FILENAME}).",
@@ -2490,6 +2542,11 @@ def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
         "--bert-en-filename",
         default=DEFAULT_BERT_EN_FILENAME,
         help=f"Manifest checkpoint.bert_en filename (default: {DEFAULT_BERT_EN_FILENAME}).",
+    )
+    parser.add_argument(
+        "--bert-zh-filename",
+        default=DEFAULT_BERT_ZH_FILENAME,
+        help=f"Manifest checkpoint.bert_zh filename (default: {DEFAULT_BERT_ZH_FILENAME}).",
     )
     parser.add_argument(
         "--output-dir",

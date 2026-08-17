@@ -11,14 +11,18 @@
 # owner recipe this workflow automates end to end: download the SBV2 v2
 # base (AGPL-3.0) + DeBERTa v2 JA (cc-by-sa-4.0) + DeBERTa v3 EN (MIT)
 # checkpoints, convert each to GGUF, regenerate the Python reference dump,
-# then run the Rust parity test against the freshly-built GGUFs.
+# then run the Rust parity test against the freshly-built GGUFs. An explicit
+# `include_zh=true` dispatch adds the Apache-2.0 Chinese RoBERTa checkpoint
+# and exercises the four-file ZH numerical leg; the default recurring JA leg
+# remains unchanged.
 #
 # ## Gating (sidecar-hash gate, fabricated-pass prevention)
 #
 # `tests/fixtures/sbv2/*.gguf.sha256` were originally comment-only
 # PLACEHOLDER files. They now carry real hashes from the completed owner
-# recipe. The setup job keeps checking all THREE current JA/EN-path
-# sidecars — design doc §10's own YAML sketch illustrates the gate against
+# recipe. The setup job checks the three current JA-path sidecars by default
+# and also requires the fourth ZH sidecar for an explicit ZH run — design doc
+# §10's own YAML sketch illustrates the gate against
 # only `sbv2-v2-multilingual-base.gguf.sha256`, but `SbV2Model::from_gguf`
 # takes all three checkpoints (`main` + `bert_ja` + `bert_en`) to even
 # construct a model, and the README's own recipe updates all three sidecars
@@ -27,7 +31,7 @@
 # from it. That README's own "Placeholder format" section already
 # anticipates exactly this: "A future workflow built from that sketch stays
 # correctly gated off (`fixtures_present=false`) against these files"
-# (plural — all three).
+# (plural — the complete selected bundle).
 #
 # If any sidecar is absent or deliberately reset to a placeholder, the
 # `parity` job below is skipped entirely — an FR-EX-08 explicit, annotated
@@ -41,7 +45,7 @@
 # commons,modules,transforms}.py` are all in place, and the dumper's
 # `run_pipeline_body` (design doc §7, 15 steps) is fully wired. Once the
 # checkpoint-sidecar gate opens, the dumper is EXPECTED to succeed (writes
-# 11 tensor `.bin` + 4 fixture `.bin` + 4 flow-tap `.bin` +
+# 11 tensor `.bin` for JA, or 12 for ZH, + 4 fixture `.bin` + 4 flow-tap `.bin` +
 # `reference_dump.manifest.json` to `tests/fixtures/sbv2/reference_dump/`).
 # Any nonzero exit from the dumper
 # is now a REAL failure, not a documented deferral — the tail-position
@@ -92,6 +96,17 @@ name: parity-sbv2-real
 
 on:
   workflow_dispatch:
+    inputs:
+      include_zh:
+        description: >-
+          Run the four-file ZH leg (main + JA/EN/ZH BERT) instead of the
+          existing JA leg. Default false keeps the recurring workload unchanged.
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
   schedule:
     - cron: '15 7 * * 1'
   pull_request:
@@ -142,20 +157,48 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       fixtures_present: ${{ steps.check.outputs.present }}
+      run_zh: ${{ steps.mode.outputs.run_zh }}
     steps:
       - uses: actions/checkout@v7
+      - name: Select JA or explicit four-file ZH leg
+        id: mode
+        env:
+          DISPATCH_ZH: ${{ inputs.include_zh }}
+          SCHEDULE_ZH: ${{ vars.VOKRA_SBV2_ZH_ENABLE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_zh=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${DISPATCH_ZH:-false}" = "true" ]; then
+            run_zh=true
+          elif [ "${{ github.event_name }}" = "schedule" ] && [ "${SCHEDULE_ZH:-0}" = "1" ]; then
+            run_zh=true
+          fi
+          echo "run_zh=${run_zh}" >> "$GITHUB_OUTPUT"
+          if [ "$run_zh" = "true" ]; then
+            echo "SBV2 parity language: ZH"
+          else
+            echo "SBV2 parity language: JA"
+          fi
       - name: Detect real fixture sidecars (sidecar-hash gate)
         id: check
+        env:
+          RUN_ZH: ${{ steps.mode.outputs.run_zh }}
         shell: bash
         run: |
           set -euo pipefail
           DIR=tests/fixtures/sbv2
           all_present=true
           reasons=()
-          for f in \
+          required=(
             "$DIR/sbv2-v2-multilingual-base.gguf.sha256" \
             "$DIR/deberta-v2-large-japanese-char-wwm.gguf.sha256" \
-            "$DIR/deberta-v3-large.gguf.sha256"; do
+            "$DIR/deberta-v3-large.gguf.sha256"
+          )
+          if [ "$RUN_ZH" = "true" ]; then
+            required+=("$DIR/chinese-roberta-wwm-ext-large.gguf.sha256")
+          fi
+          for f in "${required[@]}"; do
             if [ -s "$f" ] && ! grep -q "placeholder" "$f"; then
               continue
             fi
@@ -164,7 +207,7 @@ jobs:
           done
           if [ "$all_present" = "true" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "### parity-sbv2-real fixture gate: OPEN (all 3 sidecars real)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### parity-sbv2-real fixture gate: OPEN (${#required[@]} sidecars real)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
             {
@@ -197,6 +240,8 @@ jobs:
       BERT_JA_REVISION: 547b0e8b044fba3f9b84d0ab9f990440bd130c8b
       BERT_EN_HF_REPO: microsoft/deberta-v3-large
       BERT_EN_REVISION: 64a8c8eab3e352a784c658aef62be1662607476f
+      BERT_ZH_HF_REPO: hfl/chinese-roberta-wwm-ext-large
+      BERT_ZH_REVISION: a25cc9e05974bd9687e528edd516f2cfdb3f5db9
       FIXTURE_DIR: tests/fixtures/sbv2
     steps:
       - uses: actions/checkout@v7
@@ -315,6 +360,28 @@ jobs:
           print("DeBERTa v2/v3 snapshot_download OK")
           PYEOF
 
+      - name: Download plain BERT (ZH) checkpoint
+        if: needs.setup.outputs.run_zh == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project "${PARITY_PROJECT}" --frozen python - <<'PYEOF'
+          import os
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id=os.environ["BERT_ZH_HF_REPO"],
+              revision=os.environ["BERT_ZH_REVISION"],
+              repo_type="model",
+              local_dir=os.path.join(os.environ["RUNNER_TEMP"], "bert-zh"),
+              # The pinned HFL release ships pytorch_model.bin (no native
+              # safetensors) plus vocab.txt. A following uv-managed step
+              # performs the offline safe bridge before conversion.
+              allow_patterns=["pytorch_model.bin", "*.json", "vocab.txt"],
+          )
+          print("plain BERT ZH snapshot_download OK")
+          PYEOF
+
       - name: Convert DeBERTa v3 pytorch_model.bin -> safetensors
         # microsoft/deberta-v3-large only ships pytorch_model.bin (upstream
         # convention pre-safetensors era, never migrated). vokra-cli
@@ -362,10 +429,49 @@ jobs:
               print(f"[deberta-v3 bin→st] wrote {out} ({len(cleaned)} tensors)")
           PYEOF
 
+      - name: Convert ZH BERT pytorch_model.bin -> safetensors
+        if: needs.setup.outputs.run_zh == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project "${PARITY_PROJECT}" --frozen python - <<'PYEOF'
+          import os
+          import sys
+          from pathlib import Path
+
+          import torch
+          from safetensors.torch import save_file
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "bert-zh"
+          source = root / "pytorch_model.bin"
+          if not source.is_file():
+              print(f"::error::missing pinned ZH checkpoint: {source}", file=sys.stderr)
+              sys.exit(1)
+          state = torch.load(str(source), map_location="cpu", weights_only=True)
+          if not isinstance(state, dict) or not state:
+              print("::error::ZH pytorch_model.bin did not contain a non-empty state_dict", file=sys.stderr)
+              sys.exit(1)
+          cleaned = {
+              name: tensor.detach().clone().contiguous()
+              for name, tensor in state.items()
+              if isinstance(name, str) and isinstance(tensor, torch.Tensor)
+          }
+          if len(cleaned) != len(state):
+              print(
+                  f"::error::ZH state_dict normalization would drop entries: "
+                  f"kept {len(cleaned)} of {len(state)}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          output = root / "model.safetensors"
+          save_file(cleaned, str(output))
+          print(f"ZH bin->safetensors: {len(cleaned)} tensors -> {output}")
+          PYEOF
+
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
 
-      - name: Convert 3 checkpoints -> GGUF (vokra-cli convert)
+      - name: Convert checkpoint bundle -> GGUF (vokra-cli convert)
         # --model sbv2 / deberta-v2 / deberta-v3 are the canonical
         # ModelKind::as_arg() spellings (tests/fixtures/sbv2/README.md "3.
         # Convert to GGUF"). Multi-shard checkpoints are reported by
@@ -382,6 +488,8 @@ jobs:
         # "tensor sbv2.text_encoder.phoneme_embed not found in GGUF".
         # Explicitly pin the Generator file so this doesn't recur.
         shell: bash
+        env:
+          RUN_ZH: ${{ needs.setup.outputs.run_zh }}
         run: |
           set -euo pipefail
           # The locked uv oracle provides `sentencepiece` +
@@ -450,10 +558,24 @@ jobs:
             --tokenizer "$bert_en_tok_json" \
             --output "$FIXTURE_DIR/deberta-v3-large.gguf"
 
+          if [ "$RUN_ZH" = "true" ]; then
+            bert_zh_st="$RUNNER_TEMP/bert-zh/model.safetensors"
+            bert_zh_vocab="$RUNNER_TEMP/bert-zh/vocab.txt"
+            test -f "$bert_zh_st"
+            test -f "$bert_zh_vocab"
+            ./target/release/vokra-cli convert \
+              --model bert-base \
+              --input "$bert_zh_st" \
+              --tokenizer "$bert_zh_vocab" \
+              --output "$FIXTURE_DIR/chinese-roberta-wwm-ext-large.gguf"
+          fi
+
           ls -lh "$FIXTURE_DIR"/*.gguf
 
       - name: Verify regenerated GGUFs against committed sidecars
         shell: bash
+        env:
+          RUN_ZH: ${{ needs.setup.outputs.run_zh }}
         run: |
           set -euo pipefail
           verify_sidecar() {
@@ -482,6 +604,11 @@ jobs:
           verify_sidecar \
             "$FIXTURE_DIR/deberta-v3-large.gguf" \
             "$FIXTURE_DIR/deberta-v3-large.gguf.sha256"
+          if [ "$RUN_ZH" = "true" ]; then
+            verify_sidecar \
+              "$FIXTURE_DIR/chinese-roberta-wwm-ext-large.gguf" \
+              "$FIXTURE_DIR/chinese-roberta-wwm-ext-large.gguf.sha256"
+          fi
 
       - name: Regenerate reference dump (sbv2_dump_reference.py --do-dump)
         # Wave-4 TASK-34-DUMPER (2026-08-09): the vendoring + pipeline body
@@ -491,15 +618,25 @@ jobs:
         # failure case; DUMP_EXIT is faithfully echoed to GITHUB_ENV.
         id: dump
         shell: bash
+        env:
+          RUN_ZH: ${{ needs.setup.outputs.run_zh }}
         run: |
           set +e
+          language=ja
+          dump_args=(
+            --checkpoint "$RUNNER_TEMP/sbv2-checkpoint"
+            --output-dir "$FIXTURE_DIR"
+            --bert-ja-repo "$RUNNER_TEMP/deberta-v2-ja"
+            --bert-en-repo "$RUNNER_TEMP/deberta-v3-en"
+          )
+          if [ "$RUN_ZH" = "true" ]; then
+            language=zh
+            dump_args+=(--bert-zh-repo "$RUNNER_TEMP/bert-zh")
+          fi
           uv run --project "${PARITY_PROJECT}" --frozen python \
             tools/parity/sbv2_dump_reference.py \
-            --checkpoint "$RUNNER_TEMP/sbv2-checkpoint" \
-            --output-dir "$FIXTURE_DIR" \
-            --bert-ja-repo "$RUNNER_TEMP/deberta-v2-ja" \
-            --bert-en-repo "$RUNNER_TEMP/deberta-v3-en" \
-            --language ja \
+            "${dump_args[@]}" \
+            --language "$language" \
             --do-dump 2>&1 | tee "$RUNNER_TEMP/sbv2-dump.log"
           exit_code=${PIPESTATUS[0]}
           echo "DUMP_EXIT=${exit_code}" >> "$GITHUB_ENV"
@@ -515,7 +652,7 @@ jobs:
               echo "are fully wired (Wave-4 TASK-34-DUMPER). Investigate the traceback"
               echo "above: missing/unmapped tensor names in the safetensors state_dict,"
               echo "a shape mismatch vs the clean-room vendored primitives, or a"
-              echo "network/HF-hub fetch failure for one of the two DeBERTa BERTs."
+              echo "network/HF-hub fetch failure for one of the selected BERT checkpoints."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
