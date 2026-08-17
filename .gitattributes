@@ -44,6 +44,8 @@ tests/parity/fsq/*/*.u32 -filter -diff -merge
 # tools/parity/dump_voxtral_reference.py.
 tests/parity/voxtral/*.f32 -filter -diff -merge
 tests/parity/voxtral/*.bin -filter -diff -merge
+tests/parity/voxtral-small-24b-2507/*.f32 -filter -diff -merge
+tests/parity/voxtral-small-24b-2507/*.bin -filter -diff -merge
 
 # SBV2 SDP noise-buffer fixtures (RNG-BISECT precedent, 2026-08-08 Wave-1).
 # Consumed by crates/vokra-models/tests/sbv2_sdp_torch_parity.rs and

@@ -4,7 +4,7 @@ Tracked / public。**2026-07-28** に本 M1 iMac (16GB RAM) 上で Voxtral-Small
 
 **2026-08-17 operational override**: model conversion, real-weight verification, and upload work that can materially consume memory run on **vast.ai only**. Do not download a checkpoint, convert it, verify it against real weights, or upload its result from the M1 iMac merely because the historical size heuristic below returns `LOCAL_SAFE` / `LOCAL_OK`. The Mac may perform checkpoint-free work only: source/doc review, static tests, and the HF-metadata size preflight. This override supersedes older local-conversion suggestions in this and per-model handoffs.
 
-**2026-08-18 Voxtral-Small-24B dry-run evidence**: VAST instance `47955178` converted pinned upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` through `run-voxtral-small-24b.sh` without an HF credential. Result = 852 tensors / 851 BF16 exact passthrough / 0 skipped / tokenizer embedded / 48,542,408,640 bytes / SHA-256 `52f8607972c00ddc2a9a5736c2eaf2562878edafaa7a56e1de053ceac9a6109f`; header source is the corrected `mistralai/Voxtral-Small-24B-2507 (Apache-2.0)`. Model-card, owner sign-off, LICENSE, NOTICE, SOURCE and dry-run gates all pass. The instance is stopped (compute billing off, disk retained) with the artifact staged; resume only for explicitly authorized credential transfer + `--push`, then live-verify and destroy.
+**2026-08-18 Voxtral-Small-24B corrected dry-run + parity evidence**: VAST instance `47955178` converted pinned upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` through `run-voxtral-small-24b.sh` without an HF credential. A first provenance-only artifact was rejected before upload because its adapter metadata was absent. The corrected tracked side-car run produced 852 tensors / 54 metadata keys / 851 BF16 exact passthrough / 0 skipped / tokenizer embedded / active `frame_stack_mlp` adapter / 48,542,409,248 bytes / SHA-256 `91f2733492dd49b8e8f810192c77538d7d6d2f4c1c568098e11c3ad91f752c87`; converter peak RSS = 1,780.18 MiB. Header source is `mistralai/Voxtral-Small-24B-2507 (Apache-2.0)`, and model-card, owner sign-off, LICENSE, NOTICE, SOURCE and dry-run gates all pass. Independent upstream reference generation peaked at 130.43 GiB. Rust real-runtime results with unchanged bounds: mel `1.311e-5`, encoder `2.956e-5`, projector `1.812e-5`, logits `6.356e-4`, plus exact 27-id greedy/EOS match in 5,292.21 s. Bounded fixtures live in `tests/parity/voxtral-small-24b-2507/`. After the bounded-fixture smoke test, stop the instance without destroying its staged artifact; resume only for explicitly authorized credential transfer + `--push`, then live-verify and destroy.
 
 memory [[feedback-large-models-on-vast-ai]] の運用側詳細版。
 
@@ -46,11 +46,11 @@ source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 **Voxtral streaming path (2026-07-29 追加)**: `convert_voxtral_file_streaming`
 API を追加した (M5 gap A-3、crates/vokra-convert/src/lib.rs)。header-only
 mmap per shard + 1-tensor-at-a-time payload streaming で、Voxtral-Small-24B
-(48GB) を M1 iMac (16GB) 上で peak `max(shard_header) + max(tensor_payload)`
-のフットプリントで変換可能。**K-quant はスコープ外** (widen-then-quantize が
-in-memory 必須ゆえ)。owner が local で dry-run するときは `convert_voxtral_file`
-の代わりにこれを使う。vast.ai は引き続き quantize 系や 30B+ の base case として
-必要。
+(48GB) でも peak `max(shard_header) + max(tensor_payload)` のフットプリントに
+抑える。2026-08-18 に adapter side-car も同じ streaming path へ統合し、VASTで
+peak 1,780.18 MiB を実測した。**この技術的な低メモリ性はlocal実行の許可ではない**。
+上記operational overrideどおり、実weight変換・検証・uploadはサイズを問わずVASTで
+行う。**K-quant はスコープ外** (widen-then-quantizeがin-memory必須)。
 
 **Borderline (single-tenant なら本機可、他作業と競合させない)**:
 - 5-8GB の safetensors: kyutai-stt (5.23GB BF16、2026-07-28 実績あり)、csm-1b (6.21GB single-file、実績あり)、moshiko-7b (~14GB BF16、既 published)

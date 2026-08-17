@@ -17,6 +17,14 @@
 //! with that same environment variable; the 24B VAST-only gate uses this to
 //! avoid overwriting the committed Mini fixture:
 //!
+//! ```text
+//! VOKRA_VOXTRAL_REF_DIR=tests/parity/voxtral-small-24b-2507
+//! ```
+//!
+//! The Small-24B bounded fixture is committed separately at that path. It was
+//! generated on VAST from the pinned real checkpoint and passed the same
+//! independent-upstream self-check before the Rust runtime comparison.
+//!
 //! | file | shape |
 //! |---|---|
 //! | `input_pcm.f32` | `[n_samples]` raw 16 kHz mono (unpadded) |
@@ -33,7 +41,7 @@
 //!   every PR): manifest ↔ binary cross-checks, cheap. Absent fixture →
 //!   clean skip with a diagnostic, never a fabricated pass.
 //! - **Real-checkpoint tests** are additionally gated on
-//!   `VOKRA_VOXTRAL_GGUF` (a converted real GGUF, ~9.4 GB — never
+//!   `VOKRA_VOXTRAL_GGUF` (a converted real GGUF — never
 //!   committed) and skip when unset, same posture as `parity_whisper.rs`.
 //!   The Mini decoder leg is already memory-intensive; Small-24B is a
 //!   VAST-only run. Run either one solo, e.g.
