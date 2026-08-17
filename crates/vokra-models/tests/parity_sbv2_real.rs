@@ -56,7 +56,8 @@
 //!   "checkpoint": {
 //!     "sbv2_main": "sbv2-v2-multilingual-base.gguf",
 //!     "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf",
-//!     "bert_en": "deberta-v3-large.gguf"
+//!     "bert_en": "deberta-v3-large.gguf",
+//!     "bert_zh": "chinese-roberta-wwm-ext-large.gguf"
 //!   },
 //!   "request": {
 //!     "text": "...",
@@ -86,6 +87,7 @@
 //!     {"name": "text_hidden",     "path": "reference_dump/text_hidden.bin",     "shape": ["T_text", 192]},
 //!     {"name": "bert_hidden_ja",  "path": "reference_dump/bert_hidden_ja.bin",  "shape": ["T_bert", 1024]},
 //!     {"name": "bert_hidden_en",  "path": "reference_dump/bert_hidden_en.bin",  "shape": ["T_bert", 1024]},
+//!     {"name": "bert_hidden_zh",  "path": "reference_dump/bert_hidden_zh.bin",  "shape": ["T_bert", 1024]},
 //!     {"name": "bert_bridge_out", "path": "reference_dump/bert_bridge_out.bin", "shape": ["T_text", 192]},
 //!     {"name": "speaker_embed",   "path": "reference_dump/speaker_embed.bin",   "shape": [1, 512]},
 //!     {"name": "style_projected", "path": "reference_dump/style_projected.bin", "shape": [1, 192]},
@@ -280,17 +282,17 @@ fn fixtures_dir() -> PathBuf {
         .join("sbv2")
 }
 
-/// Loud, actionable precondition check (FR-EX-08): once a caller has opted
-/// in via `--ignored`, a missing fixture panics — it never silently
-/// skips-and-passes. `what` names the fixture's role in the panic message.
+/// Loud, actionable precondition check (FR-EX-08): after the main fixture
+/// has opened the real leg, any missing companion fixture panics — it never
+/// silently skips-and-passes. `what` names the fixture's role in the panic.
 fn require_fixture(path: &Path, what: &str) {
     assert!(
         path.exists(),
         "[parity_sbv2_real] MISSING fixture: {} ({what}). Populate `tests/fixtures/sbv2/` \
-         per Task 34's README.md (the real SBV2 v2 + DeBERTa v2/v3 checkpoints, converted \
+         per Task 34's README.md (the real SBV2 v2 + JA/EN/ZH BERT checkpoints, converted \
          with `vokra-cli convert`) plus `reference_dump.manifest.json` and \
          `reference_dump/*.bin` (Task 30's `tools/parity/sbv2_dump_reference.py`), then \
-         re-run with `cargo test -p vokra-models --test parity_sbv2_real -- --ignored`. This \
+         re-run with `cargo test -p vokra-models --test parity_sbv2_real`. This \
          is a clean gated precondition failure, not a numeric-parity regression.",
         path.display(),
     );
@@ -1186,7 +1188,7 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     let dir = fixtures_dir();
 
     // Fixture-absent → clean skip (Whisper JFK / parity-kokoro pattern).
-    // The 3 `.gguf` checkpoints (~2.5 GB) and 15 `reference_dump/*.bin` files
+    // The 3 `.gguf` checkpoints (4 for ZH) and `reference_dump/*.bin` files
     // are gitignored — a CI runner that hasn't provisioned them via the
     // `parity-sbv2-real.yml` workflow (or a fresh dev clone without local
     // fixtures) must SKIP loudly, not panic. `require_fixture`'s panic below
@@ -1200,7 +1202,8 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
         eprintln!(
             "[parity_sbv2_real] SKIP: fixtures absent at {}. Populate via \
              `parity-sbv2-real.yml` workflow or manual `tests/fixtures/sbv2/README.md` \
-             recipe (SBV2 v2 base + DeBERTa v2/v3 GGUFs + Python reference dump). \
+             recipe (SBV2 v2 base + JA/EN BERT GGUFs, plus ZH BERT for a ZH run, \
+             and the Python reference dump). \
              This is an FR-EX-08 explicit skip, not a fabricated pass.",
             dir.display()
         );
@@ -1218,6 +1221,10 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     let main_path = dir.join(json_str(checkpoint, "sbv2_main", &ctx));
     let bert_ja_path = dir.join(json_str(checkpoint, "bert_ja", &ctx));
     let bert_en_path = dir.join(json_str(checkpoint, "bert_en", &ctx));
+    let bert_zh_path = checkpoint
+        .get("bert_zh")
+        .and_then(JsonValue::as_str)
+        .map(|name| dir.join(name));
     require_fixture(
         &main_path,
         "checkpoint.sbv2_main (Task 34, converted via Task 25)",
@@ -1230,6 +1237,9 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
         &bert_en_path,
         "checkpoint.bert_en (Task 34, converted via vokra-bert)",
     );
+    if let Some(path) = &bert_zh_path {
+        require_fixture(path, "checkpoint.bert_zh (WP-19, converted via bert-base)");
+    }
 
     let main =
         GgufFile::open(&main_path).unwrap_or_else(|e| panic!("{}: {e}", main_path.display()));
@@ -1237,8 +1247,16 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
         GgufFile::open(&bert_ja_path).unwrap_or_else(|e| panic!("{}: {e}", bert_ja_path.display()));
     let bert_en =
         GgufFile::open(&bert_en_path).unwrap_or_else(|e| panic!("{}: {e}", bert_en_path.display()));
+    let bert_zh = bert_zh_path
+        .as_ref()
+        .map(|path| GgufFile::open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display())));
 
     let req = request_from_manifest(&manifest, &ctx);
+    assert!(
+        req.language != Language::ZH || bert_zh.is_some(),
+        "{ctx}: request.language is ZH but checkpoint.bert_zh is absent. A ZH parity run must \
+         load the four-file SBV2 bundle; falling back to JA/EN would fabricate coverage."
+    );
 
     // Task 7: build the fixture G2P from the manifest's phonemize_fixture
     // block (three typed side files) + assemble it into an
@@ -1248,8 +1266,15 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     // SbV2Model::from_gguf installs by default).
     let fixture = phonemize_fixture_from_manifest(&manifest, &req, &dir, &ctx);
     let phonemizer = SbV2Phonemizer::from_fixture(fixture);
-    let model = SbV2Model::from_gguf_with_phonemizer(&main, &bert_ja, &bert_en, phonemizer)
-        .unwrap_or_else(|e| panic!("SbV2Model::from_gguf_with_phonemizer: {e}"));
+    let model = if let Some(bert_zh) = &bert_zh {
+        SbV2Model::from_gguf_with_zh_bert_and_phonemizer(
+            &main, &bert_ja, &bert_en, bert_zh, phonemizer,
+        )
+        .unwrap_or_else(|e| panic!("SbV2Model::from_gguf_with_zh_bert_and_phonemizer: {e}"))
+    } else {
+        SbV2Model::from_gguf_with_phonemizer(&main, &bert_ja, &bert_en, phonemizer)
+            .unwrap_or_else(|e| panic!("SbV2Model::from_gguf_with_phonemizer: {e}"))
+    };
 
     // Blocker 3 close-out (2026-08-10): the SBV2 v2 base ckpt
     // (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra` and its

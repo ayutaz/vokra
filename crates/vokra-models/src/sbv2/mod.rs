@@ -26,7 +26,7 @@
 //! to a non-JP-Extra multilingual base. See `docs/adr/sbv2-cleanroom.md` and
 //! CLAUDE.md "documented ceilings".
 //!
-//! # ZH code-side status (WP-21 doc sweep, 2026-08-10)
+//! # ZH code-side status (WP-21, updated 2026-08-18)
 //!
 //! **Forward pointer — additive, does not contradict the JP-Extra caveat
 //! above (which still governs real-checkpoint audio quality).** As of the
@@ -48,30 +48,24 @@
 //!   token_type + word embedding sum + LayerNorm**, i.e. **standard BERT
 //!   NOT DeBERTa disentangled** — a `BertBaseEncoder` distinct from
 //!   [`DebertaV2Encoder`] / [`DebertaV3Encoder`] is required, per
-//!   `wordpiece.rs`'s target-model doc). Code-side wiring only; publish
-//!   is deferred per "モデルは公開しない" (§3.1 sign-off blank remains
-//!   fail-closed default).
+//!   `wordpiece.rs`'s target-model doc). The optional four-file loader
+//!   wires this encoder into `Language::ZH`; publishing remains a separate,
+//!   explicitly authorized operation.
 //! - **ZH G2P = piper-plus reuse** = bridge the existing 8-language G2P
 //!   via the excluded-workspace `integrations/vokra-piper-g2p` crate
 //!   (which already routes `zh` through `PassthroughPhonemizer`; see that
 //!   crate's `README.md`).
 //!
-//! **Remaining runtime gaps (WP-21 is docs-only, gap-fill = later WPs)**:
+//! **Remaining runtime gap**:
 //!
 //! 1. [`g2p::SbV2Phonemizer::phonemize`]'s `Language::ZH` arm still returns
 //!    [`VokraError::NotImplemented`] — fail-closed placeholder for the
 //!    future piper-plus reuse route (never a silent JA fallback, FR-EX-08).
-//! 2. [`SbV2Model::synthesize`]'s `Language::ZH` BERT-tokenizer arm
-//!    (below in this file) still returns [`VokraError::NotImplemented`]
-//!    — fail-closed placeholder for the future
-//!    [`vokra_bert::wordpiece::BertWordpieceTokenizer`] + `BertBaseEncoder`
-//!    wiring against the owner-approved checkpoint.
 //!
 //! Genuine ZH synthesis quality additionally requires
 //! (i) `hfl/chinese-roberta-wwm-ext-large` weights on the runtime side,
-//! (ii) owner CI fixture regeneration for the ZH real-checkpoint parity
-//! leg (WP-20), and (iii) owner §3.1 license sign-off before any HF
-//! publish — none of which WP-21 attempts to satisfy.
+//! (ii) a production Mandarin G2P implementation rather than a parity
+//! fixture, and (iii) owner §3.1 license sign-off before any HF publish.
 
 pub mod decoder;
 pub mod duration;
@@ -358,6 +352,15 @@ pub struct SbV2Intermediates {
     /// on EN-language requests. Dumper filename: `bert_hidden_en.bin`.
     /// Empty when `req.language != Language::EN`.
     pub bert_hidden_en: Vec<f32>,
+    /// `[T_bert_zh, D_BERT]` — plain BERT (ZH)
+    /// `last_hidden_state`, present on ZH-language requests. Dumper filename:
+    /// `bert_hidden_zh.bin`. Empty when `req.language != Language::ZH`.
+    ///
+    /// This field is populated only when the model was loaded through the
+    /// four-file ZH path and a ZH request reaches the forward pass. Keeping a
+    /// separate bucket prevents the parity harness from accidentally
+    /// comparing the plain-BERT output against either DeBERTa fixture.
+    pub bert_hidden_zh: Vec<f32>,
     /// `[T_text, d_model]` — bert-bridge projected contribution alone,
     /// pre-addition into `text_hidden`. The dumper writes
     /// `bert_bridge_out.bin = text_hidden + bridge_projected`
@@ -1343,6 +1346,11 @@ impl SbV2Model {
         } else {
             Vec::new()
         };
+        let bert_hidden_zh_snapshot = if req.language == Language::ZH {
+            bert_hidden.clone()
+        } else {
+            Vec::new()
+        };
 
         // 5. Speaker + style — derive `speaker_e_flow` (the raw
         // `[d_speaker]` conditioning vector consumed by SDP's `.cond(g)`
@@ -1783,6 +1791,7 @@ impl SbV2Model {
             text_hidden,
             bert_hidden_ja: bert_hidden_ja_snapshot,
             bert_hidden_en: bert_hidden_en_snapshot,
+            bert_hidden_zh: bert_hidden_zh_snapshot,
             bert_bridge_out: bert_bridge_out_snapshot,
             speaker_embed: speaker_embed_snapshot,
             style_projected: style_projected_snapshot,
@@ -1815,7 +1824,7 @@ impl SbV2Intermediates {
         fn f32_bytes(v: &[f32]) -> Vec<u8> {
             v.iter().flat_map(|f| f.to_le_bytes()).collect()
         }
-        let mut out: Vec<(&'static str, Vec<u8>)> = Vec::with_capacity(10);
+        let mut out: Vec<(&'static str, Vec<u8>)> = Vec::with_capacity(11);
         out.push(("phoneme_embed", f32_bytes(&self.phoneme_embed)));
         out.push(("text_hidden", f32_bytes(&self.text_hidden)));
         if !self.bert_hidden_ja.is_empty() {
@@ -1823,6 +1832,9 @@ impl SbV2Intermediates {
         }
         if !self.bert_hidden_en.is_empty() {
             out.push(("bert_hidden_en", f32_bytes(&self.bert_hidden_en)));
+        }
+        if !self.bert_hidden_zh.is_empty() {
+            out.push(("bert_hidden_zh", f32_bytes(&self.bert_hidden_zh)));
         }
         out.push(("bert_bridge_out", f32_bytes(&self.bert_bridge_out)));
         out.push(("speaker_embed", f32_bytes(&self.speaker_embed)));
@@ -3456,15 +3468,11 @@ impl SbV2Model {
     /// # G2P
     ///
     /// This loader installs the same [`UnwiredPhonemizer`]-backed
-    /// placeholder [`from_gguf`](Self::from_gguf) does — a caller that
-    /// needs a working G2P (production or fixture-driven) instead
-    /// composes [`from_gguf_with_phonemizer`](Self::from_gguf_with_phonemizer)
-    /// on the 3-file signature and then attaches the ZH BERT via a
-    /// setter (not yet exposed — this loader is the current single ZH
-    /// wiring path). A future 4-file
-    /// `from_gguf_with_zh_bert_and_phonemizer` sibling can layer both
-    /// axes if the need arises; the private [`from_gguf_inner`] body
-    /// already accepts both.
+    /// placeholder [`from_gguf`](Self::from_gguf) does. A caller that
+    /// already owns a production or fixture-driven G2P uses
+    /// [`from_gguf_with_zh_bert_and_phonemizer`](Self::from_gguf_with_zh_bert_and_phonemizer)
+    /// instead. The two entry points share the same private loader body;
+    /// they differ only in which phonemizer is attached.
     ///
     /// # Errors
     ///
@@ -3492,6 +3500,35 @@ impl SbV2Model {
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
         );
+        Self::from_gguf_with_zh_bert_and_phonemizer(main, bert_ja, bert_en, bert_zh, phonemizer)
+    }
+
+    /// Four-file ZH loader with an explicitly supplied phonemizer.
+    ///
+    /// This is the composition of
+    /// [`from_gguf_with_zh_bert`](Self::from_gguf_with_zh_bert) and
+    /// [`from_gguf_with_phonemizer`](Self::from_gguf_with_phonemizer): it
+    /// loads the SBV2 main checkpoint plus JA, EN, and ZH BERT GGUFs, while
+    /// attaching the caller's production or fixture-backed
+    /// [`SbV2Phonemizer`]. It exists so the real ZH parity harness can run a
+    /// complete `Language::ZH` request without weakening either fail-closed
+    /// default:
+    ///
+    /// - the legacy three-file loader still has no implicit ZH BERT;
+    /// - the four-file convenience loader still has no implicit G2P.
+    ///
+    /// # Errors
+    ///
+    /// Returns every error documented by
+    /// [`from_gguf_with_zh_bert`](Self::from_gguf_with_zh_bert), including
+    /// ZH encoder/tokenizer load failures and hidden-width disagreement.
+    pub fn from_gguf_with_zh_bert_and_phonemizer(
+        main: &GgufFile,
+        bert_ja: &GgufFile,
+        bert_en: &GgufFile,
+        bert_zh: &GgufFile,
+        phonemizer: SbV2Phonemizer,
+    ) -> Result<Self> {
         Self::from_gguf_inner(main, bert_ja, bert_en, Some(bert_zh), phonemizer)
     }
 }
