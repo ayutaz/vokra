@@ -65,6 +65,13 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# All Python entry points in the publication chain run through uv. These
+# helpers are intentionally project-independent: the gate scripts use only
+# the standard library, and VAST provisioning installs Python 3.12 via uv.
+run_python() {
+  uv run --no-project --python 3.12 python "$@"
+}
+
 # --- T3 (Copyleft) gate helpers ------------------------------------------
 
 license_meta() {
@@ -73,7 +80,7 @@ license_meta() {
   # e.g. "AGPL-3.0"). Reuses GgufReader from make_model_card.py — a
   # header-only parser already exercised by that script's own self-test —
   # instead of hand-rolling a second GGUF reader here.
-  python3 - "$1" "$here/make_model_card.py" <<'PY'
+  run_python - "$1" "$here/make_model_card.py" <<'PY'
 import sys, importlib.util
 gguf_path, mmc_path = sys.argv[1], sys.argv[2]
 spec = importlib.util.spec_from_file_location("mmc", mmc_path)
@@ -89,7 +96,7 @@ hf_tag_for() {
   # Mirrors make_model_card.py::hf_license_tag exactly — imported, not
   # re-implemented, so a future change to the accepted-tag set cannot make
   # the two silently disagree.
-  python3 - "$1" "$here/make_model_card.py" <<'PY'
+  run_python - "$1" "$here/make_model_card.py" <<'PY'
 import sys, importlib.util
 val, mmc_path = sys.argv[1], sys.argv[2]
 spec = importlib.util.spec_from_file_location("mmc", mmc_path)
@@ -209,7 +216,7 @@ size_gate() {
     return 0
   fi
   local size_gib
-  size_gib="$(python3 -c "print(f'{$size/1024**3:.2f}')")"
+  size_gib="$(run_python -c "print(f'{$size/1024**3:.2f}')")"
   echo "publish-one: gate 7 REFUSE — GGUF is ${size_gib} GiB (> 8 GiB threshold)" >&2
   echo "  2026-07-28 policy defaults large-model publish to vast.ai (memory feedback-large-models-on-vast-ai)." >&2
   echo "  From local: ~30 Mbps outbound uploads for hours; from vast.ai: ~2.6 Gbps for minutes." >&2
@@ -226,7 +233,7 @@ _selftest_build_gguf() {
   # the key/value pairs in $2... — same byte layout make_model_card.py's own
   # self-test uses, so the two can never silently disagree about the format.
   local out="$1"; shift
-  python3 - "$out" "$here/make_model_card.py" "$@" <<'PY'
+  run_python - "$out" "$here/make_model_card.py" "$@" <<'PY'
 import struct, sys, importlib.util
 out, mmc_path, kvs = sys.argv[1], sys.argv[2], sys.argv[3:]
 spec = importlib.util.spec_from_file_location("mmc", mmc_path)

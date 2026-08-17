@@ -22,16 +22,12 @@ source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 
 **モデル per に 1 コマンド**:
 ```bash
-# 例: Voxtral-Small-24B (48 GB、必ず vast.ai)
-~/vokra/scripts/publish/vast-ai/run-one.sh \
-  --hf-repo mistralai/Voxtral-Small-24B-2507 \
-  --vokra-slug voxtral-small-24b-2507 \
-  --model-kind voxtral \
-  --license-spdx apache-2.0 \
-  --push
+# Voxtral-Small-24B (48 GB、必ず vast.ai)。revision / shard-only include /
+# tokenizer / expected provenance は専用 wrapper で固定される。
+~/vokra/scripts/publish/vast-ai/run-voxtral-small-24b.sh --push
 ```
 
-`run-one.sh` は `HF snapshot_download (hf-transfer で 40x) → autodetect input → vokra-cli convert → publish-one.sh` を chain。`--push` を外せば dry-run stage のみ。T4 (非商用) は `--allow-noncommercial`、T3 (Copyleft) は `--acknowledge-copyleft`。詳細は `run-one.sh --help`。
+`run-one.sh` は `HF snapshot_download (hf-transfer) → autodetect input → vokra-cli convert → GGUF header verification → publish-one.sh` を chain。`--push` を外せば dry-run stage のみ。T4 (非商用) は `--allow-noncommercial`、T3 (Copyleft) は `--acknowledge-copyleft`。詳細は `run-one.sh --help`。Voxtral-Small-24B は `run-voxtral-small-24b.sh` を使い、upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` と 11 shard のみを固定する（同 repo の duplicate `consolidated.safetensors` は取得しない）。
 
 **local から誤って大モデルを publish する事故防止**: `publish-one.sh` に **gate 7 (>8 GiB fail-closed)** を追加済 (2026-07-28)。`VOKRA_PUBLISH_ON_VAST=1` 環境変数 (provision.sh が自動 set) がある instance では auto-bypass。owner 明示の `--allow-large` でも bypass 可 (自分の upload 帯域を分かってる時のみ)。
 
@@ -109,7 +105,21 @@ cargo build --release -p vokra-cli
 
 ### 2.5 upstream weight DL + convert + publish
 
-Voxtral-Small-24B-2507 の場合:
+Voxtral-Small-24B-2507 の推奨経路:
+
+```bash
+cd ~/vokra
+
+# dry-run: convert 後に model/source/tokenizer/tensor count と全 publish gate を検証
+./scripts/publish/vast-ai/run-voxtral-small-24b.sh
+
+# dry-run が通った同じ invocation 内で publish まで進める場合
+./scripts/publish/vast-ai/run-voxtral-small-24b.sh --push
+```
+
+専用 wrapper は exact upstream revision、`model-*.safetensors` + index、`config.json`、`tekken.json` を固定する。`consolidated.safetensors` は取得しないため、upstream weight の 48 GB 重複 download を避ける。`--push` invocation 自体も publish 前に必ず dry-run gate を通る。
+
+以下は自動化が利用できない場合だけの手動 fallback:
 
 ```bash
 mkdir -p ~/scratchpad/hf-cache ~/scratchpad/staging/voxtral-small-24b-2507

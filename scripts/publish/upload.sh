@@ -38,6 +38,33 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 card_tool="$repo_root/scripts/publish/make_model_card.py"
 audit="$repo_root/docs/license-audit.md"
 
+# Publication Python is uv-owned on both the Mac control plane and VAST.
+# The standard helper stays zero-dependency; the HF helper pins the version
+# provisioned by the VAST runbook and enables the Rust transfer extension.
+run_python() {
+  uv run --no-project --python 3.12 python "$@"
+}
+
+run_hf_python() {
+  uv run --no-project --python 3.12 \
+    --with 'huggingface_hub<0.30' --with hf_transfer python "$@"
+}
+
+stage_weight() {
+  local source="$1" destination_dir="$2" target
+  target="$destination_dir/$(basename "$source")"
+  if [[ "$(cd "$(dirname "$source")" && pwd)/$(basename "$source")" == \
+        "$(cd "$destination_dir" && pwd)/$(basename "$source")" ]]; then
+    return 0
+  fi
+
+  # Source and staging normally share a VAST filesystem. A hard link avoids
+  # a second 48 GB allocation; cross-device layouts safely fall back to copy.
+  if ! ln -f "$source" "$target" 2>/dev/null; then
+    cp -f "$source" "$target"
+  fi
+}
+
 gguf=""; repo=""; push=0; allow_nc=0; outdir=""
 
 while [[ $# -gt 0 ]]; do
@@ -76,12 +103,12 @@ if [[ "${self_test:-0}" == "1" ]]; then
   fi
 
   # (b) The card tool's own gate must be reachable from here.
-  if ! python3 "$card_tool" --self-test >/dev/null 2>&1; then
+  if ! run_python "$card_tool" --self-test >/dev/null 2>&1; then
     echo "self-test FAIL: make_model_card self-test does not pass" >&2; fail=1
   fi
 
   # (c) signoff_match must pass its own self-test.
-  if ! python3 "$repo_root/scripts/publish/signoff_match.py" --self-test >/dev/null 2>&1; then
+  if ! run_python "$repo_root/scripts/publish/signoff_match.py" --self-test >/dev/null 2>&1; then
     echo "self-test FAIL: signoff_match self-test does not pass" >&2; fail=1
   fi
 
@@ -92,7 +119,7 @@ if [[ "${self_test:-0}" == "1" ]]; then
   #     runs; a recursive call would additionally trip the artifact-exists
   #     check, which is not what this case is testing.
   #
-  #     Uses `python3 signoff_match.py --check-repo` — same CLI the
+  #     Uses the uv-managed signoff_match.py CLI — same entry point the
   #     production run below invokes — with SIGNOFF_MATCH_FIXTURES
   #     pointing at a hermetic table.
   cat >"$tmp/audit.md" <<'EOF'
@@ -108,7 +135,7 @@ EOF
   # repo map, checks each state. This is intentionally the SAME logic
   # the production path uses (approval_for_repo returns the same states)
   # so a regression in either side surfaces here.
-  py_out="$(python3 - "$tmp/audit.md" "$repo_root/scripts/publish" <<'PY'
+  py_out="$(run_python - "$tmp/audit.md" "$repo_root/scripts/publish" <<'PY'
 import sys
 audit, matcher_dir = sys.argv[1], sys.argv[2]
 sys.path.insert(0, matcher_dir)
@@ -158,7 +185,7 @@ PY
   #     accidentally starts with a real row's first 8 chars must NOT
   #     silently inherit that row. Under the explicit map this is
   #     UNKNOWN_REPO, so the assertion also documents the invariant.
-  if ! python3 - "$tmp/audit.md" "$repo_root/scripts/publish" <<'PY' >/dev/null 2>&1
+  if ! run_python - "$tmp/audit.md" "$repo_root/scripts/publish" <<'PY' >/dev/null 2>&1
 import sys
 audit, matcher_dir = sys.argv[1], sys.argv[2]
 sys.path.insert(0, matcher_dir)
@@ -174,7 +201,22 @@ PY
     fail=1
   fi
 
-  [[ $fail -eq 0 ]] && echo "upload self-test: OK (5 groups)" && exit 0
+  # (f) Large weights stage by hard link on the normal same-filesystem path,
+  #     and re-running is idempotent. The cross-device copy fallback uses the
+  #     same target contract and is exercised operationally on such layouts.
+  mkdir -p "$tmp/stage"
+  printf 'small GGUF stand-in\n' > "$tmp/weight.gguf"
+  stage_weight "$tmp/weight.gguf" "$tmp/stage"
+  cases_inode_source="$(stat -f '%d:%i' "$tmp/weight.gguf" 2>/dev/null || stat -c '%d:%i' "$tmp/weight.gguf")"
+  cases_inode_staged="$(stat -f '%d:%i' "$tmp/stage/weight.gguf" 2>/dev/null || stat -c '%d:%i' "$tmp/stage/weight.gguf")"
+  if [[ "$cases_inode_source" != "$cases_inode_staged" ]]; then
+    echo "self-test FAIL: same-filesystem staging did not use a hard link" >&2; fail=1
+  fi
+  if ! stage_weight "$tmp/weight.gguf" "$tmp/stage" || ! cmp -s "$tmp/weight.gguf" "$tmp/stage/weight.gguf"; then
+    echo "self-test FAIL: stage_weight is not idempotent" >&2; fail=1
+  fi
+
+  [[ $fail -eq 0 ]] && echo "upload self-test: OK (6 groups)" && exit 0
   exit 1
 fi
 
@@ -189,7 +231,7 @@ mkdir -p "$outdir"
 echo "== 1/4  model card (generated from the artifact) =="
 card_args=("$gguf" --repo-name "$model_name" --out "$outdir/README.md")
 [[ $allow_nc -eq 1 ]] && card_args+=(--allow-noncommercial)
-python3 "$card_tool" "${card_args[@]}"
+run_python "$card_tool" "${card_args[@]}"
 
 # The card generator has already refused anything unpublishable, so reaching
 # here means the licence permits redistribution. What it cannot know is
@@ -209,7 +251,7 @@ python3 "$card_tool" "${card_args[@]}"
 #   UNKNOWN_REPO  -> exit 5 (repo not declared in REPO_TO_SIGNOFF_ROWS at
 #                    all; add the explicit mapping in signoff_match.py).
 echo "== 2/4  owner sign-off (docs/license-audit.md §3.1) =="
-signoff_out="$(python3 "$repo_root/scripts/publish/signoff_match.py" \
+signoff_out="$(run_python "$repo_root/scripts/publish/signoff_match.py" \
     --check-repo "$model_name" --audit "$audit" 2>&1)"
 signoff_rc=$?
 signoff_state="$(printf '%s\n' "$signoff_out" | head -1)"
@@ -252,24 +294,13 @@ esac
 echo "== 3/4  accompanying files =="
 # Stage the weight only if it is not already the one in the output dir
 # (re-running with the staged file as input must be a no-op, not an error).
-if [[ "$(cd "$(dirname "$gguf")" && pwd)/$(basename "$gguf")" != "$(cd "$outdir" && pwd)/$(basename "$gguf")" ]]; then
-  cp "$gguf" "$outdir/"
-fi
-python3 - "$gguf" "$outdir" "$repo" <<'PY'
-import hashlib, subprocess, sys, datetime
+stage_weight "$gguf" "$outdir"
+run_python - "$gguf" "$outdir" "$repo" "$card_tool" <<'PY'
+import hashlib, sys
 from pathlib import Path
-gguf, outdir, repo = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+gguf, outdir, repo, mmc_path = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4])
 
-sys.path.insert(0, str(Path(__file__).parent))
 import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "mmc", Path(outdir).parents[2] / "scripts" / "publish" / "make_model_card.py")
-# The card tool lives next to this script; resolve relative to the repo root.
-root = Path(__file__).resolve()
-mmc_path = None
-for cand in Path.cwd().rglob("scripts/publish/make_model_card.py"):
-    mmc_path = cand
-    break
 spec = importlib.util.spec_from_file_location("mmc", mmc_path)
 mmc = importlib.util.module_from_spec(spec); spec.loader.exec_module(mmc)
 
@@ -277,7 +308,11 @@ g = mmc.GgufReader(gguf)
 lic = g.get("vokra.provenance.license") or "unknown"
 src = g.get("vokra.provenance.source") or "(not recorded)"
 attribution = g.get("vokra.provenance.attribution")
-digest = hashlib.sha256(gguf.read_bytes()).hexdigest()
+h = hashlib.sha256()
+with gguf.open("rb") as f:
+    for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+        h.update(chunk)
+digest = h.hexdigest()
 
 (outdir / "SOURCE.md").write_text(
     f"# Provenance — {repo}\n\n"
@@ -325,12 +360,15 @@ tok="${HF_TOKEN:-${HF:-}}"
   echo "upload: REFUSED — $outdir/LICENSE is missing. Publishing a weight" >&2
   echo "  without its licence text does not discharge the obligation." >&2
   exit 5; }
-python3 -c "import huggingface_hub" 2>/dev/null || {
-  echo "upload: huggingface_hub is not installed (pip install -U huggingface_hub)" >&2
+run_hf_python -c "import huggingface_hub" 2>/dev/null || {
+  echo "upload: uv could not prepare huggingface_hub" >&2
   exit 6; }
 echo "  pushing $outdir -> $repo"
 # Token via env, not argv, so it never lands in the process table.
-HF_UPLOAD_TOKEN="$tok" python3 - "$repo" "$outdir" <<'PY'
+(
+export HF_UPLOAD_TOKEN="$tok"
+export HF_HUB_ENABLE_HF_TRANSFER=1
+run_hf_python - "$repo" "$outdir" <<'PY'
 import os, sys
 from huggingface_hub import HfApi
 repo, folder = sys.argv[1], sys.argv[2]
@@ -339,3 +377,4 @@ api.create_repo(repo, repo_type="model", exist_ok=True)
 api.upload_folder(repo_id=repo, folder_path=folder, repo_type="model")
 print(f"  uploaded {folder} -> https://huggingface.co/{repo}")
 PY
+)

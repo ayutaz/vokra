@@ -93,6 +93,25 @@ pub(crate) const NAME_SMALL: &str = "voxtral-small-24b";
 /// 2026-02, verified 2026-07-31.
 pub(crate) const NAME_REALTIME: &str = "voxtral-mini-4b-realtime-2602";
 
+const SOURCE_MINI: &str = "mistralai/Voxtral-Mini-3B-2507 (Apache-2.0)";
+const SOURCE_SMALL: &str = "mistralai/Voxtral-Small-24B-2507 (Apache-2.0)";
+const SOURCE_REALTIME: &str = "mistralai/Voxtral-Mini-4B-Realtime-2602 (Apache-2.0)";
+
+/// Returns the exact upstream release for a known decoder shape.
+///
+/// An explicit `name_override` may describe a future or private checkpoint,
+/// so the advisory source is keyed to measured shape rather than that
+/// caller-controlled label. Unknown shapes deliberately return `None`:
+/// omitting a source is honest, while inventing one is not.
+fn upstream_source_for_shape(shape: &DecoderShape) -> Option<&'static str> {
+    match (shape.d_model, shape.n_layer) {
+        (3072, 30) => Some(SOURCE_MINI),
+        (5120, 40) => Some(SOURCE_SMALL),
+        (3072, 26) => Some(SOURCE_REALTIME),
+        _ => None,
+    }
+}
+
 // --- vokra.voxtral.* metadata keys (M3-10-T04 chunk design) -----------------
 
 /// `vokra.voxtral.audio_encoder.n_layer` (`UINT32`).
@@ -728,12 +747,13 @@ pub(crate) fn convert_shards(
     // artifact must carry its own licence, not rely on a consumer running
     // Vokra's registry resolver. Values transcribed from
     // docs/license-audit.md §3, which holds the primary-source citations.
+    let upstream_source = upstream_source_for_shape(&shape);
     vokra_core::stamp_provenance(
         &mut b,
         LicenseClass::Permissive,
         "Apache-2.0",
         Some("voxtral"),
-        Some("mistralai/Voxtral-Mini-3B (Apache-2.0)"),
+        upstream_source,
     );
     b.add_string(chunks::KEY_MODEL_NAME, &name);
     // Encoder is Whisper-derived; the frontend spec is Whisper's for the same
@@ -886,12 +906,13 @@ pub(crate) fn convert_shards_streaming(
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    let upstream_source = upstream_source_for_shape(&shape);
     vokra_core::stamp_provenance(
         &mut b,
         LicenseClass::Permissive,
         "Apache-2.0",
         Some("voxtral"),
-        Some("mistralai/Voxtral-Mini-3B (Apache-2.0)"),
+        upstream_source,
     );
     b.add_string(chunks::KEY_MODEL_NAME, &name);
     write_frontend_spec(&mut b, n_mels_ck as u32);
@@ -1973,6 +1994,24 @@ mod tests {
         assert!(derive_name(&shape(1234, 5), None).is_err());
         // The old (wrong) 28-layer mini row must no longer match.
         assert!(derive_name(&shape(3072, 28), None).is_err());
+    }
+
+    #[test]
+    fn provenance_source_matches_the_derived_release() {
+        assert_eq!(
+            upstream_source_for_shape(&shape(3072, 30)),
+            Some(SOURCE_MINI)
+        );
+        assert_eq!(
+            upstream_source_for_shape(&shape(5120, 40)),
+            Some(SOURCE_SMALL)
+        );
+        assert_eq!(
+            upstream_source_for_shape(&shape(3072, 26)),
+            Some(SOURCE_REALTIME)
+        );
+        assert_eq!(upstream_source_for_shape(&shape(9999, 99)), None);
+        assert_eq!(upstream_source_for_shape(&shape(0, 0)), None);
     }
 
     #[test]

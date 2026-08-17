@@ -16,7 +16,9 @@
 #              --license-spdx <spdx> [--push] [--allow-noncommercial] \
 #              [--acknowledge-copyleft] [--allow-large] \
 #              [--include <glob>]... [--input-name <basename>] \
-#              [--config-name <basename>]
+#              [--config-name <basename>] [--tokenizer-name <basename>] \
+#              [--revision <git-sha-or-ref>] \
+#              [--expect-model-name <name>] [--expect-source <source>]
 #   run-one.sh --self-test
 #
 # Example:
@@ -38,7 +40,9 @@ usage() {
 usage: run-one.sh --hf-repo <slug> --vokra-slug <name> --model-kind <kind> \
                   --license-spdx <spdx> \
                   [--push] [--allow-noncommercial] [--acknowledge-copyleft] [--allow-large] \
-                  [--include <glob>]... [--input-name <basename>] [--config-name <basename>]
+                  [--include <glob>]... [--input-name <basename>] [--config-name <basename>] \
+                  [--tokenizer-name <basename>] [--revision <git-sha-or-ref>] \
+                  [--expect-model-name <name>] [--expect-source <source>]
        run-one.sh --self-test
 
 Required:
@@ -60,6 +64,12 @@ Optional:
                             (default: auto-detect model.safetensors.index.json ▸ model.safetensors)
   --config-name <basename>  arch config to hand to convert as --config
                             (default: config.json if present, else omit)
+  --tokenizer-name <name>   tokenizer file to hand to convert as --tokenizer
+                            (default: omit; Voxtral uses tekken.json)
+  --revision <sha-or-ref>   pin snapshot_download to an exact upstream revision
+                            (recommended for reproducible large conversions)
+  --expect-model-name <n>   refuse before publish unless GGUF metadata has this model name
+  --expect-source <source>  refuse before publish unless GGUF provenance has this source
 
 HF token: HF_TOKEN or HF must be set in env (fail-closed).
 EOF
@@ -70,8 +80,8 @@ EOF
 # is opt-in via HF_HUB_ENABLE_HF_TRANSFER=1 (Rust-backed helper, ~40x faster
 # for large files — memory project-huggingface-vokra-publication).
 hf_download() {
-  local repo="$1" cache_dir="$2"
-  shift 2
+  local repo="$1" cache_dir="$2" revision="$3"
+  shift 3
   local patterns=("$@")
   local pattern_json
   pattern_json="$(uv run --no-project python -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${patterns[@]}")"
@@ -91,17 +101,18 @@ hf_download() {
   (
     export HF_HUB_ENABLE_HF_TRANSFER=1
     cd "$uv_cwd"
-    "${uv_cmd[@]}" - "$repo" "$cache_dir" "$pattern_json" <<'PY'
+    "${uv_cmd[@]}" - "$repo" "$cache_dir" "$revision" "$pattern_json" <<'PY'
 import json, os, sys
 from huggingface_hub import snapshot_download
 
-repo, cache_dir, pattern_json = sys.argv[1], sys.argv[2], sys.argv[3]
+repo, cache_dir, revision, pattern_json = sys.argv[1:5]
 patterns = json.loads(pattern_json)
 token = os.environ.get("HF_TOKEN") or os.environ.get("HF")
 
 os.makedirs(cache_dir, exist_ok=True)
 path = snapshot_download(
     repo_id=repo,
+    revision=revision or None,
     cache_dir=cache_dir,
     allow_patterns=patterns,
     token=token,
@@ -109,6 +120,44 @@ path = snapshot_download(
 print(path)
 PY
   )
+}
+
+# Header-only verification after conversion and before publish. This does not
+# map or load tensor payloads, so it is safe even for a 48 GB GGUF.
+verify_gguf_metadata() {
+  local gguf="$1" expected_name="$2" expected_source="$3" require_tokenizer="$4"
+  uv run --no-project --python 3.12 python - \
+    "$gguf" "$VOKRA_ROOT/scripts/publish/make_model_card.py" \
+    "$expected_name" "$expected_source" "$require_tokenizer" <<'PY'
+import importlib.util
+import sys
+
+gguf, reader_path, expected_name, expected_source, require_tokenizer = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("vokra_model_card", reader_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+reader = module.GgufReader(gguf)
+
+actual_name = reader.get("vokra.model.name") or ""
+actual_source = reader.get("vokra.provenance.source") or ""
+errors = []
+if expected_name and actual_name != expected_name:
+    errors.append(f"model name: expected {expected_name!r}, got {actual_name!r}")
+if expected_source and actual_source != expected_source:
+    errors.append(f"source: expected {expected_source!r}, got {actual_source!r}")
+if require_tokenizer == "1" and reader.get("vokra.tokenizer.model") is None:
+    errors.append("tokenizer: vokra.tokenizer.model is missing")
+if reader.n_tensors == 0:
+    errors.append("tensor count: zero")
+if errors:
+    for error in errors:
+        print(f"run-one: GGUF verification failed: {error}", file=sys.stderr)
+    raise SystemExit(1)
+print(
+    f"GGUF verified: name={actual_name or '(missing)'} tensors={reader.n_tensors} "
+    f"source={actual_source or '(missing)'} tokenizer={'yes' if reader.get('vokra.tokenizer.model') is not None else 'no'}"
+)
+PY
 }
 
 # Auto-detect input file inside the downloaded snapshot. Prefer multi-shard
@@ -127,7 +176,9 @@ autodetect_input() {
   # Last resort: pick the first *.safetensors alphabetically. Warn — this may
   # be wrong for exotic layouts and the caller should probably pass --input-name.
   local first
-  first="$(cd "$snap" && ls -1 *.safetensors 2>/dev/null | head -1 || true)"
+  first="$(cd "$snap" && find . -maxdepth 1 -type f -name '*.safetensors' -print \
+    | LC_ALL=C sort | head -1 || true)"
+  first="${first#./}"
   if [[ -n "$first" ]]; then
     log "WARN: no model.safetensors[.index.json] — using first match: $first"
     log "      pass --input-name <basename> if this is not the right file"
@@ -188,7 +239,8 @@ run_self_test() {
   local u; u="$(usage 2>&1)"
   for flag in --hf-repo --vokra-slug --model-kind --license-spdx --push \
               --allow-noncommercial --acknowledge-copyleft --allow-large \
-              --include --input-name --config-name; do
+              --include --input-name --config-name --tokenizer-name --revision \
+              --expect-model-name --expect-source; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$flag" <<<"$u"; then
       echo "self-test FAIL: usage() dropped flag $flag" >&2; fail=1
@@ -207,7 +259,8 @@ run_self_test() {
 main() {
   local hf_repo="" vokra_slug="" model_kind="" license_spdx=""
   local push=0 nc=0 ack=0 allow_large=0 self_test=0
-  local input_name="" config_name=""
+  local input_name="" config_name="" tokenizer_name="" revision=""
+  local expect_model_name="" expect_source=""
   local include=()
 
   while [[ $# -gt 0 ]]; do
@@ -223,6 +276,10 @@ main() {
       --include)               include+=("$2"); shift 2 ;;
       --input-name)            input_name="$2"; shift 2 ;;
       --config-name)           config_name="$2"; shift 2 ;;
+      --tokenizer-name)        tokenizer_name="$2"; shift 2 ;;
+      --revision)              revision="$2"; shift 2 ;;
+      --expect-model-name)     expect_model_name="$2"; shift 2 ;;
+      --expect-source)         expect_source="$2"; shift 2 ;;
       --self-test)             self_test=1; shift ;;
       -h|--help)               usage; exit 0 ;;
       *)                       echo "run-one: unknown flag '$1'" >&2; usage; exit 2 ;;
@@ -266,11 +323,12 @@ main() {
   mkdir -p "$staging" "$cache"
   log "staging : $staging"
   log "cache   : $cache"
+  [[ -n "$revision" ]] && log "revision: $revision"
 
   # --- DL ---------------------------------------------------------------
   step "HF snapshot_download (hf-transfer, allow_patterns=${include[*]})"
   local snap
-  snap="$(hf_download "$hf_repo" "$cache" "${include[@]}")"
+  snap="$(hf_download "$hf_repo" "$cache" "$revision" "${include[@]}")"
   log "snapshot: $snap"
 
   # --- input auto-detect ------------------------------------------------
@@ -293,15 +351,35 @@ main() {
     log "config  : (none — omitting --config)"
   fi
 
+  # --- tokenizer (optional) ---------------------------------------------
+  local tokenizer_args=()
+  if [[ -n "$tokenizer_name" ]]; then
+    [[ -f "$snap/$tokenizer_name" ]] || { echo "run-one: --tokenizer-name '$tokenizer_name' not found in snapshot" >&2; exit 2; }
+    tokenizer_args=(--tokenizer "$snap/$tokenizer_name")
+    log "tokenizer: $tokenizer_name"
+  else
+    log "tokenizer: (none — omitting --tokenizer)"
+  fi
+
   # --- convert ----------------------------------------------------------
   step "vokra-cli convert --model $model_kind"
   local gguf="$staging/model.gguf"
-  "$VOKRA_ROOT/target/release/vokra-cli" convert \
-    --model "$model_kind" \
-    --input "$snap/$input_name" \
-    ${config_args[@]+"${config_args[@]}"} \
-    --output "$gguf"
+  local convert_args=(
+    convert
+    --model "$model_kind"
+    --input "$snap/$input_name"
+  )
+  convert_args+=("${config_args[@]}")
+  convert_args+=("${tokenizer_args[@]}")
+  convert_args+=(--output "$gguf")
+  "$VOKRA_ROOT/target/release/vokra-cli" "${convert_args[@]}"
   log "GGUF written: $gguf ($(du -h "$gguf" | cut -f1))"
+
+  step "GGUF header verification"
+  local require_tokenizer=0
+  [[ -n "$tokenizer_name" ]] && require_tokenizer=1
+  verify_gguf_metadata \
+    "$gguf" "$expect_model_name" "$expect_source" "$require_tokenizer"
 
   # --- publish (dry-run first) ------------------------------------------
   local pub_flags=()
