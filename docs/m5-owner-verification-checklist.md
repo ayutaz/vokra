@@ -330,7 +330,7 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 **Remaining converter / real-weight gates (signed)**:
 
 - [x] **Suno Bark** — MIT signed 2026-07-23 yousan. `models::bark`, `ModelKind::{Bark,BarkSmall}`, and CLI dispatch support full and small variants. The upstream torch-pickle checkpoint must be flattened to safetensors by a UV-managed sidecar before the real-weight round-trip; the EnCodec companion remains research-only. Any conversion/publish run with material memory use follows the vast.ai policy.
-- [ ] **Matcha-TTS** — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Estimated effort per spec.
+- [ ] **Matcha-TTS** — MIT signed 2026-07-23 yousan, but the maintained design remains a conditional Draft and explicitly forbids landing a converter while the defer decision holds. Re-open only with (1) an owner-recorded trigger, (2) a ≥95% piper-plus phoneme-set coverage report, and (3) primary-source confirmation for the paired LJ Speech HiFi-GAN; then follow W0–W9 in `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Until then `matcha.rs`, registry registration, parity workflow, and publish stay absent by design.
 - [x] **WavTokenizer** — the `ModelKind::WavTokenizer` converter and CLI dispatch landed in the 2026-08-01 codec wave. The remaining future work is Lightning `.ckpt` → safetensors preparation and real-checkpoint parity, not implementation of the converter.
 
 **VoxCPM2-2B — converter extension complete; real-weight/publish gate remains**:
