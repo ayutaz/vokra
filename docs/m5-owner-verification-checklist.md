@@ -12,7 +12,7 @@
 
 **Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
 
-**2026-08-17 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. This reconciliation leaves **43 unchecked boxes**, which remain an action ledger rather than an implementation metric: a box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a box complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total. The reconciliation below removes stale merge/sign-off/implementation claims while retaining genuine follow-up work.
+**2026-08-17 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. This reconciliation leaves **41 unchecked boxes**, which remain an action ledger rather than an implementation metric: a box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a box complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total. The reconciliation below removes stale merge/sign-off/implementation claims while retaining genuine follow-up work.
 
 **Tracking**: this file (`docs/m5-owner-verification-checklist.md`) is **tracked (public)**, same convention as `docs/m3-` / `docs/m4-owner-verification-checklist.md`. Referenced handoffs `docs/handoff/m5-*.md` are tracked/public; specs `docs/tickets/m5/*.md` and ADRs `docs/adr/M5-*.md` are gitignore-local internal docs (referenced by ID).
 
@@ -190,17 +190,17 @@ CC landed `scripts/check-console-static.sh` (C-ABI-completeness + FFI-panic-fire
 
 ---
 
-## 5. M5-07 — Bark / StyleTTS 2 / Matcha-TTS license sign-off
+## 5. M5-07 — Bark / StyleTTS 2 / Matcha-TTS license decision (reconciled)
 
-CC landed the audit material (fail-closed, docs-only) in `docs/license-audit.md` §3 / §3.1 / §CC-verified and `docs/legal-compliance.md` §9.
+The current `docs/license-audit.md` §3.1 rows record Bark and Matcha-TTS as Commercial (2026-07-23) and StyleTTS 2 as Rejected. The earlier owner-decision wording in this checklist was a historical audit snapshot, not an active blank-sign-off gate.
 
-### 5.1 Adoption sign-off
+### 5.1 Recorded decision
 
-- **(a)**: for Bark / StyleTTS 2 / Matcha-TTS, make the Commercial / Research-only / Rejected decision, pass the legal-compliance checklist, and fix the §9 ✅/⚠️ tier. Fill the §3.1 sign-off rows (blank = fail-closed = not for official distribution; CC did not pre-fill).
-- **(b)**: an adoption + legal-sufficiency judgment.
+- **(a)**: retain the current decisions: Bark = Commercial, Matcha-TTS = Commercial, StyleTTS 2 = Rejected. Reopen a row only if a primary source changes.
+- **(b)**: these are already-recorded adoption + legal-sufficiency judgments; real-weight verification and implementation remain separate gates.
 - **(c)**: `docs/license-audit.md` §3.1; spec M5-07-T09/T10.
-- **(d)**: each model has a recorded tier + signed-off row.
-- **honest note**: Bark = current MIT (was CC-BY-NC → MIT 2023-05-01) but the HF card says "research purposes only"; StyleTTS 2 weight is a voice-consent usage agreement → registry `Unknown` (fail-closed); Matcha checkpoint has no separate license file (owner primary-source check pending). These are owner legal calls.
+- **(d)**: satisfied — all three rows have a recorded tier and decision.
+- **honest note**: Bark is current MIT (was CC-BY-NC → MIT 2023-05-01) while the HF card says "research purposes only"; the recorded §3.1 decision treats the MIT license as governing. StyleTTS 2 remains excluded because its weight carries a voice-consent usage agreement. Matcha's checkpoint provenance remains a real-weight verification concern even though its §3.1 commercial row is recorded.
 
 ---
 
@@ -327,19 +327,19 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 
 - [x] **~~litagin02/style_bert_vits2~~ → `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`** (SBV2 v2 JP-Extra 2.0 base, license-audit.md §3.1 **row 315**, replaces the deprecated row 302 reference above) — AGPL-3.0 ☑ Commercial 2026-07-28 yousan (依頼者許可 = CC 判断). **PUBLISHED**: `huggingface.co/vokra/sbv2-v2-jp-extra-base` = live. SKU rename rationale (per row 315 audit note): original `litagin02/style_bert_vits2` = typo (correct author = `litagin`, upstream returns 404) + actual distribution is JP-Extra 2.0 base (the current SBV2 v2 mainline), not the 1.0 multilingual base (which has no HF `cardData.license` and is defer-blocked fail-closed). Publish path used = T3 Copyleft gate (`publish-one.sh --license-spdx agpl-3.0 --acknowledge-copyleft --push` = LICENSE full text bundled + NOTICE + SOURCE.md + `--acknowledge-copyleft` opt-in flag). Fixture-status prerequisite (Blocker 2b/2c per `tests/fixtures/sbv2/README.md`) is fully resolved by 2026-08-10 Waves 1-2 (see §7 below); the residual `#[ignore]`d `sdp_body_matches_torch_ref` scaffold (commit `c8e2777`) remains an owner-fixture-待ち gate for the SDP parity flip, but is not a publish blocker for the AGPL-3.0 weight itself.
 
-**Converters still needed (signed)**:
+**Remaining converter / real-weight gates (signed)**:
 
-- [ ] **Suno Bark** — MIT signed 2026-07-23 yousan. Converter is not present in `crates/vokra-convert/src/models/`. Publish requires implementing the converter and a real-weight round-trip.
+- [x] **Suno Bark** — MIT signed 2026-07-23 yousan. `models::bark`, `ModelKind::{Bark,BarkSmall}`, and CLI dispatch support full and small variants. The upstream torch-pickle checkpoint must be flattened to safetensors by a UV-managed sidecar before the real-weight round-trip; the EnCodec companion remains research-only. Any conversion/publish run with material memory use follows the vast.ai policy.
 - [ ] **Matcha-TTS** — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Estimated effort per spec.
 - [x] **WavTokenizer** — the `ModelKind::WavTokenizer` converter and CLI dispatch landed in the 2026-08-01 codec wave. The remaining future work is Lightning `.ckpt` → safetensors preparation and real-checkpoint parity, not implementation of the converter.
 
-**Converter extension required (signed but 2B config incomplete)**:
+**VoxCPM2-2B — converter extension complete; real-weight/publish gate remains**:
 
-- [ ] **openbmb/VoxCPM2-2B** (row 280) — Apache-2.0 signed 2026-07-28 yousan. Current `voxcpm2` ModelKind hardcodes VoxCPM-0.5B constants; publishing 2B requires either `--config` side-car per-invocation OR a sibling `voxcpm2_2b.rs` module + runtime `VoxCpm2Config` extension. Design spec at `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`.
+- [x] **openbmb/VoxCPM2-2B** (row 280) — Apache-2.0 signed 2026-07-28 yousan. `VoxCpm2Variant::TwoB` detects the 2048-wide LM embedding, emits 2B-specific hparams/provenance, and accepts `voxcpm2-2b` CLI aliases. The remaining task is the 4.96-GB real-weight conversion/parity and five-gate publish run on vast.ai; design/runbook: `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md` and `docs/handoff/vast-ai-publish-voxcpm2-2b.md`.
 
 **Deferred by RAM constraint (implemented + signed, host infrastructure blocked)**:
 
-- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Attempted 2026-07-28 on M1 iMac, aborted**: converter (`ModelKind::Voxtral`) uses `SafetensorsFile::open` for shard walk which mmaps each ~4.7 GB shard, but with 16 GB physical RAM the 48 GB total working set spilled to swap (`vm.swapusage: used=40.7 GB, free=1.2 GB`) and page faults never let CPU time accumulate (5 min wall clock, 11 s CPU). Kill was necessary to prevent OS lock-up. Publish path: run on vast.ai with 64+ GB RAM OR refactor voxtral converter for streaming shard read (SafetensorsFileReader pattern from moshi). HF slug: `vokra/voxtral-small-24b-2507`.
+- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. The CLI routes unquantized config-backed conversion to `convert_voxtral_file_streaming`, but the 48-GB/11-shard real conversion, verification, and upload must run on a vast.ai instance with at least 64 GB RAM; never run it on the M1 iMac. Remaining after conversion: real ASR/runtime parity and the five-gate publish run. HF slug: `vokra/voxtral-small-24b-2507`.
 
 **BF16 fleet — dispatch complete; real-weight and policy work remain**:
 
