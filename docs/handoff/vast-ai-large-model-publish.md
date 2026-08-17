@@ -4,6 +4,8 @@ Tracked / public。**2026-07-28** に本 M1 iMac (16GB RAM) 上で Voxtral-Small
 
 **2026-08-17 operational override**: model conversion, real-weight verification, and upload work that can materially consume memory run on **vast.ai only**. Do not download a checkpoint, convert it, verify it against real weights, or upload its result from the M1 iMac merely because the historical size heuristic below returns `LOCAL_SAFE` / `LOCAL_OK`. The Mac may perform checkpoint-free work only: source/doc review, static tests, and the HF-metadata size preflight. This override supersedes older local-conversion suggestions in this and per-model handoffs.
 
+**2026-08-18 Voxtral-Small-24B dry-run evidence**: VAST instance `47955178` converted pinned upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` through `run-voxtral-small-24b.sh` without an HF credential. Result = 852 tensors / 851 BF16 exact passthrough / 0 skipped / tokenizer embedded / 48,542,408,640 bytes / SHA-256 `52f8607972c00ddc2a9a5736c2eaf2562878edafaa7a56e1de053ceac9a6109f`; header source is the corrected `mistralai/Voxtral-Small-24B-2507 (Apache-2.0)`. Model-card, owner sign-off, LICENSE, NOTICE, SOURCE and dry-run gates all pass. The instance is stopped (compute billing off, disk retained) with the artifact staged; resume only for explicitly authorized credential transfer + `--push`, then live-verify and destroy.
+
 memory [[feedback-large-models-on-vast-ai]] の運用側詳細版。
 
 ## 0. TL;DR — 自動化 pipeline (Phase B, 2026-07-28)
