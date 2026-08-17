@@ -159,6 +159,19 @@ def _infer_n_flows(flow_indices: set[int]) -> int:
     return len(odd_indices)
 
 
+def _infer_dds_kernel(state: dict[str, object], d_hidden: int) -> int:
+    """Read the shared DDS/ConvFlow kernel from its depthwise tensor."""
+    channels, in_per_group, kernel = _require_rank3_weight(
+        state, "convs.convs_sep.0.weight"
+    )
+    if channels != d_hidden or in_per_group != 1 or kernel <= 0:
+        _die(
+            "sdp.convs.convs_sep.0.weight must be [d_hidden, 1, kernel], "
+            f"got {(channels, in_per_group, kernel)} for d_hidden={d_hidden}"
+        )
+    return kernel
+
+
 def _build_upstream_sdp(state: dict[str, object], torch):
     """Instantiate the upstream MIT module and load every SDP tensor strictly."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -183,15 +196,10 @@ def _build_upstream_sdp(state: dict[str, object], torch):
             f"{(cond_out, gin, cond_kernel)}"
         )
 
-    # ``DDSConv``'s pointwise stack is named ``convs_1x1`` in the pinned
-    # upstream MIT module (not ``convs1``, which belongs to HiFi-GAN's
-    # separate residual blocks). Keep this an exact checkpoint key so a
-    # topology drift fails loudly instead of deriving a kernel from a
-    # semantically unrelated tensor.
-    conv_kernel_shape = _require_rank3_weight(state, "convs.convs_1x1.0.weight")
-    conv_kernel = conv_kernel_shape[2]
-    if conv_kernel <= 0:
-        _die(f"invalid DDS kernel width {conv_kernel}")
+    # ``DDSConv``'s kernel width belongs to its depthwise ``convs_sep``
+    # stack. The pointwise ``convs_1x1`` stack is always width 1 and would
+    # construct a reference that rejects the real ConvFlow state dict.
+    conv_kernel = _infer_dds_kernel(state, d_hidden)
 
     flow_indices: set[int] = set()
     for key in state:
@@ -325,6 +333,10 @@ def run_dump(args: argparse.Namespace) -> int:
 
 
 def run_self_test() -> int:
+    class _ShapeOnly:
+        def __init__(self, shape: tuple[int, int, int]) -> None:
+            self.shape = shape
+
     paths = artifact_paths(Path("fixtures"), 0, 50)
     expected = {
         "hidden": "sdp_body_hidden_seed0_T50.f32.bin",
@@ -337,6 +349,10 @@ def run_self_test() -> int:
         _die(f"artifact filename contract drifted: got {got}, expected {expected}")
     if _infer_n_flows({0, 1, 3, 5, 7}) != 4:
         _die("real SBV2 v2 sparse flow topology no longer counts as four flows")
+    if _infer_dds_kernel(
+        {"convs.convs_sep.0.weight": _ShapeOnly((192, 1, 3))}, 192
+    ) != 3:
+        _die("real SBV2 v2 DDS depthwise kernel no longer resolves to three")
     try:
         _infer_n_flows({0, 1, 2})
     except SystemExit:
