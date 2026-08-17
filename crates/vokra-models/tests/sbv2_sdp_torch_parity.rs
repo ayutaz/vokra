@@ -359,6 +359,12 @@ fn sdp_body_matches_torch_ref() {
         .map(|(index, (actual, reference))| ((actual - reference).abs(), index))
         .max_by(|left, right| left.0.total_cmp(&right.0))
         .unwrap_or((0.0, 0));
+    eprintln!(
+        "[sbv2_sdp_torch_parity] SDP body max |Δ| = {max_diff:.9e} at channel {} / \
+         time {} (candidate atol {INITIAL_ATOL:.9e})",
+        index / T,
+        index % T,
+    );
     assert!(
         max_diff <= INITIAL_ATOL,
         "SBV2 SDP body max |Δ| = {max_diff:.6e} at channel {} / time {} exceeds \
