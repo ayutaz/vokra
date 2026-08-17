@@ -601,8 +601,8 @@ fn parity_voxcpm2() {
     );
     // Residual acoustic LM: depth + 2B RoPE-skipped flag.
     assert_eq!(
-        expect_u64(&file, "vokra.voxcpm2.residual_lm.no_rope"),
-        u64::from(canonical.residual_lm_no_rope)
+        expect_bool(&file, "vokra.voxcpm2.residual_lm.no_rope"),
+        canonical.residual_lm_no_rope
     );
 
     // 2B-only: bandwidth-adaptive VAE decoder-head boundaries pin. Absent
