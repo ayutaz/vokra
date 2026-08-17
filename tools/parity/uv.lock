@@ -1470,6 +1470,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/91/4a/54e19c5e75939fd9418c7b806c21d12cf252ea2ba38f122b597272b459dd/mistral_common-1.8.5-py3-none-any.whl", hash = "sha256:f3cf87b61958a00485e603f3fe0530eb509d7e9b2f7178329dcd260e307eced1", size = 6515140, upload-time = "2025-09-12T06:42:59.622Z" },
 ]
 
+[package.optional-dependencies]
+soundfile = [
+    { name = "soundfile" },
+]
+
 [[package]]
 name = "ml-dtypes"
 version = "0.5.4"
@@ -3624,7 +3629,7 @@ dependencies = [
     { name = "gguf" },
     { name = "h5py" },
     { name = "huggingface-hub" },
-    { name = "mistral-common" },
+    { name = "mistral-common", extra = ["soundfile"] },
     { name = "modelscope" },
     { name = "numpy" },
     { name = "omegaconf" },
@@ -3647,7 +3652,7 @@ requires-dist = [
     { name = "gguf", specifier = ">=0.19.0" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "huggingface-hub", specifier = ">=1.24.0" },
-    { name = "mistral-common", specifier = "==1.8.5" },
+    { name = "mistral-common", extras = ["soundfile"], specifier = "==1.8.5" },
     { name = "modelscope", specifier = ">=1.39.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "omegaconf", specifier = ">=2.3.1" },
