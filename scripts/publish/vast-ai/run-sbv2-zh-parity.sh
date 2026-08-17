@@ -229,8 +229,11 @@ main() {
   bert_en_gguf="$FIXTURE_DIR/deberta-v3-large.gguf"
   bert_zh_gguf="$FIXTURE_DIR/chinese-roberta-wwm-ext-large.gguf"
 
+  # reference_dump.manifest.json is a tracked schema template and is
+  # intentionally replaced by the real dumper. Binary fixtures remain
+  # gitignored and must be absent so a run cannot reuse stale evidence.
   for target in "$sbv2_gguf" "$bert_ja_gguf" "$bert_en_gguf" "$bert_zh_gguf" \
-    "$FIXTURE_DIR/reference_dump.manifest.json" "$FIXTURE_DIR/reference_dump"; do
+    "$FIXTURE_DIR/reference_dump"; do
     [[ ! -e "$target" ]] \
       || { die "generated target already exists: $target"; return 2; }
   done
