@@ -53,11 +53,12 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
   symbol.
 - The single hard rule is that **every such change lands with an entry in
   this file, dated on the day the PR is opened**. `scripts/check-abi-changelog.sh`
-  enforces this: if the current `include/vokra.h` differs from the active
-  gate anchor (`docs/abi/vokra.h.v0.9-baseline.symbols` during the v0.9
-  window, rotated to `docs/abi/vokra.h.v1.0-rc-baseline.symbols` at M4-12)
-  and this file does not have an entry dated today, the script exits
-  non-zero.
+  enforces the recorded-symbol part of this rule: if the current
+  `include/vokra.h` differs from the active gate anchor
+  (`docs/abi/vokra.h.v0.9-baseline.symbols` during the v0.9 window, rotated to
+  `docs/abi/vokra.h.v1.0-rc-baseline.symbols` at M4-12) and any changed symbol
+  has no changelog row, the script exits non-zero. The date remains historical
+  metadata for the PR entry rather than a wall-clock CI condition.
 - At v1.0 GA (M5-13; M4-12 before the 2026-07-14 reassignment) the baseline
   is re-anchored to that release, the freeze commitment is written into
   `include/vokra.h`, and post-1.0 breaking changes require a major bump.
@@ -79,29 +80,32 @@ promoted them, M5-13 would have had nothing left to execute. The cool-off
 posture mirrors `gpu-vulkan-parity.yml` and the platform-support drift step in
 the `license` job.
 
-Known state: `rust-public-api-list.sh` is **already red**, from surface added
-without a snapshot rotation. X-08 did not rotate it — that is M5-13/IF-01's
-call — and the advisory posture keeps the red from blocking PRs. See
-`docs/adr/X-08-ci-gate-completion.md` §2 and §7-(4).
+The v0.9-rc Rust snapshot was rotated on 2026-08-17 to record the intentional
+public surface accumulated by PR #29. Before rotation the gate measured **180
+additions / 5 removals** against the snapshot; after rotation it records
+**864 functions, 264 structs, 78 enums, 30 traits, 6 types, 104 constants,
+131 re-exports and 127 modules**. Reproduce the clean check with
+`bash scripts/rust-public-api-list.sh` (no flags).
 
-The drift figure here read "53 added / 13 removed on `13a2a6e`" until
-2026-08-16. Measured at that date: **180 added / 5 removed** vs.
-`docs/abi/vokra-rust-public-api.v1.0-rc.list` — 3.4x the recorded size.
-Anyone sizing the M5-13 rotation from the old number under-counted badly.
-Reproduce with `bash scripts/rust-public-api-list.sh` (no flags; it prints a
-unified diff and exits non-zero).
-
-**The pile is no longer purely additive.** It carries a source-BREAKING
+**The recorded delta is not purely additive.** It includes a source-BREAKING
 `vokra-core` change: `pub struct BeamSearchConfig` gained a `<'a>` lifetime
 for the FR-OP-41/42 shallow-fusion LM, alongside a changed `beam_search`
-signature and the new `LmScorer` / `LmFusionConfig` public items. Recorded
-here so it is not discovered at freeze time — a breaking change inside a pile
-described as additive is the kind of surprise M5-13 should not have to find
-for itself.
+signature and the new `LmScorer` / `LmFusionConfig` public items. Recording
+that fact before snapshot rotation keeps the breaking change visible to the
+M5-13 freeze review.
 
 The additions are dominated by `vokra-ops`: the `vit`, `itn` (grammar +
 token), `wpe`, `aec`, `moe_*` and `f0` (pyin / yin) modules landed across
 this campaign.
+
+### 2026-08-17 — 1.0.0-rc.1-dev (PR #29 Rust public-API snapshot rotation)
+
+The `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot was regenerated
+after the intentional PR #29 public-surface wave. The generated snapshot is
+the current reference for `vokra-core`, `vokra-ops`, and `vokra-capi`; the
+`#[non_exhaustive]` audit still passes for all six protected enums. This is
+an anchor update only: no additional Rust API is introduced by this entry,
+and the C ABI remains covered by the separate v1.0-rc header anchor.
 
 ## Entry schema
 

@@ -32,8 +32,7 @@
 #   scripts/check-abi-changelog.sh --list           -- print current symbols
 #   scripts/check-abi-changelog.sh --update-snapshot-- rewrite the anchor
 #                                                     (owner action, requires
-#                                                     a paired changelog
-#                                                     entry dated today)
+#                                                     a paired changelog entry)
 #   scripts/check-abi-changelog.sh --check-gguf-prefixes
 #                                                  -- run only the GGUF
 #                                                     chunk-prefix leg
