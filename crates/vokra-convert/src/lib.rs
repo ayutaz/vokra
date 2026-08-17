@@ -13394,10 +13394,10 @@ pub fn convert_voxtral_file(
 ///   equivalent would need a chunked widen-then-quantize helper. Deferred
 ///   until a real need shows up (owner quantizes big models on vast.ai,
 ///   which fits the in-memory path).
-/// - Adapter side-car support is a follow-up
-///   ([`convert_voxtral_file_with_adapter_config`] does not have a
-///   streaming variant yet — same in-memory `read_voxtral_checkpoint`
-///   call).
+/// Adapter metadata is supported through
+/// [`convert_voxtral_file_streaming_with_adapter_config`]. The side-car is
+/// parsed before this function is called and attached to `config`; tensor
+/// payloads still stay on the same bounded-memory streaming path.
 ///
 /// # Errors
 ///
@@ -13412,14 +13412,20 @@ pub fn convert_voxtral_file_streaming(
     let (tensor_count, metadata_count, output_bytes, report) =
         models::voxtral::convert_shards_streaming(&paths, output, Some(config))?;
 
+    let adapter_kind = config
+        .adapter
+        .as_ref()
+        .map(|a| a.kind.as_str())
+        .unwrap_or("none");
     let notes = vec![format!(
         "voxtral (streaming): {} float weights written ({} BF16 passthrough — exact), \
-         {} non-float skipped, name {}, tokenizer embedded: {}",
+         {} non-float skipped, name {}, tokenizer embedded: {}, adapter kind: {}",
         report.written,
         report.bf16_passthrough,
         report.skipped_non_float,
         report.name,
-        report.tokenizer_embedded
+        report.tokenizer_embedded,
+        adapter_kind,
     )];
 
     Ok(ConvertSummary {
@@ -13429,6 +13435,32 @@ pub fn convert_voxtral_file_streaming(
         output_bytes,
         notes,
     })
+}
+
+/// Bounded-memory Voxtral conversion with an audio-adapter side-car.
+///
+/// This is the streaming counterpart of
+/// [`convert_voxtral_file_with_adapter_config`]. It parses the same JSON
+/// schema, attaches the resulting [`AdapterSpec`] to a cloned config, and
+/// then streams one tensor payload at a time. This keeps a 48 GB
+/// Voxtral-Small checkpoint from falling back to the in-memory path merely
+/// because real ASR conditioning metadata is required.
+///
+/// # Errors
+///
+/// As [`convert_voxtral_file_streaming`], plus malformed or unreadable
+/// `adapter_config`.
+pub fn convert_voxtral_file_streaming_with_adapter_config(
+    input: &Path,
+    config: &VoxtralConfig,
+    adapter_config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let adapter_bytes = std::fs::read(adapter_config)?;
+    let spec = models::voxtral::parse_adapter_config(&adapter_bytes)?;
+    let mut cfg = config.clone();
+    cfg.adapter = Some(spec);
+    convert_voxtral_file_streaming(input, &cfg, output)
 }
 
 /// [`convert_voxtral_file`] with an optional K-quant target (M5-15-T36,

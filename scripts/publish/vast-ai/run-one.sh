@@ -17,6 +17,7 @@
 #              [--acknowledge-copyleft] [--allow-large] \
 #              [--include <glob>]... [--input-name <basename>] \
 #              [--config-name <basename>] [--tokenizer-name <basename>] \
+#              [--adapter-config <path>] [--expect-adapter-kind <kind>] \
 #              [--revision <git-sha-or-ref>] \
 #              [--expect-model-name <name>] [--expect-source <source>]
 #   run-one.sh --self-test
@@ -42,6 +43,7 @@ usage: run-one.sh --hf-repo <slug> --vokra-slug <name> --model-kind <kind> \
                   [--push] [--allow-noncommercial] [--acknowledge-copyleft] [--allow-large] \
                   [--include <glob>]... [--input-name <basename>] [--config-name <basename>] \
                   [--tokenizer-name <basename>] [--revision <git-sha-or-ref>] \
+                  [--adapter-config <path>] [--expect-adapter-kind <kind>] \
                   [--expect-model-name <name>] [--expect-source <source>]
        run-one.sh --self-test
 
@@ -66,6 +68,10 @@ Optional:
                             (default: config.json if present, else omit)
   --tokenizer-name <name>   tokenizer file to hand to convert as --tokenizer
                             (default: omit; Voxtral uses tekken.json)
+  --adapter-config <path>   local adapter side-car to hand to convert as
+                            --adapter-config (the file is not downloaded from HF)
+  --expect-adapter-kind <k> refuse before publish unless GGUF metadata has this
+                            active adapter kind (for example frame_stack_mlp)
   --revision <sha-or-ref>   pin snapshot_download to an exact upstream revision
                             (recommended for reproducible large conversions)
   --expect-model-name <n>   refuse before publish unless GGUF metadata has this model name
@@ -127,13 +133,15 @@ PY
 # map or load tensor payloads, so it is safe even for a 48 GB GGUF.
 verify_gguf_metadata() {
   local gguf="$1" expected_name="$2" expected_source="$3" require_tokenizer="$4"
+  local expected_adapter_kind="$5"
   uv run --no-project --python 3.12 python - \
     "$gguf" "$VOKRA_ROOT/scripts/publish/make_model_card.py" \
-    "$expected_name" "$expected_source" "$require_tokenizer" <<'PY'
+    "$expected_name" "$expected_source" "$require_tokenizer" \
+    "$expected_adapter_kind" <<'PY'
 import importlib.util
 import sys
 
-gguf, reader_path, expected_name, expected_source, require_tokenizer = sys.argv[1:6]
+gguf, reader_path, expected_name, expected_source, require_tokenizer, expected_adapter_kind = sys.argv[1:7]
 spec = importlib.util.spec_from_file_location("vokra_model_card", reader_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -148,6 +156,11 @@ if expected_source and actual_source != expected_source:
     errors.append(f"source: expected {expected_source!r}, got {actual_source!r}")
 if require_tokenizer == "1" and reader.get("vokra.tokenizer.model") is None:
     errors.append("tokenizer: vokra.tokenizer.model is missing")
+actual_adapter_kind = reader.get("vokra.voxtral.adapter.kind") or ""
+if expected_adapter_kind and actual_adapter_kind != expected_adapter_kind:
+    errors.append(
+        f"adapter kind: expected {expected_adapter_kind!r}, got {actual_adapter_kind or '(missing)'!r}"
+    )
 if reader.n_tensors == 0:
     errors.append("tensor count: zero")
 if errors:
@@ -156,7 +169,8 @@ if errors:
     raise SystemExit(1)
 print(
     f"GGUF verified: name={actual_name or '(missing)'} tensors={reader.n_tensors} "
-    f"source={actual_source or '(missing)'} tokenizer={'yes' if reader.get('vokra.tokenizer.model') is not None else 'no'}"
+    f"source={actual_source or '(missing)'} tokenizer={'yes' if reader.get('vokra.tokenizer.model') is not None else 'no'} "
+    f"adapter={actual_adapter_kind or 'none'}"
 )
 PY
 }
@@ -241,6 +255,7 @@ run_self_test() {
   for flag in --hf-repo --vokra-slug --model-kind --license-spdx --push \
               --allow-noncommercial --acknowledge-copyleft --allow-large \
               --include --input-name --config-name --tokenizer-name --revision \
+              --adapter-config --expect-adapter-kind \
               --expect-model-name --expect-source; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$flag" <<<"$u"; then
@@ -260,8 +275,8 @@ run_self_test() {
 main() {
   local hf_repo="" vokra_slug="" model_kind="" license_spdx=""
   local push=0 nc=0 ack=0 allow_large=0 self_test=0
-  local input_name="" config_name="" tokenizer_name="" revision=""
-  local expect_model_name="" expect_source=""
+  local input_name="" config_name="" tokenizer_name="" adapter_config="" revision=""
+  local expect_model_name="" expect_source="" expect_adapter_kind=""
   local include=()
 
   while [[ $# -gt 0 ]]; do
@@ -278,6 +293,8 @@ main() {
       --input-name)            input_name="$2"; shift 2 ;;
       --config-name)           config_name="$2"; shift 2 ;;
       --tokenizer-name)        tokenizer_name="$2"; shift 2 ;;
+      --adapter-config)        adapter_config="$2"; shift 2 ;;
+      --expect-adapter-kind)   expect_adapter_kind="$2"; shift 2 ;;
       --revision)              revision="$2"; shift 2 ;;
       --expect-model-name)     expect_model_name="$2"; shift 2 ;;
       --expect-source)         expect_source="$2"; shift 2 ;;
@@ -364,6 +381,16 @@ main() {
     log "tokenizer: (none — omitting --tokenizer)"
   fi
 
+  # --- audio adapter side-car (optional, repo-local) --------------------
+  local adapter_args=()
+  if [[ -n "$adapter_config" ]]; then
+    [[ -f "$adapter_config" ]] || { echo "run-one: --adapter-config '$adapter_config' not found" >&2; exit 2; }
+    adapter_args=(--adapter-config "$adapter_config")
+    log "adapter : $adapter_config"
+  else
+    log "adapter : (none — omitting --adapter-config)"
+  fi
+
   # --- convert ----------------------------------------------------------
   step "vokra-cli convert --model $model_kind"
   local gguf="$staging/model.gguf"
@@ -374,6 +401,7 @@ main() {
   )
   convert_args+=("${config_args[@]}")
   convert_args+=("${tokenizer_args[@]}")
+  convert_args+=("${adapter_args[@]}")
   convert_args+=(--output "$gguf")
   "$VOKRA_ROOT/target/release/vokra-cli" "${convert_args[@]}"
   log "GGUF written: $gguf ($(du -h "$gguf" | cut -f1))"
@@ -382,7 +410,8 @@ main() {
   local require_tokenizer=0
   [[ -n "$tokenizer_name" ]] && require_tokenizer=1
   verify_gguf_metadata \
-    "$gguf" "$expect_model_name" "$expect_source" "$require_tokenizer"
+    "$gguf" "$expect_model_name" "$expect_source" "$require_tokenizer" \
+    "$expect_adapter_kind"
 
   # --- publish (dry-run first) ------------------------------------------
   local pub_flags=()

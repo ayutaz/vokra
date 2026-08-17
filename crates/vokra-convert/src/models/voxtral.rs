@@ -2736,6 +2736,47 @@ mod tests {
         assert_eq!(mc, b_ref.metadata_count());
     }
 
+    /// Supplying real adapter metadata must not force callers back onto the
+    /// in-memory path. Pin byte identity with the same frame-stack projector
+    /// shape used by the shipping Voxtral family.
+    #[test]
+    fn streaming_shards_matches_in_memory_bytes_with_adapter_metadata() {
+        let bytes = build_safetensors(&gqa_bf16_entries());
+        let mut cfg = gqa_cfg();
+        cfg.adapter = Some(AdapterSpec {
+            kind: "frame_stack_mlp".to_owned(),
+            tensor_prefix: "multi_modal_projector.".to_owned(),
+            weight_name: None,
+            bias_name: None,
+            layernorm_gamma_name: None,
+            layernorm_beta_name: None,
+            in_dim: 5120,
+            out_dim: 3072,
+            has_bias: false,
+            has_layernorm: false,
+            activation: Some("gelu".to_owned()),
+            time_stride: None,
+            frame_stack: Some(4),
+            mlp_hidden_dims: vec![3072],
+            mlp_layer_names: vec!["linear_1".to_owned(), "linear_2".to_owned()],
+        });
+
+        let (b_ref, _r_ref) = convert(bytes.clone(), Some(&cfg)).unwrap();
+        let want = b_ref.to_bytes().unwrap();
+
+        let dir = scratch_dir();
+        let shard_path = dir.join("model.safetensors");
+        std::fs::write(&shard_path, &bytes).unwrap();
+        let out_path = dir.join("out.gguf");
+        convert_shards_streaming(&[shard_path], &out_path, Some(&cfg)).unwrap();
+
+        assert_eq!(
+            std::fs::read(out_path).unwrap(),
+            want,
+            "adapter metadata must be byte-identical on streaming and in-memory paths"
+        );
+    }
+
     /// Same byte-identity contract across a two-shard checkpoint (the
     /// upstream `model-0000X-of-0000Y.safetensors` case). Splits
     /// `gqa_bf16_entries` in half — first shard gets audio_tower + first

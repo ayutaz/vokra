@@ -26,6 +26,8 @@ exec "$here/run-one.sh" \
   --input-name model.safetensors.index.json \
   --config-name config.json \
   --tokenizer-name tekken.json \
+  --adapter-config "$here/configs/voxtral-small-24b-2507.adapter.json" \
+  --expect-adapter-kind frame_stack_mlp \
   --expect-model-name voxtral-small-24b \
   --expect-source 'mistralai/Voxtral-Small-24B-2507 (Apache-2.0)' \
   "$@"

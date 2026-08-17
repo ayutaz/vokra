@@ -21,6 +21,7 @@ use vokra_convert::{
     convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
     convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
     convert_voxtral_file_quantized, convert_voxtral_file_streaming,
+    convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
@@ -762,13 +763,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             match (&p.config, &p.adapter_config, &p.tokenizer) {
                 // M3-10 Wave 8: adapter-conditioned convert (with or without
                 // the base config / tokenizer side-cars).
-                (_, Some(adapter_json), _) => convert_voxtral_file_with_adapter_config_quantized(
-                    &p.input,
-                    &base_cfg,
-                    adapter_json,
-                    &p.output,
-                    p.quant,
-                ),
+                (_, Some(adapter_json), _) => {
+                    if p.quant.is_none() {
+                        convert_voxtral_file_streaming_with_adapter_config(
+                            &p.input,
+                            &base_cfg,
+                            adapter_json,
+                            &p.output,
+                        )
+                    } else {
+                        convert_voxtral_file_with_adapter_config_quantized(
+                            &p.input,
+                            &base_cfg,
+                            adapter_json,
+                            &p.output,
+                            p.quant,
+                        )
+                    }
+                }
                 // Config and/or tokenizer without adapter → full hparam
                 // chunk, honest LM-continuation posture (no adapter
                 // metadata). The tokenizer-only case still needs the
