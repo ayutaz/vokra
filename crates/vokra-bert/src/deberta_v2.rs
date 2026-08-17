@@ -11,8 +11,8 @@
 //! - github.com/litagin02/Style-Bert-VITS2 (AGPL-3.0)
 
 use crate::bert_base::gelu_exact;
-use vokra_core::VokraError;
 use vokra_core::gguf::GgufFile;
+use vokra_core::VokraError;
 
 /// Log-scale relative position bucket per DeBERTa v2 (§3.2, "disentangled
 /// attention"). Positions closer to `q` get finer buckets; positions far

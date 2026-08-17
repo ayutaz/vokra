@@ -63,7 +63,7 @@
 # ## Zero-dependency invariant (NFR-DS-02)
 #
 # The whole run must not mutate the root workspace `Cargo.lock` — Python
-# deps live in a job-scoped `/tmp` venv, `vokra-cli convert` operates on
+# deps live in a job-scoped uv environment under `/tmp`, `vokra-cli convert` operates on
 # already-checked-in workspace code. The final `git diff --exit-code
 # Cargo.lock` guard (mirrors parity-whisper-real.yml / parity-kokoro-real.yml)
 # catches any accidental drift.
@@ -114,6 +114,8 @@ on:
       - 'tests/fixtures/sbv2/**'
       - 'tools/parity/sbv2_dump_reference.py'
       - 'tools/parity/sbv2_prepare_checkpoint.py'
+      - 'tools/parity/sbv2/pyproject.toml'
+      - 'tools/parity/sbv2/uv.lock'
       - 'tools/parity/vendor/vits/**'
       - 'tools/parity/vendor/vits2/**'
 
@@ -129,6 +131,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  PARITY_PROJECT: tools/parity/sbv2
+  UV_PROJECT_ENVIRONMENT: /tmp/vokra-sbv2-parity
 
 jobs:
   # Sidecar-hash gate (see header comment). Never fails: gate-closed is an
@@ -197,16 +201,18 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Provision parity venv (huggingface_hub + torch + transformers + spm/protobuf)
+      - name: Provision locked SBV2 upstream oracle
         # torch>=2.6 は transformers 4.57+ が `torch.load(weights_only=True)`
         # を呼ぶ際にハードチェックする ("Due to a serious vulnerability issue
         # in torch.load, even with weights_only=True, we now require users
         # to upgrade torch to at least v2.6")。CI で transformers 4.57.6 が
         # 引かれるため torch は 2.6+ でないと dumper が checkpoint load で
-        # fail する。CPU-only なので extra-index-url は不要。
+        # fail する。専用 uv.lock は Linux x86_64 + PyTorch CPU index に固定し、
+        # hosted runner と VAST の reference oracle を同じ依存グラフにする。
         #
         # `sentencepiece` + `protobuf` は DeBERTa v3 の spm tokenizer が
         # `AutoTokenizer.from_pretrained` 経由で読める前提条件 (transformers
@@ -218,17 +224,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m venv /tmp/vokra-py-sbv2
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install \
-            "huggingface_hub>=0.24,<1" \
-            "torch>=2.6,<3" \
-            "transformers>=4.44,<4.60" \
-            "sentencepiece>=0.2,<1" \
-            "protobuf>=4,<7"
-          python -m pip list | grep -Ei '^(huggingface[-_]hub|torch|transformers|sentencepiece|protobuf)\b'
+          uv sync --project "${PARITY_PROJECT}" --frozen --python 3.12
+          uv run --project "${PARITY_PROJECT}" --frozen python - <<'PYEOF'
+          import huggingface_hub
+          import google.protobuf
+          import safetensors
+          import sentencepiece
+          import torch
+          import transformers
+
+          print(
+              "sbv2 locked oracle: "
+              f"torch={torch.__version__} "
+              f"transformers={transformers.__version__} "
+              f"huggingface_hub={huggingface_hub.__version__} "
+              f"safetensors={safetensors.__version__} "
+              f"sentencepiece={sentencepiece.__version__} "
+              f"protobuf={google.protobuf.__version__}"
+          )
+          PYEOF
 
       - name: Download SBV2 v2 checkpoint + build vokra.sbv2.* config side-car
         # tools/parity/sbv2_prepare_checkpoint.py (Task 29): snapshot_download
@@ -237,15 +251,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
           # SBV2 v2 base ships weights only (no config.json). The prep script
           # provides `--clean-room-defaults` as the author-designed escape
           # hatch for this exact case: it fills the `vokra.sbv2.*` side-car
           # from cited VITS/HiFi-GAN/StyleTTS 2 MIT reference defaults
           # instead of erroring. Without this flag CI aborts with
           # "no config.json found under ... — Pass --clean-room-defaults".
-          python3 tools/parity/sbv2_prepare_checkpoint.py \
+          uv run --project "${PARITY_PROJECT}" --frozen python \
+            tools/parity/sbv2_prepare_checkpoint.py \
             --hf-repo "$SBV2_HF_REPO" \
             --output-dir "$RUNNER_TEMP/sbv2-checkpoint" \
             --clean-room-defaults
@@ -257,9 +270,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
-          python3 - <<'PYEOF'
+          uv run --project "${PARITY_PROJECT}" --frozen python - <<'PYEOF'
           import os
           from huggingface_hub import snapshot_download
 
@@ -304,15 +315,13 @@ jobs:
         # convention pre-safetensors era, never migrated). vokra-cli
         # `--model deberta-v3` expects a safetensors input — bridge the gap
         # here with the standard safetensors.torch conversion (already in
-        # the venv above). Skip cleanly when .safetensors is already present
+        # the locked oracle above). Skip cleanly when .safetensors is already present
         # (future-proof: if microsoft ever adds native safetensors, this
         # step is a no-op).
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
-          python3 - <<'PYEOF'
+          uv run --project "${PARITY_PROJECT}" --frozen python - <<'PYEOF'
           import glob
           import os
           import sys
@@ -332,7 +341,7 @@ jobs:
               sys.exit(1)
 
           # Deferred imports: torch + safetensors already installed in the
-          # venv above (`transformers>=4.44` pulls torch as a transitive).
+          # locked oracle above (torch + safetensors are direct pins).
           import torch
           from safetensors.torch import save_file
 
@@ -370,10 +379,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Activate the parity venv so `python tools/parity/extract_spm_metadata.py`
-          # below can import `sentencepiece` + `google.protobuf`.
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
+          # The locked uv oracle provides `sentencepiece` +
+          # `google.protobuf` for the tokenizer metadata extraction below.
 
           sbv2_st="$(find "$RUNNER_TEMP/sbv2-checkpoint" -name 'G_*.safetensors' | sort | head -n1)"
           if [ -z "$sbv2_st" ]; then
@@ -420,12 +427,13 @@ jobs:
           # v3 tokenizer = SentencePiece Unigram, spm.model. Convert to
           # JSON side-car first (extract_spm_metadata.py) so vokra-cli
           # doesn't need a protobuf runtime dep. Then pass the JSON via
-          # `--tokenizer`. The venv already has protobuf + sentencepiece
-          # (see "Provision parity venv" step); reuse the same venv here.
+          # `--tokenizer`. The locked oracle already has protobuf +
+          # sentencepiece; reuse the same frozen project here.
           bert_en_spm="$RUNNER_TEMP/deberta-v3-en/spm.model"
           test -f "$bert_en_spm"
           bert_en_tok_json="$RUNNER_TEMP/deberta-v3-en/tokenizer_spm.json"
-          python tools/parity/extract_spm_metadata.py \
+          uv run --project "${PARITY_PROJECT}" --frozen python \
+            tools/parity/extract_spm_metadata.py \
             --input "$bert_en_spm" \
             --output "$bert_en_tok_json"
 
@@ -449,9 +457,8 @@ jobs:
         shell: bash
         run: |
           set +e
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
-          python3 tools/parity/sbv2_dump_reference.py \
+          uv run --project "${PARITY_PROJECT}" --frozen python \
+            tools/parity/sbv2_dump_reference.py \
             --checkpoint "$RUNNER_TEMP/sbv2-checkpoint" \
             --output-dir "$FIXTURE_DIR" \
             --language ja \
@@ -520,11 +527,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
-          # `safetensors` is not in the sbv2 base venv but IS required by
-          # `utmos_prepare_checkpoint.py` — install only when we opt in.
-          python -m pip install --quiet safetensors
+          # `safetensors` is part of the same frozen SBV2 oracle because
+          # `utmos_prepare_checkpoint.py` is an optional tail of this job.
           # Reuse the already-committed UTMOS source pin (owner sign-off
           # docs/license-audit.md §3.1 UTMOS row on 2026-07-23).
           # shellcheck disable=SC1091
@@ -533,7 +537,8 @@ jobs:
           : "${CKPT_SHA256:?tests/parity/utmos/source.env must define CKPT_SHA256}"
           curl -fL --retry 3 -o "$RUNNER_TEMP/utmos-checkpoint.ckpt" "$CKPT_URL"
           echo "$CKPT_SHA256  $RUNNER_TEMP/utmos-checkpoint.ckpt" | sha256sum -c -
-          python3 tools/parity/utmos_prepare_checkpoint.py \
+          uv run --project "${PARITY_PROJECT}" --frozen python \
+            tools/parity/utmos_prepare_checkpoint.py \
             --ckpt "$RUNNER_TEMP/utmos-checkpoint.ckpt" \
             --output "$RUNNER_TEMP/utmos.safetensors" \
             --config-out "$RUNNER_TEMP/utmos-config.json"
@@ -664,9 +669,8 @@ jobs:
         shell: bash
         run: |
           set +e
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-sbv2/bin/activate
-          python3 tools/parity/sbv2_atol_summary_from_log.py \
+          uv run --project "${PARITY_PROJECT}" --frozen python \
+            tools/parity/sbv2_atol_summary_from_log.py \
             --log "$RUNNER_TEMP/parity.log" \
             --output "$RUNNER_TEMP/atol-summary.json" \
             --ci-run-id "${{ github.run_id }}" \
@@ -676,7 +680,8 @@ jobs:
 
           # Render human-readable proposals into step summary + also
           # emit as text alongside the JSON artifact for the owner.
-          python3 tools/parity/sbv2_atol_updater.py \
+          uv run --project "${PARITY_PROJECT}" --frozen python \
+            tools/parity/sbv2_atol_updater.py \
             --summary "$RUNNER_TEMP/atol-summary.json" \
             --ci-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             2>&1 | tee "$RUNNER_TEMP/atol-proposal.txt"

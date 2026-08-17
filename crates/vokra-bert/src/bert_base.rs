@@ -39,8 +39,8 @@
 //! - Any AGPL derivative of the above.
 
 use crate::deberta_v2::LayerNorm;
-use vokra_core::VokraError;
 use vokra_core::gguf::GgufFile;
+use vokra_core::VokraError;
 
 /// Static hyper-parameters for a plain BERT encoder.
 ///
