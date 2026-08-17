@@ -816,6 +816,24 @@ entries:
       subject to the signed CC-BY-SA-4.0 attribution and ShareAlike path in
       docs/license-audit.md.
 
+  - name: chinese-roberta-wwm-ext-large
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-sbv2-real.yml
+    owning_line: 244
+    upstream:
+      url: https://huggingface.co/hfl/chinese-roberta-wwm-ext-large
+      license: Apache-2.0
+    pinned_value:
+      hf_id: hfl/chinese-roberta-wwm-ext-large
+      hf_revision: "a25cc9e05974bd9687e528edd516f2cfdb3f5db9"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      Chinese RoBERTa checkpoint used only by the explicit four-file ZH
+      parity leg. The exact revision passed independent-reference VAST
+      parity on 2026-08-18; no model upload was performed.
+
   # ---- deberta-v3-large family (parity-deberta-v3-large-real.yml) ----------
 
   - name: deberta-v3-large

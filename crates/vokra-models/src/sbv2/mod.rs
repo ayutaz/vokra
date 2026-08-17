@@ -61,6 +61,7 @@
 //! 1. [`g2p::SbV2Phonemizer::phonemize`]'s `Language::ZH` arm still returns
 //!    [`VokraError::NotImplemented`] — fail-closed placeholder for the
 //!    future piper-plus reuse route (never a silent JA fallback, FR-EX-08).
+//!
 //! Genuine ZH synthesis quality additionally requires
 //! (i) `hfl/chinese-roberta-wwm-ext-large` weights on the runtime side,
 //! (ii) a production Mandarin G2P implementation rather than a parity
