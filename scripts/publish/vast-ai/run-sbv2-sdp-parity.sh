@@ -94,6 +94,22 @@ verify_sidecar() {
   log "SHA-256 OK: $(basename "$artifact") = $actual"
 }
 
+cpuinfo_value() {
+  local wanted="$1" source="${2:-/proc/cpuinfo}"
+  awk -F ':' -v wanted="$wanted" '
+    {
+      name = $1
+      gsub(/[[:space:]]/, "", name)
+      if (name == wanted) {
+        value = $2
+        sub(/^[[:space:]]+/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$source"
+}
+
 require_vast_marker() {
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
     || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh on VAST first"
@@ -132,7 +148,7 @@ require_tooling() {
 }
 
 run_self_test() {
-  local tmp payload sidecar actual cases fail script_path
+  local tmp payload sidecar actual cpuinfo cases fail script_path
   cases=0
   fail=0
   tmp="$(mktemp -d)"
@@ -185,6 +201,15 @@ run_self_test() {
     fail=1
   fi
 
+  cases=$((cases + 1))
+  cpuinfo="$tmp/cpuinfo"
+  printf 'model name\t: VAST Test CPU\nflags\t\t: avx avx2 fma\n' > "$cpuinfo"
+  if [[ "$(cpuinfo_value modelname "$cpuinfo")" != "VAST Test CPU" ]] \
+    || [[ "$(cpuinfo_value flags "$cpuinfo")" != "avx avx2 fma" ]]; then
+    log "self-test FAIL: /proc/cpuinfo whitespace normalization drifted"
+    fail=1
+  fi
+
   if [[ $fail -eq 0 ]]; then
     echo "run-sbv2-sdp-parity.sh self-test: OK ($cases cases)"
     rm -rf "$tmp"
@@ -212,13 +237,24 @@ download_ja_checkpoint() {
 
 record_environment() {
   local env_log="$1"
+  local cpu_model cpu_flags
+  cpu_model="$(cpuinfo_value modelname)"
+  cpu_flags="$(cpuinfo_value flags)"
+  if [[ -z "$cpu_model" ]] && command -v lscpu >/dev/null 2>&1; then
+    cpu_model="$(lscpu | awk -F ':' '$1 ~ /^Model name/ { sub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+  fi
+  if [[ -z "$cpu_flags" ]] && command -v lscpu >/dev/null 2>&1; then
+    cpu_flags="$(lscpu | awk -F ':' '$1 ~ /^Flags/ { sub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+  fi
+  [[ -n "$cpu_model" ]] || die "CPU model provenance could not be resolved"
+  [[ -n "$cpu_flags" ]] || die "CPU ISA flags provenance could not be resolved"
   {
     echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "git_branch=$(git -C "$VOKRA_ROOT" branch --show-current)"
     echo "uname=$(uname -a)"
-    echo "cpu_model=$(awk -F ': ' '$1 == "model name" { print $2; exit }' /proc/cpuinfo)"
-    echo "cpu_flags=$(awk -F ': ' '$1 == "flags" { print $2; exit }' /proc/cpuinfo)"
+    echo "cpu_model=$cpu_model"
+    echo "cpu_flags=$cpu_flags"
     echo "nproc=$(nproc)"
     awk '$1 == "MemTotal:" { print "mem_total_kib=" $2; exit }' /proc/meminfo
     rustc --version --verbose
