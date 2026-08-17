@@ -25,8 +25,8 @@
 # §10's own YAML sketch illustrates the gate against
 # only `sbv2-v2-multilingual-base.gguf.sha256`, but `SbV2Model::from_gguf`
 # takes all three checkpoints (`main` + `bert_ja` + `bert_en`) to even
-# construct a model, and the README's own recipe updates all three sidecars
-# together in one step ("4. Hash and commit") — so gating on the full set is
+# construct the default model, and the README's recipe updates every selected
+# sidecar together in one step ("4. Hash and commit") — so gating on the full set is
 # a faithful, deliberate extension of the sketch's intent, not a deviation
 # from it. That README's own "Placeholder format" section already
 # anticipates exactly this: "A future workflow built from that sketch stays

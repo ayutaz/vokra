@@ -157,12 +157,13 @@ input the reference forward pass consumes.
 ::
 
     {
-      "generator_version": "1.0",
+      "generator_version": "1.1",
       "generator": "tools/parity/sbv2_dump_reference.py",
       "checkpoint": {
         "sbv2_main": "sbv2-v2-multilingual-base.gguf",
         "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf",
-        "bert_en": "deberta-v3-large.gguf"
+        "bert_en": "deberta-v3-large.gguf",
+        "bert_zh": "chinese-roberta-wwm-ext-large.gguf"  # ZH run only
       },
       "request": {
         "text": "...", "language": "JA", "speaker_id": 0,
@@ -182,7 +183,7 @@ input the reference forward pass consumes.
       "tensors": [
         {"name": "phoneme_embed", "path": "reference_dump/phoneme_embed.bin",
          "shape": [T_text, 192], "dtype": "float32"},
-        ... (11 total, see table above)
+        ... (11 for JA/EN, 12 for ZH; see table above)
       ],
       "flow_layers": {                                # Task 15 addition (Wave 3)
         "flow_layer_0_output": {
@@ -221,9 +222,10 @@ dispatches on ``dtype``.
 ``checkpoint.*`` are **bare filenames** (siblings of the manifest inside
 ``tests/fixtures/sbv2/``, matching Task 34's planned ``Files:`` list) —
 override via ``--sbv2-main-filename``/``--bert-ja-filename``/
-``--bert-en-filename`` if a real fixture set uses different names.
-``request.language`` is upper-case ``"JA"``/``"EN"`` (``parity_sbv2_real.rs``
-matches on exactly those two literals). ``tensors[].path`` already includes
+``--bert-en-filename``/``--bert-zh-filename`` if a real fixture set uses
+different names. ``bert_zh`` is emitted only for a ZH request.
+``request.language`` is upper-case ``"JA"``/``"EN"``/``"ZH"`` (``parity_sbv2_real.rs``
+matches on exactly those three literals). ``tensors[].path`` already includes
 the ``reference_dump/`` prefix.
 
 # Usage
