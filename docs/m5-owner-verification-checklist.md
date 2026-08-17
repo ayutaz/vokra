@@ -366,7 +366,7 @@ Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `
 
 ### 7.2 Blocker 2c residual — owner-fixture-待ち gate
 
-- [ ] **`sdp_body_matches_torch_ref` real-parity flip** (Blocker 2c residual, commit `c8e2777` = `#[ignore]`d scaffold). The comparison and independent MIT-reference dumper now exist; owner action is to run `tools/parity/sbv2_sdp_body_dump.py` on VAST against the staged real checkpoint, review/record the strict body bound, then flip `#[ignore]` → `#[test]`. Until those VAST-generated input/output fixtures land the test stays honestly ignored (does not fake a pass). This is a parity flip only; it does not gate the AGPL-3.0 weight publish (already done, §7.1) or the 4-Blocker close-out itself.
+- [ ] **`sdp_body_matches_torch_ref` VAST real-parity gate** (Blocker 2c residual, commit `c8e2777` = `#[ignore]`d scaffold). VAST execution on 2026-08-18 against the public JP-Extra v2 checkpoint generated the independent MIT-reference body fixture and passed the Rust comparison in 85.36 s: `max |Δ| = 9.536743164e-6` at channel 96 / time 31, below the strict `1e-5` candidate bound (commit `ea3aef6` prints this measurement). The real GGUFs and derived raw fixture bytes remain gitignored under the SBV2 artifact policy, so flipping this to an unconditional local `#[test]` would manufacture failures on a clean checkout. Remaining owner action: provision a repeatable VAST-only gate that stages the three GGUFs, regenerates the fixture, runs this explicit `--ignored` test, and collects repeated measurements before any bound change. This does not gate the AGPL-3.0 weight publish (already done, §7.1) or the 4-Blocker close-out itself.
 
 ### 7.3 PR #27 merge
 

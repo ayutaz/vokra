@@ -299,10 +299,13 @@ fn sdp_noise_from_gaussian_splitmix_diverges_from_torch_philox() {
 /// tighten `PER_TENSOR_ATOL["sdp_sample"]` (currently 0.05) toward it
 /// on the same land.
 ///
-/// The test stays ignored until those VAST-generated artifacts arrive. Its
-/// initial 1e-5 bound is deliberately strict; the VAST result must be
-/// recorded and independently reviewed before removing `#[ignore]` or
-/// changing that bound.
+/// VAST run `2026-08-18` on the public JP-Extra v2 checkpoint measured
+/// `max |Δ| = 9.536743164e-6` (channel 96 / time 31) against this input at
+/// the deliberately strict `1e-5` candidate bound. The real GGUFs and these
+/// derived reference bytes remain gitignored under the SBV2 artifact policy,
+/// so this test stays explicitly ignored and is run only by an approved VAST
+/// job. Repeat the measurement before changing the bound; never loosen it
+/// merely to activate a local or hosted-CI test without the real artifacts.
 #[test]
 #[ignore = "Blocker 2c residual: needs VAST-generated SDP-body input/output fixtures \
             + SBV2 GGUFs (see test doc)"]

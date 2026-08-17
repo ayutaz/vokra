@@ -251,11 +251,19 @@ uv run python sbv2_sdp_body_dump.py \
 
 The tool uses the vendored MIT upstream `StochasticDurationPredictor`, not
 the Rust implementation, and writes two raw input fixtures plus the
-channel-major output and JSON provenance. Do not generate or load these
-large-model artifacts on the Mac. Once the VAST measurement is reviewed,
-remove the `#[ignore]` marker from
-`crates/vokra-models/tests/sbv2_sdp_torch_parity.rs::sdp_body_matches_torch_ref`
-in the same change that records its measured bound.
+channel-major output and JSON provenance. These, like the real GGUFs, are
+derived from the AGPL checkpoint and are gitignored; do not commit or copy
+them into the Apache-2.0 source tree. Do not generate or load them on the
+Mac. Run the explicitly ignored test only on that VAST instance:
+
+```bash
+cargo test -p vokra-models --test sbv2_sdp_torch_parity -- --ignored --nocapture
+```
+
+The first recorded run (2026-08-18, public JP-Extra v2 checkpoint) passed
+with `max |Δ| = 9.536743164e-6` at channel 96 / time 31, below the strict
+`1e-5` candidate bound. Repeat this VAST measurement before altering the
+bound or changing its explicit gate posture.
 
 ## About the committed `reference_dump.manifest.json`
 

@@ -171,6 +171,11 @@ integrations/vokra-godot/pkg/
 tests/fixtures/sbv2/*.gguf
 tests/fixtures/sbv2/*.safetensors
 tests/fixtures/sbv2/reference_dump/
+# The SDP body oracle is likewise generated from the real AGPL checkpoint.
+# It is consumed only by an explicitly ignored VAST parity test, never
+# committed alongside the Apache-2.0 source tree.
+tests/fixtures/sbv2/sdp_body_*.f32.bin
+tests/fixtures/sbv2/sdp_body_*.json
 
 # Spurious duplicates: sbv2_dump_reference.py が uv-managed で CWD=tools/parity
 # の状態で走ると `tests/fixtures/sbv2/...` を tools/parity 起点の相対パスに
