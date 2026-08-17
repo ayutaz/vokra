@@ -3,8 +3,9 @@
 # §10 "parity CI + fixture" / "CI workflow").
 #
 # Sibling of `.github/workflows/parity-whisper-real.yml` and
-# `.github/workflows/parity-kokoro-real.yml`: a `#[ignore]`d Rust parity
-# test (`crates/vokra-models/tests/parity_sbv2_real.rs`, Task 28) needs a
+# `.github/workflows/parity-kokoro-real.yml`: a real Rust parity test
+# (`crates/vokra-models/tests/parity_sbv2_real.rs`, Task 28; `#[ignore]`
+# removed by WP-06 on 2026-08-11) needs a
 # real, non-Apache-2.0-licensed checkpoint family this repo can never commit
 # as binary fixtures. `tests/fixtures/sbv2/README.md` (Task 34) is the
 # owner recipe this workflow automates end to end: download the SBV2 v2
@@ -14,12 +15,9 @@
 #
 # ## Gating (sidecar-hash gate, fabricated-pass prevention)
 #
-# `tests/fixtures/sbv2/*.gguf.sha256` are committed as comment-only
-# PLACEHOLDER files until an owner completes the README recipe end to end
-# and overwrites them with real `sha256sum` output (see that README's "Owner
-# recipe" step 4 and "Placeholder format" section, which this gate's exact
-# per-file test is drawn from verbatim: `[ -s <sidecar> ] && ! grep -q
-# "placeholder" <sidecar>`). The `setup` job below checks all THREE
+# `tests/fixtures/sbv2/*.gguf.sha256` were originally comment-only
+# PLACEHOLDER files. They now carry real hashes from the completed owner
+# recipe. The setup job keeps checking all THREE current JA/EN-path
 # sidecars — design doc §10's own YAML sketch illustrates the gate against
 # only `sbv2-v2-multilingual-base.gguf.sha256`, but `SbV2Model::from_gguf`
 # takes all three checkpoints (`main` + `bert_ja` + `bert_en`) to even
@@ -31,7 +29,7 @@
 # correctly gated off (`fixtures_present=false`) against these files"
 # (plural — all three).
 #
-# While the gate is closed (today, and until an owner runs the recipe), the
+# If any sidecar is absent or deliberately reset to a placeholder, the
 # `parity` job below is skipped entirely — an FR-EX-08 explicit, annotated
 # skip, never a silent no-op and never a fabricated pass.
 #
@@ -43,8 +41,9 @@
 # commons,modules,transforms}.py` are all in place, and the dumper's
 # `run_pipeline_body` (design doc §7, 15 steps) is fully wired. Once the
 # checkpoint-sidecar gate opens, the dumper is EXPECTED to succeed (writes
-# 11 tensor `.bin` + 4 fixture `.bin` + `reference_dump.manifest.json` to
-# `tests/fixtures/sbv2/reference_dump/`). Any nonzero exit from the dumper
+# 11 tensor `.bin` + 4 fixture `.bin` + 4 flow-tap `.bin` +
+# `reference_dump.manifest.json` to `tests/fixtures/sbv2/reference_dump/`).
+# Any nonzero exit from the dumper
 # is now a REAL failure, not a documented deferral — the tail-position
 # "Fail if ..." step propagates it and the job goes red. The Rust parity
 # test step still runs `if: always()` for diagnostic value (loading the
@@ -63,8 +62,8 @@
 # ## Zero-dependency invariant (NFR-DS-02)
 #
 # The whole run must not mutate the root workspace `Cargo.lock` — Python
-# deps live in a job-scoped uv environment under `/tmp`, `vokra-cli convert` operates on
-# already-checked-in workspace code. The final `git diff --exit-code
+# deps live in a job-scoped uv environment under `/tmp`; `vokra-cli convert`
+# operates on already-checked-in workspace code. The final `git diff --exit-code
 # Cargo.lock` guard (mirrors parity-whisper-real.yml / parity-kokoro-real.yml)
 # catches any accidental drift.
 #
@@ -193,8 +192,11 @@ jobs:
     timeout-minutes: 60
     env:
       SBV2_HF_REPO: litagin/Style-Bert-VITS2-2.0-base-JP-Extra
+      SBV2_REVISION: a731761009f3c96d104487be6ad332bf1bb5a3a5
       BERT_JA_HF_REPO: ku-nlp/deberta-v2-large-japanese-char-wwm
+      BERT_JA_REVISION: 547b0e8b044fba3f9b84d0ab9f990440bd130c8b
       BERT_EN_HF_REPO: microsoft/deberta-v3-large
+      BERT_EN_REVISION: 64a8c8eab3e352a784c658aef62be1662607476f
       FIXTURE_DIR: tests/fixtures/sbv2
     steps:
       - uses: actions/checkout@v7
@@ -260,6 +262,7 @@ jobs:
           uv run --project "${PARITY_PROJECT}" --frozen python \
             tools/parity/sbv2_prepare_checkpoint.py \
             --hf-repo "$SBV2_HF_REPO" \
+            --revision "$SBV2_REVISION" \
             --output-dir "$RUNNER_TEMP/sbv2-checkpoint" \
             --clean-room-defaults
 
@@ -276,6 +279,7 @@ jobs:
 
           snapshot_download(
               repo_id=os.environ["BERT_JA_HF_REPO"],
+              revision=os.environ["BERT_JA_REVISION"],
               repo_type="model",
               local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v2-ja"),
               # ku-nlp/deberta-v2-large-japanese-char-wwm ships safetensors +
@@ -289,6 +293,7 @@ jobs:
           )
           snapshot_download(
               repo_id=os.environ["BERT_EN_HF_REPO"],
+              revision=os.environ["BERT_EN_REVISION"],
               repo_type="model",
               local_dir=os.path.join(os.environ["RUNNER_TEMP"], "deberta-v3-en"),
               # microsoft/deberta-v3-large ships `pytorch_model.bin` only —
@@ -447,6 +452,37 @@ jobs:
 
           ls -lh "$FIXTURE_DIR"/*.gguf
 
+      - name: Verify regenerated GGUFs against committed sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_sidecar() {
+            local artifact="$1"
+            local sidecar="$2"
+            local expected actual
+            expected="$(awk 'NF && $1 !~ /^#/ { print $1; exit }' "$sidecar")"
+            if ! [[ "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::${sidecar} has no valid lowercase SHA-256 record"
+              return 1
+            fi
+            actual="$(sha256sum "$artifact" | awk '{ print $1 }')"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::SHA-256 mismatch for ${artifact}: got ${actual}, expected ${expected}"
+              return 1
+            fi
+            echo "SHA-256 OK: ${artifact} = ${actual}"
+          }
+
+          verify_sidecar \
+            "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf" \
+            "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf.sha256"
+          verify_sidecar \
+            "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf" \
+            "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf.sha256"
+          verify_sidecar \
+            "$FIXTURE_DIR/deberta-v3-large.gguf" \
+            "$FIXTURE_DIR/deberta-v3-large.gguf.sha256"
+
       - name: Regenerate reference dump (sbv2_dump_reference.py --do-dump)
         # Wave-4 TASK-34-DUMPER (2026-08-09): the vendoring + pipeline body
         # both landed; a nonzero exit here is a REAL failure and is
@@ -461,6 +497,8 @@ jobs:
             tools/parity/sbv2_dump_reference.py \
             --checkpoint "$RUNNER_TEMP/sbv2-checkpoint" \
             --output-dir "$FIXTURE_DIR" \
+            --bert-ja-repo "$RUNNER_TEMP/deberta-v2-ja" \
+            --bert-en-repo "$RUNNER_TEMP/deberta-v3-en" \
             --language ja \
             --do-dump 2>&1 | tee "$RUNNER_TEMP/sbv2-dump.log"
           exit_code=${PIPESTATUS[0]}
@@ -582,12 +620,12 @@ jobs:
             echo "::warning::parity-sbv2-real: WP-24 UTMOS quality gate skipped (vars.VOKRA_SBV2_UTMOS_ENABLE != '1')"
           fi
 
-      - name: Run SBV2 real-checkpoint parity test (--ignored)
-        # Runs regardless of the dumper's outcome (if: always()): the GGUF
-        # load + SbV2Model::from_gguf + synthesize() call path is exercised
-        # (and, per that function's own doc, expected to answer with a
-        # documented NotImplemented today — see this file's header comment)
-        # independent of whether reference_dump/*.bin exists yet.
+      - name: Run SBV2 real-checkpoint full-manifest parity test
+        # WP-06 removed `#[ignore]` on 2026-08-11 after the real fixture path
+        # landed. Run the named non-ignored test explicitly: `--ignored`
+        # would now filter OUT the numerical consumer and fabricate a green
+        # no-op. `if: always()` still exercises the loud partial-fixture
+        # failure path when the dumper failed.
         #
         # WP-24: when `vars.VOKRA_SBV2_UTMOS_ENABLE == "1"`, the two
         # `VOKRA_SBV2_UTMOS_*` env vars below opt the tail-position UTMOS
@@ -603,7 +641,9 @@ jobs:
         shell: bash
         run: |
           set +e
-          cargo test --release -p vokra-models --test parity_sbv2_real -- --ignored --nocapture \
+          cargo test --locked --release -p vokra-models \
+            --test parity_sbv2_real \
+            parity_sbv2_real_waveform_matches_reference_dump -- --nocapture \
             2>&1 | tee "$RUNNER_TEMP/parity.log"
           exit_code=${PIPESTATUS[0]}
           echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
