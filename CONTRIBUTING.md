@@ -166,18 +166,24 @@ only sanctioned ways to reach outside the runtime graph:
   across a trait boundary (`vokra_piper_plus::Phonemizer`) — never linked into
   the runtime graph checked here.
 
-### Claude Code
+### Codex and Claude Code
 
-The repository is configured for [Claude Code](https://claude.ai/code) via
-committed `.claude/settings.json` and `.claude/skills/`:
+Codex is the primary agent for this repository. Codex reads the committed
+`AGENTS.md`, discovers reusable workflows under `.agents/skills/`, and loads
+the repository policy hooks from `.codex/hooks.json` after they are reviewed
+and trusted with `/hooks`.
 
-- **Hooks** keep Rust edits formatted (`rustfmt` on write), re-assert the
-  zero-dependency invariant after `Cargo.toml` / `Cargo.lock` edits, and
-  block `cargo add` (which would introduce an external dependency). The hook
-  scripts live in `scripts/claude-hooks/`.
-- **Skills** encode the recurring, policy-heavy workflows so they stay
-  consistent: `add-speech-model`, `add-audio-operator`, `numerical-parity`,
-  `license-audit`.
+- **Codex hooks** keep Rust edits formatted, re-assert the zero-dependency
+  invariant after Cargo metadata edits, block `cargo add` and bare pip/conda
+  mutations, and route workspace-scale cargo or 2 GB+ model work to vast.ai.
+- **Codex skills** encode the recurring policy-heavy workflows:
+  `add-speech-model`, `add-audio-operator`, `numerical-parity`,
+  `license-audit`, `publish-model-to-hf`, and `vast-ai-workflow`.
+- **Claude Code compatibility** remains available through the committed
+  `.claude/settings.json` and `.claude/skills/`; its legacy hook scripts live
+  in `scripts/claude-hooks/`. New Codex behavior must not depend on Claude-only
+  environment variables or lifecycle events.
 
-Personal, machine-local overrides go in `.claude/settings.local.json`
-(git-ignored).
+Machine-local approval settings are managed by Codex configuration and are
+not committed to the repository. Do not add credentials or personal overrides
+to the project policy files.
