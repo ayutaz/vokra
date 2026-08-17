@@ -1,0 +1,35 @@
+[project]
+name = "vokra-misaki-g2p-bridge"
+version = "0.1.0"
+description = "Isolated Python G2P environment for the vokra-misaki-g2p integration."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Test/developer integration only. The English extra resolves the
+    # upstream GPL eSpeak loader; README.md records the hard boundary that
+    # keeps it out of every Vokra runtime and distributable artifact.
+    "misaki[en,ja,zh,ko]==0.9.4",
+    # misaki 0.9.4's Korean extra imports `mecab.MeCab()` on POSIX but does
+    # not declare the package that provides it. Pin the matching binding;
+    # its dictionary wheel is resolved transitively into uv.lock.
+    "python-mecab-ko==1.3.7",
+    # misaki.en otherwise calls `spacy.cli.download()` on first use and uv
+    # prunes that untracked wheel on the next frozen sync. Pin the exact
+    # upstream spaCy model wheel so English G2P is network-free after sync.
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+]
+
+[dependency-groups]
+parity = [
+    # True-upstream Kokoro parity stack. Keep these pins aligned with
+    # parity-kokoro-real.yml; the lock, not inline CI installs, is the SoT.
+    "click==8.4.2",
+    "hf-transfer>=0.1.9",
+    "huggingface-hub==0.36.2",
+    "kokoro==0.9.4",
+    "numpy==2.4.6",
+    "safetensors==0.8.0",
+    "torch==2.12.1",
+]
+
+[tool.uv]
+package = false
