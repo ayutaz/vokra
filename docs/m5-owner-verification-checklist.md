@@ -227,15 +227,24 @@ Full runbook: `docs/handoff/parity-ci-flip-switch.md`. For the nine variable-gat
 
 **2026-08-17 status**: scheduled workflow successes exist for the listed families, but a green scheduled run alone does not prove that the required real-weight leg was enabled, downloaded, and produced the required reference artifact. Keep these boxes open until the per-family run output demonstrates the full PASS verdict without an honest skip.
 
+**2026-08-18 compute policy**: the recipe above describes the repository's
+activation mechanism, not the machine on which new model work should be done.
+All multi-GB checkpoint download/conversion/reference work and every
+`vokra-models` cargo run now execute on VAST; do not dispatch a heavy hosted
+runner leg merely to close this checklist. A VAST result may establish the
+technical evidence, while setting each repository variable remains a separate
+owner scheduling decision. No Hugging Face upload was performed in the VAST
+campaign below.
+
 Original SoTA Phase 1-4 seven families:
 
-- [ ] Family 1 (NeMo-ASR, `VOKRA_NEMO_ASR_ENABLE`): HF-card read → applicable §6.2 decision recorded → `VOKRA_<PREFIX>_ENABLE=1` set → `gh workflow run parity-<family>-real.yml` → PASS verdict confirmed.
-- [ ] Family 2 (whisper-extras, `VOKRA_WHISPER_EXTRAS_ENABLE`): same sequence.
-- [ ] Family 3 (tts-dac, `VOKRA_TTS_DAC_ENABLE`): same sequence.
-- [ ] Family 4 (tts-hiftnet, `VOKRA_TTS_HIFTNET_ENABLE`): same sequence.
-- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): same sequence.
-- [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): same sequence.
-- [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): same sequence.
+- [ ] Family 1 (NeMo-ASR, `VOKRA_NEMO_ASR_ENABLE`): VAST `47955178` converted pinned Parakeet-TDT 0.6B v3 (`7c35754d…`) at branch `afe9b50`: the auditable integer normalizer kept 699 float tensors and removed exactly 24 scalar BatchNorm `num_batches_tracked` counters, then produced a 2,508,284,704-byte GGUF with 38 metadata keys and zero converter-side skips. The corrected exact test selection ran one `parakeet_tdt` test and passed the GGUF/metadata surface. This exposed two workflow defects now fixed on this branch: conversion previously failed on the training-only I64 counters, and the old `parity_nemo_asr::<arch>` filter executed zero tests. Keep the family open: the reference directory was unset (no independent ASR output parity), and Kyutai-STT, Parakeet-CTC, Canary, and OmniASR-CTC remain unproven in this campaign; repository scheduling is also undecided.
+- [ ] Family 2 (whisper-extras, `VOKRA_WHISPER_EXTRAS_ENABLE`): VAST converted pinned Distil-Whisper Large v3.5 (`728a…`, 539 tensors, 3,025,666,272-byte GGUF) and Kotoba-Whisper v2.2 (`9d334…`, 539 tensors, 3,025,666,304-byte GGUF); both targeted harnesses passed their current GGUF metadata/hparam checks and loudly confirmed the native loader is still absent. Keep open because native transcription and independent output parity are not implemented, and repository scheduling is undecided.
+- [ ] Family 3 (tts-dac, `VOKRA_TTS_DAC_ENABLE`): VAST converted pinned Dia 1.6B (`257bc…`, 343 tensors, 6,444,673,088-byte GGUF) and Zonos v0.1 transformer (`9d833…`, 246 tensors, 3,248,843,808-byte GGUF); both targeted scaffold harnesses passed. Keep open because no reference-stage/output numerical parity ran and native synthesis remains a scaffold; repository scheduling is undecided.
+- [ ] Family 4 (tts-hiftnet, `VOKRA_TTS_HIFTNET_ENABLE`): VAST converted and passed the current targeted GGUF harness for Chatterbox multilingual (292 tensors, 2,143,980,064 bytes), turbo (299 tensors, 1,915,470,144 bytes), and nano (155 tensors, 869,895,424 bytes), all at pinned revisions. Keep open: reference stage taps were unset, CosyVoice3 still lacks its required torch-to-safetensors sidecar, and repository scheduling is undecided.
+- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): VAST converted the pinned 0.6B release (`5d839924…`) to a 478-tensor, 1,829,328,672-byte GGUF. Its targeted harness passed 12 tests and matched the upstream talker (13 axes) and code-predictor (10 axes) config exactly. Keep open because this is structural/config parity only: native synthesis and PCM numerical parity remain absent, and repository scheduling is undecided.
+- [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): in addition to the prior VAST VoxCPM2 proof, VAST merged all three pinned VibeVoice-1.5B shards with the fail-loud checkpoint merger (1,204 tensors, 2,704,021,987 parameters, zero dropped/shared tensors), then converted the full model to a 5,408,160,960-byte GGUF and passed the targeted harness. The workflow now mirrors that proven full-shard path instead of selecting only the first shard. Keep open because byte-reference taps/native synthesis remain absent and repository scheduling is undecided.
+- [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): VAST converted pinned Irodori-TTS-500M-v3 (`236c…`) to a 637-tensor, 2,048,247,584-byte GGUF and passed the current targeted harness. Keep open because its byte-reference directory was unset; VITS-JA remains intentionally unfetched and publication-blocked by the JSUT/JVS redistribution terms (§6.8), and repository scheduling is undecided.
 
 2026-07-28 follow-up additions (bringing the variable-gated total to 9):
 

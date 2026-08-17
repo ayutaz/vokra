@@ -38,12 +38,13 @@
 #
 #   * Parity job: matrix over the five family members. Each matrix leg:
 #       1. checkout,
-#       2. python venv with torch / safetensors / numpy / huggingface_hub
+#       2. uv-managed Python environment with torch / safetensors / numpy /
+#          huggingface_hub
 #          pinned (never touches root Cargo.lock),
 #       3. HF snapshot_download at the pinned SHA (env var per arch),
 #       4. build vokra-cli release,
 #       5. `vokra-cli convert --model <arch>`,
-#       6. `cargo test -p vokra-models parity_nemo_asr::<arch> --test parity_nemo_asr`
+#       6. `cargo test -p vokra-models --test parity_nemo_asr <arch> -- --exact`
 #          with `VOKRA_<ARCH>_GGUF` set,
 #       7. `git diff --exit-code Cargo.lock` — zero-dep tripwire (NFR-DS-02).
 #
@@ -106,6 +107,7 @@ on:
       - "crates/vokra-models/src/canary/**"
       - "crates/vokra-models/src/omniasr_ctc/**"
       - "crates/vokra-models/tests/parity_nemo_asr.rs"
+      - "tools/parity/strip_int_tensors.py"
 
 # Cancel superseded runs on the same ref. Each matrix leg is a ~20-30 min
 # HF-DL + convert + smoke, so a rapid re-push must not double-book the
@@ -230,6 +232,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -248,23 +253,22 @@ jobs:
       # Root Cargo.lock is never touched; the pins mirror what a fresh
       # local venv would resolve. `huggingface_hub` includes
       # `snapshot_download` which fetches by revision.
-      - name: Provision parity venv (torch + safetensors + numpy + huggingface_hub)
+      - name: Provision parity environment with uv (torch + safetensors + numpy + huggingface_hub)
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # CPU torch keeps the runner lean; the future numerical leg is
           # argmax-deterministic and does not need CUDA on the reference side.
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
+            torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'numpy==2.4.6' \
             'safetensors==0.8.0' \
             'huggingface_hub==0.36.2'
           # hf_transfer is optional but massively speeds multi-GB downloads.
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" \
+            'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, numpy, safetensors, huggingface_hub
           print(f"parity venv: torch={torch.__version__} "
                 f"numpy={numpy.__version__} "
@@ -282,10 +286,8 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER: "1"
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           mkdir -p "${HF_STAGE}"
-          python - <<'PY'
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import os
           from huggingface_hub import snapshot_download
           repo = os.environ["HF_REPO"]
@@ -357,6 +359,27 @@ jobs:
             ls -la "${HF_STAGE}" || true
             exit 1
           fi
+
+          # NVIDIA's Parakeet checkpoints contain scalar int64 BatchNorm
+          # `num_batches_tracked` counters. They are training-only, while the
+          # strict Vokra parser intentionally accepts only F32/F16/BF16. Use
+          # the auditable normalizer rather than weakening the parser or
+          # silently skipping tensors in the converter.
+          case "${ARCH}" in
+            parakeet_tdt|parakeet_ctc)
+              if [[ "${input}" == *.index.json ]]; then
+                echo "::error::${ARCH}: integer-tensor normalization requires a single safetensors payload; got ${input}"
+                exit 1
+              fi
+              normalized="${RUNNER_TEMP}/${ARCH}.float-only.safetensors"
+              uv run --no-project --python "${PARITY_VENV}/bin/python" python \
+                tools/parity/strip_int_tensors.py \
+                --input "${input}" \
+                --output "${normalized}"
+              input="${normalized}"
+              ;;
+          esac
+
           echo "converter input: ${input}"
           ./target/release/vokra-cli convert \
             --model "${CLI_MODEL}" \
@@ -388,7 +411,7 @@ jobs:
           # GGUF, then filter the harness to just this arch's test.
           export "${ENV_GGUF}=${GGUF_OUT}"
           cargo test --release -p vokra-models --test parity_nemo_asr \
-            "parity_nemo_asr::${ARCH}" -- --nocapture
+            "${ARCH}" -- --exact --nocapture
 
       # Zero-dep tripwire (NFR-DS-02): the venv + HF hub cache + CLI build
       # must not have touched the root Rust lockfile.

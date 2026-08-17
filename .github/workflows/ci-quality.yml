@@ -57,13 +57,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Fixture EOL pins (CRLF hash breakage — regressed once, 9cfa49a)
         # windows-latest checks out with core.autocrlf=true, so any hashed
         # fixture without an explicit .gitattributes eol pin arrives with
         # different bytes and breaks a hash nobody touched.
         run: bash scripts/check-fixture-eol-pins.sh
       - name: pipefail `| grep -q` fail-open linter (static)
-        run: python3 scripts/compliance/lint-pipefail-grep-q.py
+        run: uv run --no-project python scripts/compliance/lint-pipefail-grep-q.py
       - name: NVIDIA scanner fail-open behavioural test
         # Complement to the static linter above: that one only spots the
         # `| grep -q` string idiom, this one proves the four NVIDIA
