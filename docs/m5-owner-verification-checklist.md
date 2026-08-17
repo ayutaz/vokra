@@ -12,7 +12,7 @@
 
 **Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
 
-**2026-08-17 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. This reconciliation leaves **55 unchecked boxes**, which remain an action ledger rather than an implementation metric: a box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a box complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total. The reconciliation below removes stale merge/sign-off/implementation claims while retaining genuine follow-up work.
+**2026-08-17 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. This reconciliation leaves **43 unchecked boxes**, which remain an action ledger rather than an implementation metric: a box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a box complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total. The reconciliation below removes stale merge/sign-off/implementation claims while retaining genuine follow-up work.
 
 **Tracking**: this file (`docs/m5-owner-verification-checklist.md`) is **tracked (public)**, same convention as `docs/m3-` / `docs/m4-owner-verification-checklist.md`. Referenced handoffs `docs/handoff/m5-*.md` are tracked/public; specs `docs/tickets/m5/*.md` and ADRs `docs/adr/M5-*.md` are gitignore-local internal docs (referenced by ID).
 
@@ -288,7 +288,7 @@ VITS-JA weight is `RedistributionForbidden` (JSUT / JVS training data forbid wei
 
 This queue is historical plus active backlog. It must not be read as a blanket "all sign-offs blank" list: the five ASR entries below are published, the BF16 fleet has current §3.1 decisions except the four intentionally deferred voice-conversion rows, and several remaining entries are blocked by converter/configuration/compute work rather than legal review.
 
-Each unchecked entry below therefore names its actual remaining condition (wiring, converter, configuration, infrastructure, or policy), not a generic missing sign-off.
+Each unchecked entry below therefore names its actual remaining condition (real-checkpoint validation, converter/configuration work, infrastructure, or policy), not a generic missing sign-off.
 
 **Row-number note**: the audit table grows over time. Any historical `row N` reference retained below is a dated snapshot; the model identifier and its current §3.1 decision are authoritative.
 
@@ -304,24 +304,24 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 
 **BF16 fleet skeletons (16 entries, PR #20 Wave E landing)**:
 
-*These have `pub fn convert_*_file` entry points but are NOT wired into `ModelKind` / `convert_file` dispatch yet. The unchecked status below is primarily CLI-dispatch work; the current license decision is stated per item. The four voice-conversion rows remain a policy-destination decision instead.*
+*The twelve signed, non-voice-conversion converters are wired into `ModelKind`, licensed `convert_file` dispatch, and `vokra-cli`; package and CLI parsing tests cover the paths. Their remaining work is real-weight preparation/binding/parity and, where applicable, the five-gate publish run. The four voice-conversion rows remain a policy-destination decision instead.*
 
-- [ ] **moonshotai/Kimi-Audio-7B-Instruct** — Commercial signed; wire CLI dispatch. category=s2s. Candidate: `vokra/kimi-audio-7b-instruct`. ~14 GB BF16.
-- [ ] **stepfun-ai/Step-Audio-2-mini** — Commercial signed; wire CLI dispatch. category=s2s. Candidate: `vokra/step-audio-2-mini`.
-- [ ] **baichuan-inc/Baichuan-Audio-Instruct** — Commercial signed; wire CLI dispatch. category=s2s.
-- [ ] **fnlp/SpeechTokenizer** — Commercial signed; wire CLI dispatch. category=codec.
-- [ ] **alibaba-damo/audio_codec-encodec-zh_en-…** (FunCodec) — Commercial signed; wire CLI dispatch. category=codec. FunCodec is not Meta EnCodec; the existing allowlist is intentional.
-- [ ] **fnlp/XY_Tokenizer_TTSD_V0** — Commercial signed; wire CLI dispatch. category=codec.
-- [ ] **SparkAudio/Spark-TTS-0.5B** (BiCodec) — Research-only signed (CC-BY-NC-SA-4.0); wire CLI dispatch and use the T4/T3 publish path if published. category=codec.
-- [ ] **neuphonic/neucodec** — Commercial signed; wire CLI dispatch. category=codec.
+- [x] **moonshotai/Kimi-Audio-7B-Instruct** — Commercial signed; CLI dispatch is complete. category=s2s. Remaining: real-weight preparation/binding/parity and publish gate. Candidate: `vokra/kimi-audio-7b-instruct`. ~14 GB BF16.
+- [x] **stepfun-ai/Step-Audio-2-mini** — Commercial signed; CLI dispatch is complete. category=s2s. Remaining: real-weight preparation/binding/parity and publish gate. Candidate: `vokra/step-audio-2-mini`.
+- [x] **baichuan-inc/Baichuan-Audio-Instruct** — Commercial signed; CLI dispatch is complete. category=s2s. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **fnlp/SpeechTokenizer** — Commercial signed; CLI dispatch is complete. category=codec. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **alibaba-damo/audio_codec-encodec-zh_en-…** (FunCodec) — Commercial signed; CLI dispatch is complete. category=codec. FunCodec is not Meta EnCodec; the existing allowlist is intentional. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **fnlp/XY_Tokenizer_TTSD_V0** — Commercial signed; CLI dispatch is complete. category=codec. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **SparkAudio/Spark-TTS-0.5B** (BiCodec) — Research-only signed (CC-BY-NC-SA-4.0); CLI dispatch is complete and its provenance now retains the NC + share-alike class. Remaining: real-weight preparation/binding/parity and the T4/T3 publish path. category=codec.
+- [x] **neuphonic/neucodec** — Commercial signed; CLI dispatch is complete. category=codec. Remaining: real-weight preparation/binding/parity and publish gate.
 - [ ] **myshell-ai/OpenVoiceV2** — public-main voice-conversion policy/destination decision remains; do not wire or publish here until it is resolved.
 - [ ] **bshall/knn-vc** — public-main voice-conversion policy/destination decision remains; its upstream license also needs primary-source resolution.
 - [ ] **OlaWod/FreeVC** — public-main voice-conversion policy/destination decision remains; its upstream license also needs primary-source resolution.
 - [ ] **ASLP-lab/MeanVC** — public-main voice-conversion policy/destination decision remains; do not wire or publish here until it is resolved.
-- [ ] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate) — Commercial signed; wire CLI dispatch. The exact upstream candidate remains recorded in §3.1.
-- [ ] **Wespeaker/wespeaker-voxceleb-resnet34-LM** — Commercial signed; wire CLI dispatch. category=speaker.
-- [ ] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker) — Commercial signed; wire CLI dispatch. category=speaker.
-- [ ] **emotion2vec/emotion2vec_plus_large** — Commercial signed; wire CLI dispatch. category=emotion.
+- [x] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate) — Commercial signed; CLI dispatch is complete. The exact upstream candidate remains recorded in §3.1. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **Wespeaker/wespeaker-voxceleb-resnet34-LM** — Commercial signed; CLI dispatch is complete. category=speaker. Its current CC-BY-4.0 provenance includes FR-MD-09 attribution. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker) — Commercial signed; CLI dispatch is complete. category=speaker. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **emotion2vec/emotion2vec_plus_large** — Commercial signed; CLI dispatch is complete. category=emotion. Remaining: real-weight preparation/binding/parity and publish gate.
 
 **Copyleft (1 entry) — SKU rename + PUBLISHED 2026-07-28**:
 
@@ -341,9 +341,9 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 
 - [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Attempted 2026-07-28 on M1 iMac, aborted**: converter (`ModelKind::Voxtral`) uses `SafetensorsFile::open` for shard walk which mmaps each ~4.7 GB shard, but with 16 GB physical RAM the 48 GB total working set spilled to swap (`vm.swapusage: used=40.7 GB, free=1.2 GB`) and page faults never let CPU time accumulate (5 min wall clock, 11 s CPU). Kill was necessary to prevent OS lock-up. Publish path: run on vast.ai with 64+ GB RAM OR refactor voxtral converter for streaming shard read (SafetensorsFileReader pattern from moshi). HF slug: `vokra/voxtral-small-24b-2507`.
 
-**BF16 fleet 16 skeletons — CLI dispatch wiring required before publish**:
+**BF16 fleet — dispatch complete; real-weight and policy work remain**:
 
-Investigation 2026-07-28: all 16 converters (`crates/vokra-convert/src/models/kimi_audio.rs` etc.) are landed as `pub fn convert_*_file` skeletons; `ModelKind` enum entries + `convert_file` dispatch arms + `vokra-cli` subcommand arms are **not wired**. The current §3.1 status is reconciled in §6.2: twelve are already signed for Commercial/Research-only treatment, while the four voice-conversion families await a public-repository policy decision. A wiring wave needs the enum entries, dispatch arms, and CLI aliases for whichever families remain in scope; it does not need to repeat already-recorded license decisions.
+The twelve signed non-voice-conversion converters (`crates/vokra-convert/src/models/kimi_audio.rs` etc.) have `ModelKind` entries, licensed `convert_file` dispatch arms, and `vokra-cli` model parsing/help coverage (PR #27). The four voice-conversion families remain deliberately excluded from the main public distribution path pending their destination decision. Dispatch completion does not claim a runnable native forward: the remaining follow-up is real checkpoint preparation, tensor binding/parity, and the applicable five-gate publish run.
 
 **Voice-clone territory (4 rows: openvoice_v2 / knn_vc / freevc / meanvc) — ELVIS Act policy defer**:
 
