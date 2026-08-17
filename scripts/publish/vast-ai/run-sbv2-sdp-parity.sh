@@ -18,6 +18,11 @@ VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 FIXTURE_DIR="$VOKRA_ROOT/tests/fixtures/sbv2"
 
+# Fresh non-interactive SSH sessions do not always source ~/.profile or
+# ~/.bashrc. provision.sh installs uv and Rust in these canonical locations,
+# so make its output discoverable without requiring an interactive shell.
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
 SBV2_REPO="litagin/Style-Bert-VITS2-2.0-base-JP-Extra"
 BERT_JA_REPO="ku-nlp/deberta-v2-large-japanese-char-wwm"
 BERT_EN_REPO="microsoft/deberta-v3-large"
