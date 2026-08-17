@@ -273,8 +273,12 @@ environment-provenance, and Rust-test steps are also required.
 
 The first recorded run (2026-08-18, public JP-Extra v2 checkpoint) passed
 with `max |Δ| = 9.536743164e-6` at channel 96 / time 31, below the strict
-`1e-5` candidate bound. Repeat this VAST measurement before altering the
-bound or changing its explicit gate posture.
+`1e-5` candidate bound. The tracked VAST worker's final end-to-end run at
+commit `cdfb3e2` pinned all three upstream revisions, reproduced the three
+committed GGUF hashes, recorded Xeon E5-2699 v4 / AVX2 / torch 2.13.0, and
+passed in 79.90 s with `max |Δ| = 8.583068848e-6` at channel 118 / time 48.
+The observed environment spread is still based on one checkpoint/input pair;
+repeat the gate before altering the bound or its explicit `#[ignore]` posture.
 
 ## About the committed `reference_dump.manifest.json`
 

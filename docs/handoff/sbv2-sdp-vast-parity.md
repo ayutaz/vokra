@@ -86,3 +86,25 @@ tighten the tolerance. Preserve the explicit `#[ignore]` posture while the
 real artifacts remain uncommitted, collect repeated environment-qualified
 measurements with this worker, and investigate any miss before changing the
 bound.
+
+## Recorded automated run — 2026-08-18
+
+The fail-closed worker was executed end to end at commit
+`cdfb3e21328c2c2813dc2c26c5060ca992b0259d` on a VAST Xeon E5-2699 v4
+host (88 visible threads, AVX2, 1,056,682,100 KiB RAM), with Rust 1.97.1,
+Python 3.12.14, and torch 2.13.0+cu130. It pinned:
+
+- SBV2 JP-Extra: `a731761009f3c96d104487be6ad332bf1bb5a3a5`;
+- DeBERTa v2 JA: `547b0e8b044fba3f9b84d0ab9f990440bd130c8b`;
+- DeBERTa v3 EN: `64a8c8eab3e352a784c658aef62be1662607476f`.
+
+All three converted GGUFs matched their committed sidecars. The independent
+input fixture hashes were `034b3fd65a2757ee5f834ac25c88b71bfefc6f5a0f56a7eb7b3709f713ccf5a1`
+(hidden) and `9cba13f42455d3fab3e6fe1b9c548273879de6808f3d89f8587dfe66f359fcc8`
+(speaker); the captured body hash was
+`3a05ab141972f202b9e8f5c7fd1807c0c913cf45c8f2e95f2a886dd6c8080094`.
+The Rust gate passed in 79.90 seconds with
+`max |Δ| = 8.583068848e-6` at channel 118 / time 48. This differs from the
+first manual environment while remaining below `1e-5`, so no tolerance or
+`#[ignore]` posture was changed. The text logs were collected, the disposable
+instance was destroyed, and zero running VAST instances were verified.
