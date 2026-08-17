@@ -57,8 +57,9 @@ precedent; full-size tensors would be ~7.7 MB each):
                                     provenance, ``key = value``.
 
 Run (from the repo root; the venv needs torch / transformers / numpy /
-safetensors / mistral_common — verified with torch 2.8.0, transformers 4.57.6,
-mistral_common 1.8.5, numpy 2.0.2)::
+safetensors / mistral_common — the current locked VAST environment is torch
+2.13.0, transformers 5.14.1, mistral_common 1.8.5, numpy 2.5.1, and
+safetensors 0.8.0)::
 
     uv run --project tools/parity python tools/parity/dump_voxtral_reference.py \
         --checkpoint-dir ~/.cache/vokra-eval/weights/voxtral \
@@ -419,27 +420,23 @@ class StreamedTextDecoder:
         from transformers.masking_utils import create_causal_mask
 
         t = embeds.shape[1]
-        cache_position = torch.arange(pos0, pos0 + t)
-        position_ids = cache_position.unsqueeze(0)
+        position_ids = torch.arange(pos0, pos0 + t).unsqueeze(0)
         mask = create_causal_mask(
             config=self.cfg,
-            input_embeds=embeds,
+            inputs_embeds=embeds,
             attention_mask=None,
-            cache_position=cache_position,
             past_key_values=cache,
             position_ids=position_ids,
         )
         cos_sin = self.rotary(embeds, position_ids)
-        return mask, position_ids, cache_position, cos_sin
+        return mask, position_ids, cos_sin
 
     def forward_layers(
         self, embeds: torch.Tensor, cache, pos0: int, n_layer: int | None = None
     ) -> torch.Tensor:
         """Streams ``embeds`` [1, t, d] through the (first ``n_layer``) decoder
         layers with the cache appending at ``pos0``; returns POST-NORM hidden."""
-        mask, position_ids, cache_position, cos_sin = self._mask_and_rope(
-            embeds, cache, pos0
-        )
+        mask, position_ids, cos_sin = self._mask_and_rope(embeds, cache, pos0)
         hidden = embeds
         for i in range(n_layer if n_layer is not None else self.n_layer):
             layer = self.layers[i]
@@ -451,7 +448,6 @@ class StreamedTextDecoder:
                 position_ids=position_ids,
                 past_key_values=cache,
                 use_cache=True,
-                cache_position=cache_position,
                 position_embeddings=cos_sin,
             )
             del fp32_sd  # fp32 stays referenced by the module until next assign

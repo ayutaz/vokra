@@ -3663,7 +3663,7 @@ requires-dist = [
     { name = "tensorflow", marker = "extra == 'crepe'", specifier = ">=2.20.0" },
     { name = "torch", specifier = ">=2.0" },
     { name = "torchaudio", specifier = ">=2.11.0" },
-    { name = "transformers", specifier = ">=4.44" },
+    { name = "transformers", specifier = "==5.14.1" },
 ]
 provides-extras = ["crepe"]
 
