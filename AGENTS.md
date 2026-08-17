@@ -18,7 +18,8 @@ do not depend on Claude Code settings or hook behavior when working here.
 - Do not invent model shapes, licenses, provenance, parity numbers, or source
   URLs. Preserve fail-closed license and publication gates.
 - Python tooling is managed per tree with `pyproject.toml`, `uv.lock`, and
-  Python 3.12. Prefer `uv run`/`uv sync`; do not use bare pip or conda.
+  Python 3.12. Use `uv run`/`uv sync` for every local Python invocation; do
+  not use bare `python`, `python3`, pip, or conda.
 
 ## Memory and large-model safety
 
