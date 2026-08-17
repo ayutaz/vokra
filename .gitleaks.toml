@@ -158,10 +158,12 @@ paths = [
 # hex is only allowlisted in the right context.
 # -----------------------------------------------------------------------------
 regexes = [
-  # `sha256: <64-hex>` and `sha256 = "<64-hex>"` — provenance stamp
-  # convention used across docs/*.md, crates/vokra-convert/src/models/**,
-  # scripts/publish/**, and .github/pins.yaml.
-  '''(?i)\bsha-?256\s*[:=]\s*['"]?[a-f0-9]{64}['"]?''',
+  # `sha256: <64-hex>`, `sha256 = "<64-hex>"`, and typed constants such
+  # as `TOKENIZER_SHA256 = "<64-hex>"` — provenance stamp convention used
+  # across docs/*.md, converters, parity preparers, publish scripts, and
+  # .github/pins.yaml.  Requiring the `_SHA256`/`sha256` identifier plus an
+  # exact 64-hex value keeps this narrower than a bare high-entropy allowlist.
+  '''(?i)\b(?:[a-z][a-z0-9_]*_)?sha-?256\s*[:=]\s*['"]?[a-f0-9]{64}['"]?''',
 
   # `hf_revision: <40-hex>` — Hugging Face commit-sha pin (pins.yaml +
   # every parity-*-real.yml workflow env: block).

@@ -560,7 +560,7 @@ fn convert_impl(
     let variant = detect_variant(&st)?;
     if require_complete_release && variant == VoxCpm2Variant::TwoB {
         validate_complete_two_b(&st)?;
-        if tokenizer_bytes.as_ref().map_or(true, Vec::is_empty) {
+        if tokenizer_bytes.as_ref().is_none_or(Vec::is_empty) {
             return Err(ConvertError::Parse(
                 "voxcpm2-2b: complete release conversion requires the pinned tokenizer.json; \
                  `tokenizer-free` refers to the acoustic path, not the MiniCPM text input. \

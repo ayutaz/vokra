@@ -776,6 +776,46 @@ entries:
       workflow_dispatch by owner. License sign-off pending in
       docs/license-audit.md §3.1.
 
+  # ---- SBV2 family (parity-sbv2-real.yml) ----------------------------------
+
+  - name: sbv2-v2-jp-extra-base
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-sbv2-real.yml
+    owning_line: 194
+    upstream:
+      url: https://huggingface.co/litagin/Style-Bert-VITS2-2.0-base-JP-Extra
+      license: AGPL-3.0
+    pinned_value:
+      hf_id: litagin/Style-Bert-VITS2-2.0-base-JP-Extra
+      hf_revision: "a731761009f3c96d104487be6ad332bf1bb5a3a5"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      Full SBV2 v2 JP-Extra generator checkpoint used by the three-checkpoint
+      real parity pipeline. The exact revision passed full JA/EN VAST parity
+      on 2026-08-18. Distribution remains subject to the signed AGPL-3.0
+      copyleft path in docs/license-audit.md.
+
+  - name: deberta-v2-large-japanese-char-wwm
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-sbv2-real.yml
+    owning_line: 196
+    upstream:
+      url: https://huggingface.co/ku-nlp/deberta-v2-large-japanese-char-wwm
+      license: CC-BY-SA-4.0
+    pinned_value:
+      hf_id: ku-nlp/deberta-v2-large-japanese-char-wwm
+      hf_revision: "547b0e8b044fba3f9b84d0ab9f990440bd130c8b"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      Japanese BERT checkpoint used by parity-sbv2-real. The exact revision
+      passed full JA/EN VAST parity on 2026-08-18. Distribution remains
+      subject to the signed CC-BY-SA-4.0 attribution and ShareAlike path in
+      docs/license-audit.md.
+
   # ---- deberta-v3-large family (parity-deberta-v3-large-real.yml) ----------
 
   - name: deberta-v3-large

@@ -249,7 +249,7 @@ jobs:
           )
           PY
 
-      - name: Record numerical environment (non-gating)
+      - name: Record numerical environment (advisory, record-only)
         if: always() && needs.setup.outputs.run_dumper == 'true'
         continue-on-error: true
         run: |
