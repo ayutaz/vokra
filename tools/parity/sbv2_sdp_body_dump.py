@@ -134,6 +134,31 @@ def _require_rank3_weight(state: dict[str, object], key: str) -> tuple[int, int,
     return shape
 
 
+def _infer_n_flows(flow_indices: set[int]) -> int:
+    """Validate the sparse upstream ModuleList index layout and count flows."""
+    # ``flows.0`` is the ElementwiseAffine. Each ConvFlow occupies the odd
+    # slot after it, while the even slots are parameter-less ``Flip`` modules
+    # and therefore cannot appear in a safetensors state dict. The real SBV2
+    # v2 base has exactly ``[0, 1, 3, 5, 7]`` here.
+    ordered_indices = sorted(flow_indices)
+    odd_indices = [index for index in ordered_indices if index % 2 == 1]
+    unexpected_even_indices = [
+        index for index in ordered_indices if index != 0 and index % 2 == 0
+    ]
+    expected_odd_indices = list(range(1, 2 * len(odd_indices), 2))
+    if (
+        not odd_indices
+        or 0 not in flow_indices
+        or unexpected_even_indices
+        or odd_indices != expected_odd_indices
+    ):
+        _die(
+            "sdp.flows must have upstream [EA, ConvFlow, Flip, ...] sparse "
+            f"layout; got indices {ordered_indices}"
+        )
+    return len(odd_indices)
+
+
 def _build_upstream_sdp(state: dict[str, object], torch):
     """Instantiate the upstream MIT module and load every SDP tensor strictly."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -175,15 +200,7 @@ def _build_upstream_sdp(state: dict[str, object], torch):
             flow_indices.add(int(parts[1]))
     if not flow_indices:
         _die("sdp.flows.* tensors are absent; expected ElementwiseAffine + ConvFlows")
-    ordered_indices = sorted(flow_indices)
-    if ordered_indices != list(range(ordered_indices[-1] + 1)):
-        _die(f"sdp.flows indices must be contiguous from 0, got {ordered_indices}")
-    if len(ordered_indices) < 3 or (len(ordered_indices) - 1) % 2 != 0:
-        _die(
-            "sdp.flows must have upstream [EA, ConvFlow, Flip, ...] layout; "
-            f"got {len(ordered_indices)} indexed modules"
-        )
-    n_flows = (len(ordered_indices) - 1) // 2
+    n_flows = _infer_n_flows(flow_indices)
 
     model = StochasticDurationPredictor(
         d_hidden,
@@ -318,6 +335,14 @@ def run_self_test() -> int:
     got = {name: path.name for name, path in paths.items()}
     if got != expected:
         _die(f"artifact filename contract drifted: got {got}, expected {expected}")
+    if _infer_n_flows({0, 1, 3, 5, 7}) != 4:
+        _die("real SBV2 v2 sparse flow topology no longer counts as four flows")
+    try:
+        _infer_n_flows({0, 1, 2})
+    except SystemExit:
+        pass
+    else:
+        _die("invalid sparse flow topology unexpectedly passed validation")
     print("sbv2_sdp_body_dump.py self-test: OK (artifact contract)")
     return 0
 
