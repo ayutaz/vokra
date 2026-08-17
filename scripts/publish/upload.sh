@@ -207,8 +207,12 @@ PY
   mkdir -p "$tmp/stage"
   printf 'small GGUF stand-in\n' > "$tmp/weight.gguf"
   stage_weight "$tmp/weight.gguf" "$tmp/stage"
-  cases_inode_source="$(stat -f '%d:%i' "$tmp/weight.gguf" 2>/dev/null || stat -c '%d:%i' "$tmp/weight.gguf")"
-  cases_inode_staged="$(stat -f '%d:%i' "$tmp/stage/weight.gguf" 2>/dev/null || stat -c '%d:%i' "$tmp/stage/weight.gguf")"
+  # Try GNU stat first.  On GNU coreutils, `stat -f FORMAT FILE` treats
+  # FORMAT as another path, prints filesystem details for FILE, then exits
+  # non-zero.  Putting the BSD form first therefore contaminates command
+  # substitution before the fallback runs.
+  cases_inode_source="$(stat -c '%d:%i' "$tmp/weight.gguf" 2>/dev/null || stat -f '%d:%i' "$tmp/weight.gguf")"
+  cases_inode_staged="$(stat -c '%d:%i' "$tmp/stage/weight.gguf" 2>/dev/null || stat -f '%d:%i' "$tmp/stage/weight.gguf")"
   if [[ "$cases_inode_source" != "$cases_inode_staged" ]]; then
     echo "self-test FAIL: same-filesystem staging did not use a hard link" >&2; fail=1
   fi
