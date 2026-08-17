@@ -133,7 +133,7 @@ jobs:
       - name: Cache real GGUFs (C ABI wiring test)
         if: matrix.feature == 'metal' || matrix.feature == 'cuda'
         id: gguf-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vokra-ci-gguf
           key: ci-gguf-campplus-c760971d-whisper-base-7e774425
