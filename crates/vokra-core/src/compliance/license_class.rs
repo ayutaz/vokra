@@ -715,18 +715,19 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // spellings quickly.
         "omniasr-ctc" | "omniasr-ctc-1b" => LicenseClass::Permissive,
         // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
-        // skeleton wire-ups. All 12 modules default to Permissive
-        // (MIT or Apache-2.0 per each module's docstring — see
+        // converters. Ten are permissive; BiCodec is CC-BY-NC-SA-4.0
+        // (research-only + share-alike) and WeSpeaker LM is CC-BY-4.0
+        // (attribution required). See
         // `crates/vokra-convert/src/models/{kimi_audio,step_audio2_mini,
         // baichuan_audio,speechtokenizer,funcodec,xy_tokenizer,bicodec,
         // neucodec,ecapa_tdnn,wespeaker,speaker_3d,emotion2vec}.rs`).
         // For each, the arch tag (underscore, == `vokra.model.arch`),
         // the CLI slug (hyphen, canonical `--model` spelling), and the
         // NAME model-card id (== `vokra.provenance.model_id`) are all
-        // registered so an untagged GGUF resolves permissive on the
-        // fallback path regardless of which of the three id forms it
-        // carries. A caller shipping the artifact under a non-permissive
-        // SPDX id overrides at the outer `--license <spdx>` boundary.
+        // registered so an untagged GGUF resolves to its audited class on
+        // the fallback path regardless of which of the three id forms it
+        // carries. A caller shipping the artifact under another SPDX id
+        // overrides at the outer `--license <spdx>` boundary.
         "kimi-audio" | "kimi_audio" | "kimi-audio-7b-instruct" | "kimi-audio-7b" => {
             LicenseClass::Permissive
         }
@@ -742,7 +743,9 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "xy-tokenizer" | "xy_tokenizer" | "xy-tokenizer-ttsd-v0" | "xy_tokenizer_ttsd_v0" => {
             LicenseClass::Permissive
         }
-        "bicodec" | "bi-codec" | "bi_codec" | "spark-tts-bicodec" => LicenseClass::Permissive,
+        "bicodec" | "bi-codec" | "bi_codec" | "spark-tts-bicodec" => {
+            LicenseClass::NonCommercialShareAlike
+        }
         "neucodec" | "neu-codec" | "neu_codec" => LicenseClass::Permissive,
         // hf-audio-gap-comprehensive-2026-07-30 §3.8 JA-vocoder complement
         // wave (2026-08-04): Aratako/MioCodec-25Hz-44.1kHz-v2 — MIT
@@ -798,7 +801,7 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "speechbrain/sgmse-voicebank" => LicenseClass::Permissive,
         "ecapa-tdnn" | "ecapa_tdnn" | "spkrec-ecapa-voxceleb" => LicenseClass::Permissive,
         "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
-            LicenseClass::Permissive
+            LicenseClass::AttributionRequired
         }
         // Wave 4 2026-08-14 audit follow-up: ReDimNet2 speaker
         // encoder (`Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM`).
@@ -2200,6 +2203,29 @@ mod tests {
         assert_eq!(registry_lookup("fish-speech-v9"), None);
         // Unregistered -> None (caller fails closed to Unknown).
         assert_eq!(registry_lookup("totally-unknown-model"), None);
+    }
+
+    #[test]
+    fn bf16_fleet_license_exceptions_preserve_their_audited_classes() {
+        for id in ["bicodec", "bi-codec", "bi_codec", "spark-tts-bicodec"] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::NonCommercialShareAlike),
+                "{id} must retain Spark-TTS's CC-BY-NC-SA-4.0 gate"
+            );
+        }
+        for id in [
+            "wespeaker",
+            "we-speaker",
+            "we_speaker",
+            "wespeaker-voxceleb-resnet34-lm",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::AttributionRequired),
+                "{id} must retain WeSpeaker LM's CC-BY-4.0 attribution duty"
+            );
+        }
     }
 
     /// SoTA plan Phase 2-5 (2026-07-24): every new family added to

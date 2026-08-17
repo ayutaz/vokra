@@ -898,7 +898,12 @@ impl SbV2SDP {
     /// SDP body: transposes `hidden` from row-major `[T, d_hidden]` into
     /// channel-major `[d_hidden, T]`, then runs pre → +cond(g) → DDS →
     /// proj, returning `[d_hidden, T]` channel-major.
-    fn body(&self, hidden_row_major: &[f32], text_seq_len: usize, g: &[f32]) -> Vec<f32> {
+    pub(crate) fn body(
+        &self,
+        hidden_row_major: &[f32],
+        text_seq_len: usize,
+        g: &[f32],
+    ) -> Vec<f32> {
         debug_assert_eq!(hidden_row_major.len(), text_seq_len * self.d_hidden);
         debug_assert_eq!(g.len(), self.gin);
         let d = self.d_hidden;

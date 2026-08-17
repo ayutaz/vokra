@@ -1,8 +1,25 @@
-# vast.ai execution priority — 3 pending large-model publish jobs (2026-08-14)
+# vast.ai execution priority — large-model jobs (updated 2026-08-18)
+
+**Execution update**: VoxCPM2-2B's VAST download, two-file preparation,
+conversion, and structural real-weight verification are complete at `5bc62ae`.
+The real Rust structural parity leg also passes after the BOOL metadata test fix
+at `e8d016f`; numerical forward parity remains unavailable because the native
+weight binder/forward has not landed.
+Its publish dry-run is intentionally stopped at `UNKNOWN_REPO` pending the
+voice-clone destination/legal decision. It is no longer a block-free publish
+job. Instance `47955178` is stopped with both VoxCPM2 and corrected Voxtral
+artifacts retained.
 
 **Audience**: owner (yousan). **Purpose**: minimize vast.ai spend + owner
 wall-clock, maximize learning curve efficiency, prioritize highest-value
 publish across 3 CC-authored handoff docs from WF4 + previous waves.
+
+**2026-08-17 operational override**: all model conversion, real-weight
+verification, and upload work that could consume material memory is executed
+on **vast.ai**, never on the M1 iMac. Local work is limited to
+checkpoint-free preflight, source/doc review, and static tests. This
+supersedes the older "local first" alternatives retained below as historical
+cost comparisons.
 
 **Related**:
 - 総論: [`docs/handoff/vast-ai-large-model-publish.md`](vast-ai-large-model-publish.md) (recipe / provision.sh / lifecycle)
@@ -18,13 +35,12 @@ publish across 3 CC-authored handoff docs from WF4 + previous waves.
 
 | Order | Job | Rationale (1-sentence) |
 |-------|-----|------------------------|
-| **1** | **VoxCPM2-2B** | 唯一の block-free ready-to-run 案件で、tooling 全 pass (provision.sh → run-one.sh → publish-one.sh 5-gate) を最小コストで shakedown できる — **local first 試行推奨** (Voxtral 8.7GB 実績があるので 4.96GB は M1 iMac で mmap 動くはず、失敗時のみ vast.ai へ) |
+| **1 (conversion done)** | **VoxCPM2-2B** | 888-tensor GGUF conversion and structural verification are complete on VAST. Publish remains fail-closed until the voice-clone destination/legal decision and explicit upload authorization. |
 | **2** | **FireRedASR-LLM-L** | Owner の bridge PR (`.pth.tar` → safetensors extraction) 完了後、combined 18-19 GB が M1 iMac 不可 = 定義的 vast.ai、Canary-Qwen precedent 継承の高価値 ASR (Encoder-Adapter-LLM mold の第 2 例、sibling firered_asr_aed_l の道も拓く) |
 | **3** | **Higgs-Audio v3 TTS 4B** | Publish は **BosonAI custom R&NC license** で fail-closed default = gate 2 REFUSE、owner の Boson 契約締結 or ☑ Rejected sign-off 判断まで **vast.ai を借りない** ことを推奨 (借りても gate 2 refuse で無駄) |
 
-**Cost total (推奨 path、Job B skip)**:
-- **最良ケース (voxcpm2 local success + firered vast.ai)**: ~$0.60-0.90 (1 session)
-- **通常ケース (voxcpm2 vast.ai + firered vast.ai、別 session)**: ~$0.90-2.00 (2 sessions)
+**Cost total (current policy、Job B skip)**:
+- **VoxCPM2-2B + FireRedASR-LLM-L on vast.ai**: ~$0.90-2.00 (normally two sessions; do not rely on a Mac-local conversion to reduce this estimate)
 - **Job B pursued (Boson 契約後)**: 追加 ~$0.30-0.75 (別 session、~1-1.5h)
 
 ## 1. Per-job rationale — なぜこの順序か
@@ -33,17 +49,16 @@ publish across 3 CC-authored handoff docs from WF4 + previous waves.
 
 **この位置に置く理由**:
 
-1. **唯一の block-free 案件** — Primary source (§0 で CC 直接照合済) が apache-2.0
-   でクリーン、gate 1-7 全 pass 見込み、bridge PR 不要、training data audit 不要
+1. **Conversion complete, publish policy-blocked** — Apache-2.0 redistribution
+   permission is signed, but the upstream release explicitly advertises voice
+   cloning and the main-repo destination is not yet approved.
 2. **Tooling shakedown の最小コスト candidate** — 4.96 GB は最小、~1h + $0.30-0.50、
    provision.sh (Wave 12 idempotent) + run-one.sh (Phase B 自動化 chain) を最初に
    通す対象として最適
-3. **Local first の可能性** — Voxtral 8.7GB を M1 iMac 16GB で
-   `restamp_provenance` 経由で publish 実績あり (memory
-   `[[project-restamp-provenance]]`)。VoxCPM2-2B は 4.96 GB = 半分以下で **local
-   mmap で動く可能性が高い**。初回 convert では restamp より重いが、single/2-shard
-   ゆえ `MappedSafetensors` 経路で peak footprint は Voxtral streaming (8.7GB
-   peak 6.4MB) より緩い挙動が期待される
+3. **M1 safety boundary** — historical streaming/restamp measurements do not
+   authorize a new local checkpoint conversion. VoxCPM2-2B is smaller than
+   Voxtral, but its conversion / verification / upload remains VAST-only
+   under the current policy so the Mac never enters swap-pressure territory.
 4. **Sibling precedent 継承** — 既 published `vokra/voxcpm-0.5b` 型を 4x scale-up
    で継承、converter code `crates/vokra-convert/src/models/voxcpm2.rs` の Wave 0
    ADR (Option C hybrid 推奨) の実 upstream 検証にも使える
@@ -52,22 +67,19 @@ publish across 3 CC-authored handoff docs from WF4 + previous waves.
    pinned SHA `bffb3df5a29440629464e5e839f4d214c8714c3d` で待機中、publish で
    `VOKRA_VOXCPM2_GGUF` fixture が有効化される
 
-**推奨 execution**:
+**Current execution state**:
 
-- **Step 1a**: 本機 M1 iMac 上で local convert 試行 (~30 min、$0)。`vokra-cli
-  convert --model voxcpm2 --input ... --config config.json --output model.gguf`。
-  OOM で fail した場合 Step 1b へ
-- **Step 1b (fallback)**: vast.ai (~$0.30-0.50、~1h)。job C と combined session
-  なら spin-up cost 節約可、ただし CC の推奨は「Job C bridge PR 未 land ゆえ
-  同 session combine 不可」(§3 session 見積参照)
+- Fixed revision main + AudioVAE preparation and GGUF conversion were run on
+  VAST only. The generic `run-one.sh` route is invalid for this two-file release;
+  use the model-specific runbook. Resume the stopped instance only after a
+  destination decision or for independent numerical parity work.
 
 **Owner action 前提** (`docs/handoff/vast-ai-publish-voxcpm2-2b.md` §5, §8):
 
-- §3.1 sign-off — HF primary source 直接照合 → `docs/license-audit.md` §3.1 に
-  ☑ Commercial 2026-XX-XX yousan (primary source apache-2.0 が既 CC 確認済ゆえ
-  owner 目視のみ)
-- Wave 0 ADR — Option C (Hybrid) 推奨、`crates/vokra-models/src/voxcpm2/mod.rs`
-  で auto-detect by embed_tokens shape
+- Decide whether VoxCPM2 belongs in `vokra-voiceclone-experimental` or has a
+  documented exception for the main namespace; ratify the M5-05 legal posture.
+- After that, authorize the exact remote upload, add the destination slug's
+  sign-off mapping, re-run dry-run, and only then use `--push`.
 
 ### Priority 2: FireRedASR-LLM-L (~18-19 GB combined、apache-2.0 + Qwen2 inheritance)
 

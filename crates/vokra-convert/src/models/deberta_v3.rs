@@ -1,21 +1,14 @@
 //! **DeBERTa v3** (`microsoft/deberta-v3-large`): safetensors → GGUF
 //! conversion (SBV2 v2 plan Task 11, 2026-07-26).
 //!
-//! Structurally this mirrors [`crate::models::deberta_v2`] byte-for-byte —
-//! same BF16-pass-through posture, same shape-derived hparam inference,
-//! same verbatim tensor-name pass-through, same `ConvertReport` shape
-//! (imported from `deberta_v2`, not redefined — see that module's doc for
-//! why one shared type serves both). The only real deltas are the ones
-//! DeBERTa v3 itself introduces at inference time: a distinct arch tag
-//! (`deberta_v3`), default license (`mit`, not `cc-by-sa-4.0`), upstream
-//! repository, and `vokra.bert.deberta_v3.*` metadata-key prefix. v3's one
-//! architecturally-relevant change vs v2 — a single shared position
-//! embedding table instead of one per layer (§3.1, "gradient-disentangled
-//! embedding sharing") — does not affect *this* converter at all, since
-//! tensor renaming (which is where that distinction would matter) is
-//! deferred to Task 30 (see `deberta_v2`'s module doc "TODO(owner)"
-//! section) — this file only proves the metadata/BF16/provenance contract
-//! independently for v3's own defaults.
+//! Structurally this shares DeBERTa v2's shape-derived hparams, HF→`bert.*`
+//! tensor-name mapping, Q/K content↔position duplication, tokenizer metadata,
+//! and `ConvertReport`. The inference-relevant v3 delta is a single shared
+//! relative-position table (§3.1, "gradient-disentangled embedding sharing"):
+//! this converter applies the checkpoint's encoder-level LayerNorm once and
+//! emits `bert.encoder.pos_embed.weight` once for every runtime layer to share.
+//! It also stamps v3's distinct arch, MIT provenance, upstream repository, and
+//! `vokra.bert.deberta_v3.*` metadata prefix.
 //!
 //! # References (permissive only)
 //!
@@ -27,12 +20,6 @@
 //! - github.com/litagin02/Style-Bert-VITS2 (AGPL-3.0)
 //! - github.com/fishaudio/Bert-VITS2 (AGPL-3.0)
 //!
-//! # TODO(owner): tensor name mapping — see `deberta_v2`'s module doc
-//!
-//! Same unresolved question, same Task 30 dependency: every tensor here
-//! passes through under its verbatim upstream HF name (no `wq_pos`
-//! shared/per-layer resolution attempted).
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -47,8 +34,9 @@ use super::deberta_v2::ConvertReport;
 use super::deberta_v2::{
     CATEGORY, KEY_MODEL_CATEGORY, KEY_PROVENANCE_UPSTREAM_HF, KEY_TOKENIZER_PREFIX,
     KIND_SENTENCEPIECE_UNIGRAM, MapAction, TokenizerMetadata, add_f32_array, add_string_array,
-    classify_skip, count_layers, infer_n_pos_buckets, infer_vocab_and_d_model, map_deberta_name,
-    write_hparams, write_tokenizer_metadata,
+    apply_layer_norm_rows, classify_skip, count_layers, f32_slice_to_le_bytes, infer_n_pos_buckets,
+    infer_vocab_and_d_model, map_deberta_name, widen_bytes_to_f32, write_hparams,
+    write_tokenizer_metadata,
 };
 
 /// `vokra.model.arch` for DeBERTa v3 GGUFs.
@@ -172,21 +160,85 @@ pub fn convert_deberta_v3_file(
     let mut renamed_count = 0usize;
     let mut duplicated_count = 0usize;
 
-    // Emit the shared rel_embeddings under v3's expected name if present.
-    for t in st.tensors() {
-        if t.name == "deberta.encoder.rel_embeddings.weight" {
-            b.add_tensor(
-                "bert.encoder.pos_embed.weight",
+    // DeBERTa-v3-large sets `norm_rel_ebd = "layer_norm"`. HF's
+    // `DebertaV2Encoder.get_rel_embedding` therefore applies the
+    // encoder-level LayerNorm to the shared relative-position table once
+    // per forward before every layer consumes it. The runtime GGUF format
+    // stores only the already-ready shared table, so perform that one-time
+    // normalization here (same converter-side boundary as DeBERTa v2).
+    let rel_embeddings = st
+        .tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.rel_embeddings.weight")
+        .map(|t| (t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec()));
+    let rel_ln_gamma = st
+        .tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.LayerNorm.weight")
+        .map(|t| {
+            (
                 t.dtype,
-                t.shape.clone(),
+                t.element_count() as usize,
                 st.tensor_bytes(t).to_vec(),
-            )?;
-            report.written += 1;
-            renamed_count += 1;
-            if t.dtype == GgmlType::BF16 {
-                report.bf16_passthrough += 1;
+            )
+        });
+    let rel_ln_beta = st
+        .tensors()
+        .iter()
+        .find(|t| t.name == "deberta.encoder.LayerNorm.bias")
+        .map(|t| {
+            (
+                t.dtype,
+                t.element_count() as usize,
+                st.tensor_bytes(t).to_vec(),
+            )
+        });
+    if rel_ln_gamma.is_some() != rel_ln_beta.is_some() {
+        let missing = if rel_ln_gamma.is_none() {
+            "weight (gamma)"
+        } else {
+            "bias (beta)"
+        };
+        return Err(ConvertError::Parse(format!(
+            "deberta.encoder.LayerNorm: partial pair — missing {missing} but the other \
+             half is present. LN cannot pre-normalize rel_embeddings without both halves; \
+             refusing rather than synthesizing a default (FR-EX-08)"
+        )));
+    }
+
+    if let Some((dtype, shape, bytes)) = rel_embeddings {
+        let (out_dtype, out_bytes) = match (&rel_ln_gamma, &rel_ln_beta) {
+            (Some((g_dt, g_n, g_bytes)), Some((b_dt, b_n, b_bytes))) => {
+                let n_elts = shape.iter().product::<u64>() as usize;
+                let d = *shape.last().ok_or_else(|| {
+                    ConvertError::Parse(
+                        "deberta.encoder.rel_embeddings.weight: empty shape — cannot \
+                         derive d_model for LN pre-normalization"
+                            .to_owned(),
+                    )
+                })? as usize;
+                if *g_n != d || *b_n != d {
+                    return Err(ConvertError::Parse(format!(
+                        "deberta.encoder.LayerNorm: gamma/beta element count ({} / {}) \
+                         does not match rel_embeddings d_model ({d}); LN cannot be \
+                         applied (FR-EX-08)",
+                        g_n, b_n
+                    )));
+                }
+                let rel_f32 = widen_bytes_to_f32(dtype, &bytes, n_elts)?;
+                let gamma_f32 = widen_bytes_to_f32(*g_dt, g_bytes, *g_n)?;
+                let beta_f32 = widen_bytes_to_f32(*b_dt, b_bytes, *b_n)?;
+                let normed = apply_layer_norm_rows(&rel_f32, &gamma_f32, &beta_f32, d, 1e-7);
+                (GgmlType::F32, f32_slice_to_le_bytes(&normed))
             }
-            break;
+            (None, None) => (dtype, bytes),
+            _ => unreachable!("partial LayerNorm pair is refused above"),
+        };
+        b.add_tensor("bert.encoder.pos_embed.weight", out_dtype, shape, out_bytes)?;
+        report.written += 1;
+        renamed_count += 1;
+        if out_dtype == GgmlType::BF16 {
+            report.bf16_passthrough += 1;
         }
     }
 
@@ -222,8 +274,15 @@ pub fn convert_deberta_v3_file(
                     duplicated_count += 1;
                 }
                 None => {
-                    let reason = classify_skip(&t.name);
-                    skipped_names.push((t.name.clone(), reason));
+                    // These tensors were consumed by the out-of-band shared
+                    // rel-embedding normalization above; do not misreport
+                    // them as skipped.
+                    if t.name != "deberta.encoder.rel_embeddings.weight"
+                        && !t.name.starts_with("deberta.encoder.LayerNorm.")
+                    {
+                        let reason = classify_skip(&t.name);
+                        skipped_names.push((t.name.clone(), reason));
+                    }
                 }
             },
             _ => report.skipped_non_float += 1,
@@ -469,6 +528,76 @@ mod tests {
         vals.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
 
+    fn safetensors_multi(entries: &[(&str, &str, &[u64], Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        let mut parts = Vec::new();
+        let mut cursor = 0usize;
+        for (name, dtype, shape, payload) in entries {
+            let start = cursor;
+            let end = start + payload.len();
+            let shape = shape
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            parts.push(format!(
+                r#""{name}":{{"dtype":"{dtype}","shape":[{shape}],"data_offsets":[{start},{end}]}}"#
+            ));
+            body.extend_from_slice(payload);
+            cursor = end;
+        }
+        let header = format!("{{{}}}", parts.join(","));
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn rel_ln_fixture(with_gamma: bool, with_beta: bool) -> (Vec<u8>, Vec<f32>) {
+        let d_model = 4usize;
+        let n_pos_buckets = 8usize;
+        let embed_shape = [6u64, d_model as u64];
+        let rel_shape = [n_pos_buckets as u64, d_model as u64];
+        let ln_shape = [d_model as u64];
+        let rel: Vec<f32> = (0..n_pos_buckets)
+            .flat_map(|i| {
+                (0..d_model).map(move |j| (i as f32 + 1.0) * 0.1 + (j as f32 + 1.0) * 0.01)
+            })
+            .collect();
+        let mut entries = vec![
+            (
+                "deberta.embeddings.word_embeddings.weight",
+                "F32",
+                embed_shape.as_slice(),
+                f32_bytes(&vec![0.01; 6 * d_model]),
+            ),
+            (
+                "deberta.encoder.rel_embeddings.weight",
+                "F32",
+                rel_shape.as_slice(),
+                f32_bytes(&rel),
+            ),
+        ];
+        if with_gamma {
+            entries.push((
+                "deberta.encoder.LayerNorm.weight",
+                "F32",
+                ln_shape.as_slice(),
+                f32_bytes(&[2.0; 4]),
+            ));
+        }
+        if with_beta {
+            entries.push((
+                "deberta.encoder.LayerNorm.bias",
+                "F32",
+                ln_shape.as_slice(),
+                f32_bytes(&[0.5; 4]),
+            ));
+        }
+        (safetensors_multi(&entries), rel)
+    }
+
     /// Single-tensor safetensors buffer — a shared `pos_embed` table plus
     /// the token-embedding table, enough to exercise hparam inference
     /// (vocab=5, d_model=4) without needing per-layer tensors (v3's own
@@ -558,6 +687,64 @@ mod tests {
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn shared_rel_embeddings_are_layer_normalized_when_pair_is_present() {
+        let (blob, rel) = rel_ln_fixture(true, true);
+        let (input, output) = temp_pair("rel-ln-present");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v3_file(&input, &output, None, None).expect("convert");
+        let file = GgufFile::parse(std::fs::read(&output).expect("read gguf")).expect("parse gguf");
+        let got = file
+            .tensor_f32("bert.encoder.pos_embed.weight")
+            .expect("shared normalized pos_embed");
+        let expected = apply_layer_norm_rows(&rel, &[2.0; 4], &[0.5; 4], 4, 1e-7);
+        assert_eq!(got.len(), expected.len());
+        for (i, (&a, &b)) in got.iter().zip(&expected).enumerate() {
+            assert!((a - b).abs() < 1e-6, "pos_embed[{i}]={a}, expected={b}");
+        }
+        assert!(
+            got.iter().zip(&rel).any(|(a, b)| (a - b).abs() > 1e-6),
+            "non-trivial LayerNorm fixture must differ from raw rel_embeddings"
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn shared_rel_embeddings_stay_raw_without_layer_norm_pair() {
+        let (blob, rel) = rel_ln_fixture(false, false);
+        let (input, output) = temp_pair("rel-ln-absent");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        convert_deberta_v3_file(&input, &output, None, None).expect("convert");
+        let file = GgufFile::parse(std::fs::read(&output).expect("read gguf")).expect("parse gguf");
+        assert_eq!(
+            file.tensor_f32("bert.encoder.pos_embed.weight")
+                .expect("shared raw pos_embed"),
+            rel
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn partial_shared_rel_layer_norm_pair_is_a_loud_error() {
+        let (blob, _) = rel_ln_fixture(true, false);
+        let (input, output) = temp_pair("rel-ln-partial");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        let err = convert_deberta_v3_file(&input, &output, None, None)
+            .expect_err("partial LayerNorm pair must fail");
+        assert!(matches!(err, ConvertError::Parse(_)));
+        assert!(err.to_string().contains("partial pair"));
+        assert!(!output.exists(), "failed conversion must not leave a GGUF");
+
+        std::fs::remove_file(&input).ok();
     }
 
     /// Blocker 5 (2026-08-06) — tokenizer_bytes = None emits no

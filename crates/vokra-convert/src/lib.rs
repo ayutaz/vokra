@@ -604,12 +604,11 @@ pub enum ModelKind {
     /// Distinct arch tag from CosyVoice2/3 / Qwen3-TTS / Chatterbox
     /// family / Dia / Zonos / CSM / Voxtral / Kyutai STT / Moshi —
     /// silently sharing would mis-route the runtime dispatch. The
-    /// upstream release is BF16 (~1 GB); today's F32/F16 pass-through
-    /// hits the `skipped_non_float` counter on BF16 tensors and the
-    /// converter surfaces the loud "no float tensors" note. Convert
-    /// with [`convert_voxcpm2_file`] — the converter takes no config
-    /// side-car (every hparam is fixed for the 0.5B release and
-    /// transcribed as compile-time constants).
+    /// upstream releases use BF16 main weights; the converter preserves
+    /// BF16 verbatim. Convert with [`convert_voxcpm2_file`]. The pinned 2B
+    /// release additionally requires its separately shipped AudioVAE and
+    /// tokenizer; prepare the combined checkpoint on VAST and use
+    /// [`convert_voxcpm2_file_with_tokenizer`].
     VoxCpm2,
     /// Microsoft **VibeVoice-1.5B** safetensors checkpoint (SoTA plan
     /// Phase 4, 2026-07-24). MIT end-to-end — code + weight under a
@@ -846,16 +845,12 @@ pub enum ModelKind {
     /// plan Task 11, 2026-07-26): a Hugging Face `transformers`
     /// `deberta_v2` safetensors checkpoint for Japanese text
     /// (`ku-nlp/deberta-v2-large-japanese-char-wwm`, Apache-2.0
-    /// model-card header). F32 / F16 / BF16 tensors pass through verbatim
-    /// under upstream HF names; the runtime's `DebertaV2Encoder::from_gguf`
-    /// will be written to map those names to the encoder's internal tensor
-    /// access pattern (Task 30 — today the tensor-to-schema mapping is a
-    /// deferred follow-up; every tensor is emitted verbatim so the mapping
-    /// can be validated once a real checkpoint arrives). Every hparam
-    /// required by the encoder is transcribed verbatim from the checkpoint's
-    /// `config.json` and written to the `vokra.bert.deberta_v2.*` metadata
-    /// chunk group. Convert with [`convert_deberta_v2_file`] with a
-    /// safetensors checkpoint.
+    /// model-card header). The converter maps upstream names to the runtime
+    /// `bert.*` schema, duplicates shared Q/K projections where the runtime
+    /// layout requires it, and pre-normalizes the shared relative embedding
+    /// before emitting per-layer position tables. Shape-derived hparams are
+    /// written to `vokra.bert.deberta_v2.*`. Convert with
+    /// [`convert_deberta_v2_file`] using a safetensors checkpoint.
     DebertaV2,
     /// microsoft **DeBERTa v3** English BERT checkpoint (SBV2 v2 plan Task
     /// 11, 2026-07-26; upstream/license label corrected 2026-07-27, Task 8):
@@ -863,16 +858,11 @@ pub enum ModelKind {
     /// for English text (`microsoft/deberta-v3-large`, MIT model-card
     /// header — v3 is the SBV2 `checkpoint.bert_en` counterpart to v2's
     /// `checkpoint.bert_ja`, see `crates/vokra-bert/src/lib.rs` and
-    /// `tests/fixtures/sbv2/README.md`). F32 / F16 / BF16 tensors pass
-    /// through verbatim under upstream HF names; the runtime's
-    /// `DebertaV3Encoder::from_gguf` will be written to map those names to
-    /// the encoder's internal tensor access pattern (Task 30 — today the
-    /// tensor-to-schema mapping is a deferred follow-up; every tensor is
-    /// emitted verbatim so the mapping can be validated once a real
-    /// checkpoint arrives). Every hparam required by the encoder is
-    /// transcribed verbatim from the checkpoint's `config.json` and
-    /// written to the `vokra.bert.deberta_v3.*` metadata chunk group.
-    /// Convert with [`convert_deberta_v3_file`] with a safetensors
+    /// `tests/fixtures/sbv2/README.md`). The converter maps upstream names
+    /// to the runtime `bert.*` schema, duplicates shared Q/K projections,
+    /// and pre-normalizes the one shared relative embedding table.
+    /// Shape-derived hparams are written to `vokra.bert.deberta_v3.*`.
+    /// Convert with [`convert_deberta_v3_file`] using a safetensors
     /// checkpoint.
     DebertaV3,
     /// **hfl/chinese-roberta-wwm-ext-large** plain-BERT checkpoint
@@ -7591,7 +7581,14 @@ pub fn convert_file_licensed(
             // `models::voxcpm2::detect_variant` — and the detected
             // variant is surfaced in this WP's notes so an operator
             // reading the CLI trailer sees which release was converted.
-            let (builder, report) = models::voxcpm2::convert(bytes)?;
+            // The release-facing path is strict for VoxCPM2-2B: a raw
+            // model.safetensors omits the separately shipped AudioVAE and is
+            // refused.  `convert_file` has no tokenizer side-car, so a
+            // complete 2B operator run must use
+            // `convert_voxcpm2_file_with_tokenizer` (the CLI does this when
+            // --tokenizer is supplied).  Legacy 0.5B conversion remains
+            // available through this generic arm.
+            let (builder, report) = models::voxcpm2::convert_release(bytes, None)?;
             let variant_label = match report.variant {
                 Some(models::voxcpm2::VoxCpm2Variant::HalfB) => "voxcpm2-0.5b",
                 Some(models::voxcpm2::VoxCpm2Variant::TwoB) => "voxcpm2-2b",
@@ -7599,8 +7596,11 @@ pub fn convert_file_licensed(
             };
             let mut notes = vec![format!(
                 "voxcpm2: variant={variant_label}, {} float weights written verbatim, \
-                 {} non-float skipped",
-                report.written, report.skipped_non_float,
+                 {} AudioVAE tensors, {} non-float skipped, tokenizer embedded: {}",
+                report.written,
+                report.audio_vae_tensors,
+                report.skipped_non_float,
+                report.tokenizer_embedded,
             )];
             notes.extend(report.notes.iter().map(|n| format!("voxcpm2 warning: {n}")));
             (builder, notes)
@@ -7739,15 +7739,13 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::DebertaV2 => {
-            // SBV2 v2 plan Task 11 (2026-07-26): pass every F32/F16/BF16
-            // tensor through verbatim under upstream HF names and stamp the
-            // `vokra.bert.deberta_v2.*` chunk group (DeBERTa v2 transformer
-            // encoder + hparams) from the transcribed constants in
-            // `models::deberta_v2`. Provenance = Apache-2.0 (Permissive —
+            // SBV2 v2 plan Task 11 (2026-07-26): map the upstream tensors
+            // into the runtime `bert.*` schema, including Q/K duplication
+            // and normalized per-layer relative embeddings, and stamp the
+            // shape-derived `vokra.bert.deberta_v2.*` hparams. Provenance =
+            // Apache-2.0 (Permissive —
             // no runtime-side attribution obligation, per HF model card
-            // `ku-nlp/deberta-v2-large-japanese-char-wwm`). Tensor-to-schema
-            // mapping (Task 30) is deferred; every tensor is emitted verbatim
-            // so the mapping can be validated once a real checkpoint arrives.
+            // `ku-nlp/deberta-v2-large-japanese-char-wwm`).
             // Blocker 5 (2026-08-06): tokenizer side-car is a
             // vokra-cli-front-end concern (mirror of the Voxtral
             // `--tokenizer` boundary). The plain `convert_file_licensed`
@@ -7757,7 +7755,7 @@ pub fn convert_file_licensed(
             // tokenizer when the flag is supplied.
             let report = convert_deberta_v2_file(input, output, license, None)?;
             let notes = vec![format!(
-                "deberta-v2: {} float weights written verbatim, {} non-float skipped",
+                "deberta-v2: {} float tensors emitted after architecture mapping, {} non-float skipped",
                 report.written, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -7797,21 +7795,18 @@ pub fn convert_file_licensed(
         }
         ModelKind::DebertaV3 => {
             // SBV2 v2 plan Task 11 (2026-07-26; upstream/license label
-            // corrected 2026-07-27, Task 8): pass every F32/F16/BF16
-            // tensor through verbatim under upstream HF names and stamp the
-            // `vokra.bert.deberta_v3.*` chunk group (DeBERTa v3 transformer
-            // encoder + hparams) from the transcribed constants in
-            // `models::deberta_v3`. Provenance = MIT (Permissive — no
+            // corrected 2026-07-27, Task 8): map the upstream tensors into
+            // the runtime `bert.*` schema, including Q/K duplication and the
+            // normalized shared relative embedding, and stamp shape-derived
+            // `vokra.bert.deberta_v3.*` hparams. Provenance = MIT (Permissive — no
             // runtime-side attribution obligation, per HF model card
             // `microsoft/deberta-v3-large`; the real EN upstream, distinct
-            // from v2's `ku-nlp` JA upstream). Tensor-to-schema mapping
-            // (Task 30) is deferred; every tensor is emitted verbatim so
-            // the mapping can be validated once a real checkpoint arrives.
+            // from v2's `ku-nlp` JA upstream).
             // Blocker 5 (2026-08-06): see the v2 arm above — tokenizer
             // side-car flows through the CLI `--tokenizer` route only.
             let report = convert_deberta_v3_file(input, output, license, None)?;
             let notes = vec![format!(
-                "deberta-v3: {} float weights written verbatim, {} non-float skipped",
+                "deberta-v3: {} float tensors emitted after architecture mapping, {} non-float skipped",
                 report.written, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -13394,10 +13389,10 @@ pub fn convert_voxtral_file(
 ///   equivalent would need a chunked widen-then-quantize helper. Deferred
 ///   until a real need shows up (owner quantizes big models on vast.ai,
 ///   which fits the in-memory path).
-/// - Adapter side-car support is a follow-up
-///   ([`convert_voxtral_file_with_adapter_config`] does not have a
-///   streaming variant yet — same in-memory `read_voxtral_checkpoint`
-///   call).
+/// Adapter metadata is supported through
+/// [`convert_voxtral_file_streaming_with_adapter_config`]. The side-car is
+/// parsed before this function is called and attached to `config`; tensor
+/// payloads still stay on the same bounded-memory streaming path.
 ///
 /// # Errors
 ///
@@ -13412,14 +13407,20 @@ pub fn convert_voxtral_file_streaming(
     let (tensor_count, metadata_count, output_bytes, report) =
         models::voxtral::convert_shards_streaming(&paths, output, Some(config))?;
 
+    let adapter_kind = config
+        .adapter
+        .as_ref()
+        .map(|a| a.kind.as_str())
+        .unwrap_or("none");
     let notes = vec![format!(
         "voxtral (streaming): {} float weights written ({} BF16 passthrough — exact), \
-         {} non-float skipped, name {}, tokenizer embedded: {}",
+         {} non-float skipped, name {}, tokenizer embedded: {}, adapter kind: {}",
         report.written,
         report.bf16_passthrough,
         report.skipped_non_float,
         report.name,
-        report.tokenizer_embedded
+        report.tokenizer_embedded,
+        adapter_kind,
     )];
 
     Ok(ConvertSummary {
@@ -13429,6 +13430,32 @@ pub fn convert_voxtral_file_streaming(
         output_bytes,
         notes,
     })
+}
+
+/// Bounded-memory Voxtral conversion with an audio-adapter side-car.
+///
+/// This is the streaming counterpart of
+/// [`convert_voxtral_file_with_adapter_config`]. It parses the same JSON
+/// schema, attaches the resulting [`AdapterSpec`] to a cloned config, and
+/// then streams one tensor payload at a time. This keeps a 48 GB
+/// Voxtral-Small checkpoint from falling back to the in-memory path merely
+/// because real ASR conditioning metadata is required.
+///
+/// # Errors
+///
+/// As [`convert_voxtral_file_streaming`], plus malformed or unreadable
+/// `adapter_config`.
+pub fn convert_voxtral_file_streaming_with_adapter_config(
+    input: &Path,
+    config: &VoxtralConfig,
+    adapter_config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let adapter_bytes = std::fs::read(adapter_config)?;
+    let spec = models::voxtral::parse_adapter_config(&adapter_bytes)?;
+    let mut cfg = config.clone();
+    cfg.adapter = Some(spec);
+    convert_voxtral_file_streaming(input, &cfg, output)
 }
 
 /// [`convert_voxtral_file`] with an optional K-quant target (M5-15-T36,
@@ -13767,8 +13794,8 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
 /// This is the named entry point that mirrors `convert_qwen3_tts_file`
 /// / `convert_chatterbox_nano_file` / `convert_dia_file` /
 /// `convert_zonos_file`. It is functionally identical to
-/// `convert_file(ModelKind::VoxCpm2, input, output)` — VoxCPM takes no
-/// side-car config on this conversion path (every hparam of the
+/// `convert_file(ModelKind::VoxCpm2, input, output)` for the legacy 0.5B
+/// checkpoint — every hparam of the
 /// `vokra.voxcpm2.*` + `vokra.vae_continuous.*` chunk groups is
 /// transcribed as compile-time constants in `models::voxcpm2` from the
 /// primary sources
@@ -13823,13 +13850,13 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
 ///
 /// # BF16 posture
 ///
-/// The upstream VoxCPM-0.5B release ships **BF16** safetensors
-/// (`config.json.dtype = "bfloat16"`); today's F32/F16 pass-through arm
-/// hits the `skipped_non_float` counter on BF16 tensors and the
-/// converter surfaces the loud "no float tensors" note. Pre-widen
-/// offline (F32) or wait for the streaming BF16 pass-through path
-/// (T29-equivalent — the Moshi / Kyutai STT pattern) to convert the
-/// release build directly.
+/// The upstream VoxCPM releases ship **BF16** main weights
+/// (`config.json.dtype = "bfloat16"`); they are emitted as GGUF BF16
+/// without widening. The pinned 2B release is intentionally not accepted
+/// by this no-tokenizer convenience path: first combine its separately
+/// shipped `audiovae.pth` with
+/// `tools/parity/voxcpm2_prepare_checkpoint.py` on VAST, then call
+/// [`convert_voxcpm2_file_with_tokenizer`].
 ///
 /// Weight license = **apache-2.0** **end-to-end**
 /// (`huggingface.co/openbmb/VoxCPM-0.5B` model-card + `LICENSE`,
@@ -13837,7 +13864,62 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
 /// grant. The M2-13 gate passes commercially without any attribution
 /// obligation on the runtime side.
 pub fn convert_voxcpm2_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
-    convert_file(ModelKind::VoxCpm2, input, output)
+    convert_voxcpm2_file_with_tokenizer(input, None, output)
+}
+
+/// Convert a complete VoxCPM release checkpoint, optionally embedding its
+/// text tokenizer.  For the pinned 2B release this is intentionally stricter
+/// than the old main-weight-only path: the input must contain the 577 BF16
+/// main tensors plus all 311 FP32 `audio_vae.*` tensors prepared from the
+/// separately shipped `audiovae.pth`, and `tokenizer` must be present.
+///
+/// Use `tools/parity/voxcpm2_prepare_checkpoint.py` on VAST to construct the
+/// input.  A raw upstream `model.safetensors` is refused rather than producing
+/// a success-shaped GGUF that cannot decode audio (FR-EX-08).
+pub fn convert_voxcpm2_file_with_tokenizer(
+    input: &Path,
+    tokenizer: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let tokenizer_bytes = match tokenizer {
+        Some(path) => Some(std::fs::read(path)?),
+        None => None,
+    };
+    let (builder, report) = models::voxcpm2::convert_release(bytes, tokenizer_bytes)?;
+    let variant_label = match report.variant {
+        Some(models::voxcpm2::VoxCpm2Variant::HalfB) => "voxcpm2-0.5b",
+        Some(models::voxcpm2::VoxCpm2Variant::TwoB) => "voxcpm2-2b",
+        None => "unknown-variant",
+    };
+    let mut notes = vec![format!(
+        "voxcpm2: variant={variant_label}, {} float tensors written ({} BF16, {} \
+         AudioVAE), {} non-float skipped, tokenizer embedded: {}",
+        report.written,
+        report.bf16_passthrough,
+        report.audio_vae_tensors,
+        report.skipped_non_float,
+        report.tokenizer_embedded,
+    )];
+    notes.extend(
+        report
+            .notes
+            .iter()
+            .map(|note| format!("voxcpm2 warning: {note}")),
+    );
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::VoxCpm2,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
 }
 
 /// Convert a Microsoft **VibeVoice-1.5B** safetensors checkpoint into a

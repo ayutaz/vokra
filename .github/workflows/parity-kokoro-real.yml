@@ -23,7 +23,7 @@
 #     an anchor-size mismatch on kokoro-v1_0.pth surfaces as a WARNING (not a
 #     FAIL) so a benign re-upload doesn't spuriously break the job.
 #
-#   * Python parity venv is installed inline (root Cargo.lock is untouched;
+#   * Python parity venv is installed inline through uv (root Cargo.lock is untouched;
 #     NFR-DS-02 zero-dep invariant is preserved — verified by the final
 #     `git diff --exit-code Cargo.lock` step).
 #
@@ -101,6 +101,9 @@ on:
       - 'crates/vokra-models/tests/parity_kokoro.rs'
       - 'crates/vokra-ops/**'
       - 'scripts/parity/download-kokoro.sh'
+      - 'integrations/vokra-misaki-g2p/pyproject.toml'
+      - 'integrations/vokra-misaki-g2p/uv.lock'
+      - 'integrations/vokra-misaki-g2p/python/misaki_bridge.py'
       - 'tests/parity/kokoro/**'
       - 'tools/parity/dump_kokoro_reference.py'
       - 'tools/parity/kokoro_bisect.py'
@@ -124,8 +127,17 @@ env:
   # scripts/parity/download-kokoro.sh and any mismatch surfaces as a
   # warning in the job log.
   KOKORO_REVISION: f3ff3571791e39611d31c381e3a41a3af07b4987
+  # Single source of truth for the isolated Python dependency graph.
+  PARITY_PROJECT: integrations/vokra-misaki-g2p
   # Python venv path (built once at job start, reused by later steps).
   PARITY_VENV: /tmp/vokra-py-parity
+  # Make every `uv sync/run --project` invocation use the same ephemeral
+  # runner environment rather than writing a .venv into the checkout.
+  UV_PROJECT_ENVIRONMENT: /tmp/vokra-py-parity
+  # Kokoro's canonical G2P environment. Keep this equal to PARITY_VENV so
+  # downstream text-level probes can discover the uv-managed misaki install
+  # without guessing a runner-local path (M5 checklist §6.5).
+  VOKRA_MISAKI_VENV: /tmp/vokra-py-parity
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -157,6 +169,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       # Rust toolchain — `stable` matches every other job in ci.yml.
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -173,47 +188,27 @@ jobs:
           path: ${{ env.HF_HOME }}
           key: kokoro-hf-${{ env.KOKORO_REVISION }}-v1
 
-      # Install torch + safetensors + numpy + huggingface_hub into an
-      # isolated venv. Pinned versions match tests/parity/parity-venv locally
-      # (torch 2.12.1, numpy 2.4.6, safetensors 0.8.0, huggingface_hub 0.36.2)
-      # so the CI reproduction is bit-close to the developer's workstation.
-      # Root Cargo.lock is untouched (verified by the final zero-dep guard).
-      - name: Provision parity venv (kokoro + torch + safetensors)
+      # Sync the checked-in uv lock for the isolated misaki integration. The
+      # parity group pins the Kokoro/torch stack; the base project pins all
+      # four G2P language extras required by M5 §6.5. Root Cargo.lock stays
+      # untouched (verified by the final zero-dep guard).
+      - name: Provision locked parity venv (misaki + kokoro + torch)
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
-          # `kokoro` is the TRUE upstream reference the dumper hooks
-          # (2026-07-16 P1 fidelity fix — the dumper aborts loudly without
-          # it, never falling back to a re-implementation). It pulls
-          # transformers / misaki / loguru; torch stays pinned explicitly.
-          # `click` is pinned explicitly even though nothing here depends on
-          # it directly: `kokoro` -> `misaki` -> `spacy`, and spacy's
-          # `cli/_util.py` does `from click import NoSuchOption` at IMPORT
-          # time (not only when its CLI runs). A fresh CI resolve landed
-          # spacy without click and the dumper died on
-          # `ModuleNotFoundError: No module named 'click'` before reaching
-          # any tensor. The local reference venv that produced the committed
-          # fixtures has click 8.4.2, so the pin makes CI reproduce that venv
-          # instead of depending on transitive resolution.
-          python -m pip install \
-            'kokoro==0.9.4' \
-            'click==8.4.2' \
-            'torch==2.12.1' \
-            'numpy==2.4.6' \
-            'safetensors==0.8.0' \
-            'huggingface_hub==0.36.2'
-          # hf_transfer is optional but massively speeds the .pth download.
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
-          import kokoro, torch, numpy, safetensors, huggingface_hub
+          uv sync --project "${PARITY_PROJECT}" --group parity --frozen --python 3.12
+          uv run --project "${PARITY_PROJECT}" --group parity --frozen python - <<'PY'
+          from importlib.metadata import version
+
+          import en_core_web_sm
+          import kokoro, misaki, torch, numpy, safetensors, huggingface_hub
           print(f"parity venv: kokoro={kokoro.__version__} "
+                f"misaki={version('misaki')} "
                 f"torch={torch.__version__} "
                 f"numpy={numpy.__version__} "
                 f"safetensors={safetensors.__version__} "
                 f"huggingface_hub={huggingface_hub.__version__}")
+          print(f"spacy_model={version('en-core-web-sm')}")
+          print(f"VOKRA_MISAKI_VENV={__import__('os').environ['VOKRA_MISAKI_VENV']}")
           PY
 
       # Record the execution environment BEFORE any numbers are produced.
@@ -253,9 +248,7 @@ jobs:
           for f in avx512f avx512vnni avx512bw avx2 fma f16c; do
             case " $flags " in *" $f "*) isa="${isa:+$isa }$f" ;; esac
           done
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate" 2>/dev/null
-          torch_caps="$(python -c 'import torch; print(torch.backends.cpu.get_cpu_capability())' 2>/dev/null)"
+          torch_caps="$(uv run --project "${PARITY_PROJECT}" --group parity --frozen python -c 'import torch; print(torch.backends.cpu.get_cpu_capability())' 2>/dev/null)"
           # Export vendor to the job env so the final FAIL gate can gate on
           # it (soft-pin: AMD EPYC FAILs are downgraded to advisory skips
           # because the reference upstream torch dispatches a different
@@ -311,10 +304,9 @@ jobs:
       - name: Merge .pth + voices/*.pt → safetensors (kokoro_prepare_checkpoint.py)
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           STAGE="${RUNNER_TEMP}/kokoro-stage"
-          python tools/parity/kokoro_prepare_checkpoint.py \
+          uv run --project "${PARITY_PROJECT}" --group parity --frozen python \
+            tools/parity/kokoro_prepare_checkpoint.py \
             --pth "${STAGE}/kokoro-v1_0.pth" \
             --voices-dir "${STAGE}/voices" \
             --config "${STAGE}/config.json" \
@@ -357,9 +349,8 @@ jobs:
           KOKORO_VENV: ${{ env.PARITY_VENV }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python tools/parity/dump_kokoro_reference.py \
+          uv run --project "${PARITY_PROJECT}" --group parity --frozen python \
+            tools/parity/dump_kokoro_reference.py \
             --checkpoint "${RUNNER_TEMP}/kokoro-stage/kokoro-v1_0.pth" \
             --config "${RUNNER_TEMP}/kokoro-stage/config.json" \
             tests/parity/kokoro
@@ -380,7 +371,7 @@ jobs:
               echo '```'
               echo ""
               echo "**Owner action**: if this drift is intentional (e.g. a followup"
-              echo "landed a new tensor), run \`python tools/parity/dump_kokoro_reference.py\`"
+              echo "landed a new tensor), run \`uv run --project tools/parity python tools/parity/dump_kokoro_reference.py\`"
               echo "locally (kokoro==0.9.4 venv) and commit \`tests/parity/kokoro/\`. If not"
               echo "intentional, inspect the diff — a silent fixture change would"
               echo "invalidate every previous parity claim."
@@ -510,7 +501,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python - <<'PY'
+          uv run --no-project --python 3.12 python - <<'PY'
           import os
           import re
           import sys
@@ -650,7 +641,8 @@ jobs:
           VOKRA_KOKORO_PARITY_DUMP: ${{ runner.temp }}/parity-dump
         run: |
           set +e
-          python tools/parity/kokoro_bisect.py "${VOKRA_KOKORO_PARITY_DUMP}" \
+          uv run --project "${PARITY_PROJECT}" --group parity --frozen python \
+            tools/parity/kokoro_bisect.py "${VOKRA_KOKORO_PARITY_DUMP}" \
             > "${RUNNER_TEMP}/bisect.txt" 2>&1 || true
           if [ -s "${RUNNER_TEMP}/bisect.txt" ]; then
             {
@@ -663,7 +655,7 @@ jobs:
           fi
 
       - name: Zero-dependency invariant (root Cargo.lock unchanged, NFR-DS-02)
-        # Belt-and-suspenders: pip-installing torch inside the parity venv
+        # Belt-and-suspenders: uv-syncing torch inside the parity venv
         # must not touch the root Rust lockfile. Any diff means a `cargo
         # something` step accidentally added a dependency.
         run: git diff --exit-code Cargo.lock

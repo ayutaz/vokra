@@ -29,16 +29,42 @@ Contrast with `integrations/vokra-piper-g2p`, which links a **Rust** G2P
 
 ## Prerequisites
 
-- **Python 3.9+** with the `misaki` package. Install into a venv:
+- **Python 3.12** with the `misaki` package. Create the pinned environment
+  through uv from the repository root:
 
   ```sh
-  python3 -m venv .venv
-  .venv/bin/pip install -r requirements.txt
+  uv sync --project integrations/vokra-misaki-g2p --frozen
   ```
 
-  `requirements.txt` pulls `misaki[en,ja,zh,ko]` — the four languages Kokoro-82M
-  ships trained voices for. Drop the extras you do not need (e.g. keep only
-  `[en]`) if you want a leaner env.
+  `pyproject.toml` + `uv.lock` pin `misaki[en,ja,zh,ko]` — the four languages
+  Kokoro-82M ships trained voices for. The `parity` dependency group adds the
+  independently pinned Kokoro/torch stack used by `parity-kokoro-real.yml`.
+  Misaki 0.9.4 omits its POSIX Korean `mecab` provider from the `ko` extra,
+  so this project also pins `python-mecab-ko`; uv locks its matching Korean
+  dictionary wheel transitively.
+  The English spaCy model is also locked explicitly; without that pin,
+  `misaki.en` downloads `en_core_web_sm` on first use and the next frozen uv
+  sync removes it as an undeclared package.
+
+  Korean G2P additionally asks NLTK for the `cmudict` corpus on first import.
+  That corpus is not a Python wheel and is therefore outside `uv.lock`; keep
+  `NLTK_DATA` on persistent storage when using Korean, and do not describe a
+  successful package sync alone as an offline-complete Korean data setup.
+  Japanese explicitly uses upstream `JAG2P(version="pyopenjtalk")`; the
+  default cutlet/fugashi path needs an untracked UniDic post-install download
+  and is therefore not used by this bridge. `pyopenjtalk` still downloads its
+  own Open JTalk dictionary into its installed package directory on first use,
+  so keep the uv environment itself on persistent storage if that data should
+  survive between runs. A locked Python environment is reproducible; these two
+  upstream language-data downloads are separate, explicit setup inputs and
+  prevent an unfetched installation from being called offline-complete.
+
+  Upstream `kokoro`/`misaki[en]` resolves `phonemizer-fork` and
+  `espeakng-loader`. Those GPL components are confined to this opt-in,
+  workspace-excluded reference environment; they are never linked, loaded,
+  invoked, bundled, or distributed by Vokra's runtime, model, C ABI, Unity,
+  Godot, or official package artifacts. Do not promote this integration's
+  Python environment into a shipped Vokra component.
 
 - **Kokoro GGUF converted with `--config`** so the `vokra.kokoro.phoneme_symbols`
   table is present:
@@ -63,7 +89,7 @@ cargo run --release -- \
 cargo run --release -- \
     --kokoro kokoro-82m.gguf --text "こんにちは" \
     --lang ja --voice jf_alpha \
-    --python .venv/bin/python --out hi.wav
+    --python integrations/vokra-misaki-g2p/.venv/bin/python --out hi.wav
 
 # Inspect the phoneme id sequence without synthesizing:
 cargo run --release -- \
@@ -94,7 +120,11 @@ The bridge treats any of the following as a hard error, never a silent skip:
   deps today; the JSON parsing is hand-written to avoid pulling `serde_json`).
 - Third-party `misaki`: reached only via Python subprocess, never linked.
 
-## License
+## License boundary
 
 Apache-2.0 (matches the Vokra runtime). misaki is Apache-2.0 upstream; the
-Rust wrapper does not vendor its source.
+Rust wrapper does not vendor its source. The Korean binding is BSD-3-Clause
+and its dictionary wheel is Apache-2.0. The uv lock records the isolated Python
+reference environment, including the upstream GPL eSpeak loader noted above;
+none of those Python packages are part of a Vokra binary or official runtime
+distribution.

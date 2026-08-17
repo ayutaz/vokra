@@ -9,7 +9,8 @@
 //! # Model card
 //!
 //! - **HF path**: `SparkAudio/Spark-TTS-0.5B`
-//! - **License SPDX**: `apache-2.0` (weight + code, end-to-end)
+//! - **License SPDX**: `cc-by-nc-sa-4.0` (the upstream model-card license;
+//!   research-only and share-alike)
 //! - **Category**: `codec` — bicodec is the dual-stream token codec used
 //!   inside the Spark-TTS pipeline: a **semantic** stream that carries
 //!   linguistic content plus a **fixed-length global speaker token**
@@ -83,11 +84,12 @@ const PROVENANCE_UPSTREAM_HF: &str = "SparkAudio/Spark-TTS-0.5B";
 
 /// Default weight-license SPDX (may be overridden via the `license`
 /// argument to [`convert_bicodec_file`]).
-const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
+const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-sa-4.0";
 
 /// Advisory source note stamped alongside the license into the
 /// `vokra.provenance.source` chunk.
-const PROVENANCE_SOURCE_NOTE: &str = "SparkAudio/Spark-TTS-0.5B (apache-2.0 end-to-end)";
+const PROVENANCE_SOURCE_NOTE: &str =
+    "SparkAudio/Spark-TTS-0.5B (cc-by-nc-sa-4.0; research-only, share-alike)";
 
 /// Outcome of a bicodec conversion.
 ///
@@ -123,7 +125,7 @@ pub struct BicodecReport {
 /// `input` is the upstream safetensors path; the emitted GGUF is written
 /// to `output`. `license` overrides the raw SPDX string stamped into
 /// `vokra.provenance.license` — the default is
-/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`), matching the SparkAudio
+/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-sa-4.0"`), matching the SparkAudio
 /// weight card at `huggingface.co/SparkAudio/Spark-TTS-0.5B`. Pass
 /// `Some(other_spdx)` when the immediate redistribution source has
 /// re-tagged the artifact.
@@ -154,13 +156,11 @@ pub fn convert_bicodec_file(
     // license`) and — when overridden — re-derives the class through
     // `LicenseClass::from_license_str` so the compliance gate stays honest
     // (a caller who overrides to a non-permissive SPDX would otherwise get a
-    // silent Permissive verdict). `None` keeps the SparkAudio default
-    // (apache-2.0 → Permissive) that matches the upstream weight card.
+    // silent permissive verdict). `None` keeps the SparkAudio default
+    // (cc-by-nc-sa-4.0 → NonCommercialShareAlike) that matches the
+    // upstream weight card.
     let license_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
-    let class = match license {
-        Some(_) => LicenseClass::from_license_str(license_spdx),
-        None => LicenseClass::Permissive,
-    };
+    let class = LicenseClass::from_license_str(license_spdx);
     vokra_core::stamp_provenance(
         &mut b,
         class,
@@ -356,7 +356,13 @@ mod tests {
             file.get(chunks::KEY_PROVENANCE_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(DEFAULT_LICENSE_SPDX),
-            "default license must be apache-2.0 when the `license` param is None"
+            "default license must be CC-BY-NC-SA-4.0 when the `license` param is None"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::NonCommercialShareAlike.as_str()),
+            "default class must retain both the NC and share-alike obligations"
         );
 
         std::fs::remove_file(&input).ok();

@@ -6,9 +6,11 @@
 //! vokra-misaki-g2p --kokoro kokoro-82m.gguf --text "Hello world" \
 //!     --lang en --voice af_bella --out hello.wav
 //!
-//! # Japanese with an explicit venv interpreter (recommended: `pip install misaki[ja]`):
+//! # Japanese with the interpreter created by `uv sync --project
+//! # integrations/vokra-misaki-g2p --frozen`:
 //! vokra-misaki-g2p --kokoro kokoro-82m.gguf --text "こんにちは" \
-//!     --lang ja --voice jf_alpha --python .venv/bin/python --out hi.wav
+//!     --lang ja --voice jf_alpha \
+//!     --python integrations/vokra-misaki-g2p/.venv/bin/python --out hi.wav
 //!
 //! # Dump the phoneme id sequence without synthesizing:
 //! vokra-misaki-g2p --kokoro kokoro-82m.gguf --text "Hello" --lang en --dump

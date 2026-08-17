@@ -40,7 +40,7 @@
 #     workflow still runs against the new SHA, but the summary flags it so
 #     the owner can decide whether to bump the pin.
 #
-#   * Python venv is installed inline (root Cargo.lock untouched — NFR-DS-02;
+#   * Python is provisioned through uv (root Cargo.lock untouched — NFR-DS-02;
 #     the final `git diff --exit-code Cargo.lock` step is the tripwire).
 #
 #   * NOT registered as a required check. HF flakiness must not block PRs
@@ -57,14 +57,14 @@ on:
     inputs:
       only:
         description: >-
-          Optional matrix filter — one of "voxcpm2", "vibevoice", or leave
-          empty for both. Useful when triaging one family member without
+          Matrix filter — one of "all", "voxcpm2", or "vibevoice".
+          Useful when triaging one family member without
           re-running the (>= 2 GB) download for the other.
         required: false
-        default: ""
+        default: all
         type: choice
         options:
-          - ""
+          - all
           - voxcpm2
           - vibevoice
   schedule:
@@ -85,6 +85,7 @@ on:
       - "crates/vokra-models/src/voxcpm2/**"
       - "crates/vokra-models/tests/parity_tts_continuous_vae.rs"
       - "crates/vokra-ops/**"
+      - "tools/parity/firered_asr_llm_l/prepare_checkpoint.py"
 
 concurrency:
   group: parity-tts-continuous-vae-real-${{ github.ref }}
@@ -140,8 +141,12 @@ jobs:
             vibevoice)
               echo 'matrix={"arch":["vibevoice"]}' >> "$GITHUB_OUTPUT"
               ;;
-            *)
+            all|"")
               echo 'matrix={"arch":["voxcpm2","vibevoice"]}' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::unknown matrix filter ${ONLY}"
+              exit 1
               ;;
           esac
 
@@ -171,6 +176,9 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -207,24 +215,22 @@ jobs:
           path: ${{ env.HF_HOME }}
           key: tts-cont-vae-${{ matrix.arch }}-${{ steps.pins.outputs.revision }}-v1
 
-      - name: Provision parity venv (torch + safetensors + huggingface_hub)
+      - name: Provision parity environment with uv (torch + safetensors + huggingface_hub)
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # torch CPU keeps the runner lean; the conversion path is
           # deterministic and never spins up a CUDA kernel.
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             --index-url https://download.pytorch.org/whl/cpu \
             'torch==2.9.1'
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'numpy>=2,<3' \
             'safetensors>=0.4' \
             'huggingface_hub>=0.36'
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" \
+            'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, numpy, safetensors, huggingface_hub
           print(f"parity venv: torch={torch.__version__} numpy={numpy.__version__} "
                 f"safetensors={safetensors.__version__} "
@@ -241,8 +247,6 @@ jobs:
           REVISION: ${{ steps.pins.outputs.revision }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           # GitHub Actions semantics: `$GITHUB_ENV` writes propagate to
           # the NEXT step, not the current one. Capture the path from
           # stdout and use it inline; also emit to $GITHUB_ENV so
@@ -253,7 +257,7 @@ jobs:
           # hygiene.sh` catches via `bash -n`. Mirror the parity-tts-dac
           # precedent — single-quoted Python string literals nested inside
           # the double-quoted `-c` argument.
-          SNAPSHOT_STDOUT="$(python -c "
+          SNAPSHOT_STDOUT="$(uv run --no-project --python "${PARITY_VENV}/bin/python" python -c "
           import os
           from huggingface_hub import snapshot_download
           repo = os.environ['REPO']
@@ -285,17 +289,13 @@ jobs:
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
 
-      # Pick the primary safetensors input for the converter. Multi-shard
-      # releases (e.g. VibeVoice's model-00001-of-00003.safetensors) surface
-      # here as a sharded pack; the converter takes a single safetensors
-      # file today (BF16 pre-widening is a follow-up). If a sharded release
-      # is detected AND no `model.safetensors` exists at the root, this
-      # step surfaces a loud NOTE and points at the pre-widen recipe
-      # (docs/parity/README-tts-continuous-vae.md — a doc that lands with
-      # Phase 2). The parity leg then runs against a compact "meta" file
-      # if the operator has staged one under $CKPT_DIR/model.safetensors,
-      # or clean-skips (never a fabricated pass).
-      - name: Select safetensors input for converter
+      # The Rust converter consumes one safetensors file. For a sharded
+      # checkpoint, merge every shard in index order through the existing
+      # fail-loud sidecar. The sidecar preserves F32/F16/BF16, rejects
+      # unexpected non-float state, and emits SHA/shared-storage audit files.
+      # VAST 47955178 proved this exact path against all three pinned
+      # VibeVoice-1.5B shards on 2026-08-18 (1,204 tensors; zero drops).
+      - name: Prepare complete safetensors input for converter
         id: input
         env:
           ARCH: ${{ matrix.arch }}
@@ -310,22 +310,33 @@ jobs:
             echo "sharded=false" >> "$GITHUB_OUTPUT"
             echo "primary safetensors: ${CKPT_DIR}/model.safetensors"
           else
-            SHARDS=$(ls -1 "${CKPT_DIR}"/*.safetensors 2>/dev/null | head -1 || true)
-            if [ -z "${SHARDS}" ]; then
+            shopt -s nullglob
+            shards=("${CKPT_DIR}"/*.safetensors)
+            if [ "${#shards[@]}" -eq 0 ]; then
               echo "::error::no *.safetensors under ${CKPT_DIR} — snapshot pattern miss?"
               exit 1
             fi
-            echo "input=${SHARDS}" >> "$GITHUB_OUTPUT"
-            echo "sharded=true" >> "$GITHUB_OUTPUT"
-            {
-              echo "### ${ARCH}: sharded safetensors detected"
-              echo ""
-              echo "No \`model.safetensors\` at the release root — using the first shard"
-              echo "(\`${SHARDS}\`) as the converter input. The T29-equivalent full-checkpoint"
-              echo "walk (multi-shard aggregation + BF16 pre-widen) is a follow-up wave."
-              echo "The parity leg here will exercise the SHARD's tensor subset only;"
-              echo "the reader / metadata / synthesize-refusal assertions still fire."
-            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "${#shards[@]}" -eq 1 ]; then
+              echo "input=${shards[0]}" >> "$GITHUB_OUTPUT"
+              echo "sharded=false" >> "$GITHUB_OUTPUT"
+              echo "single safetensors payload: ${shards[0]}"
+            else
+              merged="${RUNNER_TEMP}/${ARCH}.merged.safetensors"
+              uv run --no-project --python "${PARITY_VENV}/bin/python" python \
+                tools/parity/firered_asr_llm_l/prepare_checkpoint.py \
+                --input-dir "${CKPT_DIR}" \
+                --output "${merged}" \
+                2>&1 | tee "${RUNNER_TEMP}/merge-log.txt"
+              echo "input=${merged}" >> "$GITHUB_OUTPUT"
+              echo "sharded=true" >> "$GITHUB_OUTPUT"
+              {
+                echo "### ${ARCH}: complete sharded checkpoint merged"
+                echo ""
+                echo "- Shards: ${#shards[@]}"
+                echo "- Input: \`${merged}\`"
+                echo "- SHA-256: \`$(cut -d' ' -f1 "${merged}.sha256")\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
       - name: Convert to GGUF (vokra-cli convert --model ${{ matrix.arch }})
@@ -387,7 +398,7 @@ jobs:
           env "${ENV_GGUF}=${GGUF}" \
             cargo test --release -p vokra-models \
               --test parity_tts_continuous_vae \
-              "parity_${ARCH}" -- --nocapture \
+              "parity_${ARCH}" -- --exact --nocapture \
             2>&1 | tee "${RUNNER_TEMP}/parity-${ARCH}.txt"
           {
             echo "### ${ARCH}: parity leg"
@@ -398,7 +409,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Zero-dep tripwire — root Cargo.lock unchanged (NFR-DS-02)
-        # Belt-and-suspenders: pip-installing torch inside the parity venv
+        # Belt-and-suspenders: uv-installing torch inside the parity environment
         # must not have moved the root Rust lockfile.
         run: git diff --exit-code Cargo.lock
 
@@ -408,6 +419,9 @@ jobs:
         with:
           name: tts-cont-vae-parity-${{ matrix.arch }}
           path: |
+            ${{ runner.temp }}/merge-log.txt
+            ${{ runner.temp }}/${{ matrix.arch }}.merged.safetensors.sha256
+            ${{ runner.temp }}/${{ matrix.arch }}.merged.safetensors.shared_pairs.json
             ${{ runner.temp }}/convert-log.txt
             ${{ runner.temp }}/parity-*.txt
             ${{ runner.temp }}/${{ matrix.arch }}.gguf

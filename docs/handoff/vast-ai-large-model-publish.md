@@ -2,11 +2,15 @@
 
 Tracked / public。**2026-07-28** に本 M1 iMac (16GB RAM) 上で Voxtral-Small-24B-2507 (48GB BF16、11 shards) を convert 試行中、`SafetensorsFile::open` が全 shard を mmap した結果 swap 40GB used に到達 = OS レベル force shutdown リスクが実証されたことを受け、**8GB 超のモデル weight は本機で処理せず vast.ai の GPU box (副次的にメモリの多い host) で処理する** ことに 2026-07-28 決定。本 runbook は同 決定に基づく手順集。
 
+**2026-08-17 operational override**: model conversion, real-weight verification, and upload work that can materially consume memory run on **vast.ai only**. Do not download a checkpoint, convert it, verify it against real weights, or upload its result from the M1 iMac merely because the historical size heuristic below returns `LOCAL_SAFE` / `LOCAL_OK`. The Mac may perform checkpoint-free work only: source/doc review, static tests, and the HF-metadata size preflight. This override supersedes older local-conversion suggestions in this and per-model handoffs.
+
+**2026-08-18 Voxtral-Small-24B corrected dry-run + parity evidence**: VAST instance `47955178` converted pinned upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` through `run-voxtral-small-24b.sh` without an HF credential. A first provenance-only artifact was rejected before upload because its adapter metadata was absent. The corrected tracked side-car run produced 852 tensors / 54 metadata keys / 851 BF16 exact passthrough / 0 skipped / tokenizer embedded / active `frame_stack_mlp` adapter / 48,542,409,248 bytes / SHA-256 `91f2733492dd49b8e8f810192c77538d7d6d2f4c1c568098e11c3ad91f752c87`; converter peak RSS = 1,780.18 MiB. Header source is `mistralai/Voxtral-Small-24B-2507 (Apache-2.0)`, and model-card, owner sign-off, LICENSE, NOTICE, SOURCE and dry-run gates all pass. Independent upstream reference generation peaked at 130.43 GiB. Rust real-runtime results with unchanged bounds: mel `1.311e-5`, encoder `2.956e-5`, projector `1.812e-5`, logits `6.356e-4`, plus exact 27-id greedy/EOS match in 5,292.21 s. Bounded fixtures live in `tests/parity/voxtral-small-24b-2507/`; their VAST fixture-only smoke passed 4/4 after commit `7640a02`. The instance is stopped (CLI status `exited`, disk retained) with the corrected GGUF staged. Resume only for explicitly authorized credential transfer + `--push`, then live-verify and destroy.
+
 memory [[feedback-large-models-on-vast-ai]] の運用側詳細版。
 
 ## 0. TL;DR — 自動化 pipeline (Phase B, 2026-07-28)
 
-**判定**: `scripts/publish/check-model-size.sh <hf-repo>` を local で走らせて `LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` の verdict を確認。
+**判定**: `scripts/publish/check-model-size.sh <hf-repo>` を local で走らせて `LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` の verdict を確認する。この preflight は checkpoint を取得しないメタデータ照会だけに限る。convert / real-weight verify / upload は verdict にかかわらず上記 override に従い vast.ai で行う。
 
 **vast.ai 側で最初の 1 回だけ**:
 ```bash
@@ -20,16 +24,12 @@ source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 
 **モデル per に 1 コマンド**:
 ```bash
-# 例: Voxtral-Small-24B (48 GB、必ず vast.ai)
-~/vokra/scripts/publish/vast-ai/run-one.sh \
-  --hf-repo mistralai/Voxtral-Small-24B-2507 \
-  --vokra-slug voxtral-small-24b-2507 \
-  --model-kind voxtral \
-  --license-spdx apache-2.0 \
-  --push
+# Voxtral-Small-24B (48 GB、必ず vast.ai)。revision / shard-only include /
+# tokenizer / expected provenance は専用 wrapper で固定される。
+~/vokra/scripts/publish/vast-ai/run-voxtral-small-24b.sh --push
 ```
 
-`run-one.sh` は `HF snapshot_download (hf-transfer で 40x) → autodetect input → vokra-cli convert → publish-one.sh` を chain。`--push` を外せば dry-run stage のみ。T4 (非商用) は `--allow-noncommercial`、T3 (Copyleft) は `--acknowledge-copyleft`。詳細は `run-one.sh --help`。
+`run-one.sh` は `HF snapshot_download (hf-transfer) → autodetect input → vokra-cli convert → GGUF header verification → publish-one.sh` を chain。`--push` を外せば dry-run stage のみ。T4 (非商用) は `--allow-noncommercial`、T3 (Copyleft) は `--acknowledge-copyleft`。詳細は `run-one.sh --help`。Voxtral-Small-24B は `run-voxtral-small-24b.sh` を使い、upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` と 11 shard のみを固定する（同 repo の duplicate `consolidated.safetensors` は取得しない）。
 
 **local から誤って大モデルを publish する事故防止**: `publish-one.sh` に **gate 7 (>8 GiB fail-closed)** を追加済 (2026-07-28)。`VOKRA_PUBLISH_ON_VAST=1` 環境変数 (provision.sh が自動 set) がある instance では auto-bypass。owner 明示の `--allow-large` でも bypass 可 (自分の upload 帯域を分かってる時のみ)。
 
@@ -46,11 +46,11 @@ source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 **Voxtral streaming path (2026-07-29 追加)**: `convert_voxtral_file_streaming`
 API を追加した (M5 gap A-3、crates/vokra-convert/src/lib.rs)。header-only
 mmap per shard + 1-tensor-at-a-time payload streaming で、Voxtral-Small-24B
-(48GB) を M1 iMac (16GB) 上で peak `max(shard_header) + max(tensor_payload)`
-のフットプリントで変換可能。**K-quant はスコープ外** (widen-then-quantize が
-in-memory 必須ゆえ)。owner が local で dry-run するときは `convert_voxtral_file`
-の代わりにこれを使う。vast.ai は引き続き quantize 系や 30B+ の base case として
-必要。
+(48GB) でも peak `max(shard_header) + max(tensor_payload)` のフットプリントに
+抑える。2026-08-18 に adapter side-car も同じ streaming path へ統合し、VASTで
+peak 1,780.18 MiB を実測した。**この技術的な低メモリ性はlocal実行の許可ではない**。
+上記operational overrideどおり、実weight変換・検証・uploadはサイズを問わずVASTで
+行う。**K-quant はスコープ外** (widen-then-quantizeがin-memory必須)。
 
 **Borderline (single-tenant なら本機可、他作業と競合させない)**:
 - 5-8GB の safetensors: kyutai-stt (5.23GB BF16、2026-07-28 実績あり)、csm-1b (6.21GB single-file、実績あり)、moshiko-7b (~14GB BF16、既 published)
@@ -107,7 +107,21 @@ cargo build --release -p vokra-cli
 
 ### 2.5 upstream weight DL + convert + publish
 
-Voxtral-Small-24B-2507 の場合:
+Voxtral-Small-24B-2507 の推奨経路:
+
+```bash
+cd ~/vokra
+
+# dry-run: convert 後に model/source/tokenizer/tensor count と全 publish gate を検証
+./scripts/publish/vast-ai/run-voxtral-small-24b.sh
+
+# dry-run が通った同じ invocation 内で publish まで進める場合
+./scripts/publish/vast-ai/run-voxtral-small-24b.sh --push
+```
+
+専用 wrapper は exact upstream revision、`model-*.safetensors` + index、`config.json`、`tekken.json` を固定する。`consolidated.safetensors` は取得しないため、upstream weight の 48 GB 重複 download を避ける。`--push` invocation 自体も publish 前に必ず dry-run gate を通る。
+
+以下は自動化が利用できない場合だけの手動 fallback:
 
 ```bash
 mkdir -p ~/scratchpad/hf-cache ~/scratchpad/staging/voxtral-small-24b-2507
@@ -193,7 +207,7 @@ vast.ai へ移送するか本機で処理するかの判定は事前に:
 
 ```bash
 # HF API で合計 safetensors サイズ確認
-curl -sL "https://huggingface.co/api/models/<repo>?blobs=true" | python3 -c "
+curl -sL "https://huggingface.co/api/models/<repo>?blobs=true" | uv run --no-project python -c "
 import json, sys
 d = json.load(sys.stdin)
 total = 0

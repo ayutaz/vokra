@@ -473,14 +473,14 @@ run_self_test() {
   if [[ ! -f "$driver" ]]; then
     echo "  FAIL: resilient_download.py missing at $driver"; fail=1
   else
-    # Run its self-test if python3 is on PATH. Skip cleanly if not.
-    if command -v python3 >/dev/null 2>&1; then
+    # Run through uv so the VAST runbook never falls back to system Python.
+    if command -v uv >/dev/null 2>&1; then
       cases=$((cases + 1))
-      if ! python3 "$driver" --self-test >/dev/null 2>&1; then
+      if ! uv run --no-project python "$driver" --self-test >/dev/null 2>&1; then
         echo "  FAIL: resilient_download.py --self-test returned non-zero"; fail=1
       fi
     else
-      echo "  [skip] python3 not on PATH — cannot self-test resilient_download.py"
+      echo "  [skip] uv not on PATH — cannot self-test resilient_download.py"
     fi
   fi
 

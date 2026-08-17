@@ -517,6 +517,35 @@ impl SbV2Model {
         self.speaker_projection.as_ref()
     }
 
+    /// Runs the real SDP conditioner only, for the VAST-generated parity
+    /// fixture in `tests/fixtures/sbv2/sdp_body_seed*_T*.f32.bin`.
+    ///
+    /// This deliberately exposes no mutable SDP state and skips the random
+    /// latent/flow-inverse portion of [`SbV2SDP::sample`]. It exists so the
+    /// integration parity test can compare the deterministic body against the
+    /// independently executed upstream MIT VITS implementation. It is not a
+    /// general synthesis entry point.
+    #[doc(hidden)]
+    pub fn sdp_body_for_parity(
+        &self,
+        hidden_row_major: &[f32],
+        text_seq_len: usize,
+        speaker_embedding: &[f32],
+    ) -> Vec<f32> {
+        assert_eq!(
+            hidden_row_major.len(),
+            text_seq_len * self.sdp.d_hidden(),
+            "SBV2 SDP body parity input must be [T, d_hidden] row-major"
+        );
+        assert_eq!(
+            speaker_embedding.len(),
+            self.sdp.gin(),
+            "SBV2 SDP body parity speaker input must have gin elements"
+        );
+        self.sdp
+            .body(hidden_row_major, text_seq_len, speaker_embedding)
+    }
+
     /// Test-only constructor: assembles a full pipeline out of tiny,
     /// deterministic, "shaped-like-the-real-thing" components — this proves
     /// the Task 23 *wiring*, not any trained voice's quality (no real

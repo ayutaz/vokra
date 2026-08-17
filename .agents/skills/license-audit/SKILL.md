@@ -75,7 +75,7 @@ cargo deny check licenses advisories bans
 cargo audit
 bash scripts/check-forbidden-symbols.sh
 bash scripts/check-zero-deps.sh
-python3 scripts/publish/signoff_match.py --self-test
+uv run --no-project --python 3.12 python scripts/publish/signoff_match.py --self-test
 ```
 
 CONTRIBUTING.md §3（dependency license policy）/ §4（new model）と突き合わせる。

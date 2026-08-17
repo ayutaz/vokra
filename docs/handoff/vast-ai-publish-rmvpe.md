@@ -103,7 +103,7 @@ curl -sL https://raw.githubusercontent.com/Dream-High/RMVPE/main/LICENSE | head 
 
 # Release verify - github release で pt file の存在を確認
 curl -sL https://api.github.com/repos/Dream-High/RMVPE/releases/latest | \
-  python3 -c "import json,sys; d=json.load(sys.stdin); \
+  uv run --no-project python -c "import json,sys; d=json.load(sys.stdin); \
     print('tag:', d.get('tag_name')); \
     [print(a['name'], a['size']) for a in d.get('assets',[])]"
 ```
@@ -175,7 +175,7 @@ uv run python dump_reference.py \
 # 6. Path A + Path B 両方の env を export し parity harness を実行
 export VOKRA_RMVPE_REAL_GGUF=~/rmvpe-fixtures/rmvpe.gguf
 export VOKRA_RMVPE_REAL_HIDDEN=~/rmvpe-fixtures/dump/hidden.f32
-export VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM=$(python3 -c \
+export VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM=$(uv run --no-project python -c \
     'import json; print(json.load(open("'"$HOME"'/rmvpe-fixtures/dump/meta.json"))["feature_dim"])')
 export VOKRA_RMVPE_REAL_ARGMAX=~/rmvpe-fixtures/dump/argmax.u32
 cd ~/vokra

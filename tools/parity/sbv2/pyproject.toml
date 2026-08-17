@@ -1,0 +1,30 @@
+[project]
+name = "vokra-sbv2-reference"
+version = "0.1.0"
+description = "Pinned upstream SBV2 reference environment for Vokra parity."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Offline/CI oracle only. These packages never enter a Vokra runtime or
+    # distribution; the Rust workspace remains zero-dependency.
+    "huggingface-hub==0.36.0",
+    "numpy==1.26.4",
+    "protobuf==5.29.5",
+    "safetensors==0.5.3",
+    "sentencepiece==0.2.2",
+    "torch==2.6.0",
+    "transformers==4.57.6",
+]
+
+[tool.uv]
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

@@ -1,0 +1,13 @@
+{
+  "kind": "frame_stack_mlp",
+  "tensor_prefix": "multi_modal_projector.",
+  "frame_stack": 4,
+  "in_dim": 5120,
+  "out_dim": 5120,
+  "has_bias": false,
+  "has_layernorm": false,
+  "activation": "gelu",
+  "mlp_hidden_dims": [5120],
+  "mlp_layer_names": ["linear_1", "linear_2"],
+  "weight_name": "weight"
+}

@@ -1,189 +1,130 @@
 # parity-deepfilternet3-real — owner runbook
 
 Tracked / public. Operational counterpart to
-`.github/workflows/parity-deepfilternet3-real.yml`, landed 2026-07-28 as
-the CI leg for the M4-20 T17 DeepFilterNet3 `denoise` parity harness
+`.github/workflows/parity-deepfilternet3-real.yml` for the M4-20 T17
+DeepFilterNet3 `denoise` parity harness
 (`crates/vokra-ops/tests/parity_denoise_dfn3.rs`).
 
-## Overview
+## What the workflow proves
 
-The workflow is **two-phase**:
+The workflow has two explicit phases:
 
-* **Phase A — Conversion (reproducible on any hosted-runner).** Fetches
-  the pinned `Rikorose/DeepFilterNet` GitHub commit's
-  `models/DeepFilterNet3.zip` (sha256 `49c52edc…`, the same prefix the
-  harness docstring cites), flattens the `.ckpt.best` via
-  `tools/parity/dfn3_prepare_checkpoint.py`, and runs
-  `vokra-cli convert --model denoise`. The converter's own self-check re-
-  parses the emitted GGUF via `DenoiseModel::from_gguf`, so a successful
-  convert already asserts full round-trip loadability.
+* **Phase A — conversion and GGUF loadability.** It fetches
+  `Rikorose/DeepFilterNet`'s `models/DeepFilterNet3.zip` at commit
+  `82b0c7ad33fc756284104053817d1e855d8d8386`, verifies SHA-256
+  `49c52edc8947ae1f9bf50d81530beaf3a2c3245aeaf34b6f31ff535cd22284d2`,
+  flattens `model_120.ckpt.best`, and runs
+  `vokra-cli convert --model denoise`. The converter reparses the emitted
+  GGUF through `DenoiseModel::from_gguf`, so successful conversion also proves
+  runtime loadability.
 
-* **Phase B — Byte-level parity (owner-provisioned reference bundle).**
-  Runs `parity_denoise_dfn3::dfn3_real_weight_stage_and_output_parity`
-  against the reference dumps
-  (`clean_48k.f32` / `noisy_48k.f32` / `enhanced_upstream.f32` + `taps/`)
-  the harness demands. The bundle is fetched from
-  `vars.VOKRA_DFN3_DATA_URL` — currently unset because the exact
-  `prep_noisy.py` recipe (specific 11 s clean source + noise seed + mixing
-  formula that landed the harness's tight `snr_noisy = 5.002 ± 0.01` and
-  `snr_up = 14.768 ± 0.01` bounds) lives outside the repo (M4-20
-  owner-local `~/.cache/vokra-eval/out/dfn3-real/`).
+* **Phase B — independent real numerical parity.** It creates
+  `clean_48k.f32`, `noisy_48k.f32`, `enhanced_upstream.f32`, and every
+  `taps/*.f32` input required by
+  `dfn3_real_weight_stage_and_output_parity`. The upstream Python 3.11 oracle
+  is pinned by `tools/parity/dfn3/{pyproject.toml,uv.lock}` and executed only
+  through uv. `dfn3_dump_reference.py` calls the real DeepFilterNet 0.5.6
+  checkpoint and requires its stage walk to match the upstream whole-model
+  forward bit-for-bit before Rust sees the fixtures.
 
-Absent Phase B provisioning, the workflow ONLY exercises Phase A and
-emits a `::notice::` documenting the deferred parity leg — **fabricated
-pass 禁止** (FR-EX-08).
+No mutable `VOKRA_DFN3_DATA_URL` bundle is needed. Matching PRs and enabled
+schedules run both phases. A manual dispatch runs Phase A only by default and
+runs both phases with `force_parity=true`; conversion-only output is visibly
+marked as a Phase B skip, never as a numerical pass (FR-EX-08).
 
-## Owner action checklist
+## Exact fixture recipe
 
-### Phase A only (conversion + GGUF sanity)
+The quality bounds were established on 2026-07-17 with:
 
-1. Set the enable variable so cron + PR triggers exercise the conversion
-   path:
+1. `tests/fixtures/audio/jfk-30s.wav` (11 seconds of 16-kHz mono PCM16);
+2. `torchaudio.functional.resample` from torch/torchaudio 2.1.2 for 16→48 kHz;
+3. `np.random.default_rng(20260717)` float64 white noise;
+4. raw full-signal power scaling to 5.000 dB construction SNR;
+5. DeepFilterNet/DeepFilterLib 0.5.6 running the pinned real checkpoint.
 
-   ```
-   gh api -X POST repos/ayutaz/vokra/actions/variables \
-     -f name=VOKRA_DFN3_ENABLE -f value=1
-   ```
+The Rust harness separately computes zero-mean SI-SNR, hence its noisy anchor
+is `5.002 dB`. Do not replace the resampler or use zero-mean power during
+fixture construction: both change the input bytes and the upstream quality
+anchor.
 
-   Or via the UI: `Settings → Secrets and variables → Actions →
-   Variables → New repository variable`, name `VOKRA_DFN3_ENABLE`,
-   value `1`. Every value other than `1` is treated as disabled
-   (the setup job's decide step uses `[ "${ENABLE_VAR}" = "1" ]`).
+## Owner operation
 
-2. Fire the initial dispatch:
+Enable the weekly full gate:
 
-   ```
-   gh workflow run parity-deepfilternet3-real.yml
-   ```
-
-   or open the workflow in the Actions tab → `Run workflow`.
-
-3. In the run log, verify:
-   * `setup` job → `run_conversion=true`, `run_parity=false`, and the
-     Phase B `::notice::` is present in the summary.
-   * `parity (dfn3)` job → the sha256 verification line
-     (`sha256 OK: 49c52edc…`), the safetensors size table, the
-     conversion "OK" table, and the "SKIPPED (Phase B not enabled)"
-     summary block.
-   * Final `git diff --exit-code Cargo.lock` step exits clean — zero-dep
-     NFR-DS-02 held.
-
-### Phase B (byte-level parity — requires reference bundle)
-
-Enabling Phase B needs a reproducible `prep_noisy.py` (or an equivalent
-pre-baked `.tar.gz` bundle) whose output bit-exactly matches the
-`snr_noisy = 5.002 ± 0.01` bound in the harness. Two paths:
-
-**Path 1 — commit `prep_noisy.py` alongside the existing dumpers —
-LANDED 2026-07-29.** `tools/parity/dfn3_prep_noisy.py` now sits next to
-`dfn3_prepare_checkpoint.py` / `dfn3_dump_reference.py`, reproducing the
-2026-07-17 M4-20 recipe bit-for-bit (seed `20260717`, 5.000 dB SNR;
-verified `measured SNR: 5.0000 dB` on the JFK fixture at land time). The
-workflow can now invoke:
-
+```sh
+gh api -X POST repos/ayutaz/vokra/actions/variables \
+  -f name=VOKRA_DFN3_ENABLE -f value=1
 ```
-. "${PARITY_VENV}/bin/activate"
-python -m pip install 'soundfile>=0.12' 'scipy>=1.11' 'numpy<2'
-python tools/parity/dfn3_prep_noisy.py \
+
+Run the initial full dispatch:
+
+```sh
+gh workflow run parity-deepfilternet3-real.yml -f force_parity=true
+```
+
+The completed run must show:
+
+* `run_conversion=true` and `run_parity=true`;
+* checkpoint SHA verification and GGUF conversion/loadability success;
+* upstream `self_check_max_delta` values all zero;
+* all 21 stage/output comparisons within their existing bounds;
+* noisy/upstream/Vokra SI-SNR around `5.002 / 14.768 / 14.768 dB`;
+* no `skipping: set VOKRA_DFN3_GGUF` line;
+* `git diff --exit-code Cargo.lock` success.
+
+`gh` authentication must be valid before dispatching or setting the repository
+variable. The workflow is not a required check; promoting it remains an owner
+decision after consecutive stable runs.
+
+## VAST reproduction
+
+Run model-backed Python and Cargo work on VAST, not the Mac:
+
+```sh
+uv sync --project tools/parity/dfn3 --frozen --python 3.11
+
+uv run --project tools/parity/dfn3 --frozen python \
+  tools/parity/dfn3_prep_noisy.py \
   --clean-source tests/fixtures/audio/jfk-30s.wav \
-  --out-dir "${RUNNER_TEMP}/dfn3-refdata"
-# --enhance path (needs torch + deepfilternet, ~1.5 GB wheel):
-python -m pip install 'torch==2.1.2' 'torchaudio==2.1.2' 'deepfilternet==0.5.6'
-python tools/parity/dfn3_prep_noisy.py \
-  --clean-source tests/fixtures/audio/jfk-30s.wav \
-  --out-dir "${RUNNER_TEMP}/dfn3-refdata" \
+  --out-dir /tmp/dfn3-refdata \
   --enhance --model-dir "${DFN3_MODEL_DIR}"
-python tools/parity/dfn3_dump_reference.py \
+
+uv run --project tools/parity/dfn3 --frozen python \
+  tools/parity/dfn3_dump_reference.py \
   --model-dir "${DFN3_MODEL_DIR}" \
-  --noisy "${RUNNER_TEMP}/dfn3-refdata/noisy_48k.f32" \
-  --out "${RUNNER_TEMP}/dfn3-refdata/taps"
+  --noisy /tmp/dfn3-refdata/noisy_48k.f32 \
+  --out /tmp/dfn3-refdata/taps
+
+VOKRA_DFN3_GGUF="${DFN3_GGUF}" VOKRA_DFN3_DATA=/tmp/dfn3-refdata \
+  cargo test --locked --release -p vokra-ops --test parity_denoise_dfn3 \
+  dfn3_real_weight_stage_and_output_parity -- --nocapture
 ```
 
-The workflow-side wiring (dropping the `VOKRA_DFN3_DATA_URL` gate and
-calling the two scripts inline) is a follow-up in the same series;
-`prep_noisy.py` on its own already closes Path 1's "recipe lives outside
-the repo" gap.
-
-**Path 2 — host a pre-baked `.tar.gz` at a stable URL.** If committing
-`prep_noisy.py` is deferred, the owner can bake the reference bundle
-locally on the M4-20 machine and host it at any HTTPS URL Vokra
-controls (`huggingface.co/vokra/dfn3-parity-refdata`, a Vokra release
-asset, etc.). The bundle layout the workflow expects:
-
-```
-dfn3-refdata.tar.gz →
-  clean_48k.f32
-  noisy_48k.f32
-  enhanced_upstream.f32
-  taps/
-    spec.f32
-    feat_erb.f32
-    feat_spec.f32
-    e0.f32 e1.f32 e2.f32 e3.f32
-    c0.f32
-    cemb.f32
-    emb_in.f32 emb.f32
-    lsnr.f32
-    m.f32
-    df_gru_out.f32
-    coefs.f32
-    spec_e.f32
-    enhanced.f32
-```
-
-Then set:
-
-```
-gh api -X POST repos/ayutaz/vokra/actions/variables \
-  -f name=VOKRA_DFN3_DATA_URL -f value=https://example.org/.../dfn3-refdata.tar.gz
-# Optional: pin the bundle sha256 for tamper detection:
-gh api -X POST repos/ayutaz/vokra/actions/variables \
-  -f name=VOKRA_DFN3_DATA_SHA256 -f value=<sha256>
-```
-
-Subsequent cron + PR + dispatch runs fetch the bundle, verify sha256
-(if set), and run the full `parity_denoise_dfn3` per-stage bound
-assertion.
+2026-08-18 VAST instance `47955178` evidence: the first run exposed that the
+tracked prep recipe had drifted from the preserved 2026-07-17 script
+(scipy/zero-mean instead of torchaudio/raw-power), yielding an honest
+`14.790` vs `14.768 ± 0.01` quality-anchor failure. Restoring the exact recipe
+made all existing bounds pass without changing any tolerance: enhanced
+waveform max |Δ| `4.172e-7`; upstream and Vokra SI-SNR both `14.768 dB`.
 
 ## Troubleshooting
 
-* **`sha256 mismatch` on the DFN3 zip.** The `82b0c7ad…` commit has been
-  static since 2023-05-23; a mismatch indicates either a Rikorose
-  upstream re-upload (extremely unlikely; would invalidate the harness
-  bounds too) or transfer corruption. Re-run the workflow; if the
-  mismatch persists, escalate — do not bump the pin without also
-  re-baking the reference bundle.
+* **Checkpoint SHA mismatch:** retry once, then investigate the upstream
+  artifact. Do not bump the pin without regenerating and reviewing parity.
+* **Raw `.f32` “format not recognised”:** the dumper must use its explicit
+  little-endian raw-f32 path; libsndfile cannot infer a headerless format.
+* **Quality anchor moves but stage deltas pass:** compare the fixture recipe
+  and uv lock first. Do not relax the SI-SNR bound.
+* **Harness reports a skip:** both `VOKRA_DFN3_GGUF` and `VOKRA_DFN3_DATA`
+  must resolve to existing paths; the workflow converts this condition into a
+  hard failure during a requested Phase B run.
 
-* **`parity_denoise_dfn3 skipped despite both env vars being set`.** The
-  workflow has an explicit guard for this: if the harness prints
-  `skipping: set VOKRA_DFN3_GGUF …` while both env vars are set, the
-  step flips PARITY_EXIT=1. Usually indicates the env var was set to an
-  unresolved path.
+## Related files
 
-* **`git diff --exit-code Cargo.lock` fails.** The parity venv's `pip
-  install torch` must not touch the root Cargo.lock. If this ever fires,
-  something in the workflow moved to `cargo install`; revert and
-  investigate.
-
-## Non-goals
-
-* **Not** a required check. HF flakiness / GitHub raw CDN outages
-  must not block PRs (same posture as every other parity-*-real
-  workflow on this branch). Promotion to required is an explicit owner
-  decision after weeks of consecutive greens (`docs/handoff/parity-ci-
-  flip-switch.md` §Promotion criteria).
-
-* **Not** a load bearer for the M4-20 T17 GA judgment. The M1
-  owner-local run is the authoritative parity record; this CI leg
-  guards against future drift once Phase B is provisioned.
-
-## Related
-
-* Harness: `crates/vokra-ops/tests/parity_denoise_dfn3.rs`
-* Prep tool: `tools/parity/dfn3_prepare_checkpoint.py`
-* Reference dumper: `tools/parity/dfn3_dump_reference.py`
-* Primitives fixture: `tools/parity/dfn3_primitives_fixture.py` (already
-  committed under `tests/parity/dfn3/`, exercised by the per-PR fixture
-  parity in `ci.yml`)
-* Local M4-20 recipe: `docs/bench-baselines/m1-real-weight-eval-2026-07-16/`
-* Flip-switch overview: `docs/handoff/parity-ci-flip-switch.md`
+* Workflow: `.github/workflows/parity-deepfilternet3-real.yml`
+* Locked oracle: `tools/parity/dfn3/{pyproject.toml,uv.lock}`
+* Checkpoint prep: `tools/parity/dfn3_prepare_checkpoint.py`
+* Audio prep: `tools/parity/dfn3_prep_noisy.py`
+* Upstream dumper: `tools/parity/dfn3_dump_reference.py`
+* Rust gate: `crates/vokra-ops/tests/parity_denoise_dfn3.rs`
+* Committed primitive fixtures: `tests/parity/dfn3/`

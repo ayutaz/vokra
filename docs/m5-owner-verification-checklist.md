@@ -4,13 +4,15 @@
 
 **CC-side status (2026-07-21)**: this checklist covers the owner tasks left by the M5 WPs whose CC-side work has landed on branch `feat/m5-plan-and-wave1`. It is the input to the **v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13).
 
-**2026-08-10 addendum (SBV2 v2 4-Blocker + Blocker 2c residual + ZH BERT publish + H100 FA v3 bakeoff, PR #27 open)**: on branch `feat/sbv2-voxtral-real-verify-2026-08-06` (18 commits ahead of `origin/main`, tip `8d469eb`), the SBV2 v2 3-language full-publish stack landed in four waves:
+**2026-08-10 addendum (SBV2 v2 4-Blocker + Blocker 2c residual + ZH BERT publish + H100 FA v3 bakeoff; PR #27 merged 2026-08-11)**: the following is the pre-merge wave ledger from branch `feat/sbv2-voxtral-real-verify-2026-08-06` (then 18 commits ahead of `origin/main`, tip `8d469eb`). PR #27 merged as `0937ef874495465bdadf18d5511f14e6e2a0ab71`; the follow-up audit PR #29 merged as `8e048d8afd95d7d26bfa5121eef7533178b854d1` on 2026-08-17.
 - **Wave 1** (2026-08-10, 9 commits `16a8410..9cb4d52`): SBV2 4 Blockers closed — Blocker 5 (SentencePiece proto parser + WordPiece + DeBERTa v2/v3 sibling tokenizer discovery, `cb2cd7b`/`e7dc2e4`/`7242f94`), Blocker 3 (`SbV2Model::speaker_projection()` accessor, `1a90e0d`), Blocker 2b (TDD-hardening 3 commits: flow rename table + metadata-key contract + converter spelling, `296dba1`/`672ef5b`/`922d3f5`), Blocker 2c Wave 1 (rational-quadratic spline math primitive, `f1b7815`).
 - **Wave 2** (2026-08-10, 3 commits `5027b2b..c8e2777`): Blocker 2c residual — `.sqrt()` routed through `vokra_math` (`5027b2b`), from_gguf loud-fail defensive check for `sbv2.sdp.flows.<even>.*` unread tensors (`879ba8e`), `#[ignore]`d `sdp_body_matches_torch_ref` scaffold as owner-fixture-待ち gate (`c8e2777`).
-- **Wave 3** (2026-08-10, 3 commits `315b8f7..3f76abf`): license-audit.md §3.1 row 318 (ZH BERT `hfl/chinese-roberta-wwm-ext-large`) blank → ☑ Commercial 2026-08-10 owner delegation (`315b8f7`), CLI `bert-base` arm + `nemo_pt_to_safetensors.py` shared-tensor dedup (`1ea38bd`), fixture sidecar populate for WP-19 4-file loader (`3f76abf`).
+- **Wave 3** (2026-08-10, 3 commits `315b8f7..3f76abf`): the license-audit.md §3.1 entry for ZH BERT `hfl/chinese-roberta-wwm-ext-large` changed blank → ☑ Commercial by owner delegation (`315b8f7`), CLI `bert-base` arm + `nemo_pt_to_safetensors.py` shared-tensor dedup (`1ea38bd`), fixture sidecar populate for WP-19 4-file loader (`3f76abf`).
 - **Wave 4** (2026-08-10, 1 commit `8d469eb`): M4-07 T17/T18 H100 FA v3 bakeoff on vast.ai H100 PCIe (60 min, $1.73, offer #31427212). See §7 (SoTA cross-cutting) for owner ripples — the M4-07 owner ripple is tracked in `docs/m4-owner-verification-checklist.md` §2.1 (dashboard registration only remains).
 
-**Verify snapshot at branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). PR #27 is **OPEN** and needs owner review + merge.
+**Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
+
+**2026-08-18 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. The 2026-08-17 reconciliation found 41 live action-ledger boxes; the repeatable SBV2 SDP VAST gate, both misaki environment rows, and the first corrected SBV2 GitHub Actions real-parity verdict closed on 2026-08-18, leaving **37 unchecked boxes**. This remains an action ledger rather than an implementation metric: a box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a box complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total. The reconciliation below removes stale merge/sign-off/implementation claims while retaining genuine follow-up work.
 
 **Tracking**: this file (`docs/m5-owner-verification-checklist.md`) is **tracked (public)**, same convention as `docs/m3-` / `docs/m4-owner-verification-checklist.md`. Referenced handoffs `docs/handoff/m5-*.md` are tracked/public; specs `docs/tickets/m5/*.md` and ADRs `docs/adr/M5-*.md` are gitignore-local internal docs (referenced by ID).
 
@@ -188,121 +190,101 @@ CC landed `scripts/check-console-static.sh` (C-ABI-completeness + FFI-panic-fire
 
 ---
 
-## 5. M5-07 — Bark / StyleTTS 2 / Matcha-TTS license sign-off
+## 5. M5-07 — Bark / StyleTTS 2 / Matcha-TTS license decision (reconciled)
 
-CC landed the audit material (fail-closed, docs-only) in `docs/license-audit.md` §3 / §3.1 / §CC-verified and `docs/legal-compliance.md` §9.
+The current `docs/license-audit.md` §3.1 rows record Bark and Matcha-TTS as Commercial (2026-07-23) and StyleTTS 2 as Rejected. The earlier owner-decision wording in this checklist was a historical audit snapshot, not an active blank-sign-off gate.
 
-### 5.1 Adoption sign-off
+### 5.1 Recorded decision
 
-- **(a)**: for Bark / StyleTTS 2 / Matcha-TTS, make the Commercial / Research-only / Rejected decision, pass the legal-compliance checklist, and fix the §9 ✅/⚠️ tier. Fill the §3.1 sign-off rows (blank = fail-closed = not for official distribution; CC did not pre-fill).
-- **(b)**: an adoption + legal-sufficiency judgment.
+- **(a)**: retain the current decisions: Bark = Commercial, Matcha-TTS = Commercial, StyleTTS 2 = Rejected. Reopen a row only if a primary source changes.
+- **(b)**: these are already-recorded adoption + legal-sufficiency judgments; real-weight verification and implementation remain separate gates.
 - **(c)**: `docs/license-audit.md` §3.1; spec M5-07-T09/T10.
-- **(d)**: each model has a recorded tier + signed-off row.
-- **honest note**: Bark = current MIT (was CC-BY-NC → MIT 2023-05-01) but the HF card says "research purposes only"; StyleTTS 2 weight is a voice-consent usage agreement → registry `Unknown` (fail-closed); Matcha checkpoint has no separate license file (owner primary-source check pending). These are owner legal calls.
+- **(d)**: satisfied — all three rows have a recorded tier and decision.
+- **honest note**: Bark is current MIT (was CC-BY-NC → MIT 2023-05-01) while the HF card says "research purposes only"; the recorded §3.1 decision treats the MIT license as governing. StyleTTS 2 remains excluded because its weight carries a voice-consent usage agreement. Matcha's checkpoint provenance remains a real-weight verification concern even though its §3.1 commercial row is recorded.
 
 ---
 
-## SoTA plan Phase 1-4 + JA + BF16 fleet (2026-07-25, PR #20)
+## SoTA plan Phase 1-4 + JA + BF16 fleet (reconciled 2026-08-17)
 
-CC landed the SoTA plan Phase 1-4 + JA + BF16 fleet scaffolds on branch `feat/sota-phase1-2026-07-23`. The following are owner-only actions. All checkboxes are unchecked; fail-closed default (blank / unchecked → no publish, no promote) applies until yousan-signed with primary-source verification.
+PR #20 has merged. This section is now a mixed owner/action ledger: its remaining unchecked boxes are not a claim that the corresponding model or converter is absent. Fail-closed still applies where a row has no decision or where a publish gate has not been completed.
 
 ### 6.1 PR #20 review + merge
 
-- [ ] Review PR #20 (branch `feat/sota-phase1-2026-07-23` → `main`) and merge.
+- [x] Review and merge PR #20 (`feat/sota-phase1-2026-07-23` → `main`), merged as `7ed054825bbd51d8c0b7556657db5000059de922` on 2026-07-25.
 
 ### 6.2 License sign-off in `docs/license-audit.md` §3.1
 
-Fail-closed default (blank → no publish) applies until yousan-signed with primary-source verification. CC did not pre-fill any row.
+`docs/license-audit.md` §3.1 is the source of truth. The old per-family unchecked list was stale: it treated every row as blank even after decisions were recorded. These are **license decisions only**, not claims that a converter is publish-ready or that a real-weight parity run has completed.
 
-BF16 fleet families:
+- [x] **Commercial decision recorded** for `kimi_audio`, `step_audio2_mini`, `baichuan_audio`, `speechtokenizer`, `funcodec`, `xy_tokenizer`, `neucodec`, `ecapa_tdnn`, `wespeaker`, `speaker_3d`, `emotion2vec`; and for Dia, Zonos, Kyutai-STT, Parakeet-TDT/CTC, Canary, OmniASR-CTC, Distil-Whisper Large, CosyVoice3, all three Chatterbox variants, Qwen3-TTS, VoxCPM2, kotoba-whisper, and Irodori.
+- [x] **Research-only decision recorded** for `bicodec` (CC-BY-NC-SA-4.0; its T4/T3 publication record is separate from normal commercial publishing).
+- [x] **Rejected/withheld decision recorded** for VITS-JA (explicit corpus redistribution prohibition; see §6.8) and for the withdrawn VibeVoice-Large upstream. The available VibeVoice-1.5B and Realtime-0.5B variants have Commercial decisions.
+- [ ] **Voice-conversion scope decision remains** for `openvoice_v2`, `knn_vc`, `freevc`, and `meanvc`: choose an experimental-repository destination or explicitly reject them for the public main repository. Their blank §3.1 decisions are intentional pending that policy decision, not missing converter implementations.
 
-- [ ] `kimi_audio`
-- [ ] `step_audio2_mini`
-- [ ] `baichuan_audio`
-- [ ] `speechtokenizer`
-- [ ] `funcodec`
-- [ ] `xy_tokenizer`
-- [ ] `bicodec`
-- [ ] `neucodec`
-- [ ] `openvoice_v2`
-- [ ] `knn_vc`
-- [ ] `freevc`
-- [ ] `meanvc`
-- [ ] `ecapa_tdnn`
-- [ ] `wespeaker`
-- [ ] `speaker_3d`
-- [ ] `emotion2vec`
+### 6.3 Parity CI activation (10 workflows: 9 variable gates + SBV2 sidecar gate)
 
-Phase 1-4 + JA families:
+Full runbook: `docs/handoff/parity-ci-flip-switch.md`. For the nine variable-gated families: read the HF card → complete §3.1 sign-off (§6.2) if publishable → set the `VOKRA_<PREFIX>_ENABLE=1` repo/environment variable → `gh workflow run parity-<family>-real.yml` → confirm the workflow reports a PASS verdict. SBV2 is the deliberate exception: its three required sidecars control the current JA/EN numerical-parity leg.
 
-- [ ] Dia
-- [ ] Zonos
-- [ ] Kyutai-STT
-- [ ] Parakeet-TDT
-- [ ] Parakeet-CTC
-- [ ] Canary
-- [ ] OmniASR-CTC
-- [ ] Distil-Large
-- [ ] CosyVoice3
-- [ ] Chatterbox × 3 variants (sign off all three at their respective rows)
-- [ ] Qwen3-TTS
-- [ ] VoxCPM2
-- [ ] VibeVoice
-- [ ] kotoba-whisper
-- [ ] Irodori
-- [ ] vits-ja (audit only — weight publication is separately excluded, see §6.8)
+**2026-08-17 status**: scheduled workflow successes exist for the listed families, but a green scheduled run alone does not prove that the required real-weight leg was enabled, downloaded, and produced the required reference artifact. Keep these boxes open until the per-family run output demonstrates the full PASS verdict without an honest skip.
 
-### 6.3 Parity CI activation (9 workflows)
-
-Full runbook: `docs/handoff/parity-ci-flip-switch.md`. Per family: read the HF card → complete §3.1 sign-off (§6.2) if publishable → set the `VOKRA_<PREFIX>_ENABLE=1` repo/environment variable → `gh workflow run parity-<family>-real.yml` → confirm the workflow reports a PASS verdict.
+**2026-08-18 compute policy**: the recipe above describes the repository's
+activation mechanism, not the machine on which new model work should be done.
+All multi-GB checkpoint download/conversion/reference work and every
+`vokra-models` cargo run now execute on VAST; do not dispatch a heavy hosted
+runner leg merely to close this checklist. A VAST result may establish the
+technical evidence, while setting each repository variable remains a separate
+owner scheduling decision. No Hugging Face upload was performed in the VAST
+campaign below.
 
 Original SoTA Phase 1-4 seven families:
 
-- [ ] Family 1 (NeMo-ASR, `VOKRA_NEMO_ASR_ENABLE`): HF-card read → §6.2 row signed → `VOKRA_<PREFIX>_ENABLE=1` set → `gh workflow run parity-<family>-real.yml` → PASS verdict confirmed.
-- [ ] Family 2 (whisper-extras, `VOKRA_WHISPER_EXTRAS_ENABLE`): same sequence.
-- [ ] Family 3 (tts-dac, `VOKRA_TTS_DAC_ENABLE`): same sequence.
-- [ ] Family 4 (tts-hiftnet, `VOKRA_TTS_HIFTNET_ENABLE`): same sequence.
-- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): same sequence.
-- [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): same sequence.
-- [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): same sequence.
+- [ ] Family 1 (NeMo-ASR, `VOKRA_NEMO_ASR_ENABLE`): VAST `47955178` converted pinned Parakeet-TDT 0.6B v3 (`7c35754d…`) at branch `afe9b50`: the auditable integer normalizer kept 699 float tensors and removed exactly 24 scalar BatchNorm `num_batches_tracked` counters, then produced a 2,508,284,704-byte GGUF with 38 metadata keys and zero converter-side skips. The corrected exact test selection ran one `parakeet_tdt` test and passed the GGUF/metadata surface. This exposed two workflow defects now fixed on this branch: conversion previously failed on the training-only I64 counters, and the old `parity_nemo_asr::<arch>` filter executed zero tests. Keep the family open: the reference directory was unset (no independent ASR output parity), and Kyutai-STT, Parakeet-CTC, Canary, and OmniASR-CTC remain unproven in this campaign; repository scheduling is also undecided.
+- [ ] Family 2 (whisper-extras, `VOKRA_WHISPER_EXTRAS_ENABLE`): VAST converted pinned Distil-Whisper Large v3.5 (`728a…`, 539 tensors, 3,025,666,272-byte GGUF) and Kotoba-Whisper v2.2 (`9d334…`, 539 tensors, 3,025,666,304-byte GGUF); both targeted harnesses passed their current GGUF metadata/hparam checks and loudly confirmed the native loader is still absent. Keep open because native transcription and independent output parity are not implemented, and repository scheduling is undecided.
+- [ ] Family 3 (tts-dac, `VOKRA_TTS_DAC_ENABLE`): VAST converted pinned Dia 1.6B (`257bc…`, 343 tensors, 6,444,673,088-byte GGUF) and Zonos v0.1 transformer (`9d833…`, 246 tensors, 3,248,843,808-byte GGUF); both targeted scaffold harnesses passed. Keep open because no reference-stage/output numerical parity ran and native synthesis remains a scaffold; repository scheduling is undecided.
+- [ ] Family 4 (tts-hiftnet, `VOKRA_TTS_HIFTNET_ENABLE`): VAST converted and passed the current targeted GGUF harness for Chatterbox multilingual (292 tensors, 2,143,980,064 bytes), turbo (299 tensors, 1,915,470,144 bytes), and nano (155 tensors, 869,895,424 bytes), all at pinned revisions. Keep open: reference stage taps were unset, CosyVoice3 still lacks its required torch-to-safetensors sidecar, and repository scheduling is undecided.
+- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): VAST converted the pinned 0.6B release (`5d839924…`) to a 478-tensor, 1,829,328,672-byte GGUF. Its targeted harness passed 12 tests and matched the upstream talker (13 axes) and code-predictor (10 axes) config exactly. Keep open because this is structural/config parity only: native synthesis and PCM numerical parity remain absent, and repository scheduling is undecided.
+- [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): in addition to the prior VAST VoxCPM2 proof, VAST merged all three pinned VibeVoice-1.5B shards with the fail-loud checkpoint merger (1,204 tensors, 2,704,021,987 parameters, zero dropped/shared tensors), then converted the full model to a 5,408,160,960-byte GGUF and passed the targeted harness. The workflow now mirrors that proven full-shard path instead of selecting only the first shard. Keep open because byte-reference taps/native synthesis remain absent and repository scheduling is undecided.
+- [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): VAST converted pinned Irodori-TTS-500M-v3 (`236c…`) to a 637-tensor, 2,048,247,584-byte GGUF and passed the current targeted harness. Keep open because its byte-reference directory was unset; VITS-JA remains intentionally unfetched and publication-blocked by the JSUT/JVS redistribution terms (§6.8), and repository scheduling is undecided.
 
-2026-07-28 follow-up additions (bringing total to 9):
+2026-07-28 follow-up additions (bringing the variable-gated total to 9):
 
-- [ ] Family 8 (deepfilternet3, `VOKRA_DFN3_ENABLE`): HF-card read (Rikorose/DeepFilterNet MIT/Apache-2.0 dual, §3.1 row 258 already ☑ Commercial) → set `VOKRA_DFN3_ENABLE=1` → `gh workflow run parity-deepfilternet3-real.yml` → PASS verdict confirmed. Phase B byte-parity leg additionally needs `VOKRA_DFN3_DATA_URL` populated with a pre-baked reference bundle — see `docs/handoff/parity-deepfilternet3-real.md` §Phase B.
-- [ ] Family 9 (deberta-v3-large, `VOKRA_DEBERTA_V3_ENABLE`): HF-card read (microsoft/deberta-v3-large MIT, §3.1 row 304 already ☑ Commercial 2026-07-27 yousan) → set `VOKRA_DEBERTA_V3_ENABLE=1` → `gh workflow run parity-deberta-v3-large-real.yml` → PASS verdict confirmed. Phase B (Rust numerical parity vs reference dumper) opt-in on `VOKRA_DEBERTA_V3_HARNESS_READY=1` — currently honest-skips with `::notice::` since no consumer harness exists yet. See `docs/handoff/parity-deberta-v3-large-real.md`.
+- [ ] Family 8 (deepfilternet3, `VOKRA_DFN3_ENABLE`): HF-card read (Rikorose/DeepFilterNet MIT/Apache-2.0 dual; §3.1 Commercial decision recorded) → set `VOKRA_DFN3_ENABLE=1` → `gh workflow run parity-deepfilternet3-real.yml -f force_parity=true` → PASS verdict confirmed. The old `VOKRA_DFN3_DATA_URL` blocker is closed: the workflow now creates the independent upstream bundle from a checked-in uv lock. VAST `47955178` proved the exact path on 2026-08-18, then PR #33 run `32069035682` independently completed the first real GitHub Actions verdict with all 21 stage/output bounds green (`enhanced` max |Δ| `4.172e-7`, upstream/Vokra SI-SNR both `14.768 dB`, no tolerance change). The only remaining activation action is setting `VOKRA_DFN3_ENABLE=1` so scheduled runs execute the real leg; the first GitHub Actions proof itself is complete.
+- [ ] Family 9 (deberta-v3-large, `VOKRA_DEBERTA_V3_ENABLE`): HF-card read (microsoft/deberta-v3-large MIT; §3.1 Commercial decision recorded 2026-07-27) → set `VOKRA_DEBERTA_V3_ENABLE=1` → `gh workflow run parity-deberta-v3-large-real.yml` → PASS verdict confirmed. The old “no Rust consumer” description was stale: `crates/vokra-bert/tests/deberta_v3_real.rs` landed on 2026-07-29 and consumes the upstream `input_ids` + `final_hidden` dump. The workflow now uses a dedicated Linux-x86_64 uv lock, removes the obsolete `VOKRA_DEBERTA_V3_HARNESS_READY` gate, and defaults matching PRs / enabled schedules / manual dispatches to the real final-hidden numerical leg. VAST `47955178` proved the full path on 2026-08-18, then PR #33 run `32069035556` independently completed the first real GitHub Actions verdict: converter smoke passed, the tokenizer loaded 128,000 pieces, and final-hidden max |Δ| was `1.049042e-5` under the unchanged `6.0e-3` bound. The only remaining activation action is setting `VOKRA_DEBERTA_V3_ENABLE=1` so scheduled runs execute the real leg. Per-layer hidden/attention taps remain a separately disclosed extension, not a missing final-output consumer. See `docs/handoff/parity-deberta-v3-large-real.md`.
+
+- [x] Family 10 (SBV2, sidecar-hash gate): `parity-sbv2-real.yml` first validates the three real sidecars for the current main + JA BERT + EN BERT numerical path, then runs the real dump and the named non-ignored `parity_sbv2_real` consumer. VAST `47955178` proved this full path on 2026-08-18 and exposed/fixed four stale workflow details: ad-hoc pip, floating revisions, absent regenerated-hash verification, and `--ignored` filtering out the consumer after WP-06 removed its ignore attribute. PR #33 run `32069035448` then completed the first corrected GitHub Actions real verdict with all assertions green and no tolerance change: text hidden `5.858019e-7`, JA BERT hidden `3.777072e-5`, bridge/mel hidden `4.163384e-5`, latent `z` `4.649162e-5`, waveform max |Δ| `4.523803e-2`, and mel-loss RMS `1.656e-1`. The optional UTMOS sub-gate was separately skipped and is not being represented as a quality PASS. The published ZH BERT sidecar proves the separate WP-19 four-file loader input is available; it is **not** a ZH numerical-parity PASS because the ZH reference dumper/harness does not exist yet. See `docs/handoff/parity-sbv2-real-vast-2026-08-18.md` and `docs/handoff/parity-ci-flip-switch.md`.
 
 ### 6.4 Real-weight parity harness fire
 
 For each landed scaffold that ships a flip-the-switch harness, point the per-family `REFERENCE_DIR` env var (e.g. `VOKRA_HIFTNET_REFERENCE_DIR`) at the real dumped reference tensors and re-run the harness. Per-family env-var names are recorded in the parity CI YAMLs (`.github/workflows/parity-*.yml`).
 
-- [ ] Enumerate landed flip-the-switch scaffolds from the parity CI YAMLs.
-- [ ] For each, dump the reference tensors from the real upstream weights.
-- [ ] For each, set the `VOKRA_*_REFERENCE_DIR` env var and re-run the harness.
+- [x] Enumerate the current inventory: nine `VOKRA_*_ENABLE` variable-gated workflows (Families 1–9 in §6.3) plus the SBV2 sidecar-hash-gated workflow (Family 10). A scheduled `success` is not evidence of a real run while its gate is closed.
+- [ ] For each of the nine variable-gated families, dump reference tensors from real upstream weights, set its `VOKRA_*_REFERENCE_DIR` where applicable, and record the numerical harness result.
+- [ ] For SBV2, the three current numerical-path inputs and JA/EN dump + `parity_sbv2_real` are VAST-proven as of 2026-08-18. The remaining part of this combined row is the missing ZH reference-dump/harness; do not claim four-file numerical parity before it lands.
 - [ ] Record PASS / FAIL per family.
 
 ### 6.5 misaki venv setup (Kokoro G2P)
 
-- [ ] Create a Python venv and install `misaki[en,ja,zh,ko]`.
-- [ ] Export `VOKRA_MISAKI_VENV` = venv path in the runner / dev environment.
+- [x] Provision the Python 3.12 environment from the checked-in lock with `uv sync --project integrations/vokra-misaki-g2p --group parity --frozen`. The old ad-hoc `uv venv` + `uv pip install` wording was stale: `pyproject.toml` / `uv.lock` now pin `misaki[en,ja,zh,ko]==0.9.4`, the English spaCy model, and the Korean `python-mecab-ko` provider omitted by upstream's `ko` extra. VAST instance `47955178` synced the final lock, then EN / JA / ZH / KO real G2P all passed; a second `uv --offline` frozen sync and four-language run passed after explicitly staging NLTK `cmudict`. Open JTalk and NLTK language data remain documented first-use inputs outside the Python wheel lock.
+- [x] Export `VOKRA_MISAKI_VENV` = venv path in the runner / dev environment. `parity-kokoro-real.yml` now exports the uv-managed `/tmp/vokra-py-parity`; the VAST verification used `/root/scratchpad/misaki-uv-venv`. Both point at the same frozen project graph rather than a mutable pip environment.
 
 ### 6.6 Follow-up WPs (CC-tracked, not owner-blocking)
 
 These are tracked on the CC side for future waves; listed here for owner visibility only. Not gating for GA.
 
-- [ ] F0 op real CNN forward (replace placeholder implementation).
-- [ ] `align` real Viterbi implementation.
-- [ ] `vokra-kws-micro` real model (replace scaffold).
+- [x] F0 / CREPE real 6-block CNN forward landed (`crates/vokra-models/src/f0/crepe.rs`); targeted F0 tests pass. Real external-checkpoint parity remains a separate §6.4 task.
+- [ ] Charsiu `align` real-checkpoint binding and reference parity. CTC segmentation/Viterbi and synthesized-weight forward are implemented; the remaining work is the upstream tensor manifest/GGUF bind, not a replacement of a placeholder Viterbi algorithm.
+- [ ] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture. The INT8 pipeline and synthetic/parity tests are landed; emitted quantization metadata plus a real checkpoint remain.
 - [ ] BF16 native compute in runtime (currently upcast-to-f32 shim).
-- [ ] GPU kernel land for HiFTNet.
-- [ ] GPU kernel land for BigVGAN.
-- [ ] GPU kernel land for SNAC.
-- [ ] GPU kernel land for Qwen3-TTS-codec.
+- [ ] Full HiFTNet GPU generator path. Metal primitives are landed, but the complete generator and non-Metal backends remain.
+- [ ] Full BigVGAN GPU path. Metal activation/upsampling primitives are landed, but the complete generator and non-Metal backends remain.
+- [x] SNAC Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.
+- [x] Qwen3-TTS-codec Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.
 
 ### 6.7 Publication decisions (huggingface.co/vokra)
 
-Each of the ~30 new families requires yousan sign-off before upload. Per memory [[project-huggingface-vokra-publication]] the 5-gate posture applies: catalog-reality / redistributable / provenance / §3.1 sign-off / allow-noncommercial. Publication is default "not published — will decide at publish time" per fail-closed policy.
+Each unpublished family still requires the 5-gate posture: catalog-reality / redistributable / provenance / §3.1 sign-off / allow-noncommercial. Completed model-level decisions and uploads are recorded in §6.9 and §7; they are not evidence that every family is published.
 
-- [ ] For each family in §6.2 (BF16 fleet + Phase 1-4 + JA), decide upload / withhold per the 5-gate posture and record the verdict alongside the §3.1 sign-off row.
+- [ ] Complete the remaining publication/destination decisions, beginning with the four voice-conversion families in §6.2; record every future upload or withholding verdict beside the §3.1 row.
 - [ ] Confirm each uploaded repo carries: LICENSE (upstream file, not just an SPDX tag), NOTICE (if attribution-required), `SOURCE.md` (upstream URL + re-convert recipe), and `vokra.schema.version` / `vokra.schema.producer` provenance in the GGUF.
 - [ ] Run `publish-one.sh` (never the manual upload path) for every published family.
 
@@ -310,16 +292,18 @@ Each of the ~30 new families requires yousan sign-off before upload. Per memory 
 
 VITS-JA weight is `RedistributionForbidden` (JSUT / JVS training data forbid weight redistribution). It is excluded from `huggingface.co/vokra` irrespective of §6.2 audit sign-off. §6.2 covers the audit record only; §6.8 covers the publication exclusion.
 
-- [ ] Confirm VITS-JA weight remains excluded from `huggingface.co/vokra` regardless of the §6.2 audit outcome.
-- [ ] Verify the `check-catalog-reality.sh` / `LicenseClass::redistributable()` gate rejects any accidental attempt to publish the VITS-JA weight.
+- [x] VITS-JA remains excluded from `huggingface.co/vokra`: its §3.1 row is explicitly Rejected for the JSUT redistribution terms, and its parity workflow disables HF auto-fetch by design.
+- [x] The default gate resolves `vits-ja` aliases to `LicenseClass::RedistributionForbidden`, whose `redistributable()` result is false; `scripts/publish/check-catalog-reality.sh` supplies the catalog-side drift gate. Any exceptional, separately licensed retraining requires a new model row and review.
 
 ### 6.9 Publish sign-off queue (2026-07-28)
 
-Following the 2026-07-28 doc-refresh + investigation of `crates/vokra-convert/src/models/*.rs` vs `huggingface.co/vokra` live listing, the following converters are IMPLEMENTED but publish is BLOCKED because their `docs/license-audit.md` §3.1 sign-off column carries the explicit `本欄の署名・判定は owner 記入、CC は pre-fill しない` per-row directive. This directive supersedes the standing permission "ライセンスに関してはそちらで確認して判断" and requires owner to sign the row before `publish-one.sh` will accept the artifact.
+This queue is historical plus active backlog. It must not be read as a blanket "all sign-offs blank" list: the five ASR entries below are published, the BF16 fleet has current §3.1 decisions except the four intentionally deferred voice-conversion rows, and several remaining entries are blocked by converter/configuration/compute work rather than legal review.
 
-Primary sources have been pre-verified by CC and are ready for owner review. Each entry lists the license class, the upstream primary source, the specific reason CC cannot self-sign, and the HF slug candidate.
+Each unchecked entry below therefore names its actual remaining condition (real-checkpoint validation, converter/configuration work, infrastructure, or policy), not a generic missing sign-off.
 
-**Phase 2 ASR family (5 rows, all license-audit.md §3.1 rows 266-270) — 5 published 2026-07-28**:
+**Row-number note**: the audit table grows over time. Any historical `row N` reference retained below is a dated snapshot; the model identifier and its current §3.1 decision are authoritative.
+
+**Phase 2 ASR family (5 entries) — 5 published 2026-07-28**:
 
 Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル + Voxtral-Small-24B publish を進めてください"), CC has signed all 5 rows and pushed to huggingface.co/vokra. NVIDIA-EULA overlay decision resolved as: NVIDIA-EULA governs runtime binaries (cuDNN/cuBLAS bundles), the CC-BY-4.0 weight redistribution is governed by the model card's license tag.
 
@@ -329,48 +313,72 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 - [x] **nvidia/canary-1b-v2** (row 269) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED (vast.ai)**: `huggingface.co/vokra/canary-1b-v2` = live. Upstream distributes `.nemo` only (2.5 GB tar); `tools/parity/nemo_pt_to_safetensors.py` extracts the inner `timestamps_asr_model_weights.ckpt` (688 float tensors kept, 24 int tensors stripped as inference-inert) into safetensors, then `vokra-cli convert --model canary` produces the GGUF. NVIDIA-EULA overlay decision: weight redistribution governed by the CC-BY-4.0 card (NOTICE §7 carries NVIDIA credit).
 - [x] **facebook/omniASR-CTC-1B** (row 270) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED (vast.ai)**: `huggingface.co/vokra/omniasr-ctc-1b` = live. Upstream distributes `omniASR-CTC-1B.pt` (3.9 GB — a regular pickled `state_dict`, not TorchScript); `tools/parity/nemo_pt_to_safetensors.py` handles it via `torch.load` + `model` wrapper unwrap (807 float tensors kept, 0 int tensors stripped) into safetensors, then `vokra-cli convert --model omniasr-ctc` produces the GGUF. HONEST DISCREPANCY pin ratified in same wave: `facebook/omniASR-CTC-1B` is canonical, the SoTA-plan-listed `suno/omniASR-CTC-1B-v1` is a 401 dead reference.
 
-**BF16 fleet skeletons (16 rows, PR #20 Wave E landing, license-audit.md §3.1 rows 286-301)**:
+**BF16 fleet skeletons (16 entries, PR #20 Wave E landing)**:
 
-*These have `pub fn convert_*_file` entry points but are NOT wired into `ModelKind` / `convert_file` dispatch yet, and every one is a TDD pass-through skeleton pending owner primary-source verification. Publish will additionally require the `ModelKind` wiring after sign-off.*
+*The twelve signed, non-voice-conversion converters are wired into `ModelKind`, licensed `convert_file` dispatch, and `vokra-cli`; package and CLI parsing tests cover the paths. Their remaining work is real-weight preparation/binding/parity and, where applicable, the five-gate publish run. The four voice-conversion rows remain a policy-destination decision instead.*
 
-- [ ] **moonshotai/Kimi-Audio-7B-Instruct** (row 286) — MIT default per module docstring. category=s2s. HF slug candidate: `vokra/kimi-audio-7b-instruct`. ~14 GB BF16.
-- [ ] **stepfun-ai/Step-Audio-2-mini** (row 287) — Apache-2.0 default. category=s2s. HF slug candidate: `vokra/step-audio-2-mini`.
-- [ ] **baichuan-inc/Baichuan-Audio** (row 288) — Apache-2.0 default. category=s2s.
-- [ ] **fnlp/SpeechTokenizer** (row 289) — Apache-2.0 default. category=codec.
-- [ ] **alibaba-damo/audio_codec-encodec-zh_en-…** (FunCodec, row 290) — MIT default. category=codec. **Note**: slug contains "encodec" for legacy reasons but FunCodec ≠ Meta EnCodec (which is CC-BY-NC 4.0, permanently excluded per FR-OP-32). `scripts/compliance/check-encodec-exclusion.sh` `SLUG_ALLOWLIST` already permits this specific entry per prior owner ratification.
-- [ ] **fnlp/XY_Tokenizer_TTSD_V0** (row 291) — Apache-2.0 default. category=codec.
-- [ ] **SparkAudio/Spark-TTS-0.5B** (BiCodec, row 292) — Apache-2.0 default. category=codec. **Note**: Spark-TTS-0.5B parent is CC-BY-NC-SA-4.0 per SoTA plan §3.4 exclusion — owner must verify BiCodec sub-component is separately licensed before publish, else Rejected.
-- [ ] **neuphonic/neucodec** (row 293) — Apache-2.0 default. category=codec.
-- [ ] **myshell-ai/OpenVoiceV2** (row 294) — MIT default. category=vc. **Note**: ELVIS Act / voice-cloning territory — owner must confirm this isn't destined for `vokra-voiceclone-experimental` instead.
-- [ ] **bshall/knn-vc** (row 295) — MIT default. category=vc. Same voice-clone caveat as OpenVoiceV2.
-- [ ] **OlaWod/FreeVC** (row 296) — MIT default. category=vc. Same voice-clone caveat.
-- [ ] **ASLP-lab/MeanVC** (row 297) — Apache-2.0 default. category=vc. Same voice-clone caveat.
-- [ ] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate, row 298) — Apache-2.0 default. category=speaker. **Note**: upstream slug carries "verify" annotation — needs primary source resolution first.
-- [ ] **Wespeaker/wespeaker-voxceleb-resnet34-LM** (row 299) — Apache-2.0 default. category=speaker.
-- [ ] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker, row 300) — Apache-2.0 default. category=speaker.
-- [ ] **emotion2vec/emotion2vec_plus_large** (row 301) — MIT default. category=emotion.
+- [x] **moonshotai/Kimi-Audio-7B-Instruct** — Commercial signed; CLI dispatch is complete. category=s2s. Remaining: real-weight preparation/binding/parity and publish gate. Candidate: `vokra/kimi-audio-7b-instruct`. ~14 GB BF16.
+- [x] **stepfun-ai/Step-Audio-2-mini** — Commercial signed; CLI dispatch is complete. category=s2s. Remaining: real-weight preparation/binding/parity and publish gate. Candidate: `vokra/step-audio-2-mini`.
+- [x] **baichuan-inc/Baichuan-Audio-Instruct** — Commercial signed; CLI dispatch is complete. category=s2s. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **fnlp/SpeechTokenizer** — Commercial signed; CLI dispatch is complete. category=codec. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **alibaba-damo/audio_codec-encodec-zh_en-…** (FunCodec) — Commercial signed; CLI dispatch is complete. category=codec. FunCodec is not Meta EnCodec; the existing allowlist is intentional. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **fnlp/XY_Tokenizer_TTSD_V0** — Commercial signed; CLI dispatch is complete. category=codec. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **SparkAudio/Spark-TTS-0.5B** (BiCodec) — Research-only signed (CC-BY-NC-SA-4.0); CLI dispatch is complete and its provenance now retains the NC + share-alike class. Remaining: real-weight preparation/binding/parity and the T4/T3 publish path. category=codec.
+- [x] **neuphonic/neucodec** — Commercial signed; CLI dispatch is complete. category=codec. Remaining: real-weight preparation/binding/parity and publish gate.
+- [ ] **myshell-ai/OpenVoiceV2** — public-main voice-conversion policy/destination decision remains; do not wire or publish here until it is resolved.
+- [ ] **bshall/knn-vc** — public-main voice-conversion policy/destination decision remains; its upstream license also needs primary-source resolution.
+- [ ] **OlaWod/FreeVC** — public-main voice-conversion policy/destination decision remains; its upstream license also needs primary-source resolution.
+- [ ] **ASLP-lab/MeanVC** — public-main voice-conversion policy/destination decision remains; do not wire or publish here until it is resolved.
+- [x] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate) — Commercial signed; CLI dispatch is complete. The exact upstream candidate remains recorded in §3.1. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **Wespeaker/wespeaker-voxceleb-resnet34-LM** — Commercial signed; CLI dispatch is complete. category=speaker. Its current CC-BY-4.0 provenance includes FR-MD-09 attribution. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker) — Commercial signed; CLI dispatch is complete. category=speaker. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **emotion2vec/emotion2vec_plus_large** — Commercial signed; CLI dispatch is complete. category=emotion. Remaining: real-weight preparation/binding/parity and publish gate.
 
-**Copyleft (1 row) — SKU rename + PUBLISHED 2026-07-28**:
+**Copyleft (1 entry) — SKU rename + PUBLISHED 2026-07-28**:
 
 - [x] **~~litagin02/style_bert_vits2~~ → `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`** (SBV2 v2 JP-Extra 2.0 base, license-audit.md §3.1 **row 315**, replaces the deprecated row 302 reference above) — AGPL-3.0 ☑ Commercial 2026-07-28 yousan (依頼者許可 = CC 判断). **PUBLISHED**: `huggingface.co/vokra/sbv2-v2-jp-extra-base` = live. SKU rename rationale (per row 315 audit note): original `litagin02/style_bert_vits2` = typo (correct author = `litagin`, upstream returns 404) + actual distribution is JP-Extra 2.0 base (the current SBV2 v2 mainline), not the 1.0 multilingual base (which has no HF `cardData.license` and is defer-blocked fail-closed). Publish path used = T3 Copyleft gate (`publish-one.sh --license-spdx agpl-3.0 --acknowledge-copyleft --push` = LICENSE full text bundled + NOTICE + SOURCE.md + `--acknowledge-copyleft` opt-in flag). Fixture-status prerequisite (Blocker 2b/2c per `tests/fixtures/sbv2/README.md`) is fully resolved by 2026-08-10 Waves 1-2 (see §7 below); the residual `#[ignore]`d `sdp_body_matches_torch_ref` scaffold (commit `c8e2777`) remains an owner-fixture-待ち gate for the SDP parity flip, but is not a publish blocker for the AGPL-3.0 weight itself.
 
-**Non-implementable (signed but converter needed)**:
+**Remaining converter / real-weight gates (signed)**:
 
-- [ ] **Suno Bark** (license-audit.md §3.1 row 259) — MIT signed 2026-07-23 yousan. Converter is NOT present in `crates/vokra-convert/src/models/`. Publish path requires implementing the Bark converter first (M5-07 audit scope). Estimated effort: converter + real-weight round-trip.
-- [ ] **Matcha-TTS** (row 261) — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Estimated effort per spec.
-- [ ] **WavTokenizer** (row 253) — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-wavtokenizer-design.md`. Estimated effort per spec.
+- [x] **Suno Bark** — MIT signed 2026-07-23 yousan. `models::bark`, `ModelKind::{Bark,BarkSmall}`, and CLI dispatch support full and small variants. The upstream torch-pickle checkpoint must be flattened to safetensors by a UV-managed sidecar before the real-weight round-trip; the EnCodec companion remains research-only. Any conversion/publish run with material memory use follows the vast.ai policy.
+- [ ] **Matcha-TTS** — MIT signed 2026-07-23 yousan, but the maintained design remains a conditional Draft and explicitly forbids landing a converter while the defer decision holds. Re-open only with (1) an owner-recorded trigger, (2) a ≥95% piper-plus phoneme-set coverage report, and (3) primary-source confirmation for the paired LJ Speech HiFi-GAN; then follow W0–W9 in `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Until then `matcha.rs`, registry registration, parity workflow, and publish stay absent by design.
+- [x] **WavTokenizer** — the `ModelKind::WavTokenizer` converter and CLI dispatch landed in the 2026-08-01 codec wave. The remaining future work is Lightning `.ckpt` → safetensors preparation and real-checkpoint parity, not implementation of the converter.
 
-**Converter extension required (signed but 2B config incomplete)**:
+**VoxCPM2-2B — complete real-weight conversion done; numerical parity and
+destination-gated publish remain**:
 
-- [ ] **openbmb/VoxCPM2-2B** (row 280) — Apache-2.0 signed 2026-07-28 yousan. Current `voxcpm2` ModelKind hardcodes VoxCPM-0.5B constants; publishing 2B requires either `--config` side-car per-invocation OR a sibling `voxcpm2_2b.rs` module + runtime `VoxCpm2Config` extension. Design spec at `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`.
+- [x] **openbmb/VoxCPM2-2B** (license-audit row 296) — Apache-2.0 signed
+  2026-07-28 yousan. VAST execution on 2026-08-18 found that the upstream
+  loader merges two required weight files: 577 BF16 main tensors plus 311 FP32
+  `audio_vae.*` tensors from `audiovae.pth`; the earlier main-only conversion
+  was incomplete. Commit `5bc62ae` added a hash/count/dtype/config-pinned
+  UV preparer, required tokenizer embedding, and strict rejection of incomplete
+  2B artifacts. Instance `47955178` produced a 4,956,973,816-byte complete
+  safetensors (`f8c8ed28…`) and a GGUF v3 with 888 tensors / 60 metadata keys /
+  4,960,621,760 bytes (`1cdea939…`). Independent header verification confirmed
+  577 BF16 + 311 F32, all AudioVAE sentinels, tokenizer length 3,676,772, exact
+  upstream revision, and Apache-2.0 provenance. The raw 577-tensor checkpoint
+  now fails with no output. The real Rust structural parity leg initially found
+  a BOOL-vs-integer bug in its own `residual_lm.no_rope` assertion; `e8d016f`
+  corrected it and the VAST rerun passed (888 tensors / 2B runtime config /
+  explicit synthesize refusal). No `REFDIR` or native forward was present, so
+  numerical-output parity remains open. `publish-one.sh` was run without `--push` and stopped
+  at `UNKNOWN_REPO`: the signed license row permits redistribution, but the
+  official voice-cloning positioning still needs an owner decision against the
+  M5-05 separate-repository policy before any destination slug is registered.
+  The instance is stopped with the artifact retained. Remaining work is
+  independent upstream numerical output parity, destination/legal ratification,
+  explicit upload authorization, live verification, and CI flip. This already-
+  checked implementation row does not change the 37-box action-ledger total.
+  Full evidence/runbook: `docs/handoff/vast-ai-publish-voxcpm2-2b.md`.
 
 **Deferred by RAM constraint (implemented + signed, host infrastructure blocked)**:
 
-- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Attempted 2026-07-28 on M1 iMac, aborted**: converter (`ModelKind::Voxtral`) uses `SafetensorsFile::open` for shard walk which mmaps each ~4.7 GB shard, but with 16 GB physical RAM the 48 GB total working set spilled to swap (`vm.swapusage: used=40.7 GB, free=1.2 GB`) and page faults never let CPU time accumulate (5 min wall clock, 11 s CPU). Kill was necessary to prevent OS lock-up. Publish path: run on vast.ai with 64+ GB RAM OR refactor voxtral converter for streaming shard read (SafetensorsFileReader pattern from moshi). HF slug: `vokra/voxtral-small-24b-2507`.
+- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Adapter-aware 48-GB conversion, publish dry-run, and real ASR/runtime parity completed on vast.ai 2026-08-18** from pinned upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` (11 shards only; duplicate `consolidated.safetensors` excluded). The first provenance-only dry-run artifact (`52f860…`) lacked active adapter metadata and was deliberately not uploaded. The corrected streaming conversion uses the tracked Small-24B side-car and produced 852 tensors / 54 metadata keys / 851 exact BF16 passthrough / 0 skipped / tokenizer embedded / `adapter=frame_stack_mlp` / 48,542,409,248 bytes / SHA-256 `91f2733492dd49b8e8f810192c77538d7d6d2f4c1c568098e11c3ad91f752c87`; peak RSS was 1,780.18 MiB with a 1,280 MiB largest tensor. Header, §3.1, model-card, LICENSE, NOTICE, SOURCE and all no-credential publish gates pass. Independent upstream fixtures are committed under `tests/parity/voxtral-small-24b-2507/`: mandatory two-layer orchestration self-check was bitwise; Vokra tower parity measured mel `1.311e-5` (atol `5e-5`), encoder `2.956e-5` (atol `1.5e-3`), projector `1.812e-5` (atol `6e-5`); decoder logits measured `6.356e-4` (unchanged atol `1e-2`), and all 27 greedy ids matched exactly with EOS in 5,292.21 s. Reference peak was 130.43 GiB; the cgroup peak was 139,312,283,648 bytes, entirely on VAST. Commit `7640a02` was fast-forwarded back to VAST and its bounded fixture smoke passed 4/4. The existing live HF artifact at `vokra/voxtral-small-24b-2507` remains invalid for completion because it carries stale false Mini-3B provenance. Instance `47955178` is stopped (`exited`) with the corrected staged artifact retained pending explicit authorization to transfer the HF credential and run `publish-one.sh --push`; never move the 48-GB artifact or upload work to the M1 iMac. The only remaining literal done-condition is corrected-artifact upload/live verification, so this box remains open and the action-ledger total remains 37.
 
-**BF16 fleet 16 skeletons (§3.1 rows 286-301) — CLI dispatch wiring required BEFORE publish possible**:
+**BF16 fleet — dispatch complete; real-weight and policy work remain**:
 
-Investigation 2026-07-28: all 16 converters (`crates/vokra-convert/src/models/kimi_audio.rs` etc) are landed as `pub fn convert_*_file` skeletons per module docstring "TDD skeleton pending owner license sign-off"; `ModelKind` enum entries + `convert_file` dispatch arms + `vokra-cli` subcommand arms are **NOT wired**. Publishing requires: (a) 16 × `ModelKind` enum entries in `crates/vokra-convert/src/lib.rs`, (b) 16 × `convert_file` matcher arms, (c) 16 × CLI subcommand aliases in `crates/vokra-cli/src/convert.rs`, (d) 16 × §3.1 owner sign-off decisions per `本欄の署名・判定は owner 記入、CC は pre-fill しない` directive. Estimated: 1 wave of TDD tickets (~1-2 days). Owner action: authorize CC to start the wiring wave, then supply per-row sign-off decisions or ratify a batch-sign approach.
+The twelve signed non-voice-conversion converters (`crates/vokra-convert/src/models/kimi_audio.rs` etc.) have `ModelKind` entries, licensed `convert_file` dispatch arms, and `vokra-cli` model parsing/help coverage (PR #27). The four voice-conversion families remain deliberately excluded from the main public distribution path pending their destination decision. Dispatch completion does not claim a runnable native forward: the remaining follow-up is real checkpoint preparation, tensor binding/parity, and the applicable five-gate publish run.
 
 **Voice-clone territory (4 rows: openvoice_v2 / knn_vc / freevc / meanvc) — ELVIS Act policy defer**:
 
@@ -378,9 +386,9 @@ Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `
 
 ---
 
-## 7. SBV2 v2 3-language full publish (2026-08-10, PR #27)
+## 7. SBV2 v2 3-language full publish (2026-08-10; reconciled 2026-08-17)
 
-**Status**: PR #27 **OPEN** on branch `feat/sbv2-voxtral-real-verify-2026-08-06` (18 commits ahead of `origin/main`, tip `8d469eb`). All 4 SBV2 Blockers (2b / 2c / 3 / 5) closed on CC side + ZH BERT license sign-off delivered via owner delegation. SBV2 v2 3-language full publish achieved (JA / EN / ZH BERT + base = 4 models on `huggingface.co/vokra`). See header addendum (2026-08-10) for wave-by-wave commit ledger.
+**Status**: PR #27 merged as `0937ef874495465bdadf18d5511f14e6e2a0ab71` on 2026-08-11. All 4 SBV2 Blockers (2b / 2c / 3 / 5) closed on CC side + ZH BERT license sign-off delivered via owner delegation. SBV2 v2 3-language full publish achieved (JA / EN / ZH BERT + base = 4 models on `huggingface.co/vokra`). See the header addendum for the pre-merge wave ledger.
 
 ### 7.1 Published models (4 SKUs, all live on huggingface.co/vokra)
 
@@ -389,14 +397,15 @@ Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `
 - [x] **`huggingface.co/vokra/deberta-v3-large`** (SBV2 v2 EN BERT, MIT, license-audit.md §3.1 row 317) — signed 2026-07-27 yousan, published via standard permissive path. Owner ripple: none (publish complete).
 - [x] **`huggingface.co/vokra/chinese-roberta-wwm-ext-large`** (SBV2 v2 ZH BERT, apache-2.0, license-audit.md §3.1 row 318) — signed 2026-08-10 yousan (owner delegation "モデルは公開してください（code license に影響がない限り）"), published via standard permissive path. Runbook = `docs/handoff/zh-bert-publish-2026-08-10.md` (gitignore-local). Fixture sidecar `tests/fixtures/sbv2/chinese-roberta-wwm-ext-large.gguf.sha256` populated for WP-19 4-file loader (commit `3f76abf`). Owner ripple: none (publish complete).
 
-### 7.2 Blocker 2c residual — owner-fixture-待ち gate
+### 7.2 Blocker 2c residual — repeatable VAST real-parity gate
 
-- [ ] **`sdp_body_matches_torch_ref` real-parity flip** (Blocker 2c residual, commit `c8e2777` = `#[ignore]`d scaffold). Owner action: provide the SDP torch reference fixture (`tests/fixtures/sbv2/sdp_body_torch_ref.*` per `tests/fixtures/sbv2/README.md`) so the CC can flip `#[ignore]` → `#[test]` and gate SDP body parity in CI. Until the fixture lands the scaffold stays honest-ignored (does not fake a pass). This is a parity flip only; it does not gate the AGPL-3.0 weight publish (already done, §7.1) or the 4-Blocker close-out itself.
+- [x] **`sdp_body_matches_torch_ref` VAST real-parity gate** (Blocker 2c residual, commit `c8e2777` = `#[ignore]`d scaffold). The repeatable worker `scripts/publish/vast-ai/run-sbv2-sdp-parity.sh` and lifecycle runbook landed in `223bb13`, with non-interactive tool-path hardening in `485d690` and fail-closed CPU model/ISA provenance in `cdfb3e2`. Its final VAST execution on 2026-08-18 pinned the three upstream revisions (`a731761…` / `547b0e8…` / `64a8c8e…`), regenerated and hash-verified all three GGUFs against the committed sidecars, generated the independent MIT-reference body fixture, recorded Xeon E5-2699 v4 + AVX2 + torch 2.13.0 before the numeric result, and passed the explicit ignored Rust test in 79.90 s: `max |Δ| = 8.583068848e-6` at channel 118 / time 48, below the unchanged strict `1e-5` candidate bound. The earlier manual VAST run measured `9.536743164e-6`; this environment-qualified spread is why the bound was not changed. Real GGUFs and derived raw bytes remain gitignored, and the test correctly remains explicit `#[ignore]` on clean checkouts. Text logs were collected, instance `47953638` was destroyed, and the account was verified at zero running instances. Evidence/runbook: `docs/handoff/sbv2-sdp-vast-parity.md`.
 
 ### 7.3 PR #27 merge
 
-- [ ] **Review PR #27** (branch `feat/sbv2-voxtral-real-verify-2026-08-06` → `main`, currently 18 commits ahead of `origin/main`, tip `8d469eb`) covering Waves 1-4 = SBV2 4 Blockers + Blocker 2c residual + ZH BERT publish + M4-07 H100 FA v3 bakeoff, and **merge**. Verify snapshot at branch tip: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites, all gates green, no new C ABI (v1.0-rc baseline 33 fn + 11 typedef unchanged). Merge unblocks: (a) default-branch `workflow_dispatch` for parity CI families landed on this branch, (b) M4-07 dashboard registration (§7.4) which reads baseline JSON on `main`, (c) any downstream owner runbook that assumes main is caught up.
+- [x] **Review and merge PR #27** (`feat/sbv2-voxtral-real-verify-2026-08-06` → `main`), merged as `0937ef874495465bdadf18d5511f14e6e2a0ab71` on 2026-08-11. The historical branch-tip verification snapshot above remains the evidence for the merge.
 
 ### 7.4 M4-07 X-06 nightly dashboard registration (cross-cutting)
 
-- [ ] **X-06 nightly dashboard row** for `fa_v3_vs_fa_v2_e2e_median = 1.0573` (M4-07 T18 WP-close trigger, source = `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` `e2e_speedup_summary`). This is the M4-07 owner ripple from Wave 4 = the final owner-only step to close M4-07 T18. Full detail lives in `docs/m4-owner-verification-checklist.md` §2.1 (M4 checklist is the canonical owning WP location); this bullet exists here for the SBV2 addendum's owner cross-reference completeness.
+- [x] **Register the FA v3 vs FA v2 dashboard row**: `tools/bench/build_dashboard.py` now renders `e2e_speedup_summary.fa_v3_vs_fa_v2_e2e_median` from `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` as `1.0573x` in the GPU table; its test pins the value. This satisfies the code/artifact part of M4-07 T18 without inventing a benchmark result.
+- [ ] **Owner deployment gate**: enable GitHub Pages and set `VOKRA_PAGES_ENABLED=true` if the dashboard must be publicly deployed. Until then `dashboard.yml` still produces the downloadable dashboard artifact, and no public-deployment claim is made.

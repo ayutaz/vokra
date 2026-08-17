@@ -17,24 +17,23 @@ Rust forward pass against them, tensor by tensor, at
 - Any community fork/derivative/blog-post code excerpt of either of the
   above (Qiita/Zenn writeups, Discord snippets, ...)
 
-This script (and the ``tools/parity/vendor/vits/`` directory it imports
-from once vendoring lands — see "Status" below) is built exclusively from
-the permissive sources listed next. No AGPL source was read, copied, or
-recalled from memory to write this file.
+This script and its vendored ``tools/parity/vendor/vits/`` dependencies
+are built exclusively from the permissive sources listed next. No AGPL
+source was read, copied, or recalled from memory to write this file.
 
 # Permissive references this file is authorized to use
 
 - **VITS** paper (Kim et al. 2021, arXiv:2106.06103) and
   ``jaywalnut310/vits`` (MIT) — vendored piecemeal into
   ``tools/parity/vendor/vits/`` (see that directory's own README for the
-  pinned commit, exact modules, and why the actual porting is deferred).
+  pinned commit and exact module mapping).
 - **VITS2** paper (arXiv:2307.16430) and ``p0p4k/vits2_pytorch`` (MIT) —
   architectural delta reference only, for the SBV2-specific structural
   differences from vanilla VITS.
 - **DeBERTa v2** paper (arXiv:2006.03654), ``microsoft/DeBERTa`` (MIT), and
   **HuggingFace ``transformers``** (Apache-2.0) ``deberta_v2``/``deberta_v3``
   modules — used directly via ``AutoModel``/``AutoTokenizer`` below, no
-  vendoring needed (a real, `pip install`-able Apache-2.0 dependency).
+  vendoring needed (an Apache-2.0 dependency managed through ``uv``).
   ``deberta_v3``'s own paper is arXiv:2111.09543.
 - SentencePiece paper (Kudo & Richardson 2018) — informational only (the
   BERT tokenizers below come from ``transformers`` directly).
@@ -72,8 +71,9 @@ This dumper has two modes:
   format, which ``parity_sbv2_real.rs``'s ``read_f32_bin`` does not
   parse). Fails loudly at one of these tiers:
 
-  1. ``torch`` missing -> actionable ``pip install torch``.
-  2. ``transformers`` missing -> actionable ``pip install transformers``
+  1. ``torch`` missing -> run ``uv sync`` in ``tools/parity`` on the
+     VAST instance, then rerun through ``uv run python``.
+  2. ``transformers`` missing -> the same ``uv`` environment setup
      (Apache-2.0 — this project's authorized DeBERTa reference).
   3. Vendor import failure (``from vendor.vits import text_encoder / coupling
      / flow / decoder`` **or** ``from vendor.vits2 import attentions /
@@ -232,11 +232,11 @@ the ``reference_dump/`` prefix.
 ::
 
     # schema preview (no deps beyond the stdlib, nothing written to disk):
-    python3 tools/parity/sbv2_dump_reference.py \\
+    uv run --no-project python tools/parity/sbv2_dump_reference.py \\
         --checkpoint /tmp/sbv2-checkpoint --output-dir /tmp/sbv2-dump
 
-    # real dump (fails loudly today — vendoring not landed yet, see above):
-    python3 tools/parity/sbv2_dump_reference.py \\
+    # real dump (VAST only; requires staged weights and a populated G2P row):
+    uv run --project tools/parity python tools/parity/sbv2_dump_reference.py \\
         --checkpoint /tmp/sbv2-checkpoint --output-dir /tmp/sbv2-dump \\
         --text "こんにちは。" --language ja --do-dump
 
@@ -252,10 +252,10 @@ imported lazily (inside ``--do-dump``'s code path, after
 ``parser.parse_args()``) so ``--help`` and the schema-preview mode work in
 an interpreter with neither installed, matching every other
 ``tools/parity/*_prepare_checkpoint.py``/``*_dump*.py`` sibling's deferred-
-import convention. ``jaywalnut310/vits`` (MIT) has no PyPI distribution and
-must be vendored (see ``tools/parity/vendor/vits/README.md``); until that
-lands, the ``--do-dump`` path's third import tier is the one that always
-fails.
+import convention. ``jaywalnut310/vits`` (MIT) has no PyPI distribution, so
+the required modules are vendored under ``tools/parity/vendor/vits/`` (see
+that directory's README). A real dump still fails loud unless its staged
+checkpoint and exact G2P fixture row are present.
 """
 
 from __future__ import annotations
@@ -2271,9 +2271,8 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
 
 
 def run_dump(args: argparse.Namespace) -> int:
-    """Real-dump mode. Fails loudly and specifically at whichever of the
-    three dependency tiers documented in this file's module doc is missing
-    — see there for why this always reaches (and stops at) tier 3 today."""
+    """Real-dump mode. Fails loudly at a missing dependency, staged
+    checkpoint tensor, or G2P row; never substitutes a synthetic value."""
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if not args.checkpoint.is_dir():
         sys.exit(
@@ -2292,8 +2291,8 @@ def run_dump(args: argparse.Namespace) -> int:
     except ImportError as exc:
         sys.exit(
             f"{LOG_PREFIX} missing Python dep ({exc}); install with "
-            "`pip install torch` in the parity venv (tools/parity/parity-venv "
-            "or your own venv)."
+            "`cd tools/parity && uv sync` on the VAST instance, then rerun "
+            "through `uv run python`."
         )
 
     try:
@@ -2301,8 +2300,9 @@ def run_dump(args: argparse.Namespace) -> int:
     except ImportError as exc:
         sys.exit(
             f"{LOG_PREFIX} missing Python dep ({exc}); install with "
-            "`pip install transformers` — Apache-2.0, this project's "
-            "authorized DeBERTa v2/v3 reference (design doc §6)."
+            "`cd tools/parity && uv sync` on the VAST instance — "
+            "transformers is this project's authorized DeBERTa v2/v3 "
+            "reference (design doc §6)."
         )
     print(f"{LOG_PREFIX} torch {torch.__version__}, transformers {transformers.__version__} present.")
 
@@ -2396,7 +2396,7 @@ def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
             "dumps the 11 intermediate tensors design doc §10 pins for "
             "crates/vokra-models/tests/parity_sbv2_real.rs (Task 28) to diff "
             "a Rust forward pass against. See this script's module docstring "
-            "for the manifest schema, the current deferred-vendoring status, "
+            "for the manifest schema, real-dump preconditions, "
             "and the clean-room NOT-REFERENCED list."
         )
     )
@@ -2506,8 +2506,8 @@ def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Attempt a real forward pass instead of the default schema "
-            "preview. Fails loudly today (vendoring not landed yet) — see "
-            "module docstring."
+            "preview. VAST-only; fails loudly if its uv dependencies, staged "
+            "checkpoint, or exact G2P row are absent — see module docstring."
         ),
     )
     args = parser.parse_args(argv)

@@ -18,8 +18,11 @@
 #
 # misaki API summary (upstream https://github.com/hexgrad/misaki):
 #
-#     from misaki import en
+#     from misaki import en, ja, zh, ko
 #     g2p = en.G2P(trf=False, british=False)
+#     g2p = ja.JAG2P(version="pyopenjtalk")
+#     g2p = zh.ZHG2P()
+#     g2p = ko.KOG2P()
 #     phonemes, tokens = g2p(text)   # phonemes: str (IPA-like, with stress)
 #
 # The English lexicon covers stress markers `ˈ` and `ˌ`, both of which
@@ -55,22 +58,27 @@ def phonemize(lang: str, text: str) -> str:
             g2p = en.G2P(trf=False, british=True)
         elif lang == "ja":
             from misaki import ja  # noqa: WPS433
-            g2p = ja.G2P()
+            # `JAG2P()` defaults to the cutlet/fugashi path, whose unidic
+            # dictionary is an untracked post-install download. The pinned
+            # `misaki[ja]` extra already carries pyopenjtalk, so select that
+            # explicit upstream implementation and keep `uv sync --frozen`
+            # sufficient for Japanese G2P.
+            g2p = ja.JAG2P(version="pyopenjtalk")
         elif lang == "zh":
             from misaki import zh  # noqa: WPS433
-            g2p = zh.G2P()
+            g2p = zh.ZHG2P()
         elif lang == "ko":
             from misaki import ko  # noqa: WPS433
-            g2p = ko.G2P()
+            g2p = ko.KOG2P()
         else:
             die(
                 f"unsupported language: {lang!r} "
                 "(supported: en / en-gb / ja / zh / ko — the Kokoro training set)"
             )
-    except ImportError as e:
+    except (ImportError, AttributeError, RuntimeError) as e:
         die(
-            f"cannot import misaki for lang={lang!r}: {e}. "
-            "Install with `pip install misaki[en,ja,zh,ko]` "
+            f"cannot initialize misaki for lang={lang!r}: {type(e).__name__}: {e}. "
+            "Install with `uv sync --project integrations/vokra-misaki-g2p --frozen` "
             "(see integrations/vokra-misaki-g2p/README.md)."
         )
 

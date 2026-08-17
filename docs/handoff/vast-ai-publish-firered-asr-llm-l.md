@@ -26,7 +26,7 @@ publish は owner が本 runbook を追いながら実行する。
 
 ```bash
 curl -sL https://huggingface.co/api/models/FireRedTeam/FireRedASR-LLM-L | \
-  python3 -c "import json,sys; d=json.load(sys.stdin); cd=d.get('cardData',{}); \
+  uv run --no-project python -c "import json,sys; d=json.load(sys.stdin); cd=d.get('cardData',{}); \
     print('license:', cd.get('license')); \
     print('language:', cd.get('language')); \
     print('tags:', cd.get('tags')); \
@@ -65,7 +65,7 @@ tags:
 
 ```bash
 curl -sL "https://huggingface.co/api/models/FireRedTeam/FireRedASR-LLM-L?blobs=true" | \
-  python3 -c "
+  uv run --no-project python -c "
 import json, sys
 d = json.load(sys.stdin)
 for s in d.get('siblings', []):
@@ -175,13 +175,13 @@ mirror できる。実装は owner Python 側 (uv-managed 3.12、`safetensors[to
 ```bash
 # License verification (§0.1 参照)
 curl -sL https://huggingface.co/api/models/FireRedTeam/FireRedASR-LLM-L | \
-  python3 -c "import json,sys; d=json.load(sys.stdin); cd=d.get('cardData',{}); \
+  uv run --no-project python -c "import json,sys; d=json.load(sys.stdin); cd=d.get('cardData',{}); \
     print('license:', cd.get('license')); print('language:', cd.get('language'))"
 # → license: apache-2.0 / language: ['en', 'zh']
 
 # File manifest (§0.2 参照)
 curl -sL "https://huggingface.co/api/models/FireRedTeam/FireRedASR-LLM-L?blobs=true" | \
-  python3 -c "
+  uv run --no-project python -c "
 import json, sys
 d = json.load(sys.stdin)
 for s in d.get('siblings', []):
@@ -220,7 +220,7 @@ FireRedASR-LLM-L convert 前に一度だけ実行:
 | **hf_config.pth shim** | `nvidia/cuda:13.0.0` image が仕込む Python startup shim が `HF_ENDPOINT` を malicious mirror `117.175.104.83:8081` に上書き | shim 除去 + certifi CA 再植え付け (memory `[[reference-vast-ai-hf-config-pth-shim]]`) |
 | **huggingface_hub < 0.30 pin** | 1.x xet-token routing が mirror 404 を投げ、`HF_HUB_DISABLE_XET` も一部 bypass、0.30+ `resume_download` deprecated で flaky egress を落とす | vast.ai 上のみ `huggingface_hub < 0.30` に pin (memory `[[reference-huggingface-hub-lt-030-vast-ai]]`) |
 | **certifi CA bundle** | 空 or 古い CA bundle で HTTPS 検証失敗 | `certifi` 再 install + `SSL_CERT_FILE` export |
-| **stack tool install (torch/numpy/safetensors)** | resilient_batch.sh の uv fallback / ad-hoc `python3 -c` が消費するが system 層に無い、加えて `.pth.tar` extraction では `torch` が必須 (未 install だと fail) | provision.sh Wave 12 で pre-install |
+| **stack tool install (torch/numpy/safetensors)** | VAST 用の `uv pip --system` compatibility layer と `.pth.tar` extraction に必要。実行・変換・検証はすべて uv-managed Python で行う | provision.sh Wave 12 で pre-install |
 
 ```bash
 # SSH 接続後、まず HF token を export (instance destroy で消える)

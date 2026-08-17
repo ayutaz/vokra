@@ -49,7 +49,8 @@ def make_corpus(root: Path):
     # A GPU perf file.
     (root / "docs" / "perf" / "cuda.json").write_text(
         json.dumps({"model": "whisper-large-v3", "backend": "cuda", "hardware": "RTX 4090",
-                    "median_rtf": 0.1133, "measured_at": "2026-07-07", "gate_status": "preparation"}),
+                    "median_rtf": 0.1133, "measured_at": "2026-07-07", "gate_status": "preparation",
+                    "e2e_speedup_summary": {"fa_v3_vs_fa_v2_e2e_median": 1.0573}}),
         encoding="utf-8",
     )
     # An rtf jsonl (two iterations, same label).
@@ -81,6 +82,7 @@ class TestRendering(unittest.TestCase):
             self.assertIn("0.003115", page)      # mel-frontend gate baseline
             self.assertIn("whisper-large-v3", page)  # gpu perf
             self.assertIn("0.1133", page)        # gpu median rtf
+            self.assertIn("1.0573x", page)       # FA v3 vs FA v2 median speedup
             self.assertIn("whisper base", page)  # m5-14 table row
             self.assertIn("0.41x", page)         # m5-14 vs-ORT cell (bold stripped)
             # Provenance classes are distinguished.

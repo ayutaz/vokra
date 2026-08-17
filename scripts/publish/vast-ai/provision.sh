@@ -12,10 +12,10 @@
 # site-packages shim that reroutes huggingface_hub through a broken
 # mirror, (B) a huggingface_hub >= 0.30 that regressed non-xet routes,
 # (C) an empty/stale certifi CA bundle, and (D) no torch/numpy/
-# safetensors at the system layer that resilient_batch.sh's uv_cmd
-# fallback + ad-hoc `python3 -c` consume. Waves 9-11 spent ~day burning
-# down these four root causes reactively. Fix is now pre-handled at
-# provision time so a fresh box comes up clean.
+# safetensors at the system layer needed for image compatibility. Vokra
+# scripts themselves always execute Python through uv. Waves 9-11 spent
+# ~day burning down these four root causes reactively. Fix is now
+# pre-handled at provision time so a fresh box comes up clean.
 #
 # Idempotent: rerun-safe. Each step probes for its own artifact and skips
 # if already installed. Safe to invoke after `git pull` on the same box.
@@ -83,13 +83,14 @@ have_vokra_cli()   { [[ -x "$VOKRA_ROOT/target/release/vokra-cli" ]]; }
 #   (A) hf_config.pth mirror shim in site-packages reroutes hh downloads
 #   (B) huggingface_hub >= 0.30 regressed non-xet routes
 #   (C) stale/empty certifi CA bundle breaks urllib3/hh internals
-#   (D) system-layer torch/numpy/safetensors absent — resilient_batch.sh's
-#       uv_cmd fallback + ad-hoc `python3 -c` ImportError before use
+#   (D) system-layer torch/numpy/safetensors absent for image compatibility
+#       tools (Vokra's own Python execution remains uv-managed)
 #
 # Idempotent. Non-vast guarded: bails cleanly on macOS/local dev via
 # `command -v apt-get` + EUID probe. Set VOKRA_FORCE_HARDEN=1 to force
-# on a rooted local Debian container. MUST run before install_uv /
-# install_hf_transfer so shim (A) does not intercept uv operations.
+# on a rooted local Debian container. This runs immediately after install_uv:
+# Fix (A) is performed before its first Hugging Face package operation, while
+# every Python dependency operation itself stays on uv.
 harden_vast_docker_image() {
   step "Harden Docker image (rm HF shim / refresh CA / pin hh<0.30)"
 
@@ -107,8 +108,8 @@ harden_vast_docker_image() {
   fi
 
   # Fix (A): remove HF mirror shim. Load-bearing: must fire before any
-  # pip/uv operation runs, otherwise huggingface_hub installs go through
-  # the mirror during install itself. `rm -f` is no-op when clean; but
+  # Hugging Face package operation runs, otherwise huggingface_hub installs
+  # go through the mirror during install itself. `rm -f` is no-op when clean; but
   # if the file exists and rm fails, set -e kills provision.sh, which is
   # intentional (proceeding with a live shim guarantees the bug recurs).
   local shim
@@ -136,26 +137,27 @@ harden_vast_docker_image() {
   # Fix (B) + Fix (D): pin huggingface_hub<0.30 (Wave 9-11 empirical
   # ceiling — relax when upstream restores non-xet backward compat or
   # vast.ai's mirror stops mangling xet routes) + pre-install
-  # torch/numpy/safetensors/certifi at the SYSTEM layer where
-  # resilient_batch.sh's uv_cmd fallback + ad-hoc `python3 -c` actually
-  # consume them. tools/parity's per-tree uv env stays lean.
-  if command -v pip3 >/dev/null 2>&1; then
-    if pip3 install --quiet --upgrade \
+  # torch/numpy/safetensors/certifi at the SYSTEM layer as a VAST image
+  # compatibility layer. tools/parity's per-tree uv environment remains the
+  # only Python execution path for Vokra itself.
+  if command -v uv >/dev/null 2>&1; then
+    if uv pip install --system --break-system-packages --quiet --upgrade \
       'huggingface_hub<0.30' torch numpy safetensors certifi; then
-      log "pip3: hh<0.30 pin + torch/numpy/safetensors/certifi installed"
+      log "uv pip --system: hh<0.30 pin + torch/numpy/safetensors/certifi installed"
     else
-      log "WARN: pip3 install failed — uv path may still work"
+      log "WARN: uv pip --system install failed — project uv env may still work"
     fi
   else
-    log "note: pip3 not on PATH — skipping system-layer python installs"
+    log "note: uv not on PATH — skipping system-layer Python installs"
   fi
 
   # Fix (C, apply): overwrite certifi bundle with system CA. This covers
   # code that resolves through certifi.where() directly (hh internals,
   # urllib3, some torch loaders) — resilient_batch.sh's runtime
   # SSL_CERT_FILE / REQUESTS_CA_BUNDLE exports do NOT cover this path.
-  local certifi_where
-  certifi_where="$(python3 -c 'import certifi; print(certifi.where())' 2>/dev/null || true)"
+  local certifi_location certifi_where
+  certifi_location="$(uv pip show --system certifi 2>/dev/null | awk -F ': ' '$1 == "Location" { print $2; exit }' || true)"
+  certifi_where="${certifi_location:+$certifi_location/certifi/cacert.pem}"
   if [[ -n "$certifi_where" && -f /etc/ssl/certs/ca-certificates.crt ]]; then
     if cp /etc/ssl/certs/ca-certificates.crt "$certifi_where" 2>/dev/null; then
       log "certifi bundle synced: $certifi_where"
@@ -337,9 +339,9 @@ main() {
     exit $?
   fi
 
-  harden_vast_docker_image   # Wave 12 pre-handle — MUST run before install_uv
   install_rust
   install_uv
+  harden_vast_docker_image   # Wave 12 pre-handle — before any HF package operation
   clone_repo
   install_hf_transfer   # after clone: tools/parity is present
   setup_scratch

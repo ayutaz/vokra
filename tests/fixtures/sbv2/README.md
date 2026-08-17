@@ -83,12 +83,13 @@ tests/fixtures/sbv2/reference_dump/
 
 ## Owner recipe
 
-All three steps below are **owner-only** (design doc §12 "依頼者残タスク"):
-they need real network access to gated/large upstream repos, and — for the
-SBV2 main model's reference dump specifically — a vendoring step
-(`tools/parity/vendor/vits/`) that has not landed yet (see "Known
-limitations" below). Nothing here can be run unattended in CI without a
-real checkpoint already staged.
+All three steps below are **owner-only** (design doc §12 "依頼者残タスク")
+and must run on a **vast.ai instance**: they download, load, convert, and
+verify large real weights. The permissive VITS vendor pass is already
+tracked under `tools/parity/vendor/vits/`; a real dump still needs staged
+checkpoints plus the exact G2P fixture row for its text/language pair.
+Nothing here can be run unattended in CI without a real checkpoint already
+staged.
 
 ### 1. Download the checkpoints
 
@@ -97,7 +98,7 @@ real checkpoint already staged.
 `config.json` onto the `vokra.sbv2.*` hparam schema:
 
 ```bash
-python3 tools/parity/sbv2_prepare_checkpoint.py \
+uv run --project tools/parity python tools/parity/sbv2_prepare_checkpoint.py \
     --hf-repo litagin02/style_bert_vits2 \
     --output-dir /tmp/sbv2-checkpoint
 ```
@@ -116,7 +117,8 @@ repos (flat `.safetensors`, no `.pth` to flatten), so a direct
 `huggingface_hub.snapshot_download` call is enough; there is no dedicated
 prep tool for them yet. For example:
 
-```python
+```bash
+uv run --project tools/parity python - <<'PY'
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id="ku-nlp/deberta-v2-large-japanese-char-wwm",
@@ -131,6 +133,7 @@ snapshot_download(
     local_dir="/tmp/deberta-v3-en",
     allow_patterns=["*.safetensors", "*.json"],
 )
+PY
 ```
 
 (This mirrors `tools/parity/sbv2_prepare_checkpoint.py`'s own
@@ -143,41 +146,35 @@ history.)
 ### 2. Generate the reference dump (Task 30, `sbv2_dump_reference.py`)
 
 ```bash
-python3 tools/parity/sbv2_dump_reference.py \
+uv run --project tools/parity python tools/parity/sbv2_dump_reference.py \
     --checkpoint /tmp/sbv2-checkpoint \
     --output-dir tests/fixtures/sbv2 \
     --text "こんにちは。" --language ja \
     --do-dump
 ```
 
-**As of this commit, `--do-dump` always fails loudly** at one of three
-tiers (see that script's own module doc for the full explanation):
-missing `torch`, missing `transformers`, or — the tier every environment
-with both installed will actually hit — `tools/parity/vendor/vits/`
-shipping only a `LICENSE` + scaffold `README.md`, no vendored
-`jaywalnut310/vits` (MIT) module yet. **A follow-up must vendor that module
-before this step can produce a real dump** (see that README's "What a
-follow-up vendoring pass should add here" table). This is deliberate
-scaffolding, not a bug: fabricating a tensor dump without the real
-permissive reference implementation would validate nothing (see
-`tools/parity/utmos_dump_reference.py`'s own module doc, and memory
-`feedback-honest-parity-atol`).
+`--do-dump` is now wired to the tracked MIT VITS vendor modules. It still
+fails loudly — and correctly — unless the VAST `tools/parity` uv environment
+has its dependencies, the staged checkpoint contains every required tensor,
+and `MinimalG2P` has a row for the exact `--text` / `--language` request.
+Those gates prevent fabricated reference tensors; do not add heuristic G2P
+fallbacks or hand-write a dump.
 
-The JA/EN DeBERTa encoders do **not** share this gate — they are loaded
-directly via HF `transformers`' `AutoModel`, a real, `pip install`-able
-dependency, with no vendoring involved:
+The JA/EN DeBERTa encoders do **not** share the VITS-vendor gate — they are
+loaded directly via HF `transformers`' `AutoModel` in the same uv-managed
+environment:
 
 ```bash
-python3 tools/parity/deberta_v2_dump_reference.py \
+uv run --project tools/parity python tools/parity/deberta_v2_dump_reference.py \
     --hf-repo ku-nlp/deberta-v2-large-japanese-char-wwm \
     --output-dir /tmp/deberta-v2-dump --do-dump
-python3 tools/parity/deberta_v3_dump_reference.py \
+uv run --project tools/parity python tools/parity/deberta_v3_dump_reference.py \
     --hf-repo microsoft/deberta-v3-large \
     --output-dir /tmp/deberta-v3-dump --do-dump
 ```
 
 These two are useful for isolating BERT-only numeric parity independently
-of the still-vendoring-blocked SBV2 pipeline, but their output is **not**
+of the combined SBV2 pipeline, but their output is **not**
 what `reference_dump.manifest.json` / `parity_sbv2_real.rs` consume (that
 file only reads `sbv2_dump_reference.py`'s combined 11-tensor dump).
 
@@ -228,6 +225,7 @@ CONVERTER-EMIT-EXPLICIT-ZEROS).
 ### 5. Run the gated tests
 
 ```bash
+# Run this heavyweight fixture test only on the VAST instance.
 cargo test -p vokra-models --test sbv2_gguf_loader -- --ignored
 cargo test -p vokra-bert --test deberta_v2_loader -- --ignored
 cargo test -p vokra-models --test parity_sbv2_real -- --ignored
@@ -235,6 +233,52 @@ cargo test -p vokra-models --test parity_sbv2_real -- --ignored
 
 A missing fixture at this point is a **loud, actionable panic** naming
 exactly what's absent — never a silent skip-and-pass (FR-EX-08).
+
+### 6. Generate the SDP-body fixture (Blocker 2c residual)
+
+This is separate from the end-to-end `reference_dump/sdp_sample.bin`: it
+isolates the deterministic `pre -> +cond(g) -> DDSConv -> proj` body from
+the random latent and flow inverse. The canonical path is the fail-closed VAST
+worker, which pins all three upstream revisions, stages and converts all three
+GGUFs, checks their committed sidecar hashes, records the execution
+environment, generates the independent fixture, and runs the explicit ignored
+test:
+
+```bash
+cd ~/vokra
+bash scripts/publish/vast-ai/run-sbv2-sdp-parity.sh
+```
+
+See `docs/handoff/sbv2-sdp-vast-parity.md` for the rent → provision → work →
+collect logs → destroy lifecycle. Its `--self-test` is checkpoint-free and may
+run locally; the actual path refuses macOS and an unmarked Linux host.
+
+The tool uses the vendored MIT upstream `StochasticDurationPredictor`, not
+the Rust implementation, and writes two raw input fixtures plus the
+channel-major output and JSON provenance. These, like the real GGUFs, are
+derived from the AGPL checkpoint and are gitignored; do not commit or copy
+them into the Apache-2.0 source tree. Do not generate or load them on the Mac.
+For debugging the worker, its underlying fixture command is:
+
+```bash
+cd ~/vokra/tools/parity
+uv run python sbv2_sdp_body_dump.py \
+    --checkpoint <VAST-staged-sbv2-dir> \
+    --output-dir ~/vokra/tests/fixtures/sbv2 \
+    --seed 0 --T 50
+```
+
+Do not treat that isolated command as a complete gate: the worker's GGUF hash,
+environment-provenance, and Rust-test steps are also required.
+
+The first recorded run (2026-08-18, public JP-Extra v2 checkpoint) passed
+with `max |Δ| = 9.536743164e-6` at channel 96 / time 31, below the strict
+`1e-5` candidate bound. The tracked VAST worker's final end-to-end run at
+commit `cdfb3e2` pinned all three upstream revisions, reproduced the three
+committed GGUF hashes, recorded Xeon E5-2699 v4 / AVX2 / torch 2.13.0, and
+passed in 79.90 s with `max |Δ| = 8.583068848e-6` at channel 118 / time 48.
+The observed environment spread is still based on one checkpoint/input pair;
+repeat the gate before altering the bound or its explicit `#[ignore]` posture.
 
 ## About the committed `reference_dump.manifest.json`
 
@@ -244,7 +288,7 @@ byte-for-byte stdout of `sbv2_dump_reference.py`'s **schema-preview mode**
 `torch`, and no `transformers` to run:
 
 ```bash
-python3 tools/parity/sbv2_dump_reference.py \
+uv run --no-project python tools/parity/sbv2_dump_reference.py \
     --checkpoint /tmp/unused --output-dir /tmp/unused --language ja
 ```
 
@@ -318,24 +362,18 @@ touches — not something this README's task introduces, and not something
 this task fixes (each is out of scope for fixture scaffolding; flagged here
 so an owner running the recipe isn't surprised):
 
-1. **`sbv2_dump_reference.py --do-dump` is gated on VITS vendoring that has
-   not landed.** See step 2 above — the reference dump cannot actually
-   produce `reference_dump/*.bin` today; `tools/parity/vendor/vits/`
-   currently ships only a scaffold (`LICENSE` + `README.md`), no code.
+1. **`sbv2_dump_reference.py --do-dump` needs a staged checkpoint and an
+   exact G2P row.** The VITS vendor modules have landed; a missing
+   `MinimalG2P` entry or required checkpoint tensor remains a deliberate
+   loud failure. Generate the fixture only on VAST through `uv`.
 
-2. **The SBV2 v2 / DeBERTa v2 / DeBERTa v3 converters do not yet rename
-   tensors.** `crates/vokra-convert/src/models/{sbv2,deberta_v2,deberta_v3}.rs`
-   each carry a `TODO(owner): tensor name mapping` module-doc section
-   stating that every tensor is emitted under its **upstream checkpoint
-   name, verbatim** — none of the three converters yet renames e.g. an
-   upstream `dec.ups.0.weight` to whatever `SbV2Model::from_gguf` /
-   `DebertaV2Encoder::from_gguf` / `DebertaV3Encoder::from_gguf` actually
-   look up. Those module docs describe a GGUF produced today as a
-   "provenance-correct, byte-faithful **staging artifact**, not yet
-   loadable by `from_gguf`". Building the real rename table needs a real
-   checkpoint's tensor names in hand (which is exactly what this fixture
-   set, once populated, would supply) — it is a distinct follow-up task,
-   not something Task 34's fixture scaffolding does.
+2. **Fixture hashes are converter-version-specific.** The SBV2 v2 and
+   DeBERTa v2/v3 converters now map upstream names into the runtime schemas;
+   DeBERTa additionally duplicates shared projections and normalizes relative
+   embeddings as required by the upstream config. A GGUF produced by an old
+   staging-only converter must not be mixed with a newly generated sidecar.
+   Regenerate the artifact and hash together, then run the matching real
+   loader/parity gate before treating the fixture as current.
 
 3. **Even with real, correctly-named fixtures, `SbV2Model::synthesize`
    cannot succeed from this crate today.** `SbV2Model::from_gguf`'s own doc
@@ -424,7 +462,7 @@ source in the table above.
   other crates' test files, out of scope for this fixture-management task.
 - It does not populate a real checkpoint, run a real conversion, or
   compute a real hash — everything here is the reproducible scaffold an
-  owner needs to do that themselves (design doc §12 "依頼者残タスク").
+  owner needs to run on VAST (design doc §12 "依頼者残タスク").
 - It does not sign off on `docs/license-audit.md` §3.1 for these three
   SKUs — that stays blank (fail-closed default, memory
   `feedback-license-signoff-primary-source`) until an owner confirms the

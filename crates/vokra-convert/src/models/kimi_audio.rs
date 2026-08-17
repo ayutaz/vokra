@@ -41,14 +41,9 @@
 //! pattern so a future `KimiAudioWeights::from_gguf` can walk the same
 //! names.
 
-// The module is a TDD skeleton: [`convert_kimi_audio_file`] and the
-// transcribed constants are exercised by this file's `#[cfg(test)]`
-// suite but not yet wired into `crate::lib.rs`'s dispatch table
-// (`convert_file`) or a `vokra-cli` subcommand. The lib re-export is a
-// deliberate follow-up per the task scope (`git add
-// kimi_audio.rs + mod.rs` only), so silence the whole-crate dead_code
-// warning locally rather than fanning attributes across every item.
-#![allow(dead_code)]
+// `convert_kimi_audio_file` is wired through `ModelKind`, the licensed
+// `convert_file` dispatch, and the `vokra-cli convert --model kimi-audio`
+// path. Real-weight tensor binding remains a separate follow-up.
 
 use std::path::Path;
 

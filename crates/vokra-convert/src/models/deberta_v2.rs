@@ -651,12 +651,9 @@ pub(crate) fn classify_skip(name: &str) -> &'static str {
     // tensor-loop walk and applied to `rel_embeddings` in the per-layer
     // `pos_embed` duplication block); they intentionally have no entry
     // in `map_deberta_name` because they don't map to a per-layer name.
-    // The v3 converter shares this `classify_skip` helper but does NOT
-    // yet apply the same pre-normalization to its shared
-    // `bert.encoder.pos_embed.weight` output — if a v3 checkpoint sets
-    // `norm_rel_ebd = "layer_norm"` the same class of parity drift the
-    // v2 fix addresses will manifest there (owner follow-up, tracked
-    // separately). The pre-2026-08-10 reason string ("top-level
+    // The v3 converter applies the same pre-normalization out-of-band and
+    // writes one shared `bert.encoder.pos_embed.weight`. The pre-2026-08-10
+    // reason string ("top-level
     // encoder LayerNorm — loader applies its own final norm inside
     // ln2") was doubly wrong: (a) this is not the top-level encoder LN
     // — it's the rel_embeddings LN — and (b) `ln2` in the loader is
@@ -664,9 +661,8 @@ pub(crate) fn classify_skip(name: &str) -> &'static str {
     // `convert_deberta_v2_file`'s `rel_ln_gamma`/`rel_ln_beta` capture
     // block for the v2 consumer.
     if name.starts_with("deberta.encoder.LayerNorm.") {
-        return "rel_embeddings LayerNorm — v2 converter pre-normalizes rel_embeddings \
-                into per-layer pos_embed when both weight+bias present; v3 converter \
-                does not yet consume (follow-up if norm_rel_ebd=layer_norm)";
+        return "rel_embeddings LayerNorm — consumed out-of-band by the DeBERTa v2/v3 \
+                converter before emitting runtime pos_embed tensors";
     }
     "unmapped tensor — no rename rule matched"
 }

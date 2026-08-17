@@ -71,12 +71,13 @@ case "$MODE" in
         ;;
 esac
 
-# The checker body lives in python3 (stdlib only — no PyYAML, NFR-DS-02).
+# The checker body lives in Python (stdlib only — no PyYAML, NFR-DS-02) and
+# is always launched through uv per the repository Python-tooling policy.
 # `--self-test` re-invokes it against synthetic trees built in a mktemp dir.
 run_checker() {
     # $1 = directory containing the workflow *.yml files
     # $2 = mode ("check" or "--list")
-    python3 - "$1" "$2" <<'PY'
+    uv run --no-project python - "$1" "$2" <<'PY'
 import pathlib
 import re
 import subprocess

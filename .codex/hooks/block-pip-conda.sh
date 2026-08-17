@@ -21,29 +21,66 @@
 #   * pip3 install / pip3 freeze / pip3 uninstall
 #   * python -m pip <anything>
 #   * python3 -m pip <anything>
+#   * python3 <script>.py / python3 -c '...' (direct local execution)
 #   * conda install / conda create / conda env create
 #
 # NOT blocked (legitimate uses):
 #   * uv add / uv run / uv sync / uv pip (uv-managed pip pass-through)
-#   * python3 <script>.py         (running an existing script)
-#   * python3 -c '...'            (inline eval)
 #
 # Vast.ai instance provisioning uses `pip install 'huggingface_hub<0.30'` via
 # scripts/publish/vast-ai/provision.sh (documented gotcha B). That script
 # runs on remote instance, not through Codex — this hook is Codex-only.
 #
+# SELF-TEST
+#   bash .codex/hooks/block-pip-conda.sh --self-test
+#
 # Exit 2 = block the tool call and return the message to Codex.
 
 set -uo pipefail
+
+if [ "${1:-}" = "--self-test" ]; then
+    fails=0
+    check() {
+        local name="$1" expect="$2" command="$3" got
+        if printf '{"tool_input":{"command":"%s"}}' "$command" \
+            | bash "$0" >/dev/null 2>&1; then
+            got=allow
+        else
+            got=block
+        fi
+        if [ "$got" = "$expect" ]; then
+            printf '  ok    %-40s %s\n' "$name" "$got"
+        else
+            printf '  FAIL  %-40s expected %s, got %s\n' "$name" "$expect" "$got"
+            fails=$((fails + 1))
+        fi
+    }
+
+    echo "block-pip-conda --self-test"
+    check "direct python script" block "python3 scripts/check.py"
+    check "direct python inline" block "python3 -c print(1)"
+    check "uv run python" allow "uv run --project tools/parity python scripts/check.py"
+    check "bare pip install" block "pip install pyyaml"
+    check "uv pip install" allow "uv pip install pyyaml"
+    check "conda create" block "conda create -n test-env"
+    check "python word in prose" allow "echo python3 scripts/check.py"
+
+    if [ "$fails" -eq 0 ]; then
+        echo "block-pip-conda --self-test: OK"
+        exit 0
+    fi
+    echo "block-pip-conda --self-test: FAIL ($fails)"
+    exit 1
+fi
 
 payload="$(cat)"
 
 cmd=""
 if command -v jq >/dev/null 2>&1; then
     cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
-elif command -v python3 >/dev/null 2>&1; then
+elif command -v uv >/dev/null 2>&1; then
     cmd="$(printf '%s' "$payload" \
-        | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("command",""))' \
+        | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" uv run --no-project --python 3.12 python -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("command",""))' \
         2>/dev/null || true)"
 fi
 
@@ -67,7 +104,9 @@ esac
 #   pip list               → allowed (read-only introspection)
 #   ./scripts/pip-helper.sh → NOT matched (not a command word)
 #
-# Pattern B: python -m pip / python3 -m pip (any sub-command).
+# Pattern B: direct Python execution, or python -m pip (any sub-command).
+#   python3 script.py             → BLOCK
+#   python3 -c '...'              → BLOCK
 #   python -m pip install X    → BLOCK
 #   python3 -m pip freeze      → BLOCK
 #
@@ -77,7 +116,26 @@ esac
 #   conda env create -f X  → BLOCK
 #   conda info             → allowed (read-only)
 matched=""
-if printf '%s' "$cmd" | grep -Eq '(^|[;&|[:space:]])pip3?[[:space:]]+(install|freeze|uninstall)([[:space:]]|$)'; then
+segment_has_direct_python() {
+    printf '%s\n' "$1" \
+        | tr ';\n' '\n\n' \
+        | sed -e 's/&&/\n/g' -e 's/||/\n/g' -e 's/|/\n/g' \
+        | while IFS= read -r segment; do
+            segment="${segment#"${segment%%[![:space:]]*}"}"
+            while printf '%s' "$segment" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; do
+                segment="${segment#* }"
+                segment="${segment#"${segment%%[![:space:]]*}"}"
+            done
+            printf '%s' "$segment" \
+                | grep -Eq '^python3?([[:space:]]|$)' \
+                && echo MATCH
+        done \
+        | grep -q MATCH
+}
+
+if segment_has_direct_python "$cmd"; then
+    matched="direct python invocation"
+elif printf '%s' "$cmd" | grep -Eq '(^|[;&|[:space:]])pip3?[[:space:]]+(install|freeze|uninstall)([[:space:]]|$)'; then
     matched="pip install/freeze/uninstall"
 elif printf '%s' "$cmd" | grep -Eq '(^|[;&|[:space:]])python3?[[:space:]]+-m[[:space:]]+pip([[:space:]]|$)'; then
     matched="python -m pip"

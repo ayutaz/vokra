@@ -1,4 +1,4 @@
-//! **WeSpeaker** (`Wespeaker/wespeaker-voxceleb-resnet34-LM`, apache-2.0):
+//! **WeSpeaker** (`Wespeaker/wespeaker-voxceleb-resnet34-LM`, CC-BY-4.0):
 //! safetensors → GGUF conversion (SoTA follow-on, 2026-07-25).
 //!
 //! Input: the upstream `Wespeaker/wespeaker-voxceleb-resnet34-LM` release
@@ -12,7 +12,7 @@
 //!
 //! - Upstream HF: `Wespeaker/wespeaker-voxceleb-resnet34-LM` (recorded
 //!   under `vokra.provenance.upstream_hf`).
-//! - SPDX: `apache-2.0` (`LicenseClass::Permissive`).
+//! - SPDX: `cc-by-4.0` (`LicenseClass::AttributionRequired`).
 //! - Model category: `speaker` (recorded under `vokra.model.category`).
 //!
 //! # BF16 pass-through (mirror of `qwen3_tts` / `vibevoice` / `voxcpm2`)
@@ -76,6 +76,15 @@ pub(crate) const MODEL_CATEGORY: &str = "speaker";
 pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 pub(crate) const UPSTREAM_HF: &str = "Wespeaker/wespeaker-voxceleb-resnet34-LM";
 
+/// Upstream cardData license for the LM checkpoint.
+pub(crate) const DEFAULT_LICENSE_SPDX: &str = "cc-by-4.0";
+
+/// Attribution carried in every default WeSpeaker conversion (FR-MD-09).
+pub(crate) const WESPEAKER_ATTRIBUTION_TEXT: &str = "This application uses WeSpeaker ResNet34-LM \
+    (speaker embedding; VoxCeleb, Large-Margin fine-tune). Model weights are \
+    licensed under CC-BY 4.0 (attribution required; commercial use permitted). \
+    Source: https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM";
+
 /// Outcome of a WeSpeaker conversion.
 ///
 /// Mirrors [`crate::models::qwen3_tts::Qwen3TtsReport`]'s counter set
@@ -108,9 +117,9 @@ pub struct WespeakerReport {
 /// Reads `input` (upstream
 /// `Wespeaker/wespeaker-voxceleb-resnet34-LM` `model.safetensors`),
 /// writes a Vokra GGUF to `output`. `license` overrides the default
-/// `apache-2.0` provenance stamp (Whisper / kokoro-family override
+/// `cc-by-4.0` provenance stamp (Whisper / kokoro-family override
 /// pattern — see `convert_file_licensed` in `lib.rs`); pass `None` to
-/// keep the built-in `apache-2.0` stamp.
+/// keep the built-in `cc-by-4.0` stamp and its attribution metadata.
 ///
 /// # Errors
 ///
@@ -136,13 +145,16 @@ pub fn convert_wespeaker_file(
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
 
     // Self-describing redistribution: the artifact carries its own
-    // licence. Default = apache-2.0 (upstream
+    // licence. Default = CC-BY-4.0 (upstream
     // `Wespeaker/wespeaker-voxceleb-resnet34-LM` model card).
     // `license` overrides for callers who obtained the weight under a
     // different SPDX (see `convert_file_licensed` in `lib.rs`).
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => ("apache-2.0".to_owned(), LicenseClass::Permissive),
+        _ => (
+            DEFAULT_LICENSE_SPDX.to_owned(),
+            LicenseClass::AttributionRequired,
+        ),
     };
     vokra_core::stamp_provenance(
         &mut b,
@@ -151,9 +163,12 @@ pub fn convert_wespeaker_file(
         Some(NAME),
         Some(
             "Wespeaker/wespeaker-voxceleb-resnet34-LM \
-             (ResNet34 speaker encoder, VoxCeleb + Large-Margin, apache-2.0)",
+             (ResNet34 speaker encoder, VoxCeleb + Large-Margin, CC-BY-4.0)",
         ),
     );
+    if class.requires_attribution() {
+        vokra_core::stamp_attribution(&mut b, WESPEAKER_ATTRIBUTION_TEXT);
+    }
 
     let mut report = WespeakerReport::default();
     // Float tensors pass through **verbatim** — no convert-time widening.
@@ -418,12 +433,12 @@ mod tests {
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
                 .and_then(|v| v.as_str()),
-            Some("apache-2.0")
+            Some(DEFAULT_LICENSE_SPDX)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
+            Some(LicenseClass::AttributionRequired.as_str())
         );
         assert_eq!(
             file.get(KEY_PROVENANCE_UPSTREAM_HF)
@@ -433,6 +448,11 @@ mod tests {
         assert_eq!(
             file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
             Some(MODEL_CATEGORY)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_ATTRIBUTION)
+                .and_then(|v| v.as_str()),
+            Some(WESPEAKER_ATTRIBUTION_TEXT)
         );
 
         std::fs::remove_file(&input_path).ok();

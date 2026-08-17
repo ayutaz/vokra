@@ -433,7 +433,7 @@ docs**（本 wave が「実装漏れではなく別 WP」判断で honest scope 
 
 | # | Model / Work item | Handoff doc | Size / License | Owner trigger 理由 |
 |---|---|---|---|---|
-| 1 | **VoxCPM2-2B**（openbmb/VoxCPM2） | [`docs/handoff/vast-ai-publish-voxcpm2-2b.md`](vast-ai-publish-voxcpm2-2b.md) | 4.96 GB BF16 / apache-2.0 | 依頼者ルール #1（≥2GB は vast.ai）。設計 spec `2026-07-28-voxcpm2-2b-design.md` §5 の Wave 0 ADR Option A/B/C 収束が gate、runtime + converter variant-aware が Wave 1 で land すれば CI 側は既 pinned SHA で待機中 |
+| 1 | **VoxCPM2-2B**（openbmb/VoxCPM2） | [`docs/handoff/vast-ai-publish-voxcpm2-2b.md`](vast-ai-publish-voxcpm2-2b.md) | main 4.58 GB + AudioVAE 377 MB / apache-2.0 | **2026-08-18 VAST conversion complete**: strict UV preparer merged 577 BF16 + 311 F32 AudioVAE tensors; 888-tensor GGUF and exact tokenizer/revision/header verification passed at `5bc62ae`. Publish dry-run stops `UNKNOWN_REPO` pending voice-clone destination/legal decision; no upload performed. |
 | 2 | **RMVPE**（Dream-High/RMVPE MIT） | [`docs/handoff/vast-ai-publish-rmvpe.md`](vast-ai-publish-rmvpe.md) | 180 MB / mit | **✅ 2026-08-13 WF1 update: loud-partial resolved**（`e7b6810`）。上流 `yxlllc/RMVPE`（MIT）の primary source 再精査で U-Net + BiGRU + head topology が primary-source-transcribable と判明 → real forward を land。CLAUDE.md wave 3 "under-specified in primary source" 判定は REVERSED。**owner critical path 圧縮**: real verify に vast.ai 不要（local M1 iMac で完結）、`fetch_rmvpe_pt.sh` の curl ~5 分 + `tools/parity/rmvpe/dump_reference.py` の `uv run` ~30 秒で Path B fixture が揃い、`cargo test -p vokra-models parity_rmvpe` を per-crate で発火可能（memory-safe rule 準拠、§7） |
 | 3 | **Vocoder / codec GPU kernel wave**（HiFTNet / BigVGAN / SNAC / Qwen3-TTS-codec 等の Metal MSL + CUDA NVRTC） | [`docs/handoff/vast-ai-vocoder-gpu-kernels.md`](vast-ai-vocoder-gpu-kernels.md) | N/A（kernel work item） | **2026-08-13 WF1〜WF5 land 累計 = Metal 8/11 op**（`66d0077` mimi_rvq / `f9f6e40` dac_rvq / `a7a05e8` fsq_codec / `137f692` snake / `8a6d7c9` snac / `2b431cd` denoise / `52d1dca` qwen3_tts_codec）: 全 bit-identical vs CPU（max \|Δ\| = 0）を M1 iMac 上検証。残 3 op（hiftnet / bigvgan / anti_aliased_upsample）は複合構造ゆえ primitive decomposition ADR 先行が必要 = owner triggered。CUDA 半分は vast.ai owner 必須で非対称。GPU 化 = 性能最適化ゆえ v1.0 GA blocking ではない（M5-13 C ABI 凍結 precondition 外） |
 | 4 | **Higgs-Audio v3 TTS 4B**（BosonAI 系） | [`docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md`](vast-ai-publish-higgs-audio-v3-tts-4b.md) | ~9 GB / apache-2.0 | 依頼者ルール #1（≥2GB は vast.ai）+ 8 GB owner cutoff 超えゆえ確実に vast.ai。WF4 `5c77597` で converter code + provenance stamp + smoke test は land 済、実 weight fetch + convert + publish は owner triggered。§3.1 sign-off row 空欄で待機（primary source 直接照合済み）。 |
@@ -468,13 +468,15 @@ work item に固有の差分のみを記述。
 ### 4.2 中期（本 handoff docs の owner action）
 
 3. **VoxCPM2-2B publish**（handoff #1）:
-   - Wave 0 ADR 確定（Option A / B / C）
-   - Wave 1 runtime + converter variant-aware land 確認
-   - HF primary source 直接照合（apache-2.0）
-   - §3.1 sign-off（yousan として ☑ Commercial）
-   - vast.ai instance 起動（~$0.3-0.5、~1 hour）
-   - `run-one.sh --push` で publish
-   - CI variable `VOKRA_TTS_CONT_VAE_ENABLE=1` set、parity CI flip the switch
+   - **Done 2026-08-18**: Option C runtime/converter path, fixed-revision VAST
+     preparation, 888-tensor real GGUF conversion, structural verification,
+     main-only rejection, and no-credential dry-run attempt
+   - **Owner decision**: voice-clone experimental vs main `vokra/` destination,
+     plus M5-05 legal/consent/watermark ratification
+   - After explicit upload authorization, add exact sign-off mapping, resume
+     stopped instance `47955178`, re-run dry-run, then `publish-one.sh --push`
+   - Generate independent upstream numerical fixtures, set
+     `VOKRA_TTS_CONT_VAE_ENABLE=1`, and flip the parity CI switch
 4. **RMVPE publish**（handoff #2）— **2026-08-13 WF1 update: real forward 実装済**:
    - GitHub primary source 直接照合（MIT、`yxlllc/RMVPE` = 上流 fork の
      primary-source-transcribable topology、`Dream-High/RMVPE` = paper origin）
