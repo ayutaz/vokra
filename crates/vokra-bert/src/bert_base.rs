@@ -39,8 +39,8 @@
 //! - Any AGPL derivative of the above.
 
 use crate::deberta_v2::LayerNorm;
-use vokra_core::gguf::GgufFile;
 use vokra_core::VokraError;
+use vokra_core::gguf::GgufFile;
 
 /// Static hyper-parameters for a plain BERT encoder.
 ///
@@ -78,7 +78,7 @@ pub struct BertConfig {
 /// approximation (max absolute error ≈ 1.5·10⁻⁷), well below the atol
 /// bounds this crate operates at.
 #[inline]
-fn gelu_exact(x: f32) -> f32 {
+pub(crate) fn gelu_exact(x: f32) -> f32 {
     x * 0.5 * (1.0 + erf_approx(x * core::f32::consts::FRAC_1_SQRT_2))
 }
 

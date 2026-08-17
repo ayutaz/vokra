@@ -97,8 +97,9 @@ def _extract(spm_path: Path) -> dict:
     except ImportError as e:  # pragma: no cover — imported in tests
         raise SystemExit(
             "extract_spm_metadata.py: `sentencepiece` is not installed. "
-            "Run `uv sync` from tools/parity/ (Apache-2.0, permissive) or "
-            "`pip install sentencepiece>=0.2.2` in your active venv."
+            "Run `uv sync --project tools/parity/deberta_v3 --frozen` "
+            "for the dedicated DeBERTa oracle, or `uv sync --project "
+            "tools/parity --frozen` for the shared parity environment."
         ) from e
 
     sp = spm.SentencePieceProcessor(model_file=str(spm_path))

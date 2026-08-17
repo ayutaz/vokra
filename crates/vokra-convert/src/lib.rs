@@ -845,16 +845,12 @@ pub enum ModelKind {
     /// plan Task 11, 2026-07-26): a Hugging Face `transformers`
     /// `deberta_v2` safetensors checkpoint for Japanese text
     /// (`ku-nlp/deberta-v2-large-japanese-char-wwm`, Apache-2.0
-    /// model-card header). F32 / F16 / BF16 tensors pass through verbatim
-    /// under upstream HF names; the runtime's `DebertaV2Encoder::from_gguf`
-    /// will be written to map those names to the encoder's internal tensor
-    /// access pattern (Task 30 — today the tensor-to-schema mapping is a
-    /// deferred follow-up; every tensor is emitted verbatim so the mapping
-    /// can be validated once a real checkpoint arrives). Every hparam
-    /// required by the encoder is transcribed verbatim from the checkpoint's
-    /// `config.json` and written to the `vokra.bert.deberta_v2.*` metadata
-    /// chunk group. Convert with [`convert_deberta_v2_file`] with a
-    /// safetensors checkpoint.
+    /// model-card header). The converter maps upstream names to the runtime
+    /// `bert.*` schema, duplicates shared Q/K projections where the runtime
+    /// layout requires it, and pre-normalizes the shared relative embedding
+    /// before emitting per-layer position tables. Shape-derived hparams are
+    /// written to `vokra.bert.deberta_v2.*`. Convert with
+    /// [`convert_deberta_v2_file`] using a safetensors checkpoint.
     DebertaV2,
     /// microsoft **DeBERTa v3** English BERT checkpoint (SBV2 v2 plan Task
     /// 11, 2026-07-26; upstream/license label corrected 2026-07-27, Task 8):
@@ -862,16 +858,11 @@ pub enum ModelKind {
     /// for English text (`microsoft/deberta-v3-large`, MIT model-card
     /// header — v3 is the SBV2 `checkpoint.bert_en` counterpart to v2's
     /// `checkpoint.bert_ja`, see `crates/vokra-bert/src/lib.rs` and
-    /// `tests/fixtures/sbv2/README.md`). F32 / F16 / BF16 tensors pass
-    /// through verbatim under upstream HF names; the runtime's
-    /// `DebertaV3Encoder::from_gguf` will be written to map those names to
-    /// the encoder's internal tensor access pattern (Task 30 — today the
-    /// tensor-to-schema mapping is a deferred follow-up; every tensor is
-    /// emitted verbatim so the mapping can be validated once a real
-    /// checkpoint arrives). Every hparam required by the encoder is
-    /// transcribed verbatim from the checkpoint's `config.json` and
-    /// written to the `vokra.bert.deberta_v3.*` metadata chunk group.
-    /// Convert with [`convert_deberta_v3_file`] with a safetensors
+    /// `tests/fixtures/sbv2/README.md`). The converter maps upstream names
+    /// to the runtime `bert.*` schema, duplicates shared Q/K projections,
+    /// and pre-normalizes the one shared relative embedding table.
+    /// Shape-derived hparams are written to `vokra.bert.deberta_v3.*`.
+    /// Convert with [`convert_deberta_v3_file`] using a safetensors
     /// checkpoint.
     DebertaV3,
     /// **hfl/chinese-roberta-wwm-ext-large** plain-BERT checkpoint
@@ -7748,15 +7739,13 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::DebertaV2 => {
-            // SBV2 v2 plan Task 11 (2026-07-26): pass every F32/F16/BF16
-            // tensor through verbatim under upstream HF names and stamp the
-            // `vokra.bert.deberta_v2.*` chunk group (DeBERTa v2 transformer
-            // encoder + hparams) from the transcribed constants in
-            // `models::deberta_v2`. Provenance = Apache-2.0 (Permissive —
+            // SBV2 v2 plan Task 11 (2026-07-26): map the upstream tensors
+            // into the runtime `bert.*` schema, including Q/K duplication
+            // and normalized per-layer relative embeddings, and stamp the
+            // shape-derived `vokra.bert.deberta_v2.*` hparams. Provenance =
+            // Apache-2.0 (Permissive —
             // no runtime-side attribution obligation, per HF model card
-            // `ku-nlp/deberta-v2-large-japanese-char-wwm`). Tensor-to-schema
-            // mapping (Task 30) is deferred; every tensor is emitted verbatim
-            // so the mapping can be validated once a real checkpoint arrives.
+            // `ku-nlp/deberta-v2-large-japanese-char-wwm`).
             // Blocker 5 (2026-08-06): tokenizer side-car is a
             // vokra-cli-front-end concern (mirror of the Voxtral
             // `--tokenizer` boundary). The plain `convert_file_licensed`
@@ -7766,7 +7755,7 @@ pub fn convert_file_licensed(
             // tokenizer when the flag is supplied.
             let report = convert_deberta_v2_file(input, output, license, None)?;
             let notes = vec![format!(
-                "deberta-v2: {} float weights written verbatim, {} non-float skipped",
+                "deberta-v2: {} float tensors emitted after architecture mapping, {} non-float skipped",
                 report.written, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -7806,21 +7795,18 @@ pub fn convert_file_licensed(
         }
         ModelKind::DebertaV3 => {
             // SBV2 v2 plan Task 11 (2026-07-26; upstream/license label
-            // corrected 2026-07-27, Task 8): pass every F32/F16/BF16
-            // tensor through verbatim under upstream HF names and stamp the
-            // `vokra.bert.deberta_v3.*` chunk group (DeBERTa v3 transformer
-            // encoder + hparams) from the transcribed constants in
-            // `models::deberta_v3`. Provenance = MIT (Permissive — no
+            // corrected 2026-07-27, Task 8): map the upstream tensors into
+            // the runtime `bert.*` schema, including Q/K duplication and the
+            // normalized shared relative embedding, and stamp shape-derived
+            // `vokra.bert.deberta_v3.*` hparams. Provenance = MIT (Permissive — no
             // runtime-side attribution obligation, per HF model card
             // `microsoft/deberta-v3-large`; the real EN upstream, distinct
-            // from v2's `ku-nlp` JA upstream). Tensor-to-schema mapping
-            // (Task 30) is deferred; every tensor is emitted verbatim so
-            // the mapping can be validated once a real checkpoint arrives.
+            // from v2's `ku-nlp` JA upstream).
             // Blocker 5 (2026-08-06): see the v2 arm above — tokenizer
             // side-car flows through the CLI `--tokenizer` route only.
             let report = convert_deberta_v3_file(input, output, license, None)?;
             let notes = vec![format!(
-                "deberta-v3: {} float weights written verbatim, {} non-float skipped",
+                "deberta-v3: {} float tensors emitted after architecture mapping, {} non-float skipped",
                 report.written, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

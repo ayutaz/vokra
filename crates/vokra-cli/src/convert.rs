@@ -1466,7 +1466,7 @@ fn deberta_notes(
     tokenizer_present: bool,
 ) -> Vec<String> {
     let mut notes = vec![format!(
-        "{tag}: {} float weights written verbatim, {} non-float skipped",
+        "{tag}: {} float tensors emitted after architecture mapping, {} non-float skipped",
         report.written, report.skipped_non_float,
     )];
     notes.push(if tokenizer_present {

@@ -367,19 +367,13 @@ so an owner running the recipe isn't surprised):
    `MinimalG2P` entry or required checkpoint tensor remains a deliberate
    loud failure. Generate the fixture only on VAST through `uv`.
 
-2. **The SBV2 v2 / DeBERTa v2 / DeBERTa v3 converters do not yet rename
-   tensors.** `crates/vokra-convert/src/models/{sbv2,deberta_v2,deberta_v3}.rs`
-   each carry a `TODO(owner): tensor name mapping` module-doc section
-   stating that every tensor is emitted under its **upstream checkpoint
-   name, verbatim** — none of the three converters yet renames e.g. an
-   upstream `dec.ups.0.weight` to whatever `SbV2Model::from_gguf` /
-   `DebertaV2Encoder::from_gguf` / `DebertaV3Encoder::from_gguf` actually
-   look up. Those module docs describe a GGUF produced today as a
-   "provenance-correct, byte-faithful **staging artifact**, not yet
-   loadable by `from_gguf`". Building the real rename table needs a real
-   checkpoint's tensor names in hand (which is exactly what this fixture
-   set, once populated, would supply) — it is a distinct follow-up task,
-   not something Task 34's fixture scaffolding does.
+2. **Fixture hashes are converter-version-specific.** The SBV2 v2 and
+   DeBERTa v2/v3 converters now map upstream names into the runtime schemas;
+   DeBERTa additionally duplicates shared projections and normalizes relative
+   embeddings as required by the upstream config. A GGUF produced by an old
+   staging-only converter must not be mixed with a newly generated sidecar.
+   Regenerate the artifact and hash together, then run the matching real
+   loader/parity gate before treating the fixture as current.
 
 3. **Even with real, correctly-named fixtures, `SbV2Model::synthesize`
    cannot succeed from this crate today.** `SbV2Model::from_gguf`'s own doc

@@ -11,7 +11,7 @@ encoder / SDP / flow / HiFi-GAN decoder), which — unlike this dumper — is
 still blocked on the ``jaywalnut310/vits`` vendoring ``sbv2_dump_reference.py``
 defers (see that file's own module doc). This dumper has **no such gate**:
 DeBERTa v3 is loaded directly from the HF Hub via ``AutoModel``, a real,
-``pip install``-able Apache-2.0 dependency — no vendoring needed.
+uv-locked Apache-2.0 dependency — no vendoring needed.
 
 # NOT REFERENCED (clean-room — read this before touching this file)
 
@@ -194,10 +194,12 @@ guessing.
 ::
 
     # schema preview (no deps beyond the stdlib, nothing written to disk):
-    python3 tools/parity/deberta_v3_dump_reference.py --output-dir /tmp/dbv3-dump
+    uv run --project tools/parity/deberta_v3 --frozen python \\
+        tools/parity/deberta_v3_dump_reference.py --output-dir /tmp/dbv3-dump
 
     # real dump (needs torch + transformers + network access to the HF Hub):
-    python3 tools/parity/deberta_v3_dump_reference.py \\
+    uv run --project tools/parity/deberta_v3 --frozen python \\
+        tools/parity/deberta_v3_dump_reference.py \\
         --text "This is a test." --output-dir /tmp/dbv3-dump --do-dump
 
 # Dependencies
@@ -349,8 +351,7 @@ def run_dump(args: argparse.Namespace) -> int:
     except ImportError as exc:
         sys.exit(
             f"{LOG_PREFIX} missing Python dep ({exc}); install with "
-            "`pip install torch` in the parity venv (tools/parity/parity-venv "
-            "or your own venv)."
+            "`uv sync --project tools/parity/deberta_v3 --frozen`."
         )
 
     try:
@@ -359,8 +360,8 @@ def run_dump(args: argparse.Namespace) -> int:
     except ImportError as exc:
         sys.exit(
             f"{LOG_PREFIX} missing Python dep ({exc}); install with "
-            "`pip install transformers` — Apache-2.0, this project's "
-            "authorized DeBERTa v3 reference (design doc §6)."
+            "`uv sync --project tools/parity/deberta_v3 --frozen` — the "
+            "locked Apache-2.0 reference environment."
         )
     print(f"{LOG_PREFIX} torch {torch.__version__}, transformers {transformers.__version__} present.")
 

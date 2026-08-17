@@ -10,23 +10,9 @@
 //!
 //! - github.com/litagin02/Style-Bert-VITS2 (AGPL-3.0)
 
-use vokra_core::gguf::GgufFile;
+use crate::bert_base::gelu_exact;
 use vokra_core::VokraError;
-
-/// Precomputed `sqrt(2/π)`, used by the tanh-approximation GELU on
-/// [`FfnBlock::forward`]'s per-hidden-unit inner loop. Hoisted out of the
-/// loop so the constant is not re-derived per activation. Pinned against
-/// runtime `(2.0_f32 / std::f32::consts::PI).sqrt()` by
-/// `const_hoist_tests::sqrt_two_over_pi_matches_runtime_within_1_ulp`
-/// (drift detector); the value the pre-hoist code produced remains the
-/// mathematical reference under `docs/adr/sbv2-libm-strategy.md` §3.
-///
-/// The literal keeps its full 16-digit form so a reader can recognise it as
-/// `sqrt(2/π)` at a glance; f32 discards the tail past ~7 significant digits
-/// via round-to-nearest, so `SQRT_TWO_OVER_PI.to_bits()` is what the drift
-/// detector actually compares.
-#[allow(clippy::excessive_precision)]
-const SQRT_TWO_OVER_PI: f32 = 0.797_884_560_802_865_4_f32;
+use vokra_core::gguf::GgufFile;
 
 /// Log-scale relative position bucket per DeBERTa v2 (§3.2, "disentangled
 /// attention"). Positions closer to `q` get finer buckets; positions far
@@ -363,14 +349,10 @@ impl FfnBlock {
                 for d in 0..self.d_model {
                     a += x[i * self.d_model + d] * self.w1[o * self.d_model + d];
                 }
-                // GELU (Hendrycks approx): 0.5*x*(1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-                // WP-10 (2026-08-10): tanh through vokra_math for cross-plat
-                // determinism within Vokra (per-hidden-dim per-token hot site;
-                // ~40M+ calls per SBV2 utterance).
-                let g = 0.5
-                    * a
-                    * (1.0 + vokra_math::tanh(SQRT_TWO_OVER_PI * (a + 0.044715 * a * a * a)));
-                h[i * self.d_ff + o] = g;
+                // HF `ACT2FN["gelu"]` is PyTorch's exact erf-based GELU;
+                // the tanh approximation belongs to the separate
+                // `gelu_new`/`gelu_pytorch_tanh` activation names.
+                h[i * self.d_ff + o] = gelu_exact(a);
             }
         }
         // Linear 2
@@ -571,13 +553,9 @@ impl EncoderConv {
                 conv_out[t * d + oc] = acc;
             }
         }
-        // GELU (Hendrycks tanh approximation — matches FfnBlock GELU +
-        // HF `ACT2FN["gelu"]` for DeBERTa v2 which pins the tanh variant.)
-        // WP-10 (2026-08-10): tanh through vokra_math for cross-plat
-        // determinism within Vokra.
+        // Exact erf-based GELU, matching HF `ACT2FN["gelu"]`.
         for v in conv_out.iter_mut() {
-            let x = *v;
-            *v = 0.5 * x * (1.0 + vokra_math::tanh(SQRT_TWO_OVER_PI * (x + 0.044_715 * x * x * x)));
+            *v = gelu_exact(*v);
         }
         // Residual + LayerNorm: `output = LayerNorm(residual + GELU(conv(conv_input)))`.
         // Upstream `ConvLayer.forward` does `layer_norm_input =
@@ -957,35 +935,20 @@ impl DebertaV2Encoder {
 }
 
 #[cfg(test)]
-mod const_hoist_tests {
-    use super::SQRT_TWO_OVER_PI;
+mod activation_tests {
+    use super::*;
 
-    /// Drift detector for the hoisted `sqrt(2/π)` constant used by the
-    /// tanh-approximation GELU on the FFN hot path (`FfnBlock::forward`).
-    ///
-    /// The runtime side re-derives the value from the same primitives the
-    /// pre-hoist code used (`f32::sqrt` on `2.0 / std::f32::consts::PI`); if a
-    /// future edit ever changes the literal by more than one f32 ULP the
-    /// hoisted fast path would silently diverge from the mathematically-
-    /// intended value. 1 ULP = adjacent f32 bit patterns for positive finite
-    /// values, so a `to_bits` distance of at most 1 is the tightest
-    /// implementable bound.
-    ///
-    /// See `docs/adr/sbv2-libm-strategy.md` §3.1 for the parity contract this
-    /// pin defends (host-libm sqrt is the reference implementation, not any
-    /// vendored transcendental).
     #[test]
-    fn sqrt_two_over_pi_matches_runtime_within_1_ulp() {
-        let runtime = (2.0_f32 / std::f32::consts::PI).sqrt();
-        let hoisted_bits = SQRT_TWO_OVER_PI.to_bits() as i64;
-        let runtime_bits = runtime.to_bits() as i64;
-        let ulp_distance = (hoisted_bits - runtime_bits).unsigned_abs();
+    fn ffn_uses_exact_erf_gelu() {
+        let ffn = FfnBlock::new(vec![1.0], vec![0.0], vec![1.0], vec![0.0], 1, 1);
+        let got = ffn.forward(&[1.0], 1)[0];
+        let exact = gelu_exact(1.0);
+        let tanh = 0.5
+            * (1.0 + vokra_math::tanh((2.0_f32 / std::f32::consts::PI).sqrt() * (1.0 + 0.044_715)));
+        assert_eq!(got, exact, "DeBERTa hidden_act=gelu must use exact GELU");
         assert!(
-            ulp_distance <= 1,
-            "SQRT_TWO_OVER_PI = {SQRT_TWO_OVER_PI:e} (bits {:#x}), \
-             runtime = {runtime:e} (bits {:#x}), differ by {ulp_distance} ULP",
-            SQRT_TWO_OVER_PI.to_bits(),
-            runtime.to_bits(),
+            (got - tanh).abs() > 1e-5,
+            "fixture must distinguish exact GELU from tanh approximation"
         );
     }
 }
