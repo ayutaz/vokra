@@ -94,7 +94,15 @@ def load_gpu_perf(repo: Path) -> Section:
     sec = Section(
         title="GPU performance (CUDA / H100)",
         subtitle="docs/perf/*.json — reference measurements, never a required PR check",
-        columns=["model", "backend", "hardware", "median RTF", "measured", "gate status"],
+        columns=[
+            "model",
+            "backend",
+            "hardware",
+            "median RTF",
+            "FA v3 vs FA v2 (median)",
+            "measured",
+            "gate status",
+        ],
     )
     root = repo / "docs" / "perf"
     for p in sorted(root.glob("*.json")):
@@ -103,11 +111,24 @@ def load_gpu_perf(repo: Path) -> Section:
             continue
         median = data.get("median_rtf")
         median_cell = f"{median:.4f}" if isinstance(median, (int, float)) else NO_DATA
+        speedups = data.get("e2e_speedup_summary")
+        fa_v3_vs_fa_v2 = (
+            speedups.get("fa_v3_vs_fa_v2_e2e_median")
+            if isinstance(speedups, dict)
+            else None
+        )
+        fa_v3_vs_fa_v2_cell = (
+            f"{fa_v3_vs_fa_v2:.4f}x"
+            if isinstance(fa_v3_vs_fa_v2, (int, float))
+            and not isinstance(fa_v3_vs_fa_v2, bool)
+            else NO_DATA
+        )
         sec.rows.append([
             str(data.get("model", "?")),
             str(data.get("backend", "?")),
             str(data.get("hardware", "?")),
             median_cell,
+            fa_v3_vs_fa_v2_cell,
             str(data.get("measured_at", "?")),
             str(data.get("gate_status", "?")),
         ])

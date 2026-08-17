@@ -221,9 +221,9 @@ PR #20 has merged. This section is now a mixed owner/action ledger: its remainin
 - [x] **Rejected/withheld decision recorded** for VITS-JA (explicit corpus redistribution prohibition; see §6.8) and for the withdrawn VibeVoice-Large upstream. The available VibeVoice-1.5B and Realtime-0.5B variants have Commercial decisions.
 - [ ] **Voice-conversion scope decision remains** for `openvoice_v2`, `knn_vc`, `freevc`, and `meanvc`: choose an experimental-repository destination or explicitly reject them for the public main repository. Their blank §3.1 decisions are intentional pending that policy decision, not missing converter implementations.
 
-### 6.3 Parity CI activation (9 workflows)
+### 6.3 Parity CI activation (10 workflows: 9 variable gates + SBV2 sidecar gate)
 
-Full runbook: `docs/handoff/parity-ci-flip-switch.md`. Per family: read the HF card → complete §3.1 sign-off (§6.2) if publishable → set the `VOKRA_<PREFIX>_ENABLE=1` repo/environment variable → `gh workflow run parity-<family>-real.yml` → confirm the workflow reports a PASS verdict.
+Full runbook: `docs/handoff/parity-ci-flip-switch.md`. For the nine variable-gated families: read the HF card → complete §3.1 sign-off (§6.2) if publishable → set the `VOKRA_<PREFIX>_ENABLE=1` repo/environment variable → `gh workflow run parity-<family>-real.yml` → confirm the workflow reports a PASS verdict. SBV2 is the deliberate exception: its three required sidecars control the current JA/EN numerical-parity leg.
 
 **2026-08-17 status**: scheduled workflow successes exist for the listed families, but a green scheduled run alone does not prove that the required real-weight leg was enabled, downloaded, and produced the required reference artifact. Keep these boxes open until the per-family run output demonstrates the full PASS verdict without an honest skip.
 
@@ -237,18 +237,20 @@ Original SoTA Phase 1-4 seven families:
 - [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): same sequence.
 - [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): same sequence.
 
-2026-07-28 follow-up additions (bringing total to 9):
+2026-07-28 follow-up additions (bringing the variable-gated total to 9):
 
 - [ ] Family 8 (deepfilternet3, `VOKRA_DFN3_ENABLE`): HF-card read (Rikorose/DeepFilterNet MIT/Apache-2.0 dual; §3.1 Commercial decision recorded) → set `VOKRA_DFN3_ENABLE=1` → `gh workflow run parity-deepfilternet3-real.yml` → PASS verdict confirmed. Phase B byte-parity leg additionally needs `VOKRA_DFN3_DATA_URL` populated with a pre-baked reference bundle — see `docs/handoff/parity-deepfilternet3-real.md` §Phase B.
 - [ ] Family 9 (deberta-v3-large, `VOKRA_DEBERTA_V3_ENABLE`): HF-card read (microsoft/deberta-v3-large MIT; §3.1 Commercial decision recorded 2026-07-27) → set `VOKRA_DEBERTA_V3_ENABLE=1` → `gh workflow run parity-deberta-v3-large-real.yml` → PASS verdict confirmed. Phase B (Rust numerical parity vs reference dumper) opt-in on `VOKRA_DEBERTA_V3_HARNESS_READY=1` — currently honest-skips with `::notice::` since no consumer harness exists yet. See `docs/handoff/parity-deberta-v3-large-real.md`.
+
+- [ ] Family 10 (SBV2, sidecar-hash gate): `parity-sbv2-real.yml` first validates the three real sidecars for the current main + JA BERT + EN BERT numerical path, then runs the real dump and `parity_sbv2_real`. The published ZH BERT sidecar proves the separate WP-19 four-file loader input is available; it is **not** a ZH numerical-parity PASS because the ZH reference dumper/harness does not exist yet. See `docs/handoff/parity-ci-flip-switch.md`.
 
 ### 6.4 Real-weight parity harness fire
 
 For each landed scaffold that ships a flip-the-switch harness, point the per-family `REFERENCE_DIR` env var (e.g. `VOKRA_HIFTNET_REFERENCE_DIR`) at the real dumped reference tensors and re-run the harness. Per-family env-var names are recorded in the parity CI YAMLs (`.github/workflows/parity-*.yml`).
 
-- [ ] Enumerate landed flip-the-switch scaffolds from the parity CI YAMLs.
-- [ ] For each, dump the reference tensors from the real upstream weights.
-- [ ] For each, set the `VOKRA_*_REFERENCE_DIR` env var and re-run the harness.
+- [x] Enumerate the current inventory: nine `VOKRA_*_ENABLE` variable-gated workflows (Families 1–9 in §6.3) plus the SBV2 sidecar-hash-gated workflow (Family 10). A scheduled `success` is not evidence of a real run while its gate is closed.
+- [ ] For each of the nine variable-gated families, dump reference tensors from real upstream weights, set its `VOKRA_*_REFERENCE_DIR` where applicable, and record the numerical harness result.
+- [ ] For SBV2, populate/verify the three current numerical-path inputs, run the JA/EN dump and `parity_sbv2_real`, and separately add the missing ZH reference-dump/harness before claiming four-file numerical parity.
 - [ ] Record PASS / FAIL per family.
 
 ### 6.5 misaki venv setup (Kokoro G2P)
@@ -372,4 +374,5 @@ Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `
 
 ### 7.4 M4-07 X-06 nightly dashboard registration (cross-cutting)
 
-- [ ] **X-06 nightly dashboard row** for `fa_v3_vs_fa_v2_e2e_median = 1.0573` (M4-07 T18 WP-close trigger, source = `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` `e2e_speedup_summary`). This is the M4-07 owner ripple from Wave 4 = the final owner-only step to close M4-07 T18. Full detail lives in `docs/m4-owner-verification-checklist.md` §2.1 (M4 checklist is the canonical owning WP location); this bullet exists here for the SBV2 addendum's owner cross-reference completeness.
+- [x] **Register the FA v3 vs FA v2 dashboard row**: `tools/bench/build_dashboard.py` now renders `e2e_speedup_summary.fa_v3_vs_fa_v2_e2e_median` from `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` as `1.0573x` in the GPU table; its test pins the value. This satisfies the code/artifact part of M4-07 T18 without inventing a benchmark result.
+- [ ] **Owner deployment gate**: enable GitHub Pages and set `VOKRA_PAGES_ENABLED=true` if the dashboard must be publicly deployed. Until then `dashboard.yml` still produces the downloadable dashboard artifact, and no public-deployment claim is made.

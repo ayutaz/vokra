@@ -9,7 +9,7 @@
 #      repo settings (red-line 6) AND set repo variable VOKRA_PAGES_ENABLED=true.
 #      Until then the deploy job is skipped — the artifact is still produced.
 #
-# No cron (takes no ladder slot). Zero-dep: pure python3 stdlib; a
+# No cron (takes no ladder slot). Zero-dep: stdlib-only Python run through uv; a
 # `git diff --exit-code Cargo.lock` guard keeps the root lockfile honest even
 # though this job never touches cargo.
 
@@ -24,6 +24,7 @@ on:
       - "docs/perf/**"
       - "docs/benchmarks/**"
       - "tools/bench/build_dashboard.py"
+      - "tools/bench/test_build_dashboard.py"
       - ".github/workflows/dashboard.yml"
 
 permissions:
@@ -43,17 +44,22 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # Pin the action revision rather than a moving major tag. The stdlib-only
+      # scripts below still run through uv so every Python invocation follows
+      # the repository's package-manager policy.
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Oracle the generator (stdlib-only, fast)
         run: |
-          python3 tools/bench/test_build_dashboard.py
-          python3 tools/bench/test_baseline_gate.py
+          uv run --no-project python tools/bench/test_build_dashboard.py
+          uv run --no-project python tools/bench/test_baseline_gate.py
 
       - name: Generate the dashboard + verify it is self-contained
         run: |
           set -euo pipefail
           mkdir -p site
-          python3 tools/bench/build_dashboard.py \
+          uv run --no-project python tools/bench/build_dashboard.py \
             --self-check \
             --stamp "$(date -u +%Y-%m-%dT%H:%M:%SZ) (${GITHUB_SHA})" \
             --out site/index.html
