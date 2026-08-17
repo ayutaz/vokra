@@ -1,4 +1,11 @@
-# vast.ai execution priority — 3 pending large-model publish jobs (2026-08-14)
+# vast.ai execution priority — large-model jobs (updated 2026-08-18)
+
+**Execution update**: VoxCPM2-2B's VAST download, two-file preparation,
+conversion, and structural real-weight verification are complete at `5bc62ae`.
+Its publish dry-run is intentionally stopped at `UNKNOWN_REPO` pending the
+voice-clone destination/legal decision. It is no longer a block-free publish
+job. Instance `47955178` is stopped with both VoxCPM2 and corrected Voxtral
+artifacts retained.
 
 **Audience**: owner (yousan). **Purpose**: minimize vast.ai spend + owner
 wall-clock, maximize learning curve efficiency, prioritize highest-value
@@ -25,7 +32,7 @@ cost comparisons.
 
 | Order | Job | Rationale (1-sentence) |
 |-------|-----|------------------------|
-| **1** | **VoxCPM2-2B** | 唯一の block-free ready-to-run 案件で、tooling 全 pass (provision.sh → run-one.sh → publish-one.sh 5-gate) を最小コストで shakedown できる。4.96GB checkpoint の convert / real-weight verify / upload は current policy により **vast.ai で実行する**。 |
+| **1 (conversion done)** | **VoxCPM2-2B** | 888-tensor GGUF conversion and structural verification are complete on VAST. Publish remains fail-closed until the voice-clone destination/legal decision and explicit upload authorization. |
 | **2** | **FireRedASR-LLM-L** | Owner の bridge PR (`.pth.tar` → safetensors extraction) 完了後、combined 18-19 GB が M1 iMac 不可 = 定義的 vast.ai、Canary-Qwen precedent 継承の高価値 ASR (Encoder-Adapter-LLM mold の第 2 例、sibling firered_asr_aed_l の道も拓く) |
 | **3** | **Higgs-Audio v3 TTS 4B** | Publish は **BosonAI custom R&NC license** で fail-closed default = gate 2 REFUSE、owner の Boson 契約締結 or ☑ Rejected sign-off 判断まで **vast.ai を借りない** ことを推奨 (借りても gate 2 refuse で無駄) |
 
@@ -39,8 +46,9 @@ cost comparisons.
 
 **この位置に置く理由**:
 
-1. **唯一の block-free 案件** — Primary source (§0 で CC 直接照合済) が apache-2.0
-   でクリーン、gate 1-7 全 pass 見込み、bridge PR 不要、training data audit 不要
+1. **Conversion complete, publish policy-blocked** — Apache-2.0 redistribution
+   permission is signed, but the upstream release explicitly advertises voice
+   cloning and the main-repo destination is not yet approved.
 2. **Tooling shakedown の最小コスト candidate** — 4.96 GB は最小、~1h + $0.30-0.50、
    provision.sh (Wave 12 idempotent) + run-one.sh (Phase B 自動化 chain) を最初に
    通す対象として最適
@@ -56,19 +64,19 @@ cost comparisons.
    pinned SHA `bffb3df5a29440629464e5e839f4d214c8714c3d` で待機中、publish で
    `VOKRA_VOXCPM2_GGUF` fixture が有効化される
 
-**推奨 execution**:
+**Current execution state**:
 
-- **Step 1**: vast.ai (~$0.30-0.50、~1h) で `run-one.sh` を実行する。Mac-local
-  convert fallback は使わない。Job C は bridge PR 未 land のため同 session に
-  combine しない（§3 session 見積参照）。
+- Fixed revision main + AudioVAE preparation and GGUF conversion were run on
+  VAST only. The generic `run-one.sh` route is invalid for this two-file release;
+  use the model-specific runbook. Resume the stopped instance only after a
+  destination decision or for independent numerical parity work.
 
 **Owner action 前提** (`docs/handoff/vast-ai-publish-voxcpm2-2b.md` §5, §8):
 
-- §3.1 sign-off — HF primary source 直接照合 → `docs/license-audit.md` §3.1 に
-  ☑ Commercial 2026-XX-XX yousan (primary source apache-2.0 が既 CC 確認済ゆえ
-  owner 目視のみ)
-- Wave 0 ADR — Option C (Hybrid) 推奨、`crates/vokra-models/src/voxcpm2/mod.rs`
-  で auto-detect by embed_tokens shape
+- Decide whether VoxCPM2 belongs in `vokra-voiceclone-experimental` or has a
+  documented exception for the main namespace; ratify the M5-05 legal posture.
+- After that, authorize the exact remote upload, add the destination slug's
+  sign-off mapping, re-run dry-run, and only then use `--push`.
 
 ### Priority 2: FireRedASR-LLM-L (~18-19 GB combined、apache-2.0 + Qwen2 inheritance)
 

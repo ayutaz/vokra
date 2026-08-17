@@ -335,9 +335,29 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 - [ ] **Matcha-TTS** — MIT signed 2026-07-23 yousan, but the maintained design remains a conditional Draft and explicitly forbids landing a converter while the defer decision holds. Re-open only with (1) an owner-recorded trigger, (2) a ≥95% piper-plus phoneme-set coverage report, and (3) primary-source confirmation for the paired LJ Speech HiFi-GAN; then follow W0–W9 in `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Until then `matcha.rs`, registry registration, parity workflow, and publish stay absent by design.
 - [x] **WavTokenizer** — the `ModelKind::WavTokenizer` converter and CLI dispatch landed in the 2026-08-01 codec wave. The remaining future work is Lightning `.ckpt` → safetensors preparation and real-checkpoint parity, not implementation of the converter.
 
-**VoxCPM2-2B — converter extension complete; real-weight/publish gate remains**:
+**VoxCPM2-2B — complete real-weight conversion done; numerical parity and
+destination-gated publish remain**:
 
-- [x] **openbmb/VoxCPM2-2B** (row 280) — Apache-2.0 signed 2026-07-28 yousan. `VoxCpm2Variant::TwoB` detects the 2048-wide LM embedding, emits 2B-specific hparams/provenance, and accepts `voxcpm2-2b` CLI aliases. The remaining task is the 4.96-GB real-weight conversion/parity and five-gate publish run on vast.ai; design/runbook: `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md` and `docs/handoff/vast-ai-publish-voxcpm2-2b.md`.
+- [x] **openbmb/VoxCPM2-2B** (license-audit row 296) — Apache-2.0 signed
+  2026-07-28 yousan. VAST execution on 2026-08-18 found that the upstream
+  loader merges two required weight files: 577 BF16 main tensors plus 311 FP32
+  `audio_vae.*` tensors from `audiovae.pth`; the earlier main-only conversion
+  was incomplete. Commit `5bc62ae` added a hash/count/dtype/config-pinned
+  UV preparer, required tokenizer embedding, and strict rejection of incomplete
+  2B artifacts. Instance `47955178` produced a 4,956,973,816-byte complete
+  safetensors (`f8c8ed28…`) and a GGUF v3 with 888 tensors / 60 metadata keys /
+  4,960,621,760 bytes (`1cdea939…`). Independent header verification confirmed
+  577 BF16 + 311 F32, all AudioVAE sentinels, tokenizer length 3,676,772, exact
+  upstream revision, and Apache-2.0 provenance. The raw 577-tensor checkpoint
+  now fails with no output. `publish-one.sh` was run without `--push` and stopped
+  at `UNKNOWN_REPO`: the signed license row permits redistribution, but the
+  official voice-cloning positioning still needs an owner decision against the
+  M5-05 separate-repository policy before any destination slug is registered.
+  The instance is stopped with the artifact retained. Remaining work is
+  independent upstream numerical output parity, destination/legal ratification,
+  explicit upload authorization, live verification, and CI flip. This already-
+  checked implementation row does not change the 40-box action-ledger total.
+  Full evidence/runbook: `docs/handoff/vast-ai-publish-voxcpm2-2b.md`.
 
 **Deferred by RAM constraint (implemented + signed, host infrastructure blocked)**:
 

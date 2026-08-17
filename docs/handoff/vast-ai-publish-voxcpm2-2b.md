@@ -1,7 +1,37 @@
 # vast.ai publish runbook — VoxCPM2-2B (openbmb/VoxCPM2)
 
-**Owner-triggered.** CC は本 doc 作成のみ。実 vast.ai instance の起動・convert・
-publish は owner が本 runbook を追いながら実行する。
+## 0. 2026-08-18 VAST execution result
+
+Conversion and real-weight structural verification are complete on VAST instance
+`47955178` at commit `5bc62ae`. No model payload was loaded on the Mac.
+
+- Immutable upstream revision:
+  `bffb3df5a29440629464e5e839f4d214c8714c3d`.
+- The upstream release is not a complete single safetensors checkpoint:
+  `model.safetensors` has 577 BF16 tensors while `audiovae.pth` has 311 FP32
+  tensors plus one pinned int32 sample-rate-boundary buffer. The official loader
+  prefixes the VAE state with `audio_vae.` before loading it.
+- `tools/parity/voxcpm2_prepare_checkpoint.py` verified all input hashes and
+  emitted 888 tensors (577 BF16 + 311 FP32), 4,956,973,816 bytes, SHA-256
+  `f8c8ed28b98e38378c5cf368933b0a7fef9df2cc6becee915d1ecca073035ffa`.
+- `vokra-cli convert --model voxcpm2 ... --tokenizer tokenizer.json` emitted
+  GGUF v3 with 888 tensors / 60 metadata keys / 4,960,621,760 bytes, SHA-256
+  `1cdea939d265b9f64fafcd51470bf008a99d40659cf6545db9335f3d08509aa6`.
+  Header verification confirmed 577 BF16, 311 F32, all AudioVAE sentinels,
+  tokenizer length 3,676,772 bytes, and exact upstream repo/revision metadata.
+- The raw main-only checkpoint is now refused (`577/888`, no output file), so
+  the former success-shaped but non-decodable conversion path is closed.
+- `publish-one.sh` was run without `--push`. It stopped fail-closed at owner
+  sign-off mapping with `UNKNOWN_REPO` (exit 5): the license audit row is signed,
+  but the public slug `vokra/voxcpm2-2b` is intentionally not registered while
+  the model's explicit voice-cloning positioning and the repository's
+  voice-clone separation policy still need an owner destination/legal decision.
+- The instance was stopped, not destroyed. Staged VoxCPM2 and corrected Voxtral
+  artifacts remain on its volume pending explicit upload authorization.
+
+The commands below are the current reproducible conversion procedure. Do not
+use the old generic `run-one.sh` main-weight-only route, and do not add `--push`
+until the destination decision is recorded.
 
 **Related**:
 - 本 runbook は `docs/handoff/vast-ai-large-model-publish.md`（総論 = §2 recipe /
@@ -20,12 +50,12 @@ publish は owner が本 runbook を追いながら実行する。
 | License (upstream code) | apache-2.0 |
 | License (upstream weight) | apache-2.0 |
 | SPDX (Vokra 判定) | `apache-2.0`（LicenseClass = Permissive） |
-| Total safetensors size | **4.96 GB**（BF16） |
-| 判定 (`check-model-size.sh`) | `LOCAL_OK`（4-8 GiB total、single-tenant なら local OK / 依頼者ルール #1 で ≥2GB は vast.ai 推奨） |
+| Weight bundle | `model.safetensors` 4,580,080,592 bytes + `audiovae.pth` 376,951,122 bytes |
+| Execution policy | **VAST-only** for download, preparation, conversion, verification, and any future upload |
 | Vokra ModelKind | `VoxCpm2`（既存、CLI `--model voxcpm2`） |
-| Variant marker | `vokra.model.name = "voxcpm2-2b"`（0.5B との区別、Option C = Hybrid pattern を Wave 0 で owner 確定予定） |
+| Variant marker | `vokra.model.name = "voxcpm2-2b"`（Option C hybrid、実GGUFで確認済み） |
 | Arch tag | `vokra.model.arch = "voxcpm2"`（0.5B と同一、upstream `architecture` tag と一致） |
-| Vokra HF slug | `vokra/voxcpm2-2b` |
+| Candidate HF slug | `vokra/voxcpm2-2b`（未承認・未登録。別リポdestinationの可能性あり） |
 | Attribution 要求 | apache-2.0 標準の LICENSE + NOTICE 同梱のみ、runtime-side 追加なし |
 | Non-commercial 制限 | なし |
 | Share-alike | なし |
@@ -46,7 +76,8 @@ curl -sL https://huggingface.co/api/models/openbmb/VoxCPM2 | \
 
 # Size verification
 ./scripts/publish/check-model-size.sh openbmb/VoxCPM2
-# expected verdict: LOCAL_OK or LOCAL_BORDERLINE (4.96 GB BF16)
+# inventory only; the active execution policy is VAST-only regardless of the
+# helper's historical size bands
 ```
 
 ## 2. vast.ai instance recipe
@@ -76,30 +107,21 @@ harden_vast_docker_image、2026-08-03 land）。VoxCPM2-2B convert 前に一度�
 | **stack tool install（torch/numpy/safetensors）** | VAST 用の `uv pip --system` compatibility layer に必要。実行・変換・検証はすべて uv-managed Python で行う | provision.sh Wave 12 で pre-install |
 
 ```bash
-# SSH 接続後、まず HF token を export（instance destroy で消える）
-export HF_TOKEN='hf_xxxxxx'   # 本機 .env の HF= 値をここに貼る
+# Public upstream download and dry-run need no HF credential. Transfer a token
+# only after an explicit upload approval and destination decision.
 
 # 1 コマンドで Rust + uv + Python 3.12 + hf-transfer + repo + vokra-cli build まで完了
 curl -sSL https://raw.githubusercontent.com/ayutaz/vokra/main/scripts/publish/vast-ai/provision.sh | bash
 source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 ```
 
-## 4. Convert + publish command
+## 4. Complete-checkpoint conversion command
 
-### 4.1 自動化 pipeline（推奨、Phase B）
+### 4.1 Generic pipeline status
 
-```bash
-# provision.sh 完了後、以下 1 コマンド:
-~/vokra/scripts/publish/vast-ai/run-one.sh \
-  --hf-repo openbmb/VoxCPM2 \
-  --vokra-slug voxcpm2-2b \
-  --model-kind voxcpm2 \
-  --license-spdx apache-2.0 \
-  --push
-```
-
-**注意**: `--push` を外せば dry-run stage のみ（5-gate verify のみ）。本番 upload
-前に必ず dry-run で全 gate 通過を確認すること（総論 §2.5 と同じ規律）。
+`run-one.sh` cannot prepare the separately shipped `audiovae.pth`; using it
+directly would hand the incomplete 577-tensor main checkpoint to the converter.
+The converter now rejects that input. Use §4.2 until a dedicated wrapper lands.
 
 ### 4.2 手動 fallback（総論 §2.5 に準拠）
 
@@ -108,99 +130,77 @@ source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 ```bash
 mkdir -p ~/scratchpad/hf-cache ~/scratchpad/staging/voxcpm2-2b
 
-cd ~/vokra/tools/parity
-uv sync   # pyproject.toml + uv.lock から依存 install
+cd ~/vokra
+uv sync --project tools/parity   # pyproject.toml + uv.lock から依存 install
 
-# HF から weight + config DL
-uv run --with huggingface_hub python <<'PY'
+# HF から固定 revision の完全 bundle を DL
+uv run --no-project --python 3.12 \
+  --with 'huggingface_hub<0.30' --with hf-transfer python <<'PY'
 import os
 os.environ.setdefault('HF_HUB_CACHE', '/root/scratchpad/hf-cache')
 from huggingface_hub import snapshot_download
 path = snapshot_download(
     repo_id='openbmb/VoxCPM2',
+    revision='bffb3df5a29440629464e5e839f4d214c8714c3d',
     cache_dir='/root/scratchpad/hf-cache',
-    allow_patterns=['*.safetensors', 'model.safetensors.index.json',
-                    'config.json', 'generation_config.json',
-                    'tokenizer*.json', '*.md', 'LICENSE*'],
-    token=os.environ['HF_TOKEN'],
+    allow_patterns=['model.safetensors', 'audiovae.pth', 'config.json',
+                    'tokenizer.json', 'tokenizer_config.json',
+                    'special_tokens_map.json'],
+    token=os.environ.get('HF_TOKEN'),
 )
 print('DONE:', path)
 PY
 
-# Convert
-SNAP=$(ls -d /root/scratchpad/hf-cache/models--openbmb--VoxCPM2/snapshots/*/ | head -1)
-cd ~/vokra
-
-# 単一 safetensors か multi-shard かを確認
-if [ -f "$SNAP/model.safetensors.index.json" ]; then
-    INPUT="$SNAP/model.safetensors.index.json"
-else
-    INPUT="$SNAP/model.safetensors"
-fi
+# Prepare + convert (VAST only)
+SNAP=/root/scratchpad/hf-cache/models--openbmb--VoxCPM2/snapshots/bffb3df5a29440629464e5e839f4d214c8714c3d
+uv run --project tools/parity python \
+  tools/parity/voxcpm2_prepare_checkpoint.py \
+  --snapshot-dir "$SNAP" \
+  --output /root/scratchpad/staging/voxcpm2-2b/complete.safetensors \
+  --manifest /root/scratchpad/staging/voxcpm2-2b/prepare-manifest.json
 
 ./target/release/vokra-cli convert \
   --model voxcpm2 \
-  --input "$INPUT" \
-  --config "$SNAP/config.json" \
+  --input /root/scratchpad/staging/voxcpm2-2b/complete.safetensors \
+  --tokenizer "$SNAP/tokenizer.json" \
   --output /root/scratchpad/staging/voxcpm2-2b/model.gguf
 
-# Publish 5-gate（dry-run → --push で本番）
+# Publish gate inspection only. This currently exits 5 (UNKNOWN_REPO) by
+# design until the voice-clone destination/legal decision is recorded.
 ./scripts/publish/publish-one.sh \
   --gguf /root/scratchpad/staging/voxcpm2-2b/model.gguf \
   --repo vokra/voxcpm2-2b \
   --license-spdx apache-2.0
-# ↑ dry-run 全 gate 通過を確認してから ↓
-./scripts/publish/publish-one.sh \
-  --gguf /root/scratchpad/staging/voxcpm2-2b/model.gguf \
-  --repo vokra/voxcpm2-2b \
-  --license-spdx apache-2.0 --push
-
-# 検証
-curl -sI https://huggingface.co/vokra/voxcpm2-2b | head -1
-# HTTP/2 200 が返れば live
 ```
 
-### 4.3 Sharded safetensors の場合
+### 4.3 Upstream layout
 
-`openbmb/VoxCPM2` は BF16 4.96 GB ゆえ **単一 safetensors か 2 shard 程度** の可能
-性が高い（HF snapshot で要確認）。もし `model.safetensors.index.json` が存在する
-multi-shard であれば、上記 script の `INPUT` 変数は自動で index.json を指す。既存
-の `vokra-cli convert --model voxcpm2` が `MappedSafetensors` 経路で index.json を
-消費するため、事前 merge は不要（Voxtral の `convert_voxtral_file_streaming` と
-異なり VoxCPM2 は size が中規模ゆえ streaming path 未実装、mmap で足りる想定）。
-
-**もし convert が OOM で fail した場合**: 依頼者ルール #1（≥2GB は vast.ai）に従っ
-て `--config` 側車で明示 variant 指定 or Option B の兄弟 file `voxcpm2_2b.rs` へ
-Wave 0 ADR で切り替え（`docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md` §5
-参照）。
+The pinned revision has one main safetensors file plus a PyTorch AudioVAE
+sidecar. It is not sharded. `audiovae.pth` must be loaded only by the UV-managed
+preparer with `torch.load(..., weights_only=True)`; Python never enters the
+runtime or converter.
 
 ## 5. §3.1 sign-off status
 
-**現状: blank（fail-closed default）**。
+**License status: signed Commercial on 2026-07-28. Publication destination:
+unresolved and fail-closed.**
 
-`docs/license-audit.md` §3.1 に `vokra/voxcpm2-2b` 行を **追加待ち**（本 doc land
-時点では未追加、Wave 1 land 時に追加予定）。追加後の状態:
-
-| 列 | 予定値 |
-|---|---|
-| Vokra slug | `vokra/voxcpm2-2b` |
-| Upstream HF | `openbmb/VoxCPM2` |
-| Category | Multilingual TTS (30 languages) |
-| SPDX | apache-2.0 |
-| Vokra tier | T1 (Permissive Commercial) |
-| Commercial sign-off | **☐（空欄）** |
-| Sign-off date | **☐（空欄）** |
-| Signer | **☐（空欄）** |
+`docs/license-audit.md` §3.1 row 296 (`openbmb/VoxCPM2`) is signed Apache-2.0
+Commercial. That answers redistribution permission only. It does not resolve
+the separate repository policy for a model whose official positioning includes
+voice cloning. Accordingly `scripts/publish/signoff_match.py` has no
+`voxcpm2-2b` public-repo mapping and `publish-one.sh` stops at `UNKNOWN_REPO`.
 
 **Owner action**:
 
-1. **Primary source を直接照合** — https://huggingface.co/openbmb/VoxCPM2 の HF
-   model card + LICENSE + config.json で apache-2.0 表記を確認
-2. yousan として **☑ Commercial** sign-off（`docs/license-audit.md` §3.1 template
-   を使用、CC の primary-source-transcribable pattern で埋める、memory
-   [[feedback-license-signoff-primary-source]] の rule 準拠）
-3. Sign-off 後に §4 の `publish-one.sh --push` が gate 通過（5 gate 目 = §3.1
-   sign-off blank refuse が unblock）
+1. Decide whether this release's stated voice-cloning purpose makes it a
+   `vokra-voiceclone-experimental` artifact or whether a documented exception
+   permits the main `vokra/` model namespace.
+2. Ratify the corresponding M5-05 legal/consent/watermark posture.
+3. Only after that decision, add the exact destination slug to
+   `REPO_TO_SIGNOFF_ROWS` and re-run `publish-one.sh` without `--push`.
+4. Transfer an HF token and add `--push` only after a fresh explicit upload
+   authorization. The current conversation has not granted it.
 
 **publish-one.sh の 5 gate**（総論 §2.5 と同じ）:
 
@@ -208,17 +208,18 @@ Wave 0 ADR で切り替え（`docs/superpowers/specs/2026-07-28-voxcpm2-2b-desig
 2. Redistributable — `LicenseClass::redistributable()` false 拒否（apache-2.0 は
    Permissive で pass）
 3. Provenance chunk 刻印 — `vokra.provenance.*` chunk 群が missing なら拒否
-4. §3.1 sign-off 欄 blank 拒否 — **fail-closed default、上記 owner action 必須**
+4. §3.1 exact slug-to-row mapping — currently `UNKNOWN_REPO` by design even
+   though the underlying Apache-2.0 row is signed
 5. T4 (NonCommercial) は `--allow-noncommercial` 明示必須 — VoxCPM2-2B は T1
    ゆえ非該当
 
 ## 6. 期待される artifacts
 
-Publish 成功後の `huggingface.co/vokra/voxcpm2-2b` repo に含まれる:
+Approved destinationへのpublish成功後に含めるartifact:
 
 | ファイル | 内容 |
 |---|---|
-| `model.gguf` | ~4.96 GB（BF16 pass-through 変換、tensor 数は上流 safetensors index に依存） |
+| `model.gguf` | 4,960,621,760 bytes; 888 tensors (577 BF16 main + 311 F32 AudioVAE) |
 | `README.md` | `make_model_card.py` 自動生成、tier T1 obligation + apache-2.0 表記 + upstream 情報 |
 | `LICENSE` | apache-2.0 canonical text（`fetch_license.sh --spdx apache-2.0` で取得、`https://huggingface.co/openbmb/VoxCPM2/raw/main/LICENSE` を pin） |
 | `NOTICE` | apache-2.0 標準 NOTICE（attribution required、Copyright 表記あり） |
@@ -226,7 +227,7 @@ Publish 成功後の `huggingface.co/vokra/voxcpm2-2b` repo に含まれる:
 
 ### GGUF metadata（vokra.* chunk 群）
 
-`vokra-cli convert --model voxcpm2` が刻む chunk（Wave 1 land で完成予定）:
+`vokra-cli convert --model voxcpm2` が実artifactへ刻んだchunk（2026-08-18確認済み）:
 
 | Key | 型 | 値 |
 |---|---|---|
@@ -270,56 +271,42 @@ env:
   VOXCPM2_REVISION: bffb3df5a29440629464e5e839f4d214c8714c3d
 ```
 
-Owner が下記を全て満たすと **flip the switch で発火**（新規 workflow 不要）:
+Runtime/converter factories are already landed. Remaining CI activation work:
 
-1. **Runtime 側**: `VoxCpm2Config::voxcpm2_2b()` factory の追加（Wave 1、
-   `crates/vokra-models/src/voxcpm2/mod.rs`）
-2. **Converter 側**: `crates/vokra-convert/src/models/voxcpm2.rs` の variant-aware
-   dispatch（Wave 0 ADR 確定 → Option C hybrid の場合 auto-detect by
-   `base_lm.embed_tokens.weight` の hidden_size shape）
-3. **CI variable**: `VOKRA_TTS_CONT_VAE_ENABLE=1` を GitHub repo settings で set
-4. **Fixture GGUF**: 上記 §4 で publish した `vokra/voxcpm2-2b` を CI が pull
+1. **CI variable**: `VOKRA_TTS_CONT_VAE_ENABLE=1` を GitHub repo settings で set
+2. **Fixture GGUF**: approved destinationからGGUFをCIがpull
    （`VOKRA_VOXCPM2_GGUF` env で pointing、workflow YAML 側で HF から fetch）
-5. **PyTorch reference dump**: `VOKRA_VOXCPM2_REFDIR` 環境変数が pointing する
+3. **PyTorch reference dump**: `VOKRA_VOXCPM2_REFDIR` 環境変数が pointing する
    directory に PyTorch reference の中間 tensor dump を配置（owner が生成、CI
    runner に `pip install openbmb-voxcpm2` の Python 依存を install 済）
 
 ## 8. Owner critical path
 
-**依頼者ルール #3（publish は §3.1 sign-off 完了後 owner が判断）** に従い、以下
-順序で:
-
-1. **CC 側実装完了確認** — Wave 1 (Runtime `VoxCpm2Config::voxcpm2_2b()` +
-   Converter variant-aware) が land されたことを確認
-2. **Wave 0 ADR 確定** — Option A / B / C（`docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`
-   §5）から Option C（Hybrid）を推奨、owner の最終判断
-3. **HF primary source 直接照合** — https://huggingface.co/openbmb/VoxCPM2 の
-   LICENSE / README / config.json / cardData を目視確認
-4. **§3.1 sign-off** — `docs/license-audit.md` §3.1 に yousan として ☑ Commercial
-   2026-XX-XX sign
-5. **vast.ai instance 起動** — §2 recipe に従って rent（~$0.3-0.5、~1 hour）
-6. **§3 provision.sh 実行** — 1 コマンド
-7. **§4.1 run-one.sh 実行** — dry-run → `--push`
-8. **§7 CI flip the switch** — variable + fixture 配置 → workflow_dispatch
+1. Record the voice-clone destination/legal decision described in §5.
+2. Obtain explicit authorization for the chosen remote write/upload.
+3. Resume instance `47955178`; verify the two staged SHA-256 values from §0.
+4. Add the approved slug mapping and run the dry-run again.
+5. Only then run `publish-one.sh --push`, live-verify the remote artifact, and
+   destroy the instance after both VoxCPM2 and retained Voxtral artifacts no
+   longer need the volume.
+6. Activate the real parity workflow with an independently generated upstream
+   reference. Structural real-weight verification is complete, but numerical
+   output parity has not been claimed.
 
 ## 9. Notes
 
 - **VoxCPM 0.5B との共存**: 既存 `vokra/voxcpm-0.5b`（0.5B、published 済）は
-  この作業で touch しない。sibling として `vokra/voxcpm2-2b` を新設する。
-- **`vokra.model.name` 値の Wave 0 ADR 依存**: Option A / B / C のいずれを選ぶか
-  で `vokra.model.name` の実値と `vokra.model.arch` の実値が変わる。上記 §6 の
-  metadata 表は Option C（Hybrid、推奨）前提。Option B（別 arch tag）を選ぶと
-  arch が `"voxcpm2_2b"` に変わる。
-- **restamp_provenance で低メモリ再刻印可能**: 一度 publish した後 LICENSE /
-  NOTICE / SOURCE.md を差し替えたい場合、`restamp_provenance` で tensor コピー
-  無しで刻印可能（memory [[project-restamp-provenance]]、Voxtral 8.7 GB を M1
-  iMac 16 GB で peak footprint 6.4 MB 実測）。VoxCPM2-2B の 4.96 GB は Voxtral
-  より小さいゆえ同手法で余裕を持って再刻印可能 = vast.ai 再起動不要。
+  この作業で touch しない。2Bのdestinationは§5の判断待ち。
+- **Variant decision is implemented**: the landed Option C hybrid path records
+  `vokra.model.arch=voxcpm2` and `vokra.model.name=voxcpm2-2b`; the real header
+  was verified on VAST.
+- Any future restamp or upload remains VAST-only under the active user rule,
+  even if a metadata-only rewrite would theoretically fit on the Mac.
 
 ## See also
 
 - **Priority ordering (2026-08-14)**: `docs/handoff/vast-ai-execution-priority.md`
-  — 本 job は **Priority 1** (最初に実行)、local first 試行推奨
+  — conversion portion of Priority 1 is complete; publish is policy-blocked
 
 ## 関連
 
