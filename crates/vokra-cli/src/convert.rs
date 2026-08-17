@@ -19,9 +19,9 @@ use vokra_convert::{
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
     convert_llama_omni2_file_with_config, convert_openwakeword_op_file_with_config,
     convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
-    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_streaming,
-    convert_voxtral_file_streaming_with_adapter_config,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
+    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
@@ -39,7 +39,8 @@ USAGE:
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
-    vokra-cli convert --model voxcpm --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model voxcpm2 --input <complete.safetensors> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -618,22 +619,28 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    // `--tokenizer` used to be Voxtral-only; Blocker 5 (2026-08-06) opens
-    // it up to the DeBERTa v2 / v3 converters as well (they emit a
+    // `--tokenizer` used to be Voxtral-only; Blocker 5 (2026-08-06) opened
+    // it up to the DeBERTa v2 / v3 converters (they emit a
     // `vokra.bert.tokenizer.*` chunk group so `SbertTokenizer::from_gguf`
     // can round-trip real fixtures — otherwise loader-side FR-EX-08 fails
-    // on every real SBV2 v2 fixture). Every other model still rejects the
-    // flag rather than silently ignoring it.
+    // on every real SBV2 v2 fixture). VoxCPM2-2B also requires the pinned
+    // MiniCPM tokenizer because "tokenizer-free" describes only its acoustic
+    // path. Every other model still rejects the flag rather than silently
+    // ignoring it.
     if !matches!(
         model,
-        ModelKind::Voxtral | ModelKind::DebertaV2 | ModelKind::DebertaV3 | ModelKind::BertBase
+        ModelKind::Voxtral
+            | ModelKind::DebertaV2
+            | ModelKind::DebertaV3
+            | ModelKind::BertBase
+            | ModelKind::VoxCpm2
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base. Other archs embed their tokenizer through their own path (whisper: \
-             the converter bakes the vocab; csm / moshi: the standalone `vokra-convert` \
-             binary's --config side-car)"
+             bert-base / voxcpm2. Other archs embed their tokenizer through their own path \
+             (whisper: the converter bakes the vocab; csm / moshi: the standalone \
+             `vokra-convert` binary's --config side-car)"
                 .to_owned(),
         );
     }
@@ -934,12 +941,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             convert_qwen3_tts_file(&p.input, &p.output)
         }
         ModelKind::VoxCpm2 => {
-            // SoTA plan Phase 4 (2026-07-24): VoxCPM-0.5B ships a real
-            // `config.json`, but every field is fixed for the 0.5B release
-            // and byte-parallel to the transcribed constants in
-            // `models::voxcpm2` — so the CLI takes no --config side-car
-            // today (a future 0.5B-CustomVoice / 1.5B variant that reshapes
-            // the LM backbone or the AudioVAE would demand one).
+            // The pinned VoxCPM2-2B release splits its AudioVAE from the
+            // main safetensors.  `voxcpm2_prepare_checkpoint.py` combines
+            // both on VAST and this strict entry point refuses the raw,
+            // main-only checkpoint.  The MiniCPM text tokenizer is also a
+            // required side-car for the 2B release and is embedded verbatim.
+            // VoxCPM-0.5B remains compatible with the no-tokenizer path.
             // Quantization surface is whisper-only (same posture as
             // Qwen3-TTS / Chatterbox family / CosyVoice3 / dia / zonos).
             if p.quant.is_some() {
@@ -948,7 +955,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             if p.policy.is_some() {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
-            convert_voxcpm2_file(&p.input, &p.output)
+            convert_voxcpm2_file_with_tokenizer(&p.input, p.tokenizer.as_deref(), &p.output)
         }
         ModelKind::VibeVoice => {
             // SoTA plan Phase 4 (2026-07-24): VibeVoice-1.5B ships a real
@@ -2084,6 +2091,37 @@ mod tests {
         assert!(
             err.contains("--tokenizer is only supported for --model voxtral"),
             "got: {err}"
+        );
+    }
+
+    /// VoxCPM2-2B is an explicit tokenizer consumer. Reaching the input-file
+    /// error proves the common side-car gate did not reject `--tokenizer`
+    /// before dispatching to its model-specific handler.
+    #[test]
+    fn voxcpm2_accepts_tokenizer_side_car() {
+        let dir = std::env::temp_dir();
+        let missing_input = dir.join(format!(
+            "vokra-cli-missing-voxcpm2-{}.safetensors",
+            std::process::id()
+        ));
+        let err = main(&args(&[
+            "--model",
+            "voxcpm2",
+            "--input",
+            missing_input.to_str().unwrap(),
+            "--output",
+            "unused.gguf",
+            "--tokenizer",
+            "tokenizer.json",
+        ]))
+        .unwrap_err();
+        assert!(
+            !err.contains("--tokenizer is only supported"),
+            "VoxCPM2 tokenizer was rejected before dispatch: {err}"
+        );
+        assert!(
+            err.contains(&missing_input.display().to_string()) || err.contains("I/O error"),
+            "expected model-specific input error, got: {err}"
         );
     }
 

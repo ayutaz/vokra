@@ -207,6 +207,25 @@ const KEY_VAE_USE_NOISE_BLOCK: &str = "vokra.vae_continuous.use_noise_block";
 /// `ContinuousVaeConfig::voxcpm2_2b` docstring.
 const KEY_VAE_SR_BIN_BOUNDARIES: &str = "vokra.vae_continuous.sr_bin_boundaries";
 
+/// Raw upstream text tokenizer, embedded byte-for-byte.  "Tokenizer-free"
+/// in VoxCPM describes the acoustic path; the MiniCPM text backbone still
+/// consumes the release's tokenizer.json.
+pub(crate) const KEY_TOKENIZER_MODEL: &str = "vokra.tokenizer.model";
+
+/// Machine-readable upstream identity in addition to the human-readable
+/// `vokra.provenance.source` stamp.
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const TWO_B_UPSTREAM_HF: &str = "openbmb/VoxCPM2";
+const TWO_B_UPSTREAM_REVISION: &str = "bffb3df5a29440629464e5e839f4d214c8714c3d";
+
+// Complete pinned VoxCPM2-2B release after the UV sidecar imports the
+// separately shipped audiovae.pth state dict under `audio_vae.`.  These
+// counts were read from that immutable HF revision on VAST (2026-08-18).
+const TWO_B_MAIN_BF16_TENSORS: usize = 577;
+const TWO_B_AUDIOVAE_F32_TENSORS: usize = 311;
+const TWO_B_COMPLETE_TENSORS: usize = TWO_B_MAIN_BF16_TENSORS + TWO_B_AUDIOVAE_F32_TENSORS;
+
 /// Model family marker (`config.json.architecture = "voxcpm"`).
 /// Distinct from the sibling Qwen family / Llama family etc. Recorded
 /// so the runtime can distinguish VoxCPM from other MiniCPM-family
@@ -486,6 +505,11 @@ pub(crate) struct VoxCpm2Report {
     /// so callers (and unit tests) can pin the dispatch without
     /// re-parsing the header.
     pub(crate) variant: Option<VoxCpm2Variant>,
+    /// Number of float tensors under the separately prepared `audio_vae.`
+    /// namespace.  A complete pinned 2B artifact has exactly 311.
+    pub(crate) audio_vae_tensors: usize,
+    /// Whether the upstream text tokenizer JSON was embedded.
+    pub(crate) tokenizer_embedded: bool,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -499,9 +523,52 @@ pub(crate) struct VoxCpm2Report {
 /// the `vokra.voxcpm2.*` + `vokra.vae_continuous.*` chunk groups are
 /// written from the variant's transcribed constants; provenance stamps
 /// mark the weight as `Permissive` (apache-2.0 — end-to-end).
+#[cfg(test)]
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VoxCpm2Report), ConvertError> {
+    convert_impl(bytes, None, false)
+}
+
+/// Converts while embedding the release text tokenizer, without enabling the
+/// pinned-release completeness gate.  Kept for bounded converter tests and
+/// legacy 0.5B tooling; official VoxCPM2-2B conversion uses
+/// [`convert_release`].
+#[cfg(test)]
+pub(crate) fn convert_with_tokenizer(
+    bytes: Vec<u8>,
+    tokenizer_bytes: Option<Vec<u8>>,
+) -> Result<(GgufBuilder, VoxCpm2Report), ConvertError> {
+    convert_impl(bytes, tokenizer_bytes, false)
+}
+
+/// Converts an official release artifact.  The 2B route refuses unless the
+/// UV preparer supplied all 577 main + 311 AudioVAE float tensors and a
+/// non-empty tokenizer.  This prevents the old success-shaped conversion of
+/// `model.safetensors` alone.
+pub(crate) fn convert_release(
+    bytes: Vec<u8>,
+    tokenizer_bytes: Option<Vec<u8>>,
+) -> Result<(GgufBuilder, VoxCpm2Report), ConvertError> {
+    convert_impl(bytes, tokenizer_bytes, true)
+}
+
+fn convert_impl(
+    bytes: Vec<u8>,
+    tokenizer_bytes: Option<Vec<u8>>,
+    require_complete_release: bool,
+) -> Result<(GgufBuilder, VoxCpm2Report), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
     let variant = detect_variant(&st)?;
+    if require_complete_release && variant == VoxCpm2Variant::TwoB {
+        validate_complete_two_b(&st)?;
+        if tokenizer_bytes.as_ref().map_or(true, Vec::is_empty) {
+            return Err(ConvertError::Parse(
+                "voxcpm2-2b: complete release conversion requires the pinned tokenizer.json; \
+                 `tokenizer-free` refers to the acoustic path, not the MiniCPM text input. \
+                 Pass --tokenizer (FR-EX-08 — no success-shaped tokenizer-less artifact)."
+                    .to_owned(),
+            ));
+        }
+    }
     let hparams = variant.hparams();
 
     let mut b = GgufBuilder::new();
@@ -519,7 +586,8 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VoxCpm2Report), Co
         ),
         VoxCpm2Variant::TwoB => (
             variant.name(),
-            "openbmb/VoxCPM2 (2B, apache-2.0 end-to-end)",
+            "openbmb/VoxCPM2@bffb3df5a29440629464e5e839f4d214c8714c3d \
+             (model.safetensors + audiovae.pth, apache-2.0 end-to-end)",
         ),
     };
     vokra_core::stamp_provenance(
@@ -529,9 +597,33 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VoxCpm2Report), Co
         Some(weight_ref_name),
         Some(weight_ref_note),
     );
+    match variant {
+        VoxCpm2Variant::HalfB => {
+            b.add_string(KEY_PROVENANCE_UPSTREAM_HF, "openbmb/VoxCPM-0.5B");
+        }
+        VoxCpm2Variant::TwoB => {
+            b.add_string(KEY_PROVENANCE_UPSTREAM_HF, TWO_B_UPSTREAM_HF);
+            b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, TWO_B_UPSTREAM_REVISION);
+        }
+    }
+
+    let tokenizer_embedded = match tokenizer_bytes {
+        Some(tokenizer) if !tokenizer.is_empty() => {
+            b.add_metadata(
+                KEY_TOKENIZER_MODEL,
+                GgufMetadataValue::Array(GgufArray {
+                    element_type: GgufValueType::U8,
+                    values: tokenizer.into_iter().map(GgufMetadataValue::U8).collect(),
+                }),
+            );
+            true
+        }
+        _ => false,
+    };
 
     let mut report = VoxCpm2Report {
         variant: Some(variant),
+        tokenizer_embedded,
         ..Default::default()
     };
     for t in st.tensors() {
@@ -552,6 +644,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VoxCpm2Report), Co
                 if t.dtype == GgmlType::BF16 {
                     report.bf16_passthrough += 1;
                 }
+                if t.name.starts_with("audio_vae.") {
+                    report.audio_vae_tensors += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -569,7 +664,71 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VoxCpm2Report), Co
                 .into(),
         );
     }
+    if !report.tokenizer_embedded {
+        report.notes.push(
+            "no tokenizer supplied — `vokra.tokenizer.model` was not embedded; \
+             the text path is incomplete even though VoxCPM's acoustic path is \
+             tokenizer-free"
+                .into(),
+        );
+    }
     Ok((b, report))
+}
+
+fn validate_complete_two_b(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    let tensors = st.tensors();
+    let bf16 = tensors
+        .iter()
+        .filter(|tensor| tensor.dtype == GgmlType::BF16)
+        .count();
+    let f32_count = tensors
+        .iter()
+        .filter(|tensor| tensor.dtype == GgmlType::F32)
+        .count();
+    let audio_vae = tensors
+        .iter()
+        .filter(|tensor| tensor.name.starts_with("audio_vae."))
+        .count();
+    if tensors.len() != TWO_B_COMPLETE_TENSORS
+        || bf16 != TWO_B_MAIN_BF16_TENSORS
+        || f32_count != TWO_B_AUDIOVAE_F32_TENSORS
+        || audio_vae != TWO_B_AUDIOVAE_F32_TENSORS
+    {
+        return Err(ConvertError::Parse(format!(
+            "voxcpm2-2b: incomplete pinned release checkpoint: got total={} BF16={} F32={} \
+             audio_vae.*={}; expected total={TWO_B_COMPLETE_TENSORS} BF16={TWO_B_MAIN_BF16_TENSORS} \
+             F32={TWO_B_AUDIOVAE_F32_TENSORS} audio_vae.*={TWO_B_AUDIOVAE_F32_TENSORS}. \
+             The upstream audiovae.pth must be imported with \
+             tools/parity/voxcpm2_prepare_checkpoint.py before conversion (FR-EX-08).",
+            tensors.len(),
+            bf16,
+            f32_count,
+            audio_vae,
+        )));
+    }
+    for (name, shape) in [
+        ("audio_vae.encoder.fc_mu.weight_g", &[64, 1, 1][..]),
+        ("audio_vae.encoder.fc_logvar.weight_g", &[64, 1, 1][..]),
+        ("audio_vae.decoder.model.0.bias", &[64][..]),
+        (
+            "audio_vae.decoder.sr_cond_model.7.bias_embed.weight",
+            &[4, 64][..],
+        ),
+    ] {
+        let tensor = st.tensor_info(name).ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "voxcpm2-2b: complete checkpoint missing AudioVAE sentinel `{name}`"
+            ))
+        })?;
+        if tensor.dtype != GgmlType::F32 || tensor.shape.as_slice() != shape {
+            return Err(ConvertError::Parse(format!(
+                "voxcpm2-2b: AudioVAE sentinel `{name}` expected F32 shape {shape:?}, \
+                 got {:?} shape {:?}",
+                tensor.dtype, tensor.shape,
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Writes the `vokra.voxcpm2.*` + `vokra.vae_continuous.*` chunk groups
@@ -864,6 +1023,26 @@ mod tests {
         }
     }
 
+    fn get_u8_array(file: &GgufFile, key: &str) -> Vec<u8> {
+        match file.get(key) {
+            Some(GgufMetadataValue::Array(a)) => {
+                assert_eq!(
+                    a.element_type,
+                    GgufValueType::U8,
+                    "{key}: wrong element type"
+                );
+                a.values
+                    .iter()
+                    .map(|v| match v {
+                        GgufMetadataValue::U8(x) => *x,
+                        other => panic!("{key}: unexpected array element {other:?}"),
+                    })
+                    .collect()
+            }
+            other => panic!("{key}: unexpected {other:?}"),
+        }
+    }
+
     #[test]
     fn arch_string_matches_runtime_constant() {
         // The two crates only share `vokra-core`, so this constant is the
@@ -1141,10 +1320,16 @@ mod tests {
     /// key IS present with the primary-source-pinned boundaries.
     #[test]
     fn round_trip_two_b_variant() {
-        let (builder, report) = convert(safetensors_full_vocab_lm_embed(2048)).expect("convert");
+        let tokenizer = br#"{"model":{"type":"BPE"}}"#.to_vec();
+        let (builder, report) = convert_with_tokenizer(
+            safetensors_full_vocab_lm_embed(2048),
+            Some(tokenizer.clone()),
+        )
+        .expect("convert");
         assert_eq!(report.variant, Some(VoxCpm2Variant::TwoB));
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
+        assert!(report.tokenizer_embedded);
 
         let out = builder.to_bytes().expect("serialize");
         let file = GgufFile::parse(out).expect("parse");
@@ -1191,6 +1376,37 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("voxcpm2-2b")
         );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(TWO_B_UPSTREAM_HF)
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(|v| v.as_str()),
+            Some(TWO_B_UPSTREAM_REVISION)
+        );
+        assert_eq!(get_u8_array(&file, KEY_TOKENIZER_MODEL), tokenizer);
+    }
+
+    /// The public release path must not turn the upstream main checkpoint
+    /// alone into a success-shaped 2B GGUF. The AudioVAE is a separately
+    /// shipped required weight file in the pinned release.
+    #[test]
+    fn release_rejects_two_b_main_weights_without_audiovae() {
+        let err = convert_release(
+            safetensors_full_vocab_lm_embed(2048),
+            Some(br#"{"model":{}}"#.to_vec()),
+        )
+        .expect_err("main-only 2B release must fail");
+        match err {
+            ConvertError::Parse(message) => {
+                assert!(message.contains("incomplete pinned release"), "{message}");
+                assert!(message.contains("audiovae.pth"), "{message}");
+                assert!(message.contains("expected total=888"), "{message}");
+            }
+            other => panic!("expected Parse, got {other:?}"),
+        }
     }
 
     /// Detection must refuse loudly (never a silent default) when the

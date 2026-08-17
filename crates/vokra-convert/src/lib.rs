@@ -604,12 +604,11 @@ pub enum ModelKind {
     /// Distinct arch tag from CosyVoice2/3 / Qwen3-TTS / Chatterbox
     /// family / Dia / Zonos / CSM / Voxtral / Kyutai STT / Moshi —
     /// silently sharing would mis-route the runtime dispatch. The
-    /// upstream release is BF16 (~1 GB); today's F32/F16 pass-through
-    /// hits the `skipped_non_float` counter on BF16 tensors and the
-    /// converter surfaces the loud "no float tensors" note. Convert
-    /// with [`convert_voxcpm2_file`] — the converter takes no config
-    /// side-car (every hparam is fixed for the 0.5B release and
-    /// transcribed as compile-time constants).
+    /// upstream releases use BF16 main weights; the converter preserves
+    /// BF16 verbatim. Convert with [`convert_voxcpm2_file`]. The pinned 2B
+    /// release additionally requires its separately shipped AudioVAE and
+    /// tokenizer; prepare the combined checkpoint on VAST and use
+    /// [`convert_voxcpm2_file_with_tokenizer`].
     VoxCpm2,
     /// Microsoft **VibeVoice-1.5B** safetensors checkpoint (SoTA plan
     /// Phase 4, 2026-07-24). MIT end-to-end — code + weight under a
@@ -7591,7 +7590,14 @@ pub fn convert_file_licensed(
             // `models::voxcpm2::detect_variant` — and the detected
             // variant is surfaced in this WP's notes so an operator
             // reading the CLI trailer sees which release was converted.
-            let (builder, report) = models::voxcpm2::convert(bytes)?;
+            // The release-facing path is strict for VoxCPM2-2B: a raw
+            // model.safetensors omits the separately shipped AudioVAE and is
+            // refused.  `convert_file` has no tokenizer side-car, so a
+            // complete 2B operator run must use
+            // `convert_voxcpm2_file_with_tokenizer` (the CLI does this when
+            // --tokenizer is supplied).  Legacy 0.5B conversion remains
+            // available through this generic arm.
+            let (builder, report) = models::voxcpm2::convert_release(bytes, None)?;
             let variant_label = match report.variant {
                 Some(models::voxcpm2::VoxCpm2Variant::HalfB) => "voxcpm2-0.5b",
                 Some(models::voxcpm2::VoxCpm2Variant::TwoB) => "voxcpm2-2b",
@@ -7599,8 +7605,11 @@ pub fn convert_file_licensed(
             };
             let mut notes = vec![format!(
                 "voxcpm2: variant={variant_label}, {} float weights written verbatim, \
-                 {} non-float skipped",
-                report.written, report.skipped_non_float,
+                 {} AudioVAE tensors, {} non-float skipped, tokenizer embedded: {}",
+                report.written,
+                report.audio_vae_tensors,
+                report.skipped_non_float,
+                report.tokenizer_embedded,
             )];
             notes.extend(report.notes.iter().map(|n| format!("voxcpm2 warning: {n}")));
             (builder, notes)
@@ -13799,8 +13808,8 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
 /// This is the named entry point that mirrors `convert_qwen3_tts_file`
 /// / `convert_chatterbox_nano_file` / `convert_dia_file` /
 /// `convert_zonos_file`. It is functionally identical to
-/// `convert_file(ModelKind::VoxCpm2, input, output)` — VoxCPM takes no
-/// side-car config on this conversion path (every hparam of the
+/// `convert_file(ModelKind::VoxCpm2, input, output)` for the legacy 0.5B
+/// checkpoint — every hparam of the
 /// `vokra.voxcpm2.*` + `vokra.vae_continuous.*` chunk groups is
 /// transcribed as compile-time constants in `models::voxcpm2` from the
 /// primary sources
@@ -13855,13 +13864,13 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
 ///
 /// # BF16 posture
 ///
-/// The upstream VoxCPM-0.5B release ships **BF16** safetensors
-/// (`config.json.dtype = "bfloat16"`); today's F32/F16 pass-through arm
-/// hits the `skipped_non_float` counter on BF16 tensors and the
-/// converter surfaces the loud "no float tensors" note. Pre-widen
-/// offline (F32) or wait for the streaming BF16 pass-through path
-/// (T29-equivalent — the Moshi / Kyutai STT pattern) to convert the
-/// release build directly.
+/// The upstream VoxCPM releases ship **BF16** main weights
+/// (`config.json.dtype = "bfloat16"`); they are emitted as GGUF BF16
+/// without widening. The pinned 2B release is intentionally not accepted
+/// by this no-tokenizer convenience path: first combine its separately
+/// shipped `audiovae.pth` with
+/// `tools/parity/voxcpm2_prepare_checkpoint.py` on VAST, then call
+/// [`convert_voxcpm2_file_with_tokenizer`].
 ///
 /// Weight license = **apache-2.0** **end-to-end**
 /// (`huggingface.co/openbmb/VoxCPM-0.5B` model-card + `LICENSE`,
@@ -13869,7 +13878,62 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
 /// grant. The M2-13 gate passes commercially without any attribution
 /// obligation on the runtime side.
 pub fn convert_voxcpm2_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
-    convert_file(ModelKind::VoxCpm2, input, output)
+    convert_voxcpm2_file_with_tokenizer(input, None, output)
+}
+
+/// Convert a complete VoxCPM release checkpoint, optionally embedding its
+/// text tokenizer.  For the pinned 2B release this is intentionally stricter
+/// than the old main-weight-only path: the input must contain the 577 BF16
+/// main tensors plus all 311 FP32 `audio_vae.*` tensors prepared from the
+/// separately shipped `audiovae.pth`, and `tokenizer` must be present.
+///
+/// Use `tools/parity/voxcpm2_prepare_checkpoint.py` on VAST to construct the
+/// input.  A raw upstream `model.safetensors` is refused rather than producing
+/// a success-shaped GGUF that cannot decode audio (FR-EX-08).
+pub fn convert_voxcpm2_file_with_tokenizer(
+    input: &Path,
+    tokenizer: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let tokenizer_bytes = match tokenizer {
+        Some(path) => Some(std::fs::read(path)?),
+        None => None,
+    };
+    let (builder, report) = models::voxcpm2::convert_release(bytes, tokenizer_bytes)?;
+    let variant_label = match report.variant {
+        Some(models::voxcpm2::VoxCpm2Variant::HalfB) => "voxcpm2-0.5b",
+        Some(models::voxcpm2::VoxCpm2Variant::TwoB) => "voxcpm2-2b",
+        None => "unknown-variant",
+    };
+    let mut notes = vec![format!(
+        "voxcpm2: variant={variant_label}, {} float tensors written ({} BF16, {} \
+         AudioVAE), {} non-float skipped, tokenizer embedded: {}",
+        report.written,
+        report.bf16_passthrough,
+        report.audio_vae_tensors,
+        report.skipped_non_float,
+        report.tokenizer_embedded,
+    )];
+    notes.extend(
+        report
+            .notes
+            .iter()
+            .map(|note| format!("voxcpm2 warning: {note}")),
+    );
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::VoxCpm2,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
 }
 
 /// Convert a Microsoft **VibeVoice-1.5B** safetensors checkpoint into a
