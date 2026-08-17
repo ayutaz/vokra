@@ -40,9 +40,10 @@ provably describe the real forward, and the synthesized wav is compared to
 
 ::
 
-    ~/.cache/vokra-eval/venv-dfn3/bin/python tools/parity/dfn3_dump_reference.py \\
+    uv run --project tools/parity/dfn3 --frozen python \\
+        tools/parity/dfn3_dump_reference.py \\
         --model-dir ~/.cache/vokra-eval/weights/dfn3/DeepFilterNet3 \\
-        --noisy ~/.cache/vokra-eval/out/dfn3-real/noisy_48k.wav \\
+        --noisy ~/.cache/vokra-eval/out/dfn3-real/noisy_48k.f32 \\
         --out ~/.cache/vokra-eval/out/dfn3-real/taps
 """
 
@@ -64,6 +65,30 @@ def dump(path: str, t: torch.Tensor) -> None:
     np.ascontiguousarray(a).tofile(path)
 
 
+def load_noisy(path: str) -> tuple[np.ndarray, int]:
+    """Load mono 48-kHz audio from the parity prep output or a WAV file.
+
+    ``dfn3_prep_noisy.py`` deliberately writes headerless little-endian f32,
+    which libsndfile cannot auto-detect. Keep that path explicit and strict;
+    all other suffixes continue through soundfile for the historical WAV
+    invocation.
+    """
+    if path.lower().endswith(".f32"):
+        noisy = np.fromfile(path, dtype="<f4")
+        if noisy.size == 0:
+            raise ValueError(f"raw f32 input is empty: {path}")
+        if not np.isfinite(noisy).all():
+            raise ValueError(f"raw f32 input contains NaN/Inf: {path}")
+        return noisy, 48_000
+
+    noisy, sr = sf.read(path, dtype="float32", always_2d=False)
+    if noisy.ndim != 1:
+        raise ValueError(f"expected mono audio, got shape {noisy.shape}: {path}")
+    if not np.isfinite(noisy).all():
+        raise ValueError(f"audio input contains NaN/Inf: {path}")
+    return noisy, sr
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model-dir", required=True)
@@ -75,7 +100,7 @@ def main() -> int:
     model, df_state, _ = init_df(args.model_dir, post_filter=False, log_level="WARNING", log_file=None)
     model = model.to("cpu").eval()
 
-    noisy, sr = sf.read(args.noisy, dtype="float32", always_2d=False)
+    noisy, sr = load_noisy(args.noisy)
     assert sr == 48000, sr
     audio = torch.from_numpy(noisy)[None, :]
 

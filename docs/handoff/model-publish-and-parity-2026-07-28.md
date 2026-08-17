@@ -189,11 +189,11 @@ leg originally landed as `ae8fef9` on worktree
 * **Workflow YAML** `.github/workflows/parity-deepfilternet3-real.yml`.
 * **Handoff runbook** `docs/handoff/parity-deepfilternet3-real.md`
   (tracked / public).
-* **Design** — two-phase (Phase A = conversion always, Phase B =
-  byte-level parity gated on `VOKRA_DFN3_DATA_URL`). Phase B is
-  honest-skipped with a `::notice::` until the owner provisions the
-  reference bundle; both provisioning paths (commit `dfn3_prep_noisy.py`
-  or host a pre-baked `.tar.gz`) are documented in the handoff.
+* **Historical design at this commit** — two-phase (Phase A = conversion,
+  Phase B originally gated on `VOKRA_DFN3_DATA_URL`). **Superseded
+  2026-08-18**: the tracked exact fixture recipe + uv-locked upstream oracle
+  now generate Phase B inline, so no external bundle URL remains. See the
+  current handoff for the VAST-proven 21-stage result.
 * **Cron** Mon 12:30 UTC. Not registered as required check (HF-hub
   flakiness must never block PRs — same posture as every other
   `parity-*-real.yml`).

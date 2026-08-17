@@ -25,25 +25,25 @@ bounds):
 
 1. Read ``--clean-source`` (default ``tests/fixtures/audio/jfk-30s.wav`` —
    actually 11.0 s, mono, PCM16 @ 16 kHz).
-2. Convert to float32 mono, then sinc-resample 16 kHz → 48 kHz using
-   ``scipy.signal.resample_poly`` with a Kaiser window (the same
-   ``polyphase`` filter design ``soxr`` / ``librosa`` default to; ``torch``
-   is deliberately *not* used here so this script has no PyTorch
-   dependency, keeping the parity venv slim).
+2. Convert to float32 mono, then sinc-resample 16 kHz → 48 kHz with
+   ``torchaudio.functional.resample`` from the pinned torch/torchaudio 2.1.2
+   oracle. This is the exact 2026-07-17 baseline path; replacing it with
+   scipy's different polyphase kernel changes the clean/noisy bytes and the
+   downstream quality anchor.
 3. Draw an additive white-noise vector from
    ``np.random.default_rng(20260717)`` — seed matches the campaign-2
    measured run byte-for-byte.
-4. Scale the noise so the full-signal SNR = 5.000 dB (measured 5.000 in the
-   baseline). Zero-mean SNR computation, matching the ``si_snr`` methodology
-   the parity harness itself uses.
+4. Scale the float64 noise from raw full-signal powers so the construction
+   SNR = 5.000 dB. The Rust harness separately reports zero-mean SI-SNR
+   (5.002 dB); conflating those two definitions changes the fixture bytes.
 5. Write ``clean_48k.f32`` (the 48 kHz clean signal) and ``noisy_48k.f32``
    (clean + scaled noise) as raw little-endian float32 — the same layout
    ``read_f32`` in ``parity_denoise_dfn3.rs`` expects.
 
 Optionally (``--enhance``) also runs the upstream ``deepfilternet`` package
-(``pip install deepfilternet==0.5.6``) over ``noisy_48k`` to produce
+from the checked-in ``tools/parity/dfn3`` uv lock over ``noisy_48k`` to produce
 ``enhanced_upstream.f32``. Kept opt-in because the ``deepfilternet`` install
-pulls torch + torchaudio (~1.5 GB of wheel); CI callers that only need the
+pulls torch + torchaudio (~200 MB of CPU wheels); CI callers that only need the
 input tensors skip it.
 
 Fails loudly on any anomaly (missing file, wrong sample rate, corrupt
@@ -63,17 +63,17 @@ tensor) rather than masking it — FR-EX-08 posture, matches
 
 ::
 
-    # inside the parity venv (torch NOT required unless --enhance is used):
-    pip install 'numpy<2' 'soundfile>=0.12' 'scipy>=1.11'
+    uv sync --project tools/parity/dfn3 --frozen --python 3.11
 
     # inputs only (fast — used by the parity CI):
-    python tools/parity/dfn3_prep_noisy.py \\
+    uv run --project tools/parity/dfn3 --frozen python \\
+        tools/parity/dfn3_prep_noisy.py \\
         --clean-source tests/fixtures/audio/jfk-30s.wav \\
         --out-dir ${RUNNER_TEMP}/dfn3-refdata
 
     # inputs + upstream enhancement (owner-local, closes Phase B fully):
-    pip install 'torch==2.1.2' 'torchaudio==2.1.2' 'deepfilternet==0.5.6'
-    python tools/parity/dfn3_prep_noisy.py \\
+    uv run --project tools/parity/dfn3 --frozen python \\
+        tools/parity/dfn3_prep_noisy.py \\
         --clean-source tests/fixtures/audio/jfk-30s.wav \\
         --out-dir ${RUNNER_TEMP}/dfn3-refdata \\
         --enhance --model-dir /path/to/DeepFilterNet3
@@ -128,40 +128,30 @@ def read_wav_mono_f32(path: Path):
 
 
 def resample_16k_to_48k(samples):
-    """Sinc-resample 16 kHz → 48 kHz via ``scipy.signal.resample_poly``.
+    """Run the exact baseline torchaudio 2.1.2 sinc resampler."""
+    import numpy as np
+    import torch
+    import torchaudio.functional as audio_functional
 
-    Up-factor = 3, down-factor = 1 → the resulting filter length is
-    exactly determined by ``scipy``'s Kaiser-window default (beta 5.0,
-    order = 2 * 10 * max(up, down) - 1 = 59 taps at up=3). This is the
-    same polyphase design ``librosa.resample(..., res_type='soxr_hq')``
-    would produce for the 16k→48k pair, so the harness's tolerance
-    calibrations still hold if a future owner swaps to ``soxr`` directly.
-    """
-    from scipy.signal import resample_poly  # deferred
-
-    up, down = 3, 1
-    return resample_poly(samples, up, down).astype("float32", copy=False)
+    tensor = torch.from_numpy(np.asarray(samples, dtype="float32"))
+    return audio_functional.resample(tensor, 16_000, OUTPUT_SR).numpy()
 
 
 def scale_noise_to_snr(clean, noise, snr_db: float):
-    """Scale ``noise`` in-place so that ``10*log10(P_clean / P_noise) == snr_db``.
-
-    Uses zero-mean signal / noise powers to match the ``si_snr`` methodology
-    the parity harness reports. Returns the scaled noise as a fresh array.
-    """
+    """Scale float64 noise using the baseline's raw full-signal powers."""
     import numpy as np
 
-    clean_zm = clean - clean.mean(dtype="float64")
-    noise_zm = noise - noise.mean(dtype="float64")
-    p_clean = float((clean_zm.astype("float64") ** 2).mean())
-    p_noise = float((noise_zm.astype("float64") ** 2).mean())
+    clean64 = np.asarray(clean, dtype="float64")
+    noise64 = np.asarray(noise, dtype="float64")
+    p_clean = float((clean64**2).mean())
+    p_noise = float((noise64**2).mean())
     if p_noise <= 0.0:
         raise SystemExit(
             f"{LOG_PREFIX} noise vector has zero power — cannot scale to SNR"
         )
     target_p_noise = p_clean / (10.0 ** (snr_db / 10.0))
     scale = math.sqrt(target_p_noise / p_noise)
-    return (noise_zm * scale).astype("float32", copy=False)
+    return noise64 * scale
 
 
 def write_f32(path: Path, samples) -> None:
@@ -175,14 +165,13 @@ def write_f32(path: Path, samples) -> None:
 
 
 def measure_snr_db(clean, noisy) -> float:
-    """Post-hoc SNR check — verifies the scaling did what we asked."""
+    """Raw-power SNR check matching the fixture construction definition."""
     import numpy as np
 
-    clean_zm = clean - clean.mean(dtype="float64")
-    diff_zm = (noisy - clean).astype("float64")
-    diff_zm -= diff_zm.mean()
-    p_clean = float((clean_zm.astype("float64") ** 2).mean())
-    p_noise = float((diff_zm ** 2).mean())
+    clean64 = np.asarray(clean, dtype="float64")
+    diff64 = np.asarray(noisy, dtype="float64") - clean64
+    p_clean = float((clean64**2).mean())
+    p_noise = float((diff64**2).mean())
     if p_noise <= 0.0:
         return float("inf")
     return 10.0 * math.log10(p_clean / p_noise)
@@ -202,7 +191,7 @@ def run_upstream_enhance(noisy, out_path: Path, model_dir: Path) -> None:
     except ImportError as e:
         raise SystemExit(
             f"{LOG_PREFIX} --enhance requires torch + torchaudio + deepfilternet in the "
-            f"venv (pip install torch==2.1.2 torchaudio==2.1.2 deepfilternet==0.5.6) — {e}"
+            f"uv environment (uv sync --project tools/parity/dfn3 --frozen) — {e}"
         ) from e
 
     from df.enhance import enhance as df_enhance, init_df as df_init
@@ -293,7 +282,7 @@ def main() -> None:
             f"got sr={sr}. Resample your source to 16 kHz mono PCM16 first."
         )
 
-    log(f"resampling 16 kHz → {OUTPUT_SR} Hz via scipy.signal.resample_poly (sinc)")
+    log(f"resampling 16 kHz → {OUTPUT_SR} Hz via torchaudio.functional.resample")
     clean_48k = resample_16k_to_48k(clean_16k)
     log(f"resampled: {clean_48k.size} samples ({clean_48k.size / OUTPUT_SR:.3f} s)")
 
@@ -301,9 +290,9 @@ def main() -> None:
     import numpy as np
 
     rng = np.random.default_rng(args.noise_seed)
-    raw_noise = rng.standard_normal(clean_48k.size).astype("float32", copy=False)
+    raw_noise = rng.standard_normal(clean_48k.size)
     noise_scaled = scale_noise_to_snr(clean_48k, raw_noise, args.snr_db)
-    noisy_48k = (clean_48k + noise_scaled).astype("float32", copy=False)
+    noisy_48k = (clean_48k.astype("float64") + noise_scaled).astype("float32")
 
     measured = measure_snr_db(clean_48k, noisy_48k)
     log(f"measured SNR: {measured:.4f} dB (target {args.snr_db:.3f} dB)")
