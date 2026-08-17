@@ -85,23 +85,23 @@ hf_download() {
   shift 3
   local patterns=("$@")
   local pattern_json
-  pattern_json="$(uv run --no-project python -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${patterns[@]}")"
+  pattern_json="$(uv run --no-project --python 3.12 python \
+    -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${patterns[@]}")"
 
-  # Run inside tools/parity's uv env so hf-transfer is resolvable (provision.sh
-  # `uv add hf-transfer huggingface_hub` there). Falls back to --with if that
-  # env is not populated.
-  local uv_cwd="$VOKRA_ROOT/tools/parity"
-  local uv_cmd=(uv run --with huggingface_hub --with hf-transfer python)
-  if [[ ! -f "$uv_cwd/pyproject.toml" ]]; then
-    log "note: $uv_cwd/pyproject.toml missing — running with --with fallback"
-    uv_cwd="$VOKRA_ROOT"
-  fi
+  # Keep this helper out of tools/parity's large project environment. Pulling
+  # a checkpoint needs only huggingface_hub + hf-transfer; resolving the
+  # parity project also installs Torch/ONNX/Transformers and wastes several
+  # GB on every fresh VAST instance. The hub ceiling matches provision.sh's
+  # known-good non-Xet route.
+  local uv_cmd=(
+    uv run --no-project --python 3.12
+    --with 'huggingface_hub<0.30' --with hf-transfer python
+  )
 
   # Prefix-form assignment on a compound command is not valid bash — export
   # into the subshell instead so `set -u` also stays honest.
   (
     export HF_HUB_ENABLE_HF_TRANSFER=1
-    cd "$uv_cwd"
     "${uv_cmd[@]}" - "$repo" "$cache_dir" "$revision" "$pattern_json" <<'PY'
 import json, os, sys
 from huggingface_hub import snapshot_download
