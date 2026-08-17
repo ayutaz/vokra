@@ -74,7 +74,7 @@ hf_download() {
   shift 2
   local patterns=("$@")
   local pattern_json
-  pattern_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${patterns[@]}")"
+  pattern_json="$(uv run --no-project python -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${patterns[@]}")"
 
   # Run inside tools/parity's uv env so hf-transfer is resolvable (provision.sh
   # `uv add hf-transfer huggingface_hub` there). Falls back to --with if that

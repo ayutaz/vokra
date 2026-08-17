@@ -195,7 +195,7 @@ vast.ai へ移送するか本機で処理するかの判定は事前に:
 
 ```bash
 # HF API で合計 safetensors サイズ確認
-curl -sL "https://huggingface.co/api/models/<repo>?blobs=true" | python3 -c "
+curl -sL "https://huggingface.co/api/models/<repo>?blobs=true" | uv run --no-project python -c "
 import json, sys
 d = json.load(sys.stdin)
 total = 0

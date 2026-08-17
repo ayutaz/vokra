@@ -35,7 +35,7 @@ publish は owner が本 runbook を追いながら実行する。
 ```bash
 # License verification
 curl -sL https://huggingface.co/api/models/openbmb/VoxCPM2 | \
-  python3 -c "import json,sys; d=json.load(sys.stdin); \
+  uv run --no-project python -c "import json,sys; d=json.load(sys.stdin); \
     print('license:', d.get('cardData',{}).get('license')); \
     print('license_name:', d.get('cardData',{}).get('license_name')); \
     print('gated:', d.get('gated'))"
@@ -73,7 +73,7 @@ harden_vast_docker_image、2026-08-03 land）。VoxCPM2-2B convert 前に一度�
 | **hf_config.pth shim** | `nvidia/cuda:13.0.0` image が仕込む Python startup shim が `HF_ENDPOINT` を malicious mirror `117.175.104.83:8081` に上書き | shim 除去 + certifi CA 再植え付け（memory [[reference-vast-ai-hf-config-pth-shim]]） |
 | **huggingface_hub < 0.30 pin** | 1.x xet-token routing が mirror 404 を投げ、`HF_HUB_DISABLE_XET` も一部 bypass、0.30+ `resume_download` deprecated で flaky egress を落とす | vast.ai 上のみ `huggingface_hub < 0.30` に pin。local machine は pin 不要（memory [[reference-huggingface-hub-lt-030-vast-ai]]） |
 | **certifi CA bundle** | 空 or 古い CA bundle で HTTPS 検証失敗 | `certifi` 再 install + `SSL_CERT_FILE` export |
-| **stack tool install（torch/numpy/safetensors）** | resilient_batch.sh の uv fallback / ad-hoc `python3 -c` が消費するが system 層に無い | provision.sh Wave 12 で pre-install |
+| **stack tool install（torch/numpy/safetensors）** | VAST 用の `uv pip --system` compatibility layer に必要。実行・変換・検証はすべて uv-managed Python で行う | provision.sh Wave 12 で pre-install |
 
 ```bash
 # SSH 接続後、まず HF token を export（instance destroy で消える）
