@@ -8,7 +8,10 @@
 #   include/vokra.h). During this window we still want every symbol delta
 #   to be *observable* on-disk: this script diffs the working-tree
 #   include/vokra.h against a committed anchor snapshot and, if it finds a
-#   delta, requires docs/abi-changelog.md to have an entry dated today.
+#   delta, requires every changed symbol to have a row in
+#   docs/abi-changelog.md. The entry's date is historical metadata (the PR
+#   opening date), so a later CI run must not make an already documented delta
+#   fail merely because the calendar moved on.
 #
 # ARTEFACTS
 #   include/vokra.h                                 -- current C header (cbindgen)
@@ -52,9 +55,9 @@
 #   header — call `scripts/gen-c-abi.sh` first if you touched the FFI.
 #
 # EXIT CODES
-#   0  clean (no delta, or delta covered by a today-dated changelog entry,
+#   0  clean (no delta, or delta covered by recorded symbol rows,
 #      or a --list / --self-test / --update-snapshot success)
-#   1  delta detected AND no today-dated changelog entry, OR a converter
+#   1  delta detected AND one or more symbols have no changelog row, OR a converter
 #      stamps a `vokra.<group>.*` chunk prefix with no mention in
 #      docs/abi-changelog.md and no ledger exception
 #   2  usage / setup error (missing header, missing anchor, missing
@@ -332,21 +335,16 @@ EOF
 }
 
 # --------------------------------------------------------- changelog gate ---
-# has_today_entry — echo `yes` iff docs/abi-changelog.md contains an
-# `### YYYY-MM-DD ...` header dated today. We use `date -u +%F` so the gate
-# does not flake across time zones. UTC is the canonical date for the file.
-has_today_entry() {
-    local today
-    today="$(date -u +%F)"
+# changelog_mentions_symbol <symbol>
+# True iff docs/abi-changelog.md contains a table row for the exact ABI symbol.
+# Dates describe when a PR was opened; they are not a valid proxy for whether
+# the symbol itself has already been documented when CI runs later.
+changelog_mentions_symbol() {
+    local symbol="$1"
     if [ ! -f "$CHANGELOG" ]; then
-        echo "no"
         return 0
     fi
-    if grep -qE "^### ${today}( |—|$)" "$CHANGELOG"; then
-        echo "yes"
-    else
-        echo "no"
-    fi
+    grep -qF "| \`$symbol\` |" "$CHANGELOG"
 }
 
 # ------------------------------------------------ GGUF chunk-prefix gate ---
@@ -535,9 +533,21 @@ case "$mode" in
         printf '%s\n' "$diff_out" | sed 's/^/  /'
         echo ""
 
-        if [ "$(has_today_entry)" = "yes" ]; then
-            today="$(date -u +%F)"
-            echo "check-abi-changelog: OK (delta covered by a $today entry in docs/abi-changelog.md)"
+        # The anchor is intentionally long-lived through the rc window. Do
+        # not require a heading dated *today*: that made a documented ABI
+        # addition fail on every subsequent CI day. Extract the symbols from
+        # the delta and require each one to have an explicit changelog row.
+        delta_symbols="$(printf '%s' "$diff_out" | awk '/^[+-](FUNC|TYPEDEF) / { line = substr($0, 2); sub(/^(FUNC|TYPEDEF) /, "", line); sub(/\|.*/, "", line); print line }' | LC_ALL=C sort -u)"
+        missing_symbols=()
+        while IFS= read -r symbol; do
+            [ -n "$symbol" ] || continue
+            if ! changelog_mentions_symbol "$symbol"; then
+                missing_symbols+=("$symbol")
+            fi
+        done <<< "$delta_symbols"
+
+        if [ "${#missing_symbols[@]}" -eq 0 ]; then
+            echo "check-abi-changelog: OK (every changed C ABI symbol has a changelog row)"
             echo ""
             echo "reminder: once the change is merged into the release cut,"
             echo "run 'scripts/check-abi-changelog.sh --update-snapshot' to"
@@ -547,14 +557,15 @@ case "$mode" in
         fi
 
         cat >&2 <<EOF
-check-abi-changelog: FAIL — the C ABI moved but docs/abi-changelog.md has
-no entry dated $(date -u +%F).
+check-abi-changelog: FAIL — the C ABI moved but these changed symbols have
+no row in docs/abi-changelog.md:
+
+$(printf '  %s\n' "${missing_symbols[@]}")
 
 Fix:
-  1. If the change is intentional, add a section
-       ### $(date -u +%F) — 1.0.0-rc.1-dev
-     to docs/abi-changelog.md following the schema at the top of that file
-     (one row per symbol, with rationale + WP/PR id).
+  1. If the change is intentional, add one table row per missing symbol to
+     docs/abi-changelog.md following the schema at the top of that file
+     (inside a dated section, with rationale + WP/PR id).
   2. If the change is accidental (e.g. cbindgen drift on an unrelated
      refactor), revert the include/vokra.h diff or fix the vokra-capi Rust
      source that produced it.

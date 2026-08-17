@@ -1177,8 +1177,8 @@ pub struct MultiChannelAecAttrs {
 /// wrapper itself does not allocate per frame. Each per-channel
 /// [`Aec::process_with_far`] call is already ZERO-ALLOC (mono module
 /// contract), so the full multi-channel call is allocation-free too. The
-/// mono ZERO-ALLOC marker scan (`scripts/check-hot-path-allocs.sh`) does not
-/// cover this wrapper directly — see the mono `ZERO-ALLOC-BEGIN` region
+/// mono zero-allocation marker scan (`scripts/check-hot-path-allocs.sh`) does
+/// not cover this wrapper directly — see the marked mono hot-path region
 /// upstream for the M4-05/06 full-duplex hot path.
 pub struct MultiChannelAec {
     attrs: MultiChannelAecAttrs,

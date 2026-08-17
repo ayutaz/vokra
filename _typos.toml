@@ -97,6 +97,9 @@ extend-ignore-re = [
 #   [default.extend-words]
 #   theWord = "theWord"       # v1.48.0 flagged this as "theTypo"
 [default.extend-words]
+# `shfit` is the upstream SANM metadata key; changing it would break the
+# wire-compatible config key used by FunASR CT-Punc.
+shfit = "shfit"
 # ARM Mali GPU ブランド名 — 実在の GPU 世代 (Immortalis-G715 等)。
 # 2026-07-23 の Phase 5b-3 初回 CI で "Immortals" と誤検出された。
 Immortalis = "Immortalis"

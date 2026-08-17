@@ -1340,11 +1340,40 @@ mod tests {
     /// snapshot without dragging the converter crate into the models
     /// test tree.
     fn build_gguf_with_hparams(arch: Option<&str>) -> Vec<u8> {
+        build_gguf_for_config(arch, &KyutaiSttConfig::stt_2_6b_en())
+    }
+
+    /// The same fixture at [`KyutaiSttConfig::tiny_for_tests`] scale, for
+    /// tests that go on to CONSTRUCT an engine.
+    ///
+    /// `from_gguf` finds no tensors on these metadata-only fixtures and
+    /// falls back to `KyutaiSttWeights::synthesized`, which allocates the
+    /// whole model. At `stt_2_6b_en` scale (48 layers x d_model 2048) that
+    /// is ~2.5 G parameters — about **10 GB of f32** — per test. Three
+    /// tests did that, and it was not a micro-optimisation issue:
+    ///
+    /// - the workspace suite was SIGTERM-killed on GitHub runners, taking
+    ///   `test (ubuntu-latest)`, `test (windows-latest)` and `coverage`
+    ///   red, and CI logged all three as "running for over 60 seconds";
+    /// - the same tests OOM-killed a 16 GB dev machine hard enough to
+    ///   reboot it.
+    ///
+    /// None of those three assert anything about model SIZE — they cover
+    /// the license gate, the loud-partial transcribe message, and
+    /// `from_path` == `from_gguf`. The real-config round trip is covered
+    /// separately by `config_round_trips_from_converter_written_gguf`,
+    /// which only parses metadata and never synthesizes, so it stays on
+    /// `stt_2_6b_en` and stays fast.
+    fn build_tiny_gguf(arch: Option<&str>) -> Vec<u8> {
+        build_gguf_for_config(arch, &KyutaiSttConfig::tiny_for_tests())
+    }
+
+    fn build_gguf_for_config(arch: Option<&str>, cfg: &KyutaiSttConfig) -> Vec<u8> {
         let mut b = GgufBuilder::new();
         if let Some(a) = arch {
             b.add_string(chunks::KEY_MODEL_ARCH, a);
         }
-        let cfg = KyutaiSttConfig::stt_2_6b_en();
+        let cfg = cfg.clone();
         b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
         // Backbone
         b.add_u32(KEY_BB_N_LAYER, cfg.backbone.n_layer as u32);
@@ -1467,7 +1496,9 @@ mod tests {
     /// STT loadable in the default posture.
     #[test]
     fn from_gguf_reads_attribution_required_license() {
-        let bytes = build_gguf_with_hparams(Some(EXPECTED_ARCH));
+        // Tiny scale: this test constructs an engine, and what it asserts
+        // is the licence gate, not the model's dimensions.
+        let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let file = GgufFile::parse(bytes).expect("parse fixture");
         let resolution =
             check_weight_license(&file, &CompliancePolicy::strict()).expect("strict must pass");
@@ -1478,12 +1509,12 @@ mod tests {
         );
         // The M2-13 gate + arch check + config load all pass together.
         let asr = KyutaiSttAsr::from_gguf_with_policy(
-            &build_gguf_with_hparams(Some(EXPECTED_ARCH)),
+            &build_tiny_gguf(Some(EXPECTED_ARCH)),
             &CompliancePolicy::strict(),
         )
         .expect("kyutai-stt from_gguf under strict policy");
         assert!(asr.is_synthesized(), "from_gguf binds synthesized bridge");
-        assert_eq!(asr.config(), &KyutaiSttConfig::stt_2_6b_en());
+        assert_eq!(asr.config(), &KyutaiSttConfig::tiny_for_tests());
     }
 
     /// The loud-partial transcribe gate names the primary source URL so a
@@ -1491,7 +1522,8 @@ mod tests {
     /// (Wave 4 loud-partial contract — never a silent noise transcript).
     #[test]
     fn transcribe_loud_partial_names_primary_source_url() {
-        let bytes = build_gguf_with_hparams(Some(EXPECTED_ARCH));
+        // Tiny scale: constructs an engine, and asserts only the message.
+        let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let asr = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect("kyutai-stt from_gguf");
         // Build a legal one-frame code slice against the resolved config.
@@ -1580,7 +1612,8 @@ mod tests {
     /// loud-partial arm).
     #[test]
     fn from_path_round_trip() {
-        let bytes = build_gguf_with_hparams(Some(EXPECTED_ARCH));
+        // Tiny scale: constructs two engines, and asserts they agree.
+        let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let path = std::env::temp_dir().join(format!(
             "vokra-kyutai-stt-scout-{}.gguf",
             std::process::id()

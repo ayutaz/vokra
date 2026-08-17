@@ -330,7 +330,7 @@ mod metal_band {
         };
         let mut out = vec![0.0f32; 4];
         let err = compute_metal
-            .sinegen_deterministic_f32(&vec![100.0f32; 4], 0, 0, 0.1, 0.0, &mut out)
+            .sinegen_deterministic_f32(&[100.0f32; 4], 0, 0, 0.1, 0.0, &mut out)
             .expect_err("samp_rate=0 must be an explicit InvalidArgument (FR-EX-08)");
         assert!(
             matches!(err, VokraError::InvalidArgument(_)),

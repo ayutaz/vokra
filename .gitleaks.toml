@@ -204,6 +204,12 @@ regexes = [
   # writes into a GGUF chunk — never an API credential.
   '''\.add_string\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*::)?KEY_[A-Z_][A-Z0-9_]*\s*,''',
 
+  # Cross-crate GGUF key spelling assertions. These tests deliberately pin
+  # converter `KEY_*` / runtime `GGUF_KEY_*` constants to their wire names;
+  # the `vokra.*` strings are schema identifiers, not credentials. The
+  # constant-name and `assert_eq!` anchors keep this narrow.
+  '''assert_eq!\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*::)?(?:KEY|GGUF_KEY)_[A-Z0-9_]+\s*,\s*"vokra\.[a-z0-9_.]+"''',
+
   # Torch `state_dict()` tensor paths (dotted key ending in a well-known
   # parameter suffix: `weight`, `bias`, `gamma`, `beta`, `running_mean`,
   # `running_var`, or LSTM `weight_ih_l{N}` / `bias_hh_l{N}`). These

@@ -246,7 +246,7 @@ jobs:
           cargo test -p vokra-core --features vokra-wfst --lib
           ./scripts/check-zero-deps.sh
           # Feature ON must pull in no non-vokra crate.
-          extra=$(cargo tree -p vokra-core --features vokra-wfst \
+          extra=$(cargo tree --color never -p vokra-core --features vokra-wfst \
             | grep -vE 'vokra-|^\[|^$' || true)
           if [ -n "$extra" ]; then
             echo "M5-06 regression: vokra-wfst pulled in non-vokra deps:" >&2
@@ -287,7 +287,7 @@ jobs:
           cargo clippy -p vokra-cli --features vokra-wfst --all-targets -- -D warnings
           ./scripts/check-zero-deps.sh
           # Forwarding the flag must still pull in no non-vokra crate.
-          extra=$(cargo tree -p vokra-ops --features vokra-wfst \
+          extra=$(cargo tree --color never -p vokra-ops --features vokra-wfst \
             | grep -vE 'vokra-|^\[|^$' || true)
           if [ -n "$extra" ]; then
             echo "Wave D regression: vokra-ops/vokra-wfst pulled in non-vokra deps:" >&2
@@ -297,7 +297,7 @@ jobs:
           # Same assertion for the CLI passthrough — the binary is what ships,
           # so it is the edge where a third-party dep would actually reach a
           # user (NFR-DS-02).
-          extra=$(cargo tree -p vokra-cli --features vokra-wfst \
+          extra=$(cargo tree --color never -p vokra-cli --features vokra-wfst \
             | grep -vE 'vokra-|^\[|^$' || true)
           if [ -n "$extra" ]; then
             echo "Wave D regression: vokra-cli/vokra-wfst pulled in non-vokra deps:" >&2

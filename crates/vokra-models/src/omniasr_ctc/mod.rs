@@ -2796,7 +2796,12 @@ mod tests {
     /// then enforce.
     #[test]
     fn from_gguf_surfaces_stamped_permissive() {
-        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        // Tiny scale: this constructs an ENGINE, so the config decides how
+        // much `OmniasrCtcWeights::synthesized` allocates — at 1B that is
+        // gigabytes for an assertion about a licence string. The 1B config
+        // round trip is covered by
+        // `from_gguf_reads_full_omniasr_ctc_1b_config`, which parses only.
+        let cfg = OmniasrCtcConfig::tiny_for_tests();
         let file = omniasr_ctc_gguf(&cfg, Some(LicenseClass::Permissive));
         let asr = OmniasrCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
         assert_eq!(
@@ -2814,7 +2819,9 @@ mod tests {
     /// the class, it only surfaces what the GGUF stamps.
     #[test]
     fn from_gguf_defaults_missing_provenance_to_unknown() {
-        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        // Tiny scale — see the sibling test above. CI logged this one as
+        // "running for over 60 seconds" purely because of the 1B synthesis.
+        let cfg = OmniasrCtcConfig::tiny_for_tests();
         let file = omniasr_ctc_gguf(&cfg, None);
         let asr = OmniasrCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
         assert_eq!(
@@ -2831,7 +2838,8 @@ mod tests {
     /// omniasr_ctc_prepare_checkpoint.py`, T29-equivalent).
     #[test]
     fn from_gguf_engine_transcribe_is_loud_not_implemented() {
-        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        // Tiny scale — the loud-partial message does not depend on width.
+        let cfg = OmniasrCtcConfig::tiny_for_tests();
         let file = omniasr_ctc_gguf(&cfg, Some(LicenseClass::Permissive));
         let asr = OmniasrCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
         // Round-tripped engine is still synthesized-weight; the primary

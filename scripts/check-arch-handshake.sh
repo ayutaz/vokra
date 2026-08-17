@@ -322,7 +322,7 @@
 # Zero-dep: bash + python3 stdlib only (no jq, no pip, no cargo). Not a Vokra
 # runtime dep.
 # Exit: 0 = all three legs clean, 1 = an undeclared gap / a stale ledger entry /
-# an unparseable recovery-command slug / a parser guard trip / a bad argument.
+# an unparsable recovery-command slug / a parser guard trip / a bad argument.
 
 set -euo pipefail
 
@@ -457,7 +457,7 @@ declare -a NOT_A_READER=(
 # instructions an operator will actually type.
 #
 # Format: 'slug|reason', same as the ledgers above, and equally
-# double-sided: an unparseable slug not listed here fails, and a listed
+# double-sided: an unparsable slug not listed here fails, and a listed
 # slug that now parses fails as stale.
 # ---------------------------------------------------------------------------
 declare -a NOT_A_MODEL_SLUG=(
@@ -891,7 +891,7 @@ def split_code_and_strings(path):
     them for JSON samples.
     """
     text = open(path, encoding="utf-8").read()
-    code, lits = [], {}
+    code, literal_values = [], {}
     line = []
     lineno = 1
     i, n = 0, len(text)
@@ -939,7 +939,7 @@ def split_code_and_strings(path):
                     else:
                         buf.append(text[j])
                     j += 1
-                lits.setdefault(start_line, []).append("".join(buf))
+                literal_values.setdefault(start_line, []).append("".join(buf))
                 i = j + len(close)
                 continue
         if c == '"':
@@ -969,7 +969,7 @@ def split_code_and_strings(path):
                 else:
                     buf.append(text[i])
                 i += 1
-            lits.setdefault(start_line, []).append("".join(buf))
+            literal_values.setdefault(start_line, []).append("".join(buf))
             i += 1
             continue
         if c == "'":
@@ -983,7 +983,7 @@ def split_code_and_strings(path):
         line.append(c)
         i += 1
     code.append("".join(line))
-    return code, lits
+    return code, literal_values
 
 
 def fn_spans(lines):
@@ -1116,7 +1116,7 @@ def meta_read_keys(root):
             continue
         skip, _ = test_region_lines(path)
         lines = open(path, encoding="utf-8").read().split("\n")
-        code, _lits = split_code_and_strings(path)
+        code, _literal_values = split_code_and_strings(path)
         while len(code) < len(lines):
             code.append("")
         spans = fn_spans(lines)
@@ -1139,7 +1139,7 @@ def meta_read_keys(root):
                     continue
                 binds[name] = key
                 continue
-            for lit in _lits.get(i + 1, []):
+            for lit in _literal_values.get(i + 1, []):
                 if META_KEY.match(lit):
                     inline.setdefault(lit, []).append(i)
 
@@ -1255,7 +1255,7 @@ def meta_stamped(root):
             continue
         skip, _ = test_region_lines(path)
         lines = open(path, encoding="utf-8").read().split("\n")
-        code, lits = split_code_and_strings(path)
+        code, literal_values = split_code_and_strings(path)
         while len(code) < len(lines):
             code.append("")
         decls = {}
@@ -1267,7 +1267,7 @@ def meta_stamped(root):
                 decls[m.group(1)] = m.group(2)
                 name_keys.setdefault(m.group(1), set()).add(m.group(2))
         per_file[path] = decls
-        files.append((path, skip, lines, code, lits))
+        files.append((path, skip, lines, code, literal_values))
 
     def resolve(name, decls):
         if name in decls:
@@ -1278,7 +1278,7 @@ def meta_stamped(root):
         return None
 
     keys = set()
-    for path, skip, lines, code, lits in files:
+    for path, skip, lines, code, literal_values in files:
         decls = per_file[path]
         for i, line in enumerate(lines):
             # The declaration line itself is not a use — the mirror of the
@@ -1286,7 +1286,7 @@ def meta_stamped(root):
             # side. This single `continue` is what gives the leg teeth.
             if (i + 1) in skip or META_CONST.match(line):
                 continue
-            for v in lits.get(i + 1, []):
+            for v in literal_values.get(i + 1, []):
                 if META_KEY.match(v) or v.startswith("vokra."):
                     keys.add(v)
                 am = ASSEMBLED_KEY.match(v)
@@ -1424,7 +1424,7 @@ def from_arg_literals(path):
     body is nothing but `"lit" | "lit" => Some(Self::X),` arms, so every
     non-comment literal inside it is an accepted spelling.
     """
-    lits = set()
+    literal_values = set()
     in_impl = False
     capturing = False
     with open(path, encoding="utf-8") as fh:
@@ -1443,8 +1443,8 @@ def from_arg_literals(path):
                 if line.lstrip().startswith("//"):
                     continue
                 for m in STRING_LIT.finditer(line):
-                    lits.add(m.group(1))
-    return lits
+                    literal_values.add(m.group(1))
+    return literal_values
 
 
 def read_suppress_ledger(path):
@@ -1530,11 +1530,11 @@ ledger_no_stamp, ledger_d_bad = read_ledger(ledger_d)
 required_keys, suppress_counts = meta_read_keys(models_dir)
 stamped_keys = meta_stamped(conv_src)
 
-reader_lits = answering_literals(reader_sites, suppressed)
+reader_literals = answering_literals(reader_sites, suppressed)
 # Leg (b) applies the same test-code exclusion but no suppression: no
 # converter-side collision exists, and an empty ledger nobody can populate
 # is worse than none. Mirror NOT_A_READER here if one ever appears.
-emitter_lits = answering_literals(emitter_sites, {})
+emitter_literals = answering_literals(emitter_sites, {})
 
 errors = (list(ledger_a_bad) + list(ledger_b_bad) + list(ledger_c_bad)
           + list(ledger_sup_bad) + list(ledger_d_bad) + list(reader_problems)
@@ -1633,7 +1633,7 @@ if not accepted_slugs:
     errors.append(
         f"`ModelKind::from_arg` yielded ZERO accepted spellings from {convert_lib} — the "
         f"`impl ModelKind` anchor, the fn signature or the closing-brace terminator "
-        f"changed; leg (c) would then report every recovery-command slug as unparseable."
+        f"changed; leg (c) would then report every recovery-command slug as unparsable."
     )
 if not cmd_slugs:
     errors.append(
@@ -1643,7 +1643,7 @@ if not cmd_slugs:
     )
 
 # ---- leg (a): converter -> reader ----------------------------------------
-answered = reader_lits | routed | registry
+answered = reader_literals | routed | registry
 gap_a = {}
 for arch, where, const_name in converters:
     if arch not in answered:
@@ -1678,7 +1678,7 @@ for arch in sorted(ledger_no_reader):
 # ---- leg (b): binder -> converter ----------------------------------------
 gap_b = {}
 for arch, where, const_name in binders:
-    if arch not in emitter_lits:
+    if arch not in emitter_literals:
         gap_b.setdefault(arch, f"{const_name} at vokra-models/src/{where}")
 
 for arch in sorted(gap_b):
@@ -2149,10 +2149,10 @@ self_test() {
     #    for (mt3 / beat-this / redimnet / llama-omni2, 2026-08-15).
     write_cmds '/// Re-run `vokra-cli convert --model ghostslug` against the checkpoint.'
     if out="$(run "$ok" -- "$okb" 2>&1)"; then
-        echo "self-test FAIL: a recovery command naming an unparseable slug should fail" >&2
+        echo "self-test FAIL: a recovery command naming an unparsable slug should fail" >&2
         status=1
     elif grep -q 'leg c.*ghostslug' <<<"$out" && grep -q 'unknown model' <<<"$out"; then
-        echo "self-test PASS: an unparseable recovery-command slug fails, naming it"
+        echo "self-test PASS: an unparsable recovery-command slug fails, naming it"
     else
         echo "self-test FAIL: leg (c) failure did not name \`ghostslug\`" >&2
         printf '%s\n' "$out" >&2
@@ -2224,7 +2224,7 @@ self_test() {
     #     it.)
     sed 's/^impl ModelKind {/impl RenamedKind {/' "$saved_lib" >"$tmp/conv/lib.rs"
     if run "$ok" -- "$okb" >/dev/null 2>&1; then
-        echo "self-test FAIL: an unparseable from_arg should fail the guard" >&2
+        echo "self-test FAIL: an unparsable from_arg should fail the guard" >&2
         status=1
     else
         echo "self-test PASS: a from_arg the parser cannot locate fails the guard"

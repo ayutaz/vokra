@@ -36,9 +36,21 @@ set -uo pipefail
 # Model artefacts at or above this size go to vast.ai, never local.
 readonly SIZE_LIMIT_BYTES=$((2 * 1024 * 1024 * 1024))
 
-# Crates whose debug build + test binary have been measured to exhaust a
-# 16 GB machine. `vokra-models` is the one that caused the 2026-08-16 reboot.
-readonly HEAVY_CRATES='vokra-models'
+# Crates measured to exhaust a 16 GB machine on their own. Empty today, and
+# that is a finding rather than an oversight.
+#
+# `vokra-models` was listed here because `cargo test -p vokra-models` OOM-killed
+# this machine. The cause turned out not to be the crate: three `kyutai_stt`
+# tests fell through to `KyutaiSttWeights::synthesized` at `stt_2_6b_en` scale
+# and allocated ~10 GB of f32 each, for assertions about a licence class and an
+# error message. With the fixtures moved to `tiny_for_tests`, the whole crate
+# runs 2532 tests in 36 s on this machine with no memory pressure.
+#
+# Keeping the block after fixing its cause would be a guard whose stated reason
+# is no longer true — the exact thing this repo keeps auditing out. An empty
+# regex matches nothing, so the `-p <crate>` leg is inert until something is
+# measured back into it.
+readonly HEAVY_CRATES=''
 
 emit_heavy_cargo_block() {
     {
@@ -86,11 +98,25 @@ human_size() {
 }
 
 # `stat` is not portable: macOS (BSD) wants -f '%z', Linux (GNU) wants -c '%s'.
-# The hook runs on the maintainer's Mac; its --self-test runs on Linux CI. Try
-# BSD first, fall back to GNU, and report 0 rather than a stat error string —
-# a non-numeric size would make the later comparison silently allow.
+#
+# The first version tried BSD then fell back with `||`, which does not work and
+# CI caught it: GNU `stat -f` is not an error, it is a DIFFERENT valid option
+# (print filesystem status). So on Linux the BSD form SUCCEEDED, printed
+# filesystem info, the `||` never fired, and the arithmetic that consumed the
+# result died with "File: unbound variable". Every size check would have been
+# garbage rather than merely wrong.
+#
+# Two fixes, because exit status alone is not trustworthy here:
+#   1. try GNU first — BSD `stat -c` is genuinely invalid and fails cleanly,
+#      so the asymmetry now runs the safe way round;
+#   2. validate the answer is a plain integer regardless, and report 0 if not.
 file_size_bytes() {
-    stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null || echo 0
+    local out
+    out="$(stat -c '%s' "$1" 2>/dev/null)" || out="$(stat -f '%z' "$1" 2>/dev/null)" || out=""
+    case "$out" in
+        '' | *[!0-9]*) echo 0 ;;
+        *) echo "$out" ;;
+    esac
 }
 
 # Size of a file, or the recursive sum for a directory (sharded safetensors
@@ -159,8 +185,13 @@ analyse() {
             return 0
         fi
 
-        if printf '%s' "$cmd" | grep -Eq "[[:space:]]-p[[:space:]]+($HEAVY_CRATES)([[:space:]]|$)"; then
-            echo "HEAVY_CARGO:-p vokra-models (largest crate; caused the reboot)"
+        # Skipped explicitly when the list is empty. Interpolating an empty
+        # string would leave `(...)` as an empty alternation, which matches
+        # the empty string — a regex that is one stray space away from
+        # blocking every `-p` invocation there is.
+        if [ -n "$HEAVY_CRATES" ] \
+            && printf '%s' "$cmd" | grep -Eq "[[:space:]]-p[[:space:]]+($HEAVY_CRATES)([[:space:]]|$)"; then
+            echo "HEAVY_CARGO:-p names a crate measured to exhaust this machine"
             return 0
         fi
 
@@ -226,7 +257,6 @@ if [ "${1:-}" = "--self-test" ]; then
 
     # (a) heavy cargo — must block
     check "cargo test --workspace"            block "cargo test --workspace"
-    check "cargo test -p vokra-models"        block "cargo test -p vokra-models --lib kyutai_stt"
     check "bare cargo test (= workspace)"     block "cargo test"
     check "cargo nextest run --workspace"     block "cargo nextest run --workspace"
     check "cargo build --all"                 block "cargo build --all --release"
@@ -234,6 +264,11 @@ if [ "${1:-}" = "--self-test" ]; then
     check "chained after &&"                  block "cd /tmp && cargo test --workspace"
 
     # (a) light cargo — must NOT block
+    # `-p vokra-models` is allowed again: the 10 GB synthesis that made it
+    # unrunnable was a test-fixture defect, now fixed (2532 tests / 36 s).
+    # This case also pins that an EMPTY heavy-crate list blocks nothing —
+    # interpolating it into the regex unguarded would match everything.
+    check "cargo test -p vokra-models"        allow "cargo test -p vokra-models --lib kyutai_stt"
     check "cargo test -p vokra-convert"       allow "cargo test -p vokra-convert"
     check "cargo test -p vokra-cli"           allow "CARGO_BUILD_JOBS=1 cargo test -p vokra-cli"
     check "cargo fmt"                         allow "cargo fmt --all -- --check"
@@ -274,9 +309,9 @@ payload="$(cat)"
 cmd=""
 if command -v jq >/dev/null 2>&1; then
     cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
-elif command -v python3 >/dev/null 2>&1; then
+elif command -v uv >/dev/null 2>&1; then
     cmd="$(printf '%s' "$payload" \
-        | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("command",""))' \
+        | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" uv run --no-project --python 3.12 python -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("command",""))' \
         2>/dev/null || true)"
 fi
 
