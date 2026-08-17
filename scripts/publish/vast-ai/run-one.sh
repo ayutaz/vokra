@@ -71,7 +71,8 @@ Optional:
   --expect-model-name <n>   refuse before publish unless GGUF metadata has this model name
   --expect-source <source>  refuse before publish unless GGUF provenance has this source
 
-HF token: HF_TOKEN or HF must be set in env (fail-closed).
+HF token: optional for anonymous dry-run of public upstream repos. HF_TOKEN or
+HF must be set in env when --push is requested (fail-closed).
 EOF
 }
 
@@ -296,8 +297,10 @@ main() {
   [[ -n "$vokra_slug"   ]] || { echo "run-one: --vokra-slug required" >&2; exit 2; }
   [[ -n "$model_kind"   ]] || { echo "run-one: --model-kind required" >&2; exit 2; }
   [[ -n "$license_spdx" ]] || { echo "run-one: --license-spdx required" >&2; exit 2; }
-  [[ -n "${HF_TOKEN:-${HF:-}}" ]] \
-    || { echo "run-one: HF_TOKEN (or HF) must be set in env — provision.sh does not persist tokens" >&2; exit 2; }
+  if [[ $push -eq 1 && -z "${HF_TOKEN:-${HF:-}}" ]]; then
+    echo "run-one: HF_TOKEN (or HF) must be set in env for --push — provision.sh does not persist tokens" >&2
+    exit 2
+  fi
   [[ -x "$VOKRA_ROOT/target/release/vokra-cli" ]] \
     || { echo "run-one: $VOKRA_ROOT/target/release/vokra-cli missing — run scripts/publish/vast-ai/provision.sh first" >&2; exit 2; }
 
