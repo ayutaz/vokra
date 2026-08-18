@@ -15,6 +15,11 @@
 
 use std::fmt;
 
+// Match the conservative default used by mature JSON parsers. Besides
+// bounding parser recursion, this also keeps destruction of the resulting
+// recursive JsonValue comfortably below ordinary thread-stack limits.
+const MAX_NESTING_DEPTH: usize = 128;
+
 /// A decoded JSON value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonValue {
@@ -99,7 +104,11 @@ impl std::error::Error for JsonError {}
 
 /// Parses a complete JSON document, rejecting trailing non-whitespace.
 pub fn parse(input: &[u8]) -> Result<JsonValue, JsonError> {
-    let mut p = Parser { input, pos: 0 };
+    let mut p = Parser {
+        input,
+        pos: 0,
+        depth: 0,
+    };
     p.skip_ws();
     let value = p.parse_value()?;
     p.skip_ws();
@@ -112,6 +121,7 @@ pub fn parse(input: &[u8]) -> Result<JsonValue, JsonError> {
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -139,14 +149,27 @@ impl Parser<'_> {
     fn parse_value(&mut self) -> Result<JsonValue, JsonError> {
         self.skip_ws();
         match self.peek() {
-            Some(b'{') => self.parse_object(),
-            Some(b'[') => self.parse_array(),
+            Some(b'{') => self.with_nesting(Self::parse_object),
+            Some(b'[') => self.with_nesting(Self::parse_array),
             Some(b'"') => Ok(JsonValue::Str(self.parse_string()?)),
             Some(b't') | Some(b'f') => self.parse_bool(),
             Some(b'n') => self.parse_null(),
             Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
             _ => Err(self.err("unexpected token")),
         }
+    }
+
+    fn with_nesting(
+        &mut self,
+        parse_compound: fn(&mut Self) -> Result<JsonValue, JsonError>,
+    ) -> Result<JsonValue, JsonError> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(self.err("maximum nesting depth exceeded"));
+        }
+        self.depth += 1;
+        let result = parse_compound(self);
+        self.depth -= 1;
+        result
     }
 
     fn expect(&mut self, byte: u8, reason: &'static str) -> Result<(), JsonError> {
@@ -426,5 +449,20 @@ mod tests {
             parse(b"99999999999999999999").unwrap(),
             JsonValue::Float(_)
         ));
+    }
+
+    #[test]
+    fn rejects_excessive_nesting_without_overflowing_the_stack() {
+        fn nested_arrays(depth: usize) -> Vec<u8> {
+            let mut json = Vec::with_capacity(depth * 2);
+            json.extend(std::iter::repeat_n(b'[', depth));
+            json.extend(std::iter::repeat_n(b']', depth));
+            json
+        }
+
+        assert!(parse(&nested_arrays(MAX_NESTING_DEPTH)).is_ok());
+        let err = parse(&nested_arrays(MAX_NESTING_DEPTH + 1))
+            .expect_err("over-deep untrusted JSON must be rejected");
+        assert_eq!(err.reason, "maximum nesting depth exceeded");
     }
 }
