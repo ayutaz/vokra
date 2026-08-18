@@ -153,6 +153,7 @@ jobs:
   parity:
     name: parity
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     env:
       # Force the Vulkan loader to pick lavapipe (Mesa's CPU LLVMpipe ICD).
       # Without this, on a runner with multiple ICDs installed the loader's
@@ -164,11 +165,13 @@ jobs:
       # unsafe FFI is wrapped in Result-returning shims) surfaces stack.
       RUST_BACKTRACE: '1'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           # Cache scoped to the Vulkan feature: --features vulkan flips the
           # cfg gate that turns `sys.rs` FFI from stub to real, so the compile
@@ -199,22 +202,25 @@ jobs:
         # output makes the new filename visible — no fabricated pass.
         run: |
           set -euo pipefail
-          echo "## Runner environment" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### ICDs registered under /usr/share/vulkan/icd.d/" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          find /usr/share/vulkan/icd.d/ -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort >> "$GITHUB_STEP_SUMMARY" || echo "(icd.d directory missing)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### VK_ICD_FILENAMES" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "$VK_ICD_FILENAMES" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### vulkaninfo --summary" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          vulkaninfo --summary 2>&1 | head -80 >> "$GITHUB_STEP_SUMMARY" || echo "(vulkaninfo unavailable)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Runner environment"
+            echo ""
+            echo "### ICDs registered under /usr/share/vulkan/icd.d/"
+            echo '```'
+            find /usr/share/vulkan/icd.d/ -maxdepth 1 -type f -printf '%f\n' 2>/dev/null \
+              | sort || echo "(icd.d directory missing)"
+            echo '```'
+            echo ""
+            echo "### VK_ICD_FILENAMES"
+            echo '```'
+            echo "$VK_ICD_FILENAMES"
+            echo '```'
+            echo ""
+            echo "### vulkaninfo --summary"
+            echo '```'
+            vulkaninfo --summary 2>&1 | head -80 || echo "(vulkaninfo unavailable)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: SPIR-V drift gate (M4-13-T14/T16 / ADR §4-(b), two-stage)
         # Stage 1 (always): source-hash gate — each committed
@@ -301,7 +307,7 @@ jobs:
 
       - name: Upload test output (always, so failures are diagnosable)
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vulkan-test-output-${{ github.run_id }}
           path: vulkan-test-output.log

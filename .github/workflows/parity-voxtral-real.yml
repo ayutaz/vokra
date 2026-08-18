@@ -144,12 +144,15 @@ jobs:
   setup:
     name: gate (voxtral opt-in)
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       run_conversion: ${{ steps.decide.outputs.run_conversion }}
       run_dumper: ${{ steps.decide.outputs.run_dumper }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - id: decide
         env:
           ENABLE_VAR: ${{ vars.VOKRA_VOXTRAL_ENABLE }}
@@ -261,19 +264,19 @@ jobs:
         if: matrix.enabled == false
         run: |
           {
-            echo "### parity-voxtral-real — ${{ matrix.variant }}"
+            echo "### parity-voxtral-real — ${MATRIX_VARIANT}"
             echo ""
             echo "**Status**: deferred (\`if: false\` posture — matrix.enabled=false)."
             echo ""
-            if [ "${{ matrix.variant }}" = "mini-3b-2507" ]; then
-              echo "Reason: \`${{ matrix.hf_repo }}\` is ~8.7 GB BF16."
+            if [ "${MATRIX_VARIANT}" = "mini-3b-2507" ]; then
+              echo "Reason: \`${MATRIX_HF_REPO}\` is ~8.7 GB BF16."
               echo "Empirical measurement 2026-08-05 (PR #24 CI run 31021205977)"
               echo "showed ubuntu-latest 7 GB RAM cannot serve BF16→F32 widening"
               echo "even via MappedLazy — the convert step is OOM-killed by"
               echo "SIGTERM (exit 143) ~40s in. Owner flip: change to"
               echo "\`enabled:true\` when a >=12 GB RAM runner is provisioned."
             else
-              echo "Reason: \`${{ matrix.hf_repo }}\` is ~48 GB BF16 (11 shards)."
+              echo "Reason: \`${MATRIX_HF_REPO}\` is ~48 GB BF16 (11 shards)."
               echo "The ubuntu-latest runner cannot serve this (disk + RAM)."
               echo "vast.ai is the standing runbook: see"
               echo "\`docs/handoff/vast-ai-large-model-publish.md\` §2."
@@ -283,10 +286,15 @@ jobs:
             echo "design (FR-EX-08). When a large-runner class is provisioned,"
             echo "flip \`enabled: true\` on this matrix entry."
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_VARIANT: ${{ matrix.variant }}
+          MATRIX_HF_REPO: ${{ matrix.hf_repo }}
 
       - name: Checkout
         if: matrix.enabled
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Free hosted-runner disk (bf16 safetensors + venv need headroom)
         if: matrix.enabled
@@ -298,7 +306,7 @@ jobs:
 
       - name: Set up Python 3.12
         if: matrix.enabled
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
 
@@ -308,15 +316,15 @@ jobs:
 
       - name: Set up Rust toolchain
         if: matrix.enabled
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Rust cache
         if: matrix.enabled
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
       - name: Cache Voxtral HF snapshot (per pinned revision)
         if: matrix.enabled
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           # Key on hf_rev when pinned; when empty, key on the variant name
@@ -360,6 +368,10 @@ jobs:
           HF_REPO: ${{ matrix.hf_repo }}
           HF_REV: ${{ matrix.hf_rev }}
           HF_HUB_ENABLE_HF_TRANSFER: "1"
+          MATRIX_VARIANT: ${{ matrix.variant }}
+          MATRIX_HF_REPO: ${{ matrix.hf_repo }}
+          MATRIX_HF_REV: ${{ matrix.hf_rev }}
+          MATRIX_LICENSE: ${{ matrix.license }}
         run: |
           set -euo pipefail
           # `python -c` (not a heredoc): a heredoc inside $() cannot be
@@ -394,11 +406,11 @@ jobs:
           fi
           echo "CKPT_DIR=${CKPT_DIR}" >> "$GITHUB_ENV"
           {
-            echo "### Voxtral checkpoint (${{ matrix.variant }})"
+            echo "### Voxtral checkpoint (${MATRIX_VARIANT})"
             echo ""
-            echo "- Repo: \`${{ matrix.hf_repo }}\`"
-            echo "- Revision: \`${{ matrix.hf_rev || '(floating: main)' }}\`"
-            echo "- License: \`${{ matrix.license }}\`"
+            echo "- Repo: \`${MATRIX_HF_REPO}\`"
+            echo "- Revision: \`${MATRIX_HF_REV:-'(floating: main)'}\`"
+            echo "- License: \`${MATRIX_LICENSE}\`"
             echo "- Local dir: \`${CKPT_DIR}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -432,7 +444,7 @@ jobs:
         id: convert
         run: |
           set -euo pipefail
-          GGUF="${RUNNER_TEMP}/voxtral-${{ matrix.variant }}.gguf"
+          GGUF="${RUNNER_TEMP}/voxtral-${MATRIX_VARIANT}.gguf"
           # Voxtral upstream (mistralai/*) always ships config.json alongside
           # the sharded checkpoint (in snapshot_download's allow_patterns
           # above). --config must be passed so vokra-cli routes through
@@ -447,7 +459,7 @@ jobs:
           fi
           set +e
           ./target/release/vokra-cli convert \
-            --model ${{ matrix.cli_model }} \
+            --model "${MATRIX_CLI_MODEL}" \
             --input "${VOXTRAL_SAFETENSORS}" \
             --config "${CONFIG_JSON}" \
             --output "${GGUF}" \
@@ -474,6 +486,9 @@ jobs:
             echo "- Size: $(wc -c < "${GGUF}" | numfmt --to=iec)"
             echo "- Self-check: passed (converter re-loads via \`VoxtralConfig::from_gguf\`)"
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_VARIANT: ${{ matrix.variant }}
+          MATRIX_CLI_MODEL: ${{ matrix.cli_model }}
 
       - name: Regenerate reference dump (voxtral_dump_reference.py --do-dump)
         if: matrix.enabled && needs.setup.outputs.run_dumper == 'true'
@@ -555,7 +570,7 @@ jobs:
           {
             echo "### voxtral: parity gate status"
             echo ""
-            echo "* Variant: \`${{ matrix.variant }}\`"
+            echo "* Variant: \`${MATRIX_VARIANT}\`"
             echo "* Conversion (Phase A): RAN"
             if [ "${{ needs.setup.outputs.run_dumper }}" = "true" ]; then
               echo "* Reference dump (Phase B): PRODUCED"
@@ -567,6 +582,8 @@ jobs:
               echo "  with \`-f run_dumper=true\` to exercise the numerical leg."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_VARIANT: ${{ matrix.variant }}
 
       - name: Zero-dep tripwire — root Cargo.lock unchanged (NFR-DS-02)
         if: matrix.enabled
@@ -574,7 +591,7 @@ jobs:
 
       - name: Upload parity artifacts
         if: matrix.enabled && always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: voxtral-${{ matrix.variant }}-parity-artifacts
           path: |

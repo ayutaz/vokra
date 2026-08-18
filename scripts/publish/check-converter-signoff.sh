@@ -36,24 +36,28 @@ matcher="$repo_root/scripts/publish/signoff_match.py"
 models_dir="$repo_root/crates/vokra-convert/src/models"
 audit="$repo_root/docs/license-audit.md"
 
+run_python() {
+  uv run --no-project --python 3.12 python "$@"
+}
+
 if [[ "${1:-}" == "--self-test" ]]; then
   # Shell wrapper self-test. The Python module owns the exhaustive coverage
   # semantics (real maps vs. synthetic converters dir); we exercise the
-  # bash -> python hand-off here so a broken invocation cannot silently
-  # coast on a green matcher.
+  # bash -> uv-managed Python hand-off here so a broken invocation cannot
+  # silently coast on a green matcher.
   fail=0
 
   # 1. Delegated matcher self-test — the semantic core.
-  if ! python3 "$matcher" --self-test >/dev/null 2>&1; then
+  if ! run_python "$matcher" --self-test >/dev/null 2>&1; then
     echo "check-converter-signoff self-test: FAIL — signoff_match.py --self-test failed" >&2
     fail=1
   fi
 
   # 2. Real tree must currently pass. This is the "did a converter land
   #    without its signoff_match.py entry" tripwire, which is the point.
-  if ! python3 "$matcher" --check-converters "$models_dir" --audit "$audit" >/dev/null; then
+  if ! run_python "$matcher" --check-converters "$models_dir" --audit "$audit" >/dev/null; then
     echo "check-converter-signoff self-test: FAIL — real tree is not clean" >&2
-    python3 "$matcher" --check-converters "$models_dir" --audit "$audit" >&2 || true
+    run_python "$matcher" --check-converters "$models_dir" --audit "$audit" >&2 || true
     fail=1
   fi
 
@@ -68,7 +72,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     ln -s "$f" "$tmp/models/$(basename "$f")"
   done
   : >"$tmp/models/never_declared_stem.rs"
-  if out="$(python3 "$matcher" --check-converters "$tmp/models" --audit "$audit" 2>&1)"; then
+  if out="$(run_python "$matcher" --check-converters "$tmp/models" --audit "$audit" 2>&1)"; then
     echo "check-converter-signoff self-test: FAIL — undeclared converter was accepted" >&2
     fail=1
   elif ! grep -q "never_declared_stem" <<<"$out"; then
@@ -85,4 +89,4 @@ if [[ "${1:-}" == "--self-test" ]]; then
 fi
 
 # Production run: enumerate the real tree.
-exec python3 "$matcher" --check-converters "$models_dir" --audit "$audit"
+run_python "$matcher" --check-converters "$models_dir" --audit "$audit"

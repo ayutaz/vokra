@@ -114,14 +114,14 @@ Audit findings に対し「実 HEAD `40558f5` で既 landed か / true gap か /
 | `5343731` | `feat(tools/parity): microwakeword prepare_checkpoint.py (TFLite→ vokra.kws GGUF, uv Python 3.12)` |
 | `c21cb14` | `feat(vokra-kws-micro): 40-band log-mel feature extraction + scalar transcendentals (no_std, M5-03b Phase 1)` |
 | `66d0077` | `feat(mimi-rvq): Metal MSL gather+fold kernel + bit-identical vs CPU parity` |
-| `cca69ba` | `feat(tools/parity): rmvpe reference dumper (yxlllc verbatim, MIT, uv Python 3.12)` |
+| `cca69ba` | `feat(tools/parity): rmvpe reference dumper (yxlllc verbatim, MIT, uv Python 3.12)`（当時の commit 表題。license 表記は2026-08-18監査で訂正） |
 | `0f39478` | `docs(handoff): rmvpe topology fully-specified per e7b6810, loud-partial resolved` |
 | `e972f70` | `chore(lockfiles): sync tools/parity/uv.lock for rmvpe-parity workspace member` |
 
 **HEAD**: `e972f70`（WF1 wave close 時点、main から 25 commits ahead）
 
 **WF1 land 内訳** — 5 系統の deliverable:
-1. **RMVPE loud-partial resolved**（`e7b6810` + `cca69ba` + `0f39478` + `e972f70`）: 上流 `yxlllc/RMVPE`（MIT）の primary source 再精査で U-Net + BiGRU + head topology が primary-source-transcribable と判明 → real forward を land（inline `pool2d` + `conv_transpose2d` + `pytorch_gru`、外部 op 依存なし = NFR-DS-02 保存）。`extract_real()` は `VokraError::UnsupportedOp` を返さなくなった。Path A（`VOKRA_RMVPE_REAL_GGUF`）+ Path B（`VOKRA_RMVPE_REAL_HIDDEN` + `_ARGMAX` + `_HIDDEN_FEATURE_DIM`、`tools/parity/rmvpe/dump_reference.py` 発、argmax-match-rate ≥ 99 % gate）の両 fixture-gated parity leg も land。2026-07-30 の「under-specified」判定は REVERSED。
+1. **RMVPE loud-partial resolved**（`e7b6810` + `cca69ba` + `0f39478` + `e972f70`）: 上流 `yxlllc/RMVPE`（architecture source。checkpoint license は未記載）の primary source 再精査で U-Net + BiGRU + head topology が primary-source-transcribable と判明 → real forward を land（inline `pool2d` + `conv_transpose2d` + `pytorch_gru`、外部 op 依存なし = NFR-DS-02 保存）。`extract_real()` は `VokraError::UnsupportedOp` を返さなくなった。Path A（`VOKRA_RMVPE_REAL_GGUF`）+ Path B（`VOKRA_RMVPE_REAL_HIDDEN` + `_ARGMAX` + `_HIDDEN_FEATURE_DIM`、`tools/parity/rmvpe/dump_reference.py` 発、argmax-match-rate ≥ 99 % gate）の両 fixture-gated parity leg も land。2026-07-30 の「under-specified」判定は REVERSED。license は2026-08-18再監査で code Apache-2.0 / distributed weight Unknown に訂正済み。
 2. **microWakeWord KWS Phase 1**（`5343731` + `c21cb14`）: (a) 上流 kahrendt/microWakeWord canonical TFLite → `vokra.kws.*` GGUF の offline sidecar（TFLite Interpreter walk + INT8 dequant + provenance/frontend metadata group）+ (b) `vokra-kws-micro` crate に 40-band log-mel front-end + 自前 scalar transcendentals（`#![no_std]` + alloc、512-pt radix-2 FFT + HTK triangular mel）。`detect()` は scaffold のまま = Phase 2 で real classifier を配線予定（M5-03 IoT Tier-3 KWS 側、ADR M5-03b Proposed）。
 3. **Vocoder Metal 初 op**（`66d0077`）: `HotOp::MimiRvq.covered_by_metal()` を `false → true` に flip、`Compute::mimi_rvq_f32` の Metal arm を `VokraError::UnsupportedOp` から real `vokra_mimi_rvq_gather_fold_f32` MSL kernel dispatch に変更。CPU `rvq_fold_core` と bit-identical（max |Δ| = 0）を tiny/canonical 両 shape で M1 iMac 上検証済（P2 sub-wave 1/11 of the Vocoder Metal 半分 wave、M3-06 T14）。残 10 op は WF2 で land 予定。
 4. **公式 publish パイプ SPDX 拡張**（`7db02be`）: `fetch_license.sh` に GPL-3.0 / LGPL-3.0 / MPL-2.0 / ISC / Unlicense / EPL-2.0 の canonical LICENSE URL を追加（gnu.org / unlicense.org 直、MPL/ISC/EPL は SPDX license-list-data raw）。`--self-test` を全 canonical_url() branch 網羅の 18-suite coverage loop に書き換え。
@@ -439,7 +439,7 @@ docs**（本 wave が「実装漏れではなく別 WP」判断で honest scope 
 | # | Model / Work item | Handoff doc | Size / License | Owner trigger 理由 |
 |---|---|---|---|---|
 | 1 | **VoxCPM2-2B**（openbmb/VoxCPM2） | [`docs/handoff/vast-ai-publish-voxcpm2-2b.md`](vast-ai-publish-voxcpm2-2b.md) | main 4.58 GB + AudioVAE 377 MB / apache-2.0 | **2026-08-18 VAST conversion complete**: strict UV preparer merged 577 BF16 + 311 F32 AudioVAE tensors; 888-tensor GGUF and exact tokenizer/revision/header verification passed at `5bc62ae`. Publish dry-run stops `UNKNOWN_REPO` pending voice-clone destination/legal decision; no upload performed. |
-| 2 | **RMVPE**（Dream-High/RMVPE MIT） | [`docs/handoff/vast-ai-publish-rmvpe.md`](vast-ai-publish-rmvpe.md) | 180 MB / mit | **✅ 2026-08-13 WF1 update: loud-partial resolved**（`e7b6810`）。上流 `yxlllc/RMVPE`（MIT）の primary source 再精査で U-Net + BiGRU + head topology が primary-source-transcribable と判明 → real forward を land。CLAUDE.md wave 3 "under-specified in primary source" 判定は REVERSED。**owner critical path 圧縮**: real verify に vast.ai 不要（local M1 iMac で完結）、`fetch_rmvpe_pt.sh` の curl ~5 分 + `tools/parity/rmvpe/dump_reference.py` の `uv run` ~30 秒で Path B fixture が揃い、`cargo test -p vokra-models parity_rmvpe` を per-crate で発火可能（memory-safe rule 準拠、§7） |
+| 2 | **RMVPE**（Dream-High code Apache-2.0 / yxlllc weight Unknown） | [`docs/handoff/vast-ai-publish-rmvpe.md`](vast-ai-publish-rmvpe.md) | 180 MB / unknown | **✅ 2026-08-13 WF1 update: loud-partial resolved**（`e7b6810`）。上流 `yxlllc/RMVPE` の primary source 再精査で U-Net + BiGRU + head topology が primary-source-transcribable と判明 → real forward を land。CLAUDE.md wave 3 "under-specified in primary source" 判定は REVERSED。**2026-08-18 license correction**: fork/release に license grant がないため publish は fail-closed。**owner critical path**: grant 確認後、real verify は小規模だが `cargo test -p vokra-models` はMacのOOM回避ルールによりvast.aiで実施する。 |
 | 3 | **Vocoder / codec GPU kernel wave**（HiFTNet / BigVGAN / SNAC / Qwen3-TTS-codec 等の Metal MSL + CUDA NVRTC） | [`docs/handoff/vast-ai-vocoder-gpu-kernels.md`](vast-ai-vocoder-gpu-kernels.md) | N/A（kernel work item） | **2026-08-13 WF1〜WF5 land 累計 = Metal 8/11 op**（`66d0077` mimi_rvq / `f9f6e40` dac_rvq / `a7a05e8` fsq_codec / `137f692` snake / `8a6d7c9` snac / `2b431cd` denoise / `52d1dca` qwen3_tts_codec）: 全 bit-identical vs CPU（max \|Δ\| = 0）を M1 iMac 上検証。残 3 op（hiftnet / bigvgan / anti_aliased_upsample）は複合構造ゆえ primitive decomposition ADR 先行が必要 = owner triggered。CUDA 半分は vast.ai owner 必須で非対称。GPU 化 = 性能最適化ゆえ v1.0 GA blocking ではない（M5-13 C ABI 凍結 precondition 外） |
 | 4 | **Higgs-Audio v3 TTS 4B**（BosonAI 系） | [`docs/handoff/vast-ai-publish-higgs-audio-v3-tts-4b.md`](vast-ai-publish-higgs-audio-v3-tts-4b.md) | ~9 GB / apache-2.0 | 依頼者ルール #1（≥2GB は vast.ai）+ 8 GB owner cutoff 超えゆえ確実に vast.ai。WF4 `5c77597` で converter code + provenance stamp + smoke test は land 済、実 weight fetch + convert + publish は owner triggered。§3.1 sign-off row 空欄で待機（primary source 直接照合済み）。 |
 | 5 | **FireRed ASR LLM-L**（FireRedTeam 系、Conformer + Qwen2） | [`docs/handoff/vast-ai-publish-firered-asr-llm-l.md`](vast-ai-publish-firered-asr-llm-l.md) | ~7 GB / apache-2.0 | 依頼者ルール #1（≥2GB は vast.ai）。WF4 `cae8fcd` で converter code + provenance stamp + smoke test は land 済、実 weight fetch + convert + publish は owner triggered。Canary-Qwen 兄弟パターン（既存 canary_qwen converter の sibling）ゆえ既 pattern から派生。 |
@@ -483,11 +483,11 @@ work item に固有の差分のみを記述。
    - Generate independent upstream numerical fixtures, set
      `VOKRA_TTS_CONT_VAE_ENABLE=1`, and flip the parity CI switch
 4. **RMVPE publish**（handoff #2）— **2026-08-13 WF1 update: real forward 実装済**:
-   - GitHub primary source 直接照合（MIT、`yxlllc/RMVPE` = 上流 fork の
-     primary-source-transcribable topology、`Dream-High/RMVPE` = paper origin）
-   - §3.1 sign-off
-   - **Local M1 iMac のみで real verify 完結**（vast.ai 起動不要、memory-safe
-     rule 準拠 = §7）: `tools/parity/rmvpe/fetch_rmvpe_pt.sh` の curl ~5 分 +
+   - GitHub primary source 直接照合（`yxlllc/RMVPE` = primary-source-transcribable
+     topologyだが checkpoint license 未記載、`Dream-High/RMVPE` = Apache-2.0 code）
+   - checkpoint の明示的な grant 取得後のみ §3.1 sign-off
+   - fixture の fetch / dump 自体は小規模だが、`cargo test -p vokra-models`
+     はMacのOOM回避ルールによりvast.aiで実施: `tools/parity/rmvpe/fetch_rmvpe_pt.sh` の curl ~5 分 +
      `tools/parity/rmvpe/dump_reference.py` の `uv run` ~30 秒で Path B fixture
      （`hidden.f32` + `argmax.u32` + `meta.json`）が揃う → `VOKRA_RMVPE_REAL_HIDDEN`
      + `_ARGMAX` + `_HIDDEN_FEATURE_DIM` を env で set → `cargo test -p vokra-models
@@ -561,10 +561,9 @@ CLAUDE.md「現在のフェーズ状態」に列挙された 6 系統は本 wave
    - **推奨最優先 = 3 pending large-model job の execution priority**（session 2
      の `1a3d808` = `docs/handoff/vast-ai-execution-priority.md` に列挙、VoxCPM2-
      2B / Higgs-Audio v3 4B / FireRed ASR LLM-L の実行順序推奨）
-   - handoff #2 RMVPE（WF1 で real forward + Path B dumper が land 済 → **owner
-     curl ~5 分 + `uv run` ~30 秒で local M1 iMac 上 real verify 完結**、vast.ai
-     費用ゼロ、F0 tier 3 姉妹の trio 最後を close。`publish-one.sh --push` で
-     org 総計 +1）
+   - handoff #2 RMVPE（WF1 で real forward + Path B dumper が land 済。ただし
+     2026-08-18 license再監査でyxlllc checkpointはUnknownへ訂正。明示的grant取得後、
+     変換・`cargo test -p vokra-models`・publishはvast.aiで実行する）
    - handoff #1 VoxCPM2-2B（CI 側 pinned SHA で既 waiting、Wave 0 ADR + Wave 1
      land + sign-off ですぐ flip the switch 可能、publish 実績で org 総計 195+
      モデルへ、vast.ai ~$0.3-0.5 / ~1 hour）
@@ -612,7 +611,7 @@ CLAUDE.md「現在のフェーズ状態」に列挙された 6 系統は本 wave
 4. **loud-partial は fake-complete より honest — かつ primary source 再精査で
    REVERSED しうる** — 2026-07-30 CLAUDE.md wave 3 判断で RMVPE の `extract_real`
    = `VokraError::UnsupportedOp` を loud-partial 維持していたが、2026-08-13 の
-   feasibility 調査（`wf_7062f2d5`）で上流 `yxlllc/RMVPE`（MIT）の primary source
+   feasibility 調査（`wf_7062f2d5`）で上流 `yxlllc/RMVPE`（architecture source、weight license は未記載）の primary source
    を再精査したところ **fully-specified** と判明 → WF1 `e7b6810` で real forward
    を land、defer 判断は REVERSED。「loud-partial 判定は上流を再精査したうえで
    下すのが望ましい」という後続 pattern を確立。**WF3 microWakeWord も同 pattern**:

@@ -55,9 +55,12 @@ jobs:
   repo-hygiene:
     name: repo-hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -115,8 +118,11 @@ jobs:
   catalog-audit:
     name: catalog-audit
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Catalog reality (self-test, then production check)
         run: |
           bash scripts/publish/check-catalog-reality.sh --self-test
@@ -132,8 +138,11 @@ jobs:
   unity-capi-lints:
     name: unity-capi-lints
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: IL2CPP callback pattern (static / Preserve / rooted delegate)
         run: bash scripts/check-callback-pattern.sh
       - name: DllImport routes through NativeMethods.Lib (iOS __Internal switch)
@@ -153,6 +162,7 @@ jobs:
   capi-smoke:
     name: capi-smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       # Audit 2026-08-10 (Rank 15): the C ABI smoke_asr.c / smoke_tts.c legs
       # clean-skip when these env vars are unset (fail-closed pattern, not
@@ -162,9 +172,11 @@ jobs:
       VOKRA_WHISPER_GGUF: ${{ vars.VOKRA_WHISPER_GGUF_PATH || '' }}
       VOKRA_PIPER_GGUF: ${{ vars.VOKRA_PIPER_GGUF_PATH || '' }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Install cbindgen
         # Same provisioning the ios-build job uses.
         run: cargo install cbindgen --locked
@@ -175,7 +187,7 @@ jobs:
         run: git diff --exit-code Cargo.lock
 
   # MSRV verification (X-08-T15). Every other toolchain reference in this repo
-  # is `dtolnay/rust-toolchain@stable`, so the declared MSRV had never once
+  # is `dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c `, so the declared MSRV had never once
   # been exercised: a contributor on 1.85-1.88 hits a cargo rust-version error
   # that CI could not reproduce.
   #
@@ -193,16 +205,19 @@ jobs:
   msrv:
     name: msrv
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      # NOTE: `dtolnay/rust-toolchain@1.89` は **MSRV pin** = 一般的な action
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # NOTE: `dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05 ` は **MSRV pin** = 一般的な action
       # の version tag ではない。dependabot は これを version bump 対象と誤認
       # しやすい (2026-07-23 の PR #14 で `@1.89` → `@1.100` に誤 bump された
       # 実績) ので、`.github/dependabot.yml` の ignore rule で
       # `dtolnay/rust-toolchain` を除外している。ここは MSRV 変更時にのみ
       # 手で書き換える (docs/abi-changelog.md:318, X-08-T32)。
-      - uses: dtolnay/rust-toolchain@1.89
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: cargo check --workspace on the effective MSRV (1.89)
         run: cargo check --workspace
 
@@ -223,13 +238,15 @@ jobs:
   abi-surface:
     name: abi-surface (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0 # abi-diff compares against a baseline revision
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: C ABI diff (self-test, then diff)
         run: |
           bash scripts/abi-diff.sh --self-test
@@ -271,8 +288,11 @@ jobs:
   doc-examples:
     name: doc-examples
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Self-test the extractor and checkers
         # Bidirectional fixtures: cargo selectors and doc-local helpers must
@@ -295,11 +315,14 @@ jobs:
   doctests:
     name: doctests (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: cargo test --workspace --doc  (`///` doctests, rustdoc-side)
         # --no-fail-fast so a single failing doctest reports every failure
         # in one run (mirrors the shell-self-tests aggregator pattern).
@@ -330,11 +353,14 @@ jobs:
   rustdoc:
     name: rustdoc (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: cargo doc build + warning ratchet (NOT a zero-warning gate)
         shell: bash
         run: |
@@ -363,8 +389,11 @@ jobs:
   fa-v3-confinement:
     name: fa-v3-confinement (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: FA v3 symbols confined to vokra-backend-cuda
         run: ./scripts/check-fa-v3-confinement.sh
 
@@ -383,10 +412,13 @@ jobs:
   python-license-audit:
     name: python-license-audit
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - name: Install uv
@@ -491,12 +523,15 @@ jobs:
             triple: x86_64-pc-windows-msvc
             run_tests: false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           targets: ${{ matrix.triple }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: |
             integrations/vokra-server
@@ -533,22 +568,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          PROFILE_ARGS=()
           if [ "${{ matrix.run_tests }}" = "true" ]; then
-            PROFILE_ARG="--release"
-          else
-            PROFILE_ARG=""
+            PROFILE_ARGS+=(--release)
           fi
+          TARGET_ARGS=()
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            TARGET_ARG=""
+            : # Native target; keep Cargo's default target directory/cache.
           else
-            TARGET_ARG="--target ${{ matrix.triple }}"
+            TARGET_ARGS+=(--target "${{ matrix.triple }}")
           fi
-          cargo build $PROFILE_ARG $TARGET_ARG \
+          cargo build "${PROFILE_ARGS[@]}" "${TARGET_ARGS[@]}" \
             -p vokra-server \
             --manifest-path integrations/vokra-server/Cargo.toml
       - name: cargo-deny (server crate, NFR-LC-04)
         if: matrix.os == 'ubuntu-latest'
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check licenses advisories bans
           manifest-path: integrations/vokra-server/Cargo.toml
@@ -672,15 +707,18 @@ jobs:
   cargo-audit:
     name: cargo-audit (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Install cargo-audit
         # Same install path as ci.yml `license` job — keeps the toolchain
         # identical so a regression in one leg reproduces in the other.
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532
         with:
           tool: cargo-audit
       - name: cargo audit (root workspace, zero-dep tripwire)
@@ -728,16 +766,19 @@ jobs:
   typos:
     name: typos (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Spellcheck (typos)
-        # `crate-ci/typos@v1` is a moving major tag; the entrypoint pins the
+        # `crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f ` is a moving major tag; the entrypoint pins the
         # typos CLI itself (currently v1.48.0, verified 2026-07-23 via
         # `gh api repos/crate-ci/typos/contents/action/entrypoint.sh`).
         # `config` is explicit so a future working-directory change cannot
         # silently reroute to a stray _typos.toml lower in the tree.
-        uses: crate-ci/typos@v1
+        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f
         with:
           config: _typos.toml
 
@@ -766,10 +807,13 @@ jobs:
   vokra-piper-g2p:
     name: vokra-piper-g2p (excluded workspace)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: integrations/vokra-piper-g2p
       - name: cargo test (excluded workspace, own Cargo.lock)
@@ -812,10 +856,13 @@ jobs:
   python-parity-oracles:
     name: python-parity-oracles
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - name: Install uv
@@ -933,10 +980,13 @@ jobs:
   shell-self-tests:
     name: shell-self-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12 (for make_model_card.py --self-test)
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0

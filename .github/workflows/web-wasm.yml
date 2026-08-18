@@ -94,13 +94,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: web-wasm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   wasm-build:
     name: wasm 2-artifact build + Node kernel parity + npm dry-run
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -132,7 +138,7 @@ jobs:
           npm publish --dry-run --access public --tag dev
 
       - name: Upload artifacts (wasm + assembled pkg)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-web-dist
           path: |
@@ -158,7 +164,9 @@ jobs:
       # lockstep with nightly-asr-wer.yml env.HF_REVISION.
       WHISPER_BASE_REVISION: "e37978b90ca9030d5170a5c07aadb050351a65bb"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install wasm32 target

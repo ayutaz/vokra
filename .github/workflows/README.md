@@ -4,9 +4,9 @@
 cron 時刻・required check name・trigger の記述に各 workflow file の comment との差異が
 あった場合、**本 file が真** とみなし、各 workflow file 側を後追いで揃えます。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（**実数 40 file**。旧記載「2026-07-23 時点で 20 file」は
+- 対象範囲: `.github/workflows/*.yml` 全件（**実数 44 file**。旧記載「2026-07-23 時点で 20 file」は
   その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **2026-08-18 網羅確認**: 40 workflow file の全てを本 index に収録済み。
+- **2026-08-18 網羅確認**: 44 workflow file の全てを本 index に収録済み。
   required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
   明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
@@ -92,7 +92,43 @@ owner に昇格提案）。
 | unity-package | .github/workflows/ci.yml | Unity plugin package audit (M2-11、UNITY_LICENSE 未 provisioning ゆえ WARN skip) |
 | python-wheel-build | .github/workflows/ci.yml | cibuildwheel v2.23.4 + hatchling custom build hook (`vokra` wheel) |
 
-### 2.2 release.yml 内 (tag v* 起動、advisory & release パイプ)
+### 2.2 Security / supply chain / advanced Rust quality
+
+| check / workflow | trigger | 役割 |
+|---|---|---|
+| workflow-security (`.github/workflows/ci-security.yml`) | PR / main / weekly / manual | actionlint + ShellCheck と zizmor。workflow 構文、固定 SHA、最小権限、expression injection を gate |
+| dependency-review (`.github/workflows/ci-security.yml`) | PR | moderate以上の脆弱性、GPL/LGPL/AGPL/SSPL系licenseを持つ新規runtime/development依存を拒否し、変更依存のOpenSSF Scorecardも表示 |
+| documentation-links (`.github/workflows/ci-security.yml`) | PR / main / weekly / manual | README / CONTRIBUTING / `.github` / `docs` のリンク腐敗を lychee で検出 |
+| codeql-rust (`.github/workflows/codeql.yml`) | PR / main / weekly / manual | Rust を buildless `security-extended` query suite で SAST |
+| scorecard (`.github/workflows/scorecard.yml`) | main / branch-protection change / weekly / manual | OpenSSF Scorecard を SARIF と public results に送信 |
+| cargo-hack-each-feature (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR / main / weekly / manual | 全 feature の独立コンパイルと zero-dep lockfile 不変条件 |
+| cargo-semver-checks (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR | publishable crate の意図しない public API break を base SHA と比較 |
+| miri / address-sanitizer (`.github/workflows/rust-advanced.yml`) | weekly / manual | unsafe boundary の UB、provenance、memory error を nightly toolchain で検出 |
+| fuzz-* (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR / main / weekly / manual | GGUF / safetensors / JSON の不正入力を libFuzzer で検査、reproducer を artifact 保存 |
+
+weekly cron は CodeQL=`Thursday 02:41 UTC`、CI Security=`Wednesday 03:23 UTC`、
+Scorecard=`Thursday 03:17 UTC`、Rust Advanced=`Sunday 01:37 UTC`。PR のセキュリティ
+gate と、変動しやすい nightly toolchain / advisory DB の定期監視を分離する。
+
+### 2.3 Repository-native security controls
+
+2026-08-18 時点で GitHub 側の secret scanning、push protection、Dependabot alerts、
+Dependabot security updates、private vulnerability reporting を有効化済み。
+`SECURITY.md` の private advisory URL と repository setting は一致している。
+
+次の2設定はこのbranchをmainへmergeするまで意図的に保留する。現在のmainにはtag pinの
+workflowが残るため、先に「Actionsをfull SHAだけに制限」を有効化するとmain CI自体を
+停止させる。また、新設checkをrequired contextへ加えるのはPRとmainでgreenを確認した後に
+行う。merge後の順序は以下で固定する。
+
+1. main上の全workflowがfull SHA pinであることを`workflow-security`で確認する。
+2. repository Actions policyのSHA pin requirementを有効化する。
+3. `workflow-security`、`dependency-review`、`documentation-links`、`codeql-rust`を
+   branch protectionのrequired checksへ追加する。
+4. required checksをstrict（base branch最新化必須）にし、conversation resolution、
+   linear history、administrator enforcementを有効化する。
+
+### 2.4 release.yml 内 (tag v* 起動、advisory & release パイプ)
 
 release パイプの詳細は §5 を参照。
 
@@ -158,11 +194,26 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 
 | trigger | workflow | 主要 job (定義順) |
 |---|---|---|
-| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → ios-xcframework → unity-package-release → python-pypi-publish → godot-package-release → npm-web-release → crates-io-dry-run → crates-io-publish → release-notes → desktop-release → android-aar-release |
+| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python / Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
 
 release パイプ内の job は全て advisory (branch protection 対象外)。crate publish は
 `crates-io-dry-run` の green を人手で確認したうえで `crates-io-publish` を走らせる 2 段。
-tag push で全 job が並列起動、`needs:` で必要な直列依存のみ表現。
+Release 本体の作成と CHANGELOG 検証を成果物 upload より先に完了させ、
+`gh release upload` の並列 race と、不正な release notes のまま registry を更新する経路を防ぐ。
+`workflow_dispatch` の `dry_run=true` は artifact 確認のみで、Release / registry / branch を更新しない。
+
+タグ release の XCFramework / Unity UPM / Python wheel / Godot AssetLib / npm / desktop /
+Android AAR は SPDX SBOM 付き GitHub artifact attestation を発行する。ダウンロード後の
+検証は次の形に統一する。
+
+```bash
+# Build provenance
+gh attestation verify <artifact-path> --repo ayutaz/vokra
+
+# SPDX 2.3 SBOM predicate
+gh attestation verify <artifact-path> --repo ayutaz/vokra \
+  --predicate-type https://spdx.dev/Document/v2.3
+```
 
 ---
 
@@ -366,6 +417,17 @@ closed with zero exceptions:
 scalar `run:` entries. The migration inventory, cross-platform wheel recipe,
 and completion evidence are recorded in
 [`docs/handoff/workflow-python-uv-migration-2026-08-18.md`](../../docs/handoff/workflow-python-uv-migration-2026-08-18.md).
+
+### 8.7 Immutable CI dependencies
+
+Remote Actionsはすべてfull 40-hex commit SHA、Docker imageはversion tagに加えて
+multi-architecture OCI `@sha256` digestを必須とする。`secret-scan.yml`のgitleaksは
+`v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`
+へ固定済み。tagはreview時の可読性、digestは実行identityとして両方を残す。
+
+`scripts/check-workflow-hygiene.sh`はremote `uses:`、workflow container image、
+`docker run` / `docker pull`を横断し、mutable refをhard-failする。self-testはmoving
+Action tagとdigestなしDocker imageを実際に拒否し、tag+digestを受理できることも検証する。
 
 ---
 

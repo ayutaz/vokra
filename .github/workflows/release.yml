@@ -45,7 +45,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -67,6 +67,7 @@ jobs:
   validate-tag:
     name: validate-tag
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - name: Validate semver tag (announced-skip on non-tag refs)
         run: |
@@ -85,15 +86,27 @@ jobs:
 
   ios-xcframework:
     name: ios-xcframework
-    needs: [validate-tag]
+    needs: [validate-tag, release-notes]
     runs-on: macos-latest
+    timeout-minutes: 180
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          lookup-only: true
 
       - name: Install rustup iOS targets
         run: |
@@ -135,7 +148,8 @@ jobs:
       # `created` field so the document is reproducible (NFR-MT-03).
       - name: Generate SPDX SBOM (X-07-T03, first-party, NFR-MT-03)
         run: |
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --no-default-features \
@@ -144,7 +158,7 @@ jobs:
             --output build/ios/vokra-ios-xcframework.spdx.json
 
       - name: Upload workflow artifact (always, for inspection)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Vokra-xcframework-release
           path: |
@@ -152,6 +166,13 @@ jobs:
             build/ios/Vokra.xcframework.zip.sha256
             build/ios/vokra-ios-xcframework.spdx.json
           retention-days: 30
+
+      - name: Attest XCFramework provenance and SBOM
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: build/ios/Vokra.xcframework.zip
+          sbom-path: build/ios/vokra-ios-xcframework.spdx.json
 
       - name: Upload to GitHub Release (Step 4 — gh release upload)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
@@ -178,6 +199,7 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           REPO="${GITHUB_REPOSITORY}"
           URL="https://github.com/${REPO}/releases/download/${TAG}/Vokra.xcframework.zip"
+          export URL
           BRANCH="release/${TAG}"
           git config user.name "vokra-release-bot"
           git config user.email "release-bot@users.noreply.github.com"
@@ -215,6 +237,7 @@ jobs:
           PY
           git add Package.swift
           git commit -m "release(${TAG}): pin Vokra.xcframework binaryTarget to release asset"
+          gh auth setup-git
           git push origin "$BRANCH"
           gh pr create \
             --base main \
@@ -228,7 +251,7 @@ jobs:
           echo "== DRY RUN =="
           echo "Would upload:"
           ls -la build/ios/Vokra.xcframework.zip build/ios/Vokra.xcframework.zip.sha256
-          echo "SHA256: ${{ env.sha256 }}"
+          echo "SHA256: ${sha256}"
           echo "Skipping: gh release upload, Package.swift patch."
 
   # ---------------------------------------------------------------------------
@@ -266,15 +289,27 @@ jobs:
   # ---------------------------------------------------------------------------
   unity-package-release:
     name: unity-package-release
-    needs: [validate-tag, ios-xcframework]
+    needs: [validate-tag, release-notes, ios-xcframework]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          lookup-only: true
 
       - name: Compute release version (semver from tag, v-prefix stripped)
         id: version
@@ -296,7 +331,7 @@ jobs:
           echo "Release version: ${V}"
 
       - name: Download iOS XCFramework artifact from ios-xcframework job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: Vokra-xcframework-release
           path: build/ios/
@@ -428,7 +463,8 @@ jobs:
       # this job. `metal` alone is NOT a vokra-capi feature (would fail cargo tree).
       - name: Generate SPDX SBOM (X-07-T04, first-party, NFR-MT-03)
         run: |
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --no-default-features \
@@ -445,7 +481,8 @@ jobs:
           #     via the GNU tar branch on ubuntu-latest).
           #   * `find | sort` deterministic file listing (implicit in
           #     tar --sort=name, but explicit here for the audit trail).
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
           # Deterministic file-listing audit line (R5 explicit).
           ( cd bindings/unity/com.vokra.unity \
@@ -478,13 +515,20 @@ jobs:
           echo "sha256 = $(cat "${TARBALL}.sha256")"
 
       - name: Upload workflow artifact (always, for inspection)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Vokra-unity-package-release
           path: |
             ${{ steps.pack.outputs.tarball }}
             ${{ steps.pack.outputs.tarball }}.sha256
           retention-days: 30
+
+      - name: Attest Unity package provenance and SBOM
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+          sbom-path: bindings/unity/com.vokra.unity/vokra-unity-package.spdx.json
 
       - name: Upload to GitHub Release (tag + non-dry-run)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
@@ -557,20 +601,27 @@ jobs:
   # ---------------------------------------------------------------------------
   python-pypi-publish:
     name: python-pypi-publish
-    needs: [validate-tag]
+    needs: [validate-tag, release-notes]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     permissions:
+      actions: read
+      attestations: write
       contents: write
       id-token: write  # OIDC for PyPI trusted publishing (T17)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
       # X-07-T07: the first-party SBOM generator drives `cargo tree`, so this
       # job (previously wheel-only, no Rust) now needs the toolchain. The graph
       # this SBOM documents is vokra-*-only, so the toolchain is used purely to
       # read the dependency closure — no crate is built here.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Reuse python-wheel-build artifacts from ci.yml (per-OS wheels)
         env:
@@ -618,7 +669,8 @@ jobs:
       # supply-chain surface. See ADR docs/adr/X-07-release-train.md §sbom.
       - name: Generate SPDX SBOM (X-07-T07, first-party, NFR-MT-03)
         run: |
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --doc-name vokra-python-wheel \
@@ -630,7 +682,7 @@ jobs:
             python -m twine check dist/*.whl
 
       - name: Upload workflow artifact (wheels + SBOM, for inspection)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-python-release
           path: |
@@ -638,9 +690,16 @@ jobs:
             dist/vokra-python-wheel.spdx.json
           retention-days: 30
 
+      - name: Attest Python wheel provenance and SBOM
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: dist/*.whl
+          sbom-path: dist/vokra-python-wheel.spdx.json
+
       - name: Publish to PyPI (OIDC trusted publishing preferred, token fallback)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
           packages-dir: dist/
           # OIDC trusted publisher path (T17 owner config): when the PyPI
@@ -665,23 +724,6 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           gh release upload "$TAG" dist/*.whl dist/vokra-python-wheel.spdx.json --clobber
 
-      # Dry-run path: mirror the unity-package-release baseline — always
-      # ship wheels as GitHub Release assets even when PyPI upload is
-      # skipped, so the release commit produces a downloadable artifact
-      # without external secrets. `--clobber` allows re-running the
-      # dry-run on the same tag without manual cleanup.
-      - name: Upload wheels to GitHub Release (dry-run baseline)
-        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run == true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          if ls dist/*.whl >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.whl dist/vokra-python-wheel.spdx.json --clobber
-          else
-            echo "python-pypi-publish (dry-run): no wheels to upload."
-          fi
-
       - name: Dry-run summary
         if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -690,7 +732,7 @@ jobs:
           ls -la dist/*.whl 2>/dev/null || echo "  (no wheels collected)"
           echo "SBOM    : dist/vokra-python-wheel.spdx.json (first-party SPDX-JSON, X-07-T07)"
           echo "Skipping: pypa/gh-action-pypi-publish (real upload)."
-          echo "Dry-run path uploaded wheels to GitHub Release assets only."
+          echo "Skipping: GitHub Release upload and attestations (dry-run is non-mutating)."
 
   # ---------------------------------------------------------------------------
   # M3-11-T17: Godot GDExtension AssetLib package CD auto-publish
@@ -732,11 +774,21 @@ jobs:
   # ---------------------------------------------------------------------------
   godot-package-release:
     name: godot-package-release
-    needs: [validate-tag]
+    needs: [validate-tag, release-notes]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
       - name: Compute release version (semver from tag, v-prefix stripped)
         id: version
@@ -845,7 +897,8 @@ jobs:
       # from the repo root.
       - name: Generate SPDX SBOM (X-07-T05, excluded workspace, NFR-MT-03)
         run: |
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-godot \
             --manifest-dir integrations/vokra-godot \
@@ -855,7 +908,8 @@ jobs:
       - name: Pack AssetLib zip (SOURCE_DATE_EPOCH pinned, --no-build)
         run: |
           set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
           bash scripts/build-godot-gdextension.sh --no-build --pack
 
@@ -892,13 +946,20 @@ jobs:
           echo "sha256 = $(cat "${ZIP}.sha256")"
 
       - name: Upload workflow artifact (always, for inspection)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Vokra-godot-assetlib-release
           path: |
             ${{ steps.pack.outputs.zip }}
             ${{ steps.pack.outputs.zip }}.sha256
           retention-days: 30
+
+      - name: Attest Godot package provenance and SBOM
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: ${{ steps.pack.outputs.zip }}
+          sbom-path: dist/godot/vokra-godot/addons/vokra/vokra-godot-assetlib.spdx.json
 
       - name: Upload to GitHub Release (tag + non-dry-run)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
@@ -948,15 +1009,26 @@ jobs:
   # ---------------------------------------------------------------------------
   npm-web-release:
     name: npm-web-release
-    needs: [validate-tag]
+    needs: [validate-tag, release-notes]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          lookup-only: true
 
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -996,7 +1068,8 @@ jobs:
       # generator provably leaves Cargo.lock untouched (test-generate-spdx.sh b8).
       - name: Generate SPDX SBOM (X-07-T06, first-party, NFR-MT-03)
         run: |
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-wasm-harness \
             --no-default-features \
@@ -1007,12 +1080,20 @@ jobs:
         id: pack
         working-directory: web/pkg
         run: |
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
           TARBALL="$(npm pack --pack-destination . | tail -1)"
           SHA="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
           printf '%s' "$SHA" > "$TARBALL.sha256"
           echo "tarball=web/pkg/$TARBALL" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Attest npm package provenance and SBOM
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+          sbom-path: web/pkg/vokra-npm-web.spdx.json
 
       - name: Upload Release assets (tag builds)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
@@ -1077,13 +1158,20 @@ jobs:
     name: crates-io-dry-run
     needs: [validate-tag]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          lookup-only: true
 
       - name: Verify publish order is a valid topological order (X-07-T10)
         run: uv run --no-project --python 3.12 python tools/release/crates_publish_order.py --verify
@@ -1137,15 +1225,22 @@ jobs:
   # ---------------------------------------------------------------------------
   crates-io-publish:
     name: crates-io-publish
-    needs: [validate-tag, crates-io-dry-run]
+    needs: [validate-tag, release-notes, crates-io-dry-run]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          lookup-only: true
 
       - name: Pre-publish license re-check (NFR-LC-02, immutable-index safety)
         run: |
@@ -1200,9 +1295,16 @@ jobs:
     name: release-notes
     needs: [validate-tag]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
       - name: Extract release notes from CHANGELOG (X-07-T15/T16)
         run: |
@@ -1269,11 +1371,21 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop-release:
     name: desktop-release
-    needs: [validate-tag]
+    needs: [validate-tag, release-notes]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
       - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
         id: gate
@@ -1286,11 +1398,13 @@ jobs:
             echo "::notice::desktop-release: T32-gated scaffold — M4-11-T13 gap-flow (M4 follow-up / M5 / requirement revision) is owner-undecided; NOT building/uploading the desktop lib + CLI. Set repo variable DESKTOP_AAR_ENABLED=true after the decision (X-07-T32)."
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         if: steps.gate.outputs.enabled == 'true'
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         if: steps.gate.outputs.enabled == 'true'
+        with:
+          lookup-only: true
 
       - name: Build Linux CLI (glibc + musl static) and reuse ci.yml cdylibs
         if: steps.gate.outputs.enabled == 'true'
@@ -1330,7 +1444,8 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi --doc-name vokra-desktop \
             --output dist/desktop/vokra-desktop.spdx.json
@@ -1340,6 +1455,17 @@ jobs:
               sha256sum "$f" > "$f.sha256"
             done )
           echo "== desktop assets ==" && ls -la dist/desktop
+
+      - name: Attest desktop assets provenance and SBOM
+        if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            dist/desktop/vokra-cli-*
+            dist/desktop/libvokra-*
+            dist/desktop/vokra-*-windows.dll
+            dist/desktop/vokra.h
+          sbom-path: dist/desktop/vokra-desktop.spdx.json
 
       - name: Upload desktop assets to GitHub Release (enabled + tag + non-dry-run)
         if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
@@ -1361,11 +1487,20 @@ jobs:
   # ---------------------------------------------------------------------------
   android-aar-release:
     name: android-aar-release
-    needs: [validate-tag]
+    needs: [validate-tag, release-notes]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
 
       - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
         id: gate
@@ -1378,7 +1513,7 @@ jobs:
             echo "::notice::android-aar-release: T32-gated scaffold — standalone AAR NOT built/uploaded until M4-11-T13 gap-flow is decided (X-07-T32). Set DESKTOP_AAR_ENABLED=true to enable."
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         if: steps.gate.outputs.enabled == 'true'
 
       - name: Build arm64 .so + pack standalone AAR
@@ -1412,13 +1547,21 @@ jobs:
         run: |
           set -euo pipefail
           V="${GITHUB_REF_NAME#v}"
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi --no-default-features \
             --doc-name vokra-android-aar \
             --output "dist/android/vokra-${V}-android-aar.spdx.json"
           ( cd dist/android && sha256sum "vokra-${V}.aar" > "vokra-${V}.aar.sha256" )
           echo "== AAR assets ==" && ls -la dist/android
+
+      - name: Attest Android AAR provenance and SBOM
+        if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: dist/android/*.aar
+          sbom-path: dist/android/*-android-aar.spdx.json
 
       - name: Upload AAR to GitHub Release (enabled + tag + non-dry-run)
         if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true

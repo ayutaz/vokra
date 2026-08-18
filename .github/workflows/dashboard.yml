@@ -40,8 +40,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       # Pin the action revision rather than a moving major tag. The stdlib-only
@@ -65,7 +67,7 @@ jobs:
             --out site/index.html
 
       - name: Upload dashboard artifact (always available)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-benchmark-dashboard
           path: site/index.html
@@ -73,7 +75,7 @@ jobs:
 
       - name: Upload GitHub Pages artifact (consumed by the gated deploy job)
         if: vars.VOKRA_PAGES_ENABLED == 'true'
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
         with:
           path: site
 
@@ -89,6 +91,7 @@ jobs:
     needs: build
     if: vars.VOKRA_PAGES_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       pages: write
       id-token: write
@@ -98,4 +101,4 @@ jobs:
     steps:
       - name: Deploy
         id: deploy
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128

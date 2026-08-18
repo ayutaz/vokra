@@ -64,10 +64,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Build (release)
         run: cargo build --release
       # M2-11-T13 (R3): audit-trail CPU-only vokra-capi build for the UPM
@@ -98,21 +101,21 @@ jobs:
         run: bash scripts/check-binary-size.sh
       - name: Upload macOS libvokra.dylib
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-capi-macos
           path: target/release/libvokra.dylib
           retention-days: 7
       - name: Upload Windows vokra.dll
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-capi-windows
           path: target/release/vokra.dll
           retention-days: 7
       - name: Upload Linux libvokra.so
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-capi-linux
           path: target/release/libvokra.so
@@ -125,19 +128,25 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Test (workspace)
         run: cargo test --workspace
 
   fmt:
     name: fmt
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           components: rustfmt
       - name: rustfmt check
@@ -146,12 +155,15 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
@@ -177,8 +189,11 @@ jobs:
   ios-build:
     name: ios-build
     runs-on: macos-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Install rustup iOS targets
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - name: Install cbindgen
@@ -192,7 +207,7 @@ jobs:
       - name: Verify Swift Package resolves
         run: swift package describe
       - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Vokra-xcframework
           path: build/ios/Vokra.xcframework
@@ -218,12 +233,15 @@ jobs:
       matrix:
         fusion: ["0", "1"]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     env:
       VOKRA_DISABLE_FUSION: ${{ matrix.fusion }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Numerical parity tests (tests/parity)
         run: cargo test -p vokra-parity
       - name: Whisper frontend parity (fused vs unfused)
@@ -340,6 +358,7 @@ jobs:
     name: parity
     needs: parity-matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - name: All parity matrix cells passed
         run: echo "parity matrix (fusion=0, fusion=1) both green"
@@ -350,20 +369,23 @@ jobs:
   license:
     name: license
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
       - name: Ensure Cargo.lock exists (cargo-audit requires a lockfile)
         run: |
           if [ ! -f Cargo.lock ]; then
             cargo generate-lockfile
           fi
       - name: cargo-deny (licenses / advisories / bans)
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check licenses advisories bans
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532
         with:
           tool: cargo-audit
       - name: cargo-audit (RustSec advisories)
@@ -770,33 +792,36 @@ jobs:
     name: unity-package
     needs: [build, ios-build]
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Download Vokra-xcframework (from ios-build)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: Vokra-xcframework
           path: build/ios/Vokra.xcframework
       - name: Download macOS libvokra.dylib (from build/macos-latest)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: vokra-capi-macos
           path: artifacts/macos
       - name: Download Windows vokra.dll (from build/windows-latest)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: vokra-capi-windows
           path: artifacts/windows
       - name: Download Linux libvokra.so (from build/ubuntu-latest)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: vokra-capi-linux
           path: artifacts/linux
       - name: Set up Android SDK / NDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
       - name: Android cross-build (aarch64-linux-android, CPU-only, NDK)
         # scripts/build-android.sh reads $ANDROID_NDK_HOME (populated by
         # setup-android@v3), rustup-installs the aarch64-linux-android target,
@@ -879,7 +904,7 @@ jobs:
       - name: UPM dependencies check (.dependencies=={} & no Sentis)
         run: bash scripts/check-unity-package-deps.sh bindings/unity/com.vokra.unity
       - name: Upload UPM package artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Vokra-unity-package
           path: bindings/unity/com.vokra.unity-*.tgz
@@ -936,29 +961,32 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Download macOS libvokra.dylib (from build/macos-latest)
         if: matrix.os == 'macos-latest'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: vokra-capi-macos
           path: bindings/python/native
       - name: Download Windows vokra.dll (from build/windows-latest)
         if: matrix.os == 'windows-latest'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: vokra-capi-windows
           path: bindings/python/native
       - name: Download Linux libvokra.so (from build/ubuntu-latest)
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: vokra-capi-linux
           path: bindings/python/native
@@ -984,7 +1012,7 @@ jobs:
         # (v3.0.0 changelog for the enforcement addition). Bump to v3+
         # only after threading a proper `CIBW_REPAIR_WHEEL_COMMAND` that
         # retags each wheel to a platform-specific slot.
-        uses: pypa/cibuildwheel@v2.23.4
+        uses: pypa/cibuildwheel@e5486e0b831d3a4954f271c2a053fbbc0e227d6a
         with:
           package-dir: bindings/python
           output-dir: bindings/python/dist
@@ -1120,7 +1148,7 @@ jobs:
           uv run --no-project --python "${VOKRA_WHEEL_TEST_PYTHON}" \
             python -m pytest bindings/python/tests -v
       - name: Upload wheels artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-python-wheels-${{ matrix.os }}
           path: bindings/python/dist/*.whl

@@ -57,9 +57,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45   # 338 MB LibriSpeech + N × HF repo_info; comfortable margin
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -145,7 +147,7 @@ jobs:
 
       - name: Upload verdicts artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pins-verdicts
           path: /tmp/pins-verdicts.jsonl

@@ -16,15 +16,10 @@
 //!     file at all** — `raw.githubusercontent.com/yxlllc/RMVPE/main/LICENSE`
 //!     returns 404 — so its terms are unstated, not permissive-by-default.
 //!
-//!   Both are Permissive-or-unstated rather than attribution-obligated, so
-//!   nothing here needs the runtime attribution the CC-BY 4.0 codec / ASR
-//!   weights do. The distribution question is a different one and stays
-//!   owner-only: an unstated fork licence is exactly the fail-closed case
-//!   `docs/license-audit.md` §3.1 exists to decide, and this comment does
-//!   not decide it. Note the converter
-//!   (`vokra-convert/src/models/rmvpe.rs`) stamps `DEFAULT_LICENSE = "mit"`,
-//!   which inherits the same error and should be revisited with the §3.1
-//!   row rather than silently changed here.
+//!   An unstated fork licence is exactly the fail-closed case
+//!   `docs/license-audit.md` §3.1 exists to decide. The converter therefore
+//!   stamps `LicenseClass::Unknown` unless the caller supplies terms they
+//!   independently verified for the exact checkpoint.
 //!
 //! # Architecture
 //!
@@ -1667,7 +1662,8 @@ pub enum CnnChainPolicy {
 
 /// Robust Model for Vocal Pitch Estimation (RMVPE) — the pitch
 /// front-end required by RVC v2
-/// (<https://github.com/Dream-High/RMVPE>, MIT).
+/// (<https://github.com/Dream-High/RMVPE>, Apache-2.0 code; distributed
+/// checkpoint licence unresolved).
 ///
 /// Load with [`from_gguf`](Self::from_gguf) / [`open`](Self::open),
 /// then call [`extract`](Self::extract) on a PCM buffer to obtain a
@@ -3355,14 +3351,14 @@ mod tests {
         b.add_string("vokra.model.arch", "rmvpe");
         b.add_string("vokra.model.name", "rmvpe");
         // License-class round-trip — mirrors the converter's
-        // `vokra_core::stamp_provenance(&mut b, LicenseClass::Permissive,
-        // "mit", ...)`. `RmvpeWeights::from_gguf` does not read the
+        // `vokra_core::stamp_provenance(&mut b, LicenseClass::Unknown,
+        // "unknown", ...)`. `RmvpeWeights::from_gguf` does not read the
         // provenance chunk (that is `crates/vokra-core/src/compliance`'s
         // job), but the test below asserts the round-trip is intact so a
         // future runtime-side compliance gate can rely on the same
         // stamped values.
-        b.add_string("vokra.provenance.weight_license", "permissive");
-        b.add_string("vokra.provenance.license", "mit");
+        b.add_string("vokra.provenance.weight_license", "unknown");
+        b.add_string("vokra.provenance.license", "unknown");
         b.add_string("vokra.provenance.model_id", "rmvpe");
         b.add_string("vokra.provenance.source", "yxlllc/RMVPE");
 

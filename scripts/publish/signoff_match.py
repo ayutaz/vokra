@@ -33,7 +33,7 @@ default), and the map is validated by the check-converter-signoff.sh gate
 (every converter must map to ≥ 1 row OR be listed as intentionally excluded
 from the main-repo §3.1 scope).
 
-Zero-dep: python3 standard library only (NFR-DS-02).
+Zero-dep: Python 3 standard library only, executed through uv (NFR-DS-02).
 """
 
 from __future__ import annotations
@@ -1346,7 +1346,13 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "fsmn-vad (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`)",
         "FSMN-VAD (`funasr/fsmn-vad`)",
     ],
-    "rmvpe": ["rmvpe (`yxlllc/RMVPE` fork of `Dream-High/RMVPE`)"],
+    # The row is deliberately blank and records the checkpoint license as
+    # UNKNOWN. Keeping converter coverage tied to that exact row catches
+    # audit drift without making `vokra/rmvpe` publishable: no repo-side
+    # mapping exists above, so publication remains fail-closed.
+    "rmvpe": [
+        "rmvpe (`yxlllc/RMVPE` architecture derived from `Dream-High/RMVPE`)"
+    ],
     "crepe": ["CREPE (`marl/crepe`)"],
     "styletts2": ["StyleTTS 2 (yl4579)"],  # Rejected row, still needs coverage.
     "titanet": ["TitaNet (NVIDIA NeMo)"],

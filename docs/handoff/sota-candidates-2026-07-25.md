@@ -31,7 +31,7 @@ All landed items follow the standard sibling contract for converters (qwen3_tts 
 | 14 | wespeaker | `20815ba` | converter | speaker | apache-2.0 | GREEN |
 | 15 | speaker_3d | `a7716d3` | converter | speaker | apache-2.0 | GREEN |
 | 16 | emotion2vec | `51dcaf1` | converter | emotion | mit | GREEN |
-| 17 | rmvpe | `2bf3eba` | f0 op | audio | mit | GREEN (skel) |
+| 17 | rmvpe | `2bf3eba` | f0 op | audio | unknown（2026-08-18監査訂正） | GREEN (skel) |
 | 18 | fcpe | `f20f737` | f0 op | audio | mit | GREEN (skel) |
 | 19 | crepe | `3c80290` | f0 op | audio | mit | GREEN (skel) |
 | 20 | ctc_segmentation | `7286c9d` | align op | audio | apache-2.0 | GREEN (**full**) |

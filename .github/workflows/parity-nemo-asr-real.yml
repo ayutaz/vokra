@@ -134,6 +134,7 @@ jobs:
   setup:
     name: gate (checkpoint sourcing opt-in)
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       run_parity: ${{ steps.decide.outputs.run_parity }}
       matrix: ${{ steps.decide.outputs.matrix }}
@@ -225,10 +226,12 @@ jobs:
       # the harness via `VOKRA_<ARCH>_GGUF`).
       GGUF_OUT: ${{ github.workspace }}/nemo-asr-${{ matrix.arch }}.gguf
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
 
@@ -236,16 +239,16 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
       # HF cache keyed to the pinned revision — a bump invalidates it
       # cleanly. The tag ("v1") is workflow-owned so a future scheme
       # change (side-car pin, extra file) rotates by touching this file.
       - name: Cache HF hub (${{ matrix.arch }} @ ${{ matrix.hf_rev }})
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           key: nemo-asr-hf-${{ matrix.arch }}-${{ matrix.hf_rev }}-v1
@@ -329,6 +332,9 @@ jobs:
         env:
           CLI_MODEL: ${{ matrix.cli_model }}
           ARCH: ${{ matrix.arch }}
+          MATRIX_HF_REPO: ${{ matrix.hf_repo }}
+          MATRIX_HF_REV: ${{ matrix.hf_rev }}
+          MATRIX_LICENSE: ${{ matrix.license }}
         run: |
           set -euo pipefail
           # Locate the primary safetensors payload. Every entry ships at
@@ -390,8 +396,8 @@ jobs:
           {
             echo "### ${ARCH} — Vokra GGUF"
             echo ""
-            echo "- Upstream: \`${{ matrix.hf_repo }}@${{ matrix.hf_rev }}\`"
-            echo "- License: ${{ matrix.license }}"
+            echo "- Upstream: \`${MATRIX_HF_REPO}@${MATRIX_HF_REV}\`"
+            echo "- License: ${MATRIX_LICENSE}"
             echo "- CLI model: \`${CLI_MODEL}\`"
             echo "- Output: \`${GGUF_OUT}\` (${size} bytes)"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -422,14 +428,21 @@ jobs:
         if: always()
         run: |
           {
-            echo "### ${{ matrix.arch }} run"
+            echo "### ${MATRIX_ARCH} run"
             echo ""
-            echo "- HF: \`${{ matrix.hf_repo }}\` @ \`${{ matrix.hf_rev }}\`"
-            echo "- License: \`${{ matrix.license }}\`"
-            echo "- CLI: \`vokra-cli convert --model ${{ matrix.cli_model }}\`"
-            echo "- Env: \`${{ matrix.env_gguf }}=${GGUF_OUT}\`"
+            echo "- HF: \`${MATRIX_HF_REPO}\` @ \`${MATRIX_HF_REV}\`"
+            echo "- License: \`${MATRIX_LICENSE}\`"
+            echo "- CLI: \`vokra-cli convert --model ${MATRIX_CLI_MODEL}\`"
+            echo "- Env: \`${MATRIX_ENV_GGUF}=${GGUF_OUT}\`"
             echo ""
             echo "Numerical stage-tap parity is deferred until \`<Arch>Weights::from_gguf\`"
             echo "lands (T29-equivalent follow-up); today's leg exercises the GGUF surface"
             echo "(arch tag + \`vokra.<arch>.*\` hparam echo + tensor presence)."
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+          MATRIX_HF_REPO: ${{ matrix.hf_repo }}
+          MATRIX_HF_REV: ${{ matrix.hf_rev }}
+          MATRIX_LICENSE: ${{ matrix.license }}
+          MATRIX_CLI_MODEL: ${{ matrix.cli_model }}
+          MATRIX_ENV_GGUF: ${{ matrix.env_gguf }}

@@ -128,11 +128,14 @@ jobs:
   setup:
     name: setup
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       wav_present: ${{ steps.wav.outputs.present }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Compute size matrix
         id: matrix
         shell: bash
@@ -148,16 +151,16 @@ jobs:
           # threaded into snapshot_download so the CI cache key ties to
           # the exact commit, not `main` (X-10-T05 companion).
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ github.event.inputs.include_small }}" != "false" ]; then
+            if [ "${GITHUB_EVENT_INPUTS_INCLUDE_SMALL}" != "false" ]; then
               include="${include},"'{"size":"small","hf_id":"openai/whisper-small","hf_revision":"973afd24965f72e36ca33b3055d56a652f456b4d","env_var":"VOKRA_WHISPER_SMALL_GGUF","fixture_dir":"tests/parity/whisper_small","gguf":"whisper-small.gguf"}'
             fi
-            if [ "${{ github.event.inputs.include_medium }}" != "false" ]; then
+            if [ "${GITHUB_EVENT_INPUTS_INCLUDE_MEDIUM}" != "false" ]; then
               include="${include},"'{"size":"medium","hf_id":"openai/whisper-medium","hf_revision":"abdf7c39ab9d0397620ccaea8974cc764cd0953e","env_var":"VOKRA_WHISPER_MEDIUM_GGUF","fixture_dir":"tests/parity/whisper_medium","gguf":"whisper-medium.gguf"}'
             fi
-            if [ "${{ github.event.inputs.include_large_v3 }}" != "false" ]; then
+            if [ "${GITHUB_EVENT_INPUTS_INCLUDE_LARGE_V3}" != "false" ]; then
               include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","hf_revision":"06f233fe06e710322aca913c1bc4249a0d71fce1","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
             fi
-            if [ "${{ github.event.inputs.include_turbo }}" != "false" ]; then
+            if [ "${GITHUB_EVENT_INPUTS_INCLUDE_TURBO}" != "false" ]; then
               include="${include},"'{"size":"turbo","hf_id":"openai/whisper-large-v3-turbo","hf_revision":"41f01f3fe87f28c78e2fbf8b568835947dd65ed9","env_var":"VOKRA_WHISPER_TURBO_GGUF","fixture_dir":"tests/parity/whisper_turbo","gguf":"whisper-turbo.gguf"}'
             fi
           fi
@@ -172,6 +175,11 @@ jobs:
             echo "{\"include\":[${include}]}"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GITHUB_EVENT_INPUTS_INCLUDE_SMALL: ${{ github.event.inputs.include_small }}
+          GITHUB_EVENT_INPUTS_INCLUDE_MEDIUM: ${{ github.event.inputs.include_medium }}
+          GITHUB_EVENT_INPUTS_INCLUDE_LARGE_V3: ${{ github.event.inputs.include_large_v3 }}
+          GITHUB_EVENT_INPUTS_INCLUDE_TURBO: ${{ github.event.inputs.include_turbo }}
       - name: Detect audio fixture presence
         id: wav
         shell: bash
@@ -241,19 +249,21 @@ jobs:
       ENV_VAR: ${{ matrix.env_var }}
       FIXTURE_DIR: ${{ matrix.fixture_dir }}
       GGUF: ${{ matrix.gguf }}
-      # Steer HF cache into a repo-local path so actions/cache@v6 can
+      # Steer HF cache into a repo-local path so actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  can
       # snapshot it deterministically. Kokoro workflow uses the same
       # pattern (parity-kokoro-real.yml env.HF_HOME).
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           # Namespace the cache per size so the base leg's target/ doesn't
           # collide with the large-v3 leg on shared runners.
@@ -266,7 +276,7 @@ jobs:
         # churn elsewhere. Restore key gives a warm hit if the dumper file
         # changed but the checkpoint set didn't. Path is the whole HF_HOME
         # (matches parity-kokoro-real.yml's HF cache pattern).
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           key: hf-hub-${{ matrix.size }}-${{ hashFiles('tools/parity/dump_whisper_reference.py') }}
@@ -692,7 +702,7 @@ jobs:
         # against the pinned WAV + HF checkpoint on this run). `if: always()`
         # so a parity FAIL still ships the artifact for owner triage.
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: whisper-${{ matrix.size }}-fixture
           path: |
@@ -710,7 +720,7 @@ jobs:
         # produced` so an OOM during cargo test still gives owner the GGUF
         # to reproduce locally.
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: whisper-${{ matrix.size }}-gguf
           path: ${{ matrix.gguf }}

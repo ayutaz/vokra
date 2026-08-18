@@ -48,6 +48,10 @@
 #       repository-pinned setup-uv action in that same job. Unpinned actions,
 #       duplicate setup steps, and setup steps in jobs that never invoke uv
 #       are hard errors; this catches copy/paste placement mistakes.
+#   (g) immutable CI dependencies — remote `uses:` entries require a full
+#       40-hex commit SHA; `docker run` / `docker pull` and workflow container
+#       images require an OCI `@sha256:<64-hex>` digest. Mutable tags such as
+#       `@v5` and `:latest` are rejected.
 #
 # NON-GOALS
 #   Not a YAML validator. Zero-dep (NFR-DS-02) forbids PyYAML, so this is a
@@ -323,6 +327,20 @@ SETUP_UV_PIN = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 SETUP_UV_RE = re.compile(
     r"^\s*(?:-\s+)?uses:\s*astral-sh/setup-uv@([^\s#]+)\s*(?:#.*)?$"
 )
+USES_RE = re.compile(
+    r'''^\s*(?:-\s+)?uses:\s*(?:"([^"]+)"|'([^']+)'|([^\s#]+))\s*(?:#.*)?$'''
+)
+CONTAINER_IMAGE_RE = re.compile(
+    r'''^\s*image:\s*(?:"([^"]+)"|'([^']+)'|([^\s#]+))\s*(?:#.*)?$'''
+)
+FULL_ACTION_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+OCI_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}(?:\s|$)")
+DOCKER_FETCH_RE = re.compile(r"\bdocker\s+(?:--[^\s]+\s+)*(?:run|pull)\b")
+
+
+def scalar_value(match):
+    """Return a YAML plain, single-quoted, or double-quoted scalar value."""
+    return next(group for group in match.groups() if group is not None)
 
 
 def iter_logical_shell_commands(run_lineno, body):
@@ -412,6 +430,34 @@ for f in files:
     text = f.read_text(encoding="utf-8")
     jobs = parse_jobs(text)
 
+    # (g) Every remote action and container image must resolve immutably.
+    # Local actions/reusable workflows (`./...`) are part of this checkout and
+    # therefore inherit its commit identity.
+    for lineno, line in enumerate(text.splitlines(), 1):
+        uses_match = USES_RE.match(line)
+        if uses_match:
+            target = scalar_value(uses_match)
+            if target.startswith("./"):
+                continue
+            if target.startswith("docker://"):
+                if not OCI_DIGEST_RE.search(target):
+                    problems.append(
+                        f"{f.name}:{lineno}: docker action is not pinned to an OCI digest: {target}"
+                    )
+                continue
+            action, separator, ref = target.rpartition("@")
+            if not separator or not action or not FULL_ACTION_SHA_RE.fullmatch(ref):
+                problems.append(
+                    f"{f.name}:{lineno}: remote action must use a full 40-hex commit SHA: {target}"
+                )
+
+        image_match = CONTAINER_IMAGE_RE.match(line)
+        if image_match and not OCI_DIGEST_RE.search(scalar_value(image_match)):
+            problems.append(
+                f"{f.name}:{lineno}: workflow container image must use @sha256 digest: "
+                f"{scalar_value(image_match)}"
+            )
+
     for lineno, line in enumerate(text.splitlines(), 1):
         cm = CRON_RE.match(line)
         if cm:
@@ -490,6 +536,12 @@ for f in files:
                 "use uv run / uv pip / uv venv without activation"
             )
         uv_command_lines.extend(find_uv_commands(lineno, body))
+        for command_lineno, logical in iter_logical_shell_commands(lineno, body):
+            if DOCKER_FETCH_RE.search(logical) and not OCI_DIGEST_RE.search(logical):
+                problems.append(
+                    f"{f.name}:{command_lineno}: docker run/pull must pin the image with "
+                    "@sha256:<64-hex>"
+                )
 
     # Single-line `run: python ...` entries are not returned by
     # parse_run_blocks(), so scan those separately.
@@ -501,6 +553,16 @@ for f in files:
             )
         if single_run_uses_uv(line):
             uv_command_lines.append(lineno)
+        scalar_match = RUN_SINGLE_RE.match(line)
+        if scalar_match and not scalar_match.group(1).startswith(("|", ">")):
+            scalar_command = scalar_match.group(1)
+            if DOCKER_FETCH_RE.search(scalar_command) and not OCI_DIGEST_RE.search(
+                scalar_command
+            ):
+                problems.append(
+                    f"{f.name}:{lineno}: docker run/pull must pin the image with "
+                    "@sha256:<64-hex>"
+                )
 
     # (f) uv execution and setup must live in the same job, with the action
     #     pinned to the repository-reviewed commit. A misplaced setup step is
@@ -572,7 +634,7 @@ if problems:
 print(
     f"check-workflow-hygiene: OK ({len(files)} workflow(s), {len(all_crons)} cron(s), "
     "no collisions / dangling needs / shell syntax errors / bare Python tooling / "
-    "setup-uv drift)"
+    "setup-uv drift / mutable CI dependencies)"
 )
 PY
 }
@@ -1089,6 +1151,89 @@ jobs:
 YML
     if run_checker "$tmp/latesetupuv" check >/dev/null 2>&1; then
         echo "self-test FAILED: setup-uv after its first use should fail" >&2
+        rc=1
+    fi
+
+    # (7a) A moving major tag can silently replace reviewed action code.
+    mkdir -p "$tmp/unpinnedaction"
+    cat >"$tmp/unpinnedaction/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: echo done
+YML
+    if run_checker "$tmp/unpinnedaction" check >/dev/null 2>&1; then
+        echo "self-test FAILED: a remote action tag should fail immutable pinning" >&2
+        rc=1
+    fi
+
+    # (7b) Quoting a YAML scalar must not bypass the moving-tag rejection.
+    mkdir -p "$tmp/quotedunpinnedaction"
+    cat >"$tmp/quotedunpinnedaction/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: "actions/checkout@v7"
+YML
+    if run_checker "$tmp/quotedunpinnedaction" check >/dev/null 2>&1; then
+        echo "self-test FAILED: a quoted remote action tag should fail immutable pinning" >&2
+        rc=1
+    fi
+
+    # (7c) A quoted full commit SHA is still immutable and valid YAML.
+    mkdir -p "$tmp/quotedpinnedaction"
+    cat >"$tmp/quotedpinnedaction/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 'actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+YML
+    if ! run_checker "$tmp/quotedpinnedaction" check >/dev/null 2>&1; then
+        echo "self-test FAILED: a quoted full action SHA should pass immutable pinning" >&2
+        rc=1
+    fi
+
+    # (7d) A version tag is still mutable in a registry; Docker execution
+    #      requires the reviewed multi-arch digest as well.
+    mkdir -p "$tmp/mutabledocker"
+    cat >"$tmp/mutabledocker/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker run --rm example/scanner:v1 scan /repo
+YML
+    if run_checker "$tmp/mutabledocker" check >/dev/null 2>&1; then
+        echo "self-test FAILED: a Docker version tag without digest should fail" >&2
+        rc=1
+    fi
+
+    # (7e) A tag plus OCI digest is readable and immutable. The tag keeps the
+    #      version visible to reviewers; the digest is the execution identity.
+    mkdir -p "$tmp/pinneddocker"
+    cat >"$tmp/pinneddocker/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker run --rm example/scanner:v1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scan /repo
+YML
+    if ! run_checker "$tmp/pinneddocker" check >/dev/null 2>&1; then
+        echo "self-test FAILED: a Docker image pinned by OCI digest should pass" >&2
         rc=1
     fi
 

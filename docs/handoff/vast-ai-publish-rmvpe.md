@@ -6,7 +6,7 @@ provisioning・parity 検証は owner が本 runbook を追いながら実行す
 **✅ 2026-08-13 更新: loud-partial は resolved**（本 branch
 `feat/post-audit-cc-gap-2026-08-13` の commit
 [`e7b6810`](../../crates/vokra-models/src/f0/rmvpe.rs) で real U-Net +
-BiGRU forward が land）。上流 `yxlllc/RMVPE` (MIT) の code inspect で
+BiGRU forward が land）。上流 `yxlllc/RMVPE`（checkpoint license は未記載）の code inspect で
 topology が **fully-specified** と判明したため、旧 "under-specified in
 primary source" 判定は REVERSED。inline `pool2d` + `conv_transpose2d` +
 `pytorch_gru` を実装（外部 op 依存なし、NFR-DS-02 保存）、`extract_real()`
@@ -54,24 +54,25 @@ primary source" 判定は REVERSED。inline `pool2d` + `conv_transpose2d` +
 | 項目 | 値 |
 |---|---|
 | Upstream primary | https://github.com/Dream-High/RMVPE |
-| Upstream fork | https://github.com/yxlllc/RMVPE（同 architecture） |
+| Upstream fork | [yxlllc/RMVPE](https://github.com/yxlllc/RMVPE)（同 architecture、LICENSE ファイルなし） |
 | Paper | Wei et al. 2023 — "RMVPE: A Robust Model for Vocal Pitch Estimation in Polyphonic Music" (INTERSPEECH 2023) |
 | Upstream release | GitHub Releases に `.pt` pickle（`model.pt` or `checkpoint_pretrain.pt`） |
 | Upstream HF | **なし**（github release のみ、HF mirror 未存在） |
-| License | **MIT**（両 upstream、Permissive、runtime-side attribution 不要） |
-| SPDX (Vokra 判定) | `mit`（LicenseClass = Permissive） |
+| License | **code: Apache-2.0 / yxlllc release weight: 未確認**（fail-closed `unknown`） |
+| SPDX (Vokra 判定) | `unknown`（LicenseClass = Unknown） |
 | Weight size | **~180 MB**（`.pt` pickle） |
-| 判定 (`check-model-size.sh`) | 該当なし（HF mirror 不在）。実サイズは `LOCAL_SAFE`（<4 GiB） |
+| 判定 (`check-model-size.sh`) | HF mirror 不在でサイズ判定対象外。Cargo/変換/parityはvast.aiへ隔離 |
 | Vokra ModelKind | `Rmvpe`（既存、CLI `--model rmvpe`） |
-| Vokra HF slug | `vokra/rmvpe`（publish 予定、Wave 3 wave-B 決定） |
-| Attribution 要求 | なし（MIT 標準 LICENSE 同梱のみ） |
-| Non-commercial 制限 | なし |
-| Share-alike | なし |
+| Vokra HF slug | `vokra/rmvpe`（予約候補。license grant確認までpublish禁止） |
+| Attribution 要求 | **未確定**（checkpoint grant 未確認） |
+| Non-commercial 制限 | **未確定** |
+| Share-alike | **未確定** |
 
-### なぜ vast.ai なのか（サイズ観点では不要）
+### なぜ vast.ai なのか
 
-**サイズだけを見れば local M1 iMac で処理可能**（180 MB × 2 shard 想定 = local
-safe）。しかし本 runbook が vast.ai を指定する理由は 3 つ:
+checkpoint単体は小さいが、`vokra-models`を含むCargo build/testはworkspaceの
+型検査・リンク時にMacをOOM再起動させた実績がある。このため変換・parity・publish
+はvast.aiへ隔離する。Macでは文書確認と小さなdownload metadataの照合だけを行う。
 
 1. **依頼者ルール #3**: publish は §3.1 sign-off 完了後 owner が判断、CC は
    converter + test + docs までゆえ、実 publish action は owner-triggered
@@ -84,14 +85,11 @@ safe）。しかし本 runbook が vast.ai を指定する理由は 3 つ:
    **(b) は本 branch で land**（inline `pool2d` + `conv_transpose2d` +
    `pytorch_gru`、no external op deps）、**(c) の Path B reference dumper
    も本 branch で land**（`tools/parity/rmvpe/dump_reference.py`）。owner
-   は (a) real `.pt` fetch + GGUF bridge + reference dump の 3 step で
-   即 parity 発火可能（vast.ai 不要、local M1 iMac で完結、下記 §2.1）。
+   はvast.ai上で (a) real `.pt` fetch + GGUF bridge + reference dump の3 step後、
+   parityを発火できる（下記 §2.1）。
 
-したがって本 runbook は「vast.ai 上での convert + publish」ではなく **「owner が
-local M1 iMac 上で `.pt` → `.safetensors` → GGUF bridge + reference dump を実施
-し、Path A + Path B 両方の fixture を CC の parity harness に渡す」** 手順を
-記述する（vast.ai は optional、依頼者ルール #1 との整合上 tag はしているが実
-運用上 local で足りる — 詳細は §2.1）。
+したがって本 runbook は、vast.ai上で `.pt` → `.safetensors` → GGUF bridge、
+reference dump、Path A + Path B parity、許可後のpublishまでを完結させる手順を記す。
 
 ### Primary source verify command
 
@@ -99,21 +97,21 @@ local M1 iMac 上で `.pt` → `.safetensors` → GGUF bridge + reference dump �
 # License verification (github repository primary)
 # GitHub raw LICENSE file
 curl -sL https://raw.githubusercontent.com/Dream-High/RMVPE/main/LICENSE | head -5
-# expected: MIT License Copyright (c) 2023 Haojie Wei
+# expected: Apache License Version 2.0
 
-# Release verify - github release で pt file の存在を確認
-curl -sL https://api.github.com/repos/Dream-High/RMVPE/releases/latest | \
+# Release verify - checkpoint-publishing fork の GitHub release を確認
+curl -sL https://api.github.com/repos/yxlllc/RMVPE/releases/latest | \
   uv run --no-project python -c "import json,sys; d=json.load(sys.stdin); \
     print('tag:', d.get('tag_name')); \
     [print(a['name'], a['size']) for a in d.get('assets',[])]"
 ```
 
-## 2. Instance recipe（local M1 iMac 推奨、vast.ai は fallback）
+## 2. Instance recipe（vast.ai必須）
 
-### 2.1 Local M1 iMac 上での bridge（推奨、依頼者ルール #2 に該当）
+### 2.1 vast.ai上でのbridge + parity
 
-**サイズ: 180 MB `.pt` pickle → ~180 MB safetensors → ~180 MB GGUF**。M1 iMac
-16 GB RAM で余裕、依頼者ルール #2（<2GB は local OK）に該当。
+**サイズ: 180 MB `.pt` pickle → ~180 MB safetensors → ~180 MB GGUF**。
+モデル自体は小さいが、Cargoはvast.aiのRAM 64 GB以上のinstanceで実行する。
 
 ```bash
 cd ~/vokra/tools/parity
@@ -182,20 +180,17 @@ cd ~/vokra
 cargo test -p vokra-models --test parity_rmvpe -- --nocapture
 ```
 
-### 2.2 vast.ai fallback（storage / dependency 問題があれば）
-
-`.pt` unpickle が local M1 iMac で fail する場合（PyTorch version mismatch、
-Python 3.12 環境で `.pt` pickle 互換性問題等）は vast.ai fallback:
+### 2.2 Instance最低条件
 
 | 項目 | 推奨値 |
 |---|---|
 | Image | `pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel` |
-| RAM | 8 GB 以上（充分） |
-| Disk | 20 GB 以上（充分） |
+| RAM | **64 GB以上**（Cargo build/testのMac OOM実績を踏まえる） |
+| Disk | 50 GB以上 |
 | GPU | 不要 |
 | 課金見込 | ~30 min × $0.3/hr = **$0.15** |
 
-## 3. provision.sh gotcha（vast.ai fallback 時のみ）
+## 3. provision.sh gotcha
 
 `docs/handoff/vast-ai-large-model-publish.md` §3 の 4 gotcha 全て該当:
 
@@ -211,21 +206,23 @@ provision.sh 実行は 1 コマンドで対応（`docs/handoff/vast-ai-large-mod
 
 ## 4. Convert + publish command
 
-### 4.1 Local pattern（推奨、§2.1 の続き）
+### 4.1 vast.ai pattern（§2.1 の続き）
 
-Fixture 生成後、publish は **owner § 3.1 sign-off 完了後** に:
+現時点のdefault `unknown` ではpublishしない。checkpointの明示的なgrantを取得し、
+§3.1 sign-offを完了した後だけ`VERIFIED_RMVPE_SPDX`を設定して実行する。未設定なら
+Bashのparameter expansionが即時停止する:
 
 ```bash
 # Publish 5-gate（dry-run → --push で本番）
 ./scripts/publish/publish-one.sh \
   --gguf ~/rmvpe-fixtures/rmvpe.gguf \
   --repo vokra/rmvpe \
-  --license-spdx mit
+  --license-spdx "${VERIFIED_RMVPE_SPDX:?set only after verifying the checkpoint grant}"
 # ↑ dry-run 全 gate 通過を確認してから ↓
 ./scripts/publish/publish-one.sh \
   --gguf ~/rmvpe-fixtures/rmvpe.gguf \
   --repo vokra/rmvpe \
-  --license-spdx mit --push
+  --license-spdx "${VERIFIED_RMVPE_SPDX:?set only after verifying the checkpoint grant}" --push
 
 # 検証
 curl -sI https://huggingface.co/vokra/rmvpe | head -1
@@ -236,44 +233,46 @@ curl -sI https://huggingface.co/vokra/rmvpe | head -1
 
 `scripts/publish/vast-ai/run-one.sh` は `--hf-repo` を必須引数として消費する
 （HF snapshot_download 経路）。**RMVPE は upstream に HF mirror が無い**ため
-`run-one.sh` は **使えない**。手動 fallback（§4.1）または vast.ai 上での手動
-curl + convert に fall back する。
+`run-one.sh` は **使えない**。vast.ai上で個別にcurl + convertを行い、uploadは
+必ず§4.1の`publish-one.sh`を経由する（手動upload禁止）。
 
 ## 5. §3.1 sign-off status
 
 **現状: blank（fail-closed default）**。
 
-`docs/license-audit.md` §3.1 の RMVPE 行は既 land 済みだが Commercial sign-off は
-**空欄**（CLAUDE.md wave 3 の "wave B commits 内で ☑ Commercial 2026-07-30 yousan
-(依頼者許可 = CC 判断) 一次資料確認済み" 記述は **row 305（RMVPE 別レコード or
-関連 row）** を指し、`vokra/rmvpe` の publish sign-off とは別）。
+`docs/license-audit.md` §3.1の旧Commercial sign-offは、2026-08-18の一次資料再確認で
+根拠が誤りと判明したため撤回し、**空欄**へ戻した。
 
 **Owner action**:
 
-1. **Primary source を直接照合** — https://github.com/Dream-High/RMVPE/blob/main/LICENSE
-   （MIT）+ https://github.com/yxlllc/RMVPE/blob/master/LICENSE（同 MIT、fork）
-2. yousan として **☑ Commercial** sign-off（`docs/license-audit.md` §3.1 template、
-   MIT は Permissive T1）
-3. Sign-off 後に §4.1 の `publish-one.sh --push` が gate 通過
+1. **Primary source を直接照合** — [Dream-High/RMVPE LICENSE](https://github.com/Dream-High/RMVPE/blob/main/LICENSE)
+   は Apache-2.0。一方 `yxlllc/RMVPE` は repository root / release assets / README
+   のいずれにも checkpoint のライセンスを宣言していない（2026-08-18 GitHub API 再確認）。
+2. checkpoint に適用される明示的な grant を upstream から取得し、正確な SPDX を
+   `docs/license-audit.md` §3.1 に記録する。それまでは sign-off を空欄のまま維持する。
+3. grant 確認後のみ §4.1 の `publish-one.sh --push` を実行する。未確認の
+   `unknown` artifact は gate が fail-closed で拒否する。
 
-**publish-one.sh の 5 gate**（MIT の場合）:
+**publish-one.sh の現状の5 gate**:
 
 1. Catalog reality — pass
-2. Redistributable — pass（MIT は Permissive）
-3. Provenance chunk 刻印 — pass（converter が刻む）
-4. §3.1 sign-off blank 拒否 — **owner action 必須**
-5. T4 非該当 — pass（`--allow-noncommercial` 不要）
+2. Redistributable — **fail**（Unknown）
+3. Provenance chunk — `unknown`を正しく刻印
+4. §3.1 sign-off — **fail**（blank）
+5. Tier判定 — grant確認まで未評価
+
+grant確認後は、そのSPDX・redistributable判定・sign-offで5 gateすべてを再実行する。
 
 ## 6. 期待される artifacts
 
-Publish 成功後の `huggingface.co/vokra/rmvpe` repo に含まれる:
+grant確認後にpublishできた場合、`huggingface.co/vokra/rmvpe` repoに含まれる:
 
 | ファイル | 内容 |
 |---|---|
 | `model.gguf` | ~180 MB（F32 or BF16 pass-through、tensor 数は upstream U-Net + GRU + head に依存） |
-| `README.md` | `make_model_card.py` 自動生成、tier T1 obligation + MIT + upstream 情報 |
-| `LICENSE` | MIT canonical text（`fetch_license.sh --spdx mit` で取得） |
-| `NOTICE` | 空 or attribution only（MIT は NOTICE 必須ではない） |
+| `README.md` | `make_model_card.py` 自動生成、確認済みtier / obligation / upstream情報 |
+| `LICENSE` | 確認済みSPDXに対応するcanonical text |
+| `NOTICE` | 確認済みlicenseのattribution要件に従う |
 | `SOURCE.md` | 上流 URL（github release）+ `.pt` → safetensors bridge 手順 + `nemo_pt_to_safetensors.py` 手順 + Vokra converter バージョン + commit SHA |
 
 ### GGUF metadata（vokra.rmvpe.* chunk 群、既 converter 実装済）
@@ -284,8 +283,9 @@ Publish 成功後の `huggingface.co/vokra/rmvpe` repo に含まれる:
 | `vokra.schema.producer` | string | `"vokra-cli-<version>"` |
 | `vokra.model.arch` | string | `"rmvpe"` |
 | `vokra.model.name` | string | `"rmvpe"` |
-| `vokra.provenance.upstream_url` | string | `"https://github.com/Dream-High/RMVPE"` or fork URL |
-| `vokra.provenance.upstream_license` | string | `"mit"` |
+| `vokra.provenance.source` | string | `"yxlllc/RMVPE"` |
+| `vokra.provenance.license` | string | default `"unknown"`、grant確認後のみ確認済みSPDX |
+| `vokra.provenance.weight_license` | string | default `"unknown"`、SPDX override時は対応class |
 | `vokra.rmvpe.hop` | u32 | `160` |
 | `vokra.rmvpe.n_fft` | u32 | `2048` |
 | `vokra.rmvpe.win_length` | u32 | `1024` |
@@ -311,7 +311,7 @@ Owner が下記を全て満たすと **flip the switch で発火**:
 2. **Fixture path variable**: `VOKRA_RMVPE_REAL_GGUF_PATH` を set（CI runner 上
    で fixture を fetch する path、owner が upload 場所を決めて publish or artifact
    store 経由）
-3. **`vokra/rmvpe` publish 完了**（§4.1）— CI runner が HF から fetch する場合
+3. **grant確認後の`vokra/rmvpe` publish完了**（§4.1）— CI runnerがHFからfetchする場合
 
 **現状の CI 動作 (2026-08-13 更新後)**:
 
@@ -340,18 +340,17 @@ CI runner に fixture を届ける 3 通り:
 **依頼者ルール #3** に従い、以下順序で。**kernel 実装が本 branch e7b6810
 で land 済ゆえ CC wave B は不要になった** — owner は下記 6 step で完結:
 
-1. **primary source 確認** — MIT license を GitHub 上で目視確認
-   （`https://github.com/yxlllc/RMVPE/blob/master/LICENSE`）
-2. **§3.1 sign-off** — `docs/license-audit.md` §3.1 に yousan として
-   ☑ Commercial sign（MIT は Permissive T1、既 confirmed）
-3. **Fixture 生成** — §2.1 の local pattern（180 MB ゆえ local M1 iMac
-   で余裕、vast.ai 起動不要）:
+1. **primary source 確認** — `Dream-High/RMVPE` code の Apache-2.0 と、
+   `yxlllc/RMVPE` release checkpoint に明示的な license grant がない現状を確認する。
+2. **§3.1 sign-off** — checkpoint の権利者から再配布条件を確認できるまで空欄。
+   明示的な grant が得られた場合だけ、その SPDX と根拠を記録して sign する。
+3. **Fixture 生成** — §2.1のvast.ai instance上で実行:
    - `bash tools/parity/rmvpe/fetch_rmvpe_pt.sh --output ~/rmvpe-fixtures/rmvpe.pt`
    - `.pt` → safetensors → GGUF chain (`vokra-cli convert`)
    - `git clone https://github.com/yxlllc/RMVPE.git ~/rmvpe-upstream`
    - `uv run python tools/parity/rmvpe/dump_reference.py --canned ...`
      → `hidden.f32` + `argmax.u32` + `meta.json`
-4. **Parity harness で verify** — Path A + Path B 両方の env を export し
+4. **Parity harness で verify（vast.ai）** — Path A + Path B 両方の env を export し
    `cargo test -p vokra-models --test parity_rmvpe` が pass
    （Path A: shape / finite / sigmoid-range contract / Path B:
    argmax-match rate ≥ 99 %）
@@ -370,8 +369,7 @@ CI runner に fixture を届ける 3 通り:
 - **`.pt` pickle の security**: PyTorch pickle は arbitrary code execution 可能
   ゆえ、**信頼できる upstream source のみから fetch**（Dream-High / yxlllc の
   GitHub Releases）。`nemo_pt_to_safetensors.py` は fair-use pickle → safetensors
-  offline converter で、実行時 sandbox は Python venv のみ = vast.ai instance
-  上で実行が最も安全（M1 iMac local は依頼者判断）。
+  offline converter で、実行はvast.ai instanceへ隔離する。
 - **Silent-wrong risk の可視化 (2026-08-13 更新後)**: `extract_real` は
   e7b6810 で real U-Net + BiGRU + head を走らせるようになった。上流
   topology drift が起きた場合は Path B の argmax-match rate ≥ 99 % gate

@@ -125,6 +125,7 @@ jobs:
   setup:
     name: gate (dfn3 opt-in)
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       run_conversion: ${{ steps.decide.outputs.run_conversion }}
       run_parity: ${{ steps.decide.outputs.run_parity }}
@@ -179,7 +180,9 @@ jobs:
       HF_HOME: ${{ github.workspace }}/.dfn3-cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       # DFN3 checkpoint is only ~8 MB and the safetensors + GGUF combined
       # add < 30 MB — the free-disk sweep the multi-GB parity workflows
@@ -187,7 +190,7 @@ jobs:
       # the same lean posture without the aggressive image trim.
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
 
@@ -195,13 +198,13 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
       - name: Cache DFN3 zip (per pinned commit)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           # Key on the pinned zip SHA256 so a Rikorose upstream re-upload
@@ -444,7 +447,7 @@ jobs:
 
       - name: Upload parity artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dfn3-parity-artifacts
           path: |

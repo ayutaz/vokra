@@ -40,15 +40,21 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: parity-csm-real-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   parity-csm:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Synthetic fixture leg (always) + gated real leg
         env:
@@ -66,11 +72,13 @@ jobs:
           {
             echo "## parity-csm-real"
             echo ""
-            if [ -z "${{ inputs.parity_dir }}" ]; then
+            if [ -z "${INPUTS_PARITY_DIR}" ]; then
               echo "- synthetic format-pin leg: ran"
               echo "- real staged reference leg: **skipped (T29 owner dump absent — gated repos)**"
             else
-              echo "- real staged reference leg attempted against \`${{ inputs.parity_dir }}\`"
+              echo "- real staged reference leg attempted against \`${INPUTS_PARITY_DIR}\`"
               echo "- note: until the T29 weight binding lands the leg fails loudly by design"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          INPUTS_PARITY_DIR: ${{ inputs.parity_dir }}
