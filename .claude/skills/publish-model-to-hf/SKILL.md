@@ -127,7 +127,7 @@ publish 前後で以下を通す:
 
 ```bash
 scripts/publish/check-catalog-reality.sh
-python3 scripts/publish/signoff_match.py --self-test
+uv run --no-project --python 3.12 python scripts/publish/signoff_match.py --self-test
 scripts/publish/publishability-report.py  # 各モデルの 5-tier 現況
 ```
 

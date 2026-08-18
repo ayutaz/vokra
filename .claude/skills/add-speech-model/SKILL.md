@@ -47,7 +47,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
   # shared_pairs は shared_pairs.json に audit trail として吐く（後で復元ロジックが要る）
   ```
   [[reference-safetensors-shared-tensor-dedup]]。
-- **5D 以上の tensor**: GGUF writer は現状 4D まで（>4D は `"too many dimensions: 5"` で hard-error）。Qwen2.5-Omni 系 multimodal adapter が該当し publish blocked。回避 = writer 拡張 or `reshape(5D → 4D + metadata)`、判断は M6 investigation phase。着手前に上流 tensor shape を `python -c "import safetensors; ..."` で確認して 5D を含むなら **converter に着手しない**。[[project-gguf-5d-tensor-limit]]。
+- **5D 以上の tensor**: GGUF writer は現状 4D まで（>4D は `"too many dimensions: 5"` で hard-error）。Qwen2.5-Omni 系 multimodal adapter が該当し publish blocked。回避 = writer 拡張 or `reshape(5D → 4D + metadata)`、判断は M6 investigation phase。着手前に上流 tensor shape を `uv run --project tools/parity python -c "import safetensors; ..."` で確認して 5D を含むなら **converter に着手しない**。[[project-gguf-5d-tensor-limit]]。
 
 ### 2.2 大モデル（>8 GB safetensors）は M1 iMac で変換しない
 
