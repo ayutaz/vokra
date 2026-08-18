@@ -32,10 +32,10 @@ milestone below.
   `.agents/skills/`, `.codex/hooks.json`) while retaining synchronized Claude
   Code compatibility (PRs #32 and #37).
 - Enforced uv-managed Python entry points in Codex/Claude hooks, current
-  maintainer runbooks, and the workflows touched by this campaign. Legacy
-  workflow-local venv/pip recipes still require a dedicated migration; they
-  are not evidence that bare Python is allowed for new work. Routed 2 GB+
-  model work, workspace Cargo, and
+  maintainer runbooks, and all GitHub Actions workflows. The dedicated
+  migration removed 152 legacy bare Python/pip/pytest/venv invocations across
+  24 workflow files and 36 jobs, then added a repository-wide workflow hygiene
+  regression gate. Routed 2 GB+ model work, workspace Cargo, and
   `vokra-models` Cargo away from the maintainer's 16 GB Mac (PR #33 plus the
   current hook hardening).
 - Added the four-file SBV2 ZH real-parity path. VAST regenerated all four GGUFs

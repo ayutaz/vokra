@@ -327,6 +327,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        if: steps.family_gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         if: steps.family_gate.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@stable
@@ -349,24 +353,21 @@ jobs:
         if: steps.family_gate.outputs.run == 'true'
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # Torch is used by the Phase 2 sidecar (cosyvoice3 llm.pt →
           # safetensors); on chatterbox legs the checkpoint is
           # already safetensors, so torch is a defensive install for
           # a future sidecar. safetensors + huggingface_hub are
           # required by every leg.
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'torch==2.8.0' \
             'numpy>=1.26,<3' \
             'safetensors==0.8.0' \
             'huggingface_hub==0.36.2'
-          python -m pip install 'hf_transfer>=0.1.9' || true
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
           # `-c` avoids the YAML-`|` × bash-`<<` column-1 collision;
           # see the snapshot-download step's comment for detail.
-          python -c 'import torch, numpy, safetensors, huggingface_hub; print(f"parity venv: torch={torch.__version__} numpy={numpy.__version__} safetensors={safetensors.__version__} huggingface_hub={huggingface_hub.__version__}")'
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python -c 'import torch, numpy, safetensors, huggingface_hub; print(f"parity venv: torch={torch.__version__} numpy={numpy.__version__} safetensors={safetensors.__version__} huggingface_hub={huggingface_hub.__version__}")'
 
       - name: Snapshot download @ pinned SHA (${{ matrix.arch }})
         if: steps.family_gate.outputs.run == 'true'
@@ -375,8 +376,6 @@ jobs:
           SNAP_PATH_FILE: ${{ runner.temp }}/snapshot-${{ matrix.arch }}.path
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           mkdir -p "${STAGE}"
           # `python -c` (not a heredoc): a heredoc's closing
           # delimiter would need to sit at column 1 to end the
@@ -389,7 +388,7 @@ jobs:
           # re-scanning the HF cache. Filter to safetensors +
           # configuration files — the runtime never consumes ONNX
           # (FR-LD-05, permanent per CLAUDE.md 設計判断 4).
-          python -c '
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python -c '
           import os
           from huggingface_hub import snapshot_download
           local = snapshot_download(

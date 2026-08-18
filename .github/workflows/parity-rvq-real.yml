@@ -118,6 +118,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -138,18 +141,15 @@ jobs:
       - name: Provision parity venv (moshi + descript-audio-codec)
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
-          python -m pip install \
+          uv venv --python 3.12 "${PARITY_VENV}"
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'torch==2.9.1' \
             'torchaudio==2.9.1' \
             'numpy>=2,<3' \
             'safetensors>=0.4' \
             'moshi==0.2.13' \
             'descript-audio-codec==1.0.0'
-          python - <<'PY'
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, moshi, dac
           print(f"rvq parity venv OK: torch={torch.__version__}")
           PY
@@ -220,9 +220,8 @@ jobs:
         if: steps.dac-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python tools/parity/dac_prepare_checkpoint.py \
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python \
+            tools/parity/dac_prepare_checkpoint.py \
             --pth .dac-cache/weights_24khz.pth \
             --output "${RUNNER_TEMP}/dac-24khz.safetensors" \
             --config-out "${RUNNER_TEMP}/dac-24khz-config.json" \
@@ -259,15 +258,15 @@ jobs:
         if: steps.mimi-download.outputs.codec_ok == 'true' || steps.dac-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           if [ "${{ steps.mimi-download.outputs.codec_ok }}" = "true" ]; then
-            python tools/parity/mimi_dump.py mimi \
+            uv run --no-project --python "${PARITY_VENV}/bin/python" python \
+              tools/parity/mimi_dump.py mimi \
               --checkpoint "${HF_HOME}/${MIMI_FILE}" \
               --out "${RUNNER_TEMP}/mimi-ref" --seed 7 --time 64 --rows 2048 --books 8
           fi
           if [ "${{ steps.dac-download.outputs.codec_ok }}" = "true" ]; then
-            python tools/parity/mimi_dump.py dac \
+            uv run --no-project --python "${PARITY_VENV}/bin/python" python \
+              tools/parity/mimi_dump.py dac \
               --checkpoint .dac-cache/weights_24khz.pth \
               --out "${RUNNER_TEMP}/dac-ref" --seed 7 --time 64 --rows 1024 --books 32
           fi

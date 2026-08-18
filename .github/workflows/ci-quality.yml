@@ -269,14 +269,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Self-test the extractor and checkers
         # Bidirectional fixtures: a doc-local pseudo-helper (migration-guide's
         # `read_wav_mono_f32`) must stay GREEN, and injected drift must go RED.
         # Without the green half, tightening the API check later could start
         # misfiring on legitimate pseudo-helpers with nothing to catch it.
-        run: python3 tools/docs/check_doc_examples.py --self-test
+        run: uv run --no-project --python 3.12 python tools/docs/check_doc_examples.py --self-test
       - name: Verify documentation code examples
-        run: python3 tools/docs/check_doc_examples.py
+        run: uv run --no-project --python 3.12 python tools/docs/check_doc_examples.py
 
   # Audit 2026-08-10 gap: rustdoc `///` doctests were executed NOWHERE.
   # `cargo test --workspace` (which runs them) is invoked by no workflow,
@@ -383,23 +384,22 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Create isolated venv and install binding + audit tool
-        # `pip install .` reads bindings/python/pyproject.toml so build / runtime
+        # `uv pip install .` reads bindings/python/pyproject.toml so build / runtime
         # deps materialize in this venv. `pip-licenses` (MIT) enumerates every
         # installed distribution and enforces --allow-only. Isolated venv so the
         # runner's ambient site-packages cannot mask a bad license.
         run: |
           set -euo pipefail
-          python -m venv /tmp/vokra-py-audit
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-audit/bin/activate
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 /tmp/vokra-py-audit
           if [ -f bindings/python/pyproject.toml ]; then
-            python -m pip install ./bindings/python
+            uv pip install --python /tmp/vokra-py-audit/bin/python ./bindings/python
           else
             echo "bindings/python/pyproject.toml not yet present — auditing pip-licenses toolchain only."
           fi
-          python -m pip install pip-licenses
+          uv pip install --python /tmp/vokra-py-audit/bin/python pip-licenses
       - name: pip-licenses --allow-only (NFR-LC-02 GPL/LGPL block)
         # --allow-only fails nonzero if ANY installed dist reports a license
         # outside the allowlist. The venv holds only the binding's transitive
@@ -415,9 +415,7 @@ jobs:
         # allowlist expansion to cover the standard toolchain packages.
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-audit/bin/activate
-          pip-licenses \
+          uv run --no-project --python /tmp/vokra-py-audit/bin/python pip-licenses \
             --format=markdown \
             --allow-only 'Apache-2.0;Apache Software License;MIT;MIT License;BSD-3-Clause;BSD License;BSD-2-Clause;PSF-2.0;Python-2.0' \
             | tee /tmp/pip-licenses.md
@@ -815,18 +813,17 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Create isolated venv and install pytest
         # Zero-dep envelope: pytest and its transitive deps live ONLY inside
         # /tmp/vokra-py-parity; nothing in the Vokra runtime graph gains a
         # dependency (NFR-DS-02) and no Vokra artifact ships with them.
         run: |
           set -euo pipefail
-          python -m venv /tmp/vokra-py-parity
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-parity/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install pytest
-          python -m pip list | grep -Ei '^pytest\b'
+          uv venv --python 3.12 /tmp/vokra-py-parity
+          uv pip install --python /tmp/vokra-py-parity/bin/python pytest
+          uv pip list --python /tmp/vokra-py-parity/bin/python | grep -Ei '^pytest\b'
       - name: pytest tools/parity/test_*.py
         # The files are stdlib unittest.TestCase suites; pytest discovers
         # and executes them natively. Explicit file list (no glob) so a NEW
@@ -834,9 +831,7 @@ jobs:
         # in an unrelated helper named test_* someone drops in later.
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-parity/bin/activate
-          python -m pytest -v \
+          uv run --no-project --python /tmp/vokra-py-parity/bin/python python -m pytest -v \
             tools/parity/test_dump_whisper_vocab_gate.py \
             tools/parity/test_nightly_tier2_workflow.py \
             tools/parity/test_nightly_webgl_workflow.py \

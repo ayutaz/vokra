@@ -23,6 +23,7 @@ commit and environment it names; its old branch, test count, ABI count, or
 | Deployment law and policy | [Legal compliance](legal-compliance.md) |
 | Current M5 actions | [M5 owner checklist](m5-owner-verification-checklist.md) |
 | 2026-08-18 Git/VAST/session reconciliation | [Codex operations handoff](handoff/codex-operations-2026-08-18.md) |
+| 2026-08-18 workflow Python migration | [Workflow Python/uv migration](handoff/workflow-python-uv-migration-2026-08-18.md) |
 
 The product-planning set (`requirements.md`, `system-requirements.md`,
 `deliverables.md`, and `milestones.md`) and `CLAUDE.md` are intentionally

@@ -499,7 +499,8 @@ jobs:
         # parser guards against a synthetic tree, so a checker bug cannot
         # manufacture a passing run. HARD FAIL, like its check-find-hygiene /
         # check-workflow-advisory-suffix siblings above — a source-to-source
-        # invariant of Vokra's own, not upstream drift. python3 stdlib only,
+        # invariant of Vokra's own, not upstream drift. uv-managed Python
+        # 3.12 stdlib only,
         # no cargo, so it costs nothing in this job.
         run: |
           bash scripts/check-bound-arch-coverage.sh --self-test
@@ -551,7 +552,8 @@ jobs:
         # commented-out stamp, a malformed ledger line and four parser guards,
         # so a checker bug cannot manufacture a passing run. HARD FAIL, like
         # its siblings above — a source-to-source invariant of Vokra's own.
-        # python3 stdlib only, no cargo, so it costs nothing in this job.
+        # uv-managed Python 3.12 stdlib only, no cargo, so it costs nothing
+        # in this job.
         run: |
           bash scripts/check-arch-handshake.sh --self-test
           bash scripts/check-arch-handshake.sh
@@ -587,7 +589,8 @@ jobs:
         # hedge, wrapped hedge, doc-block hedge, all 8 in-tree phrasings) plus
         # two parser guards, so a checker bug cannot manufacture a passing run.
         # HARD FAIL, like its siblings above — a source-to-source invariant of
-        # Vokra's own, not upstream drift. python3 stdlib only, no cargo.
+        # Vokra's own, not upstream drift. uv-managed Python 3.12 stdlib only,
+        # no cargo.
         run: |
           bash scripts/check-parity-sidecar-citations.sh --self-test
           bash scripts/check-parity-sidecar-citations.sh
@@ -626,7 +629,8 @@ jobs:
         # (existing path, canonical/wrapped hedges, all 12 in-tree bilingual
         # phrasings, placeholders, basenames/remote paths/URLs, gitignored
         # paths) plus two parser guards, so a checker bug cannot manufacture
-        # a passing run. HARD FAIL, like its siblings. python3 stdlib + git
+        # a passing run. HARD FAIL, like its siblings. uv-managed Python 3.12
+        # stdlib + git
         # only, no cargo.
         run: |
           bash scripts/check-runbook-path-citations.sh --self-test
@@ -938,6 +942,8 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Download macOS libvokra.dylib (from build/macos-latest)
         if: matrix.os == 'macos-latest'
         uses: actions/download-artifact@v8
@@ -1039,7 +1045,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip wheel
           cd bindings/python/dist
           case "${{ matrix.os }}" in
             ubuntu-*)
@@ -1048,7 +1053,8 @@ jobs:
               # loaders accept — anything newer than 2_17 still installs
               # on the same-runner smoke test we do below.
               for whl in *.whl; do
-                python -m wheel tags --platform-tag manylinux_2_28_x86_64 "$whl"
+                uv run --no-project --python 3.12 --with wheel \
+                  python -m wheel tags --platform-tag manylinux_2_28_x86_64 "$whl"
                 rm "$whl"
               done ;;
             macos-*)
@@ -1071,14 +1077,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m venv /tmp/vokra-venv
-          # shellcheck disable=SC1091
+          VENV="${RUNNER_TEMP}/vokra-venv"
+          uv venv --python 3.12 "${VENV}"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            source /tmp/vokra-venv/Scripts/activate
+            VENV_PYTHON="${VENV}/Scripts/python.exe"
           else
-            source /tmp/vokra-venv/bin/activate
+            VENV_PYTHON="${VENV}/bin/python"
           fi
-          python -m pip install --upgrade pip
           # Install the freshly-built wheel from cibuildwheel output.
           # cibuildwheel emits one wheel per matrix cell (cp39 / cp310 /
           # cp311 / cp312). The runner's active Python here is 3.12
@@ -1094,13 +1099,15 @@ jobs:
           # built local wheels, and `--force-reinstall --no-deps` keeps
           # the smoke idempotent (a cached wheel from an earlier run
           # cannot mask a broken new build).
-          python -m pip install \
+          uv pip install --python "${VENV_PYTHON}" \
               --find-links bindings/python/dist \
               --no-index \
               --force-reinstall \
               --no-deps \
               vokra
-          python -c "import vokra; print('vokra imported OK, version:', getattr(vokra, '__version__', 'unknown'))"
+          uv run --no-project --python "${VENV_PYTHON}" python -c \
+            "import vokra; print('vokra imported OK, version:', getattr(vokra, '__version__', 'unknown'))"
+          echo "VOKRA_WHEEL_TEST_PYTHON=${VENV_PYTHON}" >> "$GITHUB_ENV"
       - name: pytest (bindings/python/tests, GGUF-gated skips)
         # Runs smoke / leak / error / negative unconditionally; parity /
         # asr / tts tests self-skip when VOKRA_WHISPER_BASE_GGUF is unset
@@ -1108,14 +1115,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            source /tmp/vokra-venv/Scripts/activate
-          else
-            source /tmp/vokra-venv/bin/activate
-          fi
-          python -m pip install pytest
-          pytest bindings/python/tests -v
+          : "${VOKRA_WHEEL_TEST_PYTHON:?Fresh-venv step did not export the interpreter path}"
+          uv pip install --python "${VOKRA_WHEEL_TEST_PYTHON}" pytest
+          uv run --no-project --python "${VOKRA_WHEEL_TEST_PYTHON}" \
+            python -m pytest bindings/python/tests -v
       - name: Upload wheels artifact
         uses: actions/upload-artifact@v7
         with:

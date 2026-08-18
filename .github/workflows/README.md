@@ -347,6 +347,26 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
 - `docs/adr/X-10-corpus-self-mirror.md` — the mirror decision itself
   (gitignore-local internal ADR).
 
+### 8.6 Python / uv policy
+
+Workflow Python follows the same uv-only rule as local tooling. The 2026-08-18
+migration started from 24 workflow files / 36 jobs / 152 bare invocations and
+closed with zero exceptions:
+
+- stdlib-only helpers use
+  `uv run --no-project --python 3.12 python <script>`;
+- dependency-bearing jobs create an environment with `uv venv`, install with
+  `uv pip --python <venv-python>`, and run with an explicit interpreter;
+- shell activation, direct venv executables, bare pip/pytest, and runner-user
+  site mutation are prohibited;
+- every Python-using job installs the pinned
+  `astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9` action.
+
+`scripts/check-workflow-hygiene.sh` enforces the command rule over block and
+scalar `run:` entries. The migration inventory, cross-platform wheel recipe,
+and completion evidence are recorded in
+[`docs/handoff/workflow-python-uv-migration-2026-08-18.md`](../../docs/handoff/workflow-python-uv-migration-2026-08-18.md).
+
 ---
 
 ## 参考
@@ -355,5 +375,5 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
 - workflow 一覧: `ls .github/workflows/*.yml`
 - 各 workflow の script side: `scripts/` 配下 (`check-*.sh` / `build-*.sh` / `parity/*.sh` など)
 - Rust workspace の zero-dep 不変条件 (NFR-DS-02): `root Cargo.lock` は `vokra-*` のみ
-  ゆえ、workflow から `cargo add`/`cargo update` を投入する変更は原則禁止 (Python venv や
-  wasm / iOS 側 build script 内での隔離依存導入のみ許可)
+  ゆえ、workflow から `cargo add`/`cargo update` を投入する変更は原則禁止 (uv-managed
+  Python environment や wasm / iOS 側 build script 内での隔離依存導入のみ許可)

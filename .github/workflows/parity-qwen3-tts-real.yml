@@ -30,7 +30,7 @@
 #     it is a deliberate act — a benign upstream re-upload surfaces here as
 #     a `snapshot_download` mismatch, not as fabricated parity.
 #
-#   * Python parity venv is provisioned inline (safetensors + torch +
+#   * Python parity venv is provisioned inline through uv (safetensors + torch +
 #     huggingface_hub); the final `git diff --exit-code Cargo.lock` step
 #     proves the zero-dep invariant (NFR-DS-02) held.
 #
@@ -198,6 +198,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -223,21 +226,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # torch CPU keeps the runner lean (no dumper runs today — this
           # is here so a future `qwen3_tts_dump.py` sibling can hook in
           # without a workflow-level Python re-provision).
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             "numpy>=1.26,<3" \
             "torch>=2.4,<3" \
             "safetensors>=0.4,<1" \
             "huggingface_hub>=0.24,<1"
           # hf_transfer optional but noticeably speeds the ~0.9 GB DL.
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import numpy, torch, safetensors, huggingface_hub
           print(f"parity venv OK: numpy={numpy.__version__} "
                 f"torch={torch.__version__} "
@@ -256,7 +256,7 @@ jobs:
           echo "arch=$ARCH hf_id=$HF_ID hf_revision=$HF_REVISION"
           echo "env_var=$ENV_VAR refdir_env_var=$REFDIR_ENV_VAR gguf=$GGUF"
           df -h .
-          python3 --version
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python --version
           cargo --version
 
       - name: Build vokra-cli (release)
@@ -272,9 +272,7 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER: "1"
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python3 - <<'PYEOF'
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PYEOF'
           import os
           from huggingface_hub import snapshot_download
           local_dir = snapshot_download(

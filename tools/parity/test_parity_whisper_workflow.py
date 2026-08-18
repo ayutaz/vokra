@@ -17,7 +17,7 @@ controlled inputs, so these tests pin behaviour, not formatting. GitHub's
 `${{ … }}` template expressions are substituted the way Actions would
 (inputs render as empty strings on non-dispatch triggers).
 
-Run: python3 tools/parity/test_parity_whisper_workflow.py
+Run: uv run --no-project --python 3.12 python tools/parity/test_parity_whisper_workflow.py
 """
 
 from __future__ import annotations

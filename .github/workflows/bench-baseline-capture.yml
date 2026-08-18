@@ -40,6 +40,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -85,7 +86,7 @@ jobs:
         # fail here rather than uploading a file the owner would commit blind.
         run: |
           set -euo pipefail
-          STATE="$(python3 tools/bench/baseline_gate.py capture-out/silero_vad_baseline.json)"
+          STATE="$(uv run --no-project --python 3.12 python tools/bench/baseline_gate.py capture-out/silero_vad_baseline.json)"
           test "$STATE" = seeded
 
       - name: Upload captured baselines

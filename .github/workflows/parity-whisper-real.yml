@@ -32,7 +32,7 @@
 # (fabricated-pass ban; Kokoro PROSODY_F0_ATOL precedent).
 #
 # Zero-dep invariant (NFR-DS-02): this workflow does NOT modify root
-# Cargo.lock. The dumper Python venv is /tmp-scoped; vokra-cli convert
+# Cargo.lock. The dumper Python venv is uv-managed and /tmp-scoped; vokra-cli convert
 # operates on already-checked-in workspace; a final `git diff --exit-code
 # Cargo.lock` guard catches any accidental root-lockfile mutation.
 #
@@ -251,6 +251,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -285,7 +286,7 @@ jobs:
           echo "== parity-whisper-real preflight =="
           echo "size=$SIZE hf_id=$HF_ID env_var=$ENV_VAR gguf=$GGUF"
           df -h .
-          python3 --version
+          uv run --no-project --python 3.12 python --version
           cargo --version
       - name: Install Python dumper deps (transformers / torch / numpy / hf_hub)
         # We inline the pins here rather than modify tests/parity/parity-requirements.txt
@@ -296,17 +297,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv /tmp/vokra-py-whisper
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-whisper/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install \
+          uv venv --python 3.12 /tmp/vokra-py-whisper
+          uv pip install --python /tmp/vokra-py-whisper/bin/python \
             "numpy>=1.26,<3" \
             "torch==2.4.*" \
             "transformers>=4.44,<4.60" \
             "huggingface_hub>=0.24,<1"
           echo "installed:"
-          python -m pip list | grep -Ei '^(numpy|torch|transformers|huggingface[-_]hub)\b'
+          uv pip list --python /tmp/vokra-py-whisper/bin/python \
+            | grep -Ei '^(numpy|torch|transformers|huggingface[-_]hub)\b'
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
       - name: Download HF checkpoint via snapshot_download
@@ -321,9 +320,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-whisper/bin/activate
-          python3 - <<'PYEOF'
+          uv run --no-project --python /tmp/vokra-py-whisper/bin/python python - <<'PYEOF'
           import os
           from huggingface_hub import snapshot_download
           repo_id = os.environ["HF_ID"]
@@ -388,8 +385,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-whisper/bin/activate
           # Map matrix size to dumper --model arg (whisper-{size}; the
           # dumper's SUPPORTED_MODELS maps whisper-turbo to the
           # openai/whisper-large-v3-turbo HF id). All 5 family sizes are
@@ -403,7 +398,8 @@ jobs:
             turbo) DUMPER_MODEL=whisper-turbo ;;
             *) echo "::error::unknown SIZE=$SIZE"; exit 2 ;;
           esac
-          python3 tools/parity/dump_whisper_reference.py \
+          uv run --no-project --python /tmp/vokra-py-whisper/bin/python python \
+            tools/parity/dump_whisper_reference.py \
             --model "$DUMPER_MODEL" \
             --audio tests/fixtures/audio/jfk-30s.wav
           ls -lh "$FIXTURE_DIR"
@@ -418,9 +414,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-whisper/bin/activate
-          python3 tests/capi/fixtures/gen_fixtures.py
+          uv run --no-project --python /tmp/vokra-py-whisper/bin/python \
+            python tests/capi/fixtures/gen_fixtures.py
           ls -lh tests/capi/fixtures/
       - name: Detect fixture drift and emit report
         # `git diff --stat` on the fixture dir + resource file + capi fixtures.
@@ -540,7 +535,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          uv run --no-project --python 3.12 python - <<'PY'
           import os
           import re
           import sys

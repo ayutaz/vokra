@@ -89,6 +89,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -135,7 +136,7 @@ jobs:
       - name: Generate SPDX SBOM (X-07-T03, first-party, NFR-MT-03)
         run: |
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --no-default-features \
             --features vokra-models/metal \
@@ -187,7 +188,7 @@ jobs:
           # `// M2-02-T09: release binaryTarget` sentinel that does not exist);
           # the regex below matches the actual `.binaryTarget(name: "Vokra",
           # path: "…")` form present at Package.swift:20-22 directly.
-          python3 - <<'PY'
+          uv run --no-project --python 3.12 python - <<'PY'
           import os
           import pathlib
           import re
@@ -269,6 +270,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -427,7 +429,7 @@ jobs:
       - name: Generate SPDX SBOM (X-07-T04, first-party, NFR-MT-03)
         run: |
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --no-default-features \
             --features cpu \
@@ -562,6 +564,7 @@ jobs:
       id-token: write  # OIDC for PyPI trusted publishing (T17)
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       # X-07-T07: the first-party SBOM generator drives `cargo tree`, so this
       # job (previously wheel-only, no Rust) now needs the toolchain. The graph
@@ -616,15 +619,15 @@ jobs:
       - name: Generate SPDX SBOM (X-07-T07, first-party, NFR-MT-03)
         run: |
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --doc-name vokra-python-wheel \
             --output dist/vokra-python-wheel.spdx.json
 
       - name: twine check (metadata validation, dry-run safe)
         run: |
-          python3 -m pip install --user twine
-          python3 -m twine check dist/*.whl
+          uv run --no-project --python 3.12 --with twine \
+            python -m twine check dist/*.whl
 
       - name: Upload workflow artifact (wheels + SBOM, for inspection)
         uses: actions/upload-artifact@v7
@@ -733,6 +736,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Compute release version (semver from tag, v-prefix stripped)
         id: version
@@ -842,7 +846,7 @@ jobs:
       - name: Generate SPDX SBOM (X-07-T05, excluded workspace, NFR-MT-03)
         run: |
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-godot \
             --manifest-dir integrations/vokra-godot \
             --doc-name vokra-godot-assetlib \
@@ -948,6 +952,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -992,7 +997,7 @@ jobs:
       - name: Generate SPDX SBOM (X-07-T06, first-party, NFR-MT-03)
         run: |
           export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-wasm-harness \
             --no-default-features \
             --doc-name vokra-npm-web \
@@ -1065,7 +1070,8 @@ jobs:
   # (uses local path deps, no registry); the downstream publish chain is
   # validated end-to-end incrementally by crates-io-publish (owner, T12/T14).
   #
-  # Zero-dep (NFR-DS-02): shell + python3 stdlib + cargo (pinned toolchain).
+  # Zero-dep (NFR-DS-02): shell + uv-managed Python 3.12 stdlib + cargo
+  # (pinned toolchain).
   # ---------------------------------------------------------------------------
   crates-io-dry-run:
     name: crates-io-dry-run
@@ -1073,18 +1079,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Verify publish order is a valid topological order (X-07-T10)
-        run: python3 tools/release/crates_publish_order.py --verify
+        run: uv run --no-project --python 3.12 python tools/release/crates_publish_order.py --verify
 
       - name: cargo package --list for every crate in the set (topo order)
         run: |
           set -euo pipefail
-          ORDER="$(python3 tools/release/crates_publish_order.py)"
+          ORDER="$(uv run --no-project --python 3.12 python tools/release/crates_publish_order.py)"
           echo "== crates.io publish set (topological order) =="
           echo "$ORDER"
           COUNT=0
@@ -1107,7 +1114,7 @@ jobs:
 
       - name: Downstream dry-run status (honest, registry-gated)
         run: |
-          N="$(python3 tools/release/crates_publish_order.py | wc -l | tr -d ' ')"
+          N="$(uv run --no-project --python 3.12 python tools/release/crates_publish_order.py | wc -l | tr -d ' ')"
           echo "::notice::crates-io-dry-run: cargo package --list passed for all ${N} crates. Downstream cargo publish --dry-run is gated on deps existing on crates.io (chicken-and-egg of first-time multi-crate publishing); the chain is validated incrementally by crates-io-publish (owner, X-07-T12/T14)."
 
       - name: Root Cargo.lock unchanged (zero-dep tripwire)
@@ -1126,7 +1133,7 @@ jobs:
   # X-09b: this job's existence is the precondition for docs.rs auto-doc (docs.rs
   # builds published crates); it is why X-07 is sequenced before X-09b.
   #
-  # Zero-dep (NFR-DS-02): shell + python3 stdlib + cargo.
+  # Zero-dep (NFR-DS-02): shell + uv-managed Python 3.12 stdlib + cargo.
   # ---------------------------------------------------------------------------
   crates-io-publish:
     name: crates-io-publish
@@ -1134,6 +1141,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1158,7 +1166,7 @@ jobs:
             exit 0
           fi
           set -euo pipefail
-          ORDER="$(python3 tools/release/crates_publish_order.py)"
+          ORDER="$(uv run --no-project --python 3.12 python tools/release/crates_publish_order.py)"
           for c in $ORDER; do
             echo "== cargo publish -p $c =="
             # Clean tag checkout (no --allow-dirty). No skip-existing: a
@@ -1173,7 +1181,7 @@ jobs:
         run: |
           echo "== crates-io-publish (dry-run / dispatch) =="
           echo "Would publish (topological order):"
-          python3 tools/release/crates_publish_order.py
+          uv run --no-project --python 3.12 python tools/release/crates_publish_order.py
           echo "Skipping: cargo publish (real). Requires tag + dry_run=false + secrets.CRATES_IO_TOKEN."
 
   # ---------------------------------------------------------------------------
@@ -1194,6 +1202,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Extract release notes from CHANGELOG (X-07-T15/T16)
         run: |
@@ -1204,9 +1213,9 @@ jobs:
           fi
           # Prefer the rolled [X.Y.Z] section; fall back to [Unreleased]. Never
           # fabricate: if both are absent/empty, fail loud.
-          if python3 scripts/release/extract-changelog.py --version "$VERSION" --output release-notes.md 2>/dev/null; then
+          if uv run --no-project --python 3.12 python scripts/release/extract-changelog.py --version "$VERSION" --output release-notes.md 2>/dev/null; then
             echo "release-notes: using [$VERSION]"
-          elif python3 scripts/release/extract-changelog.py --version Unreleased --output release-notes.md; then
+          elif uv run --no-project --python 3.12 python scripts/release/extract-changelog.py --version Unreleased --output release-notes.md; then
             echo "release-notes: [$VERSION] absent — using [Unreleased]"
           else
             echo "release-notes: no non-empty [$VERSION] or [Unreleased] section — refusing to publish blank notes (FR-EX-08)" >&2
@@ -1264,6 +1273,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
         id: gate
@@ -1321,7 +1331,7 @@ jobs:
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi --doc-name vokra-desktop \
             --output dist/desktop/vokra-desktop.spdx.json
           ( cd dist/desktop && for f in *; do
@@ -1355,6 +1365,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
         id: gate
@@ -1402,7 +1413,7 @@ jobs:
           set -euo pipefail
           V="${GITHUB_REF_NAME#v}"
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi --no-default-features \
             --doc-name vokra-android-aar \
             --output "dist/android/vokra-${V}-android-aar.spdx.json"

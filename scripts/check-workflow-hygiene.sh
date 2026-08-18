@@ -39,6 +39,15 @@
 #       quoted values are fine, `colon:no-space` is fine, URLs are fine, and
 #       block scalars (`|`) are fine because their body is not a key-line
 #       scalar.
+#   (e) uv-only Python — shell commands in every `run:` step must invoke
+#       Python, pip, and pytest through uv. Manual `python -m venv`, venv
+#       activation, direct `<venv>/bin/python`, and bare pip/pytest are hard
+#       errors. Heredoc payloads are skipped after checking their launcher, so
+#       Python source code is never mistaken for a shell command.
+#   (f) setup-uv integrity — every job that executes uv must install the
+#       repository-pinned setup-uv action in that same job. Unpinned actions,
+#       duplicate setup steps, and setup steps in jobs that never invoke uv
+#       are hard errors; this catches copy/paste placement mistakes.
 #
 # NON-GOALS
 #   Not a YAML validator. Zero-dep (NFR-DS-02) forbids PyYAML, so this is a
@@ -167,6 +176,28 @@ def parse_jobs(text):
     return jobs
 
 
+def parse_job_sections(text):
+    """Return (job_id, first_line, last_line) for each top-level job."""
+    lines = text.splitlines()
+    starts = []
+    in_jobs = False
+    for lineno, line in enumerate(lines, 1):
+        if re.match(r"^jobs:\s*(#.*)?$", line):
+            in_jobs = True
+            continue
+        if in_jobs and line and not line[0].isspace() and not line.lstrip().startswith("#"):
+            break
+        if in_jobs:
+            match = re.match(r"^ {2}([A-Za-z_][A-Za-z0-9_-]*):\s*(#.*)?$", line)
+            if match:
+                starts.append((match.group(1), lineno))
+    out = []
+    for index, (job_id, first) in enumerate(starts):
+        last = starts[index + 1][1] - 1 if index + 1 < len(starts) else len(lines)
+        out.append((job_id, first, last))
+    return out
+
+
 NEEDS_RE = re.compile(r"^\s*needs:\s*(.+?)\s*(?:#.*)?$")
 
 
@@ -204,6 +235,7 @@ def parse_needs(text):
 # the block is invisible and its shell never syntax-checked — a silent
 # false-negative the self-test pins down.
 RUN_RE = re.compile(r"^(\s*(?:-\s+)?)run:\s*([|>])[-+0-9]*\s*(?:#.*)?$")
+RUN_SINGLE_RE = re.compile(r"^\s*(?:-\s+)?run:\s+(.+?)\s*$")
 
 
 def parse_run_blocks(text):
@@ -241,6 +273,126 @@ def parse_run_blocks(text):
             continue
         i += 1
     return out
+
+
+# Python tooling policy checker. This deliberately recognises commands only
+# at shell command positions (start of line, after a shell operator, or after
+# a control keyword). Prose such as `echo "use python"` therefore remains
+# legal, while command substitutions such as `VALUE="$(python3 -c ...)"` are
+# still caught. `--python` is an uv option and cannot match because `-` is
+# excluded by the command-token boundary.
+PYTHON_COMMAND_RE = re.compile(
+    r"""(?x)
+    (?:
+        ^
+      | && | \|\| | [;|`(]
+      | \b(?:if|elif|while|until|then|do|command|exec|time)\s+
+      | !
+    )
+    \s*
+    (?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*
+    (?P<command>
+        python3? | pip3? | pytest
+      | (?:[^\s;&|()`"']+/)+(?:python(?:\.exe)?|pip(?:\.exe)?)
+    )
+    (?=\s|$)
+    """
+)
+UV_COMMAND_RE = re.compile(
+    r"""(?x)
+    (?:
+        ^
+      | && | \|\| | [;|`(]
+      | \b(?:if|elif|while|until|then|do|command|exec|time)\s+
+      | \brun\s+(?:"[^"]*"|'[^']*'|[^\s]+)\s+
+      | !
+    )
+    \s*
+    (?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*
+    uv\s+(?:run|sync|venv|pip|python|tool)\b
+    """
+)
+VENV_ACTIVATE_RE = re.compile(
+    r"(?:^|&&|\|\||[;|`(])\s*(?:source|\.)\s+"
+    r"[^\s;&|]+/(?:bin|Scripts)/(?:activate|Activate\.ps1)(?=\s|$)"
+)
+HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+SETUP_UV_PIN = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
+
+
+def iter_logical_shell_commands(run_lineno, body):
+    """Yield joined shell commands while skipping heredoc payloads."""
+    heredoc_end = None
+    logical = ""
+    logical_lineno = None
+    for offset, line in enumerate(body.splitlines(), 1):
+        stripped = line.strip()
+        lineno = run_lineno + offset
+        if heredoc_end is not None:
+            if stripped == heredoc_end:
+                heredoc_end = None
+            continue
+        if not logical and (not stripped or stripped.startswith("#")):
+            continue
+        if logical_lineno is None:
+            logical_lineno = lineno
+        if stripped.endswith("\\"):
+            logical += stripped[:-1].rstrip() + " "
+            continue
+        logical += stripped
+        yield logical_lineno, logical
+        heredoc = HEREDOC_RE.search(logical)
+        if heredoc:
+            heredoc_end = heredoc.group(1)
+        logical = ""
+        logical_lineno = None
+
+    # A dangling continuation is already a bash syntax error in check (c),
+    # but still scan it so a bare command cannot disappear from this gate's
+    # diagnostics merely because the block is malformed too.
+    if logical:
+        yield logical_lineno or run_lineno, logical
+
+
+def find_bare_python_commands(run_lineno, body):
+    """Yield (line, command) for non-uv Python tooling in one run block."""
+    for lineno, logical in iter_logical_shell_commands(run_lineno, body):
+        match = PYTHON_COMMAND_RE.search(logical)
+        if match:
+            yield lineno, match.group("command")
+        if VENV_ACTIVATE_RE.search(logical):
+            yield lineno, "venv activation"
+
+
+def find_uv_commands(run_lineno, body):
+    """Yield line numbers for uv commands in one run block."""
+    for lineno, logical in iter_logical_shell_commands(run_lineno, body):
+        if UV_COMMAND_RE.search(logical):
+            yield lineno
+
+
+def find_bare_python_in_single_run(lineno, line):
+    """Return violations from a scalar `run: command` entry, if any."""
+    match = RUN_SINGLE_RE.match(line)
+    if not match or match.group(1).startswith(("|", ">")):
+        return []
+    command = match.group(1)
+    out = []
+    bare = PYTHON_COMMAND_RE.search(command)
+    if bare:
+        out.append((lineno, bare.group("command")))
+    if VENV_ACTIVATE_RE.search(command):
+        out.append((lineno, "venv activation"))
+    return out
+
+
+def single_run_uses_uv(line):
+    match = RUN_SINGLE_RE.match(line)
+    return bool(
+        match
+        and not match.group(1).startswith(("|", ">"))
+        and UV_COMMAND_RE.search(match.group(1))
+    )
 
 
 # ------------------------------------------------------------------ collect --
@@ -306,6 +458,7 @@ for f in files:
             )
 
     # (c) run: block shell syntax
+    uv_command_lines = []
     for lineno, shell, body in parse_run_blocks(text):
         if shell is not None and shell not in ("bash", "sh"):
             continue  # pwsh / python / cmd — not ours to syntax-check
@@ -322,6 +475,57 @@ for f in files:
         if res.returncode != 0:
             detail = res.stderr.strip().replace(tmp_path, f"{f.name}:run@{lineno}")
             problems.append(f"{f.name}:{lineno}: run: block is not valid bash — {detail}")
+
+        # (e) All shell-launched Python tooling must go through uv. This is
+        #     independent of shell syntax: a bare command is valid bash but
+        #     bypasses the repository's lock/interpreter policy.
+        for command_lineno, command in find_bare_python_commands(lineno, body):
+            problems.append(
+                f"{f.name}:{command_lineno}: bare Python tooling '{command}' in run block — "
+                "use uv run / uv pip / uv venv without activation"
+            )
+        uv_command_lines.extend(find_uv_commands(lineno, body))
+
+    # Single-line `run: python ...` entries are not returned by
+    # parse_run_blocks(), so scan those separately.
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for command_lineno, command in find_bare_python_in_single_run(lineno, line):
+            problems.append(
+                f"{f.name}:{command_lineno}: bare Python tooling '{command}' in scalar run — "
+                "use uv run / uv pip / uv venv without activation"
+            )
+        if single_run_uses_uv(line):
+            uv_command_lines.append(lineno)
+
+    # (f) uv execution and setup must live in the same job, with the action
+    #     pinned to the repository-reviewed commit. A misplaced setup step is
+    #     as dangerous as an omitted one: both make the intended job depend on
+    #     ambient runner state.
+    lines = text.splitlines()
+    for job_id, first, last in parse_job_sections(text):
+        uses_uv = any(first <= lineno <= last for lineno in uv_command_lines)
+        setup_lines = [
+            lineno
+            for lineno in range(first, last + 1)
+            if "astral-sh/setup-uv@" in lines[lineno - 1]
+        ]
+        if uses_uv and not setup_lines:
+            problems.append(
+                f"{f.name}:{first}: job '{job_id}' executes uv without setup-uv"
+            )
+        if not uses_uv and setup_lines:
+            problems.append(
+                f"{f.name}:{setup_lines[0]}: job '{job_id}' installs setup-uv but never executes uv"
+            )
+        if len(setup_lines) > 1:
+            problems.append(
+                f"{f.name}:{setup_lines[1]}: job '{job_id}' has duplicate setup-uv steps"
+            )
+        for setup_lineno in setup_lines:
+            if f"astral-sh/setup-uv@{SETUP_UV_PIN}" not in lines[setup_lineno - 1]:
+                problems.append(
+                    f"{f.name}:{setup_lineno}: setup-uv must be pinned to {SETUP_UV_PIN}"
+                )
 
     inventory.append((f.name, jobs))
 
@@ -353,7 +557,8 @@ if problems:
 
 print(
     f"check-workflow-hygiene: OK ({len(files)} workflow(s), {len(all_crons)} cron(s), "
-    "no collisions / dangling needs / shell syntax errors)"
+    "no collisions / dangling needs / shell syntax errors / bare Python tooling / "
+    "setup-uv drift)"
 )
 PY
 }
@@ -663,6 +868,89 @@ jobs:
 YML
     if run_checker "$tmp/badcron" check >/dev/null 2>&1; then
         echo "self-test FAILED: a 4-field cron should be a hard error" >&2
+        rc=1
+    fi
+
+    # (6) Bare Python, pip, pytest, and activation must fail in both block and
+    #     scalar run forms. One fixture pins every prohibited family.
+    mkdir -p "$tmp/barepython"
+    cat >"$tmp/barepython/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 tools/check.py
+      - run: |
+          python -m venv /tmp/example
+          source /tmp/example/bin/activate
+          pip install pytest
+          pytest -q
+YML
+    if run_checker "$tmp/barepython" check >/dev/null 2>&1; then
+        echo "self-test FAILED: bare Python/pip/pytest/activation should fail" >&2
+        rc=1
+    fi
+
+    # (6b) Every supported uv-managed form must pass, including an explicit
+    #      venv interpreter and a heredoc whose Python body contains prose
+    #      that resembles shell commands.
+    mkdir -p "$tmp/uvpython"
+    cat >"$tmp/uvpython/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - run: uv run --no-project --python 3.12 python tools/check.py
+      - run: |
+          uv venv --python 3.12 /tmp/example
+          uv pip install --python /tmp/example/bin/python pytest
+          uv run --no-project --python /tmp/example/bin/python \
+            python - <<'PY'
+          note = "python -m pip and pytest are prose inside Python source"
+          print(note)
+          PY
+YML
+    if ! run_checker "$tmp/uvpython" check >/dev/null 2>&1; then
+        echo "self-test FAILED: uv-managed Python forms should pass" >&2
+        rc=1
+    fi
+
+    # (6c) A valid uv command without setup-uv in the SAME job must fail.
+    mkdir -p "$tmp/missingsetupuv"
+    cat >"$tmp/missingsetupuv/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: uv run --no-project --python 3.12 python tools/check.py
+YML
+    if run_checker "$tmp/missingsetupuv" check >/dev/null 2>&1; then
+        echo "self-test FAILED: uv execution without same-job setup-uv should fail" >&2
+        rc=1
+    fi
+
+    # (6d) A floating setup-uv ref is not an acceptable substitute for the
+    #      repository-reviewed SHA.
+    mkdir -p "$tmp/unpinnedsetupuv"
+    cat >"$tmp/unpinnedsetupuv/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@v9
+      - run: uv run --no-project --python 3.12 python tools/check.py
+YML
+    if run_checker "$tmp/unpinnedsetupuv" check >/dev/null 2>&1; then
+        echo "self-test FAILED: unpinned setup-uv should fail" >&2
         rc=1
     fi
 

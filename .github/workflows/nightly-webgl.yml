@@ -128,6 +128,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -216,7 +218,7 @@ jobs:
           fi
           SERVE_DIR="$(dirname "$INDEX")"
           echo "Serving $SERVE_DIR (no COOP/COEP headers — threads-off baseline)"
-          python3 -m http.server 8080 --directory "$SERVE_DIR" &
+          uv run --no-project --python 3.12 python -m http.server 8080 --directory "$SERVE_DIR" &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 

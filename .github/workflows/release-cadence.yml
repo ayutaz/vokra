@@ -15,7 +15,7 @@
 #
 # Cron slot 0 9 * * 1 (Mon 09:00 UTC) is collision-free vs every other workflow
 # (verified by scripts/check-workflow-hygiene.sh). Zero-dep (NFR-DS-02): git +
-# python3 stdlib only.
+# uv-managed Python 3.12 stdlib only.
 name: release-cadence
 
 on:
@@ -35,10 +35,11 @@ jobs:
         with:
           # Need the full tag history to measure intervals between releases.
           fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Measure release cadence (advisory, never tags)
         run: |
-          python3 tools/release/cadence.py --emit-summary | tee cadence.json
+          uv run --no-project --python 3.12 python tools/release/cadence.py --emit-summary | tee cadence.json
           echo "== cadence judgment (advisory) =="
           cat cadence.json
 
@@ -51,7 +52,7 @@ jobs:
 
       - name: Due reminder (step-summary only, no auto-tag)
         run: |
-          DUE="$(python3 -c 'import json; print(json.load(open("cadence.json"))["due"])')"
+          DUE="$(uv run --no-project --python 3.12 python -c 'import json; print(json.load(open("cadence.json"))["due"])')"
           if [ "$DUE" = "True" ]; then
             echo "::notice::release-cadence: a release is DUE (>= 28 days since the last tag). Tag issuance is owner-only (X-07-T23) — see the step summary for the material. This workflow does NOT push a tag."
           else

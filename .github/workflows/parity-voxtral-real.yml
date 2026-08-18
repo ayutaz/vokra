@@ -302,6 +302,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        if: matrix.enabled
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         if: matrix.enabled
         uses: dtolnay/rust-toolchain@stable
@@ -324,26 +328,23 @@ jobs:
         if: matrix.enabled
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # CPU torch: the reference dumper runs fp32 on CPU (no CUDA on
           # ubuntu-latest). transformers >= 4.44 has VoxtralEncoder / the
           # LlamaModel path the streamed decoder mirrors. mistral_common is
           # what dump_voxtral_reference.py uses for the tekken tokenizer
           # + TranscriptionRequest prompt layout.
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             --index-url https://download.pytorch.org/whl/cpu \
             'torch==2.4.*'
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'numpy>=1.26,<3' \
             'safetensors>=0.4' \
             'huggingface_hub>=0.24,<1' \
             'transformers>=4.44,<4.60' \
             'mistral_common>=1.8'
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, numpy, safetensors, huggingface_hub, transformers
           print(
               f"voxtral parity venv: torch={torch.__version__} "
@@ -361,13 +362,11 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER: "1"
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           # `python -c` (not a heredoc): a heredoc inside $() cannot be
           # closed from column 0 in a `run: |` block, which
           # `scripts/check-workflow-hygiene.sh` catches via `bash -n`.
           # Same pattern as parity-tts-continuous-vae-real.yml.
-          SNAPSHOT_STDOUT="$(python -c "
+          SNAPSHOT_STDOUT="$(uv run --no-project --python "${PARITY_VENV}/bin/python" python -c "
           import os
           from huggingface_hub import snapshot_download
           repo = os.environ['HF_REPO']
@@ -481,12 +480,11 @@ jobs:
         id: dump
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           REF_DIR="${RUNNER_TEMP}/voxtral-refdata"
           mkdir -p "${REF_DIR}"
           set +e
-          python tools/parity/voxtral_dump_reference.py \
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python \
+            tools/parity/voxtral_dump_reference.py \
             --do-dump \
             --checkpoint-dir "${CKPT_DIR}" \
             --output-dir "${REF_DIR}" \
@@ -507,7 +505,7 @@ jobs:
         if: matrix.enabled && needs.setup.outputs.run_dumper == 'true'
         run: |
           set -euo pipefail
-          BOS="$(python -c "
+          BOS="$(uv run --no-project --python "${PARITY_VENV}/bin/python" python -c "
           import json, os
           p = os.path.join(os.environ['CKPT_DIR'], 'generation_config.json')
           with open(p) as f:

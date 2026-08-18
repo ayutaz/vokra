@@ -139,6 +139,7 @@ jobs:
     runs-on: [self-hosted, linux, cuda-rtx-4090]
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Emit device + driver + toolkit versions to the summary
         # Belt-and-suspenders: even if the check-runner job passed, we still
@@ -206,10 +207,10 @@ jobs:
               if (n == 0) { print "NaN"; exit }
               if (n % 2 == 1) { print a[(n+1)/2] } else { printf "%.6f\n", (a[n/2] + a[n/2+1]) / 2 }
             }')
-          BASELINE=$(python3 -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['median_rtf'])")
-          HARD_CEILING=$(python3 -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['hard_ceiling'])")
-          REG=$(python3 -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['regression_threshold'])")
-          THRESHOLD=$(python3 -c "print($BASELINE * (1 + $REG))")
+          BASELINE=$(uv run --no-project --python 3.12 python -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['median_rtf'])")
+          HARD_CEILING=$(uv run --no-project --python 3.12 python -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['hard_ceiling'])")
+          REG=$(uv run --no-project --python 3.12 python -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['regression_threshold'])")
+          THRESHOLD=$(uv run --no-project --python 3.12 python -c "print($BASELINE * (1 + $REG))")
 
           echo "## RTF measurement" >> "$GITHUB_STEP_SUMMARY"
           echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
@@ -221,7 +222,7 @@ jobs:
           echo "| N iterations | ${#RTFS[@]} |" >> "$GITHUB_STEP_SUMMARY"
 
           # Gate expression: fail if regression 5% exceeded OR hard ceiling breached.
-          FAIL=$(python3 -c "print(1 if ($MEDIAN > $THRESHOLD or $MEDIAN > $HARD_CEILING) else 0)")
+          FAIL=$(uv run --no-project --python 3.12 python -c "print(1 if ($MEDIAN > $THRESHOLD or $MEDIAN > $HARD_CEILING) else 0)")
           if [ "$FAIL" -eq 1 ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "**FAIL**: median RTF $MEDIAN exceeds either baseline * 1.05 ($THRESHOLD) or the hard ceiling ($HARD_CEILING)." >> "$GITHUB_STEP_SUMMARY"

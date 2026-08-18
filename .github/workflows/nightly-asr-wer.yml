@@ -99,7 +99,7 @@
 # not a noise budget.
 #
 # Zero-dep invariant (NFR-DS-02): root Cargo.lock is never modified. The
-# Python stack lives in a /tmp venv; a `git diff --exit-code` guard catches
+# Python stack lives in an uv-managed /tmp venv; a `git diff --exit-code` guard catches
 # accidental mutation. No Cargo dependency is added by this leg.
 #
 # Corpus: LibriSpeech dev-clean (OpenSLR resource 12), CC BY 4.0,
@@ -185,6 +185,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -216,23 +217,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv /tmp/vokra-py-asrwer
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install \
+          uv venv --python 3.12 /tmp/vokra-py-asrwer
+          uv pip install --python /tmp/vokra-py-asrwer/bin/python \
             "jiwer>=3,<4" \
             "transformers>=4.44,<4.60" \
             "soundfile>=0.12,<1" \
             "huggingface_hub>=0.24,<1"
-          python -m pip list | grep -Ei '^(jiwer|transformers|soundfile|huggingface[-_]hub)\b'
+          uv pip list --python /tmp/vokra-py-asrwer/bin/python \
+            | grep -Ei '^(jiwer|transformers|soundfile|huggingface[-_]hub)\b'
 
       - name: Unit-test the scorer and this workflow's surface
         # The oracle is stdlib-only, so it runs before the heavy assets are
         # fetched: a broken threshold mirror or a cron collision should fail
         # in seconds, not after a 600 MB download.
         shell: bash
-        run: python3 tools/eval/test_librispeech_wer.py
+        run: uv run --no-project --python /tmp/vokra-py-asrwer/bin/python python tools/eval/test_librispeech_wer.py
 
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
@@ -241,9 +240,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
-          python3 - <<'PYEOF'
+          uv run --no-project --python /tmp/vokra-py-asrwer/bin/python python - <<'PYEOF'
           import os
           from huggingface_hub import snapshot_download
           local = snapshot_download(
@@ -394,11 +391,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
           mkdir -p "$GITHUB_WORKSPACE/.wav"
           echo "WAV_DIR=$GITHUB_WORKSPACE/.wav" >> "$GITHUB_ENV"
-          WAV_DIR="$GITHUB_WORKSPACE/.wav" python3 - <<'PYEOF'
+          WAV_DIR="$GITHUB_WORKSPACE/.wav" uv run --no-project \
+            --python /tmp/vokra-py-asrwer/bin/python python - <<'PYEOF'
           import os, sys
           from pathlib import Path
           import soundfile as sf
@@ -472,7 +468,8 @@ jobs:
             echo "::warning::no decoded WAV for the RTF companion — skipping (the WER leg is the gate)"
             exit 0
           fi
-          STATE="$(python3 tools/bench/baseline_gate.py "$RTF_BASE")"
+          STATE="$(uv run --no-project --python /tmp/vokra-py-asrwer/bin/python \
+            python tools/bench/baseline_gate.py "$RTF_BASE")"
           {
             echo "### Whisper base RTF companion (advisory, X-06-T11)"
             echo ""
@@ -527,7 +524,8 @@ jobs:
             echo "::notice::no staged piper GGUF (repo variable VOKRA_PIPER_GGUF unset or path absent) — clean skip, not a pass. Committed piper GGUF is open question #7."
             exit 0
           fi
-          STATE="$(python3 tools/bench/baseline_gate.py "$RTF_BASE")"
+          STATE="$(uv run --no-project --python /tmp/vokra-py-asrwer/bin/python \
+            python tools/bench/baseline_gate.py "$RTF_BASE")"
           if [ "$STATE" = placeholder ]; then
             echo "::notice::piper RTF baseline is a placeholder — measuring for the record, no verdict."
             # Advisory contract requires this branch to survive bench
@@ -574,8 +572,6 @@ jobs:
           ALL_IN_CHAPTER: ${{ github.event.inputs.all_in_chapter }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
           EXTRA=()
           # Only forward --threshold when the dispatcher actually supplied
           # one. Passing $WER_THRESHOLD unconditionally would override each
@@ -589,7 +585,8 @@ jobs:
             EXTRA+=(--all-in-chapter)
           fi
           set +e
-          python3 tools/eval/librispeech_wer.py \
+          uv run --no-project --python /tmp/vokra-py-asrwer/bin/python python \
+            tools/eval/librispeech_wer.py \
             --librispeech-root "$CORPUS_DIR" \
             --transcripts "$TRANSCRIPTS" \
             --normalizer-json "$HF_NORMALIZER" \

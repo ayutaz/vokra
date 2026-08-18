@@ -146,6 +146,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
       - name: Download + verify the upstream checkpoint (owner-declared URL)
         shell: bash
@@ -165,15 +166,16 @@ jobs:
           # converter deliberately does not parse (FR-LD-05 / NFR-DS-02).
           # The offline prepare step bridges it, in a venv so the root
           # Cargo.lock is untouched — the same split DAC and Kokoro use.
-          python3 -m venv /tmp/utmos-venv
-          /tmp/utmos-venv/bin/pip install --quiet --upgrade pip
+          uv venv --python 3.12 /tmp/utmos-venv
           # numpy is a transitive dep of safetensors.torch.save_file (it calls
           # _to_ndarray which does `import numpy as np`). torch 2.8.0 does not
           # pull numpy as a hard runtime dep, so we install it explicitly here
           # — same posture as the sibling parity-rvq-real.yml / parity-whisper-
           # real.yml / parity-kokoro-real.yml workflows.
-          /tmp/utmos-venv/bin/pip install --quiet "torch==2.8.0" "numpy>=1.26,<3" safetensors
-          /tmp/utmos-venv/bin/python tools/parity/utmos_prepare_checkpoint.py \
+          uv pip install --python /tmp/utmos-venv/bin/python \
+            "torch==2.8.0" "numpy>=1.26,<3" safetensors
+          uv run --no-project --python /tmp/utmos-venv/bin/python \
+            python tools/parity/utmos_prepare_checkpoint.py \
             --ckpt /tmp/utmos-checkpoint \
             --output /tmp/utmos.safetensors \
             --config-out /tmp/utmos-config.json

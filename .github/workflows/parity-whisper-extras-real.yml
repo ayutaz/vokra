@@ -248,6 +248,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         if: steps.leg-gate.outputs.leg_enabled == 'true'
         uses: dtolnay/rust-toolchain@stable
@@ -303,23 +307,21 @@ jobs:
         if: steps.leg-gate.outputs.leg_enabled == 'true'
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # CPU torch keeps the runner lean — every check the harness does
           # today is deterministic / integer-arithmetic (metadata + shape
           # sanity); the torch dep is present so a future flip-the-switch
           # wave can dump activations from the same venv without a fresh
           # install step.
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
+            torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'safetensors>=0.4' \
             'numpy>=2,<3' \
             'huggingface_hub==0.36.2'
           # Optional but massively speeds ~1-3 GB snapshot pulls.
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, safetensors, numpy, huggingface_hub
           print(f"whisper-extras parity venv: torch={torch.__version__} "
                 f"numpy={numpy.__version__} "
@@ -336,9 +338,7 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER: '1'
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python - <<PY
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<PY
           import os
           from huggingface_hub import snapshot_download
           repo = os.environ["HF_REPO"]

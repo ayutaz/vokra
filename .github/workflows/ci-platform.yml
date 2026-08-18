@@ -215,6 +215,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -263,7 +264,7 @@ jobs:
           bash scripts/gen-notice-cpu-vulkan-only.sh --out dist/cpu-vulkan-only/NOTICE
       - name: Generate SPDX 2.3 SBOM (deterministic)
         run: |
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --no-default-features \
             --features vulkan \
@@ -604,6 +605,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build vokra-cli (release)
@@ -651,7 +653,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE=docs/bench-baselines/silero_vad_baseline.json
-          STATE="$(python3 tools/bench/baseline_gate.py "$BASE")"
+          STATE="$(uv run --no-project --python 3.12 python tools/bench/baseline_gate.py "$BASE")"
           if [ "$STATE" = placeholder ]; then
             echo "::notice::Silero VAD RTF baseline is a placeholder (not yet seeded on ubuntu-latest). Clean skip — no regression verdict claimed. Seed via .github/workflows/bench-baseline-capture.yml (owner)."
             exit 0

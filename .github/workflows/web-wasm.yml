@@ -32,8 +32,8 @@
 # promotion applies).
 #
 # Zero-dep (NFR-DS-02): no Rust dependency is added; the Node harness and
-# the JS glue have zero npm dependencies. The whisper job's Python venv is
-# /tmp-scoped (the parity-whisper-real isolation pattern).
+# the JS glue have zero npm dependencies. The whisper job's uv-managed Python
+# venv is /tmp-scoped (the parity-whisper-real isolation pattern).
 
 name: web-wasm
 
@@ -159,6 +159,7 @@ jobs:
       WHISPER_BASE_REVISION: "e37978b90ca9030d5170a5c07aadb050351a65bb"
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -168,13 +169,12 @@ jobs:
           cargo build --release -p vokra-cli
           ./scripts/build-wasm.sh harness
 
-      - name: Fetch whisper-base checkpoint (HF snapshot_download, /tmp venv)
+      - name: Fetch whisper-base checkpoint (HF snapshot_download, uv venv)
         run: |
           set -euo pipefail
-          python3 -m venv /tmp/vokra-py-web
-          . /tmp/vokra-py-web/bin/activate
-          pip install --quiet "huggingface_hub>=0.23"
-          python3 - <<'PYEOF'
+          uv venv --python 3.12 /tmp/vokra-py-web
+          uv pip install --python /tmp/vokra-py-web/bin/python "huggingface_hub>=0.23"
+          uv run --no-project --python /tmp/vokra-py-web/bin/python python - <<'PYEOF'
           import os
           from huggingface_hub import snapshot_download
           local_dir = snapshot_download(

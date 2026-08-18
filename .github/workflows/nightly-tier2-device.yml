@@ -157,6 +157,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build vokra-cli (release)
@@ -198,8 +199,8 @@ jobs:
             OUT="$(./target/release/vokra-cli bench --model "$GGUF" --input "$WAV" --iters 10 --warmup 3 --format json)"
           fi
           echo "$OUT"
-          RTF="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rtf"])')"
-          BREACH="$(python3 -c "print(1 if float('$RTF') > float('$THRESHOLD') else 0)")"
+          RTF="$(printf '%s' "$OUT" | uv run --no-project --python 3.12 python -c 'import json,sys; print(json.load(sys.stdin)["rtf"])')"
+          BREACH="$(uv run --no-project --python 3.12 python -c "print(1 if float('$RTF') > float('$THRESHOLD') else 0)")"
           {
             echo "## ${PI} — ${LEG} RTF (${REQ})"
             echo "| metric | value |"

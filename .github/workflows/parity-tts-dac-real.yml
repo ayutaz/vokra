@@ -239,6 +239,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        if: steps.entry-gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         if: steps.entry-gate.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@stable
@@ -261,10 +265,7 @@ jobs:
         if: steps.entry-gate.outputs.run == 'true'
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # torch is the smallest arch-appropriate dep: both models ship as
           # torch pickles / safetensors and the future reference dumper will
           # need it. Kept minimal here — the CPU-only wheel + safetensors +
@@ -274,14 +275,14 @@ jobs:
           # `safetensors/torch.py::_to_ndarray`; the parity-utmos.yml
           # regression fixed in commit f90daad established the pattern for
           # every parity venv on this branch).
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'torch==2.9.1' \
             'numpy>=1.26,<3' \
             'safetensors>=0.4' \
             'huggingface_hub>=0.24'
           # hf_transfer speeds the multi-GB safetensors pull.
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, safetensors, huggingface_hub
           print(f"tts-dac parity venv: torch={torch.__version__} "
                 f"safetensors={safetensors.__version__} "
@@ -295,8 +296,6 @@ jobs:
           REVISION: ${{ env[matrix.revision_env] }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           # `python -c` (not a heredoc): a heredoc inside $() cannot be closed
           # from column 0 in a `run: |` block; `python -c` sidesteps that.
           #
@@ -305,7 +304,7 @@ jobs:
           # from stdout (the `snapshot: <path>` line) and use it inline in
           # this same step, then also emit to `$GITHUB_ENV` so downstream
           # steps (convert / harness / uploader) see it.
-          SNAPSHOT_STDOUT="$(python -c "
+          SNAPSHOT_STDOUT="$(uv run --no-project --python "${PARITY_VENV}/bin/python" python -c "
           import os, sys
           from huggingface_hub import snapshot_download
           path = snapshot_download(
