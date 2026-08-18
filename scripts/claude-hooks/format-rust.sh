@@ -14,9 +14,9 @@ payload="$(cat)"
 file=""
 if command -v jq >/dev/null 2>&1; then
     file="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)"
-elif command -v python3 >/dev/null 2>&1; then
+elif command -v uv >/dev/null 2>&1; then
     file="$(printf '%s' "$payload" \
-        | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("file_path",""))' \
+        | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" uv run --no-project --python 3.12 python -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("file_path",""))' \
         2>/dev/null || true)"
 fi
 
