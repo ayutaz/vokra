@@ -139,6 +139,11 @@ jobs:
       - name: Compute size matrix
         id: matrix
         shell: bash
+        env:
+          GITHUB_EVENT_INPUTS_INCLUDE_SMALL: ${{ github.event.inputs.include_small }}
+          GITHUB_EVENT_INPUTS_INCLUDE_MEDIUM: ${{ github.event.inputs.include_medium }}
+          GITHUB_EVENT_INPUTS_INCLUDE_LARGE_V3: ${{ github.event.inputs.include_large_v3 }}
+          GITHUB_EVENT_INPUTS_INCLUDE_TURBO: ${{ github.event.inputs.include_turbo }}
         run: |
           set -euo pipefail
           include='{"size":"base","hf_id":"openai/whisper-base","hf_revision":"e37978b90ca9030d5170a5c07aadb050351a65bb","env_var":"VOKRA_WHISPER_BASE_GGUF","fixture_dir":"tests/parity/whisper_base","gguf":"whisper-base.gguf"}'
@@ -175,11 +180,6 @@ jobs:
             echo "{\"include\":[${include}]}"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
-        env:
-          GITHUB_EVENT_INPUTS_INCLUDE_SMALL: ${{ github.event.inputs.include_small }}
-          GITHUB_EVENT_INPUTS_INCLUDE_MEDIUM: ${{ github.event.inputs.include_medium }}
-          GITHUB_EVENT_INPUTS_INCLUDE_LARGE_V3: ${{ github.event.inputs.include_large_v3 }}
-          GITHUB_EVENT_INPUTS_INCLUDE_TURBO: ${{ github.event.inputs.include_turbo }}
       - name: Detect audio fixture presence
         id: wav
         shell: bash

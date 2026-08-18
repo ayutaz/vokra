@@ -568,17 +568,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PROFILE_ARGS=()
+          set -- cargo build
           if [ "${{ matrix.run_tests }}" = "true" ]; then
-            PROFILE_ARGS+=(--release)
+            set -- "$@" --release
           fi
-          TARGET_ARGS=()
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
             : # Native target; keep Cargo's default target directory/cache.
           else
-            TARGET_ARGS+=(--target "${{ matrix.triple }}")
+            set -- "$@" --target "${{ matrix.triple }}"
           fi
-          cargo build "${PROFILE_ARGS[@]}" "${TARGET_ARGS[@]}" \
+          "$@" \
             -p vokra-server \
             --manifest-path integrations/vokra-server/Cargo.toml
       - name: cargo-deny (server crate, NFR-LC-04)

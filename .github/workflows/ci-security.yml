@@ -80,6 +80,14 @@ jobs:
             AGPL-1.0-only, AGPL-1.0-or-later,
             AGPL-3.0-only, AGPL-3.0-or-later,
             SSPL-1.0
+          # Exact, reviewed exceptions only. r-efi offers MIT/Apache as valid
+          # alternatives but Dependency Review treats the LGPL arm of its OR
+          # expression as denied. rust-cache is CI tooling and is neither
+          # linked into nor distributed with Vokra; pinning its purl to the
+          # reviewed action SHA prevents this exception from floating.
+          allow-dependencies-licenses: >-
+            pkg:cargo/r-efi@6.0.0,
+            pkg:githubactions/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
           vulnerability-check: true
           retry-on-snapshot-warnings: true
           show-openssf-scorecard: true
@@ -97,10 +105,16 @@ jobs:
       - name: Check Markdown links
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
+          # Three requirement/ADR targets are intentionally gitignored-local
+          # and therefore absent from a clean CI checkout. Tennessee's ELVIS
+          # Act page resets automated clients; its two citations remain in
+          # the docs but are excluded as a single known bot-blocked endpoint.
           args: >-
             --no-progress
             --max-retries 3
             --retry-wait-time 2
             --timeout 20
+            --exclude '^file://.*/docs/(system-requirements\.md|adr/(0004-ios-build|M2-03-followup-rtf)\.md)$'
+            --exclude '^https://www\.tn\.gov/governor/news/2024/1/10/tennessee-first-in-the-nation-to-address-ai-impact-on-music-industry\.html$'
             README.md CONTRIBUTING.md .github docs
           fail: true

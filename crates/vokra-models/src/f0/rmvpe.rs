@@ -3558,14 +3558,14 @@ mod tests {
         assert_eq!(
             file.get("vokra.provenance.weight_license")
                 .and_then(|v| v.as_str()),
-            Some("permissive"),
-            "license_class round-trip: `permissive` must survive the GGUF"
+            Some("unknown"),
+            "license_class round-trip: fail-closed `unknown` must survive the GGUF"
         );
         assert_eq!(
             file.get("vokra.provenance.license")
                 .and_then(|v| v.as_str()),
-            Some("mit"),
-            "SPDX round-trip: `mit` must survive the GGUF"
+            Some("unknown"),
+            "license round-trip: fail-closed `unknown` must survive the GGUF"
         );
         assert_eq!(
             file.get("vokra.model.arch").and_then(|v| v.as_str()),

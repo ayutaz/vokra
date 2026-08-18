@@ -37,7 +37,11 @@ jobs:
         with:
           tool: cargo-hack
       - name: Check every declared feature independently
-        run: cargo hack check --workspace --each-feature --no-dev-deps --locked
+        # `--no-dev-deps` temporarily rewrites manifests, which necessarily
+        # conflicts with Cargo's `--locked` invariant. `cargo check` does not
+        # build dev-only targets here, so retain the reproducible lockfile and
+        # exercise each declared feature without manifest mutation.
+        run: cargo hack check --workspace --each-feature --locked
       - name: Audit isolated fuzz dependencies
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
@@ -134,7 +138,7 @@ jobs:
         env:
           FUZZ_TARGET: ${{ matrix.target }}
         run: >-
-          cargo fuzz run "${FUZZ_TARGET}" --
+          cargo fuzz run --target x86_64-unknown-linux-gnu "${FUZZ_TARGET}" --
           -max_total_time=300
           -max_len=1048576
           -rss_limit_mb=3072
