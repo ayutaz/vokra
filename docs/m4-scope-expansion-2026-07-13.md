@@ -40,7 +40,7 @@
 | Trigger               | 依頼者依頼「開発速度が思ったよりも早いので v1 までに入れられるものを増やしたい。他にどのようなものがあるのかを徹底的に調査して大きな項目にまとめてほしい」 |
 | Workflow              | ultracode `wf_53683532-11c`（22 agents / 8 discovery + synthesize + 12 verify + present、~34 分） |
 | Vokra baseline commit | `b1606b6`（feature branch `docs/abi-changelog-name-fix`、post-PR-#4 sync） |
-| Related SoT           | `docs/milestones.md` §8 (M4)・§9 (M5)、`docs/deliverables.md`、`docs/tickets/m3/README.md`、`docs/handoff/m4-12.md`、`CLAUDE.md`（gitignore local SSOT） |
+| Related sources at report time | `docs/milestones.md` §8 (M4)・§9 (M5)、`docs/deliverables.md`、`docs/tickets/m3/README.md`、`docs/handoff/m4-12.md`、当時の `CLAUDE.md` project chronicle（gitignore-local。現在の SSOT ではない） |
 
 ---
 

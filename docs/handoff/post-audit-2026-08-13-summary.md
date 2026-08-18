@@ -1,5 +1,10 @@
 # post-audit 2026-08-13 wave — summary
 
+> **Disposition (2026-08-18):** historical campaign record. Its audit work is
+> represented on `main` by PR #29 (`8e048d8`). Do not resume or merge the
+> named branch from this document; use
+> `docs/handoff/codex-operations-2026-08-18.md` and the live M5 checklist.
+
 **Date**: 2026-08-13（session 1）/ 2026-08-13〜14 (session 2 residual wave)
 **Branch**: `feat/post-audit-cc-gap-2026-08-13`（main HEAD `40558f5` から作成）
 **Author**: Claude Code（本 doc は audit → plan → implement workflow の最終

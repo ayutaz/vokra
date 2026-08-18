@@ -184,7 +184,7 @@ tests/parity/silero_vad/gen_reference.py <path to silero_vad_master.onnx>
 cargo test --release -p vokra-models --lib silero_vad
 
 # the measurement legs in section 2/4 (needs the local eval cache + an ORT venv)
-python measure.py <output dir>
+uv run --no-project --python 3.12 python measure.py <output-dir>
 ```
 
 Environment: Apple M1 iMac, macOS arm64; onnxruntime 1.19.2 / numpy 2.0.2 /

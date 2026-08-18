@@ -14,11 +14,19 @@ verified in CI for every PR:
   parity suite must document its reference implementation, input fixtures
   and tolerance here (this README and/or a per-suite doc header).
 
-## M0 status
+## Current status (reviewed 2026-08-18)
 
-Only the placeholder smoke test `tests/harness_smoke.rs` exists so the CI
-check stays green while ops/models are still being implemented. **The real
-parity suites are added by the owning work packages:**
+This crate now contains the FFT/window/reference harness tests under `tests/`
+and a broad committed fixture tree for front ends, VAD, TTS, codecs, and later
+models. Model-specific Rust comparisons also live beside their owning model or
+operator crate; this directory is not a complete index of every parity test in
+the repository. Consult the model's SPEC/README and the numerical-parity skill
+before regenerating a reference.
+
+### Historical M0 rollout plan
+
+The following table describes where the first real suites were assigned; the
+old statement that only a placeholder existed is no longer current:
 
 | Suite (added by) | Target | Reference | Tolerance |
 |---|---|---|---|
@@ -55,9 +63,10 @@ fixtures are **not** generated and their numbers are **not** invented. The
 `stft` (torch), `mel` (librosa) and `dct` (scipy) suites are `#[ignore]`d; the
 comparison logic is fully written and runs once the fixtures exist:
 
-```
-pip install -r tests/parity/parity-requirements.txt   # + torch/librosa/scipy
-python3 tests/parity/gen_parity_fixtures.py stft       # or: mel / dct / all
+```sh
+uv run --no-project --python 3.12 \
+  --with-requirements tests/parity/parity-requirements.txt \
+  python tests/parity/gen_parity_fixtures.py stft      # or: mel / dct / all
 cargo test -p vokra-parity -- --ignored                # then runs the shells
 ```
 
@@ -67,8 +76,10 @@ available at fixture-generation time.
 
 ### Regenerating the committed fixtures
 
-```
-python3 tests/parity/gen_parity_fixtures.py all        # numpy fft + window
+```sh
+uv run --no-project --python 3.12 \
+  --with-requirements tests/parity/parity-requirements.txt \
+  python tests/parity/gen_parity_fixtures.py all       # numpy fft + window
 ```
 
 Regeneration is byte-reproducible (fixed seed = 1234).

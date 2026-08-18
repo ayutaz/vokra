@@ -14,8 +14,8 @@ be an always-on gate.
 - **M2-14** — owner self-hosted CUDA runner (docs: [`docs/m2-owner-verification-checklist.md`](../../docs/m2-owner-verification-checklist.md) §2)
 - **M3-01** — 5% regression gate
 
-See [`docs/adr/M2-03-followup-rtf.md`](../../docs/adr/M2-03-followup-rtf.md)
-§D6 for the red-line: **this harness never asserts an RTF ceiling and never
+See `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) §D6 for the
+red-line: **this harness never asserts an RTF ceiling and never
 promotes any threshold**. All promote/defer decisions are the owner's after
 they inspect the report.
 
@@ -30,17 +30,18 @@ they inspect the report.
 
 ## Zero-dep + NVIDIA EULA red-lines
 
-The harness runs on a stock `bash` + `python3` (stdlib) + `nvidia-smi`
-(optional metadata) host. It does **not**:
+Run the shell harness through `uv run --no-project --python 3.12 bash ...` so
+its stdlib Python subprocesses resolve to the uv-managed interpreter. The host
+also needs `nvidia-smi` for optional metadata. The harness does **not**:
 
-- `pip install` any package (numpy / pandas / matplotlib all forbidden — see NFR-DS-02)
+- install any Python package at runtime (NumPy / pandas / matplotlib are not needed)
 - `apt install` cuDNN / cuBLAS / cuFFT / cudart
 - Bundle or link any NVIDIA runtime library
 
 The `vokra-cli` binary discovers CUDA at runtime via
 `dlopen("libcuda.so.1")` + `dlopen("libnvrtc.so.12")` (raw FFI, EULA install
-model). Per [`docs/adr/M2-03-followup-rtf.md`](../../docs/adr/M2-03-followup-rtf.md)
-§D8 this is the *only* CUDA linkage in the whole tree.
+model). Per `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) §D8 this is
+the *only* CUDA linkage in the whole tree.
 
 ## Prerequisites
 
@@ -78,7 +79,7 @@ cargo build --release -p vokra-cli
 ### 2. Run the harness
 
 ```bash
-./tools/parity/cuda_rtf_variance.sh \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \
     --gguf   /root/whisper-large-v3.gguf \
     --audio  /root/jfk-30s.wav \
     --iters  10 \
@@ -112,7 +113,8 @@ approximately **~20 s per iteration**, so `--iters 10` lands in
 ### 3. Analyze
 
 ```bash
-./tools/parity/cuda_rtf_analyze.py /root/rtf-decomposed.jsonl \
+uv run --no-project --python 3.12 python \
+  tools/parity/cuda_rtf_analyze.py /root/rtf-decomposed.jsonl \
     --format markdown \
     --output /root/rtf-decomposed.report.md
 ```
@@ -120,8 +122,9 @@ approximately **~20 s per iteration**, so `--iters 10` lands in
 Or stream from stdin:
 
 ```bash
-./cuda_rtf_variance.sh --gguf ... --audio ... --iters 10 --fa-v2 off | \
-    ./cuda_rtf_analyze.py -
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \
+  --gguf ... --audio ... --iters 10 --fa-v2 off | \
+  uv run --no-project --python 3.12 python tools/parity/cuda_rtf_analyze.py -
 ```
 
 Options:
@@ -138,20 +141,20 @@ The baseline JSON records two paths — decomposed and gated FA v2. To
 reproduce the same A/B on a fresh instance, invoke the harness twice:
 
 ```bash
-./tools/parity/cuda_rtf_variance.sh --gguf ... --audio ... --iters 10 \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh --gguf ... --audio ... --iters 10 \
     --fa-v2 off --label decomposed  --output rtf-decomposed.jsonl
-./tools/parity/cuda_rtf_variance.sh --gguf ... --audio ... --iters 10 \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh --gguf ... --audio ... --iters 10 \
     --fa-v2 on  --label gated_fa_v2 --output rtf-fa-v2.jsonl
 
-./tools/parity/cuda_rtf_analyze.py rtf-decomposed.jsonl --output rtf-decomposed.md
-./tools/parity/cuda_rtf_analyze.py rtf-fa-v2.jsonl      --output rtf-fa-v2.md
+uv run --no-project --python 3.12 python tools/parity/cuda_rtf_analyze.py rtf-decomposed.jsonl --output rtf-decomposed.md
+uv run --no-project --python 3.12 python tools/parity/cuda_rtf_analyze.py rtf-fa-v2.jsonl --output rtf-fa-v2.md
 
 # M4-07 (owner T18, H100): the three-mode comparison on ONE host.
-./tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
     --fa-mode decomposed --label decomposed --output rtf-h100-decomposed.jsonl
-./tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
     --fa-mode v2         --label gated_fa_v2 --output rtf-h100-fa-v2.jsonl
-./tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
     --fa-mode v3         --label fa_v3 --output rtf-h100-fa-v3.jsonl
 ```
 
@@ -163,58 +166,36 @@ and commits the filled template alongside the two JSONL files.
 
 The vast.ai instance lifecycle (create / ssh / destroy / API key) is
 **deliberately not in the shell script**. Per
-[`docs/adr/M2-03-followup-rtf.md`](../../docs/adr/M2-03-followup-rtf.md)
-§D7 and the `CLAUDE.md` operational note ("vast.ai … 都度起動 → 計測 →
-`vastai destroy`"), the owner drives that lifecycle from their local
-machine using their `vastai` CLI + API key.
+`docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) §D7 and the current
+`vast-ai-workflow` skill, the owner drives the
+rent → provision → work → destroy lifecycle from their local machine.
 
-Recommended shape (adapt to your credentials — never commit the API key):
+Current shape (adapt offer IDs and SSH details; never commit an API key):
 
 ```bash
-# 1. On the local (owner) machine — search + create a spot instance.
-OFFER=$(vastai search offers 'gpu_name=RTX_4090 num_gpus=1 rentable=true verified=true' --raw \
-        | python3 -c 'import json,sys; print(sorted(json.load(sys.stdin), key=lambda o: o["dph_total"])[0]["id"])')
-INSTANCE=$(vastai create instance $OFFER --image nvidia/cuda:12.6.2-devel-ubuntu22.04 \
-        --disk 40 --ssh --raw | python3 -c 'import json,sys; print(json.load(sys.stdin)["new_contract"])')
+# 1. Rent an RTX 4090 offer with RAM >=64 GB and disk >=200 GB.
+vastai search offers 'gpu_name=RTX_4090 rentable=true' --order dph_total
+vastai create instance <offer-id> \
+  --image nvidia/cuda:12.4.1-devel-ubuntu22.04 --disk 200 --ssh
 
-# ALWAYS pair the create with a trap that destroys the instance on exit
-# (a hung ssh session must not leak a running RTX 4090).
-trap "vastai destroy instance $INSTANCE" EXIT
+# 2. SSH in, clone the exact revision, and run the canonical provisioning.
+git clone https://github.com/ayutaz/vokra.git ~/vokra
+cd ~/vokra
+bash scripts/publish/vast-ai/provision.sh
+cargo build --release -p vokra-cli
 
-# 2. ssh in, build, transfer the GGUF + audio.
-SSH_TARGET=$(vastai ssh-url $INSTANCE)
-ssh $SSH_TARGET '
-    apt-get update && apt-get install -y git build-essential curl
-    curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.86.0
-    . "$HOME/.cargo/env"
-    git clone https://github.com/ayutaz/vokra.git && cd vokra
-    cargo build --release -p vokra-cli
-'
-scp whisper-large-v3.gguf $SSH_TARGET:/root/
-scp jfk-30s.wav           $SSH_TARGET:/root/
+# 3. Keep the >=2 GB GGUF on VAST and run both modes through uv.
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \
+  --gguf /root/whisper-large-v3.gguf --audio /root/jfk-30s.wav \
+  --iters 10 --fa-v2 off --label decomposed \
+  --output /root/rtf-decomposed.jsonl
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \
+  --gguf /root/whisper-large-v3.gguf --audio /root/jfk-30s.wav \
+  --iters 10 --fa-v2 on --label gated_fa_v2 \
+  --output /root/rtf-fa-v2.jsonl
 
-# 3. Run the harness (two modes).
-ssh $SSH_TARGET '
-    cd vokra
-    ./tools/parity/cuda_rtf_variance.sh --gguf /root/whisper-large-v3.gguf \
-        --audio /root/jfk-30s.wav --iters 10 --fa-v2 off \
-        --label decomposed --output /root/rtf-decomposed.jsonl
-    ./tools/parity/cuda_rtf_variance.sh --gguf /root/whisper-large-v3.gguf \
-        --audio /root/jfk-30s.wav --iters 10 --fa-v2 on \
-        --label gated_fa_v2 --output /root/rtf-fa-v2.jsonl
-'
-
-# 4. Pull the JSONL back and analyze locally.
-scp $SSH_TARGET:/root/rtf-decomposed.jsonl .
-scp $SSH_TARGET:/root/rtf-fa-v2.jsonl .
-
-./tools/parity/cuda_rtf_analyze.py rtf-decomposed.jsonl \
-    --output rtf-decomposed.report.md
-./tools/parity/cuda_rtf_analyze.py rtf-fa-v2.jsonl \
-    --output rtf-fa-v2.report.md
-
-# 5. Fold both into the template, commit, then let the trap destroy the instance.
-# (The trap fires on the `exit` at the end of this block.)
+# 4. Copy back only small JSONL/report evidence, then always destroy.
+vastai destroy instance <instance-id>
 ```
 
 **Cost estimate** — RTX 4090 spot at ~$0.4/h × 10 min setup + 4 min per
@@ -243,8 +224,7 @@ The analyzer computes CV = stddev / mean and warns if CV > 0.20. Guidance:
 **Formal `<0.10` gate** — the analyzer never asserts an RTF ceiling and
 never returns non-zero on a "too slow" verdict. That decision is the
 owner's after inspecting the report, per
-[`docs/adr/M2-03-followup-rtf.md`](../../docs/adr/M2-03-followup-rtf.md)
-§D6.
+`docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) §D6.
 
 ## JSONL schema
 
@@ -339,7 +319,7 @@ Each line is a JSON object with one of these three `status` shapes:
 
 ## References
 
-- ADR: [`docs/adr/M2-03-followup-rtf.md`](../../docs/adr/M2-03-followup-rtf.md) (§D6, §D7, §D8)
+- ADR: `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`; §D6, §D7, §D8)
 - Owner checklist: [`docs/m2-owner-verification-checklist.md`](../../docs/m2-owner-verification-checklist.md) §2
 - Existing sanity test: [`crates/vokra-backend-cuda/tests/whisper_cuda_large_v3_rtf.rs`](../../crates/vokra-backend-cuda/tests/whisper_cuda_large_v3_rtf.rs)
 - Baseline JSON: [`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`](../../docs/bench-baselines/whisper_large_v3_cuda_rtf.json)

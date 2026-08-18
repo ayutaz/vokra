@@ -1,5 +1,14 @@
 # M4 (v1.0-rc) Owner Verification Checklist
 
+**Current-state reconciliation (2026-08-18):** this remains an M4-era owner
+ledger and evidence index. M4 merged in PR #8; the project baseline is now
+`main` `6d64fdf`. The 33-function ABI and test counts below are explicitly
+historical snapshots. PR #30 later expanded the generated C header to 41
+functions without firing the v1.0 freeze. Use the M5 owner checklist for live
+remaining actions.
+Any fresh workspace-wide or `-p vokra-models` verification referenced below
+runs on VAST, not on the development Mac.
+
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・実 weight sourcing・法務 sign-off・外部契約 / インフラ provisioning・ADR 判断を担当。
 **CC-side status**: **M4 CC 実装 terminal 到達（2026-07-15、全 20 WP = M4-01〜M4-20）**。investigation 3 round のうち round 2 / round 3 = **2 連続 0 CC ticket** で terminal 判定（M3 と同じ規律）。terminal 時 verify = default 2340 / all-features 2364 passed。**その後 2026-07-16 に依頼者指示で post-terminal CC-gap 追加実装 campaign を実施**（terminal 後の追加洗い出し = ultracode 32 候補中 17 land、既存 WP 内の完成度向上 = P0 wasm ビルド破損修正・converter alignment_heads/word-timestamp・vokra-server 本番 startup 配線・CSM/Mimi from_gguf・実 M1 Metal parity + Llama MSL kernel 4種・RingKVCache・agc/hpf streaming 等）。**merge 状況（2026-07-19 更新）**: **M4 は PR #8 として main に merge 済**（merge commit `ff12104`、2026-07-19、branch `feat/m4-plan-and-wave1` → main）。本チェックリスト起草時点の「PR 未作成」前提は失効しており、**「default branch に workflow ファイルが無いので workflow_dispatch できない」というブロッカーも解消済**（§4.5）。以降 main は `13a2a6e` まで進んでいる。
 
@@ -11,7 +20,7 @@
 
 **「CC 完了分」と「owner 残」の分離（honest）**: 実 weight を要する parity は **CC 側で flip-the-switch harness まで完成**しており（synthesized weight で shape / 決定性 / 有限性を機械検証済、upstream 数値一致は未主張）、owner が実 checkpoint を投入した瞬間に発火する。GPU 実 kernel（§6）は **M4 実装漏れではなく各 spec が意図的に別 WP 化した follow-up**（CPU arm は real で機能完結）。
 
-**参照文書の tracking**: 本ファイル（`docs/m4-owner-verification-checklist.md`）は **tracked（gitignore 対象外、`git check-ignore` で確認済）** = `docs/m3-owner-verification-checklist.md` と同運用。`docs/handoff/m4-*.md` / `docs/platform-support/*.md` / `docs/license-audit.md` / `docs/legal-compliance.md` / `docs/m4-07-hopper-bench-handover.md` / `docs/m4-scope-expansion-2026-07-13.md` / `docs/benchmarks/*.md` は **tracked（public）**。`docs/tickets/m4/*.md`（spec）/ `docs/adr/M4-*.md`（ADR）/ `docs/milestones.md` は **gitignore ローカル内部文書**（本書からは ID で参照）。
+**参照文書の tracking**: 本ファイル（`docs/m4-owner-verification-checklist.md`）は **tracked（gitignore 対象外、`git check-ignore` で確認済）** = `docs/m3-owner-verification-checklist.md` と同運用。`docs/handoff/m4-*.md` / `docs/platform-support/*.md` / `docs/license-audit.md` / `docs/legal-compliance.md` / `docs/m4-07-hopper-bench-handover.md` / `docs/m4-scope-expansion-2026-07-13.md` / `docs/benchmarks/*.md` / `docs/milestones.md` は **tracked（public）**。`docs/tickets/m4/*.md`（spec）と `docs/adr/M4-*.md`（ADR）はgitignore-local内部文書（本書からはIDで参照）。
 
 各タスクは **(a) 何をするか / (b) なぜ owner 専任か / (c) 参照（handoff or spec ticket ID）/ (d) 完了条件** の 4 項で記述する。
 

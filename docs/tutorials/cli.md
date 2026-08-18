@@ -120,7 +120,7 @@ a GPU backend does not cover, or a device that is absent, is an explicit error,
 not a quiet drop to CPU.
 
 ```sh
-cargo build --release -p vokra-models --features metal   # macOS
+cargo build --release -p vokra-cli --features metal   # macOS
 ./target/release/vokra-cli bench --model whisper-large-v3.gguf \
   --input speech30s.wav --backend metal
 ```

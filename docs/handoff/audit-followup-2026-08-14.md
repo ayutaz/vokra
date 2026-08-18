@@ -1,16 +1,23 @@
 # Audit-followup campaign — owner handoff (2026-08-14 / 15 / 16)
 
-**Branch**: `feat/audit-followup-cc-wave1-2026-08-14`
+> **Disposition (2026-08-18):** this is a dated pre-merge record. The audit
+> work landed through PR #29 (`8e048d8`); Codex migration through PR #32;
+> VAST/parity follow-ups through PR #33/#36; and the remaining Claude
+> compatibility delta through PR #37. The old remote branch was deleted.
+> Section 6 is historical, not the current task list. Use
+> `docs/m5-owner-verification-checklist.md` and
+> `docs/handoff/codex-operations-2026-08-18.md` for current state.
+
+**Historical branch**: `feat/audit-followup-cc-wave1-2026-08-14`
 **Scope**: 109 implementation + audit commits ahead of `main`, plus the
 documentation refresh of 2026-08-16 (§8).
-**PR**: not yet opened — see §6.
+**PR at capture time**: not yet opened — superseded by the disposition above.
 **Status**: CC-actionable work is **terminal** (14 audit rounds; rounds 13 and
 14 both found nothing to fix, which is this project's two-consecutive-zero
 rule).
 
-This document is for the owner. It says what landed, what the campaign found
-that nobody had asked it to look for, and what is left — which is entirely
-owner-gated.
+This document records what that campaign landed and found. Statements about
+what was “left” are bounded by the capture date.
 
 ---
 

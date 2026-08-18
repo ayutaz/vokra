@@ -124,24 +124,14 @@ Quantization presets available: `--quantize q4_k` / `q5_k` / `q6_k`
 
 ## 4. From `faster-whisper` (Python)
 
-The Python binding (`vokra` on PyPI) maps `faster-whisper`'s common
-surface almost 1:1:
+The direct Python package is not a current migration target. As of 2026-08-18
+the repository contains a pre-alpha `ctypes` scaffold, but its generated table
+covers the earlier 14-function subset, the current C header has 41 functions,
+and the package root does not export `Session`. See the
+[binding status](../bindings/python/README.md); do not replace a production
+`faster-whisper` import with `from vokra import Session` yet.
 
-```python
-# faster-whisper
-from faster_whisper import WhisperModel
-m = WhisperModel("large-v3", device="cuda")
-segments, _ = m.transcribe("speech.wav")
-text = " ".join(s.text for s in segments)
-
-# vokra
-from vokra import Session
-with Session.open("whisper-large-v3.gguf") as s:
-    pcm, sr = read_wav_mono_f32(open("speech.wav", "rb"))
-    text = s.transcribe(pcm, sr)
-```
-
-For a **drop-in HTTP client**, run
+For the currently documented **drop-in HTTP client** path, run
 [`integrations/vokra-server`](../integrations/vokra-server) — it exposes
 OpenAI Whisper's `/v1/audio/transcriptions` (faster-whisper drop-in),
 vLLM's `/v1/completions` + `/v1/chat/completions`, piper-plus HTTP
@@ -181,8 +171,8 @@ users of the runtime — see [`docs/legal-compliance.md`](legal-compliance.md).
 - **Voice cloning (RVC v2 / GPT-SoVITS)**: intentionally moved to the
   separate `vokra-voiceclone-experimental` repository for legal reasons
   (ELVIS Act / NO FAKES Act).
-- **ONNX at runtime**: never (design decision — see
-  [`docs/onnx-alternative-research.md`](onnx-alternative-research.md)).
+- **ONNX at runtime**: never. The detailed research record is
+  `docs/onnx-alternative-research.md` (`gitignore-local`).
 
 ## Next steps
 

@@ -6,16 +6,9 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 
 - 対象範囲: `.github/workflows/*.yml` 全件（**実数 40 file**。旧記載「2026-07-23 時点で 20 file」は
   その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **⚠ 既知の網羅 gap (owner follow-up)**: 本 file は SoT を称するが、現時点で下記 16 workflow が
-  どの節にも記載されていない — `coverage.yml` / `secret-scan.yml` / `nightly-full-parity.yml` /
-  `parity-cosyvoice2-real.yml` / `parity-deberta-v3-large-real.yml` /
-  `parity-deepfilternet3-real.yml` / `parity-nemo-asr-real.yml` / `parity-qwen3-tts-real.yml` /
-  `parity-rmvpe-real.yml` / `parity-sbv2-real.yml` / `parity-tts-continuous-vae-real.yml` /
-  `parity-tts-dac-real.yml` / `parity-tts-hiftnet-real.yml` / `parity-tts-japanese-real.yml` /
-  `parity-voxtral-real.yml` / `parity-whisper-extras-real.yml`。
-  §3 の cron stagger table に追記するには各 file の実 `schedule:` を読む必要があるため、
-  **推測で埋めず gap として明示**する（記載のない workflow は「本 file が真」の対象外＝
-  各 file 側 comment が唯一の記述になる）
+- **2026-08-18 網羅確認**: 40 workflow file の全てを本 index に収録済み。
+  required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
+  明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
   を primary source として取得し、本 file の §1 に転記
 - cron 時刻の実態: 各 workflow file 内の `schedule: - cron: '...'` 実定義から抽出。
@@ -85,6 +78,8 @@ owner に昇格提案）。
 | vokra-piper-g2p | .github/workflows/ci-quality.yml | 除外 workspace `integrations/vokra-piper-g2p` の build/test |
 | python-parity-oracles | .github/workflows/ci-quality.yml | Python 側 parity oracle script の self-test |
 | shell-self-tests | .github/workflows/ci-quality.yml | `scripts/*.sh` の `--self-test` 集約 |
+| coverage (advisory) | .github/workflows/coverage.yml | PR / main push の Rust coverage 計測 |
+| gitleaks (advisory) | .github/workflows/secret-scan.yml | PR / main push の secret scan |
 | gpu-backends | .github/workflows/ci-platform.yml | macos=metal / ubuntu=cuda opt-in feature の build/clippy/test (+ coreml/qnn delegate scaffold arm) |
 | build-target-vulkan-only | .github/workflows/ci-platform.yml | M4-15 CPU+Vulkan-only SKU build target 検証 |
 | riscv-cross-build | .github/workflows/ci-platform.yml | RVV 1.0 (M3-13) cross build + ISA dispatch asm 検査 |
@@ -114,16 +109,29 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 |---|---|---|---|
 | Monday | 04:00 | .github/workflows/parity-kokoro-real.yml | Kokoro-82M pinned SHA `f3ff3571` 全 9 tensor per-tensor atol parity |
 | Monday | 05:00 | .github/workflows/parity-whisper-real.yml | Whisper base (cron 既定) + workflow_dispatch で small/medium/turbo/large-v3 opt-in |
+| Monday | 05:15 | .github/workflows/parity-voxtral-real.yml | Voxtral Mini real-checkpoint parity（opt-in gate） |
 | Monday | 05:30 | .github/workflows/gpu-vulkan-parity.yml | Vulkan (mesa lavapipe) Whisper base parity |
 | Monday | 06:00 | .github/workflows/gpu-cuda-rtf.yml | CUDA RTF measurement N=10 (self-hosted 必須、未登録なら clean skip) |
 | Monday | 06:30 | .github/workflows/parity-csm-real.yml | CSM synthetic format pin + real T29 reference は opt-in |
 | Monday | 07:00 | .github/workflows/web-wasm.yml | WASM SIMD128 + WebGPU + Whisper base WASM e2e (opt-in) |
+| Monday | 07:15 | .github/workflows/parity-sbv2-real.yml | SBV2 JA/EN と opt-in ZH real parity + sidecar-hash gate |
 | Monday | 07:30 | .github/workflows/parity-moshi-real.yml | Moshi 切詰め parity (full-7B は 16GB RAM で mmap converter blocked) |
 | Monday | 08:00 | .github/workflows/parity-utmos.yml | UTMOS 22 STRONG parity (M4-18 un-defer 材料) |
 | Monday | 08:30 | .github/workflows/godot-crossbuild.yml | Godot GDExtension 5-target crossbuild + AssetLib zip package |
+| Monday | 08:45 | .github/workflows/parity-cosyvoice2-real.yml | CosyVoice2 real-checkpoint parity |
 | Monday | 09:00 | .github/workflows/release-cadence.yml | リリース cadence レポート |
+| Monday | 09:05 | .github/workflows/parity-nemo-asr-real.yml | NeMo ASR family real-checkpoint parity（dispatch matrix / opt-in） |
+| Monday | 09:15 | .github/workflows/parity-rmvpe-real.yml | RMVPE real-checkpoint parity |
 | Monday | 09:30 | .github/workflows/corpus-drift-detector.yml | `.github/pins.yaml` 全 entry の drift 検査（upstream=advisory / mirror=hard_fail、informational） |
+| Monday | 09:35 | .github/workflows/parity-whisper-extras-real.yml | Distil-Whisper / Kotoba-Whisper real parity（opt-in） |
 | Monday | 10:00 | .github/workflows/silero-nostd-cross-build.yml | vokra-vad-micro (M5-03 no_std) thumbv8m cross build |
+| Monday | 10:15 | .github/workflows/parity-tts-dac-real.yml | Dia / Zonos DAC-family TTS parity（opt-in） |
+| Monday | 10:30 | .github/workflows/parity-tts-hiftnet-real.yml | HiFTNet-family TTS parity（CosyVoice variants、opt-in） |
+| Monday | 11:00 | .github/workflows/parity-qwen3-tts-real.yml | Qwen3-TTS real-checkpoint parity（opt-in） |
+| Monday | 11:30 | .github/workflows/parity-tts-continuous-vae-real.yml | VoxCPM2 / VibeVoice continuous-VAE TTS parity（opt-in） |
+| Monday | 12:00 | .github/workflows/parity-tts-japanese-real.yml | Irodori / Japanese VITS parity（opt-in） |
+| Monday | 12:30 | .github/workflows/parity-deepfilternet3-real.yml | DeepFilterNet3 real-checkpoint parity（opt-in） |
+| Monday | 13:00 | .github/workflows/parity-deberta-v3-large-real.yml | DeBERTa-v3-large real-checkpoint parity（opt-in） |
 | Tuesday | 06:00 | .github/workflows/parity-rvq-real.yml | Mimi/DAC RVQ codec 実 parity (Monday hub outage で全滅回避のため火曜) |
 
 ---
@@ -139,6 +147,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | 04:47 | .github/workflows/nightly-webgl.yml | Unity WebGL preflight + wasm-harness + WebGL build |
 | 05:17 | .github/workflows/nightly-asr-wer.yml | LibriSpeech `1272/128104` WER regression (`test_librispeech_wer.py`) |
 | 05:47 | .github/workflows/nightly-tier2-device.yml | Raspberry Pi 3B/4B/5/Zero 2 W 実機 RTF (self-hosted 必須、未登録なら clean skip) |
+| 06:17 | .github/workflows/nightly-full-parity.yml | staged GGUF を用いる full-parity matrix（未配置 leg は明示 skip） |
 
 ---
 
@@ -167,11 +176,10 @@ trigger とする workflow。
 | workflow_dispatch only | .github/workflows/bench-baseline-capture.yml | `iters` iteration で bench baseline を再取得 |
 | push main (`docs/bench-baselines/**`, `docs/perf/**`, `docs/benchmarks/**`, `tools/bench/build_dashboard.py`, `.github/workflows/dashboard.yml`) + workflow_dispatch | .github/workflows/dashboard.yml | perf dashboard 再生成 + GitHub Pages deploy |
 
-path filter で PR trigger にも参加している workflow (`.yml` 側で `pull_request:` block を
-持つもの) は §3 の weekly parity に含めた: `parity-kokoro-real` / `parity-whisper-real` /
-`parity-moshi-real` / `parity-rvq-real` / `parity-utmos` / `web-wasm`。これらは PR 上の
-narrow path filter で該当 crate / dumper / fixture を触った場合のみ再実行される（PR gate
-ではなく informational）。
+path filter で PR trigger にも参加している workflow は §3 の weekly parity と
+`nightly-full-parity.yml` に含めた。各 workflow の `pull_request.paths` に該当する
+crate / dumper / fixture を触った場合のみ再実行され、いずれも branch-protection
+context ではなく informational である。
 
 ---
 

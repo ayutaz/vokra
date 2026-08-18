@@ -61,8 +61,9 @@ ground) rather than the bare mark.
 
 ## Regenerating
 
-```
-python3 tools/branding/gen_brand.py
+```sh
+uv run --no-project --python 3.12 --with fonttools python \
+  tools/branding/gen_brand.py
 ```
 
 Every dimension is a constant at the top of that script, so weight,

@@ -17,11 +17,12 @@
 # Being stricter than measured is the point: the cost of a false block is
 # one env var, the cost of a false allow is a reboot.
 #
-# WHAT IT DOES NOT DO
-# -------------------
-# It does not police `git push`. The pre-push hook has its own fast paths,
-# and blocking pushes here would misfire on the docs-only path that works
-# fine. That gap is real and is called out in the maintainer handoff.
+# GIT PUSH
+# --------
+# This command guard does not parse git's ref-update stream. `.githooks/pre-push`
+# owns that boundary: deletion-only pushes run compliance but skip cargo,
+# docs-only pushes use the light path, and a deep path on the maintainer Mac
+# refuses before cargo.
 #
 # ESCAPE HATCH
 #   VOKRA_ALLOW_LOCAL_HEAVY=1  — you have decided this specific run is safe.
@@ -36,27 +37,17 @@ set -uo pipefail
 # Model artefacts at or above this size go to vast.ai, never local.
 readonly SIZE_LIMIT_BYTES=$((2 * 1024 * 1024 * 1024))
 
-# Crates measured to exhaust a 16 GB machine on their own. Empty today, and
-# that is a finding rather than an oversight.
-#
-# `vokra-models` was listed here because `cargo test -p vokra-models` OOM-killed
-# this machine. The cause turned out not to be the crate: three `kyutai_stt`
-# tests fell through to `KyutaiSttWeights::synthesized` at `stt_2_6b_en` scale
-# and allocated ~10 GB of f32 each, for assertions about a licence class and an
-# error message. With the fixtures moved to `tiny_for_tests`, the whole crate
-# runs 2532 tests in 36 s on this machine with no memory pressure.
-#
-# Keeping the block after fixing its cause would be a guard whose stated reason
-# is no longer true — the exact thing this repo keeps auditing out. An empty
-# regex matches nothing, so the `-p <crate>` leg is inert until something is
-# measured back into it.
-readonly HEAVY_CRATES=''
+# The owner explicitly routes every compiling/testing/checking/documenting/
+# auditing `vokra-models` Cargo command to VAST, even when a particular test has
+# since been made smaller. This is an operational memory ceiling, not a claim
+# that every invocation always OOMs.
+readonly HEAVY_CRATES='vokra-models'
 
 emit_heavy_cargo_block() {
     {
-        echo "Blocked: this cargo invocation has been measured to exhaust this"
-        echo "machine's memory (16 GB M1). On 2026-08-16 an equivalent command was"
-        echo "OOM-killed and rebooted macOS."
+        echo "Blocked: this cargo scope is reserved for VAST to protect the"
+        echo "maintainer machine (16 GB M1). A local vokra-models run was"
+        echo "OOM-killed and rebooted macOS on 2026-08-16."
         echo
         echo "Matched: $1"
         echo
@@ -139,8 +130,9 @@ EOF
     fi
 }
 
-# True when some command segment actually INVOKES a build-and-run cargo
-# subcommand, as opposed to merely containing the words. Segments are split on
+# True when some command segment actually INVOKES a workspace-reading Cargo
+# subcommand covered by the owner routing rule, as opposed to merely containing
+# the words. Segments are split on
 # ; && || | and newline; leading VAR=value assignments and a +toolchain are
 # skipped so `FOO=1 cargo +stable test` still matches.
 segment_invokes_heavy_cargo() {
@@ -155,7 +147,7 @@ segment_invokes_heavy_cargo() {
                 seg="${seg#"${seg%%[![:space:]]*}"}"
             done
             printf '%s' "$seg" \
-                | grep -Eq '^cargo[[:space:]]+(\+[^[:space:]]+[[:space:]]+)?(test|build|clippy|bench|nextest)([[:space:]]|$)' \
+                | grep -Eq '^cargo[[:space:]]+(\+[^[:space:]]+[[:space:]]+)?(test|build|check|clippy|bench|nextest|run|doc|rustdoc|deny|audit)([[:space:]]|$)' \
                 && echo MATCH
         done | grep -q MATCH
 }
@@ -171,8 +163,9 @@ analyse() {
     fi
 
     # -- (a) memory-heavy cargo -------------------------------------------
-    # Only cargo subcommands that build and run test/bench binaries. `cargo
-    # fmt` and `cargo metadata` are cheap and must not be caught.
+    # Cargo subcommands that compile, test, document, run, or audit the selected
+    # workspace scope. `cargo fmt`, `cargo metadata`, and `cargo tree` are cheap
+    # and must not be caught.
     #
     # `cargo` must be the FIRST WORD of a command segment, not merely present.
     # Matching it anywhere blocked `echo 'run cargo test later'` — caught by
@@ -260,19 +253,22 @@ if [ "${1:-}" = "--self-test" ]; then
     check "bare cargo test (= workspace)"     block "cargo test"
     check "cargo nextest run --workspace"     block "cargo nextest run --workspace"
     check "cargo build --all"                 block "cargo build --all --release"
+    check "cargo check --workspace"           block "cargo check --workspace --all-targets"
+    check "bare cargo deny (= workspace)"     block "cargo deny check licenses advisories bans"
+    check "bare cargo audit (= workspace)"    block "cargo audit"
     check "toolchain-pinned workspace test"   block "cargo +stable test --workspace"
     check "chained after &&"                  block "cd /tmp && cargo test --workspace"
 
+    # (a) explicit heavy crate — must block even when the named test is small.
+    check "cargo test -p vokra-models"        block "cargo test -p vokra-models --lib kyutai_stt"
+    check "cargo check -p vokra-models"       block "cargo check -p vokra-models"
+
     # (a) light cargo — must NOT block
-    # `-p vokra-models` is allowed again: the 10 GB synthesis that made it
-    # unrunnable was a test-fixture defect, now fixed (2532 tests / 36 s).
-    # This case also pins that an EMPTY heavy-crate list blocks nothing —
-    # interpolating it into the regex unguarded would match everything.
-    check "cargo test -p vokra-models"        allow "cargo test -p vokra-models --lib kyutai_stt"
     check "cargo test -p vokra-convert"       allow "cargo test -p vokra-convert"
     check "cargo test -p vokra-cli"           allow "CARGO_BUILD_JOBS=1 cargo test -p vokra-cli"
     check "cargo fmt"                         allow "cargo fmt --all -- --check"
     check "cargo metadata"                    allow "cargo metadata --no-deps"
+    check "cargo tree"                        allow "cargo tree -p vokra-core"
     check "override honoured"                 allow "VOKRA_ALLOW_LOCAL_HEAVY=1 cargo test --workspace"
     check "unrelated command"                 allow "git status --short"
     check "the word cargo in prose"           allow "echo 'run cargo test later'"

@@ -17,12 +17,15 @@ Rust crate は `rustdoc` で documentation される。crate が publish され�
 
 feature-gated な GPU/NPU バックエンドは `[package.metadata.docs.rs]` を持ち、
 docs.rs がそのプラットフォーム固有 API をビルドする（Metal / CoreML は Apple
-target、WebGPU は wasm32、CUDA / Vulkan / QNN は各 feature 経由）。同じものを
-ローカルでビルドするには:
+target、WebGPU は wasm32、CUDA / Vulkan / QNN は各 feature 経由）。memory-safe な
+単一 crate に絞ってローカルでビルドするには:
 
 ```sh
-cargo doc --no-deps --open
+cargo doc -p vokra-core --no-deps --open
 ```
+
+maintainer の workspace 全体 rustdoc は 16 GB の開発 Mac ではなく VAST / CI で
+実行する。
 
 ## 2. C ABI — `include/vokra.h`
 
@@ -57,8 +60,10 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 ## Keeping this page current
 
-**最終確認日: 2026-07-21 — workspace publish set と `include/vokra.h` に対して
-確認。**
+**最終確認日: 2026-08-18 — `main` `6d64fdf`、workspace publish set、
+`include/vokra.h` に対して確認。** 生成 C header は41個の `vokra_*` function を
+宣言する。pre-alpha の Python generator が認識するのは現在39個、checked-in table
+が公開するのは14個であり、Python package は現行 C ABI の完全な mirror ではない。
 
 - **更新責任**: publish crate・新バインディング・C ABI 生成を変えた PR が、
   同一 PR で本索引と英語版を更新する。
@@ -66,5 +71,7 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 - **生成 surface の再取得**:
 
 ```sh
-scripts/gen-c-abi.sh && cargo doc --no-deps --workspace
+scripts/gen-c-abi.sh
+# maintainer の workspace rustdoc は開発 Mac ではなく VAST/CI で実行:
+cargo doc --no-deps --workspace
 ```

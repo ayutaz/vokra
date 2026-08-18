@@ -2,7 +2,7 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**CC-side status (2026-07-21)**: this checklist covers the owner tasks left by the M5 WPs whose CC-side work has landed on branch `feat/m5-plan-and-wave1`. It is the input to the **v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13).
+**Implementation baseline (reconciled 2026-08-18)**: the M5 implementation waves and subsequent audit/parity follow-ups are on `main` through `6d64fdf` (PR #37). This checklist is the remaining action ledger feeding the **v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13). The branch/PR history and current operating rules are summarized in `docs/handoff/codex-operations-2026-08-18.md`.
 
 **2026-08-10 addendum (SBV2 v2 4-Blocker + Blocker 2c residual + ZH BERT publish + H100 FA v3 bakeoff; PR #27 merged 2026-08-11)**: the following is the pre-merge wave ledger from branch `feat/sbv2-voxtral-real-verify-2026-08-06` (then 18 commits ahead of `origin/main`, tip `8d469eb`). PR #27 merged as `0937ef874495465bdadf18d5511f14e6e2a0ab71`; the follow-up audit PR #29 merged as `8e048d8afd95d7d26bfa5121eef7533178b854d1` on 2026-08-17.
 - **Wave 1** (2026-08-10, 9 commits `16a8410..9cb4d52`): SBV2 4 Blockers closed — Blocker 5 (SentencePiece proto parser + WordPiece + DeBERTa v2/v3 sibling tokenizer discovery, `cb2cd7b`/`e7dc2e4`/`7242f94`), Blocker 3 (`SbV2Model::speaker_projection()` accessor, `1a90e0d`), Blocker 2b (TDD-hardening 3 commits: flow rename table + metadata-key contract + converter spelling, `296dba1`/`672ef5b`/`922d3f5`), Blocker 2c Wave 1 (rational-quadratic spline math primitive, `f1b7815`).
@@ -168,7 +168,7 @@ CC landed the contradiction ADR (Proposed), the consent schema/validator, the fl
 
 ### 3.2 T15 — publish the separate repo + f0_extract + sign-off + doc propagation
 
-- **(a)**: create/publish `vokra-voiceclone-experimental` from the scaffold seed (`staging/vokra-voiceclone-experimental/`, gitignored); confirm the `f0_extract` (FR-OP-83) implementation site (core vs separate repo) AND its landing WP (its only assignment `milestones.md:56` M5-05 is invalidated by this defer — pick a WP number, CC will not invent one); fill the `docs/license-audit.md` §3.1 RVC v2 / GPT-SoVITS sign-off rows (blank = fail-closed); approve the CLAUDE.md `otonx-` → `vokra-` rename.
+- **(a)**: create/publish `vokra-voiceclone-experimental` from the scaffold seed (`staging/vokra-voiceclone-experimental/`, gitignored); confirm the `f0_extract` (FR-OP-83) implementation site (core vs separate repo) AND its landing WP (its old M5-05 assignment was invalidated by this defer; pick a WP number, CC will not invent one); fill the `docs/license-audit.md` §3.1 RVC v2 / GPT-SoVITS sign-off rows (blank = fail-closed); ratify the already-applied `otonx-` → `vokra-` naming migration in the current requirements/milestones set.
 - **(b)**: repo creation/publish, legal sign-off, and the WP-number/SSOT decisions are owner-only.
 - **(c)**: `docs/adr/M5-05-watermark-dependency.md`; spec M5-05-T15.
 - **(d)**: repo published (flag + consent enforced; the watermark-forced leg follows T04); f0_extract site + landing WP recorded; sign-off rows filled; rename approved.
@@ -382,7 +382,12 @@ The twelve signed non-voice-conversion converters (`crates/vokra-convert/src/mod
 
 **Voice-clone territory (4 rows: openvoice_v2 / knn_vc / freevc / meanvc) — ELVIS Act policy defer**:
 
-Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `ayutaz/vokra` public repo to avoid tool-distributor liability under ELVIS Act §3 (Tennessee, 2024-07-01) + NO FAKES Act (federal). These 4 converters should either be moved to `vokra-voiceclone-experimental` (M5-05 T15 owner-only) or explicitly Rejected in §3.1. Owner action: choose destination.
+Per [`legal-compliance.md`](legal-compliance.md) and the M5-05 separation ADR,
+voice-cloning is intentionally excluded from the `ayutaz/vokra` public repo
+pending owner legal ratification under ELVIS Act §3 (Tennessee, 2024-07-01)
+and the federal NO FAKES proposal. These four converters should either move to
+`vokra-voiceclone-experimental` (M5-05 T15 owner-only) or be explicitly
+Rejected in §3.1. Owner action: choose the destination.
 
 ---
 

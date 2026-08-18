@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # scripts/test-pre-push-fastpath.sh
+# shellcheck source-path=SCRIPTDIR
 #
-# Regression test for the .githooks/pre-push docs-only fast-path.
+# Regression test for the .githooks/pre-push ref-update and diff fast-paths.
 #
 # Sources .githooks/lib-fastpath.sh (production classifier) and drives
 # `is_docs_only_diff` per case by shadowing `git diff --name-only` and
@@ -9,7 +10,9 @@
 # in milliseconds and can sit inside `scripts/verify.sh` or a CI leg without
 # added cost.
 #
-# Cases exercise both directions of the classifier:
+# Cases exercise both directions of the classifiers:
+#   * deletion-only push updates may skip cargo after compliance passes
+#   * normal, mixed, empty, or malformed push updates must not skip cargo
 #   * docs-only inputs must land on fast-path (return 0)
 #   * anything Rust-adjacent must land on deep-path (return 1)
 #   * defensive inputs (empty diff, VOKRA_HOOK_DEEP=1) must land on deep-path
@@ -70,7 +73,61 @@ run_case() {
     fi
 }
 
-echo "test-pre-push-fastpath: 36 cases"
+run_update_case() {
+    local name="$1"
+    local expected="$2"
+    local updates="$3"
+    local verdict
+
+    # shellcheck source=../.githooks/lib-fastpath.sh
+    source "$ROOT/.githooks/lib-fastpath.sh"
+    if is_deletion_only_push_updates "$updates"; then
+        verdict="delete-skip-cargo"
+    else
+        verdict="continue"
+    fi
+
+    if [ "$verdict" = "$expected" ]; then
+        pass=$((pass + 1))
+        printf 'OK   %-52s → %s\n' "$name" "$verdict"
+    else
+        fail=$((fail + 1))
+        printf 'FAIL %-52s expected=%s got=%s\n' "$name" "$expected" "$verdict"
+    fi
+}
+
+zero40="0000000000000000000000000000000000000000"
+zero64="0000000000000000000000000000000000000000000000000000000000000000"
+sha40="1111111111111111111111111111111111111111"
+
+echo "test-pre-push-fastpath: 42 cases"
+echo
+
+# --- REF-UPDATE cases (read from git pre-push stdin) ---
+run_update_case "single SHA-1 branch deletion skips cargo" \
+    "delete-skip-cargo" \
+    "(delete) $zero40 refs/heads/old $sha40"
+
+run_update_case "multiple SHA-1/SHA-256 deletions skip cargo" \
+    "delete-skip-cargo" \
+    "$(printf '(delete) %s refs/heads/old-a %s\n(delete) %s refs/heads/old-b %s\n' "$zero40" "$sha40" "$zero64" "$zero64")"
+
+run_update_case "normal update continues through checks" \
+    "continue" \
+    "refs/heads/main $sha40 refs/heads/main $zero40"
+
+run_update_case "mixed deletion and update continues through checks" \
+    "continue" \
+    "$(printf '(delete) %s refs/heads/old %s\nrefs/heads/main %s refs/heads/main %s\n' "$zero40" "$sha40" "$sha40" "$sha40")"
+
+run_update_case "empty push-update input does not skip" \
+    "continue" \
+    ""
+
+run_update_case "malformed push-update input does not skip" \
+    "continue" \
+    "(delete) $zero40 refs/heads/old"
+
 echo
 
 # --- FAST-PATH cases (all inputs are docs-shape) ---

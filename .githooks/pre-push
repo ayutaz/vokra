@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Vokra pre-push hook (activate with scripts/install-git-hooks.sh).
+# shellcheck source-path=SCRIPTDIR
 #
 # Full local gate mirroring CI's compiling checks, so a push does not fail CI
 # for something reproducible locally ("run the same commands before pushing",
@@ -40,12 +41,30 @@
 # skipped, (c) prints which runner it chose, and both are visible in the
 # hook output. Force the full check regardless of diff content with
 # VOKRA_HOOK_DEEP=1 (or VOKRA_SKIP_HOOKS=1 for the pre-existing bypass).
+#
+# Ref-deletion fast-path (2026-08-18): a deletion-only push carries no new
+# commit. Git reports it with an all-zero local object id on stdin. The
+# compliance regression still runs, but cargo legs skip; an empty commit diff
+# otherwise takes the conservative deep path and can launch a workspace build
+# just to delete a stale remote branch.
 
 set -euo pipefail
 
 if [ "${VOKRA_SKIP_HOOKS:-0}" = "1" ]; then
     echo "pre-push: skipped (VOKRA_SKIP_HOOKS=1)"
     exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+# shellcheck source=lib-fastpath.sh
+source "$ROOT/.githooks/lib-fastpath.sh"
+
+push_updates="$(cat)"
+deletion_only_push=0
+if is_deletion_only_push_updates "$push_updates"; then
+    deletion_only_push=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -71,9 +90,6 @@ if command -v sccache >/dev/null 2>&1; then
     sccache --start-server >/dev/null 2>&1 || true
 fi
 
-ROOT="$(git rev-parse --show-toplevel)"
-cd "$ROOT"
-
 # ---------------------------------------------------------------------------
 # Fast-path (a): is every file in the push diff documentation-shape?
 #
@@ -82,9 +98,6 @@ cd "$ROOT"
 # empty diff or an unresolvable base falls through to the DEEP path — never
 # fast — so a broken symbolic ref cannot accidentally silence the gate.
 # ---------------------------------------------------------------------------
-
-# shellcheck source=lib-fastpath.sh
-source "$ROOT/.githooks/lib-fastpath.sh"
 
 # ---------------------------------------------------------------------------
 # Step 1 always runs: ~5 s, and first so a broken compliance gate is
@@ -96,6 +109,13 @@ source "$ROOT/.githooks/lib-fastpath.sh"
 echo "pre-push [1/3]: compliance scanner fail-open regression test"
 bash scripts/compliance/test-nvidia-scanner-sigpipe.sh
 
+if [ "$deletion_only_push" = "1" ]; then
+    echo "pre-push [2/3]: SKIP cargo clippy — deletion-only ref update(s)"
+    echo "pre-push [3/3]: SKIP cargo test  — deletion-only ref update(s)"
+    echo "pre-push: OK (ref deletion; compliance regression passed)"
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Fast-path branch.
 # ---------------------------------------------------------------------------
@@ -105,6 +125,22 @@ if is_docs_only_diff; then
     echo "pre-push [3/3]: SKIP cargo test  — $fastpath_reason"
     echo "pre-push: OK (fast-path — override with VOKRA_HOOK_DEEP=1)"
     exit 0
+fi
+
+# On the maintainer's 16 GB Mac, every deep path reaches workspace-scale
+# cargo (including package-scoped paths, which begin with cargo check
+# --workspace). That work belongs on VAST. Refuse before cargo starts; use the
+# remote-verification recipe, then bypass this hook only with recorded green
+# evidence. VOKRA_ALLOW_LOCAL_HEAVY=1 remains an explicit per-run escape hatch.
+if [ "$(uname -s)" = "Darwin" ] \
+    && [ "${VOKRA_ALLOW_LOCAL_HEAVY:-0}" != "1" ]; then
+    {
+        echo "pre-push: REFUSE deep cargo path on the maintainer Mac"
+        echo "pre-push: verify on VAST via the vast-ai-workflow skill, then push with"
+        echo "pre-push: VOKRA_SKIP_HOOKS=1 only after recording the remote green result."
+        echo "pre-push: VOKRA_ALLOW_LOCAL_HEAVY=1 is reserved for an explicitly approved run."
+    } >&2
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------

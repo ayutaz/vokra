@@ -122,24 +122,14 @@ vokra-cli convert --model whisper \
 
 ## 4. `faster-whisper`（Python）から
 
-Python バインディング（PyPI の `vokra`）は `faster-whisper` の主要な表
-面をほぼ 1:1 で対応します:
+direct Python package は現在の migration target ではありません。
+2026-08-18 時点では pre-alpha の `ctypes` scaffold が存在しますが、生成済み
+table は旧 14-function subset、現行 C header は 41 functions で、package root
+も `Session` を export していません。
+[binding status](../bindings/python/README.md) を参照し、production の
+`faster-whisper` import を `from vokra import Session` へまだ置換しないでください。
 
-```python
-# faster-whisper
-from faster_whisper import WhisperModel
-m = WhisperModel("large-v3", device="cuda")
-segments, _ = m.transcribe("speech.wav")
-text = " ".join(s.text for s in segments)
-
-# vokra
-from vokra import Session
-with Session.open("whisper-large-v3.gguf") as s:
-    pcm, sr = read_wav_mono_f32(open("speech.wav", "rb"))
-    text = s.transcribe(pcm, sr)
-```
-
-**HTTP クライアントのドロップイン置換**が欲しい場合は
+現在文書化されている **HTTP クライアントのドロップイン置換**は
 [`integrations/vokra-server`](../integrations/vokra-server) を起動して
 ください。OpenAI Whisper の `/v1/audio/transcriptions`（faster-whisper
 互換）、vLLM の `/v1/completions` + `/v1/chat/completions`、piper-plus
@@ -177,8 +167,8 @@ EnCodec）を直接使っていた場合、Vokra はデフォルトで拒否し�
 - **Voice cloning（RVC v2 / GPT-SoVITS）**: 法務上の理由（ELVIS Act /
   NO FAKES Act）で別リポジトリ `vokra-voiceclone-experimental` に意図的
   に分離しています。
-- **ランタイムでの ONNX**: 対応しません（設計判断 — 詳細は
-  [`docs/onnx-alternative-research.md`](onnx-alternative-research.md)）。
+- **ランタイムでの ONNX**: 対応しません。詳細な調査記録は
+  `docs/onnx-alternative-research.md`（`gitignore-local`）です。
 
 ## 次のステップ
 

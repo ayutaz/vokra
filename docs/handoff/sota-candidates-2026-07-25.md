@@ -1,5 +1,9 @@
 # SOTA candidates handoff — 2026-07-25
 
+> **Disposition (2026-08-18):** historical pre-merge handoff. PR #20 merged as
+> `7ed0548` on 2026-07-25. The review/merge instruction near the end is
+> complete and must not be treated as current work.
+
 Owner handoff for the ultracode SOTA candidates campaign on branch `feat/sota-phase1-2026-07-23`.
 Scope = 22 GGUF converter / F0 / align / KWS-micro TDD skeletons + 1 native long-form orchestrator, landed on top of scout HEAD `491a3ff`.
 

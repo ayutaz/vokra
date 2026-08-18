@@ -355,7 +355,8 @@ Runtime forward 実装 (future wave) 後の flip-the-switch は:
 1. `crates/vokra-models/src/higgs_audio_v3/` に native forward 実装
 2. `.github/workflows/parity-tts-higgs-audio-v3-real.yml` scaffold 追加
 3. Owner が §5 の (a) 経路で publish 済であれば fixture GGUF を CI が pull
-4. PyTorch reference dump は SGLang 依存ゆえ dumper 側で `pip install sglang`
+4. PyTorch reference dump は SGLang 依存ゆえ dumper 側の uv project に
+   `sglang` を追加し、frozen lock から同期する
    前提 (Vokra runtime に SGLang は入れない、reference 独立性 rule)
 
 ## 8. Owner critical path (優先順)

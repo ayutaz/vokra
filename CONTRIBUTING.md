@@ -4,9 +4,10 @@ Thank you for considering a contribution. Vokra is developed fully in the
 open, and every change — including changes by the maintainer — goes through
 the same pull-request and CI pipeline described below.
 
-The design documents under `docs/` (currently Japanese, Draft status) are
-the source of truth for requirements and scope; requirement IDs (BR / FR /
-NFR) referenced below are defined there.
+The design documents under `docs/` define requirements and scope; public entry
+guides have English/Japanese twins while audit and handoff records may be
+single-language. Requirement IDs (BR / FR / NFR) referenced below are indexed
+in `docs/requirement-ids.md` and its Japanese twin.
 
 ## 1. Pull requests and branch protection
 
@@ -20,19 +21,22 @@ NFR) referenced below are defined there.
 
 ## 2. CI required checks
 
-As of M0 (v0.1 spike) every PR must pass **6 required checks**:
+As verified through the GitHub branch-protection API on 2026-08-18, every PR
+must pass **10 required status contexts**:
 
 | Check | What it runs |
 |---|---|
-| `build` | `cargo build --release` on Linux / macOS / Windows |
-| `test` | `cargo test --workspace` on Linux / macOS / Windows |
+| `build (ubuntu-latest)`, `build (macos-latest)`, `build (windows-latest)` | `cargo build --release` on each OS |
+| `test (ubuntu-latest)`, `test (macos-latest)`, `test (windows-latest)` | `cargo test --workspace` on each OS |
 | `fmt` | `cargo fmt --all -- --check` |
 | `clippy` | `cargo clippy --all-targets -- -D warnings` |
 | `parity` | `cargo test -p vokra-parity` — numerical parity harness against reference implementations (`tests/parity/`) |
 | `license` | `cargo deny check licenses advisories bans` + `cargo audit`, then the repository invariant gates under `scripts/`: zero-dependency, forbidden symbols, `no_std` subset, EnCodec weight exclusion, workflow hygiene, the converter ⇄ binder architecture handshake, bound-arch registry completeness, and the citation gates (`vokra_ops::`, `vokra_<crate>::`, parity sidecars, runbook paths). Each runs its own `--self-test` first, so a gate that has stopped being able to see a defect fails before it reports on your PR. |
 
-Run the same commands locally before pushing. These six required checks live in
-`.github/workflows/ci.yml`; the advisory checks were split out on 2026-07-23 into
+Run lightweight equivalents locally and use CI or an adequately sized remote
+host for the complete matrix. On the maintainer's 16 GB Mac, workspace-wide
+Cargo and every `-p vokra-models` Cargo invocation are VAST-only. These 10
+required checks live in `.github/workflows/ci.yml`; the advisory checks were split out on 2026-07-23 into
 `.github/workflows/ci-quality.yml` (lint / audit / doc-drift / API-compat) and
 `.github/workflows/ci-platform.yml` (platform build targets / GPU backends /
 regression gate). `.github/workflows/README.md` is the index of which job lives
@@ -48,10 +52,11 @@ GPU, so the dlopen-probe-gated device tests skip cleanly). Both are
 first-party `vokra-*` crates, so this does not affect the zero-dependency
 invariant.
 
-Planned extension (M1 and later, completing the NFR-MT-07 set): a
-performance-regression gate (5% threshold) and execution checks for code
-examples in documentation will be added as required checks, and nightly
-audio-quality threshold violations will block or revert the offending PR.
+Performance-regression, documentation-example, rustdoc, platform, real-weight
+parity, and nightly audio-quality jobs already run as advisory checks. They are
+not branch-protection contexts today; promotion requires an owner decision
+after stable green runs. The exact required/advisory split is maintained in
+`.github/workflows/README.md`.
 
 ## 3. Dependency license policy
 
@@ -122,27 +127,29 @@ bash scripts/install-git-hooks.sh   # sets core.hooksPath -> .githooks
 - **pre-commit** (fast, no compile): `cargo fmt --all -- --check`,
   `scripts/check-forbidden-symbols.sh`, `scripts/check-zero-deps.sh`,
   `scripts/check-fixture-eol-pins.sh`, `scripts/compliance/lint-pipefail-grep-q.py`.
-- **pre-push** (compiling, mirrors CI):
+- **pre-push** (compiling deep path):
   `scripts/compliance/test-nvidia-scanner-sigpipe.sh` (always),
   `cargo clippy --all-targets -- -D warnings`,
-  `cargo test --workspace` (or `cargo nextest run --workspace` + `cargo
-  test --workspace --doc` when `cargo-nextest` is installed locally —
-  ~60% faster on the workspace test leg; the hook falls back to plain
-  `cargo test` when it is missing, never a hard error).
+  `cargo test --workspace` (or `cargo nextest run --workspace` when
+  `cargo-nextest` is installed — the hook falls back to plain `cargo test`
+  when it is missing). Doc-tests are CI-owned, not silently substituted by
+  nextest.
 
 **Fast-paths for iteration speed.** The pre-push hook classifies the diff
 since the tracking upstream (or `origin/main` for brand-new branches). When
-every file changed is documentation-shape (`docs/**`, `.github/**`,
-`*.md`, `*.yml` / `*.yaml`, `include/*.h`, root dotfiles / `LICENSE` /
-`NOTICE` / `README` / `CONTRIBUTING` / `CHANGELOG`), the clippy + test
-legs are **skipped**; the compliance scanner still runs. Any `.rs`,
-`Cargo.toml`, `Cargo.lock`, `scripts/`, `tools/`, `tests/`,
-`integrations/`, `.githooks/` change or an unrecognised extension puts the
-hook back on the full path. Force the full path regardless of diff shape
-with `VOKRA_HOOK_DEEP=1`. Skip everything (including the compliance
-scanner) with `git push --no-verify` or `VOKRA_SKIP_HOOKS=1`. The
-classifier lives in `.githooks/lib-fastpath.sh` and its behaviour is
-pinned by `scripts/test-pre-push-fastpath.sh` (17 cases).
+every file changed is Rust-build-neutral documentation/config, approved
+`tools/parity` Python/uv sidecars, fixture hash sidecars, publish helpers, or
+Claude hook helpers, the clippy + test legs are **skipped**; the compliance
+scanner still runs. Any Rust/build input, general script/tool/test,
+integration, hook self-change, or unrecognised extension returns to the deep
+path. A deletion-only remote ref update also runs compliance and then skips
+Cargo; mixed or malformed updates do not. On the maintainer Mac, a deep path
+refuses before Cargo and directs the run to VAST. After a recorded green VAST
+verification, use `VOKRA_SKIP_HOOKS=1` for that code push. Force the full path
+on a capable approved host with `VOKRA_HOOK_DEEP=1`; the explicit local escape
+hatch is `VOKRA_ALLOW_LOCAL_HEAVY=1`. The classifiers live in
+`.githooks/lib-fastpath.sh` and are pinned by
+`scripts/test-pre-push-fastpath.sh` (42 cases).
 
 Uninstall with `git config --unset core.hooksPath`.
 
@@ -175,7 +182,8 @@ and trusted with `/hooks`.
 
 - **Codex hooks** keep Rust edits formatted, re-assert the zero-dependency
   invariant after Cargo metadata edits, block `cargo add` and bare pip/conda
-  mutations, and route workspace-scale cargo or 2 GB+ model work to vast.ai.
+  mutations/direct Python, and route workspace-scale Cargo, all
+  `vokra-models` Cargo, or 2 GB+ model work to VAST.
 - **Codex skills** encode the recurring policy-heavy workflows:
   `add-speech-model`, `add-audio-operator`, `numerical-parity`,
   `license-audit`, `publish-model-to-hf`, and `vast-ai-workflow`.
@@ -187,3 +195,6 @@ and trusted with `/hooks`.
 Machine-local approval settings are managed by Codex configuration and are
 not committed to the repository. Do not add credentials or personal overrides
 to the project policy files.
+
+The current operational baseline and branch-retirement history are summarized
+in `docs/handoff/codex-operations-2026-08-18.md`.

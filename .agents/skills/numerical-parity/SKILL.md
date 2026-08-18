@@ -11,6 +11,7 @@ reference 実装との数値一致は Vokra の品質背骨（NFR-QL-01）。**C
 
 - reference の数値は **必ず実際の reference 実装で生成**する。ライブラリが手元に無いなら **数値を発明しない** — `#[ignore]` の shell テストとして比較ロジックだけ書き、fixtures 生成後に有効化する（既存例: `tests/parity/tests/reference_ignored.rs`）。
 - 生成は **byte-reproducible**（固定 seed。既存の numpy 系は seed=1234）。版数を pin して再現性を担保。
+- checkpoint / GGUF / shard 群の合計が **2 GB 以上**になる reference 生成・変換・検証と、`-p vokra-models` または workspace 全体の Cargo は、skill `vast-ai-workflow` に従って VAST で実行する。ローカル Mac に artefact を戻さない。
 
 ## 大原則 2: reference は「独立」でなければ何も検証しない
 
@@ -81,7 +82,7 @@ reference 実装との数値一致は Vokra の品質背骨（NFR-QL-01）。**C
 3. **Rust parity テストを書く**。
    - **FP32: `atol = 0.01`**（`vokra_parity::FP32_ATOL`）。INT8: `atol = 0.05`（量子化パス導入後）。reference は f64、vokra は f32 である点に留意。
    - モデル固有基準（MEL loss / UTMOS / WER / CER 等）は per-suite doc に記述。
-4. **検証**: `cargo test -p vokra-parity`（committed fixtures のみで green）。ignore shell は `cargo test -p vokra-parity -- --ignored`。
+4. **検証**: 軽量な committed-fixture suite はローカルで `cargo test -p vokra-parity`。`vokra-models` consumer、2 GB 以上の実 checkpoint、workspace 検証は VAST。ignore shell は対象 crate と artefact サイズを先に確認する。
 
 ## GPU backend parity（Metal / CUDA）
 
@@ -91,6 +92,10 @@ GPU backend は **reference fixtures を持たず、CPU backend を oracle に�
 - **許容誤差は CPU parity と同じ FP32 `atol = 0.01`**。`vokra-backend-{metal,cuda}/tests/parity_{metal,cuda}.rs`（GEMM）と `parity_kernels_{metal,cuda}.rs`（gemv/softmax/layer_norm/gelu/conv1d）が GPU 出力を CPU kernel 出力と比較（観測誤差は遥かに tight）。
 - **fused op（`Compute::mlp_f32` / `attn_f32` / `encode_prenorm_stack` / decoder-step session）は per-op GPU 経路と bit-identical**（1 GPU submission で中間を device 常駐、readback 削減のみ＝新しい数値ではない）。CPU arm の `mlp_f32` は fusion 前の 3-kernel 列と bit-for-bit 一致（CPU parity 維持）。**causal fused attention は host mask+softmax と IEEE-754 bit-identical**（masked col が `exp(-inf)=0` で寄与ゼロ）。**device KV cache append は host project+concat と 7.15e-7 一致**（M1 実測）。
 - **e2e（`vokra-models/tests/parity_whisper.rs`、GGUF-gated）**: encoder / decoder logits は `atol = 0.01` 内、**greedy token 列は CPU と完全一致（`assert_eq`）** を要求（最も強い e2e 判定）。**whisper base full e2e greedy は Metal M1 と CUDA RTX 4090 の双方で CPU と完全一致（5/5 tokens）を実証済み**（Phase 3b、encoder 1.32e-3 / decoder logits 4.29e-5）。
+
+## 最新の実 checkpoint precedent（SBV2 four-file ZH、2026-08-18）
+
+PR #36 の VAST run は、SBV2 + JA DeBERTa v2 + EN DeBERTa v3 + ZH Chinese-RoBERTa の4 GGUFを再生成し、全 sidecar hash 一致を確認してから独立 upstream reference を生成した。Rust consumer は `1 passed / 0 failed / 0 ignored`（1026.70 秒）。bound は変更せず、ZH BERT max `1.907349e-5`、waveform max `1.031446e-1`、mel-loss RMS `1.820711e-1` で PASS。`MinimalG2P` は byte-replay fixture であり production Mandarin G2P 完成の主張ではない。実 GGUF はコミットせず、HF upload も行わず、instance を破棄した。詳細は `docs/handoff/parity-sbv2-real-vast-2026-08-18.md`。
 
 ## 品質ゲート（忘れない）
 

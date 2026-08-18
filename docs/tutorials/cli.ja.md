@@ -119,7 +119,7 @@ GPU バックエンドが cover しない op、不在の device は明示エラ�
 無言の切り替えはしない。
 
 ```sh
-cargo build --release -p vokra-models --features metal   # macOS
+cargo build --release -p vokra-cli --features metal   # macOS
 ./target/release/vokra-cli bench --model whisper-large-v3.gguf \
   --input speech30s.wav --backend metal
 ```

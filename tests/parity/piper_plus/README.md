@@ -30,14 +30,18 @@ native implementation at the FP32 parity bound (NFR-QL-01 `atol = 0.01`).
 ## Regenerating
 
 ```sh
-python gen_reference.py <tsukuyomi-6lang-fp16.onnx> <config.json> .
+uv run --no-project --python 3.12 \
+  --with-requirements tests/parity/parity-requirements.txt \
+  python tests/parity/piper_plus/gen_reference.py \
+  <tsukuyomi-6lang-fp16.onnx> <config.json> tests/parity/piper_plus
 ```
 
 The voice model itself is **not committed** (~40 MB FP16 / ~77 MB FP32 GGUF).
 The native parity tests (`crates/vokra-models/src/piper_plus/parity.rs`) are
 gated on `$VOKRA_PIPER_GGUF` and skip cleanly when it is unset (e.g. in CI),
-mirroring the Whisper parity tests (`$VOKRA_WHISPER_GGUF`). To run them locally,
-convert the voice and point the env var at the GGUF:
+mirroring the Whisper parity tests (`$VOKRA_WHISPER_GGUF`). Because this test
+compiles `vokra-models`, maintainers run the conversion and test on VAST rather
+than on the memory-constrained development Mac:
 
 ```sh
 cargo run -p vokra-convert -- --model piper-plus \

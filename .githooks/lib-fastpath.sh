@@ -1,10 +1,16 @@
+#!/usr/bin/env bash
 # .githooks/lib-fastpath.sh
 #
 # Diff-shape classifier for the pre-push fast-paths. Sourced by
 # `.githooks/pre-push` (production) and `scripts/test-pre-push-fastpath.sh`
 # (regression tests). Not standalone-executable — always sourced.
 #
-# Two functions:
+# Three groups of functions:
+#
+#   * `is_deletion_only_push_updates <stdin>` — returns 0 only when the
+#     pre-push stdin contains one or more well-formed ref updates and every
+#     local object id is all zeroes. Deleting refs transfers no commit, so it
+#     must not fall through an empty diff into the compiling path.
 #
 #   * `diff_base` — echoes the commit id to diff HEAD against, or fails
 #     (returns 1, prints nothing). Prefers the tracking upstream; falls
@@ -18,6 +24,32 @@
 # shellcheck disable=SC2034  # fastpath_reason is set for callers to read.
 
 fastpath_reason=""
+
+is_deletion_only_push_updates() {
+    local updates="${1:-}"
+    local local_ref local_sha remote_ref remote_sha extra
+    local count=0
+
+    while read -r local_ref local_sha remote_ref remote_sha extra; do
+        if [ -z "${local_ref}${local_sha}${remote_ref}${remote_sha}${extra}" ]; then
+            continue
+        fi
+        if [ -z "$local_ref" ] || [ -z "$local_sha" ] \
+            || [ -z "$remote_ref" ] || [ -z "$remote_sha" ] \
+            || [ -n "$extra" ]; then
+            return 1
+        fi
+        # SHA-1 repositories use 40 zeroes; SHA-256 repositories use 64.
+        # A zero remote SHA means "new remote ref", not deletion, so only
+        # the local SHA participates in this decision.
+        if ! printf '%s\n' "$local_sha" | grep -Eq '^(0{40}|0{64})$'; then
+            return 1
+        fi
+        count=$((count + 1))
+    done <<<"$updates"
+
+    [ "$count" -gt 0 ]
+}
 
 diff_base() {
     local upstream

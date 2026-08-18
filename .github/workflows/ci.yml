@@ -1,4 +1,5 @@
-# Vokra CI required core (M0: NFR-MT-07 subset, CLAUDE.md item 10).
+# Vokra CI required core (NFR-MT-07; current context list is maintained in
+# `.github/workflows/README.md` §1 and verified through branch protection).
 #
 # Split (2026-07-23, chore/ci-cd-reorg-2026-07-23):
 #
@@ -158,8 +159,9 @@ jobs:
   # FR-EX-08 no silent fallback). Cross-compiles vokra-capi to the 3 Apple
   # triples (device arm64 + simulator arm64/x86_64), assembles
   # `Vokra.xcframework` (2 slices: device + fat sim, static libvokra.a per
-  # slice), and confirms the Swift Package resolves. Registered as a required
-  # check on `main` per NFR-MT-07. cbindgen header drift is caught before the
+  # slice), and confirms the Swift Package resolves. As of 2026-08-18 this is
+  # an advisory artifact-producing job, not one of the 10 branch-protection
+  # contexts. cbindgen header drift is caught before the
   # cross-compile via `gen-c-abi.sh --check` (M2-02 T08/R3). Simulator boot is
   # deferred to an optional/nightly follow-up job (`ios-smoke-simulator`, D9);
   # physical iPhone RTF (NFR-PF-03) is owned by M2-14. CUDA is unconditionally
@@ -743,14 +745,14 @@ jobs:
   #   3. Android arm64-v8a libvokra.so cross-compiled here via NDK.
   # Then runs structure lint (jq on package.json + asmdefs, find shape
   # assertion under Plugins/), the NVIDIA runtime non-bundle check (plan §R3
-  # / CLAUDE.md NVIDIA EULA "installed only in a private (non-shared)
+  # / third_party/NVIDIA-EULA.md "installed only in a private (non-shared)
   # directory location"), and the UPM dependencies check (.dependencies=={},
   # no Sentis reference — zero-dep discipline for the Unity surface too).
   # Uploads the assembled UPM `.tgz` as `Vokra-unity-package` (retention 14d)
   # so the release train can promote the same tarball to GitHub Releases /
-  # OpenUPM (release.yml companion job, T14). Registered as a required PR
-  # check per NFR-MT-07 alongside build / test / fmt / clippy / parity /
-  # license / ios-build. IL2CPP Player build is deferred to a nightly
+  # OpenUPM (release.yml companion job, T14). As of 2026-08-18 this is an
+  # advisory artifact-producing job and is not a branch-protection context.
+  # IL2CPP Player build is deferred to a nightly
   # workflow (game-ci) because Unity licensing isn't available on the
   # per-PR path — the shape lint here catches every regression a Unity
   # Editor open would also catch (asmdef parse, plugin layout, package.json
@@ -768,6 +770,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Download Vokra-xcframework (from ios-build)
         uses: actions/download-artifact@v8
         with:
@@ -862,12 +865,12 @@ jobs:
           test -f "$PKG/Plugins/Android/libs/arm64-v8a/libvokra.so"
           test -f "$PKG/Plugins/WebGL/libvokra.a"
           # Hand-authored PluginImporter .meta lint (macOS/Win/Linux/WebGL —
-          # M4-02 added the WebGL case). PyYAML ships on the runner image;
-          # install it if the image ever drops it (required-check safety).
-          python3 -c 'import yaml' 2>/dev/null || pip3 install --quiet pyyaml
+          # M4-02 added the WebGL case). Keep Python tool execution isolated
+          # and reproducible through uv rather than the runner's global site.
+          uv run --no-project --python 3.12 --with pyyaml python -c 'import yaml'
           bash scripts/check-plugin-meta.sh
           find "$PKG/Plugins" -type f
-      - name: NVIDIA runtime non-bundle check (CLAUDE.md EULA, plan §R3)
+      - name: NVIDIA runtime non-bundle check (third_party EULA, plan §R3)
         run: bash scripts/check-unity-package-no-nvidia.sh bindings/unity/com.vokra.unity
       - name: UPM dependencies check (.dependencies=={} & no Sentis)
         run: bash scripts/check-unity-package-deps.sh bindings/unity/com.vokra.unity
@@ -879,9 +882,9 @@ jobs:
           retention-days: 14
 
   # M2-12-T15 Python wheel build gate (BR-08, FR-API-01, NFR-DS-02, NFR-DS-03,
-  # NFR-LC-02, NFR-MT-02, NFR-MT-07, NFR-MT-08, NFR-RL-01). Registered as the
-  # 8th required check on `main` PRs alongside build / test / fmt / clippy /
-  # gpu-backends / parity / license.
+  # NFR-LC-02, NFR-MT-02, NFR-MT-07, NFR-MT-08, NFR-RL-01). As of 2026-08-18
+  # this is an advisory artifact-producing job, not one of the 10 required
+  # branch-protection contexts.
   #
   # Design (M2-12 plan D5/D6/D12, T15):
   #

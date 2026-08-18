@@ -27,9 +27,9 @@
 # NOT blocked (legitimate uses):
 #   * uv add / uv run / uv sync / uv pip (uv-managed pip pass-through)
 #
-# Vast.ai instance provisioning uses `pip install 'huggingface_hub<0.30'` via
-# scripts/publish/vast-ai/provision.sh (documented gotcha B). That script
-# runs on remote instance, not through Codex — this hook is Codex-only.
+# Vast.ai provisioning has one audited bootstrap-only system repair before uv
+# exists (`scripts/publish/vast-ai/provision.sh`, gotcha B). Do not reproduce
+# it by hand; task Python on the remote instance also runs through uv.
 #
 # SELF-TEST
 #   bash .codex/hooks/block-pip-conda.sh --self-test
@@ -155,9 +155,9 @@ if [ -n "$matched" ]; then
         echo "Per-tree layout: pyproject.toml + uv.lock, Python 3.12 pin"
         echo "(uv python pin 3.12 + requires-python \">=3.12\")."
         echo ""
-        echo "Bypass this hook only when the user explicitly says so — e.g.,"
-        echo "when reproducing a vast.ai provisioning step that must run pip"
-        echo "on the remote instance (scripts/publish/vast-ai/provision.sh)."
+        echo "Do not reproduce the bootstrap repair by hand. Run the audited"
+        echo "scripts/publish/vast-ai/provision.sh on the remote instance; task"
+        echo "Python after provisioning must still run through uv."
     } >&2
     exit 2
 fi

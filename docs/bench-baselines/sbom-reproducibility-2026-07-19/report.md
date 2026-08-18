@@ -15,7 +15,7 @@ their release machine.
 All runs, both checkouts detached at `53d216c`:
 
 ```sh
-python3 scripts/sbom/generate_spdx.py --package vokra-capi \
+uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py --package vokra-capi \
   --no-default-features --features vulkan \
   --doc-name vokra-capi-cpu-vulkan-only --output <path>
 ```

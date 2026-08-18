@@ -23,15 +23,21 @@ do not depend on Claude Code settings or hook behavior when working here.
 
 ## Memory and large-model safety
 
-- Do not run workspace-wide cargo tests/builds/clippy locally on the maintainer
-  machine. Use the `vast-ai-workflow` skill and a remote machine for heavy
-  verification; destroy the instance afterward.
+- Do not run workspace-wide or `vokra-models` Cargo commands that compile,
+  test, check, run, document, or audit locally on the maintainer machine. Cheap
+  `cargo fmt` / `cargo metadata` / `cargo tree` inspection remains local. Use
+  the `vast-ai-workflow` skill for the heavy scope and destroy the instance
+  afterward.
 - Treat model artifacts of 2 GB or larger (including the sum of shards) as
   vast.ai work. The only narrow exception is provenance-only restamping through
   the established mmap path, without touching tensor data.
 - Keep local verification package-scoped and serial (`CARGO_BUILD_JOBS=1`) when
   it is known to be safe. The Codex PreToolUse hook enforces the broad guard;
   do not bypass it unless the user explicitly authorizes that exact run.
+- A deep pre-push path is also refused on the maintainer Mac. After a recorded
+  green VAST run, `VOKRA_SKIP_HOOKS=1` may be used for the corresponding code
+  push. A deletion-only ref update still runs the compliance regression, then
+  skips Cargo because it transfers no commit.
 
 ## Skill routing
 
@@ -61,6 +67,11 @@ skill before acting and follow its referenced project files.
   the same logical change as the implementation.
 - Do not commit, push, publish, or open a PR unless the user asks for that
   external state change.
+- Treat model upload as a separate irreversible permission: VAST work, a clean
+  dry-run, or a license sign-off does not authorize `--push` to Hugging Face.
+- For the 2026-08-18 baseline, merged-PR history, retired-branch disposition,
+  VAST evidence, and remaining M5 ledger, read
+  `docs/handoff/codex-operations-2026-08-18.md`.
 
 The repository also contains legacy Claude configuration for users who still
 need it. Codex behavior is defined by this file, `.agents/skills/`, and the

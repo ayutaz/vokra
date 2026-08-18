@@ -284,7 +284,7 @@ Runtime/converter factories are already landed. Remaining CI activation work:
    （`VOKRA_VOXCPM2_GGUF` env で pointing、workflow YAML 側で HF から fetch）
 3. **PyTorch reference dump**: `VOKRA_VOXCPM2_REFDIR` 環境変数が pointing する
    directory に PyTorch reference の中間 tensor dump を配置（owner が生成、CI
-   runner に `pip install openbmb-voxcpm2` の Python 依存を install 済）
+   runner の uv-managed environment に `openbmb-voxcpm2` を install 済）
 
 ## 8. Owner critical path
 

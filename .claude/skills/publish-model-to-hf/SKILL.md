@@ -7,13 +7,14 @@ description: Vokra の GGUF を huggingface.co/vokra 配下に公式配布する
 
 **単一事実源**: `scripts/publish/publish-one.sh` のスクリプト冒頭コメント。本 skill はそれを skill 表現に翻訳したもの。実装との drift は script が SoT で本 skill を追随する。
 
-**大原則**: `hf` CLI や `huggingface_hub.upload_file` を CC が直接叩かない。**必ず `publish-one.sh` chain 経由**。理由 = 5 段 gate を bypass する経路が存在すると gate は fail-closed default を保てない。
+**大原則**: `hf` CLI や `huggingface_hub.upload_file` を agent が直接叩かない。**必ず `publish-one.sh` chain 経由**。理由 = 5 段 gate を bypass する経路が存在すると gate は fail-closed default を保てない。
 
 ## 0. 事前判断（着手前）
 
 - **ライセンス audit を先に通す** → skill `license-audit`。§3.1 sign-off が空欄なら **publish しない**（gate 4 で fail-closed refuse される）。primary-source rule で埋められる条件が揃ってから戻る。
-- **モデルサイズ確認**: safetensors 合計 >8 GB は M1 iMac で処理しない → skill `vast-ai-workflow`。`publish-one.sh` の gate 7 が `--allow-large` or `VOKRA_PUBLISH_ON_VAST=1` なしで refuse する。[[feedback-large-models-on-vast-ai]]。
+- **モデルサイズ確認**: checkpoint / GGUF / shard 群の合計が **2 GB 以上**なら convert・検証・publish を M1 iMac で行わず、skill `vast-ai-workflow` で VAST へ送る。`publish-one.sh` の legacy 8 GiB gate 7 は追加の backstop であり、2 GB の運用閾値を緩める根拠ではない。[[feedback-large-models-on-vast-ai]]。
 - **既に GGUF がある場合**: 変換不要なら `restamp_provenance`（§7）で provenance だけ差替可能。
+- **`--push` は依頼者の明示承認がある回だけ**付ける。ライセンス sign-off や dry-run 成功は upload 権限の代わりにならない。
 
 ## 1. 5 段 gate の全体像
 
@@ -44,12 +45,12 @@ description: Vokra の GGUF を huggingface.co/vokra 配下に公式配布する
 ## 3. HF vocabulary の normalize（SPDX と別空間）
 
 - HF `license:` タグは lower-case（`MIT` → 400 reject、`mit` OK）+ dual 表現は `other`（SPDX の `MIT OR Apache-2.0` は HF では `other`）。
-- 正規化は `make_model_card.py` の `hf_license_tag()` に集約されている。CC が手で card front-matter を書かない — 常に generator 経由。
+- 正規化は `make_model_card.py` の `hf_license_tag()` に集約されている。agent が手で card front-matter を書かない — 常に generator 経由。
 - CPML は SPDX 未登録 → converter で `NonCommercial` に hard-map（→ skill `license-audit`）+ publish は T4 workflow。[[reference-cpml-spdx-nonregistration]]。
 
 ## 4. §3.1 sign-off を埋める
 
-skill `license-audit` の primary-source rule に従う。CC 側で埋めていい条件（**両方**）:
+skill `license-audit` の primary-source rule に従う。agent 側で埋めていい条件（**両方**）:
 
 1. 依頼者が明示的に「自主判断で埋めてよい」と言った
 2. primary source で clean 確認（authenticated HF API meta / upstream LICENSE raw / DOI）
@@ -66,27 +67,24 @@ export HF=$(grep '^HF=' .env | cut -d= -f2-) && export HF_TOKEN="$HF"
 scripts/publish/publish-one.sh \
   --gguf ~/scratch/whisper-large-v3.gguf \
   --repo vokra/whisper-large-v3 \
-  --license-spdx mit \
-  --push  # ← --push 無しは常時 dry-run。省略で staging のみ
+  --license-spdx mit
 
 # T4 (Research-only) 例: X-Codec-2
 scripts/publish/publish-one.sh \
   --gguf ~/scratch/xcodec2.gguf \
   --repo vokra/xcodec2 \
   --license-url https://raw.githubusercontent.com/.../LICENSE \
-  --allow-noncommercial \
-  --push
+  --allow-noncommercial
 
 # T3 (Copyleft AGPL) 例: SBV2 v2 base
 scripts/publish/publish-one.sh \
   --gguf ~/scratch/sbv2-v2-base.gguf \
   --repo vokra/style-bert-vits2-v2-base \
   --license-spdx agpl-3.0 \
-  --acknowledge-copyleft \
-  --push
+  --acknowledge-copyleft
 ```
 
-**dry-run default** = `--push` を明示しない限り stage のみ（gate 全通過を local で確認可能）。**publish は irreversible** = 一度 live 化した weight は minutes で mirror される、「あとで消せる」は復旧計画にならない。
+**dry-run default** = `--push` を明示しない限り stage のみ。最初は必ず上記形で全 gate を確認し、依頼者がその repo / artifact の upload を明示承認した後だけ、同じ command に `--push` を加えて再実行する。**publish は irreversible** = 一度 live 化した weight は minutes で mirror される、「あとで消せる」は復旧計画にならない。
 
 ## 6. `fetch_license.sh` の使い分け
 
@@ -128,15 +126,15 @@ publish 前後で以下を通す:
 ```bash
 scripts/publish/check-catalog-reality.sh
 uv run --no-project --python 3.12 python scripts/publish/signoff_match.py --self-test
-scripts/publish/publishability-report.py  # 各モデルの 5-tier 現況
+uv run --no-project --python 3.12 python scripts/publish/publishability-report.py  # 各モデルの 5-tier 現況
 ```
 
 `upload.sh --self-test` は script 内 test（LICENSE 未同梱 / §3.1 blank / provenance 未刻印 の refuse path）を回す。
 
 ## 11. 出禁パターン（**やってはいけない**）
 
-- **`hf` CLI や `huggingface_hub.upload_folder` を CC が直接叩く**: gate を全て bypass、依頼者にも見えない unaudited publish になる
-- **§3.1 blank row を CC が勝手に埋める**: primary-source rule 違反、fail-closed default を破壊
+- **`hf` CLI や `huggingface_hub.upload_folder` を agent が直接叩く**: gate を全て bypass、依頼者にも見えない unaudited publish になる
+- **§3.1 blank row を agent が勝手に埋める**: primary-source rule 違反、fail-closed default を破壊
 - **T4 weight を `--allow-noncommercial` なしで publish**: gate 5 が refuse するが、gate を bypass すると license 違反配布
 - **canonical LICENSE を canonical URL 側で置換**: 上流が独自 copyright を付けている場合、retention 要件違反
 - **`--push` を最初から付ける**: dry-run で gate 全通過を確認しない = pipe 経由の undetected error を live 化する

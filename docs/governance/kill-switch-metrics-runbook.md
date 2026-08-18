@@ -2,13 +2,14 @@
 
 **文書 ID**: VOKRA-GOV-001
 **最終更新**: 2026-07-07（初版、Task #78）
-**位置付け**: CLAUDE.md の Kill switch 表（NFR-MT-05、四半期手動 Go/No-go review）で
+**位置付け**: [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) の Kill switch 表
+（NFR-MT-05、四半期手動 Go/No-go review）で
 `C`（v0.1 MVP 公開後 3ヶ月で GitHub star < 500、active user < 20）と
 `K`（v0.5 時点で addressable market が競合の 10% 未満）を判定するための
 **再現可能で機械的なメトリクス収集手順**。判定そのものは依頼者（`ayutaz`）が行う。
 本 runbook は「何を、いつ、どう数えるか」だけを固定する。
 
-**対象条件（CLAUDE.md より抜粋）**:
+**対象条件（現行判定表より抜粋）**:
 
 | # | 条件 | チェック時期 |
 |---|-----|-----|
@@ -330,7 +331,7 @@ EOF
 ```
 
 **記録は git 管理下**（`docs/governance/` は public repo に含めるかは依頼者判断。
-CLAUDE.md 記載のとおり、本 runbook 自体は public 化した `ayutaz/vokra` の docs 配下に
+本 runbook 自体は public `ayutaz/vokra` の docs 配下に
 配置しても問題ない — メトリクス収集手順にセンシティブ情報はない）。
 `.metrics.json` は生 JSON、判断は `.md` に人手で追記する two-file 構成を推奨。
 

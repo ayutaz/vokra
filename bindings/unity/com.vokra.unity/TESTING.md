@@ -150,7 +150,8 @@ VOKRA_WEBGL_EMSDK_VERSION=3.1.38 scripts/build-unity-webgl-lib.sh --verify
 # 3. Open a consumer project in a WebGL-module-equipped Unity Editor,
 #    import the sample, switch platform to WebGL and Build. Serve the build
 #    directory (never file://):
-python3 -m http.server 8080 --directory <BuildDir>
+uv run --no-project --python 3.12 python -m http.server \
+  8080 --directory <BuildDir>
 # 4. Open http://localhost:8080 and check the browser console for
 #    "[vokra-demo] WEBGL PASS". Model stages log "skipped" unless the GGUFs
 #    are staged under Assets/StreamingAssets/models (fetch-demo-models.sh).

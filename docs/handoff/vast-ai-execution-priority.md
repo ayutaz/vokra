@@ -119,8 +119,9 @@ cost comparisons.
 - **Prerequisite (owner)**: bridge PR land + training data audit + §3.1 sign-off
 - **Step 2a**: vast.ai instance rent (~$0.60-1.50、~2-3h)。RAM ≥ 64 GB、Disk ≥
   100 GB、GPU 最安 (converter は CPU only)
-- **Step 2b**: provision.sh (Wave 12) → run-one.sh --push (gate 7 auto-bypass by
-  `VOKRA_PUBLISH_ON_VAST=1`)
+- **Step 2b**: provision.sh (Wave 12) → run-one.sh dry-run。全 gate green 後、
+  exact artifact/repo の upload が明示承認された場合だけ `--push`
+  (`VOKRA_PUBLISH_ON_VAST=1` は size backstop の bypass であり upload 権限ではない)
 
 ### Priority 3: Higgs-Audio v3 TTS 4B (~8.67 GB、BosonAI R&NC — publish blocked)
 

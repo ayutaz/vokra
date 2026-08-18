@@ -1,5 +1,8 @@
 # CSM staged parity fixtures (M4-05 T23/T24)
 
+Maintainers run every `cargo ... -p vokra-models` command below on VAST. Do
+not compile or test `vokra-models` on the development Mac.
+
 Offline recipe for the Sesame CSM-1B staged reference dump the Rust parity
 test (`crates/vokra-models/tests/parity_csm.rs`) consumes. CI never runs
 Python; the real dump is an **owner step after T29** (both upstream repos
@@ -27,7 +30,7 @@ are gated downloads).
 3. Run:
 
    ```sh
-   python3 tools/parity/csm_dump.py dump \
+   uv run --no-project --python 3.12 python tools/parity/csm_dump.py dump \
        --checkpoint /path/to/csm-1b \
        --tokenizer /path/to/llama-3.2-tokenizer \
        --text "Hello from Vokra." --speaker 0 --max-frames 25 \

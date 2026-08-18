@@ -1,8 +1,8 @@
 # 四半期 Go/No-go review 運用手順 runbook
 
 **文書 ID**: VOKRA-GOV-002
-**最終更新**: 2026-07-11（初版、M2-15-T02）
-**位置付け**: CLAUDE.md の Kill switch 表（撤退条件 A〜L、single source of truth）と
+**最終更新**: 2026-08-18（現行文書体系・履歴参照を再照合）
+**位置付け**: 本runbookのKill switch表（撤退条件 A〜L）と
 system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review をリリース
 プロセスに組み込む）の**手動 review 運用手順**。判定そのものは依頼者（`ayutaz`）が
 行う。本 runbook は「いつ・何を入力に・どこに出力し・どのように release process と
@@ -17,11 +17,12 @@ system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review を
 
 ## 0. 前提と根拠
 
-### 0.1 SSOT
+### 0.1 現行の基準文書
 
-- **Kill switch 表**: CLAUDE.md「Kill switch（撤退条件、四半期評価に格上げ）」節が
-  single source of truth。撤退条件 A〜L の閾値・時期・監視頻度は本 runbook から
-  独自に導出せず、CLAUDE.md の表を出典として転記する。
+- **Kill switch A〜L の判定表**:
+  [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) と本 runbook。
+  閾値・時期・監視頻度を記憶から変更しない。旧 `CLAUDE.md` の表はこれらの
+  初期出典だが、現在の `CLAUDE.md` は互換 entry point であり SSOT ではない。
 - **要件 ID**: NFR-MT-05（本 runbook の根拠）、NFR-MT-03（4 週間 release train と
   連動、`docs/system-requirements.md` §3.5）。
 - **WP レイヤ**: M2-15（`docs/tickets/m2/M2-15-quarterly-review.md`）が v0.5 期の
@@ -68,11 +69,11 @@ system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review を
 | **定期** | 四半期 1 回 | 3/6/9/12 月末を目安。前四半期の release train 3 本
 （NFR-MT-03、4 週 × 3 = 12 週）の直後を review 実施点とする |
 | **緊急即時**（Kill switch E） | 検知次第 | HF + ggml が音声特化 op を llama.cpp に
-追加した瞬間に緊急発動（CLAUDE.md「常時緊急監視」）。定期四半期を待たず、
+追加した瞬間に緊急発動（本 runbook §3.3）。定期四半期を待たず、
 検知後 1 週間以内に review を起動する |
 | **マイルストーン連動** | Kill switch C/J/K/D | C = v0.1 MVP 公開後 3 ヶ月 =
 5-6 ヶ月時点 / J・K = v0.5 時点 / D = v0.5 公開後 3 ヶ月 = 8-10 ヶ月時点
-（CLAUDE.md、`docs/milestones.md` §7 の Kill switch 評価カレンダー）。
+（`docs/milestones.md` §12 の Kill switch 評価カレンダー）。
 これらは判定日到来した四半期 review に合流させ、独立 review を起こさない |
 
 **カレンダー登録は依頼者責任**（本 runbook は自動 CI に載せない = 2026-07-04
@@ -85,7 +86,8 @@ tag `v0.5.0` を打った日を起点にカレンダー登録する運用を推�
 ## 2. v0.5 期の実施時点（Kill switch C / J / K / D）
 
 `docs/milestones.md` §6「Kill switch 評価」表と `docs/tickets/m2/M2-15-quarterly-review.md`
-「位置付け・スコープ境界」表からの転記。原文の閾値は CLAUDE.md（SSOT）に従う。
+「位置付け・スコープ境界」表からの転記。現行の閾値は
+[`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) の A〜L 表に従う。
 
 | Kill switch | 判定時期（暦月は目安） | 本 runbook での扱い |
 |------|----------|------|
@@ -158,7 +160,7 @@ official 記述を確認） |
 公式 changelog / MAX blog（音声モデル対応のバージョン別追加を確認） |
 
 `.yml` を使わず**手動確認**であること、記憶からの断定を避け出典リンクを付すこと
-（CLAUDE.md ハルシネーション厳禁）を厳守する。
+（`AGENTS.md` の source-backed / fabricated-pass 禁止）を厳守する。
 
 ### 3.3 T05 常時・緊急監視（Kill switch E / F / L）
 
@@ -186,7 +188,7 @@ official 記述を確認） |
   `docs/tickets/m2/M2-15-quarterly-review.md` T08 Status セクション）。
 - HA Voice / Wyoming エコシステム側の採用シグナル（Home Assistant / Wyoming の
   公式ドキュメント・issue・推奨サーバ一覧等の外形的状況を出典付きで記録）。
-- 記憶から HA 採用可否を断定しない（CLAUDE.md ハルシネーション厳禁）。
+- 記憶から HA 採用可否を断定しない（`AGENTS.md` の source-backed 規律）。
 
 ### 3.5 M2 Exit criteria 実績
 
@@ -232,7 +234,7 @@ KPI 実績を同型で投入する。
 - **記入対象ファイル**: `docs/governance/vokra-go-nogo-<phase>.md`（v0.5 なら
   `vokra-go-nogo-v0.5.md`、M2-15-T01 の主成果物）。
 - **記入内容**（M2-15-T01 の構成に従う）: 冒頭 review 目的 + 対象マイルストーン +
-  出典（CLAUDE.md Kill switch 表 + `docs/milestones.md` §6 or §7 + NFR-MT-05）、
+  出典（本 runbook + `vokra-go-nogo-v0.5.md` + `docs/milestones.md` §12 + NFR-MT-05）、
   Kill switch A〜L 状態表、C / J / K / D 判定欄、継続監視（A/B/H/E/F/L）現況欄、
   既知リスク欄（compliance/legal 含む）、末尾に総合 Go/No-go 判定 + exit path
   選択欄（撤退時のみ）と意思決定ログ（判定日・判定者）。
@@ -263,7 +265,7 @@ KPI 実績を同型で投入する。
 - 兄弟 runbook §6 に従い、`docs/governance/quarterly-reviews/YYYY-QN.metrics.json`
   として保存。判定 `.md` と `.metrics.json` の two-file 構成を推奨。
 - 生 JSON にセンシティブ情報は無い（API token 等は含まれない）。公開 repo 反映
-  可否は依頼者判断だが、CLAUDE.md 記載どおり本 runbook 自体は公開 governance
+  可否は依頼者判断だが、本 runbook 自体は公開 governance
   ドキュメントとして扱って問題ない。
 
 ### 4.4 D 監視起点日の記録（v0.5 review 限定）
@@ -309,7 +311,7 @@ NFR-MT-03（`docs/system-requirements.md` §3.5）は 4 週間 release train を
 
 | 位置 | イベント | 本 runbook との関係 |
 |-----|---------|---------------------|
-| Release train N（週 0-4） | 通常リリース | 平常 CI（NFR-MT-07 required checks 7 項目）と NFR-QL-04（nightly 音声品質） |
+| Release train N（週 0-4） | 通常リリース | 平常 CI（2026-08-18 branch protection: 10 required contexts。`.github/workflows/README.md` §1）と NFR-QL-04（nightly 音声品質） |
 | Release train N+1（週 4-8） | 通常リリース | 同上 |
 | Release train N+2（週 8-12） | 通常リリース + **四半期 review 準備**（week 11
 までに §3 入力を CC が準備完了させる） | Kill switch 状態表の暫定案・T03 指標 JSON
@@ -325,8 +327,7 @@ Kill switch A〜L のいずれかが該当（撤退側）と判定された場�
 から具体的経路を依頼者が選択する。
 
 **Kill switch → exit path 対応の目安**（`docs/tickets/m2/M2-15-quarterly-review.md`
-T13 内容、CLAUDE.md「Rhasspy 型『上位エコシステムに merge』撤退は幻想」注記の
-継承）:
+T13 内容と [`exit-path-playbook.md`](exit-path-playbook.md) の継承）:
 
 | 発動 Kill switch | 有力 exit path |
 |------|------|
@@ -431,7 +432,7 @@ op 追加） | Candle audio extension として merge / HuggingFace / ggml-org �
 
 - 兄弟 runbook: [kill-switch-metrics-runbook.md](kill-switch-metrics-runbook.md)（VOKRA-GOV-001）
 - WP spec: `docs/tickets/m2/M2-15-quarterly-review.md`（M2-15 全 16 チケットの詳細）
-- Kill switch SSOT: CLAUDE.md「Kill switch（撤退条件、四半期評価に格上げ）」節
+- Kill switch criteria: [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md)
 - 要件: `docs/system-requirements.md` §3.5 NFR-MT-03（4 週間 release train）/
   NFR-MT-05（本 runbook の根拠）/ NFR-MT-06 / NFR-MT-07（CI 品質ゲート）/
   NFR-MT-08（CD 自動リリース）
