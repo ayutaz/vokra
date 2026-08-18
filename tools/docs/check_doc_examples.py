@@ -51,7 +51,8 @@ up), the checker FAILS and tells you to delete the entry. That is what stops
 the ledger from silently rotting into a permanent hole.
 
 Usage:
-    python3 tools/docs/check_doc_examples.py [--list | --self-test]
+    uv run --no-project --python 3.12 python \
+        tools/docs/check_doc_examples.py [--list | --self-test]
         --list       print the extracted block inventory and exit 0
         --self-test  run the bidirectional fixture tests (T24) and exit
 
@@ -265,6 +266,25 @@ REPO_PREFIXES = ("scripts/", "web/demo/", "web/pkg/", "bindings/", "tools/", "do
 CLI_TOKEN = re.compile(r"(?:^|[\s(])(?:\./)?(?:target/release/)?vokra-cli\b")
 
 
+def _contains_cli_invocation(line: str) -> bool:
+    """Return whether a shell line invokes the CLI rather than naming its crate.
+
+    Cargo selectors such as ``-p vokra-cli``, ``--package vokra-cli``, and
+    ``--bin vokra-cli`` name a build target.  Treating the next non-flag token
+    as a Vokra subcommand turns ``--features metal`` into a bogus
+    ``vokra-cli metal`` invocation.  A ``cargo run ... -- <subcommand>`` line
+    remains an invocation through its argument separator.
+    """
+    if re.search(r"\bcargo\s+run\b.*(?:^|\s)--(?:\s|$)", line):
+        return True
+    for match in CLI_TOKEN.finditer(line):
+        prefix = line[:match.start()].rstrip()
+        if re.search(r"(?:^|\s)(?:-p|--package|--bin)$", prefix):
+            continue
+        return True
+    return False
+
+
 def _tokenize_invocation(lines, idx):
     """Join a shell invocation that uses trailing backslash continuations."""
     out = [lines[idx]]
@@ -284,7 +304,7 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
             i += 1
             continue
 
-        if CLI_TOKEN.search(raw) or re.search(r"--\s+convert\b|--\s+run\b|--\s+bench\b", raw):
+        if _contains_cli_invocation(raw):
             joined, i = _tokenize_invocation(lines, i)
             toks = joined.split()
             # Find the subcommand: the token right after the vokra-cli word,
@@ -293,6 +313,13 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
             sub_idx = None
             for k, t in enumerate(toks):
                 base = t.split("/")[-1]
+                is_cargo_selector = (
+                    base == "vokra-cli"
+                    and k > 0
+                    and toks[k - 1] in {"-p", "--package", "--bin"}
+                )
+                if is_cargo_selector:
+                    continue
                 if base == "vokra-cli" or t == "--":
                     for off, cand in enumerate(toks[k + 1:], start=k + 1):
                         if cand.startswith("-"):
@@ -309,10 +336,9 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
                     )
                 else:
                     # Only flags AFTER the subcommand belong to it. `cargo run
-                    # --release --bin vokra-cli -- convert …` (docs/tutorials/
-                    # python.md:37) puts cargo's own --release / --bin before
-                    # the `--` separator; attributing those to `convert` was a
-                    # false positive the self-test now pins.
+                    # --release -p vokra-cli --features metal -- convert …`
+                    # puts cargo's own flags before the `--` separator;
+                    # attributing those to `convert` would be a false positive.
                     for k, t in enumerate(toks):
                         if k < sub_idx:
                             continue
@@ -558,7 +584,13 @@ def run_check(root: pathlib.Path, docs, listing=False):
 GREEN_DOC = '''# Fixture
 
 ```sh
+cargo build --release -p vokra-cli --features metal
+cargo build --release --package vokra-cli --features cuda
 ./target/release/vokra-cli convert \\
+  --model whisper \\
+  --input model.safetensors \\
+  --output whisper.gguf
+cargo run --release -p vokra-cli --features metal -- convert \\
   --model whisper \\
   --input model.safetensors \\
   --output whisper.gguf
@@ -595,7 +627,9 @@ def self_test(root: pathlib.Path) -> int:
     with tempfile.TemporaryDirectory() as td:
         tmp = pathlib.Path(td)
         # (a) GREEN side (T24): a legitimate doc-local pseudo-helper must NOT
-        #     be mistaken for API drift, and a valid invocation must pass.
+        #     be mistaken for API drift; cargo target selectors must NOT be
+        #     mistaken for CLI invocations; valid direct and cargo-run
+        #     invocations must pass.
         gd = tmp / "green.md"
         gd.write_text(GREEN_DOC, encoding="utf-8")
         shutil.copytree(root / "crates", tmp / "crates", dirs_exist_ok=True,

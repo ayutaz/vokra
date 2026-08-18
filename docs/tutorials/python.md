@@ -13,8 +13,8 @@
 
 - Package metadata: `0.1.0.dev0`, Python 3.9–3.12.
 - Runtime dependency list: empty; NumPy is optional interop.
-- Internal modules: native loader, handle/session/stream wrappers, WAV helpers,
-  and a nine-class error hierarchy.
+- Internal modules: native loader, handle/session/stream wrappers, and a
+  nine-class error hierarchy. Audio-file decoding remains caller-owned.
 - Generated FFI table: the earlier 14-function ASR/TTS/streaming subset.
 - Current C header: 41 functions. The generator parser recognizes 39, then
   generation is blocked on the newer `vokra_aec_config_t` structure mapping.
@@ -43,14 +43,34 @@ cp target/release/libvokra.dylib bindings/python/src/vokra/_lib/  # macOS
 ## Intended public API
 
 After the ABI generator and package exports are brought current, the intended
-surface is `Session`, `Stream`, WAV helpers, and `VokraError` subclasses. The
-following shape is illustrative and deliberately not presented as runnable on
-the current checkout:
+surface is `Session`, `Stream`, and `VokraError` subclasses. WAV loading is not
+part of the package API; the example therefore uses a local standard-library
+helper. This shape is illustrative and deliberately not presented as runnable
+on the current checkout:
 
 ```python
-from vokra import Session, read_wav_mono_f32
+import struct
+import wave
 
-pcm, sample_rate = read_wav_mono_f32("speech.wav")
+from vokra import Session
+
+
+def read_pcm16_wav_mono(path: str) -> tuple[list[float], int]:
+    with wave.open(path, "rb") as source:
+        wav_format = (
+            source.getnchannels(),
+            source.getsampwidth(),
+            source.getcomptype(),
+        )
+        if wav_format != (1, 2, "NONE"):
+            raise ValueError("expected an uncompressed mono 16-bit PCM WAV")
+        sample_rate = source.getframerate()
+        frames = source.readframes(source.getnframes())
+    pcm = [sample / 32768.0 for (sample,) in struct.iter_unpack("<h", frames)]
+    return pcm, sample_rate
+
+
+pcm, sample_rate = read_pcm16_wav_mono("speech.wav")
 with Session.open("whisper-base.gguf") as session:
     text = session.transcribe(pcm, sample_rate)
 ```

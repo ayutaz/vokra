@@ -12,8 +12,8 @@
 
 - package metadata: `0.1.0.dev0`、Python 3.9〜3.12。
 - runtime dependency は空。NumPy は任意の interop のみ。
-- 内部モジュール: native loader、handle/session/stream wrapper、WAV helper、
-  9 個の error subclass。
+- 内部モジュール: native loader、handle/session/stream wrapper、9 個の error
+  subclass。音声 file の decode は caller 側の責務です。
 - 生成済み FFI table: 旧来の ASR/TTS/streaming 14-function subset。
 - 現行 C header: 41 functions。generator parser が認識するのは 39 で、さらに
   新しい `vokra_aec_config_t` の型 mapping がないため再生成時に停止する。
@@ -42,13 +42,33 @@ cp target/release/libvokra.dylib bindings/python/src/vokra/_lib/  # macOS
 ## 予定している public API
 
 ABI generator と package export を現行化した後の予定 surface は
-`Session`、`Stream`、WAV helper、`VokraError` subclass です。次は形を示す
-例であり、現在の checkout で実行可能な quick start ではありません:
+`Session`、`Stream`、`VokraError` subclass です。WAV 読込は package API に
+含めず、例では標準 library だけの local helper を使います。次は形を示す例で
+あり、現在の checkout で実行可能な quick start ではありません:
 
 ```python
-from vokra import Session, read_wav_mono_f32
+import struct
+import wave
 
-pcm, sample_rate = read_wav_mono_f32("speech.wav")
+from vokra import Session
+
+
+def read_pcm16_wav_mono(path: str) -> tuple[list[float], int]:
+    with wave.open(path, "rb") as source:
+        wav_format = (
+            source.getnchannels(),
+            source.getsampwidth(),
+            source.getcomptype(),
+        )
+        if wav_format != (1, 2, "NONE"):
+            raise ValueError("expected an uncompressed mono 16-bit PCM WAV")
+        sample_rate = source.getframerate()
+        frames = source.readframes(source.getnframes())
+    pcm = [sample / 32768.0 for (sample,) in struct.iter_unpack("<h", frames)]
+    return pcm, sample_rate
+
+
+pcm, sample_rate = read_pcm16_wav_mono("speech.wav")
 with Session.open("whisper-base.gguf") as session:
     text = session.transcribe(pcm, sample_rate)
 ```
