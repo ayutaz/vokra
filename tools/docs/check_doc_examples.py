@@ -63,6 +63,7 @@ Exit code: 0 = clean (announced tier-C / pinned gaps are not failures),
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import pathlib
 import re
@@ -304,8 +305,9 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
             i += 1
             continue
 
-        if _contains_cli_invocation(raw):
-            joined, i = _tokenize_invocation(lines, i)
+        joined, joined_end = _tokenize_invocation(lines, i)
+        if _contains_cli_invocation(joined):
+            i = joined_end
             toks = joined.split()
             # Find the subcommand: the token right after the vokra-cli word,
             # or after a bare `--` separator (`cargo run ... -- convert`).
@@ -348,8 +350,12 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
                                 problems.append(
                                     f"{block.where()}: `vokra-cli {sub}` has no flag {flag}"
                                 )
-                            elif flag == "--model" and sub == "convert" and k + 1 < len(toks):
-                                kind = toks[k + 1]
+                            elif flag == "--model" and sub == "convert":
+                                kind = (
+                                    t.split("=", 1)[1]
+                                    if "=" in t
+                                    else (toks[k + 1] if k + 1 < len(toks) else "")
+                                )
                                 if not kind.startswith("-") and kind not in kinds:
                                     problems.append(
                                         f"{block.where()}: `--model {kind}` is not a known "
@@ -360,13 +366,13 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
 
         # Repo-relative path existence (T19: ios.md's build-ios.sh /
         # verify-ios-xcframework.sh, web.md's build-wasm.sh + demo server).
-        for tok in re.findall(r"[A-Za-z0-9_./-]+", raw):
+        for tok in re.findall(r"[A-Za-z0-9_./-]+", joined):
             if tok.startswith(REPO_PREFIXES) and not tok.endswith("/"):
                 if re.search(r"[*?]|\.\.\.|<|>", tok):
                     continue
                 if not (root / tok).exists():
                     problems.append(f"{block.where()}: referenced repo path '{tok}' does not exist")
-        i += 1
+        i = joined_end + 1
 
 
 # ------------------------------------------------------------------ tier B --
@@ -410,6 +416,15 @@ PY_IMPORT = re.compile(r"^from\s+vokra(?:\.\w+)?\s+import\s+(\(([^)]*)\)|(.+))$"
 
 def check_python_block(block: Block, names, session_methods, problems, gaps):
     body = block.body
+    try:
+        ast.parse(body, filename=block.where(), mode="exec")
+    except SyntaxError as error:
+        problems.append(
+            f"{block.where()}: `python` block does not parse — "
+            f"{error.msg} (line {error.lineno})"
+        )
+        return
+
     # (1) Names imported from `vokra` must resolve somewhere in the package.
     for m in PY_IMPORT.finditer(body):
         raw = m.group(2) if m.group(2) is not None else (m.group(3) or "")
@@ -586,8 +601,12 @@ GREEN_DOC = '''# Fixture
 ```sh
 cargo build --release -p vokra-cli --features metal
 cargo build --release --package vokra-cli --features cuda
+cargo build --release --package=vokra-cli --features metal
+cargo build --release --bin vokra-cli
+cargo build --release -p \\
+  vokra-cli --features metal
 ./target/release/vokra-cli convert \\
-  --model whisper \\
+  --model=whisper \\
   --input model.safetensors \\
   --output whisper.gguf
 cargo run --release -p vokra-cli --features metal -- convert \\
@@ -611,8 +630,15 @@ RED_DOCS = {
     "bad-flag": '```sh\nvokra-cli convert --model whisper --input a --outpt b.gguf\n```\n',
     "bad-sub": '```sh\nvokra-cli transcribe --model whisper\n```\n',
     "bad-kind": '```sh\nvokra-cli convert --model wisper --input a --output b.gguf\n```\n',
+    "bad-kind-equals": '```sh\nvokra-cli convert --model=wisper --input a --output b.gguf\n```\n',
+    "bad-multiline-cargo-run-flag": (
+        '```sh\ncargo run --release -p vokra-cli \\\n'
+        '  --features metal \\\n'
+        '  -- convert --model whisper --outpt b.gguf\n```\n'
+    ),
     "bad-path": '```sh\nscripts/build-nonexistent-thing.sh\n```\n',
     "bad-import": '```python\nfrom vokra import NoSuchSymbol\n```\n',
+    "bad-python-syntax": '```python\ndef broken(:\n    pass\n```\n',
     "bad-method": (
         '```python\nfrom vokra import Session\n'
         's = Session.open("m.gguf")\ns.transcrybe(pcm, 16000)\n```\n'
@@ -620,6 +646,79 @@ RED_DOCS = {
     "bad-json": '```json\n{ "dependencies": { oops }\n```\n',
     "bad-lang": '```ruby\nputs "hi"\n```\n',
 }
+
+
+def check_tutorial_wav_helper(root: pathlib.Path) -> list[str]:
+    """Execute the WAV helper directly from both tutorial code fences."""
+    problems = []
+    functions = []
+    for rel in ("docs/tutorials/python.md", "docs/tutorials/python.ja.md"):
+        blocks = extract_blocks(root / rel, rel)
+        candidates = [
+            block for block in blocks
+            if block.lang == "python" and "def read_pcm16_wav_mono" in block.body
+        ]
+        if len(candidates) != 1:
+            problems.append(f"{rel}: expected exactly one read_pcm16_wav_mono example")
+            continue
+        tree = ast.parse(candidates[0].body, filename=rel, mode="exec")
+        function_nodes = [
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "read_pcm16_wav_mono"
+        ]
+        if len(function_nodes) != 1:
+            problems.append(f"{rel}: WAV helper definition was not parseable as one function")
+            continue
+        functions.append((rel, function_nodes[0], tree))
+
+    if len(functions) != 2:
+        return problems
+    if ast.dump(functions[0][1], include_attributes=False) != ast.dump(
+        functions[1][1], include_attributes=False
+    ):
+        problems.append("Python tutorial WAV helpers differ between English and Japanese")
+
+    namespace = {}
+    executable = ast.Module(
+        body=[
+            node for node in functions[0][2].body
+            if isinstance(node, (ast.Import, ast.FunctionDef))
+        ],
+        type_ignores=[],
+    )
+    exec(compile(executable, functions[0][0], "exec"), namespace)
+    helper = namespace["read_pcm16_wav_mono"]
+    struct_module = namespace["struct"]
+    wave_module = namespace["wave"]
+
+    with tempfile.TemporaryDirectory() as td:
+        mono = pathlib.Path(td) / "mono.wav"
+        with wave_module.open(str(mono), "wb") as sink:
+            sink.setnchannels(1)
+            sink.setsampwidth(2)
+            sink.setframerate(16000)
+            sink.writeframes(struct_module.pack("<hhh", -32768, 0, 32767))
+        pcm, sample_rate = helper(str(mono))
+        expected = [-1.0, 0.0, 32767 / 32768.0]
+        if pcm != expected or sample_rate != 16000:
+            problems.append(
+                "Python tutorial WAV helper returned the wrong PCM normalization/sample rate"
+            )
+
+        stereo = pathlib.Path(td) / "stereo.wav"
+        with wave_module.open(str(stereo), "wb") as sink:
+            sink.setnchannels(2)
+            sink.setsampwidth(2)
+            sink.setframerate(8000)
+            sink.writeframes(struct_module.pack("<hhhh", 0, 0, 1, -1))
+        try:
+            helper(str(stereo))
+        except ValueError:
+            pass
+        else:
+            problems.append("Python tutorial WAV helper accepted stereo input")
+
+    return problems
 
 
 def self_test(root: pathlib.Path) -> int:
@@ -651,6 +750,9 @@ def self_test(root: pathlib.Path) -> int:
             if run_check(tmp, [rd.name]) == 0:
                 print(f"self-test FAILED: red fixture '{name}' should have failed", file=sys.stderr)
                 rc = 1
+        for problem in check_tutorial_wav_helper(root):
+            print(f"self-test FAILED: {problem}", file=sys.stderr)
+            rc = 1
     if rc == 0:
         print("check-doc-examples --self-test: OK")
     return rc

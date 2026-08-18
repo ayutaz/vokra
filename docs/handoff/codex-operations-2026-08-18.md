@@ -78,7 +78,8 @@ still runs the compliance scanner regression, then skips Cargo. A normal,
 mixed, empty, or malformed update cannot take that path. The maintainer Mac
 also refuses every other deep pre-push path before Cargo; code is verified on
 VAST and pushed with the bypass only after its green result is recorded.
-`scripts/test-pre-push-fastpath.sh` pins all of this in 42 cases.
+`scripts/test-pre-push-fastpath.sh` pins all of this in 50 classifier and
+production-hook integration cases.
 
 ## Standing execution policy
 

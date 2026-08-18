@@ -30,7 +30,7 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 - シェルゲート全般（`scripts/check-*.sh`）、`cargo fmt`、`cargo metadata`
 - **restamp_provenance 経路**: **8.7 GB Voxtral を peak 6.4 MB で publish 実績あり**（mmap 読取のみ、tensor コピーなし。→ skill `publish-model-to-hf` §7）。**tensor を触らず provenance だけ差し替えるなら 2 GB 閾値の例外**
 
-**強制されている**: `scripts/claude-hooks/guard-local-memory.sh` が PreToolUse フックとして上記を**ブロック**する（`.claude/settings.json` に登録済み、`--self-test` 24 ケース）。`.githooks/pre-push` も maintainer Mac の deep Cargo path を開始前に拒否する。意図的に通す場合は、その1回を依頼者が明示承認したときだけ `VOKRA_ALLOW_LOCAL_HEAVY=1` を前置する。
+**強制されている**: `scripts/claude-hooks/guard-local-memory.sh` が PreToolUse フックとして上記を**ブロック**する（`.claude/settings.json` に登録済み、`--self-test` 43 ケース）。`.githooks/pre-push` も maintainer Mac の deep Cargo path を開始前に拒否する。意図的に通す場合は、その1回を依頼者が明示承認したときだけ `VOKRA_ALLOW_LOCAL_HEAVY=1` を前置する。
 
 [[feedback-large-models-on-vast-ai]] / [[feedback-no-local-workspace-cargo]]。
 

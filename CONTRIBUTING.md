@@ -149,7 +149,7 @@ verification, use `VOKRA_SKIP_HOOKS=1` for that code push. Force the full path
 on a capable approved host with `VOKRA_HOOK_DEEP=1`; the explicit local escape
 hatch is `VOKRA_ALLOW_LOCAL_HEAVY=1`. The classifiers live in
 `.githooks/lib-fastpath.sh` and are pinned by
-`scripts/test-pre-push-fastpath.sh` (42 cases).
+`scripts/test-pre-push-fastpath.sh` (50 classifier/integration cases).
 
 Uninstall with `git config --unset core.hooksPath`.
 

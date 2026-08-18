@@ -86,7 +86,7 @@ esac
 run_checker() {
     # $1 = directory containing the workflow *.yml files
     # $2 = mode ("check" or "--list")
-    uv run --no-project python - "$1" "$2" <<'PY'
+    uv run --no-project --python 3.12 python - "$1" "$2" <<'PY'
 import pathlib
 import re
 import subprocess
@@ -287,6 +287,7 @@ PYTHON_COMMAND_RE = re.compile(
         ^
       | && | \|\| | [;|`(]
       | \b(?:if|elif|while|until|then|do|command|exec|time)\s+
+      | \benv\s+(?:(?:-[^\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+))\s+)*
       | !
     )
     \s*
@@ -305,6 +306,7 @@ UV_COMMAND_RE = re.compile(
       | && | \|\| | [;|`(]
       | \b(?:if|elif|while|until|then|do|command|exec|time)\s+
       | \brun\s+(?:"[^"]*"|'[^']*'|[^\s]+)\s+
+      | \benv\s+(?:(?:-[^\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+))\s+)*
       | !
     )
     \s*
@@ -318,6 +320,9 @@ VENV_ACTIVATE_RE = re.compile(
 )
 HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
 SETUP_UV_PIN = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
+SETUP_UV_RE = re.compile(
+    r"^\s*(?:-\s+)?uses:\s*astral-sh/setup-uv@([^\s#]+)\s*(?:#.*)?$"
+)
 
 
 def iter_logical_shell_commands(run_lineno, body):
@@ -504,11 +509,12 @@ for f in files:
     lines = text.splitlines()
     for job_id, first, last in parse_job_sections(text):
         uses_uv = any(first <= lineno <= last for lineno in uv_command_lines)
-        setup_lines = [
-            lineno
-            for lineno in range(first, last + 1)
-            if "astral-sh/setup-uv@" in lines[lineno - 1]
-        ]
+        setup_steps = []
+        for lineno in range(first, last + 1):
+            setup_match = SETUP_UV_RE.match(lines[lineno - 1])
+            if setup_match:
+                setup_steps.append((lineno, setup_match.group(1)))
+        setup_lines = [lineno for lineno, _ in setup_steps]
         if uses_uv and not setup_lines:
             problems.append(
                 f"{f.name}:{first}: job '{job_id}' executes uv without setup-uv"
@@ -517,12 +523,20 @@ for f in files:
             problems.append(
                 f"{f.name}:{setup_lines[0]}: job '{job_id}' installs setup-uv but never executes uv"
             )
+        if uses_uv and setup_lines:
+            first_uv = min(
+                lineno for lineno in uv_command_lines if first <= lineno <= last
+            )
+            if first_uv < setup_lines[0]:
+                problems.append(
+                    f"{f.name}:{first_uv}: job '{job_id}' executes uv before setup-uv"
+                )
         if len(setup_lines) > 1:
             problems.append(
                 f"{f.name}:{setup_lines[1]}: job '{job_id}' has duplicate setup-uv steps"
             )
-        for setup_lineno in setup_lines:
-            if f"astral-sh/setup-uv@{SETUP_UV_PIN}" not in lines[setup_lineno - 1]:
+        for setup_lineno, setup_ref in setup_steps:
+            if setup_ref != SETUP_UV_PIN:
                 problems.append(
                     f"{f.name}:{setup_lineno}: setup-uv must be pinned to {SETUP_UV_PIN}"
                 )
@@ -871,27 +885,60 @@ YML
         rc=1
     fi
 
-    # (6) Bare Python, pip, pytest, and activation must fail in both block and
-    #     scalar run forms. One fixture pins every prohibited family.
-    mkdir -p "$tmp/barepython"
-    cat >"$tmp/barepython/a.yml" <<'YML'
+    # (6) Every prohibited Python family gets an independent red fixture. A
+    #     single fixture containing all of them would still pass if all but one
+    #     detector regressed, which is not a meaningful bidirectional test.
+    assert_rejected_scalar() {
+        local name="$1" command="$2" dir="$tmp/red-$1"
+        mkdir -p "$dir"
+        cat >"$dir/a.yml" <<YML
 name: A
 on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - run: python3 tools/check.py
-      - run: |
-          python -m venv /tmp/example
-          source /tmp/example/bin/activate
-          pip install pytest
-          pytest -q
+      - run: $command
 YML
-    if run_checker "$tmp/barepython" check >/dev/null 2>&1; then
-        echo "self-test FAILED: bare Python/pip/pytest/activation should fail" >&2
-        rc=1
-    fi
+        if run_checker "$dir" check >/dev/null 2>&1; then
+            echo "self-test FAILED: '$name' should be rejected" >&2
+            rc=1
+        fi
+    }
+
+    assert_rejected_block() {
+        local name="$1" command="$2" dir="$tmp/red-$1"
+        mkdir -p "$dir"
+        cat >"$dir/a.yml" <<YML
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          $command
+YML
+        if run_checker "$dir" check >/dev/null 2>&1; then
+            echo "self-test FAILED: '$name' should be rejected" >&2
+            rc=1
+        fi
+    }
+
+    assert_rejected_scalar "scalar-python3" "python3 tools/check.py"
+    assert_rejected_block  "block-python" "python -m venv /tmp/example"
+    assert_rejected_block  "block-pip" "pip install pytest"
+    assert_rejected_scalar "scalar-pip3" "pip3 freeze"
+    assert_rejected_scalar "scalar-pytest" "pytest -q"
+    assert_rejected_scalar "direct-venv-python" "/tmp/example/bin/python tools/check.py"
+    assert_rejected_scalar "direct-windows-python" "C:/tmp/Scripts/python.exe tools/check.py"
+    assert_rejected_scalar "direct-venv-pip" "/tmp/example/bin/pip install pytest"
+    assert_rejected_block  "source-activation" "source /tmp/example/bin/activate"
+    assert_rejected_block  "dot-activation" ". /tmp/example/bin/activate"
+    # shellcheck disable=SC2016  # literal command substitution belongs in the fixture.
+    assert_rejected_block  "command-substitution" 'VALUE="$(python3 -c pass)"'
+    assert_rejected_block  "chained-command" "echo ready && python3 tools/check.py"
+    assert_rejected_block  "env-wrapped-python" "env MODE=test python3 tools/check.py"
 
     # (6b) Every supported uv-managed form must pass, including an explicit
     #      venv interpreter and a heredoc whose Python body contains prose
@@ -904,8 +951,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - run: uv run --no-project --python 3.12 python tools/check.py
+      - run: env MODE=test uv run --no-project --python 3.12 python tools/check.py
       - run: |
           uv venv --python 3.12 /tmp/example
           uv pip install --python /tmp/example/bin/python pytest
@@ -951,6 +999,96 @@ jobs:
 YML
     if run_checker "$tmp/unpinnedsetupuv" check >/dev/null 2>&1; then
         echo "self-test FAILED: unpinned setup-uv should fail" >&2
+        rc=1
+    fi
+
+    # (6e) A comment mentioning the pinned action is not an installation step.
+    mkdir -p "$tmp/commentedsetupuv"
+    cat >"$tmp/commentedsetupuv/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - run: uv run --no-project --python 3.12 python tools/check.py
+YML
+    if run_checker "$tmp/commentedsetupuv" check >/dev/null 2>&1; then
+        echo "self-test FAILED: a commented setup-uv line must not satisfy the job" >&2
+        rc=1
+    fi
+
+    # (6f) Duplicate installation is drift even when both refs are pinned.
+    mkdir -p "$tmp/duplicatesetupuv"
+    cat >"$tmp/duplicatesetupuv/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - run: uv run --no-project --python 3.12 python tools/check.py
+YML
+    if run_checker "$tmp/duplicatesetupuv" check >/dev/null 2>&1; then
+        echo "self-test FAILED: duplicate setup-uv steps should fail" >&2
+        rc=1
+    fi
+
+    # (6g) Installing uv in a job that never executes it is a copy/paste error.
+    mkdir -p "$tmp/unusedsetupuv"
+    cat >"$tmp/unusedsetupuv/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - run: echo no-python-here
+YML
+    if run_checker "$tmp/unusedsetupuv" check >/dev/null 2>&1; then
+        echo "self-test FAILED: unused setup-uv should fail" >&2
+        rc=1
+    fi
+
+    # (6h) Setup in a sibling job cannot satisfy the job that invokes uv.
+    mkdir -p "$tmp/crossjobsetupuv"
+    cat >"$tmp/crossjobsetupuv/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  setup_only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - run: echo setup-only
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - run: uv run --no-project --python 3.12 python tools/check.py
+YML
+    if run_checker "$tmp/crossjobsetupuv" check >/dev/null 2>&1; then
+        echo "self-test FAILED: setup-uv must be in the same job as uv execution" >&2
+        rc=1
+    fi
+
+    # (6i) Same-job setup is still too late when uv was already executed.
+    mkdir -p "$tmp/latesetupuv"
+    cat >"$tmp/latesetupuv/a.yml" <<'YML'
+name: A
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: uv run --no-project --python 3.12 python tools/check.py
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+YML
+    if run_checker "$tmp/latesetupuv" check >/dev/null 2>&1; then
+        echo "self-test FAILED: setup-uv after its first use should fail" >&2
         rc=1
     fi
 

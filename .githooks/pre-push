@@ -15,7 +15,8 @@
 #   test always runs (5 s) — it is trivially cheap and diff-independent.
 #
 #   Skippable categories (see .githooks/lib-fastpath.sh for the exact
-#   patterns and scripts/test-pre-push-fastpath.sh for the 28 pinned cases):
+#   patterns and scripts/test-pre-push-fastpath.sh for classifier plus
+#   production-hook integration coverage):
 #     - Docs / config: docs/**, .github/**, *.md, *.yml, *.yaml, dotfiles,
 #       LICENSE / NOTICE / CHANGELOG / CONTRIBUTING, include/*.h
 #     - Offline sidecar Python tools: tools/parity/*.py,

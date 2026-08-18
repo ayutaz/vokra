@@ -130,26 +130,62 @@ EOF
     fi
 }
 
-# True when some command segment actually INVOKES a workspace-reading Cargo
-# subcommand covered by the owner routing rule, as opposed to merely containing
-# the words. Segments are split on
-# ; && || | and newline; leading VAR=value assignments and a +toolchain are
-# skipped so `FOO=1 cargo +stable test` still matches.
-segment_invokes_heavy_cargo() {
-    printf '%s\n' "$1" \
-        | tr ';\n' '\n\n' \
-        | sed -e 's/&&/\n/g' -e 's/||/\n/g' -e 's/|/\n/g' \
-        | while IFS= read -r seg; do
-            # Drop leading whitespace, then leading NAME=VALUE assignments.
+command_names_package() {
+    local cmd="$1" package_re="$2"
+    printf '%s' "$cmd" \
+        | grep -Eq "[[:space:]](-p|--package)[[:space:]]+(${package_re})([[:space:]]|$)|[[:space:]]--package=(${package_re})([[:space:]]|$)"
+}
+
+command_has_package_selector() {
+    printf '%s' "$1" \
+        | grep -Eq '[[:space:]](-p|--package)[[:space:]]+[^[:space:]]+|[[:space:]]--package=[^[:space:]]+'
+}
+
+# Return the first heavy Cargo reason, evaluating each shell segment in
+# isolation. Package flags in an `echo` or a neighbouring light Cargo command
+# must not scope (or poison) a bare workspace command in another segment.
+heavy_cargo_reason() {
+    local cmd="$1" seg continuation=$'\\\n'
+    cmd="${cmd//$continuation/ }"
+    while IFS= read -r seg; do
+        seg="${seg#"${seg%%[![:space:]]*}"}"
+        while printf '%s' "$seg" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; do
+            seg="${seg#* }"
             seg="${seg#"${seg%%[![:space:]]*}"}"
-            while printf '%s' "$seg" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; do
+        done
+        while printf '%s' "$seg" | grep -Eq '^(command|exec|time)[[:space:]]+'; do
+            seg="${seg#* }"
+            seg="${seg#"${seg%%[![:space:]]*}"}"
+        done
+        if printf '%s' "$seg" | grep -Eq '^env[[:space:]]+'; then
+            seg="${seg#* }"
+            seg="${seg#"${seg%%[![:space:]]*}"}"
+            while printf '%s' "$seg" \
+                | grep -Eq '^(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+)[[:space:]]+'; do
                 seg="${seg#* }"
                 seg="${seg#"${seg%%[![:space:]]*}"}"
             done
-            printf '%s' "$seg" \
-                | grep -Eq '^cargo[[:space:]]+(\+[^[:space:]]+[[:space:]]+)?(test|build|check|clippy|bench|nextest|run|doc|rustdoc|deny|audit)([[:space:]]|$)' \
-                && echo MATCH
-        done | grep -q MATCH
+        fi
+        if ! printf '%s' "$seg" \
+            | grep -Eq '^cargo[[:space:]]+(\+[^[:space:]]+[[:space:]]+)?(test|build|check|clippy|bench|nextest|run|doc|rustdoc|deny|audit)([[:space:]]|$)'; then
+            continue
+        fi
+        if printf '%s' "$seg" | grep -Eq '[[:space:]]--(workspace|all)([[:space:]]|$)'; then
+            echo "workspace-wide scope (--workspace / --all)"
+            return 0
+        fi
+        if [ -n "$HEAVY_CRATES" ] && command_names_package "$seg" "$HEAVY_CRATES"; then
+            echo "package selector names a crate reserved for VAST"
+            return 0
+        fi
+        if ! command_has_package_selector "$seg"; then
+            echo "no package selector given, which in this virtual workspace means every crate"
+            return 0
+        fi
+    done <<EOF
+$(printf '%s\n' "$cmd" | tr ';\n' '\n' | sed -e 's/&&/\n/g' -e 's/||/\n/g' -e 's/|/\n/g')
+EOF
+    return 1
 }
 
 # ---------------------------------------------------------------- analysis --
@@ -171,30 +207,10 @@ analyse() {
     # Matching it anywhere blocked `echo 'run cargo test later'` — caught by
     # this file's own self-test. A guard that trips on prose about a command
     # gets switched off, and then it guards nothing.
-    if segment_invokes_heavy_cargo "$cmd"; then
-
-        if printf '%s' "$cmd" | grep -Eq '[[:space:]]--(workspace|all)([[:space:]]|$)'; then
-            echo "HEAVY_CARGO:workspace-wide scope (--workspace / --all)"
-            return 0
-        fi
-
-        # Skipped explicitly when the list is empty. Interpolating an empty
-        # string would leave `(...)` as an empty alternation, which matches
-        # the empty string — a regex that is one stray space away from
-        # blocking every `-p` invocation there is.
-        if [ -n "$HEAVY_CRATES" ] \
-            && printf '%s' "$cmd" | grep -Eq "[[:space:]]-p[[:space:]]+($HEAVY_CRATES)([[:space:]]|$)"; then
-            echo "HEAVY_CARGO:-p names a crate measured to exhaust this machine"
-            return 0
-        fi
-
-        # A bare `cargo test` in a virtual workspace IS the workspace. Treat
-        # "no -p and no --package" as workspace scope rather than assuming
-        # the caller meant something small.
-        if ! printf '%s' "$cmd" | grep -Eq '[[:space:]](-p|--package)[[:space:]]'; then
-            echo "HEAVY_CARGO:no -p given, which in this virtual workspace means every crate"
-            return 0
-        fi
+    local cargo_reason
+    if cargo_reason="$(heavy_cargo_reason "$cmd")"; then
+        echo "HEAVY_CARGO:$cargo_reason"
+        return 0
     fi
 
     # -- (b) model artefacts at or over the limit --------------------------
@@ -204,16 +220,24 @@ analyse() {
     # errs toward allowing rather than blocking on a mis-parse.
     local tok prev="" size
     for tok in $cmd; do
-        case "$prev" in
-            --input|--config|--model|--output|-i|-o) : ;;
+        case "$tok" in
+            --input=*|--config=*|--model=*|--output=*|-i=*|-o=*)
+                tok="${tok#*=}"
+                prev=""
+                ;;
             *)
-                case "$tok" in
-                    *.safetensors|*.gguf|*.pt|*.pth|*.bin|*.ckpt) : ;;
-                    *) prev="$tok"; continue ;;
+                case "$prev" in
+                    --input|--config|--model|--output|-i|-o) : ;;
+                    *)
+                        case "$tok" in
+                            *.safetensors|*.gguf|*.pt|*.pth|*.bin|*.ckpt) : ;;
+                            *) prev="$tok"; continue ;;
+                        esac
+                        ;;
                 esac
+                prev="$tok"
                 ;;
         esac
-        prev="$tok"
 
         # Strip surrounding quotes a naive split leaves behind.
         tok="${tok%\"}"; tok="${tok#\"}"
@@ -254,6 +278,11 @@ if [ "${1:-}" = "--self-test" ]; then
     check "cargo nextest run --workspace"     block "cargo nextest run --workspace"
     check "cargo build --all"                 block "cargo build --all --release"
     check "cargo check --workspace"           block "cargo check --workspace --all-targets"
+    check "bare cargo clippy (= workspace)"   block "cargo clippy --all-targets"
+    check "bare cargo bench (= workspace)"    block "cargo bench"
+    check "bare cargo run (= workspace)"      block "cargo run --bin helper"
+    check "bare cargo doc (= workspace)"      block "cargo doc --no-deps"
+    check "bare cargo rustdoc (= workspace)"  block "cargo rustdoc"
     check "bare cargo deny (= workspace)"     block "cargo deny check licenses advisories bans"
     check "bare cargo audit (= workspace)"    block "cargo audit"
     check "toolchain-pinned workspace test"   block "cargo +stable test --workspace"
@@ -262,16 +291,28 @@ if [ "${1:-}" = "--self-test" ]; then
     # (a) explicit heavy crate — must block even when the named test is small.
     check "cargo test -p vokra-models"        block "cargo test -p vokra-models --lib kyutai_stt"
     check "cargo check -p vokra-models"       block "cargo check -p vokra-models"
+    check "--package vokra-models"            block "cargo run --package vokra-models --example probe"
+    check "--package=vokra-models"            block "cargo doc --package=vokra-models --no-deps"
+    check "env-wrapped workspace Cargo"       block "env CARGO_TERM_COLOR=never cargo test"
+    check "command-wrapped heavy Cargo"       block "command cargo check -p vokra-models"
+    check "continued heavy package selector"  block $'cargo test \\\n  --package vokra-models'
 
     # (a) light cargo — must NOT block
     check "cargo test -p vokra-convert"       allow "cargo test -p vokra-convert"
     check "cargo test -p vokra-cli"           allow "CARGO_BUILD_JOBS=1 cargo test -p vokra-cli"
+    check "--package light crate"             allow "cargo check --package vokra-cli"
+    check "--package= light crate"            allow "cargo check --package=vokra-cli"
+    check "env-wrapped light Cargo"           allow "env CARGO_TERM_COLOR=never cargo test -p vokra-cli"
+    check "continued light package selector"  allow $'cargo test \\\n  --package vokra-cli'
     check "cargo fmt"                         allow "cargo fmt --all -- --check"
     check "cargo metadata"                    allow "cargo metadata --no-deps"
     check "cargo tree"                        allow "cargo tree -p vokra-core"
     check "override honoured"                 allow "VOKRA_ALLOW_LOCAL_HEAVY=1 cargo test --workspace"
     check "unrelated command"                 allow "git status --short"
     check "the word cargo in prose"           allow "echo 'run cargo test later'"
+    check "other segment cannot scope bare"   block "echo --package vokra-cli && cargo test"
+    check "other segment cannot poison light" allow "echo -p vokra-models && cargo test -p vokra-cli"
+    check "later heavy segment still blocks"  block "cargo test -p vokra-cli && cargo check -p vokra-models"
 
     # (b) artefact size — needs real files on disk
     tmp="$(mktemp -d)"
@@ -279,12 +320,15 @@ if [ "${1:-}" = "--self-test" ]; then
     mkdir -p "$tmp/shards"
     # Sparse files: apparent size is what stat reports, no disk is consumed.
     dd if=/dev/null of="$tmp/small.safetensors" bs=1 count=0 seek=1000000 2>/dev/null
+    dd if=/dev/null of="$tmp/limit.safetensors" bs=1 count=0 seek="$SIZE_LIMIT_BYTES" 2>/dev/null
     dd if=/dev/null of="$tmp/big.safetensors"   bs=1 count=0 seek=3000000000 2>/dev/null
     # Each shard is under the limit; the set is over it.
     dd if=/dev/null of="$tmp/shards/a.safetensors" bs=1 count=0 seek=1500000000 2>/dev/null
     dd if=/dev/null of="$tmp/shards/b.safetensors" bs=1 count=0 seek=1500000000 2>/dev/null
 
     check "3 GB checkpoint"                   block "vokra-cli convert --model whisper --input $tmp/big.safetensors"
+    check "exactly 2 GB checkpoint"           block "vokra-cli convert --input $tmp/limit.safetensors"
+    check "--input=<3 GB checkpoint>"         block "vokra-cli convert --input=$tmp/big.safetensors"
     check "sharded dir summing over limit"    block "vokra-cli convert --model x --input $tmp/shards"
     check "1 MB checkpoint"                   allow "vokra-cli convert --model x --input $tmp/small.safetensors"
     check "path that does not exist"          allow "vokra-cli convert --model x --input /nope/absent.safetensors"
