@@ -51,9 +51,11 @@ reviewable branches and preserve the merged required-check ownership.
    manifest. GitHub's four native jobs are green. VAST independently built and
    tested `vokra-capi`, then clean-installed an actual Linux native wheel on
    Python 3.9 and 3.12 and resolved all 41 symbols. The branch is rebased onto
-   the post-PR #39/#40/#43 `main`; the remaining integration work is final-head
-   CI is green (72 total: 71 success, one intentional full-history skip, zero
-   failures on final head); review remains. The same branch promotes
+   the post-PR #39/#40/#43 `main`. The implementation head's CI is green (72
+   checks: 71 success, one
+   intentional full-history skip, zero failures); later documentation-only
+   heads retain the same required-check coverage. Review is the remaining
+   integration work. The branch promotes
    `gitleaks` after 18/18 green main runs and adds a nightly full-history scan.
    PyPI/TestPyPI publication remains out of scope.
 2. **Desktop distribution.** Replace the T32-gated scaffold with native
