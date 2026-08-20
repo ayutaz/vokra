@@ -124,12 +124,14 @@ Quantization presets available: `--quantize q4_k` / `q5_k` / `q6_k`
 
 ## 4. From `faster-whisper` (Python)
 
-The direct Python package is not a current migration target. As of 2026-08-18
-the repository contains a pre-alpha `ctypes` scaffold, but its generated table
-covers the earlier 14-function subset, the current C header has 41 functions,
-and the package root does not export `Session`. See the
-[binding status](../bindings/python/README.md); do not replace a production
-`faster-whisper` import with `from vokra import Session` yet.
+The source Python package now exposes `Session` and its generated `ctypes`
+table covers all 41 current C functions. It remains an unpublished pre-1.0
+surface: the four native wheels must pass final-head CI, and no PyPI/TestPyPI
+destination has been authorized. See the
+[binding status](../bindings/python/README.md). Source-checkout evaluation is
+available now, but do not replace a production `faster-whisper` dependency
+with a registry `vokra` package until a specific release is published and
+verified.
 
 For the currently documented **drop-in HTTP client** path, run
 [`integrations/vokra-server`](../integrations/vokra-server) — it exposes
