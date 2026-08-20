@@ -292,8 +292,8 @@ jobs:
           KOKORO_CACHE_DIR: ${{ env.HF_HOME }}
           KOKORO_STAGE_DIR: ${{ runner.temp }}/kokoro-stage
           KOKORO_REVISION: ${{ env.KOKORO_REVISION }}
-          # Speed up the 327 MB .pth pull if hf_transfer installed cleanly.
-          HF_HUB_ENABLE_HF_TRANSFER: '1'
+          # Speed up the 327 MB .pth pull through huggingface_hub's hf-xet transport.
+          HF_XET_HIGH_PERFORMANCE: '1'
         run: |
           set -euo pipefail
           bash scripts/parity/download-kokoro.sh
