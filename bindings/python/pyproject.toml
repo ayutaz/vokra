@@ -33,7 +33,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-numpy = ["numpy>=1.23"]
+numpy = ["numpy>=1.23,<2"]
 dev = [
     "pytest>=7.4",
     "pip-licenses>=4.3",

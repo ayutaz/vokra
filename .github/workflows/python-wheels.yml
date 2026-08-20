@@ -72,7 +72,9 @@ jobs:
       - name: Build and stage vokra-capi
         run: |
           set -euo pipefail
-          cargo build --release -p vokra-capi
+          # --locked is the zero-dependency tripwire: Cargo must fail instead
+          # of mutating the repository lockfile in this container checkout.
+          cargo build --locked --release -p vokra-capi
           install -Dm755 target/release/libvokra.so \
             bindings/python/src/vokra/_lib/libvokra.so
       - name: Build and repair manylinux wheel
@@ -117,8 +119,6 @@ jobs:
           uv pip install --python "${VENV_PATH}/bin/python" pytest
           uv run --no-project --python "${VENV_PATH}/bin/python" \
             python -m pytest bindings/python/tests -q
-      - name: Verify root Cargo.lock unchanged
-        run: git diff --exit-code Cargo.lock
       - name: Upload Linux wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -160,7 +160,7 @@ jobs:
       - name: Build and stage vokra-capi
         run: |
           set -euo pipefail
-          cargo build --release -p vokra-capi
+          cargo build --locked --release -p vokra-capi
           mkdir -p bindings/python/src/vokra/_lib
           install -m755 target/release/libvokra.dylib \
             bindings/python/src/vokra/_lib/libvokra.dylib
@@ -210,8 +210,6 @@ jobs:
           uv pip install --python "${VENV_PATH}/bin/python" pytest
           uv run --no-project --python "${VENV_PATH}/bin/python" \
             python -m pytest bindings/python/tests -q
-      - name: Verify root Cargo.lock unchanged
-        run: git diff --exit-code Cargo.lock
       - name: Upload macOS wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -241,7 +239,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p vokra-capi
+          cargo build --locked --release -p vokra-capi
           mkdir -p bindings/python/src/vokra/_lib
           cp target/release/vokra.dll bindings/python/src/vokra/_lib/vokra.dll
       - name: Build and repair Windows wheel
@@ -291,9 +289,6 @@ jobs:
           uv pip install --python "$VENV_PYTHON" pytest
           uv run --no-project --python "$VENV_PYTHON" \
             python -m pytest bindings/python/tests -q
-      - name: Verify root Cargo.lock unchanged
-        shell: pwsh
-        run: git diff --exit-code Cargo.lock
       - name: Upload Windows wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

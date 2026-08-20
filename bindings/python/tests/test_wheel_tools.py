@@ -59,6 +59,7 @@ def _write_wheel(
     version: str = "1.2.3",
     *,
     binary_target: str | None = None,
+    extra_native: dict[str, bytes] | None = None,
 ) -> Path:
     platform = _platform(target)
     filename = directory / f"vokra-{version}-py3-none-{platform}.whl"
@@ -76,6 +77,7 @@ def _write_wheel(
             f"Tag: py3-none-{platform}\n\n"
         ).encode(),
     }
+    members.update(extra_native or {})
     record_path = f"{dist_info}/RECORD"
     stream = io.StringIO()
     writer = csv.writer(stream, lineterminator="\n")
@@ -103,6 +105,27 @@ def test_verify_wheel_rejects_false_architecture(tmp_path: Path) -> None:
     wheel = _write_wheel(tmp_path, "macos-x86_64", binary_target="macos-arm64")
     with pytest.raises(SystemExit, match="architecture"):
         wheel_tools.verify_wheel(wheel, "macos-x86_64", "1.2.3")
+
+
+def test_verify_windows_wheel_accepts_hashed_vcruntime(tmp_path: Path) -> None:
+    runtime = "vokra.libs/vcruntime140-0123456789abcdef0123456789abcdef.dll"
+    wheel = _write_wheel(
+        tmp_path,
+        "windows-x86_64",
+        extra_native={runtime: _binary("windows-x86_64")},
+    )
+    result = wheel_tools.verify_wheel(wheel, "windows-x86_64", "1.2.3")
+    assert result["bundled_runtime_paths"] == [runtime]
+
+
+def test_verify_windows_wheel_rejects_unapproved_bundled_dll(tmp_path: Path) -> None:
+    wheel = _write_wheel(
+        tmp_path,
+        "windows-x86_64",
+        extra_native={"vokra.libs/unrelated-0123456789abcdef.dll": _binary("windows-x86_64")},
+    )
+    with pytest.raises(SystemExit, match="unapproved bundled DLL"):
+        wheel_tools.verify_wheel(wheel, "windows-x86_64", "1.2.3")
 
 
 def test_manifest_requires_all_four_targets(tmp_path: Path) -> None:

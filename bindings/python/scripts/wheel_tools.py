@@ -41,6 +41,10 @@ _WHEEL_NAME_RE = re.compile(
     r"^vokra-(?P<version>[^-]+)-(?P<python>[^-]+)-"
     r"(?P<abi>[^-]+)-(?P<platform>[^-]+)\.whl$"
 )
+_WINDOWS_RUNTIME_RE = re.compile(
+    r"^vokra\.libs/vcruntime140(?:_1)?-[0-9a-f]{32}\.dll$",
+    re.IGNORECASE,
+)
 
 
 def _fail(message: str) -> NoReturn:
@@ -181,11 +185,28 @@ def verify_wheel(wheel: Path, target: str, version: str) -> dict[str, object]:
         native_members = [
             name for name in files if name.lower().endswith((".so", ".dylib", ".dll"))
         ]
-        if native_members != [expected_native]:
+        if native_members.count(expected_native) != 1:
             _fail(
-                f"wheel must contain only {expected_native!r} as native payload; "
+                f"wheel must contain exactly one principal native payload {expected_native!r}; "
                 f"got {native_members!r}"
             )
+        bundled_runtime_members = [
+            name for name in native_members if name != expected_native
+        ]
+        if bundled_runtime_members and target != "windows-x86_64":
+            _fail(
+                f"{target} wheel has unexpected bundled native libraries "
+                f"{bundled_runtime_members!r}"
+            )
+        for name in bundled_runtime_members:
+            if _WINDOWS_RUNTIME_RE.fullmatch(name) is None:
+                _fail(f"Windows wheel has an unapproved bundled DLL path {name!r}")
+            runtime_arch = _binary_arch(archive.read(name))
+            if runtime_arch != TARGETS[target]["arch"]:
+                _fail(
+                    f"bundled runtime {name!r} architecture is {runtime_arch!r}, expected "
+                    f"{TARGETS[target]['arch']!r}"
+                )
         native_data = archive.read(expected_native)
         arch = _binary_arch(native_data)
         if arch != TARGETS[target]["arch"]:
@@ -218,6 +239,7 @@ def verify_wheel(wheel: Path, target: str, version: str) -> dict[str, object]:
         "platform_tag": match["platform"],
         "native_path": expected_native,
         "native_arch": arch,
+        "bundled_runtime_paths": bundled_runtime_members,
         "bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
     }
