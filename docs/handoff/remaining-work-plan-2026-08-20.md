@@ -72,7 +72,10 @@ reviewable branches and preserve the merged required-check ownership.
    release tag.
 5. **Registry channels.** Exercise dry-runs first for PyPI, crates.io, npm,
    OpenUPM/Godot AssetLib as applicable. Tokens, project reservations, and
-   production uploads require exact owner authorization.
+   production uploads require exact owner authorization. As of 2026-08-20 the
+   repository has no repo-level Actions secrets and no environments, so the
+   external registry tokens and Unity license referenced by workflows are not
+   configured here (the automatic `GITHUB_TOKEN` is separate).
 6. **Dashboard hosting.** Decide whether the generated performance dashboard
    should be public. The artifact path already works; public deployment still
    requires enabling GitHub Pages and setting `VOKRA_PAGES_ENABLED=true`.
@@ -105,7 +108,11 @@ real artifacts; they must not be bulk-marked complete from structural tests.
 Execute in increasing cost order:
 
 1. Activate the already-proven scheduled legs for DeepFilterNet3 and
-   DeBERTa-v3-large after owner approval of the repository variables.
+   DeBERTa-v3-large after owner approval of the repository variables. The
+   repo-level Actions Variables list is empty as of 2026-08-20, so these and
+   every other `vars.*`-guarded real-parity / Pages / self-hosted leg currently
+   clean-skip; enabling one requires supplying its complete artifact/runner
+   contract rather than only flipping an enable flag.
 2. For NeMo ASR, Whisper extras, TTS DAC, HiFTNet family, Qwen3-TTS,
    continuous-VAE TTS, and Japanese TTS, generate independent upstream
    reference outputs, implement any missing native consumer, and record a
