@@ -245,9 +245,10 @@ promotes the working-tree scan, and adds the nightly full-history companion.
 
 - The running VAST `piper-v11` instance was migrated on 2026-08-20 from a
   bare `python3 -m venv`/pip bootstrap to an uv-managed environment synced
-  from the pinned piper-plus `uv.lock`; the resume-capable dataset download
-  continues. Preserve its checkpoint/dataset evidence, then destroy the
-  instance after the smoke/train lifecycle finishes.
+  from the pinned piper-plus `uv.lock`. Its 300,443-entry dataset and F0 cache
+  are complete, and the v11 H-src-r2 smoke is the active retained evidence.
+  Preserve its checkpoint/dataset evidence, then destroy the instance after
+  the smoke/train lifecycle finishes.
 - The live VAST inventory is one running instance (`48184676`, `piper-v11`)
   plus five **stopped instances with attached disks**, not five detached
   volumes; `vastai show volumes` returns an empty list. Before requesting
@@ -256,9 +257,14 @@ promotes the working-tree scan, and adds the nightly full-history companion.
   (`48186199`) disks. The Voxtral disk has an explicit publication/withhold
   decision path; the older Piper/Moshi disks need artifact manifests, and the
   PR #38 disk must be checked for unique evidence.
-- Three local stashes include entries likely superseded by later merged PRs, but none is
-  deletion-safe yet. Compare evolved hunks semantically against PRs #27/#28
-  and #8, then request explicit destructive approval before dropping them.
+- The three local stashes were compared against the current Python PR head and
+  `main`. `stash@{0}` has all 17 paths accounted for (10 byte-identical, seven
+  evolved by the native-wheel follow-ups); `stash@{1}` has all 307 paths
+  accounted for (181 byte-identical, 126 evolved through PRs #27/#28 and later
+  fixes); `stash@{2}` has all 10 server paths evolved through PR #8 and later
+  server work. No stash-only path is missing from the current trees. They are
+  deletion candidates, but dropping them remains a destructive action that
+  requires explicit approval.
 - GitHub CLI is authenticated as `ayutaz`. Rotate the VAST API credential and
   any active instance access/Jupyter token exposed by raw CLI inventory output
   before further credential-sensitive use. Never record replacement
