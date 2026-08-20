@@ -1,40 +1,101 @@
-"""Hatchling custom build hook — force a platform-tagged wheel.
+"""Hatchling hooks for Vokra's platform-specific ``ctypes`` wheel.
 
-The Vokra Python binding is a hybrid distribution: pure-Python at the Python
-layer, plus a pre-built native shared library (`libvokra.so` /
-`libvokra.dylib` / `vokra.dll`) that CI injects under
-`src/vokra/_lib/` via `CIBW_BEFORE_BUILD_*` (see
-`.github/workflows/ci.yml`'s `python-wheel-build` job). Without this hook
-hatchling emits a `py3-none-any` wheel — a pure-Python tag — which
-cibuildwheel v2.20+ hard-rejects with
-
-    Build failed because a pure Python wheel was generated.
-
-The check exists to keep cibuildwheel-users from accidentally producing
-tag-mismatched wheels for a project that intended to compile C. Our
-intent IS platform-specific (one wheel per OS × arch), so this hook
-tells hatchling to infer the correct tag from the current interpreter
-and mark the wheel as non-pure.
-
-Registered under `[tool.hatch.build.targets.wheel.hooks.custom]` in
-`pyproject.toml`.
+The Python layer is ABI-independent, but every wheel contains one native
+``vokra-capi`` shared library.  The wheel therefore uses ``py3-none`` for the
+Python/ABI fields and an explicit platform field supplied by the native build
+job.  Guessing a CPython ABI tag or relabelling a host-built library is unsafe.
 """
 
+from __future__ import annotations
+
+import os
+import platform
+import re
+import sys
+from pathlib import Path
+
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+from hatchling.metadata.plugin.interface import MetadataHookInterface
+
+_DEV_VERSION = "0.1.0.dev0"
+_TAG_RE = re.compile(
+    r"^py3-none-(?:"
+    r"linux_(?:x86_64|aarch64)|"
+    r"macosx_11_0_(?:arm64|x86_64)|"
+    r"win_amd64"
+    r")$"
+)
 
 
-class CustomBuildHook(BuildHookInterface):
-    """Force `pure_python = False` and `infer_tag = True` on every wheel."""
+def _host_platform_tag() -> str:
+    machine = platform.machine().lower()
+    if machine == "amd64":
+        machine = "x86_64"
+    if sys.platform.startswith("linux") and machine in {"x86_64", "aarch64"}:
+        return f"py3-none-linux_{machine}"
+    if sys.platform == "darwin" and machine in {"arm64", "x86_64"}:
+        return f"py3-none-macosx_11_0_{machine}"
+    if sys.platform == "win32" and machine == "x86_64":
+        return "py3-none-win_amd64"
+    raise RuntimeError(
+        "unsupported Vokra wheel build host: "
+        f"sys.platform={sys.platform!r}, machine={platform.machine()!r}"
+    )
+
+
+def _native_library_name() -> str:
+    if sys.platform.startswith("linux"):
+        return "libvokra.so"
+    if sys.platform == "darwin":
+        return "libvokra.dylib"
+    if sys.platform == "win32":
+        return "vokra.dll"
+    raise RuntimeError(f"unsupported Vokra wheel build OS: {sys.platform!r}")
+
+
+class VokraMetadataHook(MetadataHookInterface):
+    """Set package metadata from the release job without editing sources."""
 
     PLUGIN_NAME = "custom"
 
-    def initialize(self, version: str, build_data: dict) -> None:  # noqa: D401 - hatchling contract
-        # `pure_python = False` sets the wheel's Root-Is-Purelib metadata to
-        # False (WHEEL file), signalling that native code is bundled. The tag
-        # infers from the running Python (`cp39-cp39-linux_x86_64` etc.),
-        # which is exactly what cibuildwheel expects for a platform wheel.
-        # We do NOT hard-code a tag here: cibuildwheel launches the build
-        # inside the target Python's environment, so `infer_tag` picks up
-        # the right (Python, ABI, platform) triple for every matrix cell.
+    def update(self, metadata: dict) -> None:
+        metadata["version"] = os.environ.get("VOKRA_BUILD_VERSION", _DEV_VERSION)
+
+
+class VokraWheelHook(BuildHookInterface):
+    """Require one native library and emit a truthful platform wheel tag."""
+
+    PLUGIN_NAME = "custom"
+
+    def initialize(self, version: str, build_data: dict) -> None:
+        native_name = _native_library_name()
+        native_path = Path(self.root, "src", "vokra", "_lib", native_name)
+        if not native_path.is_file() or native_path.stat().st_size == 0:
+            raise RuntimeError(
+                "Vokra wheel build requires a non-empty native library at "
+                f"{native_path}; build vokra-capi for this host first"
+            )
+
+        tag = os.environ.get("VOKRA_WHEEL_TAG", _host_platform_tag())
+        if not _TAG_RE.fullmatch(tag):
+            raise RuntimeError(
+                f"unsafe or unsupported VOKRA_WHEEL_TAG={tag!r}; expected an "
+                "explicit py3-none platform tag for the current native build"
+            )
+        if tag != _host_platform_tag():
+            raise RuntimeError(
+                f"VOKRA_WHEEL_TAG={tag!r} does not match native build host "
+                f"{_host_platform_tag()!r}; cross-retagging is forbidden"
+            )
+
         build_data["pure_python"] = False
-        build_data["infer_tag"] = True
+        build_data["infer_tag"] = False
+        build_data["tag"] = tag
+
+
+def get_metadata_hook() -> type[VokraMetadataHook]:
+    return VokraMetadataHook
+
+
+def get_build_hook() -> type[VokraWheelHook]:
+    return VokraWheelHook

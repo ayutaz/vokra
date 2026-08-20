@@ -576,8 +576,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # M2-12-T15: Python wheel PyPI publish (NFR-MT-08 / FR-API-01 / NFR-MT-03).
   #
-  # Downloads platform-tagged wheels produced by the ci.yml `python-wheel-build`
-  # job for the tag SHA, generates an SPDX SBOM (NFR-MT-03) per wheel, and
+  # Builds the four platform-tagged wheels in this release run, generates an
+  # SPDX SBOM (NFR-MT-03), and
   # publishes to PyPI via OIDC trusted publishing (fallback: PYPI_API_TOKEN
   # secret). Dry-run mode runs `twine check` + uploads wheels and SBOMs as
   # GitHub Release assets without touching PyPI, mirroring the
@@ -599,9 +599,16 @@ jobs:
   # Zero-dep invariant unchanged (NFR-DS-02): no new Rust crate; no Cargo.lock
   # churn; shell + gh + pypa/gh-action-pypi-publish + python3 (first-party SBOM).
   # ---------------------------------------------------------------------------
+  python-wheel-release-build:
+    name: python-wheel-release-build
+    needs: validate-tag
+    uses: ./.github/workflows/python-wheels.yml
+    with:
+      version: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.0.dev0' }}
+
   python-pypi-publish:
     name: python-pypi-publish
-    needs: [validate-tag, release-notes]
+    needs: [validate-tag, release-notes, python-wheel-release-build]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -623,37 +630,21 @@ jobs:
       # read the dependency closure — no crate is built here.
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - name: Reuse python-wheel-build artifacts from ci.yml (per-OS wheels)
+      - name: Download wheels built by this release run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-python-wheels
+          path: dist
+      - name: Verify wheel manifest against downloaded release set
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VOKRA_BUILD_VERSION: ${{ needs.python-wheel-release-build.outputs.version }}
         run: |
-          set +e
-          RUN_ID="$(gh run list \
-            --workflow=ci.yml \
-            --branch="${GITHUB_REF_NAME}" \
-            --limit=20 \
-            --json databaseId,headSha,conclusion \
-            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
-            | head -n 1)"
-          if [ -z "$RUN_ID" ]; then
-            echo "python-pypi-publish: no successful ci.yml run for SHA ${GITHUB_SHA}; wheels unavailable" >&2
-            exit 1
-          fi
-          echo "python-pypi-publish: reusing ci.yml run ${RUN_ID} for wheels"
-          mkdir -p dist
-          for os in ubuntu-latest macos-latest windows-latest; do
-            gh run download "$RUN_ID" \
-              --name "vokra-python-wheels-${os}" \
-              --dir "reuse/${os}" \
-              || echo "python-pypi-publish: wheels for ${os} missing (build red?)"
-            if [ -d "reuse/${os}" ]; then
-              cp reuse/${os}/*.whl dist/ || true
-            fi
-          done
-          echo "== Collected wheels =="
-          ls -la dist/
-          set -e
-
+          set -euo pipefail
+          uv run --no-project --python 3.12 python \
+            bindings/python/scripts/wheel_tools.py manifest \
+            --directory dist --version "$VOKRA_BUILD_VERSION" \
+            --check dist/vokra-python-wheels.manifest.json
+          ls -la dist/*.whl dist/vokra-python-wheels.manifest.json
       # X-07-T07: first-party SPDX SBOM, replacing anchore/sbom-action@v0.
       # WHY: the first-party generator is DETERMINISTIC (SOURCE_DATE_EPOCH-pinned
       # `created`, git-SHA namespace, sorted keys — reproducible per NFR-MT-03),
@@ -687,6 +678,7 @@ jobs:
           name: vokra-python-release
           path: |
             dist/*.whl
+            dist/vokra-python-wheels.manifest.json
             dist/vokra-python-wheel.spdx.json
           retention-days: 30
 
@@ -722,7 +714,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release upload "$TAG" dist/*.whl dist/vokra-python-wheel.spdx.json --clobber
+          gh release upload "$TAG" \
+            dist/*.whl \
+            dist/vokra-python-wheels.manifest.json \
+            dist/vokra-python-wheel.spdx.json \
+            --clobber
 
       - name: Dry-run summary
         if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
@@ -730,6 +726,7 @@ jobs:
           echo "== DRY RUN (python-pypi-publish) =="
           echo "Wheels  :"
           ls -la dist/*.whl 2>/dev/null || echo "  (no wheels collected)"
+          echo "Manifest: dist/vokra-python-wheels.manifest.json"
           echo "SBOM    : dist/vokra-python-wheel.spdx.json (first-party SPDX-JSON, X-07-T07)"
           echo "Skipping: pypa/gh-action-pypi-publish (real upload)."
           echo "Skipping: GitHub Release upload and attestations (dry-run is non-mutating)."

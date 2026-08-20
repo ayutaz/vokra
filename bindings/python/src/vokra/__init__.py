@@ -1,21 +1,49 @@
-"""Vokra — audio-specialized inference runtime (Python binding).
+"""Public Python API for the Vokra speech runtime.
 
-This is a T06 skeleton. Public API surface (Session, Stream, VokraError,
-etc.) is populated by later tickets:
+Importing :mod:`vokra` exposes the high-level handle and error types but does
+not load the native library. The first operation that needs native code (for
+example :meth:`Session.open`) resolves and binds ``libvokra`` lazily. This
+keeps documentation tooling and source-only installs importable while still
+failing loudly at the first unavailable native operation.
 
-    T07  scripts/gen-py-bindings.py  -> _bindings.py
-    T08  _handles.py, session.py, stream.py
-    T09  errors.py
-    T10  Session.transcribe / Session.synthesize
-    T11  Stream.push / Stream.poll
-
-Until then, importing `vokra` succeeds but exposes only metadata; the
-native library is not loaded here so that a wheel built without the
-prebuilt lib (source-only sdist install) still imports without crashing.
-
-Pre-1.0: the underlying C ABI is not frozen. Pin an exact version.
-See README.md and ADR-0003.
+Pre-1.0: the underlying C ABI is not frozen. Pin an exact version. See the
+binding README and ADR-0003.
 """
 
-__version__ = "0.1.0.dev0"
-__all__ = ["__version__"]
+from .errors import (
+    VokraBackendUnavailableError,
+    VokraError,
+    VokraGraphValidationError,
+    VokraInvalidArgumentError,
+    VokraIoError,
+    VokraModelLoadError,
+    VokraNotImplementedError,
+    VokraOtherError,
+    VokraPanicError,
+    VokraUnsupportedOpError,
+)
+from .session import Session
+from .stream import Event, Stream
+
+try:
+    from importlib.metadata import PackageNotFoundError, version as _distribution_version
+
+    __version__ = _distribution_version("vokra")
+except PackageNotFoundError:  # pragma: no cover - source-tree import without metadata
+    __version__ = "0.1.0.dev0"
+__all__ = [
+    "__version__",
+    "Session",
+    "Stream",
+    "Event",
+    "VokraError",
+    "VokraIoError",
+    "VokraModelLoadError",
+    "VokraUnsupportedOpError",
+    "VokraBackendUnavailableError",
+    "VokraInvalidArgumentError",
+    "VokraGraphValidationError",
+    "VokraNotImplementedError",
+    "VokraPanicError",
+    "VokraOtherError",
+]

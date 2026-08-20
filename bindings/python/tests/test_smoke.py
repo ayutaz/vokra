@@ -47,8 +47,8 @@ if str(_SRC) not in sys.path:
 def test_import_vokra_succeeds() -> None:
     """``import vokra`` must not require the native lib.
 
-    Per ``src/vokra/__init__.py`` the package top-level exposes only
-    metadata (``__version__``) and defers CDLL load to first API use.
+    Per ``src/vokra/__init__.py`` the package top-level exposes metadata and
+    API types while deferring CDLL load to the first native operation.
     This lets a source-only install ``pip install vokra`` (sdist)
     succeed on any platform even when the wheel-bundled shared library
     is absent — the failure only surfaces when the user actually calls
@@ -63,11 +63,34 @@ def test_import_vokra_succeeds() -> None:
     assert vokra.__version__  # non-empty
 
 
+def test_public_api_exports_handles_events_and_typed_errors() -> None:
+    import vokra
+
+    expected = {
+        "Session",
+        "Stream",
+        "Event",
+        "VokraError",
+        "VokraIoError",
+        "VokraModelLoadError",
+        "VokraUnsupportedOpError",
+        "VokraBackendUnavailableError",
+        "VokraInvalidArgumentError",
+        "VokraGraphValidationError",
+        "VokraNotImplementedError",
+        "VokraPanicError",
+        "VokraOtherError",
+    }
+    assert expected <= set(vokra.__all__)
+    for name in expected:
+        assert getattr(vokra, name) is not None
+
+
 def test_import_does_not_load_native_lib() -> None:
     """A bare ``import vokra`` must NOT eagerly dlopen the library.
 
-    This matches ``__init__.py``'s docstring guarantee: metadata-only
-    exposure. If some future refactor accidentally hoists a ``load()``
+    This matches ``__init__.py``'s lazy-native-load guarantee. If some future
+    refactor accidentally hoists a ``load()``
     call to module top-level, this test fires — that would silently
     break sdist installs on platforms without a prebuilt lib.
     """
@@ -80,7 +103,7 @@ def test_import_does_not_load_native_lib() -> None:
 
     # ``vokra._native`` is not imported by ``vokra/__init__.py``, so it
     # must be absent from ``sys.modules`` right after the bare import.
-    # (If a later ticket adds an eager submodule import for a good
+    # (If a later change adds an eager native-loader import for a good
     # reason, update this assertion in the same PR that changes the
     # contract — do not silently loosen it.)
     assert "vokra._native" not in sys.modules, (

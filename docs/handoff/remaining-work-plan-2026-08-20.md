@@ -1,6 +1,6 @@
 # Remaining-work execution plan (2026-08-20)
 
-This is the execution order derived from the live repository, PR #38, GitHub
+This is the execution order derived from the live repository, merged PR #38, GitHub
 settings, the M5 owner checklist, and the platform-support matrix. It is a
 route map, not a completion claim. A checked historical ticket or a green
 gated-skip does not replace the evidence named below.
@@ -9,8 +9,7 @@ gated-skip does not replace the evidence named below.
 
 The remaining work is complete only when all of the following are true:
 
-1. PR #38 has unique check names, current CI/branch-protection documentation,
-   current M5 tracking, and a green run at its final head.
+1. The PR #38 CI/branch-protection reconciliation remains intact on `main`.
 2. Release surfaces advertised as usable match the current 41-function C ABI;
    package jobs produce installable, tested artifacts rather than scaffolds.
 3. Every enabled real-weight family records an independent numerical verdict;
@@ -22,36 +21,35 @@ The remaining work is complete only when all of the following are true:
 6. M5 legal, commercial, DoD, and ABI-freeze gates have owner evidence. The
    v1.0.0 tag is last; it must not be used to manufacture completion.
 
-## Phase A — finish PR #38
+## Phase A — PR #38 reconciliation (complete)
 
 | Item | State on 2026-08-20 | Evidence required to close |
 |---|---|---|
-| Retire obsolete local branches | Complete in the working session: 13 refs audited, archived in a verified local Git bundle, then deleted | `git branch -vv` shows only `main` and the PR branch |
-| Unique required context ownership | Worktree change renames Vulkan's display name from `parity` to `vulkan-parity`; main CI exclusively owns required `parity` | actionlint + workflow hygiene; final GitHub run reports one required `parity` and a separate `vulkan-parity` |
-| PR check fanout | Worktree adds a dynamic `nightly-full-parity` plan: Silero remains PR-every, while unset staged-GGUF legs are recorded without allocating six skip-only runners; prose-only PRs skip advisory platform/coverage workflows | planner shell cases + actionlint/workflow hygiene; compare final-head check count with the previous 115-check run |
-| Branch-protection documentation | Worktree updates 10 → 14 required contexts and records the four security contexts | branch-protection API equals `.github/workflows/README.md` §1 exactly |
-| Workflow inventory | Worktree updates 40/32 → 44 workflow files / 36 cron entries | `scripts/check-workflow-hygiene.sh` reports the same totals |
-| M5 tracking | Worktree adds a complete live routing index and corrects stale Accepted decisions | literal box counts plus prose-only gates are both represented; doc checks pass |
-| Final verification | Pending | lightweight local gates; no new Rust delta, so the final PR run supplies compile/test evidence. Use VAST only if a Rust/workspace delta is added; final PR checks must be green |
+| Retire obsolete branches | Complete: 13 old refs were audited, archived in a verified local Git bundle, and obsolete remote branches were deleted | Archive/delete evidence from the working session |
+| Unique required context ownership | Complete: Vulkan is `vulkan-parity`; main CI exclusively owns required `parity` | Final PR run contained distinct contexts |
+| PR check fanout | Complete: dynamic `nightly-full-parity` planning and prose-only workflow filters landed | Final-head workflow checks |
+| Branch-protection documentation | Complete: 14 required contexts and four security contexts are current | Branch-protection API and workflow index |
+| Workflow inventory | Complete for PR #38 at 44 workflows / 36 cron entries; this Python branch intentionally adds workflow 45 without adding a cron | `scripts/check-workflow-hygiene.sh` reports 45 / 36 on this branch |
+| M5 tracking | Complete for the reconciliation scope: live routing index added and stale Accepted decisions corrected | Documentation gates in PR #38 |
+| Final verification | Complete and merged | PR #38 had 110 checks (99 success, 11 intentional skips, zero failures) and was squash-merged as `234d368` |
 
-Do not merge PR #38 while it is Draft or before the final-head checks finish.
-Staging, commit, push, ready-for-review, and merge remain separate authorized
-actions.
+PR #38 is no longer a pending dependency. New work must remain on separate,
+reviewable branches and preserve the merged required-check ownership.
 
 ## Phase B — make the release surface truthful
 
-1. **Python binding / wheel (highest code priority).** The separate local
-   branch `agent/python-bindings-capi-2026-08-20` now extends
+1. **Python binding / wheel (active).** The separate local branch
+   `agent/python-bindings-capi-2026-08-20` is rebased onto merged PR #38 and extends
    `gen-py-bindings.py` to parse the current C structs, four enum families,
    seven opaque handles, integer widths, plain-`bool` and struct-pointer
-   returns, and all 41 functions; its uv test suite is green. Rebase that
-   branch after PR #38, rerun on VAST where Cargo is required, and land it in a
-   separate PR. Source completion does **not** close release packaging.
-   Replace the current CI-built wheel reuse with native release-wheel jobs:
-   audit/repair Linux manylinux policy instead of manually retagging an Ubuntu
-   24.04 build, and build true macOS architecture slices before claiming
-   `universal2`. Add install + native-symbol smoke per wheel. Only then may
-   PyPI/TestPyPI publication be considered.
+   returns, and all 41 functions. Its uv tests pass on Python 3.9 and 3.12.
+   This branch also replaces unsafe CI-artifact retag/reuse with a reusable
+   same-run native build: pinned manylinux 2.28 + auditwheel on Linux, separate
+   arm64/x86_64 macOS builds + delocate, and Windows x86_64 + delvewheel. Each
+   wheel is `py3-none-<platform>`, archive/RECORD/native architecture checked,
+   clean-installed on Python 3.9/3.12, and collected into an exact four-wheel
+   manifest. Local static/source gates are green; GitHub native jobs and a VAST
+   Rust verification remain required before the branch is ready to land.
 2. **Desktop distribution.** Replace the T32-gated scaffold with native
    Windows/macOS/Linux library + CLI builds, a completeness manifest, install
    smoke, and fail-loud publication. A Linux-only best-effort archive is not a
@@ -67,8 +65,8 @@ actions.
    OpenUPM/Godot AssetLib as applicable. Tokens, project reservations, and
    production uploads require exact owner authorization.
 
-Each implementation belongs in a fresh branch after PR #38; do not extend the
-already broad reconciliation PR with release-feature code.
+Each implementation belongs in a focused branch after PR #38. The active
+Python branch is the first such release-surface branch.
 
 ## Phase C — real parity and runtime depth
 
@@ -159,12 +157,13 @@ The dependency order is fixed:
   from the pinned piper-plus `uv.lock`; the resume-capable dataset download
   continues. Preserve its checkpoint/dataset evidence, then destroy the
   instance after the smoke/train lifecycle finishes.
-- Inventory the three stopped VAST volumes before destruction. The Voxtral
+- Inventory the five stopped VAST volumes before destruction. The Voxtral
   volume has an explicit publication/withhold decision path; the older Piper
-  and Moshi volumes need an artefact manifest first.
-- Two local stashes are likely superseded by later merged PRs, but neither is
+  and Moshi volumes need an artefact manifest first, while the PR #38 verify
+  volume should be checked for unique evidence before requesting destruction.
+- Three local stashes include entries likely superseded by later merged PRs, but none is
   deletion-safe yet. Compare evolved hunks semantically against PRs #27/#28
   and #8, then request explicit destructive approval before dropping them.
-- Re-authenticate GitHub CLI before any GitHub write that depends on `gh`, and
-  rotate the VAST API credential that appeared in prior command output. Never
+- GitHub CLI is authenticated as `ayutaz`. Rotate the VAST API credential that
+  appeared in prior command output before further credential-sensitive use. Never
   record replacement credentials in this repository or a VAST `.env` file.

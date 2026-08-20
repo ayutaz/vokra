@@ -4,9 +4,9 @@
 cron 時刻・required check name・trigger の記述に各 workflow file の comment との差異が
 あった場合、**本 file が真** とみなし、各 workflow file 側を後追いで揃えます。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（**実数 44 file**。旧記載「2026-07-23 時点で 20 file」は
+- 対象範囲: `.github/workflows/*.yml` 全件（**実数 45 file**。旧記載「2026-07-23 時点で 20 file」は
   その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **2026-08-18 網羅確認**: 44 workflow file の全てを本 index に収録済み。
+- **2026-08-20 網羅確認**: 45 workflow file の全てを本 index に収録済み。
   required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
   明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
@@ -97,7 +97,7 @@ advisory soakを完了し、2026-08-20にhard-fail + 全PR起動へ変更した�
 | ios-build | .github/workflows/ci.yml | iOS `libvokra.a` static build + `verify-xcframework.sh` |
 | parity-matrix | .github/workflows/ci.yml | fixture parity matrix leg (aggregator `parity` の元) |
 | unity-package | .github/workflows/ci.yml | Unity plugin package audit (M2-11、UNITY_LICENSE 未 provisioning ゆえ WARN skip) |
-| python-wheel-build | .github/workflows/ci.yml | cibuildwheel v2.23.4 + hatchling custom build hook (`vokra` wheel) |
+| python-wheel-build | .github/workflows/ci.yml + python-wheels.yml | 4 native wheels（manylinux x86_64 / macOS arm64+x86_64 / Windows x86_64）のrepair・archive/arch検証・Python 3.9/3.12 clean-installを集約 |
 
 ### 2.2 Security / supply chain / advanced Rust quality
 
@@ -200,7 +200,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 
 | trigger | workflow | 主要 job (定義順) |
 |---|---|---|
-| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python / Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
+| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python（同一runでpython-wheels.ymlをcall）/ Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
 
 release パイプ内の job は全て advisory (branch protection 対象外)。crate publish は
 `crates-io-dry-run` の green を人手で確認したうえで `crates-io-publish` を走らせる 2 段。

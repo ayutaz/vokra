@@ -9,7 +9,7 @@ NULL / invalid arguments (which would be UB in C). The three families:
    *before* the FFI call so the runtime never sees a missing file, and
    propagates C-ABI-reported I/O failures (``VOKRA_ERROR_IO``) verbatim.
    We check both branches: pre-FFI ``FileNotFoundError`` on absent files
-   and the ``RuntimeError`` wrapper when the native side reports failure.
+   and the typed ``VokraError`` when the native side reports failure.
 
 2. **Double-free rejection** — the ``Handle`` base clears its raw pointer
    after ``_release`` so ``vokra_session_destroy`` is invoked at most
@@ -225,7 +225,7 @@ def test_directory_path_raises_before_ffi(fake_lib: FakeLib, tmp_path: Path) -> 
     fake_lib.next_status = _b.VOKRA_ERROR_IO
     fake_lib.last_error_bytes = b"expected regular file, got directory"
     # The directory itself must exist so ``os.path.exists`` returns True.
-    with pytest.raises(RuntimeError, match="expected regular file"):
+    with pytest.raises(VokraIoError, match="expected regular file"):
         Session.open(str(tmp_path), lib=fake_lib)
     # FFI *was* reached (dir passes the pre-FFI guard) but no handle was
     # produced, so destroy must not have been scheduled.
@@ -263,7 +263,7 @@ def test_non_ascii_path_is_utf8_encoded_at_ffi(fake_lib: FakeLib, tmp_path: Path
     non_ascii.write_bytes(b"\x00")
     fake_lib.next_status = _b.VOKRA_ERROR_MODEL_LOAD
     fake_lib.last_error_bytes = b"bad GGUF magic"
-    with pytest.raises(RuntimeError, match="bad GGUF magic"):
+    with pytest.raises(VokraModelLoadError, match="bad GGUF magic"):
         Session.open(str(non_ascii), lib=fake_lib)
     # Assert the encoding contract: the wrapper handed us UTF-8 bytes,
     # not the platform's default locale encoding. The exact expected
@@ -281,13 +281,10 @@ def test_ffi_reported_model_load_error_typed_by_t09(fake_lib: FakeLib, tmp_model
     """A ``VOKRA_ERROR_MODEL_LOAD`` from the C ABI surfaces as a typed error.
 
     T09 wired ``raise_from_status`` to map every ``vokra_status_t`` to a
-    matching ``VokraError`` subclass. ``Session.open`` (still on T08's
-    ``RuntimeError`` path pending T09 refinement of the open path) uses
-    ``raise_from_status`` indirectly via the higher-level wrappers, but
-    the status-to-class mapping is exhaustive so we lock it in here from
-    the caller's perspective: when the C ABI reports a specific status,
-    a downstream ``raise_from_status`` call in the same session lifetime
-    produces the *matching* subclass, not the base ``VokraError``.
+    matching ``VokraError`` subclass. ``Session.open`` and the high-level
+    wrappers all use that mapping in the same call frame, so we lock it in
+    from the caller's perspective: a C ABI status produces the *matching*
+    subclass, not the base ``VokraError``.
 
     We drive this through ``transcribe`` (T10) which is the first API
     fully wired to ``raise_from_status``, so we open a session
