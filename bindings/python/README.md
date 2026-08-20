@@ -7,11 +7,11 @@ keeps third-party Python runtime dependencies at zero.
 
 ## Status: pre-alpha, not a current release surface
 
-**Reviewed:** 2026-08-18 against `main` at `6d64fdf`.
+**Reviewed:** 2026-08-20 against `main` at `6d64fdf`.
 
 The package metadata is `0.1.0.dev0`; this checkout must not be documented as
 an installed `vokra==0.1.0` release. The source tree contains the loader,
-session, stream, audio, and error modules, but `src/vokra/__init__.py` currently
+session, stream, and error modules, but `src/vokra/__init__.py` currently
 exports only `__version__`. Therefore examples such as
 `from vokra import Session` and `vokra.__abi_version__` are not part of the
 current package surface.
@@ -22,8 +22,13 @@ There is also known C-ABI drift:
 - the checked-in `src/vokra/_bindings.py` contains the earlier 14-function
   ASR/TTS/streaming subset;
 - the generator's declaration parser recognizes only 39 of the 41 current
-  functions, and generation then stops at `vokra_aec_config_t` because that
-  struct is not mapped.
+  functions (it misses `vokra_backend_available` and
+  `vokra_session_options_create`), and generation then stops at
+  `vokra_aec_config_t` because the current structs, opaque handles, enums, and
+  integer widths are not all mapped;
+- `check-py-bindings.sh` exists but is not invoked by a GitHub workflow, so the
+  checked-in 14-function table can drift while every current CI check remains
+  green.
 
 Do not publish a wheel or claim full C-ABI coverage until the generator supports
 the current structs, `_bindings.py` is regenerated, the intended public names
@@ -75,8 +80,9 @@ the failing native call.
 Use uv for all Python work. From the repository root:
 
 ```sh
-uv sync --project bindings/python --extra dev
-uv run --project bindings/python --extra dev pytest bindings/python/tests
+uv sync --python 3.12 --project bindings/python --extra dev
+uv run --python 3.12 --project bindings/python --extra dev \
+  pytest bindings/python/tests
 ```
 
 The generated binding check currently fails honestly at
@@ -102,8 +108,7 @@ bindings/python/
 │   ├── _bindings.py       # generated; currently the 14-function subset
 │   ├── _handles.py        # opaque handle wrappers
 │   ├── session.py         # internal Session wrapper
-│   ├── stream.py          # internal Stream wrapper
-│   ├── audio.py           # WAV I/O + optional NumPy interop
+│   ├── stream.py          # internal Stream wrapper + optional NumPy fast path
 │   ├── errors.py          # VokraError hierarchy
 │   └── _lib/              # native library injected by CI
 └── tests/

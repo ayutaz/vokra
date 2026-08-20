@@ -12,11 +12,42 @@
 
 **Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
 
-**2026-08-18 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. The 2026-08-17 reconciliation found 41 live action-ledger boxes; the repeatable SBV2 SDP VAST gate, both misaki environment rows, the first corrected SBV2 GitHub Actions JA verdict, and the four-file ZH numerical leg closed on 2026-08-18, leaving **36 unchecked boxes**. This remains an action ledger rather than an implementation metric: a box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a box complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total. The reconciliation below removes stale merge/sign-off/implementation claims while retaining genuine follow-up work.
+**2026-08-20 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. The 2026-08-17 reconciliation found 41 literal unchecked boxes; the repeatable SBV2 SDP VAST gate, both misaki environment rows, the first corrected SBV2 GitHub Actions JA verdict, and the four-file ZH numerical leg closed on 2026-08-18, leaving **36 literal unchecked boxes**. Those 36 are not an exhaustive task count: the M5-03/M5-04/M5-05/M5-06 and M5-10…M5-15 GA gates were written as prose rather than Markdown boxes. The live index below includes both sets. A box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a condition complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total.
 
 **Tracking**: this file (`docs/m5-owner-verification-checklist.md`) is **tracked (public)**, same convention as `docs/m3-` / `docs/m4-owner-verification-checklist.md`. Referenced handoffs `docs/handoff/m5-*.md` are tracked/public; specs `docs/tickets/m5/*.md` and ADRs `docs/adr/M5-*.md` are gitignore-local internal docs (referenced by ID).
 
 Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** done-when.
+
+---
+
+## 0. Live remaining-work index (2026-08-20)
+
+This table is the complete M5 routing index. The 36 unchecked Markdown boxes
+live mainly in §1.5 and §6; the prose-only rows below are equally real and must
+not disappear from planning merely because `rg '\[ \]'` cannot count them.
+
+| Scope | Current state | Remaining done-condition / route |
+|---|---|---|
+| M5-01 / M5-02 | Delegate scaffolds and bakeoff tooling landed | Real ANE + Hexagon placement/RTF captures, two verdicts, then M5-13 C-export decision (§1.5; 9 literal boxes) |
+| M5-03 | ADR **Accepted**; `vokra-vad-micro`, cross-build, host differential, and memory budget landed | Real Cortex-M55/FVP run plus Tier-3/Helium investment decision (§2.2/§2.3) |
+| M5-04 | Static-link and no-dynamic-load gate landed | Console NDA, real SDK triple build, and ADR ratification (§4) |
+| M5-05 | ADR option (ii) **Accepted**; `f0_extract` placement = core / M5-16; naming migration applied | Legal sufficiency, consent trust root, separate-repository publication, and RVC/GPT-SoVITS sign-off (§3) |
+| M5-06 | Decode-only `wfst_decode` and independent OpenFST parity landed | Ratify the Proposed WFST ADR; decide WFST C export at M5-13; decide Google SynthID contract vs OSS alternative |
+| M5-07 | Bark/Matcha commercial and StyleTTS2 rejected decisions recorded | No unconditional license-decision task; Matcha implementation remains trigger-gated (§6.9) |
+| M5-08 | CPU+Vulkan critical-safe build/SBOM machinery landed | Market positioning, B2B requirements, and M5-11 commercial bundle decision |
+| M5-09 | M4-09 ADR chose piper-plus G2P reuse | **Skipped by design**; no Rust-port task while that Accepted decision holds |
+| M5-10 | Compliance configuration/documentation exists | Owner legal work and EU AI Act certification evidence |
+| M5-11 | Technical product surface exists | Commercial adoption evidence; fundraising is tracked but is not itself a DoD pass criterion |
+| M5-12 | GA/DoD machinery and review runbook exist | Satisfy all DoD inputs, record the Go/No-Go result, and declare GA only after they are evidenced |
+| M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
+| M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
+| M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
+| SoTA / parity / publish | Converters and many structural proofs landed | The 36 literal boxes cover NPU capture, nine parity families, five implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
+
+The cross-milestone Python binding, package distribution, and real-device lab
+gaps are tracked outside this file in
+`docs/platform-support/v1.0-rc-support-matrix.md`; they still feed M5-12 DoD
+and are not waived by this M5 index.
 
 ---
 
@@ -131,12 +162,12 @@ recorded verdict feeding **§1.3 T19 GO/NO-GO** on the C-ABI symbol call.
 
 CC landed the no_std subset + `vokra-vad-micro` crate + thumbv8m cross-build + host-executable bit-identical differential + memory budget. See `docs/handoff/m5-03.md`.
 
-### 2.1 T02 — ratify the crate-topology ADR
+### 2.1 T02 — crate-topology ADR (complete)
 
-- **(a)**: ratify `docs/adr/M5-03-iot-tier3-nostd.md` (Status=Proposed): topology (案1 new `vokra-vad-micro` crate is CC's proposed default, vs 案2 in-place feature-gate), the all-target transcendental unification, the sqrt route (Newton default vs `asm! vsqrt`), and the Helium investment (scalar default vs raw-asm MVE).
-- **(b)**: an architecture decision with a large downstream cost (案2 is a large refactor); an owner call.
+- **(a)**: `docs/adr/M5-03-iot-tier3-nostd.md` is **Accepted** (2026-07-22): topology = new `vokra-vad-micro` crate, all-target transcendental unification, Newton sqrt accepted, scalar Helium default/defer, and split per-PR/weekly cadence.
+- **(b)**: completed owner architecture decision; do not reopen it without new evidence and a superseding ADR.
 - **(c)**: `docs/handoff/m5-03.md`; spec M5-03-T02.
-- **(d)**: ADR is Accepted with the topology + transcendental + sqrt + Helium choices recorded.
+- **(d)**: satisfied. Real-device performance and the optional raw-asm investment remain T17/T18, not T02.
 
 ### 2.2 T17 — real Cortex-M55 silicon / Arm FVP run
 
@@ -157,23 +188,29 @@ CC landed the no_std subset + `vokra-vad-micro` crate + thumbv8m cross-build + h
 
 ## 3. M5-05 — voice-clone separation + watermark-dependency resolution
 
-CC landed the contradiction ADR (Proposed), the consent schema/validator, the flag gate, and the `vokra-voiceclone-experimental` scaffold seed. See `docs/adr/M5-05-watermark-dependency.md`.
+CC landed the contradiction ADR, the consent schema/validator, the flag gate,
+and the `vokra-voiceclone-experimental` scaffold seed. The ADR was subsequently
+Accepted with option (ii). See `docs/adr/M5-05-watermark-dependency.md`.
 
-### 3.1 T04 — resolution option + legal judgment + ADR ratification
+### 3.1 T04 — accepted resolution; legal sufficiency + trust root remain
 
-- **(a)**: choose the resolution option ((i) un-defer watermark embedding / (ii) amend the completion criteria to what the code holds / (iii) M5-defer), judge EU AI Act Article 50 / SB 942 / ELVIS Act / NO FAKES sufficiency, decide the consent-signature trust root (whose key / distribution / revocation), and set the ADR to Accepted. CC's recommendation is "(提案) (ii)" (matches the current honest posture: core does not embed, the deployer discloses per §1.4).
+- **(a)**: resolution option **(ii) requirement-side amendment is Accepted** (2026-07-22). Remaining owner work is to judge EU AI Act Article 50 / SB 942 / ELVIS Act / NO FAKES sufficiency and decide the consent-signature trust root (whose key / distribution / revocation).
 - **(b)**: a legal-sufficiency + trust-root decision; not a code judgment.
-- **(c)**: `docs/adr/M5-05-watermark-dependency.md` §5 (blank); spec M5-05-T04.
-- **(d)**: ADR Accepted with the option, legal record, and signature-verification policy filled in.
+- **(c)**: `docs/adr/M5-05-watermark-dependency.md` §5; spec M5-05-T04.
+- **(d)**: satisfied for the resolution option; still open for the legal record and signature-verification policy.
 
-### 3.2 T15 — publish the separate repo + f0_extract + sign-off + doc propagation
+### 3.2 T15 — publish the separate repo + sign-off
 
-- **(a)**: create/publish `vokra-voiceclone-experimental` from the scaffold seed (`staging/vokra-voiceclone-experimental/`, gitignored); confirm the `f0_extract` (FR-OP-83) implementation site (core vs separate repo) AND its landing WP (its old M5-05 assignment was invalidated by this defer; pick a WP number, CC will not invent one); fill the `docs/license-audit.md` §3.1 RVC v2 / GPT-SoVITS sign-off rows (blank = fail-closed); ratify the already-applied `otonx-` → `vokra-` naming migration in the current requirements/milestones set.
-- **(b)**: repo creation/publish, legal sign-off, and the WP-number/SSOT decisions are owner-only.
+- **(a)**: create/publish `vokra-voiceclone-experimental` from the scaffold seed (`staging/vokra-voiceclone-experimental/`, gitignored) and fill the `docs/license-audit.md` §3.1 RVC v2 / GPT-SoVITS sign-off rows (blank = fail-closed). The `f0_extract` site (core), landing WP (M5-16), and `otonx-` → `vokra-` naming migration were already decided/applied on 2026-07-22.
+- **(b)**: repo creation/publish and legal sign-off are owner-only; the former WP-number/SSOT decisions are complete.
 - **(c)**: `docs/adr/M5-05-watermark-dependency.md`; spec M5-05-T15.
-- **(d)**: repo published (flag + consent enforced; the watermark-forced leg follows T04); f0_extract site + landing WP recorded; sign-off rows filled; rename approved.
+- **(d)**: repo published (flag + consent enforced; the watermark-forced leg follows the accepted option (ii) contract) and sign-off rows filled.
 
-**honest note (watermark leg)**: the "watermark forced-embed" completion leg is honest-UNMET — `WatermarkConfig::backend_status()` is permanently Deferred (2026-07-04 drop, BIG-8 held). The scaffold test positively asserts this UNMET state rather than faking a pass. It becomes MET only if T04 picks option (i).
+**honest note (watermark leg)**: real watermark embedding remains honestly
+Deferred (`WatermarkConfig::backend_status()`, 2026-07-04 drop, BIG-8 held).
+Accepted option (ii) amended M5-05 to require the enforced configuration
+surface plus deployer-visible disclosure; it did not fabricate an embed. Real
+embedding can become active only through a separately approved follow-up WP.
 
 ---
 

@@ -137,8 +137,9 @@ missing implementations. The 36-box ledger mixes distinct done-conditions:
   Voxtral-Small-24B;
 - optional GitHub Pages deployment.
 
-Read and close each literal box independently. Do not infer implementation
-status from the total.
+Read and close each literal box independently. Also follow the prose-only GA
+gates in the checklist's §0 live index; the 36 literal boxes are not an
+exhaustive count of M5 work. Do not infer implementation status from the total.
 
 ## Credential hygiene
 

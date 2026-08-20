@@ -134,6 +134,13 @@ is_docs_only_diff() {
             # tooling, never invoked by Rust code or CI Rust builds.
             scripts/claude-hooks/*|scripts/claude-hooks/*/*)
                 ;;
+            # Matrix planning only: this script serializes repository
+            # variables into a GitHub Actions matrix and is covered by
+            # ShellCheck and workflow hygiene. It cannot affect Rust output.
+            # Keep this exact-path allowlist narrow; other scripts/ci tools
+            # remain deep by default.
+            scripts/ci/plan-nightly-full-parity.sh)
+                ;;
             # Scripts / tooling that may be exercised elsewhere in the hook or in tests:
             scripts/*|tools/*|.githooks/*)
                 trigger="$f"; break ;;
@@ -198,6 +205,8 @@ changed_workspace_crates() {
             scripts/publish/*|scripts/publish/*/*|scripts/publish/*/*/*)
                 ;;
             scripts/claude-hooks/*|scripts/claude-hooks/*/*)
+                ;;
+            scripts/ci/plan-nightly-full-parity.sh)
                 ;;
             # Root-level build config → disqualifies package scoping (must run
             # full workspace):

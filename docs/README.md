@@ -1,7 +1,7 @@
 # Vokra documentation map
 
-**Current-state review:** 2026-08-18
-**Repository baseline:** `main` at `6d64fdf` (PR #37)
+**Current-state review:** 2026-08-20
+**Repository baseline:** PR #38 branch at `c693194`, based on `main` `6d64fdf`
 
 This page explains which documents describe current behavior and which are
 dated evidence. A dated benchmark, ADR, plan, or handoff remains true for the
@@ -22,6 +22,7 @@ commit and environment it names; its old branch, test count, ABI count, or
 | Model and dependency decisions | [Licence audit](license-audit.md) |
 | Deployment law and policy | [Legal compliance](legal-compliance.md) |
 | Current M5 actions | [M5 owner checklist](m5-owner-verification-checklist.md) |
+| Ordered remaining-work plan | [2026-08-20 execution plan](handoff/remaining-work-plan-2026-08-20.md) |
 | 2026-08-18 Git/VAST/session reconciliation | [Codex operations handoff](handoff/codex-operations-2026-08-18.md) |
 | 2026-08-18 workflow Python migration | [Workflow Python/uv migration](handoff/workflow-python-uv-migration-2026-08-18.md) |
 
@@ -37,16 +38,16 @@ publication scripts for release gates.
 
 ## Current repository state
 
-- `main` and `origin/main` were synchronized at `6d64fdf` when this
-  review began. The only active fetched remote branch was `origin/main`.
+- `main` and `origin/main` are synchronized at `6d64fdf`; PR #38 is the only
+  active feature branch and is based directly on that commit.
 - The retired audit branch was not merged wholesale. PR #29 carried the audit
   work, PR #32 carried the Codex migration, and PR #37 carried the remaining
   Claude compatibility delta.
 - The generated C header currently has 41 `vokra_*` functions. References
   to 33 functions in dated M4/M5 reports are historical snapshots.
 - M5 is not complete and the C ABI is not frozen. The live checklist has
-  42 checked and 36 unchecked actions; unchecked actions are not equivalent
-  to missing implementations.
+  42 checked and 36 literal unchecked boxes plus prose-only GA gates in §0;
+  unchecked actions are not equivalent to missing implementations.
 - The official-zoo reality gate currently accepts 20 advertised rows and
   reports no declared implementation gaps.
 

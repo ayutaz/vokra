@@ -345,7 +345,7 @@ jobs:
   # status check per matrix cell (e.g. `parity (0)`, `parity (1)`) and
   # NEVER a raw check with the bare job name (e.g. `parity`). If the
   # branch-protection required-check list references the bare name (as
-  # ours does — `parity` is one of the 10 required contexts on `main`),
+  # ours does — `parity` is one of the 14 required contexts on `main`),
   # that context never gets a report and the PR stays permanently in
   # "Expected — Waiting for status to be reported" limbo.
   #
@@ -912,7 +912,7 @@ jobs:
 
   # M2-12-T15 Python wheel build gate (BR-08, FR-API-01, NFR-DS-02, NFR-DS-03,
   # NFR-LC-02, NFR-MT-02, NFR-MT-07, NFR-MT-08, NFR-RL-01). As of 2026-08-18
-  # this is an advisory artifact-producing job, not one of the 10 required
+  # this is an advisory artifact-producing job, not one of the 14 required
   # branch-protection contexts.
   #
   # Design (M2-12 plan D5/D6/D12, T15):

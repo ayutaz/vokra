@@ -311,7 +311,7 @@ NFR-MT-03（`docs/system-requirements.md` §3.5）は 4 週間 release train を
 
 | 位置 | イベント | 本 runbook との関係 |
 |-----|---------|---------------------|
-| Release train N（週 0-4） | 通常リリース | 平常 CI（2026-08-18 branch protection: 10 required contexts。`.github/workflows/README.md` §1）と NFR-QL-04（nightly 音声品質） |
+| Release train N（週 0-4） | 通常リリース | 平常 CI（2026-08-20 branch protection: 14 required contexts。`.github/workflows/README.md` §1）と NFR-QL-04（nightly 音声品質） |
 | Release train N+1（週 4-8） | 通常リリース | 同上 |
 | Release train N+2（週 8-12） | 通常リリース + **四半期 review 準備**（week 11
 までに §3 入力を CC が準備完了させる） | Kill switch 状態表の暫定案・T03 指標 JSON

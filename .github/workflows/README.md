@@ -21,7 +21,7 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 
 ## 1. Required checks (main branch protection)
 
-`main` への PR merge を gate する 10 checks。branch protection API 側の contexts と一対一に
+`main` への PR merge を gate する 14 checks。branch protection API 側の contexts と一対一に
 対応しなければならない。`build (*)` と `test (*)` は `ci.yml` の matrix expansion 由来で、
 `os: [ubuntu-latest, macos-latest, windows-latest]` の 3 展開を **必ずこの順** で確保する。
 `parity` は matrix job (`parity-matrix`) の aggregator（Wave 10 で分離済、matrix 直下では
@@ -40,14 +40,19 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 | clippy | clippy | .github/workflows/ci.yml | `cargo clippy --workspace --all-targets -- -D warnings` |
 | parity | parity | .github/workflows/ci.yml | fixture-only parity aggregator (needs: parity-matrix)、真の重量級 real-weight parity は §3 の weekly leg |
 | license | license | .github/workflows/ci.yml | `cargo deny` + `scripts/check-*` compliance gate |
+| workflow-security | workflow-security | .github/workflows/ci-security.yml | actionlint + ShellCheck + zizmor workflow security gate |
+| dependency-review | dependency-review | .github/workflows/ci-security.yml | changed dependency の vulnerability / license / Scorecard gate |
+| documentation-links | documentation-links | .github/workflows/ci-security.yml | public documentation surface の link validation |
+| CodeQL | analyze (`codeql-rust`) | .github/workflows/codeql.yml | GitHub CodeQL Rust `security-extended` analysis |
 
 ---
 
-## 2. Advisory checks (branch protection なし)
+## 2. Additional required and advisory checks
 
-merge を gate しない informational check。定期監視で赤化を検知し、依頼者判定で
-required 昇格するかを判断する（初期 promotion 方針: 連続数週の緑が確認できた時点で
-owner に昇格提案）。
+§1 の14 contexts以外はmergeをgateしないinformational check。定期監視で赤化を
+検知し、依頼者判定でrequired昇格するかを判断する（初期 promotion 方針: 連続数週の
+緑が確認できた時点でownerに昇格提案）。§2.2の先頭4項目は2026-08-20にrequiredへ
+昇格済みで、詳細説明を重複掲載している。
 
 ### 2.1 ci*.yml 内 (PR/push で常時走行、advisory)
 
@@ -78,7 +83,7 @@ owner に昇格提案）。
 | vokra-piper-g2p | .github/workflows/ci-quality.yml | 除外 workspace `integrations/vokra-piper-g2p` の build/test |
 | python-parity-oracles | .github/workflows/ci-quality.yml | Python 側 parity oracle script の self-test |
 | shell-self-tests | .github/workflows/ci-quality.yml | `scripts/*.sh` の `--self-test` 集約 |
-| coverage (advisory) | .github/workflows/coverage.yml | PR / main push の Rust coverage 計測 |
+| coverage (advisory) | .github/workflows/coverage.yml | Rust差分を含むPR / main pushのcoverage計測（prose-only PRは非起動） |
 | gitleaks (advisory) | .github/workflows/secret-scan.yml | PR / main push の secret scan |
 | gpu-backends | .github/workflows/ci-platform.yml | macos=metal / ubuntu=cuda opt-in feature の build/clippy/test (+ coreml/qnn delegate scaffold arm) |
 | build-target-vulkan-only | .github/workflows/ci-platform.yml | M4-15 CPU+Vulkan-only SKU build target 検証 |
@@ -94,12 +99,15 @@ owner に昇格提案）。
 
 ### 2.2 Security / supply chain / advanced Rust quality
 
+`workflow-security` / `dependency-review` / `documentation-links` / `CodeQL`
+は§1のrequired contexts。残りはadvisoryまたはschedule/manual専用である。
+
 | check / workflow | trigger | 役割 |
 |---|---|---|
 | workflow-security (`.github/workflows/ci-security.yml`) | PR / main / weekly / manual | actionlint + ShellCheck と zizmor。workflow 構文、固定 SHA、最小権限、expression injection を gate |
 | dependency-review (`.github/workflows/ci-security.yml`) | PR | moderate以上の脆弱性、GPL/LGPL/AGPL/SSPL系licenseを持つ新規runtime/development依存を拒否し、変更依存のOpenSSF Scorecardも表示 |
 | documentation-links (`.github/workflows/ci-security.yml`) | PR / main / weekly / manual | README / CONTRIBUTING / `.github` / `docs` のリンク腐敗を lychee で検出 |
-| codeql-rust (`.github/workflows/codeql.yml`) | PR / main / weekly / manual | Rust を buildless `security-extended` query suite で SAST |
+| CodeQL (`codeql-rust`, `.github/workflows/codeql.yml`) | PR / main / weekly / manual | Rust を buildless `security-extended` query suite で SAST |
 | scorecard (`.github/workflows/scorecard.yml`) | main / branch-protection change / weekly / manual | OpenSSF Scorecard を SARIF と public results に送信 |
 | cargo-hack-each-feature (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR / main / weekly / manual | 全 feature の独立コンパイルと zero-dep lockfile 不変条件 |
 | cargo-semver-checks (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR | publishable crate の意図しない public API break を base SHA と比較 |
@@ -183,7 +191,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | 04:47 | .github/workflows/nightly-webgl.yml | Unity WebGL preflight + wasm-harness + WebGL build |
 | 05:17 | .github/workflows/nightly-asr-wer.yml | LibriSpeech `1272/128104` WER regression (`test_librispeech_wer.py`) |
 | 05:47 | .github/workflows/nightly-tier2-device.yml | Raspberry Pi 3B/4B/5/Zero 2 W 実機 RTF (self-hosted 必須、未登録なら clean skip) |
-| 06:17 | .github/workflows/nightly-full-parity.yml | staged GGUF を用いる full-parity matrix（未配置 leg は明示 skip） |
+| 06:17 | .github/workflows/nightly-full-parity.yml | staged GGUFを用いるdynamic full-parity matrix（全PRでSileroを実行、未設定legはplan summaryへ未測定記録） |
 
 ---
 

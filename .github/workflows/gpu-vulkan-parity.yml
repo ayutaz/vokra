@@ -151,7 +151,9 @@ concurrency:
 
 jobs:
   parity:
-    name: parity
+    # Keep required-check names unique across workflows. The main CI
+    # aggregator exclusively owns the branch-protection context `parity`.
+    name: vulkan-parity
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:

@@ -341,6 +341,10 @@ run_case "scripts/claude-hooks only" \
     "fast" \
     "scripts/claude-hooks/on-tool-use.sh"
 
+run_case "nightly parity matrix planner only" \
+    "fast" \
+    "scripts/ci/plan-nightly-full-parity.sh"
+
 # --- DEEP-PATH cases (anything Rust-adjacent kills the fast-path) ---
 
 run_case "tools/parity Python + .rs together kills fast-path" \
@@ -374,6 +378,10 @@ run_case "crate Cargo.toml kills fast-path (path pattern *.toml)" \
 run_case "scripts/ (general, non-publish) kills fast-path" \
     "deep" \
     "scripts/check-zero-deps.sh"
+
+run_case "unlisted scripts/ci helper kills fast-path" \
+    "deep" \
+    "scripts/ci/other-helper.sh"
 
 run_case "scripts/check-fa-v3-confinement.sh kills fast-path (Rust test dep)" \
     "deep" \

@@ -77,9 +77,9 @@ them first-class native operators instead.
   weights and are bit-exactly reproducible.
 - **Cross-platform distribution**: single library, single C ABI header,
   static or dynamic linking; iOS XCFramework and Swift Package; Unity UPM
-  package; Godot GDExtension; Python `ctypes` wheels; HTTP compatibility
-  server exposing OpenAI Whisper, vLLM, piper-plus, and Wyoming Protocol
-  endpoints.
+  package; Godot GDExtension; Python `ctypes` wheels; HTTP server exposing
+  OpenAI Whisper, piper-plus, and Wyoming Protocol endpoints plus
+  contract-only vLLM completion schemas.
 - **Safe-by-default Rust**: `unsafe_code = "deny"` is set workspace-wide;
   `unsafe` is allowed only in backend and FFI crates and requires
   `// SAFETY:` justifications enforced by
@@ -412,11 +412,12 @@ Vokra never silently reroutes to a different backend or dtype.
   current C header has 41 functions, and the package root does not yet export
   `Session`. Treat PyPI publication as pending; see the binding README.
 - **HTTP server** — [`integrations/vokra-server`](integrations/vokra-server):
-  an isolated workspace exposing four compatibility APIs so existing
-  clients drop in unchanged: **OpenAI Whisper**
-  (`/v1/audio/transcriptions`), **vLLM** (`/v1/completions`,
-  `/v1/chat/completions`), **piper-plus HTTP** (`/api/tts`), and
-  **Wyoming Protocol** for Home Assistant Voice backends.
+  an isolated workspace implementing **OpenAI Whisper**
+  (`/v1/audio/transcriptions`), **piper-plus HTTP** (`/api/tts`), and
+  **Wyoming Protocol** for Home Assistant Voice backends. The vLLM-shaped
+  `/v1/completions` and `/v1/chat/completions` routes currently validate the
+  contract but return explicit 501 responses until an LLM generation engine
+  is wired; they are not yet drop-in inference endpoints.
 
 ## Model publications
 

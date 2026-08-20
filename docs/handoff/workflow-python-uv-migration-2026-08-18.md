@@ -94,6 +94,6 @@ UV_CACHE_DIR=/private/tmp/vokra-workflow-audit-uv-cache \
 git diff --check
 ```
 
-The full workflow check covers all 40 workflow files and all 32 cron entries;
+The full workflow check covers all 44 workflow files and all 36 cron entries;
 success means no cron collisions, dangling `needs`, shell syntax errors,
 unquotable YAML scalars, or bare Python tooling remain.

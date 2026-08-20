@@ -35,7 +35,17 @@
 name: CI Platform
 
 on:
+  # Platform compilation/RTF jobs do not validate prose-only changes. Keeping
+  # those PRs out of this advisory workflow avoids allocating the 12-cell
+  # platform fanout while required CI/security checks continue to run.
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE*"
+      - "NOTICE"
+      - "CODE_OF_CONDUCT*"
+      - "SECURITY*"
   push:
     branches: [main]
 

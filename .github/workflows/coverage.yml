@@ -31,7 +31,17 @@
 name: Coverage
 
 on:
+  # Coverage is a Rust production-code signal. Prose-only PRs cannot change
+  # its numerator or denominator, so do not spend a workspace llvm-cov runner
+  # on them. Required CI/security checks remain unconditional.
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE*"
+      - "NOTICE"
+      - "CODE_OF_CONDUCT*"
+      - "SECURITY*"
   push:
     branches: [main]
   workflow_dispatch:

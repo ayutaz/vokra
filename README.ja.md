@@ -79,9 +79,9 @@ VAD、話者エンベディング — こういった要素はどれもグラフ
   weight と一緒に運ばれ、bit-exact に再現可能です。
 - **クロスプラットフォーム配布**: 単一ライブラリ、単一 C ABI ヘッダ、静的
   または動的リンク。iOS XCFramework + Swift Package、Unity UPM パッケージ、
-  Godot GDExtension、Python `ctypes` wheel、OpenAI Whisper / vLLM /
-  piper-plus / Wyoming Protocol 互換エンドポイントを提供する HTTP
-  互換サーバ。
+  Godot GDExtension、Python `ctypes` wheel、OpenAI Whisper / piper-plus /
+  Wyoming Protocolエンドポイントと、contract-onlyのvLLM completion schemaを
+  提供するHTTPサーバ。
 - **デフォルトで安全な Rust**: ワークスペース全体で `unsafe_code = "deny"`
   を設定。`unsafe` はバックエンドと FFI クレートでのみ許可され、
   `clippy::undocumented_unsafe_blocks = "deny"` によって `// SAFETY:`
@@ -408,11 +408,11 @@ Vokra は決して別のバックエンドや dtype に silently リルートし
   package root もまだ `Session` を export しません。PyPI 公開は pending として
   [binding README](bindings/python/README.md) を参照してください。
 - **HTTP サーバ** — [`integrations/vokra-server`](integrations/vokra-server):
-  既存クライアントを無改変で置き換えられる 4 種類の互換 API を公開する
-  独立ワークスペース。**OpenAI Whisper** (`/v1/audio/transcriptions`)、
-  **vLLM** (`/v1/completions`、`/v1/chat/completions`)、
-  **piper-plus HTTP** (`/api/tts`)、Home Assistant Voice バックエンド用の
-  **Wyoming Protocol**。
+  **OpenAI Whisper** (`/v1/audio/transcriptions`)、**piper-plus HTTP**
+  (`/api/tts`)、Home Assistant Voiceバックエンド用の**Wyoming Protocol**を
+  実装する独立ワークスペース。vLLM形状の`/v1/completions`と
+  `/v1/chat/completions`は現時点ではcontract検証後に明示的な501を返し、
+  LLM生成engineが接続されるまでdrop-in inference endpointではありません。
 
 ## モデル配布
 
