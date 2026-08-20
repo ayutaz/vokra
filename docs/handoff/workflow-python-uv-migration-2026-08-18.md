@@ -44,7 +44,7 @@ The 24 migrated files are:
 Each Python-using job installs the repository-pinned action:
 
 ```yaml
-- uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+- uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
 ```
 
 Stdlib-only commands run without a project environment:

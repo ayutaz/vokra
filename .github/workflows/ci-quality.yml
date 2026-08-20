@@ -63,7 +63,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
       - name: Fixture EOL pins (CRLF hash breakage — regressed once, 9cfa49a)
         # windows-latest checks out with core.autocrlf=true, so any hashed
         # fixture without an explicit .gitattributes eol pin arrives with
@@ -293,7 +293,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
       - name: Self-test the extractor and checkers
         # Bidirectional fixtures: cargo selectors and doc-local helpers must
         # stay GREEN, injected drift must go RED, and the Python tutorial's WAV
@@ -422,7 +422,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
       - name: Create isolated venv and install binding + audit tool
         # `uv pip install .` reads bindings/python/pyproject.toml so build / runtime
         # deps materialize in this venv. `pip-licenses` (MIT) enumerates every
@@ -865,7 +865,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
       - name: Create isolated venv and install pytest
         # Zero-dep envelope: pytest and its transitive deps live ONLY inside
         # /tmp/vokra-py-parity; nothing in the Vokra runtime graph gains a
@@ -988,7 +988,7 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
       - name: Run each script's --self-test (collect ALL failures, do not fail-fast)
         # No `set -e` on the loop: we want every failure surfaced in one run,
         # not just the first, so a reviewer sees the full drift picture on a
