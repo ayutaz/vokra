@@ -11,7 +11,8 @@ dependencies = [
     "numpy==1.26.4",
     "soundfile==0.14.0",
     "torch==2.1.2",
-    "torchaudio==2.11.0",
+    # torchaudio ships a compiled extension and must match torch's major/minor.
+    "torchaudio==2.1.2",
 ]
 
 [tool.uv]

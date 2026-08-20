@@ -2,7 +2,7 @@
 # scripts/parity/download-kokoro.sh — Fetch hexgrad/Kokoro-82M @ pinned SHA
 # into a caller-supplied cache dir, then stage the files the parity workflow
 # consumes into a single flat stage dir. Zero external tool assumptions:
-# uses the venv-provided `huggingface-cli` from KOKORO_VENV.
+# uses the venv-provided `hf` CLI from KOKORO_VENV.
 #
 # This script exists to keep the workflow YAML readable — the HF download +
 # stage layout logic here would otherwise clutter the YAML file with quoted
@@ -10,7 +10,7 @@
 #
 # Environment (all required):
 #   KOKORO_VENV        Path to a Python venv with `huggingface_hub` installed.
-#                      The `bin/huggingface-cli` binary must exist under it.
+#                      The `bin/hf` binary must exist under it.
 #   KOKORO_CACHE_DIR   HF cache root (HF_HOME). actions/cache@v4 keys off this.
 #   KOKORO_STAGE_DIR   Where to stage kokoro-v1_0.pth + config.json + voices/.
 #
@@ -18,8 +18,8 @@
 #   KOKORO_REVISION    Pinned git SHA on hexgrad/Kokoro-82M. Default matches
 #                      the workflow's env-declared pin; overriding here lets
 #                      an owner bump the pin without touching the YAML.
-#   HF_HUB_ENABLE_HF_TRANSFER  Set to "1" by the workflow when hf_transfer
-#                      is on the pip line for faster downloads.
+#   HF_XET_HIGH_PERFORMANCE  Set to "1" by the workflow to accelerate downloads
+#                      through the hf-xet transport bundled with huggingface_hub.
 #
 # Exit codes:
 #   0    success (staged files present, sizes verified)
@@ -42,15 +42,15 @@ set -euo pipefail
 # `HF cache miss + fresh download` path, not silently.
 : "${KOKORO_REVISION:=f3ff3571791e39611d31c381e3a41a3af07b4987}"
 
-HF_BIN="${KOKORO_VENV}/bin/huggingface-cli"
+HF_BIN="${KOKORO_VENV}/bin/hf"
 if [ ! -x "${HF_BIN}" ]; then
-  echo "::error::huggingface-cli not found at ${HF_BIN} — is the parity venv provisioned?"
+  echo "::error::hf CLI not found at ${HF_BIN} — is the parity venv provisioned?"
   exit 1
 fi
 
 # Point every HF client at the same cache dir so actions/cache@v4 sees the
 # whole thing. HF_HUB_CACHE / HF_HOME need to agree to keep both hf_hub_download
-# and huggingface-cli in sync.
+# and the hf CLI in sync.
 export HF_HOME="${KOKORO_CACHE_DIR}"
 export HF_HUB_CACHE="${KOKORO_CACHE_DIR}"
 mkdir -p "${HF_HOME}" "${KOKORO_STAGE_DIR}"
@@ -59,7 +59,7 @@ echo "[kokoro-dl] cache = ${KOKORO_CACHE_DIR}"
 echo "[kokoro-dl] stage = ${KOKORO_STAGE_DIR}"
 echo "[kokoro-dl] revision = ${KOKORO_REVISION}"
 
-# huggingface-cli download prints the local dir it staged into on stdout,
+# `hf download` prints the local dir it staged into on stdout,
 # which we capture for the stage-copy step. `--include` narrows the fetch to
 # what the parity pipeline actually needs (avoids the ~15 MB samples/*.wav
 # tree in the upstream repo).
@@ -72,7 +72,7 @@ LOCAL_DIR="$(
 )"
 
 if [ -z "${LOCAL_DIR}" ] || [ ! -d "${LOCAL_DIR}" ]; then
-  echo "::error::huggingface-cli download did not produce a valid local dir (got: '${LOCAL_DIR}')"
+  echo "::error::hf download did not produce a valid local dir (got: '${LOCAL_DIR}')"
   exit 2
 fi
 
