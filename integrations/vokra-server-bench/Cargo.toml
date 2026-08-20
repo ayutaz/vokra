@@ -52,7 +52,7 @@ path = "src/lib.rs"
 # so no system OpenSSL / openssl-sys is pulled in. An operator can therefore
 # point this at either a plaintext local `http://127.0.0.1:8080` or a LAN
 # `https://` deployment without recompiling.
-ureq = "2"
+ureq = "3"
 # Serialising the request JSON body via `serde_json::json!({...}).to_string()`
 # gives correct UTF-8 escaping for `--text` payloads (Unicode / control chars
 # are common in ASR/TTS smoke fixtures) without hand-rolling escape logic in
