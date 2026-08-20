@@ -419,7 +419,7 @@ closed with zero exceptions:
 - shell activation, direct venv executables, bare pip/pytest, and runner-user
   site mutation are prohibited;
 - every Python-using job installs the pinned
-  `astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9` action.
+  `astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d` action (v10.0.0).
 
 `scripts/check-workflow-hygiene.sh` enforces the command rule over block and
 scalar `run:` entries. The migration inventory, cross-platform wheel recipe,
