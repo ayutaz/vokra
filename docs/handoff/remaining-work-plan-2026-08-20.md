@@ -29,7 +29,7 @@ The remaining work is complete only when all of the following are true:
 | Unique required context ownership | Complete: Vulkan is `vulkan-parity`; main CI exclusively owns required `parity` | Final PR run contained distinct contexts |
 | PR check fanout | Complete: dynamic `nightly-full-parity` planning and prose-only workflow filters landed | Final-head workflow checks |
 | Branch-protection documentation | Complete: 15 required contexts (core 10 + security 4 + pins-sync 1), strict checks, conversation resolution, linear history, administrator enforcement, and Actions SHA pinning are current | Branch-protection and Actions-policy APIs plus workflow index |
-| Workflow inventory | Complete for PR #38 at 44 workflows / 36 cron entries; this Python branch intentionally adds workflow 45 without adding a cron | `scripts/check-workflow-hygiene.sh` reports 45 / 36 on this branch |
+| Workflow inventory | Complete for PR #38 at 44 workflows / 36 cron entries; this Python branch adds workflow 45 and promotes its secret scan with one nightly full-history cron | `scripts/check-workflow-hygiene.sh` reports 45 / 37 on this branch |
 | M5 tracking | Complete for the reconciliation scope: live routing index added and stale Accepted decisions corrected | Documentation gates in PR #38 |
 | Final verification | Complete and merged | PR #38 had 110 checks (99 success, 11 intentional skips, zero failures) and was squash-merged as `234d368` |
 
@@ -52,15 +52,21 @@ reviewable branches and preserve the merged required-check ownership.
    tested `vokra-capi`, then clean-installed an actual Linux native wheel on
    Python 3.9 and 3.12 and resolved all 41 symbols. The branch is rebased onto
    the post-PR #39/#40/#43 `main`; the remaining integration work is final-head
-   CI and review. PyPI/TestPyPI publication remains out of scope.
+   CI is green (61/61 on final head); review remains. The same branch promotes
+   `gitleaks` after 18/18 green main runs and adds a nightly full-history scan.
+   PyPI/TestPyPI publication remains out of scope.
 2. **Desktop distribution.** Replace the T32-gated scaffold with native
    Windows/macOS/Linux library + CLI builds, a completeness manifest, install
    smoke, and fail-loud publication. A Linux-only best-effort archive is not a
    three-platform release.
-3. **Android distribution.** Replace the manifest + arm64 `.so` scaffold with
-   a real standalone AAR containing the required helper/classes.jar, declared
-   ABI set, Gradle consumer test, and fail-loud completeness gate; keep Android
-   real-device RTF separate from cross-build success.
+3. **Android distribution and binding depth.** Replace the manifest + arm64
+   `.so` scaffold with a real standalone AAR containing the required
+   helper/classes.jar, declared ABI set, Gradle consumer test, and fail-loud
+   completeness gate. The current raw-JNI crate exposes only five lifecycle /
+   error entry points; ratify JNA vs raw JNI, then add ASR, TTS, VAD,
+   streaming, AEC, and S2S wrappers, the `AssetManager` → `filesDir` helper,
+   coroutine wrappers, and Maven publication. Keep Android real-device RTF
+   separate from cross-build success.
 4. **Godot distribution.** Require every advertised platform slice before
    publishing the AssetLib zip; crossbuild reuse may not be best-effort at a
    release tag.
@@ -112,8 +118,10 @@ Execute in increasing cost order:
 
 Explicit non-checklist implementation holes also remain:
 
-- implement Godot `session_vad_open_stream` object creation and add headless +
-  editor smoke evidence before claiming full runtime dispatch;
+- implement Godot `session_vad_open_stream` Object creation and add headless +
+  editor smoke evidence before claiming full runtime dispatch. The other four
+  data-bearing trampolines already have real Variant plumbing; old README /
+  crate-doc wording that called all four pending was retired in this branch;
 - implement a real `TtsEngine::synthesize_stream` override before advertising
   incremental streaming; the trait default intentionally returns
   `UnsupportedOp`, so a one-chunk synchronous wrapper is not completion;
@@ -122,12 +130,34 @@ Explicit non-checklist implementation holes also remain:
 - parse and compare the openWakeWord reference JSON against a real fixture;
 - finish real-checkpoint DeBERTa-v2 tensor mapping (distinct from the completed
   DeBERTa-v3 scheduled parity);
+- replace the RNNoise opaque-blob checkpoint prep with the Xiph v0.2 per-layer
+  split, bind a real GGUF runtime, and promote the env-gated full-denoise test
+  from its intentional panic marker to independent C-reference waveform
+  parity;
+- implement PyIN HMM/Viterbi temporal smoothing. The current
+  `viterbi_smooth_todo` deliberately returns the framewise pitch unchanged;
+- stamp and strictly read the Conv-TasNet topology chunk group instead of
+  relying on transcribed runtime constants;
+- replace JASCO's provisional chord/drum vocabulary and sampler defaults with
+  values pinned from the upstream AudioCraft config before any real artifact
+  claim;
+- resolve the SBV2 language-row ordering with checkpoint evidence and finish
+  production Mandarin segmentation/word-boundary handling; the completed ZH
+  numerical fixture does not close production G2P;
+- verify the Windows NVRTC DLL suffix list on a real Windows CUDA image before
+  claiming that the dynamic CUDA loader covers that platform;
 - decide whether vLLM completion generation is in the GA server scope; until
   implemented, retain the explicit contract-only/501 wording at top level.
 - decide the GA compatibility boundary for the other explicit server 501s:
   OpenAI segment timestamps (`verbose_json`, SRT, VTT), compressed/headerless
   speech formats and per-request speed, plus Piper per-request overrides.
   Preserve fail-loud responses for every feature kept out of scope.
+
+The marker audit found no executable `todo!()` or `unimplemented!()` macro in
+production code; the three literal hits are historical RED-phase prose in
+tests. That does not make the runtime complete: the explicit error paths,
+placeholder metadata, and deferred helper bodies above are the actionable
+forms used by this repository.
 
 Read the numerical-parity skill before writing a reference dumper, changing a
 bound, or diagnosing a parity failure. All model artifacts totaling at least
@@ -178,6 +208,13 @@ The dependency order is fixed:
 10. Promote `abi-surface` only after a green observation window, record all
    M5-12 DoD evidence, then prepare v1.0.0 and fire the irreversible ABI freeze.
 
+CI quality debt remains independently visible: `rustdoc (advisory)` currently
+uses a 266-warning ceiling rather than a zero-warning gate. Drain that baseline
+in a dedicated documentation-hygiene WP, ratchet the ceiling down as warnings
+are removed, and only then consider required-check promotion. The gitleaks
+advisory window is no longer debt: this branch records 18/18 green main runs,
+promotes the working-tree scan, and adds the nightly full-history companion.
+
 ## Continuous controls
 
 - Python always runs through uv.
@@ -197,13 +234,18 @@ The dependency order is fixed:
   from the pinned piper-plus `uv.lock`; the resume-capable dataset download
   continues. Preserve its checkpoint/dataset evidence, then destroy the
   instance after the smoke/train lifecycle finishes.
-- Inventory the five stopped VAST volumes before destruction. The Voxtral
-  volume has an explicit publication/withhold decision path; the older Piper
-  and Moshi volumes need an artefact manifest first, while the PR #38 verify
-  volume should be checked for unique evidence before requesting destruction.
+- The live VAST inventory is one running instance (`48184676`, `piper-v11`)
+  plus five **stopped instances with attached disks**, not five detached
+  volumes; `vastai show volumes` returns an empty list. Before requesting
+  destruction, inventory the stopped Voxtral (`47955178`), Piper v10b
+  (`48000459`), Moshi (`48178589` / `48187958`), and PR #38 verification
+  (`48186199`) disks. The Voxtral disk has an explicit publication/withhold
+  decision path; the older Piper/Moshi disks need artifact manifests, and the
+  PR #38 disk must be checked for unique evidence.
 - Three local stashes include entries likely superseded by later merged PRs, but none is
   deletion-safe yet. Compare evolved hunks semantically against PRs #27/#28
   and #8, then request explicit destructive approval before dropping them.
-- GitHub CLI is authenticated as `ayutaz`. Rotate the VAST API credential that
-  appeared in prior command output before further credential-sensitive use. Never
-  record replacement credentials in this repository or a VAST `.env` file.
+- GitHub CLI is authenticated as `ayutaz`. Rotate the VAST API credential and
+  any active instance access/Jupyter token exposed by raw CLI inventory output
+  before further credential-sensitive use. Never record replacement
+  credentials in this repository or a VAST `.env` file.

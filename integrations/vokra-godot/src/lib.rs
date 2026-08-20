@@ -45,13 +45,11 @@
 //! - **T19**: 実 Godot 4.3+ editor での `demos/asr_demo` + `demos/tts_demo`
 //!   smoke — M3-18 と併走 runtime verification。
 //! - **T20**: M3-11 WP-close PR。
-//! - `TODO(future)` markers in `trampoline.rs` for the four PackedFloat32Array
-//!   / String Variant packers (`session_transcribe`, `session_synthesize`,
-//!   `stream_push_pcm`, `stream_poll` return path, `session_vad_open_stream`
-//!   return path). `stream_interrupt` is fully promoted past stub state as
-//!   of the T14 land — see `trampoline` module doc §T14 promotion for the
-//!   per-trampoline breakdown. The remaining Variant packers are deferred
-//!   to owner smoke per `trampoline` module doc §T14 promotion.
+//! - `session_transcribe`, `session_synthesize`, `stream_push_pcm`, and
+//!   `stream_poll` now have full Variant packing/unpacking. The sole remaining
+//!   trampoline implementation gap is `session_vad_open_stream`: construct a
+//!   Godot Object with the correct `StreamInstance` lifetime and pack it into
+//!   the return Variant. Real editor/headless smoke remains owner evidence.
 //!
 //! # Unsafe policy (NFR-RL-07, workspace lint `unsafe_code = "deny"`)
 //!

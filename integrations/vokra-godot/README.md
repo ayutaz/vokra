@@ -1,6 +1,9 @@
 # vokra-godot — Godot 4.x GDExtension binding for Vokra
 
-**State (2026-07-10, Wave 13 — CC 側 100% 完成)**: **T01-T18 landed**.
+**State (2026-08-20 audit)**: the original **T01-T18 scope landed**. Four
+data-bearing trampolines have since been promoted to real Variant dispatch;
+`session_vad_open_stream` Object construction and real Godot editor/headless
+smoke evidence remain open.
 
 **Wave 11 (T05-T13)**: Class registration (`classdb_register_extension_class3`),
 method binding (`classdb_register_extension_class_method` for 6 methods across
@@ -9,11 +12,11 @@ method binding (`classdb_register_extension_class_method` for 6 methods across
 panic firewall at every trampoline, and compile-time layout guards for
 `GDExtensionClassCreationInfo3` (160 bytes) / `GDExtensionClassMethodInfo`
 (88 bytes) are all wired against the Godot 4.3-stable header. Trampoline
-runtime dispatch (Variant packing/unpacking to call real
-`crate::asr::transcribe` etc.) is **honest scope-out to M3-18 owner smoke**:
-each trampoline exists with correct signature + arity enforcement + panic
-firewall + `catch_unwind`, and returns `InvalidMethod` with a documented
-"runtime dispatch pending" marker until the real Variant plumbing lands.
+runtime dispatch originally landed as an arity/type/panic-firewall scaffold.
+The T14 follow-up now fully dispatches `session_transcribe`,
+`session_synthesize`, `stream_push_pcm`, and `stream_poll`, including their
+String / Dictionary / PackedFloat32Array Variant paths. VAD stream Object
+creation is still fail-loud as `InvalidMethod` pending its lifetime plumbing.
 
 **Wave 13 (T12 + T14-T18)**: Crossbuild matrix (5 target: macOS Intel /
 Apple Silicon / Linux x64 / Windows MSVC / Android arm64) via
@@ -34,7 +37,7 @@ pattern + closed a latent glob gap that would miss `libcudart.so.12`).
 
 The Godot 4.x GDExtension surface for the [Vokra](https://github.com/ayutaz/vokra)
 speech-first inference runtime. Exposes a `VokraSession` Godot Object
-class (once T05 lands) that wraps the Vokra C ABI (`include/vokra.h`,
+class that wraps the Vokra C ABI (`include/vokra.h`,
 cbindgen-generated from `crates/vokra-capi`) and dispatches to native
 Whisper base ASR, piper-plus TTS, and Silero VAD v5 engines.
 

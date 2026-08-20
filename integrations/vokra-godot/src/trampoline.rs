@@ -149,10 +149,11 @@ unsafe fn enforce_instance(
     true
 }
 
-/// Set an `InvalidMethod` outcome with a "runtime dispatch pending" marker.
-/// Signals to Godot that the method exists (registered in ClassDB) but its
-/// full runtime plumbing is deferred (see individual `TODO(future)`
-/// markers on the un-promoted trampolines).
+/// Set an `InvalidMethod` outcome for a method that cannot dispatch.
+///
+/// Most call sites use this when the extension interface or loaded session is
+/// unavailable, or when return-Variant construction fails. The sole remaining
+/// deliberately unimplemented trampoline is [`session_vad_open_stream`].
 ///
 /// # Safety
 ///
