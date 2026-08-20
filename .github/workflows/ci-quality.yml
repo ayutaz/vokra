@@ -939,7 +939,11 @@ jobs:
   #                                             (thresholds + render_human +
   #                                             render_json), offline, sub-
   #                                             second (FQ-09, 2026-07-31).
-  #   * scripts/publish/fetch_license.sh      — publish-side.
+  #   * scripts/publish/fetch_license.sh      — publish-side. Required PR
+  #                                             self-test uses deterministic
+  #                                             curl fixtures; the live URL
+  #                                             probe runs weekly in
+  #                                             corpus-drift-detector.yml.
   #   * scripts/publish/upload.sh             — publish-side.
   #   * scripts/publish/make_model_card.py    — publish-side.
   #   * scripts/publish/publish-one.sh        — publish-side; orchestrates

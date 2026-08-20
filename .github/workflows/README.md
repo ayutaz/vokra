@@ -164,7 +164,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | Monday | 09:00 | .github/workflows/release-cadence.yml | リリース cadence レポート |
 | Monday | 09:05 | .github/workflows/parity-nemo-asr-real.yml | NeMo ASR family real-checkpoint parity（dispatch matrix / opt-in） |
 | Monday | 09:15 | .github/workflows/parity-rmvpe-real.yml | RMVPE real-checkpoint parity |
-| Monday | 09:30 | .github/workflows/corpus-drift-detector.yml | `.github/pins.yaml` 全 entry の drift 検査（upstream=advisory / mirror=hard_fail、informational） |
+| Monday | 09:30 | .github/workflows/corpus-drift-detector.yml | `.github/pins.yaml` 全 entry と canonical license URL の drift 検査（upstream/license URL=advisory / mirror=hard_fail、informational） |
 | Monday | 09:35 | .github/workflows/parity-whisper-extras-real.yml | Distil-Whisper / Kotoba-Whisper real parity（opt-in） |
 | Monday | 10:00 | .github/workflows/silero-nostd-cross-build.yml | vokra-vad-micro (M5-03 no_std) thumbv8m cross build |
 | Monday | 10:15 | .github/workflows/parity-tts-dac-real.yml | Dia / Zonos DAC-family TTS parity（opt-in） |
