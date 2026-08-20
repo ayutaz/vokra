@@ -141,9 +141,10 @@ Explicit non-checklist implementation holes also remain:
 - replace JASCO's provisional chord/drum vocabulary and sampler defaults with
   values pinned from the upstream AudioCraft config before any real artifact
   claim;
-- resolve the SBV2 language-row ordering with checkpoint evidence and finish
-  production Mandarin segmentation/word-boundary handling; the completed ZH
-  numerical fixture does not close production G2P;
+- resolve the SBV2 language-row ordering and spline `num_bins` value with
+  checkpoint/config evidence, then finish production Mandarin segmentation /
+  word-boundary handling; the completed ZH numerical fixture does not close
+  production G2P;
 - verify the Windows NVRTC DLL suffix list on a real Windows CUDA image before
   claiming that the dynamic CUDA loader covers that platform;
 - decide whether vLLM completion generation is in the GA server scope; until
@@ -204,8 +205,11 @@ The dependency order is fixed:
    adoption evidence.
 8. Supply the X-05-T04 owner contact points and land the four pending
    `CODE_OF_CONDUCT` / `SECURITY` English/Japanese community files.
-9. Stabilize the release train and community/maintainer DoD inputs.
-10. Promote `abi-surface` only after a green observation window, record all
+9. Confirm that GitHub Sponsors is configured for `@ayutaz`, or disable/remove
+   `.github/FUNDING.yml` until it is; do not leave the repository funding
+   surface in an owner-unverified state.
+10. Stabilize the release train and community/maintainer DoD inputs.
+11. Promote `abi-surface` only after a green observation window, record all
    M5-12 DoD evidence, then prepare v1.0.0 and fire the irreversible ABI freeze.
 
 CI quality debt remains independently visible: `rustdoc (advisory)` currently

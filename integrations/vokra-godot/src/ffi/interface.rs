@@ -86,9 +86,10 @@ pub struct InterfaceTable {
     // distinct `_int_ctor` fields for backward compatibility with sibling
     // modules `variant.rs` / `trampoline.rs`). The additional fields below
     // (String / PackedFloat32Array / Dictionary / Object, both from + to)
-    // are the M3-18 Variant-unpack foundation prerequisite: they enable
-    // downstream trampoline promotions listed as `TODO(M3-18)` in
-    // `crate::trampoline` without a further init-time resolver walk.
+    // began as the M3-18 Variant-unpack foundation and now back the promoted
+    // transcribe/synthesize/stream trampolines without a further init-time
+    // resolver walk. Object packing is also the foundation for the remaining
+    // `session_vad_open_stream` promotion.
     //
     // The null case for every cached factory result is discharged at
     // resolution time inside [`Self::from_proc_address`] (`?` propagation);
