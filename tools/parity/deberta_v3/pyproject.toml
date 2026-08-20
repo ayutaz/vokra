@@ -7,11 +7,11 @@ dependencies = [
     # Offline/CI oracle only. These packages never enter a Vokra runtime or
     # distribution; the Rust workspace remains zero-dependency.
     "huggingface-hub==0.29.3",
-    "numpy==1.26.4",
-    "protobuf==5.29.5",
-    "safetensors==0.5.3",
+    "numpy==2.5.2",
+    "protobuf==7.35.1",
+    "safetensors==0.8.0",
     "sentencepiece==0.2.2",
-    "torch==2.4.1",
+    "torch==2.13.0",
     "transformers==4.49.0",
 ]
 

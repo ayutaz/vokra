@@ -24,11 +24,11 @@ parity = [
     # parity-kokoro-real.yml; the lock, not inline CI installs, is the SoT.
     "click==8.4.2",
     "hf-transfer>=0.1.9",
-    "huggingface-hub==0.36.2",
+    "huggingface-hub==1.27.0",
     "kokoro==0.9.4",
-    "numpy==2.4.6",
+    "numpy==2.5.2",
     "safetensors==0.8.0",
-    "torch==2.12.1",
+    "torch==2.13.0",
 ]
 
 [tool.uv]
