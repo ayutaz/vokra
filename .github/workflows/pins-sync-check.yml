@@ -1,4 +1,4 @@
-# Vokra pinned-external sync tripwire — informational.
+# Vokra pinned-external sync gate.
 #
 # Assert that `.github/pins.yaml` and `.github/workflows/*.yml` stay in
 # lock-step. Two enforcement legs:
@@ -10,11 +10,11 @@
 #      registered in pins.yaml (or explicitly allowlisted with a
 #      justification in `.github/pins-allowlist.txt`).
 #
-# Runs on push/PR against pins.yaml or workflows/*.yml — the majority of
-# PRs are unaffected. `continue-on-error: true` on the job during the
-# initial 4-week soak; promote to a required check under branch protection
-# once the noise floor is characterised (matches README §2 promotion
-# policy).
+# The initial advisory soak ran from 2026-07-23 through 2026-08-20 with no
+# observed false positives. It now hard-fails and runs on every PR so its
+# stable context can be added to branch protection after this workflow is
+# green on both the PR and main. Pushes remain path-filtered because an
+# unrelated direct push cannot change either side of the invariant.
 #
 # Zero-dep NFR-DS-02: PyYAML in per-run venv (CI-only). Nothing lands in
 # root Cargo.lock.
@@ -29,12 +29,9 @@ on:
       - '.github/pins-allowlist.txt'
       - '.github/scripts/check_pins_sync.py'
       - '.github/workflows/*.yml'
-  pull_request:
-    paths:
-      - '.github/pins.yaml'
-      - '.github/pins-allowlist.txt'
-      - '.github/scripts/check_pins_sync.py'
-      - '.github/workflows/*.yml'
+  # Deliberately unfiltered: a required check must report a conclusion for
+  # every PR, including documentation-only changes.
+  pull_request: {}
   workflow_dispatch: {}
 
 permissions:
@@ -46,12 +43,8 @@ concurrency:
 
 jobs:
   check:
-    name: pins.yaml ↔ workflow sync (advisory, record-only)
+    name: pins.yaml ↔ workflow sync
     runs-on: ubuntu-latest
-    # 4-week advisory soak per README §2 promotion policy. Owner drops
-    # this after consecutive weeks of green and promotes to a required
-    # check via branch protection.
-    continue-on-error: true
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

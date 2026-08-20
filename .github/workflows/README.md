@@ -52,7 +52,9 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 §1 の14 contexts以外はmergeをgateしないinformational check。定期監視で赤化を
 検知し、依頼者判定でrequired昇格するかを判断する（初期 promotion 方針: 連続数週の
 緑が確認できた時点でownerに昇格提案）。§2.2の先頭4項目は2026-08-20にrequiredへ
-昇格済みで、詳細説明を重複掲載している。
+昇格済みで、詳細説明を重複掲載している。`pins.yaml ↔ workflow sync` は4週間の
+advisory soakを完了し、2026-08-20にhard-fail + 全PR起動へ変更した。PRとmainのgreenを
+確認後、§1とbranch protectionへ追加する（設定反映まではrequiredではない）。
 
 ### 2.1 ci*.yml 内 (PR/push で常時走行、advisory)
 
@@ -80,7 +82,7 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 | server-compat | .github/workflows/ci-quality.yml | OpenAI / vLLM / Wyoming プロトコル互換 leg (3-OS cross-build) |
 | cargo-audit | .github/workflows/ci-quality.yml | RustSec advisory audit |
 | typos | .github/workflows/ci-quality.yml | typo checker |
-| vokra-piper-g2p | .github/workflows/ci-quality.yml | 除外 workspace `integrations/vokra-piper-g2p` の build/test |
+| excluded-workspace (5 matrix cells) | .github/workflows/ci-quality.yml | 専用CIを持つserver/Godot以外の除外workspace（Android / CLI server bench / Misaki G2P / Piper G2P / ureq server bench）を各lockfile付きでbuild/test |
 | python-parity-oracles | .github/workflows/ci-quality.yml | Python 側 parity oracle script の self-test |
 | shell-self-tests | .github/workflows/ci-quality.yml | `scripts/*.sh` の `--self-test` 集約 |
 | coverage (advisory) | .github/workflows/coverage.yml | Rust差分を含むPR / main pushのcoverage計測（prose-only PRは非起動） |
@@ -124,17 +126,13 @@ gate と、変動しやすい nightly toolchain / advisory DB の定期監視を
 Dependabot security updates、private vulnerability reporting を有効化済み。
 `SECURITY.md` の private advisory URL と repository setting は一致している。
 
-次の2設定はこのbranchをmainへmergeするまで意図的に保留する。現在のmainにはtag pinの
-workflowが残るため、先に「Actionsをfull SHAだけに制限」を有効化するとmain CI自体を
-停止させる。また、新設checkをrequired contextへ加えるのはPRとmainでgreenを確認した後に
-行う。merge後の順序は以下で固定する。
-
-1. main上の全workflowがfull SHA pinであることを`workflow-security`で確認する。
-2. repository Actions policyのSHA pin requirementを有効化する。
-3. `workflow-security`、`dependency-review`、`documentation-links`、`codeql-rust`を
-   branch protectionのrequired checksへ追加する。
-4. required checksをstrict（base branch最新化必須）にし、conversation resolution、
-   linear history、administrator enforcementを有効化する。
+**2026-08-20 post-merge audit**: full-SHA workflow移行と`workflow-security`での検証、
+`workflow-security` / `dependency-review` / `documentation-links` / `codeql-rust`の
+required追加は完了した。残るGitHub側設定は、repository Actions policyの
+`sha_pinning_required`（現在false）と、branch protectionのstrict status checks /
+conversation resolution / linear history / administrator enforcement（いずれも現在false）
+である。CI hardening PRをPR上とmain上の両方でgreen確認してから、この順で有効化する。
+`pins.yaml ↔ workflow sync`のrequired追加も同じmain-green確認後に行う。
 
 ### 2.4 release.yml 内 (tag v* 起動、advisory & release パイプ)
 
@@ -400,8 +398,10 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
   `.github/pins.yaml` must appear verbatim in its `owning_workflow` and
   every typed SHA literal in a workflow env must be registered in the
   catalog (catches "workflow edited without updating catalog" and
-  "unregistered pin added to a workflow"). START ADVISORY, promote to
-  required after 4 consecutive weeks of green (matches §2 policy).
+  "unregistered pin added to a workflow"). The 2026-07-23–08-20 advisory
+  soak completed without observed false positives; the job now hard-fails
+  on every PR. Add its stable context to branch protection only after the
+  promoted form is green on both its PR and main (matches §2 policy).
 - `.github/workflows/corpus-drift-detector.yml` — weekly probe per §8.4.
 - `docs/adr/X-10-corpus-self-mirror.md` — the mirror decision itself
   (gitignore-local internal ADR).
