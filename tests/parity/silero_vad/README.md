@@ -71,7 +71,9 @@ Requires the upstream `silero_vad.onnx` and a Python env with
 `onnx` / `onnxruntime` / `numpy` (see `../parity-requirements.txt`):
 
 ```sh
-python gen_reference.py /path/to/silero_vad.onnx
+uv run --no-project --python 3.12 \
+  --with-requirements tests/parity/parity-requirements.txt \
+  python tests/parity/silero_vad/gen_reference.py /path/to/silero_vad.onnx
 ```
 
 The step-level intermediates are obtained by lifting each ONNX `If` branch

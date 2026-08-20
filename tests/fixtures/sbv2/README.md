@@ -267,6 +267,7 @@ CONVERTER-EMIT-EXPLICIT-ZEROS).
 
 ```bash
 # Run this heavyweight fixture test only on the VAST instance.
+# VAST only for maintainers: every -p vokra-models compile/test runs remotely.
 cargo test -p vokra-models --test sbv2_gguf_loader -- --ignored
 cargo test -p vokra-bert --test deberta_v2_loader -- --ignored
 cargo test -p vokra-models --test parity_sbv2_real \

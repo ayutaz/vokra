@@ -14,9 +14,9 @@ on CPU. For GPU backends (Metal / CUDA) and distribution artefacts
   the AVX-512 intrinsics stabilized there, and that crate is in every build.
   CI verifies this in the `msrv` job.
 - **git**: for cloning the repository
-- **Python 3.10+**: only needed to prepare the PyTorch checkpoints the
-  conversion step consumes. The Vokra runtime itself has no Python
-  dependency (`FR-LD-05`).
+- **uv + Python 3.12**: only needed to prepare checkpoints consumed by the
+  converter. Run every Python command through uv; the Vokra runtime itself
+  has no Python dependency (`FR-LD-05`).
 - **Disk**: 2–4 GB for the sample models (Whisper base + a piper-plus voice)
 
 The Vokra runtime is **zero external dependency** — the root `Cargo.lock`
@@ -28,11 +28,12 @@ toolchain are required.
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-cargo build --release
+cargo build --release -p vokra-cli
 ```
 
-This produces the CLI (`target/release/vokra-cli`) and the C-ABI
-`libvokra`. Reference build time: ~2 minutes on a MacBook Air M2 (cold).
+This produces the CLI at `target/release/vokra-cli`. Build the C ABI
+separately with `cargo build --release -p vokra-capi` when needed. Reference
+CLI build time: ~2 minutes on a MacBook Air M2 (cold).
 
 ## 2 min: Convert models to GGUF
 
@@ -54,17 +55,21 @@ wget https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/siler
 
 ```sh
 # Hugging Face safetensors → GGUF (size auto-detected from checkpoint shape)
-pip install transformers safetensors
-python3 -c "
+uv run --no-project --python 3.12 \
+  --with transformers --with safetensors python - <<'PY'
 from transformers import WhisperForConditionalGeneration
 m = WhisperForConditionalGeneration.from_pretrained('openai/whisper-base')
 m.save_pretrained('whisper-base', safe_serialization=True)
-"
+PY
 ./target/release/vokra-cli convert \
   --model whisper \
   --input whisper-base/model.safetensors \
   --output whisper-base.gguf
 ```
+
+Run conversion, validation, and publication on VAST when the aggregate model
+artefacts are 2 GB or larger. Count all checkpoint shards and do not stage a
+large converted artefact back onto a memory-constrained development Mac.
 
 To **K-quantize** for smaller footprint:
 
@@ -131,8 +136,8 @@ metadata (Whisper→ASR / Silero VAD→VAD / piper-plus→TTS).
 ./target/release/vokra-cli bench --model whisper-base.gguf --input speech.wav
 
 # GPU (Metal on macOS / CUDA on Linux with hardware)
-cargo build --release -p vokra-models --features metal   # macOS
-cargo build --release -p vokra-models --features cuda    # Linux with system CUDA
+cargo build --release -p vokra-cli --features metal   # macOS
+cargo build --release -p vokra-cli --features cuda    # Linux with system CUDA
 ./target/release/vokra-cli bench --model whisper-large-v3.gguf \
   --input speech30s.wav --backend cuda
 ```
@@ -144,6 +149,10 @@ Whisper large-v3 on CUDA is RTF < 0.15 (measured 0.081–0.115 on RTX 4090).
 
 Include `include/vokra.h` and link `libvokra` (see the [C ABI
 example](../README.md#using-the-c-abi) in the top-level README):
+
+```sh
+cargo build --release -p vokra-capi
+```
 
 ```c
 #include "vokra.h"

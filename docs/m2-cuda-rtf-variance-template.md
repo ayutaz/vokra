@@ -8,7 +8,7 @@ CUDA host). The filled report is committed alongside the raw JSONL under
 **Position**: reference measurement, **not** the formal `RTF < 0.10`
 always-on gate. That always-on decision belongs to **M2-14** (owner
 self-hosted CUDA runner) + **M3-01** (5% regression gate) per
-[`docs/adr/M2-03-followup-rtf.md`](adr/M2-03-followup-rtf.md) §D6.
+`docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) §D6.
 
 ---
 
@@ -21,7 +21,7 @@ self-hosted CUDA runner) + **M3-01** (5% regression gate) per
 | Vokra commit          | `<git rev-parse HEAD>` |
 | Toolchain             | `rustc 1.86.0 (05f9846f8 2025-03-31)` |
 | Harness version       | `tools/parity/cuda_rtf_variance.sh` @ `<commit>` |
-| Related ADR           | [`docs/adr/M2-03-followup-rtf.md`](adr/M2-03-followup-rtf.md) |
+| Related ADR           | `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) |
 | Related checklist row | [`docs/m2-owner-verification-checklist.md`](m2-owner-verification-checklist.md) §2 |
 | Baseline JSON updated | [`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`](bench-baselines/whisper_large_v3_cuda_rtf.json) — yes / no |
 
@@ -55,7 +55,7 @@ self-hosted CUDA runner) + **M3-01** (5% regression gate) per
 
 ```bash
 # Path A: decomposed 2 + 7·n_head chain (VOKRA_CUDA_DISABLE_FA_V2=1)
-./tools/parity/cuda_rtf_variance.sh \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \
     --gguf   /root/whisper-large-v3.gguf \
     --audio  /root/jfk-30s.wav \
     --iters  10 \
@@ -65,7 +65,7 @@ self-hosted CUDA runner) + **M3-01** (5% regression gate) per
     --output /root/rtf-decomposed.jsonl
 
 # Path B: default FA v2 gated wrapper (t_q >= 16)
-./tools/parity/cuda_rtf_variance.sh \
+uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \
     --gguf   /root/whisper-large-v3.gguf \
     --audio  /root/jfk-30s.wav \
     --iters  10 \
@@ -206,7 +206,7 @@ logs, or vast.ai instance state that informed the decision>
 
 ## References
 
-- ADR: [`docs/adr/M2-03-followup-rtf.md`](adr/M2-03-followup-rtf.md) (§D6, §D7, §D8)
+- ADR: `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`; §D6, §D7, §D8)
 - Checklist row: [`docs/m2-owner-verification-checklist.md`](m2-owner-verification-checklist.md) §2
 - Existing sanity test: [`crates/vokra-backend-cuda/tests/whisper_cuda_large_v3_rtf.rs`](../crates/vokra-backend-cuda/tests/whisper_cuda_large_v3_rtf.rs)
 - Baseline JSON: [`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`](bench-baselines/whisper_large_v3_cuda_rtf.json)

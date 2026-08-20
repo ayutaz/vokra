@@ -73,6 +73,13 @@ on:
       - 'crates/vokra-convert/src/models/whisper.rs'
       - 'docs/perf/cuda-large-v3-baseline.json'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-cuda-rtf-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # All jobs treat the self-hosted runner as **optional infrastructure**. A
 # stand-in `check-runner-availability` job is the entry: it emits the skip
 # annotation when no self-hosted CUDA runner is registered, so the workflow
@@ -84,6 +91,7 @@ jobs:
   check-runner-availability:
     name: check-runner-availability
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       run_available: ${{ steps.check.outputs.run_available }}
       skip_reason: ${{ steps.check.outputs.skip_reason }}
@@ -102,25 +110,31 @@ jobs:
           # FR-EX-08; the reason ends up on the step summary of the "measure"
           # job even when that job skips.
           if [ "${{ vars.VOKRA_CUDA_SELF_HOSTED_RUNNER }}" = "true" ]; then
-            echo "run_available=true" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            {
+              echo "run_available=true"
+              echo "skip_reason="
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "run_available=false" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=no self-hosted CUDA runner: set repository variable VOKRA_CUDA_SELF_HOSTED_RUNNER=true and register a runner with the 'cuda-rtx-4090' label to enable" >> "$GITHUB_OUTPUT"
+            {
+              echo "run_available=false"
+              echo "skip_reason=no self-hosted CUDA runner: set repository variable VOKRA_CUDA_SELF_HOSTED_RUNNER=true and register a runner with the 'cuda-rtx-4090' label to enable"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Emit skip annotation when unavailable
         if: steps.check.outputs.run_available != 'true'
         run: |
-          echo "## Skipped: no self-hosted CUDA runner" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "This workflow requires a self-hosted RTX 4090 runner registered with the label \`cuda-rtx-4090\`." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Reason**: ${{ steps.check.outputs.skip_reason }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "This job is workflow_dispatch + weekly cron only and is **not registered as a required check** (see ADR docs/adr/M3-01-cuda-complete.md §2 (d) — promotion pending M2-14 self-hosted runner + owner approval)." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "The measured baseline (\`docs/perf/cuda-large-v3-baseline.json\`) currently holds \`median_rtf = 0.1133\` from the M2-14 vast.ai variance harness (see \`docs/m2-cuda-rtf-variance-2026-07-08.md\`). Refreshing that baseline requires a real measurement — which this skip has not produced." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Skipped: no self-hosted CUDA runner"
+            echo ""
+            echo "This workflow requires a self-hosted RTX 4090 runner registered with the label \`cuda-rtx-4090\`."
+            echo ""
+            echo "**Reason**: ${{ steps.check.outputs.skip_reason }}"
+            echo ""
+            echo "This job is workflow_dispatch + weekly cron only and is **not registered as a required check** (see ADR docs/adr/M3-01-cuda-complete.md §2 (d) — promotion pending M2-14 self-hosted runner + owner approval)."
+            echo ""
+            echo "The measured baseline (\`docs/perf/cuda-large-v3-baseline.json\`) currently holds \`median_rtf = 0.1133\` from the M2-14 vast.ai variance harness (see \`docs/m2-cuda-rtf-variance-2026-07-08.md\`). Refreshing that baseline requires a real measurement — which this skip has not produced."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Gate #2: run the RTF measurement on the self-hosted runner. Currently
   # entirely guarded off with `if: false` so the workflow can land / lint /
@@ -137,20 +151,26 @@ jobs:
     # optional infrastructure until owner sign-off".
     if: false && needs.check-runner-availability.outputs.run_available == 'true'
     runs-on: [self-hosted, linux, cuda-rtx-4090]
+    timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Emit device + driver + toolkit versions to the summary
         # Belt-and-suspenders: even if the check-runner job passed, we still
         # want the exact device model + driver + CUDA version on the summary
         # so a baseline update carries the same context M2-14 recorded.
         run: |
-          echo "## Runner environment" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Runner environment"
+            echo '```'
+            nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Build vokra-cli with --features cuda
         # Release build so the RTF number is the one the user would see.
@@ -166,14 +186,18 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${VOKRA_WHISPER_LARGE_V3_GGUF:-}" ]; then
-            echo "## Skipped: no GGUF path" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Set the \`gguf_path\` workflow_dispatch input to the absolute path of whisper-large-v3.gguf on the runner. cron runs are expected to skip until the runner has a persistent path staged." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Skipped: no GGUF path"
+              echo ""
+              echo "Set the \`gguf_path\` workflow_dispatch input to the absolute path of whisper-large-v3.gguf on the runner. cron runs are expected to skip until the runner has a persistent path staged."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [ ! -f "$VOKRA_WHISPER_LARGE_V3_GGUF" ]; then
-            echo "## Skipped: GGUF file not found" >> "$GITHUB_STEP_SUMMARY"
-            echo "\`$VOKRA_WHISPER_LARGE_V3_GGUF\` does not exist on this runner." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Skipped: GGUF file not found"
+              echo "\`$VOKRA_WHISPER_LARGE_V3_GGUF\` does not exist on this runner."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -206,33 +230,39 @@ jobs:
               if (n == 0) { print "NaN"; exit }
               if (n % 2 == 1) { print a[(n+1)/2] } else { printf "%.6f\n", (a[n/2] + a[n/2+1]) / 2 }
             }')
-          BASELINE=$(python3 -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['median_rtf'])")
-          HARD_CEILING=$(python3 -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['hard_ceiling'])")
-          REG=$(python3 -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['regression_threshold'])")
-          THRESHOLD=$(python3 -c "print($BASELINE * (1 + $REG))")
+          BASELINE=$(uv run --no-project --python 3.12 python -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['median_rtf'])")
+          HARD_CEILING=$(uv run --no-project --python 3.12 python -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['hard_ceiling'])")
+          REG=$(uv run --no-project --python 3.12 python -c "import json; print(json.load(open('docs/perf/cuda-large-v3-baseline.json'))['regression_threshold'])")
+          THRESHOLD=$(uv run --no-project --python 3.12 python -c "print($BASELINE * (1 + $REG))")
 
-          echo "## RTF measurement" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| median_rtf | $MEDIAN |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| baseline_median_rtf | $BASELINE |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| regression_threshold (5%) | $THRESHOLD |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| hard_ceiling | $HARD_CEILING |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| N iterations | ${#RTFS[@]} |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## RTF measurement"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| median_rtf | $MEDIAN |"
+            echo "| baseline_median_rtf | $BASELINE |"
+            echo "| regression_threshold (5%) | $THRESHOLD |"
+            echo "| hard_ceiling | $HARD_CEILING |"
+            echo "| N iterations | ${#RTFS[@]} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           # Gate expression: fail if regression 5% exceeded OR hard ceiling breached.
-          FAIL=$(python3 -c "print(1 if ($MEDIAN > $THRESHOLD or $MEDIAN > $HARD_CEILING) else 0)")
+          FAIL=$(uv run --no-project --python 3.12 python -c "print(1 if ($MEDIAN > $THRESHOLD or $MEDIAN > $HARD_CEILING) else 0)")
           if [ "$FAIL" -eq 1 ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**FAIL**: median RTF $MEDIAN exceeds either baseline * 1.05 ($THRESHOLD) or the hard ceiling ($HARD_CEILING)." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo ""
+              echo "**FAIL**: median RTF $MEDIAN exceeds either baseline * 1.05 ($THRESHOLD) or the hard ceiling ($HARD_CEILING)."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**PASS**: median RTF $MEDIAN is within both the 5% regression bound and the 0.10 hard ceiling." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "**PASS**: median RTF $MEDIAN is within both the 5% regression bound and the 0.10 hard ceiling."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload measurement log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cuda-rtf-runs-${{ github.run_id }}
           path: rtf-runs.log

@@ -1,6 +1,6 @@
 ---
 name: vast-ai-workflow
-description: メモリを食う作業を vast.ai へ逃がすときに使う。**≥2 GB のモデル artefact の変換 / 検証 / publish**、および **workspace 全体や `vokra-models` の cargo**（2026-08-16 に M1 iMac を OOM で再起動させた実績）が対象。`provision.sh` の 4 gotcha（hf_config.pth shim / huggingface_hub<0.30 pin / certifi / stack tool install）+ rent→provision→work→destroy lifecycle + 未 push コミットの git bundle 転送 + Voxtral streaming reader + FA v3 Hopper bakeoff の runbook を示す。
+description: メモリを食う作業を vast.ai へ逃がすときに使う。**≥2 GB のモデル artefact の変換 / 検証 / publish**、および **workspace 全体や `vokra-models` の cargo**（2026-08-16 に M1 iMac を OOM で再起動させた実績）が対象。`provision.sh` の 4 gotcha（hf_config.pth shim / huggingface_hub pre-0.30 pin / certifi / stack tool install）+ rent→provision→work→destroy lifecycle + 未 push コミットの git bundle 転送 + Voxtral streaming reader + FA v3 Hopper bakeoff の runbook を示す。
 ---
 
 # vast.ai で大モデルを扱う
@@ -30,7 +30,7 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 - シェルゲート全般（`scripts/check-*.sh`）、`cargo fmt`、`cargo metadata`
 - **restamp_provenance 経路**: **8.7 GB Voxtral を peak 6.4 MB で publish 実績あり**（mmap 読取のみ、tensor コピーなし。→ skill `publish-model-to-hf` §7）。**tensor を触らず provenance だけ差し替えるなら 2 GB 閾値の例外**
 
-**強制されている**: `scripts/claude-hooks/guard-local-memory.sh` が PreToolUse フックとして上記を**ブロック**する（`.claude/settings.json` に登録済み、`--self-test` 19 ケース）。指針ではなく強制なのは、8 GB の memory を持ったまま重いコマンドを打った実績があるため。意図的に通す場合のみ `VOKRA_ALLOW_LOCAL_HEAVY=1` を前置する。
+**強制されている**: `scripts/claude-hooks/guard-local-memory.sh` が PreToolUse フックとして上記を**ブロック**する（`.claude/settings.json` に登録済み、`--self-test` 43 ケース）。`.githooks/pre-push` も maintainer Mac の deep Cargo path を開始前に拒否する。意図的に通す場合は、その1回を依頼者が明示承認したときだけ `VOKRA_ALLOW_LOCAL_HEAVY=1` を前置する。
 
 [[feedback-large-models-on-vast-ai]] / [[feedback-no-local-workspace-cargo]]。
 
@@ -63,9 +63,9 @@ vast.ai の stock image が持つ 4 個の trap を `provision.sh` が **`instal
 | # | Gotcha | 症状 | Fix |
 |---|--------|------|-----|
 | A | **hf_config.pth site-packages shim** | Python startup shim が `HF_ENDPOINT` を malicious mirror `117.175.104.83:8081` に書換、全 large DL が 404 | `/usr/local/lib/python3.10/dist-packages/hf_config.pth` + `/usr/lib/python3/dist-packages/pip/_vendor/hf_config.pth` を削除 |
-| B | **huggingface_hub >= 0.30 non-xet regression** | xet-token routing が mirror 404 を投げる、`HF_HUB_DISABLE_XET` も一部 bypass | `pip install 'huggingface_hub<0.30'` で pin（**vast.ai 上のみ**、local は pin 不要） |
+| B | **huggingface_hub >= 0.30 non-xet regression** | xet-token routing が mirror 404 を投げる、`HF_HUB_DISABLE_XET` も一部 bypass | `provision.sh` の bootstrap-only system repair で pre-0.30 に pin（手動 package 操作は禁止、task Python は uv） |
 | C | **certifi CA bundle 空/stale** | HTTPS 全般 fail | `certifi` を再植え付け |
-| D | **torch/numpy/safetensors が system layer に無い** | `python3 -c` fallback や `uv_cmd` fallback が missing modules で死ぬ | pre-install で torch + numpy + safetensors を system-level に置く |
+| D | **torch/numpy/safetensors が system layer に無い** | stock image の bare-Python fallback や `uv_cmd` fallback が missing modules で死ぬ | pre-install で torch + numpy + safetensors を system-level に置く |
 
 **呼び方**:
 ```bash
@@ -82,13 +82,19 @@ bash scripts/publish/vast-ai/provision.sh  # idempotent, rerun-safe
 
 ## 4. Work phase
 
-### 4.1 Convert + publish 1 モデル
+### 4.1 Convert + stage 1 モデル（publish は別承認）
 
 ```bash
 # provision 済 instance 上
 export VOKRA_PUBLISH_ON_VAST=1  # publish-one.sh gate 7 の implicit bypass
-scripts/publish/vast-ai/run-one.sh <slug>  # convert → stage → push chain
+scripts/publish/vast-ai/run-one.sh \
+  --hf-repo <upstream/repo> \
+  --vokra-slug <slug> \
+  --model-kind <kind> \
+  --license-spdx <spdx>  # dry-run: convert → stage
 ```
+
+`--push` は dry-run が green で、かつ依頼者がその repo / artifact の upload を明示承認した場合だけ追加する。VAST 作業の指示だけから HF upload 権限を推定しない。
 
 ### 4.2 Voxtral streaming reader パターン（sharded safetensors、mmap 節約）
 
@@ -96,7 +102,7 @@ scripts/publish/vast-ai/run-one.sh <slug>  # convert → stage → push chain
 - **Voxtral だけは例外**: TextDecoder の `Vec<f32>` eager binding が ~15 GB 要求で M1 を殺していた root cause → `MappedTextBlocks` / `MappedHeads`（mmap + tiled transpose、lm_head streaming）で **peak 15 GB → 3.55 GB**。同じ pattern を他 sharded モデルに横展開する場合は先例として参照
 - 実装: `crates/vokra-models/src/voxtral/mapped_lazy.rs` 系。streaming 適用可能なモデルは事前 merge 不要（converter が sharded を直接読む）
 
-### 4.3 大モデルの publish 直行（H100 レンタル + 即 push）
+### 4.3 provenance-only の低メモリ経路
 
 ```bash
 # 大 GGUF を convert する必要がなく、既存 HF から DL → restamp → repush だけの場合
@@ -108,12 +114,13 @@ scripts/publish/vast-ai/run-one.sh <slug>  # convert → stage → push chain
 
 ### 4.4 workspace 検証を逃がす（GPU も provision.sh も不要）
 
-`cargo test --workspace` をローカルで走らせられないときの実績レシピ（2026-08-16、**所要 ~25 分 / $0.03**）。**モデル変換ではないので GPU も HF token も `provision.sh` も要らない** — 必要なのは CPU と RAM だけ。
+`cargo test --workspace` をローカルで走らせないための実績レシピ（2026-08-16、**所要 ~25 分 / $0.03**）。**モデル変換ではないので GPU も HF token も `provision.sh` も要らない** — 必要なのは CPU と RAM だけ。
 
 ```bash
 # 1. RAM で選ぶ（GPU 性能は無関係）。48 core / 125 GB が $0.082/hr だった
 vastai search offers 'rentable=true cpu_ram>=64 disk_space>=150 num_gpus=1' \
-  --order 'dph_total' --raw | python3 -c "
+  --order 'dph_total' --raw | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" \
+  uv run --no-project --python 3.12 python -c "
 import json,sys
 for o in json.load(sys.stdin)[:10]:
     print(o['id'], o['dph_total'], o['cpu_cores_effective'], int(o['cpu_ram']/1024))"
@@ -123,7 +130,8 @@ vastai create instance <offer-id> --image nvidia/cuda:12.4.1-devel-ubuntu22.04 \
 
 # 2. 接続は direct endpoint を使う（public_ipaddr + direct_port_start）。
 #    ssh_host/ssh_port 側は Connection refused になることがある
-vastai show instance <id> --raw | python3 -c "
+vastai show instance <id> --raw | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" \
+  uv run --no-project --python 3.12 python -c "
 import json,sys; d=json.load(sys.stdin); print(d['public_ipaddr'], d['direct_port_start'])"
 
 # 3. Rust。--profile minimal は rustfmt/clippy を入れないので明示追加が要る
@@ -146,7 +154,9 @@ git rev-parse --short HEAD    # 手元と一致することを必ず確認
 
 **判定に使える実測値**: フル workspace = `6965 passed / 0 failed / 23 ignored / 234 suites`。ローカル並列実行で落ちる 2 件は **regression ではない** — `kyutai_stt` は正当に **155 秒**かかるため 180 秒タイムアウトに接触し、`csm_frame_loop_allocates_zero_after_open` は alloc カウンタが他スレッドに撹乱される。どちらも単独・大容量機では通る。
 
-検証が green なら、手元からの push は pre-push の重い経路を踏まないよう `VOKRA_SKIP_HOOKS=1` を使う。**無検証のまま bypass しないこと** — 根拠はリモート検証結果。
+検証が green なら、手元からのコード push は pre-push の重い経路を踏まないよう `VOKRA_SKIP_HOOKS=1` を使う。**無検証のまま bypass しないこと** — 根拠はリモート検証結果。remote branch の削除-only push は compliance 回帰テストを実行した後、Cargo leg を自動 skip する。
+
+**2026-08-18 incident**: 旧 remote branch の deletion-only push が空 diff と判定され、修正前の pre-push が workspace Cargo を起動した。process group を停止して残存 process がないことを確認し、`VOKRA_SKIP_HOOKS=1` で削除を完了した。現在は stdin の local SHA が全 zero の ref update だけを deletion-only と認識し、mixed/normal/malformed update は従来どおり検査へ送る。回帰テストは `scripts/test-pre-push-fastpath.sh`。
 
 ## 5. Destroy phase（**必ず**）
 
@@ -185,7 +195,7 @@ trap 'vastai destroy instance $VAST_CONTAINERLABEL' EXIT
 
 ## 8. 出禁パターン
 
-- **「今回くらいはローカルで」**: これが 2026-08-16 に mac を再起動させた。8 GB 閾値の memory を持ったうえで `cargo test -p vokra-models` を打っている。**判断で防げなかったので hook で強制した** = `guard-local-memory.sh`。`VOKRA_ALLOW_LOCAL_HEAVY=1` は「測って安全と分かっている」ときだけで、「面倒だから」で使わない
+- **「今回くらいはローカルで」**: これが 2026-08-16 に mac を再起動させた。現在の閾値は artefact 合計 2 GB、Cargo は workspace 全体または `-p vokra-models`。**判断で防げなかったので hook で強制した** = `guard-local-memory.sh`。`VOKRA_ALLOW_LOCAL_HEAVY=1` は依頼者がその1回を明示承認した場合だけ使う
 - **未検証のまま `VOKRA_SKIP_HOOKS=1` で push**: bypass の根拠はリモート検証結果であって、急いでいることではない
 - **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap `vastai destroy` を必ず仕込む
 - **provision.sh を skip して pip 手打ちで頑張る**: 4 gotcha に順番にハマる（実績 1 day 溶かす）

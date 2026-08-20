@@ -49,7 +49,7 @@
 # `tests/parity/silero_vad/silero-vad-v5.gguf` として commit 済 fixture
 # の一部で、env var 不要で常に走る (真の fixture-only)。この leg が
 # green を出さなければ code 側の regression 確定なので、確実な daily
-# smoke になる。他の 5 leg は staged weight があるときのみ acid test
+# smoke になる。他の 6 leg は staged weight があるときのみ acid test
 # として発火する。
 #
 # 週次 vs 夜間 の重複回避
@@ -66,7 +66,7 @@
 # 段階で owner が required 昇格するかを判断する
 # (workflows/README.md §2.1 の promotion policy に従う)。
 #
-# 実装 detail: matrix cell の default 6 leg
+# 実装 detail: dynamic matrix の最大 7 leg
 # -----------------------------------------
 # leg           | GGUF var                          | test filter
 # ------------- | --------------------------------- | -----------------------------------
@@ -96,16 +96,13 @@ on:
   workflow_dispatch:
     inputs:
       leg:
-        description: "実行対象 leg (空 = 全 6 leg、kokoro / whisper-base / silero-vad-v5 / piper-plus / campplus / dac のいずれか)。"
+        description: "実行対象 leg (空 = 全7 leg、kokoro / whisper-base / silero-vad-v5 / piper-plus / campplus / campplus-capi / dac のいずれか)。"
         required: false
         default: ""
-  # Phase 5a-1 (2026-07-23): PR-every 化。fixture-only ゆえ 6 leg のうち 5 leg
-  # は staged GGUF 無しで clean-skip し数秒で終わる (silero-vad-v5 のみ真の
-  # fixture-only で実行)。path filter は入れない = 依頼者指示「e2e テストは
-  # PR ごとに回す」に従い全 PR で trigger、code side の regression を PR 段階
-  # で捕捉する。silero leg は真の fixture-only なので確実な PR-every smoke に
-  # なる。他 5 leg は skip 記録として GH Actions log に "no staged GGUF" が
-  # 残り、runner-hosted staging を有効化すれば自動発火する。
+  # Phase 5a-1 (2026-07-23): PR-every 化。2026-08-20 の runner fanout 改善後も
+  # silero-vad-v5 は全 PR で必ず実行する。staged GGUF が必要な残りの leg は
+  # repo variable が設定されたものだけ dynamic matrix に入れる。未設定 leg は
+  # plan job の summary に「未測定」として列挙し、runner を割り当てない。
   pull_request:
   schedule:
     # 06:17 UTC daily. Nightly ladder (workflows/README.md §4):
@@ -130,123 +127,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: full-parity-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    env:
+      INPUT_LEG: ${{ inputs.leg }}
+      VOKRA_NIGHTLY_KOKORO_GGUF: ${{ vars.VOKRA_NIGHTLY_KOKORO_GGUF }}
+      VOKRA_NIGHTLY_WHISPER_BASE_GGUF: ${{ vars.VOKRA_NIGHTLY_WHISPER_BASE_GGUF }}
+      VOKRA_NIGHTLY_PIPER_V7_GGUF: ${{ vars.VOKRA_NIGHTLY_PIPER_V7_GGUF }}
+      VOKRA_NIGHTLY_CAMPLUS_GGUF: ${{ vars.VOKRA_NIGHTLY_CAMPLUS_GGUF }}
+      VOKRA_NIGHTLY_DAC_GGUF: ${{ vars.VOKRA_NIGHTLY_DAC_GGUF }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build dynamic parity matrix
+        id: plan
+        run: bash scripts/ci/plan-nightly-full-parity.sh
+
   full-parity:
     name: full-parity ${{ matrix.leg }}
+    needs: plan
     runs-on: ubuntu-latest
-    # 6 leg のうち silero だけ真の fixture-only、他は staged GGUF が無ければ
-    # clean-skip して数秒で終わる。build cache warm 前提で 1 leg 最大 15 min、
+    # 最大7 legのうちsileroだけ真のfixture-only。他はplan jobがstaging
+    # variable設定済みのcellだけを生成する。build cache warm前提で1 leg最大15 min、
     # 30 min の上限は truly stuck run の cap のみ。
     timeout-minutes: 30
     strategy:
       # 1 leg 落ちても他の leg の結果を握り潰さない (fixture drift の局所化)。
       fail-fast: false
-      matrix:
-        include:
-          - leg: kokoro
-            model_name: "Kokoro-82M"
-            gguf_var: VOKRA_NIGHTLY_KOKORO_GGUF
-            fixture_dir: tests/parity/kokoro
-            test_crate: vokra-models
-            test_flag: "--test parity_kokoro"
-            test_filter: ""
-            needs_gguf: "true"
-          - leg: whisper-base
-            model_name: "Whisper base (log-mel + encoder/decoder/greedy fixtures)"
-            gguf_var: VOKRA_NIGHTLY_WHISPER_BASE_GGUF
-            fixture_dir: tests/parity/whisper_base
-            test_crate: vokra-models
-            test_flag: "--test parity_whisper"
-            # 明示的に "base" のみに絞り、real-audio 系 (nightly-asr-wer で
-            # cover) には触れないため VOKRA_WHISPER_REAL_AUDIO は不設定。
-            test_filter: ""
-            needs_gguf: "true"
-          - leg: silero-vad-v5
-            model_name: "Silero VAD v5 (fixture-only 常時走行)"
-            # 上流 ONNX 由来の 1.7 MB GGUF が commit 済 fixture として同梱、
-            # env var 不要。needs_gguf=false で常に実行される。
-            gguf_var: ""
-            fixture_dir: tests/parity/silero_vad
-            test_crate: vokra-models
-            test_flag: "--lib"
-            test_filter: "silero_vad::parity"
-            needs_gguf: "false"
-          - leg: piper-plus
-            model_name: "piper-plus v7 (JA/multilingual zero-shot voice fixture)"
-            gguf_var: VOKRA_NIGHTLY_PIPER_V7_GGUF
-            fixture_dir: tests/parity/piper_plus_v7
-            test_crate: vokra-models
-            test_flag: "--lib"
-            test_filter: "piper_plus::parity_v7"
-            needs_gguf: "true"
-          - leg: campplus
-            model_name: "CAM++ speaker encoder (fbank80 -> 192-d embedding)"
-            gguf_var: VOKRA_NIGHTLY_CAMPLUS_GGUF
-            fixture_dir: tests/parity/camplus
-            test_crate: vokra-models
-            test_flag: "--lib"
-            test_filter: "speaker::parity"
-            needs_gguf: "true"
-          # 2026-08-14 (C ABI speaker surface): the leg above pins the Rust
-          # chain; this one pins the C entry points that host bindings call
-          # (`vokra_speaker_embed` PCM->embedding, the two-call sizing idiom,
-          # and the backend-reached-the-engine wiring). Both consume the same
-          # CAM++ GGUF. Without this leg the gated C ABI tests never run
-          # anywhere: the campplus cell above only touches vokra-models, so
-          # "the C ABI returns the right embedding" was an unverified claim.
-          # No test_filter — vokra-capi's whole suite is seconds, and the
-          # wiring test is not named after the model it loads.
-          - leg: campplus-capi
-            model_name: "CAM++ through the C ABI (vokra_speaker_embed + backend wiring)"
-            gguf_var: VOKRA_NIGHTLY_CAMPLUS_GGUF
-            fixture_dir: tests/parity/camplus
-            test_crate: vokra-capi
-            test_flag: ""
-            test_filter: ""
-            needs_gguf: "true"
-          - leg: dac
-            model_name: "DAC 24kHz codec (RVQ decode against sliced fixtures)"
-            gguf_var: VOKRA_NIGHTLY_DAC_GGUF
-            fixture_dir: tests/parity/dac
-            test_crate: vokra-models
-            test_flag: "--test real_codec_parity"
-            test_filter: "real_dac"
-            needs_gguf: "true"
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      # 単一 leg 実行モード: workflow_dispatch で `leg` input が指定された
-      # 場合、指定 leg 以外は最初にここで exit する (matrix は cell 単位で
-      # skip できないため step レベルで判定)。
-      - name: Gate — single-leg selector (workflow_dispatch)
+      # The plan job has already removed unset/selector-mismatch cells.
+      # Keep one shared output so the remaining step conditions stay explicit.
+      - name: Accept planned matrix cell
         id: gate
-        env:
-          REQUESTED_LEG: ${{ inputs.leg }}
-          CURRENT_LEG: ${{ matrix.leg }}
         run: |
           set -euo pipefail
-          if [ -n "${REQUESTED_LEG:-}" ] && [ "${REQUESTED_LEG}" != "${CURRENT_LEG}" ]; then
-            {
-              echo "## Skipped: workflow_dispatch selector"
-              echo ""
-              echo "Requested leg = \`${REQUESTED_LEG}\`, this cell = \`${CURRENT_LEG}\`."
-              echo ""
-              echo "他 leg の parity は動いていない (この cell は selector で明示的に skip)。"
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "skip_reason=selector-mismatch" >> "$GITHUB_OUTPUT"
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         if: steps.gate.outputs.should_run == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Rust toolchain (stable)
         if: steps.gate.outputs.should_run == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Rust cache
         if: steps.gate.outputs.should_run == 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           # leg 毎に独立した cache namespace (matrix 内で share すると target/
           # の他 leg 由来 artifact が混じって debug しづらい)。
@@ -289,7 +224,7 @@ jobs:
         env:
           NEEDS_GGUF: ${{ matrix.needs_gguf }}
           GGUF_VAR_NAME: ${{ matrix.gguf_var }}
-          # matrix 内で `vars[matrix.gguf_var]` は展開できないので、6 leg 分の
+          # matrix 内で `vars[matrix.gguf_var]` は展開できないので、5種類の
           # var を全部 env に落とし、matrix.gguf_var の値を key として dispatch。
           # 未 set の owner variable は空文字列に評価される (fabricated pass 禁止:
           # 空 = 「未 staged」で skip 判定に回す)。
@@ -422,7 +357,7 @@ jobs:
       # 全体を貼れない)。
       - name: Upload parity log (failure triage)
         if: always() && steps.gate.outputs.should_run == 'true' && steps.gguf.outputs.should_test == 'true' && steps.parity.outputs.log_path != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: nightly-full-parity-${{ matrix.leg }}-log
           path: ${{ steps.parity.outputs.log_path }}

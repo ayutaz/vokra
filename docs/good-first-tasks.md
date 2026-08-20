@@ -7,7 +7,7 @@ has a file/line anchor or a reproduction command, acceptance criteria you can
 check yourself, and a rough size — so you can decide before starting whether
 it is worth your time.
 
-**Last reviewed: 2026-07-20.**
+**Last reviewed: 2026-08-18.**
 
 ## How to use this list
 
@@ -16,9 +16,10 @@ it is worth your time.
 - **These are not tracked as GitHub Issues.** Work items live in the
   maintainer's ticket tree, so there is no issue number to reference — see
   [CONTRIBUTING.md](../CONTRIBUTING.md) §1.
-- **Start from a green build.** `cargo test --workspace` should pass before
-  you change anything; CONTRIBUTING has measured timings for what "normal"
-  looks like.
+- **Start from a green baseline.** Use the recorded CI result. On the
+  maintainer Mac, workspace Cargo and `-p vokra-models` are VAST-only; follow
+  [CONTRIBUTING.md](../CONTRIBUTING.md) instead of running the old local
+  workspace command.
 - **Sizes** are rough: **XS** under an hour, **S** an hour or two, **M** half
   a day, **L** more than that.
 
@@ -64,8 +65,9 @@ description. It is the only such reference in the tree
 **Acceptance criteria**
 
 - `grep -rn "scratchpad/" crates/ --include="*.rs"` returns nothing
-- `cargo doc -p vokra-models` still builds
-- `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` pass
+- `cargo doc -p vokra-models` still builds on VAST/CI
+- local `cargo fmt --all -- --check` passes; the all-target clippy leg passes
+  on VAST/CI
 
 **Why it is worth doing**: it is a two-line change that makes the most
 architecturally important module in the model layer readable by someone who
@@ -80,15 +82,15 @@ does not have the private planning tree — which is the whole reason
 
 The repository has an established convention: a check script supports
 `--help` and prints its purpose, modes and exit codes. `check-zero-deps.sh`,
-`check-forbidden-symbols.sh` and eleven others do not follow it yet.
+`check-forbidden-symbols.sh` and other checks do not follow it yet.
 
 Reproduce the list:
 
 ```bash
-for s in scripts/check-*.sh; do grep -q -- '--help' "$s" || echo "$s"; done
+rg --files-without-match -- '--help' scripts/check-*.sh
 ```
 
-At the time of writing that prints **13** scripts.
+At the 2026-08-18 review that prints **18** scripts.
 
 **What to do**: follow the shape already used by
 `scripts/check-platform-support.sh` and `scripts/check-doc-references.sh` — a
@@ -97,7 +99,7 @@ bottom. **Do not change any check's behaviour or exit codes**; this is purely
 about discoverability.
 
 Doing two or three scripts is a perfectly good PR — you do not need to do all
-thirteen.
+18.
 
 **Acceptance criteria**
 

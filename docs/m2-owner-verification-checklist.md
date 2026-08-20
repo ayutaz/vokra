@@ -88,7 +88,7 @@ VOKRA_WHISPER_LARGE_V3_GGUF=$PWD/large-v3.gguf \
 # 出力例: rtf=0.087 mean_ms=2620.5 p50=2611.3 p95=2645.1 ...
 # を docs/bench-baselines/ に json で保存
 
-# 6. instance 即 destroy（コスト最小化、CLAUDE.md の運用パターン）
+# 6. instance 即 destroy（`vast-ai-workflow` の lifecycle）
 vastai destroy instance <instance_id>
 ```
 
@@ -130,6 +130,10 @@ vastai destroy instance <instance_id>
 
 ## 3. Kokoro-82M / Whisper 全サイズの実 checkpoint parity（M2-06 T09-T11 / M2-07 T11-T21）
 
+この節の `cargo ... -p vokra-models` はすべて VAST で実行する。fixture 生成も
+5-size aggregate が 2 GB を超えるため同じ VAST instance 上で行い、巨大 GGUF
+を開発 Mac へ戻さない。
+
 **Status (2026-07-09、PR #3 merged + main 上の workflow_dispatch 初回起動完了)**: **CC 側で 全 acid test を通過 = M2 item 3 close 済** —
 - **Kokoro（M2 item 3）**: `.github/workflows/parity-kokoro-real.yml` を land、pinned SHA + workflow_dispatch + weekly cron + PR path filter で回る。**per-tensor atol `PROSODY_F0_ATOL = 0.05` を land**（`parity_kokoro.rs` + workflow YAML の両方に atol lookup + verdict 表 + rationale docstring、fabricated pass 禁止）で **9/9 tensor PASS**。T17-fixup #4（norm1/norm2 + F0_proj/N_proj f64 acc、commit `58a18a8`）は land、続く #5（conv1/conv2 f64 acc）/ #6（conv1x1 f64 acc）は empirical regression で REVERT（commit `89fb52b`）— PyTorch reference が SGEMM byte-order を持ち、Rust の `compute.gemm_f32` は既にその order を match しているため divergent accumulator は reference から離れる方向に振れる。**main 上の workflow_dispatch 初回起動 = 成功**（run `28954467027`、2026-07-08T15:25 UTC、5 min）: text_encoder `4.813e-6` / bert `3.994e-6` / prosody_durations `0` / **prosody_f0 `3.268e-2` PASS（per-tensor atol=0.05）** / prosody_n `1.761e-3` / prosody_hidden `3.497e-3` / decoder_mag `6.008e-5` / decoder_phase `7.033e-5` / decoder_pcm `1.511e-3` = **9/9 PASS**（M1 iMac aarch64 local と x86_64 GitHub-hosted で prosody_f0 が 2.619e-2 → 3.268e-2 と host 差はあるが両方 atol 内）。**CI validity 確定**。
 - **Whisper（M2 item 4）**: `.github/workflows/parity-whisper-real.yml` を land、sidecar-hash gated + workflow_dispatch + weekly cron + PR path filter で回る。**`tests/fixtures/audio/jfk-30s.wav` 実 WAV を commit 済**（sha256 `58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f`、openai-whisper `tests/jfk.flac` を 16 kHz mono PCM16 に変換した 11 s 発声、dumper が 30 s に zero-pad）。base + large-v3 matrix、`include_large_v3` opt-in 制御。**main 上の workflow_dispatch 初回起動（base leg のみ）= 成功**（run `28954469020`、2026-07-08T15:25 UTC、3 min）: encoder hidden `2.337e-5` / log-mel `1.431e-5` / decoder logits full `6.485e-5` / decoder logits cached `6.104e-5` / cached vs full last-position logits `1.717e-5` = all under atol 0.01、**test result: 7 passed; 0 failed**。dumper の greedy_text = `" And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country."` = 完全な JFK 演説転写。**CI validity 確定**（残 large-v3 leg は 2.9 GB HF DL + 3 GB GGUF artifact で高コスト、次回 workflow_dispatch で owner が opt-in できる）。
@@ -138,7 +142,8 @@ vastai destroy instance <instance_id>
 
 ### 必要な準備
 
-- [ ] Python 3.10+ + PyTorch 2.0+ + transformers 4.30+ + numpy。
+- [ ] uv + Python 3.12。dependency は `tools/parity/pyproject.toml` と
+  `tools/parity/uv.lock` を使う。
 - [ ] Hugging Face access（`openai/whisper-{base,small,medium,large-v3,turbo}` + `hexgrad/Kokoro-82M`）。
 
 ### 実行手順
@@ -153,10 +158,11 @@ vastai destroy instance <instance_id>
 #     (.github/workflows/parity-whisper-real.yml) はこの sidecar を
 #     `sha256sum -c` で検証する。
 
-# --- 経路 A: ローカル手動 regen（5 サイズすべて）---
+# --- 経路 A: VAST 手動 regen（5 サイズすべて。aggregate >2 GB）---
 # Whisper 4 サイズ（M2-06 T09/T11）
 for size in whisper-small whisper-medium whisper-large-v3 whisper-turbo; do
-  python3 tools/parity/dump_whisper_reference.py \
+  uv run --project tools/parity --frozen python \
+    tools/parity/dump_whisper_reference.py \
     --model $size --audio tests/fixtures/audio/jfk-30s.wav
 done
 # → tests/parity/whisper_{size}/ に fixture が入る
@@ -170,10 +176,12 @@ done
 # small / medium / turbo は現時点で CI 対象外（経路 A のみ）。
 
 # Kokoro-82M（M2-07 T11 / T17-fixup #4 acid test）
-# --- 経路 A: ローカル手動 regen ---
+# --- 経路 A: VAST 手動 regen ---
 # script: tools/parity/dump_kokoro_reference.py
 # rust:   crates/vokra-models/tests/parity_kokoro.rs
-python3 tools/parity/dump_kokoro_reference.py --model hexgrad/Kokoro-82M --mode full
+uv run --project tools/parity --with 'kokoro==0.9.4' python \
+  tools/parity/dump_kokoro_reference.py \
+  --model hexgrad/Kokoro-82M --mode full
 # → tests/parity/kokoro/ に fixture が入る（mode=full = byte-level parity 有効）
 
 # --- 経路 B: CI 経由 acid test（M2 item 3、workflow_dispatch + weekly cron）---
@@ -292,7 +300,7 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 | decoder_phase | 7.915e-5 | ✅ PASS | 同上 |
 | decoder_pcm | 6.836e-3 | ✅ PASS | 同上 |
 
-**honest 判定**: T17-fixup #4 は prosody f0 の atol=0.01 通過には**不十分**。9 tensor 中 8 PASS + 1 FAIL の状態は fixup #4 以前と機能的に同一。CLAUDE.md / 本 checklist の "prosody f0 honest negative" ステータスは変わらず継続、次の follow-up が必要。
+**honest 判定**: T17-fixup #4 は prosody f0 の atol=0.01 通過には**不十分**。9 tensor 中 8 PASS + 1 FAIL の状態は fixup #4 以前と機能的に同一。本 checklist の "prosody f0 honest negative" ステータスは変わらず継続、次の follow-up が必要。
 
 **Post-PR #3 update（2026-07-09、PR #3 merged 反映）**: 上記 "次の follow-up" は **T17-fixup #5（AdainResBlk 内 conv1/conv2 f64 acc）+ #6（conv1x1 shortcut f64 acc）として試行 → 実測で regression → REVERT**（commit `89fb52b`）。原因: PyTorch reference が SGEMM byte-order の rounding pattern を持ち、Rust の `compute.gemm_f32`（BiLstm1d/Conv1d hot path）は既にその order を match しているため、divergent accumulator = f64 化は reference から離れる方向に振れる（T17-fixup #2 と同型の failure mode）。**代わりに per-tensor atol calibration `PROSODY_F0_ATOL = 0.05` を land**（`crates/vokra-models/tests/parity_kokoro.rs` + `.github/workflows/parity-kokoro-real.yml` の両方に atol lookup + verdict 表 + rationale docstring）— F0_proj Conv1d 256→1 の ~9x amplification × upstream hidden 3e-3 delta = 2.7e-2 が理論下限、atol=0.01 は architecturally 到達不可 → honest engineering として per-tensor atol=0.05 で 9/9 tensor PASS。詳細は `docs/adr/0007-kokoro-native.md` の T17-fixup per-tensor atol calibration 節。将来 BiLstm1d を PyTorch SGEMM byte-for-byte 一致に書き換えた時点で `PROSODY_F0_ATOL` を default `ATOL` に戻す方向（follow-up、blocking ではない）。
 
@@ -395,10 +403,11 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 
 ### 実行手順
 
-1. `pip install twine` → `twine upload --repository testpypi bindings/python/dist/*.whl`（TestPyPI で dry-run）。
-2. PyPI project 作成 → `pyproject.toml` の name = `vokra` を予約。
-3. GH Actions secret `PYPI_API_TOKEN` を登録、または trusted publisher を GH Actions workflow に紐付け。
-4. `git tag v0.5.0-rc1 && git push --tags` → `release.yml.python-pypi-publish` が起動、dry-run mode を経由して実 upload。
+1. current ABI generator、package export、wheel smoke gate を先に修復する（`bindings/python/README.md`）。
+2. exact wheel と TestPyPI project への upload 許可を得た後、`uvx --python 3.12 twine upload --repository testpypi bindings/python/dist/*.whl` で TestPyPI 検証する。
+3. PyPI project 作成 → `pyproject.toml` の name = `vokra` を予約。
+4. GH Actions secret `PYPI_API_TOKEN` を登録、または trusted publisher を GH Actions workflow に紐付け。
+5. release tag と exact upload の明示承認後に release workflow を起動し、dry-run / TestPyPI evidence を確認してから production upload へ進む。
 
 ### Exit 判定への寄与
 
@@ -496,7 +505,7 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 | M2-09 | vokra-server 4 互換 API | ✅ 完了 | — |
 | M2-10 | Discord bot デモ | ❌ descoped | Discord 全体を非採用（依頼者決定）。サーバ稼働実証は M2-15 review の別形態で扱う |
 | M2-11 | Unity official plugin | ✅ 完了（UPM CD） | § 7（Unity license）|
-| M2-12 | 言語バインディング（Python 初回） | ✅ 完了（wheel scaffold、cibuildwheel v2.23.4 + hatchling `pure_python=False` + wheel retag manylinux_2_28_x86_64 + `pip install --find-links` install で main CI 復旧に貢献） | § 5（合意）+ § 6（PyPI token）|
+| M2-12 | 言語バインディング（Python 初回） | ⚠️ wheel scaffold 完了。ただし current ABI 41 functions に対して生成済み binding は14 functions、generator は新構造体未対応、package root export 未完了 | binding drift 修復 + § 5（合意）+ § 6（PyPI reservation / publication）|
 | M2-13 | compliance 拡張 | ✅ 完了 | — |
 | M2-14 | 実機ベンチ計測 | 引き渡し済み / CUDA reference 計測は完了、iOS 実機は依頼者側／**CUDA RTF variance harness は Phase 3 で CC-integrated + 実 vast.ai run 完了（hardware variance で M2-14 defer 決定）**（§ 2） | § 1 + § 2 |
 | M2-15 | 四半期 Go/No-go review | 継続監視 / metrics runbook 整備済（§ 4 参照） | § 8（Kill switch J — wire-level PASS）+ § 9（C/K）|
@@ -509,4 +518,3 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 
 - CC 側で追加 workflow が必要になった場合（例: 新規言語バインディング着手、実測結果を受けた最適化 follow-up）は本チェックリストに追記して依頼者から CC に振る。
 - v0.5 Exit 判定は上記全項目の消化 + milestones.md §6 Exit criteria を根拠に依頼者が最終判断。
-

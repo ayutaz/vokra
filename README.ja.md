@@ -79,9 +79,9 @@ VAD、話者エンベディング — こういった要素はどれもグラフ
   weight と一緒に運ばれ、bit-exact に再現可能です。
 - **クロスプラットフォーム配布**: 単一ライブラリ、単一 C ABI ヘッダ、静的
   または動的リンク。iOS XCFramework + Swift Package、Unity UPM パッケージ、
-  Godot GDExtension、Python `ctypes` wheel、OpenAI Whisper / vLLM /
-  piper-plus / Wyoming Protocol 互換エンドポイントを提供する HTTP
-  互換サーバ。
+  Godot GDExtension、Python `ctypes` wheel、OpenAI Whisper / piper-plus /
+  Wyoming Protocolエンドポイントと、contract-onlyのvLLM completion schemaを
+  提供するHTTPサーバ。
 - **デフォルトで安全な Rust**: ワークスペース全体で `unsafe_code = "deny"`
   を設定。`unsafe` はバックエンドと FFI クレートでのみ許可され、
   `clippy::undocumented_unsafe_blocks = "deny"` によって `// SAFETY:`
@@ -139,7 +139,9 @@ weight ローダとトークナイザはランタイムに組み込まれてお�
 - FSMN-VAD
 
 **キーワードスポッティング / ウェイクワード**
-- openWakeWord
+- openWakeWord（`FR-OP-51`）— converter / binder / classifier は実装済みです。上流公式
+  weight は CC-BY-NC-SA-4.0 のため同梱・商用再配布せず、embedding
+  extractor は loud-partial のままです
 - microWakeWord — INT8 forward は `no_std` な `vokra-kws-micro` クレートで
   動作（Cortex-M55 クロスビルド）。checkpoint からの chain ロードは未配線で、
   未設定の detector は「何も起きなかった」ではなく拒否を返します
@@ -256,8 +258,8 @@ cargo build --release -p vokra-cli
 ファイルが明記されています。例えば Whisper base の checkpoint を取得するには:
 
 ```sh
-# curl / wget / huggingface-cli のいずれでも可 — ファイルは素の GGUF blob です。
-huggingface-cli download vokra/whisper-base whisper-base.gguf --local-dir .
+# curl / wget / hf のいずれでも可 — ファイルは素の GGUF blob です。
+hf download vokra/whisper-base whisper-base.gguf --local-dir .
 ```
 
 ### 音声を文字起こしする
@@ -400,14 +402,17 @@ Vokra は決して別のバックエンドや dtype に silently リルートし
   でビルド: 5-target クロスビルドマトリクス（macOS Intel + Apple Silicon、
   Linux x64、Windows MSVC、Android arm64）、AssetLib 形状のリリース
   レイアウト。
-- **Python** — [`bindings/python/`](bindings/python) の純粋 `ctypes`
-  実装（`pyo3` 非使用）、`cibuildwheel` で PyPI wheel を発行。
+- **Python（pre-alpha source）** — [`bindings/python/`](bindings/python) の
+  純粋 `ctypes` 実装（`pyo3` 非使用）。wheel scaffold はありますが、生成済み
+  binding は旧 14-function subset のまま（現行 C header は 41 functions）で、
+  package root もまだ `Session` を export しません。PyPI 公開は pending として
+  [binding README](bindings/python/README.md) を参照してください。
 - **HTTP サーバ** — [`integrations/vokra-server`](integrations/vokra-server):
-  既存クライアントを無改変で置き換えられる 4 種類の互換 API を公開する
-  独立ワークスペース。**OpenAI Whisper** (`/v1/audio/transcriptions`)、
-  **vLLM** (`/v1/completions`、`/v1/chat/completions`)、
-  **piper-plus HTTP** (`/api/tts`)、Home Assistant Voice バックエンド用の
-  **Wyoming Protocol**。
+  **OpenAI Whisper** (`/v1/audio/transcriptions`)、**piper-plus HTTP**
+  (`/api/tts`)、Home Assistant Voiceバックエンド用の**Wyoming Protocol**を
+  実装する独立ワークスペース。vLLM形状の`/v1/completions`と
+  `/v1/chat/completions`は現時点ではcontract検証後に明示的な501を返し、
+  LLM生成engineが接続されるまでdrop-in inference endpointではありません。
 
 ## モデル配布
 
@@ -462,11 +467,13 @@ Vokra はこれを標準 TTS レイヤ、かつ Vokra 初のネイティブ実�
 
 ## ドキュメント
 
-ユーザ向けドキュメントはすべて [`docs/`](docs) 配下にあります。トップ
-レベル文書はすべて英語版 (`.md`) と日本語版 (`.ja.md`) が用意されています。
+[ドキュメントマップ](docs/README.md)から参照してください。公開入口ガイドと
+プラットフォーム別チュートリアルは英語・日本語を対で保守し、監査・法務・
+ベンチマーク・ADR・日付付きhandoffは意図的に単言語の場合があります。
 
 | ドキュメント | 内容 |
 |---|---|
+| [`docs/README.md`](docs/README.md) | 現行情報源・履歴記録・検証ルール |
 | [`docs/getting-started.md`](docs/getting-started.md) | 5 分クイックスタート |
 | [`docs/architecture.md`](docs/architecture.md) | 内部アーキテクチャ、クレート構成、グラフ実行エンジン |
 | [`docs/api-reference.md`](docs/api-reference.md) | C ABI + CLI リファレンス |

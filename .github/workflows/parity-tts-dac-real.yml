@@ -124,6 +124,7 @@ jobs:
   setup:
     name: gate (tts-dac fetch opt-in)
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       run_parity: ${{ steps.decide.outputs.run_parity }}
       run_dia: ${{ steps.decide.outputs.run_dia }}
@@ -161,21 +162,27 @@ jobs:
               fi
               ;;
             pull_request)
-              echo "run_parity=true" >> "$GITHUB_OUTPUT"
-              echo "run_dia=true"    >> "$GITHUB_OUTPUT"
-              echo "run_zonos=true"  >> "$GITHUB_OUTPUT"
+              {
+                echo "run_parity=true"
+                echo "run_dia=true"
+                echo "run_zonos=true"
+              } >> "$GITHUB_OUTPUT"
               echo "pull_request: proceeding with both legs (path filter matched)"
               ;;
             schedule|*)
               if [ "${ENABLE_VAR}" = "1" ]; then
-                echo "run_parity=true" >> "$GITHUB_OUTPUT"
-                echo "run_dia=true"    >> "$GITHUB_OUTPUT"
-                echo "run_zonos=true"  >> "$GITHUB_OUTPUT"
+                {
+                  echo "run_parity=true"
+                  echo "run_dia=true"
+                  echo "run_zonos=true"
+                } >> "$GITHUB_OUTPUT"
                 echo "VOKRA_TTS_DAC_ENABLE=1: proceeding with both legs on cron"
               else
-                echo "run_parity=false" >> "$GITHUB_OUTPUT"
-                echo "run_dia=false"    >> "$GITHUB_OUTPUT"
-                echo "run_zonos=false"  >> "$GITHUB_OUTPUT"
+                {
+                  echo "run_parity=false"
+                  echo "run_dia=false"
+                  echo "run_zonos=false"
+                } >> "$GITHUB_OUTPUT"
                 echo "::notice title=parity-tts-dac-real clean skip::VOKRA_TTS_DAC_ENABLE is not '1' — the ~9 GB weekly parity fetch is gated on an opt-in repo variable. Set it to '1' (repository settings → variables) to enable, or dispatch this workflow manually. This is a clean gated skip, not a pass (fabricated pass 禁止, FR-EX-08)."
               fi
               ;;
@@ -223,7 +230,9 @@ jobs:
 
       - name: Checkout
         if: steps.entry-gate.outputs.run == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Free hosted-runner disk (multi-GB safetensors + GGUF need headroom)
         if: steps.entry-gate.outputs.run == 'true'
@@ -235,21 +244,25 @@ jobs:
 
       - name: Set up Python 3.12
         if: steps.entry-gate.outputs.run == 'true'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        if: steps.entry-gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
         if: steps.entry-gate.outputs.run == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Rust cache
         if: steps.entry-gate.outputs.run == 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
       - name: Cache HF snapshot
         if: steps.entry-gate.outputs.run == 'true'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           # Include the pinned SHA in the key so a revision bump invalidates
@@ -261,10 +274,7 @@ jobs:
         if: steps.entry-gate.outputs.run == 'true'
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # torch is the smallest arch-appropriate dep: both models ship as
           # torch pickles / safetensors and the future reference dumper will
           # need it. Kept minimal here — the CPU-only wheel + safetensors +
@@ -274,14 +284,14 @@ jobs:
           # `safetensors/torch.py::_to_ndarray`; the parity-utmos.yml
           # regression fixed in commit f90daad established the pattern for
           # every parity venv on this branch).
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'torch==2.9.1' \
             'numpy>=1.26,<3' \
             'safetensors>=0.4' \
             'huggingface_hub>=0.24'
           # hf_transfer speeds the multi-GB safetensors pull.
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, safetensors, huggingface_hub
           print(f"tts-dac parity venv: torch={torch.__version__} "
                 f"safetensors={safetensors.__version__} "
@@ -295,8 +305,6 @@ jobs:
           REVISION: ${{ env[matrix.revision_env] }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           # `python -c` (not a heredoc): a heredoc inside $() cannot be closed
           # from column 0 in a `run: |` block; `python -c` sidesteps that.
           #
@@ -305,7 +313,7 @@ jobs:
           # from stdout (the `snapshot: <path>` line) and use it inline in
           # this same step, then also emit to `$GITHUB_ENV` so downstream
           # steps (convert / harness / uploader) see it.
-          SNAPSHOT_STDOUT="$(python -c "
+          SNAPSHOT_STDOUT="$(uv run --no-project --python "${PARITY_VENV}/bin/python" python -c "
           import os, sys
           from huggingface_hub import snapshot_download
           path = snapshot_download(
@@ -395,7 +403,7 @@ jobs:
 
       - name: Upload parity artifacts
         if: always() && steps.entry-gate.outputs.run == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: parity-tts-dac-${{ matrix.arch }}-artifacts
           path: |

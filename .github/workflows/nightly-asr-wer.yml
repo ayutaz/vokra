@@ -50,7 +50,7 @@
 #       records corpus_ok=false on the step output, and skips every
 #       downstream step (WER + both RTF companions) via
 #       `if: steps.<id>.outputs.corpus_ok == 'true'`. The local drift blob
-#       is removed (`rm -f "$TARBALL"`) so the post-step `actions/cache@v6`
+#       is removed (`rm -f "$TARBALL"`) so the post-step `actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 `
 #       save does not persist a bad blob in the current cache-MISS run;
 #       actual re-fetch on the NEXT run relies on either a cache-key SHA
 #       change (bump `DEV_CLEAN_SHA256`) or the WP X-10 self-mirror flip,
@@ -99,7 +99,7 @@
 # not a noise budget.
 #
 # Zero-dep invariant (NFR-DS-02): root Cargo.lock is never modified. The
-# Python stack lives in a /tmp venv; a `git diff --exit-code` guard catches
+# Python stack lives in an uv-managed /tmp venv; a `git diff --exit-code` guard catches
 # accidental mutation. No Cargo dependency is added by this leg.
 #
 # Corpus: LibriSpeech dev-clean (OpenSLR resource 12), CC BY 4.0,
@@ -181,17 +181,20 @@ jobs:
     # genuinely stuck run.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: nightly-asr-wer
 
       - name: Cache HF checkpoint
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           key: hf-hub-whisper-base-asr-wer
@@ -202,7 +205,7 @@ jobs:
         # Keyed on the pinned digest: if the digest constant changes, the
         # cache misses and the new corpus is fetched, which is exactly the
         # behaviour a deliberate corpus bump needs.
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ github.workspace }}/.corpus-cache
           key: librispeech-dev-clean-${{ env.DEV_CLEAN_SHA256 }}
@@ -216,23 +219,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv /tmp/vokra-py-asrwer
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install \
+          uv venv --python 3.12 /tmp/vokra-py-asrwer
+          uv pip install --python /tmp/vokra-py-asrwer/bin/python \
             "jiwer>=3,<4" \
             "transformers>=4.44,<4.60" \
             "soundfile>=0.12,<1" \
             "huggingface_hub>=0.24,<1"
-          python -m pip list | grep -Ei '^(jiwer|transformers|soundfile|huggingface[-_]hub)\b'
+          uv pip list --python /tmp/vokra-py-asrwer/bin/python \
+            | grep -Ei '^(jiwer|transformers|soundfile|huggingface[-_]hub)\b'
 
       - name: Unit-test the scorer and this workflow's surface
         # The oracle is stdlib-only, so it runs before the heavy assets are
         # fetched: a broken threshold mirror or a cron collision should fail
         # in seconds, not after a 600 MB download.
         shell: bash
-        run: python3 tools/eval/test_librispeech_wer.py
+        run: uv run --no-project --python /tmp/vokra-py-asrwer/bin/python python tools/eval/test_librispeech_wer.py
 
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
@@ -241,9 +242,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
-          python3 - <<'PYEOF'
+          uv run --no-project --python /tmp/vokra-py-asrwer/bin/python python - <<'PYEOF'
           import os
           from huggingface_hub import snapshot_download
           local = snapshot_download(
@@ -386,7 +385,8 @@ jobs:
           mv "$src" "$CORPUS_DIR/dev-clean/${SPEAKER}/"
           echo "extracted $n_flac flac from $member"
           # subset-extract>>>
-          ls -la "$CORPUS_DIR/dev-clean/${SPEAKER}/${CHAPTER}" | head
+          find "$CORPUS_DIR/dev-clean/${SPEAKER}/${CHAPTER}" \
+            -maxdepth 1 -mindepth 1 -print | LC_ALL=C sort | head
           echo "corpus_ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Decode flac → 16 kHz mono WAV
@@ -394,11 +394,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
           mkdir -p "$GITHUB_WORKSPACE/.wav"
           echo "WAV_DIR=$GITHUB_WORKSPACE/.wav" >> "$GITHUB_ENV"
-          WAV_DIR="$GITHUB_WORKSPACE/.wav" python3 - <<'PYEOF'
+          WAV_DIR="$GITHUB_WORKSPACE/.wav" uv run --no-project \
+            --python /tmp/vokra-py-asrwer/bin/python python - <<'PYEOF'
           import os, sys
           from pathlib import Path
           import soundfile as sf
@@ -472,7 +471,8 @@ jobs:
             echo "::warning::no decoded WAV for the RTF companion — skipping (the WER leg is the gate)"
             exit 0
           fi
-          STATE="$(python3 tools/bench/baseline_gate.py "$RTF_BASE")"
+          STATE="$(uv run --no-project --python /tmp/vokra-py-asrwer/bin/python \
+            python tools/bench/baseline_gate.py "$RTF_BASE")"
           {
             echo "### Whisper base RTF companion (advisory, X-06-T11)"
             echo ""
@@ -527,7 +527,8 @@ jobs:
             echo "::notice::no staged piper GGUF (repo variable VOKRA_PIPER_GGUF unset or path absent) — clean skip, not a pass. Committed piper GGUF is open question #7."
             exit 0
           fi
-          STATE="$(python3 tools/bench/baseline_gate.py "$RTF_BASE")"
+          STATE="$(uv run --no-project --python /tmp/vokra-py-asrwer/bin/python \
+            python tools/bench/baseline_gate.py "$RTF_BASE")"
           if [ "$STATE" = placeholder ]; then
             echo "::notice::piper RTF baseline is a placeholder — measuring for the record, no verdict."
             # Advisory contract requires this branch to survive bench
@@ -574,8 +575,6 @@ jobs:
           ALL_IN_CHAPTER: ${{ github.event.inputs.all_in_chapter }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-asrwer/bin/activate
           EXTRA=()
           # Only forward --threshold when the dispatcher actually supplied
           # one. Passing $WER_THRESHOLD unconditionally would override each
@@ -589,7 +588,8 @@ jobs:
             EXTRA+=(--all-in-chapter)
           fi
           set +e
-          python3 tools/eval/librispeech_wer.py \
+          uv run --no-project --python /tmp/vokra-py-asrwer/bin/python python \
+            tools/eval/librispeech_wer.py \
             --librispeech-root "$CORPUS_DIR" \
             --transcripts "$TRANSCRIPTS" \
             --normalizer-json "$HF_NORMALIZER" \
@@ -606,7 +606,7 @@ jobs:
         # Runs even on a breach: the report is the evidence the revert/block
         # decision (NFR-MT-07) is made from.
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: asr-wer-report
           path: asr-wer-report.json

@@ -16,7 +16,9 @@
 #   --output <path>   local destination (required)
 #   --sha256 <hex>    if set, verify integrity after download
 #
-# License: upstream is MIT (yxlllc/RMVPE and Dream-High/RMVPE both).
+# License: Dream-High/RMVPE code is Apache-2.0. The yxlllc/RMVPE release
+# repository does not declare checkpoint terms; generated artifacts must
+# remain fail-closed (`unknown`) unless the owner verifies an exact grant.
 set -euo pipefail
 
 # Pinned default: the current upstream release. Verify the tag on

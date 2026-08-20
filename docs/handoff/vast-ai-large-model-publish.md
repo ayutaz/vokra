@@ -1,6 +1,6 @@
 # vast.ai runbook — 大きめ音声モデルの convert + publish
 
-Tracked / public。**2026-07-28** に本 M1 iMac (16GB RAM) 上で Voxtral-Small-24B-2507 (48GB BF16、11 shards) を convert 試行中、`SafetensorsFile::open` が全 shard を mmap した結果 swap 40GB used に到達 = OS レベル force shutdown リスクが実証されたことを受け、**8GB 超のモデル weight は本機で処理せず vast.ai の GPU box (副次的にメモリの多い host) で処理する** ことに 2026-07-28 決定。本 runbook は同 決定に基づく手順集。
+Tracked / public。**2026-07-28** に本 M1 iMac (16GB RAM) 上で Voxtral-Small-24B-2507 (48GB BF16、11 shards) を convert 試行中、`SafetensorsFile::open` が全 shard を mmap した結果 swap 40GB used に到達 = OS レベル force shutdown リスクが実証された。初期の 8GB heuristic は、2026-08-16 の owner 指示で **合計 2GB 以上の model artefact は VAST**へ引き下げられた。workspace 全体と `vokra-models` の Cargo も VAST-only。本 runbook は現在の厳しい運用境界を正本とし、後段の旧 size classifier は履歴/コスト見積りとしてのみ残す。
 
 **2026-08-17 operational override**: model conversion, real-weight verification, and upload work that can materially consume memory run on **vast.ai only**. Do not download a checkpoint, convert it, verify it against real weights, or upload its result from the M1 iMac merely because the historical size heuristic below returns `LOCAL_SAFE` / `LOCAL_OK`. The Mac may perform checkpoint-free work only: source/doc review, static tests, and the HF-metadata size preflight. This override supersedes older local-conversion suggestions in this and per-model handoffs.
 
@@ -26,8 +26,10 @@ source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 ```bash
 # Voxtral-Small-24B (48 GB、必ず vast.ai)。revision / shard-only include /
 # tokenizer / expected provenance は専用 wrapper で固定される。
-~/vokra/scripts/publish/vast-ai/run-voxtral-small-24b.sh --push
+~/vokra/scripts/publish/vast-ai/run-voxtral-small-24b.sh
 ```
+
+上記 dry-run が green になっても upload 権限は自動では生じない。依頼者がこの artifact/repo の upload を明示承認した場合だけ、同じ command に `--push` を追加する。
 
 `run-one.sh` は `HF snapshot_download (hf-transfer) → autodetect input → vokra-cli convert → GGUF header verification → publish-one.sh` を chain。`--push` を外せば dry-run stage のみ。T4 (非商用) は `--allow-noncommercial`、T3 (Copyleft) は `--acknowledge-copyleft`。詳細は `run-one.sh --help`。Voxtral-Small-24B は `run-voxtral-small-24b.sh` を使い、upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` と 11 shard のみを固定する（同 repo の duplicate `consolidated.safetensors` は取得しない）。
 
@@ -52,20 +54,20 @@ peak 1,780.18 MiB を実測した。**この技術的な低メモリ性はlocal�
 上記operational overrideどおり、実weight変換・検証・uploadはサイズを問わずVASTで
 行う。**K-quant はスコープ外** (widen-then-quantizeがin-memory必須)。
 
-**Borderline (single-tenant なら本機可、他作業と競合させない)**:
+**Historical borderline classifier (現在は VAST、local 実行許可ではない)**:
 - 5-8GB の safetensors: kyutai-stt (5.23GB BF16、2026-07-28 実績あり)、csm-1b (6.21GB single-file、実績あり)、moshiko-7b (~14GB BF16、既 published)
-- 判定基準: `curl -sL "https://huggingface.co/api/models/<repo>?blobs=true"` で最大 shard サイズ + shards 数から推定。**11 shards × 4GB = mmap 44GB → vast.ai**、単一 shard 6GB → local single-tenant で OK。
+- 判定基準: `curl -sL "https://huggingface.co/api/models/<repo>?blobs=true"` で最大 shard サイズ + shards 数から推定していた。現在は合計 2GB 以上なら単一 shard でも VAST。
 
-**Safe locally (問題なく処理可)**:
+**Historical safe-size list (現在は preflight 参考のみ)**:
 - ≤4GB の safetensors全般 (whisper-* / kokoro / silero / piper / dfn3 / utmos / dac / mimi / parakeet-tdt / parakeet-ctc / distil-whisper / kotoba-whisper / dia / qwen3-tts / vibevoice-1.5b / voxcpm-0.5b / cosyvoice2-0.5b / chatterbox-* / irodori / zonos / xcodec2)
 
 ## 2. vast.ai 手順 (Voxtral-Small-24B-2507 を例に)
 
-### 2.1 事前準備 (本機 CC で実施可)
+### 2.1 事前準備 (本機 agent で実施可)
 
 - **§3.1 sign-off 確認**: `docs/license-audit.md` §3.1 で該当 row が signed。Voxtral-Small-24B は row 250 = ☑ Commercial 2026-07-23 yousan 済。
 - **HF token 確認**: `HF_TOKEN` (or `HF`) を本機の `.env` から取得 → vast.ai インスタンスに `export` で渡す。
-- **branch 確認**: vast.ai には `main` (or 現行 branch) を clone。scratch 系変更が残る場合は事前 commit + push。
+- **branch 確認**: vast.ai には current `main` を clone。未 push commit が必要なら remote branch を増やさず `git bundle` で渡し、手元と VAST の HEAD 一致を確認する。
 
 ### 2.2 vast.ai インスタンス起動
 
@@ -94,7 +96,7 @@ cd ~/vokra
 
 # HF token 手動 export (公開しない、instance destroy で消える)
 export HF_TOKEN='hf_xxxxxxxxxxxxxx'   # 本機 .env の HF= 値をここに貼る
-export HF='$HF_TOKEN'
+export HF="$HF_TOKEN"
 ```
 
 ### 2.4 vokra-cli release build (~5 min)
@@ -115,7 +117,7 @@ cd ~/vokra
 # dry-run: convert 後に model/source/tokenizer/tensor count と全 publish gate を検証
 ./scripts/publish/vast-ai/run-voxtral-small-24b.sh
 
-# dry-run が通った同じ invocation 内で publish まで進める場合
+# dry-run 後、依頼者がこの upload を明示承認した場合だけ
 ./scripts/publish/vast-ai/run-voxtral-small-24b.sh --push
 ```
 
@@ -160,7 +162,7 @@ cd ~/vokra
   --gguf /root/scratchpad/staging/voxtral-small-24b-2507/model.gguf \
   --repo vokra/voxtral-small-24b-2507 \
   --license-spdx apache-2.0
-# ↑ dry-run 全 gate 通過を確認してから ↓ --push で本番
+# ↑ dry-run 全 gate 通過 + exact upload の依頼者明示承認後だけ ↓
 ./scripts/publish/publish-one.sh \
   --gguf /root/scratchpad/staging/voxtral-small-24b-2507/model.gguf \
   --repo vokra/voxtral-small-24b-2507 \
@@ -173,7 +175,7 @@ curl -sI https://huggingface.co/vokra/voxtral-small-24b-2507 | head -1
 
 ### 2.6 instance destroy (billing 抑制)
 
-vast.ai UI から即 destroy、または `vastai destroy <instance-id>` (CLI 使用時)。**upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残らない。次回同モデル再 publish 時は本機で `restamp` するか、vast.ai を再起動。
+vast.ai UI から即 destroy、または `vastai destroy <instance-id>` (CLI 使用時)。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。
 
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 
@@ -181,7 +183,7 @@ vast.ai UI から即 destroy、または `vastai destroy <instance-id>` (CLI 使
 
 ```bash
 # tools/parity/strip_int_tensors.py で inference-inert int tensor を除去
-uv run python ~/vokra/tools/parity/strip_int_tensors.py \
+uv run --no-project --python 3.12 python ~/vokra/tools/parity/strip_int_tensors.py \
   --input  "$SNAP/model.safetensors" \
   --output /root/scratchpad/staging/<model>/model.stripped.safetensors
 # manifest sidecar (.stripped-manifest.json) が dropped tensor 一覧を記録
@@ -191,7 +193,7 @@ Voxtral-Small-24B は全 tensor が BF16 = strip 不要 (2026-07-28 事前確認
 
 ## 4. 事前サイズ確認 command
 
-vast.ai へ移送するか本機で処理するかの判定は事前に:
+artefact の規模と必要 disk/RAM を見積もる preflight は事前に行う。現在の実作業 routing は合計 2GB 以上で VAST であり、旧 label は local 実行許可ではない:
 
 **推奨 (2026-07-28〜)**: `scripts/publish/check-model-size.sh` を使う。HF API を叩いて上表の threshold で機械判定 + rationale + 誘導先を human-readable で出力。exit code は `VAST_AI_REQUIRED` = 1、それ以外 = 0 ゆえ script chain にも使える。
 
@@ -207,7 +209,7 @@ vast.ai へ移送するか本機で処理するかの判定は事前に:
 
 ```bash
 # HF API で合計 safetensors サイズ確認
-curl -sL "https://huggingface.co/api/models/<repo>?blobs=true" | uv run --no-project python -c "
+curl -sL "https://huggingface.co/api/models/<repo>?blobs=true" | uv run --no-project --python 3.12 python -c "
 import json, sys
 d = json.load(sys.stdin)
 total = 0
@@ -220,16 +222,18 @@ print(f'TOTAL: {total:,} bytes = {total/1024**3:.2f} GiB')
 "
 ```
 
-**判定 threshold** (check-model-size.sh と runbook 側で同期):
+**Historical script verdict** (`check-model-size.sh` の出力互換。現在の 2GB VAST 運用を上書きしない):
 
-- **≤4 GiB total**: `LOCAL_SAFE` — 本機で OK。
-- **4-8 GiB total, max shard ≤6 GiB**: `LOCAL_OK` — 本機で single-tenant。
-- **8-16 GiB or shards ≥5**: `LOCAL_BORDERLINE` — 本機は single-tenant で慎重に (他ビルド/テスト全部止める)。可能なら vast.ai。
-- **>16 GiB**: `VAST_AI_REQUIRED` — **vast.ai 必須**。M1 iMac (16GB RAM) で mmap すると swap thrash → Mac 強制終了リスク。
+- **≤4 GiB total**: script label `LOCAL_SAFE` — size metadata label only。
+- **4-8 GiB total, max shard ≤6 GiB**: script label `LOCAL_OK` — size metadata label only。
+- **8-16 GiB or shards ≥5**: script label `LOCAL_BORDERLINE`。
+- **>16 GiB**: script label `VAST_AI_REQUIRED`。
+
+Operational verdict: **合計 2 GiB 以上は全 label で VAST**。将来 script threshold を変更するまでは、Codex/Claude memory guard と本 runbook がより厳しい上位規則になる。
 
 ## 5. Owner action
 
-- **HF_TOKEN の vast.ai instance への手渡し**: 本機 `.env` の `HF=hf_xxx` 値を SSH セッションで export。**instance 破棄で消える** ので secret 漏洩なし。
+- **HF_TOKEN の vast.ai instance への手渡し**: 本機 `.env` の値を SSH セッションの環境変数で渡す。CLI 引数や output に表示しない。instance 破棄は永続化を減らすだけで、既に terminal/log に出た secret を無効化しないため、その場合は即 rotate する。
 - **課金承認**: 1 モデル publish あたり ~$0.6-1.0。事前予算目安。
 - **live 確認**: `curl -sI https://huggingface.co/vokra/<name>` が HTTP/2 200 を返せば live、destroy 進めて OK。
 
@@ -275,8 +279,8 @@ owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済
 
 ### 5.1 `mistralai/Voxtral-Mini-4B-Realtime-2602` (~8 GB BF16、apache-2.0)
 
-**Verdict**: BORDERLINE (~8 GB safetensors、実質 vast.ai 推奨)。M1 iMac
-16 GB では tight = swap 危険帯、確実性のため vast.ai。
+**Verdict**: historical label は BORDERLINE だが、現在の 2GB rule では
+**VAST required**。M1 iMac 16 GB では実行しない。
 
 **Vokra ModelKind**: `VoxtralMiniRealtime` (`--model voxtral-mini-realtime`)。
 converter は既 land、Voxtral (Mistral) 家族と同じ `models::voxtral::convert`
@@ -294,18 +298,18 @@ converter は既 land、Voxtral (Mistral) 家族と同じ `models::voxtral::conv
   --hf-repo mistralai/Voxtral-Mini-4B-Realtime-2602 \
   --vokra-slug voxtral-mini-4b-realtime-2602 \
   --model-kind voxtral \
-  --license-spdx apache-2.0 \
-  --push
+  --license-spdx apache-2.0
 ```
+
+dry-run 後、依頼者が exact artifact/repo の upload を明示承認した場合だけ `--push` を追加する。
 
 **推定コスト**: ~1-1.5h wall-clock × $0.3-0.5/hr = **$0.3-0.75**。
 
 ### 5.2 `CohereLabs/cohere-transcribe-03-2026` (~1 GB but gated=auto、apache-2.0)
 
-**Verdict**: SIZE-safe (~1 GB) だが **HF gate accept 要 (gated=auto)**。owner
-の HF token + repo accept が必須ゆえ CC が local convert しても upload 前に
-publish-one.sh が gate で refuse。vast.ai 経由が polite (owner の HF UI
-accept は 1 回のみ、以降 authenticated fetch 可)。
+**Verdict**: historical size label は SAFE (~1 GB) だが **HF gate accept 要
+(gated=auto)**。現在の model-work override に従って変換/検証/upload は VAST。
+owner の HF UI accept は 1 回のみで、以降 authenticated fetch 可。
 
 **Vokra ModelKind**: `CohereTranscribe` (`--model cohere-transcribe` /
 `cohere-transcribe-03-2026`)。
@@ -319,14 +323,15 @@ accept は 1 回のみ、以降 authenticated fetch 可)。
 #    "Access repository" ボタンを一度クリック (非拘束 advisory の accept)
 # 2. HF_TOKEN を export
 export HF_TOKEN='hf_xxxxxx'
-# 3. vast.ai instance (localでも可、~1 GB safe) で:
+# 3. current model-work override に従い vast.ai instance で dry-run:
 ~/vokra/scripts/publish/vast-ai/run-one.sh \
   --hf-repo CohereLabs/cohere-transcribe-03-2026 \
   --vokra-slug cohere-transcribe-03-2026 \
   --model-kind cohere-transcribe \
-  --license-spdx apache-2.0 \
-  --push
+  --license-spdx apache-2.0
 ```
+
+upload は runtime readiness と dry-run を再確認し、依頼者が exact artifact/repo を明示承認した場合だけ `--push` を追加する。
 
 **注意**: `cohere-transcribe` は新規 ModelKind (2026-07-30 CLI wiring commit
 `2556b4a` で追加)。converter dispatch は library-callable だが実 forward /
@@ -388,15 +393,14 @@ Nemotron は 2026-07-30 に completed (§5.3)、残 2 モデル用:
 2. **§3.1 sign-off** — Voxtral-Realtime = ☑ Commercial 2026-07-30 yousan
    (2556b4a と同 wave の row 追加、docs/handoff で follow up)、
    Cohere-transcribe = ☑ Commercial 同、Nemotron-ASR = ☑ Commercial
-   2026-07-30 yousan (CC ADR 完了、§5.3)
-3. **branch 確認** — vast.ai instance clone するのは main か
-   `feat/model-publish-and-m5-gap-2026-07-29` (2556b4a 含む branch)
+   2026-07-30 yousan (agent ADR 完了、§5.3)
+3. **branch 確認** — vast.ai instance は current `main` を clone。未 push delta が必要なら `git bundle` で渡し、旧 long-lived branch は clone/push/merge しない
 4. **cost 見込確認** — 残 2 モデル合計 ~$0.7-1.3 (Voxtral 8GB × 1 +
    Cohere 1GB × 1、~2-3h wall-clock)
 5. **Cohere HF gate accept** — owner が browser で
    https://huggingface.co/CohereLabs/cohere-transcribe-03-2026 を開き
    "Access repository" をクリック。以降 fetch 可能 (`gated=auto` は非拘束
-   advisory accept のみ)。CC 側では accept できないため必須 owner task
+   advisory accept のみ)。agent 側では accept できないため必須 owner task
 
 ## 関連
 

@@ -4,7 +4,7 @@
 **Predecessor**: M3-11 T01-T18 = 100% CC 完成 (Wave 3.5 + Wave 11 + Wave 13、`docs/tickets/m3/M3-11-godot-gdextension.md` §改訂記録)。
 **Requirement under verification**: FR-API-05 (Godot GDExtension) + `docs/milestones.md` §7.3 Exit criteria 3 (Godot デモ動作)。
 
-> **Explicit boundary**: 本 handover は M3-11-T19 (実 Godot 4.3+ editor での dispatch verify) + T20 (WP-close PR) を対象とする。CC 側で land 済のスコープは (a) ClassDB 登録 + method binding (T05-T13、`registry.rs` + `trampoline.rs`)、(b) crossbuild matrix (T12、5 target)、(c) demo scaffold (T14/T15、`asr_demo` + `tts_demo`)、(d) CI (T16/T17、`godot-crossbuild.yml` + release job)、(e) compliance scanner (T18、Unity mirror pattern + `libcudart*` glob gap 補修)。**runtime dispatch (Variant 実 unpack) は Wave 11 の trampoline layer で honest scope-out**: 各 trampoline は正しい signature + arity + panic firewall + `catch_unwind` を持つが、Variant unpack → real Rust dispatch (`crate::asr::transcribe` 等) は `TODO(M3-18)` として `InvalidMethod` を返す状態。**owner side で dispatch を実装するか、CC follow-up を明示的に依頼するか**が本 T19 の判断点。
+> **Current boundary (2026-08-20 correction)**: M3-11-T19 (実Godot 4.3+ editor verify) + T20 (WP-close PR) が本handoverの中心。旧`TODO(M3-18)`だったload/transcribe/TTS/streamの5 dispatchは後続commitで実装済み。一方、追加公開された`session_vad_open_stream`は引数検証までで、実`VokraStream::open`とGodot object wrappingが`TODO(future)`のまま`InvalidMethod`を返す。したがって「全runtime dispatch完成」ではなく、既存demo経路のeditor検証とVAD stream実装を分けて追跡する。
 
 ## 1. Prerequisites checklist
 
@@ -77,9 +77,10 @@ gh workflow run godot-crossbuild.yml
 > （CC follow-up 実装）が実施済みです。`ba33bd0` が 5 trampoline の real
 > dispatch を land し、`71ea5ef` が `load` trampoline と inner-session
 > binding（registry が常に None を返していた欠陥）を実装、あわせて headless
-> 検証 leg も追加しました。`trampoline.rs` L236-408 の `TODO(M3-18)` marker は
-> **残存 0 件**（grep 実測）。**残る owner タスクは T19 の実 Godot editor 動作
-> 確認と T20 の WP-close PR のみ**で、実装判断は不要です。原文は判断経緯の記録
+> 検証 leg も追加しました。旧`trampoline.rs` L236-408 の`TODO(M3-18)` markerは
+> **残存0件**です。ただし、これは後から追加された`session_vad_open_stream`の
+> `TODO(future)`を含まないため、残作業はT19 editor確認、VAD stream object生成、
+> その後のT20 close PRです。原文は判断経緯の記録
 > として下に保持。
 
 Wave 11 の trampoline layer は **各 method の signature + arity + panic firewall + `catch_unwind` は正しく wire 済**だが、Variant unpack → real Rust dispatch は `TODO(M3-18)` として `InvalidMethod` を返す状態。以下の 3 option から本 T19 の scope を選択:

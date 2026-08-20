@@ -76,7 +76,7 @@ git commit -m "chore(parity/whisper): commit jfk-30s.wav real-audio fixture (M2-
 
 ## What happens if the WAV is absent
 
-- Local: `python3 tools/parity/dump_whisper_reference.py --model whisper-base`
+- Local: `uv run --no-project --python 3.12 python tools/parity/dump_whisper_reference.py --model whisper-base` in an already locked reference environment.
   exits with a loud FR-EX-08 error containing the ffmpeg recipe above.
 - CI (`.github/workflows/parity-whisper-real.yml`): the `setup` job detects
   the missing WAV and skips the parity leg with a step-summary annotation

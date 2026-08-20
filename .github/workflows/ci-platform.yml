@@ -35,7 +35,17 @@
 name: CI Platform
 
 on:
+  # Platform compilation/RTF jobs do not validate prose-only changes. Keeping
+  # those PRs out of this advisory workflow avoids allocating the 12-cell
+  # platform fanout while required CI/security checks continue to run.
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE*"
+      - "NOTICE"
+      - "CODE_OF_CONDUCT*"
+      - "SECURITY*"
   push:
     branches: [main]
 
@@ -87,12 +97,15 @@ jobs:
           - os: ubuntu-latest
             feature: qnn
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           # 2026-07-23 CI 高速化: feature 別 shared-key を明示。Swatinem のデフォルト
           # は workflow + workspace + Cargo.lock hash なので、同一 OS の feature 違い
@@ -133,7 +146,7 @@ jobs:
       - name: Cache real GGUFs (C ABI wiring test)
         if: matrix.feature == 'metal' || matrix.feature == 'cuda'
         id: gguf-cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ runner.temp }}/vokra-ci-gguf
           key: ci-gguf-campplus-c760971d-whisper-base-7e774425
@@ -213,12 +226,16 @@ jobs:
   build-target-vulkan-only:
     name: build-target-vulkan-only
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Build vokra-capi (CPU + Vulkan-only, audit trail)
         # The printf line makes the feature selection discoverable in the CI
         # log for auditors — same audit-trail pattern as the CPU-only UPM
@@ -263,7 +280,7 @@ jobs:
           bash scripts/gen-notice-cpu-vulkan-only.sh --out dist/cpu-vulkan-only/NOTICE
       - name: Generate SPDX 2.3 SBOM (deterministic)
         run: |
-          python3 scripts/sbom/generate_spdx.py \
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
             --package vokra-capi \
             --no-default-features \
             --features vulkan \
@@ -283,7 +300,7 @@ jobs:
             scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh \
             docs/handoff/m4-15.md
       - name: Upload CPU + Vulkan-only artifact (cdylib + legal files + SBOM)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-cpu-vulkan-only-linux
           path: dist/cpu-vulkan-only/
@@ -314,13 +331,16 @@ jobs:
   riscv-cross-build:
     name: riscv-cross-build
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           targets: riscv64gc-unknown-linux-gnu
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Cross-build vokra-backend-cpu (riscv64gc-unknown-linux-gnu)
         # Baseline rv64gc target — shared by BOTH RISC-V vector tiers, no new
         # target needed: RVV 1.0 instructions land only inside the
@@ -461,14 +481,17 @@ jobs:
     # summary, we just do not fail the workflow.
     continue-on-error: true
     runs-on: windows-11-arm
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           # Pin the target explicitly so this exercises aarch64-pc-windows-msvc
           # regardless of what the runner image's default toolchain provides.
           targets: aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Build vokra-cli (release, aarch64-pc-windows-msvc)
         # Narrow scope on purpose: `-p vokra-cli` exercises the workspace's
         # public consumer surface without pulling every crate through the
@@ -499,14 +522,17 @@ jobs:
   cpu-isa-server-tier:
     name: cpu-isa-server-tier (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Server-tier differential (runtime-detect gated, --nocapture logs skips)
         run: cargo test --release -p vokra-backend-cpu --test server_tier_parity -- --nocapture
       - name: Full backend-cpu suite on this runner
@@ -602,10 +628,14 @@ jobs:
   bench-regression:
     name: bench-regression
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
       - name: mel-frontend regression check (5% gate, fusion enabled)
@@ -651,7 +681,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE=docs/bench-baselines/silero_vad_baseline.json
-          STATE="$(python3 tools/bench/baseline_gate.py "$BASE")"
+          STATE="$(uv run --no-project --python 3.12 python tools/bench/baseline_gate.py "$BASE")"
           if [ "$STATE" = placeholder ]; then
             echo "::notice::Silero VAD RTF baseline is a placeholder (not yet seeded on ubuntu-latest). Clean skip — no regression verdict claimed. Seed via .github/workflows/bench-baseline-capture.yml (owner)."
             exit 0
@@ -706,12 +736,15 @@ jobs:
   server-deployment:
     name: server-deployment
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: |
             .

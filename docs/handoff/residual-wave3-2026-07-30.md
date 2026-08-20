@@ -51,7 +51,7 @@ plan; some cherry-picks landed under new SHAs on the integration branch
 
 | # | SHA | Wave | Item | Notes |
 |---|-----|------|------|-------|
-| 1 | `4e02235` | B | F0 RMVPE — real mel front-end + 360-class Hz decoder + converter (MIT) | **partial** — internal U-Net + GRU forward returns `VokraError::UnsupportedOp` (FR-EX-08 loud-partial). Real weight kernel binding is an owner-side follow-up wave. |
+| 1 | `4e02235` | B | F0 RMVPE — real mel front-end + 360-class Hz decoder + converter（当時MITと記録、2026-08-18監査でweight Unknownへ訂正） | **partial** — internal U-Net + GRU forward returns `VokraError::UnsupportedOp` (FR-EX-08 loud-partial). Real weight kernel binding is an owner-side follow-up wave. |
 | 2 | `61ca106` | B | F0 CREPE — real 6-block CNN forward + converter (MIT) + Keras `.h5` → safetensors bridge | 5 sizes (tiny/small/medium/large/full) covered by one MIT sign-off. |
 | 3 | `d3f30a0` | D | JA-ASR-5 Zipformer encoder (`vokra-ops/src/zipformer.rs`) | Multi-resolution + shared-QK attention scalar Rust port. Primary consumer = reazonspeech-k2 CTC family. |
 | 4 | `9c65324` | D | JA-ASR-4 E-Branchformer encoder (`vokra-ops/src/ebranchformer.rs`) | Parallel MHA + cgMLP + Merge module. Primary consumer = ESPnet OWSM family. |

@@ -17,7 +17,7 @@ controlled inputs, so these tests pin behaviour, not formatting. GitHub's
 `${{ … }}` template expressions are substituted the way Actions would
 (inputs render as empty strings on non-dispatch triggers).
 
-Run: python3 tools/parity/test_parity_whisper_workflow.py
+Run: uv run --no-project --python 3.12 python tools/parity/test_parity_whisper_workflow.py
 """
 
 from __future__ import annotations
@@ -122,8 +122,9 @@ def _substitute_github_exprs(body: str, event_name: str, inputs: dict[str, str])
 
 def run_matrix_step(event_name: str, inputs: dict[str, str] | None = None) -> dict:
     """Execute the setup job's matrix computation; return the parsed matrix."""
+    resolved_inputs = inputs or {}
     body = _substitute_github_exprs(
-        _extract_step_run("Compute size matrix"), event_name, inputs or {}
+        _extract_step_run("Compute size matrix"), event_name, resolved_inputs
     )
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "gh_output"
@@ -131,6 +132,16 @@ def run_matrix_step(event_name: str, inputs: dict[str, str] | None = None) -> di
         out.touch()
         summary.touch()
         env = dict(os.environ, GITHUB_OUTPUT=str(out), GITHUB_STEP_SUMMARY=str(summary))
+        # GitHub Actions renders the step-level env mapping before invoking
+        # Bash. Mirror it here so `set -u` sees defined (possibly empty)
+        # variables on every trigger.
+        for name in DISPATCH_INPUTS:
+            value = (
+                resolved_inputs.get(name, "")
+                if event_name == "workflow_dispatch"
+                else ""
+            )
+            env[f"GITHUB_EVENT_INPUTS_{name.upper()}"] = value
         proc = subprocess.run(
             ["bash", "-c", body], env=env, capture_output=True, text=True, cwd=REPO
         )

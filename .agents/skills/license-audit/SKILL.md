@@ -42,9 +42,9 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 
 - **soxr / rubberband（GPL）禁止** → speexdsp(BSD) / pocketfft(BSD-3) 設計ベースの自前実装。AEC は SpeexDSP(BSD) / WebRTC AEC3 port。
 
-## §3.1 sign-off の primary-source rule（fail-closed default、CC は勝手に埋めない）
+## §3.1 sign-off の primary-source rule（fail-closed default、agent は勝手に埋めない）
 
-`docs/license-audit.md` §3.1 の sign-off 欄は **依頼者（owner）の判断印**。fail-closed default = 空欄のままロックされ続けることが正しい振る舞い。以下 2 条件が **両方揃った時のみ** CC 側で埋めてよい:
+`docs/license-audit.md` §3.1 の sign-off 欄は **依頼者（owner）の判断印**。fail-closed default = 空欄のままロックされ続けることが正しい振る舞い。以下 2 条件が **両方揃った時のみ** agent 側で埋めてよい:
 
 1. **依頼者が明示的に「自主判断で埋めてよい」と言った**（session 内の直接発話 or AGENTS.md 記載、暗黙推定は禁止）
 2. **primary source で license class が clean と確認できた**:
@@ -52,7 +52,7 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
    - authenticated HF API（`hf_hub_download` の meta 経由、README の「license:」だけを信じない）
    - upstream publish の DOI / 論文ライセンス声明
 
-**署名は依頼者指示に従い `yousan`**（handle）+ 日付。判断根拠を row の右端に「(依頼者許可 = CC 判断)」で明記。片方でも欠けたら **空欄据置** — 現状の CC が埋めた row は monotonic に増えるだけで、fail-closed の default を破らない。
+**署名は依頼者指示に従い `yousan`**（handle）+ 日付。判断根拠を row の右端に「(依頼者許可 = agent 判断)」で明記。片方でも欠けたら **空欄据置** — 許可済み row は monotonic に増えるだけで、fail-closed の default を破らない。
 
 **precedent 例**:
 - **CSM-1B ☑ Commercial** (2026-07-28): authenticated HF API で `license=apache-2.0` clean、README "Misuse and abuse" は非拘束 advisory precedent（Bark row 259 と同型）→ CC 判断で埋めた。
@@ -68,11 +68,14 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 2. attribution / 配布条件があれば `NOTICE` に追記（credit 要・NC・scratch-reimpl の別を明記）。
 3. TTS/VC なら `docs/legal-compliance.md`（EU AI Act Art.50 / SB 942）も通す → skill `add-speech-model`。**watermark / C2PA 埋め込み（FR-CP-01/02）は 2026-07-04 依頼者ドロップで未実装**（`WatermarkConfig` は config 面のみ・`backend_status`=Deferred）。weight license は上記 compliance gate で強制。
 4. HF 公開する場合 → skill `publish-model-to-hf`（5-tier gate）。
-5. ゲートを走らせる:
+5. ゲートを走らせる。`cargo deny` / `cargo audit` は workspace を読むため VAST、shell / uv のゲートはローカルでよい:
 
-```
+```bash
+# VAST
 cargo deny check licenses advisories bans
 cargo audit
+
+# ローカル
 bash scripts/check-forbidden-symbols.sh
 bash scripts/check-zero-deps.sh
 uv run --no-project --python 3.12 python scripts/publish/signoff_match.py --self-test

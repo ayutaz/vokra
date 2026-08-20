@@ -27,9 +27,9 @@
 # NOT blocked (legitimate uses):
 #   * uv add / uv run / uv sync / uv pip (uv-managed pip pass-through)
 #
-# Vast.ai instance provisioning uses `pip install 'huggingface_hub<0.30'` via
-# scripts/publish/vast-ai/provision.sh (documented gotcha B). That script
-# runs on remote instance, not through Codex — this hook is Codex-only.
+# Vast.ai provisioning has one audited bootstrap-only system repair before uv
+# exists (`scripts/publish/vast-ai/provision.sh`, gotcha B). Do not reproduce
+# it by hand; task Python on the remote instance also runs through uv.
 #
 # SELF-TEST
 #   bash .codex/hooks/block-pip-conda.sh --self-test
@@ -41,13 +41,15 @@ set -uo pipefail
 if [ "${1:-}" = "--self-test" ]; then
     fails=0
     check() {
-        local name="$1" expect="$2" command="$3" got
-        if printf '{"tool_input":{"command":"%s"}}' "$command" \
-            | bash "$0" >/dev/null 2>&1; then
-            got=allow
-        else
-            got=block
-        fi
+        local name="$1" expect="$2" command="$3" got rc
+        printf '{"tool_input":{"command":"%s"}}' "$command" \
+            | bash "$0" >/dev/null 2>&1
+        rc=$?
+        case "$rc" in
+            0) got=allow ;;
+            2) got=block ;;
+            *) got="error($rc)" ;;
+        esac
         if [ "$got" = "$expect" ]; then
             printf '  ok    %-40s %s\n' "$name" "$got"
         else
@@ -59,11 +61,40 @@ if [ "${1:-}" = "--self-test" ]; then
     echo "block-pip-conda --self-test"
     check "direct python script" block "python3 scripts/check.py"
     check "direct python inline" block "python3 -c print(1)"
-    check "uv run python" allow "uv run --project tools/parity python scripts/check.py"
+    check "direct python after assignment" block "MODE=test python scripts/check.py"
+    check "direct python after &&" block "cd scripts && python3 check.py"
+    check "direct python after pipe" block "printf payload | python3 -c pass"
+    check "direct python through env" block "env MODE=test python3 scripts/check.py"
+    check "direct python through command" block "command python scripts/check.py"
+    check "direct python through time" block "time python3 scripts/check.py"
+    check "python -m pip" block "python -m pip install pyyaml"
     check "bare pip install" block "pip install pyyaml"
+    check "bare pip3 freeze" block "pip3 freeze"
+    check "bare pip uninstall" block "pip uninstall pyyaml"
+    check "conda install" block "conda install pyyaml"
     check "uv pip install" allow "uv pip install pyyaml"
     check "conda create" block "conda create -n test-env"
+    check "conda env update" block "conda env update -f environment.yml"
+    check "conda remove" block "conda remove -n test-env pyyaml"
+    check "uv run python" allow "uv run --project tools/parity python scripts/check.py"
+    check "uv no-project Python 3.12" allow "uv run --no-project --python 3.12 python scripts/check.py"
+    check "env-wrapped uv run" allow "env MODE=test uv run --no-project --python 3.12 python scripts/check.py"
+    check "read-only pip list" allow "pip list"
+    check "read-only conda info" allow "conda info"
     check "python word in prose" allow "echo python3 scripts/check.py"
+    check "python-like script path" allow "./scripts/python3-helper.sh"
+
+    message_output="$(printf '%s' '{"tool_input":{"command":"pip install pyyaml"}}' \
+        | bash "$0" 2>&1 >/dev/null)"
+    message_rc=$?
+    if [ "$message_rc" -eq 2 ] \
+        && printf '%s' "$message_output" | grep -q 'audited' \
+        && ! printf '%s' "$message_output" | grep -q 'Bypass this hook'; then
+        printf '  ok    %-40s %s\n' "block guidance" "audited uv/VAST path"
+    else
+        printf '  FAIL  %-40s expected audited guidance without bypass advice\n' "block guidance"
+        fails=$((fails + 1))
+    fi
 
     if [ "$fails" -eq 0 ]; then
         echo "block-pip-conda --self-test: OK"
@@ -118,7 +149,7 @@ esac
 matched=""
 segment_has_direct_python() {
     printf '%s\n' "$1" \
-        | tr ';\n' '\n\n' \
+        | tr ';\n' '\n' \
         | sed -e 's/&&/\n/g' -e 's/||/\n/g' -e 's/|/\n/g' \
         | while IFS= read -r segment; do
             segment="${segment#"${segment%%[![:space:]]*}"}"
@@ -126,6 +157,19 @@ segment_has_direct_python() {
                 segment="${segment#* }"
                 segment="${segment#"${segment%%[![:space:]]*}"}"
             done
+            while printf '%s' "$segment" | grep -Eq '^(command|exec|time)[[:space:]]+'; do
+                segment="${segment#* }"
+                segment="${segment#"${segment%%[![:space:]]*}"}"
+            done
+            if printf '%s' "$segment" | grep -Eq '^env[[:space:]]+'; then
+                segment="${segment#* }"
+                segment="${segment#"${segment%%[![:space:]]*}"}"
+                while printf '%s' "$segment" \
+                    | grep -Eq '^(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+)[[:space:]]+'; do
+                    segment="${segment#* }"
+                    segment="${segment#"${segment%%[![:space:]]*}"}"
+                done
+            fi
             printf '%s' "$segment" \
                 | grep -Eq '^python3?([[:space:]]|$)' \
                 && echo MATCH
@@ -155,9 +199,9 @@ if [ -n "$matched" ]; then
         echo "Per-tree layout: pyproject.toml + uv.lock, Python 3.12 pin"
         echo "(uv python pin 3.12 + requires-python \">=3.12\")."
         echo ""
-        echo "Bypass this hook only when the user explicitly says so — e.g.,"
-        echo "when reproducing a vast.ai provisioning step that must run pip"
-        echo "on the remote instance (scripts/publish/vast-ai/provision.sh)."
+        echo "Do not reproduce the bootstrap repair by hand. Run the audited"
+        echo "scripts/publish/vast-ai/provision.sh on the remote instance; task"
+        echo "Python after provisioning must still run through uv."
     } >&2
     exit 2
 fi

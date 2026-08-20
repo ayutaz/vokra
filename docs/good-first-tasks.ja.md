@@ -7,7 +7,7 @@ Vokra への最初のコントリビューションに向いた、独立して�
 入れ条件、おおよその規模を付けています。着手前に「自分の時間を使う価値がある
 か」を判断できるようにするためです。
 
-**最終確認日: 2026-07-20。**
+**最終確認日: 2026-08-18。**
 
 ## この一覧の使い方
 
@@ -17,9 +17,10 @@ Vokra への最初のコントリビューションに向いた、独立して�
 - **これらは GitHub Issue で管理していません。** 作業項目は作者のチケット
   ツリーにあり、参照すべき issue 番号は存在しません
   （[CONTRIBUTING.md](../CONTRIBUTING.md) §1）。
-- **緑のビルドから始めてください。** 何かを変更する前に
-  `cargo test --workspace` が通ることを確認してください。「正常な状態」の
-  実測時間は CONTRIBUTING に記載しています。
+- **緑のbaselineから始めてください。** 記録済みCI結果を確認します。
+  maintainer Macではworkspace Cargoと`-p vokra-models`はVAST専用です。
+  古いlocal workspace commandを実行せず、
+  [CONTRIBUTING.md](../CONTRIBUTING.md)に従ってください。
 - **規模** は目安です: **XS** = 1 時間未満、**S** = 1〜2 時間、
   **M** = 半日、**L** = それ以上。
 
@@ -65,8 +66,8 @@ Vokra への最初のコントリビューションに向いた、独立して�
 **受け入れ条件**
 
 - `grep -rn "scratchpad/" crates/ --include="*.rs"` が何も返さない
-- `cargo doc -p vokra-models` が引き続きビルドできる
-- `cargo fmt --all -- --check` と `cargo clippy --all-targets -- -D warnings` が通る
+- `cargo doc -p vokra-models` がVAST/CIで引き続きビルドできる
+- localの`cargo fmt --all -- --check`とVAST/CIのall-target clippyが通る
 
 **なぜやる価値があるか**: 2 行の変更で、モデル層で最もアーキテクチャ上重要な
 モジュールを、非公開の計画ツリーを持たない人にも読めるようにできます。
@@ -80,15 +81,15 @@ Vokra への最初のコントリビューションに向いた、独立して�
 
 このリポジトリには「check スクリプトは `--help` に対応し、目的・モード・
 終了コードを表示する」という確立した慣習があります。`check-zero-deps.sh` /
-`check-forbidden-symbols.sh` ほか 11 本がまだ従っていません。
+`check-forbidden-symbols.sh` ほかにも未対応があります。
 
 一覧の再現:
 
 ```bash
-for s in scripts/check-*.sh; do grep -q -- '--help' "$s" || echo "$s"; done
+rg --files-without-match -- '--help' scripts/check-*.sh
 ```
 
-執筆時点で **13 本**が出力されます。
+2026-08-18の確認では **18本**が出力されます。
 
 **やること**: `scripts/check-platform-support.sh` と
 `scripts/check-doc-references.sh` が既に使っている形（ヘッダのコメント
@@ -96,7 +97,7 @@ for s in scripts/check-*.sh; do grep -q -- '--help' "$s" || echo "$s"; done
 **各 check の挙動と終了コードは一切変えないでください** — 目的は発見しやすさ
 だけです。
 
-2〜3 本だけの PR でも十分です。13 本すべてを対象にする必要はありません。
+2〜3本だけのPRでも十分です。18本すべてを対象にする必要はありません。
 
 **受け入れ条件**
 

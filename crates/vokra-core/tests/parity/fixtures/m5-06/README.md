@@ -47,7 +47,7 @@ consumed).
 
 ```
 brew install openfst    # Apache-2.0, bottled
-python3 tools/parity/wfst_dump_reference.py
+uv run --no-project --python 3.12 python tools/parity/wfst_dump_reference.py
 ```
 
 The dumper aborts loudly if the OpenFST CLI is missing (it never self-mirrors).

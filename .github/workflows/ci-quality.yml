@@ -55,9 +55,12 @@ jobs:
   repo-hygiene:
     name: repo-hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -67,7 +70,7 @@ jobs:
         # different bytes and breaks a hash nobody touched.
         run: bash scripts/check-fixture-eol-pins.sh
       - name: pipefail `| grep -q` fail-open linter (static)
-        run: uv run --no-project python scripts/compliance/lint-pipefail-grep-q.py
+        run: uv run --no-project --python 3.12 python scripts/compliance/lint-pipefail-grep-q.py
       - name: NVIDIA scanner fail-open behavioural test
         # Complement to the static linter above: that one only spots the
         # `| grep -q` string idiom, this one proves the four NVIDIA
@@ -86,6 +89,10 @@ jobs:
         run: |
           bash scripts/check-workflow-hygiene.sh --self-test
           bash scripts/check-workflow-hygiene.sh
+      - name: Pre-push classifier and production-hook regression tests
+        # Executes the real hook with Git/Cargo/compliance boundaries mocked;
+        # no compilation or ref mutation occurs in this checkout-only job.
+        run: bash scripts/test-pre-push-fastpath.sh
 
   # FQ-03 (2026-07-31): promote `check-catalog-reality.sh` PRODUCTION run
   # from owner-only publish-time to per-PR. The script's --self-test already
@@ -111,8 +118,11 @@ jobs:
   catalog-audit:
     name: catalog-audit
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Catalog reality (self-test, then production check)
         run: |
           bash scripts/publish/check-catalog-reality.sh --self-test
@@ -128,8 +138,11 @@ jobs:
   unity-capi-lints:
     name: unity-capi-lints
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: IL2CPP callback pattern (static / Preserve / rooted delegate)
         run: bash scripts/check-callback-pattern.sh
       - name: DllImport routes through NativeMethods.Lib (iOS __Internal switch)
@@ -149,6 +162,7 @@ jobs:
   capi-smoke:
     name: capi-smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       # Audit 2026-08-10 (Rank 15): the C ABI smoke_asr.c / smoke_tts.c legs
       # clean-skip when these env vars are unset (fail-closed pattern, not
@@ -158,9 +172,11 @@ jobs:
       VOKRA_WHISPER_GGUF: ${{ vars.VOKRA_WHISPER_GGUF_PATH || '' }}
       VOKRA_PIPER_GGUF: ${{ vars.VOKRA_PIPER_GGUF_PATH || '' }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Install cbindgen
         # Same provisioning the ios-build job uses.
         run: cargo install cbindgen --locked
@@ -171,7 +187,7 @@ jobs:
         run: git diff --exit-code Cargo.lock
 
   # MSRV verification (X-08-T15). Every other toolchain reference in this repo
-  # is `dtolnay/rust-toolchain@stable`, so the declared MSRV had never once
+  # is `dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c `, so the declared MSRV had never once
   # been exercised: a contributor on 1.85-1.88 hits a cargo rust-version error
   # that CI could not reproduce.
   #
@@ -189,16 +205,19 @@ jobs:
   msrv:
     name: msrv
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      # NOTE: `dtolnay/rust-toolchain@1.89` は **MSRV pin** = 一般的な action
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # NOTE: `dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05 ` は **MSRV pin** = 一般的な action
       # の version tag ではない。dependabot は これを version bump 対象と誤認
       # しやすい (2026-07-23 の PR #14 で `@1.89` → `@1.100` に誤 bump された
       # 実績) ので、`.github/dependabot.yml` の ignore rule で
       # `dtolnay/rust-toolchain` を除外している。ここは MSRV 変更時にのみ
       # 手で書き換える (docs/abi-changelog.md:318, X-08-T32)。
-      - uses: dtolnay/rust-toolchain@1.89
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: cargo check --workspace on the effective MSRV (1.89)
         run: cargo check --workspace
 
@@ -219,13 +238,15 @@ jobs:
   abi-surface:
     name: abi-surface (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0 # abi-diff compares against a baseline revision
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: C ABI diff (self-test, then diff)
         run: |
           bash scripts/abi-diff.sh --self-test
@@ -267,16 +288,21 @@ jobs:
   doc-examples:
     name: doc-examples
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Self-test the extractor and checkers
-        # Bidirectional fixtures: a doc-local pseudo-helper (migration-guide's
-        # `read_wav_mono_f32`) must stay GREEN, and injected drift must go RED.
+        # Bidirectional fixtures: cargo selectors and doc-local helpers must
+        # stay GREEN, injected drift must go RED, and the Python tutorial's WAV
+        # helper is executed against mono/stereo standard-library fixtures.
         # Without the green half, tightening the API check later could start
         # misfiring on legitimate pseudo-helpers with nothing to catch it.
-        run: python3 tools/docs/check_doc_examples.py --self-test
+        run: uv run --no-project --python 3.12 python tools/docs/check_doc_examples.py --self-test
       - name: Verify documentation code examples
-        run: python3 tools/docs/check_doc_examples.py
+        run: uv run --no-project --python 3.12 python tools/docs/check_doc_examples.py
 
   # Audit 2026-08-10 gap: rustdoc `///` doctests were executed NOWHERE.
   # `cargo test --workspace` (which runs them) is invoked by no workflow,
@@ -289,11 +315,14 @@ jobs:
   doctests:
     name: doctests (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: cargo test --workspace --doc  (`///` doctests, rustdoc-side)
         # --no-fail-fast so a single failing doctest reports every failure
         # in one run (mirrors the shell-self-tests aggregator pattern).
@@ -324,11 +353,14 @@ jobs:
   rustdoc:
     name: rustdoc (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: cargo doc build + warning ratchet (NOT a zero-warning gate)
         shell: bash
         run: |
@@ -357,8 +389,11 @@ jobs:
   fa-v3-confinement:
     name: fa-v3-confinement (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: FA v3 symbols confined to vokra-backend-cuda
         run: ./scripts/check-fa-v3-confinement.sh
 
@@ -377,29 +412,31 @@ jobs:
   python-license-audit:
     name: python-license-audit
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Create isolated venv and install binding + audit tool
-        # `pip install .` reads bindings/python/pyproject.toml so build / runtime
+        # `uv pip install .` reads bindings/python/pyproject.toml so build / runtime
         # deps materialize in this venv. `pip-licenses` (MIT) enumerates every
         # installed distribution and enforces --allow-only. Isolated venv so the
         # runner's ambient site-packages cannot mask a bad license.
         run: |
           set -euo pipefail
-          python -m venv /tmp/vokra-py-audit
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-audit/bin/activate
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 /tmp/vokra-py-audit
           if [ -f bindings/python/pyproject.toml ]; then
-            python -m pip install ./bindings/python
+            uv pip install --python /tmp/vokra-py-audit/bin/python ./bindings/python
           else
             echo "bindings/python/pyproject.toml not yet present — auditing pip-licenses toolchain only."
           fi
-          python -m pip install pip-licenses
+          uv pip install --python /tmp/vokra-py-audit/bin/python pip-licenses
       - name: pip-licenses --allow-only (NFR-LC-02 GPL/LGPL block)
         # --allow-only fails nonzero if ANY installed dist reports a license
         # outside the allowlist. The venv holds only the binding's transitive
@@ -415,9 +452,7 @@ jobs:
         # allowlist expansion to cover the standard toolchain packages.
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-audit/bin/activate
-          pip-licenses \
+          uv run --no-project --python /tmp/vokra-py-audit/bin/python pip-licenses \
             --format=markdown \
             --allow-only 'Apache-2.0;Apache Software License;MIT;MIT License;BSD-3-Clause;BSD License;BSD-2-Clause;PSF-2.0;Python-2.0' \
             | tee /tmp/pip-licenses.md
@@ -488,12 +523,15 @@ jobs:
             triple: x86_64-pc-windows-msvc
             run_tests: false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           targets: ${{ matrix.triple }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: |
             integrations/vokra-server
@@ -530,22 +568,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set -- cargo build
           if [ "${{ matrix.run_tests }}" = "true" ]; then
-            PROFILE_ARG="--release"
-          else
-            PROFILE_ARG=""
+            set -- "$@" --release
           fi
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            TARGET_ARG=""
+            : # Native target; keep Cargo's default target directory/cache.
           else
-            TARGET_ARG="--target ${{ matrix.triple }}"
+            set -- "$@" --target "${{ matrix.triple }}"
           fi
-          cargo build $PROFILE_ARG $TARGET_ARG \
+          "$@" \
             -p vokra-server \
             --manifest-path integrations/vokra-server/Cargo.toml
       - name: cargo-deny (server crate, NFR-LC-04)
         if: matrix.os == 'ubuntu-latest'
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check licenses advisories bans
           manifest-path: integrations/vokra-server/Cargo.toml
@@ -669,15 +706,18 @@ jobs:
   cargo-audit:
     name: cargo-audit (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Install cargo-audit
         # Same install path as ci.yml `license` job — keeps the toolchain
         # identical so a regression in one leg reproduces in the other.
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532
         with:
           tool: cargo-audit
       - name: cargo audit (root workspace, zero-dep tripwire)
@@ -725,16 +765,19 @@ jobs:
   typos:
     name: typos (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Spellcheck (typos)
-        # `crate-ci/typos@v1` is a moving major tag; the entrypoint pins the
+        # `crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f ` is a moving major tag; the entrypoint pins the
         # typos CLI itself (currently v1.48.0, verified 2026-07-23 via
         # `gh api repos/crate-ci/typos/contents/action/entrypoint.sh`).
         # `config` is explicit so a future working-directory change cannot
         # silently reroute to a stray _typos.toml lower in the tree.
-        uses: crate-ci/typos@v1
+        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f
         with:
           config: _typos.toml
 
@@ -763,10 +806,13 @@ jobs:
   vokra-piper-g2p:
     name: vokra-piper-g2p (excluded workspace)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: integrations/vokra-piper-g2p
       - name: cargo test (excluded workspace, own Cargo.lock)
@@ -809,24 +855,26 @@ jobs:
   python-parity-oracles:
     name: python-parity-oracles
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Create isolated venv and install pytest
         # Zero-dep envelope: pytest and its transitive deps live ONLY inside
         # /tmp/vokra-py-parity; nothing in the Vokra runtime graph gains a
         # dependency (NFR-DS-02) and no Vokra artifact ships with them.
         run: |
           set -euo pipefail
-          python -m venv /tmp/vokra-py-parity
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-parity/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install pytest
-          python -m pip list | grep -Ei '^pytest\b'
+          uv venv --python 3.12 /tmp/vokra-py-parity
+          uv pip install --python /tmp/vokra-py-parity/bin/python pytest
+          uv pip list --python /tmp/vokra-py-parity/bin/python | grep -Ei '^pytest\b'
       - name: pytest tools/parity/test_*.py
         # The files are stdlib unittest.TestCase suites; pytest discovers
         # and executes them natively. Explicit file list (no glob) so a NEW
@@ -834,9 +882,7 @@ jobs:
         # in an unrelated helper named test_* someone drops in later.
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . /tmp/vokra-py-parity/bin/activate
-          python -m pytest -v \
+          uv run --no-project --python /tmp/vokra-py-parity/bin/python python -m pytest -v \
             tools/parity/test_dump_whisper_vocab_gate.py \
             tools/parity/test_nightly_tier2_workflow.py \
             tools/parity/test_nightly_webgl_workflow.py \
@@ -933,10 +979,13 @@ jobs:
   shell-self-tests:
     name: shell-self-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12 (for make_model_card.py --self-test)
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -974,17 +1023,17 @@ jobs:
           run "publish/check-model-size"      bash scripts/publish/check-model-size.sh   --self-test
           run "publish/fetch_license"         bash scripts/publish/fetch_license.sh      --self-test
           run "publish/upload"                bash scripts/publish/upload.sh             --self-test
-          run "publish/make_model_card"       uv run --no-project python scripts/publish/make_model_card.py --self-test
-          run "publish/publishability-report" uv run --no-project python scripts/publish/publishability-report.py --self-test
-          run "publish/signoff_match"         uv run --no-project python scripts/publish/signoff_match.py   --self-test
+          run "publish/make_model_card"       uv run --no-project --python 3.12 python scripts/publish/make_model_card.py --self-test
+          run "publish/publishability-report" uv run --no-project --python 3.12 python scripts/publish/publishability-report.py --self-test
+          run "publish/signoff_match"         uv run --no-project --python 3.12 python scripts/publish/signoff_match.py   --self-test
           run "publish/publish-one"           bash scripts/publish/publish-one.sh        --self-test
           run "publish/x10-mirror-librispeech" bash scripts/publish/x10-mirror-librispeech.sh --self-test
-          # A Claude Code PreToolUse hook rather than a repo gate, but its
-          # --self-test belongs here for a reason CI is uniquely able to give:
-          # the hook runs on the maintainer's macOS box and sizes files with
-          # BSD `stat -f`, falling back to GNU `stat -c`. Only a Linux runner
-          # exercises that fallback. If it ever breaks, every size check
-          # silently reports 0 bytes and the guard stops guarding.
+          # Both agent-facing copies are production inputs. Run all four, not
+          # only one compatibility copy: the memory guard's GNU-stat branch is
+          # Linux-only, and an unwired block-pip self-test could silently rot.
+          run "codex-hooks/block-pip-conda" bash .codex/hooks/block-pip-conda.sh --self-test
+          run "codex-hooks/guard-local-memory" bash .codex/hooks/guard-local-memory.sh --self-test
+          run "claude-hooks/block-pip-conda" bash scripts/claude-hooks/block-pip-conda.sh --self-test
           run "claude-hooks/guard-local-memory" bash scripts/claude-hooks/guard-local-memory.sh --self-test
           echo
           if [ "${fail}" -ne 0 ]; then

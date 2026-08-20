@@ -40,11 +40,14 @@ description: Vokra の audio-dialect オペレータ（STFT/vocoder/flow sampler
 
 ## 5. parity と検証
 
-→ skill `numerical-parity`（torch / scipy / librosa reference と照合、fixtures はオフライン生成をコミット）。最後に：
+→ skill `numerical-parity`（torch / scipy / librosa reference と照合、fixtures はオフライン生成をコミット）。`vokra-models` を含む Cargo と workspace 全体の Cargo はローカルで実行せず、skill `vast-ai-workflow` で VAST に送る。最後に：
 
-```
-cargo test --workspace
-cargo clippy --all-targets -- -D warnings
+```bash
+# ローカル（非コンパイルまたは既知の軽量ゲート）
 cargo fmt --all -- --check
 bash scripts/check-zero-deps.sh
+
+# VAST（workspace Cargo）
+cargo test --workspace
+cargo clippy --all-targets -- -D warnings
 ```

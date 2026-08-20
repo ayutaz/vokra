@@ -63,6 +63,7 @@ jobs:
   preflight:
     name: preflight (license check)
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       has_license: ${{ steps.check.outputs.has_license }}
     steps:
@@ -88,16 +89,18 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
       - name: Cache emsdk
         id: emsdk-cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/emsdk
           key: emsdk-${{ env.VOKRA_WEBGL_EMSDK_VERSION }}-${{ runner.os }}
@@ -111,6 +114,7 @@ jobs:
       - name: Build staticlib + audits + pinned-emcc verify harness
         run: |
           ~/emsdk/emsdk activate "${VOKRA_WEBGL_EMSDK_VERSION}"
+          # shellcheck source=/dev/null
           source ~/emsdk/emsdk_env.sh
           rustup target add wasm32-unknown-emscripten
           bash scripts/build-unity-webgl-lib.sh --verify
@@ -126,10 +130,14 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Build the WebGL staticlib into Plugins/WebGL
         # rustc-only (no emsdk — Unity's bundled Emscripten links it).
@@ -186,7 +194,7 @@ jobs:
           EOF
 
       - name: Cache Unity Library folder
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: nightly-webgl-consumer/Library
           key: unity-library-webgl-${{ hashFiles('nightly-webgl-consumer/Packages/manifest.json') }}
@@ -194,7 +202,7 @@ jobs:
             unity-library-webgl-
 
       - name: Build WebGL player
-        uses: game-ci/unity-builder@v5
+        uses: game-ci/unity-builder@d829bfc901f2347c8fe18898f06712b66916ef42
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
         with:
@@ -216,7 +224,7 @@ jobs:
           fi
           SERVE_DIR="$(dirname "$INDEX")"
           echo "Serving $SERVE_DIR (no COOP/COEP headers — threads-off baseline)"
-          python3 -m http.server 8080 --directory "$SERVE_DIR" &
+          uv run --no-project --python 3.12 python -m http.server 8080 --directory "$SERVE_DIR" &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
@@ -258,7 +266,7 @@ jobs:
 
       - name: Upload browser console log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: nightly-webgl-console-log
           path: ${{ runner.temp }}/chrome-console.log

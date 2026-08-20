@@ -33,13 +33,13 @@
 //!
 //! # License
 //!
-//! **MIT** end-to-end — code + weights ship under the standard MIT
-//! license (upstream `github.com/Dream-High/RMVPE/blob/main/LICENSE` +
-//! `github.com/yxlllc/RMVPE/blob/main/LICENSE`, both fetched
-//! 2026-07-30 — CLAUDE.md 「ハルシネーション厳禁」). MIT classifies as
-//! [`LicenseClass::Permissive`] — same commercial verdict as
-//! apache-2.0 (no runtime-side attribution obligation, unlike the CC-BY
-//! codec weights).
+//! The paper's `Dream-High/RMVPE` reference implementation is
+//! Apache-2.0, but the `yxlllc/RMVPE` repository that publishes the
+//! checkpoint consumed here has no LICENSE file or release-side license
+//! declaration (GitHub API rechecked 2026-08-18). The distributed
+//! checkpoint therefore defaults to [`LicenseClass::Unknown`] and stays
+//! fail-closed. A caller may pass an explicit SPDX override only after
+//! independently establishing terms for the exact checkpoint.
 //!
 //! # BF16 posture
 //!
@@ -100,12 +100,11 @@ pub const CATEGORY: &str = "f0";
 /// GitHub coordinate rather than an `<org>/<repo>` HF path.
 pub const UPSTREAM_HF: &str = "yxlllc/RMVPE";
 
-/// Canonical weight license SPDX (`mit`). Overrides via the
-/// [`convert_rmvpe_file`] `license` parameter — the standing mechanism
-/// for "implementation is clean-room MIT but the upstream distributed
-/// checkpoint is another license" scenarios (mirror of
-/// `convert_file_licensed` in `lib.rs`).
-pub const DEFAULT_LICENSE: &str = "mit";
+/// Fail-closed weight license marker. `Dream-High/RMVPE` code is
+/// Apache-2.0, but the checkpoint-publishing `yxlllc/RMVPE` repository
+/// has no license declaration. Override via [`convert_rmvpe_file`] only
+/// after verifying terms for the exact checkpoint.
+pub const DEFAULT_LICENSE: &str = "unknown";
 
 /// Ad-hoc metadata key for the model category. Kept as a converter-side
 /// constant (not a `chunks::KEY_*` alias) until a sibling `category`
@@ -194,10 +193,8 @@ pub struct RmvpeReport {
 /// and RMVPE hparams so the runtime binder can bring the graph up
 /// without a side-car config lookup.
 ///
-/// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
-/// mechanism `lib.rs::convert_file_licensed` uses when the
-/// implementation is clean-room but the redistributed checkpoint
-/// carries a different SPDX (e.g. `cc-by-4.0`).
+/// `license` overrides the fail-closed `DEFAULT_LICENSE` (`"unknown"`)
+/// after the caller has verified terms for the exact checkpoint.
 pub fn convert_rmvpe_file(
     input: &Path,
     output: &Path,
@@ -230,15 +227,15 @@ pub fn convert_rmvpe_file(
     b.add_f32(KEY_CENTS_PER_CLASS, DEFAULT_CENTS_PER_CLASS);
     b.add_f32(KEY_BASE_HZ, DEFAULT_BASE_HZ);
 
-    // Self-describing redistribution: the artifact carries its own
-    // licence. RMVPE ships MIT end-to-end (upstream `Dream-High/RMVPE`
-    // + `yxlllc/RMVPE` LICENSE, fetched 2026-07-30). The `license`
-    // override lets a downstream repackager stamp a different SPDX if
-    // they redistribute under stricter terms.
+    // Fail closed: the source repository is Apache-2.0, but the fork
+    // that publishes this checkpoint does not declare weight terms.
+    // A caller-provided SPDX is classified only after that caller has
+    // independently verified the exact checkpoint's licence.
     let effective_license = license.unwrap_or(DEFAULT_LICENSE);
+    let license_class = LicenseClass::from_license_str(effective_license);
     vokra_core::stamp_provenance(
         &mut b,
-        LicenseClass::Permissive,
+        license_class,
         effective_license,
         Some(NAME),
         Some(UPSTREAM_HF),
@@ -390,7 +387,7 @@ mod tests {
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
+            Some(LicenseClass::Unknown.as_str())
         );
 
         // Hparam chunk pins the primary-source RMVPE constants.
@@ -478,6 +475,11 @@ mod tests {
             file.get(chunks::KEY_PROVENANCE_LICENSE)
                 .and_then(|v| v.as_str()),
             Some("apache-2.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str())
         );
 
         std::fs::remove_file(&input).ok();

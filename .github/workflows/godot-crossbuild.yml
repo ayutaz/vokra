@@ -99,6 +99,7 @@ jobs:
   crossbuild:
     name: crossbuild (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
     strategy:
       # Show every regression, don't mask one behind another.
       fail-fast: false
@@ -123,16 +124,18 @@ jobs:
       TARGET_TRIPLE: ${{ matrix.target }}
       RUST_BACKTRACE: '1'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           # Per-target rustup component. When `target` is set the action
           # runs `rustup target add ${target}` automatically — mirrors the
           # ios-xcframework leg in release.yml.
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           # Cache scoped per-target so a Windows change doesn't invalidate
           # the Android cache.
@@ -151,7 +154,7 @@ jobs:
       # vars.
       - name: Set up Android SDK / NDK (aarch64-linux-android only)
         if: matrix.target == 'aarch64-linux-android'
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
 
       - name: Configure NDK linker for aarch64-linux-android
         if: matrix.target == 'aarch64-linux-android'
@@ -178,7 +181,8 @@ jobs:
           LINKER="${BIN}/aarch64-linux-android24-clang"
           if [ ! -x "${LINKER}" ]; then
             echo "FAIL: expected NDK linker not executable: ${LINKER}" >&2
-            ls "${BIN}" | grep aarch64 | head -20 >&2 || true
+            find "${BIN}" -maxdepth 1 -type f -name '*aarch64*' \
+              -print | head -20 >&2 || true
             exit 1
           fi
           {
@@ -234,7 +238,7 @@ jobs:
           ls -la "$F"
 
       - name: Upload cdylib artifact (${{ matrix.target }})
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vokra-godot-${{ matrix.target }}
           path: integrations/vokra-godot/pkg/lib/${{ matrix.target }}/
@@ -259,14 +263,17 @@ jobs:
     name: package (AssetLib zip + T18 compliance)
     needs: crossbuild
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       # Downloading all matrix artifacts populates each per-target subdir
       # under a common root; we then re-run build-godot-gdextension.sh in
       # --no-build --pack mode to lay out the AssetLib tree.
       - name: Download per-target cdylibs from crossbuild matrix
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: vokra-godot-*
           path: staging/
@@ -321,7 +328,7 @@ jobs:
         run: bash scripts/build-godot-gdextension.sh --no-build --pack
 
       - name: Upload AssetLib package artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Vokra-godot-assetlib
           path: |

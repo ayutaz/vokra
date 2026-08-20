@@ -74,7 +74,7 @@
 #     SHA, but the summary flags it so the owner can decide whether to
 #     bump the pin.
 #
-#   * Python venv is installed inline (root Cargo.lock untouched —
+#   * Python venv is installed inline through uv (root Cargo.lock untouched —
 #     NFR-DS-02; the final `git diff --exit-code Cargo.lock` step is the
 #     tripwire).
 #
@@ -94,13 +94,13 @@ on:
       only:
         description: >-
           Optional matrix filter — one of "irodori", "vits_ja", or leave
-          empty for both. Useful when triaging one family member without
+          "all" for both. Useful when triaging one family member without
           re-running the (~1 GB) Irodori HF download.
         required: false
-        default: ""
+        default: all
         type: choice
         options:
-          - ""
+          - all
           - irodori
           - vits_ja
   schedule:
@@ -154,6 +154,7 @@ jobs:
   setup:
     name: gate (family opt-in)
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       run_parity: ${{ steps.decide.outputs.run_parity }}
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -204,7 +205,9 @@ jobs:
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Free hosted-runner disk (the >= 1 GB downloads + venv need headroom)
         if: matrix.arch == 'irodori'
@@ -215,15 +218,18 @@ jobs:
           df -h /
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
       - name: Resolve per-arch pins
         id: pins
@@ -286,7 +292,7 @@ jobs:
 
       - name: Cache HF checkpoint (per revision)
         if: steps.pins.outputs.auto_fetch == 'true'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           key: tts-japanese-${{ matrix.arch }}-${{ steps.pins.outputs.revision }}-v1
@@ -295,21 +301,18 @@ jobs:
         if: steps.pins.outputs.auto_fetch == 'true'
         run: |
           set -euo pipefail
-          python -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # torch CPU keeps the runner lean; the conversion path is
           # deterministic and never spins up a CUDA kernel.
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             --index-url https://download.pytorch.org/whl/cpu \
             'torch==2.9.1'
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             'numpy>=2,<3' \
             'safetensors>=0.4' \
             'huggingface_hub>=0.36'
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import torch, numpy, safetensors, huggingface_hub
           print(f"parity venv: torch={torch.__version__} numpy={numpy.__version__} "
                 f"safetensors={safetensors.__version__} "
@@ -325,10 +328,9 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER: "1"
           REPO: ${{ steps.pins.outputs.repo }}
           REVISION: ${{ steps.pins.outputs.revision }}
+          MATRIX_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
           # GitHub Actions semantics: `$GITHUB_ENV` writes propagate to
           # the NEXT step, not the current one. Capture the path from
           # stdout and use it inline; also emit to $GITHUB_ENV so
@@ -339,7 +341,7 @@ jobs:
           # hygiene.sh` catches via `bash -n`. Mirror the parity-tts-dac
           # precedent — single-quoted Python string literals nested inside
           # the double-quoted `-c` argument.
-          SNAPSHOT_STDOUT="$(python -c "
+          SNAPSHOT_STDOUT="$(uv run --no-project --python "${PARITY_VENV}/bin/python" python -c "
           import os
           from huggingface_hub import snapshot_download
           repo = os.environ['REPO']
@@ -364,7 +366,7 @@ jobs:
           fi
           echo "CKPT_DIR=${CKPT_DIR}" >> "$GITHUB_ENV"
           {
-            echo "### ${{ matrix.arch }} checkpoint"
+            echo "### ${MATRIX_ARCH} checkpoint"
             echo ""
             echo "- Repo: \`${REPO}\`"
             echo "- Revision: \`${REVISION}\`"
@@ -396,7 +398,8 @@ jobs:
             echo "sharded=false" >> "$GITHUB_OUTPUT"
             echo "primary safetensors: ${CKPT_DIR}/model.safetensors"
           else
-            SHARDS=$(ls -1 "${CKPT_DIR}"/*.safetensors 2>/dev/null | head -1 || true)
+            SHARDS=$(find "${CKPT_DIR}" -maxdepth 1 -type f \
+              -name '*.safetensors' -print | LC_ALL=C sort | head -1 || true)
             if [ -z "${SHARDS}" ]; then
               echo "::error::no *.safetensors under ${CKPT_DIR} — snapshot pattern miss?"
               exit 1
@@ -507,7 +510,7 @@ jobs:
 
       - name: Upload parity artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: tts-japanese-parity-${{ matrix.arch }}
           path: |

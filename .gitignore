@@ -3,6 +3,8 @@
 
 # Rust / Cargo build artifacts (M0-02-T01).
 /target
+# cargo-fuzz is an isolated workspace and therefore writes its own target/.
+/fuzz/target/
 # Session-local scratchpad for HF weight caches + publish staging + one-shot
 # helper outputs (per Claude Code scratchpad convention; 2026-07-28 の
 # 10-model publish で GBs 単位のモデルが untracked に残ったので明示化)。

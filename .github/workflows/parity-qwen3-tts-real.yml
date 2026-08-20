@@ -30,7 +30,7 @@
 #     it is a deliberate act — a benign upstream re-upload surfaces here as
 #     a `snapshot_download` mismatch, not as fabricated parity.
 #
-#   * Python parity venv is provisioned inline (safetensors + torch +
+#   * Python parity venv is provisioned inline through uv (safetensors + torch +
 #     huggingface_hub); the final `git diff --exit-code Cargo.lock` step
 #     proves the zero-dep invariant (NFR-DS-02) held.
 #
@@ -107,6 +107,7 @@ jobs:
   setup:
     name: setup (matrix + enable gate)
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     outputs:
       run_parity: ${{ steps.decide.outputs.run_parity }}
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -151,7 +152,7 @@ jobs:
           # dispatcher only wants to test the workflow shape; cron / PR
           # always include it.
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] \
-             || [ "${{ github.event.inputs.include_qwen3_tts_0_6b_base }}" != "false" ]; then
+             || [ "${GITHUB_EVENT_INPUTS_INCLUDE_QWEN3_TTS_0_6B_BASE}" != "false" ]; then
             add_leg '{"arch":"qwen3_tts","hf_id":"Qwen/Qwen3-TTS-12Hz-0.6B-Base","hf_revision":"5d83992436eae1d760afd27aff78a71d676296fc","env_var":"VOKRA_QWEN3_TTS_GGUF","refdir_env_var":"VOKRA_QWEN3_TTS_REFDIR","gguf":"qwen3-tts-0.6b-base.gguf"}'
           fi
           echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
@@ -165,6 +166,8 @@ jobs:
             echo "{\"include\":[${include}]}"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GITHUB_EVENT_INPUTS_INCLUDE_QWEN3_TTS_0_6B_BASE: ${{ github.event.inputs.include_qwen3_tts_0_6b_base }}
 
   parity:
     name: parity (${{ matrix.arch }})
@@ -185,31 +188,36 @@ jobs:
       ENV_VAR: ${{ matrix.env_var }}
       REFDIR_ENV_VAR: ${{ matrix.refdir_env_var }}
       GGUF: ${{ matrix.gguf }}
-      # Steer HF cache into a repo-local path so actions/cache@v6 keys
+      # Steer HF cache into a repo-local path so actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  keys
       # stay workspace-relative and stable across jobs (matches the
       # Kokoro / Whisper cache pattern).
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           # Namespace the cache per family member so a future 1.7B leg's
           # target/ does not collide with this one on shared runners.
           key: parity-qwen3-tts-real-${{ matrix.arch }}
 
       - name: Cache HF checkpoint (${{ matrix.arch }})
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.HF_HOME }}
           key: hf-qwen3-tts-${{ matrix.arch }}-${{ matrix.hf_revision }}-v1
@@ -223,21 +231,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv "${PARITY_VENV}"
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python -m pip install --upgrade pip
+          uv venv --python 3.12 "${PARITY_VENV}"
           # torch CPU keeps the runner lean (no dumper runs today — this
           # is here so a future `qwen3_tts_dump.py` sibling can hook in
           # without a workflow-level Python re-provision).
-          python -m pip install \
+          uv pip install --python "${PARITY_VENV}/bin/python" \
             "numpy>=1.26,<3" \
             "torch>=2.4,<3" \
             "safetensors>=0.4,<1" \
             "huggingface_hub>=0.24,<1"
           # hf_transfer optional but noticeably speeds the ~0.9 GB DL.
-          python -m pip install 'hf_transfer>=0.1.9' || true
-          python - <<'PY'
+          uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
           import numpy, torch, safetensors, huggingface_hub
           print(f"parity venv OK: numpy={numpy.__version__} "
                 f"torch={torch.__version__} "
@@ -256,7 +261,7 @@ jobs:
           echo "arch=$ARCH hf_id=$HF_ID hf_revision=$HF_REVISION"
           echo "env_var=$ENV_VAR refdir_env_var=$REFDIR_ENV_VAR gguf=$GGUF"
           df -h .
-          python3 --version
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python --version
           cargo --version
 
       - name: Build vokra-cli (release)
@@ -272,9 +277,7 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER: "1"
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          . "${PARITY_VENV}/bin/activate"
-          python3 - <<'PYEOF'
+          uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PYEOF'
           import os
           from huggingface_hub import snapshot_download
           local_dir = snapshot_download(
@@ -383,7 +386,7 @@ jobs:
 
       - name: Upload parity artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: parity-qwen3-tts-${{ matrix.arch }}
           path: |

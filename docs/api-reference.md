@@ -18,12 +18,15 @@ The Rust crates are documented with `rustdoc`. Once the crates are published
 
 The feature-gated GPU/NPU backends carry `[package.metadata.docs.rs]` so
 docs.rs builds their platform-specific API (Metal / CoreML on an Apple target,
-WebGPU on wasm32, CUDA / Vulkan / QNN via their features). Build the same
-locally with:
+WebGPU on wasm32, CUDA / Vulkan / QNN via their features). Build a focused,
+memory-safe crate locally with:
 
 ```sh
-cargo doc --no-deps --open
+cargo doc -p vokra-core --no-deps --open
 ```
+
+Maintainers build workspace-wide rustdoc on VAST or CI, never on the 16 GB
+development Mac.
 
 ## 2. C ABI — `include/vokra.h`
 
@@ -60,8 +63,11 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — against the workspace publish set and
-`include/vokra.h`.**
+**Last verified: 2026-08-18 — against `main` `6d64fdf`, the workspace publish
+set, and `include/vokra.h`.** The generated C header declares 41 `vokra_*`
+functions. The pre-alpha Python generator currently recognizes 39 and its
+checked-in table exposes 14, so the Python package is not a complete mirror of
+the current C ABI yet.
 
 - **Update responsibility**: a PR that adds a published crate, a new binding, or
   changes the C ABI generation updates this index and its Japanese twin in the
@@ -70,5 +76,7 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 - **Re-fetch the generated surfaces**:
 
 ```sh
-scripts/gen-c-abi.sh && cargo doc --no-deps --workspace
+scripts/gen-c-abi.sh
+# Maintainers run workspace rustdoc on VAST/CI, not on the development Mac:
+cargo doc --no-deps --workspace
 ```

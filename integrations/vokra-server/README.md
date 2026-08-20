@@ -244,7 +244,7 @@ that.)
 `base_url` at the vokra-server HTTP listener:
 
 ```python
-# pip install openai  (or use any OpenAI-compatible client library)
+# uv add openai  # or use any OpenAI-compatible client library
 from openai import OpenAI
 
 client = OpenAI(

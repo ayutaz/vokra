@@ -1,26 +1,23 @@
 # Dependabot 設定 (SoT: このファイル)
 #
 # 対象 ecosystem:
-#   - GitHub Actions のみ (`.github/workflows/*.yml` の `uses:` に載る action の pin バージョン)
+#   - GitHub Actions（全 `uses:` は immutable 40-hex SHA）
+#   - root から除外された `integrations/*` Cargo workspaces
+#   - uv 管理の Python tool / parity environments
 #
-# 対象外 (意図的除外):
-#   - Rust crate: root `Cargo.lock` は `vokra-*` のみを許す zero-dep 不変条件
-#     (NFR-DS-02) を持つため、`cargo` ecosystem を dependabot 対象にすると
-#     `zero-dep` gate を巻き込みで壊す PR が量産される。crate 更新は
-#     除外 workspace 側 (integrations/*, vokra-server, vokra-godot 等) に
-#     限定して手動で行う。
-#   - Python / npm: 補助 tool は venv/isolated build のみで、production 面には
-#     bundle しないため dependabot 対象外 (M4/M5 tickets で運用継続を判断)。
+# root Cargo workspace は対象外: `Cargo.lock` が first-party `vokra-*` のみという
+# NFR-DS-02 を維持する。外部依存更新は独立 lockfile を持つ integration / fuzz
+# tooling に閉じ込め、Dependency Review と各 workspace の CI で検査する。
 #
 # schedule:
 #   毎週月曜 UTC 00:00 = JST 09:00。週次 parity cron 群 (Monday 04:00-10:00 UTC =
 #   §3 stagger、workflows/README.md 参照) より前に投げるので、PR がその週の parity
 #   結果を巻き込みで反映しやすい。
 #
-# limit / labels / reviewer:
+# limit / labels / ownership:
 #   - open-pull-requests-limit: 5 (同時にレビュー可能な上限を controlled に保つ)
 #   - labels: ci + dependencies (Kill switch 監視や release note で機械的に filter するため)
-#   - reviewers: ayutaz (依頼者が唯一の maintainer)
+#   - owner: `.github/CODEOWNERS` の `* @ayutaz` で一元管理
 #
 # grouping:
 #   `production-actions` に全 action を集約し、major/minor/patch を 1 PR に束ねる。
@@ -39,8 +36,6 @@ updates:
     labels:
       - "ci"
       - "dependencies"
-    reviewers:
-      - "ayutaz"
     commit-message:
       prefix: "chore(deps)"
     # ignore:
@@ -65,3 +60,66 @@ updates:
       production-actions:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "cargo"
+    directories:
+      - "/fuzz"
+      - "/integrations/vokra-android"
+      - "/integrations/vokra-cli-bench-server"
+      - "/integrations/vokra-godot"
+      - "/integrations/vokra-misaki-g2p"
+      - "/integrations/vokra-piper-g2p"
+      - "/integrations/vokra-server"
+      - "/integrations/vokra-server-bench"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "00:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "ci"
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      isolated-cargo:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "uv"
+    directories:
+      - "/bindings/python"
+      - "/integrations/vokra-misaki-g2p"
+      - "/tools/parity"
+      - "/tools/parity/deberta_v3"
+      - "/tools/parity/dfn3"
+      - "/tools/parity/firered_asr_llm_l"
+      - "/tools/parity/higgs_audio_v3_tts_4b"
+      - "/tools/parity/magnet_medium_30secs"
+      - "/tools/parity/magnet_small_10secs"
+      - "/tools/parity/melodyflow_t24_30secs"
+      - "/tools/parity/microwakeword"
+      - "/tools/parity/rmvpe"
+      - "/tools/parity/sbv2"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      time: "00:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "ci"
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      parity-python:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7

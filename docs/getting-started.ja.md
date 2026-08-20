@@ -14,8 +14,9 @@ ASR → TTS の 3 デモを CPU で動かします。GPU（Metal / CUDA）や配
   ため自身の下限を 1.89 に引き上げており、この crate は全ビルドに入ります。
   CI の `msrv` job で検証しています。
 - **git**: リポジトリの取得に使用
-- **Python 3.10+**: モデル変換の PyTorch 依存を用意するだけで、Vokra ラン
-  タイム自体は Python に依存しません（`FR-LD-05`）
+- **uv + Python 3.12**: converter が読む checkpoint の準備にだけ使います。
+  Python command はすべて uv 経由で実行し、Vokra runtime 自体は Python に
+  依存しません（`FR-LD-05`）
 - **ディスク**: モデル変換で 2〜4 GB（Whisper base + piper-plus voice）
 
 Vokra ランタイムは **zero external dependency**（root `Cargo.lock` は
@@ -27,11 +28,12 @@ package は不要です。
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-cargo build --release
+cargo build --release -p vokra-cli
 ```
 
-これで CLI（`target/release/vokra-cli`）と C ABI 用 `libvokra` が生成され
-ます。ビルド時間の目安: MacBook Air M2 で約 2 分（初回）。
+これで CLI（`target/release/vokra-cli`）が生成されます。C ABI が必要な場合
+は `cargo build --release -p vokra-capi` を別に実行します。CLI build 時間の
+目安: MacBook Air M2 で約 2 分（初回）。
 
 ## 2 分: モデルを GGUF に変換
 
@@ -54,17 +56,21 @@ wget https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/siler
 
 ```sh
 # Hugging Face safetensors → GGUF（サイズは checkpoint shape で自動検出）
-pip install transformers safetensors
-python3 -c "
+uv run --no-project --python 3.12 \
+  --with transformers --with safetensors python - <<'PY'
 from transformers import WhisperForConditionalGeneration
 m = WhisperForConditionalGeneration.from_pretrained('openai/whisper-base')
 m.save_pretrained('whisper-base', safe_serialization=True)
-"
+PY
 ./target/release/vokra-cli convert \
   --model whisper \
   --input whisper-base/model.safetensors \
   --output whisper-base.gguf
 ```
+
+model artefact の合計が 2 GB 以上なら、変換・検証・公開は VAST で行います。
+全 shard を合算し、変換後の巨大 artefact を memory の限られた開発 Mac へ
+戻さないでください。
 
 **K-quant で軽量化**する場合:
 
@@ -131,8 +137,8 @@ wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/me
 ./target/release/vokra-cli bench --model whisper-base.gguf --input speech.wav
 
 # GPU（Metal on macOS / CUDA on Linux 実機）
-cargo build --release -p vokra-models --features metal   # macOS
-cargo build --release -p vokra-models --features cuda    # Linux with system CUDA
+cargo build --release -p vokra-cli --features metal   # macOS
+cargo build --release -p vokra-cli --features cuda    # Linux with system CUDA
 ./target/release/vokra-cli bench --model whisper-large-v3.gguf \
   --input speech30s.wav --backend cuda
 ```
@@ -144,6 +150,10 @@ Whisper large-v3 は RTF < 0.15（RTX 4090 実測 0.081〜0.115）が目安で�
 
 `include/vokra.h` を include して `libvokra` にリンクするだけです（詳細は
 [README.md](../README.md#using-the-c-abi) の例を参照）。
+
+```sh
+cargo build --release -p vokra-capi
+```
 
 ```c
 #include "vokra.h"

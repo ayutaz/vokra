@@ -1,5 +1,18 @@
 # pyannote 実装計画 handoff (2026-07-30)
 
+> **2026-08-18 status review:** This is the original implementation plan, not
+> a live list of missing files. The segmentation and weightless-pipeline
+> converters, `vokra.pyannote{,_pipeline}.*` metadata, native PyanNet
+> SincNet/BiLSTM/linear/classifier path, diarization scaffolding, CLI segment
+> dispatch, and env-gated real-GGUF harness have landed. The real forward is
+> deliberately not the default: it requires
+> `VOKRA_PYANNET_ENABLE_FORWARD=1` until an upstream-independent probability
+> dump pins numerical parity. Full default-on diarization and publication
+> therefore remain pending. Treat the wave/file lists below as dated design
+> provenance; use `crates/vokra-models/src/pyannote/` and
+> `crates/vokra-models/tests/parity_pyannote_segmentation.rs` for current
+> behavior.
+
 ## 背景 — なぜ本 handoff か
 
 **License half unblock (2026-07-30)**: `docs/license-audit.md` §3.1 row 263 で pyannote weight license を primary source (authenticated HF API `pyannote/segmentation-3.0` + `pyannote/speaker-diarization-3.1` cardData tag `license: mit`、`gated: auto` は access control のみで追加条項なし) 確認済、CC 判断で ☑ Commercial sign-off (2026-07-30 yousan)。
@@ -107,13 +120,13 @@ pyannote 3.0 uses **powerset multiclass encoding** — segmentation is a joint c
 **Fetch method** (CC が実 checkpoint に触れずに tensor 名を確認する手段):
 
 ```bash
-# 手順 (owner or CC on vast.ai / M1 iMac with HF gate accepted):
-python3 -c "
+# 手順（HF gate accepted 後に VAST で実行）:
+uv run --project tools/parity --frozen python - <<'PY'
 import torch
 w = torch.load('pytorch_model.bin', map_location='cpu', weights_only=True)
 for k, v in w.items():
     print(f'{k}\\t{list(v.shape)}\\t{v.dtype}')
-" | sort
+PY
 ```
 
 **Expected pattern** (from PyanNet.py source):
@@ -128,9 +141,11 @@ for k, v in w.items():
 - `classifier.weight`, `classifier.bias` (Linear(128, 7))
 
 **Verify by owner or CC after HF gate accept**:
-1. HF login: `huggingface-cli login`
+1. On VAST, HF login:
+   `uv run --project tools/parity --frozen hf auth login`
 2. Accept gate for `pyannote/segmentation-3.0`
-3. Download: `huggingface-cli download pyannote/segmentation-3.0 pytorch_model.bin`
+3. Download:
+   `uv run --project tools/parity --frozen hf download pyannote/segmentation-3.0 pytorch_model.bin`
 4. Run tensor dump script above
 5. Compare with expected manifest, update this handoff
 
@@ -219,7 +234,9 @@ pyannote pipeline の Python 版に依存せず、Vokra native の diarization p
 1. **HF gate accept** for `pyannote/segmentation-3.0` + `pyannote/speaker-diarization-3.1` (HF UI で非拘束 advisory の accept ボタンをクリック、Vokra 配布側は Meta Llama tokenizer と同じ non-bundle 方式 = consumer 側 accept)
 2. **pytorch_model.bin download** (~5.7 MB、gate accept 後は誰でも DL 可)
 3. **Tensor manifest verify** (実 checkpoint で上記 Expected pattern を確認、drift があれば本 handoff 更新)
-4. **Real weight parity harness owner run** — Wave 3 完了後、`PARITY_PYANNOTE_REAL_GGUF=<path> cargo test parity_pyannote_segmentation` 実行 → parity 判定
+4. **Real weight parity harness owner run** — VAST で
+   `PARITY_PYANNOTE_REAL_GGUF=<path> VOKRA_PYANNET_ENABLE_FORWARD=1 cargo test -p vokra-models --test parity_pyannote_segmentation -- --nocapture`
+   を実行し、upstream-independent probability dump との parity を判定
 5. **§3.1 publish sign-off** — pyannote weight を `huggingface.co/vokra/pyannote-segmentation-3.0` へ mirror publish するか (weight license MIT clean、Vokra converter output GGUF の再配布)、mirror でなく consumer-side download で済ませるか (Meta Llama tokenizer 前例と同じ non-bundle)
 
 ## verify (本 handoff の primary source claim)

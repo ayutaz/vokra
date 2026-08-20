@@ -434,7 +434,8 @@ pub(crate) mod qwen3_tts;
 // original task split would have created -- see `sbv2`'s module doc (same
 // rationale as Task 11's `deberta_v2` / `deberta_v3`).
 // F0 pitch-extractor tier (2026-07-30): **RMVPE** (`yxlllc/RMVPE` fork of
-// `Dream-High/RMVPE`, MIT weight + code — Permissive). Safetensors →
+// `Dream-High/RMVPE`; primary code Apache-2.0, fork weight licence
+// unstated — fail-closed Unknown). Safetensors →
 // GGUF with the `vokra.rmvpe.*` hparam chunk group; every F32 / F16 /
 // BF16 tensor passes through verbatim under upstream state_dict names.
 // Distinct arch tag (`rmvpe`) — the first `category = "f0"` binder in

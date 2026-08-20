@@ -1,0 +1,36 @@
+[package]
+name = "vokra-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vokra-core = { path = "../crates/vokra-core" }
+
+[workspace]
+
+[[bin]]
+name = "gguf_parse"
+path = "fuzz_targets/gguf_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_parse"
+path = "fuzz_targets/json_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safetensors_parse"
+path = "fuzz_targets/safetensors_parse.rs"
+test = false
+doc = false
+bench = false

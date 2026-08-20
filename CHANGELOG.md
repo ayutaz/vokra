@@ -24,6 +24,38 @@ owner checklists (`docs/m2-owner-verification-checklist.md`,
 `docs/m5-owner-verification-checklist.md`). Added entries are grouped by
 milestone below.
 
+### Fixed
+
+#### Codex/VAST operational hardening (2026-08-17 → 2026-08-18)
+
+- Migrated the repository's primary agent workflow to Codex (`AGENTS.md`,
+  `.agents/skills/`, `.codex/hooks.json`) while retaining synchronized Claude
+  Code compatibility (PRs #32 and #37).
+- Enforced uv-managed Python entry points in Codex/Claude hooks, current
+  maintainer runbooks, and all GitHub Actions workflows. The dedicated
+  migration removed 152 legacy bare Python/pip/pytest/venv invocations across
+  24 workflow files and 36 jobs, then added a repository-wide workflow hygiene
+  regression gate. Routed 2 GB+ model work, workspace Cargo, and
+  `vokra-models` Cargo away from the maintainer's 16 GB Mac (PR #33 plus the
+  current hook hardening).
+- Added the four-file SBV2 ZH real-parity path. VAST regenerated all four GGUFs
+  with sidecar-hash matches and passed the unchanged numerical bounds; no HF
+  upload occurred (PR #36).
+- Made deletion-only remote-ref pushes run the compliance regression but skip
+  Cargo, preventing an empty diff from launching workspace compilation. Mixed,
+  normal, empty, and malformed update streams remain fail-closed and are pinned
+  by the 42-case pre-push regression suite.
+- Reconciled the M5 checklist from its historical 94-box snapshot to the live
+  action ledger: 42 checked and 36 unchecked. The 36 are not 36 implied missing
+  implementations; each literal external/real-weight/policy condition remains
+  independently tracked.
+- Reconciled current documentation against `main`: C ABI references now
+  distinguish the 41-function header from historical 33-function snapshots,
+  the Python binding is documented as a pre-alpha 14-function scaffold, and
+  dated handoffs are explicitly separated from current instructions. Corrected
+  openWakeWord's official-weight posture to CC-BY-NC-SA-4.0/non-bundled while
+  retaining the Apache-2.0 converter and custom-weight path.
+
 ### Added
 
 #### Audio-wide coverage expansion (2026-07-24 → 2026-08-16)

@@ -49,10 +49,10 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
   [[reference-safetensors-shared-tensor-dedup]]。
 - **5D 以上の tensor**: GGUF writer は現状 4D まで（>4D は `"too many dimensions: 5"` で hard-error）。Qwen2.5-Omni 系 multimodal adapter が該当し publish blocked。回避 = writer 拡張 or `reshape(5D → 4D + metadata)`、判断は M6 investigation phase。着手前に上流 tensor shape を `uv run --project tools/parity python -c "import safetensors; ..."` で確認して 5D を含むなら **converter に着手しない**。[[project-gguf-5d-tensor-limit]]。
 
-### 2.2 大モデル（>8 GB safetensors）は M1 iMac で変換しない
+### 2.2 合計 2 GB 以上のモデル artefact は M1 iMac で処理しない
 
-- 依頼者機（M1 iMac 16 GB）で >8 GB safetensors を mmap すると swap が急伸して macOS が強制終了する（Voxtral-Small-24B 48 GB で swap 40 GB 到達実証）。→ **vast.ai へ escalate** → skill `vast-ai-workflow`。
-- 安全ライン: whisper-* / csm-1b（6.21 GB tight OK）/ kyutai-stt（5.23 GB）/ parakeet-* は M1 OK。要 vast.ai: Voxtral-Small-24B / Kimi-Audio-7B 系 / 30B+。
+- 依頼者機（M1 iMac 16 GB）では、checkpoint / GGUF / shard 群の**合計が 2 GB 以上**なら convert・実 checkpoint 検証・publish を行わない。実測で動いたモデルを例外扱いせず、skill `vast-ai-workflow` で VAST へ送る。
+- shard 単体ではなく対象ディレクトリ内の合計で判定する。Voxtral-Small-24B 48 GB では swap 40 GB 到達、ローカル `vokra-models` Cargo では macOS 再起動の実績がある。
 - 既存 GGUF の provenance 差替のみなら `restamp_provenance`（mmap 読取 + `GgufStreamWriter` で tensor コピーせず metadata だけ差替、8.7 GB Voxtral を M1 16 GB で peak footprint 6.4 MB で実測）→ skill `publish-model-to-hf` §restamp。[[project-restamp-provenance]]。
 
 ## 3. 新規 op が要るか（gap analysis）
@@ -76,12 +76,15 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 ## 7. 検証してコミット
 
-```
-cargo test --workspace
-cargo clippy --all-targets -- -D warnings
+```bash
+# ローカル
 cargo fmt --all -- --check
 bash scripts/check-forbidden-symbols.sh
 bash scripts/check-zero-deps.sh
+
+# VAST（workspace / vokra-models Cargo）
+cargo test --workspace
+cargo clippy --all-targets -- -D warnings
 cargo deny check licenses advisories bans
 ```
 

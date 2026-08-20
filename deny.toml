@@ -34,6 +34,12 @@ unused-allowed-license = "allow"
 #   1. add a crate-scoped exception here, e.g.
 #        exceptions = [{ crate = "symphonia", allow = ["MPL-2.0"] }]
 #   2. record the evaluation in docs/license-audit.md.
+exceptions = [
+    # CI-only fuzz harness. The Rust wrapper is MIT OR Apache-2.0; the bundled
+    # LLVM libFuzzer C++ sources are NCSA (permissive BSD-family). This package
+    # lives only in the excluded fuzz workspace and is never shipped.
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
 
 [bans]
 multiple-versions = "warn"

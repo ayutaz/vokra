@@ -33,7 +33,7 @@ default), and the map is validated by the check-converter-signoff.sh gate
 (every converter must map to ≥ 1 row OR be listed as intentionally excluded
 from the main-repo §3.1 scope).
 
-Zero-dep: python3 standard library only (NFR-DS-02).
+Zero-dep: Python 3 standard library only, executed through uv (NFR-DS-02).
 """
 
 from __future__ import annotations
@@ -244,15 +244,16 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # updated in a post-workflow batch (mirror of sibling base
     # `AudioLDM 2 (cvssp/audioldm2)` row form).
     "audioldm2-large": ["AudioLDM 2 Large (`cvssp/audioldm2-large`)"],
-    # 2026-08-02 Wave residual: openWakeWord (dscripka, apache-2.0).
+    # 2026-08-02 Wave residual: openWakeWord converter/code scope.
     # Audio-dialect `kws` op entry — small custom-KWS MLP/CNN family
-    # over precomputed melspec. HF API rate-limited (401) — upstream
-    # GitHub `dscripka/openWakeWord` primary source is Apache-2.0
-    # (code + bundled checkpoints). Placeholder row — the row heading
-    # MUST match `docs/license-audit.md` §3.1 byte-for-byte once the
-    # audit doc is updated in a post-workflow batch. Scale ~0.01 GB =
-    # local convert safe on M1 iMac.
-    "openwakeword": ["openWakeWord (`dscripka/openWakeWord`)"],
+    # over precomputed melspec. The upstream code is Apache-2.0, while
+    # official pretrained weights are CC-BY-NC-SA-4.0 and remain
+    # non-bundled. This mapping intentionally targets the separately
+    # signed converter/code row. Scale ~0.01 GB = local convert safe on
+    # M1 iMac.
+    "openwakeword": [
+        "openWakeWord converter/code (`dscripka/openWakeWord`)"
+    ],
     # 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors, MIT). 27M
     # raw-audio transformer enc-dec ASR (arXiv:2410.15608). Distinct arch
     # tag `moonshine` from sibling Whisper (raw-audio Conv1D front-end +
@@ -1232,13 +1233,13 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         # signs each row separately when the SA cascade ADR lands).
         "AudioLDM 2 Large (`cvssp/audioldm2-large`)",
     ],
-    # 2026-08-02 Wave residual: openWakeWord (dscripka, apache-2.0).
+    # 2026-08-02 Wave residual: openWakeWord converter/code scope.
     # Audio-dialect `kws` op entry — small custom-KWS MLP/CNN family
-    # (~1–5 MB per wake-word) over precomputed melspec. Placeholder
-    # row — the row heading MUST match `docs/license-audit.md` §3.1
-    # byte-for-byte once the audit doc is updated in a post-workflow
-    # batch.
-    "openwakeword": ["openWakeWord (`dscripka/openWakeWord`)"],
+    # (~1–5 MB per wake-word) over precomputed melspec. The separately
+    # signed op-wiring row controls official CC-BY-NC-SA-4.0 weights.
+    "openwakeword": [
+        "openWakeWord converter/code (`dscripka/openWakeWord`)"
+    ],
     # SoTA plan Phase 1-5 wave (2026-07-24 onward).
     "canary": ["nvidia/canary-1b-v2"],
     "canary_qwen": ["nvidia/canary-qwen-2.5b"],
@@ -1345,7 +1346,13 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "fsmn-vad (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`)",
         "FSMN-VAD (`funasr/fsmn-vad`)",
     ],
-    "rmvpe": ["rmvpe (`yxlllc/RMVPE` fork of `Dream-High/RMVPE`)"],
+    # The row is deliberately blank and records the checkpoint license as
+    # UNKNOWN. Keeping converter coverage tied to that exact row catches
+    # audit drift without making `vokra/rmvpe` publishable: no repo-side
+    # mapping exists above, so publication remains fail-closed.
+    "rmvpe": [
+        "rmvpe (`yxlllc/RMVPE` architecture derived from `Dream-High/RMVPE`)"
+    ],
     "crepe": ["CREPE (`marl/crepe`)"],
     "styletts2": ["StyleTTS 2 (yl4579)"],  # Rejected row, still needs coverage.
     "titanet": ["TitaNet (NVIDIA NeMo)"],

@@ -259,10 +259,10 @@ Vokra::init(VokraConfig {
   - ✅ piper-plus (依頼者作、training data 公開)
   - ✅ Whisper (OpenAI 公開 web-scraped、controversial だが Meta v Kadrey で fair use 傾向)
 - **community models** は下流責任 disclaimer 付きで別途配布:
-  - ⚠️ Bark (Suno、training data 非公開。code+weight とも現行 MIT = https://github.com/suno-ai/bark / https://huggingface.co/suno/bark、HF model card「research purposes only」付記、2026-07-21 CC fetch)
+  - ⚠️ Bark (Suno、training data 非公開。code+weight とも現行 MIT = [GitHub](https://github.com/suno-ai/bark) / [Hugging Face](https://huggingface.co/suno/bark)、HF model card「research purposes only」付記、2026-07-21 CC fetch)
   - ⚠️ Fish-Speech (fishaudio、training data 一部非公開)
   - ⚠️ RVC 系派生 (learned from various)
-  - ⚠️ StyleTTS 2 (yl4579、code MIT = https://github.com/yl4579/StyleTTS2。pretrained weight は voice-consent/disclosure 条件付き usage agreement、学習データは LJSpeech/VCTK/LibriTTS = README 記載、2026-07-21 CC fetch)
+  - ⚠️ StyleTTS 2 (yl4579、code MIT = [yl4579/StyleTTS2](https://github.com/yl4579/StyleTTS2)。pretrained weight は voice-consent/disclosure 条件付き usage agreement、学習データは LJSpeech/VCTK/LibriTTS = README 記載、2026-07-21 CC fetch)
 - **audit 材料整備済・tier 未確定（owner 判断待ち、M5-07）**:
   - Matcha-TTS: code MIT (https://github.com/shivammehta25/Matcha-TTS の LICENSE、2026-07-21 CC fetch)。配布 checkpoint は README に別段の license 記載なし（Google Drive 自動 DL）。学習データは README が LJ Speech を例示するのみで、released checkpoint の provenance を網羅記載していない。→ ✅（zoo 適格）/ ⚠️（community 別途配布）の最終 tier 確定と zoo 可否は owner（`docs/license-audit.md` §3.1 の Matcha sign-off + 本 §9 の tier 判断）。CC は事実記録のみ（tier を確定しない）
 
@@ -342,7 +342,7 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 
 - [EU AI Act Article 50 — Transparency Obligations](https://artificialintelligenceact.eu/article/50/)
 - [What Actually Comes Due on August 2, 2026 — ComplianceHub](https://compliancehub.wiki/eu-ai-act-article-50-transparency-digital-omnibus-2026/)
-- [ELVIS Act — Wikipedia](https://en.wikipedia.org/wiki/ELVIS_Act)
+- [ELVIS Act — Governor of Tennessee](https://www.tn.gov/governor/news/2024/1/10/tennessee-first-in-the-nation-to-address-ai-impact-on-music-industry.html)
 - [ELVIS Act Alston & Bird](https://www.alstonprivacy.com/tennessee-law-designed-to-combat-deepfakes-set-to-take-effect-in-july/)
 - [NO FAKES Act — Temple 10-Q](https://law.temple.edu/10q/the-clone-wars-a-new-congress-reconsiders-the-no-fakes-act-to-combat-digital-deepfakes/)
 - [SynthID / C2PA 2026 status — InfoQ](https://www.infoq.com/news/2026/05/google-synthid-content-detection/)
@@ -353,6 +353,6 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 - [Google Play Generative AI Content Policy](https://support.google.com/googleplay/android-developer/answer/13985936)
 - [Apple App Store Guideline 5.5](https://developer.apple.com/app-store/review/guidelines/#5.5)
 - [NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html)
-- [Kadrey v. Meta case](https://en.wikipedia.org/wiki/Kadrey_v._Meta)
+- [Kadrey v. Meta case — U.S. District Court, Northern District of California](https://cand.uscourts.gov/cases-e-filing/cases/323-cv-03417-vc/kadrey-et-al-v-meta-platforms-inc)
 - [RIAA vs Suno/Udio suit](https://www.riaa.com/riaa-and-major-record-labels-sue-suno-and-udio/)
 - [VOICEVOX 利用規約](https://voicevox.hiroshiba.jp/term/)

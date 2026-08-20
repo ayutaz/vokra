@@ -4,18 +4,11 @@
 cron 時刻・required check name・trigger の記述に各 workflow file の comment との差異が
 あった場合、**本 file が真** とみなし、各 workflow file 側を後追いで揃えます。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（**実数 40 file**。旧記載「2026-07-23 時点で 20 file」は
+- 対象範囲: `.github/workflows/*.yml` 全件（**実数 44 file**。旧記載「2026-07-23 時点で 20 file」は
   その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **⚠ 既知の網羅 gap (owner follow-up)**: 本 file は SoT を称するが、現時点で下記 16 workflow が
-  どの節にも記載されていない — `coverage.yml` / `secret-scan.yml` / `nightly-full-parity.yml` /
-  `parity-cosyvoice2-real.yml` / `parity-deberta-v3-large-real.yml` /
-  `parity-deepfilternet3-real.yml` / `parity-nemo-asr-real.yml` / `parity-qwen3-tts-real.yml` /
-  `parity-rmvpe-real.yml` / `parity-sbv2-real.yml` / `parity-tts-continuous-vae-real.yml` /
-  `parity-tts-dac-real.yml` / `parity-tts-hiftnet-real.yml` / `parity-tts-japanese-real.yml` /
-  `parity-voxtral-real.yml` / `parity-whisper-extras-real.yml`。
-  §3 の cron stagger table に追記するには各 file の実 `schedule:` を読む必要があるため、
-  **推測で埋めず gap として明示**する（記載のない workflow は「本 file が真」の対象外＝
-  各 file 側 comment が唯一の記述になる）
+- **2026-08-18 網羅確認**: 44 workflow file の全てを本 index に収録済み。
+  required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
+  明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
   を primary source として取得し、本 file の §1 に転記
 - cron 時刻の実態: 各 workflow file 内の `schedule: - cron: '...'` 実定義から抽出。
@@ -28,7 +21,7 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 
 ## 1. Required checks (main branch protection)
 
-`main` への PR merge を gate する 10 checks。branch protection API 側の contexts と一対一に
+`main` への PR merge を gate する 14 checks。branch protection API 側の contexts と一対一に
 対応しなければならない。`build (*)` と `test (*)` は `ci.yml` の matrix expansion 由来で、
 `os: [ubuntu-latest, macos-latest, windows-latest]` の 3 展開を **必ずこの順** で確保する。
 `parity` は matrix job (`parity-matrix`) の aggregator（Wave 10 で分離済、matrix 直下では
@@ -47,14 +40,19 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 | clippy | clippy | .github/workflows/ci.yml | `cargo clippy --workspace --all-targets -- -D warnings` |
 | parity | parity | .github/workflows/ci.yml | fixture-only parity aggregator (needs: parity-matrix)、真の重量級 real-weight parity は §3 の weekly leg |
 | license | license | .github/workflows/ci.yml | `cargo deny` + `scripts/check-*` compliance gate |
+| workflow-security | workflow-security | .github/workflows/ci-security.yml | actionlint + ShellCheck + zizmor workflow security gate |
+| dependency-review | dependency-review | .github/workflows/ci-security.yml | changed dependency の vulnerability / license / Scorecard gate |
+| documentation-links | documentation-links | .github/workflows/ci-security.yml | public documentation surface の link validation |
+| CodeQL | analyze (`codeql-rust`) | .github/workflows/codeql.yml | GitHub CodeQL Rust `security-extended` analysis |
 
 ---
 
-## 2. Advisory checks (branch protection なし)
+## 2. Additional required and advisory checks
 
-merge を gate しない informational check。定期監視で赤化を検知し、依頼者判定で
-required 昇格するかを判断する（初期 promotion 方針: 連続数週の緑が確認できた時点で
-owner に昇格提案）。
+§1 の14 contexts以外はmergeをgateしないinformational check。定期監視で赤化を
+検知し、依頼者判定でrequired昇格するかを判断する（初期 promotion 方針: 連続数週の
+緑が確認できた時点でownerに昇格提案）。§2.2の先頭4項目は2026-08-20にrequiredへ
+昇格済みで、詳細説明を重複掲載している。
 
 ### 2.1 ci*.yml 内 (PR/push で常時走行、advisory)
 
@@ -85,6 +83,8 @@ owner に昇格提案）。
 | vokra-piper-g2p | .github/workflows/ci-quality.yml | 除外 workspace `integrations/vokra-piper-g2p` の build/test |
 | python-parity-oracles | .github/workflows/ci-quality.yml | Python 側 parity oracle script の self-test |
 | shell-self-tests | .github/workflows/ci-quality.yml | `scripts/*.sh` の `--self-test` 集約 |
+| coverage (advisory) | .github/workflows/coverage.yml | Rust差分を含むPR / main pushのcoverage計測（prose-only PRは非起動） |
+| gitleaks (advisory) | .github/workflows/secret-scan.yml | PR / main push の secret scan |
 | gpu-backends | .github/workflows/ci-platform.yml | macos=metal / ubuntu=cuda opt-in feature の build/clippy/test (+ coreml/qnn delegate scaffold arm) |
 | build-target-vulkan-only | .github/workflows/ci-platform.yml | M4-15 CPU+Vulkan-only SKU build target 検証 |
 | riscv-cross-build | .github/workflows/ci-platform.yml | RVV 1.0 (M3-13) cross build + ISA dispatch asm 検査 |
@@ -97,7 +97,46 @@ owner に昇格提案）。
 | unity-package | .github/workflows/ci.yml | Unity plugin package audit (M2-11、UNITY_LICENSE 未 provisioning ゆえ WARN skip) |
 | python-wheel-build | .github/workflows/ci.yml | cibuildwheel v2.23.4 + hatchling custom build hook (`vokra` wheel) |
 
-### 2.2 release.yml 内 (tag v* 起動、advisory & release パイプ)
+### 2.2 Security / supply chain / advanced Rust quality
+
+`workflow-security` / `dependency-review` / `documentation-links` / `CodeQL`
+は§1のrequired contexts。残りはadvisoryまたはschedule/manual専用である。
+
+| check / workflow | trigger | 役割 |
+|---|---|---|
+| workflow-security (`.github/workflows/ci-security.yml`) | PR / main / weekly / manual | actionlint + ShellCheck と zizmor。workflow 構文、固定 SHA、最小権限、expression injection を gate |
+| dependency-review (`.github/workflows/ci-security.yml`) | PR | moderate以上の脆弱性、GPL/LGPL/AGPL/SSPL系licenseを持つ新規runtime/development依存を拒否し、変更依存のOpenSSF Scorecardも表示 |
+| documentation-links (`.github/workflows/ci-security.yml`) | PR / main / weekly / manual | README / CONTRIBUTING / `.github` / `docs` のリンク腐敗を lychee で検出 |
+| CodeQL (`codeql-rust`, `.github/workflows/codeql.yml`) | PR / main / weekly / manual | Rust を buildless `security-extended` query suite で SAST |
+| scorecard (`.github/workflows/scorecard.yml`) | main / branch-protection change / weekly / manual | OpenSSF Scorecard を SARIF と public results に送信 |
+| cargo-hack-each-feature (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR / main / weekly / manual | 全 feature の独立コンパイルと zero-dep lockfile 不変条件 |
+| cargo-semver-checks (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR | publishable crate の意図しない public API break を base SHA と比較 |
+| miri / address-sanitizer (`.github/workflows/rust-advanced.yml`) | weekly / manual | unsafe boundary の UB、provenance、memory error を nightly toolchain で検出 |
+| fuzz-* (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR / main / weekly / manual | GGUF / safetensors / JSON の不正入力を libFuzzer で検査、reproducer を artifact 保存 |
+
+weekly cron は CodeQL=`Thursday 02:41 UTC`、CI Security=`Wednesday 03:23 UTC`、
+Scorecard=`Thursday 03:17 UTC`、Rust Advanced=`Sunday 01:37 UTC`。PR のセキュリティ
+gate と、変動しやすい nightly toolchain / advisory DB の定期監視を分離する。
+
+### 2.3 Repository-native security controls
+
+2026-08-18 時点で GitHub 側の secret scanning、push protection、Dependabot alerts、
+Dependabot security updates、private vulnerability reporting を有効化済み。
+`SECURITY.md` の private advisory URL と repository setting は一致している。
+
+次の2設定はこのbranchをmainへmergeするまで意図的に保留する。現在のmainにはtag pinの
+workflowが残るため、先に「Actionsをfull SHAだけに制限」を有効化するとmain CI自体を
+停止させる。また、新設checkをrequired contextへ加えるのはPRとmainでgreenを確認した後に
+行う。merge後の順序は以下で固定する。
+
+1. main上の全workflowがfull SHA pinであることを`workflow-security`で確認する。
+2. repository Actions policyのSHA pin requirementを有効化する。
+3. `workflow-security`、`dependency-review`、`documentation-links`、`codeql-rust`を
+   branch protectionのrequired checksへ追加する。
+4. required checksをstrict（base branch最新化必須）にし、conversation resolution、
+   linear history、administrator enforcementを有効化する。
+
+### 2.4 release.yml 内 (tag v* 起動、advisory & release パイプ)
 
 release パイプの詳細は §5 を参照。
 
@@ -114,16 +153,29 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 |---|---|---|---|
 | Monday | 04:00 | .github/workflows/parity-kokoro-real.yml | Kokoro-82M pinned SHA `f3ff3571` 全 9 tensor per-tensor atol parity |
 | Monday | 05:00 | .github/workflows/parity-whisper-real.yml | Whisper base (cron 既定) + workflow_dispatch で small/medium/turbo/large-v3 opt-in |
+| Monday | 05:15 | .github/workflows/parity-voxtral-real.yml | Voxtral Mini real-checkpoint parity（opt-in gate） |
 | Monday | 05:30 | .github/workflows/gpu-vulkan-parity.yml | Vulkan (mesa lavapipe) Whisper base parity |
 | Monday | 06:00 | .github/workflows/gpu-cuda-rtf.yml | CUDA RTF measurement N=10 (self-hosted 必須、未登録なら clean skip) |
 | Monday | 06:30 | .github/workflows/parity-csm-real.yml | CSM synthetic format pin + real T29 reference は opt-in |
 | Monday | 07:00 | .github/workflows/web-wasm.yml | WASM SIMD128 + WebGPU + Whisper base WASM e2e (opt-in) |
+| Monday | 07:15 | .github/workflows/parity-sbv2-real.yml | SBV2 JA/EN と opt-in ZH real parity + sidecar-hash gate |
 | Monday | 07:30 | .github/workflows/parity-moshi-real.yml | Moshi 切詰め parity (full-7B は 16GB RAM で mmap converter blocked) |
 | Monday | 08:00 | .github/workflows/parity-utmos.yml | UTMOS 22 STRONG parity (M4-18 un-defer 材料) |
 | Monday | 08:30 | .github/workflows/godot-crossbuild.yml | Godot GDExtension 5-target crossbuild + AssetLib zip package |
+| Monday | 08:45 | .github/workflows/parity-cosyvoice2-real.yml | CosyVoice2 real-checkpoint parity |
 | Monday | 09:00 | .github/workflows/release-cadence.yml | リリース cadence レポート |
+| Monday | 09:05 | .github/workflows/parity-nemo-asr-real.yml | NeMo ASR family real-checkpoint parity（dispatch matrix / opt-in） |
+| Monday | 09:15 | .github/workflows/parity-rmvpe-real.yml | RMVPE real-checkpoint parity |
 | Monday | 09:30 | .github/workflows/corpus-drift-detector.yml | `.github/pins.yaml` 全 entry の drift 検査（upstream=advisory / mirror=hard_fail、informational） |
+| Monday | 09:35 | .github/workflows/parity-whisper-extras-real.yml | Distil-Whisper / Kotoba-Whisper real parity（opt-in） |
 | Monday | 10:00 | .github/workflows/silero-nostd-cross-build.yml | vokra-vad-micro (M5-03 no_std) thumbv8m cross build |
+| Monday | 10:15 | .github/workflows/parity-tts-dac-real.yml | Dia / Zonos DAC-family TTS parity（opt-in） |
+| Monday | 10:30 | .github/workflows/parity-tts-hiftnet-real.yml | HiFTNet-family TTS parity（CosyVoice variants、opt-in） |
+| Monday | 11:00 | .github/workflows/parity-qwen3-tts-real.yml | Qwen3-TTS real-checkpoint parity（opt-in） |
+| Monday | 11:30 | .github/workflows/parity-tts-continuous-vae-real.yml | VoxCPM2 / VibeVoice continuous-VAE TTS parity（opt-in） |
+| Monday | 12:00 | .github/workflows/parity-tts-japanese-real.yml | Irodori / Japanese VITS parity（opt-in） |
+| Monday | 12:30 | .github/workflows/parity-deepfilternet3-real.yml | DeepFilterNet3 real-checkpoint parity（opt-in） |
+| Monday | 13:00 | .github/workflows/parity-deberta-v3-large-real.yml | DeBERTa-v3-large real-checkpoint parity（opt-in） |
 | Tuesday | 06:00 | .github/workflows/parity-rvq-real.yml | Mimi/DAC RVQ codec 実 parity (Monday hub outage で全滅回避のため火曜) |
 
 ---
@@ -139,6 +191,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | 04:47 | .github/workflows/nightly-webgl.yml | Unity WebGL preflight + wasm-harness + WebGL build |
 | 05:17 | .github/workflows/nightly-asr-wer.yml | LibriSpeech `1272/128104` WER regression (`test_librispeech_wer.py`) |
 | 05:47 | .github/workflows/nightly-tier2-device.yml | Raspberry Pi 3B/4B/5/Zero 2 W 実機 RTF (self-hosted 必須、未登録なら clean skip) |
+| 06:17 | .github/workflows/nightly-full-parity.yml | staged GGUFを用いるdynamic full-parity matrix（全PRでSileroを実行、未設定legはplan summaryへ未測定記録） |
 
 ---
 
@@ -149,11 +202,26 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 
 | trigger | workflow | 主要 job (定義順) |
 |---|---|---|
-| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → ios-xcframework → unity-package-release → python-pypi-publish → godot-package-release → npm-web-release → crates-io-dry-run → crates-io-publish → release-notes → desktop-release → android-aar-release |
+| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python / Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
 
 release パイプ内の job は全て advisory (branch protection 対象外)。crate publish は
 `crates-io-dry-run` の green を人手で確認したうえで `crates-io-publish` を走らせる 2 段。
-tag push で全 job が並列起動、`needs:` で必要な直列依存のみ表現。
+Release 本体の作成と CHANGELOG 検証を成果物 upload より先に完了させ、
+`gh release upload` の並列 race と、不正な release notes のまま registry を更新する経路を防ぐ。
+`workflow_dispatch` の `dry_run=true` は artifact 確認のみで、Release / registry / branch を更新しない。
+
+タグ release の XCFramework / Unity UPM / Python wheel / Godot AssetLib / npm / desktop /
+Android AAR は SPDX SBOM 付き GitHub artifact attestation を発行する。ダウンロード後の
+検証は次の形に統一する。
+
+```bash
+# Build provenance
+gh attestation verify <artifact-path> --repo ayutaz/vokra
+
+# SPDX 2.3 SBOM predicate
+gh attestation verify <artifact-path> --repo ayutaz/vokra \
+  --predicate-type https://spdx.dev/Document/v2.3
+```
 
 ---
 
@@ -167,11 +235,10 @@ trigger とする workflow。
 | workflow_dispatch only | .github/workflows/bench-baseline-capture.yml | `iters` iteration で bench baseline を再取得 |
 | push main (`docs/bench-baselines/**`, `docs/perf/**`, `docs/benchmarks/**`, `tools/bench/build_dashboard.py`, `.github/workflows/dashboard.yml`) + workflow_dispatch | .github/workflows/dashboard.yml | perf dashboard 再生成 + GitHub Pages deploy |
 
-path filter で PR trigger にも参加している workflow (`.yml` 側で `pull_request:` block を
-持つもの) は §3 の weekly parity に含めた: `parity-kokoro-real` / `parity-whisper-real` /
-`parity-moshi-real` / `parity-rvq-real` / `parity-utmos` / `web-wasm`。これらは PR 上の
-narrow path filter で該当 crate / dumper / fixture を触った場合のみ再実行される（PR gate
-ではなく informational）。
+path filter で PR trigger にも参加している workflow は §3 の weekly parity と
+`nightly-full-parity.yml` に含めた。各 workflow の `pull_request.paths` に該当する
+crate / dumper / fixture を触った場合のみ再実行され、いずれも branch-protection
+context ではなく informational である。
 
 ---
 
@@ -339,6 +406,37 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
 - `docs/adr/X-10-corpus-self-mirror.md` — the mirror decision itself
   (gitignore-local internal ADR).
 
+### 8.6 Python / uv policy
+
+Workflow Python follows the same uv-only rule as local tooling. The 2026-08-18
+migration started from 24 workflow files / 36 jobs / 152 bare invocations and
+closed with zero exceptions:
+
+- stdlib-only helpers use
+  `uv run --no-project --python 3.12 python <script>`;
+- dependency-bearing jobs create an environment with `uv venv`, install with
+  `uv pip --python <venv-python>`, and run with an explicit interpreter;
+- shell activation, direct venv executables, bare pip/pytest, and runner-user
+  site mutation are prohibited;
+- every Python-using job installs the pinned
+  `astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9` action.
+
+`scripts/check-workflow-hygiene.sh` enforces the command rule over block and
+scalar `run:` entries. The migration inventory, cross-platform wheel recipe,
+and completion evidence are recorded in
+[`docs/handoff/workflow-python-uv-migration-2026-08-18.md`](../../docs/handoff/workflow-python-uv-migration-2026-08-18.md).
+
+### 8.7 Immutable CI dependencies
+
+Remote Actionsはすべてfull 40-hex commit SHA、Docker imageはversion tagに加えて
+multi-architecture OCI `@sha256` digestを必須とする。`secret-scan.yml`のgitleaksは
+`v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`
+へ固定済み。tagはreview時の可読性、digestは実行identityとして両方を残す。
+
+`scripts/check-workflow-hygiene.sh`はremote `uses:`、workflow container image、
+`docker run` / `docker pull`を横断し、mutable refをhard-failする。self-testはmoving
+Action tagとdigestなしDocker imageを実際に拒否し、tag+digestを受理できることも検証する。
+
 ---
 
 ## 参考
@@ -347,5 +445,5 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
 - workflow 一覧: `ls .github/workflows/*.yml`
 - 各 workflow の script side: `scripts/` 配下 (`check-*.sh` / `build-*.sh` / `parity/*.sh` など)
 - Rust workspace の zero-dep 不変条件 (NFR-DS-02): `root Cargo.lock` は `vokra-*` のみ
-  ゆえ、workflow から `cargo add`/`cargo update` を投入する変更は原則禁止 (Python venv や
-  wasm / iOS 側 build script 内での隔離依存導入のみ許可)
+  ゆえ、workflow から `cargo add`/`cargo update` を投入する変更は原則禁止 (uv-managed
+  Python environment や wasm / iOS 側 build script 内での隔離依存導入のみ許可)

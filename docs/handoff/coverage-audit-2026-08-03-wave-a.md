@@ -52,21 +52,12 @@
 
 ## 2. Owner critical path (Wave A 完了までの最短経路)
 
-### 2a. dnsmos-p808-p835 (即時可能、prep script re-run のみ)
-```bash
-cd /Users/inamotoyuuta/Desktop/Otonx
-source tools/parity/.venv/bin/activate  # or `uv sync --project tools/parity`
-python tools/parity/dnsmos_prepare_checkpoint.py \
-  --p808 ~/checkpoints/dns-challenge/DNSMOS/DNSMOS/model_v8.onnx \
-  --p835 ~/checkpoints/dns-challenge/DNSMOS/DNSMOS/sig_bak_ovr.onnx \
-  --output ~/checkpoints/dnsmos/model.safetensors
-./target/release/vokra-cli convert --model dnsmos-p808-p835 \
-  --input ~/checkpoints/dnsmos/model.safetensors \
-  --output ~/gguf/dnsmos-p808-p835.gguf
-export HF_TOKEN=$(grep '^HF=' .env | cut -d'=' -f2-)
-bash scripts/publish/publish-one.sh --gguf ~/gguf/dnsmos-p808-p835.gguf \
-  --repo vokra/dnsmos-p808-p835 --license-spdx MIT --push
-```
+### 2a. dnsmos-p808-p835 — complete
+
+Published on 2026-08-04. There is no remaining owner action and the old
+credential-harvesting/manual-push recipe was removed from the live handoff.
+Any future rebuild uses the frozen `tools/parity` uv project on VAST and the
+current `publish-one.sh` dry-run → explicit upload-authorization flow.
 
 ### 2b. rnnoise-v0.2 (C build 経由、~5 min)
 ```bash

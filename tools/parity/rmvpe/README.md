@@ -1,16 +1,20 @@
 # tools/parity/rmvpe
 
+Maintainers run every `cargo ... -p vokra-models` command in this document on
+VAST, never on the memory-constrained development Mac. Python work uses the
+frozen uv project in this directory.
+
 Offline sidecar for **yxlllc/RMVPE** (or **Dream-High/RMVPE** parent,
 same architecture; both MIT) → Vokra parity fixtures. Companion to the
 Vokra-side runtime port in
-[`crates/vokra-models/src/f0/rmvpe.rs`](../../crates/vokra-models/src/f0/rmvpe.rs)
+[`crates/vokra-models/src/f0/rmvpe.rs`](../../../crates/vokra-models/src/f0/rmvpe.rs)
 and the env-gated parity harness
-[`crates/vokra-models/tests/parity_rmvpe.rs`](../../crates/vokra-models/tests/parity_rmvpe.rs).
+[`crates/vokra-models/tests/parity_rmvpe.rs`](../../../crates/vokra-models/tests/parity_rmvpe.rs).
 
 ## Status (2026-08-13)
 
 The Vokra runtime port is **feature-complete** as of commit
-[`e7b6810`](../../crates/vokra-models/src/f0/rmvpe.rs) (real U-Net +
+[`e7b6810`](../../../crates/vokra-models/src/f0/rmvpe.rs) (real U-Net +
 BiGRU forward, inline `pool2d` / `conv_transpose2d` / `pytorch_gru`
 implementation, no external op deps). Path A of the parity harness
 (`VOKRA_RMVPE_REAL_GGUF`) already binds shape / finite / sigmoid-range
@@ -45,7 +49,7 @@ see `docs/handoff/vast-ai-publish-rmvpe.md` §1 for the evolution.
 - Wrote `dump_reference.py`, `fetch_rmvpe_pt.sh`, and this README.
 - Kept the runtime side (`crates/vokra-models/src/f0/rmvpe.rs` +
   `parity_rmvpe.rs`) unchanged in this wave (already landed in
-  [`e7b6810`](../../crates/vokra-models/src/f0/rmvpe.rs)).
+  [`e7b6810`](../../../crates/vokra-models/src/f0/rmvpe.rs)).
 - Verified the dumper's structural contract via static review against
   the parity-harness env-var / raw-byte-format expectations in
   `crates/vokra-models/tests/parity_rmvpe.rs` L80-104, L342-373.
@@ -186,7 +190,7 @@ DFN3 dumpers established.
 ## Related
 
 - Runtime port: `crates/vokra-models/src/f0/rmvpe.rs` (real U-Net +
-  BiGRU, landed [`e7b6810`](../../crates/vokra-models/src/f0/rmvpe.rs))
+  BiGRU, landed [`e7b6810`](../../../crates/vokra-models/src/f0/rmvpe.rs))
 - Parity harness: `crates/vokra-models/tests/parity_rmvpe.rs`
 - Converter: `crates/vokra-convert/src/models/rmvpe.rs`
 - CI workflow: `.github/workflows/parity-rmvpe-real.yml`

@@ -51,7 +51,8 @@ up), the checker FAILS and tells you to delete the entry. That is what stops
 the ledger from silently rotting into a permanent hole.
 
 Usage:
-    python3 tools/docs/check_doc_examples.py [--list | --self-test]
+    uv run --no-project --python 3.12 python \
+        tools/docs/check_doc_examples.py [--list | --self-test]
         --list       print the extracted block inventory and exit 0
         --self-test  run the bidirectional fixture tests (T24) and exit
 
@@ -62,6 +63,7 @@ Exit code: 0 = clean (announced tier-C / pinned gaps are not failures),
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import pathlib
 import re
@@ -265,6 +267,25 @@ REPO_PREFIXES = ("scripts/", "web/demo/", "web/pkg/", "bindings/", "tools/", "do
 CLI_TOKEN = re.compile(r"(?:^|[\s(])(?:\./)?(?:target/release/)?vokra-cli\b")
 
 
+def _contains_cli_invocation(line: str) -> bool:
+    """Return whether a shell line invokes the CLI rather than naming its crate.
+
+    Cargo selectors such as ``-p vokra-cli``, ``--package vokra-cli``, and
+    ``--bin vokra-cli`` name a build target.  Treating the next non-flag token
+    as a Vokra subcommand turns ``--features metal`` into a bogus
+    ``vokra-cli metal`` invocation.  A ``cargo run ... -- <subcommand>`` line
+    remains an invocation through its argument separator.
+    """
+    if re.search(r"\bcargo\s+run\b.*(?:^|\s)--(?:\s|$)", line):
+        return True
+    for match in CLI_TOKEN.finditer(line):
+        prefix = line[:match.start()].rstrip()
+        if re.search(r"(?:^|\s)(?:-p|--package|--bin)$", prefix):
+            continue
+        return True
+    return False
+
+
 def _tokenize_invocation(lines, idx):
     """Join a shell invocation that uses trailing backslash continuations."""
     out = [lines[idx]]
@@ -284,8 +305,9 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
             i += 1
             continue
 
-        if CLI_TOKEN.search(raw) or re.search(r"--\s+convert\b|--\s+run\b|--\s+bench\b", raw):
-            joined, i = _tokenize_invocation(lines, i)
+        joined, joined_end = _tokenize_invocation(lines, i)
+        if _contains_cli_invocation(joined):
+            i = joined_end
             toks = joined.split()
             # Find the subcommand: the token right after the vokra-cli word,
             # or after a bare `--` separator (`cargo run ... -- convert`).
@@ -293,6 +315,13 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
             sub_idx = None
             for k, t in enumerate(toks):
                 base = t.split("/")[-1]
+                is_cargo_selector = (
+                    base == "vokra-cli"
+                    and k > 0
+                    and toks[k - 1] in {"-p", "--package", "--bin"}
+                )
+                if is_cargo_selector:
+                    continue
                 if base == "vokra-cli" or t == "--":
                     for off, cand in enumerate(toks[k + 1:], start=k + 1):
                         if cand.startswith("-"):
@@ -309,10 +338,9 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
                     )
                 else:
                     # Only flags AFTER the subcommand belong to it. `cargo run
-                    # --release --bin vokra-cli -- convert …` (docs/tutorials/
-                    # python.md:37) puts cargo's own --release / --bin before
-                    # the `--` separator; attributing those to `convert` was a
-                    # false positive the self-test now pins.
+                    # --release -p vokra-cli --features metal -- convert …`
+                    # puts cargo's own flags before the `--` separator;
+                    # attributing those to `convert` would be a false positive.
                     for k, t in enumerate(toks):
                         if k < sub_idx:
                             continue
@@ -322,8 +350,12 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
                                 problems.append(
                                     f"{block.where()}: `vokra-cli {sub}` has no flag {flag}"
                                 )
-                            elif flag == "--model" and sub == "convert" and k + 1 < len(toks):
-                                kind = toks[k + 1]
+                            elif flag == "--model" and sub == "convert":
+                                kind = (
+                                    t.split("=", 1)[1]
+                                    if "=" in t
+                                    else (toks[k + 1] if k + 1 < len(toks) else "")
+                                )
                                 if not kind.startswith("-") and kind not in kinds:
                                     problems.append(
                                         f"{block.where()}: `--model {kind}` is not a known "
@@ -334,13 +366,13 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
 
         # Repo-relative path existence (T19: ios.md's build-ios.sh /
         # verify-ios-xcframework.sh, web.md's build-wasm.sh + demo server).
-        for tok in re.findall(r"[A-Za-z0-9_./-]+", raw):
+        for tok in re.findall(r"[A-Za-z0-9_./-]+", joined):
             if tok.startswith(REPO_PREFIXES) and not tok.endswith("/"):
                 if re.search(r"[*?]|\.\.\.|<|>", tok):
                     continue
                 if not (root / tok).exists():
                     problems.append(f"{block.where()}: referenced repo path '{tok}' does not exist")
-        i += 1
+        i = joined_end + 1
 
 
 # ------------------------------------------------------------------ tier B --
@@ -384,6 +416,15 @@ PY_IMPORT = re.compile(r"^from\s+vokra(?:\.\w+)?\s+import\s+(\(([^)]*)\)|(.+))$"
 
 def check_python_block(block: Block, names, session_methods, problems, gaps):
     body = block.body
+    try:
+        ast.parse(body, filename=block.where(), mode="exec")
+    except SyntaxError as error:
+        problems.append(
+            f"{block.where()}: `python` block does not parse — "
+            f"{error.msg} (line {error.lineno})"
+        )
+        return
+
     # (1) Names imported from `vokra` must resolve somewhere in the package.
     for m in PY_IMPORT.finditer(body):
         raw = m.group(2) if m.group(2) is not None else (m.group(3) or "")
@@ -558,7 +599,17 @@ def run_check(root: pathlib.Path, docs, listing=False):
 GREEN_DOC = '''# Fixture
 
 ```sh
+cargo build --release -p vokra-cli --features metal
+cargo build --release --package vokra-cli --features cuda
+cargo build --release --package=vokra-cli --features metal
+cargo build --release --bin vokra-cli
+cargo build --release -p \\
+  vokra-cli --features metal
 ./target/release/vokra-cli convert \\
+  --model=whisper \\
+  --input model.safetensors \\
+  --output whisper.gguf
+cargo run --release -p vokra-cli --features metal -- convert \\
   --model whisper \\
   --input model.safetensors \\
   --output whisper.gguf
@@ -579,8 +630,15 @@ RED_DOCS = {
     "bad-flag": '```sh\nvokra-cli convert --model whisper --input a --outpt b.gguf\n```\n',
     "bad-sub": '```sh\nvokra-cli transcribe --model whisper\n```\n',
     "bad-kind": '```sh\nvokra-cli convert --model wisper --input a --output b.gguf\n```\n',
+    "bad-kind-equals": '```sh\nvokra-cli convert --model=wisper --input a --output b.gguf\n```\n',
+    "bad-multiline-cargo-run-flag": (
+        '```sh\ncargo run --release -p vokra-cli \\\n'
+        '  --features metal \\\n'
+        '  -- convert --model whisper --outpt b.gguf\n```\n'
+    ),
     "bad-path": '```sh\nscripts/build-nonexistent-thing.sh\n```\n',
     "bad-import": '```python\nfrom vokra import NoSuchSymbol\n```\n',
+    "bad-python-syntax": '```python\ndef broken(:\n    pass\n```\n',
     "bad-method": (
         '```python\nfrom vokra import Session\n'
         's = Session.open("m.gguf")\ns.transcrybe(pcm, 16000)\n```\n'
@@ -590,12 +648,87 @@ RED_DOCS = {
 }
 
 
+def check_tutorial_wav_helper(root: pathlib.Path) -> list[str]:
+    """Execute the WAV helper directly from both tutorial code fences."""
+    problems = []
+    functions = []
+    for rel in ("docs/tutorials/python.md", "docs/tutorials/python.ja.md"):
+        blocks = extract_blocks(root / rel, rel)
+        candidates = [
+            block for block in blocks
+            if block.lang == "python" and "def read_pcm16_wav_mono" in block.body
+        ]
+        if len(candidates) != 1:
+            problems.append(f"{rel}: expected exactly one read_pcm16_wav_mono example")
+            continue
+        tree = ast.parse(candidates[0].body, filename=rel, mode="exec")
+        function_nodes = [
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "read_pcm16_wav_mono"
+        ]
+        if len(function_nodes) != 1:
+            problems.append(f"{rel}: WAV helper definition was not parseable as one function")
+            continue
+        functions.append((rel, function_nodes[0], tree))
+
+    if len(functions) != 2:
+        return problems
+    if ast.dump(functions[0][1], include_attributes=False) != ast.dump(
+        functions[1][1], include_attributes=False
+    ):
+        problems.append("Python tutorial WAV helpers differ between English and Japanese")
+
+    namespace = {}
+    executable = ast.Module(
+        body=[
+            node for node in functions[0][2].body
+            if isinstance(node, (ast.Import, ast.FunctionDef))
+        ],
+        type_ignores=[],
+    )
+    exec(compile(executable, functions[0][0], "exec"), namespace)
+    helper = namespace["read_pcm16_wav_mono"]
+    struct_module = namespace["struct"]
+    wave_module = namespace["wave"]
+
+    with tempfile.TemporaryDirectory() as td:
+        mono = pathlib.Path(td) / "mono.wav"
+        with wave_module.open(str(mono), "wb") as sink:
+            sink.setnchannels(1)
+            sink.setsampwidth(2)
+            sink.setframerate(16000)
+            sink.writeframes(struct_module.pack("<hhh", -32768, 0, 32767))
+        pcm, sample_rate = helper(str(mono))
+        expected = [-1.0, 0.0, 32767 / 32768.0]
+        if pcm != expected or sample_rate != 16000:
+            problems.append(
+                "Python tutorial WAV helper returned the wrong PCM normalization/sample rate"
+            )
+
+        stereo = pathlib.Path(td) / "stereo.wav"
+        with wave_module.open(str(stereo), "wb") as sink:
+            sink.setnchannels(2)
+            sink.setsampwidth(2)
+            sink.setframerate(8000)
+            sink.writeframes(struct_module.pack("<hhhh", 0, 0, 1, -1))
+        try:
+            helper(str(stereo))
+        except ValueError:
+            pass
+        else:
+            problems.append("Python tutorial WAV helper accepted stereo input")
+
+    return problems
+
+
 def self_test(root: pathlib.Path) -> int:
     rc = 0
     with tempfile.TemporaryDirectory() as td:
         tmp = pathlib.Path(td)
         # (a) GREEN side (T24): a legitimate doc-local pseudo-helper must NOT
-        #     be mistaken for API drift, and a valid invocation must pass.
+        #     be mistaken for API drift; cargo target selectors must NOT be
+        #     mistaken for CLI invocations; valid direct and cargo-run
+        #     invocations must pass.
         gd = tmp / "green.md"
         gd.write_text(GREEN_DOC, encoding="utf-8")
         shutil.copytree(root / "crates", tmp / "crates", dirs_exist_ok=True,
@@ -617,6 +750,9 @@ def self_test(root: pathlib.Path) -> int:
             if run_check(tmp, [rd.name]) == 0:
                 print(f"self-test FAILED: red fixture '{name}' should have failed", file=sys.stderr)
                 rc = 1
+        for problem in check_tutorial_wav_helper(root):
+            print(f"self-test FAILED: {problem}", file=sys.stderr)
+            rc = 1
     if rc == 0:
         print("check-doc-examples --self-test: OK")
     return rc

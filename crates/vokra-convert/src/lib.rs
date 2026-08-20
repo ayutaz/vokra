@@ -906,10 +906,10 @@ pub enum ModelKind {
     /// estimator required by RVC v2 and reused by GPT-SoVITS /
     /// retrieval-based VC pipelines: a U-Net encoder (5 down blocks) +
     /// intermediate GRU + U-Net decoder (5 up blocks) + 360-pitch-class
-    /// head over a 128-mel spectrogram at 16 kHz PCM in. MIT weight +
-    /// code (upstream `Dream-High/RMVPE` + `yxlllc/RMVPE` LICENSE both
-    /// = MIT, fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」)
-    /// → [`vokra_core::LicenseClass::Permissive`]. Every F32 / F16 / BF16 tensor
+    /// head over a 128-mel spectrogram at 16 kHz PCM in. The primary
+    /// implementation is Apache-2.0, while the checkpoint-publishing
+    /// `yxlllc/RMVPE` repository declares no weight licence; conversion
+    /// therefore defaults to [`vokra_core::LicenseClass::Unknown`]. Every F32 / F16 / BF16 tensor
     /// passes through verbatim under upstream state_dict names; the
     /// `vokra.rmvpe.*` chunk group carries the primary-source hparams
     /// (hop=160, sr=16000, n_mels=128, win_length=1024, n_fft=2048,

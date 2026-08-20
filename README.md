@@ -77,9 +77,9 @@ them first-class native operators instead.
   weights and are bit-exactly reproducible.
 - **Cross-platform distribution**: single library, single C ABI header,
   static or dynamic linking; iOS XCFramework and Swift Package; Unity UPM
-  package; Godot GDExtension; Python `ctypes` wheels; HTTP compatibility
-  server exposing OpenAI Whisper, vLLM, piper-plus, and Wyoming Protocol
-  endpoints.
+  package; Godot GDExtension; Python `ctypes` wheels; HTTP server exposing
+  OpenAI Whisper, piper-plus, and Wyoming Protocol endpoints plus
+  contract-only vLLM completion schemas.
 - **Safe-by-default Rust**: `unsafe_code = "deny"` is set workspace-wide;
   `unsafe` is allowed only in backend and FFI crates and requires
   `// SAFETY:` justifications enforced by
@@ -140,7 +140,9 @@ silently wrong — they refuse by name.
 - FSMN-VAD
 
 **Keyword spotting / wake word**
-- openWakeWord
+- openWakeWord (`FR-OP-51`) — converter, binder and classifier are present; the upstream
+  official weights are CC-BY-NC-SA-4.0 and are not bundled or commercially
+  redistributed. The embedding extractor remains loud-partial.
 - microWakeWord — the INT8 forward runs in the `no_std` `vokra-kws-micro`
   crate (Cortex-M55 cross-build); loading a chain from a checkpoint is not
   wired yet, and an unconfigured detector refuses rather than reporting
@@ -258,8 +260,8 @@ Every published model card on <https://huggingface.co/vokra> lists the exact
 `.gguf` file to fetch. For example, to grab a Whisper base checkpoint:
 
 ```sh
-# Any of: curl / wget / huggingface-cli — the file is a plain GGUF blob.
-huggingface-cli download vokra/whisper-base whisper-base.gguf --local-dir .
+# Any of: curl / wget / hf — the file is a plain GGUF blob.
+hf download vokra/whisper-base whisper-base.gguf --local-dir .
 ```
 
 ### Transcribe audio
@@ -404,15 +406,18 @@ Vokra never silently reroutes to a different backend or dtype.
   [`scripts/build-godot-gdextension.sh`](scripts/build-godot-gdextension.sh):
   five-target cross-build matrix (macOS Intel + Apple Silicon, Linux x64,
   Windows MSVC, Android arm64) with an AssetLib-shaped release layout.
-- **Python** — pure `ctypes` (no `pyo3`) under
-  [`bindings/python/`](bindings/python), published as PyPI wheels via
-  `cibuildwheel`.
+- **Python (pre-alpha source)** — pure `ctypes` (no `pyo3`) under
+  [`bindings/python/`](bindings/python). The wheel scaffold exists, but the
+  checked-in binding still covers the earlier 14-function subset while the
+  current C header has 41 functions, and the package root does not yet export
+  `Session`. Treat PyPI publication as pending; see the binding README.
 - **HTTP server** — [`integrations/vokra-server`](integrations/vokra-server):
-  an isolated workspace exposing four compatibility APIs so existing
-  clients drop in unchanged: **OpenAI Whisper**
-  (`/v1/audio/transcriptions`), **vLLM** (`/v1/completions`,
-  `/v1/chat/completions`), **piper-plus HTTP** (`/api/tts`), and
-  **Wyoming Protocol** for Home Assistant Voice backends.
+  an isolated workspace implementing **OpenAI Whisper**
+  (`/v1/audio/transcriptions`), **piper-plus HTTP** (`/api/tts`), and
+  **Wyoming Protocol** for Home Assistant Voice backends. The vLLM-shaped
+  `/v1/completions` and `/v1/chat/completions` routes currently validate the
+  contract but return explicit 501 responses until an LLM generation engine
+  is wired; they are not yet drop-in inference endpoints.
 
 ## Model publications
 
@@ -465,11 +470,13 @@ implemented TTS model:
 
 ## Documentation
 
-All user-facing documentation lives under [`docs/`](docs). Every top-level
-document has both an English (`.md`) and a Japanese (`.ja.md`) version.
+Start with the [documentation map](docs/README.md). Public entry guides and
+platform tutorials have English/Japanese twins; audit, legal, benchmark, ADR,
+and dated handoff records may intentionally be single-language.
 
 | Document | What it covers |
 |---|---|
+| [`docs/README.md`](docs/README.md) | Current sources, historical records, and validation rules |
 | [`docs/getting-started.md`](docs/getting-started.md) | Five-minute quickstart |
 | [`docs/architecture.md`](docs/architecture.md) | Internal architecture, crate layout, graph executor |
 | [`docs/api-reference.md`](docs/api-reference.md) | C ABI + CLI reference |
