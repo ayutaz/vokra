@@ -22,10 +22,10 @@ entry MUST carry a justification, so the drift can be re-audited later.
 Failure emits `::error file=<path>,line=<n>::<msg>` so GitHub highlights
 the exact line in the PR file-view.
 
-Advisory-first posture (matches .github/workflows/README.md §2 promotion
-policy): the calling workflow (`pins-sync-check.yml`) sets
-`continue-on-error: true` on the job, which is dropped after 4 consecutive
-green weeks per owner judgement.
+Enforcement posture: after the 2026-07-23--08-20 advisory soak, the calling
+workflow (`pins-sync-check.yml`) runs on every pull request and hard-fails on
+drift. Its stable `pins.yaml ↔ workflow sync` context is required by `main`
+branch protection.
 
 Zero-dep NFR-DS-02: stdlib + PyYAML in an isolated venv. Nothing lands
 in root Cargo.lock.

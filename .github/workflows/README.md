@@ -21,7 +21,7 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 
 ## 1. Required checks (main branch protection)
 
-`main` への PR merge を gate する 14 checks。branch protection API 側の contexts と一対一に
+`main` への PR merge を gate する 15 checks。branch protection API 側の contexts と一対一に
 対応しなければならない。`build (*)` と `test (*)` は `ci.yml` の matrix expansion 由来で、
 `os: [ubuntu-latest, macos-latest, windows-latest]` の 3 展開を **必ずこの順** で確保する。
 `parity` は matrix job (`parity-matrix`) の aggregator（Wave 10 で分離済、matrix 直下では
@@ -44,17 +44,18 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 | dependency-review | dependency-review | .github/workflows/ci-security.yml | changed dependency の vulnerability / license / Scorecard gate |
 | documentation-links | documentation-links | .github/workflows/ci-security.yml | public documentation surface の link validation |
 | CodeQL | analyze (`codeql-rust`) | .github/workflows/codeql.yml | GitHub CodeQL Rust `security-extended` analysis |
+| pins.yaml ↔ workflow sync | pins-sync | .github/workflows/pins-sync-check.yml | `.github/pins.yaml` と workflow pin の双方向同期 |
 
 ---
 
 ## 2. Additional required and advisory checks
 
-§1 の14 contexts以外はmergeをgateしないinformational check。定期監視で赤化を
+§1 の15 contexts以外はmergeをgateしないinformational check。定期監視で赤化を
 検知し、依頼者判定でrequired昇格するかを判断する（初期 promotion 方針: 連続数週の
 緑が確認できた時点でownerに昇格提案）。§2.2の先頭4項目は2026-08-20にrequiredへ
-昇格済みで、詳細説明を重複掲載している。`pins.yaml ↔ workflow sync` は4週間の
-advisory soakを完了し、2026-08-20にhard-fail + 全PR起動へ変更した。PRとmainのgreenを
-確認後、§1とbranch protectionへ追加する（設定反映まではrequiredではない）。
+昇格済みで、詳細説明を重複掲載している。`pins.yaml ↔ workflow sync` も4週間の
+advisory soakとPR/mainのgreen確認を完了し、同日にhard-fail + 全PR起動へ変更して
+§1およびbranch protectionへ追加済みである。
 
 ### 2.1 ci*.yml 内 (PR/push で常時走行、advisory)
 
@@ -128,11 +129,11 @@ Dependabot security updates、private vulnerability reporting を有効化済み
 
 **2026-08-20 post-merge audit**: full-SHA workflow移行と`workflow-security`での検証、
 `workflow-security` / `dependency-review` / `documentation-links` / `codeql-rust`の
-required追加は完了した。残るGitHub側設定は、repository Actions policyの
-`sha_pinning_required`（現在false）と、branch protectionのstrict status checks /
-conversation resolution / linear history / administrator enforcement（いずれも現在false）
-である。CI hardening PRをPR上とmain上の両方でgreen確認してから、この順で有効化する。
-`pins.yaml ↔ workflow sync`のrequired追加も同じmain-green確認後に行う。
+required追加は完了した。repository Actions policyの`sha_pinning_required`と、branch
+protectionのstrict status checks / conversation resolution / linear history /
+administrator enforcementも有効化済みである。required contextsはcore 10 + security 4
+に`pins.yaml ↔ workflow sync` 1を加えた合計15、required approving reviewsはsingle-maintainer
+運用のため0、force pushとbranch deletionは禁止、merge方式はsquashのみである。
 
 ### 2.4 release.yml 内 (tag v* 起動、advisory & release パイプ)
 
@@ -400,8 +401,8 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
   catalog (catches "workflow edited without updating catalog" and
   "unregistered pin added to a workflow"). The 2026-07-23–08-20 advisory
   soak completed without observed false positives; the job now hard-fails
-  on every PR. Add its stable context to branch protection only after the
-  promoted form is green on both its PR and main (matches §2 policy).
+  on every PR. Its promoted form was green on both its PR and main, and the
+  stable context was added to branch protection on 2026-08-20.
 - `.github/workflows/corpus-drift-detector.yml` — weekly probe per §8.4.
 - `docs/adr/X-10-corpus-self-mirror.md` — the mirror decision itself
   (gitignore-local internal ADR).

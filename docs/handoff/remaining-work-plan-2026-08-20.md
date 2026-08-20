@@ -28,7 +28,7 @@ The remaining work is complete only when all of the following are true:
 | Retire obsolete branches | Complete: 13 old refs were audited, archived in a verified local Git bundle, and obsolete remote branches were deleted | Archive/delete evidence from the working session |
 | Unique required context ownership | Complete: Vulkan is `vulkan-parity`; main CI exclusively owns required `parity` | Final PR run contained distinct contexts |
 | PR check fanout | Complete: dynamic `nightly-full-parity` planning and prose-only workflow filters landed | Final-head workflow checks |
-| Branch-protection documentation | Complete: 14 required contexts and four security contexts are current | Branch-protection API and workflow index |
+| Branch-protection documentation | Complete: 15 required contexts (core 10 + security 4 + pins-sync 1), strict checks, conversation resolution, linear history, administrator enforcement, and Actions SHA pinning are current | Branch-protection and Actions-policy APIs plus workflow index |
 | Workflow inventory | Complete for PR #38 at 44 workflows / 36 cron entries; this Python branch intentionally adds workflow 45 without adding a cron | `scripts/check-workflow-hygiene.sh` reports 45 / 36 on this branch |
 | M5 tracking | Complete for the reconciliation scope: live routing index added and stale Accepted decisions corrected | Documentation gates in PR #38 |
 | Final verification | Complete and merged | PR #38 had 110 checks (99 success, 11 intentional skips, zero failures) and was squash-merged as `234d368` |
@@ -39,7 +39,7 @@ reviewable branches and preserve the merged required-check ownership.
 ## Phase B — make the release surface truthful
 
 1. **Python binding / wheel (active).** The separate local branch
-   `agent/python-bindings-capi-2026-08-20` is rebased onto merged PR #38 and extends
+   `agent/python-bindings-capi-2026-08-20` extends
    `gen-py-bindings.py` to parse the current C structs, four enum families,
    seven opaque handles, integer widths, plain-`bool` and struct-pointer
    returns, and all 41 functions. Its uv tests pass on Python 3.9 and 3.12.
@@ -48,8 +48,11 @@ reviewable branches and preserve the merged required-check ownership.
    arm64/x86_64 macOS builds + delocate, and Windows x86_64 + delvewheel. Each
    wheel is `py3-none-<platform>`, archive/RECORD/native architecture checked,
    clean-installed on Python 3.9/3.12, and collected into an exact four-wheel
-   manifest. Local static/source gates are green; GitHub native jobs and a VAST
-   Rust verification remain required before the branch is ready to land.
+   manifest. GitHub's four native jobs are green. VAST independently built and
+   tested `vokra-capi`, then clean-installed an actual Linux native wheel on
+   Python 3.9 and 3.12 and resolved all 41 symbols. The branch is rebased onto
+   the post-PR #39/#40/#43 `main`; the remaining integration work is final-head
+   CI and review. PyPI/TestPyPI publication remains out of scope.
 2. **Desktop distribution.** Replace the T32-gated scaffold with native
    Windows/macOS/Linux library + CLI builds, a completeness manifest, install
    smoke, and fail-loud publication. A Linux-only best-effort archive is not a
@@ -64,11 +67,34 @@ reviewable branches and preserve the merged required-check ownership.
 5. **Registry channels.** Exercise dry-runs first for PyPI, crates.io, npm,
    OpenUPM/Godot AssetLib as applicable. Tokens, project reservations, and
    production uploads require exact owner authorization.
+6. **Dashboard hosting.** Decide whether the generated performance dashboard
+   should be public. The artifact path already works; public deployment still
+   requires enabling GitHub Pages and setting `VOKRA_PAGES_ENABLED=true`.
 
 Each implementation belongs in a focused branch after PR #38. The active
 Python branch is the first such release-surface branch.
 
 ## Phase C — real parity and runtime depth
+
+The runtime inventory is mechanically complete but is not a claim that every
+model executes. On 2026-08-20 `check-bound-arch-coverage.sh` accounted for all
+89 distinct binder architectures (14 directly routed and 75 represented by 79
+`BOUND_ARCHES` rows), `check-arch-handshake.sh` reconciled 111 converter and 89
+binder discoveries plus 570 required metadata-key reads, and
+`check-m5-residual-blockers.sh` passed. The honest blocker ledger in
+`crates/vokra-cli/src/engine.rs` currently splits the 79 unrouted rows into:
+
+| Blocker class | Rows | Next action |
+|---|---:|---|
+| `RealForwardNoCliTask` | 3 | Wire `wetextprocessing` normalization (with `vokra-wfst`), FCPE extraction, and CREPE extraction into explicit CLI tasks and tests |
+| `NeedsPairedInput` | 1 | Add a paired mic/reference input contract before routing NKF-AEC |
+| `NoCliShapedOutput` | 2 | Define an honest presentation/input contract for Mimi codes and CT-Punc token/id input, or keep them library-only |
+| `NoGgufLoader` | 17 | Add real artifact loaders before advertising CLI execution: Parakeet-TDT, CosyVoice3, Chatterbox (three variants), Dia, Irodori-TTS, Qwen3-TTS, VibeVoice, VITS-JA, VoxCPM2, Zonos, BigVGAN, Vocos, HiFi-GAN vocoder, SpeechT5 HiFi-GAN, and Charsiu |
+| `LoudPartialForward` | 56 | Implement and independently parity-test the primitive named by each binder; do not collapse these into one checkbox or count a loader/converter as a forward |
+
+Treat the first three CLI adapters as the lowest-cost code slice. The 17
+loader and 56 forward rows need model-family scope, upstream references, and
+real artifacts; they must not be bulk-marked complete from structural tests.
 
 Execute in increasing cost order:
 
@@ -88,6 +114,9 @@ Explicit non-checklist implementation holes also remain:
 
 - implement Godot `session_vad_open_stream` object creation and add headless +
   editor smoke evidence before claiming full runtime dispatch;
+- implement a real `TtsEngine::synthesize_stream` override before advertising
+  incremental streaming; the trait default intentionally returns
+  `UnsupportedOp`, so a one-chunk synchronous wrapper is not completion;
 - replace the flow-sampler fixture-triggered panic with an independent
   reference decoder/comparison;
 - parse and compare the openWakeWord reference JSON against a real fixture;
@@ -95,6 +124,10 @@ Explicit non-checklist implementation holes also remain:
   DeBERTa-v3 scheduled parity);
 - decide whether vLLM completion generation is in the GA server scope; until
   implemented, retain the explicit contract-only/501 wording at top level.
+- decide the GA compatibility boundary for the other explicit server 501s:
+  OpenAI segment timestamps (`verbose_json`, SRT, VTT), compressed/headerless
+  speech formats and per-request speed, plus Piper per-request overrides.
+  Preserve fail-loud responses for every feature kept out of scope.
 
 Read the numerical-parity skill before writing a reference dumper, changing a
 bound, or diagnosing a parity failure. All model artifacts totaling at least
@@ -123,19 +156,26 @@ dry-run work was already approved.
 The dependency order is fixed:
 
 1. Capture the M5-14/M5-15 same-rig CPU, quantization, and quality evidence.
-2. Run CoreML/ANE and QNN/Hexagon placement + RTF bakeoffs against matched CPU
-   baselines; record PASS/FAIL/INSUFFICIENT DATA.
-3. Decide delegate and WFST C exports; ratify the WFST ADR.
-4. Run Cortex-M55/FVP Silero VAD and decide Tier-3/Helium investment.
-5. Complete iOS, Android, Web, Godot, server-latency, and self-hosted CUDA
+2. Implement the delegate execution prerequisite before scheduling NPU
+   measurements. `vokra-backend-coreml` and `vokra-backend-qnn` currently
+   report zero supported ops: non-empty graphs return `UnsupportedOp`, while
+   `execute` on an empty graph is `NotImplemented`. Ratify the CoreML model-
+   supply ADR, transcribe the QNN SDK-gated graph path, bind the selected
+   delegate submodel, and add fail-loud graph/parity tests.
+3. Run CoreML/ANE and QNN/Hexagon placement + RTF bakeoffs against matched CPU
+   baselines only after that execution path exists; record
+   PASS/FAIL/INSUFFICIENT DATA.
+4. Decide delegate and WFST C exports; ratify the WFST ADR.
+5. Run Cortex-M55/FVP Silero VAD and decide Tier-3/Helium investment.
+6. Complete iOS, Android, Web, Godot, server-latency, and self-hosted CUDA
    measurements required by their owning acceptance criteria.
-6. Complete console NDA/SDK verification, voice-clone legal/trust-root work,
+7. Complete console NDA/SDK verification, voice-clone legal/trust-root work,
    SynthID-contract-or-alternative decision, EU certification, and commercial
    adoption evidence.
-7. Supply the X-05-T04 owner contact points and land the four pending
+8. Supply the X-05-T04 owner contact points and land the four pending
    `CODE_OF_CONDUCT` / `SECURITY` English/Japanese community files.
-8. Stabilize the release train and community/maintainer DoD inputs.
-9. Promote `abi-surface` only after a green observation window, record all
+9. Stabilize the release train and community/maintainer DoD inputs.
+10. Promote `abi-surface` only after a green observation window, record all
    M5-12 DoD evidence, then prepare v1.0.0 and fire the irreversible ABI freeze.
 
 ## Continuous controls

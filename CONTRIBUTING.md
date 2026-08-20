@@ -22,7 +22,7 @@ in `docs/requirement-ids.md` and its Japanese twin.
 ## 2. CI required checks
 
 As verified through the GitHub branch-protection API on 2026-08-20, every PR
-must pass **14 required status contexts**:
+must pass **15 required status contexts**:
 
 | Check | What it runs |
 |---|---|
@@ -36,19 +36,21 @@ must pass **14 required status contexts**:
 | `dependency-review` | dependency license/vulnerability review plus OpenSSF Scorecard visibility for changed dependencies |
 | `documentation-links` | lychee link validation for the public documentation surface |
 | `CodeQL` | GitHub CodeQL Rust `security-extended` analysis |
+| `pins.yaml ↔ workflow sync` | Bidirectional consistency between `.github/pins.yaml` and workflow pin literals |
 
 Run lightweight equivalents locally and use CI or an adequately sized remote
 host for the complete matrix. On the maintainer's 16 GB Mac, workspace-wide
 Cargo and every `-p vokra-models` Cargo invocation are VAST-only. Ten core
 contexts live in `.github/workflows/ci.yml`; the four security contexts live
-in `.github/workflows/ci-security.yml` and `.github/workflows/codeql.yml`.
+in `.github/workflows/ci-security.yml` and `.github/workflows/codeql.yml`, and
+the pin-catalog context lives in `.github/workflows/pins-sync-check.yml`.
 The advisory checks were split out on 2026-07-23 into
 `.github/workflows/ci-quality.yml` (lint / audit / doc-drift / API-compat) and
 `.github/workflows/ci-platform.yml` (platform build targets / GPU backends /
 regression gate). `.github/workflows/README.md` is the index of which job lives
 where.
 
-Beyond the 14 required contexts, CI also runs a **`gpu-backends`** job
+Beyond the 15 required contexts, CI also runs a **`gpu-backends`** job
 (in `.github/workflows/ci-platform.yml`) that
 keeps the optional `metal` / `cuda` GPU backends compiling and lint-clean
 (`cargo build`/`clippy`/`test -p vokra-models -p vokra-cli --features
