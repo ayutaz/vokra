@@ -13,7 +13,7 @@
 //!
 //! A [`ZooModel`] is either [`ZooKind::Gated`] (a model the item-2 runner
 //! scores) or [`ZooKind::Excluded`] (a zoo row that is **not** a mel/UTMOS
-//! quality-gated model — a KWS spotter, speaker-embedding, enhancement,
+//! quality-gated model — a speaker-embedding, enhancement,
 //! watermarker, or vocoder component — or one held pending license sign-off).
 //! An excluded record is *not* iterated, but it stays in the catalog so
 //! `scripts/check-zoo-manifest-complete.sh` can prove every `★ 公式 zoo` row in
@@ -521,11 +521,13 @@ mod tests {
         let gated = m.gated().count();
         let excluded = m.excluded().count();
         // 15 gated (1 vad + 5 whisper + piper + kokoro + cosyvoice2 + csm +
-        // moshi + voxtral + 3 codecs) / 12 excluded (xcodec2 + titanet +
-        // pyannote license/embedding holds + 4 non-quality + 3 enhancement +
-        // audioseal + vocos).
+        // moshi + voxtral + 3 codecs) / 11 excluded (xcodec2 + titanet +
+        // pyannote parity/runtime hold + 3 speaker/non-quality + 3 enhancement
+        // + audioseal + vocos). openWakeWord's official NC-SA weights are not
+        // an official-zoo record; only its user-supplied/custom-weight runtime
+        // path remains available.
         assert_eq!(gated, 15, "gated count drifted");
-        assert_eq!(excluded, 12, "excluded count drifted");
+        assert_eq!(excluded, 11, "excluded count drifted");
     }
 
     #[test]

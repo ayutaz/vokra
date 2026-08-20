@@ -39,7 +39,7 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 | fmt | fmt | .github/workflows/ci.yml | `cargo fmt --all -- --check` |
 | clippy | clippy | .github/workflows/ci.yml | `cargo clippy --workspace --all-targets -- -D warnings` |
 | parity | parity | .github/workflows/ci.yml | fixture-only parity aggregator (needs: parity-matrix)、真の重量級 real-weight parity は §3 の weekly leg |
-| license | license | .github/workflows/ci.yml | `cargo deny` + `scripts/check-*` compliance gate |
+| license | license | .github/workflows/ci.yml | `cargo deny` + hard zoo-manifest completeness/no-NC + `scripts/check-*` compliance gate |
 | workflow-security | workflow-security | .github/workflows/ci-security.yml | actionlint + ShellCheck + zizmor workflow security gate |
 | dependency-review | dependency-review | .github/workflows/ci-security.yml | changed dependency の vulnerability / license / Scorecard gate |
 | documentation-links | documentation-links | .github/workflows/ci-security.yml | public documentation surface の link validation |
