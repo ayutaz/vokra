@@ -20,12 +20,12 @@ use crate::stats::{Summary, summarize};
 /// add non-Copy fields without a version bump).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timing {
-    /// Time from `Instant::now()` before `send_bytes` to `.send_bytes(...)`
+    /// Time from `Instant::now()` before `send` to `.send(...)`
     /// returning a `Response` (status + headers received; approximates
     /// TTFA on the current non-streaming vocoder — see `lib.rs` module
     /// docs "Boundary being measured").
     pub ttfa: Duration,
-    /// Time from `Instant::now()` before `send_bytes` to the response
+    /// Time from `Instant::now()` before `send` to the response
     /// body being fully drained.
     pub total: Duration,
     /// HTTP status code (uses 0 for non-transport `body drain`
@@ -71,12 +71,17 @@ pub fn build_request_body(text: &str, voice: &str) -> Vec<u8> {
 /// Build a shared ureq [`Agent`](ureq::Agent) with the timeouts from
 /// [`Args`].
 pub fn new_agent(args: &Args) -> ureq::Agent {
-    ureq::AgentBuilder::new()
+    let config = ureq::Agent::config_builder()
         // Split connect timeout so a firewall drop is caught before
         // the full-round-trip timeout.
-        .timeout_connect(Duration::from_secs(5))
-        .timeout(Duration::from_secs(args.timeout_secs))
-        .build()
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_global(Some(Duration::from_secs(args.timeout_secs)))
+        // The bench records 4xx/5xx as completed HTTP timings. ureq 3
+        // otherwise converts them to Error::StatusCode and discards the
+        // response body, preventing the full-round-trip drain below.
+        .http_status_as_error(false)
+        .build();
+    config.into()
 }
 
 /// Fire one request and return its outcome.
@@ -85,17 +90,17 @@ pub fn new_agent(args: &Args) -> ureq::Agent {
 /// deterministic on a warm CPU with `Instant`'s monotonic clock.
 pub fn single_request(agent: &ureq::Agent, url: &str, body: &[u8]) -> TransportOutcome {
     let start = Instant::now();
-    let resp = agent
-        .post(url)
-        .set("Content-Type", "application/json")
-        .send_bytes(body);
+    let resp = agent.post(url).content_type("application/json").send(body);
     let ttfa = start.elapsed();
 
     let (status, mut reader) = match resp {
-        Ok(r) => (r.status(), r.into_reader()),
-        Err(ureq::Error::Status(code, r)) => (code, r.into_reader()),
-        Err(ureq::Error::Transport(t)) => {
-            return TransportOutcome::Transport(t.to_string());
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let (_, body) = r.into_parts();
+            (status, body.into_reader())
+        }
+        Err(e) => {
+            return TransportOutcome::Transport(e.to_string());
         }
     };
     // Drain the body — this is what makes `total` a full round-trip
