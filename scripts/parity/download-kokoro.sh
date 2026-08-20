@@ -59,15 +59,19 @@ echo "[kokoro-dl] cache = ${KOKORO_CACHE_DIR}"
 echo "[kokoro-dl] stage = ${KOKORO_STAGE_DIR}"
 echo "[kokoro-dl] revision = ${KOKORO_REVISION}"
 
-# `hf download` prints the local dir it staged into on stdout,
-# which we capture for the stage-copy step. `--include` narrows the fetch to
-# what the parity pipeline actually needs (avoids the ~15 MB samples/*.wav
-# tree in the upstream repo).
+# `hf download --quiet` prints only the local snapshot dir on stdout, which we
+# capture for the stage-copy step. Repeat `--include` for each pattern: the
+# current Typer CLI accepts one value per option, and treating the later values
+# as positional filenames makes it ignore the include filter. The three
+# patterns avoid the ~15 MB samples/*.wav tree in the upstream repo.
 LOCAL_DIR="$(
   "${HF_BIN}" download \
     hexgrad/Kokoro-82M \
     --revision "${KOKORO_REVISION}" \
-    --include 'kokoro-v1_0.pth' 'config.json' 'voices/*.pt' \
+    --include 'kokoro-v1_0.pth' \
+    --include 'config.json' \
+    --include 'voices/*.pt' \
+    --quiet \
     2>&1 | tee /dev/stderr | tail -n 1
 )"
 
