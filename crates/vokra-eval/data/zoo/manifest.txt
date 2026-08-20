@@ -54,8 +54,9 @@
 #
 # EXCLUDED records carry instead:
 #   excluded_reason  why this ★/⚠ zoo row is not a mel/UTMOS quality-gated
-#                    model (KWS / speaker-embedding / enhancement / watermark /
-#                    vocoder-component), or is held pending license sign-off.
+#                    model (speaker-embedding / enhancement / watermark /
+#                    vocoder-component), or is held pending a license, parity,
+#                    or runtime-default gate.
 #                    An excluded record is NOT iterated by the runner, but it
 #                    keeps the model visible so "dropped" != "forgotten".
 
@@ -258,7 +259,7 @@ quality_metric = roundtrip
 mos_domain = n_a
 parity_gate = crates/vokra-ops fsq_codec (wavtokenizer_vq) parity
 since_version = v1.0-rc
-notes = FSQ family; distribution owner sign-off (fail-closed, M4-16-T14).
+notes = FSQ family; commercial sign-off is recorded; pretrained-checkpoint forward parity remains follow-up evidence.
 
 # ---- Excluded: held pending license sign-off ------------------------------
 # X-Codec 2 is a ⚠ 保留 (not ★) row: weight license shows a 3-way discrepancy
@@ -273,14 +274,10 @@ since_version = v1.0-rc
 notes = engine op exists (fsq_codec xcodec2_fsq); weight distribution blocked until sign-off.
 
 # ---- Excluded: not a mel/UTMOS quality-gated model ------------------------
-name = openwakeword
-family = openwakeword
-audit_name = openWakeWord
-license = Apache-2.0
-excluded_reason = kws-not-a-mel-utmos-quality-gated-model
-since_version = v0.1
-notes = keyword spotting; evaluated by detection metrics, not mel/UTMOS.
-
+# openWakeWord is deliberately absent: upstream official weights are
+# CC-BY-NC-SA-4.0 and the audit rejects them from the official zoo. The
+# Apache-2.0 user-supplied/custom-weight runtime path remains documented in
+# docs/license-audit.md, but is not an official-zoo artifact.
 name = campplus
 family = campplus
 audit_name = CAM++ Speaker Embedding
@@ -300,10 +297,10 @@ notes =
 name = wespeaker
 family = wespeaker
 audit_name = WeSpeaker
-license = Apache-2.0
+license = CC-BY-4.0
 excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model
 since_version = v1.0
-notes =
+notes = pass-through converter; native forward remains a residual anchor; attribution required.
 
 name = deepfilternet3
 family = deepfilternet
@@ -324,7 +321,7 @@ notes = denoise alternative candidate.
 name = gtcrn
 family = gtcrn
 audit_name = GTCRN
-license = Apache-2.0
+license = MIT
 excluded_reason = enhancement-si-snr-not-a-mel-utmos-quality-gated-model
 since_version = v1.0-rc
 notes = denoise alternative candidate; owner license pre-check T18.
@@ -345,24 +342,24 @@ excluded_reason = vocoder-head-component-not-a-standalone-zoo-model
 since_version = v1.0
 notes = vocos_head op; a vocoder component measured inside a TTS pipeline, not standalone.
 
-# ---- Excluded: speaker-embedding / diarization, held pending license sign-off ----
-# TitaNet + pyannote are ⚠ 保留 rows (docs/license-audit.md, added 2026-07-20). Both
-# are residual-anchor ops in m5_residual_ops.rs that are NOT implemented and are NOT
-# mel/UTMOS quality-gated; their weight license is also unconfirmed (owner T13). Listed
-# explicitly so "held for license / not-a-quality-gated-model" is distinguishable from
-# "accidentally dropped" — same rule as xcodec2 above.
+# ---- Excluded: speaker-embedding / diarization ----------------------------
+# These records remain outside the mel/UTMOS runner. TitaNet's CC-BY-4.0
+# license is confirmed but its native forward remains a residual anchor;
+# pyannote is held on independent real-weight probability parity/default-on,
+# not on license. Keeping the reasons distinct prevents a stale legal hold
+# from masking the actual runtime gate.
 name = titanet
 family = titanet
 audit_name = TitaNet (NVIDIA NeMo)
-license = pending-M5-ORPHAN-T13
-excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model + license-sign-off-pending-M5-ORPHAN-T13 (NVIDIA NeMo checkpoint license unconfirmed; fail-closed)
+license = CC-BY-4.0
+excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model
 since_version = v1.0-rc
-notes = op unimplemented = residual anchor only (titanet_speaker_encode, m5_residual_ops.rs); CAM++ already covers speaker embedding.
+notes = converter and attribution metadata landed; native titanet_speaker_encode remains a residual anchor; CAM++ covers native speaker embedding.
 
 name = pyannote
 family = pyannote
 audit_name = pyannote (speaker diarization)
-license = pending-M5-ORPHAN-T13
-excluded_reason = diarization-not-a-mel-utmos-quality-gated-model + license-sign-off-pending-M5-ORPHAN-T13 (HF-gated usage terms unconfirmed; fail-closed)
+license = MIT
+excluded_reason = diarization-not-a-mel-utmos-quality-gated-model + real-weight-probability-parity-and-default-on-pending
 since_version = v1.0-rc
-notes = op unimplemented = residual anchor only (diarize, m5_residual_ops.rs, optional feature flag).
+notes = segmentation and pipeline converters, native PyanNet forward, diarization scaffold, and CLI dispatch landed; forward remains opt-in pending independent real-weight probability parity.

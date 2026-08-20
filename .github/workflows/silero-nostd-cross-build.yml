@@ -38,10 +38,12 @@
 #   only the first-party `vokra-core` dep). The last step diffs Cargo.lock as a
 #   belt-and-suspenders tripwire, the same one riscv-cross-build uses.
 #
-# Untested on this machine: the initial `workflow_dispatch` run is an owner
-# handoff — the authoring host (Apple Silicon macOS) DID cross-build both
-# thumbv8m targets locally (M5-03 verification), but this GitHub-hosted
-# ubuntu-latest run has not yet executed.
+# Hosted-run history (audited 2026-08-20): the weekly runs on 2026-07-27,
+# 2026-08-03, 2026-08-10, and 2026-08-17 all reached the real cross-build but
+# failed only in Clippy because `--all-targets` asked bare-metal thumb targets
+# for Rust's unavailable `libtest` (E0463). The 2026-08-20 repair uses `--lib`;
+# that exact cross-Clippy command passes locally. A first green hosted run is
+# still required before this Tier 3 leg can be promoted.
 
 name: silero-nostd-cross-build
 
@@ -116,8 +118,12 @@ jobs:
 
       - name: Clippy (thumbv8m.main-none-eabihf, deny warnings)
         # Deny warnings on the no_std configuration too — catches
-        # target-specific lint regressions the host build would miss.
-        run: cargo clippy --release -p vokra-vad-micro --no-default-features --target thumbv8m.main-none-eabihf --all-targets -- -D warnings
+        # target-specific lint regressions the host build would miss. This is
+        # deliberately `--lib`, not `--all-targets`: bare-metal thumb targets
+        # do not ship Rust's `libtest`, so asking Clippy to compile `#[test]`
+        # targets fails with E0463 before it can lint the no_std library. Host
+        # tests remain covered by the required workspace Clippy/test jobs.
+        run: cargo clippy --release -p vokra-vad-micro --no-default-features --target thumbv8m.main-none-eabihf --lib -- -D warnings
 
       - name: Zero-dep invariant (Cargo.lock unchanged by the cross-build)
         # NFR-DS-02: cross-building the no_std subset must NOT add any crate to

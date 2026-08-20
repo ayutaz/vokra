@@ -23,10 +23,11 @@
 #       cc-by-4.0 | cc-by-sa-3.0 | cc-by-sa-4.0
 #       cc-by-nc-4.0 | cc-by-nc-sa-4.0
 #       openmdw-1.1  (inline, no canonical URL)
-#   fetch_license.sh --self-test  # probe network; loop every SPDX above; skip if offline
+#   fetch_license.sh --self-test          # deterministic offline contract tests
+#   fetch_license.sh --network-self-test  # optional live canonical-URL probe
 
 set -euo pipefail
-CURL="/usr/bin/curl"
+CURL="${CURL:-/usr/bin/curl}"
 
 canonical_url() {
   # Source selection policy:
@@ -102,6 +103,113 @@ OPENMDW_EOF
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
+  # Required PR CI must be deterministic: a public licence host timing out is
+  # not evidence that this repository's resolver regressed. Exercise the real
+  # --spdx path with a curl fixture, including content needles and fail-closed
+  # HTTP handling. The separate --network-self-test mode retains the live URL
+  # drift probe for scheduled/manual use.
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -f "$tmp_dir"/*; rmdir "$tmp_dir"' EXIT
+  mock_curl="$tmp_dir/curl"
+  cat > "$mock_curl" <<'MOCK_CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+url=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o|-w|--connect-timeout|--max-time) [[ "$1" == "-o" ]] && out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+code="${MOCK_LICENSE_HTTP_CODE:-200}"
+if [[ "$code" == "200" ]]; then
+  case "$url" in
+    *LICENSE-2.0.txt) body="Apache License" ;;
+    *MIT.txt) body="MIT License" ;;
+    *BSD-2-Clause.txt) body="Redistribution and use in source and binary forms" ;;
+    *BSD-3-Clause.txt) body="Neither the name of" ;;
+    *ISC.txt) body="Permission to use, copy, modify" ;;
+    *UNLICENSE) body="This is free and unencumbered software" ;;
+    *publicdomain/zero/1.0/*) body="CC0 1.0 Universal" ;;
+    *lgpl-3.0.txt) body="GNU LESSER GENERAL PUBLIC LICENSE" ;;
+    *agpl-3.0.txt) body="GNU AFFERO GENERAL PUBLIC LICENSE" ;;
+    *gpl-3.0.txt) body="GNU GENERAL PUBLIC LICENSE" ;;
+    *MPL-2.0.txt) body="Mozilla Public License" ;;
+    *EPL-2.0.txt) body="Eclipse Public License" ;;
+    *licenses/by/4.0/*) body="Attribution 4.0 International" ;;
+    *licenses/by-sa/3.0/*) body="Attribution-ShareAlike 3.0" ;;
+    *licenses/by-sa/4.0/*) body="Attribution-ShareAlike 4.0 International" ;;
+    *licenses/by-nc/4.0/*) body="Attribution-NonCommercial 4.0 International" ;;
+    *licenses/by-nc-sa/4.0/*) body="Attribution-NonCommercial-ShareAlike 4.0 International" ;;
+    *) body="unexpected fixture URL: $url" ;;
+  esac
+  printf '%s\n' "$body" > "$out"
+fi
+printf '%s' "$code"
+MOCK_CURL
+  chmod +x "$mock_curl"
+
+  suites=(
+    "apache-2.0|Apache License"
+    "mit|MIT License"
+    "bsd-2-clause|Redistribution and use in source and binary forms"
+    "bsd-3-clause|Neither the name of"
+    "isc|Permission to use, copy, modify"
+    "unlicense|This is free and unencumbered software"
+    "cc0-1.0|CC0 1.0 Universal"
+    "gpl-3.0|GNU GENERAL PUBLIC LICENSE"
+    "lgpl-3.0|GNU LESSER GENERAL PUBLIC LICENSE"
+    "agpl-3.0|GNU AFFERO GENERAL PUBLIC LICENSE"
+    "mpl-2.0|Mozilla Public License"
+    "epl-2.0|Eclipse Public License"
+    "cc-by-4.0|Attribution 4.0 International"
+    "cc-by-sa-3.0|Attribution-ShareAlike 3.0"
+    "cc-by-sa-4.0|Attribution-ShareAlike 4.0 International"
+    "cc-by-nc-4.0|Attribution-NonCommercial 4.0 International"
+    "cc-by-nc-sa-4.0|Attribution-NonCommercial-ShareAlike 4.0 International"
+    "openmdw-1.1|OpenMDW License Agreement"
+  )
+
+  pass=0; fail=0
+  for suite in "${suites[@]}"; do
+    spdx="${suite%%|*}"; needle="${suite#*|}"
+    out="$tmp_dir/$spdx.txt"
+    if ! CURL="$mock_curl" "$0" --spdx "$spdx" "$out" >/dev/null 2>&1; then
+      echo "fetch_license self-test: FAIL — --spdx $spdx rejected fixture HTTP 200" >&2
+      fail=$((fail+1)); continue
+    fi
+    if ! grep -qi -- "$needle" "$out"; then
+      echo "fetch_license self-test: FAIL — --spdx $spdx body missing needle '$needle'" >&2
+      fail=$((fail+1)); continue
+    fi
+    pass=$((pass+1))
+  done
+
+  if MOCK_LICENSE_HTTP_CODE=503 CURL="$mock_curl" \
+      "$0" --spdx apache-2.0 "$tmp_dir/http-503.txt" >/dev/null 2>&1; then
+    echo "fetch_license self-test: FAIL — HTTP 503 must fail closed" >&2
+    fail=$((fail+1))
+  else
+    pass=$((pass+1))
+  fi
+  if CURL="$mock_curl" "$0" --spdx unknown-license "$tmp_dir/unknown.txt" >/dev/null 2>&1; then
+    echo "fetch_license self-test: FAIL — unknown SPDX id must be rejected" >&2
+    fail=$((fail+1))
+  else
+    pass=$((pass+1))
+  fi
+
+  if [[ "$fail" -gt 0 ]]; then
+    echo "fetch_license self-test: FAIL ($pass passed, $fail failed)" >&2
+    exit 1
+  fi
+  echo "fetch_license self-test: OK ($pass deterministic cases passed)"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--network-self-test" ]]; then
   # Coverage discipline: every SPDX id resolved by canonical_url() must be
   # reachable AND its fetched body must contain a needle unique to that
   # licence. If we accept HTTP 200 alone we would accept a captive-portal
@@ -115,7 +223,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
 
   probe_url="https://www.apache.org/licenses/LICENSE-2.0.txt"
   if ! "$CURL" -sSfI --max-time 10 "$probe_url" >/dev/null 2>&1; then
-    echo "fetch_license self-test: SKIP (network unreachable — offline / firewalled CI)"
+    echo "fetch_license network-self-test: SKIP (network unreachable — offline / firewalled CI)"
     exit 0
   fi
 
@@ -164,11 +272,11 @@ if [[ "${1:-}" == "--self-test" ]]; then
     if "$0" --spdx "$spdx" "$tmp" >/dev/null 2>&1; then
       # Fetch (or inline) succeeded — content must contain the needle.
       if ! [[ -s "$tmp" ]]; then
-        echo "fetch_license self-test: FAIL — --spdx $spdx wrote an empty file" >&2
+        echo "fetch_license network-self-test: FAIL — --spdx $spdx wrote an empty file" >&2
         fail=$((fail+1)); continue
       fi
       if ! grep -qi -- "$needle" "$tmp"; then
-        echo "fetch_license self-test: FAIL — --spdx $spdx body missing needle '$needle'" >&2
+        echo "fetch_license network-self-test: FAIL — --spdx $spdx body missing needle '$needle'" >&2
         fail=$((fail+1)); continue
       fi
       pass=$((pass+1))
@@ -179,24 +287,24 @@ if [[ "${1:-}" == "--self-test" ]]; then
     # never depend on the network, so failure there is a real bug → FAIL.
     url="$(canonical_url "$spdx" 2>/dev/null || true)"
     if [[ -z "$url" ]]; then
-      echo "fetch_license self-test: FAIL — --spdx $spdx has no canonical URL and inline_license_text failed" >&2
+      echo "fetch_license network-self-test: FAIL — --spdx $spdx has no canonical URL and inline_license_text failed" >&2
       fail=$((fail+1)); continue
     fi
     host="$(printf '%s' "$url" | awk -F/ '{print $3}')"
     if probe_host "$host"; then
-      echo "fetch_license self-test: FAIL — --spdx $spdx (host $host reachable but $url did not return HTTP 200)" >&2
+      echo "fetch_license network-self-test: FAIL — --spdx $spdx (host $host reachable but $url did not return HTTP 200)" >&2
       fail=$((fail+1))
     else
-      echo "fetch_license self-test: SKIP — --spdx $spdx (host $host unreachable — transient network / firewall)"
+      echo "fetch_license network-self-test: SKIP — --spdx $spdx (host $host unreachable — transient network / firewall)"
       skip=$((skip+1))
     fi
   done
 
   if [[ "$fail" -gt 0 ]]; then
-    echo "fetch_license self-test: FAIL ($pass passed, $skip skipped, $fail failed)" >&2
+    echo "fetch_license network-self-test: FAIL ($pass passed, $skip skipped, $fail failed)" >&2
     exit 1
   fi
-  echo "fetch_license self-test: OK ($pass passed, $skip skipped)"
+  echo "fetch_license network-self-test: OK ($pass passed, $skip skipped)"
   exit 0
 fi
 

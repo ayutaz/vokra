@@ -781,32 +781,45 @@ jobs:
         with:
           config: _typos.toml
 
-  # Excluded-workspace build/test coverage (Phase 5c-1, 2026-07-23).
+  # Excluded-workspace build/test coverage (Phase 5c-1, 2026-07-23;
+  # complete host-compatible inventory 2026-08-20).
   #
-  # `integrations/vokra-piper-g2p` is deliberately OUT of the root workspace:
-  # it links the real 8-language `piper-plus-g2p` (which drags in jpreprocess
-  # / regex / serde / …, all non-`vokra-*`), so it cannot live inside the
-  # zero-dep runtime workspace (NFR-DS-02, enforced on the root Cargo.lock).
-  # The empty `[workspace]` table in its Cargo.toml isolates it with its own
-  # Cargo.lock — the root cargo test in ci.yml never touches it. Nothing else
-  # in the tree compiles it either, so an API drift in piper-plus, a moved
-  # git rev, or a Rust edition slip would land silently.
+  # Every first-level `integrations/*/Cargo.toml` is an independent workspace
+  # with its own Cargo.lock. The root workspace test therefore cannot prove
+  # these crates compile. `vokra-server` and `vokra-godot` already have richer
+  # dedicated CI (`server-compat` / `server-deployment` and
+  # `godot-crossbuild`). This matrix covers the remaining host-compatible
+  # workspaces so dependency/API drift cannot land behind a green root build:
+  #
+  #   * vokra-android          — raw-JNI host unit tests + capi linkage;
+  #   * vokra-cli-bench-server — pure-std HTTP benchmark and its e2e tests;
+  #   * vokra-misaki-g2p       — Rust bridge tests (Python parity is separate);
+  #   * vokra-piper-g2p        — pinned piper-plus git API compatibility;
+  #   * vokra-server-bench     — ureq/serde_json wire client and e2e tests.
   #
   # ADVISORY (continue-on-error absent so red is visible in the PR checks
-  # panel but the job is NOT wired into branch-protection required checks —
-  # the crate is opt-in developer tooling, not the shipping runtime). The
-  # Cargo.lock diff at the end mirrors the server-compat mutation-guard:
-  # touching this excluded workspace must never perturb the root lock, which
-  # would mean the isolation broke and NFR-DS-02 was breached in-flight.
-  #
-  # Test count is currently 0 (the crate is a thin bridge with no #[test]
-  # functions in src/lib.rs or src/main.rs at commit dd8b683); the value is
-  # in the COMPILE — a fetched-git dependency whose rev disappears, or an
-  # incompatible piper-plus API change, would go red here first.
-  vokra-piper-g2p:
-    name: vokra-piper-g2p (excluded workspace)
+  # panel but the job is NOT wired into branch-protection required checks).
+  # `--locked` makes the committed per-workspace lockfile authoritative; a
+  # dependency PR must update source and lock together. The root Cargo.lock
+  # mutation guard proves the isolation did not leak (NFR-DS-02).
+  excluded-workspace:
+    name: excluded-workspace (${{ matrix.id }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: vokra-android
+            path: integrations/vokra-android
+          - id: vokra-cli-bench-server
+            path: integrations/vokra-cli-bench-server
+          - id: vokra-misaki-g2p
+            path: integrations/vokra-misaki-g2p
+          - id: vokra-piper-g2p
+            path: integrations/vokra-piper-g2p
+          - id: vokra-server-bench
+            path: integrations/vokra-server-bench
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -814,18 +827,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          workspaces: integrations/vokra-piper-g2p
-      - name: cargo test (excluded workspace, own Cargo.lock)
-        # Runs the crate's own tests (currently 0) but proves the compile
-        # against the pinned piper-plus git rev in its Cargo.toml. --locked
-        # is intentionally NOT passed: the crate's Cargo.lock is committed
-        # separately from the root and freshening transitives on CI is OK.
-        run: cargo test --manifest-path integrations/vokra-piper-g2p/Cargo.toml
+          workspaces: ${{ matrix.path }}
+      - name: cargo test --locked (excluded workspace, own Cargo.lock)
+        run: cargo test --locked --manifest-path "${{ matrix.path }}/Cargo.toml"
       - name: Verify root Cargo.lock unchanged (NFR-DS-02 mutation-guard)
-        # Same shape as server-compat's final step: exercising the excluded
-        # workspace must NEVER touch the root Cargo.lock. A diff here means
-        # the isolation leaked (e.g., someone made vokra-piper-g2p a member
-        # of the root workspace by mistake), which is a zero-dep breach.
+        # Same shape as server-compat's final step: exercising any excluded
+        # workspace must NEVER touch the root Cargo.lock.
         run: git diff --exit-code Cargo.lock
 
   # Python parity-workflow oracles (Phase 5c-2, 2026-07-23; +voxtral FQ-07 2026-07-31).
@@ -932,7 +939,11 @@ jobs:
   #                                             (thresholds + render_human +
   #                                             render_json), offline, sub-
   #                                             second (FQ-09, 2026-07-31).
-  #   * scripts/publish/fetch_license.sh      — publish-side.
+  #   * scripts/publish/fetch_license.sh      — publish-side. Required PR
+  #                                             self-test uses deterministic
+  #                                             curl fixtures; the live URL
+  #                                             probe runs weekly in
+  #                                             corpus-drift-detector.yml.
   #   * scripts/publish/upload.sh             — publish-side.
   #   * scripts/publish/make_model_card.py    — publish-side.
   #   * scripts/publish/publish-one.sh        — publish-side; orchestrates
