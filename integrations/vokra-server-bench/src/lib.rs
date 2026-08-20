@@ -23,14 +23,14 @@
 //!
 //! Per NFR-PF-05, TTFA (Time To First Audio byte) is the wall time
 //! between the client finishing the request write and receiving the
-//! first byte of the audio response. ureq's `.send_bytes(...)` returns
+//! first byte of the audio response. ureq's `.send(...)` returns
 //! a `Response` the moment status + headers are fully read from the
 //! socket, which — for `POST /api/tts` where the server produces the
 //! WAV up-front (see `integrations/vokra-server/src/service.rs` L957
 //! "single-shot response body") — is the wire event that starts the
 //! audio byte stream. We therefore measure:
 //!
-//! * `ttfa_ms`  = start → `.send_bytes(...)` returns (status + headers
+//! * `ttfa_ms`  = start → `.send(...)` returns (status + headers
 //!   received);
 //! * `total_ms` = start → response body fully drained.
 //!

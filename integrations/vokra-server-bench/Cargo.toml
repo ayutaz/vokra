@@ -40,10 +40,10 @@ name = "vokra_server_bench"
 path = "src/lib.rs"
 
 [dependencies]
-# ureq 2.x — blocking, synchronous HTTP client (MIT/Apache-2.0). Chosen over
+# ureq 3.x — blocking, synchronous HTTP client (MIT/Apache-2.0). Chosen over
 # reqwest+tokio because a bench binary must not skew its own measurements with
 # an async runtime's scheduling jitter. `std::time::Instant` bracketing a
-# blocking `send_bytes(...)` gives an unambiguous wall-time for the request
+# blocking `send(...)` gives an unambiguous wall-time for the request
 # round-trip. Concurrency is handled with `std::thread::scope` in
 # `src/bench.rs` — no async runtime, no `future.poll()` reordering the
 # "first byte" moment.
