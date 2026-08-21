@@ -35,7 +35,10 @@ dependencies = []
 [project.optional-dependencies]
 numpy = ["numpy>=1.23,<2"]
 dev = [
-    "pytest>=7.4",
+    # GHSA-6w46-j5rx-g56g is fixed in pytest 9.0.3. pytest 9 requires
+    # Python 3.10; Python 3.9 remains a supported runtime target, but its
+    # dependency-free wheel is not a supported contributor test environment.
+    "pytest>=9.0.3; python_version >= '3.10'",
     "pip-licenses>=4.3",
 ]
 

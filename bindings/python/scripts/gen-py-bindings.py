@@ -40,6 +40,7 @@ PRIM_TYPES = {
     "bool": "ctypes.c_bool",
     "char": "ctypes.c_char",
     "int32_t": "ctypes.c_int32",
+    "int64_t": "ctypes.c_int64",
     "uint8_t": "ctypes.c_uint8",
     "uint32_t": "ctypes.c_uint32",
     "uint64_t": "ctypes.c_uint64",

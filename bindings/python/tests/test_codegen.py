@@ -36,7 +36,7 @@ def test_every_current_header_function_has_one_prototype() -> None:
     parsed_names = [name for name, _, _ in parsed]
     discovered_names = generator.discover_function_names(source)
 
-    assert len(parsed_names) == 41
+    assert len(parsed_names) == 48
     assert len(parsed_names) == len(set(parsed_names))
     assert parsed_names == discovered_names
     assert set(bindings.PROTOTYPES) == set(parsed_names)
@@ -87,6 +87,32 @@ def test_current_wide_and_pointer_prototypes_are_exact() -> None:
     assert bindings.PROTOTYPES["vokra_model_attribution"][1][1] == ctypes.POINTER(
         ctypes.c_char
     )
+    assert bindings.PROTOTYPES["vokra_feat_open"] == (
+        ctypes.c_void_p,
+        (ctypes.c_void_p,),
+    )
+    assert bindings.PROTOTYPES["vokra_feat_frame_rate_mhz"] == (
+        ctypes.c_int32,
+        (ctypes.c_void_p,),
+    )
+    assert bindings.PROTOTYPES["vokra_feat_dim"] == (
+        ctypes.c_int32,
+        (ctypes.c_void_p,),
+    )
+    assert bindings.PROTOTYPES["vokra_feat_push_pcm"] == (
+        ctypes.c_int,
+        (ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t),
+    )
+    assert bindings.PROTOTYPES["vokra_feat_pull"] == (
+        ctypes.c_int,
+        (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_int64),
+        ),
+    )
 
 
 def test_generated_struct_layout_matches_c_abi_contract() -> None:
@@ -120,11 +146,12 @@ def test_generated_struct_layout_matches_c_abi_contract() -> None:
     ] == expected_offsets
 
 
-def test_all_seven_opaque_handles_are_void_p_aliases() -> None:
+def test_all_eight_opaque_handles_are_void_p_aliases() -> None:
     names = generator.parse_opaque_structs(_header_source())
     assert names == [
         "vokra_aec_ref_writer_t",
         "vokra_aec_t",
+        "vokra_feat_t",
         "vokra_s2s_duplex_t",
         "vokra_s2s_interrupt_t",
         "vokra_session_options_t",

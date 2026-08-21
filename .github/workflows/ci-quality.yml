@@ -171,6 +171,7 @@ jobs:
       # are set. Unset (default) keeps today's behavior.
       VOKRA_WHISPER_GGUF: ${{ vars.VOKRA_WHISPER_GGUF_PATH || '' }}
       VOKRA_PIPER_GGUF: ${{ vars.VOKRA_PIPER_GGUF_PATH || '' }}
+      VOKRA_MOSHI_GGUF: ${{ vars.VOKRA_MOSHI_GGUF_PATH || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

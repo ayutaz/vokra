@@ -7,7 +7,7 @@
 //! matching `destroy` (ADR-0003 §1). Handles cross the boundary as
 //! `Box::into_raw` pointers and come back via `Box::from_raw`.
 
-use vokra_core::{Session, Stream};
+use vokra_core::{Session, SpeechFeatureStream, Stream};
 
 /// Opaque session handle: one loaded model bound to one backend, with the
 /// matching native engine injected (ASR / TTS / VAD — see
@@ -38,6 +38,18 @@ pub struct vokra_stream_t {
     /// model (and its engine) alive independently of `vokra_session_destroy`.
     /// Dropped after `stream` (declaration order = drop order).
     pub(crate) stream: Stream,
+    pub(crate) _session: Session,
+}
+
+/// Opaque continuous speech-feature handle (#49).
+///
+/// Created by `vokra_feat_open`, released by `vokra_feat_destroy`. It owns the
+/// encoder's causal state and bounded pending-output ring, and retains the
+/// originating session so model weights outlive the C handle.
+#[allow(non_camel_case_types)]
+pub struct vokra_feat_t {
+    /// Dropped before the retained session (declaration order).
+    pub(crate) stream: Box<dyn SpeechFeatureStream + Send>,
     pub(crate) _session: Session,
 }
 

@@ -27,6 +27,9 @@
 //! - **Speaker** (`speaker`): `vokra_speaker_embed` (PCM → embedding, FR-OP-80)
 //!   and `vokra_speaker_verify` (cosine similarity, FR-OP-81).
 //! - **ASR** (`asr`): `vokra_asr_transcribe` + `vokra_string_free`.
+//! - **Speech features** (`feature`): `vokra_feat_open` / `_push_pcm` /
+//!   `_pull` / metadata queries / `_reset` / `_destroy` over one native
+//!   continuous encoder (Moshi's causal Mimi tower, #49).
 //! - **TTS** (`tts`): `vokra_tts_synthesize` (piper-plus native, no
 //!   onnxruntime) + `vokra_audio_free`.
 //! - **Streaming** (`stream`): `vokra_stream_open` / `_push_pcm` / `_poll`
@@ -62,6 +65,7 @@
 mod aec;
 mod asr;
 mod error;
+mod feature;
 mod ffi_guard;
 mod handle;
 // 2026-08-14: vokra_backend_t + the opaque vokra_session_options_t that

@@ -174,7 +174,8 @@ fn inject_engine(
             let engine = Arc::new(engine);
             let mut session = session
                 .with_s2s_engine(engine.clone())
-                .with_s2s_duplex_engine(engine);
+                .with_s2s_duplex_engine(engine.clone())
+                .with_speech_feature_engine(engine);
             if let Some(info) = attribution {
                 session = session.with_attribution(info);
             }

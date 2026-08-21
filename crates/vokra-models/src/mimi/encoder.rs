@@ -151,6 +151,38 @@ impl std::fmt::Debug for MimiEncoderState {
     }
 }
 
+impl MimiEncoderState {
+    /// Resets every causal convolution and transformer cache while retaining
+    /// all preallocated activation/scratch buffers.
+    pub fn reset(&mut self) {
+        self.init.reset();
+        for (blocks, down) in &mut self.stages {
+            for (conv1, conv2) in blocks {
+                conv1.reset();
+                conv2.reset();
+            }
+            down.reset();
+        }
+        self.final_conv.reset();
+        self.frame_down.reset();
+        self.tf.reset();
+        for buf in &mut self.bufs {
+            buf.fill(0.0);
+        }
+        for buf in &mut self.tmp {
+            buf.fill(0.0);
+        }
+        for buf in &mut self.mid {
+            buf.fill(0.0);
+        }
+        self.tf_rows.fill(0.0);
+        self.proj.fill(0.0);
+        self.residual.fill(0.0);
+        self.proj_all.fill(0.0);
+        self.rest_all.fill(0.0);
+    }
+}
+
 impl MimiEncoder {
     /// Builds a synthesized (seed-deterministic) encoder for `config` —
     /// shapes and streaming behaviour verified without real weights.
@@ -437,6 +469,36 @@ impl MimiEncoder {
         self.config.frame_hop_samples()
     }
 
+    /// Width of each continuous speech-encoder feature frame.
+    ///
+    /// These are the Mimi bottleneck-transformer hidden states before the
+    /// 25 Hz → token-rate convolution and RVQ quantizer.
+    #[must_use]
+    pub fn feature_dim(&self) -> usize {
+        self.config.seanet.dimension
+    }
+
+    /// PCM samples between consecutive continuous feature frames.
+    ///
+    /// For released Mimi/Moshi configurations this is the native SEANet hop
+    /// (960 samples at 24 kHz = 25 Hz), before the stride-2 token-rate
+    /// resampler.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the config's exact-rate validation.
+    pub fn feature_frame_hop(&self) -> Result<usize> {
+        let hop = self.config.seanet_hop();
+        let token_hop = self.frame_hop()?;
+        if hop == 0 || token_hop % hop != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi encoder features: token hop {token_hop} is not an exact multiple of \
+                 SEANet hop {hop}"
+            )));
+        }
+        Ok(hop)
+    }
+
     fn compute(&self) -> Result<Compute> {
         Compute::for_backend(self.backend, MIMI_HOT_OPS)
     }
@@ -505,20 +567,7 @@ impl MimiEncoder {
         })
     }
 
-    /// Encodes whole frames of PCM into RVQ codes
-    /// (`codes_out = [n_frames, n_q]` row-major), carrying all causal
-    /// state in `state`. Allocation-free.
-    ///
-    /// # Errors
-    ///
-    /// [`VokraError::InvalidArgument`] on a non-whole-frame `pcm` length,
-    /// capacity overflow, or shape mismatch.
-    pub fn encode_into(
-        &self,
-        state: &mut MimiEncoderState,
-        pcm: &[f32],
-        codes_out: &mut [u32],
-    ) -> Result<()> {
+    fn validate_stream_input(&self, state: &MimiEncoderState, pcm: &[f32]) -> Result<usize> {
         let hop = self.frame_hop()?;
         if pcm.is_empty() || pcm.len() % hop != 0 {
             return Err(VokraError::InvalidArgument(format!(
@@ -534,15 +583,22 @@ impl MimiEncoder {
                 state.frames_cap
             )));
         }
-        let n_q = self.config.quantizer.n_q;
-        if codes_out.len() != n_frames * n_q {
-            return Err(VokraError::InvalidArgument(format!(
-                "mimi encode: codes_out len {} != n_frames*n_q {}",
-                codes_out.len(),
-                n_frames * n_q
-            )));
-        }
-        let compute = self.compute()?;
+        Ok(n_frames)
+    }
+
+    /// Runs PCM through the causal SEANet and bottleneck transformer.
+    ///
+    /// On success, `state.tf_rows[..feature_frames * dim]` holds the native
+    /// continuous feature grid in row-major order. The returned `edge` is the
+    /// channel-major copy used by the existing token-rate/RVQ tail.
+    fn encode_continuous(
+        &self,
+        compute: &Compute,
+        state: &mut MimiEncoderState,
+        pcm: &[f32],
+        n_frames: usize,
+    ) -> Result<(usize, usize, usize)> {
+        let hop = self.frame_hop()?;
         let mut t = n_frames * hop;
         state.bufs[0][..t].copy_from_slice(pcm);
 
@@ -551,7 +607,7 @@ impl MimiEncoder {
         {
             let (before, after) = state.bufs.split_at_mut(edge);
             self.init.process_into(
-                &compute,
+                compute,
                 &mut state.init,
                 &before[edge - 1][..t],
                 t,
@@ -560,27 +616,24 @@ impl MimiEncoder {
         }
         let mut ch = self.init.out_ch;
 
-        // Stages.
+        // SEANet residual/downsample stages.
         for (si, stage) in self.stages.iter().enumerate() {
             let (block_states, down_state) = &mut state.stages[si];
-            // Residual blocks operate in place on bufs[edge].
             for (bi, block) in stage.blocks.iter().enumerate() {
                 let hidden = block.conv1.out_ch;
                 let x = &mut state.bufs[edge];
-                // tmp = elu(x)
                 state.tmp[si][..ch * t].copy_from_slice(&x[..ch * t]);
                 elu_inplace(&mut state.tmp[si][..ch * t]);
                 block.conv1.process_into(
-                    &compute,
+                    compute,
                     &mut block_states[bi].0,
                     &state.tmp[si][..ch * t],
                     t,
                     &mut state.mid[si][..hidden * t],
                 )?;
                 elu_inplace(&mut state.mid[si][..hidden * t]);
-                // conv2 (k=1) back to ch — write into tmp then add skip.
                 block.conv2.process_into(
-                    &compute,
+                    compute,
                     &mut block_states[bi].1,
                     &state.mid[si][..hidden * t],
                     t,
@@ -591,13 +644,12 @@ impl MimiEncoder {
                     *dst += *src;
                 }
             }
-            // ELU → downsample conv into the next edge buffer.
             state.tmp[si][..ch * t].copy_from_slice(&state.bufs[edge][..ch * t]);
             elu_inplace(&mut state.tmp[si][..ch * t]);
             let t_out = t / stage.down.stride;
             let out_ch = stage.down.out_ch;
             stage.down.process_into(
-                &compute,
+                compute,
                 down_state,
                 &state.tmp[si][..ch * t],
                 t,
@@ -610,9 +662,6 @@ impl MimiEncoder {
 
         // ELU → final conv → latent [dim, t].
         {
-            // The last stage's tmp buffer is wide enough (ch*t of the last
-            // stage ≥ current ch*t after its own downsample? No — reuse the
-            // final edge buffer copy instead).
             let x = &mut state.bufs[edge];
             elu_inplace(&mut x[..ch * t]);
         }
@@ -620,7 +669,7 @@ impl MimiEncoder {
         {
             let (before, after) = state.bufs.split_at_mut(edge + 1);
             self.final_conv.process_into(
-                &compute,
+                compute,
                 &mut state.final_conv,
                 &before[edge][..ch * t],
                 t,
@@ -630,14 +679,14 @@ impl MimiEncoder {
         edge += 1;
 
         // Bottleneck transformer at 25 Hz: channel-major → rows, in place,
-        // back.
+        // then mirror back for the token-rate/RVQ continuation.
         for i in 0..t {
             for c in 0..dim {
                 state.tf_rows[i * dim + c] = state.bufs[edge][c * t + i];
             }
         }
         self.transformer.process_inplace(
-            &compute,
+            compute,
             &mut state.tf,
             &mut state.tf_rows[..t * dim],
             t,
@@ -647,6 +696,106 @@ impl MimiEncoder {
                 state.bufs[edge][c * t + i] = state.tf_rows[i * dim + c];
             }
         }
+        Ok((edge, t, dim))
+    }
+
+    /// Encodes whole token frames of PCM into the native continuous Mimi
+    /// speech features (`features_out = [feature_frames, feature_dim]`
+    /// row-major), carrying causal state in `state`.
+    ///
+    /// The exposed point is the 25 Hz bottleneck-transformer output before
+    /// the stride-2 token-rate convolution, input projection and lossy RVQ.
+    /// It is therefore suitable for downstream models that consume continuous
+    /// speech representations rather than codec ids. All storage comes from
+    /// [`Self::state`] and the caller-owned output; successful calls allocate
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a non-whole-token-frame PCM length,
+    /// state capacity overflow, or an output buffer whose length is not
+    /// exactly `pcm.len() / feature_frame_hop * feature_dim`. Shape errors are
+    /// checked before recurrent state advances.
+    // ZERO-ALLOC-BEGIN (#49: continuous Mimi speech-feature forward)
+    pub fn encode_features_into(
+        &self,
+        state: &mut MimiEncoderState,
+        pcm: &[f32],
+        features_out: &mut [f32],
+    ) -> Result<()> {
+        let n_frames = self.validate_stream_input(state, pcm)?;
+        let feature_hop = self.feature_frame_hop()?;
+        let feature_frames = pcm.len() / feature_hop;
+        let dim = self.feature_dim();
+        let expected = feature_frames.checked_mul(dim).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "mimi encoder features: feature_frames * feature_dim overflows usize".into(),
+            )
+        })?;
+        if features_out.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi encoder features: output len {} != feature_frames*feature_dim {expected}",
+                features_out.len()
+            )));
+        }
+
+        let compute = self.compute()?;
+        let (_, produced_frames, produced_dim) =
+            self.encode_continuous(&compute, state, pcm, n_frames)?;
+        debug_assert_eq!(produced_frames, feature_frames);
+        debug_assert_eq!(produced_dim, dim);
+        features_out.copy_from_slice(&state.tf_rows[..expected]);
+        Ok(())
+    }
+    // ZERO-ALLOC-END
+
+    /// Convenience fresh-state whole-buffer continuous-feature encode.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::encode_features_into`].
+    pub fn encode_features_all(&self, pcm: &[f32]) -> Result<Vec<f32>> {
+        let hop = self.frame_hop()?;
+        if pcm.is_empty() || pcm.len() % hop != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi encoder features: pcm len {} is not a positive multiple of the \
+                 token frame hop {hop}",
+                pcm.len()
+            )));
+        }
+        let n_frames = pcm.len() / hop;
+        let feature_frames = pcm.len() / self.feature_frame_hop()?;
+        let mut state = self.state(n_frames)?;
+        let mut features = vec![0.0f32; feature_frames * self.feature_dim()];
+        self.encode_features_into(&mut state, pcm, &mut features)?;
+        Ok(features)
+    }
+
+    /// Encodes whole frames of PCM into RVQ codes
+    /// (`codes_out = [n_frames, n_q]` row-major), carrying all causal
+    /// state in `state`. Allocation-free.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a non-whole-frame `pcm` length,
+    /// capacity overflow, or shape mismatch.
+    pub fn encode_into(
+        &self,
+        state: &mut MimiEncoderState,
+        pcm: &[f32],
+        codes_out: &mut [u32],
+    ) -> Result<()> {
+        let n_frames = self.validate_stream_input(state, pcm)?;
+        let n_q = self.config.quantizer.n_q;
+        if codes_out.len() != n_frames * n_q {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi encode: codes_out len {} != n_frames*n_q {}",
+                codes_out.len(),
+                n_frames * n_q
+            )));
+        }
+        let compute = self.compute()?;
+        let (mut edge, t, dim) = self.encode_continuous(&compute, state, pcm, n_frames)?;
 
         // Frame resample (25 → 12.5 Hz).
         let ds = self.frame_down.stride;
@@ -1152,6 +1301,88 @@ mod tests {
             streamed.extend_from_slice(&codes);
         }
         assert_eq!(full, streamed, "causal state carry-over must be exact");
+    }
+
+    #[test]
+    fn continuous_features_full_buffer_equal_frame_streaming_bit_for_bit() {
+        let enc = encoder();
+        let hop = enc.frame_hop().unwrap();
+        let feature_hop = enc.feature_frame_hop().unwrap();
+        let dim = enc.feature_dim();
+        let features_per_codec_frame = hop / feature_hop;
+        let pcm = sine_pcm(hop * 3);
+
+        let full = enc.encode_features_all(&pcm).unwrap();
+        assert_eq!(full.len(), 3 * features_per_codec_frame * dim);
+
+        let mut state = enc.state(1).unwrap();
+        let mut scratch = vec![0.0f32; features_per_codec_frame * dim];
+        let mut streamed = Vec::new();
+        for frame in pcm.chunks_exact(hop) {
+            enc.encode_features_into(&mut state, frame, &mut scratch)
+                .unwrap();
+            streamed.extend_from_slice(&scratch);
+        }
+        assert_eq!(
+            streamed, full,
+            "causal Mimi hidden states must not depend on caller chunking",
+        );
+    }
+
+    #[test]
+    fn continuous_feature_geometry_is_the_native_pre_quantizer_grid() {
+        let enc = encoder();
+        let cfg = enc.config();
+        assert_eq!(enc.feature_dim(), cfg.seanet.dimension);
+        assert_eq!(enc.feature_frame_hop().unwrap(), cfg.seanet_hop());
+        assert_eq!(
+            u64::from(cfg.sample_rate) * 1000 / enc.feature_frame_hop().unwrap() as u64,
+            u64::from(cfg.frame_rate_mhz) * cfg.frame_downsample_stride().unwrap() as u64,
+            "the pre-quantizer feature grid must be the token rate times its downsample stride",
+        );
+    }
+
+    #[test]
+    fn continuous_feature_output_shape_errors_are_loud_before_state_advances() {
+        let enc = encoder();
+        let hop = enc.frame_hop().unwrap();
+        let pcm = sine_pcm(hop);
+        let expected = hop / enc.feature_frame_hop().unwrap() * enc.feature_dim();
+        let mut state = enc.state(1).unwrap();
+
+        assert!(
+            enc.encode_features_into(&mut state, &pcm, &mut vec![0.0; expected - 1])
+                .is_err(),
+        );
+        let mut after_error = vec![0.0f32; expected];
+        enc.encode_features_into(&mut state, &pcm, &mut after_error)
+            .unwrap();
+
+        let mut fresh = enc.state(1).unwrap();
+        let mut want = vec![0.0f32; expected];
+        enc.encode_features_into(&mut fresh, &pcm, &mut want)
+            .unwrap();
+        assert_eq!(
+            after_error, want,
+            "shape error must not consume encoder state"
+        );
+    }
+
+    #[test]
+    fn continuous_feature_state_reset_reproduces_a_fresh_stream() {
+        let enc = encoder();
+        let hop = enc.frame_hop().unwrap();
+        let output_len = hop / enc.feature_frame_hop().unwrap() * enc.feature_dim();
+        let pcm = sine_pcm(hop);
+        let mut state = enc.state(1).unwrap();
+        let mut first = vec![0.0f32; output_len];
+        enc.encode_features_into(&mut state, &pcm, &mut first)
+            .unwrap();
+        state.reset();
+        let mut second = vec![0.0f32; output_len];
+        enc.encode_features_into(&mut state, &pcm, &mut second)
+            .unwrap();
+        assert_eq!(second, first);
     }
 
     #[test]

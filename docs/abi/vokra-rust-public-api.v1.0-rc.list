@@ -219,6 +219,13 @@ FN vokra-capi::aec::vokra_aec_reset|pub unsafe extern "C" fn vokra_aec_reset(aec
 FN vokra-capi::asr::vokra_asr_transcribe|pub unsafe extern "C" fn vokra_asr_transcribe(
 FN vokra-capi::asr::vokra_string_free|pub unsafe extern "C" fn vokra_string_free(s: *mut c_char) {
 FN vokra-capi::error::vokra_last_error|pub extern "C" fn vokra_last_error() -> *const c_char {
+FN vokra-capi::feature::vokra_feat_destroy|pub unsafe extern "C" fn vokra_feat_destroy(feat: *mut vokra_feat_t) {
+FN vokra-capi::feature::vokra_feat_dim|pub unsafe extern "C" fn vokra_feat_dim(feat: *const vokra_feat_t) -> i32 {
+FN vokra-capi::feature::vokra_feat_frame_rate_mhz|pub unsafe extern "C" fn vokra_feat_frame_rate_mhz(feat: *const vokra_feat_t) -> i32 {
+FN vokra-capi::feature::vokra_feat_open|pub unsafe extern "C" fn vokra_feat_open(session: *const vokra_session_t) -> *mut vokra_feat_t {
+FN vokra-capi::feature::vokra_feat_pull|pub unsafe extern "C" fn vokra_feat_pull(
+FN vokra-capi::feature::vokra_feat_push_pcm|pub unsafe extern "C" fn vokra_feat_push_pcm(
+FN vokra-capi::feature::vokra_feat_reset|pub unsafe extern "C" fn vokra_feat_reset(feat: *mut vokra_feat_t) {
 FN vokra-capi::options::vokra_backend_available|pub extern "C" fn vokra_backend_available(backend: i32) -> bool {
 FN vokra-capi::options::vokra_session_options_create|pub extern "C" fn vokra_session_options_create() -> *mut vokra_session_options_t {
 FN vokra-capi::options::vokra_session_options_destroy|pub unsafe extern "C" fn vokra_session_options_destroy(opts: *mut vokra_session_options_t) {
@@ -651,6 +658,7 @@ FN vokra-core::session::from_gguf|pub fn from_gguf(gguf: GgufFile) -> SessionBui
 FN vokra-core::session::gguf|pub fn gguf(&self) -> &GgufFile {
 FN vokra-core::session::kv_quant|pub fn kv_quant(&self) -> KvQuant {
 FN vokra-core::session::model_path|pub fn model_path(&self) -> &Path {
+FN vokra-core::session::open_speech_feature_stream|pub fn open_speech_feature_stream(&self) -> Result<Box<dyn SpeechFeatureStream + Send>> {
 FN vokra-core::session::open_vad_stream|pub fn open_vad_stream(&self) -> Result<Box<dyn VadStreamHandle + Send>> {
 FN vokra-core::session::with_asr_engine|pub fn with_asr_engine(mut self, engine: Arc<dyn AsrEngine>) -> Self {
 FN vokra-core::session::with_attribution|pub fn with_attribution(mut self, attribution: AttributionInfo) -> Self {
@@ -659,6 +667,7 @@ FN vokra-core::session::with_kv_quant|pub fn with_kv_quant(mut self, kv_quant: K
 FN vokra-core::session::with_s2s_duplex_engine|pub fn with_s2s_duplex_engine(mut self, engine: Arc<dyn S2sDuplexEngine>) -> Self {
 FN vokra-core::session::with_s2s_engine|pub fn with_s2s_engine(mut self, engine: Arc<dyn S2sEngine>) -> Self {
 FN vokra-core::session::with_speaker_engine|pub fn with_speaker_engine(mut self, engine: Arc<dyn SpeakerEngine>) -> Self {
+FN vokra-core::session::with_speech_feature_engine|pub fn with_speech_feature_engine(mut self, engine: Arc<dyn SpeechFeatureEngine>) -> Self {
 FN vokra-core::session::with_tts_engine|pub fn with_tts_engine(mut self, engine: Arc<dyn TtsEngine>) -> Self {
 FN vokra-core::session::with_vad_engine|pub fn with_vad_engine(mut self, engine: Arc<dyn VadEngine>) -> Self {
 FN vokra-core::stream::active_stream_count|pub fn active_stream_count(&self) -> u64 {
@@ -1210,6 +1219,7 @@ MOD vokra-ops::zipformer|pub mod zipformer;
 STRUCT vokra-capi::aec::vokra_aec_config_t|pub struct vokra_aec_config_t {
 STRUCT vokra-capi::aec::vokra_aec_ref_writer_t|pub struct vokra_aec_ref_writer_t {
 STRUCT vokra-capi::aec::vokra_aec_t|pub struct vokra_aec_t {
+STRUCT vokra-capi::handle::vokra_feat_t|pub struct vokra_feat_t {
 STRUCT vokra-capi::handle::vokra_session_t|pub struct vokra_session_t {
 STRUCT vokra-capi::handle::vokra_stream_t|pub struct vokra_stream_t {
 STRUCT vokra-capi::options::vokra_session_options_t|pub struct vokra_session_options_t {
@@ -1490,6 +1500,8 @@ TRAIT vokra-core::engines::S2sDuplexEngine|pub trait S2sDuplexEngine: Send + Syn
 TRAIT vokra-core::engines::S2sDuplexHandle|pub trait S2sDuplexHandle {
 TRAIT vokra-core::engines::S2sEngine|pub trait S2sEngine: Send + Sync {
 TRAIT vokra-core::engines::SpeakerEngine|pub trait SpeakerEngine: Send + Sync {
+TRAIT vokra-core::engines::SpeechFeatureEngine|pub trait SpeechFeatureEngine: Send + Sync {
+TRAIT vokra-core::engines::SpeechFeatureStream|pub trait SpeechFeatureStream {
 TRAIT vokra-core::engines::TtsEngine|pub trait TtsEngine: Send + Sync {
 TRAIT vokra-core::engines::TtsStreamHandle|pub trait TtsStreamHandle {
 TRAIT vokra-core::engines::VadEngine|pub trait VadEngine: Send + Sync {
@@ -1533,7 +1545,7 @@ USE vokra-core::decode::wfst::semiring::{Semiring, TropicalWeight}|pub use semir
 USE vokra-core::decode::wfst::{ Arc, Fst, Label, Semiring, StateId, TropicalWeight, WfstDecodeConfig, WfstDecoder, WfstHypothesis, WfstLattice, read_openfst_vector, }|pub use wfst::{ Arc, Fst, Label, Semiring, StateId, TropicalWeight, WfstDecodeConfig, WfstDecoder, WfstHypothesis, WfstLattice, read_openfst_vector, };
 USE vokra-core::decode::word_timing::{ APPEND_PUNCTUATIONS, AlignmentParams, CrossAttention, PREPEND_PUNCTUATIONS, WordTiming, merge_punctuations, token_alignment, words_from_alignment, }|pub use word_timing::{ APPEND_PUNCTUATIONS, AlignmentParams, CrossAttention, PREPEND_PUNCTUATIONS, WordTiming, merge_punctuations, token_alignment, words_from_alignment, };
 USE vokra-core::decode::{ CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg, apply_cfg_inplace, argmax, sample_sequence, }|pub use decode::{ CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg, apply_cfg_inplace, argmax, sample_sequence, };
-USE vokra-core::engines::{ AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, }|pub use engines::{ AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, };
+USE vokra-core::engines::{ AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SpeechFeatureEngine, SpeechFeatureStream, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, }|pub use engines::{ AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SpeechFeatureEngine, SpeechFeatureStream, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, };
 USE vokra-core::error::{Result, VokraError}|pub use error::{Result, VokraError};
 USE vokra-core::gguf::frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec}|pub use frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec};
 USE vokra-core::gguf::reader::{AsBytes, GgufFile}|pub use reader::{AsBytes, GgufFile};

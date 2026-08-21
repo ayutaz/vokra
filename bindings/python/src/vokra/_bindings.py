@@ -62,6 +62,7 @@ class vokra_event_t(ctypes.Structure):
 # native runtime owns their layouts.
 vokra_aec_ref_writer_t = ctypes.c_void_p
 vokra_aec_t = ctypes.c_void_p
+vokra_feat_t = ctypes.c_void_p
 vokra_s2s_duplex_t = ctypes.c_void_p
 vokra_s2s_interrupt_t = ctypes.c_void_p
 vokra_session_options_t = ctypes.c_void_p
@@ -109,6 +110,34 @@ PROTOTYPES = {
     'vokra_last_error': (
         ctypes.c_char_p,
         (),
+    ),
+    'vokra_feat_open': (
+        ctypes.c_void_p,
+        (ctypes.c_void_p,),
+    ),
+    'vokra_feat_frame_rate_mhz': (
+        ctypes.c_int32,
+        (ctypes.c_void_p,),
+    ),
+    'vokra_feat_dim': (
+        ctypes.c_int32,
+        (ctypes.c_void_p,),
+    ),
+    'vokra_feat_push_pcm': (
+        ctypes.c_int,
+        (ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,),
+    ),
+    'vokra_feat_pull': (
+        ctypes.c_int,
+        (ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_int64),),
+    ),
+    'vokra_feat_reset': (
+        None,
+        (ctypes.c_void_p,),
+    ),
+    'vokra_feat_destroy': (
+        None,
+        (ctypes.c_void_p,),
     ),
     'vokra_session_options_create': (
         ctypes.c_void_p,

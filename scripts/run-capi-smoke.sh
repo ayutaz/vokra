@@ -7,13 +7,16 @@
 #   2. scripts/gen-c-abi.sh --check          (vokra.h has no drift — WP cond.)
 #   3. exported-symbol check                 (only vokra_* symbols are public)
 #   4. cc-build + run
-#      tests/capi/smoke_{vad,vad_bytes,aec,s2s,backend_options,asr,tts}.c
+#      tests/capi/smoke_{vad,vad_bytes,aec,s2s,features,
+#      backend_options,asr,tts}.c
 #      against <vokra.h>
 #
 # VAD / VAD(bytes) use the committed 2 MB Silero fixture; AEC is model-free
 # (synthetic PCM). S2S runs its error paths + a permissive-model attribution
 # from the committed fixture and ENV-GATES its full duplex leg on
-# VOKRA_MOSHI_GGUF. ASR/TTS are ENV-GATED: they SKIP cleanly unless
+# VOKRA_MOSHI_GGUF. The continuous-feature happy path shares that Moshi gate;
+# its NULL and family-mismatch legs are always on. ASR/TTS are ENV-GATED: they
+# SKIP cleanly unless
 # VOKRA_WHISPER_GGUF / VOKRA_PIPER_GGUF point at the (uncommitted) GGUFs.
 #
 # Exit code: 0 = all pass/skip, non-zero = a build or test failure.
@@ -96,6 +99,11 @@ build_one aec
 # VOKRA_MOSHI_GGUF (SKIP when unset).
 build_one s2s
 "$TMP/smoke_s2s" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" || status=1
+
+# Issue #49: continuous speech features. NULL + non-feature-family rejection
+# are always on; the native Mimi happy path uses the same optional Moshi GGUF.
+build_one features
+"$TMP/smoke_features" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" || status=1
 
 # 2026-08-14: backend selection through the opaque options object
 # (vokra_backend_t / vokra_session_options_* / vokra_backend_available) plus
