@@ -26,10 +26,10 @@ bounds):
 1. Read ``--clean-source`` (default ``tests/fixtures/audio/jfk-30s.wav`` —
    actually 11.0 s, mono, PCM16 @ 16 kHz).
 2. Convert to float32 mono, then sinc-resample 16 kHz → 48 kHz with
-   ``torchaudio.functional.resample`` from the pinned torch/torchaudio 2.1.2
-   oracle. This is the exact 2026-07-17 baseline path; replacing it with
-   scipy's different polyphase kernel changes the clean/noisy bytes and the
-   downstream quality anchor.
+   ``torchaudio.functional.resample`` from the pinned torch/torchaudio oracle.
+   This preserves the 2026-07-17 baseline path; replacing it with scipy's
+   different polyphase kernel changes the clean/noisy bytes and the downstream
+   quality anchor.
 3. Draw an additive white-noise vector from
    ``np.random.default_rng(20260717)`` — seed matches the campaign-2
    measured run byte-for-byte.
@@ -128,7 +128,7 @@ def read_wav_mono_f32(path: Path):
 
 
 def resample_16k_to_48k(samples):
-    """Run the exact baseline torchaudio 2.1.2 sinc resampler."""
+    """Run the locked torchaudio sinc resampler used by the baseline."""
     import numpy as np
     import torch
     import torchaudio.functional as audio_functional
@@ -187,6 +187,10 @@ def run_upstream_enhance(noisy, out_path: Path, model_dir: Path) -> None:
     try:
         import numpy as np
         import torch
+
+        from dfn3_torchaudio_compat import install_deepfilternet_import_compat
+
+        install_deepfilternet_import_compat()
         from df.enhance import enhance, init_df, load_audio  # noqa: F401 — presence check
     except ImportError as e:
         raise SystemExit(

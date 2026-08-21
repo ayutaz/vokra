@@ -130,12 +130,8 @@ impl QuantKvPage {
 
     fn zero(&mut self, mode: KvQuant) {
         let z = AnyBlock::zero(mode);
-        for slot in &mut self.k {
-            *slot = z;
-        }
-        for slot in &mut self.v {
-            *slot = z;
-        }
+        self.k.fill(z);
+        self.v.fill(z);
     }
 
     fn capacity_bytes(&self) -> usize {
@@ -491,9 +487,7 @@ impl QuantizedPagedKvCache {
 
     /// Rewinds the cache to empty while preserving the arena.
     pub fn reset(&mut self) {
-        for slot in &mut self.page_table {
-            *slot = None;
-        }
+        self.page_table.fill(None);
         self.allocator.reset();
         self.pos = 0;
     }

@@ -61,6 +61,9 @@ VOKRA_ROOT="${VOKRA_ROOT:-$PWD}"
 SKIP_BUILD=0
 SKIP_HOPPER_GATE=0
 SELF_TEST=0
+RUSTUP_INIT_VERSION="1.29.0"
+RUSTUP_INIT_SHA256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
 
 log() { printf '[provision-h100] %s\n' "$*" >&2; }
 step() { printf '\n\033[1;36m[provision-h100] ==== %s ====\033[0m\n' "$*" >&2; }
@@ -107,6 +110,7 @@ done
 
 have_rust()      { command -v cargo    >/dev/null 2>&1; }
 have_curl()      { command -v curl     >/dev/null 2>&1; }
+have_sha256sum() { command -v sha256sum >/dev/null 2>&1; }
 have_nvidia_smi(){ command -v nvidia-smi >/dev/null 2>&1; }
 have_repo()      { [ -f "$VOKRA_ROOT/Cargo.toml" ]; }
 have_vokra_cli() { [ -x "$VOKRA_ROOT/target/release/vokra-cli" ]; }
@@ -190,15 +194,30 @@ install_rust() {
     err "curl not on PATH — cannot download rustup. Install curl first."
     exit 1
   fi
+  if ! have_sha256sum; then
+    err "sha256sum not on PATH — cannot verify rustup-init. Install coreutils first."
+    exit 1
+  fi
 
-  # Standard rustup one-liner. Pinned to the same recipe the CUDA
-  # measurement handoff uses (see tools/parity/README-cuda-rtf-variance.md
-  # §"Owner workflow (vast.ai)"). We NOT pin to a fixed rustc version
-  # here — the M4-07 handoff instructs the owner to `git checkout` the
-  # M4-07 branch first, so the checkout's `rust-toolchain.toml` (if
-  # any) becomes the source of truth.
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain stable
+  # Download a versioned rustup-init binary and verify the Rust-published
+  # SHA-256 before execution. The Rust compiler remains `stable`: the checked
+  # out repository's rust-toolchain.toml is still the compiler source of truth.
+  local rustup_dir rustup_init actual_sha256
+  rustup_dir="$(mktemp -d "${TMPDIR:-/tmp}/vokra-rustup-init.XXXXXX")"
+  rustup_init="$rustup_dir/rustup-init"
+  curl --proto '=https' --tlsv1.2 -sSfL \
+      --output "$rustup_init" "$RUSTUP_INIT_URL"
+  actual_sha256="$(sha256sum "$rustup_init" | awk '{print $1}')"
+  if [ "$actual_sha256" != "$RUSTUP_INIT_SHA256" ]; then
+    rm -f "$rustup_init"
+    rmdir "$rustup_dir"
+    err "rustup-init SHA-256 mismatch (expected $RUSTUP_INIT_SHA256, got $actual_sha256)"
+    exit 1
+  fi
+  chmod 700 "$rustup_init"
+  "$rustup_init" -y --default-toolchain stable
+  rm -f "$rustup_init"
+  rmdir "$rustup_dir"
 
   # shellcheck disable=SC1091
   . "$HOME/.cargo/env"
@@ -303,6 +322,7 @@ self_test() {
 
   if have_rust;       then log "cargo:      present"; else log "cargo:      absent (would install rustup)"; rc=1; fi
   if have_curl;       then log "curl:       present"; else log "curl:       absent (needed for rustup)"; rc=1; fi
+  if have_sha256sum;  then log "sha256sum:  present"; else log "sha256sum:  absent (needed to verify rustup-init)"; rc=1; fi
   if have_nvidia_smi; then log "nvidia-smi: present"; else log "nvidia-smi: absent (not a CUDA host?)"; rc=1; fi
   if have_repo;       then log "repo:       present at $VOKRA_ROOT"; else log "repo:       Cargo.toml missing at $VOKRA_ROOT"; rc=1; fi
   if have_vokra_cli;  then log "vokra-cli:  present";  else log "vokra-cli:  not built (would run cargo build)"; fi

@@ -57,6 +57,10 @@ import soundfile as sf
 import torch
 import torch.nn.functional as F
 
+from dfn3_torchaudio_compat import install_deepfilternet_import_compat
+
+install_deepfilternet_import_compat()
+
 from df.enhance import df_features, enhance, init_df
 
 
