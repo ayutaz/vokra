@@ -26,9 +26,13 @@
 //! `vokra_core::check_weight_license` path first (Mimi is
 //! `AttributionRequired` = admitted with attribution; DAC is `Permissive`).
 
+use std::sync::Arc;
 use vokra_core::gguf::{GgmlType, GgufFile};
-use vokra_core::{Result, VokraError};
+
+use vokra_core::{CodecDecoderEngine, CodecDecoderHandle, Result, VokraError};
 use vokra_ops::{CodebookTable, DacOutProj, DacRvqAttrs, MimiRvqAttrs};
+
+use crate::mimi::{MimiDecoderState, MimiNeuralConfig, MimiNeuralDecoder};
 
 /// Reads a `u32` metadata key or fails loudly.
 fn get_u32(file: &GgufFile, key: &str) -> Result<u32> {
@@ -119,6 +123,191 @@ impl MimiCodecGguf {
             tables.push(CodebookTable::new(codebook_size, d_model, slice)?);
         }
         Ok(Self { attrs, tables })
+    }
+}
+
+/// Complete standalone Mimi token-to-PCM engine used by the generic streaming
+/// codec surface. The immutable tables and neural weights are shared by every
+/// opened handle; causal state and scratch buffers are handle-local.
+#[derive(Clone)]
+pub struct MimiStreamingCodec {
+    tables: Arc<Vec<CodebookTable>>,
+    attrs: MimiRvqAttrs,
+    decoder: Arc<MimiNeuralDecoder>,
+    sample_rate: u32,
+    frame_hop: usize,
+}
+
+impl std::fmt::Debug for MimiStreamingCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MimiStreamingCodec")
+            .field("attrs", &self.attrs)
+            .field("sample_rate", &self.sample_rate)
+            .field("frame_hop", &self.frame_hop)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MimiStreamingCodec {
+    /// Binds a standalone Mimi GGUF into a complete streaming decoder.
+    ///
+    /// The standalone converter emits effective (already output-projected)
+    /// codebook tables, so their width must equal the neural decoder's input
+    /// width. A mixed or partial GGUF is rejected before a handle is exposed.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let config = MimiNeuralConfig::from_gguf(file)?;
+        config.validate()?;
+        let codec = MimiCodecGguf::from_gguf(file)?;
+        let decoder = MimiNeuralDecoder::from_gguf(file, &config)?;
+        Self::new(codec, decoder, config.sample_rate)
+    }
+
+    /// Builds the engine from already-bound components. Public to support
+    /// deterministic synthesized-weight tests without fabricating source
+    /// checkpoint provenance.
+    pub fn new(codec: MimiCodecGguf, decoder: MimiNeuralDecoder, sample_rate: u32) -> Result<Self> {
+        if codec.attrs.n_codebooks == 0 || codec.tables.len() != codec.attrs.n_codebooks {
+            return Err(VokraError::ModelLoad(format!(
+                "mimi streaming codec: {} tables != n_codebooks {}",
+                codec.tables.len(),
+                codec.attrs.n_codebooks
+            )));
+        }
+        if codec.attrs.d_model != decoder.expected_feature_dim() {
+            return Err(VokraError::ModelLoad(format!(
+                "mimi streaming codec: effective codebook width {} != decoder input width {}",
+                codec.attrs.d_model,
+                decoder.expected_feature_dim()
+            )));
+        }
+        if decoder.config().quantizer.n_q != codec.attrs.n_codebooks {
+            return Err(VokraError::ModelLoad(format!(
+                "mimi streaming codec: decoder n_q {} != codebook count {}",
+                decoder.config().quantizer.n_q,
+                codec.attrs.n_codebooks
+            )));
+        }
+        if decoder.config().quantizer.bins != codec.attrs.codebook_size {
+            return Err(VokraError::ModelLoad(format!(
+                "mimi streaming codec: decoder bins {} != codebook size {}",
+                decoder.config().quantizer.bins,
+                codec.attrs.codebook_size
+            )));
+        }
+        if sample_rate == 0 || sample_rate != decoder.config().sample_rate {
+            return Err(VokraError::ModelLoad(format!(
+                "mimi streaming codec: sample rate {sample_rate} != decoder sample rate {}",
+                decoder.config().sample_rate
+            )));
+        }
+        let frame_hop = decoder.frame_hop()?;
+        Ok(Self {
+            tables: Arc::new(codec.tables),
+            attrs: codec.attrs,
+            decoder: Arc::new(decoder),
+            sample_rate,
+            frame_hop,
+        })
+    }
+}
+
+impl CodecDecoderEngine for MimiStreamingCodec {
+    fn open_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>> {
+        Ok(Box::new(MimiStreamingDecoder {
+            state: self.decoder.state(1)?,
+            features: vec![0.0; self.attrs.d_model],
+            pcm: vec![0.0; self.frame_hop],
+            pending: false,
+            tables: Arc::clone(&self.tables),
+            attrs: self.attrs,
+            decoder: Arc::clone(&self.decoder),
+            sample_rate: self.sample_rate,
+            frame_hop: self.frame_hop,
+        }))
+    }
+}
+
+/// One independently stateful Mimi decoder handle.
+struct MimiStreamingDecoder {
+    // Drop state/scratch before the shared immutable model fields below.
+    state: MimiDecoderState,
+    features: Vec<f32>,
+    pcm: Vec<f32>,
+    pending: bool,
+    tables: Arc<Vec<CodebookTable>>,
+    attrs: MimiRvqAttrs,
+    decoder: Arc<MimiNeuralDecoder>,
+    sample_rate: u32,
+    frame_hop: usize,
+}
+
+impl CodecDecoderHandle for MimiStreamingDecoder {
+    fn frame_hop(&self) -> usize {
+        self.frame_hop
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn n_codebooks(&self) -> usize {
+        self.attrs.n_codebooks
+    }
+
+    // ZERO-ALLOC-BEGIN — warmed successful code-frame decode; scratch and
+    // causal state are allocated by open/reset. Guarded by
+    // scripts/check-hot-path-allocs.sh and the counting-allocator test below.
+    fn push_codes(&mut self, codes: &[u32]) -> Result<usize> {
+        if codes.len() != self.attrs.n_codebooks {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi codec push: n_codebooks {} != checkpoint {}",
+                codes.len(),
+                self.attrs.n_codebooks
+            )));
+        }
+        if self.pending {
+            return Err(VokraError::InvalidArgument(
+                "mimi codec push: pull the pending PCM frame before pushing another code frame"
+                    .into(),
+            ));
+        }
+
+        self.features.fill(0.0);
+        for (cb, &index) in codes.iter().enumerate() {
+            let row = self.tables[cb].row(index)?;
+            for (dst, src) in self.features.iter_mut().zip(row) {
+                *dst += *src;
+            }
+        }
+        self.decoder
+            .decode_into(&mut self.state, &self.features, &mut self.pcm)?;
+        self.pending = true;
+        Ok(1)
+    }
+
+    fn pull_pcm(&mut self, out: &mut [f32]) -> Result<usize> {
+        if !self.pending {
+            return Ok(0);
+        }
+        if out.len() < self.frame_hop {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi codec pull: output capacity {} < frame hop {}",
+                out.len(),
+                self.frame_hop
+            )));
+        }
+        out[..self.frame_hop].copy_from_slice(&self.pcm);
+        self.pending = false;
+        Ok(self.frame_hop)
+    }
+    // ZERO-ALLOC-END
+
+    fn reset(&mut self) -> Result<()> {
+        self.state = self.decoder.state(1)?;
+        self.features.fill(0.0);
+        self.pcm.fill(0.0);
+        self.pending = false;
+        Ok(())
     }
 }
 
@@ -215,6 +404,7 @@ impl DacCodecGguf {
 mod tests {
     use super::*;
     use vokra_core::gguf::GgufBuilder;
+    use vokra_ops::mimi_rvq_decode;
 
     /// A hand-assembled Mimi codec GGUF (bypassing the converter — the
     /// converter e2e lives in tests/codec_gguf_roundtrip.rs).
@@ -277,6 +467,86 @@ mod tests {
             MimiCodecGguf::from_gguf(&file),
             Err(VokraError::ModelLoad(_))
         ));
+    }
+
+    fn synthesized_streaming_codec(seed: u64) -> (MimiStreamingCodec, MimiCodecGguf) {
+        let cfg = MimiNeuralConfig::tiny_for_tests();
+        let tables = (0..cfg.quantizer.n_q)
+            .map(|cb| {
+                let values = (0..cfg.quantizer.bins * cfg.seanet.dimension)
+                    .map(|i| ((cb * 97 + i) as f32 - 40.0) * 0.002)
+                    .collect();
+                CodebookTable::new(cfg.quantizer.bins, cfg.seanet.dimension, values).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let codec = MimiCodecGguf {
+            attrs: MimiRvqAttrs {
+                n_codebooks: cfg.quantizer.n_q,
+                codebook_size: cfg.quantizer.bins,
+                d_model: cfg.seanet.dimension,
+            },
+            tables,
+        };
+        let neural = MimiNeuralDecoder::synthesized(&cfg, seed, false).unwrap();
+        (
+            MimiStreamingCodec::new(codec.clone(), neural, cfg.sample_rate).unwrap(),
+            codec,
+        )
+    }
+
+    #[test]
+    fn mimi_successive_pushes_are_bit_identical_to_whole_decode() {
+        let seed = 0x48;
+        let (engine, codec) = synthesized_streaming_codec(seed);
+        let cfg = MimiNeuralConfig::tiny_for_tests();
+        let codes = vec![0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3];
+        let frames = codes.len() / codec.attrs.n_codebooks;
+        let features = mimi_rvq_decode(&codes, frames, &codec.tables, &codec.attrs).unwrap();
+        let reference = MimiNeuralDecoder::synthesized(&cfg, seed, false)
+            .unwrap()
+            .decode_all(&features)
+            .unwrap();
+
+        let mut stream = engine.open_decoder().unwrap();
+        let mut got = Vec::with_capacity(reference.len());
+        let mut frame = vec![0.0; stream.frame_hop()];
+        for code_frame in codes.chunks_exact(stream.n_codebooks()) {
+            assert_eq!(stream.push_codes(code_frame).unwrap(), 1);
+            let written = stream.pull_pcm(&mut frame).unwrap();
+            assert_eq!(written, stream.frame_hop());
+            got.extend_from_slice(&frame[..written]);
+        }
+        assert_eq!(got, reference);
+
+        stream.reset().unwrap();
+        let n_codebooks = stream.n_codebooks();
+        assert_eq!(stream.push_codes(&codes[..n_codebooks]).unwrap(), 1);
+        stream.pull_pcm(&mut frame).unwrap();
+        let frame_hop = stream.frame_hop();
+        assert_eq!(&frame[..], &reference[..frame_hop]);
+    }
+
+    #[test]
+    fn mimi_streaming_shape_and_backpressure_fail_loudly() {
+        let (engine, _) = synthesized_streaming_codec(9);
+        let mut stream = engine.open_decoder().unwrap();
+        assert!(matches!(
+            stream.push_codes(&[0, 1]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert_eq!(stream.push_codes(&[0, 1, 2]).unwrap(), 1);
+        assert!(matches!(
+            stream.push_codes(&[0, 1, 2]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut short = vec![0.0; stream.frame_hop() - 1];
+        assert!(matches!(
+            stream.pull_pcm(&mut short),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut exact = vec![0.0; stream.frame_hop()];
+        assert_eq!(stream.pull_pcm(&mut exact).unwrap(), exact.len());
+        assert_eq!(stream.pull_pcm(&mut exact).unwrap(), 0);
     }
 
     #[test]

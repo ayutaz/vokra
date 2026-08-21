@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use vokra_core::gguf::{AsBytes, GgufFile};
 use vokra_core::{BackendKind, CompliancePolicy, Session, VokraError};
+use vokra_models::codec::MimiStreamingCodec;
 use vokra_models::moshi::MoshiEngine;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
@@ -31,6 +32,8 @@ const ARCH_WHISPER: &str = "whisper";
 const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 const ARCH_MOSHI: &str = "moshi";
+/// Standalone Kyutai Mimi codec (`vokra-cli convert --model mimi`).
+const ARCH_MIMI: &str = "mimi";
 /// CAM++ speaker encoder (`crates/vokra-convert/src/models/campplus.rs`), the
 /// `speaker_encode` model behind `vokra_speaker_embed`.
 const ARCH_CAMPLUS: &str = "campplus";
@@ -181,9 +184,15 @@ fn inject_engine(
             }
             Ok(session)
         }
+        ARCH_MIMI => {
+            reject_cpu_only_backend(backend, "Mimi streaming codec decoder")?;
+            let decoder = MimiStreamingCodec::from_gguf(session.gguf())?;
+            Ok(session.with_codec_decoder_engine(Arc::new(decoder)))
+        }
         other => Err(VokraError::InvalidArgument(format!(
             "unsupported model arch `{other}` (supported: `{ARCH_WHISPER}` / \
-             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}` / `{ARCH_CAMPLUS}`)"
+             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}` / `{ARCH_MIMI}` / \
+             `{ARCH_CAMPLUS}`)"
         ))),
     }
 }

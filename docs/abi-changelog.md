@@ -366,6 +366,27 @@ NeMo-Speech.cpp commit `4f9676226f667d14608487df744f375db87127f8`.
 No model weights are bundled and this entry makes no publication-license
 claim.
 
+### 2026-08-22 — 1.0.0-rc.1-dev (generic streaming codec decoder C ABI, issue #48)
+
+Additive prerelease C ABI and Rust engine contract. Codebook count is loaded
+from the GGUF and repeated as a call-time argument; no codec topology is frozen
+into the header. Each opaque decoder is single-owner-thread state retaining its
+source session. Standalone Mimi is the first complete implementation; partial
+codec binders do not opt in.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `include/vokra.h` | `vokra_codec_decoder_t` | Added | opaque struct | Independently owned streaming token-to-PCM state (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_destroy` | Added | `void vokra_codec_decoder_destroy(struct vokra_codec_decoder_t *decoder)` | Release a decoder handle; NULL-tolerant (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_frame_hop` | Added | `int32_t vokra_codec_decoder_frame_hop(const struct vokra_codec_decoder_t *decoder)` | Query checkpoint-derived PCM frame size (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_n_codebooks` | Added | `int32_t vokra_codec_decoder_n_codebooks(const struct vokra_codec_decoder_t *decoder)` | Query model-specific codebook width without an ABI constant (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_open` | Added | `struct vokra_codec_decoder_t *vokra_codec_decoder_open(const struct vokra_session_t *session)` | Open independent causal codec state (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_pull_pcm` | Added | `enum vokra_status_t vokra_codec_decoder_pull_pcm(struct vokra_codec_decoder_t *decoder, float *out, size_t capacity, size_t *out_len)` | Copy pending mono PCM without allocation (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_push_codes` | Added | `enum vokra_status_t vokra_codec_decoder_push_codes(struct vokra_codec_decoder_t *decoder, const uint32_t *codes, size_t n_codebooks, int32_t *out_frames_emitted)` | Push one call-time-shaped code frame (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_reset` | Added | `void vokra_codec_decoder_reset(struct vokra_codec_decoder_t *decoder)` | Restore as-new causal state (#48) | no | #TBD |
+| `include/vokra.h` | `vokra_codec_decoder_sample_rate` | Added | `int32_t vokra_codec_decoder_sample_rate(const struct vokra_codec_decoder_t *decoder)` | Query checkpoint-derived PCM rate (#48) | no | #TBD |
+| `vokra-core::engines` | `CodecDecoderEngine` / `CodecDecoderHandle` | Added | public traits | Codec-family-neutral session injection and stateful push/pull contract (#48) | no | #TBD |
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 
 **Behaviour change** plus additive Rust surface. The C ABI

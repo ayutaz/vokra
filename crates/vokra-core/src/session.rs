@@ -21,8 +21,8 @@ use std::sync::atomic::AtomicU64;
 use crate::backend::BackendKind;
 use crate::compliance::AttributionInfo;
 use crate::engines::{
-    AsrEngine, S2sDuplexEngine, S2sEngine, SpeakerEngine, SpeechFeatureEngine, SpeechFeatureStream,
-    TtsEngine, VadEngine, VadStreamHandle,
+    AsrEngine, CodecDecoderEngine, CodecDecoderHandle, S2sDuplexEngine, S2sEngine, SpeakerEngine,
+    SpeechFeatureEngine, SpeechFeatureStream, TtsEngine, VadEngine, VadStreamHandle,
 };
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
@@ -80,6 +80,7 @@ pub struct Session {
     s2s: Option<Arc<dyn S2sEngine>>,
     s2s_duplex: Option<Arc<dyn S2sDuplexEngine>>,
     speech_features: Option<Arc<dyn SpeechFeatureEngine>>,
+    codec_decoder: Option<Arc<dyn CodecDecoderEngine>>,
     /// Speaker-embedding engine (CAM++ = M0-08, FR-OP-80). Same shape as the
     /// engines above; the facade entry is [`Session::speaker`].
     speaker: Option<Arc<dyn SpeakerEngine>>,
@@ -101,6 +102,7 @@ impl Clone for Session {
             s2s: self.s2s.clone(),
             s2s_duplex: self.s2s_duplex.clone(),
             speech_features: self.speech_features.clone(),
+            codec_decoder: self.codec_decoder.clone(),
             speaker: self.speaker.clone(),
             attribution: self.attribution.clone(),
         }
@@ -119,6 +121,7 @@ impl fmt::Debug for Session {
             .field("s2s_engine", &self.s2s.is_some())
             .field("s2s_duplex_engine", &self.s2s_duplex.is_some())
             .field("speech_feature_engine", &self.speech_features.is_some())
+            .field("codec_decoder_engine", &self.codec_decoder.is_some())
             .field("speaker_engine", &self.speaker.is_some())
             .field("attribution", &self.attribution.is_some())
             .finish()
@@ -238,6 +241,14 @@ impl Session {
         self
     }
 
+    /// Attaches a streaming codec decoder engine. The engine is model-family
+    /// generic; only families with a complete token-to-PCM decoder opt in.
+    #[must_use]
+    pub fn with_codec_decoder_engine(mut self, engine: Arc<dyn CodecDecoderEngine>) -> Self {
+        self.codec_decoder = Some(engine);
+        self
+    }
+
     /// Attaches a speaker-embedding engine (CAM++ = M0-08, FR-OP-80); the
     /// [`Speaker`](crate::tasks::Speaker) facade delegates to it.
     #[must_use]
@@ -285,6 +296,19 @@ impl Session {
     /// [`S2s`](crate::S2s) facade's `duplex` entry).
     pub(crate) fn s2s_duplex_engine(&self) -> Option<&Arc<dyn S2sDuplexEngine>> {
         self.s2s_duplex.as_ref()
+    }
+
+    /// Opens an independently owned streaming codec decoder.
+    ///
+    /// Returns [`VokraError::NotImplemented`] when the loaded model does not
+    /// expose a complete streaming token-to-PCM path.
+    pub fn open_codec_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>> {
+        match &self.codec_decoder {
+            Some(engine) => engine.open_decoder(),
+            None => Err(VokraError::NotImplemented(
+                "no streaming codec decoder engine injected for this model",
+            )),
+        }
     }
 
     /// The injected speaker-embedding engine, if any (used by the
@@ -417,6 +441,7 @@ impl SessionBuilder {
             s2s: None,
             s2s_duplex: None,
             speech_features: None,
+            codec_decoder: None,
             speaker: None,
             attribution: None,
         })
@@ -745,5 +770,70 @@ pub(crate) mod tests {
         let mut out = [0.0f32; 4];
         assert_eq!(stream.pull_into(&mut out).unwrap(), (2, 0));
         assert_eq!(out, [0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn codec_decoder_is_loud_when_absent_and_independent_when_injected() {
+        struct FakeCodec;
+        struct FakeDecoder {
+            next: f32,
+        }
+        impl CodecDecoderEngine for FakeCodec {
+            fn open_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>> {
+                Ok(Box::new(FakeDecoder { next: 0.0 }))
+            }
+        }
+        impl CodecDecoderHandle for FakeDecoder {
+            fn frame_hop(&self) -> usize {
+                2
+            }
+            fn sample_rate(&self) -> u32 {
+                16_000
+            }
+            fn n_codebooks(&self) -> usize {
+                3
+            }
+            fn push_codes(&mut self, codes: &[u32]) -> Result<usize> {
+                if codes.len() != self.n_codebooks() {
+                    return Err(VokraError::InvalidArgument("wrong code width".into()));
+                }
+                self.next = codes.iter().sum::<u32>() as f32;
+                Ok(1)
+            }
+            fn pull_pcm(&mut self, out: &mut [f32]) -> Result<usize> {
+                if out.len() < self.frame_hop() {
+                    return Err(VokraError::InvalidArgument("short PCM output".into()));
+                }
+                out[..2].copy_from_slice(&[self.next, -self.next]);
+                Ok(2)
+            }
+            fn reset(&mut self) -> Result<()> {
+                self.next = 0.0;
+                Ok(())
+            }
+        }
+
+        let file = TempModelFile::new("codec-engine");
+        let plain = Session::from_file(&file.0).build().expect("session builds");
+        assert!(matches!(
+            plain.open_codec_decoder(),
+            Err(VokraError::NotImplemented(_))
+        ));
+
+        let session = plain.with_codec_decoder_engine(Arc::new(FakeCodec));
+        let mut a = session.open_codec_decoder().expect("first decoder");
+        let mut b = session.open_codec_decoder().expect("second decoder");
+        assert_eq!(
+            (a.sample_rate(), a.frame_hop(), a.n_codebooks()),
+            (16_000, 2, 3)
+        );
+        assert_eq!(a.push_codes(&[1, 2, 3]).unwrap(), 1);
+        assert_eq!(b.push_codes(&[4, 5, 6]).unwrap(), 1);
+        let mut pcm_a = [0.0; 2];
+        let mut pcm_b = [0.0; 2];
+        assert_eq!(a.pull_pcm(&mut pcm_a).unwrap(), 2);
+        assert_eq!(b.pull_pcm(&mut pcm_b).unwrap(), 2);
+        assert_eq!(pcm_a, [6.0, -6.0]);
+        assert_eq!(pcm_b, [15.0, -15.0]);
     }
 }

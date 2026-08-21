@@ -64,6 +64,7 @@
 // (FR-OP-60; split-handle thread contract, ADR M4-03 §D-(j)).
 mod aec;
 mod asr;
+mod codec;
 mod error;
 mod feature;
 mod ffi_guard;

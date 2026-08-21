@@ -105,6 +105,17 @@ milestone below.
   allocation-free post-warmup push/pull paths. The generated Python `ctypes`
   table and C smoke suite cover the additive surface (#49).
 
+#### Generic streaming codec C ABI (2026-08-22)
+
+- Added `vokra_codec_decoder_*`: an opaque, single-owner streaming handle
+  accepting one call-time-sized codebook frame and yielding mono PCM. The
+  first complete family implementation is standalone Mimi; codec families
+  without a real terminal PCM decoder remain explicit unsupported errors.
+- Mimi code-frame streaming is bit-identical to whole-buffer decode, retains
+  checkpoint-derived sample rate / frame hop / codebook count, and reuses all
+  feature, causal-state, and PCM scratch after open. A counting-allocator test
+  pins zero allocations across warmed `push_codes` + `pull_pcm` calls.
+
 #### Audio-wide coverage expansion (2026-07-24 → 2026-08-16)
 
 Vokra's scope widened from speech to audio: music generation, source
