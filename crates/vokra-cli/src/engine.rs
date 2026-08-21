@@ -1404,6 +1404,15 @@ const BOUND_ARCHES: &[BoundArch] = &[
         reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::audiosr::AudioSr::from_gguf(g).map(|_| ())),
     },
+    BoundArch {
+        arch: "rnnoise",
+        module: "vokra_models::rnnoise",
+        entry: "RnnoiseV02::from_gguf → RnnoiseV02::forward_features (real network complete; \
+                waveform denoise remains partial: v0.2 32-band/65-feature analysis, pitch \
+                downsample/remove_doubling, delayed-spectrum gains, and OLA synthesis)",
+        reason: BoundReason::LoudPartialForward,
+        probe: Some(|g: &GgufFile| vokra_models::rnnoise::RnnoiseV02::from_gguf(g).map(|_| ())),
+    },
     // --- Diarization / speaker -------------------------------------------
     BoundArch {
         arch: "sortformer",

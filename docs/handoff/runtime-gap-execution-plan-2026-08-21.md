@@ -16,8 +16,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `RealForwardNoCliTask` | 3 | 0 | 0 | 0 | Real forward exists; CLI routing is absent |
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | 17 | 14 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 56 | Loading can succeed, but the named forward stops explicitly |
+| `NoGgufLoader` | 17 | 17 | 17 | 13 | No real artifact can be bound, even if a constructor/forward exists |
+| `LoudPartialForward` | 56 | 56 | 56 | 57 | Loading can succeed, but the named forward stops explicitly |
 | **Total** | **79** | **75** | **73** | **70** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
@@ -89,6 +89,12 @@ synthesis; then add waveform parity. Auditing or replacing the already-public
 Hub artifact remains a separate publication action requiring explicit upload
 authorization and `publish-one.sh`.
 
+The network binder is intentionally registered in `BOUND_ARCHES` as a
+`LoudPartialForward`: `forward_features` is real and parity-verified, but a
+`rnnoise` GGUF is not advertised as a runnable denoiser until the waveform DSP
+chain above lands. This newly bound arch was absent from the baseline count,
+so the current partial-forward inventory is 57 rather than the baseline 56.
+
 ## Wave 1 — small runtime surfaces (implemented on this branch)
 
 These can proceed before the model-family loader/forward waves.
@@ -152,7 +158,7 @@ Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
 package tests are present. Real-weight CT-Punc/Mimi execution remains part of
 the final VAST evidence pass; it is not replaced by the structural tests.
 
-## Wave 3 — 14 of 17 GGUF loaders remaining
+## Wave 3 — 13 of 17 GGUF loaders remaining
 
 Implement loaders in dependency-aware families. Every loader needs a writer ↔
 reader tensor/metadata handshake, a real pinned checkpoint, license/provenance
@@ -168,8 +174,8 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    `vokra-models` package: lib `2533 passed / 0 failed / 1 ignored`, with all
    integration/doc-test suites green. Instance `48290692` was destroyed after
    the run; no weight upload occurred.
-2. Vocoder family (2 remaining): `hifigan_vocoder`, `vocos`. Share only
-   genuinely identical tensor conventions. Vocos also has a second
+2. Vocoder family (1 remaining): `vocos`. Share only genuinely identical
+   tensor conventions. Vocos also has a second
    ConvNeXt-V2 forward blocker; loading it does not make decoding complete.
 
    `bigvgan` closed on 2026-08-21: the strict loader binds the official base
@@ -197,6 +203,19 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    native scalar kernels across 78 convolutions; it is 1.8x the observed
    delta. The CLI smoke emitted an IEEE-float32 16 kHz WAV with exactly 512
    samples and independently measured `max_abs=2.7299363e-5` after parsing.
+
+   `hifigan_vocoder` closed on 2026-08-21 against SpeechBrain revision
+   `4188503131602dc234f48d7f22eebea93d788736`. The audited sidecar validates
+   the 234-tensor `generator.ckpt` and folds every `weight_g` / `weight_v`
+   pair exactly like the official `remove_weight_norm()`, producing the strict
+   156-tensor runtime manifest. The binder preserves both SpeechBrain-only
+   contracts: five-frame replicate padding around the mel input and reflect
+   padding in every stride-1 Conv1d. The 55,714,976-byte GGUF
+   (`sha256=fb11fd44e97344eb6ecca2b2cddf314a1eb443b28424a873b4dc3dec92b5d11e`)
+   passed the official SpeechBrain 1.0.3 two-frame mel-to-3072-sample forward
+   at `max_abs=3.1374395e-5` under the predeclared `5e-5` FP32 bound. The CLI
+   smoke emitted mono IEEE-float32 WAV at 22,050 Hz with exactly 3072 samples;
+   independent WAV parsing measured the same `max_abs=3.137439489e-5`.
 3. ASR (1): `parakeet-tdt`. Add the artifact binder before exposing its
    existing transcription entry point.
 4. TTS scaffolds (11): `chatterbox`, `chatterbox_nano`,
@@ -211,7 +230,7 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 56 partial forwards
+## Wave 4 — 57 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
@@ -222,7 +241,7 @@ family as one completion checkbox.
 | VAD / KWS / turn taking | 4 | `firered_vad`, `openwakeword_op`, `smart_turn`, `ten_vad` |
 | TTS / speech-to-speech | 6 | `chattts`, `cosyvoice2`, `diffsinger`, `llama_omni2`, `styletts2`, `voila` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
-| Enhancement / separation / AEC | 8 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `sepformer`, `storm` |
+| Enhancement / separation / AEC | 9 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `rnnoise`, `sepformer`, `storm` |
 | Speaker / diarization | 3 | `redimnet`, `sortformer`, `speaker_3d` |
 | Representation / classification | 11 | `atst`, `clap`, `deepfake_detection`, `eat`, `emotion2vec`, `lang_id_ecapa`, `m2d`, `maest`, `panns`, `w2v-bert-2`, `wavlm_sv` |
 | Quality estimation | 4 | `dnsmos`, `nisqa_v2_weight`, `torchaudio_squim`, `utmosv2` |

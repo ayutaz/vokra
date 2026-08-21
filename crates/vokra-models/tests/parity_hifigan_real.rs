@@ -58,8 +58,9 @@ fn parity_speechbrain_hifigan_real_weight_mel_to_waveform() {
         .map(|(value, reference)| (value - reference).abs())
         .fold(0.0f32, f32::max);
     eprintln!("SpeechBrain HiFi-GAN real-weight parity: samples=3072, max_abs={max_abs:e}");
-    // Initial bound matches the independently justified SpeechT5 sibling.
-    // Tighten or document any change only after the first official run.
+    // PyTorch CPU and Vokra's scalar FP32 kernels accumulate 78 convolutions
+    // in different orders. The first official run measured 3.1374395e-5;
+    // 5e-5 is a narrow 1.6x ceiling shared with the SpeechT5 sibling.
     assert!(
         max_abs <= 5e-5,
         "SpeechBrain HiFi-GAN max |Δ| {max_abs:e} exceeds the 5e-5 FP32 bound"
