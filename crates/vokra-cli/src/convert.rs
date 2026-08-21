@@ -71,7 +71,7 @@ USAGE:
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
-    vokra-cli convert --model fsmn-vad --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model fsmn-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model firered-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>

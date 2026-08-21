@@ -293,11 +293,11 @@ pub const DECODER_LAYERS: u32 = 6;
 // construct from them.
 //
 // WINDOW DIVERGENCE — read this before wiring the forward: upstream passes
-// `window_type='hanning'` ([`FBANK_WINDOW_TYPE`]), while
-// `vokra_ops::kaldi_fbank` currently hard-codes the Povey window (Hann^0.85).
-// Those are different windows and would desync every feature. The op needs a
-// window selector before it can serve EAT; stamping the upstream value makes
-// that mismatch detectable at load instead of invisible in the output.
+// `window_type='hanning'` ([`FBANK_WINDOW_TYPE`]), while the checked
+// `KaldiFbankWindow` selector currently offers Povey and Hamming, not Hanning.
+// Those are different windows and would desync every feature. A Hanning
+// variant is still required before this op can serve EAT; stamping the
+// upstream value makes that mismatch detectable instead of invisible.
 
 /// Front-end sample rate — 16 kHz.
 ///

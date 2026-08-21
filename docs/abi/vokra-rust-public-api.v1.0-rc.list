@@ -211,6 +211,7 @@ ENUM vokra-ops::hifigan::HifiGanConvPadding|pub enum HifiGanConvPadding {
 ENUM vokra-ops::hifigan::HifiGanPrecision|pub enum HifiGanPrecision {
 ENUM vokra-ops::hifigan::SpectralCheckResult|pub enum SpectralCheckResult {
 ENUM vokra-ops::itn::token::ItnParseType|pub enum ItnParseType {
+ENUM vokra-ops::kaldi_fbank::KaldiFbankWindow|pub enum KaldiFbankWindow {
 ENUM vokra-ops::nsf::NsfEntropy|pub enum NsfEntropy {
 ENUM vokra-ops::rnnoise::Activation|pub enum Activation {
 ENUM vokra-ops::rnnt_decode::RnntDecoderKind|pub enum RnntDecoderKind {
@@ -843,10 +844,10 @@ FN vokra-ops::frontend::mel_attrs_from_spec|pub fn mel_attrs_from_spec(spec: &Fr
 FN vokra-ops::frontend::stft_attrs_from_spec|pub fn stft_attrs_from_spec(spec: &FrontendSpec) -> Result<StftAttrs> {
 FN vokra-ops::fsmn_vad::fsmn_vad_forward|pub fn fsmn_vad_forward(
 FN vokra-ops::fsmn_vad::is_zero|pub fn is_zero(&self) -> bool {
+FN vokra-ops::fsmn_vad::left_history_frames|pub fn left_history_frames(&self) -> usize {
 FN vokra-ops::fsmn_vad::matches|pub fn matches(&self, cfg: &FsmnEncoderConfig) -> bool {
-FN vokra-ops::fsmn_vad::memory_kernel|pub fn memory_kernel(&self) -> usize {
 FN vokra-ops::fsmn_vad::reset|pub fn reset(&mut self) {
-FN vokra-ops::fsmn_vad::softmax_last_axis|pub fn softmax_last_axis(logits: &[f32], n_class: usize) -> Vec<f32> {
+FN vokra-ops::fsmn_vad::softmax_last_axis|pub fn softmax_last_axis(logits: &[f32], width: usize) -> Vec<f32> {
 FN vokra-ops::fsmn_vad::upstream_default|pub fn upstream_default() -> Self {
 FN vokra-ops::fsmn_vad::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::fsmn_vad::validate|pub fn validate(&self, cfg: &FsmnEncoderConfig) -> Result<()> {
@@ -946,6 +947,7 @@ FN vokra-ops::itn::token::prefix|pub const fn prefix(self) -> &'static str {
 FN vokra-ops::itn::token::render|pub fn render(&self, orders: &[(&str, &[&str])]) -> String {
 FN vokra-ops::itn::token::reorder|pub fn reorder(input: &str, parse_type: ItnParseType) -> Result<String> {
 FN vokra-ops::kaldi_fbank::camplus|pub fn camplus() -> Self {
+FN vokra-ops::kaldi_fbank::kaldi_fbank_with_window|pub fn kaldi_fbank_with_window(
 FN vokra-ops::kaldi_fbank::kaldi_fbank|pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usize)> {
 FN vokra-ops::length_conditioning::length_conditioning|pub fn length_conditioning(attrs: &LengthConditioningAttrs) -> Result<u32> {
 FN vokra-ops::lm_fusion::from_arpa|pub fn from_arpa(text: &str) -> Result<Self> {
@@ -1664,7 +1666,7 @@ USE vokra-ops::itn::grammar::{ ARC_TYPE_STANDARD, FST_TYPE_VECTOR, ItnGrammarSet
 USE vokra-ops::itn::pipeline::ItnPipeline|pub use pipeline::ItnPipeline;
 USE vokra-ops::itn::rule_fallback::{RuleBasedItnOutput, rule_based_english_cardinals}|pub use rule_fallback::{RuleBasedItnOutput, rule_based_english_cardinals};
 USE vokra-ops::itn::token::{ EN_TN_ORDERS, ITN_ORDERS, ItnParseType, JA_TN_ORDERS, Token, ZH_TN_ORDERS, is_key_char, parse_tokens, reorder, }|pub use token::{ EN_TN_ORDERS, ITN_ORDERS, ItnParseType, JA_TN_ORDERS, Token, ZH_TN_ORDERS, is_key_char, parse_tokens, reorder, };
-USE vokra-ops::kaldi_fbank::{KaldiFbankOpts, kaldi_fbank}|pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
+USE vokra-ops::kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank_with_window}|pub use kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank_with_window};
 USE vokra-ops::length_conditioning::length_conditioning|pub use length_conditioning::length_conditioning;
 USE vokra-ops::loudness_norm::{LoudnessNormAttrs, integrated_lufs, loudness_norm}|pub use loudness_norm::{LoudnessNormAttrs, integrated_lufs, loudness_norm};
 USE vokra-ops::mel::mel_filterbank|pub use mel::mel_filterbank;

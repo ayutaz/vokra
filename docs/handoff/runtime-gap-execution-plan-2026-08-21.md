@@ -599,11 +599,6 @@ unit suite and independent parity test pass locally with `CARGO_BUILD_JOBS=1`.
 
 ## Other explicit non-row holes retained
 
-- `fsmn-vad` conversion still admits an identity-CMVN placeholder instead of
-  requiring checkpoint statistics, while its docs overstate real end-to-end
-  parity. Replace that producer path with pinned real CMVN extraction and an
-  independent Kaldi-fbank/LFR/CMVN/encoder fixture before treating its PCM
-  path as validated.
 - The Godot VAD stream Object bridge has mock-level coverage but still needs
   real headless/editor construction, lifetime, and push/reset smoke evidence.
 - Real `TtsEngine::synthesize_stream`; a one-chunk synchronous wrapper is not
@@ -617,6 +612,22 @@ unit suite and independent parity test pass locally with `CARGO_BUILD_JOBS=1`.
   DeBERTa-v2 mapping and ZH numerical fixture.
 - vLLM completion generation scope and the other explicit server 501
   contracts. Preserve the 501s until scope and implementation are real.
+
+## FSMN-VAD real checkpoint closure — completed 2026-08-22
+
+The identity-CMVN and synthetic-topology scaffold was removed. The strict
+prepare/converter path now pins the official `funasr/fsmn-vad` revision and
+the SHA-256 values of `model.pt`, `am.mvn`, and `config.yaml`; it requires the
+exact 24-weight manifest plus real AddShift/Rescale vectors and stamps the
+Apache-2.0 weight provenance. The runtime now matches the released 400→140→250
+four-block FSMN→140→248 topology, Hamming fbank, online LFR left padding and
+tail retention, `(x + AddShift) * Rescale`, and `1 - p(silence_pdf_0)` score.
+
+The independent reference script directly executed FunASR commit
+`3c58cb56a56598232c3efffa15d313d7e82a4307`. Across 96 online frames, VAST
+measured full-posterior max absolute error `8.344650269e-7` and one-shot plus
+173-sample streaming PCM score error `1.370906830e-6`; the committed gates are
+`2e-6` and `5e-6`. No weight was uploaded or published.
 
 ## Definition of done and verification routing
 

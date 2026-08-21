@@ -291,22 +291,31 @@ the strict executable bind rather than inheriting guessed defaults.
 RNNoise adds a native 48 kHz denoise stream and engine implementation over its
 existing GGUF schema. This closes the former loud-partial runtime/CLI behavior;
 it does not add a C symbol or change a GGUF key.
+FSMN-VAD replaces its synthetic two-class/identity-CMVN artifact contract with
+the pinned official 248-pdf topology and real `am.mvn` transform. This is an
+intentional pre-1.0 breaking GGUF/Rust correction: historical scaffold files
+fail closed rather than being guessed onto incompatible weights.
 
 | Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
 | --- | --- | --- | --- | --- | --- | --- |
 | `gguf:vokra.charsiu.*` | canonical Charsiu metadata group | Added | 16 keys: `revision`/`checkpoint_sha256` (`string`), `hidden_size`/`ffn_dim`/`n_layer`/`n_head`/`vocab_size`/`silence_id`/`pad_id`/`sample_rate`/`pos_conv_kernel`/`pos_conv_groups`/`silence_threshold` (`u32`), `frame_shift_sec`/`layer_norm_eps` (`f32`), `vocab` (`string[]`) | Writer/reader handshake for the canonical 10 ms frame classifier; no topology or label default is inferred. | no | #44 |
+| `gguf:vokra.fsmn_vad.*` | canonical FSMN-VAD metadata group | Changed / Breaking | removes scaffold `hidden_dim`, `n_class`, `cmvn_mean`, `cmvn_var`; adds `input_affine_dim`, `linear_dim`, `lstride`, `rstride`, `output_affine_dim`, `output_dim` (`u32`), `cmvn_add_shift`, `cmvn_rescale` (`f32[]`), pinned HF/ModelScope identities, revision and three source hashes (`string`) | Corrects invented topology/identity CMVN to the official 24-weight, 248-pdf release. Old scaffold GGUFs are deliberately rejected before inference. | yes (artifact schema) | #44 |
 | `gguf:vokra.firered_vad.*` | canonical Stream-VAD metadata group | Added / persisted | `variant` (`string`), `sample_rate`/`n_mels`/`window_length`/`hop_length`/`n_blocks`/`hidden_dim`/`projection_dim`/`memory_order`/`memory_stride`/`n_class` (`u32`), `required_tensors` (`string[]`) | Selects the official causal DFSMN variant and makes every frontend/cache/tensor axis load-bearing; unknown variants and partial manifests fail closed. | no | #44 |
 | `gguf:vokra.smart_turn.*` | canonical SmartTurn v2 metadata group | Added | `revision`/`checkpoint_sha256`/`config_sha256`/`preprocessor_config_sha256`/`reference_revision` (`string`), `sample_rate`/`max_input_samples`/`hidden_size`/`feature_dim`/`ffn_dim`/`n_layer`/`n_head`/`pos_conv_kernel`/`pos_conv_groups` (`u32`), `max_segment_seconds`/`layer_norm_eps`/`normalization_eps`/`completion_threshold` (`f32`) | Pins the official processor, Wav2Vec2-base topology, endpoint threshold, and independent reference revision; absent or mismatched canonical fields fail closed. | no | #44 |
 | `gguf:vokra.ten_vad.*` | canonical TEN-VAD v1.0 metadata group | Added | `revision`/`onnx_sha256`/`frontend_license_spdx` (`string`), `sample_rate`/`hop_size`/`n_features`/`context_frames`/`hidden_dim`/`n_layers` (`u32`) | Pins the exact official graph and frontend contract. Missing/mismatched fields fail closed; canonical provenance also changes to `LicenseRef-Agora-TEN-VAD-Open-Source-License-2025` / `RedistributionForbidden`, preventing model-zoo republication under the formerly incorrect Apache label. | yes (artifact schema/provenance) | #44 |
 | `gguf:vokra.moonshine.*` | canonical Moonshine Tiny/Base metadata group | Added | `revision`/`checkpoint_sha256`/`tokenizer_sha256`/`encoder_activation`/`decoder_activation` (`string`), `sample_rate`/`hidden_size`/`intermediate_size`/`encoder_layers`/`decoder_layers`/`encoder_heads`/`decoder_heads`/`vocab_size`/`max_positions`/`decoder_start_token_id`/`eos_token_id` (`u32`), `rope_theta`/`partial_rotary_factor` (`f32`); reuses `vokra.tokenizer.model` U8 array | Pins the two official revisions and corrects the old six-head/all-SwiGLU scaffold assumptions. Missing/mismatched metadata or tokenizer fails closed before weights execute. | yes (artifact schema/behavior) | #44 |
 | `vokra-ops::firered_vad` | `FireredVadDfsmnConfig`, `FireredVadDfsmnBlockWeights`, `FireredVadDfsmnWeights`, `FireredVadDfsmnState`, `firered_vad_dfsmn_forward` | Added | stateful causal DFSMN primitive over normalized fbank rows | Native transcription of the official eight-stage streaming graph without an ONNX runtime dependency. | no | #44 |
+| `vokra-ops::fsmn_vad` | `FsmnEncoderConfig`, `FsmnBlockWeights`, `FsmnVadWeights` | Changed / Breaking | replaces scaffold hidden/two-class fields with exact input/output affines, 250-wide blocks, 128-wide causal memory and 248-pdf output geometry | Makes the public primitive represent the official checkpoint instead of a shape-incompatible synthetic network. | yes (Rust source) | #44 |
+| `vokra-ops::kaldi_fbank` | `KaldiFbankWindow`, `kaldi_fbank_with_window` | Added | explicit `Povey` or symmetric `Hamming` analysis-window selection; existing `kaldi_fbank` remains Povey | Adds the released FunASR frontend contract without changing existing CAM++ callers. | no | #44 |
 | `vokra-ops::ten_vad` | TEN-VAD constants, weight/state structs, `TenVadFrontend`, `network_forward` | Added | native 16 kHz LPCNet-derived streaming frontend plus separable-conv/two-LSTM graph | Replaces the explicit unsupported forward without ONNX Runtime, protobuf, or a silent fallback. | no | #44 |
 | `vokra-models::firered_vad` | `FireredVadNativeConfig`, `FireredVad::{native_config,forward_features}` | Added | strict native GGUF binder plus feature-level parity entry point | Runs canonical Stream-VAD while retaining the old unstamped loud-partial contract for compatibility. | no | #44 |
 | `vokra-models::smart_turn` | `SmartTurnWeights::from_gguf`, `SmartTurn::predict_endpoint` | Changed | strict 221-tensor binder plus native utterance-level Wav2Vec2 endpoint forward | Replaces the old topology-presence binder and explicit unsupported error with the pinned released checkpoint contract; no frame-level `VadEngine` is fabricated. | yes (Rust behavior) | #44 |
 | `vokra-models::moonshine` | `Moonshine::from_gguf`, `Moonshine::transcribe`, `AsrEngine for Moonshine` | Changed | strict 160/210-tensor binder, raw-waveform encoder-decoder, tied greedy logits and HF BPE decode | Replaces the explicit unsupported forward and routes `moonshine` through the CLI ASR task. Non-CPU composed attention remains an explicit unsupported path. | yes (Rust source/behavior) | #44 |
 | `vokra-models::rnnoise` | `RnnoiseFrameOutput`, `RnnoiseStream`, `RnnoiseV02::{stream,denoise_pcm}`, `DenoiseEngine for RnnoiseV02`, `DenoiseStreamHandle for RnnoiseStream` | Added / Changed | native 48 kHz, 480-sample-frame denoise engine with arbitrary-chunk streaming and reset | Replaces the explicit unsupported waveform/CLI behavior while preserving the existing canonical GGUF metadata schema. No C ABI symbol is added. | yes (Rust source/behavior) | #44 |
+| `vokra-models::fsmn_vad` | canonical binder and `VadEngine` behavior | Changed / Breaking | strict 24-tensor binder; Hamming fbank + online LFR + real AddShift/Rescale; score `1-p(pdf0)` | Replaces identity CMVN, wrong Povey/LFR assumptions and a fabricated two-class speech column with the official executable contract. | yes (Rust/artifact behavior) | #44 |
 | `vokra-convert` | `ModelKind::Charsiu` / `--model charsiu` | Added | canonical 213-tensor safetensors manifest → 211 F32 GGUF tensors | Consumes the eval-dead masking vector and folds positional-conv weight norm offline; missing, extra, retyped, or reshaped tensors are errors. | no | #44 |
 | `vokra-convert` | `ModelKind::SmartTurn` / `--model smart-turn` | Changed | canonical 223-tensor F32 safetensors manifest → 221 F32 GGUF tensors | Replaces pass-through conversion with strict manifest binding, offline positional weight-norm folding, and omission of the eval-unused SpecAugment vector. | yes (artifact schema) | #44 |
+| `vokra-convert` | `ModelKind::FsmnVad` / `--model fsmn-vad` | Changed | prepare-script-verified 26-tensor bundle → 24 F32 GGUF weights plus real CMVN metadata | Rejects ordinary weight-only files and the former identity-CMVN placeholder; stamps Apache-2.0 weight provenance and pinned source identity. | yes (input/artifact contract) | #44 |
 | `vokra-models::align::charsiu` | `Charsiu::from_file`, `Charsiu::logits`, canonical config/vocabulary fields | Added / Changed | strict GGUF binder + real frame-classification forward + upstream silence-mask/monotone-DTW alignment | Replaces the synthesized-only/unwired loader and the incorrect pre-norm/CTC description with the released post-norm topology and phone-alignment algorithm. This is pre-1.0 source churn; no C symbol changes. | yes (Rust source) | #44 |
 | `vokra-backend-cpu::kernels` | `grouped_conv1d_f32` | Added | checked grouped Conv1D composition over the existing dispatched dense kernel | Shared by Charsiu positional convolution and `vokra-eval`; invalid groups/extents fail loudly and no backend fallback is introduced. | no | #44 |
 | `vokra-ops::bigvgan_generator` | `AliasFreeActivationWeights` | Added | `pub struct AliasFreeActivationWeights { pub upsample_filter: Vec<f32>, pub downsample_filter: Vec<f32> }` | Binds the released checkpoint's per-activation Kaiser buffers instead of regenerating remembered constants. | no | #44 |
@@ -1487,13 +1496,18 @@ isolates its GGUFs from the llama.cpp namespace (CLAUDE.md §3).
 
 ### 2026-07-30 — 1.0.0-rc.1-dev (FSMN-VAD backend — Rust surface only, advisory)
 
-Additive **Rust public API** entry for the FSMN-VAD (FunASR
-`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT) first-class
+Additive **Rust public API** entry for the historical FSMN-VAD scaffold (FunASR
+`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`) first-class
 audio-dialect op posture. The C ABI (`include/vokra.h`) is **untouched**
 (33 fn + 11 typedef baseline unchanged; `scripts/gen-c-abi.sh --check` =
 no diff). Follows the X-Codec-2 / SBV2 precedent for new `ModelKind`
 variants: **advisory Rust-surface entry**, `scripts/check-abi-changelog.sh`
 does not gate on it (no C symbol changed).
+
+> Superseded by the PR #44 correction recorded in the 2026-08-21 entry:
+> the scaffold topology/schema was incompatible with the official checkpoint,
+> and the weight is Apache-2.0 while the FunASR reference code is MIT. This
+> block remains as the historical description of the initial prerelease API.
 
 - **vokra-ops::fsmn_vad (new module)**: `FsmnEncoderConfig` (fields
   `n_blocks` / `input_dim` / `proj_dim` / `hidden_dim` / `lorder` /
@@ -1532,8 +1546,9 @@ does not gate on it (no C symbol changed).
 
 All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
 baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
-`docs/license-audit.md` §3.1 sign-off row landed 2026-07-30 yousan
-(☑ Commercial — MIT, FunASR upstream repo LICENSE primary source).
+`docs/license-audit.md` retains the 2026-07-30 yousan commercial sign-off; its
+weight SPDX was corrected to Apache-2.0 on 2026-08-22 without changing that
+commercial classification.
 
 ### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: hybrid CTC/attention decode + LSTM LM shallow fusion — Rust surface only, advisory)
 

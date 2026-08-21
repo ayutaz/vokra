@@ -1655,9 +1655,9 @@ fn forward_loud_partial(
          shape-gated against the stamped axes — but this PCM-in surface has no such \
          manifest to reach for and will not guess one. \
          (ii) THE KALDI-FBANK WINDOW: the front-end arguments ARE stamped in full, and \
-         `{GGUF_KEY_FBANK_WINDOW_TYPE}` is `{window}`, but `vokra_ops::kaldi_fbank` \
-         hard-codes the Povey window (Hann^0.85) and exposes no selector, so every feature \
-         would desync. The stamp is what makes this detectable rather than invisible. \
+         `{GGUF_KEY_FBANK_WINDOW_TYPE}` is `{window}`, but the checked \
+         `KaldiFbankWindow` selector exposes Povey and Hamming, not Hanning, so every \
+         feature would desync. The stamp makes this detectable rather than invisible. \
          (iii) NORM ORDER UNRECONCILED: `{GGUF_KEY_LAYER_NORM_FIRST}` is stamped \
          `{lnf}` as a transcribed config value, explicitly NOT as an assertion about where \
          the norms sit; `vokra_ops::vit::ViTEncoder` is pre-norm BY CONSTRUCTION and its own \

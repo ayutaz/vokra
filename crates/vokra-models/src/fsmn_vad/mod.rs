@@ -1,200 +1,147 @@
-//! FSMN-VAD — Feed-forward Sequential Memory Network for voice activity
-//! detection (SoTA plan Phase 5 VAD-2; FunASR family,
-//! `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`, MIT).
+//! Native binding for the released FunASR FSMN-VAD checkpoint.
 //!
-//! # Distinct posture from Silero VAD v5
-//!
-//! Where Silero VAD v5 is a 1:1-preserved dedicated subgraph
-//! (FR-LD-06 — its ONNX `If`-branch topology cannot be lowered cleanly),
-//! FSMN-VAD is a first-class audio-dialect op stack. Its architecture is
-//! a stack of stateless feed-forward + memory blocks over Kaldi fbank +
-//! LFR (Low Frame Rate) + CMVN — a natural fit for graph-level ops.
-//! The numeric forward lives in `vokra-ops::fsmn_vad`; this module is
-//! the model-level veneer (GGUF binding + streaming handle + `VadEngine`
-//! trait impl).
-//!
-//! # Architecture (source of truth: `SPEC.md` in this directory)
-//!
-//! ```text
-//! PCM (16 kHz mono f32)
-//!  -> Kaldi fbank (80-d, 25 ms / 10 ms, Povey window, per-frame DC
-//!                  removal + pre-emphasis 0.97)                 [t_fbank, 80]
-//!  -> LFR frame stacking (lfr_m=5, lfr_n=1)                     [t_lfr, 400]
-//!  -> CMVN (global mean / variance normalisation)               [t_lfr, 400]
-//!  -> FSMN encoder stack (4 blocks × [ffn + memory + residual]) [t_lfr, 128]
-//!  -> output head (Linear(proj_dim -> n_class))                 [t_lfr, 2]
-//!  -> softmax over last axis                                    [t_lfr, 2]
-//! ```
-//!
-//! # Real-weight parity posture
-//!
-//! Real-weight parity against the upstream FunASR Python pipeline is
-//! deferred to owner (`docs/license-audit.md` §3.1 sign-off recorded
-//! 2026-07-30 yousan). This module ships:
-//!
-//! - the exact tensor / hparam contract the future
-//!   `FsmnVadV1::from_gguf` binds against (see [`FsmnVadV1::from_gguf`]);
-//! - synthetic-weight structural tests pinning FR-EX-08 (loud errors on
-//!   every shape / config-mismatch violation);
-//! - a `VadEngine` implementation that carries the FSMN rolling
-//!   histories across chunks (mirror of the Silero VAD v5 API surface
-//!   so the `stream::open_stream` glue in `vokra-core` sees no
-//!   FSMN-vs-Silero asymmetry).
-//!
-//! Kaldi fbank + LFR + CMVN wiring uses the shared
-//! `vokra_ops::kaldi_fbank` op and is scaffolded but does NOT ship a
-//! full streaming pipeline yet (the model wrapper accepts pre-computed
-//! features via [`FsmnVadV1::forward_features`] for consistency across
-//! synthetic + real-weight tests; a full PCM entry-point lands with the
-//! real-weight parity CI once the checkpoint is fetched).
+//! The canonical model is `funasr/fsmn-vad` revision
+//! `df20e6b30c653645fa4ff125cacfcabd1020a669`, mirrored from ModelScope
+//! `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`.  Its frontend is 16 kHz
+//! Kaldi fbank with a Hamming window, five-frame LFR stacking, and the affine
+//! transform stored in `am.mvn`.  The encoder has a 248-pdf head; pdf 0 is
+//! silence, so the public VAD score is `1 - p(pdf=0)`.
 
 use std::sync::Arc;
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{Result, VokraError};
-
 use vokra_ops::{
     FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, KaldiFbankOpts,
-    fsmn_vad_forward, kaldi_fbank, softmax_last_axis,
+    KaldiFbankWindow, fsmn_vad_forward, kaldi_fbank_with_window, softmax_last_axis,
 };
 
 #[cfg(test)]
 mod tests;
 
-/// `vokra.model.arch` value for FSMN-VAD GGUFs — distinct from the
-/// `"silero-vad"` sibling so the model dispatcher picks the right load
-/// path. Silently sharing would misroute the loader.
+/// Canonical GGUF architecture tag.
 pub const ARCH: &str = "fsmn-vad";
-
-/// `vokra.model.name` value for the canonical release
-/// (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`). Callers who ship a
-/// distinct checkpoint override via the converter CLI.
+/// Canonical Vokra model name.
 pub const DEFAULT_NAME: &str = "fsmn-vad-zh-cn-16k-common";
-
-/// `vokra.model.category` — VAD family. Same value the `silero_vad`
-/// module uses (VAD load-path selector reads this rather than `arch`).
+/// Runtime engine category.
 pub const CATEGORY: &str = "vad";
+/// Official Hugging Face mirror.
+pub const UPSTREAM_HF: &str = "funasr/fsmn-vad";
+/// Original ModelScope model identifier.
+pub const UPSTREAM_MODELSCOPE: &str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch";
+/// Pinned model revision.
+pub const UPSTREAM_REVISION: &str = "df20e6b30c653645fa4ff125cacfcabd1020a669";
+/// SHA-256 of the pinned `model.pt`.
+pub const MODEL_SHA256: &str = "b3be75be477f0780277f3bae0fe489f48718f585f3a6e45d7dd1fbb1a4255fc5";
+/// SHA-256 of the pinned `am.mvn`.
+pub const CMVN_SHA256: &str = "df189fd5f4352df84a0fd464eeab4e450a5e645665d6b38f13c832492261a739";
+/// SHA-256 of the pinned `config.yaml`.
+pub const CONFIG_SHA256: &str = "486861ca26ddb79081663b6179cb204c6bfae71c52f04aafc48a9e9d8dde1e93";
 
-/// Upstream HF repository slug (recorded under
-/// `vokra.provenance.upstream_hf`).
-pub const UPSTREAM_HF: &str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch";
-
-// ---- metadata keys (`vokra.fsmn_vad.*`) ----------------------------------
-//
-// Kept as module-level `pub const` (mirror of `wespeaker::KEY_MODEL_CATEGORY`)
-// so the converter can reference the exact strings without a chunks::KEY_*
-// namespace expansion for an arch-scoped field group.
-
-/// Model-category metadata key (`vokra.model.category`). Written by the
-/// converter, read here (round-trip test in the tests submodule).
+/// Model-category metadata key.
 pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-/// Upstream HF slug metadata key (`vokra.provenance.upstream_hf`).
+/// Hugging Face provenance key.
 pub const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+/// ModelScope provenance key.
+pub const KEY_PROVENANCE_UPSTREAM_MODELSCOPE: &str = "vokra.provenance.upstream_modelscope";
+/// Upstream revision provenance key.
+pub const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+/// Checkpoint-hash metadata key.
+pub const KEY_CHECKPOINT_SHA256: &str = "vokra.fsmn_vad.checkpoint_sha256";
+/// CMVN-hash metadata key.
+pub const KEY_CMVN_SHA256: &str = "vokra.fsmn_vad.cmvn_sha256";
+/// Config-hash metadata key.
+pub const KEY_CONFIG_SHA256: &str = "vokra.fsmn_vad.config_sha256";
 
-/// Number of FSMN encoder blocks.
+/// Encoder block-count key.
 pub const KEY_N_BLOCKS: &str = "vokra.fsmn_vad.n_blocks";
-/// LFR-stacked input width (== `lfr_m * n_mels`).
+/// LFR input-width key.
 pub const KEY_INPUT_DIM: &str = "vokra.fsmn_vad.input_dim";
-/// FSMN block projection width.
+/// First input-affine width key.
+pub const KEY_INPUT_AFFINE_DIM: &str = "vokra.fsmn_vad.input_affine_dim";
+/// FSMN block width key.
+pub const KEY_LINEAR_DIM: &str = "vokra.fsmn_vad.linear_dim";
+/// FSMN projection-width key.
 pub const KEY_PROJ_DIM: &str = "vokra.fsmn_vad.proj_dim";
-/// FSMN block hidden (ReLU) width.
-pub const KEY_HIDDEN_DIM: &str = "vokra.fsmn_vad.hidden_dim";
-/// Memory-block left context (past frames).
+/// Left-memory order key.
 pub const KEY_LORDER: &str = "vokra.fsmn_vad.lorder";
-/// Memory-block right context (future frames; 0 for streaming).
+/// Right-memory order key.
 pub const KEY_RORDER: &str = "vokra.fsmn_vad.rorder";
-/// Output class count (2 = [silence, speech]).
-pub const KEY_N_CLASS: &str = "vokra.fsmn_vad.n_class";
-/// Kaldi fbank mel-bin count (per raw frame, pre-LFR).
+/// Left-memory stride key.
+pub const KEY_LSTRIDE: &str = "vokra.fsmn_vad.lstride";
+/// Right-memory stride key.
+pub const KEY_RSTRIDE: &str = "vokra.fsmn_vad.rstride";
+/// First output-affine width key.
+pub const KEY_OUTPUT_AFFINE_DIM: &str = "vokra.fsmn_vad.output_affine_dim";
+/// Posterior-pdf count key.
+pub const KEY_OUTPUT_DIM: &str = "vokra.fsmn_vad.output_dim";
+/// Raw fbank-width key.
 pub const KEY_N_MELS: &str = "vokra.fsmn_vad.n_mels";
-/// LFR stacking window (frames).
+/// LFR window-width key.
 pub const KEY_LFR_M: &str = "vokra.fsmn_vad.lfr_m";
-/// LFR stride (frames).
+/// LFR stride key.
 pub const KEY_LFR_N: &str = "vokra.fsmn_vad.lfr_n";
-/// Sample rate the checkpoint expects (Hz).
+/// Required sample-rate key.
 pub const KEY_SAMPLE_RATE: &str = "vokra.fsmn_vad.sample_rate";
-/// CMVN global mean stats (`Array<F32>` of `input_dim` elements — the
-/// FunASR `am.mvn.mean_stats`). Applied per-column as
-/// `(x - mean) / sqrt(var + eps)` after LFR stacking.
-///
-/// Stored as a `vokra.*` **metadata chunk** (not a tensor) because the
-/// FunASR release ships the CMVN inside a small `am.mvn` transform file,
-/// distinct from the model's `.pt` state-dict; keeping it in metadata
-/// preserves that separation and makes the front-end config
-/// self-describing at file open time (no tensor lookup needed).
-pub const KEY_CMVN_MEAN: &str = "vokra.fsmn_vad.cmvn_mean";
-/// CMVN global variance stats (`Array<F32>` of `input_dim` elements —
-/// the FunASR `am.mvn.var_stats`). See [`KEY_CMVN_MEAN`] for the
-/// storage rationale.
-pub const KEY_CMVN_VAR: &str = "vokra.fsmn_vad.cmvn_var";
-/// Numerical floor added to variance before the reciprocal-square-root
-/// (guard against a zero-variance dim collapsing the front-end).
-pub(crate) const CMVN_EPSILON: f32 = 1e-6;
+/// `am.mvn` AddShift vector key.
+pub const KEY_CMVN_ADD_SHIFT: &str = "vokra.fsmn_vad.cmvn_add_shift";
+/// `am.mvn` Rescale vector key.
+pub const KEY_CMVN_RESCALE: &str = "vokra.fsmn_vad.cmvn_rescale";
 
-// ---- tensor-name convention -----------------------------------------------
-//
-// Rows are `[out, in]` (PyTorch convention); the converter emits under the
-// same names. Deliberate mirror of the upstream FunASR PyTorch parameter
-// naming so `from_gguf` binds against the same identifiers the state-dict
-// exposes.
+/// First input-affine weight name.
+pub const TENSOR_IN_LINEAR1_WEIGHT: &str = "encoder.in_linear1.linear.weight";
+/// First input-affine bias name.
+pub const TENSOR_IN_LINEAR1_BIAS: &str = "encoder.in_linear1.linear.bias";
+/// Second input-affine weight name.
+pub const TENSOR_IN_LINEAR2_WEIGHT: &str = "encoder.in_linear2.linear.weight";
+/// Second input-affine bias name.
+pub const TENSOR_IN_LINEAR2_BIAS: &str = "encoder.in_linear2.linear.bias";
+/// First output-affine weight name.
+pub const TENSOR_OUT_LINEAR1_WEIGHT: &str = "encoder.out_linear1.linear.weight";
+/// First output-affine bias name.
+pub const TENSOR_OUT_LINEAR1_BIAS: &str = "encoder.out_linear1.linear.bias";
+/// Posterior-head weight name.
+pub const TENSOR_OUT_LINEAR2_WEIGHT: &str = "encoder.out_linear2.linear.weight";
+/// Posterior-head bias name.
+pub const TENSOR_OUT_LINEAR2_BIAS: &str = "encoder.out_linear2.linear.bias";
 
-/// Input projection weight `[proj_dim, input_dim]`.
-pub const TENSOR_IN_PROJ_WEIGHT: &str = "encoder.in_linear.weight";
-/// Input projection bias `[proj_dim]`.
-pub const TENSOR_IN_PROJ_BIAS: &str = "encoder.in_linear.bias";
-/// Output head weight `[n_class, proj_dim]`.
-pub const TENSOR_OUT_WEIGHT: &str = "decoder.dec_dense3.weight";
-/// Output head bias `[n_class]`.
-pub const TENSOR_OUT_BIAS: &str = "decoder.dec_dense3.bias";
-
-/// Formats the per-block ffn1 weight tensor name (`encoder.<i>.ffn.linear1.weight`).
-pub fn tensor_ffn1_weight(block_idx: usize) -> String {
-    format!("encoder.{block_idx}.ffn.linear1.weight")
-}
-/// Formats the per-block ffn1 bias tensor name.
-pub fn tensor_ffn1_bias(block_idx: usize) -> String {
-    format!("encoder.{block_idx}.ffn.linear1.bias")
-}
-/// Formats the per-block ffn2 weight tensor name.
-pub fn tensor_ffn2_weight(block_idx: usize) -> String {
-    format!("encoder.{block_idx}.ffn.linear2.weight")
-}
-/// Formats the per-block ffn2 bias tensor name.
-pub fn tensor_ffn2_bias(block_idx: usize) -> String {
-    format!("encoder.{block_idx}.ffn.linear2.bias")
-}
-/// Formats the per-block depthwise memory-conv weight tensor name.
-pub fn tensor_memory_weight(block_idx: usize) -> String {
-    format!("encoder.{block_idx}.memory.conv1.weight")
-}
-/// Formats the per-block depthwise memory-conv bias tensor name.
-pub fn tensor_memory_bias(block_idx: usize) -> String {
-    format!("encoder.{block_idx}.memory.conv1.bias")
+/// Returns one block's projection tensor name.
+pub fn tensor_block_linear_weight(index: usize) -> String {
+    format!("encoder.fsmn.{index}.linear.linear.weight")
 }
 
-/// Full FSMN-VAD checkpoint configuration.
-///
-/// Every field is transcribed from `vokra.fsmn_vad.*` GGUF metadata by
-/// [`FsmnVadV1::from_gguf`]; `0`-sentinels are rejected loudly so a
-/// half-populated GGUF cannot silently load.
+/// Returns one block's causal-memory tensor name.
+pub fn tensor_block_memory_weight(index: usize) -> String {
+    format!("encoder.fsmn.{index}.fsmn_block.conv_left.weight")
+}
+
+/// Returns one block's expansion tensor name.
+pub fn tensor_block_affine_weight(index: usize) -> String {
+    format!("encoder.fsmn.{index}.affine.linear.weight")
+}
+
+/// Returns one block's expansion-bias tensor name.
+pub fn tensor_block_affine_bias(index: usize) -> String {
+    format!("encoder.fsmn.{index}.affine.linear.bias")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Complete frontend and encoder geometry read from GGUF.
 pub struct FsmnVadConfig {
-    /// Encoder-stack geometry (consumed by `vokra_ops::fsmn_vad`).
+    /// Encoder geometry.
     pub encoder: FsmnEncoderConfig,
-    /// Kaldi fbank mel-bin count (per raw frame, pre-LFR).
+    /// Raw Kaldi fbank width.
     pub n_mels: u32,
-    /// LFR stacking window (frames).
+    /// Adjacent raw frames stacked per LFR row.
     pub lfr_m: u32,
-    /// LFR stride (frames).
+    /// Raw-frame stride between LFR rows.
     pub lfr_n: u32,
-    /// Sample rate the checkpoint expects (Hz — upstream: 16 000).
+    /// Required PCM sample rate.
     pub sample_rate: u32,
 }
 
 impl FsmnVadConfig {
-    /// The upstream default (mirror of
-    /// `FsmnEncoderConfig::upstream_default` extended with the fbank +
-    /// LFR axes the model-level wrapper cares about).
+    /// Returns the pinned release geometry.
     pub fn upstream_default() -> Self {
         Self {
             encoder: FsmnEncoderConfig::upstream_default(),
@@ -205,315 +152,251 @@ impl FsmnVadConfig {
         }
     }
 
-    /// Validates the config loudly (FR-EX-08): `0`-sentinels are
-    /// rejected on every hparam, and the LFR-stacked width must match
-    /// the encoder's declared `input_dim`.
+    /// Validates non-zero axes and the LFR input-width invariant.
     pub fn validate(&self) -> Result<()> {
         self.encoder.validate()?;
-        for (label, v) in [
+        for (label, value) in [
             ("n_mels", self.n_mels),
             ("lfr_m", self.lfr_m),
             ("lfr_n", self.lfr_n),
             ("sample_rate", self.sample_rate),
         ] {
-            if v == 0 {
+            if value == 0 {
                 return Err(VokraError::InvalidArgument(format!(
-                    "fsmn-vad config: {label} must be > 0 (got 0 — the GGUF's \
-                     vokra.fsmn_vad.* chunk is missing or malformed)",
+                    "fsmn-vad config: {label} must be > 0"
                 )));
             }
         }
-        let expected_input = (self.lfr_m as usize) * (self.n_mels as usize);
-        if self.encoder.input_dim != expected_input {
+        let expected = self.lfr_m as usize * self.n_mels as usize;
+        if self.encoder.input_dim != expected {
             return Err(VokraError::InvalidArgument(format!(
-                "fsmn-vad config: encoder.input_dim ({}) != lfr_m ({}) * n_mels ({}) = {}",
-                self.encoder.input_dim, self.lfr_m, self.n_mels, expected_input,
+                "fsmn-vad config: input_dim {} != lfr_m {} * n_mels {} = {expected}",
+                self.encoder.input_dim, self.lfr_m, self.n_mels
             )));
         }
         Ok(())
     }
 
-    /// Reads config from `vokra.fsmn_vad.*` metadata in a parsed GGUF.
+    /// Reads every required geometry value from GGUF metadata.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
-        let get_u32 = |k: &str| -> Result<u32> {
-            let v = gguf.get(k).and_then(|v| v.as_u64()).ok_or_else(|| {
-                VokraError::ModelLoad(format!("fsmn-vad GGUF missing required u32 metadata `{k}`"))
-            })?;
-            u32::try_from(v).map_err(|_| {
-                VokraError::ModelLoad(format!(
-                    "fsmn-vad GGUF metadata `{k}` = {v} does not fit in u32"
-                ))
+        let get = |key: &str| -> Result<usize> {
+            let value = gguf
+                .get(key)
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "fsmn-vad GGUF missing required u32 metadata `{key}`"
+                    ))
+                })?;
+            usize::try_from(value).map_err(|_| {
+                VokraError::ModelLoad(format!("fsmn-vad metadata `{key}` is too large"))
             })
         };
-        let n_blocks = get_u32(KEY_N_BLOCKS)? as usize;
-        let input_dim = get_u32(KEY_INPUT_DIM)? as usize;
-        let proj_dim = get_u32(KEY_PROJ_DIM)? as usize;
-        let hidden_dim = get_u32(KEY_HIDDEN_DIM)? as usize;
-        let lorder = get_u32(KEY_LORDER)? as usize;
-        let rorder = get_u32(KEY_RORDER)? as usize;
-        let n_class = get_u32(KEY_N_CLASS)? as usize;
         let cfg = Self {
             encoder: FsmnEncoderConfig {
-                n_blocks,
-                input_dim,
-                proj_dim,
-                hidden_dim,
-                lorder,
-                rorder,
-                n_class,
+                n_blocks: get(KEY_N_BLOCKS)?,
+                input_dim: get(KEY_INPUT_DIM)?,
+                input_affine_dim: get(KEY_INPUT_AFFINE_DIM)?,
+                linear_dim: get(KEY_LINEAR_DIM)?,
+                proj_dim: get(KEY_PROJ_DIM)?,
+                lorder: get(KEY_LORDER)?,
+                rorder: get(KEY_RORDER)?,
+                lstride: get(KEY_LSTRIDE)?,
+                rstride: get(KEY_RSTRIDE)?,
+                output_affine_dim: get(KEY_OUTPUT_AFFINE_DIM)?,
+                output_dim: get(KEY_OUTPUT_DIM)?,
             },
-            n_mels: get_u32(KEY_N_MELS)?,
-            lfr_m: get_u32(KEY_LFR_M)?,
-            lfr_n: get_u32(KEY_LFR_N)?,
-            sample_rate: get_u32(KEY_SAMPLE_RATE)?,
+            n_mels: u32::try_from(get(KEY_N_MELS)?).map_err(|_| {
+                VokraError::ModelLoad(format!("fsmn-vad metadata `{KEY_N_MELS}` is too large"))
+            })?,
+            lfr_m: u32::try_from(get(KEY_LFR_M)?).map_err(|_| {
+                VokraError::ModelLoad(format!("fsmn-vad metadata `{KEY_LFR_M}` is too large"))
+            })?,
+            lfr_n: u32::try_from(get(KEY_LFR_N)?).map_err(|_| {
+                VokraError::ModelLoad(format!("fsmn-vad metadata `{KEY_LFR_N}` is too large"))
+            })?,
+            sample_rate: u32::try_from(get(KEY_SAMPLE_RATE)?).map_err(|_| {
+                VokraError::ModelLoad(format!(
+                    "fsmn-vad metadata `{KEY_SAMPLE_RATE}` is too large"
+                ))
+            })?,
         };
         cfg.validate()
-            .map_err(|e| VokraError::ModelLoad(e.to_string()))?;
+            .map_err(|error| VokraError::ModelLoad(error.to_string()))?;
         Ok(cfg)
     }
 }
 
-/// Loads a required `Array<F32>` metadata chunk into an owned `Vec<f32>`,
-/// enforcing element count + element-type (FR-EX-08 — refuse the load
-/// rather than silently coerce or default). Used by the CMVN
-/// `vokra.fsmn_vad.cmvn_{mean,var}` chunks; kept local to this module
-/// because no other model needs the shape today.
-fn read_f32_array(gguf: &GgufFile, key: &str, expect_len: usize) -> Result<Vec<f32>> {
-    let value = gguf.get(key).ok_or_else(|| {
-        VokraError::ModelLoad(format!(
-            "fsmn-vad GGUF missing required Array<F32> metadata `{key}`",
-        ))
-    })?;
-    let arr = value.as_array().ok_or_else(|| {
-        VokraError::ModelLoad(format!(
-            "fsmn-vad GGUF metadata `{key}` is not an array (expected Array<F32>)",
-        ))
-    })?;
-    if arr.element_type != GgufValueType::F32 {
+fn require_string(gguf: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    let actual = gguf.get(key).and_then(|value| value.as_str());
+    if actual != Some(expected) {
         return Err(VokraError::ModelLoad(format!(
-            "fsmn-vad GGUF metadata `{key}` has element_type {:?}, expected F32",
-            arr.element_type
+            "fsmn-vad: metadata `{key}` is {actual:?}, expected `{expected}`"
         )));
     }
-    if arr.values.len() != expect_len {
-        return Err(VokraError::ModelLoad(format!(
-            "fsmn-vad GGUF metadata `{key}` has {} elements, expected {expect_len}",
-            arr.values.len()
-        )));
-    }
-    let mut out = Vec::with_capacity(expect_len);
-    for (i, v) in arr.values.iter().enumerate() {
-        match v {
-            GgufMetadataValue::F32(x) => out.push(*x),
-            other => {
-                return Err(VokraError::ModelLoad(format!(
-                    "fsmn-vad GGUF metadata `{key}[{i}]` is not F32 (got {:?})",
-                    other.value_type()
-                )));
-            }
-        }
-    }
-    Ok(out)
+    Ok(())
 }
 
-/// Kaldi fbank options for the FunASR FSMN-VAD front-end.
-///
-/// Mirror of the upstream `WavFrontend` config: 25 ms window, 10 ms hop,
-/// per-frame DC removal, pre-emphasis 0.97, Povey window (via `povey()`
-/// inside `kaldi_fbank`), snip-edges framing, power spectrum, Kaldi HTK
-/// mel over the `20`–`Nyquist` Hz band, log magnitude. **CMN is off**
-/// here because the FSMN-VAD front-end normalises with the checkpoint's
-/// global CMVN (mean / var stats stored in the `vokra.fsmn_vad.cmvn_*`
-/// chunks), not per-utterance mean subtraction — leaving both on would
-/// double-subtract and change the distribution the encoder was trained
-/// on.
+fn read_f32_array(gguf: &GgufFile, key: &str, expected: usize) -> Result<Vec<f32>> {
+    let array = gguf
+        .get(key)
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "fsmn-vad GGUF missing required Array<F32> metadata `{key}`"
+            ))
+        })?;
+    if array.element_type != GgufValueType::F32 || array.values.len() != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "fsmn-vad metadata `{key}` must be Array<F32>[{expected}]"
+        )));
+    }
+    array
+        .values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| match value {
+            GgufMetadataValue::F32(value) if value.is_finite() => Ok(*value),
+            _ => Err(VokraError::ModelLoad(format!(
+                "fsmn-vad metadata `{key}[{index}]` is not finite F32"
+            ))),
+        })
+        .collect()
+}
+
 fn fsmn_vad_fbank_opts(sample_rate: u32, num_mel_bins: usize) -> KaldiFbankOpts {
     KaldiFbankOpts {
         sample_rate,
         num_mel_bins,
-        // 25 ms / 10 ms at any sample rate: `(sr * ms) / 1000`, matches
-        // Kaldi `frame_shift_ms=10`, `frame_length_ms=25`.
-        frame_length: ((sample_rate as usize) * 25) / 1000,
-        frame_shift: ((sample_rate as usize) * 10) / 1000,
+        frame_length: sample_rate as usize * 25 / 1000,
+        frame_shift: sample_rate as usize * 10 / 1000,
         remove_dc_offset: true,
         preemph_coeff: 0.97,
         low_freq: 20.0,
         high_freq: 0.0,
         use_power: true,
         use_log: true,
-        // CMVN handles global normalisation; do NOT do per-utterance CMN
-        // here (would double-subtract).
         subtract_mean: false,
         round_to_power_of_two: true,
     }
 }
 
-/// FSMN-VAD model — an immutable shareable weight bundle plus the
-/// config it was bound against.
-///
-/// Load with [`from_gguf`](Self::from_gguf) / [`open`](Self::open), then
-/// obtain a stateful stream through the [`VadEngine`] trait
-/// ([`open_stream`]). All mutable recurrent state lives in the stream
-/// handle (mirror of Silero VAD v5, FR-LD-06).
-///
-/// [`VadEngine`]: vokra_core::engines::VadEngine
-/// [`open_stream`]: vokra_core::engines::VadEngine::open_stream
 #[derive(Debug)]
+/// Immutable, shareable FSMN-VAD model bound from canonical GGUF.
 pub struct FsmnVadV1 {
     cfg: FsmnVadConfig,
     weights: Arc<FsmnVadWeights>,
-    /// CMVN global mean vector (`[input_dim]`, transcribed from the
-    /// `vokra.fsmn_vad.cmvn_mean` metadata chunk). Applied per-column
-    /// after LFR stacking as `(x - mean) / sqrt(var + eps)`.
-    cmvn_mean: Arc<Vec<f32>>,
-    /// CMVN global variance vector (`[input_dim]`, transcribed from the
-    /// `vokra.fsmn_vad.cmvn_var` metadata chunk).
-    cmvn_var: Arc<Vec<f32>>,
+    cmvn_add_shift: Arc<Vec<f32>>,
+    cmvn_rescale: Arc<Vec<f32>>,
 }
 
 impl FsmnVadV1 {
-    /// Binds the model from a parsed GGUF (FR-LD-01).
-    ///
-    /// Returns [`VokraError::ModelLoad`] if any required
-    /// `vokra.fsmn_vad.*` chunk is missing, any documented tensor is
-    /// absent, or any tensor has the wrong shape / dtype (FR-EX-08 —
-    /// no silent reshape).
+    /// Binds a GGUF after validating identity, tensors, and CMVN metadata.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
-        // Verify the arch tag first so the caller does not see a
-        // downstream "missing tensor" when they handed us a silero-vad
-        // GGUF by mistake.
-        match gguf.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
-            Some(a) if a == ARCH => {}
-            Some(other) => {
-                return Err(VokraError::ModelLoad(format!(
-                    "fsmn-vad: GGUF arch is `{other}`, expected `{ARCH}`"
-                )));
-            }
-            None => {
-                return Err(VokraError::ModelLoad(
-                    "fsmn-vad: GGUF is missing `vokra.model.arch` (converter did not stamp it)"
-                        .to_owned(),
-                ));
-            }
-        }
-
+        require_string(gguf, chunks::KEY_MODEL_ARCH, ARCH)?;
+        require_string(gguf, KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF)?;
+        require_string(
+            gguf,
+            KEY_PROVENANCE_UPSTREAM_MODELSCOPE,
+            UPSTREAM_MODELSCOPE,
+        )?;
+        require_string(gguf, KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION)?;
+        require_string(gguf, KEY_CHECKPOINT_SHA256, MODEL_SHA256)?;
+        require_string(gguf, KEY_CMVN_SHA256, CMVN_SHA256)?;
+        require_string(gguf, KEY_CONFIG_SHA256, CONFIG_SHA256)?;
         let cfg = FsmnVadConfig::from_gguf(gguf)?;
 
-        let load_f32 = |name: &str, expect: usize| -> Result<Vec<f32>> {
-            let v = gguf.tensor_f32(name).map_err(|e| {
-                VokraError::ModelLoad(format!("fsmn-vad: tensor `{name}` load failed: {e}"))
+        let load = |name: &str, shape: &[u64]| -> Result<Vec<f32>> {
+            let info = gguf.tensor_info(name).ok_or_else(|| {
+                VokraError::ModelLoad(format!("fsmn-vad: missing tensor `{name}`"))
             })?;
-            if v.len() != expect {
+            if info.dimensions != shape {
                 return Err(VokraError::ModelLoad(format!(
-                    "fsmn-vad: tensor `{name}` has {} elements, expected {expect}",
-                    v.len()
+                    "fsmn-vad: tensor `{name}` has shape {:?}, expected {shape:?}",
+                    info.dimensions
                 )));
             }
-            Ok(v)
+            gguf.tensor_f32(name).map_err(|error| {
+                VokraError::ModelLoad(format!("fsmn-vad: tensor `{name}` load failed: {error}"))
+            })
         };
-
-        let in_proj_weight = load_f32(
-            TENSOR_IN_PROJ_WEIGHT,
-            cfg.encoder.proj_dim * cfg.encoder.input_dim,
-        )?;
-        let in_proj_bias = load_f32(TENSOR_IN_PROJ_BIAS, cfg.encoder.proj_dim)?;
-        let out_weight = load_f32(
-            TENSOR_OUT_WEIGHT,
-            cfg.encoder.n_class * cfg.encoder.proj_dim,
-        )?;
-        let out_bias = load_f32(TENSOR_OUT_BIAS, cfg.encoder.n_class)?;
-
-        let mut blocks = Vec::with_capacity(cfg.encoder.n_blocks);
-        for b in 0..cfg.encoder.n_blocks {
-            let ffn1_weight = load_f32(
-                &tensor_ffn1_weight(b),
-                cfg.encoder.hidden_dim * cfg.encoder.proj_dim,
-            )?;
-            let ffn1_bias = load_f32(&tensor_ffn1_bias(b), cfg.encoder.hidden_dim)?;
-            let ffn2_weight = load_f32(
-                &tensor_ffn2_weight(b),
-                cfg.encoder.proj_dim * cfg.encoder.hidden_dim,
-            )?;
-            let ffn2_bias = load_f32(&tensor_ffn2_bias(b), cfg.encoder.proj_dim)?;
-            let memory_weight = load_f32(
-                &tensor_memory_weight(b),
-                cfg.encoder.proj_dim * cfg.encoder.memory_kernel(),
-            )?;
-            let memory_bias = load_f32(&tensor_memory_bias(b), cfg.encoder.proj_dim)?;
+        let e = &cfg.encoder;
+        let mut blocks = Vec::with_capacity(e.n_blocks);
+        for index in 0..e.n_blocks {
             blocks.push(FsmnBlockWeights {
-                ffn1_weight,
-                ffn1_bias,
-                ffn2_weight,
-                ffn2_bias,
-                memory_weight,
-                memory_bias,
+                linear_weight: load(
+                    &tensor_block_linear_weight(index),
+                    &[e.proj_dim as u64, e.linear_dim as u64],
+                )?,
+                memory_weight: load(
+                    &tensor_block_memory_weight(index),
+                    &[e.proj_dim as u64, 1, e.lorder as u64, 1],
+                )?,
+                affine_weight: load(
+                    &tensor_block_affine_weight(index),
+                    &[e.linear_dim as u64, e.proj_dim as u64],
+                )?,
+                affine_bias: load(&tensor_block_affine_bias(index), &[e.linear_dim as u64])?,
             });
         }
-
         let weights = FsmnVadWeights {
-            in_proj_weight,
-            in_proj_bias,
+            in_linear1_weight: load(
+                TENSOR_IN_LINEAR1_WEIGHT,
+                &[e.input_affine_dim as u64, e.input_dim as u64],
+            )?,
+            in_linear1_bias: load(TENSOR_IN_LINEAR1_BIAS, &[e.input_affine_dim as u64])?,
+            in_linear2_weight: load(
+                TENSOR_IN_LINEAR2_WEIGHT,
+                &[e.linear_dim as u64, e.input_affine_dim as u64],
+            )?,
+            in_linear2_bias: load(TENSOR_IN_LINEAR2_BIAS, &[e.linear_dim as u64])?,
             blocks,
-            out_weight,
-            out_bias,
+            out_linear1_weight: load(
+                TENSOR_OUT_LINEAR1_WEIGHT,
+                &[e.output_affine_dim as u64, e.linear_dim as u64],
+            )?,
+            out_linear1_bias: load(TENSOR_OUT_LINEAR1_BIAS, &[e.output_affine_dim as u64])?,
+            out_linear2_weight: load(
+                TENSOR_OUT_LINEAR2_WEIGHT,
+                &[e.output_dim as u64, e.output_affine_dim as u64],
+            )?,
+            out_linear2_bias: load(TENSOR_OUT_LINEAR2_BIAS, &[e.output_dim as u64])?,
         };
         weights
-            .validate(&cfg.encoder)
-            .map_err(|e| VokraError::ModelLoad(e.to_string()))?;
-
-        // CMVN mean / var are FunASR-standard front-end config; we require
-        // them (FR-EX-08 — no silent identity fallback for a load-bearing
-        // normalisation) but the converter always emits them (identity for
-        // synthetic conversions, per-checkpoint `am.mvn.mean_stats` /
-        // `var_stats` for real releases).
-        let cmvn_mean = read_f32_array(gguf, KEY_CMVN_MEAN, cfg.encoder.input_dim)?;
-        let cmvn_var = read_f32_array(gguf, KEY_CMVN_VAR, cfg.encoder.input_dim)?;
-        for (i, &v) in cmvn_var.iter().enumerate() {
-            if v < 0.0 || !v.is_finite() {
+            .validate(e)
+            .map_err(|error| VokraError::ModelLoad(error.to_string()))?;
+        let cmvn_add_shift = read_f32_array(gguf, KEY_CMVN_ADD_SHIFT, e.input_dim)?;
+        let cmvn_rescale = read_f32_array(gguf, KEY_CMVN_RESCALE, e.input_dim)?;
+        for (index, value) in cmvn_rescale.iter().enumerate() {
+            if *value <= 0.0 {
                 return Err(VokraError::ModelLoad(format!(
-                    "fsmn-vad: {KEY_CMVN_VAR}[{i}] = {v} is not a non-negative finite \
-                     variance (checkpoint's am.mvn.var_stats malformed?)"
+                    "fsmn-vad: `{KEY_CMVN_RESCALE}[{index}]` must be positive"
                 )));
             }
         }
-
         Ok(Self {
             cfg,
             weights: Arc::new(weights),
-            cmvn_mean: Arc::new(cmvn_mean),
-            cmvn_var: Arc::new(cmvn_var),
+            cmvn_add_shift: Arc::new(cmvn_add_shift),
+            cmvn_rescale: Arc::new(cmvn_rescale),
         })
     }
 
-    /// Opens and binds the model from a GGUF file on disk.
+    /// Opens and binds a canonical GGUF file.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let gguf = GgufFile::open(path)?;
-        Self::from_gguf(&gguf)
+        Self::from_gguf(&GgufFile::open(path)?)
     }
 
-    /// Returns the checkpoint's config.
+    /// Returns the bound model geometry.
     pub fn config(&self) -> &FsmnVadConfig {
         &self.cfg
     }
 
-    /// Runs the encoder + softmax on `features` (`[t_lfr, input_dim]`,
-    /// row-major, already LFR-stacked + CMVN-normalised) starting from
-    /// a **fresh zero state** and returns the per-frame probabilities
-    /// (`[t_lfr, n_class]`, row-major).
-    ///
-    /// This is the "one-shot" analogue of Silero VAD v5's
-    /// `forward_chunk`; it does NOT carry any prior context. For
-    /// streaming (state carried across chunks) use
-    /// [`open_stream`](vokra_core::engines::VadEngine::open_stream).
-    ///
-    /// # Errors
-    ///
-    /// [`VokraError::InvalidArgument`] on any shape violation
-    /// (`features.len()` not a multiple of `input_dim`, empty input).
+    /// Runs a fresh-state network forward on normalized LFR features.
     pub fn forward_features(&self, features: &[f32]) -> Result<Vec<f32>> {
         let mut state = FsmnStreamState::zeros(&self.cfg.encoder)?;
         let logits = fsmn_vad_forward(&self.cfg.encoder, &self.weights, features, &mut state)?;
-        Ok(softmax_last_axis(&logits, self.cfg.encoder.n_class))
+        Ok(softmax_last_axis(&logits, self.cfg.encoder.output_dim))
     }
 }
 
@@ -522,182 +405,112 @@ impl vokra_core::engines::VadEngine for FsmnVadV1 {
         Box::new(FsmnVadStream::new(
             self.cfg.clone(),
             Arc::clone(&self.weights),
-            Arc::clone(&self.cmvn_mean),
-            Arc::clone(&self.cmvn_var),
+            Arc::clone(&self.cmvn_add_shift),
+            Arc::clone(&self.cmvn_rescale),
         ))
     }
 }
 
-/// Stateful FSMN-VAD stream: the per-block rolling histories cross
-/// chunks, and the front-end (Kaldi fbank + LFR + CMVN) holds its own
-/// three-layer streaming buffer (raw PCM → fbank frames → LFR frames)
-/// so successive `push_pcm` calls produce the same speech-column probs
-/// as one whole-utterance call would (feature-level chunk invariance;
-/// pinned by `push_pcm_matches_whole_utterance` in the tests).
-///
-/// The features-in entry-point ([`Self::push_features`]) is still
-/// available for parity harnesses that want to inject pre-computed
-/// LFR-stacked + CMVN-normalised features, bypassing the front-end.
+/// Stateful PCM frontend and causal-FSMN stream.
 pub struct FsmnVadStream {
     cfg: FsmnVadConfig,
     weights: Arc<FsmnVadWeights>,
     state: FsmnStreamState,
-    /// CMVN mean vector (shared with the parent model — never mutated).
-    cmvn_mean: Arc<Vec<f32>>,
-    /// CMVN variance vector (shared — never mutated).
-    cmvn_var: Arc<Vec<f32>>,
-    /// Kaldi fbank options built once from `cfg.sample_rate` /
-    /// `cfg.n_mels` so `push_pcm` does not re-derive them per call.
+    cmvn_add_shift: Arc<Vec<f32>>,
+    cmvn_rescale: Arc<Vec<f32>>,
     fbank_opts: KaldiFbankOpts,
-    /// Rolling raw-PCM tail: samples the front-end has not yet consumed
-    /// into a complete fbank frame. Snip-edges framing means the last
-    /// `frame_length - frame_shift` samples of any pending window stay
-    /// here until the next call closes a frame.
     pending_pcm: Vec<f32>,
-    /// Rolling fbank-frame tail: `n_mels`-wide rows the LFR stack has
-    /// not yet consumed into a complete LFR feature. Length is always
-    /// a multiple of `n_mels`.
     pending_frames: Vec<f32>,
+    lfr_initialized: bool,
 }
 
 impl FsmnVadStream {
     fn new(
         cfg: FsmnVadConfig,
         weights: Arc<FsmnVadWeights>,
-        cmvn_mean: Arc<Vec<f32>>,
-        cmvn_var: Arc<Vec<f32>>,
+        cmvn_add_shift: Arc<Vec<f32>>,
+        cmvn_rescale: Arc<Vec<f32>>,
     ) -> Self {
-        let state = FsmnStreamState::zeros(&cfg.encoder)
-            .expect("cfg was validated at FsmnVadV1::from_gguf time");
+        let state = FsmnStreamState::zeros(&cfg.encoder).expect("validated FSMN config");
         let fbank_opts = fsmn_vad_fbank_opts(cfg.sample_rate, cfg.n_mels as usize);
         Self {
             cfg,
             weights,
             state,
-            cmvn_mean,
-            cmvn_var,
+            cmvn_add_shift,
+            cmvn_rescale,
             fbank_opts,
             pending_pcm: Vec::new(),
             pending_frames: Vec::new(),
+            lfr_initialized: false,
         }
     }
 
-    /// Pushes LFR-stacked + CMVN-normalised features (`[n_frames,
-    /// input_dim]`, row-major) and returns the per-frame speech-class
-    /// probabilities (index 1 of the softmax output — the "speech"
-    /// column by upstream convention).
-    ///
-    /// State (per-block rolling histories) is carried across calls, so
-    /// splitting the same features across multiple `push_features`
-    /// calls is bit-identical to one whole-utterance call — the
-    /// FSMN-streaming contract (verified by
-    /// `vokra_ops::fsmn_vad::tests::state_carry_matches_single_chunk`).
-    ///
-    /// The [`vokra_core::engines::VadStreamHandle::push_pcm`] implementation goes through
-    /// this method after the front-end (kaldi fbank + LFR + CMVN)
-    /// produces LFR features; parity harnesses that pre-compute the
-    /// features can bypass the front-end by calling here directly.
+    /// Runs normalized LFR features and returns `1 - p(silence)` per row.
     pub fn push_features(&mut self, features: &[f32]) -> Result<Vec<f32>> {
         let logits = fsmn_vad_forward(&self.cfg.encoder, &self.weights, features, &mut self.state)?;
-        let probs = softmax_last_axis(&logits, self.cfg.encoder.n_class);
-        // The "speech" class is index 1 by upstream convention
-        // (n_class=2: [silence, speech]).
-        let n_frames = probs.len() / self.cfg.encoder.n_class;
-        let speech_col = 1usize.min(self.cfg.encoder.n_class - 1);
-        let mut out = Vec::with_capacity(n_frames);
-        for f in 0..n_frames {
-            out.push(probs[f * self.cfg.encoder.n_class + speech_col]);
-        }
-        Ok(out)
+        let width = self.cfg.encoder.output_dim;
+        let probabilities = softmax_last_axis(&logits, width);
+        Ok(probabilities
+            .chunks_exact(width)
+            .map(|row| 1.0 - row[0])
+            .collect())
     }
 
-    /// Consumes as many complete fbank frames as `pending_pcm` allows
-    /// (snip-edges framing: a frame must fit entirely) and appends them
-    /// to `pending_frames`. Returns the number of new fbank frames
-    /// appended (0 if the buffer is still too short).
-    fn drain_pcm_into_frames(&mut self) -> Result<usize> {
-        let flen = self.fbank_opts.frame_length;
-        let fshift = self.fbank_opts.frame_shift;
-        if self.pending_pcm.len() < flen || fshift == 0 {
-            return Ok(0);
+    fn drain_pcm_into_frames(&mut self) -> Result<()> {
+        let frame_length = self.fbank_opts.frame_length;
+        if self.pending_pcm.len() < frame_length {
+            return Ok(());
         }
-        let (feats, n_new) = kaldi_fbank(&self.pending_pcm, &self.fbank_opts)?;
-        if n_new == 0 {
-            return Ok(0);
+        // FunASR's WavFrontend converts normalized PCM back to the Kaldi
+        // 16-bit amplitude domain before calling torchaudio's fbank.
+        let scaled = self
+            .pending_pcm
+            .iter()
+            .map(|sample| sample * 32768.0)
+            .collect::<Vec<_>>();
+        let (features, frames) =
+            kaldi_fbank_with_window(&scaled, &self.fbank_opts, KaldiFbankWindow::Hamming)?;
+        if frames == 0 {
+            return Ok(());
         }
-        self.pending_frames.extend_from_slice(&feats);
-        // Consume `n_new * fshift` samples from the front; the last
-        // `frame_overlap` samples of the final frame stay for the next
-        // frame that will start `fshift` samples ahead of it. This is
-        // the standing snip-edges streaming contract.
-        let consumed = n_new
-            .checked_mul(fshift)
-            .ok_or_else(|| {
-                VokraError::InvalidArgument("fsmn-vad: pcm consumption overflow".into())
-            })?
-            .min(self.pending_pcm.len());
+        let n_mels = self.cfg.n_mels as usize;
+        if !self.lfr_initialized {
+            let left_padding = (self.cfg.lfr_m as usize - 1) / 2;
+            for _ in 0..left_padding {
+                self.pending_frames.extend_from_slice(&features[..n_mels]);
+            }
+            self.lfr_initialized = true;
+        }
+        self.pending_frames.extend_from_slice(&features);
+        let consumed = frames
+            .checked_mul(self.fbank_opts.frame_shift)
+            .ok_or_else(|| VokraError::InvalidArgument("fsmn-vad PCM overflow".to_owned()))?;
         self.pending_pcm.drain(..consumed);
-        Ok(n_new)
+        Ok(())
     }
 
-    /// Consumes as many complete LFR features as `pending_frames`
-    /// allows (`lfr_m` frames × `n_mels` cols, stride `lfr_n`). Returns
-    /// the row-major flat buffer of new LFR features — length is
-    /// `n_new * input_dim`.
     fn drain_frames_into_lfr(&mut self) -> Vec<f32> {
         let n_mels = self.cfg.n_mels as usize;
         let lfr_m = self.cfg.lfr_m as usize;
         let lfr_n = self.cfg.lfr_n as usize;
-        let input_dim = self.cfg.encoder.input_dim;
-        let mut out: Vec<f32> = Vec::new();
-        loop {
-            let have_frames = self.pending_frames.len() / n_mels;
-            if have_frames < lfr_m {
-                break;
-            }
-            // Stack the leading `lfr_m` frames row-by-row: identical
-            // memory layout as concatenating the `lfr_m` `n_mels`-wide
-            // rows, because `pending_frames` is already row-major.
-            let take = lfr_m * n_mels;
-            debug_assert_eq!(take, input_dim);
-            out.extend_from_slice(&self.pending_frames[..take]);
-            // Stride forward by `lfr_n` frames (== `lfr_n * n_mels`
-            // elements). If `lfr_n == 0` we would loop forever; the
-            // config validator refuses that at load time.
-            let drop = lfr_n
-                .checked_mul(n_mels)
-                .expect("lfr_n * n_mels fits usize (validated at load)")
-                .min(self.pending_frames.len());
-            self.pending_frames.drain(..drop);
+        let mut output = Vec::new();
+        while self.pending_frames.len() / n_mels >= lfr_m {
+            output.extend_from_slice(&self.pending_frames[..lfr_m * n_mels]);
+            self.pending_frames.drain(..lfr_n * n_mels);
         }
-        out
+        output
     }
 
-    /// Applies CMVN in place: `(x - mean) / sqrt(var + eps)` per column,
-    /// row-major over `[n_new, input_dim]`. `mean` / `var` are the
-    /// `[input_dim]`-wide CMVN vectors loaded from the GGUF chunks.
-    fn apply_cmvn_in_place(&self, features: &mut [f32]) {
-        let input_dim = self.cfg.encoder.input_dim;
-        if features.is_empty() || input_dim == 0 {
-            return;
-        }
-        debug_assert_eq!(self.cmvn_mean.len(), input_dim);
-        debug_assert_eq!(self.cmvn_var.len(), input_dim);
-        // Precompute inv_std once per column (constant across all
-        // frames — pulling it out of the inner loop is both faster and
-        // clearer than recomputing per element).
-        let inv_std: Vec<f32> = self
-            .cmvn_var
-            .iter()
-            .map(|v| 1.0 / (v + CMVN_EPSILON).sqrt())
-            .collect();
-        for row in features.chunks_exact_mut(input_dim) {
-            for ((r, &m), &s) in row
+    fn apply_cmvn(&self, features: &mut [f32]) {
+        let width = self.cfg.encoder.input_dim;
+        for row in features.chunks_exact_mut(width) {
+            for ((value, shift), scale) in row
                 .iter_mut()
-                .zip(self.cmvn_mean.iter())
-                .zip(inv_std.iter())
+                .zip(self.cmvn_add_shift.iter())
+                .zip(self.cmvn_rescale.iter())
             {
-                *r = (*r - m) * s;
+                *value = (*value + shift) * scale;
             }
         }
     }
@@ -705,35 +518,26 @@ impl FsmnVadStream {
 
 impl vokra_core::engines::VadStreamHandle for FsmnVadStream {
     fn push_pcm(&mut self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
-        // Sample rate is a load-bearing invariant of the CMVN stats
-        // (they were fit against a specific rate); refuse mismatched
-        // rates loudly rather than resampling silently (FR-EX-08).
         if sample_rate != self.cfg.sample_rate {
             return Err(VokraError::InvalidArgument(format!(
-                "fsmn-vad: sample rate mismatch — pushed {sample_rate} Hz but the model / \
-                 CMVN stats were fit for {} Hz (resample upstream, or open a stream on the \
-                 matching rate)",
+                "fsmn-vad: sample rate mismatch: got {sample_rate}, expected {}",
                 self.cfg.sample_rate
             )));
         }
-
-        // Front-end pipeline: PCM → fbank (snip-edges streaming) → LFR
-        // stacking (streaming) → CMVN → FSMN forward. Every stage
-        // buffers its remainder so successive calls produce the same
-        // probabilities a single whole-utterance call would.
         self.pending_pcm.extend_from_slice(pcm);
         self.drain_pcm_into_frames()?;
-        let mut lfr = self.drain_frames_into_lfr();
-        if lfr.is_empty() {
+        let mut features = self.drain_frames_into_lfr();
+        if features.is_empty() {
             return Ok(Vec::new());
         }
-        self.apply_cmvn_in_place(&mut lfr);
-        self.push_features(&lfr)
+        self.apply_cmvn(&mut features);
+        self.push_features(&features)
     }
 
     fn reset(&mut self) {
         self.state.reset();
         self.pending_pcm.clear();
         self.pending_frames.clear();
+        self.lfr_initialized = false;
     }
 }

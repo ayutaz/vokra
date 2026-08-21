@@ -523,7 +523,7 @@ pub use hifigan::{
 // -------------------------------------------------------------------------
 pub use istft::istft;
 pub use istft_streaming::{IstftStreamingState, istft_streaming_oneshot};
-pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
+pub use kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank_with_window};
 pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;

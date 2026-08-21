@@ -374,6 +374,24 @@ tools/parity/THIRD_PARTY_LICENSES/ten-vad-LICENSE.txt and
 tools/parity/THIRD_PARTY_LICENSES/ten-vad-NOTICES.txt.
 
 --------------------------------------------------------------------------
+14. FunASR FSMN-VAD — MIT code notice
+--------------------------------------------------------------------------
+Vokra's native FSMN-VAD encoder and online frontend follow the released
+FunASR implementation pinned at commit
+3c58cb56a56598232c3efffa15d313d7e82a4307.
+
+  FunASR
+  Copyright (c) 2025 FunASR
+  Licensed under the MIT License.
+  Source: https://github.com/modelscope/FunASR
+
+The complete MIT text is reproduced in
+crates/vokra-ops/THIRD_PARTY_LICENSES/funasr-LICENSE.txt. The official
+`funasr/fsmn-vad` checkpoint is separately licensed Apache-2.0; code and
+weight provenance are not conflated. No official weight is bundled in this
+repository.
+
+--------------------------------------------------------------------------
 9. Maintaining this file
 --------------------------------------------------------------------------
 

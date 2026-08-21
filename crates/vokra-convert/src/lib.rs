@@ -11453,18 +11453,13 @@ pub fn convert_file_licensed(
         }
         // === FsmnVad (SoTA plan Phase 5 VAD-2, 2026-07-30) ===
         ModelKind::FsmnVad => {
-            // FSMN-VAD converter — full hparam chunk stamp + verbatim
-            // float pass-through (F32 / F16 / BF16). Every hparam axis
-            // is a compile-time constant transcribed from the released
-            // FunASR checkpoint; a future non-default variant would
-            // introduce a --config side-car (owner follow-up).
+            // Strict prepared bundle: 24 official weights plus the real
+            // AddShift/Rescale vectors extracted from the pinned am.mvn.
             let report = models::fsmn_vad::convert_fsmn_vad_file(input, output, license)?;
             let notes = vec![format!(
-                "fsmn-vad: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped; vokra.fsmn_vad.* hparam chunk group stamped \
-                 (n_blocks=4, input_dim=400, proj_dim=128, hidden_dim=128, lorder=20, \
-                 rorder=0, n_class=2, n_mels=80, lfr_m=5, lfr_n=1, sample_rate=16000)",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "fsmn-vad: {} prepared tensors read, {} official F32 weights written; \
+                 real CMVN AddShift/Rescale and canonical 4×FSMN/248-pdf geometry stamped",
+                report.read, report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::FsmnVad,

@@ -1900,9 +1900,9 @@ pub mod canary_1b_flash;
 // whose modality-specific parameters live under a `modality_encoders.*` tree),
 // so this PCM-in surface has no manifest to reach for and will not guess one;
 // (ii) THE KALDI-FBANK WINDOW: the front-end arguments ARE stamped in full and
-// `vokra.eat.fbank_window_type` is `hanning`, but `vokra_ops::kaldi_fbank`
-// hard-codes the Povey window and exposes no selector, so every feature would
-// desync — the stamp is what makes this detectable rather than invisible;
+// `vokra.eat.fbank_window_type` is `hanning`, but the checked
+// `KaldiFbankWindow` selector currently exposes Povey and Hamming, not
+// Hanning, so every feature would desync — the stamp makes this detectable;
 // (iii) NORM ORDER UNRECONCILED: `vokra.eat.layer_norm_first` is stamped as a
 // transcribed config value, explicitly NOT as an assertion about where the
 // norms sit, while `vokra_ops::vit::ViTEncoder` is pre-norm BY CONSTRUCTION.
