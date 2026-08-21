@@ -9,8 +9,7 @@
 //!
 //! Mirror of `crates/vokra-convert/tests/roundtrip.rs` (M0-03-T17) — no
 //! large real checkpoint is committed. Full real-weight parity against
-//! Xiph's reference C forward is the owner deliverable
-//! (`docs/license-audit.md` §3.1 sign-off queue for RNNoise v0.2).
+//! Xiph's reference C forward lives in the separately gated model test.
 
 use std::path::PathBuf;
 
@@ -33,33 +32,63 @@ fn tmp_path(tag: &str) -> PathBuf {
     p
 }
 
-/// Builds a synthetic RNNoise-shaped safetensors buffer: a small F32
-/// `input_dense.kernel` and a smaller F32 `vad_output.bias`. Tensor names
-/// track the RNNoise topology documented in
-/// `github.com/xiph/rnnoise/blob/main/src/denoise.c` so a downstream
-/// reader can eyeball the round-trip as "recognisably RNNoise-shaped";
-/// the actual per-layer axes / dtype (int8 quantized in the real Xiph
-/// release) are the owner deliverable.
+fn canonical_manifest() -> Vec<(String, usize)> {
+    let mut tensors = vec![
+        ("conv1_weights_float".to_owned(), 24_960),
+        ("conv1_bias".to_owned(), 128),
+        ("conv2_weights_int8".to_owned(), 147_456),
+        ("conv2_scale".to_owned(), 384),
+        ("conv2_bias".to_owned(), 384),
+    ];
+    for layer in 1..=3 {
+        for part in ["input", "recurrent"] {
+            let prefix = format!("gru{layer}_{part}");
+            tensors.push((format!("{prefix}_weights_int8"), 147_456));
+            tensors.push((format!("{prefix}_weights_idx"), 4_752));
+            tensors.push((format!("{prefix}_scale"), 1_152));
+            tensors.push((format!("{prefix}_bias"), 1_152));
+            if part == "recurrent" {
+                tensors.push((format!("{prefix}_weights_diag"), 1_152));
+            }
+        }
+    }
+    tensors.extend([
+        ("dense_out_weights_float".to_owned(), 12_288),
+        ("dense_out_bias".to_owned(), 32),
+        ("vad_dense_weights_float".to_owned(), 384),
+        ("vad_dense_bias".to_owned(), 1),
+    ]);
+    assert_eq!(tensors.len(), 36);
+    tensors
+}
+
+/// Builds the complete canonical 36-array RNNoise safetensors contract with
+/// two non-zero payload anchors. The converter must reject the old two-tensor
+/// scaffold instead of accepting a structurally meaningless artifact.
 fn synthetic_rnnoise_safetensors() -> Vec<u8> {
-    // Non-zero payloads so a silent widen / drop regression falls out
-    // rather than trivially round-tripping a zero buffer. Six + two
-    // values keeps the total payload at 32 bytes.
-    let kernel: Vec<u8> = [1.0f32, -2.0, 3.5, -0.25, 100.0, 0.001]
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect();
-    assert_eq!(kernel.len(), 24, "6 elements × 4 bytes F32 payload");
-    let bias: Vec<u8> = [-42.0f32, 7.5]
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect();
-    assert_eq!(bias.len(), 8, "2 elements × 4 bytes F32 payload");
-    let header = r#"{"input_dense.kernel":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},"vad_output.bias":{"dtype":"F32","shape":[2],"data_offsets":[24,32]}}"#;
+    let mut entries = Vec::new();
+    let mut payload = Vec::new();
+    for (name, count) in canonical_manifest() {
+        let start = payload.len();
+        let end = start + count * 4;
+        payload.resize(end, 0);
+        if name == "conv1_weights_float" {
+            for (index, value) in [1.0f32, -2.0, 3.5].iter().enumerate() {
+                payload[start + index * 4..start + (index + 1) * 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+        } else if name == "vad_dense_bias" {
+            payload[start..end].copy_from_slice(&7.5f32.to_le_bytes());
+        }
+        entries.push(format!(
+            "\"{name}\":{{\"dtype\":\"F32\",\"shape\":[{count}],\"data_offsets\":[{start},{end}]}}"
+        ));
+    }
+    let header = format!("{{{}}}", entries.join(","));
     let mut buf = Vec::new();
     buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
     buf.extend_from_slice(header.as_bytes());
-    buf.extend_from_slice(&kernel);
-    buf.extend_from_slice(&bias);
+    buf.extend_from_slice(&payload);
     buf
 }
 
@@ -72,7 +101,7 @@ fn rnnoise_safetensors_roundtrips_through_convert_file_dispatch() {
     let summary: ConvertSummary =
         convert_file(ModelKind::Rnnoise, &input, &output).expect("convert");
     assert_eq!(summary.model, ModelKind::Rnnoise);
-    assert_eq!(summary.tensor_count, 2, "both float tensors must land");
+    assert_eq!(summary.tensor_count, 36, "all canonical arrays must land");
     assert!(
         summary.output_bytes > 0,
         "output GGUF must be non-empty on disk"
@@ -86,11 +115,12 @@ fn rnnoise_safetensors_roundtrips_through_convert_file_dispatch() {
     let file = GgufFile::open(&output).expect("load output gguf");
     assert_eq!(
         file.tensors().len(),
-        2,
-        "both synthetic tensors survive the round-trip"
+        36,
+        "the complete canonical manifest survives the round-trip"
     );
-    assert!(file.tensor_info("input_dense.kernel").is_some());
-    assert!(file.tensor_info("vad_output.bias").is_some());
+    assert!(file.tensor_info("conv1_weights_float").is_some());
+    assert!(file.tensor_info("gru3_recurrent_weights_diag").is_some());
+    assert!(file.tensor_info("vad_dense_bias").is_some());
 
     // Arch + name + category — the three axes downstream tooling
     // (publish-one.sh / make_model_card.py / zoo manifest) reads.
@@ -149,22 +179,19 @@ fn rnnoise_safetensors_roundtrips_through_convert_file_dispatch() {
 
     // Byte-identical payload survival — a silent widen / re-quantize
     // would flip these payloads.
-    let expected_kernel: Vec<u8> = [1.0f32, -2.0, 3.5, -0.25, 100.0, 0.001]
+    let expected_kernel_prefix: Vec<u8> = [1.0f32, -2.0, 3.5]
         .iter()
         .flat_map(|f| f.to_le_bytes())
         .collect();
-    let expected_bias: Vec<u8> = [-42.0f32, 7.5]
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect();
+    let kernel = file.tensor_data("conv1_weights_float").unwrap();
     assert_eq!(
-        file.tensor_data("input_dense.kernel").unwrap(),
-        expected_kernel.as_slice(),
-        "F32 kernel payload must be byte-identical to input"
+        &kernel[..expected_kernel_prefix.len()],
+        expected_kernel_prefix.as_slice(),
+        "F32 kernel prefix must be byte-identical to input"
     );
     assert_eq!(
-        file.tensor_data("vad_output.bias").unwrap(),
-        expected_bias.as_slice(),
+        file.tensor_data("vad_dense_bias").unwrap(),
+        7.5f32.to_le_bytes().as_slice(),
         "F32 bias payload must be byte-identical to input"
     );
 
