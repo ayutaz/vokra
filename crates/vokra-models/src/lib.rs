@@ -50,14 +50,12 @@
 //     pure host-side algorithm — Viterbi over the standard CTC extended
 //     sequence — with no external weights. Emits `Vec<AlignedToken>` for
 //     word / sub-word / character granularity uniformly.
-//   * `align::charsiu` — Wav2Vec2-based neural forced aligner (real
-//     forward, 2026-07-30). Runs the raw-waveform stem
-//     (`vokra_ops::waveform_frontend`) → feature projection → n_layer
-//     pre-norm Transformer encoder → CTC head → log-softmax →
-//     `ctc_segmentation` end-to-end. Real weights bind via
-//     `Charsiu::new(CharsiuConfig, CharsiuWeights)`; the real-GGUF
-//     binder (`from_gguf`) is a follow-up wave gated on the upstream
-//     tensor-name manifest (T29-equivalent). License = MIT (permissive).
+//   * `align::charsiu` — canonical `charsiu/en_w2v2_fc_10ms` GGUF loader
+//     and real Wav2Vec2 frame-classification forward: waveform stem →
+//     feature projection → grouped positional convolution → post-norm
+//     Transformer → 42-phone head → upstream long-silence mask + monotone
+//     DTW. The binder verifies pinned revision/checkpoint SHA, metadata,
+//     vocabulary and every tensor shape. License = MIT (permissive).
 pub mod aec;
 pub mod align;
 pub mod canary;

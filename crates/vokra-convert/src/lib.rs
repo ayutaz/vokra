@@ -1476,6 +1476,15 @@ pub enum ModelKind {
     /// not parse — the same offline-prepare split as DAC / Kokoro /
     /// UTMOS). Weight license = **MIT**.
     Crepe,
+    /// **Charsiu English 10 ms forced aligner**
+    /// (`charsiu/en_w2v2_fc_10ms`). The canonical wav2vec2-base-derived
+    /// frame classifier uses a 160-sample feature stride, grouped positional
+    /// convolution, 12 post-norm Transformer layers, and the official
+    /// 42-entry ARPAbet inventory. The converter accepts only the exact
+    /// canonical manifest, folds the positional-conv weight norm, and stamps
+    /// every runtime axis plus the vocabulary. Code/weight posture is MIT per
+    /// `docs/license-audit.md` §3.1 (owner sign-off 2026-07-30).
+    Charsiu,
     /// **pyannote/segmentation-3.0** (Bredin, CNRS — 2026-07-30
     /// license half unblock, `docs/license-audit.md` §3.1 row 263).
     /// Category = `vad`. PyanNet voice-activity-detection /
@@ -4688,6 +4697,10 @@ impl ModelKind {
             // .h5 files), and the upstream GitHub coordinate.
             "crepe" | "crepe-tiny" | "crepe-small" | "crepe-medium" | "crepe-large"
             | "crepe-full" | "marl/crepe" => Some(Self::Crepe),
+            "charsiu"
+            | "charsiu-en"
+            | "en-w2v2-fc-10ms"
+            | "charsiu/en_w2v2_fc_10ms" => Some(Self::Charsiu),
             // pyannote/segmentation-3.0 (VAD / speaker-segmentation
             // backbone, 2026-07-30 license half unblock). Accept the
             // arch tag underscore + hyphen variants, the short forms
@@ -6024,6 +6037,7 @@ impl ModelKind {
             Self::Emotion2vec => "emotion2vec",
             Self::Rmvpe => "rmvpe",
             Self::Crepe => "crepe",
+            Self::Charsiu => "charsiu",
             Self::PyannoteSegmentation => "pyannote-segmentation",
             Self::PyannoteSpeakerDiarization31 => "pyannote-speaker-diarization-3.1",
             Self::Ast => "ast",
@@ -9061,6 +9075,16 @@ pub fn convert_file_licensed(
                  use convert_crepe_file"
                     .to_owned(),
             ));
+        }
+        ModelKind::Charsiu => {
+            let (builder, report) = models::charsiu::convert(bytes)?;
+            let notes = vec![format!(
+                "charsiu: {} runtime tensor(s) emitted from {} canonical upstream tensor(s); \
+                 training-only masked_spec_embed consumed but omitted; 10 ms Wav2Vec2 position \
+                 convolution weight norm folded; official 42-phone vocabulary embedded",
+                report.emitted, report.consumed,
+            )];
+            (builder, notes)
         }
         ModelKind::PyannoteSegmentation => {
             // 2026-07-30 license half unblock (docs/license-audit.md §3.1
@@ -14813,6 +14837,9 @@ mod modelkind_alias_and_roundtrip_tests {
             // spelling in `as_arg` fails loudly (same rationale as the
             // Phase 2-5 additions above).
             Fcpe,
+            // Runtime-gap Wave 3 (2026-08-21): canonical Charsiu English
+            // 10 ms forced-aligner converter and strict GGUF binder.
+            Charsiu,
             // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD —
             // first-class audio-dialect op posture (distinct from Silero
             // VAD v5's FR-LD-06 1:1 subgraph). Every hparam axis is

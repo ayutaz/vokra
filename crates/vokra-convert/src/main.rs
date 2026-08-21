@@ -1,7 +1,7 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise|dia|zonos|kyutai-stt>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise|dia|zonos|kyutai-stt|charsiu>
 //!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
@@ -29,7 +29,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -50,6 +50,10 @@ OPTIONS:
                        config.json), csm (Sesame CSM-1B safetensors),
                        moshi (Kyutai Moshi safetensors), dia (nari-labs
                        Dia-1.6B safetensors — SoTA plan Phase 1-4),
+                       charsiu (`charsiu/en_w2v2_fc_10ms` safetensors —
+                       English Wav2Vec2 frame classifier for phone-level
+                       forced alignment; converter verifies the canonical
+                       tensor manifest and folds positional-conv weight norm),
                        zonos (Zyphra Zonos-v0.1-transformer safetensors —
                        SoTA plan Phase 1-5), kyutai-stt (Kyutai
                        STT-2.6B-EN decoder-only English streaming ASR
@@ -2172,6 +2176,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // triple as the Phase 5 fleet + RMVPE sibling; grouped here so
         // the verify surface stays a shape-lookup.
         | ModelKind::Crepe
+        | ModelKind::Charsiu
         // 2026-07-30 license half unblock: pyannote/segmentation-3.0
         // (VAD backbone) emits the same `vokra.model.*` +
         // `vokra.provenance.*` triple + additional `vokra.pyannote.*`

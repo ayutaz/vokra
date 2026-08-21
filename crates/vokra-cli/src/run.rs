@@ -38,6 +38,8 @@ USAGE:
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
     vokra-cli run --model <fcpe.gguf> --input <in.wav>
     vokra-cli run --model <crepe.gguf> --input <in.wav>
+    vokra-cli run --model <charsiu.gguf> --input <in.wav> --text \"P AE T\" \
+                  [--output <alignment.tsv>]
     vokra-cli run --model <wetextprocessing.gguf> --text <string>
     vokra-cli run --model <nkf-aec.gguf> --input <mic.wav> --far-end <reference.wav> \
                   [--output <clean.wav>]
@@ -87,6 +89,11 @@ OPTIONS:
                                 ids only, sentinels are added). Kokoro has no
                                 G2P bridge in-tree, so unmappable input is an
                                 error rather than a silent drop.
+                                For Charsiu this is an exact, whitespace-
+                                delimited sequence from the GGUF's official
+                                phone vocabulary (for example `SH IY`); no G2P,
+                                case folding, or unknown-token substitution is
+                                inferred.
     --voice <name>              kokoro only: voice name from the GGUF's
                                 vokra.kokoro.voice_names. The name resolves,
                                 but mapping it to a style row is NOT
@@ -100,7 +107,8 @@ OPTIONS:
                                 precedence over --voice.
     --length-scale <s>          kokoro only: duration multiplier (reciprocal
                                 of upstream `speed`) [default 1.0]
-    --output <path>             WAV file for audio-producing tasks. CT-Punc
+    --output <path>             WAV file for audio-producing tasks. Charsiu
+                                writes alignment TSV; CT-Punc
                                 writes exact UTF-8 restored text when present.
                                 Mimi requires it: code container for encode,
                                 WAV for decode.
@@ -580,6 +588,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
         ModelTask::F0Fcpe => Some("FCPE F0 (pitch) extraction"),
         ModelTask::F0Crepe => Some("CREPE F0 (pitch) extraction"),
+        ModelTask::AlignCharsiu => Some("Charsiu forced alignment"),
         ModelTask::TextNormalize => Some("WeTextProcessing normalization"),
         ModelTask::AecNkf => Some("NKF acoustic echo cancellation"),
         ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
@@ -856,6 +865,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::F0Crepe => {
             run_f0_crepe(&a)?;
+        }
+        ModelTask::AlignCharsiu => {
+            run_charsiu_align(&session, &a)?;
         }
         ModelTask::TextNormalize => {
             run_text_normalize(&session, &a)?;
@@ -1431,6 +1443,66 @@ fn run_f0_crepe(a: &RunArgs) -> Result<(), String> {
         .extract_real(&clip.samples, clip.sample_rate)
         .map_err(|e| e.to_string())?;
     emit_f0_track(&track, model.config().hop, NATIVE_SAMPLE_RATE);
+    Ok(())
+}
+
+/// Charsiu's paired audio/phone-sequence route.
+///
+/// The phone transcript is deliberately accepted only as exact, whitespace-
+/// delimited labels from the GGUF vocabulary.  G2P, case folding and unknown
+/// substitution would all change the alignment contract, so they remain
+/// explicit caller-side steps.
+fn run_charsiu_align(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (charsiu): --input <in.wav> is required")?;
+    let phone_text = a
+        .text
+        .as_deref()
+        .ok_or("run (charsiu): --text \"P AE T\" is required")?;
+    let phones: Vec<String> = phone_text
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect();
+    if phones.is_empty() {
+        return Err("run (charsiu): --text must contain at least one phone label".to_owned());
+    }
+
+    let model = vokra_models::align::charsiu::Charsiu::from_file(session.gguf())
+        .map_err(|e| e.to_string())?;
+    let clip = wav::read_wav(path)?;
+    let expected_rate = model.config().sample_rate;
+    if clip.sample_rate != expected_rate {
+        return Err(format!(
+            "run (charsiu): {path}: expected a {expected_rate} Hz mono WAV, got {} Hz — \
+             resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let aligned = model
+        .align(&clip.samples, clip.sample_rate, &phones)
+        .map_err(|e| e.to_string())?;
+
+    let mut tsv =
+        String::from("vokra-charsiu-alignment-tsv-v1\nphone\tstart_sec\tend_sec\tconfidence\n");
+    for token in &aligned {
+        use std::fmt::Write as _;
+        writeln!(
+            tsv,
+            "{}\t{:.6}\t{:.6}\t{:.6}",
+            token.text, token.start_sec, token.end_sec, token.confidence
+        )
+        .expect("writing to a String cannot fail");
+    }
+    match a.output.as_deref() {
+        Some(out) => {
+            std::fs::write(out, tsv)
+                .map_err(|e| format!("run (charsiu): cannot write {out}: {e}"))?;
+            println!("charsiu: wrote {} aligned phone(s) -> {out}", aligned.len());
+        }
+        None => print!("{tsv}"),
+    }
     Ok(())
 }
 

@@ -651,6 +651,14 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::AlignCharsiu => {
+            return Err(
+                "bench: arch `charsiu` requires paired audio and an exact phone sequence; \
+                 no alignment timing contract is defined yet — use `vokra-cli run --model \
+                 <charsiu.gguf> --input <in.wav> --text \"P AE T\"`"
+                    .to_owned(),
+            );
+        }
         ModelTask::TextNormalize => {
             return Err(
                 "bench: arch `wetextprocessing` has no audio RTF task — use `vokra-cli \

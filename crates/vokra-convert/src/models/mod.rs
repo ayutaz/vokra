@@ -83,6 +83,10 @@ pub(crate) mod chatterbox_turbo;
 // (`vokra-models::cosyvoice2::hift_chain::HiFTChain`) applies —
 // no new op or backend kernel is added.
 pub(crate) mod chatterbox_nano;
+// Charsiu English 10 ms forced aligner. The converter accepts only the
+// canonical `charsiu/en_w2v2_fc_10ms` manifest, folds its positional-conv
+// weight norm, and stamps the official 42-entry phone inventory.
+pub(crate) mod charsiu;
 pub(crate) mod cosyvoice2;
 // M5 gap follow-up (2026-07-30): marl/crepe (Kim et al. 2018) — a
 // monophonic F0 (fundamental-frequency) extractor. The upstream release

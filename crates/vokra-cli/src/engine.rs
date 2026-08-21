@@ -180,6 +180,10 @@ pub(crate) enum ModelTask {
     /// F0 extraction through CREPE. Kept distinct from FCPE/RMVPE so rate and
     /// checkpoint diagnostics name the actual front-end.
     F0Crepe,
+    /// Charsiu neural forced alignment. The run arm binds the concrete model
+    /// from the already parsed GGUF and pairs `--input` audio with the
+    /// whitespace-delimited official phone sequence in `--text`.
+    AlignCharsiu,
     /// WeTextProcessing inverse/text normalization (`--text` → text). The
     /// concrete binder is built from the session GGUF in the `run` arm; a
     /// build without `vokra-wfst` retains the binder's loud feature error.
@@ -303,6 +307,8 @@ const ARCH_RMVPE: &str = "rmvpe";
 const ARCH_FCPE: &str = "fcpe";
 /// CREPE pitch extractor — mirror of `vokra_models::f0::crepe::ARCH`.
 const ARCH_CREPE: &str = "crepe";
+/// Charsiu English 10 ms forced aligner.
+const ARCH_CHARSIU: &str = "charsiu";
 /// WeTextProcessing ITN/TN bundle — mirror of
 /// `vokra_models::wetextprocessing::ARCH`.
 const ARCH_WETEXTPROCESSING: &str = "wetextprocessing";
@@ -692,6 +698,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::F0Crepe))
         }
+        ARCH_CHARSIU => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_CHARSIU}`"
+                ));
+            }
+            Ok((session, ModelTask::AlignCharsiu))
+        }
         ARCH_WETEXTPROCESSING => {
             if hint.is_some() {
                 return Err(format!(
@@ -834,6 +848,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
+                 `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
                  `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -902,11 +917,7 @@ enum BoundReason {
     /// A module whose `from_gguf` exists but refuses on every path, binding
     /// no tensor, is the same class and belongs here: what separates this
     /// variant from the others is whether a converted artifact can yield a
-    /// usable handle, not whether a symbol by that name compiles. `charsiu`
-    /// is filed here on that reading — see its comment in [`BOUND_ARCHES`].
-    /// This is a note on the variant's scope, not a widening of it: the
-    /// sentence above already says "nothing to bind", which is what such a
-    /// module reports, and `explain()` is unchanged.
+    /// usable handle, not whether a symbol by that name compiles.
     NoGgufLoader,
 }
 
@@ -1501,8 +1512,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // Wave K (2026-08-15) — corrected rows. `bigvgan`, `hifigan_vocoder` and
     // `speecht5_hifigan` all shipped as `LoudPartialForward` naming
     // `X::from_gguf → X::decode`. Both halves were false, in the same
-    // direction as the Wave J charsiu defect: a non-loadable binder labelled
-    // as a working-loader-with-a-partial-forward. What the source says:
+    // direction as the historical Charsiu defect: a non-loadable binder
+    // labelled as a working-loader-with-a-partial-forward. What the source
+    // says:
     //
     //   * The forwards are REAL and complete. `HiFiGan::decode`
     //     (`hifigan/mod.rs`) is one call to the landed `hifigan_generator`
@@ -1518,7 +1530,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
     //     deferred. Neither ever binds a tensor.
     //
     // So the blocker that fires FIRST is that nothing binds from a converted
-    // artifact — the same ordering rule the charsiu row above states.
+    // artifact — the same ordering rule used throughout this registry.
     // `NoGgufLoader` is that class, and its docstring already covers this
     // exact shape ("A module whose `from_gguf` exists but refuses on every
     // path, binding no tensor, is the same class"). Its `explain()`
@@ -1526,8 +1538,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // ship `synthesized` alongside `new`, and that is where weights come
     // from today.
     //
-    // `entry` now names the constructor a caller can actually reach, per the
-    // charsiu precedent. `probe` drops to `None` because the registry
+    // `entry` now names the constructor a caller can actually reach. `probe`
+    // drops to `None` because the registry
     // invariant below requires it of this reason — a row must not claim
     // "nothing binds" while carrying a probe that demonstrates a binder.
     //
@@ -1601,59 +1613,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::snac::Snac::from_gguf(g).map(|_| ())),
     },
     // --- Text / alignment side-cars ---------------------------------------
-    // Wave J (2026-08-15) — corrected row. This shipped as
-    // `NoCliShapedOutput` naming `Charsiu::from_gguf → Charsiu::align`,
-    // which reads as "the forward works, only the presentation blocks it".
-    // Both halves were false in the same direction — the Wave I
-    // distil-whisper defect inverted: there a working binder was labelled
-    // broken, here a non-loadable one was labelled working. What the source
-    // says:
-    //
-    //   * `Charsiu::from_gguf` (`align/charsiu.rs`) returns
-    //     `LoadError::Gguf("charsiu: from_gguf is not wired yet …")` on
-    //     every path past the arch check. No tensor is ever bound, so the
-    //     first half of that entry never returns a handle.
-    //   * Nothing under `crates/vokra-convert/src/` mentions `charsiu`, so
-    //     no converter stamps the arch — the binder's own `EXPECTED_ARCH`
-    //     doc states this ("no crates/vokra-convert/src/models/charsiu.rs
-    //     exists"), and it is the reader half of a writer contract with no
-    //     writer yet.
-    //
-    // So the blocker that fires FIRST for the library caller this row points
-    // at — the ordering rule the AEC pair comment below states — is that
-    // there is nothing to bind from a converted artifact. `NoGgufLoader` is
-    // that class: its `explain()` says "there is nothing to bind from this
-    // artifact", which is the binder's own refusal in other words. Its
-    // parenthetical ("weights come from a deterministic `synthesized`
-    // fixture") holds for the scaffold path `CharsiuWeights::synthesized`;
-    // real weights would arrive as a caller-supplied `CharsiuWeights`.
-    //
-    // The forward past that point IS real (stem → feature projection →
-    // encoder blocks → CTC head → `ctc_segmentation`) and is reachable only
-    // through the constructor the module names, which is what `entry` now
-    // points at. `NoCliShapedOutput` was not merely mislabelled: `align`
-    // also needs a caller-supplied phoneme sequence, so that reason is
-    // separately true — but stating it FIRST asserts a load this build
-    // cannot perform, and that is the lie being removed.
-    //
-    // `scripts/check-bound-arch-coverage.sh` DOES see this arch. charsiu
-    // spells its constant `EXPECTED_ARCH`, and that gate's discovery scan
-    // was widened to that spelling by the same 2026-08-15 change that
-    // corrected this row — it now reports 89 arch constants across the
-    // spellings `ARCH`, `ARCH_<SUFFIX>` and `EXPECTED_ARCH`, `charsiu`
-    // among them. So this row is not merely kept on its own merits (a
-    // `charsiu`-stamped GGUF must not read as an unknown arch): the arch is
-    // not routed by the dispatch, so deleting the row would leave it
-    // unaccounted and fail that gate. Its self-test pins exactly that shape
-    // (fixture 2b drops the row of an `EXPECTED_ARCH` binder and requires a
-    // failure).
-    BoundArch {
-        arch: "charsiu",
-        module: "vokra_models::align::charsiu",
-        entry: "Charsiu::new(CharsiuConfig, CharsiuWeights) → Charsiu::align",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //
     // Each of these landed a `vokra-models` binder without the row the doc
@@ -2175,6 +2134,7 @@ mod tests {
             (ARCH_FCPE, "fcpe-routed", ModelTask::F0Fcpe),
             (ARCH_CREPE, "crepe-routed", ModelTask::F0Crepe),
             (ARCH_NKF_AEC, "nkf-aec-routed", ModelTask::AecNkf),
+            (ARCH_CHARSIU, "charsiu-routed", ModelTask::AlignCharsiu),
         ] {
             let (_session, task) = with_arch_only_gguf(arch, tag, |p| {
                 load_session(p).expect("newly routed session builds (bare)")
@@ -2196,6 +2156,7 @@ mod tests {
             ("wetextprocessing", "wetext-hint"),
             ("nkf_aec", "nkf-aec-hint"),
             ("fsmn-vad", "fsmn-hint"),
+            (ARCH_CHARSIU, "charsiu-hint"),
         ] {
             let err = with_arch_only_gguf(arch, tag, |p| {
                 // let-else rather than `.expect_err()`: `Session` is `!Debug`
@@ -2471,96 +2432,25 @@ mod tests {
         }
     }
 
-    // ---- Wave J (2026-08-15) — charsiu: a loader that never binds --------
-    //
-    // The row shipped as `NoCliShapedOutput` naming
-    // `Charsiu::from_gguf → Charsiu::align`, i.e. "the forward works, only
-    // the presentation blocks it". `Charsiu::from_gguf` refuses on every
-    // path and no converter stamps the arch, so the first half of that entry
-    // is unreachable. Nothing pinned either half, which is how the row and
-    // the binder drifted apart. These three tests pin the corrected state
-    // from both sides — the message a user sees, the binder behind it, and
-    // the row's own data — so it cannot invert again in either direction.
+    // ---- Wave 3 (2026-08-21) — Charsiu real artifact route ---------------
 
-    /// The `run` diagnostic names the blocker that actually fires (nothing
-    /// binds) instead of the output-shape one, and points at the constructor
-    /// a caller can really reach.
+    /// Charsiu now has a converter, a strict GGUF binder and a paired
+    /// audio/phone CLI contract.  The metadata-only fixture is sufficient to
+    /// prove dispatch because the concrete binder intentionally runs in the
+    /// `run` arm, after all paired inputs have been validated.
     #[test]
-    fn load_session_binds_charsiu_arch_as_unwired_loader_not_no_cli_shaped_output() {
-        let err = assert_bound_arch(
-            "charsiu",
-            "charsiu-arch",
-            "vokra_models::align::charsiu",
-            "Charsiu::new(CharsiuConfig, CharsiuWeights)",
-        );
-        assert!(
-            err.contains("no GGUF loader yet"),
-            "charsiu's first blocker is that nothing binds from a converted artifact: {err}"
-        );
-        assert!(
-            !err.contains("not a CLI-shaped artifact"),
-            "leading with the OUTPUT shape asserts a working load this build cannot \
-             perform — `Charsiu::from_gguf` refuses on every path: {err}"
-        );
-        assert!(
-            !err.contains("Charsiu::from_gguf"),
-            "the entry must not send a caller at a constructor that always errors: {err}"
-        );
-    }
-
-    /// The claim the row rests on, checked against the binder itself:
-    /// `Charsiu::from_gguf` refuses even a correctly stamped GGUF.
-    ///
-    /// If a converter and a real binder land, this test fails — which is the
-    /// point. The row's `reason` and `entry` both assume nothing binds, so
-    /// that commit has to revisit them rather than leave a stale claim in
-    /// place.
-    #[test]
-    fn charsiu_from_gguf_still_binds_nothing() {
-        with_arch_only_gguf("charsiu", "charsiu-loader-probe", |p| {
-            // let-else rather than `.expect_err()`, per this module's rule.
-            let Err(err) =
-                vokra_models::align::charsiu::Charsiu::from_gguf(std::path::Path::new(p))
-            else {
-                panic!(
-                    "Charsiu::from_gguf bound a metadata-only GGUF — if the real binder \
-                     landed, revisit the BOUND_ARCHES row: its reason (NoGgufLoader) and \
-                     entry (Charsiu::new) both assume nothing binds"
-                );
-            };
-            let msg = err.to_string();
-            assert!(
-                msg.contains("not wired yet"),
-                "the refusal must still name the unwired binder: {msg}"
-            );
+    fn load_session_routes_charsiu_to_alignment_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_CHARSIU, "charsiu-routed", |p| {
+            load_session(p).expect("charsiu session builds (bare)")
         });
+        assert_eq!(task, ModelTask::AlignCharsiu);
     }
 
-    /// The row's data, asserted directly so a regression reports its cause
-    /// rather than only the downstream message.
     #[test]
-    fn bound_arch_registry_charsiu_row_does_not_promise_a_gguf_load() {
-        let row = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "charsiu")
-            .expect("charsiu has a vokra-models binder and must carry a row");
-        assert_eq!(
-            row.reason,
-            BoundReason::NoGgufLoader,
-            "`Charsiu::from_gguf` refuses on every path and no converter stamps the \
-             arch — any other reason asserts a load this build cannot perform"
-        );
+    fn bound_arch_registry_excludes_routed_charsiu() {
         assert!(
-            !row.entry.contains("from_gguf"),
-            "`entry` must name a reachable constructor; `Charsiu::from_gguf` always \
-             errors, so naming it points the caller at a dead end: {}",
-            row.entry
-        );
-        assert!(
-            row.entry.contains("Charsiu::new"),
-            "the module names `Charsiu::new(CharsiuConfig, CharsiuWeights)` as the \
-             reachable constructor: {}",
-            row.entry
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_CHARSIU),
+            "Charsiu has a real GGUF loader and a ModelTask::AlignCharsiu route"
         );
     }
 
@@ -2919,6 +2809,7 @@ mod tests {
             ARCH_NKF_AEC,
             ARCH_CT_PUNC,
             ARCH_MIMI,
+            ARCH_CHARSIU,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,
             ARCH_MELODYFLOW_T24_30SECS,
