@@ -40,6 +40,50 @@ ASR には decode 制御がある: `--beam-size` / `--word-timestamps` /
   --beam-size 5 --word-timestamps
 ```
 
+### CT-Punc のtoken/idペア入力
+
+CT-Puncはtokenizeを推測しない。token文字列とモデルに渡す正確なvocabulary
+IDを、1つのversioned UTF-8 TSVに対で記述する:
+
+```
+vokra-ct-punc-tsv-v1
+101	we
+202	build
+303	世界
+```
+
+各recordは`<u32 id><TAB><escaped token>`。tokenにはliteral Unicode、または
+`\\` / `\t` / `\n` / `\r` / `\u{HEX}` escapeを使用できる。空record、余分な
+TSV列、不正escape、vocabulary範囲外IDはエラーになる。単一record streamに
+することでtoken列とID列の長さ不一致を構造的に排除する。
+
+```sh
+./target/release/vokra-cli run --model ct-punc.gguf \
+  --tokens tokens.tsv --output restored.txt
+```
+
+`--output`なしでは`ct_punc: <text>`として表示する。指定時のfile内容は診断
+prefixや暗黙newlineを含まない、復元後の正確なUTF-8 textになる。
+
+### Mimi encode/decodeとportable code container
+
+Mimiは方向を明示する。Rustのnested arrayのdebug表示を交換形式にはしない:
+
+```sh
+./target/release/vokra-cli run --model mimi.gguf --codec-mode encode \
+  --input speech-24k.wav --output speech.vmc
+./target/release/vokra-cli run --model mimi.gguf --codec-mode decode \
+  --input speech.vmc --output reconstructed.wav
+```
+
+`speech.vmc`は`VKRMCODE` version 1。固定little-endian headerにmono channel、
+sample rate、milli-Hz単位のframe rate、frame数、元PCM sample数、codebook数・
+size、feature幅、GGUF effective codebook tableのSHA-256を保持する。payloadは
+time-major `[frame, codebook]` 順のunsigned 32-bit code。decodeは異なるmodel
+hash/topology、余分・不足byte、範囲外code、`frames * model_hop`と一致しない
+PCM長を拒否する。encodeも正のframe-hop整数倍だけを受け付け、暗黙のresample・
+padding・trimは行わない。
+
 ## 3. `convert` — checkpoint → GGUF（オフライン）
 
 runtime は **GGUF のみ**をロードする。ONNX / safetensors はここでオフライン
@@ -146,7 +190,7 @@ CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあな�
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-16 — `crates/vokra-cli/src/` の `run` / `convert` /
+**最終確認日: 2026-08-21 — `crates/vokra-cli/src/` の `run` / `convert` /
 `bench` / `f0` 引数パーサに対して確認。**
 
 - **更新責任**: CLI フラグを追加・改名した PR が、同一 PR で本ページと英語版を

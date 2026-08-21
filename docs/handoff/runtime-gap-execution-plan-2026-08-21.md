@@ -11,14 +11,14 @@ Baseline: `3464de7cc832` (`origin/main` when the working branch was created).
 
 At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 
-| Blocker | Baseline | After Wave 1 | Meaning |
-|---|---:|---:|---|
-| `RealForwardNoCliTask` | 3 | 0 | Real forward exists; CLI routing is absent |
-| `NeedsPairedInput` | 1 | 0 | The CLI has no honest two-audio-input contract |
-| `NoCliShapedOutput` | 2 | 2 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | `BOUND_ARCHES` registry rows |
+| Blocker | Baseline | After Wave 1 | After Wave 2 | Meaning |
+|---|---:|---:|---:|---|
+| `RealForwardNoCliTask` | 3 | 0 | 0 | Real forward exists; CLI routing is absent |
+| `NeedsPairedInput` | 1 | 0 | 0 | The CLI has no honest two-audio-input contract |
+| `NoCliShapedOutput` | 2 | 2 | 0 | Input/output serialization must be specified first |
+| `NoGgufLoader` | 17 | 17 | 17 | No real artifact can be bound, even if a constructor/forward exists |
+| `LoudPartialForward` | 56 | 56 | 56 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -129,18 +129,27 @@ invalid session/model/sample-rate, constructor failure, Variant failure,
 headless and editor smoke evidence is still required before advertising full
 Godot runtime dispatch.
 
-## Wave 2 — specify the two display contracts
+## Wave 2 — specify the two display contracts (implemented on this branch)
 
-These are design/API tasks first, not formatting-only patches.
+These were design/API tasks first, not formatting-only patches. The branch now
+implements both and removes their registry rows:
 
-1. `ct_punc`: define how callers supply both token strings and token IDs. A
-   versioned JSON or TSV sidecar is preferable to inferring tokenization from
-   the GGUF. Define restored-text and/or token output, invalid-length behavior,
-   and Unicode escaping before adding a CLI route.
-2. `mimi`: define explicit encode/decode modes and a versioned portable codec
-   code container. Pin codebook/time axis order, integer width, sample rate,
-   frame rate, channel count, and model compatibility. Raw debug printing of
-   nested code arrays is not a stable display contract.
+1. `ct_punc`: `--tokens` reads `vokra-ct-punc-tsv-v1`. Every record pairs one
+   `u32` id with one escaped UTF-8 token, so length divergence between separate
+   token/id arrays is unrepresentable. Literal Unicode and `\\`, `\t`, `\n`,
+   `\r`, `\u{HEX}` escapes are specified; malformed, empty, extra-column and
+   out-of-range records fail loudly. Restored text is labelled on stdout or
+   written as exact UTF-8 bytes through `--output`.
+2. `mimi`: `--codec-mode encode|decode` uses the fixed little-endian
+   `VKRMCODE` v1 container. It pins `[frame, codebook]` order, unsigned 32-bit
+   codes, mono sample rate, milli-Hz frame rate, frame/sample counts, codebook
+   axes, feature width, and SHA-256 of the GGUF's effective codebook table.
+   Decode refuses topology/hash/length/range mismatches; encode does not
+   resample, pad, or trim.
+
+Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
+package tests are present. Real-weight CT-Punc/Mimi execution remains part of
+the final VAST evidence pass; it is not replaced by the structural tests.
 
 ## Wave 3 — 17 GGUF loaders
 

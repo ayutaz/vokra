@@ -666,6 +666,21 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::CtPunc => {
+            return Err(
+                "bench: arch `ct_punc` has a paired token/id text contract, not an audio \
+                 RTF task — use `vokra-cli run --model <ct-punc.gguf> --tokens <tokens.tsv>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::MimiCodec => {
+            return Err(
+                "bench: arch `mimi` uses explicit encode/decode modes and a versioned code \
+                 container; no standalone codec benchmark contract is defined yet — use \
+                 `vokra-cli run --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
         ModelTask::Asr => {
             let path = args
                 .input

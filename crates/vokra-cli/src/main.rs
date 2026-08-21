@@ -22,6 +22,7 @@ mod engine;
 mod f0;
 mod report;
 mod run;
+mod runtime_contracts;
 mod wav;
 
 use std::process::ExitCode;

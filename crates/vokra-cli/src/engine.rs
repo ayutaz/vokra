@@ -188,6 +188,14 @@ pub(crate) enum ModelTask {
     /// [`vokra_core::engines::AecStreamHandle`] in the `run` arm because the
     /// generic [`Session`] facade has no AEC engine slot.
     AecNkf,
+    /// CT-Transformer punctuation restoration. The generic session has no
+    /// punctuation-engine slot, so `run` binds [`vokra_models::ct_punc::CtPunc`]
+    /// from `session.gguf()` and consumes the versioned paired token/id TSV.
+    CtPunc,
+    /// Standalone Mimi codec encode/decode. `run` binds the real encoder,
+    /// effective RVQ tables, and neural decoder from the same GGUF and uses
+    /// the versioned portable code container between the two modes.
+    MimiCodec,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -300,6 +308,12 @@ const ARCH_CREPE: &str = "crepe";
 const ARCH_WETEXTPROCESSING: &str = "wetextprocessing";
 /// NKF-AEC — mirror of `vokra_models::aec::nkf_aec::ARCH`.
 const ARCH_NKF_AEC: &str = "nkf_aec";
+/// CT-Punc text post-processor — mirror of
+/// [`vokra_models::ct_punc::ARCH`].
+const ARCH_CT_PUNC: &str = "ct_punc";
+/// Standalone Kyutai Mimi codec — mirror of what
+/// `vokra-cli convert --model mimi` writes.
+const ARCH_MIMI: &str = "mimi";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -696,6 +710,28 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::AecNkf))
         }
+        ARCH_CT_PUNC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_CT_PUNC}`"
+                ));
+            }
+            // Bare session: the run arm binds the concrete model once so its
+            // paired token/id API remains reachable without adding a fake
+            // generic text-engine trait.
+            Ok((session, ModelTask::CtPunc))
+        }
+        ARCH_MIMI => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MIMI}`"
+                ));
+            }
+            // Bare session: standalone encode/decode needs all three concrete
+            // codec components and a versioned codes container, none of which
+            // belongs in the ASR/TTS/S2S session slots.
+            Ok((session, ModelTask::MimiCodec))
+        }
         ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
             // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
             // runtime shell exists in `vokra-models::magnet` (config
@@ -799,6 +835,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
                  vokra-models binds without a CLI task yet)",
@@ -858,12 +895,6 @@ enum BoundReason {
     /// unconditionally, naming the missing primitive and its primary source.
     /// Verified per module by reading the entry point's body.
     LoudPartialForward,
-    /// The runtime works, but what it emits is not a CLI-shaped artifact —
-    /// hidden states, per-token logits, codec codes, or an output that needs
-    /// a caller-supplied tokenization / phoneme sequence the GGUF does not
-    /// carry. Rendering one of those as a `run` result would mean inventing a
-    /// presentation the model never defined.
-    NoCliShapedOutput,
     /// The module has no GGUF loader at all yet — its weights come from a
     /// deterministic `synthesized` fixture, so there is nothing for the CLI
     /// to bind from a converted artifact.
@@ -888,11 +919,6 @@ impl BoundReason {
                  reports the specific missing primitive and the primary source to \
                  transcribe it from (this CLI deliberately does not restate that gap: a \
                  copy here would drift away from the binder)"
-            }
-            Self::NoCliShapedOutput => {
-                "its output is not a CLI-shaped artifact (hidden states / logits / codec \
-                 codes, or it needs a caller-supplied tokenization the GGUF does not \
-                 carry), so `run` has no honest way to render it"
             }
             Self::NoGgufLoader => {
                 "the module has no GGUF loader yet (its weights come from a deterministic \
@@ -1574,21 +1600,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
         reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::snac::Snac::from_gguf(g).map(|_| ())),
     },
-    BoundArch {
-        arch: "mimi",
-        module: "vokra_models::mimi",
-        entry: "MimiEncoder::encode_all / MimiNeuralDecoder::decode_all",
-        reason: BoundReason::NoCliShapedOutput,
-        probe: None,
-    },
     // --- Text / alignment side-cars ---------------------------------------
-    BoundArch {
-        arch: "ct_punc",
-        module: "vokra_models::ct_punc",
-        entry: "CtPunc::from_gguf → CtPunc::restore",
-        reason: BoundReason::NoCliShapedOutput,
-        probe: Some(|g: &GgufFile| vokra_models::ct_punc::CtPunc::from_gguf(g).map(|_| ())),
-    },
     // Wave J (2026-08-15) — corrected row. This shipped as
     // `NoCliShapedOutput` naming `Charsiu::from_gguf → Charsiu::align`,
     // which reads as "the forward works, only the presentation blocks it".
@@ -2834,37 +2846,43 @@ mod tests {
         assert_eq!(task, ModelTask::TextNormalize);
     }
 
-    /// The text-in/text-out judgement behind two adjacent rows, made
-    /// mechanical.
-    ///
-    /// The function signatures still pin why WeTextProcessing is routable
-    /// while CT-Punc remains in the display-contract ledger.
+    /// Wave 2: both text surfaces are routed, but retain their distinct input
+    /// contracts. CT-Punc's paired token/id signature is what the versioned
+    /// TSV adapter feeds; it is not silently tokenized from `--text`.
     #[test]
-    fn text_shaped_entry_points_still_have_the_signatures_their_rows_assume() {
+    fn text_shaped_entry_points_are_routed_with_their_real_signatures() {
         // Text in, text out: no output shape blocks a `run` task here.
         const _: fn(
             &vokra_models::wetextprocessing::WeTextProcessing,
             &str,
         ) -> vokra_core::Result<String> =
             vokra_models::wetextprocessing::WeTextProcessing::normalize;
-        // A caller-supplied tokenization AND its ids, neither of which a GGUF
-        // carries — the contrast that keeps the neighbouring row where it is.
+        // A caller-supplied tokenization AND its ids, paired by the CLI TSV.
         const _: fn(&vokra_models::ct_punc::CtPunc, &[&str], &[u32]) -> vokra_core::Result<String> =
             vokra_models::ct_punc::CtPunc::restore;
 
-        let ct_punc = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "ct_punc")
-            .expect("ct_punc has a vokra-models binder and must carry a row");
         assert!(
-            BOUND_ARCHES.iter().all(|b| b.arch != ARCH_WETEXTPROCESSING),
-            "wetextprocessing is routed and must not retain an unreachable registry row"
+            BOUND_ARCHES
+                .iter()
+                .all(|b| b.arch != ARCH_WETEXTPROCESSING && b.arch != ARCH_CT_PUNC),
+            "both routed text arches must be absent from the unreachable registry"
         );
-        assert_eq!(
-            ct_punc.reason,
-            BoundReason::NoCliShapedOutput,
-            "`restore` needs tokens and token ids from the caller — the contrast the \
-             wetextprocessing row's old tag had lost"
+
+        let (_session, task) = with_arch_only_gguf(ARCH_CT_PUNC, "ct-punc-routed", |p| {
+            load_session(p).expect("ct-punc session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::CtPunc);
+    }
+
+    #[test]
+    fn load_session_routes_mimi_to_the_standalone_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_MIMI, "mimi-routed", |p| {
+            load_session(p).expect("mimi session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::MimiCodec);
+        assert!(
+            BOUND_ARCHES.iter().all(|b| b.arch != ARCH_MIMI),
+            "the routed standalone codec must not retain a registry row"
         );
     }
 
@@ -2899,6 +2917,8 @@ mod tests {
             ARCH_CREPE,
             ARCH_WETEXTPROCESSING,
             ARCH_NKF_AEC,
+            ARCH_CT_PUNC,
+            ARCH_MIMI,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,
             ARCH_MELODYFLOW_T24_30SECS,

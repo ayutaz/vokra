@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
+use crate::runtime_contracts::{MimiCodesV1, parse_ct_punc_tsv, sha256};
 use crate::wav;
 
 pub(crate) const USAGE: &str = "\
@@ -40,6 +41,9 @@ USAGE:
     vokra-cli run --model <wetextprocessing.gguf> --text <string>
     vokra-cli run --model <nkf-aec.gguf> --input <mic.wav> --far-end <reference.wav> \
                   [--output <clean.wav>]
+    vokra-cli run --model <ct-punc.gguf> --tokens <tokens.tsv> [--output <restored.txt>]
+    vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
+    vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
@@ -53,6 +57,8 @@ OPTIONS:
                                 context audio for S2S — the explicit AEC bypass
                                 path, FR-OP-60). For NKF-AEC this is the mic
                                 signal and must be paired with --far-end.
+                                For Mimi encode it is a mono WAV; for Mimi
+                                decode it is a `VKRMCODE` v1 code container.
     --far-end <path>            nkf_aec only: sample-aligned far-end/reference
                                 mono WAV. It must have exactly the same sample
                                 rate and sample count as --input; no trim,
@@ -94,8 +100,21 @@ OPTIONS:
                                 precedence over --voice.
     --length-scale <s>          kokoro only: duration multiplier (reciprocal
                                 of upstream `speed`) [default 1.0]
-    --output <path>             WAV file for the TTS / S2S / denoise / AEC output
-                                (optional)
+    --output <path>             WAV file for audio-producing tasks. CT-Punc
+                                writes exact UTF-8 restored text when present.
+                                Mimi requires it: code container for encode,
+                                WAV for decode.
+    --tokens <path>             ct_punc only: `vokra-ct-punc-tsv-v1` UTF-8
+                                side-car. Each record is `<u32 id><TAB><token>`;
+                                tokens allow literal Unicode plus `\\`, `\t`,
+                                `\n`, `\r`, and `\\u{HEX}` escapes. This keeps
+                                caller token strings paired with the exact ids
+                                passed to the model; no tokenizer is inferred.
+    --codec-mode <mode>         mimi only: `encode` (mono WAV -> portable
+                                code container) or `decode` (container -> WAV).
+                                The v1 container pins time-major `[frame,cb]`
+                                order, u32 little-endian codes, mono rate,
+                                frame rate, topology, and codebook SHA-256.
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Honored for `voxtral` (n-best beam) and, with
                                 --word-timestamps, for `whisper`. An arch whose
@@ -183,13 +202,19 @@ struct RunArgs {
     input: Option<String>,
     text: Option<String>,
     output: Option<String>,
+    /// CT-Punc-only versioned TSV pairing token ids and escaped UTF-8 tokens.
+    tokens: Option<String>,
+    /// Standalone Mimi direction. Required on the `mimi` arch and rejected
+    /// everywhere else.
+    codec_mode: Option<CodecMode>,
     /// Backend the model's hot ops run on (mirrors `bench --backend`).
-    /// Honored by the whisper / voxtral ASR, kokoro TTS and speaker (CAM++)
-    /// paths, whose dispatch binds `.with_backend(...)`. The VAD, piper-plus
-    /// TTS and CSM / Moshi S2S engines are not backend-parameterised, so a
-    /// non-CPU backend for them is rejected loudly in `main` rather than run
-    /// silently on the CPU (FR-EX-08). For the honoring paths an *unavailable*
-    /// backend still fails loudly at inference, never silently on CPU.
+    /// Honored by whisper / voxtral ASR, kokoro TTS, speaker (CAM++), and the
+    /// standalone Mimi codec, whose dispatch binds `.with_backend(...)`. The
+    /// VAD, piper-plus TTS and CSM / Moshi S2S engines are not
+    /// backend-parameterised, so a non-CPU backend for them is rejected loudly
+    /// in `main` rather than run silently on the CPU (FR-EX-08). For the
+    /// honoring paths an *unavailable* backend still fails loudly at
+    /// inference, never silently on CPU.
     backend: vokra_core::BackendKind,
     /// Speaker (campplus) only: second WAV for the cosine-similarity
     /// comparison. Any other task rejects the flag loudly (FR-EX-08).
@@ -256,11 +281,31 @@ struct RunArgs {
     speaker_embedding: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodecMode {
+    Encode,
+    Decode,
+}
+
+impl CodecMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "encode" => Ok(Self::Encode),
+            "decode" => Ok(Self::Decode),
+            other => Err(format!(
+                "unknown --codec-mode `{other}` (expected encode or decode)"
+            )),
+        }
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut model: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
+    let mut tokens: Option<String> = None;
+    let mut codec_mode: Option<CodecMode> = None;
     let mut backend = vokra_core::BackendKind::Cpu;
     let mut compare: Option<String> = None;
     let mut far_end: Option<String> = None;
@@ -304,6 +349,17 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
             }
             "--output" => {
                 output = Some(args.get(i + 1).ok_or("--output requires a value")?.clone());
+                i += 2;
+            }
+            "--tokens" => {
+                tokens = Some(args.get(i + 1).ok_or("--tokens requires a path")?.clone());
+                i += 2;
+            }
+            "--codec-mode" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--codec-mode requires encode or decode")?;
+                codec_mode = Some(CodecMode::parse(value)?);
                 i += 2;
             }
             "--backend" => {
@@ -457,6 +513,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         input,
         text,
         output,
+        tokens,
+        codec_mode,
         backend,
         compare,
         far_end,
@@ -524,6 +582,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::F0Crepe => Some("CREPE F0 (pitch) extraction"),
         ModelTask::TextNormalize => Some("WeTextProcessing normalization"),
         ModelTask::AecNkf => Some("NKF acoustic echo cancellation"),
+        ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
@@ -536,7 +595,11 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // a non-CPU backend reaches the hot ops (and an unavailable one fails
         // loudly at inference — the existing FR-EX-08 posture). The guard must
         // NOT fire for these.
-        ModelTask::Asr | ModelTask::AsrVoxtral | ModelTask::TtsKokoro | ModelTask::Speaker => None,
+        ModelTask::Asr
+        | ModelTask::AsrVoxtral
+        | ModelTask::TtsKokoro
+        | ModelTask::Speaker
+        | ModelTask::MimiCodec => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -570,6 +633,20 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         return Err(
             "run: --far-end is only supported for the nkf_aec arch — it is the \
              sample-aligned far-end/reference stream paired with the --input mic WAV"
+                .to_owned(),
+        );
+    }
+    if a.tokens.is_some() && task != ModelTask::CtPunc {
+        return Err(
+            "run: --tokens is only supported for the ct_punc arch — it supplies the \
+             versioned, paired token-string/token-id input to CtPunc::restore"
+                .to_owned(),
+        );
+    }
+    if a.codec_mode.is_some() && task != ModelTask::MimiCodec {
+        return Err(
+            "run: --codec-mode is only supported for the standalone mimi arch — use \
+             `--codec-mode encode|decode` with its portable code container"
                 .to_owned(),
         );
     }
@@ -650,21 +727,21 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     // `--backend metal|cuda|vulkan` reaches the model's hot ops only on the
     // arches whose `run` dispatch binds the concrete engine
     // `.with_backend(...)`: the Whisper / Voxtral ASR paths, the Kokoro TTS
-    // path, and the speaker (CAM++) encoder. The VAD (Silero), piper-plus TTS,
-    // and both S2S engines (CSM / Moshi) bind without a backend and run on the
-    // CPU regardless. A non-CPU `--backend` for one of them would be a silent
-    // no-op — the model would run on the CPU while the caller believes the GPU
-    // is in use. Reject it loudly rather than misreport where the model ran
-    // (FR-EX-08), mirroring the per-arch flag rejections above. (The honoring
-    // arches keep their existing posture: an *unavailable* backend there fails
-    // loudly at inference, never on CPU.)
+    // path, speaker (CAM++) encoder, and standalone Mimi codec. The VAD
+    // (Silero), piper-plus TTS, and both S2S engines (CSM / Moshi) bind without
+    // a backend and run on the CPU regardless. A non-CPU `--backend` for one
+    // of them would be a silent no-op — the model would run on the CPU while
+    // the caller believes the GPU is in use. Reject it loudly rather than
+    // misreport where the model ran (FR-EX-08), mirroring the per-arch flag
+    // rejections above. (The honoring arches keep their existing posture: an
+    // *unavailable* backend there fails loudly at inference, never on CPU.)
     if a.backend != vokra_core::BackendKind::Cpu {
         if let Some(engine_label) = cpu_only_engine_label(task) {
             return Err(format!(
                 "run: --backend {backend} is not supported for this model — the \
                  {engine_label} engine runs on the CPU regardless (its dispatch is not \
-                 backend-parameterised). Only the whisper / voxtral ASR, kokoro TTS, and \
-                 speaker (campplus) paths honor --backend; a non-CPU backend here would \
+                 backend-parameterised). Only the whisper / voxtral ASR, kokoro TTS, \
+                 speaker (campplus), and standalone Mimi paths honor --backend; a non-CPU backend here would \
                  silently run on the CPU (FR-EX-08). Re-run with --backend cpu (or omit it).",
                 backend = backend_flag_name(a.backend),
             ));
@@ -785,6 +862,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AecNkf => {
             run_nkf_aec(&session, &a)?;
+        }
+        ModelTask::CtPunc => {
+            run_ct_punc(&session, &a)?;
+        }
+        ModelTask::MimiCodec => {
+            run_mimi_codec(&session, &a)?;
         }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
@@ -1377,6 +1460,273 @@ fn run_text_normalize(session: &Session, a: &RunArgs) -> Result<(), String> {
     let normalized = model.normalize(text).map_err(|e| e.to_string())?;
     println!("normalize: {normalized}");
     Ok(())
+}
+
+/// CT-Punc's versioned paired-input route.
+///
+/// Token strings and ids are read from one TSV record stream so they cannot
+/// acquire different lengths through two independently parsed flags. The
+/// binder still validates vocabulary range and emits exactly one label per
+/// record. `--output` is exact UTF-8 restored text with no diagnostic prefix;
+/// stdout uses a labelled human-readable line when no file is requested.
+fn run_ct_punc(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some() || a.text.is_some() {
+        return Err(
+            "run (ct_punc): use --tokens <tokens.tsv>; --input/--text cannot preserve the \
+             required caller-supplied token-string/token-id pairing"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .tokens
+        .as_deref()
+        .ok_or("run (ct_punc): --tokens <tokens.tsv> is required")?;
+    let input = std::fs::read_to_string(path)
+        .map_err(|e| format!("run (ct_punc): --tokens {path}: {e}"))?;
+    let paired = parse_ct_punc_tsv(&input)?;
+    debug_assert_eq!(paired.tokens.len(), paired.token_ids.len());
+    let tokens: Vec<&str> = paired.tokens.iter().map(String::as_str).collect();
+    let model =
+        vokra_models::ct_punc::CtPunc::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let restored = model
+        .restore(&tokens, &paired.token_ids)
+        .map_err(|e| e.to_string())?;
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, restored.as_bytes())
+            .map_err(|e| format!("run (ct_punc): --output {output}: {e}"))?;
+        eprintln!(
+            "ct_punc: restored {} paired tokens -> {output}",
+            paired.tokens.len()
+        );
+    } else {
+        println!("ct_punc: {restored}");
+    }
+    Ok(())
+}
+
+/// Standalone Mimi encode/decode using the portable `VKRMCODE` v1 contract.
+fn run_mimi_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::codec::MimiCodecGguf;
+    use vokra_models::mimi::{MimiEncoder, MimiNeuralConfig, MimiNeuralDecoder};
+    use vokra_ops::{MimiRvqAttrs, mimi_rvq_decode};
+
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (mimi): --text/--tokens are not codec inputs; use --input plus \
+             --codec-mode encode|decode"
+                .to_owned(),
+        );
+    }
+    let mode = a
+        .codec_mode
+        .ok_or("run (mimi): --codec-mode encode|decode is required")?;
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (mimi): --input <wav|codes.vmc> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (mimi): --output <codes.vmc|wav> is required")?;
+
+    // The standalone route is a model-load boundary just like Moshi's
+    // `with_mimi_gguf`: enforce the provenance gate and surface CC-BY
+    // attribution before binding any learned tensors.
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|e| e.to_string())?;
+    if let Some(info) = vokra_core::resolve_attribution(session.gguf()) {
+        eprintln!("vokra: ATTRIBUTION ({}) {}", info.license, info.text);
+    }
+
+    let cfg = MimiNeuralConfig::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    cfg.validate().map_err(|e| e.to_string())?;
+    let codec = MimiCodecGguf::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let n_q = cfg.quantizer.n_q;
+    if codec.attrs.n_codebooks < n_q {
+        return Err(format!(
+            "run (mimi): effective table GGUF has {} codebooks but the neural config requires {n_q}",
+            codec.attrs.n_codebooks
+        ));
+    }
+    if codec.attrs.codebook_size != cfg.quantizer.bins {
+        return Err(format!(
+            "run (mimi): effective table codebook_size {} != neural quantizer bins {}",
+            codec.attrs.codebook_size, cfg.quantizer.bins
+        ));
+    }
+    let table_bytes = session
+        .gguf()
+        .tensor_data("vokra.mimi.codebook_tables")
+        .ok_or("run (mimi): GGUF tensor `vokra.mimi.codebook_tables` has no data")?;
+    let model_sha256 = sha256(table_bytes);
+    let hop = cfg.frame_hop_samples().map_err(|e| e.to_string())?;
+
+    match mode {
+        CodecMode::Encode => {
+            let clip = wav::read_wav(input_path)
+                .map_err(|e| format!("run (mimi encode): {input_path}: {e}"))?;
+            if clip.sample_rate != cfg.sample_rate {
+                return Err(format!(
+                    "run (mimi encode): {input_path} is {} Hz, model requires {} Hz — \
+                     resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate, cfg.sample_rate
+                ));
+            }
+            if clip.samples.is_empty() || clip.samples.len() % hop != 0 {
+                return Err(format!(
+                    "run (mimi encode): input has {} samples; v1 requires a positive exact \
+                     multiple of the model frame hop {hop} (no implicit pad/trim)",
+                    clip.samples.len()
+                ));
+            }
+            let encoder = MimiEncoder::from_gguf(session.gguf(), &cfg)
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend);
+            let codes = encoder
+                .encode_all(&clip.samples)
+                .map_err(|e| e.to_string())?;
+            let n_frames = codes.len() / n_q;
+            let container = MimiCodesV1 {
+                sample_rate: cfg.sample_rate,
+                frame_rate_mhz: cfg.frame_rate_mhz,
+                n_codebooks: u32::try_from(n_q)
+                    .map_err(|_| "run (mimi encode): n_codebooks exceeds u32")?,
+                codebook_size: u32::try_from(cfg.quantizer.bins)
+                    .map_err(|_| "run (mimi encode): codebook_size exceeds u32")?,
+                feature_dimension: u32::try_from(codec.attrs.d_model)
+                    .map_err(|_| "run (mimi encode): feature dimension exceeds u32")?,
+                n_frames: u64::try_from(n_frames)
+                    .map_err(|_| "run (mimi encode): frame count exceeds u64")?,
+                pcm_samples: u64::try_from(clip.samples.len())
+                    .map_err(|_| "run (mimi encode): sample count exceeds u64")?,
+                model_sha256,
+                codes,
+            };
+            let bytes = container.to_bytes()?;
+            std::fs::write(output_path, bytes)
+                .map_err(|e| format!("run (mimi encode): --output {output_path}: {e}"))?;
+            println!(
+                "mimi encode: {} samples -> {} frames x {} codebooks -> {output_path}",
+                clip.samples.len(),
+                n_frames,
+                n_q
+            );
+        }
+        CodecMode::Decode => {
+            let decoder = MimiNeuralDecoder::from_gguf(session.gguf(), &cfg)
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend);
+            if codec.attrs.d_model != decoder.expected_feature_dim() {
+                return Err(format!(
+                    "run (mimi decode): effective table feature dimension {} != neural decoder input {}",
+                    codec.attrs.d_model,
+                    decoder.expected_feature_dim()
+                ));
+            }
+            let bytes = std::fs::read(input_path)
+                .map_err(|e| format!("run (mimi decode): {input_path}: {e}"))?;
+            let container = MimiCodesV1::from_bytes(&bytes)?;
+            validate_mimi_codes_for_model(&container, &cfg, &codec, model_sha256, hop)?;
+            let n_frames = usize::try_from(container.n_frames)
+                .map_err(|_| "run (mimi decode): frame count does not fit this host")?;
+            let attrs = MimiRvqAttrs {
+                n_codebooks: n_q,
+                codebook_size: codec.attrs.codebook_size,
+                d_model: codec.attrs.d_model,
+            };
+            let features =
+                mimi_rvq_decode(&container.codes, n_frames, &codec.tables[..n_q], &attrs)
+                    .map_err(|e| e.to_string())?;
+            let pcm = decoder.decode_all(&features).map_err(|e| e.to_string())?;
+            let expected_samples = usize::try_from(container.pcm_samples)
+                .map_err(|_| "run (mimi decode): PCM sample count does not fit this host")?;
+            if pcm.len() != expected_samples {
+                return Err(format!(
+                    "run (mimi decode): decoder emitted {} samples, container declares {expected_samples}",
+                    pcm.len()
+                ));
+            }
+            wav::write_wav(output_path, &pcm, cfg.sample_rate)
+                .map_err(|e| format!("run (mimi decode): --output {output_path}: {e}"))?;
+            println!(
+                "mimi decode: {} frames x {} codebooks -> {} samples @ {} Hz -> {output_path}",
+                n_frames,
+                n_q,
+                pcm.len(),
+                cfg.sample_rate
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_mimi_codes_for_model(
+    codes: &MimiCodesV1,
+    cfg: &vokra_models::mimi::MimiNeuralConfig,
+    codec: &vokra_models::codec::MimiCodecGguf,
+    model_sha256: [u8; 32],
+    hop: usize,
+) -> Result<(), String> {
+    let expected_n_q = u32::try_from(cfg.quantizer.n_q)
+        .map_err(|_| "run (mimi decode): model n_codebooks exceeds u32")?;
+    let expected_bins = u32::try_from(cfg.quantizer.bins)
+        .map_err(|_| "run (mimi decode): model codebook_size exceeds u32")?;
+    let expected_dim = u32::try_from(codec.attrs.d_model)
+        .map_err(|_| "run (mimi decode): model feature dimension exceeds u32")?;
+    if codes.sample_rate != cfg.sample_rate
+        || codes.frame_rate_mhz != cfg.frame_rate_mhz
+        || codes.n_codebooks != expected_n_q
+        || codes.codebook_size != expected_bins
+        || codes.feature_dimension != expected_dim
+    {
+        return Err(format!(
+            "run (mimi decode): container/model contract mismatch: container \
+             rate={} frame_rate_mhz={} n_q={} bins={} dim={}, model \
+             rate={} frame_rate_mhz={} n_q={} bins={} dim={}",
+            codes.sample_rate,
+            codes.frame_rate_mhz,
+            codes.n_codebooks,
+            codes.codebook_size,
+            codes.feature_dimension,
+            cfg.sample_rate,
+            cfg.frame_rate_mhz,
+            expected_n_q,
+            expected_bins,
+            expected_dim
+        ));
+    }
+    if codes.model_sha256 != model_sha256 {
+        return Err(format!(
+            "run (mimi decode): codebook SHA-256 mismatch (container {}, model {}); \
+             codes must be decoded by the exact effective codebook tables that encoded them",
+            hex_digest(&codes.model_sha256),
+            hex_digest(&model_sha256)
+        ));
+    }
+    let frames = usize::try_from(codes.n_frames)
+        .map_err(|_| "run (mimi decode): frame count does not fit this host")?;
+    let expected_pcm = frames
+        .checked_mul(hop)
+        .ok_or("run (mimi decode): frame count overflows PCM length")?;
+    let expected_pcm_u64 = u64::try_from(expected_pcm)
+        .map_err(|_| "run (mimi decode): PCM sample count exceeds u64")?;
+    if codes.pcm_samples != expected_pcm_u64 {
+        return Err(format!(
+            "run (mimi decode): container pcm_samples {} != n_frames {} * model hop {hop} = {expected_pcm}",
+            codes.pcm_samples, frames
+        ));
+    }
+    Ok(())
+}
+
+fn hex_digest(digest: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for &b in digest {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn run_nkf_aec(session: &Session, a: &RunArgs) -> Result<(), String> {
@@ -2053,6 +2403,108 @@ mod tests {
         assert!(err.contains("--mimi requires a GGUF path"), "got: {err}");
     }
 
+    #[test]
+    fn parses_wave2_ct_punc_and_mimi_contract_flags() {
+        let ct = parse_args(&args(&[
+            "--model",
+            "ct.gguf",
+            "--tokens",
+            "tokens.tsv",
+            "--output",
+            "restored.txt",
+        ]))
+        .expect("CT-Punc flags parse");
+        assert_eq!(ct.tokens.as_deref(), Some("tokens.tsv"));
+        assert_eq!(ct.codec_mode, None);
+
+        for (value, expected) in [("encode", CodecMode::Encode), ("decode", CodecMode::Decode)] {
+            let mimi = parse_args(&args(&[
+                "--model",
+                "mimi.gguf",
+                "--codec-mode",
+                value,
+                "--input",
+                "input.bin",
+                "--output",
+                "output.bin",
+            ]))
+            .expect("Mimi mode parses");
+            assert_eq!(mimi.codec_mode, Some(expected));
+        }
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "mimi.gguf",
+                "--codec-mode",
+                "roundtrip"
+            ]))
+            .err()
+            .unwrap()
+            .contains("expected encode or decode")
+        );
+        assert!(
+            parse_args(&args(&["--model", "ct.gguf", "--tokens"]))
+                .err()
+                .unwrap()
+                .contains("--tokens requires a path")
+        );
+    }
+
+    #[test]
+    fn mimi_container_is_bound_to_exact_model_contract() {
+        use vokra_models::codec::MimiCodecGguf;
+        use vokra_models::mimi::MimiNeuralConfig;
+        use vokra_ops::MimiRvqAttrs;
+
+        let cfg = MimiNeuralConfig::tiny_for_tests();
+        let hop = cfg.frame_hop_samples().unwrap();
+        let codec = MimiCodecGguf {
+            attrs: MimiRvqAttrs {
+                n_codebooks: cfg.quantizer.n_q,
+                codebook_size: cfg.quantizer.bins,
+                d_model: cfg.transformer.d_model,
+            },
+            // Contract validation reads topology only; RVQ math is exercised
+            // by vokra-ops and the real-weight VAST lane.
+            tables: Vec::new(),
+        };
+        let digest = sha256(b"exact effective tables");
+        let mut codes = MimiCodesV1 {
+            sample_rate: cfg.sample_rate,
+            frame_rate_mhz: cfg.frame_rate_mhz,
+            n_codebooks: u32::try_from(cfg.quantizer.n_q).unwrap(),
+            codebook_size: u32::try_from(cfg.quantizer.bins).unwrap(),
+            feature_dimension: u32::try_from(codec.attrs.d_model).unwrap(),
+            n_frames: 2,
+            pcm_samples: u64::try_from(2 * hop).unwrap(),
+            model_sha256: digest,
+            codes: vec![0; 2 * cfg.quantizer.n_q],
+        };
+
+        validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop).unwrap();
+
+        codes.model_sha256[0] ^= 1;
+        assert!(
+            validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop)
+                .unwrap_err()
+                .contains("SHA-256 mismatch")
+        );
+        codes.model_sha256 = digest;
+        codes.n_codebooks += 1;
+        assert!(
+            validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop)
+                .unwrap_err()
+                .contains("contract mismatch")
+        );
+        codes.n_codebooks -= 1;
+        codes.pcm_samples += 1;
+        assert!(
+            validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop)
+                .unwrap_err()
+                .contains("pcm_samples")
+        );
+    }
+
     /// Task 38: `--bert-ja` / `--bert-en` parse into `RunArgs`, are absent by
     /// default, and each requires a value.
     #[test]
@@ -2682,6 +3134,10 @@ mod tests {
         assert!(USAGE.contains("nkf_aec"));
         assert!(USAGE.contains("fcpe.gguf"));
         assert!(USAGE.contains("crepe.gguf"));
+        assert!(USAGE.contains("ct-punc.gguf"));
+        assert!(USAGE.contains("vokra-ct-punc-tsv-v1"));
+        assert!(USAGE.contains("--codec-mode encode"));
+        assert!(USAGE.contains("VKRMCODE"));
     }
 
     /// `--compare` on a non-speaker arch is an explicit contract error
@@ -2718,6 +3174,16 @@ mod tests {
             err.contains("--far-end is only supported for the nkf_aec arch"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn wave2_contract_flags_are_rejected_off_their_arches() {
+        let model = silero_fixture();
+        let err = main(&args(&["--model", &model, "--tokens", "tokens.tsv"])).unwrap_err();
+        assert!(err.contains("--tokens is only supported for the ct_punc arch"));
+
+        let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
+        assert!(err.contains("--codec-mode is only supported for the standalone mimi arch"));
     }
 
     /// A campplus-arch GGUF whose tensors do not bind fails loudly at the
@@ -3329,12 +3795,17 @@ mod tests {
             cpu_only_engine_label(ModelTask::Sbv2),
             Some("SBV2 (Style-Bert-VITS2 v2) TTS")
         );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::CtPunc),
+            Some("CT-Punc punctuation restoration")
+        );
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         // Bench-only tasks — unreachable from `run`; defer to their own error.
         assert_eq!(cpu_only_engine_label(ModelTask::MelFrontend), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Cosyvoice2Synthetic), None);
