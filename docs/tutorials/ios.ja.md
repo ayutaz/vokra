@@ -68,6 +68,7 @@ Xcode で:
 import SwiftUI
 import Vokra   // Clang module がすべての `vokra_*` C シンボルを re-export
 import Foundation
+import AVFoundation
 
 struct ContentView: View {
     @State private var status = "Idle"
@@ -88,17 +89,36 @@ struct ContentView: View {
 
         var session: OpaquePointer?
         let rc = vokra_session_create_from_file(gguf, &session)
-        guard rc == 0, let s = session else {
-            status = "session_create err=\(rc)"; return
+        guard rc.rawValue == VOKRA_OK.rawValue, let s = session else {
+            status = "session_create err=\(rc.rawValue)"; return
         }
         defer { vokra_session_destroy(s) }
 
-        // 実機 RTF 計測の e2e harness は docs/m2-14-ios-rtf-handover.md 参照
-        var out: UnsafeMutablePointer<CChar>?
-        let arc = vokra_asr_transcribe(s, wav, &out)
-        let text = out.map { String(cString: $0) } ?? "<null>"
-        if let o = out { vokra_string_free(o) }
-        status = "rc=\(arc): \(text.prefix(120))"
+        do {
+            // WAV parse は C ABI の外。transcribe には mono Float32 PCM、
+            // sample 数、sample rate を渡す。
+            let file = try AVAudioFile(forReading: URL(fileURLWithPath: wav))
+            let format = file.processingFormat
+            guard format.channelCount == 1, format.sampleRate == 16_000,
+                  let buffer = AVAudioPCMBuffer(
+                      pcmFormat: format,
+                      frameCapacity: AVAudioFrameCount(file.length)
+                  )
+            else { status = "fixture must be mono 16 kHz"; return }
+            try file.read(into: buffer)
+            guard let pcm = buffer.floatChannelData?[0] else {
+                status = "fixture is not Float32 PCM"; return
+            }
+            var out: UnsafeMutablePointer<CChar>?
+            let arc = vokra_asr_transcribe(
+                s, pcm, Int(buffer.frameLength), 16_000, &out
+            )
+            let text = out.map { String(cString: $0) } ?? "<null>"
+            if let o = out { vokra_string_free(o) }
+            status = "rc=\(arc.rawValue): \(text.prefix(120))"
+        } catch {
+            status = "WAV read failed: \(error)"
+        }
     }
 }
 ```
@@ -119,10 +139,11 @@ Vokra iOS ビルドはプラットフォームの制約を強制します:
   `compile_error!(...)` により、動かせない CUDA 型シンボルを silent に
   リンクしてしまうのを防ぎます。
 - **アクセラレーションは Metal** — CPU（Apple Silicon の NEON）は常に
-  利用可能。Metal を有効にするには
-  `vokra_session_set_backend(s, VOKRA_BACKEND_METAL)`（enum 名は
-  `vokra.h` 参照）。FR-EX-08 により、Metal で未対応の op は明示エラー
-  で silent CPU fallback は行いません。
+  利用可能。Metal は `vokra_session_options_t` に
+  `VOKRA_BACKEND_METAL` を設定し、
+  `vokra_session_create_from_file_with_options` へ渡す construction-time
+  選択です。FR-EX-08 により、Metal unavailable / unsupported は明示
+  エラーで、silent CPU fallback は行いません。
 
 ## 6. 実機 RTF 計測
 
