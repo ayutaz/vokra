@@ -97,6 +97,7 @@
 
 use std::collections::BTreeSet;
 
+use vokra_backend_cpu::kernels;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{LicenseClass, Result, VokraError};
@@ -1322,11 +1323,11 @@ impl ParakeetAsr {
             &weights.encoder_projector_b,
             hidden,
             &mut encoder_projected,
-        );
+        )?;
         let embed_offset = token_id as usize * hidden;
         let mut decoder = weights.embedding[embed_offset..embed_offset + hidden].to_vec();
         for layer in &weights.lstm {
-            decoder = lstm_zero_state_step(&decoder, layer, hidden);
+            decoder = lstm_zero_state_step(&decoder, layer, hidden)?;
         }
         let mut decoder_projected = vec![0.0; hidden];
         linear_into(
@@ -1335,7 +1336,7 @@ impl ParakeetAsr {
             &weights.decoder_projector_b,
             hidden,
             &mut decoder_projected,
-        );
+        )?;
         for index in 0..hidden {
             decoder_projected[index] =
                 (decoder_projected[index] + encoder_projected[index]).max(0.0);
@@ -1348,7 +1349,7 @@ impl ParakeetAsr {
             &weights.joint_head_b,
             output_dim,
             &mut logits,
-        );
+        )?;
         Ok(logits)
     }
 
@@ -1403,39 +1404,40 @@ impl ParakeetAsr {
     }
 }
 
-fn linear_into(input: &[f32], weight: &[f32], bias: &[f32], output_dim: usize, output: &mut [f32]) {
-    let input_dim = input.len();
-    debug_assert_eq!(weight.len(), output_dim * input_dim);
-    debug_assert_eq!(bias.len(), output_dim);
-    debug_assert_eq!(output.len(), output_dim);
-    for out in 0..output_dim {
-        let row = &weight[out * input_dim..(out + 1) * input_dim];
-        let mut sum = bias[out];
-        for index in 0..input_dim {
-            sum += row[index] * input[index];
-        }
-        output[out] = sum;
-    }
+fn linear_into(
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    output_dim: usize,
+    output: &mut [f32],
+) -> Result<()> {
+    kernels::gemv_f32(output_dim, input.len(), weight, input, Some(bias), output)
 }
 
 fn lstm_zero_state_step(
     input: &[f32],
     weights: &ParakeetBoundLstmLayer,
     hidden: usize,
-) -> Vec<f32> {
+) -> Result<Vec<f32>> {
+    debug_assert_eq!(weights.w_hh.len(), 4 * hidden * hidden);
+    let bias = weights
+        .b_ih
+        .iter()
+        .zip(&weights.b_hh)
+        .map(|(input, recurrent)| input + recurrent)
+        .collect::<Vec<_>>();
     let mut gates = vec![0.0f32; 4 * hidden];
-    for gate in 0..4 * hidden {
-        let row = &weights.w_ih[gate * hidden..(gate + 1) * hidden];
-        let mut sum = weights.b_ih[gate] + weights.b_hh[gate];
-        for index in 0..hidden {
-            sum += row[index] * input[index];
-        }
-        // Recurrent term is exactly zero for this parity consumer's initial
-        // state, but validate/load `w_hh` above so it cannot disappear from
-        // the checkpoint contract.
-        debug_assert_eq!(weights.w_hh.len(), 4 * hidden * hidden);
-        gates[gate] = sum;
-    }
+    // The recurrent term is exactly zero for this parity consumer's initial
+    // state, but the strict binder still validates and loads `w_hh` so it
+    // cannot disappear from the checkpoint contract.
+    kernels::gemv_f32(
+        4 * hidden,
+        hidden,
+        &weights.w_ih,
+        input,
+        Some(&bias),
+        &mut gates,
+    )?;
     let mut output = vec![0.0f32; hidden];
     for index in 0..hidden {
         let input_gate = sigmoid_f32(gates[index]);
@@ -1444,7 +1446,7 @@ fn lstm_zero_state_step(
         let cell = input_gate * candidate;
         output[index] = output_gate * cell.tanh();
     }
-    output
+    Ok(output)
 }
 
 #[inline]
