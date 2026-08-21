@@ -88,6 +88,48 @@ pub trait SpeechFeatureStream {
     fn reset(&mut self);
 }
 
+/// A model family capable of opening a stateful streaming codec decoder.
+///
+/// The engine is immutable and session-shareable. Each call to
+/// [`Self::open_decoder`] creates an independently owned state machine, which
+/// is the unit exposed by the C ABI as `vokra_codec_decoder_t`. Codec families
+/// opt in only after their real token-to-PCM streaming path exists; a partial
+/// binder must fail loudly instead of masquerading as a decoder (FR-EX-08).
+pub trait CodecDecoderEngine: Send + Sync {
+    /// Opens a fresh token-to-PCM decoder state.
+    fn open_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>>;
+}
+
+/// One stateful streaming codec decoder (codes in, mono PCM out).
+///
+/// Handles are single-owner mutable objects. They are `Send` so ownership can
+/// move between threads, but callers must not use the same handle concurrently.
+/// All shape axes are queried from the loaded checkpoint; in particular,
+/// `n_codebooks` is never a build-time or ABI constant.
+pub trait CodecDecoderHandle {
+    /// PCM samples produced by one complete code frame.
+    fn frame_hop(&self) -> usize;
+
+    /// PCM sample rate in Hz.
+    fn sample_rate(&self) -> u32;
+
+    /// Number of token indices required by one code frame.
+    fn n_codebooks(&self) -> usize;
+
+    /// Pushes exactly one `[n_codebooks]` frame and returns the number of PCM
+    /// frames made available to [`Self::pull_pcm`] (currently zero or one).
+    /// The warmed successful path must not allocate.
+    fn push_codes(&mut self, codes: &[u32]) -> Result<usize>;
+
+    /// Copies one pending PCM frame into `out`, returning the number of samples
+    /// written (`0` when no frame is pending). The warmed successful path must
+    /// not allocate.
+    fn pull_pcm(&mut self, out: &mut [f32]) -> Result<usize>;
+
+    /// Restores as-new causal state and discards pending PCM.
+    fn reset(&mut self) -> Result<()>;
+}
+
 /// A speech-to-speech dialog engine (implemented natively in
 /// `vokra-models` — Sesame CSM-1B = M4-05; Moshi = M4-06).
 ///

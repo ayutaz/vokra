@@ -139,6 +139,9 @@ typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t;
 // far-end queue. Owned by the inference thread. Opaque to C.
 typedef struct vokra_aec_t vokra_aec_t;
 
+// Opaque single-owner streaming codec decoder (module docs).
+typedef struct vokra_codec_decoder_t vokra_codec_decoder_t;
+
 // Opaque continuous speech-feature handle (#49).
 //
 // Created by `vokra_feat_open`, released by `vokra_feat_destroy`. It owns the
@@ -354,6 +357,93 @@ enum vokra_status_t vokra_asr_transcribe(const struct vokra_session_t *session,
 // `s` must be `NULL` or a pointer returned by `vokra_asr_transcribe` that has
 // not already been freed.
 void vokra_string_free(char *s);
+
+// Opens a fresh streaming codec decoder for `session`.
+//
+// Returns `NULL` and records detail in `vokra_last_error()` when the loaded
+// model does not expose a complete streaming token-to-PCM decoder. Currently
+// standalone Mimi and NVIDIA NanoCodec opt in; partial SNAC support remains
+// an explicit error until its terminal PCM decoder exists.
+//
+// # Safety
+//
+// `session` must be `NULL` or a live `vokra_session_t`. The returned handle,
+// when non-NULL, must be destroyed exactly once with
+// [`vokra_codec_decoder_destroy`].
+struct vokra_codec_decoder_t *vokra_codec_decoder_open(const struct vokra_session_t *session);
+
+// Returns PCM samples emitted per complete code frame, or `-1` on error.
+//
+// # Safety
+//
+// `decoder` must be a live handle or `NULL` (reported as `-1`).
+int32_t vokra_codec_decoder_frame_hop(const struct vokra_codec_decoder_t *decoder);
+
+// Returns the decoder PCM sample rate in Hz, or `-1` on error.
+//
+// # Safety
+//
+// `decoder` must be a live handle or `NULL` (reported as `-1`).
+int32_t vokra_codec_decoder_sample_rate(const struct vokra_codec_decoder_t *decoder);
+
+// Returns the checkpoint's codebook count, or `-1` on error. This value is
+// informational; callers must still pass the count to every push so shape
+// mismatches remain observable at the ABI boundary.
+//
+// # Safety
+//
+// `decoder` must be a live handle or `NULL` (reported as `-1`).
+int32_t vokra_codec_decoder_n_codebooks(const struct vokra_codec_decoder_t *decoder);
+
+// Pushes one complete code frame.
+//
+// `n_codebooks` is a required call-time shape and must exactly match
+// `vokra_codec_decoder_n_codebooks(decoder)`. On success,
+// `*out_frames_emitted` is `1`; pull the corresponding PCM before the next
+// push. The warmed successful push/pull path performs no heap allocation.
+//
+// # Safety
+//
+// `decoder` must be a live handle owned by the calling thread; `codes` must
+// point to `n_codebooks` readable `uint32_t` values; `out_frames_emitted`
+// must be valid and writable.
+enum vokra_status_t vokra_codec_decoder_push_codes(struct vokra_codec_decoder_t *decoder,
+                                                   const uint32_t *codes,
+                                                   size_t n_codebooks,
+                                                   int32_t *out_frames_emitted);
+
+// Pulls one pending PCM frame into `out`.
+//
+// `capacity` must be at least `vokra_codec_decoder_frame_hop(decoder)` when
+// a frame is pending. `*out_len == 0` means there was nothing to pull.
+//
+// # Safety
+//
+// `decoder` must be a live handle owned by the calling thread; when
+// `capacity > 0`, `out` must point to that many writable floats; `out_len`
+// must be valid and writable.
+enum vokra_status_t vokra_codec_decoder_pull_pcm(struct vokra_codec_decoder_t *decoder,
+                                                 float *out,
+                                                 size_t capacity,
+                                                 size_t *out_len);
+
+// Resets the causal decoder to its as-new state and discards pending PCM.
+// Errors (including `NULL`) are recorded in `vokra_last_error()`; this exact
+// pre-freeze API is void, matching the issue contract.
+//
+// # Safety
+//
+// `decoder` must be a live handle owned by the calling thread.
+void vokra_codec_decoder_reset(struct vokra_codec_decoder_t *decoder);
+
+// Destroys a decoder handle. `NULL` is a no-op; double-free or concurrent
+// use/destroy is undefined behaviour.
+//
+// # Safety
+//
+// `decoder` must be `NULL` or a live handle returned by
+// [`vokra_codec_decoder_open`] and not yet freed.
+void vokra_codec_decoder_destroy(struct vokra_codec_decoder_t *decoder);
 
 // Returns the calling thread's last error message as a NUL-terminated UTF-8
 // C string, or `NULL` if no error has been recorded on this thread.

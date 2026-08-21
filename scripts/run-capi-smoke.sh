@@ -7,7 +7,7 @@
 #   2. scripts/gen-c-abi.sh --check          (vokra.h has no drift — WP cond.)
 #   3. exported-symbol check                 (only vokra_* symbols are public)
 #   4. cc-build + run
-#      tests/capi/smoke_{vad,vad_bytes,aec,s2s,features,
+#      tests/capi/smoke_{vad,vad_bytes,aec,s2s,features,codec,
 #      backend_options,asr,tts}.c
 #      against <vokra.h>
 #
@@ -104,6 +104,11 @@ build_one s2s
 # are always on; the native Mimi happy path uses the same optional Moshi GGUF.
 build_one features
 "$TMP/smoke_features" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" || status=1
+
+# #48: generic streaming codec decoder. The committed Silero fixture proves a
+# non-codec session fails open loudly; a real Mimi push/pull is ENV-GATED.
+build_one codec
+"$TMP/smoke_codec" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" || status=1
 
 # 2026-08-14: backend selection through the opaque options object
 # (vokra_backend_t / vokra_session_options_* / vokra_backend_available) plus
