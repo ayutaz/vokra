@@ -1087,9 +1087,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "parakeet-tdt",
         module: "vokra_models::parakeet",
-        entry: "ParakeetAsr::transcribe",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ParakeetAsr::from_gguf → ParakeetAsr::transcribe",
+        reason: BoundReason::LoudPartialForward,
+        probe: Some(|g: &GgufFile| vokra_models::parakeet::ParakeetAsr::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "sensevoicesmall",
