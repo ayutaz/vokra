@@ -55,6 +55,9 @@
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
+mod bound;
+pub use bound::{DiaCheckpoint, DiaTextEmbedding};
+
 use crate::codec::DacCodecGguf;
 
 /// `vokra.model.arch` a Dia GGUF must carry. Written by

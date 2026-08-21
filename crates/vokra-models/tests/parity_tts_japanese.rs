@@ -59,11 +59,9 @@
 //!
 //! # What each test proves TODAY
 //!
-//! Both runtime modules (`crate::irodori`, `crate::vits_ja`) are
-//! primary-source-transcribed SCAFFOLDS: their `synthesize` returns
-//! [`VokraError::NotImplemented`] until a T29-shaped follow-up wave
-//! binds real weights and wires the forward. On a **real converted
-//! GGUF** we can — and here do — assert:
+//! Both runtime modules now have strict real-GGUF binders. Their full
+//! `synthesize` paths remain loud partials until the terminal model stacks are
+//! wired. On a **real converted GGUF** we can — and here do — assert:
 //!
 //! - the file opens (GGUF v3, well-formed);
 //! - `vokra.model.arch` equals the runtime constant
@@ -78,8 +76,8 @@
 //!   metadata-only GGUF from the "no float tensors" note in each
 //!   converter's rustdoc would here surface as a loud FAIL rather than
 //!   a silent "shape OK");
-//! - the scaffold `synthesize` refuses loudly (FR-EX-08 pin — this is
-//!   the assertion that goes AWAY the moment real weights bind).
+//! - a real native consumer executes after strict binding, while full
+//!   `synthesize` refuses loudly at the remaining forward boundary.
 //!
 //! Once `VOKRA_<A>_REFDIR` is populated, an additional byte-level
 //! comparison step fires (`assert_close` at `atol = 0.01` against the
@@ -111,7 +109,7 @@ use vokra_models::irodori::{
     irodori_text_block_forward,
 };
 use vokra_models::vits_ja::{
-    VITS_JA_LEAKY_RELU_SLOPE, VITS_JA_SAMPLE_RATE, VitsJaConfig, VitsJaTts, VitsJaWeights,
+    VITS_JA_LEAKY_RELU_SLOPE, VITS_JA_SAMPLE_RATE, VitsJaCheckpoint, VitsJaConfig,
 };
 
 /// Global FP32 parity tolerance (NFR-QL-01). Applied to the reference-dir
@@ -820,7 +818,9 @@ fn parity_tts_japanese_irodori() {
 ///   `upsample_kernel_sizes`, `resblock_kernel_sizes`,
 ///   `resblock_dilations_flat_u32`) round-trip verbatim;
 /// * the converter shipped ≥1 float tensor through;
-/// * `VitsJaTts::synthesize` refuses loudly.
+/// * the strict binder validates all 885 canonical generator tensor names
+///   and shapes, then executes the real phoneme embedding;
+/// * `VitsJaCheckpoint::synthesize` refuses loudly at the remaining forward.
 ///
 /// If `VOKRA_VITS_JA_REFDIR` is also set, the byte-level leg fires.
 #[test]
@@ -1023,16 +1023,32 @@ fn parity_tts_japanese_vits_ja() {
     // Sample-rate anchor.
     assert_eq!(VITS_JA_SAMPLE_RATE, 22_050);
 
-    // FR-EX-08 pin — scaffold synthesize must refuse loudly.
-    let cfg = VitsJaConfig::espnet_ja_jsut_22khz();
-    let weights = VitsJaWeights::synthesized(&cfg).expect("build vits_ja scaffold weights");
-    let tts = VitsJaTts::new(cfg, weights).expect("build vits_ja scaffold engine");
-    let err = tts
+    let checkpoint = VitsJaCheckpoint::from_gguf(&file).unwrap_or_else(|error| {
+        panic!("strict VITS-JA binder rejected {}: {error}", gguf.display())
+    });
+    assert_eq!(checkpoint.model_name(), "espnet-jsut-vits-22khz");
+    assert_eq!(checkpoint.tensor_count(), 885);
+    assert_eq!(
+        checkpoint.weight_license(),
+        LicenseClass::RedistributionForbidden
+    );
+    let embedding = checkpoint
+        .load_text_embedding(&file)
+        .expect("decode real VITS-JA phoneme embedding");
+    let output = embedding
+        .forward(&[0, 1, 42])
+        .expect("run real VITS-JA phoneme embedding");
+    assert_eq!(output.len(), 3 * 192);
+    assert!(output.iter().all(|value| value.is_finite()));
+    assert!(output.iter().any(|value| value.abs() > 1.0e-7));
+
+    // FR-EX-08 pin — full forward remains loud after real binding.
+    let err = checkpoint
         .synthesize("こんにちは")
-        .expect_err("scaffold synthesize must refuse loudly");
+        .expect_err("partial VITS-JA synthesize must refuse loudly");
     assert!(
         matches!(err, VokraError::NotImplemented(_)),
-        "vits_ja: scaffold synthesize returned unexpected variant {err:?}"
+        "vits_ja: partial synthesize returned unexpected variant {err:?}"
     );
 
     if let Some(refdir) = refdir {

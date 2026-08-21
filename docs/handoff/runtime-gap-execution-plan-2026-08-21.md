@@ -16,8 +16,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `RealForwardNoCliTask` | 3 | 0 | 0 | 0 | Real forward exists; CLI routing is absent |
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | 17 | 9 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 60 | Loading can succeed, but the named forward stops explicitly |
+| `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
+| `LoudPartialForward` | 56 | 56 | 56 | 69 | Loading can succeed, but the named forward stops explicitly |
 | **Total** | **79** | **75** | **73** | **69** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
@@ -158,7 +158,7 @@ Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
 package tests are present. Real-weight CT-Punc/Mimi execution remains part of
 the final VAST evidence pass; it is not replaced by the structural tests.
 
-## Wave 3 — 9 of 17 GGUF loaders remaining
+## Wave 3 — all 17 GGUF loader gaps closed
 
 Implement loaders in dependency-aware families. Every loader needs a writer ↔
 reader tensor/metadata handshake, a real pinned checkpoint, license/provenance
@@ -261,13 +261,45 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    BatchNorm convolution modules, recurrent TDT decode state, and
    SentencePiece detokenization. The generic stacking/RoPE Conformer scaffold
    is not numerically equivalent and is not substituted.
-4. Remaining TTS scaffolds (9): `chatterbox`, `chatterbox_nano`,
-   `chatterbox_turbo`, `cosyvoice3`, `dia`, `vibevoice`, `vits-ja`,
-   `voxcpm2`, `zonos`. Several currently use
-   synthesized weights, zero-placeholder axes, or a missing terminal codec.
-   Split each into config transcription, real-weight load, forward, terminal
-   codec/vocoder, and parity; do not land blanket loaders that only reveal the
-   next refusal.
+4. The remaining TTS loader slice closed on 2026-08-22. Eight redistributable
+   official GGUFs were mmap-bound and exercised on VAST instance `48305436`;
+   every binder pins the complete sorted tensor name/shape manifest rather
+   than admitting a count-only match. No artifact was uploaded.
+
+   | Arch | Upstream revision | Bytes | Tensors | GGUF SHA-256 | Manifest SHA-256 | Real consumer / measured `max_abs` |
+   |---|---|---:|---:|---|---|---|
+   | `chatterbox` | `95c8bf4409c237de930c2eec0274fb2b99a21a09` | 2,143,980,064 | 292 | `32733495d1379fc495e091f527139d2b0b5a0fbaf7ec8a53c03f0cebbf939d32` | `4c62a90e6241765f742f27917ac05c08f66623f0b1768e48efd7f7f6bbf84c79` | 256→1024 speaker projection / `8.195639e-8` |
+   | `chatterbox_nano` | `49b2f3612ec3e479eb64ce49ab27ae82cbf0b206` | 869,895,424 | 155 | `624bec40b1f590ecf3e336f1ffe0deb42b49089b24abdfc3e1944ff5154cc39d` | `ecc33b97887ddc77e21d06ad225b323afcd10daae15eb82e4b3fdb25350b9798` | 256→768 speaker projection / `1.4901161e-7` |
+   | `chatterbox_turbo` | `10fee774c6c5ed890e39cea76d0ae1a320f7a4eb` | 1,915,470,144 | 299 | `ab1a266a42e41a9b4c2ab48fc60040abd9f1c320f807df154c08da986cd601b5` | `c21cfd336cb9b0f70179fcf2308ec66e239a8272193464ba2a78251d8182b880` | 256→1024 speaker projection / `1.2852252e-7` |
+   | `cosyvoice3` | `37e7d22a665d96dd7eb2e10e43ff4571783670cc` | 2,577,517,280 | 293 | `d581891f7b25f8b3da80a73b750098108f065f03421e23acf0722f716c3cc84f` | `fb6e0c2c37f12343bd3c7ad52bc6a1551b7ed8945c7bab0e011e666fcbca7705` | layer-0 896→896 Q projection / `5.722046e-6` |
+   | `dia` | `dd1df2a129fed7d15c365caeabaae227ccfe8537` | 6,444,673,088 | 343 | `a90733e9e6806cae66abf3eca1d575ecf6dab9298c07d39fc4217a509c952a6d` | `55fce2a39cafba838bd800f6a6aefe63a8e3b1dd86f2727f9a20d87fe6d252f7` | `[256,1024]` text embedding / exact |
+   | `vibevoice` | `dec190628f58928fc247b1205b9da2dabc58b9da` | 5,408,160,960 | 1,204 | `8ef5f259dfab0b048151ce52d27468040f72b35b6909528e6db7fbb332ccaeac` | `45cb011420fdb114c7ad61d80888663bcc861e33b7945873836aee2450eb5702` | 64→1536 acoustic projection / `1.4901161e-8` |
+   | `voxcpm2` | `ee0ca6d6728c947ecf170e6711bdfbd6decaf0d5` | 1,304,607,744 | 377 | `2c5c3b2509368db3545ea44e66ddd3ef5050ceacd5b5a431d8d8acf1300c6cce` | `d364689d5593ed8886029907a5d17e7659b94f7f310fe95b133c545b6901c509` | 1024→1024 stop projection / `5.9604645e-7` |
+   | `zonos` | `b1bf5c56d470eb9097e9b04f9deca364576574ba` | 3,248,843,808 | 246 | `12d542bd219f7f31c91b893810d85b0d810285e603029c69fbd19fd3c7da2c5c` | `6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c9afdae805847` | 128→2048 speaker conditioner / `4.4703484e-8` |
+
+   Fixed bounds are respectively `5e-7`, `5e-7`, `5e-7`, `1e-5`, `1e-8`,
+   `1e-7`, `1e-6`, and `1e-7`; none was widened after measurement. The
+   `voxcpm2` binder accepts only the known published name `voxcpm-0.5b` and
+   the current converter alias `voxcpm2-0.5b` under the same exact manifest.
+   The official Chatterbox Nano artifact is GPT-2-shaped (12 layers, hidden
+   768), exposing stale Llama-shaped scaffold prose/config that remains a
+   forward-wave correction rather than being silently treated as equivalent.
+
+   `vits-ja` is the ninth row and has a different evidence boundary. The
+   official ESPnet README identifies the 22.05 kHz release as Zenodo record
+   5521354 trained at commit
+   `628b46282537ce532d613d6bafb75e826e8455de`; JSUT terms prohibit
+   redistribution, so Vokra neither fetched nor uploaded the weight. The new
+   offline preparer accepts only an operator-held checkpoint, extracts and
+   normalizes only the `VITSGenerator` state, and requires the 885-tensor,
+   42,011,890-parameter manifest
+   `b5d039b6f6febfcb93f2ad17f1647311bb0c37869f54b5e5ceac23f7b951b284`.
+   A generator instantiated from that exact official commit and recipe was
+   wrapped like an ESPnet training checkpoint, passed through the preparer and
+   converter, then passed the strict Rust binder and real 43×192 embedding
+   consumer on VAST. This is structural loader evidence, not real-weight
+   numerical parity; the operator-provisioned real leg remains fail-closed in
+   `parity-tts-japanese-real.yml` until a lawful local artifact is supplied.
 5. `qwen3_tts` loader closed on 2026-08-21 for the official
    `Qwen/Qwen3-TTS-12Hz-0.6B-Base` checkpoint. The strict binder validates the
    exact 478-tensor name/shape manifest, including the 76-tensor speaker

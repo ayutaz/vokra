@@ -116,6 +116,9 @@
 
 use vokra_core::{Result, VokraError};
 
+mod bound;
+pub use bound::{VibeVoiceAcousticProjection, VibeVoiceCheckpoint};
+
 // Public seam re-exports — shared with the VAE + sampler primitives.
 pub use vokra_ops::ddpm_sampler::{BetaSchedule, DdpmSamplerConfig, PredictionType};
 pub use vokra_ops::vae_continuous::ContinuousVaeConfig;

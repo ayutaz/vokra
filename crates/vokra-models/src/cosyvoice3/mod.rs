@@ -127,6 +127,9 @@
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
+mod bound;
+pub use bound::{CosyVoice3Checkpoint, CosyVoice3QProjection};
+
 // ---------------------------------------------------------------------------
 // Public seam re-exports (SoTA plan §1(a) 訂正 shared with CosyVoice2)
 // ---------------------------------------------------------------------------

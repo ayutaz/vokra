@@ -928,8 +928,7 @@ fn print_attribution_banner(info: &vokra_core::AttributionInfo) {
 // *which* primitive is missing — restating that here would be a second source
 // of truth that drifts silently away from the binder. It carries only facts
 // this file can keep honest: the module that binds the arch, the public entry
-// point a caller reaches the runtime through, the class of blocker (verified
-// by reading each module's entry point), and — where the binder's loader
+// point a caller reaches the runtime through, and — where the binder's loader
 // accepts an already-parsed GGUF handle — a probe that actually loads it, so a
 // malformed artifact surfaces the BINDER's own load error rather than a
 // generic message.
@@ -942,45 +941,12 @@ fn print_attribution_banner(info: &vokra_core::AttributionInfo) {
 /// hands the binder's own diagnostic straight to the user.
 type BoundProbe = fn(&GgufFile) -> Result<(), VokraError>;
 
-/// Why an architecture that `vokra-models` binds has no `vokra-cli run` task.
-///
-/// Each value was established by reading the module's entry point, not
-/// inferred: see the per-variant note for the evidence class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoundReason {
-    /// The binder loads and validates, but its runtime entry point is a
-    /// loud-partial: it returns `UnsupportedOp` / `NotImplemented`
-    /// unconditionally, naming the missing primitive and its primary source.
-    /// Verified per module by reading the entry point's body.
-    LoudPartialForward,
-    /// The module has no GGUF loader at all yet — its weights come from a
-    /// deterministic `synthesized` fixture, so there is nothing for the CLI
-    /// to bind from a converted artifact.
-    ///
-    /// A module whose `from_gguf` exists but refuses on every path, binding
-    /// no tensor, is the same class and belongs here: what separates this
-    /// variant from the others is whether a converted artifact can yield a
-    /// usable handle, not whether a symbol by that name compiles.
-    NoGgufLoader,
-}
-
-impl BoundReason {
-    /// One sentence naming the blocker class, for the `run` diagnostic.
-    fn explain(self) -> &'static str {
-        match self {
-            Self::LoudPartialForward => {
-                "its runtime forward is a loud-partial — calling the entry point below \
-                 reports the specific missing primitive and the primary source to \
-                 transcribe it from (this CLI deliberately does not restate that gap: a \
-                 copy here would drift away from the binder)"
-            }
-            Self::NoGgufLoader => {
-                "the module has no GGUF loader yet (its weights come from a deterministic \
-                 `synthesized` fixture), so there is nothing to bind from this artifact"
-            }
-        }
-    }
-}
+/// Every current registry row has a GGUF loader and a loud-partial runtime
+/// forward. The former `NoGgufLoader` class reached zero in the 2026-08-22 TTS
+/// loader wave, so the diagnostic no longer carries a dead blocker variant.
+const LOUD_PARTIAL_EXPLANATION: &str = "its runtime forward is a loud-partial — calling the entry point below reports the \
+     specific missing primitive and the primary source to transcribe it from (this CLI \
+     deliberately does not restate that gap: a copy here would drift away from the binder)";
 
 /// One architecture `vokra-models` binds but `vokra-cli run` cannot execute.
 #[derive(Clone, Copy)]
@@ -991,11 +957,8 @@ struct BoundArch {
     module: &'static str,
     /// The public entry point a library caller reaches the runtime through.
     entry: &'static str,
-    /// The class of blocker keeping it out of `run`.
-    reason: BoundReason,
     /// Load probe, when the binder's loader takes an already-parsed
-    /// `&GgufFile`. `None` for path-taking loaders and for
-    /// [`BoundReason::NoGgufLoader`] rows.
+    /// `&GgufFile`. `None` for path-taking loaders.
     probe: Option<BoundProbe>,
 }
 
@@ -1013,14 +976,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "canary",
         module: "vokra_models::canary",
         entry: "CanaryAsr::from_gguf → CanaryAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::canary::CanaryAsr::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "canary-1b-flash",
         module: "vokra_models::canary_1b_flash",
         entry: "Canary1bFlashAsr::from_gguf → Canary1bFlashAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::canary_1b_flash::Canary1bFlashAsr::from_gguf(g).map(|_| ())
         }),
@@ -1029,7 +990,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "canary-qwen",
         module: "vokra_models::canary_qwen",
         entry: "CanaryQwenAsr::from_gguf → CanaryQwenAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::canary_qwen::CanaryQwenAsr::from_gguf(g).map(|_| ())
         }),
@@ -1045,7 +1005,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "whisper-medusa-v1",
         module: "vokra_models::whisper_medusa",
         entry: "WhisperMedusa::from_gguf → WhisperMedusa::transcribe_tokens",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::whisper_medusa::WhisperMedusa::from_gguf(g).map(|_| ())
         }),
@@ -1054,14 +1013,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "moonshine",
         module: "vokra_models::moonshine",
         entry: "Moonshine::from_gguf → Moonshine::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::moonshine::Moonshine::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "omniasr-ctc",
         module: "vokra_models::omniasr_ctc",
         entry: "OmniasrCtcAsr::from_gguf → OmniasrCtcAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(g).map(|_| ())
         }),
@@ -1070,7 +1027,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "parakeet-ctc",
         module: "vokra_models::parakeet_ctc",
         entry: "ParakeetCtcAsr::from_gguf → ParakeetCtcAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::parakeet_ctc::ParakeetCtcAsr::from_gguf(g).map(|_| ())
         }),
@@ -1079,7 +1035,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "parakeet-tdt-1_1b",
         module: "vokra_models::parakeet_tdt_1_1b",
         entry: "ParakeetTdt11b::from_gguf → ParakeetTdt11b::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf(g).map(|_| ())
         }),
@@ -1088,14 +1043,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "parakeet-tdt",
         module: "vokra_models::parakeet",
         entry: "ParakeetAsr::from_gguf → ParakeetAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::parakeet::ParakeetAsr::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "sensevoicesmall",
         module: "vokra_models::sensevoicesmall_runtime",
         entry: "SenseVoiceSmall::from_gguf → SenseVoiceSmall::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::sensevoicesmall_runtime::SenseVoiceSmall::from_gguf(g).map(|_| ())
         }),
@@ -1104,7 +1057,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "firered_asr_aed_l",
         module: "vokra_models::firered_asr_aed",
         entry: "FireredAsrAed::from_gguf → FireredAsrAed::transcribe_tokens",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::firered_asr_aed::FireredAsrAed::from_gguf(g).map(|_| ())
         }),
@@ -1113,28 +1065,24 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "sber_gigaam_v3",
         module: "vokra_models::gigaam",
         entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "gigaam_multilingual",
         module: "vokra_models::gigaam",
         entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "kyutai-stt",
         module: "vokra_models::kyutai_stt",
         entry: "KyutaiSttAsr::from_path → KyutaiSttAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "mt3",
         module: "vokra_models::mt3",
         entry: "Mt3::from_gguf → Mt3::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::mt3::Mt3::from_gguf(g).map(|_| ())),
     },
     // --- VAD / KWS / turn-taking ----------------------------------------
@@ -1142,21 +1090,18 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "firered_vad",
         module: "vokra_models::firered_vad",
         entry: "FireredVad::from_gguf → FireredVad::speech_probabilities",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::firered_vad::FireredVad::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "ten_vad",
         module: "vokra_models::ten_vad",
         entry: "TenVad::from_gguf → TenVad::frame_probability",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::ten_vad::TenVad::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "smart_turn",
         module: "vokra_models::smart_turn",
         entry: "SmartTurn::from_gguf → SmartTurn::predict_endpoint",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::smart_turn::SmartTurn::from_gguf(g).map(|_| ())),
     },
     // `LoudPartialForward` asserts something specific: that the LOAD
@@ -1185,7 +1130,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "openwakeword_op",
         module: "vokra_models::kws::openwakeword",
         entry: "OpenwakewordSession::from_gguf → OpenwakewordSession::push_pcm16k",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::kws::openwakeword::OpenwakewordSession::from_gguf(g).map(|_| ())
         }),
@@ -1195,56 +1139,56 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "styletts2",
         module: "vokra_models::styletts2",
         entry: "StyleTts2Tts::from_gguf → StyleTts2Tts::synthesize",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "cosyvoice2",
         module: "vokra_models::cosyvoice2",
         entry: "CosyVoice2Tts::from_path → CosyVoice2Tts::synthesize_pcm_from_mel",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "cosyvoice3",
         module: "vokra_models::cosyvoice3",
-        entry: "CosyVoice3Tts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "CosyVoice3Checkpoint::from_gguf → CosyVoice3Checkpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::cosyvoice3::CosyVoice3Checkpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "chatterbox",
         module: "vokra_models::chatterbox",
-        entry: "ChatterboxTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ChatterboxCheckpoint::from_gguf → ChatterboxCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::chatterbox::ChatterboxCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "chatterbox_nano",
         module: "vokra_models::chatterbox_nano",
-        entry: "ChatterboxNanoTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ChatterboxNanoCheckpoint::from_gguf → ChatterboxNanoCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::chatterbox_nano::ChatterboxNanoCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "chatterbox_turbo",
         module: "vokra_models::chatterbox_turbo",
-        entry: "ChatterboxTurboTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ChatterboxTurboCheckpoint::from_gguf → ChatterboxTurboCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::chatterbox_turbo::ChatterboxTurboCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "dia",
         module: "vokra_models::dia",
-        entry: "DiaTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "DiaCheckpoint::from_gguf → DiaCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| vokra_models::dia::DiaCheckpoint::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "irodori-tts",
         module: "vokra_models::irodori",
         entry: "IrodoriCheckpoint::from_gguf → IrodoriCheckpoint::synthesize",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::irodori::IrodoriCheckpoint::from_gguf(g).map(|_| ())
         }),
@@ -1253,7 +1197,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "qwen3_tts",
         module: "vokra_models::qwen3_tts",
         entry: "Qwen3TtsCheckpoint::from_gguf → Qwen3TtsCheckpoint::synthesize",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::qwen3_tts::Qwen3TtsCheckpoint::from_gguf(g).map(|_| ())
         }),
@@ -1261,36 +1204,37 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "vibevoice",
         module: "vokra_models::vibevoice",
-        entry: "VibeVoiceTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "VibeVoiceCheckpoint::from_gguf → VibeVoiceCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::vibevoice::VibeVoiceCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "vits-ja",
         module: "vokra_models::vits_ja",
-        entry: "VitsJaTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "VitsJaCheckpoint::from_gguf → VitsJaCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::vits_ja::VitsJaCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "voxcpm2",
         module: "vokra_models::voxcpm2",
-        entry: "VoxCpm2Tts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "VoxCpm2Checkpoint::from_gguf → VoxCpm2Checkpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::voxcpm2::VoxCpm2Checkpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "zonos",
         module: "vokra_models::zonos",
-        entry: "ZonosTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ZonosCheckpoint::from_gguf → ZonosCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| vokra_models::zonos::ZonosCheckpoint::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "diffsinger",
         module: "vokra_models::diffsinger",
         entry: "DiffSinger::from_gguf → DiffSinger::synthesize_mel",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::diffsinger::DiffSinger::from_gguf(g).map(|_| ())),
     },
     // --- Speech-to-speech -------------------------------------------------
@@ -1324,14 +1268,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "llama_omni2",
         module: "vokra_models::llama_omni2",
         entry: "LlamaOmni2::from_path → LlamaOmni2::converse",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "voila",
         module: "vokra_models::voila",
         entry: "Voila::from_gguf → Voila::converse",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::voila::Voila::from_gguf(g).map(|_| ())),
     },
     // --- Music / audio generation ----------------------------------------
@@ -1339,35 +1281,30 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "musicgen",
         module: "vokra_models::musicgen",
         entry: "MusicGen::from_gguf → MusicGen::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::musicgen::MusicGen::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "audiogen",
         module: "vokra_models::audiogen",
         entry: "AudioGen::from_gguf → AudioGen::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::audiogen::AudioGen::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "audioldm2",
         module: "vokra_models::audioldm2",
         entry: "AudioLdm2::from_gguf → AudioLdm2::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::audioldm2::AudioLdm2::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "jasco_400m_chords_drums",
         module: "vokra_models::jasco",
         entry: "Jasco::from_gguf → Jasco::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::jasco::Jasco::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "beat-this",
         module: "vokra_models::beat_this",
         entry: "BeatThis::from_gguf → BeatThis::analyze",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::beat_this::BeatThis::from_gguf(g).map(|_| ())),
     },
     // --- Source separation / enhancement / super-resolution ---------------
@@ -1375,35 +1312,30 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "sepformer",
         module: "vokra_models::sepformer",
         entry: "SepFormer::from_gguf → SepFormer::separate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::sepformer::SepFormer::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "conv_tasnet",
         module: "vokra_models::conv_tasnet",
         entry: "ConvTasnet::from_gguf → ConvTasnet::separate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::conv_tasnet::ConvTasnet::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "demucs",
         module: "vokra_models::demucs",
         entry: "Demucs::from_gguf → Demucs::separate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::demucs::Demucs::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "gtcrn",
         module: "vokra_models::gtcrn",
         entry: "Gtcrn::from_gguf → Gtcrn::denoise",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::gtcrn::Gtcrn::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "facebook_denoiser",
         module: "vokra_models::facebook_denoiser",
         entry: "FbDenoiser::from_gguf → FbDenoiser::denoise",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::facebook_denoiser::FbDenoiser::from_gguf(g).map(|_| ())
         }),
@@ -1412,14 +1344,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "storm",
         module: "vokra_models::storm",
         entry: "Storm::from_gguf → Storm::enhance",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::storm::Storm::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "audiosr",
         module: "vokra_models::audiosr",
         entry: "AudioSr::from_gguf → AudioSr::super_resolve",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::audiosr::AudioSr::from_gguf(g).map(|_| ())),
     },
     BoundArch {
@@ -1428,7 +1358,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "RnnoiseV02::from_gguf → RnnoiseV02::forward_features (real network complete; \
                 waveform denoise remains partial: v0.2 32-band/65-feature analysis, pitch \
                 downsample/remove_doubling, delayed-spectrum gains, and OLA synthesis)",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::rnnoise::RnnoiseV02::from_gguf(g).map(|_| ())),
     },
     // --- Diarization / speaker -------------------------------------------
@@ -1436,7 +1365,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "sortformer",
         module: "vokra_models::sortformer_diar_4spk_v1",
         entry: "SortformerDiar::from_gguf → SortformerDiar::diarize",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::sortformer_diar_4spk_v1::SortformerDiar::from_gguf(g).map(|_| ())
         }),
@@ -1445,7 +1373,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "speaker_3d",
         module: "vokra_models::speaker_3d_eres2net",
         entry: "Speaker3dEres2Net::from_gguf → Speaker3dEres2Net::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::speaker_3d_eres2net::Speaker3dEres2Net::from_gguf(g).map(|_| ())
         }),
@@ -1454,14 +1381,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "redimnet",
         module: "vokra_models::redimnet",
         entry: "ReDimNet::from_gguf → ReDimNet::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::redimnet::ReDimNet::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "wavlm_sv",
         module: "vokra_models::wavlm",
         entry: "WavLmSv::from_gguf → WavLmSv::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::wavlm::WavLmSv::from_gguf(g).map(|_| ())),
     },
     // --- SSL / representation encoders and classifiers --------------------
@@ -1478,49 +1403,42 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "atst",
         module: "vokra_models::atst",
         entry: "Atst::from_gguf → Atst::encode / Atst::embed",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::atst::Atst::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "eat",
         module: "vokra_models::eat",
         entry: "Eat::from_gguf → Eat::encode / Eat::embed_utterance",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::eat::Eat::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "m2d",
         module: "vokra_models::m2d",
         entry: "M2d::from_gguf → M2d::encode / M2d::embed",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::m2d::M2d::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "maest",
         module: "vokra_models::maest",
         entry: "Maest::from_gguf → Maest::encode / Maest::tag",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::maest::Maest::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "w2v-bert-2",
         module: "vokra_models::w2v_bert2",
         entry: "W2vBert2::from_gguf → W2vBert2::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::w2v_bert2::W2vBert2::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "clap",
         module: "vokra_models::clap",
         entry: "Clap::from_gguf → Clap::encode_audio",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::clap::Clap::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "emotion2vec",
         module: "vokra_models::emotion2vec",
         entry: "Emotion2Vec::from_gguf → Emotion2Vec::classify",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::emotion2vec::Emotion2Vec::from_gguf(g).map(|_| ())
         }),
@@ -1529,7 +1447,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "panns",
         module: "vokra_models::panns",
         entry: "Panns::from_gguf → Panns::classify",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::panns::Panns::from_gguf(g).map(|_| ())),
     },
     // --- Quality metrics --------------------------------------------------
@@ -1537,7 +1454,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "dnsmos",
         module: "vokra_models::dnsmos_p808_p835",
         entry: "Dnsmos::from_gguf → Dnsmos::score_all",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf(g).map(|_| ())
         }),
@@ -1546,21 +1462,18 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "nisqa_v2_weight",
         module: "vokra_models::nisqa",
         entry: "Nisqa::from_gguf → Nisqa::score",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::nisqa::Nisqa::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "utmosv2",
         module: "vokra_models::utmosv2",
         entry: "Utmosv2::from_gguf → Utmosv2::predict_mos",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::utmosv2::Utmosv2::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "torchaudio_squim",
         module: "vokra_models::squim",
         entry: "Squim::from_gguf → Squim::estimate_objective / estimate_subjective",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::squim::Squim::from_gguf(g).map(|_| ())),
     },
     // --- Vocoders / codecs -----------------------------------------------
@@ -1571,7 +1484,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "snac",
         module: "vokra_models::snac",
         entry: "Snac::from_gguf → Snac::encode / Snac::decode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::snac::Snac::from_gguf(g).map(|_| ())),
     },
     // --- Text / alignment side-cars ---------------------------------------
@@ -1594,7 +1506,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "chattts",
         module: "vokra_models::chattts",
         entry: "ChatTts::from_gguf → ChatTts::synthesize",
-        reason: BoundReason::LoudPartialForward,
         // The probe is the un-gated `&GgufFile` binder, which reads only the
         // tensor MANIFEST (`ChatTtsWeights` holds `(name, dims)` pairs — no
         // payload) and drops it. ChatTTS weights are CC-BY-NC-4.0 and the
@@ -1607,7 +1518,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "deepfake_detection",
         module: "vokra_models::deepfake_detection",
         entry: "DeepfakeDetection::from_gguf → DeepfakeDetection::score",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::deepfake_detection::DeepfakeDetection::from_gguf(g).map(|_| ())
         }),
@@ -1616,7 +1526,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "lang_id_ecapa",
         module: "vokra_models::lang_id",
         entry: "LangIdEcapa::from_gguf → LangIdEcapa::identify",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::lang_id::LangIdEcapa::from_gguf(g).map(|_| ())),
     },
     // DTLN-AEC still stops at the absent generic LSTM primitive. NKF-AEC is
@@ -1625,7 +1534,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "dtln_aec",
         module: "vokra_models::aec::dtln_aec",
         entry: "DtlnAec::from_gguf → DtlnAec::process",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::aec::dtln_aec::DtlnAec::from_gguf(g).map(|_| ())),
     },
 ];
@@ -1665,7 +1573,7 @@ fn bound_arch_error(bound: &BoundArch, gguf: &GgufFile) -> String {
     let arch = bound.arch;
     let module = bound.module;
     let entry = bound.entry;
-    let reason = bound.reason.explain();
+    let reason = LOUD_PARTIAL_EXPLANATION;
     format!(
         "arch `{arch}` is BOUND by this build — `{module}` has a runtime binder for it, \
          not an unknown architecture. {load_line} What it does NOT have is a `vokra-cli \
@@ -2181,10 +2089,11 @@ mod tests {
         );
     }
 
-    /// A module with no GGUF loader says exactly that, rather than implying
-    /// a forward gap it has not reached yet.
+    /// Zonos moved from the last no-loader slice to a strict manifest probe;
+    /// an arch-only GGUF must surface the binder failure and the remaining
+    /// forward class rather than the retired synthesized-only diagnosis.
     #[test]
-    fn load_session_bound_arch_without_a_gguf_loader_says_so() {
+    fn load_session_zonos_uses_strict_probe_and_loud_partial_diagnostic() {
         let err = with_arch_only_gguf("zonos", "zonos-arch", |p| {
             let Err(e) = load_session(p) else {
                 panic!("zonos has no run task");
@@ -2192,8 +2101,8 @@ mod tests {
             e
         });
         assert!(
-            err.contains("no GGUF loader yet"),
-            "must name the real blocker for a synthesized-weights module: {err}"
+            err.contains("FAILED — the binder reports:") && err.contains("loud-partial"),
+            "must report the strict binder outcome and remaining forward class: {err}"
         );
         assert!(
             err.contains("vokra_models::zonos"),
@@ -2587,13 +2496,6 @@ mod tests {
                 "row `{}` must name a library entry point",
                 row.arch
             );
-            if row.reason == BoundReason::NoGgufLoader {
-                assert!(
-                    row.probe.is_none(),
-                    "row `{}` claims no GGUF loader yet carries a probe",
-                    row.arch
-                );
-            }
         }
     }
 

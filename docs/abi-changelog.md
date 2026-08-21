@@ -264,7 +264,11 @@ SpeechT5/SpeechBrain HiFi-GAN, and Vocos real-weight forwards. The existing
 `vokra.vocos.variant` wire key is unchanged; the runtime now enforces its two
 previously documented values against exact tensor manifests. Qwen3-TTS adds a
 strict 0.6B checkpoint handle and decoder-block API over its already-existing
-GGUF schema; no `vokra.qwen3_tts.*` key is added or changed.
+GGUF schema. The remaining TTS loader slice adds strict checkpoint/real-tensor
+consumer APIs for eight published GGUFs plus the operator-provisioned VITS-JA
+path. No existing `vokra.qwen3_tts.*`, `vokra.chatterbox*.*`,
+`vokra.cosyvoice3.*`, `vokra.dia.*`, `vokra.vibevoice.*`, `vokra.voxcpm2.*`,
+`vokra.zonos.*`, or `vokra.vits_ja.*` key is added, removed, or changed.
 
 | Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -278,8 +282,15 @@ GGUF schema; no `vokra.qwen3_tts.*` key is added or changed.
 | `vokra-ops::f0::pyin` | `pyin_detailed` | Added | `pub fn pyin_detailed(&[f32], u32, f32, f32) -> Result<Vec<PyinFrame>>` | Exposes full PyIN output without changing the compatibility wrapper; re-exported through `f0` and the crate root. | no | #44 |
 | `vokra-ops::f0::pyin` | `pyin` | Changed | `pub fn pyin(&[f32], u32, f32, f32) -> Result<Vec<f32>>` | Replaces per-frame first-dip argmax with all-trough Beta interval observations and voiced/unvoiced Viterbi smoothing; signature and `0.0` unvoiced convention are unchanged. | no | #44 |
 | `vokra-ops::vocos` | `VocosAttrs`, `VocosIstftPadding`, `VocosNormWeights`, `VocosBlockWeights`, `VocosWeights`, `vocos_decode` | Added | native ConvNeXt-1D feature decoder with conditional/plain normalization and center/same iSTFT trimming | Exposes the exact two official Vocos numerical contracts; validation rejects inconsistent axes and condition ids before arithmetic. | no | #44 |
+| `vokra-models::{chatterbox,chatterbox_nano,chatterbox_turbo}` | `ChatterboxCheckpoint`, `ChatterboxNanoCheckpoint`, `ChatterboxTurboCheckpoint` and corresponding `*SpeakerProjection` consumers | Added | exact release-manifest binders plus native speaker-conditioning affine projections | Replaces synthesized-only load posture with strict real-GGUF identity/shape checks while keeping AR token generation and terminal vocoders loud-partial. No C symbol or GGUF key changes. | no | #44 |
+| `vokra-models::cosyvoice3` | `CosyVoice3Checkpoint`, `CosyVoice3QProjection` | Added | exact 293-tensor binder plus native layer-0 Q projection | Establishes a real checkpoint consumer without claiming the pending flow/HiFTNet PCM path. No C symbol or GGUF key changes. | no | #44 |
+| `vokra-models::dia` | `DiaCheckpoint`, `DiaTextEmbedding` | Added | exact 343-tensor binder plus native text embedding lookup | Establishes a real checkpoint consumer while the encoder/decoder generation loop remains loud-partial. No C symbol or GGUF key changes. | no | #44 |
 | `vokra-models::qwen3_tts` | `Qwen3TtsCheckpoint`, `Qwen3TtsBoundBlockWeights`, `qwen3_tts_talker_block_forward`, `qwen3_tts_code_predictor_block_forward` | Added | strict official 0.6B-Base 478-tensor binder plus native bias-free GQA/RMSNorm/mRoPE/SwiGLU decoder block | Moves the existing Qwen3-TTS wire schema from synthesized-only inspection to real-checkpoint binding while retaining a loud end-to-end PCM refusal. This is pre-1.0 additive Rust source surface; no C symbol or GGUF key changes. | no | #44 |
 | `vokra-models::irodori` | `IrodoriCheckpoint`, `IrodoriTextBlockWeights`, `irodori_text_block_forward` | Added | strict official v3 637-tensor binder plus native gated non-causal MHA/RMSNorm/RoPE/SwiGLU text block | Moves the existing Irodori GGUF schema from synthesized-only inspection to real-checkpoint binding while retaining a loud refusal for the unbound RF-DiT/terminal-codec path. No C symbol or GGUF key changes. | no | #44 |
+| `vokra-models::vibevoice` | `VibeVoiceCheckpoint`, `VibeVoiceAcousticProjection` | Added | exact 1,204-tensor binder plus native acoustic-connector affine projection | Establishes a real checkpoint consumer while the diffusion/codec path remains loud-partial. No C symbol or GGUF key changes. | no | #44 |
+| `vokra-models::vits_ja` | `VitsJaCheckpoint`, `VitsJaTextEmbedding` | Added | exact 885-tensor canonical ESPnet generator binder plus native phoneme embedding lookup | Allows lawful operator-provisioned local artifacts without fetching or redistributing the JSUT-trained weight; the full VITS forward remains loud-partial. No C symbol or GGUF key changes. | no | #44 |
+| `vokra-models::voxcpm2` | `VoxCpm2Checkpoint`, `VoxCpm2StopProjection` | Added | exact 377-tensor binder plus native stop projection | Establishes a real checkpoint consumer while the MiniCPM/audio-VAE generation path remains loud-partial. No C symbol or GGUF key changes. | no | #44 |
+| `vokra-models::zonos` | `ZonosCheckpoint`, `ZonosSpeakerProjection` | Added | exact 246-tensor binder plus native speaker-conditioner projection | Establishes a real checkpoint consumer while conditioning, sampling, and DAC decode remain loud-partial. No C symbol or GGUF key changes. | no | #44 |
 
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 

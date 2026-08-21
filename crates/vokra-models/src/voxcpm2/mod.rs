@@ -104,6 +104,9 @@
 
 use vokra_core::{Result, VokraError};
 
+mod bound;
+pub use bound::{VoxCpm2Checkpoint, VoxCpm2StopProjection};
+
 // Public seam re-export — shared with the VAE primitive
 pub use vokra_ops::vae_continuous::ContinuousVaeConfig;
 
