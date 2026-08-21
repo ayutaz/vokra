@@ -139,15 +139,15 @@ typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t;
 // far-end queue. Owned by the inference thread. Opaque to C.
 typedef struct vokra_aec_t vokra_aec_t;
 
+// Opaque single-owner streaming codec decoder (module docs).
+typedef struct vokra_codec_decoder_t vokra_codec_decoder_t;
+
 // Opaque continuous speech-feature handle (#49).
 //
 // Created by `vokra_feat_open`, released by `vokra_feat_destroy`. It owns the
 // encoder's causal state and bounded pending-output ring, and retains the
 // originating session so model weights outlive the C handle.
 typedef struct vokra_feat_t vokra_feat_t;
-
-// Opaque single-owner streaming codec decoder (module docs).
-typedef struct vokra_codec_decoder_t vokra_codec_decoder_t;
 
 // Opaque duplex-session handle (module docs). Created by
 // `vokra_s2s_duplex_open`, released by `vokra_s2s_duplex_destroy`.
@@ -362,8 +362,8 @@ void vokra_string_free(char *s);
 //
 // Returns `NULL` and records detail in `vokra_last_error()` when the loaded
 // model does not expose a complete streaming token-to-PCM decoder. Currently
-// standalone Mimi opts in; partial SNAC support remains an explicit error
-// until its terminal PCM decoder exists.
+// standalone Mimi and NVIDIA NanoCodec opt in; partial SNAC support remains
+// an explicit error until its terminal PCM decoder exists.
 //
 // # Safety
 //

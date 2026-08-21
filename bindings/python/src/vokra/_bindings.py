@@ -62,8 +62,8 @@ class vokra_event_t(ctypes.Structure):
 # native runtime owns their layouts.
 vokra_aec_ref_writer_t = ctypes.c_void_p
 vokra_aec_t = ctypes.c_void_p
-vokra_feat_t = ctypes.c_void_p
 vokra_codec_decoder_t = ctypes.c_void_p
+vokra_feat_t = ctypes.c_void_p
 vokra_s2s_duplex_t = ctypes.c_void_p
 vokra_s2s_interrupt_t = ctypes.c_void_p
 vokra_session_options_t = ctypes.c_void_p

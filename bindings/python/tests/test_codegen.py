@@ -146,11 +146,12 @@ def test_generated_struct_layout_matches_c_abi_contract() -> None:
     ] == expected_offsets
 
 
-def test_all_eight_opaque_handles_are_void_p_aliases() -> None:
+def test_all_nine_opaque_handles_are_void_p_aliases() -> None:
     names = generator.parse_opaque_structs(_header_source())
     assert names == [
         "vokra_aec_ref_writer_t",
         "vokra_aec_t",
+        "vokra_codec_decoder_t",
         "vokra_feat_t",
         "vokra_s2s_duplex_t",
         "vokra_s2s_interrupt_t",
