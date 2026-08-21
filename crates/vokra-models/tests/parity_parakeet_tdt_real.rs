@@ -40,16 +40,39 @@ fn real_parakeet_tdt_head_step_matches_official() {
         .expect("real decoder/head step");
     let expected = read_f32(Path::new(&reference));
     assert_eq!(actual.len(), expected.len());
-    let max_abs = actual
+    let (max_index, max_abs) = actual
+        .iter()
+        .zip(&expected)
+        .enumerate()
+        .map(|(index, (left, right))| (index, (left - right).abs()))
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("non-empty joint output");
+    let mean_abs = actual
         .iter()
         .zip(&expected)
         .map(|(left, right)| (left - right).abs())
-        .fold(0.0f32, f32::max);
+        .sum::<f32>()
+        / actual.len() as f32;
+    let actual_argmax = actual
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1))
+        .map(|(index, _)| index)
+        .expect("non-empty actual output");
+    let expected_argmax = expected
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1))
+        .map(|(index, _)| index)
+        .expect("non-empty reference output");
     eprintln!(
-        "Parakeet-TDT: tensors={}, joint_width={}, max_abs={max_abs:.9e}",
+        "Parakeet-TDT: tensors={}, joint_width={}, max_abs={max_abs:.9e} at {max_index} (actual={:.9e}, reference={:.9e}), mean_abs={mean_abs:.9e}, argmax={actual_argmax}",
         model.tensor_count(),
-        actual.len()
+        actual.len(),
+        actual[max_index],
+        expected[max_index],
     );
+    assert_eq!(actual_argmax, expected_argmax, "joint argmax must match");
     assert!(
         max_abs <= 2.0e-4,
         "Parakeet-TDT max_abs {max_abs} exceeds fixed 2e-4 bound"
