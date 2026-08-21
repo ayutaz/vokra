@@ -68,6 +68,7 @@ In Xcode:
 import SwiftUI
 import Vokra   // Clang module re-exports all `vokra_*` C symbols.
 import Foundation
+import AVFoundation
 
 struct ContentView: View {
     @State private var status = "Idle"
@@ -88,18 +89,36 @@ struct ContentView: View {
 
         var session: OpaquePointer?
         let rc = vokra_session_create_from_file(gguf, &session)
-        guard rc == 0, let s = session else {
-            status = "session_create err=\(rc)"; return
+        guard rc.rawValue == VOKRA_OK.rawValue, let s = session else {
+            status = "session_create err=\(rc.rawValue)"; return
         }
         defer { vokra_session_destroy(s) }
 
-        // See docs/m2-14-ios-rtf-handover.md for a full end-to-end RTF
-        // measurement harness (fixture WAV -> transcribe -> record RTF).
-        var out: UnsafeMutablePointer<CChar>?
-        let arc = vokra_asr_transcribe(s, wav, &out)
-        let text = out.map { String(cString: $0) } ?? "<null>"
-        if let o = out { vokra_string_free(o) }
-        status = "rc=\(arc): \(text.prefix(120))"
+        do {
+            // WAV parsing is outside Vokra's C ABI: transcribe accepts mono
+            // Float32 PCM, its sample count, and its sample rate.
+            let file = try AVAudioFile(forReading: URL(fileURLWithPath: wav))
+            let format = file.processingFormat
+            guard format.channelCount == 1, format.sampleRate == 16_000,
+                  let buffer = AVAudioPCMBuffer(
+                      pcmFormat: format,
+                      frameCapacity: AVAudioFrameCount(file.length)
+                  )
+            else { status = "fixture must be mono 16 kHz"; return }
+            try file.read(into: buffer)
+            guard let pcm = buffer.floatChannelData?[0] else {
+                status = "fixture is not Float32 PCM"; return
+            }
+            var out: UnsafeMutablePointer<CChar>?
+            let arc = vokra_asr_transcribe(
+                s, pcm, Int(buffer.frameLength), 16_000, &out
+            )
+            let text = out.map { String(cString: $0) } ?? "<null>"
+            if let o = out { vokra_string_free(o) }
+            status = "rc=\(arc.rawValue): \(text.prefix(120))"
+        } catch {
+            status = "WAV read failed: \(error)"
+        }
     }
 }
 ```
@@ -121,10 +140,11 @@ The Vokra iOS build enforces the platform's static-linking / no-JIT rules:
   `vokra-backend-cuda` makes this explicit rather than silently linking a
   CUDA-shaped surface that cannot run.
 - **Metal is the accelerated path** — the CPU path (NEON on Apple
-  Silicon) is always available; opt into Metal via
-  `vokra_session_set_backend(s, VOKRA_BACKEND_METAL)` (see `vokra.h` for
-  the exact enum name). Per FR-EX-08, unsupported ops on Metal surface as
-  explicit errors, never silent CPU fallback.
+  Silicon) is always available. To opt into Metal, create
+  `vokra_session_options_t`, set `VOKRA_BACKEND_METAL`, and pass it to
+  `vokra_session_create_from_file_with_options`; backend selection is a
+  construction-time choice. Per FR-EX-08, unavailable or unsupported Metal
+  surfaces as an explicit error, never silent CPU fallback.
 
 ## 6. On-device RTF measurement
 

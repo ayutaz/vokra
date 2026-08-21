@@ -12,6 +12,7 @@
 - [ ] `Package.swift` reachable — either local path `.binaryTarget(path: "build/ios/Vokra.xcframework")` (dev) or release URL + SHA256 (`.binaryTarget(url:, checksum:)`).
 - [ ] Xcode 14 or newer installed on macOS host (matches CI floor from M2-02 ADR).
 - [ ] Whisper base GGUF model file (`whisper-base.gguf`) converted via `vokra-cli convert` and bundled in the app target's Resources.
+- [ ] Mimi GGUF model file (`mimi.gguf`) for the 30-minute streaming-codec run; build from a revision containing issue #48's `vokra_codec_decoder_*` ABI.
 - [ ] Fixture WAV (16 kHz mono, 30 s) — recommend `tests/fixtures/audio/jfk-30s.wav` from the repo, bundled as an app resource.
 - [ ] Physical iOS 15+ device (iPhone or iPad); Simulator RTF is NOT valid for NFR-PF-03.
 - [ ] Apple Developer signing profile for on-device deployment.
@@ -24,60 +25,66 @@
 4. Signing & Capabilities → set Team; Bundle ID unique to依頼者.
 5. Build Settings → **Enable Bitcode = No** (Bitcode is deprecated by Apple; the XCFramework is not bitcode-bundled).
 
-## 3. Minimal measurement app (SwiftUI)
+## 3. Measurement app
 
-```swift
-import SwiftUI
-import Vokra
-import Foundation
+Use the checked and iPhoneOS-typechecked harness at
+[`tools/bench/ios-device/IOSDeviceBench.swift`](../tools/bench/ios-device/IOSDeviceBench.swift)
+and follow its [README](../tools/bench/ios-device/README.md). It fixes two
+defects in the historical snippet that used to live here:
 
-struct ContentView: View {
-    @State private var result: String = "Idle"
-    var body: some View {
-        VStack(spacing: 20) {
-            Text(result).font(.system(.body, design: .monospaced))
-            Button("Run RTF Measurement") { measure() }
-        }.padding()
-    }
-    func measure() {
-        guard let gguf = Bundle.main.path(forResource: "whisper-base", ofType: "gguf"),
-              let wav  = Bundle.main.path(forResource: "jfk-30s",     ofType: "wav")
-        else { result = "resource missing"; return }
-        var session: OpaquePointer?
-        let rc = vokra_session_create_from_file(gguf, &session)
-        guard rc == 0, let s = session else { result = "session_create err=\(rc)"; return }
-        defer { vokra_session_destroy(s) }
+- `vokra_asr_transcribe` accepts mono `f32` PCM plus its sample count/rate; it
+  does **not** accept a WAV path. The harness decodes the WAV before timing and
+  passes exactly 480,000 samples at 16 kHz.
+- Backend selection happens on `vokra_session_options_t` before session
+  construction; there is no `vokra_session_set_backend` mutation API.
 
-        let audioSec: Double = 30.0
-        let t0 = Date()
-        var out: UnsafeMutablePointer<CChar>?
-        let arc = vokra_asr_transcribe(s, wav, &out)
-        let elapsed = Date().timeIntervalSince(t0)
-        let rtf = elapsed / audioSec
-        let text = out.map { String(cString: $0) } ?? "<null>"
-        if let o = out { vokra_string_free(o) }
-        result = "rc=\(arc) elapsed=\(String(format: "%.3f", elapsed))s RTF=\(String(format: "%.4f", rtf))\n\(text.prefix(60))"
-    }
-}
+The harness performs 3 warm iterations then 10 measured iterations, reports
+P50 RTF, and samples Darwin `ru_maxrss` (process-lifetime peak RSS, so a peak
+inside the blocking inference call cannot be missed). It hashes the model and
+fixture before loading the session and writes a JSON report to the app's
+Documents directory.
+
+For the codec leg it opens a `vokra_codec_decoder_t`, derives the real
+`frame_hop`, sample rate, and codebook count from the GGUF, then paces one valid
+code frame at the model frame rate for 1,800 seconds. Export the JSONL and run:
+
+```sh
+uv run --project tools/parity --python 3.12 python tools/bench/ios_sustained_analyze.py \
+  vokra-ios-codec-sustained-....jsonl \
+  --json-output sustained-report.json \
+  --markdown-output sustained-report.md
 ```
 
-Notes:
-- Exact C symbol names may differ; consult `include/vokra.h` in the XCFramework `Headers/` and adjust. The Clang module `Vokra` re-exports all `vokra_*` symbols.
-- Run 3 warm iterations, then record the median of 5 timed runs (drop min/max).
-- Fix CPU governor by keeping device plugged in + screen on; disable Low Power Mode.
+The analyzer fails closed on a short, sparse, non-contiguous, non-finite, or
+conditions-incomplete log. Its report contains p50/p95/p99, peak RSS, deadline
+misses, thermal-state transition, and the exact last-decile/first-decile p50
+ratio. It does not invent a pass threshold for degradation.
 
 ## 4. Recording template
 
-| Run | Backend | Device model | iOS version | Elapsed (s) | Audio (s) | RTF | NFR-PF-03 (<0.5) |
-|-----|---------|--------------|-------------|-------------|-----------|-----|------------------|
-| 1   | CPU     |              |             |             | 30.0      |     | pass / fail      |
-| 2   | Metal   |              |             |             | 30.0      |     | pass / fail      |
+| Run | Backend | Device model | iOS version | Elapsed P50 (s) | Audio (s) | RTF P50 | Peak RSS | Build SHA | NFR-PF-03 (<0.5) |
+|-----|---------|--------------|-------------|-----------------|-----------|---------|----------|-----------|------------------|
+| 1   | CPU     |              |             |                 | 30.0      |         |          |           | pass / fail      |
+| 2   | Metal   |              |             |                 | 30.0      |         |          |           | pass / fail      |
 
-Also record: Vokra `git rev-parse HEAD`, XCFramework SHA256, Xcode version, thermal state (`ProcessInfo.processInfo.thermalState`), whether device was plugged in.
+| Codec model | Backend | Duration | Frames | p50 (ms) | p95 (ms) | p99 (ms) | Deadline misses | Peak RSS | First→last decile p50 | Thermal start→end |
+|-------------|---------|----------|--------|----------|----------|----------|-----------------|----------|-----------------------|-------------------|
+| Mimi        | CPU     | 1800 s   |        |          |          |          |                 |          |                       |                   |
+
+Also record: XCFramework SHA256, Xcode version, model SHA256, fixture SHA256,
+ambient temperature, starting thermal state, screen on/off, charging or not,
+and case installed/removed. iOS does not expose internal device temperature in
+degrees through a public API, so record `ProcessInfo.processInfo.thermalState`
+instead and do not fabricate a Celsius value.
 
 ## 5. Backend selection
 
-Backend defaults to CPU. To try Metal, invoke `vokra_session_set_backend(s, VOKRA_BACKEND_METAL)` before `vokra_asr_transcribe` (see `vokra.h` for the exact enum name). Per FR-EX-08, unsupported ops on Metal must surface as **explicit errors** — never silent CPU fallback. Log the returned rc.
+Backend defaults to CPU. To try Metal, create `vokra_session_options_t`, call
+`vokra_session_options_set_backend(opts, VOKRA_BACKEND_METAL)`, then construct
+the model with `vokra_session_create_from_file_with_options`. Destroy the
+options after construction. Per FR-EX-08, unavailable/unsupported Metal must
+surface as an **explicit error** — never silent CPU fallback. Log the returned
+status and `vokra_last_error()`.
 
 ## 6. R4 boundary — Metal probe failure on iPhone
 
@@ -91,4 +98,7 @@ CPU pass alone satisfies NFR-PF-03 for this WP if RTF < 0.5; Metal is a separate
 
 ## 7. Handover deliverable back to Vokra
 
-Attach to the M2-14 completion ticket: the filled table above, raw logs, and the device video (optional) showing the run. If any RTF ≥ 0.5, open a perf ticket referencing this handover; do NOT close M2-14 as pass.
+Attach to the M2-14 completion ticket: the filled tables above, raw Whisper
+JSON, raw codec JSONL, analyzer JSON/Markdown, and the device video (optional)
+showing the run. If any RTF ≥ 0.5, open a perf ticket referencing this
+handover; do NOT close M2-14 as pass.
