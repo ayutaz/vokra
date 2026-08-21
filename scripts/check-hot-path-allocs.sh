@@ -30,6 +30,9 @@ FILES=(
     # #50: stateful streaming resampler; counting-allocator proof lives in
     # crates/vokra-ops/tests/streaming_resampler_hot_path_alloc.rs.
     "crates/vokra-ops/src/resample.rs"
+    # #45: caller-owned Group-FSQ per-frame decode; counting-allocator proof
+    # lives in crates/vokra-ops/tests/group_fsq_hot_path_alloc.rs.
+    "crates/vokra-ops/src/fsq_codec.rs"
 )
 
 # The forbidden allocating constructs, as a grep ERE. (Matching is done by grep,

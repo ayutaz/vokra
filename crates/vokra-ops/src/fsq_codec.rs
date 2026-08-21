@@ -1,4 +1,4 @@
-//! FSQ codec family decode — `wavtokenizer_vq` + `xcodec2_fsq`
+//! FSQ codec family decode — `wavtokenizer_vq` + `xcodec2_fsq` + `group_fsq`
 //! (M4-16; FR-OP-31, **separate subgraph from the RVQ family**).
 //!
 //! # FSQ vs RVQ — the structural distinction (FR-OP-31 vs FR-OP-30)
@@ -14,13 +14,17 @@
 //!   (`decoded[t,:] = Σ_cb tables[cb].row(codes[t,cb])`), plus a paged
 //!   `[time, stream, codebook]` variant (block size 2-4). Signature-level
 //!   marker: the RVQ decodes take `&[CodebookTable]` (a *slice*).
-//! - **FSQ family (FR-OP-31, this module)** — **single-stage**: there is
-//!   **no cross-codebook residual-sum loop and no paged variant**.
+//! - **FSQ family (FR-OP-31, this module)** — there is **no
+//!   cross-codebook residual-sum loop and no paged variant**.
 //!   - [`wavtokenizer_vq_decode`] gathers rows from **one** large-vocab
 //!     codebook (`&CodebookTable`, *singular* — not a slice).
 //!   - [`xcodec2_fsq_decode`] has **no codebook tensor at all**: the code is
 //!     decomposed onto an implicit per-dimension finite-scalar grid and
 //!     projected up by one output GEMV.
+//!   - [`group_fsq_decode`] / [`group_fsq_decode_into`] decode a runtime
+//!     `[time, n_groups]` set of independent FSQ indices and **concatenate**
+//!     their grid vectors. The group axis is multi-codebook but
+//!     non-residual: unlike RVQ, no vectors are summed.
 //!
 //! **No adapter between the families is provided** (混同ヘルパー禁止, M4-16
 //! T06): feeding FSQ codes into `mimi_rvq_decode` / `dac_rvq_decode` (or RVQ
@@ -69,6 +73,16 @@
 //!   released X-Codec 2 checkpoints decode with.) The downstream
 //!   `fc_post_a` / Vocos backbone are the consumer model's layers, outside
 //!   this op boundary (same cut as ADR M4-04 §D-g "features, not PCM").
+//! - **`group_fsq`** — NVIDIA-NeMo/Speech
+//!   `nemo/collections/tts/modules/audio_codec_modules.py`, pinned at commit
+//!   `4fcff72febec9395fdbd4bfa0747bfda2ecd3cef` (Apache-2.0), matching the
+//!   NeMo version recorded by the released NanoCodec checkpoint.
+//!   `GroupFiniteScalarQuantizer.decode` chunks indices along its runtime
+//!   `num_groups` axis, calls one `FiniteScalarQuantizer.decode` per group,
+//!   and `torch.cat`s the results along the feature axis. The scalar decode
+//!   is exactly the mixed-radix `dim_base_index` formula implemented by
+//!   [`fsq_index_to_grid_codes`]. NanoCodec checkpoint shapes and NeMo output
+//!   are pinned by the committed `tests/parity/fsq/nanocodec/` fixture.
 //!
 //! # Single-stage GEMV bound
 //!
@@ -271,23 +285,23 @@ pub struct Xcodec2FsqAttrs {
 /// `levels.to_vec()` on every call). Explicit error on an empty tuple, a
 /// level `< 2`, or a product that overflows `usize` (FR-EX-08 — no silent
 /// wrap).
-fn effective_vocab_of(levels: &[u32]) -> Result<usize> {
+fn effective_vocab_of(levels: &[u32], op: &str) -> Result<usize> {
     if levels.is_empty() {
-        return Err(VokraError::InvalidArgument(
-            "xcodec2_fsq: levels tuple must be non-empty".to_owned(),
-        ));
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: levels tuple must be non-empty"
+        )));
     }
     let mut vocab = 1usize;
     for (d, &level) in levels.iter().enumerate() {
         if level < 2 {
             return Err(VokraError::InvalidArgument(format!(
-                "xcodec2_fsq: levels[{d}] = {level} < 2 (half_width would be 0 — a 1-level \
+                "{op}: levels[{d}] = {level} < 2 (half_width would be 0 — a 1-level \
                  dimension cannot represent any grid value)"
             )));
         }
         vocab = vocab.checked_mul(level as usize).ok_or_else(|| {
             VokraError::InvalidArgument(format!(
-                "xcodec2_fsq: Π levels overflows usize at levels[{d}] = {level} (no silent \
+                "{op}: Π levels overflows usize at levels[{d}] = {level} (no silent \
                  wrap — FR-EX-08)"
             ))
         })?;
@@ -321,7 +335,7 @@ impl Xcodec2FsqAttrs {
     /// wrapper over `effective_vocab_of` (shared with the
     /// [`fsq_index_to_grid_codes`] validation path).
     pub fn effective_vocab(&self) -> Result<usize> {
-        effective_vocab_of(&self.levels)
+        effective_vocab_of(&self.levels, "xcodec2_fsq")
     }
 }
 
@@ -411,7 +425,7 @@ pub fn fsq_index_to_grid_codes(index: u32, levels: &[u32], out: &mut [f32]) -> R
     // `Xcodec2FsqAttrs` here on every call). The hot loop in
     // `xcodec2_fsq_decode` never reaches this wrapper: it computes `vocab`
     // once and calls `fsq_index_to_grid_codes_into` per frame.
-    let vocab = effective_vocab_of(levels)?;
+    let vocab = effective_vocab_of(levels, "fsq_index_to_grid_codes")?;
     if out.len() != levels.len() {
         return Err(VokraError::InvalidArgument(format!(
             "fsq_index_to_grid_codes: out.len() {} != levels.len() {}",
@@ -471,6 +485,152 @@ fn fsq_index_to_grid_codes_into(index: u32, levels: &[u32], vocab: usize, out: &
         rem /= level;
         let half_width = level / 2; // integer division (>= 1: level >= 2 validated)
         out[d] = (level_index as f32 - half_width as f32) / half_width as f32;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// group_fsq — grouped (multi-codebook, non-residual) finite scalar quantizer
+// ---------------------------------------------------------------------------
+
+/// Decodes grouped FSQ indices from row-major `[time, n_groups]` into
+/// `[time, n_groups * levels_per_group.len()]`, concatenating each group's
+/// finite-scalar vector along the feature axis.
+///
+/// `n_groups` is inferred at runtime as `codes.len() / time`; it is never a
+/// compile-time constant. Every group uses the same `levels_per_group` tuple,
+/// matching NeMo's `GroupFiniteScalarQuantizer`, which constructs one
+/// `FiniteScalarQuantizer(num_levels=levels_per_group)` per group and
+/// concatenates the decoded groups rather than summing them.
+///
+/// This allocating convenience wrapper validates all indices before creating
+/// its result buffer. Steady-state audio paths should reuse a caller-owned
+/// buffer through [`group_fsq_decode_into`].
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] if `levels_per_group` is empty, contains a
+/// value below 2, or has an overflowing product; if the flattened code count
+/// cannot represent a non-empty runtime group axis for `time`; if an index is
+/// greater than or equal to `Π levels_per_group`; or if an output length
+/// calculation overflows. Indices are never clamped (FR-EX-08).
+///
+/// # Example
+///
+/// ```
+/// use vokra_ops::group_fsq_decode;
+///
+/// // One frame, four runtime groups, two scalar dimensions per group.
+/// let got = group_fsq_decode(&[0, 7, 15, 4], 1, &[4, 4]).unwrap();
+/// assert_eq!(
+///     got,
+///     vec![-1.0, -1.0, 0.5, -0.5, 0.5, 0.5, -1.0, -0.5],
+/// );
+/// ```
+pub fn group_fsq_decode(codes: &[u32], time: usize, levels_per_group: &[u32]) -> Result<Vec<f32>> {
+    let (vocab, n_groups, out_len) = group_fsq_layout(codes.len(), time, levels_per_group)?;
+    group_fsq_validate_codes(codes, vocab, n_groups)?;
+    let mut out = vec![0.0f32; out_len];
+    group_fsq_decode_validated(codes, levels_per_group, vocab, &mut out);
+    Ok(out)
+}
+
+/// Allocation-free grouped FSQ decode into a caller-owned output buffer.
+///
+/// Shapes and semantics match [`group_fsq_decode`]. Validation completes
+/// before the first output write, so an invalid code or shape leaves `out`
+/// untouched. The successful path performs no allocation and is guarded both
+/// by `scripts/check-hot-path-allocs.sh` and a counting-allocator integration
+/// test covering 1000 consecutive single-frame calls after warm-up.
+///
+/// # Errors
+///
+/// The same [`VokraError::InvalidArgument`] cases as [`group_fsq_decode`],
+/// plus `out.len() != time * n_groups * levels_per_group.len()`.
+// ZERO-ALLOC-BEGIN (#45: caller-owned per-frame grouped-FSQ decode)
+pub fn group_fsq_decode_into(
+    codes: &[u32],
+    time: usize,
+    levels_per_group: &[u32],
+    out: &mut [f32],
+) -> Result<()> {
+    let (vocab, n_groups, expected_out) = group_fsq_layout(codes.len(), time, levels_per_group)?;
+    if out.len() != expected_out {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_fsq: out.len() {} != time {time} * n_groups {n_groups} * n_dims {} = \
+             {expected_out}",
+            out.len(),
+            levels_per_group.len(),
+        )));
+    }
+    group_fsq_validate_codes(codes, vocab, n_groups)?;
+    group_fsq_decode_validated(codes, levels_per_group, vocab, out);
+    Ok(())
+}
+// ZERO-ALLOC-END
+
+fn group_fsq_layout(
+    codes_len: usize,
+    time: usize,
+    levels_per_group: &[u32],
+) -> Result<(usize, usize, usize)> {
+    let vocab = effective_vocab_of(levels_per_group, "group_fsq")?;
+    if time == 0 {
+        if codes_len != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "group_fsq: time is 0 but codes.len() is {codes_len}; an empty time axis \
+                 requires empty codes"
+            )));
+        }
+        return Ok((vocab, 0, 0));
+    }
+    if codes_len % time != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_fsq: codes.len() {codes_len} is not divisible by time {time}; expected a \
+             row-major [time, n_groups] buffer"
+        )));
+    }
+    let n_groups = codes_len / time;
+    if n_groups == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_fsq: n_groups inferred from codes.len() {codes_len} / time {time} is 0; \
+             at least one runtime group is required"
+        )));
+    }
+    let out_len = codes_len
+        .checked_mul(levels_per_group.len())
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "group_fsq: codes.len() {codes_len} * n_dims {} overflows usize",
+                levels_per_group.len(),
+            ))
+        })?;
+    Ok((vocab, n_groups, out_len))
+}
+
+fn group_fsq_validate_codes(codes: &[u32], vocab: usize, n_groups: usize) -> Result<()> {
+    for (flat, &code) in codes.iter().enumerate() {
+        if (code as usize) >= vocab {
+            let time_index = flat / n_groups;
+            let group_index = flat % n_groups;
+            return Err(VokraError::InvalidArgument(format!(
+                "group_fsq: codes[time={time_index}, group={group_index}] = {code} >= Π \
+                 levels_per_group {vocab} (no silent clamp — FR-EX-08)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn group_fsq_decode_validated(
+    codes: &[u32],
+    levels_per_group: &[u32],
+    vocab: usize,
+    out: &mut [f32],
+) {
+    let n_dims = levels_per_group.len();
+    for (flat, &code) in codes.iter().enumerate() {
+        let dst = &mut out[flat * n_dims..(flat + 1) * n_dims];
+        fsq_index_to_grid_codes_into(code, levels_per_group, vocab, dst);
     }
 }
 
@@ -830,6 +990,79 @@ mod tests {
     }
 
     #[test]
+    fn group_fsq_decode_concatenates_runtime_group_counts() {
+        let levels = [4u32, 4];
+        let one_frame_codes = [0u32, 7, 15, 4, 0, 7, 15, 4, 0, 7, 15, 4, 0];
+        let one_frame_expected = [
+            -1.0, -1.0, 0.5, -0.5, 0.5, 0.5, -1.0, -0.5, -1.0, -1.0, 0.5, -0.5, 0.5, 0.5, -1.0,
+            -0.5, -1.0, -1.0, 0.5, -0.5, 0.5, 0.5, -1.0, -0.5, -1.0, -1.0,
+        ];
+
+        for n_groups in [4usize, 8, 13] {
+            let codes = &one_frame_codes[..n_groups];
+            let got = group_fsq_decode(codes, 1, &levels).expect("group FSQ decode");
+            assert_eq!(got, one_frame_expected[..n_groups * levels.len()]);
+
+            let mut into = vec![f32::NAN; n_groups * levels.len()];
+            group_fsq_decode_into(codes, 1, &levels, &mut into).expect("decode into");
+            assert_eq!(
+                into, got,
+                "_into must match the allocating wrapper for G={n_groups}"
+            );
+        }
+    }
+
+    #[test]
+    fn group_fsq_decode_preserves_time_major_group_order() {
+        // [time=2, groups=4], group-major within each timestep.
+        let codes = [0u32, 7, 15, 4, 4, 15, 7, 0];
+        let got = group_fsq_decode(&codes, 2, &[4, 4]).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                -1.0, -1.0, 0.5, -0.5, 0.5, 0.5, -1.0, -0.5, // t=0
+                -1.0, -0.5, 0.5, 0.5, 0.5, -0.5, -1.0, -1.0, // t=1
+            ],
+        );
+    }
+
+    #[test]
+    fn group_fsq_decode_rejects_bad_shapes_and_codes_without_partial_write() {
+        let mut out = [9.0f32; 8];
+        let before = out;
+        let err = group_fsq_decode_into(&[0, 7, 16, 4], 1, &[4, 4], &mut out)
+            .expect_err("index == product(levels) must fail");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        assert_eq!(
+            out, before,
+            "bounds validation must finish before writing output"
+        );
+
+        assert!(matches!(
+            group_fsq_decode_into(&[0, 1, 2], 2, &[4, 4], &mut [0.0; 6]),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+        assert!(matches!(
+            group_fsq_decode_into(&[0, 1, 2, 3], 1, &[4, 4], &mut [0.0; 7]),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+        assert!(matches!(
+            group_fsq_decode_into(&[0], 1, &[], &mut []),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+        assert!(matches!(
+            group_fsq_decode_into(&[0], 1, &[4, 1], &mut [0.0; 2]),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+
+        assert_eq!(
+            group_fsq_decode(&[], 0, &[4, 4]).unwrap(),
+            Vec::<f32>::new()
+        );
+        group_fsq_decode_into(&[], 0, &[4, 4], &mut []).unwrap();
+    }
+
+    #[test]
     fn xcodec2_decode_with_projection_matches_hand_fold() {
         // levels [4, 4] (n_dims 2) → d_model 3. index 7 → grid (0.5, -0.5).
         // W = [[1,2],[3,4],[5,6]], b = [0.5, -0.5, 0.25]:
@@ -975,7 +1208,7 @@ mod tests {
         // revalidation, never the arithmetic. `effective_vocab_of` is the
         // shared borrow-slice validator both paths reach.
         let levels = [3u32, 4, 5]; // Π levels = 60
-        let vocab = effective_vocab_of(&levels).unwrap();
+        let vocab = effective_vocab_of(&levels, "test").unwrap();
         assert_eq!(vocab, 60);
         let mut via_inner = [0.0_f32; 3];
         let mut via_wrapper = [0.0_f32; 3];

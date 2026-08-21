@@ -833,6 +833,8 @@ FN vokra-ops::fsmn_vad::validate|pub fn validate(&self, cfg: &FsmnEncoderConfig)
 FN vokra-ops::fsmn_vad::zeros|pub fn zeros(cfg: &FsmnEncoderConfig) -> Result<Self> {
 FN vokra-ops::fsq_codec::effective_vocab|pub fn effective_vocab(&self) -> Result<usize> {
 FN vokra-ops::fsq_codec::fsq_index_to_grid_codes|pub fn fsq_index_to_grid_codes(index: u32, levels: &[u32], out: &mut [f32]) -> Result<()> {
+FN vokra-ops::fsq_codec::group_fsq_decode_into|pub fn group_fsq_decode_into(
+FN vokra-ops::fsq_codec::group_fsq_decode|pub fn group_fsq_decode(codes: &[u32], time: usize, levels_per_group: &[u32]) -> Result<Vec<f32>> {
 FN vokra-ops::fsq_codec::n_dims|pub fn n_dims(&self) -> usize {
 FN vokra-ops::fsq_codec::new|pub fn new(d_model: usize, n_dims: usize, weight: Vec<f32>, bias: Vec<f32>) -> Result<Self> {
 FN vokra-ops::fsq_codec::wavtokenizer_24k_4096|pub const fn wavtokenizer_24k_4096() -> Self {
@@ -1601,7 +1603,7 @@ USE vokra-ops::fft::vokra_core::Complex32|pub use vokra_core::Complex32;
 USE vokra-ops::flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, }|pub use flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, };
 USE vokra-ops::frontend::{mel_attrs_from_spec, stft_attrs_from_spec}|pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 USE vokra-ops::fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, }|pub use fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, };
-USE vokra-ops::fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, wavtokenizer_vq_decode, xcodec2_fsq_decode, }|pub use fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, wavtokenizer_vq_decode, xcodec2_fsq_decode, };
+USE vokra-ops::fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode, group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode, }|pub use fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode, group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode, };
 USE vokra-ops::fused_logmel::fused_log_mel_scalar|pub use fused_logmel::fused_log_mel_scalar;
 USE vokra-ops::hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, }|pub use hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, };
 USE vokra-ops::hpf::{HpfAttrs, HpfState, hpf}|pub use hpf::{HpfAttrs, HpfState, hpf};
