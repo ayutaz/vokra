@@ -250,6 +250,23 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-21 — 1.0.0-rc.1-dev (stateful streaming resampler — Rust surface only, additive)
+
+Issue #50 adds a caller-owned-buffer streaming wrapper around Vokra's existing
+Kaiser-windowed-sinc resampler. The C ABI and GGUF schema are unchanged. The
+Rust API is additive, preserves the one-shot sample sequence across arbitrary
+chunk boundaries, and allocates all history storage in `new`; a
+1000-steady-state-call counting-allocator test and the zero-allocation source
+gate cover `process_into`.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-ops::resample` | `StreamingResampler` | Added | `pub struct StreamingResampler` | Owns the fixed history ring and absolute phase for #50 without exposing implementation fields. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::delay_samples` | Added | `pub fn delay_samples(&self) -> usize` | Reports centered-kernel look-ahead in output-rate samples for device latency budgeting. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::new` | Added | `pub fn new(in_rate: u32, out_rate: u32, quality: u8) -> Result<Self>` | Allocates and validates one fixed-rate streaming resampler. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::process_into` | Added | `pub fn process_into(&mut self, input: &[f32], out: &mut [f32]) -> Result<usize>` | Processes chunks without allocation and uses empty input as an explicit final flush. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::reset` | Added | `pub fn reset(&mut self)` | Reuses the existing allocation for a new stream. | no | (TBD) |
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 
 **Behaviour change** plus additive Rust surface. The C ABI
