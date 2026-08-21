@@ -7,9 +7,14 @@
 //! walk, per-output scale, recurrent diagonal, `[z, r, h]` gate order, and
 //! rational tanh/sigmoid approximation.
 //!
-//! Waveform analysis/synthesis is intentionally a separate boundary.  This
-//! binder consumes the canonical 65-feature frames produced by v0.2 and emits
-//! the real per-band network decisions; it never fabricates enhanced PCM.
+//! The [`waveform`] module ports the matching v0.2 analysis, pitch, delayed
+//! spectrum filtering, and overlap-add synthesis path.  It deliberately does
+//! not reuse `vokra_ops::rnnoise`: that older public operator implements the
+//! incompatible 22-band/42-feature topology.
+
+mod waveform;
+
+pub use waveform::{RnnoiseFrameOutput, RnnoiseStream};
 
 use std::sync::Arc;
 
@@ -185,6 +190,26 @@ impl RnnoiseV02 {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let gguf = GgufFile::open(path)?;
         Self::from_gguf(&gguf)
+    }
+
+    /// Opens a concrete 48 kHz waveform stream.  The stream carries every
+    /// analysis, pitch, neural, delayed-spectrum, and synthesis state.
+    pub fn stream(&self) -> RnnoiseStream {
+        RnnoiseStream::new(self.clone())
+    }
+
+    /// Denoises a complete mono 48 kHz buffer through the official 480-sample
+    /// frame contract.  A final short frame is zero-padded and trimmed back to
+    /// the caller's input length; no resampling is performed.
+    pub fn denoise_pcm(&self, pcm: &[f32]) -> Result<Vec<f32>> {
+        let input_len = pcm.len();
+        let mut stream = self.stream();
+        let mut output = vokra_core::engines::DenoiseStreamHandle::push_pcm(&mut stream, pcm)?;
+        if !stream.pending_is_empty() {
+            output.extend(stream.flush_partial()?);
+        }
+        output.truncate(input_len);
+        Ok(output)
     }
 
     /// Runs one real 65-feature frame through the causal network.
