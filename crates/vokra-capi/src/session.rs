@@ -633,6 +633,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn build_session_binds_real_nanocodec_decoder_when_fixture_is_available() {
+        let Ok(model) = std::env::var("VOKRA_NANOCODEC_GGUF") else {
+            eprintln!("skipping NanoCodec leg: set VOKRA_NANOCODEC_GGUF to run");
+            return;
+        };
+        let session = build_session(&model, CPU).expect("NanoCodec session builds on CPU");
+        let mut decoder = session
+            .open_codec_decoder()
+            .expect("NanoCodec session injects codec decoder");
+        assert_eq!(decoder.sample_rate(), 22_050);
+        assert!(decoder.frame_hop() > 0);
+        assert!(decoder.n_codebooks() > 0);
+
+        let codes = vec![0; decoder.n_codebooks()];
+        let mut pcm = vec![0.0; decoder.frame_hop()];
+        assert_eq!(decoder.push_codes(&codes).unwrap(), 1);
+        assert_eq!(decoder.pull_pcm(&mut pcm).unwrap(), pcm.len());
+        assert!(pcm.iter().all(|sample| sample.is_finite()));
+    }
+
     /// The guard itself: CPU passes, every GPU backend is refused, and the
     /// refusal names the engine so the message is actionable.
     #[test]
