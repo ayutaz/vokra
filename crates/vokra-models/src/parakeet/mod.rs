@@ -56,44 +56,30 @@
 //!   [`vokra_core::LicenseClass::AttributionRequired`] so the M2-13 gate
 //!   passes commercially *and* the FR-MD-09 attribution surface activates.
 //!
-//! # Boundary — Conformer / RNN-T decoder ops consumed, never re-implemented
+//! # Runtime boundary
 //!
-//! Parakeet reuses two shared Vokra primitives instead of duplicating them:
+//! [`ParakeetAsr::from_gguf`] strictly validates the official 699 inference
+//! tensors (the 24 training-only BatchNorm counters are intentionally absent)
+//! and binds the real decoder-side graph. [`ParakeetAsr::tdt_head_step`] runs
+//! the encoder projector, embedding, two-layer LSTM prediction network,
+//! decoder projector, ReLU join, and combined token/duration head through the
+//! shared CPU GEMV kernel. The deterministic [`ParakeetWeights::synthesized`]
+//! store remains only for shape and negative-path tests.
 //!
-//! - **Encoder body**: [`vokra_ops::conformer`] — the Conformer /
-//!   FastConformer encoder covers both variants via
-//!   `ConvSubsampleKind::Stacking { factor: 8 }` (matches
-//!   `subsampling_factor=8`). The primitive was authored for exactly this
-//!   family (its module docs list `parakeet` as the first consumer).
-//! - **TDT decoding**: [`vokra_ops::rnnt_decode()`] — the primitive covers
-//!   greedy / beam / TDT with the exact NeMo semantics
-//!   (`durations = [0..=4]`, `blank_id = vocab_size`, `max_symbols_per_step
-//!   = 10`).
-//!
-//! # What lands in this Phase 2 slice
-//!
-//! - [`ParakeetConfig`] — every hparam transcribed from the primary
-//!   source (no hardcoded fabrication; sample-rate is inherited from the
-//!   preprocessor, documented on the field).
-//! - [`ParakeetWeights`] — a scaffold weight store with a deterministic
-//!   [`ParakeetWeights::synthesized`] fixture (SplitMix64 + Xavier) so
-//!   shape / dtype / size flow can be exercised without the real HF
-//!   checkpoint. Real-checkpoint parity is a follow-up wave gated on the
-//!   real-checkpoint tensor-name manifest (T29-equivalent — the Moshi /
-//!   CSM / Zonos / Kyutai STT pattern).
-//! - [`ParakeetAsr`] — engine handle carrying config + weights.
-//!   [`ParakeetAsr::transcribe`] returns [`VokraError::NotImplemented`]
-//!   until real weights are bound (the real forward — 128-bin log-mel →
-//!   FastConformer encoder → 640-dim RNN-T prediction net → joint →
-//!   `rnnt_decode(Tdt { duration_bins: [0..=4] })` → SentencePiece
-//!   detokenize — is a follow-up wave gated on the real-checkpoint tensor
-//!   manifest).
+//! Full PCM transcription remains loud-partial. The released encoder uses a
+//! three-stage depthwise-separable Conv2D subsampler, relative-position
+//! attention with separate Q/K/V projections and learned biases, and eval
+//! BatchNorm in each convolution module. Those contracts are not equivalent
+//! to the older generic stacking/RoPE Conformer scaffold, so this module does
+//! not silently substitute it. Once the exact front end and FastConformer
+//! encoder land, TDT sequence decoding will reuse [`vokra_ops::rnnt_decode()`]
+//! with the released duration bins and blank id.
 //!
 //! # No ONNX (permanent)
 //!
 //! Parakeet ships as safetensors / a Python pipeline; the pipeline is
-//! re-implemented natively in `vokra-models/src/parakeet/` (whisper.cpp
-//! 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
+//! re-implemented natively in `vokra-models/src/parakeet/`. This module never
+//! touches ONNX.
 
 use std::collections::BTreeSet;
 

@@ -11,7 +11,7 @@ use vokra_models::parakeet::ParakeetAsr;
 /// The 2026-08-21 VAST calibration used the audited upstream revision and
 /// public 699-tensor GGUF with token ids 0, 1, 4096, and 8192. The measured
 /// worst max-|Δ| was 5.493164062e-4 (on a logit whose magnitude was about
-/// 6.26e2), and the worst mean-|Δ| was 8.496245573e-5. The fixed bounds are
+/// 6.26e2), and the worst mean-|Δ| was 9.052013047e-5. The fixed bounds are
 /// roughly 2× those measured GEMV-order floors; joint argmax is checked
 /// independently so a head-layout or activation error still fails loudly.
 const MAX_ABS_BOUND: f32 = 1.2e-3;

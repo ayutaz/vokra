@@ -16,8 +16,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `RealForwardNoCliTask` | 3 | 0 | 0 | 0 | Real forward exists; CLI routing is absent |
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | 17 | 12 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 57 | Loading can succeed, but the named forward stops explicitly |
+| `NoGgufLoader` | 17 | 17 | 17 | 11 | No real artifact can be bound, even if a constructor/forward exists |
+| `LoudPartialForward` | 56 | 56 | 56 | 58 | Loading can succeed, but the named forward stops explicitly |
 | **Total** | **79** | **75** | **73** | **69** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
@@ -158,7 +158,7 @@ Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
 package tests are present. Real-weight CT-Punc/Mimi execution remains part of
 the final VAST evidence pass; it is not replaced by the structural tests.
 
-## Wave 3 — 12 of 17 GGUF loaders remaining
+## Wave 3 — 11 of 17 GGUF loaders remaining
 
 Implement loaders in dependency-aware families. Every loader needs a writer ↔
 reader tensor/metadata handshake, a real pinned checkpoint, license/provenance
@@ -236,8 +236,31 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    `--bandwidth-id 0..3` for Encodec, and emitted mono IEEE-float32 24 kHz WAVs
    with the same sample counts and errors under independent parsing. No
    Encodec neural encoder weights are bundled or silently substituted.
-3. ASR (1): `parakeet-tdt`. Add the artifact binder before exposing its
-   existing transcription entry point.
+3. `parakeet-tdt` loader closed on 2026-08-21. The strict binder validates
+   every name and shape in the published 699-float-tensor artifact and rejects
+   the 24 training-only BatchNorm `num_batches_tracked` counters. The audited
+   upstream revision is `541d1f99c6b0c3cd0b11a95167540bb8edefd82b`; the
+   existing public GGUF revision is
+   `e2448d380310b49b74a6776e9903929ae5a4467d`, with size 2,508,284,704 bytes
+   and SHA-256
+   `df5e044b040fa27447de23912694b462c6e97b8d5510c24e8c1ed6090dcc0a18`.
+   No upload occurred.
+
+   A real numerical consumer now runs the encoder projector, blank/token
+   embedding, two-layer zero-state LSTM prediction network, decoder
+   projector, ReLU join, and combined 8,198-output token/duration head through
+   the shared CPU GEMV kernel. Against the official Transformers implementation
+   on VAST, token ids 0, 1, 4096, and blank 8192 measured worst
+   `max_abs=5.493164062e-4` and `mean_abs=9.052013047e-5`; all four joint
+   argmax values matched. The fixed gates are `max_abs <= 1.2e-3`,
+   `mean_abs <= 2e-4`, and exact argmax.
+
+   This moves the row to `LoudPartialForward`, not completion. The remaining
+   path is the exact 128-bin log-mel front end, three-stage depthwise-separable
+   Conv2D subsampler, relative-position FastConformer attention, eval
+   BatchNorm convolution modules, recurrent TDT decode state, and
+   SentencePiece detokenization. The generic stacking/RoPE Conformer scaffold
+   is not numerically equivalent and is not substituted.
 4. TTS scaffolds (11): `chatterbox`, `chatterbox_nano`,
    `chatterbox_turbo`, `cosyvoice3`, `dia`, `irodori-tts`, `qwen3_tts`,
    `vibevoice`, `vits-ja`, `voxcpm2`, `zonos`. Several currently use
@@ -250,14 +273,14 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 57 partial forwards
+## Wave 4 — 58 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
 
 | Family | Count | Rows |
 |---|---:|---|
-| ASR / speech transcription | 13 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `moonshine`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
+| ASR / speech transcription | 14 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `moonshine`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
 | VAD / KWS / turn taking | 4 | `firered_vad`, `openwakeword_op`, `smart_turn`, `ten_vad` |
 | TTS / speech-to-speech | 6 | `chattts`, `cosyvoice2`, `diffsinger`, `llama_omni2`, `styletts2`, `voila` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
