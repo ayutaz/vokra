@@ -10,3 +10,10 @@ dependencies = [
 
 [tool.uv]
 package = false
+# NeMo declares text-unidecode unconditionally for text normalization, but the
+# pinned AudioCodecModel oracle never imports that path.  Its license includes
+# GPL alternatives, so fail closed and omit it instead of allowing a GPL
+# package into the committed reference environment.
+override-dependencies = [
+    "text-unidecode ; python_version < '0'",
+]
