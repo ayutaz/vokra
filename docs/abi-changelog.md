@@ -371,8 +371,8 @@ claim.
 Additive prerelease C ABI and Rust engine contract. Codebook count is loaded
 from the GGUF and repeated as a call-time argument; no codec topology is frozen
 into the header. Each opaque decoder is single-owner-thread state retaining its
-source session. Standalone Mimi is the first complete implementation; partial
-codec binders do not opt in.
+source session. Standalone Mimi and NVIDIA NanoCodec provide complete native
+implementations; partial codec binders do not opt in.
 
 | Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
 | --- | --- | --- | --- | --- | --- | --- |

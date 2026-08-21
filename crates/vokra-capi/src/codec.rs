@@ -43,8 +43,8 @@ pub struct vokra_codec_decoder_t {
 ///
 /// Returns `NULL` and records detail in `vokra_last_error()` when the loaded
 /// model does not expose a complete streaming token-to-PCM decoder. Currently
-/// standalone Mimi opts in; partial SNAC support remains an explicit error
-/// until its terminal PCM decoder exists.
+/// standalone Mimi and NVIDIA NanoCodec opt in; partial SNAC support remains
+/// an explicit error until its terminal PCM decoder exists.
 ///
 /// # Safety
 ///

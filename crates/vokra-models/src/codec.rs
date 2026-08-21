@@ -27,12 +27,13 @@
 //! `AttributionRequired` = admitted with attribution; DAC is `Permissive`).
 
 use std::sync::Arc;
-use vokra_core::gguf::{GgmlType, GgufFile};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue};
 
 use vokra_core::{CodecDecoderEngine, CodecDecoderHandle, Result, VokraError};
-use vokra_ops::{CodebookTable, DacOutProj, DacRvqAttrs, MimiRvqAttrs};
+use vokra_ops::{CodebookTable, DacOutProj, DacRvqAttrs, MimiRvqAttrs, group_fsq_decode_into};
 
 use crate::mimi::{MimiDecoderState, MimiNeuralConfig, MimiNeuralDecoder};
+use crate::nanocodec::{CausalHifiGan, CausalHifiGanState};
 
 /// Reads a `u32` metadata key or fails loudly.
 fn get_u32(file: &GgufFile, key: &str) -> Result<u32> {
@@ -45,6 +46,41 @@ fn get_u32(file: &GgufFile, key: &str) -> Result<u32> {
              `vokra-cli convert --model mimi|dac`?)"
         ))),
     }
+}
+
+/// Reads a non-empty `u32` metadata array or fails loudly.
+fn get_u32_array(file: &GgufFile, key: &str) -> Result<Vec<u32>> {
+    let values = match file.get(key) {
+        Some(GgufMetadataValue::Array(array)) => &array.values,
+        Some(_) => {
+            return Err(VokraError::ModelLoad(format!(
+                "codec GGUF: metadata `{key}` is not an array"
+            )));
+        }
+        None => {
+            return Err(VokraError::ModelLoad(format!(
+                "codec GGUF: required metadata `{key}` missing"
+            )));
+        }
+    };
+    if values.is_empty() {
+        return Err(VokraError::ModelLoad(format!(
+            "codec GGUF: metadata array `{key}` is empty"
+        )));
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "codec GGUF: metadata array `{key}` contains a non-u32 value"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Reads an F32 tensor's raw data + dimensions or fails loudly.
@@ -304,6 +340,198 @@ impl CodecDecoderHandle for MimiStreamingDecoder {
 
     fn reset(&mut self) -> Result<()> {
         self.state = self.decoder.state(1)?;
+        self.features.fill(0.0);
+        self.pcm.fill(0.0);
+        self.pending = false;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NanoCodec
+// ---------------------------------------------------------------------------
+
+/// Complete NVIDIA NanoCodec grouped-FSQ-to-PCM streaming engine.
+///
+/// Immutable causal HiFi-GAN weights and quantizer geometry are shared across
+/// handles. Each opened handle owns independent causal state and fixed-size
+/// feature/PCM scratch buffers.
+#[derive(Clone)]
+pub struct NanoCodecStreamingCodec {
+    levels_per_group: Arc<Vec<u32>>,
+    n_codebooks: usize,
+    decoder: Arc<CausalHifiGan>,
+    sample_rate: u32,
+    frame_hop: usize,
+}
+
+impl std::fmt::Debug for NanoCodecStreamingCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NanoCodecStreamingCodec")
+            .field("levels_per_group", &self.levels_per_group)
+            .field("n_codebooks", &self.n_codebooks)
+            .field("sample_rate", &self.sample_rate)
+            .field("frame_hop", &self.frame_hop)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NanoCodecStreamingCodec {
+    /// Binds the exact decoder-only GGUF emitted by the NanoCodec converter.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let decoder = CausalHifiGan::from_gguf(file)?;
+        let n_codebooks = get_u32(file, "vokra.nanocodec.n_codebooks")? as usize;
+        let levels_per_group = get_u32_array(file, "vokra.nanocodec.levels_per_group")?;
+        let sample_rate = get_u32(file, "vokra.nanocodec.sample_rate")?;
+        Self::new(n_codebooks, levels_per_group, decoder, sample_rate)
+    }
+
+    /// Builds an engine from validated grouped-FSQ geometry and decoder
+    /// weights. Public for deterministic synthesized-weight tests.
+    pub fn new(
+        n_codebooks: usize,
+        levels_per_group: Vec<u32>,
+        decoder: CausalHifiGan,
+        sample_rate: u32,
+    ) -> Result<Self> {
+        if n_codebooks == 0 || levels_per_group.is_empty() || sample_rate == 0 {
+            return Err(VokraError::ModelLoad(
+                "nanocodec streaming codec: codebooks, scalar dimensions, and sample rate must be non-zero"
+                    .to_owned(),
+            ));
+        }
+        if levels_per_group.iter().any(|&level| level < 2) {
+            return Err(VokraError::ModelLoad(
+                "nanocodec streaming codec: levels_per_group entries must each be >= 2".to_owned(),
+            ));
+        }
+        levels_per_group.iter().try_fold(1usize, |vocab, &level| {
+            vocab.checked_mul(level as usize).ok_or_else(|| {
+                VokraError::ModelLoad(
+                    "nanocodec streaming codec: grouped-FSQ vocabulary overflows usize".to_owned(),
+                )
+            })
+        })?;
+        let feature_dim = n_codebooks
+            .checked_mul(levels_per_group.len())
+            .ok_or_else(|| {
+                VokraError::ModelLoad(
+                    "nanocodec streaming codec: feature dimension overflows usize".to_owned(),
+                )
+            })?;
+        if feature_dim != decoder.expected_feature_dim() {
+            return Err(VokraError::ModelLoad(format!(
+                "nanocodec streaming codec: n_codebooks {n_codebooks} * scalar dimensions {} = {feature_dim}, decoder expects {}",
+                levels_per_group.len(),
+                decoder.expected_feature_dim()
+            )));
+        }
+        let frame_hop = decoder.frame_hop();
+        Ok(Self {
+            levels_per_group: Arc::new(levels_per_group),
+            n_codebooks,
+            decoder: Arc::new(decoder),
+            sample_rate,
+            frame_hop,
+        })
+    }
+}
+
+impl CodecDecoderEngine for NanoCodecStreamingCodec {
+    fn open_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>> {
+        Ok(Box::new(NanoCodecStreamingDecoder {
+            state: self.decoder.state(1)?,
+            features: vec![0.0; self.decoder.expected_feature_dim()],
+            pcm: vec![0.0; self.frame_hop],
+            pending: false,
+            levels_per_group: Arc::clone(&self.levels_per_group),
+            n_codebooks: self.n_codebooks,
+            decoder: Arc::clone(&self.decoder),
+            sample_rate: self.sample_rate,
+            frame_hop: self.frame_hop,
+        }))
+    }
+}
+
+/// One independently stateful NanoCodec decoder handle.
+struct NanoCodecStreamingDecoder {
+    state: CausalHifiGanState,
+    features: Vec<f32>,
+    pcm: Vec<f32>,
+    pending: bool,
+    levels_per_group: Arc<Vec<u32>>,
+    n_codebooks: usize,
+    decoder: Arc<CausalHifiGan>,
+    sample_rate: u32,
+    frame_hop: usize,
+}
+
+impl CodecDecoderHandle for NanoCodecStreamingDecoder {
+    fn frame_hop(&self) -> usize {
+        self.frame_hop
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn n_codebooks(&self) -> usize {
+        self.n_codebooks
+    }
+
+    // ZERO-ALLOC-BEGIN — caller-owned grouped-FSQ and causal decoder scratch.
+    fn push_codes(&mut self, codes: &[u32]) -> Result<usize> {
+        if codes.len() != self.n_codebooks {
+            return Err(VokraError::InvalidArgument(format!(
+                "nanocodec push: n_codebooks {} != checkpoint {}",
+                codes.len(),
+                self.n_codebooks
+            )));
+        }
+        if self.pending {
+            return Err(VokraError::InvalidArgument(
+                "nanocodec push: pull the pending PCM frame before pushing another code frame"
+                    .into(),
+            ));
+        }
+        group_fsq_decode_into(
+            codes,
+            1,
+            self.levels_per_group.as_slice(),
+            &mut self.features,
+        )?;
+        let written = self
+            .decoder
+            .decode_into(&mut self.state, &self.features, &mut self.pcm)?;
+        if written != self.frame_hop {
+            return Err(VokraError::InvalidArgument(format!(
+                "nanocodec decoder wrote {written} samples, expected frame hop {}",
+                self.frame_hop
+            )));
+        }
+        self.pending = true;
+        Ok(1)
+    }
+
+    fn pull_pcm(&mut self, out: &mut [f32]) -> Result<usize> {
+        if !self.pending {
+            return Ok(0);
+        }
+        if out.len() < self.frame_hop {
+            return Err(VokraError::InvalidArgument(format!(
+                "nanocodec pull: output capacity {} < frame hop {}",
+                out.len(),
+                self.frame_hop
+            )));
+        }
+        out[..self.frame_hop].copy_from_slice(&self.pcm);
+        self.pending = false;
+        Ok(self.frame_hop)
+    }
+    // ZERO-ALLOC-END
+
+    fn reset(&mut self) -> Result<()> {
+        self.decoder.reset(&mut self.state)?;
         self.features.fill(0.0);
         self.pcm.fill(0.0);
         self.pending = false;

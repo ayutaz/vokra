@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use vokra_core::gguf::{AsBytes, GgufFile};
 use vokra_core::{BackendKind, CompliancePolicy, Session, VokraError};
-use vokra_models::codec::MimiStreamingCodec;
+use vokra_models::codec::{MimiStreamingCodec, NanoCodecStreamingCodec};
 use vokra_models::moshi::MoshiEngine;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
@@ -34,6 +34,8 @@ const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 const ARCH_MOSHI: &str = "moshi";
 /// Standalone Kyutai Mimi codec (`vokra-cli convert --model mimi`).
 const ARCH_MIMI: &str = "mimi";
+/// NVIDIA NanoCodec decoder-only GGUF (`vokra-cli convert --model nanocodec`).
+const ARCH_NANOCODEC: &str = "nanocodec";
 /// CAM++ speaker encoder (`crates/vokra-convert/src/models/campplus.rs`), the
 /// `speaker_encode` model behind `vokra_speaker_embed`.
 const ARCH_CAMPLUS: &str = "campplus";
@@ -189,10 +191,15 @@ fn inject_engine(
             let decoder = MimiStreamingCodec::from_gguf(session.gguf())?;
             Ok(session.with_codec_decoder_engine(Arc::new(decoder)))
         }
+        ARCH_NANOCODEC => {
+            reject_cpu_only_backend(backend, "NanoCodec streaming codec decoder")?;
+            let decoder = NanoCodecStreamingCodec::from_gguf(session.gguf())?;
+            Ok(session.with_codec_decoder_engine(Arc::new(decoder)))
+        }
         other => Err(VokraError::InvalidArgument(format!(
             "unsupported model arch `{other}` (supported: `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}` / `{ARCH_MIMI}` / \
-             `{ARCH_CAMPLUS}`)"
+             `{ARCH_NANOCODEC}` / `{ARCH_CAMPLUS}`)"
         ))),
     }
 }
