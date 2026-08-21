@@ -334,6 +334,8 @@ const ARCH_SMART_TURN: &str = "smart_turn";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
+/// Xiph RNNoise v0.2 native waveform denoiser.
+const ARCH_RNNOISE: &str = "rnnoise";
 /// pyannote `segmentation-3.0` — mirror of
 /// [`vokra_models::pyannote::EXPECTED_ARCH`].
 const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
@@ -745,10 +747,10 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // exactly once and calls its utterance-level endpoint surface.
             Ok((session, ModelTask::SmartTurn))
         }
-        ARCH_NSNET2 => {
+        ARCH_NSNET2 | ARCH_RNNOISE => {
             if hint.is_some() {
                 return Err(format!(
-                    "task hint {hint:?} is not supported on arch `{ARCH_NSNET2}`"
+                    "task hint {hint:?} is not supported on denoise arch `{arch}`"
                 ));
             }
             // Bare session — the `run` arm binds the concrete `Nsnet2V1` from
@@ -976,7 +978,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
@@ -1383,14 +1385,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::audiosr",
         entry: "AudioSr::from_gguf → AudioSr::super_resolve",
         probe: Some(|g: &GgufFile| vokra_models::audiosr::AudioSr::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "rnnoise",
-        module: "vokra_models::rnnoise",
-        entry: "RnnoiseV02::from_gguf → RnnoiseV02::forward_features (real network complete; \
-                waveform denoise remains partial: v0.2 32-band/65-feature analysis, pitch \
-                downsample/remove_doubling, delayed-spectrum gains, and OLA synthesis)",
-        probe: Some(|g: &GgufFile| vokra_models::rnnoise::RnnoiseV02::from_gguf(g).map(|_| ())),
     },
     // --- Diarization / speaker -------------------------------------------
     BoundArch {
@@ -2001,13 +1995,18 @@ mod tests {
         );
     }
 
-    /// An `nsnet2` GGUF dispatches to [`ModelTask::Denoise`] with a bare
-    /// session — the concrete `Nsnet2V1` binds in the `run` arm (the
+    /// An `nsnet2` or `rnnoise` GGUF dispatches to [`ModelTask::Denoise`] with
+    /// a bare session — the concrete model binds in the `run` arm (the
     /// campplus / voxtral precedent), so a metadata-only fixture is enough.
     #[test]
     fn load_session_detects_nsnet2_as_denoise_task() {
         let (_session, task) = with_arch_only_gguf("nsnet2", "nsnet2-arch", |p| {
             load_session(p).expect("nsnet2 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) = with_arch_only_gguf("rnnoise", "rnnoise-arch", |p| {
+            load_session(p).expect("rnnoise session builds (bare)")
         });
         assert_eq!(task, ModelTask::Denoise);
     }
@@ -2551,6 +2550,7 @@ mod tests {
             ARCH_FIRERED_VAD,
             ARCH_SMART_TURN,
             ARCH_NSNET2,
+            ARCH_RNNOISE,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
             ARCH_FCPE,

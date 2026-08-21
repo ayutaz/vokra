@@ -35,6 +35,46 @@ const REGRESSION_THRESHOLD: f64 = 0.05;
 /// Default utterance for TTS bench when `--text` is not supplied.
 const DEFAULT_BENCH_TEXT: &str = "the quick brown fox jumps over the lazy dog";
 
+enum DenoiseBenchModel {
+    Nsnet2(vokra_models::nsnet2::Nsnet2V1),
+    Rnnoise(vokra_models::rnnoise::RnnoiseV02),
+}
+
+impl DenoiseBenchModel {
+    fn bind(gguf: &vokra_core::gguf::GgufFile) -> Result<Self, String> {
+        let arch = gguf
+            .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+            .and_then(|value| value.as_str())
+            .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
+        match arch {
+            "nsnet2" => vokra_models::nsnet2::Nsnet2V1::from_gguf(gguf)
+                .map(Self::Nsnet2)
+                .map_err(|error| error.to_string()),
+            "rnnoise" => vokra_models::rnnoise::RnnoiseV02::from_gguf(gguf)
+                .map(Self::Rnnoise)
+                .map_err(|error| error.to_string()),
+            other => Err(format!(
+                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2 or rnnoise"
+            )),
+        }
+    }
+
+    fn sample_rate(&self) -> u32 {
+        match self {
+            Self::Nsnet2(model) => model.config().sample_rate,
+            Self::Rnnoise(_) => vokra_models::rnnoise::SAMPLE_RATE,
+        }
+    }
+
+    fn denoise_pcm(&self, pcm: &[f32]) -> Result<Vec<f32>, String> {
+        match self {
+            Self::Nsnet2(model) => model.denoise_pcm(pcm),
+            Self::Rnnoise(model) => model.denoise_pcm(pcm),
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
 /// Output serialization format for the bench report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -621,22 +661,24 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 .input
                 .as_deref()
                 .ok_or("bench (denoise): --input <in.wav> is required")?;
-            let model = vokra_models::nsnet2::Nsnet2V1::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?;
-            let rate = model.config().sample_rate;
             let clip = wav::read_wav(path)?;
+            let arch = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str())
+                .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
+            let model = DenoiseBenchModel::bind(session.gguf())?;
+            let rate = model.sample_rate();
             if clip.sample_rate != rate {
                 return Err(format!(
-                    "bench (denoise): {path}: expected a {rate} Hz mono WAV (the NSNet2 \
-                     STFT front-end is fixed at the trained rate), got {} Hz — resample \
-                     offline first (FR-EX-08: never a silent resample)",
+                    "bench (denoise): {path}: arch `{arch}` expects a {rate} Hz mono WAV, got {} Hz — resample offline first (FR-EX-08: never a silent resample)",
                     clip.sample_rate
                 ));
             }
             let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
             let pcm = clip.samples;
             let samples = time_iters(args.warmup, args.iters, || {
-                model.denoise_pcm(&pcm).map_err(|e| e.to_string())?;
+                model.denoise_pcm(&pcm)?;
                 Ok(())
             })?;
             ("denoise", audio_seconds, samples)

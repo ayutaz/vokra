@@ -37,6 +37,7 @@ USAGE:
     vokra-cli run --model <smart-turn-v2.gguf> --input <16k-mono.wav>
     vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
+    vokra-cli run --model <rnnoise.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
     vokra-cli run --model <fcpe.gguf> --input <in.wav>
@@ -617,7 +618,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::VadTen => Some("VAD (TEN-VAD)"),
         ModelTask::KwsOpenwakeword => Some("openWakeWord keyword spotting"),
         ModelTask::SmartTurn => Some("SmartTurn v2 semantic endpointing"),
-        ModelTask::Denoise => Some("NSNet2 speech enhancement"),
+        ModelTask::Denoise => Some("NSNet2 / RNNoise speech enhancement"),
         ModelTask::Segment => Some("pyannote speaker segmentation"),
         ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
         ModelTask::F0Fcpe => Some("FCPE F0 (pitch) extraction"),
@@ -1307,7 +1308,7 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// The NSNet2 speech-enhancement path (Wave G, 2026-08-15).
+/// The native NSNet2 / RNNoise speech-enhancement path.
 ///
 /// `--input` is a mono WAV at the model's trained rate; the denoised PCM goes
 /// to `--output` (or its duration is reported when the flag is absent, the
@@ -1324,32 +1325,59 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
 /// rate, so feeding a 44.1/48 kHz clip through it would emit plausible-sounding
 /// but wrong audio with no diagnostic.
 fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
-    use vokra_models::nsnet2::Nsnet2V1;
-
     let path = a
         .input
         .as_deref()
         .ok_or("run (denoise): --input <in.wav> is required")?;
-    let model = Nsnet2V1::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
-    let rate = model.config().sample_rate;
     let clip = wav::read_wav(path)?;
-    if clip.sample_rate != rate {
-        return Err(format!(
-            "run (denoise): {path}: expected a {rate} Hz mono WAV (the NSNet2 STFT \
-             front-end is fixed at the rate the model was trained on), got {} Hz — \
-             resample offline first (FR-EX-08: never a silent resample)",
-            clip.sample_rate
-        ));
-    }
-    let out = model
-        .denoise_pcm(&clip.samples)
-        .map_err(|e| e.to_string())?;
+    let arch = session
+        .gguf()
+        .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+        .and_then(|value| value.as_str())
+        .ok_or("run (denoise): GGUF is missing `vokra.model.arch`")?;
+    let (rate, out) = match arch {
+        "nsnet2" => {
+            let model = vokra_models::nsnet2::Nsnet2V1::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?;
+            let rate = model.config().sample_rate;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let output = model
+                .denoise_pcm(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            (rate, output)
+        }
+        "rnnoise" => {
+            let model = vokra_models::rnnoise::RnnoiseV02::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?;
+            let rate = vokra_models::rnnoise::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let output = model
+                .denoise_pcm(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            (rate, output)
+        }
+        other => {
+            return Err(format!(
+                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2 or rnnoise"
+            ));
+        }
+    };
     println!(
         "denoise: {} in -> {} out samples @ {rate} Hz",
         clip.samples.len(),
         out.len()
     );
     emit_audio("denoise", &out, rate, a.output.as_deref())
+}
+
+fn denoise_rate_error(path: &str, arch: &str, expected: u32, actual: u32) -> String {
+    format!(
+        "run (denoise): {path}: arch `{arch}` expects a {expected} Hz mono WAV, got {actual} Hz — resample offline first (FR-EX-08: never a silent resample)"
+    )
 }
 
 /// The pyannote `segmentation-3.0` speaker-segmentation path (Wave G).
