@@ -20,7 +20,8 @@ use std::process::ExitCode;
 use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
     convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
-    convert_file_licensed, convert_file_quantized, convert_moshi_file, convert_piper_plus_file,
+    convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
+    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_piper_plus_file,
     convert_sbv2_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
@@ -34,6 +35,7 @@ USAGE:
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
+    vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -249,6 +251,49 @@ fn main() -> ExitCode {
             // (tokenizer_spm_32k_3.model — public in the kyutai repo;
             // without it the monologue decode fails loudly, M4-06-T22).
             convert_moshi_file(&input, config.as_deref(), &output)
+        }
+        ModelKind::MoonshineTiny | ModelKind::MoonshineBase => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = config.as_deref() else {
+                eprintln!(
+                    "error: --model {} requires --config <tokenizer.json>\n\n{USAGE}",
+                    model.as_arg()
+                );
+                return ExitCode::from(2);
+            };
+            let converted = match model {
+                ModelKind::MoonshineTiny => convert_moonshine_tiny_file_with_tokenizer(
+                    &input,
+                    Some(tokenizer),
+                    &output,
+                    license.as_deref(),
+                )
+                .map(|report| report.written),
+                ModelKind::MoonshineBase => convert_moonshine_base_file_with_tokenizer(
+                    &input,
+                    Some(tokenizer),
+                    &output,
+                    license.as_deref(),
+                )
+                .map(|report| report.written),
+                _ => unreachable!("outer match restricts Moonshine variants"),
+            };
+            converted.map(|written| ConvertSummary {
+                model,
+                tensor_count: written,
+                // 4 model/category/upstream fields + 18 Moonshine fields +
+                // 4 provenance fields + the embedded tokenizer blob.
+                metadata_count: 27,
+                output_bytes: std::fs::metadata(&output)
+                    .map(|meta| meta.len())
+                    .unwrap_or(0),
+                notes: vec![
+                    "strict official Moonshine manifest validated; tokenizer.json embedded".into(),
+                ],
+            })
         }
         ModelKind::CosyVoice2 => {
             if quant.is_some() {

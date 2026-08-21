@@ -16,6 +16,7 @@ use vokra_core::{BackendKind, Session, VokraError};
 use vokra_models::csm::{CsmEngine, EchoPath, FixtureByteTokenizer};
 use vokra_models::distil_whisper::DistilWhisperAsr;
 use vokra_models::kotoba_whisper::KotobaWhisperAsr;
+use vokra_models::moonshine::Moonshine;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
@@ -385,6 +386,8 @@ const ARCH_DISTIL_WHISPER: &str = "distil-whisper";
 /// kotoba-whisper (`kotoba-tech/kotoba-whisper-v2.0` and family) — mirror of
 /// `vokra-convert::models::kotoba_whisper::ARCH`.
 const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
+/// Moonshine Tiny/Base raw-waveform encoder-decoder ASR.
+const ARCH_MOONSHINE: &str = "moonshine";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -503,6 +506,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             let asr = KotobaWhisperAsr::from_gguf(session.gguf())
                 .map_err(|e| e.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_MOONSHINE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_MOONSHINE}`)"
+                ));
+            }
+            let asr = Moonshine::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
                 .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
@@ -954,6 +969,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             Err(format!(
                 "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
                  `{ARCH_DISTIL_WHISPER}` / `{ARCH_KOTOBA_WHISPER}` / \
+                 `{ARCH_MOONSHINE}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
@@ -1079,12 +1095,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| {
             vokra_models::whisper_medusa::WhisperMedusa::from_gguf(g).map(|_| ())
         }),
-    },
-    BoundArch {
-        arch: "moonshine",
-        module: "vokra_models::moonshine",
-        entry: "Moonshine::from_gguf → Moonshine::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::moonshine::Moonshine::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "omniasr-ctc",
@@ -2341,8 +2351,8 @@ mod tests {
     /// re-added row fails here with a direct explanation rather than only as a
     /// downstream symptom.
     #[test]
-    fn bound_arch_registry_does_not_slander_the_distilled_whispers() {
-        for arch in [ARCH_DISTIL_WHISPER, ARCH_KOTOBA_WHISPER] {
+    fn bound_arch_registry_excludes_routed_asr_forwards() {
+        for arch in [ARCH_DISTIL_WHISPER, ARCH_KOTOBA_WHISPER, ARCH_MOONSHINE] {
             assert!(
                 BOUND_ARCHES.iter().all(|b| b.arch != arch),
                 "`{arch}` has a real forward (its binder delegates to WhisperAsr) and is \
@@ -2528,6 +2538,7 @@ mod tests {
             ARCH_WHISPER,
             ARCH_DISTIL_WHISPER,
             ARCH_KOTOBA_WHISPER,
+            ARCH_MOONSHINE,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,
             ARCH_CSM,

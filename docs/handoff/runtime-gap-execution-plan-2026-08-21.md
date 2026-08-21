@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 65 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **65** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 64 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **64** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -148,6 +148,37 @@ derivatives to them. Canonical GGUFs therefore stamp
 `RedistributionForbidden`; no official weight is bundled, uploaded, or
 eligible for the Vokra model zoo. Both BSD-2-Clause and BSD-3-Clause LPCNet
 notices are preserved for the native frontend.
+
+### 2026-08-22 Moonshine Tiny/Base closure
+
+`moonshine` is no longer a partial-forward row. The canonical repositories are
+`moonshine-ai/moonshine-{tiny,base}`; the former UsefulSensors ids redirect.
+The pinned Tiny revision `390624ed33d594443aa4aa221f5b9f283b545b5a`
+contains 160 F32 tensors, while Base revision
+`7a73d8d55ac0ba2ef3ae761593f6784b51f96dcf` contains 210. Strict conversion
+rejects any missing, extra, retyped, or reshaped tensor and embeds the pinned
+32,768-entry HF BPE tokenizer.
+
+The primary implementation corrected two stale scaffold claims: both releases
+use eight attention heads, not six for Tiny; and only the decoder is SwiGLU,
+while the encoder MLP is exact GELU. The native CPU path implements the valid
+raw-waveform Conv1D stem, GroupNorm, partial RoPE, encoder self-attention,
+causal decoder self-attention, encoder cross-attention, tied logits, greedy EOS
+termination, and byte-fallback BPE decoding. Non-CPU backends return an
+explicit unsupported error until composed attention is routed there.
+
+Tiny and Base official checkpoints converted on VAST to 160- and 210-tensor
+GGUFs respectively; no artifact was uploaded or published. The independent
+Transformers reference measured Tiny maximum absolute error `9.548664e-5` for
+the 40×288 encoder output, `6.496906e-5` for a three-token decoder output, and
+`2.5308132e-4` for all 32,768 tied logits. Fixed gates are `2e-4`, `2e-4`, and
+`5e-4` respectively. Greedy generation also matched exact ids
+`[1, 1939, 29889, 2]` and text `No.` on the deterministic fixture. The dumper
+and ignored environment-gated test are
+`tools/parity/moonshine_dump_reference.py` and
+`official_tiny_encoder_decoder_logit_parity`. The normal CLI ASR route returned
+`No.` for Tiny on the same one-second deterministic waveform; Base loaded all
+210 tensors and completed the same route (empty text after immediate EOS).
 
 ## Corrections to the previous ledger
 
@@ -462,14 +493,14 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 65 partial forwards
+## Wave 4 — 64 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
 
 | Family | Count | Rows |
 |---|---:|---|
-| ASR / speech transcription | 14 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `moonshine`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
+| ASR / speech transcription | 13 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
 | TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
 | Enhancement / separation / AEC | 9 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `rnnoise`, `sepformer`, `storm` |

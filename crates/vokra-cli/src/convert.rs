@@ -17,7 +17,8 @@ use vokra_convert::{
     convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
     convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
-    convert_llama_omni2_file_with_config, convert_openwakeword_op_file_with_config,
+    convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
+    convert_moonshine_tiny_file_with_tokenizer, convert_openwakeword_op_file_with_config,
     convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
     convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
     convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
@@ -40,6 +41,8 @@ USAGE:
     vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model voxcpm2 --input <complete.safetensors> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model moonshine-<tiny|base> --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
@@ -647,11 +650,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::DebertaV3
             | ModelKind::BertBase
             | ModelKind::VoxCpm2
+            | ModelKind::MoonshineTiny
+            | ModelKind::MoonshineBase
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -1073,6 +1078,58 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
             convert_styletts2_file(&p.input, &p.output)
+        }
+        ModelKind::MoonshineTiny | ModelKind::MoonshineBase => {
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for Moonshine; pass the pinned tokenizer.json with --tokenizer"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                format!(
+                    "--model {} requires --tokenizer <tokenizer.json>; a weight-only GGUF cannot render transcripts",
+                    model.as_arg()
+                )
+            })?;
+            let (written, embedded) = match model {
+                ModelKind::MoonshineTiny => {
+                    let report = convert_moonshine_tiny_file_with_tokenizer(
+                        &p.input,
+                        Some(tokenizer),
+                        &p.output,
+                        p.license.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    (report.written, report.tokenizer_embedded)
+                }
+                ModelKind::MoonshineBase => {
+                    let report = convert_moonshine_base_file_with_tokenizer(
+                        &p.input,
+                        Some(tokenizer),
+                        &p.output,
+                        p.license.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    (report.written, report.tokenizer_embedded)
+                }
+                _ => unreachable!("outer match restricts Moonshine variants"),
+            };
+            let output_bytes = std::fs::metadata(&p.output)
+                .map_err(|error| format!("{}: {error}", p.output.display()))?
+                .len();
+            println!(
+                "converted {}: {written} strict F32 tensors, tokenizer_embedded={embedded}, {output_bytes} bytes -> {}",
+                model.as_arg(),
+                p.output.display()
+            );
+            return Ok(ExitCode::SUCCESS);
         }
         ModelKind::DebertaV2 => {
             // Blocker 5 (2026-08-06): dedicated dispatch so `--tokenizer

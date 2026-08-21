@@ -904,16 +904,12 @@ pub mod yue_bundle;
 // Distinct arch tag `openwakeword`, category `kws`. Scale ~0.01 GB =
 // local convert safe on M1 iMac (well below vast.ai threshold).
 pub mod openwakeword;
-// 2026-08-02 Wave residual: UsefulSensors/moonshine-tiny (27M raw-audio
-// transformer enc-dec ASR, MIT). Distinct from Whisper: no mel front-end
-// (raw 16 kHz audio via Conv1D stack) + rotary + SwiGLU. Distinct arch
-// tag `moonshine`, category `asr`. Scale ~0.11 GB = local convert safe.
+// `moonshine-ai/moonshine-tiny` (27M raw-audio transformer enc-dec ASR,
+// MIT). Exact 160-tensor F32 manifest + pinned BPE tokenizer.
+pub(crate) mod moonshine_common;
 pub mod moonshine_tiny;
-// 2026-08-02 Wave residual: UsefulSensors/moonshine-base (61.5M raw-audio
-// transformer enc-dec ASR, MIT). Sibling to `moonshine_tiny` — same
-// arch family (raw-audio Conv1D + rotary + SwiGLU), wider/deeper
-// backbone. Distinct arch tag `moonshine` (shared with sibling Tiny),
-// category `asr`. Scale ~0.25 GB = local convert safe.
+// `moonshine-ai/moonshine-base` (61.5M sibling). Exact 210-tensor F32
+// manifest; shared runtime arch and tokenizer contract with Tiny.
 pub mod moonshine_base;
 // 2026-08-02 Wave residual: facebook/demucs (HT-Demucs, MIT). Hybrid
 // transformer Demucs (Rouard et al. 2023, arXiv:2211.08553) — U-Net

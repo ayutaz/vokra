@@ -860,40 +860,19 @@ pub mod wavlm;
 // verified by the converter 2026-07-25 — no owner action needed for
 // MIT class per feedback-license-signoff-primary-source memory).
 pub mod emotion2vec;
-// Wave 8 2026-08-14 audit follow-up (LIB.RS RULE append at end with
-// Wave 8 comment marker): Useful Sensors Moonshine ASR family
-// (`UsefulSensors/moonshine-{tiny,base}`, MIT) — real-time
+// Moonshine ASR family (`moonshine-ai/moonshine-{tiny,base}`, MIT) — real-time
 // transformer encoder-decoder ASR alternative to Whisper for edge
 // (Jeffries et al. 2024, arXiv:2410.15608 "Moonshine: Speech
 // Recognition for Live Transcription and Voice Commands"). **Distinct
 // from every Whisper-family sibling** (whisper / distil_whisper /
 // kotoba_whisper) in two significant ways: (1) **no mel front-end** —
 // the model consumes raw 16 kHz PCM directly via a learned Conv1D
-// stem (strides = [64, 3, 2] → 384x downsampling); (2) **RoPE + SwiGLU**
-// activations rather than Whisper's sinusoidal + GELU. Loud-partial
-// pattern per Wave 1-7 precedent (snac / wavlm / fsmn_vad /
-// openwakeword / dnsmos_p808_p835 / storm / sepformer / demucs /
-// conv_tasnet / musicgen / audiogen / audioldm2 / jasco / panns /
-// llama_omni2 / emotion2vec): `from_gguf` real (arch check + variant
-// discrimination via `vokra.model.name` + per-variant
-// `MoonshineConfig` primary-source-transcribed hparams + weight-
-// license class surfacing); `transcribe()` returns
-// `VokraError::UnsupportedOp` naming the three exact missing pieces
-// (i) raw-audio Conv1D stem walk, (ii) RoPE + SwiGLU transformer
-// encoder-decoder forward, (iii) greedy / beam decoding +
-// SentencePiece detokenize — every message cites all three primary
-// source URLs (github.com/usefulsensors/moonshine +
-// arXiv:2410.15608 + huggingface.co/UsefulSensors/moonshine-*) so a
-// reader diagnosing the gap has exactly three anchors to walk.
-// Consumes converter siblings `moonshine_tiny.rs` +
-// `moonshine_base.rs` (both landed Wave 9 2026-08-02, §3.1 rows 421 +
-// 422 both ☑ Commercial MIT by 2026-08-01 yousan — this runtime
-// binder needs NO new §3.1 row). No new C ABI, no new Cargo.toml dep
-// — cross-crate string handshake via duplicated
-// `pub const ARCH = "moonshine"` (mirror of the converter's ARCH
-// constant, preserving the layered convention `vokra-ops → nothing
-// GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
-// binder`, `vokra-convert → GGUF writer`).
+// stem (strides = [64, 3, 2] → 384x downsampling); (2) RoPE plus a GELU
+// encoder and SwiGLU decoder. The strict binder loads the complete official
+// manifest and pinned HF BPE tokenizer; `transcribe` runs native Conv1D,
+// encoder/decoder attention, tied logits and greedy decoding. Non-CPU
+// backends fail explicitly until the composed attention path is wired. No new
+// runtime dependency is introduced.
 pub mod moonshine;
 // Wave 8 2026-08-14 audit follow-up (LIB.RS RULE append at end with
 // Wave 8 comment marker): Facebook Denoiser

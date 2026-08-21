@@ -2897,14 +2897,15 @@ pub enum ModelKind {
     /// GGUF bridge only; the audio-dialect `kws` op consumes the
     /// artifact in a future WP).
     Openwakeword,
-    /// **Moonshine-Tiny** (`UsefulSensors/moonshine-tiny`, **MIT**)
-    /// safetensors → GGUF (Wave residual, 2026-08-02). 27M-parameter
+    /// **Moonshine-Tiny** (`moonshine-ai/moonshine-tiny`, **MIT**)
+    /// safetensors → GGUF. 27M-parameter
     /// transformer encoder-decoder ASR (Jeffries et al. 2024,
     /// arXiv:2410.15608). **Distinct from sibling [`Self::Whisper`]** in
     /// two significant ways: (1) **no mel front-end** — the model
     /// consumes raw 16 kHz audio directly via a learned Conv1D stack
     /// (bypassing STFT + Mel filterbank), (2) **rotary position encoding
-    /// + SwiGLU** activations rather than Whisper's sinusoidal + GELU.
+    /// + a GELU encoder / SwiGLU decoder** rather than Whisper's
+    /// sinusoidal positions.
     /// Distinct arch tag `moonshine` — silently sharing with
     /// [`Self::Whisper`] would misroute runtime dispatch at the audio-
     /// input boundary (raw-audio Conv1D vs Mel encoder), which FR-EX-08
@@ -2914,25 +2915,23 @@ pub enum ModelKind {
     /// Whisper / piper-plus / Silero / CAM++ first-party Permissive
     /// posture. Scale ~0.11 GB = local convert safe on M1 iMac 16 GB
     /// (well below the vast.ai ≥8 GB cutoff per memory
-    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
-    /// skeleton mirror of sibling `musicgen_small.rs` /
-    /// `hubert_large_ls960.rs` / `openwakeword.rs`. Runtime binder (raw-
-    /// audio Conv1D + rotary + SwiGLU encoder-decoder + greedy decode)
-    /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+    /// `[[feedback-large-models-on-vast-ai]]`). The converter validates
+    /// the exact 160-tensor F32 manifest and embeds the pinned BPE
+    /// tokenizer; the native runtime implements greedy decoding.
     MoonshineTiny,
-    /// **Moonshine-Base** (`UsefulSensors/moonshine-base`, **MIT**)
+    /// **Moonshine-Base** (`moonshine-ai/moonshine-base`, **MIT**)
     /// safetensors → GGUF (Wave residual, 2026-08-02). 61.5M-parameter
     /// transformer encoder-decoder ASR (Jeffries et al. 2024,
     /// arXiv:2410.15608). Sibling to [`Self::MoonshineTiny`] with the
     /// same architecture family (raw-audio Conv1D front-end + rotary
-    /// position encoding + SwiGLU activations) but a wider/deeper
+    /// position encoding + GELU encoder / SwiGLU decoder) but a wider/deeper
     /// backbone (~2.3× parameter count vs the 27M Tiny variant per the
     /// upstream release manifest). **Distinct from sibling
     /// [`Self::Whisper`]** in two significant ways: (1) **no mel
     /// front-end** — the model consumes raw 16 kHz audio directly via a
     /// learned Conv1D stack (bypassing STFT + Mel filterbank), (2)
-    /// **rotary position encoding + SwiGLU** activations rather than
-    /// Whisper's sinusoidal + GELU. Shares arch tag `moonshine` with
+    /// **rotary positions + GELU encoder / SwiGLU decoder** rather than
+    /// Whisper's sinusoidal positions. Shares arch tag `moonshine` with
     /// sibling [`Self::MoonshineTiny`] (Tiny and Base share the same
     /// architecture — only depth/width differ). Silently sharing with
     /// [`Self::Whisper`] would misroute runtime dispatch at the audio-
@@ -2943,12 +2942,9 @@ pub enum ModelKind {
     /// Whisper / piper-plus / Silero / CAM++ / Moonshine-Tiny first-
     /// party Permissive posture. Scale ~0.25 GB = local convert safe on
     /// M1 iMac 16 GB (well below the vast.ai ≥8 GB cutoff per memory
-    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
-    /// skeleton mirror of sibling `moonshine_tiny.rs` /
-    /// `musicgen_small.rs` / `hubert_large_ls960.rs` / `openwakeword.rs`.
-    /// Runtime binder (raw-audio Conv1D + rotary + SwiGLU encoder-
-    /// decoder + greedy decode) deferred to owner sign-off
-    /// (`docs/license-audit.md` §3.1).
+    /// `[[feedback-large-models-on-vast-ai]]`). The converter validates
+    /// the exact 210-tensor F32 manifest and embeds the pinned BPE
+    /// tokenizer; the native runtime implements greedy decoding.
     MoonshineBase,
     /// **Demucs (HT-Demucs)** (`facebook/demucs`, **MIT**) safetensors →
     /// GGUF (Wave residual, 2026-08-02). Meta's hybrid transformer Demucs
@@ -5537,30 +5533,33 @@ impl ModelKind {
             | "dscripka-openwakeword"
             | "dscripka/openwakeword"
             | "dscripka/openWakeWord" => Some(Self::Openwakeword),
-            // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors,
-            // MIT). 27M raw-audio transformer enc-dec ASR (arXiv:
+            // Moonshine-Tiny (`moonshine-ai`, MIT). 27M raw-audio
+            // transformer enc-dec ASR (arXiv:
             // 2410.15608). Distinct arch tag `moonshine`. Accept the
             // arch tag, the family-name spelling, hyphen / underscore
-            // variants, and the canonical HF org/name path.
+            // variants, the canonical HF org/name path, and the former
+            // UsefulSensors redirect spellings for compatibility.
             "moonshine"
             | "moonshine-tiny"
             | "moonshine_tiny"
+            | "moonshine-ai/moonshine-tiny"
             | "usefulsensors-moonshine-tiny"
             | "usefulsensors/moonshine-tiny"
             | "UsefulSensors/moonshine-tiny" => Some(Self::MoonshineTiny),
-            // 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors,
-            // MIT). 61.5M raw-audio transformer enc-dec ASR (arXiv:
+            // Moonshine-Base (`moonshine-ai`, MIT). 61.5M raw-audio
+            // transformer enc-dec ASR (arXiv:
             // 2410.15608). Sibling to Moonshine-Tiny — same arch family
-            // (raw-audio Conv1D + rotary + SwiGLU), wider/deeper
+            // (raw-audio Conv1D + rotary + GELU encoder / SwiGLU decoder), wider/deeper
             // backbone. Shared arch tag `moonshine` at the runtime side,
             // distinct ModelKind at the converter side (the two
             // checkpoints have different tensor shapes; the dispatch
             // must not silently pick Tiny for a Base checkpoint or vice
             // versa — FR-EX-08). Accept the family-name spelling with
             // the `-base` suffix, hyphen / underscore variants, and the
-            // canonical HF org/name path.
+            // canonical HF org/name path plus the former redirect spellings.
             "moonshine-base"
             | "moonshine_base"
+            | "moonshine-ai/moonshine-base"
             | "usefulsensors-moonshine-base"
             | "usefulsensors/moonshine-base"
             | "UsefulSensors/moonshine-base" => Some(Self::MoonshineBase),
@@ -10403,64 +10402,60 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // === MoonshineTiny (2026-08-02 Wave residual, raw-audio ASR) ===
+        // === MoonshineTiny (strict raw-audio ASR manifest) ===
         ModelKind::MoonshineTiny => {
-            // Moonshine-Tiny (UsefulSensors, MIT). 27M transformer enc-
-            // dec ASR with raw-audio Conv1D front-end (no mel) + rotary
-            // + SwiGLU (Jeffries et al. 2024, arXiv:2410.15608). Distinct
+            // Moonshine-Tiny (`moonshine-ai`, MIT). 27M transformer enc-
+            // dec ASR with raw-audio Conv1D front-end (no mel), rotary,
+            // GELU encoder and SwiGLU decoder (Jeffries et al. 2024,
+            // arXiv:2410.15608). Distinct
             // arch tag `moonshine` from sibling Whisper (different audio
             // input path + different attention/MLP variants) — silently
             // sharing would misroute runtime dispatch at the audio-input
-            // boundary (FR-EX-08). BF16 pass-through skeleton mirror of
-            // sibling musicgen_small / hubert_large_ls960 / openwakeword.
-            // Default license `mit` + Permissive (Whisper / piper-plus /
-            // Silero / CAM++ first-party posture). Scale ~0.11 GB =
-            // local convert safe on M1 iMac 16 GB.
+            // boundary (FR-EX-08). This compatibility API has no tokenizer
+            // parameter, so it writes an exact 160-tensor weight-only GGUF;
+            // the executable CLI paths require and embed tokenizer.json.
             let report =
                 models::moonshine_tiny::convert_moonshine_tiny_file(input, output, license)?;
             let notes = vec![format!(
-                "moonshine-tiny: {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
-                 from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU)",
+                "moonshine-tiny: {} exact F32 tensors written ({} BF16 passthrough), \
+                 {} non-float skipped; weight-only compatibility output — use the Moonshine \
+                 CLI path with tokenizer.json for an executable GGUF",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
-                metadata_count: 0,
+                metadata_count: 26,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
         }
-        // === MoonshineBase (2026-08-02 Wave residual, raw-audio ASR) ===
+        // === MoonshineBase (strict raw-audio ASR manifest) ===
         ModelKind::MoonshineBase => {
-            // Moonshine-Base (UsefulSensors, MIT). 61.5M transformer
-            // enc-dec ASR with raw-audio Conv1D front-end (no mel) +
-            // rotary + SwiGLU (Jeffries et al. 2024, arXiv:2410.15608).
+            // Moonshine-Base (`moonshine-ai`, MIT). 61.5M transformer
+            // enc-dec ASR with raw-audio Conv1D front-end (no mel),
+            // rotary, GELU encoder and SwiGLU decoder (Jeffries et al. 2024,
+            // arXiv:2410.15608).
             // Sibling to Moonshine-Tiny — same arch family, wider/deeper
             // backbone (~2.3× parameter count per upstream release
             // manifest). Shares arch tag `moonshine` with Tiny at the
             // runtime side; distinct ModelKind at the converter side
             // (different tensor shapes — a Base checkpoint fed to a
-            // Tiny loader would misroute at load, FR-EX-08). BF16 pass-
-            // through skeleton mirror of sibling moonshine_tiny /
-            // musicgen_small / hubert_large_ls960 / openwakeword.
-            // Default license `mit` + Permissive (Whisper / piper-plus /
-            // Silero / CAM++ / Moonshine-Tiny first-party posture).
-            // Scale ~0.25 GB = local convert safe on M1 iMac 16 GB.
+            // Tiny loader would misroute at load, FR-EX-08). This
+            // compatibility API writes the exact 210 tensors but cannot
+            // embed tokenizer.json; executable CLI conversion requires it.
             let report =
                 models::moonshine_base::convert_moonshine_base_file(input, output, license)?;
             let notes = vec![format!(
-                "moonshine-base: {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
-                 from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU; sibling \
-                 Moonshine-Tiny same arch, wider/deeper backbone)",
+                "moonshine-base: {} exact F32 tensors written ({} BF16 passthrough), \
+                 {} non-float skipped; weight-only compatibility output — use the Moonshine \
+                 CLI path with tokenizer.json for an executable GGUF",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
-                metadata_count: 0,
+                metadata_count: 26,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -13070,6 +13065,8 @@ pub use models::neutts_air::{NeuTtsAirReport, convert_neutts_air_file};
 // are not in the safetensors, so it will not invent them — the
 // `ModelKind::Crepe` precedent). The working entry point is
 // [`convert_openwakeword_op_file_with_config`] below.
+pub use models::moonshine_base::{MoonshineBaseReport, convert_moonshine_base_file_with_tokenizer};
+pub use models::moonshine_tiny::{MoonshineTinyReport, convert_moonshine_tiny_file_with_tokenizer};
 pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_file};
 pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
 pub use models::torchaudio_squim::{TorchaudioSquimReport, convert_torchaudio_squim_file};
