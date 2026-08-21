@@ -27,6 +27,9 @@ FILES=(
     # M4-03: the AEC process()/DSP-kernel regions (FR-EX-05; the counting-
     # allocator proof lives in crates/vokra-ops/tests/aec_hot_path_alloc.rs).
     "crates/vokra-ops/src/aec.rs"
+    # #50: stateful streaming resampler; counting-allocator proof lives in
+    # crates/vokra-ops/tests/streaming_resampler_hot_path_alloc.rs.
+    "crates/vokra-ops/src/resample.rs"
 )
 
 # The forbidden allocating constructs, as a grep ERE. (Matching is done by grep,

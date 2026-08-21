@@ -988,8 +988,12 @@ FN vokra-ops::qwen3_tts_codec::quantizer_vocab_size|pub fn quantizer_vocab_size(
 FN vokra-ops::qwen3_tts_codec::qwen3_tts_12hz|pub const fn qwen3_tts_12hz() -> Self {
 FN vokra-ops::qwen3_tts_codec::qwen3_tts_codec_decode|pub fn qwen3_tts_codec_decode(
 FN vokra-ops::qwen3_tts_codec::tables|pub fn tables(&self) -> &[CodebookTable] {
+FN vokra-ops::resample::delay_samples|pub fn delay_samples(&self) -> usize {
+FN vokra-ops::resample::new|pub fn new(in_rate: u32, out_rate: u32, quality: u8) -> Result<Self> {
+FN vokra-ops::resample::process_into|pub fn process_into(&mut self, input: &[f32], out: &mut [f32]) -> Result<usize> {
 FN vokra-ops::resample::quality_params|pub fn quality_params(quality: u8) -> (usize, f64) {
 FN vokra-ops::resample::resample|pub fn resample(input: &[f32], in_rate: u32, out_rate: u32, quality: u8) -> Result<Vec<f32>> {
+FN vokra-ops::resample::reset|pub fn reset(&mut self) {
 FN vokra-ops::rnnoise::bark_dct|pub fn bark_dct(log_energies: &[f32; N_BARK_BANDS]) -> [f32; N_BARK_BANDS] {
 FN vokra-ops::rnnoise::bark_filterbank|pub fn bark_filterbank(magnitude: &[f32]) -> Result<[f32; N_BARK_BANDS]> {
 FN vokra-ops::rnnoise::dense_forward|pub fn dense_forward(
@@ -1432,6 +1436,7 @@ STRUCT vokra-ops::openwakeword::OpenwakewordClassifierWeights|pub struct Openwak
 STRUCT vokra-ops::prosody::ProsodyControl|pub struct ProsodyControl {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodecConfig|pub struct Qwen3TtsCodecConfig {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodec|pub struct Qwen3TtsCodec {
+STRUCT vokra-ops::resample::StreamingResampler|pub struct StreamingResampler {
 STRUCT vokra-ops::rnnoise::PitchState|pub struct PitchState {
 STRUCT vokra-ops::rnnt_decode::RnntAttrs|pub struct RnntAttrs {
 STRUCT vokra-ops::rnnt_decode::RnntHypothesis|pub struct RnntHypothesis {
@@ -1620,7 +1625,7 @@ USE vokra-ops::openwakeword::{OpenwakewordClassifierWeights, openwakeword_classi
 USE vokra-ops::preprocess::{apply_frontend, dc_offset_remove, pre_emphasis}|pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 USE vokra-ops::prosody::{ApplyProsody, ProsodyControl}|pub use prosody::{ApplyProsody, ProsodyControl};
 USE vokra-ops::qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode}|pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
-USE vokra-ops::resample::resample|pub use resample::resample;
+USE vokra-ops::resample::{StreamingResampler, resample}|pub use resample::{StreamingResampler, resample};
 USE vokra-ops::rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, }|pub use rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, };
 USE vokra-ops::rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode}|pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 USE vokra-ops::snac_decode::{SnacConfig, SnacDecoder, SnacWeights}|pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
