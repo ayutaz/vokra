@@ -1316,73 +1316,13 @@ pub mod utmosv2;
 // `vokra-convert → GGUF writer`).
 pub mod nisqa;
 
-// Wave B (2026-08-15) — TEN-VAD runtime binder (LIB.RS RULE: append at the
-// END of the `pub mod` block with a Wave marker; do NOT alphabetize —
-// rustfmt has reordered these before and broken a commit).
-//
-// Closes a real gap: `crates/vokra-convert/src/models/ten_vad.rs` (landed
-// coverage-audit-2026-08-03 Wave A permissive continuation, 2026-08-04)
-// produced a GGUF stamped `vokra.model.arch = "ten_vad"` that NOTHING in the
-// workspace read back, so every converted checkpoint was unloadable. This
-// module is that consumer.
-//
-// TEN-VAD (`github.com/TEN-framework/ten-vad`) is a compact (~306 KB ONNX
-// bundle) real-time voice-activity detector positioned upstream as a
-// ~5.5x-lighter alternative to Silero VAD v5. It is the THIRD first-class VAD
-// topology under the shared `category = "vad-kws"` umbrella, and it exposes
-// the same `vokra_core::engines::VadEngine` / `VadStreamHandle` seam as
-// `silero_vad` and `fsmn_vad`, so a caller can swap between the three without
-// rewriting call sites.
-//
-// REAL: strict `vokra.model.arch` verification that refuses a foreign GGUF
-// loudly with the whole `vad-kws` sibling fleet enumerated (`silero-vad`
-// 1:1-preserved pseudo-STFT + LSTM subgraph / `fsmn-vad` fbank + LFR + CMVN op
-// stack / `openwakeword` + `openwakeword_op` keyword spotting); a tensor
-// manifest walk with a non-empty gate AND a converter-contract dtype gate
-// (`convert_ten_vad_file` has no quantization arm — it passes F32/F16/BF16
-// through verbatim — so a K-quant tensor proves a foreign producer); a
-// `require_tensor` name-resolution primitive that fails loudly NAMING the
-// tensor and previewing the real manifest; a BF16 counter mirroring the
-// converter's `TenVadReport::bf16_passthrough`; the OPTIONAL, all-or-nothing
-// `vokra.ten_vad.*` topology group (absent -> `None`, half-stamped -> loud);
-// a real hop-based streaming frame accumulator with a loud sample-rate gate
-// (never a silent resample); and weight-license surfacing that fail-closes to
-// `LicenseClass::Unknown`.
-//
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `TenVad::frame_probability` and the stream's `push_pcm` return
-// `VokraError::UnsupportedOp` naming four concrete blockers — (i) the MISSING
-// TENSOR-NAME MANIFEST, because the published artefact came from the generic
-// `tools/parity/onnx_to_safetensors.py` bridge which passes ONNX initializer
-// names through verbatim and nothing here records them; (ii) the MISSING
-// TOPOLOGY AXES, since the converter stamps no `vokra.ten_vad.*` group at all,
-// leaving hop size / feature width / hidden width / layer count unknown;
-// (iii) the UNRESOLVED BACKBONE FAMILY, since the converter docstring says
-// "small LSTM/GRU backbone" without committing to either and a coin flip here
-// is SILENT-wrong (note `vokra_ops::rnnoise::gru_forward` is already
-// shape-generic, so the blocker is the manifest and the axes, not the
-// arithmetic); (iv) the MISSING LPCNet-DERIVED FRONT-END, since
-// `vokra_ops::rnnoise::bark_filterbank` is RNNoise's FIXED 22-band table (same
-// Xiph lineage, different hard-coded edges), not TEN-VAD's front-end. No
-// fabricated speech probability is ever emitted (FR-EX-08). Deliberately NO
-// `TenVadConfig::upstream_default()`: unlike `FsmnVadConfig`, TEN-VAD's axes
-// are not stated in any available primary source, so a default would be
-// invented numbers wearing an authoritative face (CLAUDE.md ハルシネーション厳禁).
-//
-// LICENSING: Apache-2.0 for the main project (`LicenseClass::Permissive`,
-// mirroring the converter's `DEFAULT_LICENSE_SPDX`), but the LPCNet-derived
-// DSP front-end bundled in the upstream distribution is separately
-// BSD-3-Clause and requires NOTICE attribution for the LPCNet copyright when
-// redistributing binaries that embed it — surfaced as the named constant
-// `FRONTEND_LICENSE_SPDX` so the follow-up front-end-port wave has a greppable
-// anchor for that obligation. `docs/license-audit.md` §3.1 sign-off stays
-// BLANK (owner-only per `[[feedback-license-signoff-primary-source]]` — CC
-// does NOT sign).
-//
-// Cross-crate string handshake via duplicated `pub const ARCH = "ten_vad"`
-// (mirror of the converter's ARCH constant, preserving the layered convention
-// `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF reader`,
-// `vokra-models → GGUF binder`, `vokra-convert → GGUF writer`).
+// Native TEN-VAD v1.0 runtime. The strict offline ONNX sidecar and converter
+// pin the 19-tensor manifest, topology, revision, and source hash. Runtime is
+// first-party Rust: LPCNet-derived streaming features feed the released
+// separable-conv/two-LSTM graph through the common `VadEngine` API. Upstream's
+// Apache text carries additional non-compete/application-only deployment
+// terms, so canonical GGUFs are fail-closed for redistribution. The frontend
+// preserves both BSD-2-Clause and BSD-3-Clause notices required by `NOTICES`.
 pub mod ten_vad;
 
 // Wave B (2026-08-15) — smart-turn v2 runtime binder for semantic

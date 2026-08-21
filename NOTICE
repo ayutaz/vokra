@@ -328,8 +328,35 @@ this change. The complete license text is reproduced in
 tools/parity/THIRD_PARTY_LICENSES/pipecat-LICENSE.txt.
 
 --------------------------------------------------------------------------
+13. TEN-VAD v1.0 — restricted upstream license and LPCNet notices
+--------------------------------------------------------------------------
+Vokra's strict converter, native streaming VAD, and independent parity
+sidecar target TEN-framework/ten-vad commit
+8e96899ba05a8e8c0e883ec7417e7a144bd9dec0 (tag v1.0-ONNX).
+
+The upstream LICENSE is not unmodified Apache-2.0. It adds non-compete,
+application-only deployment conditions and requires derivative works to remain
+under those terms. Canonical GGUF conversion therefore stamps
+`LicenseRef-Agora-TEN-VAD-Open-Source-License-2025` as
+`redistribution-forbidden`; this repository does not bundle or publish the
+official weights. Application-local use remains subject to the upstream terms.
+
+The LPCNet-derived frontend is separately covered by upstream NOTICES:
+
+  Copyright (c) 2017-2019 Mozilla                     (BSD-2-Clause)
+  Copyright (c) 2017-2018 Mozilla                     (BSD-3-Clause)
+  Copyright (c) 2007-2017 Jean-Marc Valin             (BSD-3-Clause)
+  Copyright (c) 2005-2017 Xiph.Org Foundation         (BSD-3-Clause)
+  Copyright (c) 2003-2004 Mark Borgerding             (BSD-3-Clause)
+
+The complete upstream license and both BSD notices are reproduced in
+tools/parity/THIRD_PARTY_LICENSES/ten-vad-LICENSE.txt and
+tools/parity/THIRD_PARTY_LICENSES/ten-vad-NOTICES.txt.
+
+--------------------------------------------------------------------------
 9. Maintaining this file
 --------------------------------------------------------------------------
+
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,
 when the addition carries attribution or distribution-relevant terms,

@@ -1,81 +1,11 @@
-//! **TEN-VAD** (`TEN-framework/ten-vad`, Apache-2.0 + BSD-3-Clause front-end):
-//! safetensors → GGUF conversion (coverage-audit-2026-08-03 Wave A permissive
-//! continuation, 2026-08-04).
+//! Strict conversion for the official TEN-VAD v1.0 ONNX checkpoint.
 //!
-//! Input: the upstream `TEN-framework/ten-vad` release on GitHub — a
-//! compact voice-activity-detection model (~306 KB ONNX bundle, small
-//! LSTM/GRU backbone + LPCNet-derived DSP front-end) targeting real-time
-//! edge inference. Positioned as a **~5.5x lighter** alternative to
-//! Silero VAD v5 (upstream claim) for latency-constrained deployments
-//! at 16 kHz. The upstream release is distributed as ONNX only —
-//! `tools/parity/onnx_to_safetensors.py` bridges the ONNX graph to
-//! safetensors offline (NSNet2 / DNSMOS ONNX-bridge precedent — no
-//! ONNX ever enters the runtime, NFR-DS-02 zero-dep + FR-LD-05). A
-//! model-specific `tools/parity/ten_vad_prepare_checkpoint.py` is **not
-//! yet written**, and the binder records that discrepancy verbatim (see
-//! `crates/vokra-models/src/ten_vad/mod.rs`).
-//!
-//! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
-//! and `vokra.provenance.*` metadata chunks the runtime VAD path binds
-//! against.
-//!
-//! # License
-//!
-//! - SPDX: **Apache-2.0** ([`vokra_core::LicenseClass::Permissive`]).
-//!   The upstream repo LICENSE is Apache-2.0.
-//! - Category: **vad-kws** (voice-activity detection — sibling of the
-//!   existing `SileroVad` FR-LD-06 1:1 subgraph and `FsmnVad`
-//!   first-class op posture, positioned as a third alternative topology
-//!   under the shared `vad-kws` umbrella covering VAD + KWS families).
-//! - Notes: the LPCNet-derived DSP front-end bundled in the upstream
-//!   distribution is BSD-3-Clause; NOTICE attribution for the LPCNet
-//!   copyright is required when redistributing runtime binaries that
-//!   embed the front-end.
-//!
-//! # BF16 pass-through (mirror of nkf_aec / facebook_denoiser /
-//! # torchaudio_squim / sensevoicesmall)
-//!
-//! F32 / F16 / BF16 all ride the verbatim pass-through arm on the same
-//! match arm — no convert-time widening. BF16 is emitted as GGUF type
-//! 30 ([`GgmlType::BF16`]); the runtime widens BF16 → f32 losslessly at
-//! load via the single choke point
-//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16 is the
-//! top 16 bits of an f32 — `bits << 16` is exact). The observability
-//! counter [`TenVadReport::bf16_passthrough`] guards against a silent
-//! widen / downcast regression.
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream ONNX-inspection-derived state
-//! keys verbatim** (`encoder.*` / `decoder.*` / `feature_extractor.*`
-//! per the NSNet2 ONNX-bridge convention). Real-weight parity binding
-//! to a future `vokra-models::ten_vad` module (native LSTM + LPCNet
-//! front-end forward) is deferred to owner sign-off per
-//! `docs/license-audit.md §3.1`.
-//!
-//! # Provenance key choice: `vokra.provenance.upstream_url`
-//!
-//! TEN-VAD's primary redistribution source is the **GitHub repository**
-//! at `github.com/TEN-framework/ten-vad` — there is no HF mirror. The
-//! converter therefore stamps [`KEY_PROVENANCE_UPSTREAM_URL`] following
-//! the parallel key naming convention the Wave A tickets established
-//! for non-HF sources (`nkf-aec` / `torchaudio-squim` /
-//! `facebook-denoiser`).
-//!
-//! # No ONNX (permanent) in the runtime
-//!
-//! The upstream TEN-VAD release ships an ONNX file; the offline bridge
-//! `tools/parity/onnx_to_safetensors.py` flattens the graph tensors to
-//! safetensors so the runtime never touches the ONNX (FR-LD-05,
-//! NFR-DS-02). A model-specific
-//! `tools/parity/ten_vad_prepare_checkpoint.py` is not yet written.
-//!
-//! # Wiring status
-//!
-//! This is the TDD skeleton (BF16 / F16 / F32 pass-through plus
-//! provenance / category stamps). The runtime native LSTM + LPCNet-
-//! inspired feature-extractor forward is a follow-up wave, deferred to
-//! owner sign-off (see `docs/license-audit.md` §3.1).
+//! `tools/parity/ten_vad_prepare_checkpoint.py` is the only supported ONNX
+//! bridge.  It pins `TEN-framework/ten-vad` tag `v1.0-ONNX` at commit
+//! `8e96899ba05a8e8c0e883ec7417e7a144bd9dec0`, verifies the released ONNX
+//! SHA-256, and rewrites all 19 float initializers to stable names.  This
+//! converter then checks the complete name/shape/dtype manifest before writing
+//! GGUF.  ONNX and Python remain offline-only.
 
 use std::path::Path;
 
@@ -85,158 +15,176 @@ use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` value for TEN-VAD GGUFs. Intentionally distinct
-/// from every sibling VAD / KWS arch tag (`silero-vad` /
-/// `fsmn_vad` / `openwakeword` / `openwakeword_op`) — TEN-VAD's LSTM +
-/// LPCNet-inspired front-end is a distinct topology, so silently
-/// sharing would mis-route the runtime dispatch.
+/// GGUF architecture discriminator.
 pub const ARCH: &str = "ten_vad";
-
-/// `vokra.model.name` value written for the canonical
-/// `TEN-framework/ten-vad` release.
-pub const NAME: &str = "ten_vad";
-
-/// `vokra.model.category` value written for every TEN-VAD GGUF.
-/// Sibling of `silero-vad` / `fsmn_vad` / `openwakeword` (`vad-kws`
-/// umbrella covering VAD + KWS families).
+/// Canonical model name.
+pub const NAME: &str = "ten-vad-v1.0";
+/// Shared runtime category.
 pub const CATEGORY: &str = "vad-kws";
-
-/// Primary redistribution source (author's GitHub repository — no HF
-/// mirror). Written under [`KEY_PROVENANCE_UPSTREAM_URL`].
+/// Pinned primary-source repository.
 pub const UPSTREAM_URL: &str = "github.com/TEN-framework/ten-vad";
+/// SPDX-style identifier for Agora's restricted TEN-VAD license.
+pub const DEFAULT_LICENSE_SPDX: &str = "LicenseRef-Agora-TEN-VAD-Open-Source-License-2025";
+/// SPDX expression for the LPCNet-derived frontend.
+pub const FRONTEND_LICENSE_SPDX: &str = "bsd-2-clause AND bsd-3-clause";
+/// Pinned upstream commit for the v1.0 ONNX release.
+pub const REVISION: &str = "8e96899ba05a8e8c0e883ec7417e7a144bd9dec0";
+/// SHA-256 of the pinned upstream ONNX file.
+pub const ONNX_SHA256: &str = "e10b98a0cab1c98e847fbdda14cb3d45a38336d47535a3f63a0fb6c4e0f4cdf4";
+/// Required PCM sample rate stamped in canonical GGUF files.
+pub const SAMPLE_RATE: u32 = 16_000;
+/// Streaming hop size stamped in canonical GGUF files.
+pub const HOP_SIZE: u32 = 256;
+/// Feature width stamped in canonical GGUF files.
+pub const N_FEATURES: u32 = 41;
+/// Context length stamped in canonical GGUF files.
+pub const CONTEXT_FRAMES: u32 = 3;
+/// Recurrent hidden width stamped in canonical GGUF files.
+pub const HIDDEN_DIM: u32 = 64;
+/// Recurrent layer count stamped in canonical GGUF files.
+pub const N_LAYERS: u32 = 2;
+/// Exact float-initializer count in the pinned graph.
+pub const TENSOR_COUNT: usize = 19;
 
-/// Default upstream weight licence (SPDX). Verified against
-/// `github.com/TEN-framework/ten-vad/blob/main/LICENSE` (Apache-2.0
-/// for the main project; the LPCNet-derived DSP front-end bundled in
-/// the upstream distribution is BSD-3-Clause — NOTICE attribution
-/// required when redistributing binaries embedding the front-end).
-pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
-
-// Raw string keys not covered by `crate::gguf::chunks` — kept as
-// converter-side constants (the cross-crate constant duplication
-// convention the sibling BF16-passthrough converters use applies).
-
-/// `vokra.model.category` metadata key. Local per the established
-/// nkf_aec / sensevoicesmall / funcodec convention (not yet centralized
-/// in `vokra-core::gguf::chunks`).
 pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-
-/// `vokra.provenance.upstream_url` — the primary redistribution source
-/// URL for models whose canonical release is NOT on the Hugging Face
-/// hub. Parallel to `vokra.provenance.upstream_hf` (the HF-hosted
-/// sibling key); the Wave A tickets established the split so the
-/// model-card generator can distinguish "there is an HF mirror" from
-/// "the source is a raw URL". Local per the same convention as
-/// [`KEY_MODEL_CATEGORY`].
 pub(crate) const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
 
-/// Outcome of a TEN-VAD conversion.
-///
-/// Mirrors the sibling BF16-passthrough converters' counter shape
-/// (`super::nkf_aec::NkfAecReport`,
-/// `super::torchaudio_squim::TorchaudioSquimReport`) — the invariant
-/// `read == written + skipped_non_float` is auditable at the report
-/// level.
+fn tensor_spec() -> Vec<(&'static str, Vec<usize>)> {
+    vec![
+        ("ten_vad.conv0.depthwise.weight", vec![1, 1, 3, 3]),
+        ("ten_vad.conv0.pointwise.weight", vec![16, 1, 1, 1]),
+        ("ten_vad.conv0.pointwise.bias", vec![16]),
+        ("ten_vad.conv1.depthwise.weight", vec![16, 1, 1, 3]),
+        ("ten_vad.conv1.pointwise.weight", vec![16, 16, 1, 1]),
+        ("ten_vad.conv1.pointwise.bias", vec![16]),
+        ("ten_vad.conv2.depthwise.weight", vec![16, 1, 1, 3]),
+        ("ten_vad.conv2.pointwise.weight", vec![16, 16, 1, 1]),
+        ("ten_vad.conv2.pointwise.bias", vec![16]),
+        ("ten_vad.lstm0.weight_ih", vec![1, 256, 80]),
+        ("ten_vad.lstm0.weight_hh", vec![1, 256, 64]),
+        ("ten_vad.lstm0.bias", vec![1, 512]),
+        ("ten_vad.lstm1.weight_ih", vec![1, 256, 64]),
+        ("ten_vad.lstm1.weight_hh", vec![1, 256, 64]),
+        ("ten_vad.lstm1.bias", vec![1, 512]),
+        ("ten_vad.dense0.weight", vec![128, 32]),
+        ("ten_vad.dense0.bias", vec![32]),
+        ("ten_vad.dense1.weight", vec![32, 1]),
+        ("ten_vad.dense1.bias", vec![1]),
+    ]
+}
+
+/// Outcome of a strict TEN-VAD conversion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TenVadReport {
-    /// Total tensor entries observed on the safetensors input side.
+    /// Source tensors inspected (always 19 on success).
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16).
+    /// Canonical tensors written (always 19 on success).
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter — the safetensors
-    /// reader accepts only `F32` / `F16` / `BF16` at parse time
-    /// (`crates/vokra-core/src/safetensors.rs map_dtype`), so any
-    /// tensor reaching this counter would signal a reader change
-    /// upstream; kept for parity with the sibling converters).
+    /// Kept for report compatibility; strict conversion rejects non-F32 input.
     pub skipped_non_float: usize,
-    /// Of the tensors in [`Self::written`], how many were BF16 (subset
-    /// counter). Emits GGUF type 30 verbatim; the runtime widens BF16
-    /// → f32 losslessly via the single choke point
-    /// `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. A silent
-    /// widen / downcast regression would surface as this counter
-    /// drifting away from the input BF16 count.
+    /// Kept for report compatibility; the official release contains no BF16.
     pub bf16_passthrough: usize,
 }
 
-/// Converts a TEN-VAD safetensors checkpoint at `input` (pre-flattened
-/// from the upstream ONNX by `tools/parity/onnx_to_safetensors.py`; a
-/// model-specific `tools/parity/ten_vad_prepare_checkpoint.py` is not
-/// yet written) into a Vokra-native GGUF at `output`, returning a
-/// [`TenVadReport`].
-///
-/// Every F32 / F16 / BF16 tensor passes through under its upstream
-/// ONNX-inspection-derived key; the `vokra.model.*` (arch / name /
-/// category) and `vokra.provenance.*` (weight_license / license /
-/// model_id / source / upstream_url) chunks are stamped for the
-/// runtime compliance gate (FR-CP-03).
-///
-/// `license` optionally overrides the stamped weight license (raw SPDX
-/// string; the [`LicenseClass`] is re-derived via
-/// [`LicenseClass::from_license_str`]). The default is
-/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`).
-///
-/// # Errors
-///
-/// - [`ConvertError::Io`] on read/write failure.
-/// - [`ConvertError::Parse`] on malformed safetensors input.
-/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+/// Converts the canonical sidecar output to a native GGUF.
 pub fn convert_ten_vad_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<TenVadReport, ConvertError> {
-    // Load the whole checkpoint into memory — the TEN-VAD bundle is
-    // ~306 KB, well below the streaming-mandated Moshi 14 GiB tier,
-    // so the simple `std::fs::read` posture applies trivially.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+    if st.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "ten-vad-v1.0: source manifest has {} tensors, expected exactly {TENSOR_COUNT}; run tools/parity/ten_vad_prepare_checkpoint.py against revision {REVISION}",
+            st.tensors().len()
+        )));
+    }
 
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+    let spec = tensor_spec();
+    for (name, expected) in &spec {
+        let tensor = st
+            .tensors()
+            .iter()
+            .find(|tensor| tensor.name == *name)
+            .ok_or_else(|| ConvertError::Parse(format!("ten-vad-v1.0: missing tensor `{name}`")))?;
+        let expected_u64 = expected.iter().map(|&dim| dim as u64).collect::<Vec<_>>();
+        if tensor.shape != expected_u64 {
+            return Err(ConvertError::Parse(format!(
+                "ten-vad-v1.0: tensor `{name}` has shape {:?}, expected {expected_u64:?}",
+                tensor.shape
+            )));
+        }
+        if tensor.dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "ten-vad-v1.0: tensor `{name}` is {:?}, expected F32 from the pinned official ONNX",
+                tensor.dtype
+            )));
+        }
+    }
+    for tensor in st.tensors() {
+        if !spec.iter().any(|(name, _)| *name == tensor.name) {
+            return Err(ConvertError::Parse(format!(
+                "ten-vad-v1.0: unexpected tensor `{}`; the pinned manifest has exactly {TENSOR_COUNT} tensors",
+                tensor.name
+            )));
+        }
+    }
 
-    let effective_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
-    let effective_class = LicenseClass::from_license_str(effective_spdx);
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    builder.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+    builder.add_string("vokra.ten_vad.revision", REVISION);
+    builder.add_string("vokra.ten_vad.onnx_sha256", ONNX_SHA256);
+    builder.add_string("vokra.ten_vad.frontend_license_spdx", FRONTEND_LICENSE_SPDX);
+    builder.add_u32("vokra.ten_vad.sample_rate", SAMPLE_RATE);
+    builder.add_u32("vokra.ten_vad.hop_size", HOP_SIZE);
+    builder.add_u32("vokra.ten_vad.n_features", N_FEATURES);
+    builder.add_u32("vokra.ten_vad.context_frames", CONTEXT_FRAMES);
+    builder.add_u32("vokra.ten_vad.hidden_dim", HIDDEN_DIM);
+    builder.add_u32("vokra.ten_vad.n_layers", N_LAYERS);
+
+    // The upstream file is not plain Apache-2.0: it adds non-compete,
+    // application-only deployment conditions and binds derivatives to those
+    // terms. A generic GGUF mirror would enable third-party applications, so
+    // the default must remain non-publishable. An explicit override represents
+    // a separately negotiated redistribution grant held by the caller.
+    let (effective_spdx, effective_class) = match license {
+        Some(value) if !value.is_empty() => (value, LicenseClass::from_license_str(value)),
+        _ => (DEFAULT_LICENSE_SPDX, LicenseClass::RedistributionForbidden),
+    };
     vokra_core::stamp_provenance(
-        &mut b,
+        &mut builder,
         effective_class,
         effective_spdx,
         Some(NAME),
         Some(
-            "github.com/TEN-framework/ten-vad (compact ~306 KB LSTM/GRU VAD + \
-             LPCNet-derived DSP front-end, Apache-2.0 main + BSD-3-Clause front-end — \
-             NOTICE attribution required for LPCNet copyright when redistributing \
-             binaries embedding the front-end)",
+            "TEN-framework/ten-vad v1.0-ONNX; Agora restricted deployment license with BSD-2-Clause and BSD-3-Clause LPCNet-derived frontend notices",
         ),
     );
 
-    let mut report = TenVadReport::default();
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
+    for (name, dims) in &spec {
+        let tensor = st
+            .tensors()
+            .iter()
+            .find(|tensor| tensor.name == *name)
+            .expect("complete manifest validated above");
+        builder.add_tensor(
+            name,
+            GgmlType::F32,
+            dims.iter().map(|&dim| dim as u64).collect(),
+            st.tensor_bytes(tensor).to_vec(),
+        )?;
     }
-
-    let out_bytes = b.to_bytes()?;
-    std::fs::write(output, &out_bytes)?;
-    Ok(report)
+    std::fs::write(output, builder.to_bytes()?)?;
+    Ok(TenVadReport {
+        read: TENSOR_COUNT,
+        written: TENSOR_COUNT,
+        skipped_non_float: 0,
+        bf16_passthrough: 0,
+    })
 }
 
 #[cfg(test)]
@@ -246,16 +194,15 @@ mod tests {
     use vokra_core::gguf::GgufFile;
 
     fn scratch_path(tag: &str, ext: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-ten-vad-{tag}-{}-{}.{ext}",
+        std::env::temp_dir().join(format!(
+            "vokra-ten-vad-{tag}-{}-{}.{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
+                .map(|duration| duration.as_nanos())
                 .unwrap_or(0),
-        ));
-        p
+            ext
+        ))
     }
 
     struct TempFileGuard(PathBuf);
@@ -265,186 +212,75 @@ mod tests {
         }
     }
 
-    fn bf16_bytes(values: &[f32]) -> Vec<u8> {
-        values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect()
+    fn canonical_safetensors() -> Vec<u8> {
+        let spec = tensor_spec();
+        let mut offset = 0usize;
+        let mut entries = Vec::new();
+        let mut payload = Vec::new();
+        for (name, dims) in spec {
+            let bytes = dims.iter().product::<usize>() * 4;
+            entries.push(format!(
+                "\"{name}\":{{\"dtype\":\"F32\",\"shape\":{:?},\"data_offsets\":[{offset},{}]}}",
+                dims,
+                offset + bytes
+            ));
+            payload.resize(payload.len() + bytes, 0);
+            offset += bytes;
+        }
+        let header = format!("{{{}}}", entries.join(","));
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
     }
 
-    /// Pins the BF16 pass-through end-to-end. Mirrors
-    /// `nkf_aec::tests::bf16_tensor_passes_through_verbatim`.
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let payload = bf16_bytes(&values);
-        assert_eq!(payload.len(), 12, "6 elements × 2 bytes BF16");
-        // TEN-VAD LSTM feature-extractor Conv1D weight — the ONNX-
-        // inspection-derived state key convention preserved verbatim
-        // through the `ten_vad_prepare_checkpoint.py` bridge.
-        let header =
-            r#"{"encoder.conv.0.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&payload);
-
-        let input_path = scratch_path("bf16-in", "safetensors");
-        let output_path = scratch_path("bf16-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report = convert_ten_vad_file(&input_path, &output_path, None).expect("convert BF16");
-        assert_eq!(report.read, 1, "one BF16 tensor observed");
+    fn strict_manifest_stamps_native_contract() {
+        let input = scratch_path("canonical", "safetensors");
+        let output = scratch_path("canonical", "gguf");
+        std::fs::write(&input, canonical_safetensors()).unwrap();
+        let _input_guard = TempFileGuard(input.clone());
+        let _output_guard = TempFileGuard(output.clone());
+        let report = convert_ten_vad_file(&input, &output, None).unwrap();
+        assert_eq!(report.read, TENSOR_COUNT);
+        assert_eq!(report.written, TENSOR_COUNT);
+        let file = GgufFile::open(&output).unwrap();
+        assert_eq!(file.tensors().len(), TENSOR_COUNT);
         assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of nkf_aec / torchaudio_squim)"
-        );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 tensor must increment the observability counter"
-        );
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let info = file
-            .tensor_info("encoder.conv.0.weight")
-            .expect("BF16 tensor present in output");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            payload.as_slice(),
-            "BF16 payload must be byte-identical to input (no silent widen)"
-        );
-    }
-
-    /// Pins that F32 and F16 tensors both ride the pass-through arm in
-    /// the same conversion, and that the BF16 counter stays at 0.
-    /// Also asserts the arch / name / category / provenance stamps
-    /// land through the default (apache-2.0 → Permissive).
-    #[test]
-    fn f32_and_f16_tensors_pass_through_and_default_license_is_permissive() {
-        let f32_vals: [f32; 2] = [7.0, -8.25];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let f16_patterns: [u16; 2] = [0x3C00, 0x4000];
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 8);
-        assert_eq!(f16_bytes.len(), 4);
-
-        let header = format!(
-            r#"{{"encoder.lstm.weight_ih_l0":{{"dtype":"F32","shape":[1,2],"data_offsets":[0,{}]}},"decoder.linear.bias":{{"dtype":"F16","shape":[2],"data_offsets":[{},{}]}}}}"#,
-            f32_bytes.len(),
-            f32_bytes.len(),
-            f32_bytes.len() + f16_bytes.len(),
-        );
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
-        input_bytes.extend_from_slice(&f16_bytes);
-
-        let input_path = scratch_path("mixed-in", "safetensors");
-        let output_path = scratch_path("mixed-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report =
-            convert_ten_vad_file(&input_path, &output_path, None).expect("convert F32 + F16 mixed");
-        assert_eq!(report.read, 2);
-        assert_eq!(report.written, 2, "F32 and F16 must both pass through");
-        assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32 / F16 must NOT increment the BF16 counter"
-        );
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let f32_info = file
-            .tensor_info("encoder.lstm.weight_ih_l0")
-            .expect("F32 tensor");
-        assert_eq!(f32_info.dtype, GgmlType::F32);
-        assert_eq!(f32_info.dimensions, vec![1, 2]);
-        assert_eq!(file.tensor_bytes(f32_info), f32_bytes.as_slice());
-        let f16_info = file.tensor_info("decoder.linear.bias").expect("F16 tensor");
-        assert_eq!(f16_info.dtype, GgmlType::F16);
-        assert_eq!(f16_info.dimensions, vec![2]);
-        assert_eq!(file.tensor_bytes(f16_info), f16_bytes.as_slice());
-
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            file.get(chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str()),
             Some(ARCH)
         );
         assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
+            file.get("vokra.ten_vad.revision")
+                .and_then(|value| value.as_str()),
+            Some(REVISION)
         );
         assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_URL)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_URL)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE_SPDX)
+            file.get("vokra.ten_vad.context_frames")
+                .and_then(|value| value.as_u64()),
+            Some(CONTEXT_FRAMES as u64)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "apache-2.0 must resolve to Permissive (T1 tier)"
+                .and_then(|value| value.as_str()),
+            Some(LicenseClass::RedistributionForbidden.as_str())
         );
     }
 
-    /// Pins the license override boundary.
     #[test]
-    fn license_override_replaces_default() {
-        let f32_bytes: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let header = r#"{"encoder.embed.weight":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
-
-        let input_path = scratch_path("lic-in", "safetensors");
-        let output_path = scratch_path("lic-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report = convert_ten_vad_file(&input_path, &output_path, Some("mit"))
-            .expect("convert with override");
-        assert_eq!(report.written, 1);
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit"),
-            "override replaces the raw SPDX string"
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "mit stays Permissive (same class as apache-2.0 default)",
-        );
+    fn incomplete_manifest_is_rejected() {
+        let header = r#"{"ten_vad.dense1.bias":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        let input = scratch_path("incomplete", "safetensors");
+        let output = scratch_path("incomplete", "gguf");
+        std::fs::write(&input, bytes).unwrap();
+        let _input_guard = TempFileGuard(input.clone());
+        let error = convert_ten_vad_file(&input, &output, None).unwrap_err();
+        assert!(error.to_string().contains("expected exactly 19"));
     }
 }

@@ -1649,6 +1649,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "MossFormer2-SS-16K (`alibabasglab/MossFormer2_SS_16K`)"
     ],
     "ten_vad": ["TEN-VAD (`TEN-framework/ten-vad`)"],
+    "charsiu": [
+        "Charsiu (`lingjzhu/charsiu`; runtime checkpoint `charsiu/en_w2v2_fc_10ms`)"
+    ],
     "audioseal_real_weight": ["AudioSeal real weight (`facebook/audioseal`)"],
     # Music-understanding wave (2026-08-13, post-audit CC-gap): 6 BF16
     # pass-through skeleton converters. Row headings match

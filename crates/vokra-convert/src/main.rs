@@ -2908,9 +2908,9 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // `<none>` in an upstream_hf-only readback.
         ModelKind::FacebookDenoiser
         | ModelKind::NisqaV2Weight
-        // coverage-audit-2026-08-03 Wave A permissive continuation
-        // (2026-08-04): 2 GitHub-only entries in the permissive
-        // continuation (torchaudio_squim + ten_vad) that stamp
+        // coverage-audit-2026-08-03 Wave A continuation (TEN-VAD's license
+        // classification was corrected to RedistributionForbidden on
+        // 2026-08-22): 2 GitHub-only entries (torchaudio_squim + ten_vad) stamp
         // `vokra.provenance.upstream_url` per the NKF-AEC / RNNoise /
         // NSNet2 / facebook_denoiser precedent.
         | ModelKind::TorchaudioSquim

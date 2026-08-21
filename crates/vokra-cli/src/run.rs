@@ -614,6 +614,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // of gap as VAD / piper-plus / CSM / Moshi above.
         ModelTask::VadFsmn => Some("VAD (FSMN)"),
         ModelTask::VadFirered => Some("VAD (FireRedVAD)"),
+        ModelTask::VadTen => Some("VAD (TEN-VAD)"),
         ModelTask::KwsOpenwakeword => Some("openWakeWord keyword spotting"),
         ModelTask::SmartTurn => Some("SmartTurn v2 semantic endpointing"),
         ModelTask::Denoise => Some("NSNet2 speech enhancement"),
@@ -802,7 +803,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         // FSMN-VAD (Wave G) shares this arm verbatim: its binder implements
         // the same `VadEngine` trait Silero does and the dispatch injects it
         // into the same session slot, so the Silero path stays byte-identical.
-        ModelTask::Vad | ModelTask::VadFsmn | ModelTask::VadFirered => {
+        ModelTask::Vad | ModelTask::VadFsmn | ModelTask::VadFirered | ModelTask::VadTen => {
             let path = a
                 .input
                 .as_deref()

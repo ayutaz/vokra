@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 66 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **66** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 65 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **65** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -116,6 +116,38 @@ forward produced `0.1068216413`, for `max_abs=4.321336746e-7` under the fixed
 `1e-4` gate. The CLI now routes SmartTurn as an utterance-level endpoint task
 rather than pretending it is a frame-level `VadEngine`. No model artifact was
 uploaded or published.
+
+### 2026-08-22 TEN-VAD v1.0 closure
+
+`ten_vad` is no longer a partial-forward row. The official `v1.0-ONNX` source
+at commit `8e96899ba05a8e8c0e883ec7417e7a144bd9dec0` fixes the topology at a
+`3 × 41` feature context, three separable convolutions, two 64-unit ONNX LSTM
+layers, and a `128 → 32 → 1` sigmoid head. The offline Python 3.12 sidecar
+verifies the released ONNX SHA-256, maps exactly its 19 float initializers,
+and rejects graph-manifest drift. The converter accepts only that complete F32
+manifest and stamps every topology, revision, source-hash, and frontend-license
+axis consumed by the strict runtime binder.
+
+The native stream implements the official 16 kHz / 256-sample-hop frontend:
+pre-emphasis, a 768-point periodic Hann inside a 1024-point FFT, 40 log-mel
+features, the LPCNet-derived LPC/pitch tracker, three-frame context, and both
+recurrent states. The neural graph matched direct ONNX Runtime across four
+stateful steps at `max_abs=5.960464478e-8`. Against the official prebuilt C ABI
+over 40 deterministic PCM16 frames, the independent frontend bound is
+`3e-4` (measured `2.753734589e-4`) and the complete probability bound is
+`1e-3` (measured `6.932020187e-4`). These bounds account for the released
+binary's fixed-coefficient Ooura f32 FFT versus Vokra's independently
+implemented mixed-radix f32 FFT; they were set after isolating the neural
+graph, window coefficients, official internal power spectrum, and feature
+context rather than by weakening the exact-network gate.
+
+The license audit also corrected the old plain-Apache assumption. Upstream's
+`LICENSE` adds non-compete, application-only deployment conditions and binds
+derivatives to them. Canonical GGUFs therefore stamp
+`LicenseRef-Agora-TEN-VAD-Open-Source-License-2025` as
+`RedistributionForbidden`; no official weight is bundled, uploaded, or
+eligible for the Vokra model zoo. Both BSD-2-Clause and BSD-3-Clause LPCNet
+notices are preserved for the native frontend.
 
 ## Corrections to the previous ledger
 
@@ -430,7 +462,7 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 66 partial forwards
+## Wave 4 — 65 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
@@ -438,7 +470,6 @@ family as one completion checkbox.
 | Family | Count | Rows |
 |---|---:|---|
 | ASR / speech transcription | 14 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `moonshine`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
-| VAD / KWS / turn taking | 1 | `ten_vad` |
 | TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
 | Enhancement / separation / AEC | 9 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `rnnoise`, `sepformer`, `storm` |

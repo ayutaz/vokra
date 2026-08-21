@@ -317,6 +317,8 @@ pub mod snac_decode;
 pub mod snake;
 // -------------------------------------------------------------------------
 pub mod stft;
+// ---- TEN-VAD v1.0 native network + LPCNet-derived frontend --------------
+pub mod ten_vad;
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend (raw-waveform 7-layer
 // strided conv stem, FR-OP-40) — the mel-free ASR input path wav2vec 2.0 /
 // HuBERT / k2SSL consume. Runtime function, NOT an `OpKind` variant (same

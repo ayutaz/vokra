@@ -148,6 +148,12 @@ pub(crate) enum ModelTask {
     /// The native Kaldi-fbank + CMVN + causal DFSMN forward implements the
     /// same `VadEngine` contract as Silero and FSMN-VAD.
     VadFirered,
+    /// Voice activity detection through native TEN-VAD v1.0.
+    ///
+    /// The LPCNet-derived frontend and separable-conv/two-LSTM network share
+    /// the common `VadEngine` stream contract. Canonical official weights are
+    /// local-use only because their upstream deployment license is restricted.
+    VadTen,
     /// Speech enhancement through NSNet2 (Microsoft DNS-Challenge baseline).
     ///
     /// Real forward: [`vokra_models::nsnet2::Nsnet2V1::denoise_pcm`] runs
@@ -318,6 +324,8 @@ const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
 const ARCH_FSMN_VAD: &str = "fsmn-vad";
 /// FireRedTeam Stream-VAD native DFSMN.
 const ARCH_FIRERED_VAD: &str = "firered_vad";
+/// TEN-framework TEN-VAD v1.0 native streaming VAD.
+const ARCH_TEN_VAD: &str = "ten_vad";
 /// openWakeWord native v0.5.1 KWS pipeline.
 const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
 /// Pipecat smart-turn v2 utterance-level endpoint classifier.
@@ -693,6 +701,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 session.with_vad_engine(Arc::new(vad)),
                 ModelTask::VadFirered,
             ))
+        }
+        ARCH_TEN_VAD => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_TEN_VAD}`"
+                ));
+            }
+            let vad = vokra_models::ten_vad::TenVad::from_gguf(session.gguf())
+                .map_err(|error| format!("arch `{ARCH_TEN_VAD}`: {error}"))?;
+            Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::VadTen))
         }
         ARCH_OPENWAKEWORD_OP => {
             if hint.is_some() {
@@ -1137,13 +1155,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::mt3",
         entry: "Mt3::from_gguf → Mt3::transcribe",
         probe: Some(|g: &GgufFile| vokra_models::mt3::Mt3::from_gguf(g).map(|_| ())),
-    },
-    // --- VAD / KWS / turn-taking ----------------------------------------
-    BoundArch {
-        arch: "ten_vad",
-        module: "vokra_models::ten_vad",
-        entry: "TenVad::from_gguf → TenVad::frame_probability",
-        probe: Some(|g: &GgufFile| vokra_models::ten_vad::TenVad::from_gguf(g).map(|_| ())),
     },
     // --- TTS -------------------------------------------------------------
     BoundArch {
@@ -2368,6 +2379,22 @@ mod tests {
         assert!(
             BOUND_ARCHES.iter().all(|row| row.arch != ARCH_FIRERED_VAD),
             "FireRedVAD has a real native forward and CLI VAD route"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_ten_vad_to_native_vad_loader() {
+        let error = with_arch_only_gguf(ARCH_TEN_VAD, "ten-vad-routed", |path| {
+            let Err(error) = load_session(path) else {
+                panic!("metadata-only TEN-VAD GGUF must fail its strict metadata gate");
+            };
+            error
+        });
+        assert!(error.contains("vokra.ten_vad.revision"), "{error}");
+        assert!(!error.contains("is BOUND"), "{error}");
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_TEN_VAD),
+            "TEN-VAD has a real native forward and CLI VAD route"
         );
     }
 

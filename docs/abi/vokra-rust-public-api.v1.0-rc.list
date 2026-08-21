@@ -127,6 +127,15 @@ CONST vokra-ops::rnnoise::N_PITCH_BANDS|pub const N_PITCH_BANDS: usize = 6;
 CONST vokra-ops::rnnoise::N_STFT_BINS|pub const N_STFT_BINS: usize = 241;
 CONST vokra-ops::rnnoise::PITCH_BUF_SIZE|pub const PITCH_BUF_SIZE: usize = 720;
 CONST vokra-ops::rnnoise::SAMPLE_RATE|pub const SAMPLE_RATE: u32 = 48_000;
+CONST vokra-ops::ten_vad::CONTEXT_FRAMES|pub const CONTEXT_FRAMES: usize = 3;
+CONST vokra-ops::ten_vad::CONV_CHANNELS|pub const CONV_CHANNELS: usize = 16;
+CONST vokra-ops::ten_vad::FFT_SIZE|pub const FFT_SIZE: usize = 1024;
+CONST vokra-ops::ten_vad::HIDDEN_DIM|pub const HIDDEN_DIM: usize = 64;
+CONST vokra-ops::ten_vad::HOP_SIZE|pub const HOP_SIZE: usize = 256;
+CONST vokra-ops::ten_vad::LSTM0_INPUT|pub const LSTM0_INPUT: usize = 80;
+CONST vokra-ops::ten_vad::N_FEATURES|pub const N_FEATURES: usize = 41;
+CONST vokra-ops::ten_vad::SAMPLE_RATE|pub const SAMPLE_RATE: u32 = 16_000;
+CONST vokra-ops::ten_vad::WINDOW_SIZE|pub const WINDOW_SIZE: usize = 768;
 CONST vokra-ops::wpe::DEFAULT_DELAY|pub const DEFAULT_DELAY: usize = 3;
 CONST vokra-ops::wpe::DEFAULT_ITERATIONS|pub const DEFAULT_ITERATIONS: usize = 3;
 CONST vokra-ops::wpe::DEFAULT_PSD_CONTEXT|pub const DEFAULT_PSD_CONTEXT: usize = 0;
@@ -1032,6 +1041,11 @@ FN vokra-ops::stft::magnitude|pub fn magnitude(&self) -> Vec<f32> {
 FN vokra-ops::stft::power|pub fn power(&self) -> Vec<f32> {
 FN vokra-ops::stft::stft|pub fn stft(signal: &[f32], attrs: &StftAttrs) -> Result<Spectrogram> {
 FN vokra-ops::stft::to_interleaved|pub fn to_interleaved(&self) -> Vec<f32> {
+FN vokra-ops::ten_vad::network_forward|pub fn network_forward(
+FN vokra-ops::ten_vad::new|pub fn new() -> Self {
+FN vokra-ops::ten_vad::process_frame|pub fn process_frame(&mut self, pcm: &[f32]) -> Result<&[f32]> {
+FN vokra-ops::ten_vad::reset|pub fn reset(&mut self) {
+FN vokra-ops::ten_vad::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::vae_continuous::config|pub fn config(&self) -> &ContinuousVaeConfig {
 FN vokra-ops::vae_continuous::continuous_vae_decode|pub fn continuous_vae_decode(
 FN vokra-ops::vae_continuous::continuous_vae_encode|pub fn continuous_vae_encode(
@@ -1214,6 +1228,7 @@ MOD vokra-ops::rnnt_decode|pub mod rnnt_decode;
 MOD vokra-ops::snac_decode|pub mod snac_decode;
 MOD vokra-ops::snake|pub mod snake;
 MOD vokra-ops::stft|pub mod stft;
+MOD vokra-ops::ten_vad|pub mod ten_vad;
 MOD vokra-ops::vae_continuous|pub mod vae_continuous;
 MOD vokra-ops::vit|pub mod vit;
 MOD vokra-ops::vocos|pub mod vocos;
@@ -1471,6 +1486,11 @@ STRUCT vokra-ops::snac_decode::SnacConfig|pub struct SnacConfig {
 STRUCT vokra-ops::snac_decode::SnacDecoder|pub struct SnacDecoder {
 STRUCT vokra-ops::snac_decode::SnacWeights|pub struct SnacWeights {
 STRUCT vokra-ops::stft::Spectrogram|pub struct Spectrogram {
+STRUCT vokra-ops::ten_vad::LstmWeights|pub struct LstmWeights {
+STRUCT vokra-ops::ten_vad::SeparableConvWeights|pub struct SeparableConvWeights {
+STRUCT vokra-ops::ten_vad::TenVadFrontend|pub struct TenVadFrontend {
+STRUCT vokra-ops::ten_vad::TenVadNetworkState|pub struct TenVadNetworkState {
+STRUCT vokra-ops::ten_vad::TenVadNetworkWeights|pub struct TenVadNetworkWeights {
 STRUCT vokra-ops::vae_continuous::ContinuousVaeConfig|pub struct ContinuousVaeConfig {
 STRUCT vokra-ops::vae_continuous::ContinuousVaeDecoderWeights|pub struct ContinuousVaeDecoderWeights {
 STRUCT vokra-ops::vae_continuous::ContinuousVaeDecoder|pub struct ContinuousVaeDecoder {

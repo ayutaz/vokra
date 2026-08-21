@@ -1279,11 +1279,11 @@ pub enum ModelKind {
     /// `convert_jasco_400m_chords_drums_file` — publish requires
     /// `--allow-noncommercial` per MusicGen family T4 precedent.
     Jasco400mChordsDrums,
-    // ---- coverage-audit-2026-08-03 Wave A permissive continuation ----
-    // (2026-08-04): 7 BF16 pass-through skeletons all in the T1
-    // (Permissive) tier — MIT / BSD-2-Clause / Apache-2.0 defaults
-    // land as `LicenseClass::Permissive` and sign-off ☑ Commercial by
-    // yousan at land time. Two flavors: HF-hosted (Utmosv2 /
+    // ---- coverage-audit-2026-08-03 Wave A continuation ----
+    // The original 2026-08-04 audit grouped seven converters as permissive.
+    // TEN-VAD was corrected on 2026-08-22 after its primary LICENSE revealed
+    // additional deployment restrictions; its dedicated docs below carry the
+    // fail-closed result. Two flavors: HF-hosted (Utmosv2 /
     // HtdemucsMulti / OpenwakewordOp / Mossformer2Ss16k /
     // AudiosealRealWeight) and GitHub-only (TorchaudioSquim / TenVad).
     /// **UTMOSv2** (`sarulab-speech/UTMOSv2`, MIT,
@@ -1340,15 +1340,13 @@ pub enum ModelKind {
     /// = `source-separation`. Convert with
     /// `convert_mossformer2_ss_16k_file`.
     Mossformer2Ss16k,
-    /// **TEN-VAD** (`TEN-framework/ten-vad`, Apache-2.0 main +
-    /// BSD-3-Clause LPCNet-derived front-end,
-    /// coverage-audit-2026-08-03 Wave A permissive continuation) —
-    /// compact ~306 KB LSTM/GRU VAD alternative to Silero VAD v5
-    /// (upstream claim: ~5.5x lighter). Category = `vad-kws`,
-    /// GitHub-only upstream (no HF mirror) — stamps
-    /// `vokra.provenance.upstream_url`. NOTICE attribution required
-    /// for the bundled LPCNet BSD-3-Clause front-end. Convert with
-    /// `convert_ten_vad_file`.
+    /// **TEN-VAD** (`TEN-framework/ten-vad`, restricted Agora deployment
+    /// license plus BSD-2-Clause and BSD-3-Clause LPCNet notices) — compact
+    /// ~306 KB streaming VAD. The 2026-08-22 primary-source correction found
+    /// non-compete/application-only terms layered over Apache-2.0, so the
+    /// canonical converter stamps `RedistributionForbidden` and no official
+    /// model-zoo publication is allowed. Category = `vad-kws`; GitHub-only
+    /// upstream provenance is stamped. Convert with `convert_ten_vad_file`.
     TenVad,
     /// **AudioSeal real weight** (`facebook/audioseal`, MIT,
     /// coverage-audit-2026-08-03 Wave A permissive continuation) —
@@ -8604,9 +8602,9 @@ pub fn convert_file_licensed(
             let report = models::ten_vad::convert_ten_vad_file(input, output, license)?;
             let notes = vec![format!(
                 "ten-vad: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
-                 skipped (apache-2.0 default, Permissive; GitHub-only upstream, \
-                 vokra.provenance.upstream_url stamped; NOTICE attribution required for bundled \
-                 LPCNet BSD-3-Clause front-end)",
+                 skipped (restricted Agora deployment license default, RedistributionForbidden; \
+                 GitHub-only upstream stamped; BSD-2-Clause and BSD-3-Clause LPCNet notices \
+                 preserved)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
