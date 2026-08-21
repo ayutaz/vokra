@@ -370,6 +370,7 @@ mod tests {
         assert!(unsafe { vokra_codec_decoder_open(session) }.is_null());
         // SAFETY: NULL is the documented error branch.
         assert_eq!(
+            // SAFETY: NULL is explicitly accepted and reported as `-1`.
             unsafe { vokra_codec_decoder_n_codebooks(std::ptr::null()) },
             -1
         );
