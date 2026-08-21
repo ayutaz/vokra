@@ -1158,6 +1158,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "csm": ["Sesame CSM-1B"],
     "moshi": ["Moshi (Helium + Mimi)"],
     "mimi": ["Mimi codec (Kyutai)"],
+    # The matching §3.1 row is deliberately blank until the owner records a
+    # decision, so converter coverage remains fail-closed for publication.
+    "nanocodec": ["NVIDIA NanoCodec (NeMo, 22 kHz)"],
     "dac": ["DAC 24khz (Descript)"],
     "denoise": ["DeepFilterNet3"],
     "utmos": ["UTMOS22-strong (SaruLab)"],
