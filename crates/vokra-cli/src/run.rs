@@ -612,6 +612,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // non-CPU `--backend` would be a silent CPU run for them — same class
         // of gap as VAD / piper-plus / CSM / Moshi above.
         ModelTask::VadFsmn => Some("VAD (FSMN)"),
+        ModelTask::VadFirered => Some("VAD (FireRedVAD)"),
         ModelTask::KwsOpenwakeword => Some("openWakeWord keyword spotting"),
         ModelTask::Denoise => Some("NSNet2 speech enhancement"),
         ModelTask::Segment => Some("pyannote speaker segmentation"),
@@ -799,7 +800,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         // FSMN-VAD (Wave G) shares this arm verbatim: its binder implements
         // the same `VadEngine` trait Silero does and the dispatch injects it
         // into the same session slot, so the Silero path stays byte-identical.
-        ModelTask::Vad | ModelTask::VadFsmn => {
+        ModelTask::Vad | ModelTask::VadFsmn | ModelTask::VadFirered => {
             let path = a
                 .input
                 .as_deref()
@@ -4072,6 +4073,10 @@ mod tests {
     fn cpu_only_engine_label_classifies_every_task() {
         // Silent-ignore engines → guard fires (named label).
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), Some("VAD (Silero)"));
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VadFirered),
+            Some("VAD (FireRedVAD)")
+        );
         assert_eq!(
             cpu_only_engine_label(ModelTask::Tts),
             Some("piper-plus TTS")

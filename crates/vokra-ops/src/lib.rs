@@ -154,6 +154,10 @@ pub mod fsq_codec;
 // the M3-08 length_conditioning and M3-17 prosody pattern.
 pub mod flow_sampler;
 // -----------------------------------------------------------------------
+// ---- FireRedVAD native streaming DFSMN ---------------------------------
+// Exact causal DFSMN core for the official FireRedTeam Stream-VAD model.
+pub mod firered_vad;
+// -----------------------------------------------------------------------
 pub mod frontend;
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad primitive ---------------------------
 // FSMN-VAD (funasr/fsmn-vad, MIT) — Feed-forward Sequential Memory Network
@@ -495,6 +499,10 @@ pub use fsq_codec::{
     wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 // ---------------------------------------------------------------------------
+pub use firered_vad::{
+    FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
+    FireredVadDfsmnWeights, firered_vad_dfsmn_forward,
+};
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad re-exports --------------------------
 pub use fsmn_vad::{

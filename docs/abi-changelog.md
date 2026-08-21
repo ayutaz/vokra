@@ -269,10 +269,18 @@ consumer APIs for eight published GGUFs plus the operator-provisioned VITS-JA
 path. No existing `vokra.qwen3_tts.*`, `vokra.chatterbox*.*`,
 `vokra.cosyvoice3.*`, `vokra.dia.*`, `vokra.vibevoice.*`, `vokra.voxcpm2.*`,
 `vokra.zonos.*`, or `vokra.vits_ja.*` key is added, removed, or changed.
+FireRedVAD replaces its unstamped passthrough converter with a canonical native
+Stream-VAD variant, persisting the previously optional frontend fields plus
+the causal-DFSMN geometry and strict tensor manifest under the existing
+`vokra.firered_vad.*` prefix. Historical unvariant artifacts retain their
+explicit loud-partial behavior.
 
 | Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
 | --- | --- | --- | --- | --- | --- | --- |
 | `gguf:vokra.charsiu.*` | canonical Charsiu metadata group | Added | 16 keys: `revision`/`checkpoint_sha256` (`string`), `hidden_size`/`ffn_dim`/`n_layer`/`n_head`/`vocab_size`/`silence_id`/`pad_id`/`sample_rate`/`pos_conv_kernel`/`pos_conv_groups`/`silence_threshold` (`u32`), `frame_shift_sec`/`layer_norm_eps` (`f32`), `vocab` (`string[]`) | Writer/reader handshake for the canonical 10 ms frame classifier; no topology or label default is inferred. | no | #44 |
+| `gguf:vokra.firered_vad.*` | canonical Stream-VAD metadata group | Added / persisted | `variant` (`string`), `sample_rate`/`n_mels`/`window_length`/`hop_length`/`n_blocks`/`hidden_dim`/`projection_dim`/`memory_order`/`memory_stride`/`n_class` (`u32`), `required_tensors` (`string[]`) | Selects the official causal DFSMN variant and makes every frontend/cache/tensor axis load-bearing; unknown variants and partial manifests fail closed. | no | #44 |
+| `vokra-ops::firered_vad` | `FireredVadDfsmnConfig`, `FireredVadDfsmnBlockWeights`, `FireredVadDfsmnWeights`, `FireredVadDfsmnState`, `firered_vad_dfsmn_forward` | Added | stateful causal DFSMN primitive over normalized fbank rows | Native transcription of the official eight-stage streaming graph without an ONNX runtime dependency. | no | #44 |
+| `vokra-models::firered_vad` | `FireredVadNativeConfig`, `FireredVad::{native_config,forward_features}` | Added | strict native GGUF binder plus feature-level parity entry point | Runs canonical Stream-VAD while retaining the old unstamped loud-partial contract for compatibility. | no | #44 |
 | `vokra-convert` | `ModelKind::Charsiu` / `--model charsiu` | Added | canonical 213-tensor safetensors manifest → 211 F32 GGUF tensors | Consumes the eval-dead masking vector and folds positional-conv weight norm offline; missing, extra, retyped, or reshaped tensors are errors. | no | #44 |
 | `vokra-models::align::charsiu` | `Charsiu::from_file`, `Charsiu::logits`, canonical config/vocabulary fields | Added / Changed | strict GGUF binder + real frame-classification forward + upstream silence-mask/monotone-DTW alignment | Replaces the synthesized-only/unwired loader and the incorrect pre-norm/CTC description with the released post-norm topology and phone-alignment algorithm. This is pre-1.0 source churn; no C symbol changes. | yes (Rust source) | #44 |
 | `vokra-backend-cpu::kernels` | `grouped_conv1d_f32` | Added | checked grouped Conv1D composition over the existing dispatched dense kernel | Shared by Charsiu positional convolution and `vokra-eval`; invalid groups/extents fail loudly and no backend fallback is introduced. | no | #44 |

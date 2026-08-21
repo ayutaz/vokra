@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 68 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **68** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 67 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **67** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -60,6 +60,30 @@ ONNX Runtime, under the unchanged `1e-4` gate. Official CC-BY-NC-SA-4.0 weights
 remained on the VAST validation instance and were not uploaded. The CLI now
 routes the arch to a real KWS task and prints detections at the documented 0.5
 threshold.
+
+### 2026-08-22 FireRedVAD closure
+
+`firered_vad` is no longer a partial-forward row. The official implementation
+at FireRedTeam/FireRedVAD revision
+`c30ec49e8cc69642b0ee65362eba11b9d11c6e54` disproved the old transformer
+scaffold: Stream-VAD is an eight-stage causal DFSMN over 80-bin Kaldi fbank,
+checkpoint CMVN, and a one-column sigmoid head. The offline Python 3.12 bridge
+maps every one of the official ONNX graph's 37 floating initializers plus the
+two CMVN vectors into a strict 39-tensor F32 bundle. The converter refuses all
+missing, extra, retyped, or reshaped tensors and stamps the complete frontend,
+DFSMN, cache, variant, provenance, and required-tensor contracts.
+
+The native runtime carries 19 projected history frames for each DFSMN stage,
+preserves incomplete PCM framing across pushes, and explicitly converts
+normalized runtime PCM back to the int16-valued scale used by the official
+Kaldi frontend before checkpoint CMVN. On VAST, the 2,278,176-byte official
+GGUF matched direct ONNX Runtime across 222 frames at
+`max_abs=1.788139343e-7` for precomputed normalized features and
+`3.039836884e-6` for the complete PCM path, under the pre-registered `1e-4`
+bound. The same PCM error held when the WAV was pushed in 173-sample chunks,
+pinning recurrent and frontend remainder state. The CLI now routes the arch
+through the shared VAD run/bench contract.
+No model artifact was uploaded or published.
 
 ## Corrections to the previous ledger
 
@@ -374,7 +398,7 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 68 partial forwards
+## Wave 4 — 67 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
@@ -382,7 +406,7 @@ family as one completion checkbox.
 | Family | Count | Rows |
 |---|---:|---|
 | ASR / speech transcription | 14 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `moonshine`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
-| VAD / KWS / turn taking | 3 | `firered_vad`, `smart_turn`, `ten_vad` |
+| VAD / KWS / turn taking | 2 | `smart_turn`, `ten_vad` |
 | TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
 | Enhancement / separation / AEC | 9 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `rnnoise`, `sepformer`, `storm` |
@@ -478,6 +502,13 @@ unit suite and independent parity test pass locally with `CARGO_BUILD_JOBS=1`.
 
 ## Other explicit non-row holes retained
 
+- `fsmn-vad` conversion still admits an identity-CMVN placeholder instead of
+  requiring checkpoint statistics, while its docs overstate real end-to-end
+  parity. Replace that producer path with pinned real CMVN extraction and an
+  independent Kaldi-fbank/LFR/CMVN/encoder fixture before treating its PCM
+  path as validated.
+- The Godot VAD stream Object bridge has mock-level coverage but still needs
+  real headless/editor construction, lifetime, and push/reset smoke evidence.
 - Real `TtsEngine::synthesize_stream`; a one-chunk synchronous wrapper is not
   streaming completion.
 - microWakeWord emitted quantization metadata plus a real fixture.

@@ -578,7 +578,7 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
         // implements the same `VadEngine` trait Silero does and is injected
         // into the same session slot, so the Silero measurement path is
         // untouched.
-        ModelTask::Vad | ModelTask::VadFsmn => {
+        ModelTask::Vad | ModelTask::VadFsmn | ModelTask::VadFirered => {
             let path = args
                 .input
                 .as_deref()

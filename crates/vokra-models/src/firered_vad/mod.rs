@@ -1,10 +1,12 @@
-//! **FireRedVAD** (Xiaohongshu FireRedTeam) — runtime binder for the
-//! `firered_vad` converter arch (Wave B 2026-08-15 audit follow-up,
-//! loud-partial per the RMVPE / NISQA / emotion2vec / panns / redimnet
-//! precedent — CLAUDE.md 教訓 (a): 「loud-partial は fake-complete より
-//! honest」).
+//! **FireRedVAD** (Xiaohongshu FireRedTeam) — native streaming VAD.
 //!
-//! # The gap this closes
+//! Canonical GGUFs carry [`NATIVE_VARIANT`] and run the official 16 kHz
+//! Kaldi-fbank + checkpoint CMVN + eight-stage causal DFSMN + sigmoid head.
+//! Historical unstamped GGUFs still bind for compatibility but retain their
+//! explicit [`forward_loud_partial`] refusal; they are never guessed onto the
+//! native topology.
+//!
+//! # Historical loader gap
 //!
 //! `crates/vokra-convert/src/models/firered_vad.rs` (TIER 1 F wave,
 //! 2026-07-30) writes a GGUF stamped `vokra.model.arch = "firered_vad"`,
@@ -21,9 +23,9 @@
 //! - Upstream release: <https://huggingface.co/FireRedTeam/FireRedVAD>
 //!   (recorded by the converter as fetched 2026-07-30 —
 //!   CLAUDE.md「ハルシネーション厳禁」).
-//! - Family reference code: <https://github.com/FireRedTeam/FireRedASR>
-//!   (the FireRedTeam speech family that FireRedVAD ships alongside —
-//!   FireRedASR / FireRedTTS).
+//! - Reference code and checkpoint: <https://github.com/FireRedTeam/FireRedVAD>,
+//!   pinned by the offline sidecar to commit
+//!   `c30ec49e8cc69642b0ee65362eba11b9d11c6e54`.
 //! - In-repo contract: `crates/vokra-convert/src/models/firered_vad.rs`
 //!   — the GGUF writer whose `ARCH` / `NAME` / `CATEGORY` /
 //!   `UPSTREAM_HF` constants this module mirrors verbatim.
@@ -33,13 +35,11 @@
 //! `vokra.provenance.upstream_url` — unlike the GitHub-only siblings
 //! (NISQA / NSNet2 / RNNoise / DNSMOS) which have no HF mirror.
 //!
-//! # Architecture posture — why the forward is a loud-partial
+//! # Historical compatibility posture
 //!
-//! The converter's docstring describes FireRedVAD as a "transformer-based
-//! streaming VAD" and stops there. It copies every F32 / F16 / BF16
-//! tensor under its **verbatim upstream safetensors name** and stamps
-//! **no** `vokra.firered_vad.*` hyper-parameter chunk at all. There is
-//! consequently no in-repo transcription of
+//! The old converter described FireRedVAD incorrectly as transformer-based,
+//! copied arbitrary floating tensors, and stamped no topology. Those legacy
+//! files have no safe way to recover
 //!
 //! - the front-end (sample rate, window / hop length, mel-band count),
 //! - the encoder geometry (layer count, model width, head count, FFN
@@ -47,17 +47,14 @@
 //! - the output-head width or its class ordering (which column is
 //!   "speech"),
 //!
-//! and no `tools/parity/firered_vad_*` sidecar or parity harness exists
-//! to recover them from a real checkpoint. Writing a "plausible"
-//! transformer-VAD forward on top of that would be exactly the
-//! silent-wrong failure mode CLAUDE.md 教訓 (a) forbids: a mis-guessed
-//! head-count or a swapped speech column produces a *shape-valid*
-//! probability vector that is quietly wrong, with no crash to catch it.
+//! The canonical converter instead accepts only the 39-tensor bundle produced
+//! by [`SIDECAR_PATH`] from pinned official ONNX/CMVN files and stamps every
+//! load-bearing value. Unknown variants and malformed manifests fail at load.
 //!
-//! The blocker here is **geometry, not kernels**: once the topology is
-//! transcribed from a real checkpoint the encoder body composes from
-//! transformer primitives Vokra already carries. That is why this module
-//! ships the whole surround as real and defers exactly one thing.
+//! Real-weight parity against the official ONNX graph measured max absolute
+//! probability error `1.788139343e-7` for normalized features and
+//! `3.039836884e-6` for the complete PCM frontend, both under the fixed `1e-4`
+//! gate across 222 frames.
 //!
 //! # Loud-partial classification (CLAUDE.md 教訓 (a))
 //!
@@ -90,14 +87,9 @@
 //!   - Weight-license surfacing, fail-closed to
 //!     [`LicenseClass::Unknown`] when the stamp is absent.
 //!
-//! - **Loud-partial (this WP)**: [`FireredVad::speech_probabilities`] and
-//!   [`FireredVadStream::push_pcm`] return [`VokraError::UnsupportedOp`]
-//!   naming three concrete blockers — the missing topology transcription,
-//!   the missing `vokra.firered_vad.*` metadata group, and the missing
-//!   parity sidecar — plus both primary-source URLs so a reader
-//!   diagnosing the gap has exactly two places to walk. **No fabricated
-//!   speech probabilities are ever emitted** (FR-EX-08 — no silent
-//!   partial output).
+//! - **Legacy loud-partial**: only unstamped pre-native GGUFs return
+//!   [`VokraError::UnsupportedOp`]. Canonical [`NATIVE_VARIANT`] GGUFs execute
+//!   real one-shot and stateful streaming forwards.
 //!
 //! # Sibling family distinctness (`category = "vad"` neighbourhood)
 //!
@@ -145,7 +137,7 @@
 //!
 //! # Cross-crate constant duplication
 //!
-//! [`ARCH`] / [`NAME`] / [`CATEGORY`] / [`UPSTREAM_HF`] /
+//! [`ARCH`] / [`NATIVE_NAME`] / [`CATEGORY`] / [`UPSTREAM_HF`] /
 //! [`DEFAULT_LICENSE_SPDX`] are mirrors of the converter's own constants
 //! — the same rule every sibling binder (`emotion2vec` / `nisqa` /
 //! `panns` / `redimnet` / `sortformer_diar_4spk_v1` / `snac` / …) follows
@@ -164,9 +156,15 @@
 //! `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]`), which is
 //! never shipped as part of the `vokra-*` runtime.
 
+use std::sync::Arc;
+
 use vokra_core::engines::{VadEngine, VadStreamHandle};
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
+use vokra_ops::{
+    FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
+    FireredVadDfsmnWeights, KaldiFbankOpts, firered_vad_dfsmn_forward, kaldi_fbank,
+};
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of `crates/vokra-convert/src/models/firered_vad.rs`.
@@ -183,12 +181,16 @@ use vokra_core::{LicenseClass, Result, VokraError};
 /// FR-EX-08 violation.
 pub const ARCH: &str = "firered_vad";
 
-/// Expected `vokra.model.name` value written by the converter.
+/// Historical pre-native `vokra.model.name` value retained for compatibility.
 ///
-/// Note the hyphen: the *name* is `firered-vad` while the *arch* is
-/// `firered_vad` (underscore). Both spellings are load-bearing on the
-/// wire, so they are pinned separately by a test.
+/// Canonical conversions use [`NATIVE_NAME`].
 pub const NAME: &str = "firered-vad";
+
+/// Canonical model name for the official native Stream-VAD bundle.
+pub const NATIVE_NAME: &str = "firered-vad-stream-v1";
+
+/// Native checkpoint variant emitted by the strict offline converter.
+pub const NATIVE_VARIANT: &str = "stream-vad-dfsmn-v1";
 
 /// Expected `vokra.model.category` value — `"vad"`, shared with the
 /// sibling voice-activity detectors (`silero-vad`, `fsmn-vad`,
@@ -227,16 +229,13 @@ pub const PRIMARY_SOURCE_HF: &str = "huggingface.co/FireRedTeam/FireRedVAD";
 
 /// Primary-source anchor: the FireRedTeam speech-family reference code
 /// that FireRedVAD ships alongside (FireRedASR / FireRedTTS).
-pub const PRIMARY_SOURCE_FAMILY_CODE: &str = "github.com/FireRedTeam/FireRedASR";
+pub const PRIMARY_SOURCE_FAMILY_CODE: &str = "github.com/FireRedTeam/FireRedVAD";
 
 /// In-repo contract anchor: the converter this binder mirrors.
 pub const CONVERTER_PATH: &str = "crates/vokra-convert/src/models/firered_vad.rs";
 
-/// The offline sidecar that does not exist yet. It is the place a real
-/// checkpoint's topology must be transcribed from and the
-/// [`FIREREDVAD_SPEC_KEYS`] group emitted, mirroring the sibling
-/// `tools/parity/*_prepare_checkpoint.py` bridges. Never shipped inside
-/// the `vokra-*` runtime (NFR-DS-02).
+/// Offline official-ONNX/CMVN bridge and independent reference generator.
+/// Never shipped inside the `vokra-*` runtime (NFR-DS-02).
 pub const SIDECAR_PATH: &str = "tools/parity/firered_vad_prepare_checkpoint.py";
 
 // ---------------------------------------------------------------------------
@@ -259,6 +258,18 @@ pub const KEY_WINDOW_LENGTH: &str = "vokra.firered_vad.window_length";
 /// [`KEY_SAMPLE_RATE`] this fixes the per-frame output rate that
 /// [`FireredVadConfig::frame_rate_hz`] reports.
 pub const KEY_HOP_LENGTH: &str = "vokra.firered_vad.hop_length";
+/// Native checkpoint variant selector.
+pub const KEY_VARIANT: &str = "vokra.firered_vad.variant";
+/// Number of causal DFSMN memory stages.
+pub const KEY_N_BLOCKS: &str = "vokra.firered_vad.n_blocks";
+/// Hidden affine width in each DFSMN stage.
+pub const KEY_HIDDEN_DIM: &str = "vokra.firered_vad.hidden_dim";
+/// DFSMN projection and memory-channel width.
+pub const KEY_PROJECTION_DIM: &str = "vokra.firered_vad.projection_dim";
+/// Number of causal taps per depthwise memory filter.
+pub const KEY_MEMORY_ORDER: &str = "vokra.firered_vad.memory_order";
+/// Spacing, in frames, between causal memory taps.
+pub const KEY_MEMORY_STRIDE: &str = "vokra.firered_vad.memory_stride";
 /// Transformer encoder depth (block count).
 pub const KEY_N_LAYERS: &str = "vokra.firered_vad.n_layers";
 /// Transformer encoder model width.
@@ -532,6 +543,63 @@ impl FireredVadConfig {
     }
 }
 
+/// Exact native Stream-VAD contract stamped by the strict converter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FireredVadNativeConfig {
+    /// Input PCM sample rate.
+    pub sample_rate: u32,
+    /// Kaldi-fbank output width.
+    pub n_mels: usize,
+    /// Analysis-window length in samples.
+    pub window_length: usize,
+    /// Analysis hop in samples.
+    pub hop_length: usize,
+    /// Native DFSMN geometry.
+    pub dfsmn: FireredVadDfsmnConfig,
+}
+
+impl FireredVadNativeConfig {
+    fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+        let to_usize = |key: &str| -> Result<usize> {
+            usize::try_from(read_u32_key(gguf, key)?).map_err(|_| {
+                VokraError::ModelLoad(format!(
+                    "firered-vad: GGUF metadata `{key}` does not fit usize"
+                ))
+            })
+        };
+        let cfg = Self {
+            sample_rate: read_u32_key(gguf, KEY_SAMPLE_RATE)?,
+            n_mels: to_usize(KEY_N_MELS)?,
+            window_length: to_usize(KEY_WINDOW_LENGTH)?,
+            hop_length: to_usize(KEY_HOP_LENGTH)?,
+            dfsmn: FireredVadDfsmnConfig {
+                input_dim: to_usize(KEY_N_MELS)?,
+                hidden_dim: to_usize(KEY_HIDDEN_DIM)?,
+                projection_dim: to_usize(KEY_PROJECTION_DIM)?,
+                n_blocks: to_usize(KEY_N_BLOCKS)?,
+                memory_order: to_usize(KEY_MEMORY_ORDER)?,
+                memory_stride: to_usize(KEY_MEMORY_STRIDE)?,
+                output_dim: to_usize(KEY_N_CLASS)?,
+            },
+        };
+        cfg.dfsmn
+            .validate()
+            .map_err(|error| VokraError::ModelLoad(error.to_string()))?;
+        if cfg.window_length == 0 || cfg.hop_length == 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-vad: `{KEY_WINDOW_LENGTH}` and `{KEY_HOP_LENGTH}` must be positive"
+            )));
+        }
+        if cfg.n_mels != cfg.dfsmn.input_dim {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-vad: `{KEY_N_MELS}`={} does not match DFSMN input_dim {}",
+                cfg.n_mels, cfg.dfsmn.input_dim
+            )));
+        }
+        Ok(cfg)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FireredVadWeights — tensor manifest with a non-empty gate.
 // ---------------------------------------------------------------------------
@@ -649,6 +717,135 @@ impl FireredVadWeights {
     }
 }
 
+#[derive(Debug)]
+struct NativeFireredVad {
+    cfg: FireredVadNativeConfig,
+    weights: FireredVadDfsmnWeights,
+    cmvn_mean: Vec<f32>,
+    cmvn_inverse_std: Vec<f32>,
+}
+
+fn load_native_tensor(file: &GgufFile, name: &str, expected: &[usize]) -> Result<Vec<f32>> {
+    let info = file.tensor_info(name).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "firered-vad: native checkpoint is missing required tensor `{name}`"
+        ))
+    })?;
+    let actual = info
+        .dimensions
+        .iter()
+        .map(|&value| value as usize)
+        .collect::<Vec<_>>();
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-vad: tensor `{name}` has shape {actual:?}, expected {expected:?}"
+        )));
+    }
+    file.tensor_f32(name).map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "firered-vad: tensor `{name}` F32 decode failed: {error}"
+        ))
+    })
+}
+
+impl NativeFireredVad {
+    fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let cfg = FireredVadNativeConfig::from_gguf(file)?;
+        let d = cfg.dfsmn;
+        let memory_weights = (0..d.n_blocks)
+            .map(|index| {
+                load_native_tensor(
+                    file,
+                    &format!("firered_vad.dfsmn.memory.{index}.weight"),
+                    &[d.projection_dim, 1, d.memory_order],
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let blocks = (0..d.n_blocks - 1)
+            .map(|index| {
+                let prefix = format!("firered_vad.dfsmn.block.{index}");
+                Ok(FireredVadDfsmnBlockWeights {
+                    fc1_weight: load_native_tensor(
+                        file,
+                        &format!("{prefix}.fc1.weight"),
+                        &[d.projection_dim, d.hidden_dim],
+                    )?,
+                    fc1_bias: load_native_tensor(
+                        file,
+                        &format!("{prefix}.fc1.bias"),
+                        &[d.hidden_dim],
+                    )?,
+                    fc2_weight: load_native_tensor(
+                        file,
+                        &format!("{prefix}.fc2.weight"),
+                        &[d.hidden_dim, d.projection_dim],
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let weights = FireredVadDfsmnWeights {
+            input_fc1_weight: load_native_tensor(
+                file,
+                "firered_vad.dfsmn.fc1.weight",
+                &[d.input_dim, d.hidden_dim],
+            )?,
+            input_fc1_bias: load_native_tensor(
+                file,
+                "firered_vad.dfsmn.fc1.bias",
+                &[d.hidden_dim],
+            )?,
+            input_fc2_weight: load_native_tensor(
+                file,
+                "firered_vad.dfsmn.fc2.weight",
+                &[d.hidden_dim, d.projection_dim],
+            )?,
+            input_fc2_bias: load_native_tensor(
+                file,
+                "firered_vad.dfsmn.fc2.bias",
+                &[d.projection_dim],
+            )?,
+            memory_weights,
+            blocks,
+            dnn_weight: load_native_tensor(
+                file,
+                "firered_vad.dfsmn.dnn.0.weight",
+                &[d.projection_dim, d.hidden_dim],
+            )?,
+            dnn_bias: load_native_tensor(file, "firered_vad.dfsmn.dnn.0.bias", &[d.hidden_dim])?,
+            output_weight: load_native_tensor(
+                file,
+                "firered_vad.output.weight",
+                &[d.hidden_dim, d.output_dim],
+            )?,
+            output_bias: load_native_tensor(file, "firered_vad.output.bias", &[d.output_dim])?,
+        };
+        weights
+            .validate(&d)
+            .map_err(|error| VokraError::ModelLoad(error.to_string()))?;
+        let cmvn_mean = load_native_tensor(file, "firered_vad.cmvn.mean", &[cfg.n_mels])?;
+        let cmvn_inverse_std =
+            load_native_tensor(file, "firered_vad.cmvn.inverse_std", &[cfg.n_mels])?;
+        for (index, value) in cmvn_inverse_std.iter().enumerate() {
+            if !value.is_finite() || *value <= 0.0 {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-vad: inverse CMVN std[{index}]={value} is not positive finite"
+                )));
+            }
+        }
+        Ok(Self {
+            cfg,
+            weights,
+            cmvn_mean,
+            cmvn_inverse_std,
+        })
+    }
+
+    fn forward_features(&self, features: &[f32]) -> Result<Vec<f32>> {
+        let mut state = FireredVadDfsmnState::zeros(&self.cfg.dfsmn)?;
+        firered_vad_dfsmn_forward(&self.cfg.dfsmn, &self.weights, features, &mut state)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FireredVad — the runtime binder handle.
 // ---------------------------------------------------------------------------
@@ -663,14 +860,14 @@ impl FireredVadWeights {
 /// binders expose, so the `stream::open_stream` glue in `vokra-core` sees
 /// no FireRedVAD-vs-FSMN-vs-Silero asymmetry.
 ///
-/// Both entry points are loud-partials today; see the module doc for
-/// exactly which three pieces are missing and why guessing them would be
-/// silent-wrong.
+/// Canonical [`NATIVE_VARIANT`] checkpoints execute the complete native
+/// forward. Unstamped historical checkpoints preserve the old loud-partial.
 #[derive(Debug)]
 pub struct FireredVad {
     /// The `vokra.firered_vad.*` group when stamped. `None` for every
     /// GGUF today's converter produces — see [`FireredVadConfig`].
     cfg: Option<FireredVadConfig>,
+    native: Option<Arc<NativeFireredVad>>,
     weights: FireredVadWeights,
     weight_license: LicenseClass,
 }
@@ -742,12 +939,24 @@ impl FireredVad {
             weights.require_all(&required)?;
         }
 
-        // 3. The optional all-or-nothing hyper-parameter group. `None`
-        //    here is the normal state today (the converter stamps no
-        //    `vokra.firered_vad.*` keys) and must NOT be a load failure —
-        //    refusing it would re-open the unloadable-checkpoint gap this
-        //    module closes.
-        let cfg = FireredVadConfig::from_gguf(file)?;
+        // 3. Native releases are selected only by an explicit variant.
+        //    Unstamped historical GGUFs preserve the previous loud-partial
+        //    behavior; an unknown stamped variant is refused rather than
+        //    guessed onto either topology.
+        let (cfg, native) = match file.get(KEY_VARIANT) {
+            Some(value) => {
+                let variant = value.as_str().ok_or_else(|| {
+                    VokraError::ModelLoad(format!("firered-vad: `{KEY_VARIANT}` must be a string"))
+                })?;
+                if variant != NATIVE_VARIANT {
+                    return Err(VokraError::ModelLoad(format!(
+                        "firered-vad: unsupported `{KEY_VARIANT}`={variant:?}; expected {NATIVE_VARIANT:?}"
+                    )));
+                }
+                (None, Some(Arc::new(NativeFireredVad::from_gguf(file)?)))
+            }
+            None => (FireredVadConfig::from_gguf(file)?, None),
+        };
 
         // 4. Provenance surfacing. The converter stamps `apache-2.0` →
         //    Permissive by default; a GGUF with no stamp fail-closes to
@@ -760,6 +969,7 @@ impl FireredVad {
 
         Ok(Self {
             cfg,
+            native,
             weights,
             weight_license,
         })
@@ -787,6 +997,23 @@ impl FireredVad {
     #[must_use]
     pub fn config(&self) -> Option<&FireredVadConfig> {
         self.cfg.as_ref()
+    }
+
+    /// Exact native Stream-VAD configuration, when this is a canonical bundle.
+    #[must_use]
+    pub fn native_config(&self) -> Option<&FireredVadNativeConfig> {
+        self.native.as_ref().map(|native| &native.cfg)
+    }
+
+    /// Runs the native DFSMN directly on CMVN-normalized fbank features.
+    ///
+    /// This bypasses PCM feature extraction for independent numerical-parity
+    /// fixtures. Historical unstamped GGUFs remain a loud partial.
+    pub fn forward_features(&self, features: &[f32]) -> Result<Vec<f32>> {
+        match &self.native {
+            Some(native) => native.forward_features(features),
+            None => Err(forward_loud_partial(self.cfg.as_ref())),
+        }
     }
 
     /// The bound tensor manifest.
@@ -829,13 +1056,9 @@ impl FireredVad {
     /// [`VadEngine`] path, and the same API shape the sibling VAD binders
     /// expose.
     ///
-    /// # Loud-partial (this WP)
-    ///
-    /// Returns [`VokraError::UnsupportedOp`]. FireRedVAD's topology is
-    /// not primary-source-transcribable from anything in this repository
-    /// — see [`forward_loud_partial`] for the full message and the
-    /// flip-the-switch recipe. **No fabricated speech probabilities are
-    /// ever emitted** (FR-EX-08).
+    /// Canonical checkpoints run the complete frontend and DFSMN. Historical
+    /// unstamped checkpoints return [`forward_loud_partial`] rather than
+    /// fabricating a topology.
     ///
     /// # Errors
     ///
@@ -854,16 +1077,28 @@ impl FireredVad {
                     .to_owned(),
             ));
         }
+        if let Some(native) = &self.native {
+            if sample_rate != native.cfg.sample_rate {
+                return Err(native_sample_rate_error(&native.cfg, sample_rate));
+            }
+            let mut stream = NativeFireredVadStream::new(Arc::clone(native))?;
+            return stream.push_pcm(pcm, sample_rate);
+        }
         check_sample_rate(self.cfg.as_ref(), sample_rate)?;
-        // The gate fires BEFORE any front-end work so a caller can never
-        // observe a partial computation that looks like a real forward.
         Err(forward_loud_partial(self.cfg.as_ref()))
     }
 }
 
 impl VadEngine for FireredVad {
     fn open_stream(&self) -> Box<dyn VadStreamHandle + Send> {
-        Box::new(FireredVadStream { cfg: self.cfg })
+        let mode = match &self.native {
+            Some(native) => FireredVadStreamMode::Native(
+                NativeFireredVadStream::new(Arc::clone(native))
+                    .expect("native configuration was validated at load time"),
+            ),
+            None => FireredVadStreamMode::Legacy { cfg: self.cfg },
+        };
+        Box::new(FireredVadStream { mode })
     }
 }
 
@@ -871,35 +1106,120 @@ impl VadEngine for FireredVad {
 /// exactly like [`crate::fsmn_vad::FsmnVadStream`] and the Silero v5
 /// handle so `vokra-core`'s `stream::open_stream` glue sees one shape.
 ///
-/// It carries **no recurrent state yet**: the encoder's streaming caches
-/// only exist once the topology transcription lands (see the module
-/// doc). Every [`push_pcm`](VadStreamHandle::push_pcm) therefore either
-/// rejects the sample rate or returns the loud-partial — it never returns
-/// a plausible-looking empty vector, because an empty return is
-/// indistinguishable from "no frame completed" and would let a caller
-/// loop forever believing the VAD is running.
+/// Native streams carry all eight causal DFSMN histories plus incomplete PCM
+/// framing state. Legacy streams retain the explicit unsupported operation.
 #[derive(Debug)]
 pub struct FireredVadStream {
-    cfg: Option<FireredVadConfig>,
+    mode: FireredVadStreamMode,
+}
+
+#[derive(Debug)]
+enum FireredVadStreamMode {
+    Native(NativeFireredVadStream),
+    Legacy { cfg: Option<FireredVadConfig> },
+}
+
+#[derive(Debug)]
+struct NativeFireredVadStream {
+    model: Arc<NativeFireredVad>,
+    state: FireredVadDfsmnState,
+    fbank_opts: KaldiFbankOpts,
+    pending_pcm: Vec<f32>,
+}
+
+impl NativeFireredVadStream {
+    fn new(model: Arc<NativeFireredVad>) -> Result<Self> {
+        let state = FireredVadDfsmnState::zeros(&model.cfg.dfsmn)?;
+        let fbank_opts = KaldiFbankOpts {
+            sample_rate: model.cfg.sample_rate,
+            num_mel_bins: model.cfg.n_mels,
+            frame_length: model.cfg.window_length,
+            frame_shift: model.cfg.hop_length,
+            remove_dc_offset: true,
+            preemph_coeff: 0.97,
+            low_freq: 20.0,
+            high_freq: 0.0,
+            use_power: true,
+            use_log: true,
+            subtract_mean: false,
+            round_to_power_of_two: true,
+        };
+        Ok(Self {
+            model,
+            state,
+            fbank_opts,
+            pending_pcm: Vec::new(),
+        })
+    }
+
+    fn push_pcm(&mut self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
+        if sample_rate != self.model.cfg.sample_rate {
+            return Err(native_sample_rate_error(&self.model.cfg, sample_rate));
+        }
+        // Vokra's public PCM contract is normalized f32, whereas the official
+        // Kaldi frontend consumes int16-valued samples. Preserve that training
+        // scale before applying the checkpoint CMVN statistics.
+        self.pending_pcm
+            .extend(pcm.iter().map(|sample| sample * 32_768.0));
+        let frame_length = self.fbank_opts.frame_length;
+        if self.pending_pcm.len() < frame_length {
+            return Ok(Vec::new());
+        }
+        let (mut features, frames) = kaldi_fbank(&self.pending_pcm, &self.fbank_opts)?;
+        if frames == 0 {
+            return Ok(Vec::new());
+        }
+        let consumed = frames
+            .checked_mul(self.fbank_opts.frame_shift)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("firered-vad: PCM consumption overflow".into())
+            })?
+            .min(self.pending_pcm.len());
+        self.pending_pcm.drain(..consumed);
+        for row in features.chunks_exact_mut(self.model.cfg.n_mels) {
+            for (index, value) in row.iter_mut().enumerate() {
+                *value =
+                    (*value - self.model.cmvn_mean[index]) * self.model.cmvn_inverse_std[index];
+            }
+        }
+        firered_vad_dfsmn_forward(
+            &self.model.cfg.dfsmn,
+            &self.model.weights,
+            &features,
+            &mut self.state,
+        )
+    }
+
+    fn reset(&mut self) {
+        self.state.reset();
+        self.pending_pcm.clear();
+    }
 }
 
 impl VadStreamHandle for FireredVadStream {
     fn push_pcm(&mut self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
-        // Rate first: a mismatched rate is a caller bug worth reporting
-        // even while the forward itself is deferred, and reporting it
-        // here keeps the guard identical to the one-shot path.
-        check_sample_rate(self.cfg.as_ref(), sample_rate)?;
-        let _ = pcm;
-        Err(forward_loud_partial(self.cfg.as_ref()))
+        match &mut self.mode {
+            FireredVadStreamMode::Native(stream) => stream.push_pcm(pcm, sample_rate),
+            FireredVadStreamMode::Legacy { cfg } => {
+                check_sample_rate(cfg.as_ref(), sample_rate)?;
+                let _ = pcm;
+                Err(forward_loud_partial(cfg.as_ref()))
+            }
+        }
     }
 
     fn reset(&mut self) {
-        // No recurrent state exists yet — the encoder's streaming caches
-        // land with the topology transcription. Deliberately a no-op
-        // rather than `unimplemented!()`: `reset` is infallible in the
-        // trait, and panicking on a handle whose forward already fails
-        // loudly would add nothing but a crash.
+        if let FireredVadStreamMode::Native(stream) = &mut self.mode {
+            stream.reset();
+        }
     }
+}
+
+fn native_sample_rate_error(cfg: &FireredVadNativeConfig, sample_rate: u32) -> VokraError {
+    VokraError::InvalidArgument(format!(
+        "firered-vad: sample rate mismatch — pushed {sample_rate} Hz but the native checkpoint expects {} Hz; resample upstream",
+        cfg.sample_rate
+    ))
 }
 
 /// Shared sample-rate guard for both VAD entry points.
@@ -1129,7 +1449,12 @@ mod tests {
         // converter-side drift without a binder-side follow-through lands
         // here in the same commit or fails this test.
         assert_eq!(ARCH, "firered_vad", "arch tag pin (underscore)");
-        assert_eq!(NAME, "firered-vad", "model name pin (hyphen)");
+        assert_eq!(NAME, "firered-vad", "legacy model name pin");
+        assert_eq!(
+            NATIVE_NAME, "firered-vad-stream-v1",
+            "native model name pin"
+        );
+        assert_eq!(NATIVE_VARIANT, "stream-vad-dfsmn-v1", "native variant pin");
         assert_eq!(CATEGORY, "vad", "category pin");
         assert_eq!(
             UPSTREAM_HF, "FireRedTeam/FireRedVAD",

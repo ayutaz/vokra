@@ -143,6 +143,11 @@ pub(crate) enum ModelTask {
     /// `forward_features` / stream `push_pcm` run the encoder, no
     /// loud-partial gate).
     VadFsmn,
+    /// Voice activity detection through FireRedTeam Stream-VAD.
+    ///
+    /// The native Kaldi-fbank + CMVN + causal DFSMN forward implements the
+    /// same `VadEngine` contract as Silero and FSMN-VAD.
+    VadFirered,
     /// Speech enhancement through NSNet2 (Microsoft DNS-Challenge baseline).
     ///
     /// Real forward: [`vokra_models::nsnet2::Nsnet2V1::denoise_pcm`] runs
@@ -307,6 +312,8 @@ const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
 /// [`vokra_models::fsmn_vad::ARCH`] and of what `vokra-cli convert --model
 /// fsmn-vad` writes.
 const ARCH_FSMN_VAD: &str = "fsmn-vad";
+/// FireRedTeam Stream-VAD native DFSMN.
+const ARCH_FIRERED_VAD: &str = "firered_vad";
 /// openWakeWord native v0.5.1 KWS pipeline.
 const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
@@ -668,6 +675,19 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 })?;
             Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::VadFsmn))
         }
+        ARCH_FIRERED_VAD => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FIRERED_VAD}`"
+                ));
+            }
+            let vad = vokra_models::firered_vad::FireredVad::from_gguf(session.gguf())
+                .map_err(|error| format!("arch `{ARCH_FIRERED_VAD}`: {error}"))?;
+            Ok((
+                session.with_vad_engine(Arc::new(vad)),
+                ModelTask::VadFirered,
+            ))
+        }
         ARCH_OPENWAKEWORD_OP => {
             if hint.is_some() {
                 return Err(format!(
@@ -903,6 +923,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
+                 `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
@@ -1101,12 +1122,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::mt3::Mt3::from_gguf(g).map(|_| ())),
     },
     // --- VAD / KWS / turn-taking ----------------------------------------
-    BoundArch {
-        arch: "firered_vad",
-        module: "vokra_models::firered_vad",
-        entry: "FireredVad::from_gguf → FireredVad::speech_probabilities",
-        probe: Some(|g: &GgufFile| vokra_models::firered_vad::FireredVad::from_gguf(g).map(|_| ())),
-    },
     BoundArch {
         arch: "ten_vad",
         module: "vokra_models::ten_vad",
@@ -2318,6 +2333,22 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_firered_vad_to_native_vad_loader() {
+        let error = with_arch_only_gguf(ARCH_FIRERED_VAD, "firered-vad-routed", |path| {
+            let Err(error) = load_session(path) else {
+                panic!("metadata-only FireRedVAD GGUF must fail its tensor gate");
+            };
+            error
+        });
+        assert!(error.contains("zero tensors"), "{error}");
+        assert!(!error.contains("is BOUND"), "{error}");
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_FIRERED_VAD),
+            "FireRedVAD has a real native forward and CLI VAD route"
+        );
+    }
+
+    #[test]
     fn bound_arch_registry_excludes_routed_charsiu() {
         assert!(
             BOUND_ARCHES.iter().all(|row| row.arch != ARCH_CHARSIU),
@@ -2456,6 +2487,7 @@ mod tests {
             ARCH_KOKORO,
             ARCH_SBV2,
             ARCH_FSMN_VAD,
+            ARCH_FIRERED_VAD,
             ARCH_NSNET2,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
