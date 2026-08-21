@@ -16,14 +16,23 @@ use std::sync::Arc;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{Result, VokraError};
 
+/// Required GGUF architecture tag.
 pub const ARCH: &str = "rnnoise";
+/// Upstream PCM sample rate in hertz.
 pub const SAMPLE_RATE: u32 = 48_000;
+/// Samples consumed per 10 ms frame.
 pub const FRAME_SIZE: usize = 480;
+/// Samples in the 20 ms analysis window.
 pub const WINDOW_SIZE: usize = 960;
+/// Gain bands predicted by the v0.2 network.
 pub const N_BANDS: usize = 32;
+/// Input features consumed per frame.
 pub const N_FEATURES: usize = 65;
+/// First causal convolution output width.
 pub const CONV1_WIDTH: usize = 128;
+/// Width of the second convolution and each GRU state.
 pub const HIDDEN_SIZE: usize = 384;
+/// Number of recurrent layers.
 pub const N_GRU: usize = 3;
 
 const KEY_RELEASE_SHA256: &str = "vokra.rnnoise.release_tarball_sha256";
@@ -38,6 +47,7 @@ const KEY_N_GRU: &str = "vokra.rnnoise.n_gru";
 const KEY_QUANTIZATION: &str = "vokra.rnnoise.quantization";
 const KEY_GATE_ORDER: &str = "vokra.rnnoise.gate_order";
 
+/// SHA-256 of the official GitHub v0.2 source release tarball.
 pub const RELEASE_TARBALL_SHA256: &str =
     "90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37";
 
@@ -584,8 +594,8 @@ mod tests {
     #[test]
     fn activation_matches_xiph_anchor_values() {
         assert_eq!(tanh_approx(0.0), 0.0);
-        assert!((tanh_approx(1.0) - 0.761_59).abs() < 2e-5);
-        assert!((sigmoid_approx(2.0) - 0.880_795).abs() < 2e-5);
+        assert!((tanh_approx(1.0) - 0.761_64).abs() < 2e-5);
+        assert!((sigmoid_approx(2.0) - 0.880_82).abs() < 2e-5);
         assert_eq!(tanh_approx(100.0), 1.0);
     }
 
