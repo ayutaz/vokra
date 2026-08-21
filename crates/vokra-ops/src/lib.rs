@@ -578,7 +578,7 @@ pub use voice_ref::{VoiceRef, VoiceRefSource};
 // ---- Wave 7 2026-08-14 audit follow-up classical DSP F0 re-exports ------
 // YIN / PyIN weight-free extractors. See the `pub mod f0` block above for
 // placement / red-line rationale.
-pub use f0::{pyin, yin};
+pub use f0::{PyinFrame, pyin, pyin_detailed, yin};
 // -------------------------------------------------------------------------
 // ---- Wave A (2026-08-15) WPE dereverberation re-exports -----------------
 // See the `pub mod wpe` block above for placement / licence rationale.

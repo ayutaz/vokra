@@ -151,8 +151,9 @@ extractor:
 time_sec<TAB>hz<TAB>voiced<TAB>confidence
 ```
 
-An unvoiced frame is `hz=0.000`, `voiced=false`. Neither op exposes a
-per-frame confidence, so the column reports `1.0` / `0.0` alongside `voiced`
+An unvoiced frame is `hz=0.000`, `voiced=false`. PyIN reports its real
+per-frame voiced probability in `confidence`; YIN has no probability output,
+so its confidence remains the explicit binary `1.0` / `0.0` alongside `voiced`.
 rather than a fabricated score.
 
 The sample rate is **not** fixed: both ops derive their lag search from the

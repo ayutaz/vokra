@@ -220,29 +220,22 @@ Recommended dependency order:
    front ends, sampler contract, and terminal codec/vocoder are independently
    proven. Keep explicit errors in place meanwhile.
 
-## PyIN temporal smoothing task
+## PyIN temporal smoothing — completed 2026-08-21
 
-`viterbi_smooth_todo` is currently an identity function and is not called by
-the public `pyin` result path. Replacing that helper alone cannot implement
-PyIN smoothing because `pyin` collapses each frame to one Hz value and
-discards the candidate posterior and voiced/unvoiced probabilities needed by
-the HMM.
+The identity `viterbi_smooth_todo` scaffold was removed. `pyin_detailed`
+retains every CMNDF trough, integrates exact Beta(2, 18) CDF interval masses,
+builds voiced/unvoiced pitch-bin observations, and decodes the canonical local
+triangle/switch transition model with Viterbi. `pyin(...) -> Vec<f32>` remains
+the compatibility wrapper, while the CLI now renders the real voiced
+probability instead of binary confidence for PyIN.
 
-The complete task is:
-
-1. retain threshold-integrated candidate probabilities per log-frequency bin
-   plus voiced/unvoiced observations;
-2. implement the PyIN transition model and Viterbi decode, including pitch
-   jump constraints and voiced-state transitions;
-3. keep the existing `pyin(...) -> Vec<f32>` API as a compatibility wrapper
-   and add a richer internal/public result only if a real consumer needs
-   confidence;
-4. stop presenting binary voiced state as model confidence in the CLI unless
-   the selected estimator exposes a probability;
-5. add an independent reference fixture covering steady tones, octave spikes,
-   silence boundaries, and voiced/unvoiced transitions.
-
-Read the numerical-parity skill before writing the dumper or selecting bounds.
+Independent evidence is committed under
+`crates/vokra-ops/tests/fixtures/pyin`: `librosa.pyin==0.11.0` at revision
+`af8c839fb15317fa2712ea66e7a22da6a9267b32`, 121 frames covering steady
+tones, a short octave spike, silence boundaries, and voiced/unvoiced
+transitions. The fixed gates are exact voiced-state agreement, F0 absolute
+error <= 1e-3 Hz, and voiced-probability absolute error <= 2e-4. The focused
+unit suite and independent parity test pass locally with `CARGO_BUILD_JOBS=1`.
 
 ## Other explicit non-row holes retained
 

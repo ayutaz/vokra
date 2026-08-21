@@ -250,13 +250,15 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
-### 2026-08-21 — 1.0.0-rc.1-dev (Charsiu canonical GGUF contract and alignment route)
+### 2026-08-21 — 1.0.0-rc.1-dev (Charsiu route and complete PyIN HMM)
 
 Additive GGUF wire schema and Rust/CLI surface; the C ABI is untouched.  The
 new `vokra.charsiu.*` group binds one pinned
 `charsiu/en_w2v2_fc_10ms` release and has no permissive defaults: revision,
 checkpoint SHA-256, all topology axes, the official 42-label inventory, and
-every tensor name/shape must agree before inference.
+every tensor name/shape must agree before inference. The same branch completes
+PyIN temporal decoding and adds an additive detailed-result API; the historical
+`pyin(...) -> Vec<f32>` signature remains source-compatible.
 
 | Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -264,6 +266,9 @@ every tensor name/shape must agree before inference.
 | `vokra-convert` | `ModelKind::Charsiu` / `--model charsiu` | Added | canonical 213-tensor safetensors manifest → 211 F32 GGUF tensors | Consumes the eval-dead masking vector and folds positional-conv weight norm offline; missing, extra, retyped, or reshaped tensors are errors. | no | #44 |
 | `vokra-models::align::charsiu` | `Charsiu::from_file`, `Charsiu::logits`, canonical config/vocabulary fields | Added / Changed | strict GGUF binder + real frame-classification forward + upstream silence-mask/monotone-DTW alignment | Replaces the synthesized-only/unwired loader and the incorrect pre-norm/CTC description with the released post-norm topology and phone-alignment algorithm. This is pre-1.0 source churn; no C symbol changes. | yes (Rust source) | #44 |
 | `vokra-backend-cpu::kernels` | `grouped_conv1d_f32` | Added | checked grouped Conv1D composition over the existing dispatched dense kernel | Shared by Charsiu positional convolution and `vokra-eval`; invalid groups/extents fail loudly and no backend fallback is introduced. | no | #44 |
+| `vokra-ops::f0::pyin` | `PyinFrame` | Added | `pub struct PyinFrame { pub hz: f32, pub voiced: bool, pub confidence: f32 }` | Carries the decoded voiced state plus the real pre-decode voiced probability required by the CLI's shared F0 row contract. | no | #44 |
+| `vokra-ops::f0::pyin` | `pyin_detailed` | Added | `pub fn pyin_detailed(&[f32], u32, f32, f32) -> Result<Vec<PyinFrame>>` | Exposes full PyIN output without changing the compatibility wrapper; re-exported through `f0` and the crate root. | no | #44 |
+| `vokra-ops::f0::pyin` | `pyin` | Changed | `pub fn pyin(&[f32], u32, f32, f32) -> Result<Vec<f32>>` | Replaces per-frame first-dip argmax with all-trough Beta interval observations and voiced/unvoiced Viterbi smoothing; signature and `0.0` unvoiced convention are unchanged. | no | #44 |
 
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 

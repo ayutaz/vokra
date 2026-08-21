@@ -28,12 +28,10 @@
 //!   parabolic interpolation.
 //! - [`pyin`] — PyIN (Mauch & Dixon 2014, *"pYIN: A Fundamental Frequency
 //!   Estimator Using Probabilistic Threshold Distributions"*, ICASSP 2014).
-//!   Probabilistic YIN — evaluate the CMNDF dip-pick under a linearly-spaced
-//!   grid of 100 thresholds, weight each candidate by the Beta(2, 18) prior
-//!   density, and pick the per-frame posterior argmax. **Full HMM Viterbi
-//!   temporal smoothing is a documented follow-up** (see [`pyin`] module
-//!   docstring); the per-frame argmax primitive shipped here is what the
-//!   task's 5+ unit tests exercise and is sufficient for FR-OP-83.
+//!   All local CMNDF troughs are integrated over 100 Beta(2, 18) threshold
+//!   intervals and decoded by the voiced/unvoiced pitch-bin HMM with Viterbi
+//!   temporal smoothing. [`pyin_detailed`] additionally exposes voiced state
+//!   and the real per-frame voiced probability.
 //! - Harvest (WORLD vocoder) — deferred follow-up wave (task allows).
 //!
 //! # Placement rationale (2026-08-14 audit follow-up Wave 7)
@@ -82,7 +80,7 @@ use vokra_core::{Result, VokraError};
 pub mod pyin;
 pub mod yin;
 
-pub use pyin::pyin;
+pub use pyin::{PyinFrame, pyin, pyin_detailed};
 pub use yin::yin;
 
 /// Analysis frame size (samples) shared by both extractors. `2048` is the

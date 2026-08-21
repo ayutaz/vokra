@@ -795,6 +795,7 @@ FN vokra-ops::ebranchformer::head_dim|pub fn head_dim(&self) -> usize {
 FN vokra-ops::ebranchformer::new|pub fn new(cfg: EBranchformerConfig, weights: EBranchformerWeights) -> Result<Self> {
 FN vokra-ops::encodec_rvq::encodec_rvq_decode|pub fn encodec_rvq_decode(
 FN vokra-ops::f0::pyin::beta_2_18_pdf|pub fn beta_2_18_pdf(x: f32) -> f32 {
+FN vokra-ops::f0::pyin::pyin_detailed|pub fn pyin_detailed(
 FN vokra-ops::f0::pyin::pyin|pub fn pyin(pcm: &[f32], sample_rate: u32, fmin: f32, fmax: f32) -> Result<Vec<f32>> {
 FN vokra-ops::f0::yin::yin|pub fn yin(pcm: &[f32], sample_rate: u32, fmin: f32, fmax: f32) -> Result<Vec<f32>> {
 FN vokra-ops::fft::norm_scale|pub fn norm_scale(norm: Normalization, n: usize, forward: bool) -> f32 {
@@ -1367,6 +1368,7 @@ STRUCT vokra-ops::ebranchformer::EBranchformerStemWeights|pub struct EBranchform
 STRUCT vokra-ops::ebranchformer::EBranchformerWeights|pub struct EBranchformerWeights {
 STRUCT vokra-ops::ebranchformer::MergeWeights|pub struct MergeWeights {
 STRUCT vokra-ops::encodec_rvq::EncodecRvqAttrs|pub struct EncodecRvqAttrs {
+STRUCT vokra-ops::f0::pyin::PyinFrame|pub struct PyinFrame {
 STRUCT vokra-ops::fft::plan::FftPlan|pub struct FftPlan {
 STRUCT vokra-ops::fft::real::RealFftPlan|pub struct RealFftPlan {
 STRUCT vokra-ops::flow_sampler::FlowSamplerConfig|pub struct FlowSamplerConfig {
@@ -1587,9 +1589,9 @@ USE vokra-ops::ddpm_sampler::{ BetaSchedule, DdpmSamplerConfig, PredictionType, 
 USE vokra-ops::denoise::{ DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise, denoise_apply_mask_f32, denoise_skipped_checkpoint_tensors, denoise_synthesized_tensors, denoise_tensor_manifest, }|pub use denoise::{ DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise, denoise_apply_mask_f32, denoise_skipped_checkpoint_tensors, denoise_synthesized_tensors, denoise_tensor_manifest, };
 USE vokra-ops::dispatch::{OpValue, dispatch}|pub use dispatch::{OpValue, dispatch};
 USE vokra-ops::encodec_rvq::{EncodecRvqAttrs, encodec_rvq_decode}|pub use encodec_rvq::{EncodecRvqAttrs, encodec_rvq_decode};
-USE vokra-ops::f0::pyin::pyin|pub use pyin::pyin;
+USE vokra-ops::f0::pyin::{PyinFrame, pyin, pyin_detailed}|pub use pyin::{PyinFrame, pyin, pyin_detailed};
 USE vokra-ops::f0::yin::yin|pub use yin::yin;
-USE vokra-ops::f0::{pyin, yin}|pub use f0::{pyin, yin};
+USE vokra-ops::f0::{PyinFrame, pyin, pyin_detailed, yin}|pub use f0::{PyinFrame, pyin, pyin_detailed, yin};
 USE vokra-ops::fft::plan::FftPlan|pub use plan::FftPlan;
 USE vokra-ops::fft::real::RealFftPlan|pub use real::RealFftPlan;
 USE vokra-ops::fft::vokra_core::Complex32|pub use vokra_core::Complex32;

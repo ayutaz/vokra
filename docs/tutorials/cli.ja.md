@@ -148,9 +148,9 @@ extractor を切り替えてもパース側は変更不要:
 time_sec<TAB>hz<TAB>voiced<TAB>confidence
 ```
 
-無声フレームは `hz=0.000`, `voiced=false`。どちらの op もフレーム単位の
-confidence を持たないため、この列は捏造したスコアではなく `voiced` と同じ
-`1.0` / `0.0` を報告する。
+無声フレームは `hz=0.000`, `voiced=false`。PyIN は実際のフレーム単位の
+voiced probability を `confidence` に報告する。YIN は確率出力を持たないため、
+confidence は `voiced` と同じ明示的な `1.0` / `0.0` のままとなる。
 
 サンプルレートは**固定ではない**: 両 op とも WAV が持つレートから lag 探索
 範囲を導出するので、暗黙のリサンプルは発生しない。同じ family の neural
