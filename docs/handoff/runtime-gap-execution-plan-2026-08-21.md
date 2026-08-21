@@ -11,14 +11,14 @@ Baseline: `3464de7cc832` (`origin/main` when the working branch was created).
 
 At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 
-| Blocker | Baseline | After Wave 1 | After Wave 2 | Meaning |
-|---|---:|---:|---:|---|
-| `RealForwardNoCliTask` | 3 | 0 | 0 | Real forward exists; CLI routing is absent |
-| `NeedsPairedInput` | 1 | 0 | 0 | The CLI has no honest two-audio-input contract |
-| `NoCliShapedOutput` | 2 | 2 | 0 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | 17 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | `BOUND_ARCHES` registry rows |
+| Blocker | Baseline | After Wave 1 | After Wave 2 | Current | Meaning |
+|---|---:|---:|---:|---:|---|
+| `RealForwardNoCliTask` | 3 | 0 | 0 | 0 | Real forward exists; CLI routing is absent |
+| `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
+| `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
+| `NoGgufLoader` | 17 | 17 | 17 | 16 | No real artifact can be bound, even if a constructor/forward exists |
+| `LoudPartialForward` | 56 | 56 | 56 | 56 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **72** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -151,14 +151,22 @@ Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
 package tests are present. Real-weight CT-Punc/Mimi execution remains part of
 the final VAST evidence pass; it is not replaced by the structural tests.
 
-## Wave 3 — 17 GGUF loaders
+## Wave 3 — 16 of 17 GGUF loaders remaining
 
 Implement loaders in dependency-aware families. Every loader needs a writer ↔
 reader tensor/metadata handshake, a real pinned checkpoint, license/provenance
 evidence, negative shape/key tests, and an independent numerical consumer.
 
-1. Alignment first (1): `charsiu`. Its forward is already real; add converter,
-   loader, required phoneme-input contract, and parity.
+1. Alignment first (1): `charsiu` — **closed in PR #44 on 2026-08-21**.
+   The canonical converter consumed all 213 upstream tensors and emitted 211
+   runtime tensors, the strict loader bound the real 360 MiB GGUF, and the
+   paired CLI route accepts 16 kHz mono WAV plus exact whitespace-delimited
+   phone labels and emits versioned TSV. Independent Transformers reference
+   parity on VAST measured `max_abs=7.629394531e-6` over the 42 one-frame
+   logits (fixed gate `2e-4`). The same VAST run completed the full
+   `vokra-models` package: lib `2533 passed / 0 failed / 1 ignored`, with all
+   integration/doc-test suites green. Instance `48290692` was destroyed after
+   the run; no weight upload occurred.
 2. Vocoder family (4): `bigvgan`, `hifigan_vocoder`,
    `speecht5_hifigan`, `vocos`. Share only genuinely identical tensor
    conventions. Vocos also has a second ConvNeXt-V2 forward blocker; loading
