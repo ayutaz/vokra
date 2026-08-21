@@ -4000,7 +4000,7 @@ mod tests {
     }
 
     #[test]
-    fn bigvgan_mel_bytes_enforce_shape_and_finite_contract() {
+    fn vocoder_mel_bytes_enforce_shape_and_finite_contract() {
         let bytes: Vec<u8> = [0.25_f32, -0.5, 1.0, 2.0]
             .into_iter()
             .flat_map(f32::to_le_bytes)

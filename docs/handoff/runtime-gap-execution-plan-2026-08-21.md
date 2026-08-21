@@ -16,9 +16,9 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `RealForwardNoCliTask` | 3 | 0 | 0 | 0 | Real forward exists; CLI routing is absent |
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | 17 | 15 | No real artifact can be bound, even if a constructor/forward exists |
+| `NoGgufLoader` | 17 | 17 | 17 | 14 | No real artifact can be bound, even if a constructor/forward exists |
 | `LoudPartialForward` | 56 | 56 | 56 | 56 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **71** | `BOUND_ARCHES` registry rows |
+| **Total** | **79** | **75** | **73** | **70** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -152,7 +152,7 @@ Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
 package tests are present. Real-weight CT-Punc/Mimi execution remains part of
 the final VAST evidence pass; it is not replaced by the structural tests.
 
-## Wave 3 — 15 of 17 GGUF loaders remaining
+## Wave 3 — 14 of 17 GGUF loaders remaining
 
 Implement loaders in dependency-aware families. Every loader needs a writer ↔
 reader tensor/metadata handshake, a real pinned checkpoint, license/provenance
@@ -168,10 +168,9 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    `vokra-models` package: lib `2533 passed / 0 failed / 1 ignored`, with all
    integration/doc-test suites green. Instance `48290692` was destroyed after
    the run; no weight upload occurred.
-2. Vocoder family (3 remaining): `hifigan_vocoder`,
-   `speecht5_hifigan`, `vocos`. Share only genuinely identical tensor
-   conventions. Vocos also has a second ConvNeXt-V2 forward blocker; loading
-   it does not make decoding complete.
+2. Vocoder family (2 remaining): `hifigan_vocoder`, `vocos`. Share only
+   genuinely identical tensor conventions. Vocos also has a second
+   ConvNeXt-V2 forward blocker; loading it does not make decoding complete.
 
    `bigvgan` closed on 2026-08-21: the strict loader binds the official base
    checkpoint's 448-tensor folded manifest, including all 146 stored
@@ -186,6 +185,18 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    `max_abs=5.736514e-6` against the upstream output row. The full GPU
    generator remains a separate backend task; unsupported GPU execution has
    no CPU fallback.
+
+   `speecht5_hifigan` closed on 2026-08-21: the strict loader binds the
+   official revision `bb6f429406e86a9992357a972c0698b22043307d` 158-tensor
+   manifest, applies its learned 80-bin `mean` / `scale`, and rejects every
+   missing, extra, renamed, or wrong-shaped tensor. The 50,636,640-byte GGUF
+   (`sha256=96a262c6cd5b222feaca490486c10d9f6d2d9e274f4c2b35e38ce670bcf4a6bc`)
+   passed the official Transformers two-frame mel-to-512-sample forward at
+   `max_abs=2.7298927e-5` under a `5e-5` FP32 bound. The bound accounts for
+   accumulation-order differences between PyTorch CPU convolutions and the
+   native scalar kernels across 78 convolutions; it is 1.8x the observed
+   delta. The CLI smoke emitted an IEEE-float32 16 kHz WAV with exactly 512
+   samples and independently measured `max_abs=2.7299363e-5` after parsing.
 3. ASR (1): `parakeet-tdt`. Add the artifact binder before exposing its
    existing transcription entry point.
 4. TTS scaffolds (11): `chatterbox`, `chatterbox_nano`,
