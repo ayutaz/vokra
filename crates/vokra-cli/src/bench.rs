@@ -642,12 +642,27 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
         // settled window definition (hop vs. centered-STFT frame count) before
         // the number means anything comparable. No bench arm rather than a
         // number whose denominator is undefined (FR-EX-08).
-        ModelTask::F0Rmvpe => {
+        ModelTask::F0Rmvpe | ModelTask::F0Fcpe | ModelTask::F0Crepe => {
             return Err(
-                "bench: arch `rmvpe` has no bench task yet — the F0 RTF denominator (hop \
+                "bench: checkpoint-backed F0 arches have no bench task yet — the F0 RTF denominator (hop \
                  timebase vs. centered-STFT frame count) is not settled, so the number \
                  would not be comparable across extractors. Use `vokra-cli run --model \
-                 <rmvpe.gguf> --input <in.wav>` for the pitch track itself"
+                 <f0.gguf> --input <in.wav>` for the pitch track itself"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TextNormalize => {
+            return Err(
+                "bench: arch `wetextprocessing` has no audio RTF task — use `vokra-cli \
+                 run --model <wetext.gguf> --text <string>` for normalization"
+                    .to_owned(),
+            );
+        }
+        ModelTask::AecNkf => {
+            return Err(
+                "bench: arch `nkf_aec` requires paired mic/far-end WAVs, but bench has no \
+                 paired-input timing contract yet — use `vokra-cli run --model \
+                 <nkf-aec.gguf> --input <mic.wav> --far-end <reference.wav>`"
                     .to_owned(),
             );
         }

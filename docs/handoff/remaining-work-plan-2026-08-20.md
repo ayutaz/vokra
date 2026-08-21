@@ -1,5 +1,10 @@
 # Remaining-work execution plan (2026-08-20)
 
+> 2026-08-21 refinement: the runtime portion of Phase C is superseded by
+> `docs/handoff/runtime-gap-execution-plan-2026-08-21.md`. The newer audit
+> corrects the stale DeBERTa-v2 mapping item, records the public RNNoise
+> opaque-blob issue, and groups all 79 blocker rows into executable waves.
+
 This is the execution order derived from the live repository, merged PR #38, GitHub
 settings, the M5 owner checklist, and the platform-support matrix. It is a
 route map, not a completion claim. A checked historical ticket or a green

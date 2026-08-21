@@ -3,8 +3,8 @@
 //! # Why this is its own subcommand rather than a `run --task`
 //!
 //! Every `run` task loads a GGUF: `RunArgs::model` is a required `String`, and
-//! the F0 route there (`ModelTask::F0Rmvpe`) reaches its extractor through
-//! `RMVPE::open(&a.model)`. YIN and PyIN have no weights at all — they are
+//! the F0 routes there (`ModelTask::F0Rmvpe`, `F0Fcpe`, `F0Crepe`) reach their
+//! extractors through the supplied GGUF. YIN and PyIN have no weights at all — they are
 //! pure DSP over the input samples, with no checkpoint, no license class and
 //! no `docs/license-audit.md` §3.1 row. Threading them through a
 //! model-loading path would mean inventing a `--model` a caller cannot

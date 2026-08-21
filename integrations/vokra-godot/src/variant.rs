@@ -19,6 +19,8 @@
 //!   explicit type check that surfaces mismatches as an
 //!   `Err(GDExtensionVariantType)`.
 //! - [`variant_from_i64`]: pack an `i64` into a Variant slot.
+//! - [`variant_from_object`]: pack a live Godot Object pointer into a
+//!   Variant slot.
 //! - [`write_nil_variant`]: write a Nil Variant into a return slot on the
 //!   success path of void-return methods.
 //! - [`variant_to_packed_float32_slice`]: unpack a PackedFloat32Array
@@ -38,10 +40,6 @@
 //!   Handled by [`pack_f32_slice_into_variant`] (T14-followup, out of scope
 //!   for the session_transcribe promotion but scaffolded in
 //!   [`crate::ffi::interface`]).
-//! - Object pack. Requires `object_get_instance_binding` and the
-//!   `InstanceBinding` posture that
-//!   [`crate::registry`] deliberately defers (see registry.rs §Instance
-//!   lifetime).
 //!
 //! # var-A: String pack ([`variant_from_string_utf8`])
 //!
@@ -89,7 +87,7 @@ use core::slice;
 
 use crate::ffi::gdextension::{
     DICTIONARY_SIZE, GDExtensionConstStringPtr, GDExtensionConstTypePtr,
-    GDExtensionConstVariantPtr, GDExtensionInt, GDExtensionTypePtr,
+    GDExtensionConstVariantPtr, GDExtensionInt, GDExtensionObjectPtr, GDExtensionTypePtr,
     GDExtensionUninitializedTypePtr, GDExtensionUninitializedVariantPtr, GDExtensionVariantPtr,
     GDExtensionVariantType, PACKED_FLOAT32_ARRAY_SIZE, STRING_SIZE,
 };
@@ -164,6 +162,38 @@ pub unsafe fn variant_from_i64(
     // 8-byte slot from which the constructor reads the payload.
     unsafe {
         (interface.variant_from_int_ctor)(r_dest, &mut val as *mut i64 as _);
+    }
+}
+
+/// Pack a live Godot Object pointer into `r_dest` as an Object Variant.
+///
+/// This does not look up an instance binding: `object` is already the real
+/// Godot Object returned by `classdb_construct_object`, with the Rust-side
+/// instance attached by `object_set_instance`. The typed Variant constructor
+/// takes a pointer to that Object pointer, matching the GDExtension ABI's
+/// `Object *` builtin representation.
+///
+/// # Safety
+///
+/// `r_dest` must be a writable 24-byte Variant slot and `object` must be a
+/// live, non-null Godot Object pointer. The resulting Variant participates in
+/// Godot's normal Object lifetime tracking.
+#[inline]
+pub unsafe fn variant_from_object(
+    interface: &InterfaceTable,
+    r_dest: GDExtensionUninitializedVariantPtr,
+    object: GDExtensionObjectPtr,
+) {
+    debug_assert!(!object.is_null());
+    let mut object_ptr = object;
+    // SAFETY: `variant_from_object_ctor` is the cached constructor for
+    // VariantType::Object; caller provides a writable Variant slot and a
+    // live Object pointer. The constructor reads `object_ptr` synchronously.
+    unsafe {
+        (interface.variant_from_object_ctor)(
+            r_dest,
+            &mut object_ptr as *mut GDExtensionObjectPtr as GDExtensionTypePtr,
+        );
     }
 }
 
@@ -1184,7 +1214,7 @@ mod tests {
         make_sig_aware_interface, mock_variant_from_int, mock_variant_to_int,
     };
     use core::ptr;
-    use core::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+    use core::sync::atomic::{AtomicI64, AtomicU8, AtomicUsize, Ordering};
 
     // ------------------------------------------------------------------
     // A minimal per-test mock interface. `make_sig_aware_interface`
@@ -1199,6 +1229,7 @@ mod tests {
     static LAST_VARIANT_TYPE_RETURN: AtomicU8 = AtomicU8::new(0);
     static LAST_TO_INT_OUT: AtomicI64 = AtomicI64::new(0);
     static LAST_FROM_INT_IN: AtomicI64 = AtomicI64::new(0);
+    static LAST_FROM_OBJECT_IN: AtomicUsize = AtomicUsize::new(0);
 
     /// Mock `variant_get_type` that returns whatever value was last stored
     /// in `LAST_VARIANT_TYPE_RETURN` (interpreted as `GDExtensionVariantType`).
@@ -1239,6 +1270,17 @@ mod tests {
         // SAFETY: caller passes an 8-byte pointer to i64.
         let v = unsafe { (p as *const i64).read() };
         LAST_FROM_INT_IN.store(v, Ordering::SeqCst);
+    }
+
+    /// Mock `variant_from_object_ctor` that records the pointed-to Object.
+    unsafe extern "C" fn mock_from_object_recording(
+        _r: GDExtensionUninitializedVariantPtr,
+        p: crate::ffi::gdextension::GDExtensionTypePtr,
+    ) {
+        // SAFETY: `variant_from_object` passes a pointer to one
+        // `GDExtensionObjectPtr` value.
+        let object = unsafe { (p as *const GDExtensionObjectPtr).read() };
+        LAST_FROM_OBJECT_IN.store(object as usize, Ordering::SeqCst);
     }
 
     /// Build an interface table whose type/int-ctor fields go through the
@@ -1335,6 +1377,21 @@ mod tests {
         // deref `r_dest` beyond side-effect recording of `p_in`.
         unsafe { variant_from_i64(&iface, slot.as_mut_ptr() as _, 12345) };
         assert_eq!(LAST_FROM_INT_IN.load(Ordering::SeqCst), 12345);
+    }
+
+    #[test]
+    fn variant_from_object_forwards_object_pointer_to_constructor() {
+        let mut iface = make_sig_aware_interface();
+        iface.variant_from_object_ctor = mock_from_object_recording;
+        LAST_FROM_OBJECT_IN.store(0, Ordering::SeqCst);
+
+        let object = ptr::dangling_mut::<core::ffi::c_void>();
+        let mut slot = [0u8; 24];
+        // SAFETY: `slot` is a writable Variant-sized buffer and `object` is a
+        // stable non-null sentinel that the recording constructor only reads.
+        unsafe { variant_from_object(&iface, slot.as_mut_ptr() as _, object) };
+
+        assert_eq!(LAST_FROM_OBJECT_IN.load(Ordering::SeqCst), object as usize);
     }
 
     #[test]

@@ -172,11 +172,22 @@ pub(crate) enum ModelTask {
     /// name `extract`, so the obvious name on a loaded model handed back a
     /// fabricated track.)
     ///
-    /// Its siblings FCPE and CREPE are still NOT routed here, but as of
-    /// 2026-08-15 no longer because they fabricate: both now refuse a
-    /// weightless or wrong-rate artifact with a named error. What they lack
-    /// is the CLI wiring. See their rows in [`BOUND_ARCHES`].
     F0Rmvpe,
+    /// F0 extraction through FCPE. The concrete path-taking binder is opened
+    /// once by the `run` arm and returns the same [`vokra_models::f0::F0Frame`]
+    /// rows as RMVPE.
+    F0Fcpe,
+    /// F0 extraction through CREPE. Kept distinct from FCPE/RMVPE so rate and
+    /// checkpoint diagnostics name the actual front-end.
+    F0Crepe,
+    /// WeTextProcessing inverse/text normalization (`--text` → text). The
+    /// concrete binder is built from the session GGUF in the `run` arm; a
+    /// build without `vokra-wfst` retains the binder's loud feature error.
+    TextNormalize,
+    /// NKF-AEC offline paired-WAV route. The concrete model opens a stateful
+    /// [`vokra_core::engines::AecStreamHandle`] in the `run` arm because the
+    /// generic [`Session`] facade has no AEC engine slot.
+    AecNkf,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -280,6 +291,15 @@ const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
 /// keys off `vokra.f0.*` instead), so this dispatch is the only place the
 /// string is matched; it is kept verbatim in lock-step with the converter.
 const ARCH_RMVPE: &str = "rmvpe";
+/// FCPE pitch extractor — mirror of `vokra_models::f0::fcpe::ARCH`.
+const ARCH_FCPE: &str = "fcpe";
+/// CREPE pitch extractor — mirror of `vokra_models::f0::crepe::ARCH`.
+const ARCH_CREPE: &str = "crepe";
+/// WeTextProcessing ITN/TN bundle — mirror of
+/// `vokra_models::wetextprocessing::ARCH`.
+const ARCH_WETEXTPROCESSING: &str = "wetextprocessing";
+/// NKF-AEC — mirror of `vokra_models::aec::nkf_aec::ARCH`.
+const ARCH_NKF_AEC: &str = "nkf_aec";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -640,6 +660,42 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // binds it from `--model`.
             Ok((session, ModelTask::F0Rmvpe))
         }
+        ARCH_FCPE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FCPE}`"
+                ));
+            }
+            // Path-taking binder; bind once in the run arm so the same loaded
+            // weights produce both the config/rate check and the F0 track.
+            Ok((session, ModelTask::F0Fcpe))
+        }
+        ARCH_CREPE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_CREPE}`"
+                ));
+            }
+            Ok((session, ModelTask::F0Crepe))
+        }
+        ARCH_WETEXTPROCESSING => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_WETEXTPROCESSING}`"
+                ));
+            }
+            // The binder consumes the already parsed GGUF in the run arm and
+            // the feature-gated FST pipeline returns its own precise error.
+            Ok((session, ModelTask::TextNormalize))
+        }
+        ARCH_NKF_AEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_NKF_AEC}`"
+                ));
+            }
+            Ok((session, ModelTask::AecNkf))
+        }
         ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
             // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
             // runtime shell exists in `vokra-models::magnet` (config
@@ -741,7 +797,9 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
-                 `{ARCH_RMVPE}` / `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
+                 `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
+                 `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
+                 `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
                  vokra-models binds without a CLI task yet)",
                 BOUND_ARCHES.len()
@@ -806,46 +864,6 @@ enum BoundReason {
     /// carry. Rendering one of those as a `run` result would mean inventing a
     /// presentation the model never defined.
     NoCliShapedOutput,
-    /// The forward is real and complete, but it consumes a **pair** of
-    /// strictly sample-aligned input streams — an AEC mic signal plus its
-    /// far-end reference — and `run` carries exactly one `--input`. Neither
-    /// the GGUF nor any current flag supplies the second stream (`--compare`
-    /// is the campplus speaker-verify pair and is rejected on every other
-    /// task), so there is no honest input to drive the model with.
-    NeedsPairedInput,
-    /// The forward is real, complete and fallible — it refuses a bad artifact
-    /// with a named error rather than handing back a plausible-looking
-    /// fabrication — and its output would be CLI-shaped. Nothing about the
-    /// binder blocks a `run` task; this CLI simply has not wired one for the
-    /// arch yet.
-    ///
-    /// The gloss above used to name only the F0 instance of that fallibility
-    /// ("a weightless or wrong-rate artifact ... rather than degrading to a
-    /// zero track"), because the FCPE and CREPE rows were its only users. The
-    /// `wetextprocessing` row is a text side-car with neither a sample rate
-    /// nor a track, so the wording was widened to the class and the audio
-    /// instance moved into those rows' own comment, where it is still exact.
-    /// Nothing about the variant's meaning changed.
-    ///
-    /// A row here may still carry a BUILD-time gate — `wetextprocessing`'s
-    /// two FST stages need the `vokra-wfst` feature — provided its `entry`
-    /// names that gate. What the variant forbids is a forward that refuses
-    /// unconditionally: that is [`Self::LoudPartialForward`], and confusing
-    /// the two in either direction is the defect both rows' comments record.
-    ///
-    /// # A `SkeletonFallback` variant used to sit here
-    ///
-    /// It named the opposite hazard: a forward that runs when the GGUF
-    /// carries weights but degrades to an all-zero, frame-count-only track
-    /// when it does not, so that printing the track could not be told apart
-    /// from a real measurement. Its only two users were the FCPE and CREPE
-    /// rows, and on 2026-08-15 both binders stopped doing that — every
-    /// failure is now a named error. The variant was removed with its last
-    /// user rather than kept as a label no row could honestly carry.
-    ///
-    /// If a future binder reintroduces that shape, reintroduce the variant
-    /// with it; do not file it under this one, which asserts the opposite.
-    RealForwardNoCliTask,
     /// The module has no GGUF loader at all yet — its weights come from a
     /// deterministic `synthesized` fixture, so there is nothing for the CLI
     /// to bind from a converted artifact.
@@ -875,20 +893,6 @@ impl BoundReason {
                 "its output is not a CLI-shaped artifact (hidden states / logits / codec \
                  codes, or it needs a caller-supplied tokenization the GGUF does not \
                  carry), so `run` has no honest way to render it"
-            }
-            Self::NeedsPairedInput => {
-                "its forward is real, but it consumes a PAIR of strictly sample-aligned \
-                 streams (an AEC mic signal plus its far-end reference) while `run` \
-                 carries exactly one `--input` — neither the GGUF nor any current flag \
-                 supplies the second one, so there is nothing honest to feed it"
-            }
-            Self::RealForwardNoCliTask => {
-                "its forward is real, complete and fallible — it refuses a bad artifact with \
-                 a named error rather than handing back a plausible-looking fabrication — so \
-                 nothing about the binder blocks execution; this CLI has simply not wired a \
-                 `run` task for the arch yet, and the entry point below is callable from a \
-                 library context today, subject to any build-time feature gate that entry \
-                 names"
             }
             Self::NoGgufLoader => {
                 "the module has no GGUF loader yet (its weights come from a deterministic \
@@ -1585,63 +1589,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         reason: BoundReason::NoCliShapedOutput,
         probe: Some(|g: &GgufFile| vokra_models::ct_punc::CtPunc::from_gguf(g).map(|_| ())),
     },
-    // Wave M (2026-08-15) — corrected row. This shipped as
-    // `NoCliShapedOutput`, whose definition above names the blocker class
-    // "hidden states, per-token logits, codec codes, or an output that needs a
-    // caller-supplied tokenization / phoneme sequence the GGUF does not carry".
-    // None of those applies. The entry the row itself names is declared in
-    // `crates/vokra-models/src/wetextprocessing/mod.rs` as
-    //
-    //     pub fn normalize(&self, input: &str) -> Result<String>
-    //
-    // text in, text out — and `run` already carries `--text`.
-    //
-    // The tag looks borrowed from the neighbour directly above rather than read
-    // off the binder. That `ct_punc` row IS correct under the same definition,
-    // because `CtPunc::restore(&self, tokens: &[&str], token_ids: &[u32])`
-    // genuinely needs a tokenization no GGUF carries. Two adjacent text
-    // side-cars, one signature apart, and the wrong one was copied.
-    //
-    // What actually blocks it, in the order a caller meets them:
-    //
-    //   1. no `run` task is wired for the arch. Structural, true in every
-    //      build, and exactly what `RealForwardNoCliTask` states.
-    //   2. the two FST stages behind `normalize` compile only under the
-    //      `vokra-wfst` feature — `crates/vokra-ops/src/itn/pipeline.rs` gates
-    //      `compose_stage` on it. Until 2026-08-15 `vokra-cli` declared no such
-    //      feature, so a CLI build could not reach the real forward at all and
-    //      the honest tag then WOULD have been `LoudPartialForward`; the
-    //      passthrough in `crates/vokra-cli/Cargo.toml` is what changed that.
-    //
-    // Blocker 2 is build-conditional, so it is stated in `entry` — the vocos
-    // precedent above for naming a second blocker — while `reason` carries the
-    // class that holds in both builds. Filing the row back under
-    // `LoudPartialForward` would now repeat the Wave I distil-whisper defect in
-    // its own direction: that variant asserts an UNCONDITIONAL refusal, and a
-    // `--features vokra-wfst` build composes both grammars for real.
-    //
-    // The feature-off build still refuses loudly for every non-empty input
-    // (`UnsupportedOp` naming the absent OpenFST reader, the rebuild command
-    // and the upstream URL). The one input it does not refuse is the empty
-    // string, which short-circuits to `Ok("")` in both builds because
-    // upstream's `Processor::Tag` / `Processor::Verbalize` do. No normalised
-    // text is fabricated on any path, in either build (FR-EX-08).
-    //
-    // The half of this judgement a compiler can hold — the two signatures — is
-    // pinned by `text_shaped_entry_points_still_have_the_signatures_their_rows_assume`
-    // below, so the next reader need not take the paragraphs above on trust.
-    BoundArch {
-        arch: "wetextprocessing",
-        module: "vokra_models::wetextprocessing",
-        entry: "WeTextProcessing::from_gguf → WeTextProcessing::normalize (real text→text; \
-                the two FST stages behind it compile only under the `vokra-wfst` feature, \
-                which this crate now forwards — without it `normalize` refuses loudly \
-                instead of composing, so build the CLI with `--features vokra-wfst`)",
-        reason: BoundReason::RealForwardNoCliTask,
-        probe: Some(|g: &GgufFile| {
-            vokra_models::wetextprocessing::WeTextProcessing::from_gguf(g).map(|_| ())
-        }),
-    },
     // Wave J (2026-08-15) — corrected row. This shipped as
     // `NoCliShapedOutput` naming `Charsiu::from_gguf → Charsiu::align`,
     // which reads as "the forward works, only the presentation blocks it".
@@ -1695,35 +1642,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         reason: BoundReason::NoGgufLoader,
         probe: None,
     },
-    // --- F0 siblings that are NOT routed to `ModelTask::F0Rmvpe` ----------
-    //
-    // Both stopped being skeleton-fallbacks on 2026-08-15, in the same change
-    // that gave RMVPE its `extract` / `extract_real` / `frame_times` shape.
-    // Each now refuses loudly instead of degrading to a zero track:
-    // `ModelLoad` when no weights were bound, `InvalidArgument` when the
-    // caller's sample rate is not the one the checkpoint is defined at, and —
-    // for FCPE — the STFT front-end's own error propagated verbatim instead
-    // of swallowed by an `Err(_) =>` arm. The timebase-only half moved to a
-    // `frame_times` accessor that returns bare `f32` seconds, so nothing it
-    // returns can be read as a pitch estimate.
-    //
-    // Both rows stay because no `run` task is wired for either arch — but the
-    // reason they carry had to change with the binders, and the entries they
-    // name had to stop pointing at a method whose contract no longer holds.
-    BoundArch {
-        arch: "fcpe",
-        module: "vokra_models::f0::fcpe",
-        entry: "FCPE::from_gguf → FCPE::extract",
-        reason: BoundReason::RealForwardNoCliTask,
-        probe: None,
-    },
-    BoundArch {
-        arch: "crepe",
-        module: "vokra_models::f0::crepe",
-        entry: "CREPE::from_gguf → CREPE::extract",
-        reason: BoundReason::RealForwardNoCliTask,
-        probe: None,
-    },
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //
     // Each of these landed a `vokra-models` binder without the row the doc
@@ -1768,27 +1686,14 @@ const BOUND_ARCHES: &[BoundArch] = &[
         reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::lang_id::LangIdEcapa::from_gguf(g).map(|_| ())),
     },
-    // Both AEC binders take a paired (mic, far-end) input that `run` cannot
-    // supply, but `reason` names the blocker that fires FIRST for the library
-    // caller the row points at — and the two differ. DTLN-AEC's `process`
-    // returns `UnsupportedOp` unconditionally (the generic LSTM primitive is
-    // absent from `vokra-ops`), so a caller holding both streams still hits a
-    // loud-partial. NKF-AEC's forward is a real native re-implementation with
-    // an upstream parity harness, so for it the paired input IS the only
-    // blocker. Reporting both as loud-partials would slander a working model.
+    // DTLN-AEC still stops at the absent generic LSTM primitive. NKF-AEC is
+    // routed above now that `run` has an explicit far-end WAV contract.
     BoundArch {
         arch: "dtln_aec",
         module: "vokra_models::aec::dtln_aec",
         entry: "DtlnAec::from_gguf → DtlnAec::process",
         reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::aec::dtln_aec::DtlnAec::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "nkf_aec",
-        module: "vokra_models::aec::nkf_aec",
-        entry: "NkfAec::from_gguf → AecEngine::open_stream → NkfAecStream::push_paired",
-        reason: BoundReason::NeedsPairedInput,
-        probe: Some(|g: &GgufFile| vokra_models::aec::nkf_aec::NkfAec::from_gguf(g).map(|_| ())),
     },
 ];
 
@@ -2252,6 +2157,20 @@ mod tests {
         assert_eq!(task, ModelTask::F0Rmvpe);
     }
 
+    #[test]
+    fn load_session_detects_fcpe_crepe_and_nkf_tasks() {
+        for (arch, tag, expected) in [
+            (ARCH_FCPE, "fcpe-routed", ModelTask::F0Fcpe),
+            (ARCH_CREPE, "crepe-routed", ModelTask::F0Crepe),
+            (ARCH_NKF_AEC, "nkf-aec-routed", ModelTask::AecNkf),
+        ] {
+            let (_session, task) = with_arch_only_gguf(arch, tag, |p| {
+                load_session(p).expect("newly routed session builds (bare)")
+            });
+            assert_eq!(task, expected, "wrong task for `{arch}`");
+        }
+    }
+
     /// Task hints stay rejected on the newly routed arches (FR-EX-08 — no
     /// silent hint drop), same rule every other arch follows.
     #[test]
@@ -2260,6 +2179,10 @@ mod tests {
             ("nsnet2", "nsnet2-hint"),
             ("pyannote-segmentation", "pyannote-hint"),
             ("rmvpe", "rmvpe-hint"),
+            ("fcpe", "fcpe-hint"),
+            ("crepe", "crepe-hint"),
+            ("wetextprocessing", "wetext-hint"),
+            ("nkf_aec", "nkf-aec-hint"),
             ("fsmn-vad", "fsmn-hint"),
         ] {
             let err = with_arch_only_gguf(arch, tag, |p| {
@@ -2430,29 +2353,6 @@ mod tests {
         assert!(
             err.contains("its runtime forward is a loud-partial"),
             "dtln_aec's blocker is its deferred forward, not its input shape: {err}"
-        );
-    }
-
-    /// NKF-AEC (`vokra_models::aec::nkf_aec`) — the one row of the five whose
-    /// forward is REAL (native re-implementation with an upstream parity
-    /// harness). Its blocker is the paired (mic, far-end) input `run` cannot
-    /// supply, so it must NOT be reported as a loud-partial like its DTLN
-    /// sibling — that would slander a working model.
-    #[test]
-    fn load_session_binds_nkf_aec_arch_as_paired_input_not_loud_partial() {
-        let err = assert_bound_arch(
-            "nkf_aec",
-            "nkf-aec-arch",
-            "vokra_models::aec::nkf_aec",
-            "NkfAecStream::push_paired",
-        );
-        assert!(
-            err.contains("PAIR of strictly sample-aligned"),
-            "nkf_aec must name the paired-input blocker: {err}"
-        );
-        assert!(
-            !err.contains("its runtime forward is a loud-partial"),
-            "nkf_aec's forward is real — reporting it as a loud-partial is a lie: {err}"
         );
     }
 
@@ -2921,64 +2821,24 @@ mod tests {
         );
     }
 
-    // ---- Wave M (2026-08-15) — wetextprocessing: a text side-car ---------
-    //
-    // The row shipped as `NoCliShapedOutput`, a class defined as "hidden
-    // states, per-token logits, codec codes, or an output that needs a
-    // caller-supplied tokenization the GGUF does not carry". Its own named
-    // entry point is `WeTextProcessing::normalize(&self, input: &str) ->
-    // Result<String>`, which is none of those, and `run` already carries
-    // `--text`. The neighbour it was filed beside, `ct_punc`, IS correct under
-    // that class — `CtPunc::restore` takes tokens and token ids from the
-    // caller — which is the likeliest route the wrong tag took.
-    //
-    // Nothing pinned either row, so these two tests pin both sides: the
-    // message a user sees, and the signatures the two classifications rest on.
+    // ---- Wave 1 (2026-08-21) — newly routed small runtime surfaces -------
 
-    /// The `run` diagnostic names the blockers that actually apply — no task
-    /// wired, plus the build-time FST feature gate — instead of an output
-    /// shape that does not.
+    /// WeTextProcessing now resolves to a real text task. Binding the grammar
+    /// and running its feature-gated FST pipeline happens in `run`, so an
+    /// arch-only GGUF is sufficient to prove dispatch ownership here.
     #[test]
-    fn load_session_binds_wetextprocessing_arch_as_unwired_task_not_no_cli_shaped_output() {
-        let err = assert_bound_arch(
-            "wetextprocessing",
-            "wetext-arch",
-            "vokra_models::wetextprocessing",
-            "WeTextProcessing::normalize",
-        );
-        assert!(
-            err.contains("not wired a `run` task"),
-            "`normalize` is text in, text out — what is missing is the task: {err}"
-        );
-        assert!(
-            !err.contains("not a CLI-shaped artifact"),
-            "a `&str` -> `String` entry point is exactly CLI-shaped, and `run` already \
-             carries `--text`: {err}"
-        );
-        assert!(
-            err.contains("vokra-wfst"),
-            "the real forward needs that feature; dropping the gate from the diagnostic \
-             would send a default-build user at an entry point that refuses: {err}"
-        );
+    fn load_session_routes_wetextprocessing_to_text_normalize() {
+        let (_session, task) = with_arch_only_gguf(ARCH_WETEXTPROCESSING, "wetext-routed", |p| {
+            load_session(p).expect("wetextprocessing session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::TextNormalize);
     }
 
     /// The text-in/text-out judgement behind two adjacent rows, made
     /// mechanical.
     ///
-    /// `BoundReason` accuracy is otherwise established by reading each
-    /// module's entry point — the enum's own doc says so — which is how this
-    /// pair drifted: `wetextprocessing` ended up filed under the class its
-    /// neighbour belongs to. A signature is the one part of that judgement a
-    /// compiler can hold, so each entry point is coerced to an `fn` pointer
-    /// carrying the argument and return types its row assumes. Change either
-    /// binder's shape and this stops compiling, which forces the row to be
-    /// re-read rather than left behind.
-    ///
-    /// It cannot check the rest: nothing here can see whether a forward is a
-    /// loud-partial, or whether a task was wired. It covers only the half that
-    /// turns on "what must the caller supply, and what comes back" — which is
-    /// exactly the half `NoCliShapedOutput` rests on, and exactly where the
-    /// drift was.
+    /// The function signatures still pin why WeTextProcessing is routable
+    /// while CT-Punc remains in the display-contract ledger.
     #[test]
     fn text_shaped_entry_points_still_have_the_signatures_their_rows_assume() {
         // Text in, text out: no output shape blocks a `run` task here.
@@ -2992,31 +2852,19 @@ mod tests {
         const _: fn(&vokra_models::ct_punc::CtPunc, &[&str], &[u32]) -> vokra_core::Result<String> =
             vokra_models::ct_punc::CtPunc::restore;
 
-        let wetext = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "wetextprocessing")
-            .expect("wetextprocessing has a vokra-models binder and must carry a row");
         let ct_punc = BOUND_ARCHES
             .iter()
             .find(|b| b.arch == "ct_punc")
             .expect("ct_punc has a vokra-models binder and must carry a row");
-        assert_eq!(
-            wetext.reason,
-            BoundReason::RealForwardNoCliTask,
-            "`normalize` takes `&str` and returns `String`, so nothing about the output \
-             shape blocks a task — what is missing is the task itself"
+        assert!(
+            BOUND_ARCHES.iter().all(|b| b.arch != ARCH_WETEXTPROCESSING),
+            "wetextprocessing is routed and must not retain an unreachable registry row"
         );
         assert_eq!(
             ct_punc.reason,
             BoundReason::NoCliShapedOutput,
             "`restore` needs tokens and token ids from the caller — the contrast the \
              wetextprocessing row's old tag had lost"
-        );
-        assert!(
-            wetext.entry.contains("vokra-wfst"),
-            "the FST stages behind `normalize` are feature-gated — demoting that out of \
-             `reason` must move it into `entry`, not drop it: {}",
-            wetext.entry
         );
     }
 
@@ -3047,6 +2895,10 @@ mod tests {
             ARCH_NSNET2,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
+            ARCH_FCPE,
+            ARCH_CREPE,
+            ARCH_WETEXTPROCESSING,
+            ARCH_NKF_AEC,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,
             ARCH_MELODYFLOW_T24_30SECS,

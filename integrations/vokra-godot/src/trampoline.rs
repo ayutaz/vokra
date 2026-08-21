@@ -16,12 +16,10 @@
 //!   [`session_vad_open_stream`]: the int-typed arg (capacity /
 //!   sample_rate) is Variant-unpacked via
 //!   [`crate::variant::variant_to_i64`], and a type mismatch surfaces as
-//!   `InvalidArgument` with the exact offending index. The unpacked value
-//!   is currently unused — full dispatch still returns `InvalidMethod`
-//!   because the return path (PackedFloat32Array / Object) requires
-//!   additional Variant plumbing.
+//!   `InvalidArgument` with the exact offending index.
 //! - **Full dispatch** for [`session_transcribe`], [`session_synthesize`],
-//!   [`stream_push_pcm`], [`stream_poll`]: T14-followup promotions.
+//!   [`stream_push_pcm`], [`stream_poll`], [`session_vad_open_stream`]:
+//!   T14-followup promotions.
 //!   `session_transcribe` unpacks `PackedFloat32Array` + `Int` and packs a
 //!   `String` return. `session_synthesize` unpacks `String` and packs a
 //!   `Dictionary` return (`{"pcm": PackedFloat32Array, "sample_rate":
@@ -152,8 +150,7 @@ unsafe fn enforce_instance(
 /// Set an `InvalidMethod` outcome for a method that cannot dispatch.
 ///
 /// Most call sites use this when the extension interface or loaded session is
-/// unavailable, or when return-Variant construction fails. The sole remaining
-/// deliberately unimplemented trampoline is [`session_vad_open_stream`].
+/// unavailable, or when return-Variant construction fails.
 ///
 /// # Safety
 ///
@@ -963,9 +960,17 @@ pub unsafe extern "C" fn session_vad_open_stream(
         if !unsafe { enforce_instance(p_instance, r_error) } {
             return;
         }
+        if r_return.is_null() {
+            // A method with a declared Object return must receive a writable
+            // Variant slot. Reject before opening a stream so this host
+            // contract violation cannot leak a C handle.
+            // SAFETY: `r_error` doc.
+            unsafe { report_pending(r_error) };
+            return;
+        }
 
-        // T14 partial promotion: validate `p_args[0]` (sample_rate) as
-        // Int. Extension must be initialised for the Variant unpack to
+        // Validate `p_args[0]` (sample_rate) as Int before opening the
+        // stream. Extension must be initialised for the Variant unpack to
         // reach the resolved constructor — a `None` from
         // `with_interface` means the extension is being called before
         // `vokra_gdextension_init` completed (or after deinit), which
@@ -983,26 +988,80 @@ pub unsafe extern "C" fn session_vad_open_stream(
             unsafe { report_pending(r_error) };
             return;
         };
-        let Some(_sample_rate) = inner else {
+        let Some(sample_rate_i64) = inner else {
             // `unpack_i64_or_report` already wrote `InvalidArgument` on
             // type mismatch; nothing more to do.
             return;
         };
+        let sample_rate = match i32::try_from(sample_rate_i64) {
+            Ok(value) if value > 0 => value,
+            Err(_) => {
+                // The C ABI accepts i32. Reject narrowing overflow as a
+                // typed argument error instead of wrapping the sample rate.
+                // SAFETY: `r_error` doc.
+                unsafe {
+                    report_error(
+                        r_error,
+                        GDExtensionCallErrorType::InvalidArgument,
+                        0,
+                        GDExtensionVariantType::Int as i32,
+                    )
+                };
+                return;
+            }
+            Ok(_) => {
+                // A sample rate is a positive frequency. Reject zero/negative
+                // values at the typed boundary rather than asking the backend
+                // to reinterpret them.
+                // SAFETY: `r_error` doc.
+                unsafe {
+                    report_error(
+                        r_error,
+                        GDExtensionCallErrorType::InvalidArgument,
+                        0,
+                        GDExtensionVariantType::Int as i32,
+                    )
+                };
+                return;
+            }
+        };
 
-        // TODO(future): Open `crate::vad::VokraStream::open(&session,
-        //   sample_rate as i32)`; construct a Godot Object bound to our
-        //   `StreamInstance*`; Variant-wrap it into `r_return` via
-        //   `object_get_instance_binding` + object Variant constructor.
-        //   Rationale for holding off: Object wrapping requires the
-        //   `InstanceBinding` posture that `crate::registry` §Instance
-        //   lifetime defers to owner smoke, and the object Variant
-        //   packer requires resolving `object_new` + refcount
-        //   arithmetic. The int-arg validation above IS a real
-        //   improvement over the pre-T14 stub — a GDScript coding error
-        //   like `session.vad_open_stream("16000")` now surfaces as
-        //   InvalidArgument(index=0, expected=Int) instead of the vague
-        //   "runtime dispatch pending" InvalidMethod.
-        unsafe { report_pending(r_error) };
+        // Complete the open + Object construction + Variant pack under one
+        // interface borrow. The typed Object constructor is non-fallible;
+        // every earlier failure occurs before ownership transfers to Godot.
+        let dispatched = unsafe {
+            crate::with_interface(|iface| {
+                // SAFETY: `p_instance` passed the non-null check and Godot
+                // created it as `SessionInstance` for this registered method.
+                let holder = &*(p_instance as *const crate::registry::SessionInstance);
+                let Some(session) = holder.inner.as_ref() else {
+                    return false;
+                };
+
+                let stream = match crate::vad::VokraStream::open(session, sample_rate) {
+                    Ok(stream) => stream,
+                    Err(_backend_err) => return false,
+                };
+
+                // SAFETY: live interface and Godot main-thread method call.
+                let object = crate::registry::create_open_stream_object(iface, stream);
+                if object.is_null() {
+                    return false;
+                }
+
+                // SAFETY: `r_return` was checked non-null; `object` is the
+                // live Godot Object now owning the bound StreamInstance.
+                crate::variant::variant_from_object(iface, r_return, object);
+                true
+            })
+        };
+        if dispatched != Some(true) {
+            // Covers unavailable interface, unloaded session, backend open
+            // error, and Godot Object construction refusal. Backend details
+            // remain available through `vokra_last_error()`.
+            // SAFETY: `r_error` doc.
+            unsafe { report_pending(r_error) };
+        }
     });
 }
 
@@ -1841,12 +1900,18 @@ mod tests {
         unsafe { (r_out as *mut i64).write(-1) };
     }
 
-    /// Legitimate Int argument passes the type check but the return
-    /// path is still deferred: expect `InvalidMethod` (partial
-    /// promotion). Verifies the type-check path takes the good branch
-    /// (i.e. does NOT emit `InvalidArgument`).
+    unsafe extern "C" fn mock_to_int_writes_i64_max(
+        r_out: crate::ffi::gdextension::GDExtensionUninitializedTypePtr,
+        _p: crate::ffi::gdextension::GDExtensionVariantPtr,
+    ) {
+        // SAFETY: caller (`variant_to_i64`) passes a writable 8-byte slot.
+        unsafe { (r_out as *mut i64).write(i64::MAX) };
+    }
+
+    /// A valid sample rate reaches real dispatch. With an unopened session,
+    /// dispatch must fail explicitly rather than reporting typed-arg failure.
     #[test]
-    fn session_vad_open_stream_int_arg_reaches_deferred_return_stub() {
+    fn session_vad_open_stream_valid_int_reaches_session_dispatch() {
         let _lock = crate::registry::tests::TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -1861,10 +1926,45 @@ mod tests {
         // because our mock ignores `p_in`.
         let fake_variant: *const c_void = ptr::dangling();
         let args: [GDExtensionConstVariantPtr; 1] = [fake_variant];
+        let mut instance = Box::new(crate::registry::SessionInstance { inner: None });
 
-        // SAFETY: `args` has 1 valid slot; arity=1 matches; instance
-        // dummy passes non-null check. Mock interface is installed so
-        // `with_interface` sees Some.
+        // SAFETY: `args` has 1 valid slot; arity=1 matches; `instance` is a
+        // live, correctly aligned SessionInstance. Mock interface is installed
+        // so `with_interface` sees Some.
+        unsafe {
+            session_vad_open_stream(
+                ptr::null_mut(),
+                instance.as_mut() as *mut _ as GDExtensionClassInstancePtr,
+                args.as_ptr(),
+                1,
+                ret.as_mut_ptr() as *mut _,
+                &mut err,
+            )
+        };
+        assert_eq!(
+            err.error,
+            GDExtensionCallErrorType::InvalidMethod,
+            "valid Int must pass validation and reach the unloaded-session error",
+        );
+    }
+
+    #[test]
+    fn session_vad_open_stream_rejects_sample_rate_outside_i32() {
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _state = MockStateGuard::install_with_variant_type_mock(
+            mock_returns_int_type,
+            mock_to_int_writes_i64_max,
+        );
+
+        let mut err = fresh_error();
+        let mut ret = fresh_variant_slot();
+        let fake_variant: *const c_void = ptr::dangling();
+        let args: [GDExtensionConstVariantPtr; 1] = [fake_variant];
+
+        // SAFETY: the range check happens before the non-null sentinel
+        // instance is dereferenced.
         unsafe {
             session_vad_open_stream(
                 ptr::null_mut(),
@@ -1875,12 +1975,41 @@ mod tests {
                 &mut err,
             )
         };
-        // Deferred return path → InvalidMethod, NOT InvalidArgument.
-        assert_eq!(
-            err.error,
-            GDExtensionCallErrorType::InvalidMethod,
-            "Int-typed arg must pass validation and reach the deferred stub",
+        assert_eq!(err.error, GDExtensionCallErrorType::InvalidArgument);
+        assert_eq!(err.argument, 0);
+        assert_eq!(err.expected, GDExtensionVariantType::Int as i32);
+    }
+
+    #[test]
+    fn session_vad_open_stream_rejects_non_positive_sample_rate() {
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _state = MockStateGuard::install_with_variant_type_mock(
+            mock_returns_int_type,
+            mock_to_int_writes_zero,
         );
+
+        let mut err = fresh_error();
+        let mut ret = fresh_variant_slot();
+        let fake_variant: *const c_void = ptr::dangling();
+        let args: [GDExtensionConstVariantPtr; 1] = [fake_variant];
+
+        // SAFETY: the positivity check happens before the non-null sentinel
+        // instance is dereferenced.
+        unsafe {
+            session_vad_open_stream(
+                ptr::null_mut(),
+                core::ptr::dangling_mut(),
+                args.as_ptr(),
+                1,
+                ret.as_mut_ptr() as *mut _,
+                &mut err,
+            )
+        };
+        assert_eq!(err.error, GDExtensionCallErrorType::InvalidArgument);
+        assert_eq!(err.argument, 0);
+        assert_eq!(err.expected, GDExtensionVariantType::Int as i32);
     }
 
     /// Type mismatch: pass a String Variant where Int is expected. The
@@ -1923,8 +2052,7 @@ mod tests {
 
     /// Symmetric coverage for `stream_poll` int-arg validation.
     ///
-    /// `stream_poll` is fully promoted (unlike `session_vad_open_stream`
-    /// which still has a deferred return path), so a valid `Int` arg passes
+    /// `stream_poll` is fully promoted, so a valid `Int` arg passes
     /// the type check AND reaches the real dispatch body — which
     /// dereferences `p_instance` as `&mut StreamInstance` (line ~885). A
     /// `dangling_mut::<c_void>()` pointer has alignment 1 and misaligns

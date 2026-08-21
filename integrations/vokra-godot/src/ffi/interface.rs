@@ -88,8 +88,8 @@ pub struct InterfaceTable {
     // (String / PackedFloat32Array / Dictionary / Object, both from + to)
     // began as the M3-18 Variant-unpack foundation and now back the promoted
     // transcribe/synthesize/stream trampolines without a further init-time
-    // resolver walk. Object packing is also the foundation for the remaining
-    // `session_vad_open_stream` promotion.
+    // resolver walk, including the Object return from
+    // `session_vad_open_stream`.
     //
     // The null case for every cached factory result is discharged at
     // resolution time inside [`Self::from_proc_address`] (`?` propagation);

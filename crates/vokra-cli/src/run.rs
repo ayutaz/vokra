@@ -12,7 +12,7 @@
 
 use std::process::ExitCode;
 
-use vokra_core::Session;
+use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
 use crate::wav;
@@ -24,7 +24,7 @@ USAGE:
     vokra-cli run --model <model.gguf> [--input <in.wav>] [--text <string>] [--output <out.wav>]
                   [--backend cpu|metal|cuda] [--beam-size <N>] [--length-penalty <α>]
                   [--no-repeat-ngram <N>] [--fixture-tokenizer] [--interrupt-after <N>]
-                  [--deterministic]
+                  [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
@@ -35,6 +35,11 @@ USAGE:
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
+    vokra-cli run --model <fcpe.gguf> --input <in.wav>
+    vokra-cli run --model <crepe.gguf> --input <in.wav>
+    vokra-cli run --model <wetextprocessing.gguf> --text <string>
+    vokra-cli run --model <nkf-aec.gguf> --input <mic.wav> --far-end <reference.wav> \
+                  [--output <clean.wav>]
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
@@ -46,7 +51,12 @@ OPTIONS:
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
                                 denoise, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
-                                path, FR-OP-60)
+                                path, FR-OP-60). For NKF-AEC this is the mic
+                                signal and must be paired with --far-end.
+    --far-end <path>            nkf_aec only: sample-aligned far-end/reference
+                                mono WAV. It must have exactly the same sample
+                                rate and sample count as --input; no trim,
+                                repeat, channel mixing, or resampling is done.
     --backend <name>            cpu | metal | cuda — backend for the model's hot
                                 ops [default cpu]. Mirrors `bench --backend`:
                                 honored by the whisper / voxtral ASR, kokoro TTS
@@ -60,7 +70,8 @@ OPTIONS:
     --compare <path>            speaker (campplus) only: second WAV; prints the
                                 cosine similarity of the two 192-d embeddings
                                 (speaker_verify, FR-OP-81)
-    --text <string>             text to synthesize (TTS) / the reply text CSM
+    --text <string>             text to synthesize (TTS) / normalize
+                                (wetextprocessing) / the reply text CSM
                                 speaks (S2S — caller-supplied, the model does
                                 not generate text). For `kokoro` this is
                                 PHONEME content, not graphemes: either a misaki
@@ -83,7 +94,7 @@ OPTIONS:
                                 precedence over --voice.
     --length-scale <s>          kokoro only: duration multiplier (reciprocal
                                 of upstream `speed`) [default 1.0]
-    --output <path>             WAV file for the TTS / S2S / denoise output
+    --output <path>             WAV file for the TTS / S2S / denoise / AEC output
                                 (optional)
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Honored for `voxtral` (n-best beam) and, with
@@ -183,6 +194,9 @@ struct RunArgs {
     /// Speaker (campplus) only: second WAV for the cosine-similarity
     /// comparison. Any other task rejects the flag loudly (FR-EX-08).
     compare: Option<String>,
+    /// NKF-AEC only: the far-end/reference WAV paired sample-for-sample with
+    /// `input`. Rejected on every other task.
+    far_end: Option<String>,
     /// Beam-search width (default 1 = greedy). Only honored for `voxtral`
     /// arch — other archs error out on `> 1` rather than silently ignoring
     /// (FR-EX-08).
@@ -249,6 +263,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut output: Option<String> = None;
     let mut backend = vokra_core::BackendKind::Cpu;
     let mut compare: Option<String> = None;
+    let mut far_end: Option<String> = None;
     // Beam-search defaults: greedy (beam_size = 1). Length-penalty 0.6 is
     // only meaningful when beam_size > 1; the default is arbitrary but
     // matches `voxtral::BeamConfig::with_beam_size` so the same value flows
@@ -298,6 +313,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
             }
             "--compare" => {
                 compare = Some(args.get(i + 1).ok_or("--compare requires a value")?.clone());
+                i += 2;
+            }
+            "--far-end" => {
+                far_end = Some(args.get(i + 1).ok_or("--far-end requires a value")?.clone());
                 i += 2;
             }
             "--beam-size" => {
@@ -440,6 +459,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         output,
         backend,
         compare,
+        far_end,
         beam_size,
         length_penalty,
         no_repeat_ngram,
@@ -500,6 +520,10 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::Denoise => Some("NSNet2 speech enhancement"),
         ModelTask::Segment => Some("pyannote speaker segmentation"),
         ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
+        ModelTask::F0Fcpe => Some("FCPE F0 (pitch) extraction"),
+        ModelTask::F0Crepe => Some("CREPE F0 (pitch) extraction"),
+        ModelTask::TextNormalize => Some("WeTextProcessing normalization"),
+        ModelTask::AecNkf => Some("NKF acoustic echo cancellation"),
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
@@ -539,6 +563,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         return Err(
             "run: --compare is only supported for the speaker (campplus) arch — \
              it compares two speaker embeddings (FR-OP-81)"
+                .to_owned(),
+        );
+    }
+    if a.far_end.is_some() && task != ModelTask::AecNkf {
+        return Err(
+            "run: --far-end is only supported for the nkf_aec arch — it is the \
+             sample-aligned far-end/reference stream paired with the --input mic WAV"
                 .to_owned(),
         );
     }
@@ -742,6 +773,18 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::F0Rmvpe => {
             run_f0_rmvpe(&a)?;
+        }
+        ModelTask::F0Fcpe => {
+            run_f0_fcpe(&a)?;
+        }
+        ModelTask::F0Crepe => {
+            run_f0_crepe(&a)?;
+        }
+        ModelTask::TextNormalize => {
+            run_text_normalize(&session, &a)?;
+        }
+        ModelTask::AecNkf => {
+            run_nkf_aec(&session, &a)?;
         }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
@@ -1255,17 +1298,172 @@ fn run_f0_rmvpe(a: &RunArgs) -> Result<(), String> {
     let track = model
         .extract_real(&clip.samples, clip.sample_rate)
         .map_err(|e| e.to_string())?;
+    emit_f0_track(&track, model.config().hop, rate);
+    Ok(())
+}
+
+fn run_f0_fcpe(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::f0::fcpe::FCPE;
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (f0): --input <in.wav> is required")?;
+    let model = FCPE::from_gguf(std::path::Path::new(&a.model)).map_err(|e| e.to_string())?;
+    let rate = model.config().sample_rate;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (f0): {path}: expected a {rate} Hz mono WAV (the FCPE mel front-end is \
+             fixed at the rate in `vokra.f0.fcpe.*`), got {} Hz — resample offline first \
+             (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let track = model
+        .extract_real(&clip.samples, clip.sample_rate)
+        .map_err(|e| e.to_string())?;
+    emit_f0_track(&track, model.config().hop, rate);
+    Ok(())
+}
+
+fn run_f0_crepe(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::f0::crepe::{CREPE, NATIVE_SAMPLE_RATE};
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (f0): --input <in.wav> is required")?;
+    let model = CREPE::from_gguf(std::path::Path::new(&a.model)).map_err(|e| e.to_string())?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != NATIVE_SAMPLE_RATE {
+        return Err(format!(
+            "run (f0): {path}: expected a {NATIVE_SAMPLE_RATE} Hz mono WAV (CREPE's \
+             1024-sample frame and cent grid are anchored to that rate), got {} Hz — \
+             resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let track = model
+        .extract_real(&clip.samples, clip.sample_rate)
+        .map_err(|e| e.to_string())?;
+    emit_f0_track(&track, model.config().hop, NATIVE_SAMPLE_RATE);
+    Ok(())
+}
+
+/// Shared renderer for all three checkpoint-backed F0 estimators.
+fn emit_f0_track(track: &[vokra_models::f0::F0Frame], hop: u32, rate: u32) {
     let voiced = track.iter().filter(|f| f.voiced).count();
     println!(
         "f0: {} frames, voiced_frames={voiced}, hop={} @ {rate} Hz",
         track.len(),
-        model.config().hop
+        hop
     );
-    for frame in &track {
+    for frame in track {
         println!(
             "{:.4}\t{:.3}\t{}\t{:.4}",
             frame.time_sec, frame.hz, frame.voiced, frame.confidence
         );
+    }
+}
+
+fn run_text_normalize(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let text = a
+        .text
+        .as_deref()
+        .ok_or("run (wetextprocessing): --text <string> is required")?;
+    let model = vokra_models::wetextprocessing::WeTextProcessing::from_gguf(session.gguf())
+        .map_err(|e| e.to_string())?;
+    let normalized = model.normalize(text).map_err(|e| e.to_string())?;
+    println!("normalize: {normalized}");
+    Ok(())
+}
+
+fn run_nkf_aec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let mic_path = a
+        .input
+        .as_deref()
+        .ok_or("run (nkf_aec): --input <mic.wav> is required")?;
+    let far_path = a
+        .far_end
+        .as_deref()
+        .ok_or("run (nkf_aec): --far-end <reference.wav> is required")?;
+    let mic = wav::read_wav(mic_path).map_err(|e| format!("{mic_path}: {e}"))?;
+    let far = wav::read_wav(far_path).map_err(|e| format!("{far_path}: {e}"))?;
+    validate_aec_pair(mic_path, &mic, far_path, &far)?;
+
+    let model =
+        vokra_models::aec::nkf_aec::NkfAec::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let cfg = model.config();
+    if mic.sample_rate != cfg.sample_rate {
+        return Err(format!(
+            "run (nkf_aec): input pair is {} Hz, but this checkpoint is fixed at {} Hz — \
+             resample both WAVs offline first (FR-EX-08: never a silent resample)",
+            mic.sample_rate, cfg.sample_rate
+        ));
+    }
+
+    let mut stream = model
+        .open_stream(mic.sample_rate)
+        .map_err(|e| e.to_string())?;
+    let mut cleaned = stream
+        .push_paired(&mic.samples, &far.samples)
+        .map_err(|e| e.to_string())?;
+
+    // Offline `run` promises one output sample per paired input sample. The
+    // streaming engine commits only samples no future center=false STFT frame
+    // can change, so zero-extend both streams just far enough to flush the OLA
+    // tail, then discard the synthetic extension from the returned waveform.
+    if !mic.samples.is_empty() {
+        let frames = mic.samples.len().div_ceil(cfg.hop);
+        let required_total = (frames - 1)
+            .checked_mul(cfg.hop)
+            .and_then(|n| n.checked_add(cfg.n_fft))
+            .ok_or("run (nkf_aec): input length overflows the offline flush geometry")?;
+        let pad = required_total.saturating_sub(mic.samples.len());
+        if pad > 0 {
+            let zeros = vec![0.0f32; pad];
+            cleaned.extend(
+                stream
+                    .push_paired(&zeros, &zeros)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        if cleaned.len() < mic.samples.len() {
+            return Err(format!(
+                "run (nkf_aec): offline flush committed only {} of {} samples — refusing \
+                 to pad a model output silently",
+                cleaned.len(),
+                mic.samples.len()
+            ));
+        }
+        cleaned.truncate(mic.samples.len());
+    }
+
+    emit_audio("aec", &cleaned, mic.sample_rate, a.output.as_deref())
+}
+
+fn validate_aec_pair(
+    mic_path: &str,
+    mic: &wav::Wav,
+    far_path: &str,
+    far: &wav::Wav,
+) -> Result<(), String> {
+    if mic.sample_rate != far.sample_rate {
+        return Err(format!(
+            "run (nkf_aec): sample-rate mismatch: --input {mic_path} is {} Hz, but \
+             --far-end {far_path} is {} Hz; the streams must be sample-aligned and Vokra \
+             never resamples silently",
+            mic.sample_rate, far.sample_rate
+        ));
+    }
+    if mic.samples.len() != far.samples.len() {
+        return Err(format!(
+            "run (nkf_aec): sample-count mismatch: --input {mic_path} has {} samples, but \
+             --far-end {far_path} has {}; no trim/repeat is allowed for an AEC reference",
+            mic.samples.len(),
+            far.samples.len()
+        ));
     }
     Ok(())
 }
@@ -2080,6 +2278,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_far_end_flag_and_rejects_dangling_far_end() {
+        let a = parse_args(&args(&[
+            "--model",
+            "nkf.gguf",
+            "--input",
+            "mic.wav",
+            "--far-end",
+            "ref.wav",
+        ]))
+        .expect("valid");
+        assert_eq!(a.far_end.as_deref(), Some("ref.wav"));
+        assert_eq!(
+            parse_args(&args(&["--model", "nkf.gguf", "--far-end"]))
+                .err()
+                .unwrap(),
+            "--far-end requires a value"
+        );
+    }
+
+    #[test]
+    fn aec_pair_contract_rejects_rate_and_length_mismatch() {
+        let mic = wav::Wav {
+            sample_rate: 16_000,
+            samples: vec![0.0; 320],
+        };
+        let same = mic.clone();
+        validate_aec_pair("mic.wav", &mic, "ref.wav", &same).expect("aligned pair");
+
+        let wrong_rate = wav::Wav {
+            sample_rate: 48_000,
+            samples: vec![0.0; 320],
+        };
+        let err = validate_aec_pair("mic.wav", &mic, "ref.wav", &wrong_rate).unwrap_err();
+        assert!(err.contains("sample-rate mismatch"), "{err}");
+        assert!(err.contains("16000") && err.contains("48000"), "{err}");
+
+        let wrong_len = wav::Wav {
+            sample_rate: 16_000,
+            samples: vec![0.0; 319],
+        };
+        let err = validate_aec_pair("mic.wav", &mic, "ref.wav", &wrong_len).unwrap_err();
+        assert!(err.contains("sample-count mismatch"), "{err}");
+        assert!(err.contains("320") && err.contains("319"), "{err}");
+    }
+
     // ---- P2 cc-10 / cc-19: voxtral route + whisper word timestamps -------
 
     #[test]
@@ -2423,6 +2667,7 @@ mod tests {
             "USAGE lists the backend names"
         );
         assert!(USAGE.contains("--compare"), "USAGE lists --compare");
+        assert!(USAGE.contains("--far-end"), "USAGE lists --far-end");
         assert!(USAGE.contains("speaker"), "USAGE mentions the speaker task");
         assert!(USAGE.contains("campplus"), "USAGE names the campplus arch");
         // P2 cc-10 / cc-19 surface.
@@ -2433,6 +2678,10 @@ mod tests {
         assert!(USAGE.contains("--language"), "USAGE lists --language");
         assert!(USAGE.contains("--bare-prompt"), "USAGE lists --bare-prompt");
         assert!(USAGE.contains("voxtral"), "USAGE names the voxtral arch");
+        assert!(USAGE.contains("wetextprocessing"));
+        assert!(USAGE.contains("nkf_aec"));
+        assert!(USAGE.contains("fcpe.gguf"));
+        assert!(USAGE.contains("crepe.gguf"));
     }
 
     /// `--compare` on a non-speaker arch is an explicit contract error
@@ -2450,6 +2699,23 @@ mod tests {
         .unwrap_err();
         assert!(
             err.contains("--compare is only supported for the speaker"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn far_end_on_non_aec_arch_is_rejected() {
+        let err = main(&args(&[
+            "--model",
+            &silero_fixture(),
+            "--input",
+            "unused.wav",
+            "--far-end",
+            "reference.wav",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--far-end is only supported for the nkf_aec arch"),
             "got: {err}"
         );
     }

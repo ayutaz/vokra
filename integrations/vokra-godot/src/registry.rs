@@ -17,21 +17,16 @@
 //! # Instance lifetime
 //!
 //! Godot's `create_instance_func` is called when GDScript does
-//! `VokraSession.new()`. We allocate a `SessionInstance` on the heap
-//! (`Box::into_raw`) and return the resulting `*mut SessionInstance`
-//! as our `GDExtensionClassInstancePtr`. The paired `free_instance_func`
-//! reclaims it via `Box::from_raw`. The instance holds
+//! `VokraSession.new()`. We construct a real Godot `Object`, allocate a
+//! `SessionInstance` on the heap (`Box::into_raw`), and attach that pointer
+//! with `object_set_instance`. Godot then passes the same pointer to method
+//! trampolines and the paired `free_instance_func`, which reclaims it via
+//! `Box::from_raw`. The instance holds
 //! `Option<VokraSession>` = `None` at first; the registered
 //! `load_model(path: String) -> int` method
 //! ([`crate::trampoline::session_load_model`]) populates it. This makes
 //! the `new() -> load_model()` two-step explicit at the GDScript surface,
 //! matching how uPiper's Session works.
-//!
-//! Instance-binding pointers on the Godot Object are OUT-OF-SCOPE for T05:
-//! we don't override `object_set_instance` on the Godot side because our
-//! only method surface currently lives via ClassDB dispatch. Owner smoke
-//! (M3-18) will decide whether InstanceBinding is needed for a specific
-//! demo scene pattern.
 //!
 //! # StringName lifetime
 //!
@@ -278,6 +273,34 @@ unsafe fn create_bound_object(
         (interface.object_set_instance)(object, class_name.as_ptr(), instance);
     }
     object
+}
+
+/// Construct a Godot `VokraStream` Object and bind an already-open Rust
+/// stream to it. Used by `VokraSession::vad_open_stream` after the C API has
+/// successfully created the streaming handle.
+///
+/// If Godot refuses to construct the parent Object, `create_bound_object`
+/// never invokes the closure; dropping that closure drops `stream`, so the C
+/// handle is reclaimed without a leak. On success ownership of the boxed
+/// [`StreamInstance`] transfers to Godot's paired `free_instance_func`.
+///
+/// # Safety
+///
+/// `interface` must contain live Godot function pointers and the call must be
+/// made on Godot's main thread.
+pub(crate) unsafe fn create_open_stream_object(
+    interface: &InterfaceTable,
+    stream: crate::vad::VokraStream,
+) -> GDExtensionObjectPtr {
+    // SAFETY: caller doc; the closure transfers the opened stream into the
+    // Rust instance allocation only after Godot Object construction succeeds.
+    unsafe {
+        create_bound_object(interface, class_names::VOKRA_STREAM, move || {
+            Box::into_raw(Box::new(StreamInstance {
+                inner: Some(stream),
+            })) as GDExtensionClassInstancePtr
+        })
+    }
 }
 
 /// `create_instance_func` for `VokraSession`. Godot invokes this when
@@ -1954,6 +1977,46 @@ pub(crate) mod tests {
         assert_eq!(bound.0, "VokraStream");
 
         // SAFETY: reclaim the allocation we just produced.
+        unsafe {
+            free_stream_instance(ptr::null_mut(), bound.1 as GDExtensionClassInstancePtr);
+        }
+    }
+
+    #[test]
+    fn create_open_stream_object_binds_populated_stream_instance() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_recorder();
+        let iface = make_mock_interface();
+
+        // A NULL-backed stream is sufficient here: this test covers Object
+        // construction and ownership transfer, not C API stream creation.
+        let stream = crate::vad::VokraStream::null_for_tests();
+        // SAFETY: complete mock interface; single-threaded test.
+        let obj = unsafe { create_open_stream_object(&iface, stream) };
+        assert!(!obj.is_null(), "opened stream must produce a Godot Object");
+
+        let events = EVENTS.lock().unwrap().clone();
+        let bound = events
+            .iter()
+            .find_map(|event| match event {
+                Event::InstanceBound {
+                    class_name,
+                    instance,
+                    ..
+                } => Some((class_name.clone(), *instance)),
+                _ => None,
+            })
+            .expect("opened stream must be attached with object_set_instance");
+        assert_eq!(bound.0, "VokraStream");
+
+        // SAFETY: this is the live `Box<StreamInstance>` produced above.
+        let instance = unsafe { &*(bound.1 as *const StreamInstance) };
+        assert!(
+            instance.inner.is_some(),
+            "opened stream must populate inner"
+        );
+
+        // SAFETY: reclaim the allocation through the registered lifecycle.
         unsafe {
             free_stream_instance(ptr::null_mut(), bound.1 as GDExtensionClassInstancePtr);
         }
