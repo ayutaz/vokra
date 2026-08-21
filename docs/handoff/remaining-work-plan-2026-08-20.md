@@ -133,10 +133,11 @@ Execute in increasing cost order:
 
 Explicit non-checklist implementation holes also remain:
 
-- implement Godot `session_vad_open_stream` Object creation and add headless +
-  editor smoke evidence before claiming full runtime dispatch. The other four
-  data-bearing trampolines already have real Variant plumbing; old README /
-  crate-doc wording that called all four pending was retired in this branch;
+- ~~implement Godot `session_vad_open_stream` Object creation and add headless
+  smoke evidence~~ — **closed 2026-08-22**. The official Godot 4.7.1 gate now
+  checks the Object return, real Silero load, push/poll, interrupt drain, and
+  deterministic reset. Interactive editor demo confirmation remains a manual
+  release check rather than an implementation gap;
 - implement a real `TtsEngine::synthesize_stream` override before advertising
   incremental streaming; the trait default intentionally returns
   `UnsupportedOp`, so a one-chunk synchronous wrapper is not completion;

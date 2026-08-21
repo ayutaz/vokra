@@ -1,9 +1,12 @@
 # vokra-godot — Godot 4.x GDExtension binding for Vokra
 
-**State (2026-08-20 audit)**: the original **T01-T18 scope landed**. Four
-data-bearing trampolines have since been promoted to real Variant dispatch;
-`session_vad_open_stream` Object construction and real Godot editor/headless
-smoke evidence remain open.
+**State (2026-08-22 audit)**: the original **T01-T18 scope landed**. All
+data-bearing trampolines now use real Variant dispatch, including
+`session_vad_open_stream` returning a live `VokraStream` Object. The official
+Godot 4.7.1 headless gate loads the committed Silero VAD GGUF, pushes real
+PCM, polls bounded probabilities, interrupts/resets the stream, and verifies
+deterministic replay. Interactive editor confirmation of the demo scenes
+remains a manual release check.
 
 **Wave 11 (T05-T13)**: Class registration (`classdb_register_extension_class3`),
 method binding (`classdb_register_extension_class_method` for 6 methods across
@@ -13,10 +16,12 @@ panic firewall at every trampoline, and compile-time layout guards for
 `GDExtensionClassCreationInfo3` (160 bytes) / `GDExtensionClassMethodInfo`
 (88 bytes) are all wired against the Godot 4.3-stable header. Trampoline
 runtime dispatch originally landed as an arity/type/panic-firewall scaffold.
-The T14 follow-up now fully dispatches `session_transcribe`,
+The T14 follow-up fully dispatches `session_transcribe`,
 `session_synthesize`, `stream_push_pcm`, and `stream_poll`, including their
-String / Dictionary / PackedFloat32Array Variant paths. VAD stream Object
-creation is still fail-loud as `InvalidMethod` pending its lifetime plumbing.
+String / Dictionary / PackedFloat32Array Variant paths. The runtime-gap
+follow-up completes the VAD lifetime path: `session_vad_open_stream` opens the
+C-ABI stream, binds it to a Godot-owned `VokraStream`, and returns an Object
+Variant whose ClassDB signature names the concrete class.
 
 **Wave 13 (T12 + T14-T18)**: Crossbuild matrix (5 target: macOS Intel /
 Apple Silicon / Linux x64 / Windows MSVC / Android arm64) via
@@ -29,9 +34,10 @@ Release upload (T17). NVIDIA non-bundle compliance scanner
 `scripts/compliance/check-godot-package-no-nvidia.sh` (T18, Unity mirror
 pattern + closed a latent glob gap that would miss `libcudart.so.12`).
 
-**Owner (`ayutaz`) 引き渡し**: T19 (実 Godot 4.3+ editor での
-`demos/asr_demo` + `demos/tts_demo` smoke) と T20 (M3-11 WP-close PR)。
-`godot-crossbuild.yml` の initial workflow_dispatch も owner。
+**Owner (`ayutaz`) 引き渡し**: 実 Godot editor での
+`demos/asr_demo` + `demos/tts_demo` の対話的確認は release 前の手動項目。
+Linux headless の ClassDB / Variant / VAD stream 経路は
+`godot-crossbuild.yml` が継続検証する。
 
 ## What it is
 

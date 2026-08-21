@@ -9,8 +9,11 @@
 #   * asset-free   — no arguments. Runs the checks that need no model:
 #                    ClassDB registration, method binding, instantiation, and
 #                    the load_model failure path. Suitable for CI.
-#   * full chain   — `-- <model.gguf> <audio.wav>`. Adds a real GGUF load and
+#   * ASR chain    — `-- <model.gguf> <audio.wav>`. Adds a real GGUF load and
 #                    a real transcription through the registered trampolines.
+#   * VAD chain    — `-- --vad <model.gguf> <audio.f32>`. Opens the returned
+#                    VokraStream Object, pushes real PCM, polls probabilities,
+#                    interrupts/reset it, and repeats the stream deterministically.
 #
 # Exits 0 only when every check passes.
 extends SceneTree
@@ -66,15 +69,51 @@ func _load_wav_16k_mono(path: String) -> PackedFloat32Array:
 	return out
 
 
+# The C-ABI VAD fixture is raw little-endian f32. Decode it explicitly rather
+# than relying on host-endian PackedByteArray casts, so the headless contract
+# is identical on every supported desktop runner.
+func _load_raw_f32(path: String) -> PackedFloat32Array:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		push_error("cannot open " + path)
+		return PackedFloat32Array()
+	var b := f.get_buffer(f.get_length())
+	f.close()
+	if b.size() == 0 or b.size() % 4 != 0:
+		push_error("expected non-empty little-endian f32 PCM: " + path)
+		return PackedFloat32Array()
+	var out := PackedFloat32Array()
+	out.resize(b.size() / 4)
+	for i in range(out.size()):
+		out[i] = b.decode_float(i * 4)
+	return out
+
+
+func _run_vad_stream(stream: Object, pcm: PackedFloat32Array) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	var offset := 0
+	while offset < pcm.size():
+		var end: int = min(offset + 2048, pcm.size())
+		stream.push_pcm(pcm.slice(offset, end))
+		out.append_array(stream.poll(64))
+		offset = end
+	# A final non-blocking drain proves poll remains callable when the ring is
+	# already empty; complete frames were drained after every push above.
+	out.append_array(stream.poll(64))
+	return out
+
+
 func _initialize() -> void:
 	var argv := OS.get_cmdline_user_args()
-	var model_path: String = argv[0] if argv.size() > 0 else ""
-	var audio_path: String = argv[1] if argv.size() > 1 else ""
-	var full_chain := model_path != "" and audio_path != ""
+	var vad_mode: bool = argv.size() > 0 and argv[0] == "--vad"
+	var arg_offset: int = 1 if vad_mode else 0
+	var model_path: String = argv[arg_offset] if argv.size() > arg_offset else ""
+	var audio_path: String = argv[arg_offset + 1] if argv.size() > arg_offset + 1 else ""
+	var full_chain: bool = model_path != "" and audio_path != ""
 
 	print("== Vokra GDExtension headless verification (M3-11 T19) ==")
 	print("Godot   : ", Engine.get_version_info().string)
-	print("mode    : ", "full chain" if full_chain else "asset-free")
+	print("mode    : ", ("VAD stream" if vad_mode else "ASR full chain") if full_chain else "asset-free")
 	if full_chain:
 		print("model   : ", model_path)
 		print("audio   : ", audio_path)
@@ -98,7 +137,7 @@ func _initialize() -> void:
 		"load_model": [1, TYPE_INT],
 		"transcribe": [2, TYPE_STRING],
 		"synthesize": [1, TYPE_DICTIONARY],
-		"vad_open_stream": [1, TYPE_NIL],
+		"vad_open_stream": [1, TYPE_OBJECT],
 	}
 	var seen := {}
 	for m in ClassDB.class_get_method_list("VokraSession", true):
@@ -138,6 +177,7 @@ func _initialize() -> void:
 		"status=%d" % bad_status)
 
 	if not full_chain:
+		session.free()
 		print("")
 		if _failures == 0:
 			print("RESULT: PASS (asset-free checks green; pass <model.gguf> <audio.wav> for the full chain)")
@@ -149,22 +189,63 @@ func _initialize() -> void:
 
 	# --- 5. load_model success path ---------------------------------------
 	print("[5] load_model success path")
-	var t0 := Time.get_ticks_msec()
+	var t0: int = Time.get_ticks_msec()
 	var status: int = session.load_model(model_path)
-	var load_ms := Time.get_ticks_msec() - t0
+	var load_ms: int = Time.get_ticks_msec() - t0
 	_check(status == 0, "real GGUF loads", "status=%d, %d ms" % [status, load_ms])
 	if status != 0:
 		print("\nRESULT: FAIL (model did not load)")
+		session.free()
 		quit(1)
 		return
 
-	# --- 6. transcribe through the registered trampoline -------------------
-	print("[6] transcribe")
-	var pcm := _load_wav_16k_mono(audio_path)
-	_check(pcm.size() > 0, "WAV decoded", "%d samples" % pcm.size())
+	# --- 6. task path through the registered trampolines -------------------
+	print("[6] ", "VAD stream" if vad_mode else "transcribe")
+	var pcm: PackedFloat32Array = _load_raw_f32(audio_path) if vad_mode else _load_wav_16k_mono(audio_path)
+	_check(pcm.size() > 0, "PCM decoded", "%d samples" % pcm.size())
 	if pcm.size() == 0:
 		print("\nRESULT: FAIL")
+		session.free()
 		quit(1)
+		return
+
+	if vad_mode:
+		var stream: Object = session.vad_open_stream(16000)
+		_check(stream != null, "vad_open_stream returns an Object")
+		if stream == null:
+			print("\nRESULT: FAIL")
+			session.free()
+			quit(1)
+			return
+		_check(stream.is_class("VokraStream"), "returned Object is VokraStream", stream.get_class())
+		_check(stream.has_method("push_pcm") and stream.has_method("poll") and stream.has_method("interrupt"),
+			"stream methods are callable")
+
+		t0 = Time.get_ticks_msec()
+		var probs: PackedFloat32Array = _run_vad_stream(stream, pcm)
+		var vad_ms: int = Time.get_ticks_msec() - t0
+		_check(probs.size() == pcm.size() / 512, "one probability per complete frame",
+			"%d probs, %d ms" % [probs.size(), vad_ms])
+		var in_range: bool = probs.size() > 0
+		for prob in probs:
+			if not (prob >= 0.0 and prob <= 1.0):
+				in_range = false
+				break
+		_check(in_range, "all probabilities are finite and within [0,1]")
+
+		stream.interrupt()
+		_check(stream.poll(64).is_empty(), "interrupt drains pending output")
+		var probs_after_reset: PackedFloat32Array = _run_vad_stream(stream, pcm)
+		_check(probs_after_reset == probs, "interrupt resets hidden/context state deterministically")
+		stream.free()
+		session.free()
+		print("")
+		if _failures == 0:
+			print("RESULT: PASS (real VAD stream checks green)")
+			quit(0)
+		else:
+			print("RESULT: FAIL (%d check(s) failed)" % _failures)
+			quit(1)
 		return
 
 	t0 = Time.get_ticks_msec()

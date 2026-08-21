@@ -30,9 +30,12 @@ registry rows and implements the separate Godot VAD Object-return gap:
   mismatch, and emits an exact-input-length WAV on the microphone timebase;
 - `session_vad_open_stream` now validates the Godot Int range, opens the C API
   stream, constructs a `VokraStream` Object with populated Rust instance data,
-  and packs the Object Variant. Mock-level Object construction/lifetime and
-  Variant-constructor tests pass. Real headless/editor smoke remains required
-  owner evidence because this crate intentionally carries no VAD GGUF fixture.
+  and packs the Object Variant. On 2026-08-22 the ClassDB return declaration
+  was corrected from Nil to Object/`VokraStream`, and the checksum-pinned
+  official Godot 4.7.1 headless gate loaded the committed Silero VAD GGUF,
+  pushed 10,240 real PCM samples, produced 20 bounded probabilities, drained
+  on interrupt, and reproduced the stream exactly after reset. Interactive
+  editor demo confirmation remains a manual release check, not a runtime hole.
 
 These are blocker rows, not 79 equally sized implementation tickets. In
 particular, adding a loader must not close a row whose forward still refuses,
@@ -265,21 +268,17 @@ output WAV timebase. Route `AecEngine::open_stream`/`push_paired`, add parser
 and mismatch tests, then reclassify `nkf_aec`. This contract decision precedes
 the wiring; `dtln_aec` remains a separate partial-forward row.
 
-### GODOT-01: VAD stream object construction
+### GODOT-01: VAD stream object construction (closed 2026-08-22)
 
-`session_vad_open_stream` validates its argument and then always reports
-pending. The binding layer already has `create_bound_object`,
-`object_set_instance`, `create_stream_instance`, and an Object-to-Variant
-constructor, so the old claim that instance binding infrastructure is absent
-is stale.
-
-Refactor object creation so the new `VokraStream` is constructed with
-`StreamInstance { inner: Some(stream) }`, wrap the Godot Object in a Variant,
-and clean up correctly on construction/wrapping failures. Cover success,
-invalid session/model/sample-rate, constructor failure, Variant failure,
-`push_pcm`, `poll`, and `interrupt`. Package-scoped tests may run locally;
-headless and editor smoke evidence is still required before advertising full
-Godot runtime dispatch.
+`session_vad_open_stream` constructs `StreamInstance { inner: Some(stream) }`,
+wraps the Godot-owned Object in a Variant, and cleans up on construction
+failure. The excluded workspace passes 110 unit tests, 14 demo-scaffold tests,
+and 11 package-license tests on VAST. The official Godot 4.7.1 smoke proves
+the concrete ClassDB Object signature and the real `push_pcm` / `poll` /
+`interrupt` path with the committed Silero checkpoint. The durable Linux CI
+leg downloads the official binary, verifies SHA-256
+`c7ff14fd28472c8d4f193043de30278dcf7e5241a1dcf7566b02e27addaa33ba`,
+then runs both asset-free and real-VAD modes.
 
 ## Wave 2 — specify the two display contracts (implemented on this branch)
 
@@ -599,8 +598,6 @@ unit suite and independent parity test pass locally with `CARGO_BUILD_JOBS=1`.
 
 ## Other explicit non-row holes retained
 
-- The Godot VAD stream Object bridge has mock-level coverage but still needs
-  real headless/editor construction, lifetime, and push/reset smoke evidence.
 - Real `TtsEngine::synthesize_stream`; a one-chunk synchronous wrapper is not
   streaming completion.
 - microWakeWord emitted quantization metadata plus a real fixture.

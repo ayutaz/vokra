@@ -893,10 +893,10 @@ unsafe fn register_session_synthesize(
 
 /// `VokraSession::vad_open_stream(sample_rate: int) -> Object`.
 ///
-/// Returns Nil at the ClassDB surface for now — the Object return type is
-/// declared via `return_value_info` but Godot 4.3 documents that Object
-/// returns from extension methods travel through Variant boxing anyway.
-/// Owner M3-18 resolves this.
+/// The return PropertyInfo is explicitly typed as `Object` and names
+/// `VokraStream` as its class. The call trampoline boxes the live Godot Object
+/// into the return Variant; declaring Nil here would make ClassDB advertise a
+/// signature that disagrees with the value actually returned.
 ///
 /// # Safety
 ///
@@ -909,11 +909,13 @@ unsafe fn register_session_vad_open_stream(
     let mut method_name = OwnedStringName::new();
     let mut arg0 = OwnedStringName::new();
     let mut ret_name = OwnedStringName::new();
+    let mut ret_class_name = OwnedStringName::new();
     // SAFETY: interface live; byte constants NUL-terminated.
     unsafe {
         method_name.init_utf8(interface, method_names::VAD_OPEN_STREAM);
         arg0.init_utf8(interface, arg_names::SAMPLE_RATE);
         ret_name.init_utf8(interface, b"stream\0");
+        ret_class_name.init_utf8(interface, class_names::VOKRA_STREAM);
     }
 
     // SAFETY: `interface` holds live Godot fn pointers (caller doc).
@@ -924,9 +926,12 @@ unsafe fn register_session_vad_open_stream(
         &empties,
     )];
     let mut args_meta = [GDExtensionClassMethodArgumentMetadata::None];
-    // Returns a Nil Variant at ClassDB level; the trampoline is expected
-    // to box the Godot Object separately.
-    let mut ret_info = make_property_info(GDExtensionVariantType::Nil, ret_name.as_ptr(), &empties);
+    let mut ret_info =
+        make_property_info(GDExtensionVariantType::Object, ret_name.as_ptr(), &empties);
+    // Object-typed PropertyInfo carries the concrete class name. Godot copies
+    // this during registration, so `ret_class_name` only has to outlive the
+    // register call below.
+    ret_info.class_name = ret_class_name.as_ptr();
 
     let method_info = GDExtensionClassMethodInfo {
         name: method_name.as_ptr(),
@@ -1785,6 +1790,51 @@ pub(crate) mod tests {
                     Some(GDExtensionVariantType::Int),
                     "load_model must declare an Int return so GDScript's \
                      `var load_status: int = session.load_model(path)` coerces",
+                );
+            }
+            other => panic!("expected MethodRegistered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vad_open_stream_is_registered_on_session_returning_object() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_recorder();
+        let interface = make_mock_interface();
+        // SAFETY: mock interface's fn ptrs are live; single-threaded test.
+        unsafe { register(ptr::null_mut(), &interface) };
+
+        let events = EVENTS.lock().unwrap().clone();
+        let open_stream = events
+            .iter()
+            .find(|event| {
+                matches!(
+                    event,
+                    Event::MethodRegistered { class_name, method_name, .. }
+                        if class_name == "VokraSession" && method_name == "vad_open_stream"
+                )
+            })
+            .cloned()
+            .expect("VokraSession::vad_open_stream must be registered");
+
+        match open_stream {
+            Event::MethodRegistered {
+                arg_count,
+                has_return,
+                has_call_func,
+                return_type,
+                ..
+            } => {
+                assert_eq!(arg_count, 1, "vad_open_stream takes one sample rate");
+                assert!(has_return, "vad_open_stream returns a VokraStream Object");
+                assert!(
+                    has_call_func,
+                    "vad_open_stream must dispatch through a trampoline"
+                );
+                assert_eq!(
+                    return_type,
+                    Some(GDExtensionVariantType::Object),
+                    "ClassDB must advertise the Object that the trampoline boxes",
                 );
             }
             other => panic!("expected MethodRegistered, got {other:?}"),

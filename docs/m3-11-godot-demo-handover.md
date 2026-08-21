@@ -4,7 +4,7 @@
 **Predecessor**: M3-11 T01-T18 = 100% CC 完成 (Wave 3.5 + Wave 11 + Wave 13、`docs/tickets/m3/M3-11-godot-gdextension.md` §改訂記録)。
 **Requirement under verification**: FR-API-05 (Godot GDExtension) + `docs/milestones.md` §7.3 Exit criteria 3 (Godot デモ動作)。
 
-> **Current boundary (2026-08-20 correction)**: M3-11-T19 (実Godot 4.3+ editor verify) + T20 (WP-close PR) が本handoverの中心。旧`TODO(M3-18)`だったload/transcribe/TTS/streamの5 dispatchは後続commitで実装済み。一方、追加公開された`session_vad_open_stream`は引数検証までで、実`VokraStream::open`とGodot object wrappingが`TODO(future)`のまま`InvalidMethod`を返す。したがって「全runtime dispatch完成」ではなく、既存demo経路のeditor検証とVAD stream実装を分けて追跡する。
+> **Current boundary (2026-08-22 correction)**: load/transcribe/TTS/stream に加え、`session_vad_open_stream` の実 `VokraStream::open`、Godot Object wrapping、ClassDB Object return が実装済み。公式 Godot 4.7.1 headless で実 Silero GGUF の push/poll/interrupt/reset も検証済みである。残る owner 項目は既存 ASR/TTS demo scene の対話的 editor/各 export target 確認であり、VAD runtime 実装穴ではない。
 
 ## 1. Prerequisites checklist
 
@@ -73,16 +73,15 @@ gh workflow run godot-crossbuild.yml
 
 ### 3.b. Method dispatch 検証 (T19 honest scope note)
 
-> **決着済み 2026-07-19 — 旧3 optionを選ぶ必要はありません**: Option C
+> **決着済み 2026-08-22 — 旧3 optionを選ぶ必要はありません**: Option C
 > （CC follow-up 実装）が実施済みです。`ba33bd0` が 5 trampoline の real
 > dispatch を land し、`71ea5ef` が `load` trampoline と inner-session
 > binding（registry が常に None を返していた欠陥）を実装、あわせて headless
 > 検証 leg も追加しました。旧`trampoline.rs` L236-408 の`TODO(M3-18)` markerは
-> **残存0件**です。ただし、これは後から追加された`session_vad_open_stream`の
-> `TODO(future)`を含まないため、残作業はT19 editor確認、VAD stream object生成、
-> その後のT20 close PRです。旧Option A/B/Cは実装前の判断記録であり、現在の
-> 作業選択肢ではありません。現在の検証対象は実装済み4 dispatchと、別タスクの
-> `session_vad_open_stream`です。
+> **残存0件**です。後から追加された`session_vad_open_stream`も Object return と
+> 実 Silero headless smoke まで完了しました。旧Option A/B/Cは実装前の判断記録で
+> あり、現在の作業選択肢ではありません。現在の owner 検証対象は実装穴ではなく、
+> ASR/TTS demo の editor 操作と各 export target です。
 
 ### 3.c. Demo scene の smoke
 
@@ -123,9 +122,9 @@ Verification date: YYYY-MM-DD
 ## 6. Escalation
 
 - **Extension load 失敗が続く場合**: `docs/adr/0011-godot-gdextension.md` の resolve chain (dlopen → `vokra_gdextension_init` → `p_get_proc_address` の 8 API resolve) が正しく通っていない可能性。Wave 11 の compile-time layout assert は Godot 4.3-stable header 前提 → **Godot 4.4+ で ABI 変更があれば `GDExtensionClassCreationInfo3` layout mismatch** で init 失敗する。この場合は M4 (v1.0-rc、2026-07-14 再割当 #2) で `GDExtensionClassCreationInfo4` 対応が必要。
-- **`session_vad_open_stream`を実装する場合**は、`VokraStream::open`の呼び出し、
-  `StreamInstance` lifetime、Godot Objectへのpackを同じ変更で扱い、headlessと
-  実editorの両方でsmokeする。
+- **`session_vad_open_stream`**: 2026-08-22 に `VokraStream::open`、
+  `StreamInstance` lifetime、Godot Object pack、公式 Godot 4.7.1 headless smoke
+  まで完了。実 editor は上記 demo release check で確認する。
 - **T20 (WP-close PR)**: 上記 §5 の verification report を PR description に貼付、`docs/milestones.md` §7.3 Exit criteria 3 の 判定材料として反映。
 
 ## 7. 参考
@@ -133,7 +132,7 @@ Verification date: YYYY-MM-DD
 - `docs/adr/0011-godot-gdextension.md` — ADR (gitignore、Wave 3.5 + Wave 11 + Wave 13 反映済)
 - `docs/tickets/m3/M3-11-godot-gdextension.md` — ticket spec (§改訂記録 Wave 3.5 / Wave 11 / Wave 13 参照)
 - `integrations/vokra-godot/README.md` — crate-level doc (Wave 13 状態、T01-T18 = 100%)
-- `integrations/vokra-godot/src/trampoline.rs` — 実装済み4 dispatchと、残る
-  `session_vad_open_stream`のfail-loud境界
+- `integrations/vokra-godot/src/trampoline.rs` — 実装済み dispatch と
+  `session_vad_open_stream` Object return
 - `docs/adr/0007-unity-official-plugin.md` — sister binding (Unity UPM、Wave 11 の scanner を M3-11 で mirror)
 - `.github/workflows/godot-crossbuild.yml` — CI (Wave 13、initial workflow_dispatch は owner)
