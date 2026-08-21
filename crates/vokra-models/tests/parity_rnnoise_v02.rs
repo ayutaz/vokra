@@ -29,6 +29,8 @@
 //! # 4. Point the parity harness at it:
 //! export VOKRA_RNNOISE_V02_REAL_GGUF=~/rnnoise-v02.gguf
 //! cargo test -p vokra-models --test parity_rnnoise_v02 -- --nocapture
+//! # The still-pending waveform/pitch tier uses a separate explicit opt-in:
+//! # export VOKRA_RNNOISE_V02_PITCH_REFERENCE=~/rnnoise-v02-pitch.csv
 //! ```
 //!
 //! # Numeric parity contract
@@ -71,6 +73,11 @@ use vokra_ops::rnnoise::{
 /// v0.2 GGUF. Absent = skip cleanly (never a fabricated pass). Present =
 /// binding: every downstream check hard-fails on any error.
 const GGUF_ENV: &str = "VOKRA_RNNOISE_V02_REAL_GGUF";
+
+/// Env var reserved for the still-pending upstream pitch-period fixture.
+/// Keeping it separate from [`GGUF_ENV`] lets the completed neural-network
+/// parity tier run without opting into an unimplemented waveform-DSP tier.
+const PITCH_REFERENCE_ENV: &str = "VOKRA_RNNOISE_V02_PITCH_REFERENCE";
 
 /// Per-band `max |Δ|` bound for the Bark filterbank parity check.
 /// See the module doc for the honest atol rationale.
@@ -218,14 +225,14 @@ fn parity_rnnoise_v02_gguf_smoke() {
 /// Skips cleanly when the pointer env is unset.
 #[test]
 fn parity_rnnoise_v02_pitch_period_matches_upstream_band() {
-    let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
+    let Some(reference_path) = env::var(PITCH_REFERENCE_ENV).ok() else {
         eprintln!(
-            "{GGUF_ENV} unset — skipping rnnoise v0.2 pitch parity; \
+            "{PITCH_REFERENCE_ENV} unset — skipping rnnoise v0.2 pitch parity; \
              clean skip (never a fabricated pass)."
         );
         return;
     };
-    let _ = gguf_path;
+    let _ = reference_path;
 
     // Placeholder: the sidecar (`tools/parity/rnnoise_prepare_checkpoint.py`)
     // does not yet emit a per-frame reference pitch dump. When it does,
@@ -233,7 +240,7 @@ fn parity_rnnoise_v02_pitch_period_matches_upstream_band() {
     // upstream `celt_pitch_xcorr` + `remove_doubling` reference under
     // `PITCH_PERIOD_FRACTIONAL_TOL`.
     panic!(
-        "rnnoise v0.2 pitch parity: opt-in received but the reference dumper does \
+        "rnnoise v0.2 pitch parity: {PITCH_REFERENCE_ENV} opt-in received but the reference dumper does \
          not yet emit per-frame periods. Extend `tools/parity/rnnoise_prepare_checkpoint.py` \
          with a `--dump-pitch-reference` mode that runs the upstream C library on the \
          same audio and dumps the corrected pitch periods; this test then loads that \

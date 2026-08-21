@@ -75,7 +75,11 @@ The replacement binder implements Xiph's causal Conv1d pair, three 384-wide
 GRUs, signed-int8 8×4 sparse matrix walk, scale/bias/recurrent-diagonal
 handling, `[z,r,h]` gates, rational activations, 32 gain outputs, and VAD head.
 The real GGUF (36 tensors, 4,469,280 bytes) passed four sequential frames
-against an independent executable compiled from unmodified Xiph v0.2 C.
+against an independent executable compiled from unmodified Xiph v0.2 C at
+`max_abs=1.4901161e-7`, within the unchanged `2e-5` bound. The completed
+network tier is gated by `VOKRA_RNNOISE_V02_REAL_GGUF`; the pending pitch and
+waveform tier has a separate `VOKRA_RNNOISE_V02_PITCH_REFERENCE` opt-in so a
+real network GGUF cannot accidentally trigger an unimplemented test.
 
 Remaining RNNoise work is now narrower and explicit: replace the legacy
 22-band/42-feature waveform primitives in `vokra-ops::rnnoise` with v0.2's
