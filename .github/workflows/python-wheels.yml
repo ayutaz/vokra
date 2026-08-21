@@ -109,7 +109,7 @@ jobs:
               --find-links bindings/python/wheelhouse/final \
               --no-index --no-deps "vokra==${VOKRA_BUILD_VERSION}"
             uv run --no-project --python "$VENV_PYTHON" python -c \
-              'import os, vokra; from vokra import _bindings, _native; assert vokra.__version__ == os.environ["VOKRA_BUILD_VERSION"]; assert len(_bindings.PROTOTYPES) == 41; assert _native.load().vokra_version()'
+              'import os, vokra; from vokra import _bindings, _native; assert vokra.__version__ == os.environ["VOKRA_BUILD_VERSION"]; assert len(_bindings.PROTOTYPES) == 48; assert _native.load().vokra_version()'
           done
       - name: Run Python binding tests
         run: |
@@ -200,7 +200,7 @@ jobs:
               --find-links bindings/python/wheelhouse/final \
               --no-index --no-deps "vokra==${VOKRA_BUILD_VERSION}"
             uv run --no-project --python "$VENV_PYTHON" python -c \
-              'import os, vokra; from vokra import _bindings, _native; assert vokra.__version__ == os.environ["VOKRA_BUILD_VERSION"]; assert len(_bindings.PROTOTYPES) == 41; assert _native.load().vokra_version()'
+              'import os, vokra; from vokra import _bindings, _native; assert vokra.__version__ == os.environ["VOKRA_BUILD_VERSION"]; assert len(_bindings.PROTOTYPES) == 48; assert _native.load().vokra_version()'
           done
       - name: Run Python binding tests
         run: |
@@ -277,7 +277,7 @@ jobs:
               --find-links bindings/python/wheelhouse/final \
               --no-index --no-deps "vokra==${VOKRA_BUILD_VERSION}"
             uv run --no-project --python "$VENV_PYTHON" python -c \
-              'import os, vokra; from vokra import _bindings, _native; assert vokra.__version__ == os.environ["VOKRA_BUILD_VERSION"]; assert len(_bindings.PROTOTYPES) == 41; assert _native.load().vokra_version()'
+              'import os, vokra; from vokra import _bindings, _native; assert vokra.__version__ == os.environ["VOKRA_BUILD_VERSION"]; assert len(_bindings.PROTOTYPES) == 48; assert _native.load().vokra_version()'
           done
       - name: Run Python binding tests
         shell: bash
