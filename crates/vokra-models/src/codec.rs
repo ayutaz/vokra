@@ -403,8 +403,13 @@ impl DacCodecGguf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nanocodec::{
+        CausalHifiGan, CausalHifiGanConfig, CausalHifiGanConv1dWeights,
+        CausalHifiGanConvTranspose1dWeights, CausalHifiGanHalfSnakeWeights,
+        CausalHifiGanResidualBlockWeights, CausalHifiGanStageWeights, CausalHifiGanWeights,
+    };
     use vokra_core::gguf::GgufBuilder;
-    use vokra_ops::mimi_rvq_decode;
+    use vokra_ops::{group_fsq_decode, mimi_rvq_decode};
 
     /// A hand-assembled Mimi codec GGUF (bypassing the converter — the
     /// converter e2e lives in tests/codec_gguf_roundtrip.rs).
@@ -494,6 +499,59 @@ mod tests {
         )
     }
 
+    fn nanocodec_conv(
+        out_channels: usize,
+        in_channels: usize,
+        kernel: usize,
+    ) -> CausalHifiGanConv1dWeights {
+        let len = out_channels * in_channels * kernel;
+        CausalHifiGanConv1dWeights {
+            weight: (0..len).map(|i| (i as f32 + 1.0) * 0.003).collect(),
+            bias: vec![0.001; out_channels],
+        }
+    }
+
+    fn nanocodec_half_snake(channels: usize) -> CausalHifiGanHalfSnakeWeights {
+        CausalHifiGanHalfSnakeWeights {
+            alpha: vec![0.8; channels / 2],
+            alpha_inv: vec![1.25; channels / 2],
+        }
+    }
+
+    fn synthesized_nanocodec_decoder(input_dim: usize) -> CausalHifiGan {
+        let config = CausalHifiGanConfig {
+            input_dim,
+            base_channels: 2,
+            frame_hop: 2,
+            upsample_rates: vec![2],
+            input_kernel_size: 3,
+            output_kernel_size: 3,
+            resblock_kernel_sizes: vec![3],
+            resblock_dilations: vec![1],
+        };
+        let residual = CausalHifiGanResidualBlockWeights {
+            input_activation: nanocodec_half_snake(1),
+            input_conv: nanocodec_conv(1, 1, 3),
+            skip_activation: nanocodec_half_snake(1),
+            skip_conv: nanocodec_conv(1, 1, 3),
+            dilation: 1,
+        };
+        let weights = CausalHifiGanWeights {
+            pre_conv: nanocodec_conv(2, input_dim, 3),
+            stages: vec![CausalHifiGanStageWeights {
+                activation: nanocodec_half_snake(2),
+                upsample: CausalHifiGanConvTranspose1dWeights {
+                    weight: (0..8).map(|i| (i as f32 + 1.0) * 0.002).collect(),
+                    bias: vec![0.001],
+                },
+                residual_branches: vec![vec![residual]],
+            }],
+            post_activation: nanocodec_half_snake(1),
+            post_conv: nanocodec_conv(1, 1, 3),
+        };
+        CausalHifiGan::new(config, weights).expect("tiny NanoCodec decoder")
+    }
+
     #[test]
     fn mimi_successive_pushes_are_bit_identical_to_whole_decode() {
         let seed = 0x48;
@@ -547,6 +605,72 @@ mod tests {
         let mut exact = vec![0.0; stream.frame_hop()];
         assert_eq!(stream.pull_pcm(&mut exact).unwrap(), exact.len());
         assert_eq!(stream.pull_pcm(&mut exact).unwrap(), 0);
+    }
+
+    #[test]
+    fn nanocodec_successive_pushes_are_bit_identical_to_whole_decode_and_reset() {
+        let levels = vec![4, 3];
+        let n_codebooks = 2;
+        let feature_dim = n_codebooks * levels.len();
+        let codes = vec![0, 1, 11, 3, 2, 5];
+        let frames = codes.len() / n_codebooks;
+        let features = group_fsq_decode(&codes, frames, &levels).unwrap();
+        let reference = synthesized_nanocodec_decoder(feature_dim)
+            .decode_all(&features)
+            .unwrap();
+        let engine = NanoCodecStreamingCodec::new(
+            n_codebooks,
+            levels,
+            synthesized_nanocodec_decoder(feature_dim),
+            22_050,
+        )
+        .unwrap();
+
+        let mut stream = engine.open_decoder().unwrap();
+        let mut got = Vec::with_capacity(reference.len());
+        let mut pcm = vec![0.0; stream.frame_hop()];
+        for code_frame in codes.chunks_exact(stream.n_codebooks()) {
+            assert_eq!(stream.push_codes(code_frame).unwrap(), 1);
+            let written = stream.pull_pcm(&mut pcm).unwrap();
+            got.extend_from_slice(&pcm[..written]);
+        }
+        assert_eq!(got, reference);
+
+        stream.reset().unwrap();
+        assert_eq!(stream.push_codes(&codes[..n_codebooks]).unwrap(), 1);
+        assert_eq!(stream.pull_pcm(&mut pcm).unwrap(), pcm.len());
+        assert_eq!(&pcm, &reference[..pcm.len()]);
+    }
+
+    #[test]
+    fn nanocodec_shape_code_range_and_backpressure_fail_loudly() {
+        let engine =
+            NanoCodecStreamingCodec::new(2, vec![4, 3], synthesized_nanocodec_decoder(4), 22_050)
+                .unwrap();
+        let mut stream = engine.open_decoder().unwrap();
+        assert!(matches!(
+            stream.push_codes(&[0]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            stream.push_codes(&[0, 12]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert_eq!(stream.push_codes(&[0, 1]).unwrap(), 1);
+        assert!(matches!(
+            stream.push_codes(&[0, 1]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut short = vec![0.0; stream.frame_hop() - 1];
+        assert!(matches!(
+            stream.pull_pcm(&mut short),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let err =
+            NanoCodecStreamingCodec::new(2, vec![4, 3], synthesized_nanocodec_decoder(3), 22_050)
+                .expect_err("feature geometry mismatch must be rejected");
+        assert!(matches!(err, VokraError::ModelLoad(_)));
     }
 
     #[test]
