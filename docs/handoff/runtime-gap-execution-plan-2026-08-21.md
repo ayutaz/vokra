@@ -335,6 +335,29 @@ work testable and self-describing.
   AudioCraft's normal default remains adaptive Dopri5 with `rtol=atol=1e-5`;
   the actual JASCO forward must preserve that distinction when it lands.
 
+### Wave 4 prerequisite VAST verification — completed 2026-08-21
+
+The code-bearing prerequisite commit `062c209f` was transferred without an
+unverified push to disposable VAST instance `48303876`
+(`vokra-pr44-runtime-gap-verify`: RTX A4000, 16 effective CPU cores, 125.5 GiB
+RAM) by git bundle. The following commands completed with exit status 0:
+
+- `cargo test --workspace`, including all workspace integration tests and
+  doctests;
+- `cargo clippy --workspace --all-targets -- -D warnings`;
+- `cargo fmt --all -- --check`;
+- focused Flow sampler, Conv-TasNet, JASCO, openWakeWord, and converter tests;
+- zero-dependency, forbidden-symbol, bound-arch, arch-handshake, zoo-manifest,
+  M5 no-C-ABI, and catalog-reality gates.
+
+The first ABI changelog gate run correctly rejected the two newly stamped
+metadata groups. Commit `93c2b60f` records `vokra.conv_tasnet.*` and
+`vokra.jasco.*` as additive persisted on-disk schema; the gate then passed at
+that exact HEAD. Instance `48303876` was destroyed immediately after evidence
+collection and the API returned no remaining instance record. No model
+artifacts were downloaded, converted, published, or uploaded during this
+verification.
+
 ## PyIN temporal smoothing — completed 2026-08-21
 
 The identity `viterbi_smooth_todo` scaffold was removed. `pyin_detailed`
