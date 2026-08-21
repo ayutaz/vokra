@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 64 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **64** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 63 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **63** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -198,7 +198,7 @@ including the synthetic test comment that names a non-existent
 `parity_deberta_v2_layer_bisect.rs`. Supporting another DeBERTa-v2 variant
 would be a new, separately scoped model task.
 
-### RNNoise real-weight network closure (completed 2026-08-21)
+### RNNoise native waveform closure (completed 2026-08-22)
 
 The old prep script wrote one opaque `rnnoise.weights_blob_f32` tensor and the
 converter silently accepted it. That route has been removed. The canonical
@@ -209,33 +209,36 @@ renamed, wrong-sized, or non-F32-container arrays before writing GGUF.
 The public `vokra/rnnoise-v0.2` repository was checked on 2026-08-21. Its Hub
 API revision was `bedd79292105b7975ddb2383c24c06d4390c100b`, it remained
 public, and its 1.4 MB GGUF exposed `rnnoise.weights_blob_f32` but no
-`prep_status` marker. The runtime has RNNoise DSP/RNN primitives and a
-pass-through converter, but no `vokra-models` RNNoise binder; the env-gated
-denoise parity test intentionally panicked when a GGUF was supplied.
+`prep_status` marker. It is a stale pre-contract artifact and was not used for
+runtime verification or replaced by this branch.
 
 The replacement binder implements Xiph's causal Conv1d pair, three 384-wide
 GRUs, signed-int8 8×4 sparse matrix walk, scale/bias/recurrent-diagonal
 handling, `[z,r,h]` gates, rational activations, 32 gain outputs, and VAD head.
-The real GGUF (36 tensors, 4,469,280 bytes) passed four sequential frames
+The real GGUF (36 tensors, 4,469,280 bytes; SHA-256
+`596d3fdd157a5b8a5a4d4e206f0c89a8db4f6e0722d402fb578bc22a5475e49c`)
+passed four sequential network frames
 against an independent executable compiled from unmodified Xiph v0.2 C at
-`max_abs=1.4901161e-7`, within the unchanged `2e-5` bound. The completed
-network tier is gated by `VOKRA_RNNOISE_V02_REAL_GGUF`; the pending pitch and
-waveform tier has a separate `VOKRA_RNNOISE_V02_PITCH_REFERENCE` opt-in so a
-real network GGUF cannot accidentally trigger an unimplemented test.
+`max_abs=1.4901161e-7`, within the unchanged `2e-5` bound.
 
-Remaining RNNoise work is now narrower and explicit: replace the legacy
-22-band/42-feature waveform primitives in `vokra-ops::rnnoise` with v0.2's
-32-band/65-feature analysis, official downsampled pitch search and
-`remove_doubling`, delayed-spectrum gain application, and overlap-add
-synthesis; then add waveform parity. Auditing or replacing the already-public
+The waveform tier now implements v0.2's 48 kHz / 480-sample-frame high-pass,
+960-sample analysis window, 32-band/65-feature frontend, official 12 kHz pitch
+downsample/search and `remove_doubling`, delayed-spectrum gain application,
+and overlap-add synthesis. `RnnoiseStream` accepts arbitrary input chunk sizes,
+preserves recurrent/DSP state, and resets deterministically; `RnnoiseV02`
+implements both `DenoiseEngine` and `DenoiseStreamHandle`. CLI `run` and
+`bench` route the model as a denoiser, and a VAST smoke processed 9,600 input
+samples into 9,600 finite output samples.
+
+The independent portable Xiph C oracle covers 16 sequential frames. The
+network-only path remains strict at `1.4901161e-7`; end-to-end measurements are
+`max_pcm_abs=7.196754e-3` and `max_vad_abs=3.1113923e-3` under bounds `1e-2`
+and `5e-3`. The wider waveform bounds are isolated to the different butterfly
+factorizations of Xiph scalar KISS FFT and Vokra's native real FFT, whose
+frontend features differ by about `2e-5`; they do not relax the network gate.
+`rnnoise` is therefore removed from `BOUND_ARCHES`. Replacing the stale public
 Hub artifact remains a separate publication action requiring explicit upload
-authorization and `publish-one.sh`.
-
-The network binder is intentionally registered in `BOUND_ARCHES` as a
-`LoudPartialForward`: `forward_features` is real and parity-verified, but a
-`rnnoise` GGUF is not advertised as a runnable denoiser until the waveform DSP
-chain above lands. This newly bound arch raised the partial-forward inventory
-by one at the time; the current table also includes later loader waves.
+authorization and the gated `publish-one.sh` chain.
 
 ## Wave 1 — small runtime surfaces (implemented on this branch)
 
@@ -493,7 +496,7 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 64 partial forwards
+## Wave 4 — 63 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
@@ -503,7 +506,7 @@ family as one completion checkbox.
 | ASR / speech transcription | 13 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
 | TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
-| Enhancement / separation / AEC | 9 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `rnnoise`, `sepformer`, `storm` |
+| Enhancement / separation / AEC | 8 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `sepformer`, `storm` |
 | Speaker / diarization | 3 | `redimnet`, `sortformer`, `speaker_3d` |
 | Representation / classification | 11 | `atst`, `clap`, `deepfake_detection`, `eat`, `emotion2vec`, `lang_id_ecapa`, `m2d`, `maest`, `panns`, `w2v-bert-2`, `wavlm_sv` |
 | Quality estimation | 4 | `dnsmos`, `nisqa_v2_weight`, `torchaudio_squim`, `utmosv2` |

@@ -5,10 +5,13 @@
  * Rust implementation.  Each CSV row is 65 input features, 32 gain outputs,
  * and one VAD output.  Nine significant digits round-trip every f32 input.
  *
- *   cc -std=c99 -O0 -Isrc \
+ *   cc -std=c99 -O0 -DDISABLE_NEON -Isrc \
  *     /path/to/rnnoise_v02_network_reference.c \
  *     src/rnn.c src/rnnoise_data.c src/nnet.c src/nnet_default.c \
  *     src/parse_lpcnet_weights.c -lm -o rnnoise-v02-network-reference
+ *
+ * DISABLE_NEON selects Xiph's portable scalar kernels so the fixture is
+ * architecture-independent and uses the canonical row-major 8x4 walk.
  */
 
 #include <stdio.h>

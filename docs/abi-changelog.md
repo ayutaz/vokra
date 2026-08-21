@@ -288,6 +288,9 @@ Tiny/Base manifests, a required tokenizer blob, and a native ASR forward. Its
 new `vokra.moonshine.*` group pins every topology and artifact identity axis;
 old weight-only scaffold artifacts remain identifiable but intentionally fail
 the strict executable bind rather than inheriting guessed defaults.
+RNNoise adds a native 48 kHz denoise stream and engine implementation over its
+existing GGUF schema. This closes the former loud-partial runtime/CLI behavior;
+it does not add a C symbol or change a GGUF key.
 
 | Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -301,6 +304,7 @@ the strict executable bind rather than inheriting guessed defaults.
 | `vokra-models::firered_vad` | `FireredVadNativeConfig`, `FireredVad::{native_config,forward_features}` | Added | strict native GGUF binder plus feature-level parity entry point | Runs canonical Stream-VAD while retaining the old unstamped loud-partial contract for compatibility. | no | #44 |
 | `vokra-models::smart_turn` | `SmartTurnWeights::from_gguf`, `SmartTurn::predict_endpoint` | Changed | strict 221-tensor binder plus native utterance-level Wav2Vec2 endpoint forward | Replaces the old topology-presence binder and explicit unsupported error with the pinned released checkpoint contract; no frame-level `VadEngine` is fabricated. | yes (Rust behavior) | #44 |
 | `vokra-models::moonshine` | `Moonshine::from_gguf`, `Moonshine::transcribe`, `AsrEngine for Moonshine` | Changed | strict 160/210-tensor binder, raw-waveform encoder-decoder, tied greedy logits and HF BPE decode | Replaces the explicit unsupported forward and routes `moonshine` through the CLI ASR task. Non-CPU composed attention remains an explicit unsupported path. | yes (Rust source/behavior) | #44 |
+| `vokra-models::rnnoise` | `RnnoiseFrameOutput`, `RnnoiseStream`, `RnnoiseV02::{stream,denoise_pcm}`, `DenoiseEngine for RnnoiseV02`, `DenoiseStreamHandle for RnnoiseStream` | Added / Changed | native 48 kHz, 480-sample-frame denoise engine with arbitrary-chunk streaming and reset | Replaces the explicit unsupported waveform/CLI behavior while preserving the existing canonical GGUF metadata schema. No C ABI symbol is added. | yes (Rust source/behavior) | #44 |
 | `vokra-convert` | `ModelKind::Charsiu` / `--model charsiu` | Added | canonical 213-tensor safetensors manifest → 211 F32 GGUF tensors | Consumes the eval-dead masking vector and folds positional-conv weight norm offline; missing, extra, retyped, or reshaped tensors are errors. | no | #44 |
 | `vokra-convert` | `ModelKind::SmartTurn` / `--model smart-turn` | Changed | canonical 223-tensor F32 safetensors manifest → 221 F32 GGUF tensors | Replaces pass-through conversion with strict manifest binding, offline positional weight-norm folding, and omission of the eval-unused SpecAugment vector. | yes (artifact schema) | #44 |
 | `vokra-models::align::charsiu` | `Charsiu::from_file`, `Charsiu::logits`, canonical config/vocabulary fields | Added / Changed | strict GGUF binder + real frame-classification forward + upstream silence-mask/monotone-DTW alignment | Replaces the synthesized-only/unwired loader and the incorrect pre-norm/CTC description with the released post-norm topology and phone-alignment algorithm. This is pre-1.0 source churn; no C symbol changes. | yes (Rust source) | #44 |

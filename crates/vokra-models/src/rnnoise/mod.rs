@@ -411,6 +411,8 @@ fn quantized_matvec(
 
 fn accumulate_i8_block(output: &mut [f32], weights: &[i8], input: &[i8]) {
     for (row, output_value) in output.iter_mut().enumerate().take(8) {
+        // Xiph's quantized `cgemv8x4` stores four consecutive input weights
+        // for each of the block's eight outputs.
         let base = 4 * row;
         let sum = i32::from(weights[base]) * i32::from(input[0])
             + i32::from(weights[base + 1]) * i32::from(input[1])
@@ -626,14 +628,16 @@ mod tests {
     }
 
     #[test]
-    fn blocked_i8_kernel_uses_output_major_eight_by_four_layout() {
-        let weights: Vec<i8> = (0..8)
-            .flat_map(|row| [row + 1, 0, 0, 0])
-            .map(|value| value as i8)
+    fn blocked_i8_kernel_uses_upstream_row_major_eight_by_four_layout() {
+        let weights: Vec<i8> = (1..=8)
+            .flat_map(|row| (1..=4).map(move |column| (row * column) as i8))
             .collect();
         let mut output = [0.0; 8];
         accumulate_i8_block(&mut output, &weights, &[2, 3, 4, 5]);
-        assert_eq!(output, [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0]);
+        assert_eq!(
+            output,
+            [40.0, 80.0, 120.0, 160.0, 200.0, 240.0, 280.0, 320.0]
+        );
     }
 
     #[test]

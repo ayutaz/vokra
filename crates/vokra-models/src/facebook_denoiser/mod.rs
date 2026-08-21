@@ -110,8 +110,8 @@
 //! - `denoise` — DeepFilterNet3 (ERB analysis / synthesis + CRN — a
 //!   completely different topology axis from facebook-denoiser's
 //!   time-domain waveform U-Net + LSTM);
-//! - `rnnoise` — Xiph RNNoise (GRU + BFCC / Bark features on 22-band
-//!   filterbank — no U-Net, no LSTM, feature-domain not waveform);
+//! - `rnnoise` — Xiph RNNoise v0.2 (GRU + 32-band/65-feature spectral
+//!   frontend — no U-Net, no LSTM, feature-domain network);
 //! - `nsnet2` — Microsoft DNS baseline (2-layer GRU + 3-Linear mask
 //!   over 257-bin STFT log-magnitude — spectral mask predictor, not a
 //!   waveform-domain U-Net);
@@ -711,7 +711,7 @@ mod tests {
         );
         assert_ne!(
             ARCH, "rnnoise",
-            "facebook_denoiser and rnnoise (Xiph GRU + BFCC on 22-band filterbank) \
+            "facebook_denoiser and rnnoise (Xiph GRU + 32-band/65-feature frontend) \
              are different topologies — sharing arch would mis-route (FR-EX-08)"
         );
         assert_ne!(

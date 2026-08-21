@@ -11,7 +11,8 @@
  *     src/nnet.c src/nnet_default.c src/parse_lpcnet_weights.c \
  *     src/rnnoise_data.c src/rnnoise_tables.c -lm -o rnnoise-v02-waveform-reference
  *
- * Each row is: frame index, VAD probability, then 64 deterministic PCM taps.
+ * DISABLE_NEON selects the architecture-independent portable Xiph kernels.
+ * Each row is: frame index, VAD probability, then 16 deterministic PCM taps.
  * The input generator uses integer arithmetic plus exact power-of-two scaling
  * so the Rust parity test can reproduce it without a libm dependency.
  */
