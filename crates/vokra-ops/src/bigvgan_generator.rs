@@ -7,6 +7,13 @@
 //! - `bigvgan.py` — `BigVGAN.__init__` L206-322, `BigVGAN.forward` L324-354,
 //!   `AMPBlock1.__init__` L23-133, `AMPBlock1.forward` L135-145.
 //! - `activations.py` — `Snake` L7-59, `SnakeBeta` L62-114.
+//! - `alias_free_activation/torch/{act,filter,resample}.py` — adapted by
+//!   NVIDIA from `junjun3518/alias-free-torch` (Apache-2.0), with the sinc
+//!   and low-pass construction adapted from `adefossez/julius` (MIT).
+//!
+//! This Rust port changes storage, error handling, tensor layout, and scalar
+//! execution. The applicable third-party texts are retained in
+//! `THIRD_PARTY_LICENSES/` and the project `NOTICE`.
 //!
 //! # Op contract
 //!

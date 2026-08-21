@@ -211,6 +211,16 @@ impl BigVGanVariant {
             _ => None,
         }
     }
+
+    /// Output sample rate from the corresponding upstream `config.json`.
+    #[must_use]
+    pub const fn sample_rate(self) -> u32 {
+        match self {
+            Self::V2_22khz80Band256x => 22_050,
+            Self::V2_44khz128Band512x => 44_100,
+            Self::V2_24khz100Band256x | Self::BaseV1_24khz100Band => 24_000,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

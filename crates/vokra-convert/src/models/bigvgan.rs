@@ -66,9 +66,9 @@
 //! (`conv_pre.weight`, `ups.{i}.0.weight`,
 //! `resblocks.{i*3+j}.convs1.{k}.weight`, `activation_post.alpha` /
 //! `activation_post.beta`, `conv_post.weight`, biases; upstream
-//! `bigvgan.py` L212-L322 defines the module tree). Real-weight parity
-//! vs the upstream `nvidia/BigVGAN` reference is deferred to owner
-//! (`docs/license-audit.md` §3.1 sign-off queue).
+//! `bigvgan.py` L212-L322 defines the module tree). The strict runtime
+//! binder, stored alias-free filter buffers, and real-weight upstream parity
+//! are recorded in `docs/handoff/runtime-gap-execution-plan-2026-08-21.md`.
 //!
 //! # No ONNX (permanent)
 //!

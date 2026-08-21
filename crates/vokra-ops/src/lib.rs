@@ -81,8 +81,8 @@ pub mod anti_aliased_upsample;
 // Anti-aliased periodic-activation vocoder — verbatim port of upstream
 // NVIDIA/BigVGAN (MIT, Copyright (c) 2024 NVIDIA CORPORATION). AMPBlock1 +
 // Snake/SnakeBeta + tanh terminal — see module docstring for the exact
-// upstream line references and a note on the (deferred) alias-free
-// activation wrapper. Snake activation is reused from [`crate::hiftnet`];
+// upstream line references, including the alias-free activation wrapper.
+// Snake activation is reused from [`crate::hiftnet`];
 // SnakeBeta lives here.
 pub mod bigvgan_generator;
 // ---------------------------------------------------------------------------

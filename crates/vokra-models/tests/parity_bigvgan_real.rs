@@ -52,7 +52,7 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
         .fold(0.0f32, f32::max);
     eprintln!("BigVGAN base real-weight parity: samples=256, max_abs={max_abs:e}");
     assert!(
-        max_abs <= 5e-4,
-        "BigVGAN base max |Δ| {max_abs:e} exceeds the 5e-4 FP32 bound"
+        max_abs <= 2e-5,
+        "BigVGAN base max |Δ| {max_abs:e} exceeds the 2e-5 FP32 bound"
     );
 }

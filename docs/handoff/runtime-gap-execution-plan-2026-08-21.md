@@ -16,9 +16,9 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `RealForwardNoCliTask` | 3 | 0 | 0 | 0 | Real forward exists; CLI routing is absent |
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | 17 | 16 | No real artifact can be bound, even if a constructor/forward exists |
+| `NoGgufLoader` | 17 | 17 | 17 | 15 | No real artifact can be bound, even if a constructor/forward exists |
 | `LoudPartialForward` | 56 | 56 | 56 | 56 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **72** | `BOUND_ARCHES` registry rows |
+| **Total** | **79** | **75** | **73** | **71** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -152,7 +152,7 @@ Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
 package tests are present. Real-weight CT-Punc/Mimi execution remains part of
 the final VAST evidence pass; it is not replaced by the structural tests.
 
-## Wave 3 — 16 of 17 GGUF loaders remaining
+## Wave 3 — 15 of 17 GGUF loaders remaining
 
 Implement loaders in dependency-aware families. Every loader needs a writer ↔
 reader tensor/metadata handshake, a real pinned checkpoint, license/provenance
@@ -168,11 +168,20 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    `vokra-models` package: lib `2533 passed / 0 failed / 1 ignored`, with all
    integration/doc-test suites green. Instance `48290692` was destroyed after
    the run; no weight upload occurred.
-2. Vocoder family (4): `bigvgan`, `hifigan_vocoder`,
+2. Vocoder family (3 remaining): `hifigan_vocoder`,
    `speecht5_hifigan`, `vocos`. Share only genuinely identical tensor
    conventions. Vocos also has a second ConvNeXt-V2 forward blocker; loading
-   it does not make decoding complete. BigVGAN CPU loader/forward work is
-   separate from the full GPU path follow-up.
+   it does not make decoding complete.
+
+   `bigvgan` closed on 2026-08-21: the strict loader binds the official base
+   checkpoint's 448-tensor folded manifest, including all 146 stored
+   alias-free Kaiser filter buffers. The native ratio-2 Activation1d matches
+   an upstream-import fixture, and the 56,103,872-byte GGUF passed independent
+   one-frame mel-to-256-sample waveform parity at
+   `max_abs=5.736947e-6` under the tightened `2e-5` bound. The CLI consumes
+   explicit channel-major little-endian f32 mel data and emits 22.05/24/44.1
+   kHz WAV according to the pinned variant. The full GPU generator remains a
+   separate backend task; unsupported GPU execution has no CPU fallback.
 3. ASR (1): `parakeet-tdt`. Add the artifact binder before exposing its
    existing transcription entry point.
 4. TTS scaffolds (11): `chatterbox`, `chatterbox_nano`,

@@ -689,6 +689,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::VocoderBigVgan => {
+            return Err(
+                "bench: arch `bigvgan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]`"
+                    .to_owned(),
+            );
+        }
         ModelTask::Asr => {
             let path = args
                 .input
