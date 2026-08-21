@@ -170,6 +170,20 @@ pub enum HotOp {
     /// `covered_by_metal` returns `true`; `covered_by_cuda` /
     /// `covered_by_vulkan` / `covered_by_webgpu` return `false`.
     Xcodec2Fsq,
+    /// NVIDIA NanoCodec grouped finite scalar quantizer dequantization
+    /// (`vokra_ops::group_fsq`) — the per-group mixed-radix code-to-latent
+    /// transform introduced by #45. It is deliberately distinct from
+    /// [`HotOp::Xcodec2Fsq`]: NanoCodec partitions the latent channels into
+    /// independently configured groups and concatenates their dequantized
+    /// values, rather than applying X-Codec 2's single grid and optional
+    /// projection.
+    ///
+    /// **CPU-only initial slice (#51, 2026-08-21).** No Metal, CUDA, Vulkan,
+    /// WebGPU, CoreML, or QNN kernel is claimed. A NanoCodec model must list
+    /// this variant in its required-op registry, so pinning any non-CPU
+    /// backend fails at [`Compute::for_backend`] with an explicit
+    /// [`VokraError::UnsupportedOp`] instead of silently falling back.
+    GroupFsq,
     /// Snake activation (`vokra_ops::snake_activation_f32`) — the per-channel
     /// closed-form periodic activation `y = x + (1/(α+ε))·sin(α·x)²` shared
     /// by the BigVGAN / HiFTNet / Kokoro-82M vocoder lineage. Consumed by
@@ -335,6 +349,17 @@ pub enum HotOp {
     /// `covered_by_webgpu` / `covered_by_coreml` / `covered_by_qnn` return
     /// `false`.
     AntiAliasedUpsample,
+    /// Stateful causal HiFi-GAN generator forward (#46), including the
+    /// generator's causal transposed-convolution stages and streaming state.
+    /// This is one model-level hot op rather than a claim that the existing
+    /// non-causal [`HotOp::Conv1d`] kernel covers transposed convolution.
+    ///
+    /// **CPU-only initial slice (#51, 2026-08-21).** No Metal, CUDA, Vulkan,
+    /// WebGPU, CoreML, or QNN implementation exists for the stateful causal
+    /// transposed-convolution path. Models using the generator must list this
+    /// variant in their required-op registry; selecting a non-CPU backend is
+    /// therefore rejected loudly by [`Compute::for_backend`] before inference.
+    CausalHifiGan,
 }
 
 impl HotOp {
@@ -3789,6 +3814,17 @@ mod tests {
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
+            HotOp::SnakeActivation,
+            HotOp::SnacDecode,
+            HotOp::DenoiseApplyMask,
+            HotOp::Qwen3TtsCodec,
+            HotOp::SnakeBeta,
+            HotOp::SinegenDeterministic,
+            HotOp::AntiAliasedUpsample,
+            HotOp::GroupFsq,
+            HotOp::CausalHifiGan,
         ];
         let c = Compute::for_backend(BackendKind::Cpu, &all).expect("cpu covers all");
         assert_eq!(c.backend_name(), "cpu");
@@ -3868,22 +3904,24 @@ mod tests {
             );
         }
 
-        // Same deferred posture for the remaining M4-04 RVQ sibling (lock-step
-        // with the Metal arm of `encodec_rvq_f32`). Single-element scope
-        // rather than a `for op in [..]` loop (clippy::single_element_loop)
-        // — the list may grow again if a sibling regresses to deferred, at
-        // which point restoring the loop is the right shape.
-        {
-            let op = HotOp::EncodecRvq;
+        // The remaining M4-04 RVQ sibling and the two NanoCodec hot ops are
+        // deliberately CPU-only. Keep these flags in lock-step with the
+        // corresponding model required-op registries and Compute method arms.
+        for op in [HotOp::EncodecRvq, HotOp::GroupFsq, HotOp::CausalHifiGan] {
             assert!(
                 !op.covered_by_metal(),
-                "{op:?} unexpectedly Metal-covered — the M4-04 GPU kernel is deferred; \
-                 if it has just landed, flip `HotOp::covered_by_metal` and update this test.",
+                "{op:?} unexpectedly Metal-covered — its GPU kernel is deferred; if it has \
+                 just landed, flip `HotOp::covered_by_metal` and update this test.",
             );
-            assert!(matches!(
-                Compute::for_backend(BackendKind::Metal, &[op]),
-                Err(VokraError::UnsupportedOp(_) | VokraError::BackendUnavailable(_)),
-            ));
+            let Err(VokraError::UnsupportedOp(msg)) =
+                Compute::for_backend(BackendKind::Metal, &[op])
+            else {
+                panic!("Metal must reject CPU-only {op:?} with UnsupportedOp");
+            };
+            assert!(
+                msg.contains(&format!("{op:?}")),
+                "Metal coverage error must identify the required CPU-only op: {msg}",
+            );
         }
         // A request that lists MimiRvq is now a covered request post M3-06
         // T14: it either builds (device present) or reports an explicit
@@ -4046,6 +4084,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupFsq,
+            HotOp::CausalHifiGan,
         ] {
             assert!(
                 !op.covered_by_cuda(),
@@ -4123,6 +4163,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupFsq,
+            HotOp::CausalHifiGan,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -4181,6 +4223,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupFsq,
+            HotOp::CausalHifiGan,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -4226,6 +4270,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupFsq,
+            HotOp::CausalHifiGan,
         ] {
             assert!(
                 !op.covered_by_coreml(),
@@ -4288,6 +4334,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupFsq,
+            HotOp::CausalHifiGan,
         ] {
             assert!(
                 !op.covered_by_qnn(),
@@ -4451,6 +4499,8 @@ mod tests {
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
             HotOp::SnacDecode,
             HotOp::DenoiseApplyMask,
@@ -4459,6 +4509,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupFsq,
+            HotOp::CausalHifiGan,
         ] {
             assert!(
                 !op.covered_by_webgpu(),
