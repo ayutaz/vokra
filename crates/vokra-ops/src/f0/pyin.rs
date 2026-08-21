@@ -148,11 +148,11 @@ fn pyin_cmndf(frame: &[f32], min_period: usize, max_period: usize) -> Vec<f64> {
 
     let mut cumulative = 0.0f64;
     let mut out = Vec::with_capacity(max_period - min_period + 1);
-    for period in 1..=max_period {
-        cumulative += differences[period];
+    for (period, &difference) in differences.iter().enumerate().take(max_period + 1).skip(1) {
+        cumulative += difference;
         if period >= min_period {
             let mean = cumulative / period as f64;
-            out.push(differences[period] / (mean + f64::MIN_POSITIVE));
+            out.push(difference / (mean + f64::MIN_POSITIVE));
         }
     }
     out
@@ -196,6 +196,7 @@ fn boltzmann_probability(rank: usize, count: usize) -> f64 {
     numerator / (1.0 - (-BOLTZMANN_PARAMETER * count as f64).exp())
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the pinned upstream PyIN axes
 fn frame_observation(
     frame: &[f32],
     sample_rate: f64,
@@ -314,9 +315,14 @@ fn viterbi_decode(observations: &[Observation], n_pitch_bins: usize, radius: usi
                     } else {
                         SWITCH_PROB
                     };
-                    for source_pitch in source_lo..=source_hi {
+                    for (source_pitch, &row_normalizer) in row_normalizers
+                        .iter()
+                        .enumerate()
+                        .take(source_hi + 1)
+                        .skip(source_lo)
+                    {
                         let triangle = (radius + 1 - source_pitch.abs_diff(dest_pitch)) as f64;
-                        let transition = switch * triangle / row_normalizers[source_pitch];
+                        let transition = switch * triangle / row_normalizer;
                         let source_state = source_voice * n_pitch_bins + source_pitch;
                         let candidate = values[source_state] + (transition + tiny).ln();
                         if candidate > best_value {

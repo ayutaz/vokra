@@ -1118,7 +1118,7 @@ fn alias_free_upsample(
     let padded_time = time + 2 * pad;
     let core_time = (padded_time - 1) * ratio + filter.len();
     let crop_left = pad * ratio + (filter.len() - ratio) / 2;
-    let crop_right = pad * ratio + (filter.len() - ratio + 1) / 2;
+    let crop_right = pad * ratio + (filter.len() - ratio).div_ceil(2);
     let output_time = core_time
         .checked_sub(crop_left + crop_right)
         .ok_or_else(|| {
