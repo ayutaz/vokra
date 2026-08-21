@@ -652,6 +652,10 @@ mod tests {
         assert_eq!(decoder.push_codes(&codes).unwrap(), 1);
         assert_eq!(decoder.pull_pcm(&mut pcm).unwrap(), pcm.len());
         assert!(pcm.iter().all(|sample| sample.is_finite()));
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 1.0e-8),
+            "real NanoCodec decode must not silently substitute zero PCM"
+        );
     }
 
     /// The guard itself: CPU passes, every GPU backend is refused, and the
