@@ -48,12 +48,21 @@ pub(crate) fn guard_void<F: FnOnce()>(body: F) {
     let _ = catch_unwind(AssertUnwindSafe(body));
 }
 
-/// Panic firewall for a **handle-returning constructor**
-/// (`vokra_session_options_create`), whose contract signals failure with a
-/// `NULL` return rather than a status. A caught panic therefore becomes
-/// `NULL` — the one failure value the caller already has to check.
+/// Panic firewall for a **handle-returning constructor**. A caught panic
+/// becomes `NULL` — the one failure value the caller already has to check —
+/// and records its detail for constructors such as `vokra_feat_open` whose
+/// contract also exposes `vokra_last_error()`.
 pub(crate) fn guard_ptr<T, F: FnOnce() -> *mut T>(body: F) -> *mut T {
-    catch_unwind(AssertUnwindSafe(body)).unwrap_or(std::ptr::null_mut())
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(ptr) => ptr,
+        Err(payload) => {
+            set_last_error(&format!(
+                "internal panic caught at FFI boundary: {}",
+                describe_panic(&payload)
+            ));
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Panic firewall for a **pure boolean query** (`vokra_backend_available`),
@@ -62,6 +71,22 @@ pub(crate) fn guard_ptr<T, F: FnOnce() -> *mut T>(body: F) -> *mut T {
 /// `false` ("not available"), the conservative answer.
 pub(crate) fn guard_bool<F: FnOnce() -> bool>(body: F) -> bool {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(false)
+}
+
+/// Panic firewall for a signed integer metadata query. `-1` is reserved as
+/// the failure sentinel by the `vokra_feat_*` getters; valid dimensions and
+/// milli-Hertz rates are non-negative.
+pub(crate) fn guard_i32<F: FnOnce() -> i32>(body: F) -> i32 {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            set_last_error(&format!(
+                "internal panic caught at FFI boundary: {}",
+                describe_panic(&payload)
+            ));
+            -1
+        }
+    }
 }
 
 /// Best-effort human-readable text for a caught panic payload.
@@ -188,6 +213,14 @@ mod tests {
         let status = guard(|| panic!("boom from inside the boundary"));
         assert_eq!(status, vokra_status_t::VOKRA_ERROR_PANIC);
         // The panic message is recorded for vokra_last_error().
+        assert!(!vokra_last_error().is_null());
+    }
+
+    #[test]
+    fn scalar_and_pointer_guards_use_their_failure_sentinels_on_panic() {
+        assert_eq!(guard_i32(|| panic!("metadata panic")), -1);
+        let ptr = guard_ptr::<u8, _>(|| panic!("constructor panic"));
+        assert!(ptr.is_null());
         assert!(!vokra_last_error().is_null());
     }
 

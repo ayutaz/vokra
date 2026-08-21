@@ -400,7 +400,7 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
-      - name: Python binding C ABI drift (41-function header coverage)
+      - name: Python binding C ABI drift (48-function header coverage)
         run: >-
           uv run --no-project --python 3.12 python
           bindings/python/scripts/gen-py-bindings.py --check

@@ -270,6 +270,36 @@ checkpoint. The fixture records the HF repo commit, checkpoint SHA-256 and
 NVIDIA-NeMo/Speech source commit; Python is offline-only under a dedicated
 Python 3.12 `uv.lock`. Root `Cargo.lock` remains first-party-only.
 
+### 2026-08-22 — 1.0.0-rc.1-dev (streaming continuous speech features — 7 new functions, 1 new typedef, additive)
+
+The C surface grows from **41 fn + 13 typedef to 48 fn + 14 typedef**. All
+changes are additive and the v1.0-rc baseline snapshot is intentionally not
+rotated before the M5-13 GA freeze. The first implementation is Moshi's causal
+Mimi input encoder: it exposes the continuous bottleneck-transformer grid at
+25 Hz, before token-rate resampling and RVQ. No GGUF key or runtime dependency
+is added.
+
+`push_pcm` accepts arbitrary chunks and retains a partial token frame. `pull`
+writes complete feature rows and reports the exact source-sample index of its
+first row; later rows follow the queried native frame rate. Both operations use
+bounded, preallocated storage after warmup. Queue overflow, undersized output,
+NULL arguments, and a session without a feature engine fail loudly without
+consuming queued data.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| ------------ | ------ | ---- | --------- | --------- | --------- | -- |
+| `include/vokra.h` | `vokra_feat_t` | Added | `typedef struct vokra_feat_t vokra_feat_t` | Opaque streaming-feature state retaining its session | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_open` | Added | `vokra_feat_t *(const vokra_session_t *)` | Open the feature stream selected by the session's native model family | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_frame_rate_mhz` | Added | `int32_t(const vokra_feat_t *)` | Query the encoder's native rate without caller hard-coding | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_dim` | Added | `int32_t(const vokra_feat_t *)` | Query floats per row for caller-owned output sizing | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_push_pcm` | Added | `vokra_status_t(vokra_feat_t *, const float *, size_t)` | Stream arbitrary mono PCM chunks into bounded causal state | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_pull` | Added | `vokra_status_t(vokra_feat_t *, float *, size_t, size_t *, int64_t *)` | Non-blocking complete-row pull plus sample-accurate start timestamp | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_reset` | Added | `void(vokra_feat_t *)` | Return PCM tail, queue, clock, and recurrent caches to as-new state | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_destroy` | Added | `void(vokra_feat_t *)` | Release the opaque stream (`NULL` is a no-op) | no | (TBD) |
+| `vokra-core` | `SpeechFeatureEngine` / `SpeechFeatureStream` | Added | two public traits | Model-independent engine injection and streaming metadata/push/pull/reset contract | no | (TBD) |
+| `vokra-core` | `Session::with_speech_feature_engine` / `Session::open_speech_feature_stream` | Added | public methods | Attach or open the family-specific engine; absence is a loud `NotImplemented` | no | (TBD) |
+| `vokra-models` | `MimiEncoder::{feature_dim, feature_frame_hop, encode_features_into, encode_features_all}` / `MimiEncoderState::reset` | Added | public methods | Reuse the native causal encoder and expose its pre-RVQ continuous grid without changing codec output arithmetic | no | (TBD) |
+
 ### 2026-08-21 — 1.0.0-rc.1-dev (stateful streaming resampler — Rust surface only, additive)
 
 Issue #50 adds a caller-owned-buffer streaming wrapper around Vokra's existing

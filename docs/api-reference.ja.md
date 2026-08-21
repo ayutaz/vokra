@@ -60,10 +60,11 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-18 — `main` `6d64fdf`、workspace publish set、
-`include/vokra.h` に対して確認。** 生成 C header は41個の `vokra_*` function を
-宣言する。pre-alpha の Python generator が認識するのは現在39個、checked-in table
-が公開するのは14個であり、Python package は現行 C ABI の完全な mirror ではない。
+**最終確認日: 2026-08-22 — issue #49 の source と `include/vokra.h` に対して
+確認。** 生成 C header は48個の `vokra_*` function を宣言し、pre-alpha の
+Python generator と checked-in `ctypes` table は48個すべてを覆う。高水準 Python
+package は、全 C handle に wrapper class を持つのではなく、より小さい慣用的な
+surface のままである。
 
 - **更新責任**: publish crate・新バインディング・C ABI 生成を変えた PR が、
   同一 PR で本索引と英語版を更新する。

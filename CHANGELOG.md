@@ -96,6 +96,15 @@ milestone below.
   bundle. Missing/foreign metadata, non-F32 tensors, and shape mismatches are
   model-load errors rather than partially loaded models.
 
+#### Streaming continuous speech features (2026-08-22)
+
+- Added the model-independent `SpeechFeatureEngine` / `SpeechFeatureStream`
+  seam and the `vokra_feat_*` C ABI. Moshi's causal Mimi encoder is the first
+  native implementation, exposing its continuous pre-RVQ 25 Hz hidden grid
+  with sample-accurate source timestamps, bounded backpressure, reset, and
+  allocation-free post-warmup push/pull paths. The generated Python `ctypes`
+  table and C smoke suite cover the additive surface (#49).
+
 #### Audio-wide coverage expansion (2026-07-24 → 2026-08-16)
 
 Vokra's scope widened from speech to audio: music generation, source

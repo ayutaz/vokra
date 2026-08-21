@@ -55,6 +55,7 @@ pub mod config;
 pub mod depth;
 pub mod duplex;
 pub mod engine;
+mod feature;
 pub mod frame;
 pub mod tokenizer;
 

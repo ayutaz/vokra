@@ -43,7 +43,7 @@ publication scripts for release gates.
 - The retired audit branch was not merged wholesale. PR #29 carried the audit
   work, PR #32 carried the Codex migration, and PR #37 carried the remaining
   Claude compatibility delta.
-- The generated C header currently has 41 `vokra_*` functions. References
+- The generated C header currently has 48 `vokra_*` functions. References
   to 33 functions in dated M4/M5 reports are historical snapshots.
 - M5 is not complete and the C ABI is not frozen. The live checklist has
   42 checked and 36 literal unchecked boxes plus prose-only GA gates in §0;

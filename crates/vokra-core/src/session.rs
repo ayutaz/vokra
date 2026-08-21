@@ -21,7 +21,8 @@ use std::sync::atomic::AtomicU64;
 use crate::backend::BackendKind;
 use crate::compliance::AttributionInfo;
 use crate::engines::{
-    AsrEngine, S2sDuplexEngine, S2sEngine, SpeakerEngine, TtsEngine, VadEngine, VadStreamHandle,
+    AsrEngine, S2sDuplexEngine, S2sEngine, SpeakerEngine, SpeechFeatureEngine, SpeechFeatureStream,
+    TtsEngine, VadEngine, VadStreamHandle,
 };
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
@@ -78,6 +79,7 @@ pub struct Session {
     vad: Option<Arc<dyn VadEngine>>,
     s2s: Option<Arc<dyn S2sEngine>>,
     s2s_duplex: Option<Arc<dyn S2sDuplexEngine>>,
+    speech_features: Option<Arc<dyn SpeechFeatureEngine>>,
     /// Speaker-embedding engine (CAM++ = M0-08, FR-OP-80). Same shape as the
     /// engines above; the facade entry is [`Session::speaker`].
     speaker: Option<Arc<dyn SpeakerEngine>>,
@@ -98,6 +100,7 @@ impl Clone for Session {
             vad: self.vad.clone(),
             s2s: self.s2s.clone(),
             s2s_duplex: self.s2s_duplex.clone(),
+            speech_features: self.speech_features.clone(),
             speaker: self.speaker.clone(),
             attribution: self.attribution.clone(),
         }
@@ -115,6 +118,7 @@ impl fmt::Debug for Session {
             .field("vad_engine", &self.vad.is_some())
             .field("s2s_engine", &self.s2s.is_some())
             .field("s2s_duplex_engine", &self.s2s_duplex.is_some())
+            .field("speech_feature_engine", &self.speech_features.is_some())
             .field("speaker_engine", &self.speaker.is_some())
             .field("attribution", &self.attribution.is_some())
             .finish()
@@ -227,6 +231,13 @@ impl Session {
         self
     }
 
+    /// Attaches a continuous streaming speech-feature engine (#49).
+    #[must_use]
+    pub fn with_speech_feature_engine(mut self, engine: Arc<dyn SpeechFeatureEngine>) -> Self {
+        self.speech_features = Some(engine);
+        self
+    }
+
     /// Attaches a speaker-embedding engine (CAM++ = M0-08, FR-OP-80); the
     /// [`Speaker`](crate::tasks::Speaker) facade delegates to it.
     #[must_use]
@@ -290,6 +301,20 @@ impl Session {
             Some(engine) => Ok(engine.open_stream()),
             None => Err(VokraError::NotImplemented(
                 "no VAD engine injected (Silero VAD v5 = M0-05)",
+            )),
+        }
+    }
+
+    /// Opens a continuous speech-feature stream from the injected engine.
+    ///
+    /// Returns [`VokraError::NotImplemented`] for a model family that does not
+    /// expose this capability; there is no silent substitution with ASR text or
+    /// a different encoder.
+    pub fn open_speech_feature_stream(&self) -> Result<Box<dyn SpeechFeatureStream + Send>> {
+        match &self.speech_features {
+            Some(engine) => Arc::clone(engine).open_feature_stream(),
+            None => Err(VokraError::NotImplemented(
+                "no continuous speech-feature engine injected",
             )),
         }
     }
@@ -391,6 +416,7 @@ impl SessionBuilder {
             vad: None,
             s2s: None,
             s2s_duplex: None,
+            speech_features: None,
             speaker: None,
             attribution: None,
         })
@@ -653,5 +679,71 @@ pub(crate) mod tests {
         );
         // reset() is reachable through the trait object (a no-op on the fake).
         handle.reset();
+    }
+
+    #[test]
+    fn speech_feature_stream_fails_closed_without_an_injected_engine() {
+        let file = TempModelFile::new("speech-features-none");
+        let session = Session::from_file(&file.0).build().expect("session builds");
+        assert!(matches!(
+            session.open_speech_feature_stream(),
+            Err(VokraError::NotImplemented(_)),
+        ));
+    }
+
+    #[test]
+    fn speech_feature_stream_delegates_and_session_clone_retains_engine() {
+        struct FakeFeatureStream {
+            next_sample: i64,
+        }
+        impl SpeechFeatureStream for FakeFeatureStream {
+            fn sample_rate(&self) -> u32 {
+                16_000
+            }
+            fn frame_rate_millihz(&self) -> u32 {
+                25_000
+            }
+            fn feature_frame_hop(&self) -> usize {
+                640
+            }
+            fn feature_dim(&self) -> usize {
+                2
+            }
+            fn push_pcm(&mut self, _pcm: &[f32]) -> Result<()> {
+                Ok(())
+            }
+            fn pull_into(&mut self, out: &mut [f32]) -> Result<(usize, i64)> {
+                let frames = out.len() / 2;
+                for (i, value) in out[..frames * 2].iter_mut().enumerate() {
+                    *value = i as f32;
+                }
+                let start = self.next_sample;
+                self.next_sample += frames as i64 * 640;
+                Ok((frames, start))
+            }
+            fn reset(&mut self) {
+                self.next_sample = 0;
+            }
+        }
+        struct FakeFeatureEngine;
+        impl SpeechFeatureEngine for FakeFeatureEngine {
+            fn open_feature_stream(self: Arc<Self>) -> Result<Box<dyn SpeechFeatureStream + Send>> {
+                Ok(Box::new(FakeFeatureStream { next_sample: 0 }))
+            }
+        }
+
+        let file = TempModelFile::new("speech-features-fake");
+        let session = Session::from_file(&file.0)
+            .build()
+            .expect("session builds")
+            .with_speech_feature_engine(Arc::new(FakeFeatureEngine));
+        let clone = session.clone();
+        drop(session);
+        let mut stream = clone.open_speech_feature_stream().unwrap();
+        assert_eq!(stream.frame_rate_millihz(), 25_000);
+        assert_eq!(stream.feature_dim(), 2);
+        let mut out = [0.0f32; 4];
+        assert_eq!(stream.pull_into(&mut out).unwrap(), (2, 0));
+        assert_eq!(out, [0.0, 1.0, 2.0, 3.0]);
     }
 }

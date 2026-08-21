@@ -63,11 +63,11 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 ## Keeping this page current
 
-**Last verified: 2026-08-18 — against `main` `6d64fdf`, the workspace publish
-set, and `include/vokra.h`.** The generated C header declares 41 `vokra_*`
-functions. The pre-alpha Python generator currently recognizes 39 and its
-checked-in table exposes 14, so the Python package is not a complete mirror of
-the current C ABI yet.
+**Last verified: 2026-08-22 — against the issue #49 source and
+`include/vokra.h`.** The generated C header declares 48 `vokra_*` functions.
+The pre-alpha Python generator and checked-in `ctypes` table cover all 48; the
+high-level Python package remains a smaller idiomatic surface rather than a
+wrapper class for every C handle.
 
 - **Update responsibility**: a PR that adds a published crate, a new binding, or
   changes the C ABI generation updates this index and its Japanese twin in the
