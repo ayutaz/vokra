@@ -73,25 +73,18 @@ gh workflow run godot-crossbuild.yml
 
 ### 3.b. Method dispatch 検証 (T19 honest scope note)
 
-> **決着済み 2026-07-19 — 下の 3 option を選ぶ必要はありません**: Option C
+> **決着済み 2026-07-19 — 旧3 optionを選ぶ必要はありません**: Option C
 > （CC follow-up 実装）が実施済みです。`ba33bd0` が 5 trampoline の real
 > dispatch を land し、`71ea5ef` が `load` trampoline と inner-session
 > binding（registry が常に None を返していた欠陥）を実装、あわせて headless
 > 検証 leg も追加しました。旧`trampoline.rs` L236-408 の`TODO(M3-18)` markerは
 > **残存0件**です。ただし、これは後から追加された`session_vad_open_stream`の
 > `TODO(future)`を含まないため、残作業はT19 editor確認、VAD stream object生成、
-> その後のT20 close PRです。原文は判断経緯の記録
-> として下に保持。
+> その後のT20 close PRです。旧Option A/B/Cは実装前の判断記録であり、現在の
+> 作業選択肢ではありません。現在の検証対象は実装済み4 dispatchと、別タスクの
+> `session_vad_open_stream`です。
 
-Wave 11 の trampoline layer は **各 method の signature + arity + panic firewall + `catch_unwind` は正しく wire 済**だが、Variant unpack → real Rust dispatch は `TODO(M3-18)` として `InvalidMethod` を返す状態。以下の 3 option から本 T19 の scope を選択:
-
-- **Option A: 現状で "CC 側完成" 判定を確定**する (最小 verify、`ClassDB.class_exists` + method 呼び出しが `InvalidMethod` で正しく返ることの確認のみ)。real dispatch は M3-11 の post-M3 follow-up として M4 に押し出し。
-- **Option B: 依頼者側で Variant unpack を実装** (`trampoline.rs` L236 以降の `TODO(M3-18)` marker を実装)。C ABI 側の `include/vokra.h` は既に stable ゆえ、`p_args[0]` から `PackedFloat32Array` を取り出して `vokra_transcribe` に流すだけの thin wrapper。工数見積 = 2〜4 時間 (5 methods × 30〜60 min each)。
-- **Option C: CC に follow-up 実装を明示的に依頼**する。本 handover の scope 外だが、Investigation を再実行して "CC-implementable" 判定に載せることは可能 (Variant layout は Godot 4.3-stable header + `docs/adr/0011-godot-gdextension.md` §D3 から reference 可能、ハルシネーション回避可)。
-
-**推奨**: **Option A** で v0.9 Exit を通し、real dispatch を M4-XX の "M3-11 follow-up: full runtime dispatch" チケットに切る (M4 スコープ = 全 platform official support、M3-11 の完全動作は M4/v1.0-rc の DoD。C ABI 凍結は 2026-07-14 v-label 再割当 #2 で M5-13/v1.0 GA タグへ移動)。
-
-### 3.c. Demo scene の smoke (Option B/C を採用した場合のみ)
+### 3.c. Demo scene の smoke
 
 `demos/asr_demo/main.gd` L28 以降の flow:
 1. `res://models/whisper-base.gguf` を配置 (owner が手動、または `bash addons/vokra/fetch-demo-models.sh` を owner-side で作成)。
@@ -121,7 +114,8 @@ Platforms tested:
 - [ ] Windows x86_64:      ☐ Extension load / ☐ ClassDB / ☐ Method dispatch / ☐ Full demo
 - [ ] Android arm64-v8a:   ☐ Extension load / ☐ ClassDB / ☐ Method dispatch / ☐ Full demo (M3-18 併走)
 
-Dispatch mode: ☐ Option A (現状 InvalidMethod で pass、M4 follow-up) / ☐ Option B (owner 側で Variant unpack 実装) / ☐ Option C (CC follow-up 依頼)
+Implemented dispatch: ☐ transcribe / ☐ synthesize / ☐ stream_push_pcm / ☐ stream_poll
+VAD stream object: ☐ implemented + verified / ☐ explicitly pending (must not count as full dispatch)
 
 Verification date: YYYY-MM-DD
 ```
@@ -129,7 +123,9 @@ Verification date: YYYY-MM-DD
 ## 6. Escalation
 
 - **Extension load 失敗が続く場合**: `docs/adr/0011-godot-gdextension.md` の resolve chain (dlopen → `vokra_gdextension_init` → `p_get_proc_address` の 8 API resolve) が正しく通っていない可能性。Wave 11 の compile-time layout assert は Godot 4.3-stable header 前提 → **Godot 4.4+ で ABI 変更があれば `GDExtensionClassCreationInfo3` layout mismatch** で init 失敗する。この場合は M4 (v1.0-rc、2026-07-14 再割当 #2) で `GDExtensionClassCreationInfo4` 対応が必要。
-- **Method dispatch を CC 側 follow-up として依頼**する場合は `docs/tickets/m3/M3-11-godot-gdextension.md` に T21 (or M4-XX) として新規 spec 起票を依頼。
+- **`session_vad_open_stream`を実装する場合**は、`VokraStream::open`の呼び出し、
+  `StreamInstance` lifetime、Godot Objectへのpackを同じ変更で扱い、headlessと
+  実editorの両方でsmokeする。
 - **T20 (WP-close PR)**: 上記 §5 の verification report を PR description に貼付、`docs/milestones.md` §7.3 Exit criteria 3 の 判定材料として反映。
 
 ## 7. 参考
@@ -137,6 +133,7 @@ Verification date: YYYY-MM-DD
 - `docs/adr/0011-godot-gdextension.md` — ADR (gitignore、Wave 3.5 + Wave 11 + Wave 13 反映済)
 - `docs/tickets/m3/M3-11-godot-gdextension.md` — ticket spec (§改訂記録 Wave 3.5 / Wave 11 / Wave 13 参照)
 - `integrations/vokra-godot/README.md` — crate-level doc (Wave 13 状態、T01-T18 = 100%)
-- `integrations/vokra-godot/src/trampoline.rs` L236-408 — `TODO(M3-18)` markers (Variant unpack scope-out points)
+- `integrations/vokra-godot/src/trampoline.rs` — 実装済み4 dispatchと、残る
+  `session_vad_open_stream`のfail-loud境界
 - `docs/adr/0007-unity-official-plugin.md` — sister binding (Unity UPM、Wave 11 の scanner を M3-11 で mirror)
 - `.github/workflows/godot-crossbuild.yml` — CI (Wave 13、initial workflow_dispatch は owner)

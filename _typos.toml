@@ -97,6 +97,10 @@ extend-ignore-re = [
 #   [default.extend-words]
 #   theWord = "theWord"       # v1.48.0 flagged this as "theTypo"
 [default.extend-words]
+# "delocate" = macOS wheel の dynamic-library repair tool 名。
+# typos v1.49.0 は "deallocate" / "delicate" を提案するが、PyPI 上の
+# 正式 package / command 名なので原綴りを保持する。
+delocate = "delocate"
 # `shfit` is the upstream SANM metadata key; changing it would break the
 # wire-compatible config key used by FunASR CT-Punc.
 shfit = "shfit"

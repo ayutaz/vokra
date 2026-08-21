@@ -591,9 +591,9 @@ pub type GDExtensionInterfaceMemFree = unsafe extern "C" fn(p_ptr: *mut core::ff
 // `get_variant_{from,to}_type_constructor` are factories: called ONCE per
 // Variant type at [`crate::ffi::interface::InterfaceTable::from_proc_address`]
 // time, they return the actual per-type packer/unpacker fn pointer. We cache
-// the resolved constructors for `Int` (the only type this crate packs/unpacks
-// today; String/PackedFloat32Array packing is deferred — see
-// [`crate::trampoline`] TODO(future) markers for rationale).
+// the resolved constructors for Int, String, PackedFloat32Array, Dictionary,
+// and Object. The first four support the promoted runtime trampolines; Object
+// packing is also used by the remaining `session_vad_open_stream` work.
 // ---------------------------------------------------------------------------
 
 /// `variant_get_type` — reads the type tag of a Variant. Cheap, non-allocating,
@@ -705,9 +705,9 @@ pub type GDExtensionInterfaceVariantNewCopy = unsafe extern "C" fn(
 ///
 /// This ONLY destroys Variants. To destroy a typed opaque handle produced by
 /// a `get_variant_to_type_constructor(TYPE)` unpacker (e.g. a typed String or
-/// PackedFloat32Array), callers must additionally resolve
-/// `variant_get_ptr_destructor` (out of scope for the current land — see
-/// module-doc `TODO(M3-18)` markers in [`crate::trampoline`]).
+/// PackedFloat32Array), callers must use the corresponding cached destructor
+/// resolved through `variant_get_ptr_destructor`; [`crate::variant`] owns the
+/// current typed-handle cleanup paths.
 pub type GDExtensionInterfaceVariantDestroy = unsafe extern "C" fn(p_self: GDExtensionVariantPtr);
 
 /// `packed_float32_array_operator_index_const` (Godot 4.1,
@@ -726,9 +726,10 @@ pub type GDExtensionInterfaceVariantDestroy = unsafe extern "C" fn(p_self: GDExt
 ///
 /// # Not the size resolver
 ///
-/// The companion `packed_float32_array_size` resolver is out of scope for the
-/// current land; callers reading elements MUST separately resolve it to know
-/// the count. See [`crate::trampoline`] `TODO(M3-18)` markers.
+/// Godot exposes no dedicated `packed_float32_array_size` resolver. Callers
+/// use the cached `PackedFloat32Array::size()` builtin method in
+/// [`crate::ffi::interface::InterfaceTable::pfa_size_method`] before reading
+/// elements.
 ///
 /// Header signature:
 /// `const float *(*)(GDExtensionConstTypePtr p_self, GDExtensionInt p_index)`.

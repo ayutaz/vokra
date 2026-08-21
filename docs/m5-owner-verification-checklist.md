@@ -28,7 +28,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 
 | Scope | Current state | Remaining done-condition / route |
 |---|---|---|
-| M5-01 / M5-02 | Delegate scaffolds and bakeoff tooling landed | Real ANE + Hexagon placement/RTF captures, two verdicts, then M5-13 C-export decision (§1.5; 9 literal boxes) |
+| M5-01 / M5-02 | Delegate selection/probe scaffolds and bakeoff tooling landed; both backends still advertise zero executable ops | Implement the selected CoreML/QNN delegate graph paths, then capture real ANE + Hexagon placement/RTF, record two verdicts, and make the M5-13 C-export decision (§1.5; 9 literal boxes) |
 | M5-03 | ADR **Accepted**; `vokra-vad-micro`, cross-build, host differential, and memory budget landed | Real Cortex-M55/FVP run plus Tier-3/Helium investment decision (§2.2/§2.3) |
 | M5-04 | Static-link and no-dynamic-load gate landed | Console NDA, real SDK triple build, and ADR ratification (§4) |
 | M5-05 | ADR option (ii) **Accepted**; `f0_extract` placement = core / M5-16; naming migration applied | Legal sufficiency, consent trust root, separate-repository publication, and RVC/GPT-SoVITS sign-off (§3) |
@@ -78,8 +78,8 @@ The freeze machinery is landed (`abi-diff.sh --gate`, proven to fail on a blocki
 
 ## 1.5 NPU bakeoff (M5-01 CoreML/ANE + M5-02 QNN/Hexagon)
 
-- **(a)**: run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥ 2× over the CPU baseline). Feeds T19.
-- **(b)**: needs real ANE / Hexagon silicon; this machine has neither an NPU bakeoff rig nor the delegate runtimes.
+- **(a)**: first land executable delegate graph/submodel paths, then run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥ 2× over the CPU baseline). Feeds T19. The current scaffolds deliberately report `supports = false` for every op; non-empty graphs return `UnsupportedOp` and empty-graph `execute` returns `NotImplemented`, so a placement-only probe cannot produce a valid bakeoff yet.
+- **(b)**: implementation needs the ratified CoreML model-supply ADR and the SDK-gated QNN graph API transcription; measurement then needs real ANE / Hexagon silicon. This machine has neither an NPU bakeoff rig nor the QNN delegate runtime.
 - **(c)**: spec M5-01-T24 / M5-02-T12 (gitignore-local); runbook is the sub-sections below.
 - **(d)**: a `PASS` / `FAIL` / `INSUFFICIENT DATA` verdict vs the 2× bar is recorded for each delegate in the sibling template files.
 
@@ -146,11 +146,11 @@ recorded verdict feeding **§1.3 T19 GO/NO-GO** on the C-ABI symbol call.
 
 ### 1.5.4 Bakeoff checklist
 
-- [ ] CoreML placement probe (Xcode Instruments MLModel trace wrapper) is wired up + emits the expected JSON.
+- [ ] CoreML delegate graph/submodel execution and placement probe (Xcode Instruments MLModel trace wrapper) are wired up + emit the expected JSON.
 - [ ] CoreML baseline captured (`cpu`, N=10, CV ≤ 0.20).
 - [ ] CoreML NPU captured (`coreml`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
 - [ ] CoreML verdict recorded in `docs/handoff/m5-01-coreml-bakeoff-YYYY-MM-DD.md`.
-- [ ] QNN placement probe (`qnn-net-run --profiling_option=op` wrapper) is wired up + emits the expected JSON.
+- [ ] QNN graph construction/execution and placement probe (`qnn-net-run --profiling_option=op` wrapper) are wired up + emit the expected JSON.
 - [ ] QNN baseline captured (`cpu`, N=10, CV ≤ 0.20).
 - [ ] QNN NPU captured (`qnn`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
 - [ ] QNN verdict recorded in `docs/handoff/m5-02-qnn-bakeoff-YYYY-MM-DD.md`.

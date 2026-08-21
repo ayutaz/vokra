@@ -40,6 +40,7 @@ from vokra._bindings import (  # noqa: E402
     VOKRA_EVENT_TOKEN,
     vokra_event_t,
 )
+from vokra.errors import VokraInvalidArgumentError, VokraOtherError  # noqa: E402
 from vokra.stream import Event, Stream  # noqa: E402
 
 
@@ -258,7 +259,7 @@ def test_reenter_context_after_close_raises(fake_lib: FakeLib, tmp_model: str) -
 def test_create_failure_raises_and_no_destroy(fake_lib: FakeLib, tmp_model: str) -> None:
     fake_lib.next_status = 5  # VOKRA_ERROR_INVALID_ARGUMENT
     fake_lib.last_error_bytes = b"synthetic failure"
-    with pytest.raises(RuntimeError, match="synthetic failure"):
+    with pytest.raises(VokraInvalidArgumentError, match="synthetic failure"):
         Session.open(tmp_model, lib=fake_lib)
     # A failed create must not schedule a destroy — there is no handle
     # to release, and calling destroy(NULL) is UB in C.
@@ -458,7 +459,7 @@ def test_stream_lifecycle(stream_lib: FakeStreamLib, tmp_model: str) -> None:
     # -- open failure raises and leaves no dangling handle ------------
     session2 = Session.open(tmp_model, lib=stream_lib)
     stream_lib.next_stream_status = 5  # VOKRA_ERROR_INVALID_ARGUMENT
-    with pytest.raises(RuntimeError, match="vokra_stream_open failed"):
+    with pytest.raises(VokraInvalidArgumentError):
         Stream(session2, sample_rate_hz=16000, lib=stream_lib)
     # Failed open must not have registered a destroy pairing.
     assert len(stream_lib.stream_destroy_calls) == 5
@@ -664,7 +665,7 @@ def test_stream_push_status_failure_raises(
     session, s = _open_stream(stream_lib, tmp_model)
     stream_lib._init_pushpoll()
     stream_lib.push_status = 5  # VOKRA_ERROR_INVALID_ARGUMENT
-    with pytest.raises(RuntimeError, match="vokra_stream_push_pcm failed"):
+    with pytest.raises(VokraInvalidArgumentError):
         s.push([0.1, 0.2])
     s.close()
     session.close()
@@ -676,10 +677,10 @@ def test_stream_poll_status_failure_raises(
     session, s = _open_stream(stream_lib, tmp_model)
     stream_lib._init_pushpoll()
     stream_lib.poll_status = 9  # VOKRA_ERROR_OTHER
-    with pytest.raises(RuntimeError, match="vokra_stream_poll failed"):
+    with pytest.raises(VokraOtherError):
         s.poll(capacity=8)
     stream_lib.poll_events_status = 9
-    with pytest.raises(RuntimeError, match="vokra_stream_poll_events failed"):
+    with pytest.raises(VokraOtherError):
         s.poll_events(capacity=8)
     s.close()
     session.close()

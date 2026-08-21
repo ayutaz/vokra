@@ -29,14 +29,25 @@ declared in `[build-system].requires` in pyproject.toml and is not a
 runtime dependency; it is not included in the wheel artifact.
 
 --------------------------------------------------------------------------
-3. Optional runtime interop: numpy (BSD-3-Clause, optional)
+3. Build-time transitive dependency: pathspec (MPL-2.0, build-only)
 --------------------------------------------------------------------------
-numpy is an optional interop for zero-copy audio buffer exchange. It is
-imported lazily inside `vokra.audio` and is never a hard install
-dependency of the `vokra` package.
+hatchling uses pathspec to select files while constructing the wheel. Vokra
+does not modify pathspec, and neither pathspec nor any of its source files is
+included in the resulting wheel. This build-only use was evaluated under the
+repository's case-by-case MPL-2.0 policy on 2026-08-20; upstream licensing:
+https://github.com/cpburnz/python-pathspec/blob/master/LICENSE-MPL-2.0
 
 --------------------------------------------------------------------------
-4. Zero third-party runtime dependencies
+4. Optional runtime interop: numpy (BSD-3-Clause, optional)
+--------------------------------------------------------------------------
+numpy is optional caller-side interop for zero-copy audio buffer exchange.
+`Stream.push` recognizes a contiguous float32 array through its buffer/ctypes
+attributes; `vokra` does not import numpy, and numpy is never a hard install
+dependency of the `vokra` package. The extra is constrained to numpy 1.x so
+its declared license remains within the repository allowlist.
+
+--------------------------------------------------------------------------
+5. Zero third-party runtime dependencies
 --------------------------------------------------------------------------
 Per Vokra invariant NFR-DS-02, `pip install vokra` MUST NOT pull any
 Python package other than `vokra` itself. Any change to

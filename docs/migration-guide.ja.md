@@ -122,12 +122,12 @@ vokra-cli convert --model whisper \
 
 ## 4. `faster-whisper`（Python）から
 
-direct Python package は現在の migration target ではありません。
-2026-08-18 時点では pre-alpha の `ctypes` scaffold が存在しますが、生成済み
-table は旧 14-function subset、現行 C header は 41 functions で、package root
-も `Session` を export していません。
-[binding status](../bindings/python/README.md) を参照し、production の
-`faster-whisper` import を `from vokra import Session` へまだ置換しないでください。
+source Python packageは`Session`をexportし、生成済み`ctypes` tableも現行C
+headerの41 functionsをすべて覆います。ただし未公開のpre-1.0 surfaceです。
+4 native wheelsのfinal-head CIとPyPI/TestPyPI公開先の明示承認は未完了です。
+[binding status](../bindings/python/README.md)を参照してください。source checkout
+での評価は可能ですが、特定versionが公開・検証されるまではproductionの
+`faster-whisper`依存をregistry上の`vokra` packageへ置換しないでください。
 
 現在文書化されている **HTTP クライアントのドロップイン置換**は
 [`integrations/vokra-server`](../integrations/vokra-server) を起動して

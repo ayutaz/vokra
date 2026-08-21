@@ -55,6 +55,18 @@ if TYPE_CHECKING:  # pragma: no cover
 _VOKRA_OK = 0
 
 
+def _check_status(status: int, lib: ctypes.CDLL) -> None:
+    """Raise the typed Vokra error for a failed stream ABI call."""
+    if status == _VOKRA_OK:
+        return
+    # Import lazily so ``import vokra`` still does not import ``_native`` or
+    # attempt to resolve the shared library. No FFI call occurs between the
+    # failed operation and this thread-local error read.
+    from ._native import _check_status as check_native_status
+
+    check_native_status(status, lib=lib)
+
+
 class Event(Tuple[int, int, float]):
     """Immutable 3-tuple view of ``vokra_event_t``.
 
@@ -160,15 +172,7 @@ class Stream(Handle):
             ctypes.c_int32(int(sample_rate_hz)),
             ctypes.byref(out_stream),
         )
-        if status != _VOKRA_OK:
-            # T09 will replace this with the VokraError hierarchy that
-            # reads vokra_last_error() on the same thread. For T08/T11
-            # we keep the failure loud but self-contained so this
-            # module does not depend on errors.py yet.
-            raise RuntimeError(
-                f"vokra_stream_open failed (status={status}); "
-                "see vokra_last_error() for detail"
-            )
+        _check_status(status, lib)
         if not out_stream.value:
             # Defensive: OK status but NULL out-pointer would be a
             # runtime contract violation. Fail loud rather than proceed
@@ -243,11 +247,7 @@ class Stream(Handle):
             ptr,
             ctypes.c_size_t(n),
         )
-        if status != _VOKRA_OK:
-            raise RuntimeError(
-                f"vokra_stream_push_pcm failed (status={status}); "
-                "see vokra_last_error() for detail"
-            )
+        _check_status(status, self._lib)
 
     def poll(self, capacity: int = 64) -> List[float]:
         """Drain up to ``capacity`` produced audio samples from the stream.
@@ -285,11 +285,7 @@ class Stream(Handle):
             ctypes.c_size_t(capacity),
             ctypes.byref(produced),
         )
-        if status != _VOKRA_OK:
-            raise RuntimeError(
-                f"vokra_stream_poll failed (status={status}); "
-                "see vokra_last_error() for detail"
-            )
+        _check_status(status, self._lib)
         n = int(produced.value)
         if n < 0 or n > capacity:
             # Defensive: a broken runtime that reports produced >
@@ -332,11 +328,7 @@ class Stream(Handle):
             ctypes.c_size_t(capacity),
             ctypes.byref(produced),
         )
-        if status != _VOKRA_OK:
-            raise RuntimeError(
-                f"vokra_stream_poll_events failed (status={status}); "
-                "see vokra_last_error() for detail"
-            )
+        _check_status(status, self._lib)
         n = int(produced.value)
         if n < 0 or n > capacity:
             raise RuntimeError(

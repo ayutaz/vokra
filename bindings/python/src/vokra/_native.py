@@ -5,7 +5,7 @@ Responsibilities
 ----------------
 1. Resolve the prebuilt ``libvokra`` shared object for the current
    ``(sys.platform, platform.machine())`` combination (D5/D10:
-   linux x86_64/aarch64, macOS universal2, Windows x86_64).
+   Linux x86_64/aarch64, separate macOS arm64/x86_64 wheels, Windows x86_64).
 2. Load it via ``ctypes.CDLL`` and attach the argtypes/restype declared
    in ``_bindings.PROTOTYPES`` (T07 codegen).
 3. Provide :func:`_check_status` — the single choke-point every
@@ -97,7 +97,7 @@ def _lib_filename() -> str:
             message=(
                 f"unsupported OS for vokra native binding: sys.platform={sys.platform!r}, "
                 f"machine={platform.machine()!r}. Supported: linux (x86_64/aarch64), "
-                f"macOS (universal2), Windows (x86_64)."
+                f"macOS (arm64/x86_64), Windows (x86_64)."
             ),
         )
     machine = platform.machine().lower()

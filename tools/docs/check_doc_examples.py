@@ -35,20 +35,12 @@ THE THREE TIERS
           the gated / nightly workflows (parity-*-real.yml, nightly-*.yml),
           not to a per-PR job.
 
-WHY A "KNOWN GAP" LEDGER
+PYTHON ROOT-SURFACE RULE
 ------------------------
-Two doc claims describe surface the implementation has NOT yet grown:
-`bindings/python/src/vokra/__init__.py` is a self-declared "T06 skeleton"
-that re-exports nothing, and `vokra.__abi_version__` is promised by
-bindings/python/README.md but not implemented. Pretending those pass would
-be a fabricated green; hard-failing them would make X-08 (a CI-wiring WP)
-block on someone else's unfinished feature.
-
-So they are PINNED in KNOWN_GAPS with a reason. A pinned gap is reported
-loudly on every run but does not fail the build — AND the ledger is
-self-cleaning: if a pinned gap becomes satisfiable (the implementation caught
-up), the checker FAILS and tells you to delete the entry. That is what stops
-the ledger from silently rotting into a permanent hole.
+`from vokra import Name` is checked against the names deliberately exported by
+`vokra.__all__`, while imports from a concrete submodule are checked against
+the package-wide source surface. There is no Python known-gap bypass: a root
+re-export promised by a document must exist now or the document check fails.
 
 Usage:
     uv run --no-project --python 3.12 python \
@@ -120,23 +112,6 @@ TIER_C_LANGS = {
     "csharp": "needs the Unity C# toolchain (nightly-il2cpp.yml)",
     "(none)": "untagged prose block (UI steps / HTTP headers) — nothing to check",
 }
-
-# Pinned known gaps. Each entry: key -> (reason, closing-ticket pointer).
-# See the module docstring for why these are pinned rather than hard-failed.
-KNOWN_GAPS = {
-    "python:import:vokra.__init__-reexport": (
-        "bindings/python/src/vokra/__init__.py is a self-declared T06 skeleton "
-        "(`__all__ = ['__version__']`); Session / errors live in submodules and "
-        "are not re-exported yet. Names are therefore resolved package-wide.",
-        "bindings/python/src/vokra/__init__.py docstring (T07-T11)",
-    ),
-    "python:attr:__abi_version__": (
-        "vokra.__abi_version__ is promised by bindings/python/README.md:23 but "
-        "not implemented in __init__.py (only __version__ exists).",
-        "bindings/python/README.md:23",
-    ),
-}
-
 
 # --------------------------------------------------------------- extractor --
 class Block:
@@ -228,7 +203,7 @@ def cli_surface(root: pathlib.Path):
 
 
 def python_surface(root: pathlib.Path):
-    """Names defined anywhere in the vokra Python package + Session methods."""
+    """Return package-wide names, root exports, and Session methods."""
     pkg = root / "bindings/python/src/vokra"
     if not pkg.is_dir():
         raise SystemExit("setup error: bindings/python/src/vokra not found")
@@ -240,7 +215,24 @@ def python_surface(root: pathlib.Path):
         names.update(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", text, re.M))
         if py.name in ("session.py", "_handles.py"):
             session_methods.update(re.findall(r"^    def\s+([A-Za-z_][A-Za-z0-9_]*)", text, re.M))
-    return names, session_methods
+
+    init_path = pkg / "__init__.py"
+    init_tree = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
+    init_exports: set[str] = set()
+    for node in init_tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets):
+            continue
+        if not isinstance(node.value, (ast.List, ast.Tuple)):
+            raise SystemExit("setup error: vokra.__all__ must be a literal list or tuple")
+        for item in node.value.elts:
+            if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+                raise SystemExit("setup error: every vokra.__all__ entry must be a string literal")
+            init_exports.add(item.value)
+    if not init_exports:
+        raise SystemExit("setup error: parsed no names from vokra.__all__")
+    return names, init_exports, session_methods
 
 
 def js_surface(root: pathlib.Path):
@@ -411,10 +403,18 @@ def check_c_block(block: Block, root, problems, gaps):
             problems.append(f"{block.where()}: `c` block does not compile against include/vokra.h:\n{detail}")
 
 
-PY_IMPORT = re.compile(r"^from\s+vokra(?:\.\w+)?\s+import\s+(\(([^)]*)\)|(.+))$", re.M)
+PY_IMPORT = re.compile(
+    r"^from\s+(vokra(?:\.\w+)?)\s+import\s+(\(([^)]*)\)|(.+))$", re.M
+)
 
 
-def check_python_block(block: Block, names, session_methods, problems, gaps):
+def check_python_block(
+    block: Block,
+    names,
+    init_exports,
+    session_methods,
+    problems,
+):
     body = block.body
     try:
         ast.parse(body, filename=block.where(), mode="exec")
@@ -425,24 +425,30 @@ def check_python_block(block: Block, names, session_methods, problems, gaps):
         )
         return
 
-    # (1) Names imported from `vokra` must resolve somewhere in the package.
+    # (1) Root imports must be deliberate __all__ exports. Concrete-submodule
+    # imports retain package-wide resolution until this lightweight checker
+    # grows a per-module AST index.
     for m in PY_IMPORT.finditer(body):
-        raw = m.group(2) if m.group(2) is not None else (m.group(3) or "")
+        module = m.group(1)
+        raw = m.group(3) if m.group(3) is not None else (m.group(4) or "")
+        allowed = init_exports if module == "vokra" else names
         raw = re.sub(r"#.*", "", raw)
         for nm in (x.strip() for x in raw.split(",")):
             if not nm or nm == "*":
                 continue
             nm = nm.split(" as ")[0].strip()
-            if nm not in names:
+            if nm in allowed:
+                continue
+            if module == "vokra":
                 problems.append(
-                    f"{block.where()}: `from vokra import {nm}` — no such name in "
-                    f"bindings/python/src/vokra/"
+                    f"{block.where()}: `from vokra import {nm}` — {nm!r} is not "
+                    "exported by bindings/python/src/vokra/__init__.py::__all__"
                 )
-    if PY_IMPORT.search(body):
-        gaps.append(
-            f"{block.where()}: names resolved package-wide "
-            f"(KNOWN GAP python:import:vokra.__init__-reexport)"
-        )
+            else:
+                problems.append(
+                    f"{block.where()}: `from {module} import {nm}` — no such name "
+                    "in bindings/python/src/vokra/"
+                )
 
     # (2) Methods called on a Session-typed local must exist on Session.
     #     Free calls like `read_wav_mono_f32(f)` are NOT checked: a name that
@@ -460,9 +466,7 @@ def check_python_block(block: Block, names, session_methods, problems, gaps):
 
     # (3) `vokra.<attr>` module attributes.
     for attr in re.findall(r"\bvokra\.(__\w+__)", body):
-        if f"python:attr:{attr}" in KNOWN_GAPS:
-            gaps.append(f"{block.where()}: vokra.{attr} (KNOWN GAP python:attr:{attr})")
-        elif attr not in names:
+        if attr not in init_exports:
             problems.append(f"{block.where()}: `vokra.{attr}` is not defined in the binding")
 
 
@@ -531,7 +535,7 @@ def run_check(root: pathlib.Path, docs, listing=False):
         return 0
 
     subs, kinds = cli_surface(root)
-    py_names, sess_methods = python_surface(root)
+    py_names, init_exports, sess_methods = python_surface(root)
     js_exports, js_name = js_surface(root)
 
     for b in blocks:
@@ -544,7 +548,7 @@ def run_check(root: pathlib.Path, docs, listing=False):
             check_c_block(b, root, problems, gaps)
         elif b.lang == "python":
             check_tier_a(b, subs, kinds, root, problems)  # paths inside comments too
-            check_python_block(b, py_names, sess_methods, problems, gaps)
+            check_python_block(b, py_names, init_exports, sess_methods, problems)
         elif b.lang == "js":
             check_js_block(b, js_exports, js_name, problems)
         elif b.lang == "json":
@@ -555,26 +559,6 @@ def run_check(root: pathlib.Path, docs, listing=False):
                 f"(silently ignoring it would be a fabricated pass)"
             )
 
-    # Anti-rot: a pinned gap that no longer applies must be deleted.
-    if "__abi_version__" in py_names:
-        problems.append(
-            "KNOWN_GAPS entry 'python:attr:__abi_version__' is stale — the binding now "
-            "defines it. Delete the entry from tools/docs/check_doc_examples.py."
-        )
-    # Read the DECLARED export list, not the whole file: __init__.py's docstring
-    # names Session/Stream/VokraError in prose ("populated by later tickets"),
-    # so a substring test over the file would report the gap as closed while it
-    # is still open.
-    init_src = (root / "bindings/python/src/vokra/__init__.py").read_text(encoding="utf-8")
-    m_all = re.search(r"^__all__\s*=\s*\[([^\]]*)\]", init_src, re.M)
-    declared = {x.strip().strip("\"'") for x in (m_all.group(1).split(",") if m_all else [])}
-    if "Session" in declared:
-        problems.append(
-            "KNOWN_GAPS entry 'python:import:vokra.__init__-reexport' is stale — "
-            "__init__.py now exports Session. Delete the entry and switch the "
-            "python import check to __init__-level resolution."
-        )
-
     print(f"checked {len(blocks)} block(s) across {len(docs)} doc(s)")
     if deferred:
         print(f"\nTIER C — deferred, NOT verified ({len(deferred)}):")
@@ -584,8 +568,6 @@ def run_check(root: pathlib.Path, docs, listing=False):
         print(f"\nANNOUNCED GAPS — checked partially ({len(gaps)}):")
         for g in gaps:
             print(f"  {g}")
-        for key, (reason, ticket) in KNOWN_GAPS.items():
-            print(f"  pinned: {key}\n      reason: {reason}\n      see: {ticket}")
     if problems:
         print(f"\ncheck-doc-examples: FAIL ({len(problems)})", file=sys.stderr)
         for p in problems:
@@ -618,6 +600,7 @@ scripts/build-ios.sh
 
 ```python
 from vokra import Session
+from vokra.errors import VokraError
 
 with Session.open("m.gguf") as s:
     # `read_wav_mono_f32` is a doc-local pseudo-helper, NOT a vokra API.
@@ -638,6 +621,7 @@ RED_DOCS = {
     ),
     "bad-path": '```sh\nscripts/build-nonexistent-thing.sh\n```\n',
     "bad-import": '```python\nfrom vokra import NoSuchSymbol\n```\n',
+    "bad-root-reexport": '```python\nfrom vokra import vokra_event_t\n```\n',
     "bad-python-syntax": '```python\ndef broken(:\n    pass\n```\n',
     "bad-method": (
         '```python\nfrom vokra import Session\n'

@@ -399,16 +399,17 @@ jobs:
 
   # M2-12-T16 Python binding license audit (NFR-LC-02, NFR-LC-04). Belt-and-
   # suspenders with the root `license` job (which owns the Rust side via
-  # cargo-deny). This job enforces the Python-side allowlist on the build /
-  # runtime deps declared in `bindings/python/pyproject.toml` so a GPL / LGPL
-  # crate cannot creep in through a Python transitive dep (e.g. a hatchling
-  # plugin flipping license, or a wheel-time build tool). Runs in an isolated
-  # venv so the runner's ambient site-packages cannot mask a bad license.
+  # cargo-deny). This job enforces the Python-side allowlist on every build and
+  # optional dependency declared in `bindings/python/pyproject.toml`, including
+  # their transitive dependencies. Runtime dependencies are separately required
+  # to remain empty. Runs in an isolated venv so the runner's ambient packages
+  # cannot mask a bad license.
   #
   # Allowlist (matches D13 / plan §1):
   #   Apache-2.0 ; MIT ; BSD-3-Clause ; BSD-2-Clause ; PSF-2.0 ; Python-2.0
   # (numpy = BSD-3, hatchling = MIT, pytest = MIT are all covered; anything
-  # outside this set — GPL / LGPL / MPL / CC-BY-NC — fails the job.)
+  # outside this set fails, except for the documented build-only pathspec
+  # MPL-2.0 exception in docs/license-audit.md and bindings/python/NOTICE.)
   python-license-audit:
     name: python-license-audit
     runs-on: ubuntu-latest
@@ -423,26 +424,24 @@ jobs:
           python-version: '3.12'
       - name: Install uv
         uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-      - name: Create isolated venv and install binding + audit tool
-        # `uv pip install .` reads bindings/python/pyproject.toml so build / runtime
-        # deps materialize in this venv. `pip-licenses` (MIT) enumerates every
-        # installed distribution and enforces --allow-only. Isolated venv so the
-        # runner's ambient site-packages cannot mask a bad license.
+      - name: Create isolated venv and install declared audit requirements
+        # Do not install the vokra wheel here: production wheels intentionally
+        # fail to build without a staged native library. The extractor reads the
+        # source metadata directly, enforces dependencies = [], and emits the
+        # build + optional requirements that this audit must materialize.
         run: |
           set -euo pipefail
           uv venv --python 3.12 /tmp/vokra-py-audit
-          if [ -f bindings/python/pyproject.toml ]; then
-            uv pip install --python /tmp/vokra-py-audit/bin/python ./bindings/python
-          else
-            echo "bindings/python/pyproject.toml not yet present — auditing pip-licenses toolchain only."
-          fi
-          uv pip install --python /tmp/vokra-py-audit/bin/python pip-licenses
+          uv run --no-project --python 3.12 python \
+            bindings/python/scripts/license_requirements.py extract \
+            bindings/python/pyproject.toml \
+            > /tmp/vokra-py-audit-requirements.txt
+          uv pip install --python /tmp/vokra-py-audit/bin/python \
+            --requirements /tmp/vokra-py-audit-requirements.txt
       - name: pip-licenses --allow-only (NFR-LC-02 GPL/LGPL block)
-        # --allow-only fails nonzero if ANY installed dist reports a license
-        # outside the allowlist. The venv holds only the binding's transitive
-        # deps + pip-licenses itself; pip / setuptools / prettytable / wheel
-        # are added to the allowlist so the toolchain itself does not trip the
-        # gate (they are all MIT / BSD / Apache).
+        # The first-party verifier fails if ANY installed dist reports a license
+        # outside the allowlist. It owns the package-scoped pathspec exception;
+        # a global MPL allow entry would defeat the case-by-case policy.
         #
         # Historical note: the flag `--with-system=false` used to hide
         # pip/setuptools, but pip-licenses 5.x turned `-s/--with-system` into a
@@ -452,10 +451,13 @@ jobs:
         # allowlist expansion to cover the standard toolchain packages.
         run: |
           set -euo pipefail
-          uv run --no-project --python /tmp/vokra-py-audit/bin/python pip-licenses \
-            --format=markdown \
-            --allow-only 'Apache-2.0;Apache Software License;MIT;MIT License;BSD-3-Clause;BSD License;BSD-2-Clause;PSF-2.0;Python-2.0' \
-            | tee /tmp/pip-licenses.md
+          uv run --no-project --python /tmp/vokra-py-audit/bin/python \
+            pip-licenses --format=json > /tmp/pip-licenses.json
+          uv run --no-project --python 3.12 python \
+            bindings/python/scripts/license_requirements.py verify-report \
+            /tmp/pip-licenses.json
+          uv run --no-project --python /tmp/vokra-py-audit/bin/python \
+            pip-licenses --format=markdown | tee /tmp/pip-licenses.md
           {
             echo "### Python binding license audit"
             echo ""

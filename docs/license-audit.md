@@ -56,6 +56,7 @@ sign-off 済だが numerical parity 未確定のため default-on ではない�
 | **axum** or **actix-web** (server 用途) | MIT / Apache 2.0 | HTTP server | ○ | vLLM 互換 API 用 |
 | **candle-core** / **candle-transformers** (参考用) | Apache 2.0 / MIT | Rust ML | ○ | Whisper reference 実装として参照可、Vokra は自前実装だが kernel の参考にする |
 | **cbindgen** | MPL-2.0 | C ABI ヘッダ生成 | ○ (build-only) | ビルド時のみ、成果物には含まれない |
+| **pathspec** (Hatchling 推移依存) | **MPL-2.0** | Python wheel の file selection | ○ (build-only、2026-08-20 個別評価) | Hatchling 1.32.0 の build 環境でのみ使用。Vokra は pathspec を改変せず、pathspec の source/file は wheel に含まれないため larger work への copyleft 波及なし。`bindings/python/NOTICE` に明記し、Python CI は package-scoped 例外だけを許可（global MPL allow 禁止）。一次資料: https://github.com/cpburnz/python-pathspec/blob/master/LICENSE-MPL-2.0 |
 | **libfuzzer-sys** | **(MIT OR Apache-2.0) AND NCSA** | `fuzz/` の GGUF / safetensors / JSON parser fuzz harness | ○ (CI-only) | upstream `rust-fuzz/libfuzzer`: wrapper は MIT / Apache-2.0 dual、同梱 LLVM libFuzzer C++ は permissive BSD-family の NCSA。`deny.toml` はこの crate だけ NCSA を例外許可。root workspace から `exclude` した独立 workspaceで、release artifact・runtime・root `Cargo.lock` には入らず、GitHub Actions の fuzzing でのみ使用 |
 | **SBOM generator（first-party、`scripts/sbom/generate_spdx.py`）** | Apache 2.0（Vokra 本体） | SBOM (SPDX 2.3) 生成 | ○ (build-only) | M4-15。第三者 SBOM crate（cargo-sbom / cargo-cyclonedx 等）は不採用 — `cargo tree` + python3 標準ライブラリのみで生成し root Cargo.lock 不変（NFR-DS-02、ADR M4-15 §(b)）。成果物に入るのは生成された SPDX JSON のみ |
 

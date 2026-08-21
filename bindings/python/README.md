@@ -5,36 +5,36 @@ Python binding sources for **Vokra**, implemented as a thin
 The intended wheel bundles `libvokra.dylib`, `libvokra.so`, or `vokra.dll` and
 keeps third-party Python runtime dependencies at zero.
 
-## Status: pre-alpha, not a current release surface
+## Status: source implementation current, package unpublished
 
-**Reviewed:** 2026-08-20 against `main` at `6d64fdf`.
+**Reviewed:** 2026-08-20 against `main` at `234d368` plus the Python binding
+changes in this worktree.
 
 The package metadata is `0.1.0.dev0`; this checkout must not be documented as
-an installed `vokra==0.1.0` release. The source tree contains the loader,
-session, stream, and error modules, but `src/vokra/__init__.py` currently
-exports only `__version__`. Therefore examples such as
-`from vokra import Session` and `vokra.__abi_version__` are not part of the
-current package surface.
+an installed `vokra==0.1.0` release. The source tree exports `Session`,
+`Stream`, `Event`, and the typed `VokraError` hierarchy without loading the
+native library at import time. `vokra.__abi_version__` is not exposed: the C
+header has a runtime version function, not a separately versioned ABI symbol.
 
-There is also known C-ABI drift:
+The source-side C-ABI drift is closed in this worktree:
 
 - `include/vokra.h` currently exports 41 `vokra_*` functions;
-- the checked-in `src/vokra/_bindings.py` contains the earlier 14-function
-  ASR/TTS/streaming subset;
-- the generator's declaration parser recognizes only 39 of the 41 current
-  functions (it misses `vokra_backend_available` and
-  `vokra_session_options_create`), and generation then stops at
-  `vokra_aec_config_t` because the current structs, opaque handles, enums, and
-  integer widths are not all mapped;
-- `check-py-bindings.sh` exists but is not invoked by a GitHub workflow, so the
-  checked-in 14-function table can drift while every current CI check remains
-  green.
+- `src/vokra/_bindings.py` contains one prototype for every function;
+- the generator discovers all four enums, both concrete structs, and all seven
+  opaque handles, including the `uint8_t`, `uint64_t`, plain-`bool`, and
+  struct-pointer shapes that previously blocked generation;
+- the required `license` job runs the uv-only drift check, and the wheel smoke
+  loads the matching native library after asserting the public API and 41-entry
+  table.
 
-Do not publish a wheel or claim full C-ABI coverage until the generator supports
-the current structs, `_bindings.py` is regenerated, the intended public names
-are exported, and the binding test/release gates pass. The current generated
-file may still be useful for internal development against its 14-function
-subset, but it is not a 1:1 representation of the current header.
+This is still not a publication claim. A final branch CI run must prove the
+four release wheels against their bundled libraries, and PyPI/TestPyPI upload
+requires separate authorization and destination verification.
+
+The release matrix is Linux x86_64 (`manylinux_2_28`), macOS arm64, macOS
+x86_64, and Windows x86_64. The two macOS architectures are separate truthful
+wheels; this project does not claim a universal2 binary. The source loader also
+recognizes Linux aarch64, but that wheel is not in the current release matrix.
 
 ## Pre-1.0 compatibility
 
@@ -45,7 +45,8 @@ the ABI without a deprecation window.
 ## Design invariants
 
 - **Zero third-party runtime dependencies (NFR-DS-02).** `dependencies = []`
-  in `pyproject.toml`. NumPy is optional interop and is imported lazily.
+  in `pyproject.toml`. NumPy is optional caller-side interop and is not imported
+  by the package.
 - **Explicit errors, no silent fallback (FR-EX-08).** A non-OK C status maps to
   a `VokraError` subclass. Unsupported or unavailable GPU work must not fall
   back to CPU silently.
@@ -82,11 +83,10 @@ Use uv for all Python work. From the repository root:
 ```sh
 uv sync --python 3.12 --project bindings/python --extra dev
 uv run --python 3.12 --project bindings/python --extra dev \
-  pytest bindings/python/tests
+  python -m pytest bindings/python/tests
 ```
 
-The generated binding check currently fails honestly at
-`vokra_aec_config_t`; after adding support for the current C structs, run:
+Run the same generated binding check used by CI:
 
 ```sh
 uv run --no-project --python 3.12 python \
@@ -103,12 +103,12 @@ bindings/python/
 │   ├── gen-py-bindings.py
 │   └── check-py-bindings.sh
 ├── src/vokra/
-│   ├── __init__.py        # currently exports __version__ only
+│   ├── __init__.py        # lazy public Session/Stream/Event/error exports
 │   ├── _native.py         # ctypes.CDLL loader
-│   ├── _bindings.py       # generated; currently the 14-function subset
+│   ├── _bindings.py       # generated 41-function ctypes table
 │   ├── _handles.py        # opaque handle wrappers
-│   ├── session.py         # internal Session wrapper
-│   ├── stream.py          # internal Stream wrapper + optional NumPy fast path
+│   ├── session.py         # Session lifecycle + ASR/TTS wrapper
+│   ├── stream.py          # Stream lifecycle + push/poll/event wrapper
 │   ├── errors.py          # VokraError hierarchy
 │   └── _lib/              # native library injected by CI
 └── tests/
@@ -126,9 +126,12 @@ cp target/release/libvokra.dylib bindings/python/src/vokra/_lib/  # macOS
 uv build --project bindings/python --wheel --out-dir bindings/python/dist
 ```
 
-This only creates a development artifact. It does not resolve the ABI drift or
-authorize publication. Platform wheel targets in `pyproject.toml` and CI are
-release goals, not evidence that a compatible wheel is currently published.
+This only creates a development artifact and does not authorize publication.
+The build fails if the host library is absent or a requested tag names another
+OS/architecture. CI additionally runs auditwheel/delocate/delvewheel, validates
+the archive and binary architecture, and clean-installs each wheel on Python
+3.9 and 3.12. Passing those gates is still not evidence that a compatible wheel
+has been published.
 
 ## License
 

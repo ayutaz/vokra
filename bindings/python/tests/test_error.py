@@ -271,12 +271,9 @@ def test_check_status_without_lib_still_raises(monkeypatch) -> None:
 # still runs without the prebuilt cdylib on disk (same discipline as
 # test_session.py). The FakeLib scripts vokra_session_create_from_file
 # to return VOKRA_ERROR_IO and to set a thread-local errno string, then
-# we call _check_status right after — that's the exact pattern
-# session.py::Session.open will use once T09 refinement lands. Using
-# the wrapper primitives (_check_status + _read_last_error) rather than
-# the full Session.open FFI path keeps the test decoupled from the
-# transitional RuntimeError branch inside Session.open (which the
-# session.py docstring already flags as "T09 will refine this").
+# we call _check_status right after — the same-thread status/error pattern
+# used by session.py::Session.open. Using the wrapper primitives
+# (_check_status + _read_last_error) keeps this test focused on that mapping.
 
 
 class _MissingPathLib(FakeLib):

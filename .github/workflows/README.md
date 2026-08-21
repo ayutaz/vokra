@@ -4,9 +4,9 @@
 cron 時刻・required check name・trigger の記述に各 workflow file の comment との差異が
 あった場合、**本 file が真** とみなし、各 workflow file 側を後追いで揃えます。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（**実数 44 file**。旧記載「2026-07-23 時点で 20 file」は
+- 対象範囲: `.github/workflows/*.yml` 全件（**実数 45 file**。旧記載「2026-07-23 時点で 20 file」は
   その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **2026-08-18 網羅確認**: 44 workflow file の全てを本 index に収録済み。
+- **2026-08-20 網羅確認**: 45 workflow file の全てを本 index に収録済み。
   required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
   明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
@@ -21,7 +21,7 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 
 ## 1. Required checks (main branch protection)
 
-`main` への PR merge を gate する 14 checks。branch protection API 側の contexts と一対一に
+`main` への PR merge を gate する 16 checks。branch protection API 側の contexts と一対一に
 対応しなければならない。`build (*)` と `test (*)` は `ci.yml` の matrix expansion 由来で、
 `os: [ubuntu-latest, macos-latest, windows-latest]` の 3 展開を **必ずこの順** で確保する。
 `parity` は matrix job (`parity-matrix`) の aggregator（Wave 10 で分離済、matrix 直下では
@@ -44,17 +44,20 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 | dependency-review | dependency-review | .github/workflows/ci-security.yml | changed dependency の vulnerability / license / Scorecard gate |
 | documentation-links | documentation-links | .github/workflows/ci-security.yml | public documentation surface の link validation |
 | CodeQL | analyze (`codeql-rust`) | .github/workflows/codeql.yml | GitHub CodeQL Rust `security-extended` analysis |
+| pins.yaml ↔ workflow sync | pins-sync | .github/workflows/pins-sync-check.yml | `.github/pins.yaml` と workflow pin の双方向同期 |
+| gitleaks | gitleaks | .github/workflows/secret-scan.yml | working tree の secret scan（全履歴は nightly companion） |
 
 ---
 
 ## 2. Additional required and advisory checks
 
-§1 の14 contexts以外はmergeをgateしないinformational check。定期監視で赤化を
+§1 の16 contexts以外はmergeをgateしないinformational check。定期監視で赤化を
 検知し、依頼者判定でrequired昇格するかを判断する（初期 promotion 方針: 連続数週の
-緑が確認できた時点でownerに昇格提案）。§2.2の先頭4項目は2026-08-20にrequiredへ
-昇格済みで、詳細説明を重複掲載している。`pins.yaml ↔ workflow sync` は4週間の
-advisory soakを完了し、2026-08-20にhard-fail + 全PR起動へ変更した。PRとmainのgreenを
-確認後、§1とbranch protectionへ追加する（設定反映まではrequiredではない）。
+緑が確認できた時点でownerに昇格提案）。§2.2の先頭5項目は2026-08-20にrequiredへ
+昇格済みで、詳細説明を重複掲載している。`pins.yaml ↔ workflow sync` も4週間の
+advisory soakとPR/mainのgreen確認を完了し、同日にhard-fail + 全PR起動へ変更して
+§1およびbranch protectionへ追加済みである。`gitleaks` は2026-08-06から18回の
+main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ昇格した。
 
 ### 2.1 ci*.yml 内 (PR/push で常時走行、advisory)
 
@@ -86,7 +89,6 @@ advisory soakを完了し、2026-08-20にhard-fail + 全PR起動へ変更した�
 | python-parity-oracles | .github/workflows/ci-quality.yml | Python 側 parity oracle script の self-test |
 | shell-self-tests | .github/workflows/ci-quality.yml | `scripts/*.sh` の `--self-test` 集約 |
 | coverage (advisory) | .github/workflows/coverage.yml | Rust差分を含むPR / main pushのcoverage計測（prose-only PRは非起動） |
-| gitleaks (advisory) | .github/workflows/secret-scan.yml | PR / main push の secret scan |
 | gpu-backends | .github/workflows/ci-platform.yml | macos=metal / ubuntu=cuda opt-in feature の build/clippy/test (+ coreml/qnn delegate scaffold arm) |
 | build-target-vulkan-only | .github/workflows/ci-platform.yml | M4-15 CPU+Vulkan-only SKU build target 検証 |
 | riscv-cross-build | .github/workflows/ci-platform.yml | RVV 1.0 (M3-13) cross build + ISA dispatch asm 検査 |
@@ -97,7 +99,7 @@ advisory soakを完了し、2026-08-20にhard-fail + 全PR起動へ変更した�
 | ios-build | .github/workflows/ci.yml | iOS `libvokra.a` static build + `verify-xcframework.sh` |
 | parity-matrix | .github/workflows/ci.yml | fixture parity matrix leg (aggregator `parity` の元) |
 | unity-package | .github/workflows/ci.yml | Unity plugin package audit (M2-11、UNITY_LICENSE 未 provisioning ゆえ WARN skip) |
-| python-wheel-build | .github/workflows/ci.yml | cibuildwheel v2.23.4 + hatchling custom build hook (`vokra` wheel) |
+| python-wheel-build | .github/workflows/ci.yml + python-wheels.yml | 4 native wheels（manylinux x86_64 / macOS arm64+x86_64 / Windows x86_64）のrepair・archive/arch検証・Python 3.9/3.12 clean-installを集約 |
 
 ### 2.2 Security / supply chain / advanced Rust quality
 
@@ -110,6 +112,7 @@ advisory soakを完了し、2026-08-20にhard-fail + 全PR起動へ変更した�
 | dependency-review (`.github/workflows/ci-security.yml`) | PR | moderate以上の脆弱性、GPL/LGPL/AGPL/SSPL系licenseを持つ新規runtime/development依存を拒否し、変更依存のOpenSSF Scorecardも表示 |
 | documentation-links (`.github/workflows/ci-security.yml`) | PR / main / weekly / manual | README / CONTRIBUTING / `.github` / `docs` のリンク腐敗を lychee で検出 |
 | CodeQL (`codeql-rust`, `.github/workflows/codeql.yml`) | PR / main / weekly / manual | Rust を buildless `security-extended` query suite で SAST |
+| gitleaks (`.github/workflows/secret-scan.yml`) | PR / main / nightly / manual | working tree のsecret scanをrequired gate化し、nightly companionで全git履歴も検査 |
 | scorecard (`.github/workflows/scorecard.yml`) | main / branch-protection change / weekly / manual | OpenSSF Scorecard を SARIF と public results に送信 |
 | cargo-hack-each-feature (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR / main / weekly / manual | 全 feature の独立コンパイルと zero-dep lockfile 不変条件 |
 | cargo-semver-checks (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR | publishable crate の意図しない public API break を base SHA と比較 |
@@ -128,11 +131,11 @@ Dependabot security updates、private vulnerability reporting を有効化済み
 
 **2026-08-20 post-merge audit**: full-SHA workflow移行と`workflow-security`での検証、
 `workflow-security` / `dependency-review` / `documentation-links` / `codeql-rust`の
-required追加は完了した。残るGitHub側設定は、repository Actions policyの
-`sha_pinning_required`（現在false）と、branch protectionのstrict status checks /
-conversation resolution / linear history / administrator enforcement（いずれも現在false）
-である。CI hardening PRをPR上とmain上の両方でgreen確認してから、この順で有効化する。
-`pins.yaml ↔ workflow sync`のrequired追加も同じmain-green確認後に行う。
+required追加は完了した。repository Actions policyの`sha_pinning_required`と、branch
+protectionのstrict status checks / conversation resolution / linear history /
+administrator enforcementも有効化済みである。required contextsはcore 10 + security 5
+に`pins.yaml ↔ workflow sync` 1を加えた合計16、required approving reviewsはsingle-maintainer
+運用のため0、force pushとbranch deletionは禁止、merge方式はsquashのみである。
 
 ### 2.4 release.yml 内 (tag v* 起動、advisory & release パイプ)
 
@@ -190,6 +193,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | 05:17 | .github/workflows/nightly-asr-wer.yml | LibriSpeech `1272/128104` WER regression (`test_librispeech_wer.py`) |
 | 05:47 | .github/workflows/nightly-tier2-device.yml | Raspberry Pi 3B/4B/5/Zero 2 W 実機 RTF (self-hosted 必須、未登録なら clean skip) |
 | 06:17 | .github/workflows/nightly-full-parity.yml | staged GGUFを用いるdynamic full-parity matrix（全PRでSileroを実行、未設定legはplan summaryへ未測定記録） |
+| 06:47 | .github/workflows/secret-scan.yml | gitleaks `git log -p` 全履歴 secret scan（required working-tree gate のnightly companion） |
 
 ---
 
@@ -200,7 +204,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 
 | trigger | workflow | 主要 job (定義順) |
 |---|---|---|
-| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python / Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
+| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python（同一runでpython-wheels.ymlをcall）/ Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
 
 release パイプ内の job は全て advisory (branch protection 対象外)。crate publish は
 `crates-io-dry-run` の green を人手で確認したうえで `crates-io-publish` を走らせる 2 段。
@@ -400,8 +404,8 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
   catalog (catches "workflow edited without updating catalog" and
   "unregistered pin added to a workflow"). The 2026-07-23–08-20 advisory
   soak completed without observed false positives; the job now hard-fails
-  on every PR. Add its stable context to branch protection only after the
-  promoted form is green on both its PR and main (matches §2 policy).
+  on every PR. Its promoted form was green on both its PR and main, and the
+  stable context was added to branch protection on 2026-08-20.
 - `.github/workflows/corpus-drift-detector.yml` — weekly probe per §8.4.
 - `docs/adr/X-10-corpus-self-mirror.md` — the mirror decision itself
   (gitignore-local internal ADR).

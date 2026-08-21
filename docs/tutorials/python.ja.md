@@ -2,33 +2,34 @@
 
 [English](python.md) | **日本語**
 
-> **実装状態（2026-08-18 照合）: pre-alpha。** リポジトリには内部
-> `ctypes` モジュールがありますが、package root が現在公開するのは
-> `__version__` だけです。現時点で `from vokra import Session` が使える
-> リリース済みパッケージとして案内してはいけません。正確な差分と完了条件は
-> [binding README](../../bindings/python/README.md) を参照してください。
+> **実装状態（2026-08-20 照合）: source 実装済み・未公開。** package root は
+> `Session`、`Stream`、`Event`、typed error を export し、生成 table は現行
+> C ABI 41 functions をすべて覆います。PyPI 公開は未検証・未承認です。正確な
+> gate は [binding README](../../bindings/python/README.md) を参照してください。
 
 ## 現在存在するもの
 
 - package metadata: `0.1.0.dev0`、Python 3.9〜3.12。
 - runtime dependency は空。NumPy は任意の interop のみ。
-- 内部モジュール: native loader、handle/session/stream wrapper、9 個の error
-  subclass。音声 file の decode は caller 側の責務です。
-- 生成済み FFI table: 旧来の ASR/TTS/streaming 14-function subset。
-- 現行 C header: 41 functions。generator parser が認識するのは 39 で、さらに
-  新しい `vokra_aec_config_t` の型 mapping がないため再生成時に停止する。
+- public source API: `Session`、`Stream`、`Event`、9 個の error subclass。
+  音声 file の decode は caller 側の責務です。
+- 生成済み FFI table: 現行 C header の41 functions、4 enums、2 concrete
+  structs、7 opaque handles。
+- CI 契約: required `license` job がgenerator driftを検査し、各wheel smokeが
+  public names、table件数、native symbolsのloadを検証します。
 
-packaging/CI 上の wheel target は Linux x86_64/aarch64、macOS universal2、
-Windows x86_64 です。target の宣言は、互換 wheel が公開済みである証拠では
-ありません。
+release workflowがbuildするwheelはLinux x86_64（`manylinux_2_28`）、macOS
+arm64、macOS x86_64、Windows x86_64の4個です。macOS universal2はclaimせず、
+source loaderが対応するLinux aarch64も現時点ではrelease wheel対象外です。
+targetの宣言は、互換wheelが公開済みである証拠ではありません。
 
 ## 開発環境
 
 source checkout では必ず uv を使います:
 
 ```sh
-uv sync --project bindings/python --extra dev
-uv run --project bindings/python --extra dev pytest bindings/python/tests
+uv run --no-project --python 3.12 --with pytest \
+  python -m pytest bindings/python/tests
 ```
 
 実際の `ctypes` load を試す前に platform 用 C library を build/stage します:
@@ -39,12 +40,11 @@ cp target/release/libvokra.dylib bindings/python/src/vokra/_lib/  # macOS
 # Linux は libvokra.so、Windows は vokra.dll をコピーする。
 ```
 
-## 予定している public API
+## source public API
 
-ABI generator と package export を現行化した後の予定 surface は
-`Session`、`Stream`、`VokraError` subclass です。WAV 読込は package API に
-含めず、例では標準 library だけの local helper を使います。次は形を示す例で
-あり、現在の checkout で実行可能な quick start ではありません:
+source surface は `Session`、`Stream`、`Event`、`VokraError` subclassです。
+WAV読込はpackage APIに含めず、例では標準libraryだけのlocal helperを使います。
+上記のmatching native libraryをbuild/stageした後に実行できます:
 
 ```python
 import struct
@@ -73,14 +73,14 @@ with Session.open("whisper-base.gguf") as session:
     text = session.transcribe(pcm, sample_rate)
 ```
 
-この例を quick start に戻す前に、次をすべて満たす必要があります:
+source側の先頭3条件は実装済みです。release昇格には残り2条件の外部証跡が必要です:
 
 1. generator が `include/vokra.h` の全型を処理し、現行全関数を生成する。
 2. generated drift check が通る。
 3. `src/vokra/__init__.py` が文書化した名前を export し、test する。
-4. 対応 native library 入り wheel が load、ASR/TTS、streaming、error、各
-   platform smoke test を通る。
-5. 正確な公開 version と配布先を確認する。
+4. final-headの対応native library入りwheelがload、ASR/TTS、streaming、
+   error、各platform smoke testを通る。
+5. 正確なrelease versionと配布先が明示承認され、upload後に検証される。
 
 ## Error / thread 契約
 

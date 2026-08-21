@@ -58,9 +58,9 @@ import ctypes
 import os
 from typing import Optional, Tuple
 
-from ._bindings import bind
+from ._bindings import VOKRA_ERROR_OTHER, bind
 from ._handles import Handle
-from .errors import raise_from_status
+from .errors import VokraOtherError, raise_from_status
 
 # Status code for success, mirrored locally so we do not import the whole
 # enum tree from ``_bindings`` (which pulls every prototype). The value is
@@ -121,13 +121,11 @@ class Session(Handle):
           before the FFI call so the native side never has to deal with
           missing files (LC_NUMERIC-safe path handling: we pass bytes,
           not floats).
-        * ``RuntimeError`` if the native constructor returns non-OK. T09
-          will refine this to the ``VokraError`` hierarchy without
-          touching call sites.
+        * the matching ``VokraError`` subclass if the native constructor
+          returns non-OK.
         """
-        # Defer the actual load to T09; for now we require an explicit
-        # ``lib`` so this module has no import-time dependency on the
-        # not-yet-implemented ``_native.load_library``.
+        # Resolve lazily so importing the package never requires the native
+        # library. Tests pass an explicit fake ``lib``.
         if lib is None:  # pragma: no cover - guarded by tests via injection
             from ._native import load_library  # type: ignore[import-not-found]
 
@@ -145,16 +143,20 @@ class Session(Handle):
             path.encode("utf-8"),
             ctypes.byref(out),
         )
-        if status != _VOKRA_OK or not out.value:
+        if status != _VOKRA_OK:
             # Fetch the thread-local error string on the SAME frame the
             # status was observed — the C ABI documents ``vokra_last_error``
             # as thread-local and valid until the next FFI call on this
-            # thread. T09 will convert this to VokraError.
+            # thread, then map it to the matching VokraError subclass.
             last = lib.vokra_last_error()
             msg = last.decode("utf-8", "replace") if last else ""
-            raise RuntimeError(
-                f"vokra_session_create_from_file failed "
-                f"(status={status}): {msg!r}"
+            raise_from_status(status, message=msg)
+        if not out.value:
+            raise VokraOtherError(
+                message=(
+                    "vokra_session_create_from_file returned VOKRA_OK but a null handle"
+                ),
+                status=VOKRA_ERROR_OTHER,
             )
 
         return cls(lib, out)
@@ -249,7 +251,9 @@ class Session(Handle):
             raw = out_text.value  # bytes (NUL-terminated) or None
             text = raw.decode("utf-8", "replace") if raw else ""
         finally:
-            lib.vokra_string_free(out_text)
+            lib.vokra_string_free(
+                ctypes.cast(out_text, ctypes.POINTER(ctypes.c_char))
+            )
         return text
 
     def synthesize(self, text: str) -> Tuple[list, int]:
@@ -283,8 +287,8 @@ class Session(Handle):
         Notes
         -----
         We return a ``list[float]`` rather than a numpy array to keep
-        the binding numpy-optional (``audio.py`` has a numpy-aware
-        helper for callers who want zero-copy). Copying is done via
+        the binding dependency-free; callers may construct a numpy array
+        explicitly when needed. Copying is done via
         ``list(buf)`` which uses the CPython buffer protocol under the
         hood — negligible for sub-second clips.
         """

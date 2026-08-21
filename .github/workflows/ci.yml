@@ -375,6 +375,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - name: Install uv for repository Python gates
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
       - name: Ensure Cargo.lock exists (cargo-audit requires a lockfile)
         run: |
           if [ ! -f Cargo.lock ]; then
@@ -398,6 +400,11 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
+      - name: Python binding C ABI drift (41-function header coverage)
+        run: >-
+          uv run --no-project --python 3.12 python
+          bindings/python/scripts/gen-py-bindings.py --check
+          --header include/vokra.h
       - name: "vokra_ops:: citation resolution (phantom-primitive tripwire)"
         # CLAUDE.md ハルシネーション厳禁, enforced mechanically. Five consecutive
         # audit rounds found comments citing `vokra_ops::` modules that have
@@ -911,252 +918,31 @@ jobs:
           path: bindings/unity/com.vokra.unity-*.tgz
           retention-days: 14
 
-  # M2-12-T15 Python wheel build gate (BR-08, FR-API-01, NFR-DS-02, NFR-DS-03,
-  # NFR-LC-02, NFR-MT-02, NFR-MT-07, NFR-MT-08, NFR-RL-01). As of 2026-08-18
-  # this is an advisory artifact-producing job, not one of the 14 required
-  # branch-protection contexts.
-  #
-  # Design (M2-12 plan D5/D6/D12, T15):
-  #
-  #   * Pure-ctypes wrapper (D2) — no Rust code added, root Cargo.lock
-  #     untouched. NFR-DS-02 zero-dep invariant is preserved (verified by the
-  #     `license` job's check-zero-deps.sh; nothing new to enforce here).
-  #
-  #   * cibuildwheel (D6) generates platform-tagged wheels. The native lib is
-  #     injected into `src/vokra/_lib/` via CIBW_BEFORE_BUILD: the wheel does
-  #     NOT rebuild the Rust cdylib — it pulls the artifact produced by the
-  #     `build` job (vokra-capi-{macos,windows,linux}) that this job depends
-  #     on (`needs: build`). Same idiom the `unity-package` job uses to
-  #     consume the same three artifacts.
-  #
-  #   * Matrix Linux/macOS/Windows (D10, NFR-MT-02 Tier 1). iOS/Android are
-  #     out-of-scope for Python (Swift/Kotlin bindings own those). fail-fast:
-  #     false so a wheel regression on one OS does not mask another's status.
-  #
-  #   * Fresh-venv install + smoke import (D12 step 2) proves the wheel is
-  #     self-contained and platform-tagged correctly; a manylinux tag
-  #     mismatch or missing native lib surfaces here rather than at PyPI
-  #     upload time.
-  #
-  #   * pytest against `bindings/python/tests/` runs the four test categories
-  #     (smoke / leak / error / negative); parity/asr/tts tests skip cleanly
-  #     when GGUF fixtures are absent, following the same
-  #     VOKRA_WHISPER_BASE_GGUF gated-skip pattern as `server-compat` (T22).
-  #     FR-EX-08 no-silent-fallback shape: absence → explicit skip, never a
-  #     fabricated pass.
-  #
-  #   * Artifact `vokra-python-wheels-{os}` (retention 7d, same as
-  #     vokra-capi-*) is what `release.yml`'s `python-pypi-publish` job
-  #     (M2-12 D11) downloads for dry-run / real upload. No upload happens
-  #     here — that gate is owner-driven (T17, PYPI_API_TOKEN).
-  #
-  # Location: kept in ci.yml (not ci-platform.yml) because `needs: build` —
-  # each matrix cell downloads the per-OS libvokra.* artifact uploaded by
-  # the `build` job, and cross-workflow artifact downloads are not cheaply
-  # supported by GitHub Actions.
+  # M2-12-T15 Python wheel build gate. The reusable workflow compiles each
+  # native library on the platform claimed by its wheel, repairs external
+  # dependencies, verifies archive metadata/architecture, and emits one exact
+  # four-wheel manifest. The aggregator preserves the established advisory
+  # check name used by CI documentation and historical runs.
+  python-native-wheels:
+    name: python-native-wheels
+    uses: ./.github/workflows/python-wheels.yml
+    with:
+      version: "0.1.0.dev0"
+
   python-wheel-build:
     name: python-wheel-build
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    needs: python-native-wheels
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: "3.12"
-      - name: Install uv
-        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-      - name: Download macOS libvokra.dylib (from build/macos-latest)
-        if: matrix.os == 'macos-latest'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: vokra-capi-macos
-          path: bindings/python/native
-      - name: Download Windows vokra.dll (from build/windows-latest)
-        if: matrix.os == 'windows-latest'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: vokra-capi-windows
-          path: bindings/python/native
-      - name: Download Linux libvokra.so (from build/ubuntu-latest)
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: vokra-capi-linux
-          path: bindings/python/native
-      - name: Build wheels (cibuildwheel)
-        # CIBW_BEFORE_BUILD injects the vokra-capi cdylib artifact into
-        # src/vokra/_lib/ (D5) so the wheel is self-contained. Rust is NOT
-        # rebuilt inside cibuildwheel — the artifact from `build` is the
-        # single source of truth for native binaries (audit-trail CPU-only,
-        # NFR-DS-02).
-        # cibuildwheel: pin to `v2.23.4` (last v2 release). Bare `v2`
-        # stopped resolving (upstream deprecated the moving major alias in
-        # favour of explicit `vX.Y[.Z]` tags), and jumping straight to v3+
-        # trips a new "Build failed because a pure Python wheel was
-        # generated" hard failure — cibuildwheel v3.0 assumes any user of
-        # the tool is compiling native code inside the wheel. Our binding
-        # is a hybrid: pure-Python at the Python layer with a pre-built
-        # `libvokra.so` / `libvokra.dylib` / `vokra.dll` injected under
-        # `src/vokra/_lib/` via `CIBW_BEFORE_BUILD_*`. Hatchling packs the
-        # result as a pure-python wheel, which is exactly what we want
-        # (one wheel per OS+arch, no per-Python native ABI). v2.23.4 is
-        # the last release that accepts that shape without a repair step.
-        # See https://github.com/pypa/cibuildwheel/blob/main/docs/changelog.md
-        # (v3.0.0 changelog for the enforcement addition). Bump to v3+
-        # only after threading a proper `CIBW_REPAIR_WHEEL_COMMAND` that
-        # retags each wheel to a platform-specific slot.
-        uses: pypa/cibuildwheel@e5486e0b831d3a4954f271c2a053fbbc0e227d6a
-        with:
-          package-dir: bindings/python
-          output-dir: bindings/python/dist
+      - name: Propagate reusable wheel workflow result
         env:
-          # Restrict to CPython 3.9-3.12; skip PyPy and 32-bit targets.
-          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
-          CIBW_SKIP: "*-musllinux_* pp* *-win32 *-manylinux_i686"
-          CIBW_ARCHS_LINUX: "x86_64"
-          CIBW_ARCHS_MACOS: "universal2"
-          CIBW_ARCHS_WINDOWS: "AMD64"
-          # Inject the vokra-capi cdylib (downloaded above) into the package
-          # tree before hatchling packs the wheel. `{package}` expands to the
-          # cibuildwheel `package-dir` (bindings/python). The staged file
-          # depends on the runner OS.
-          CIBW_BEFORE_BUILD_LINUX: >-
-            mkdir -p {package}/src/vokra/_lib &&
-            cp {package}/native/libvokra.so {package}/src/vokra/_lib/libvokra.so
-          CIBW_BEFORE_BUILD_MACOS: >-
-            mkdir -p {package}/src/vokra/_lib &&
-            cp {package}/native/libvokra.dylib {package}/src/vokra/_lib/libvokra.dylib
-          CIBW_BEFORE_BUILD_WINDOWS: >-
-            if not exist {package}\src\vokra\_lib mkdir {package}\src\vokra\_lib &&
-            copy {package}\native\vokra.dll {package}\src\vokra\_lib\vokra.dll
-          # Skip the platform-repair step (`auditwheel repair` on Linux,
-          # `delocate-wheel` on macOS, `delvewheel repair` on Windows).
-          # Rationale: cibuildwheel's repair pipeline is designed for
-          # wheels that COMPILE native code — it rewrites RPATHs and
-          # normalises the wheel tag to `manylinux2014` / `macosx_11_0`
-          # / `win_amd64`. Our binding INJECTS a pre-built shared
-          # library that was already produced by the sibling `build`
-          # job against the runner's own glibc / macOS SDK / MSVCRT.
-          # On Linux this trips
-          #   auditwheel: error: cannot repair … because of the presence
-          #   of too-recent versioned symbols
-          # because the `libvokra.so` from the `build` job was built on
-          # Ubuntu 24.04 (glibc 2.39) and auditwheel wants to reach
-          # manylinux2014 (glibc 2.17). The wheels emitted here are for
-          # CI smoke (install → import → pytest on the SAME runner OS),
-          # not for PyPI publish (that pipeline lives in
-          # release.yml/publish-pypi.yml and would rebuild the native
-          # lib against manylinux-compatible SDKs). Non-empty repair
-          # commands are the correct answer for a real publish flow;
-          # here they are wrong.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
-      - name: Retag wheel to platform-manylinux / macosx / win form
-        # cibuildwheel + hatch_build.py stamps the wheel with the raw
-        # interpreter platform tag: `linux_x86_64` / `macosx_11_0_arm64` /
-        # `win_amd64`. Modern pip (25.x+) refuses to install `linux_*`
-        # tags because they are ambiguous about the glibc version — you
-        # must retag to `manylinux_X_Y_x86_64`. Same treatment for macOS
-        # (`macosx_11_0_arm64` is already accepted on macos-latest but
-        # we normalise for consistency). Windows `win_amd64` needs no
-        # retag. We call `python -m wheel tags` because it edits the
-        # wheel's RECORD and Wheel-Version metadata correctly instead of
-        # just renaming the file.
-        shell: bash
+          WHEEL_WORKFLOW_RESULT: ${{ needs.python-native-wheels.result }}
         run: |
           set -euo pipefail
-          cd bindings/python/dist
-          case "${{ matrix.os }}" in
-            ubuntu-*)
-              # Ubuntu 24.04 runner has glibc 2.39. `manylinux_2_28_x86_64`
-              # is the modern PEP 600 tag that most pip / manylinux-aware
-              # loaders accept — anything newer than 2_17 still installs
-              # on the same-runner smoke test we do below.
-              for whl in *.whl; do
-                uv run --no-project --python 3.12 --with wheel \
-                  python -m wheel tags --platform-tag manylinux_2_28_x86_64 "$whl"
-                rm "$whl"
-              done ;;
-            macos-*)
-              # Already-tagged `macosx_11_0_arm64` is fine; no-op. If the
-              # cibuildwheel matrix ever adds `macosx_10_9_x86_64` this
-              # branch is where the retag would go.
-              ls -la ;;
-            windows-*)
-              # `win_amd64` is pip's canonical Windows platform tag; no
-              # retag needed.
-              ls -la ;;
-          esac
-      - name: Fresh-venv install + smoke import
-        # D12 step 2: proves platform tag / native-lib bundling is correct.
-        # `pip install ./dist/*.whl` picks the wheel matching the runner's
-        # (OS, arch, cpython) tuple; if no wheel matches, pip fails loudly.
-        # `python -c "import vokra"` fires the ctypes.CDLL load path in
-        # `_native.py`, so a missing / mis-named native lib surfaces here
-        # rather than only in user reports post-release.
-        shell: bash
-        run: |
-          set -euo pipefail
-          VENV="${RUNNER_TEMP}/vokra-venv"
-          uv venv --python 3.12 "${VENV}"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            VENV_PYTHON="${VENV}/Scripts/python.exe"
-          else
-            VENV_PYTHON="${VENV}/bin/python"
+          if [ "$WHEEL_WORKFLOW_RESULT" != "success" ]; then
+            echo "Python native wheel workflow ended with: $WHEEL_WORKFLOW_RESULT" >&2
+            exit 1
           fi
-          # Install the freshly-built wheel from cibuildwheel output.
-          # cibuildwheel emits one wheel per matrix cell (cp39 / cp310 /
-          # cp311 / cp312). The runner's active Python here is 3.12
-          # (setup-python step above), so a bare `pip install *.whl`
-          # would ask pip to install every wheel — including cp39/10/11
-          # ones that don't match — and fail with
-          #   ERROR: vokra-...-cp310-cp310-*.whl is not a supported wheel
-          #   on this platform.
-          # `pip install --find-links dist vokra --no-index` instead lets
-          # pip's own tag-compatibility resolver pick the wheel whose
-          # `<pyver>-<abi>-<platform>` triple matches the runner. `--no-
-          # index` blocks any PyPI fallback so we only ever use the freshly
-          # built local wheels, and `--force-reinstall --no-deps` keeps
-          # the smoke idempotent (a cached wheel from an earlier run
-          # cannot mask a broken new build).
-          uv pip install --python "${VENV_PYTHON}" \
-              --find-links bindings/python/dist \
-              --no-index \
-              --force-reinstall \
-              --no-deps \
-              vokra
-          uv run --no-project --python "${VENV_PYTHON}" python -c \
-            "import vokra; print('vokra imported OK, version:', getattr(vokra, '__version__', 'unknown'))"
-          echo "VOKRA_WHEEL_TEST_PYTHON=${VENV_PYTHON}" >> "$GITHUB_ENV"
-      - name: pytest (bindings/python/tests, GGUF-gated skips)
-        # Runs smoke / leak / error / negative unconditionally; parity /
-        # asr / tts tests self-skip when VOKRA_WHISPER_BASE_GGUF is unset
-        # (same FR-EX-08 no-silent-fallback pattern as server-compat T22).
-        shell: bash
-        run: |
-          set -euo pipefail
-          : "${VOKRA_WHEEL_TEST_PYTHON:?Fresh-venv step did not export the interpreter path}"
-          uv pip install --python "${VOKRA_WHEEL_TEST_PYTHON}" pytest
-          uv run --no-project --python "${VOKRA_WHEEL_TEST_PYTHON}" \
-            python -m pytest bindings/python/tests -v
-      - name: Upload wheels artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: vokra-python-wheels-${{ matrix.os }}
-          path: bindings/python/dist/*.whl
-          retention-days: 7
-      - name: Verify root Cargo.lock unchanged
-        # D13 mutation-guard: pure-ctypes / hatchling wheel build must
-        # never touch the root workspace lockfile. Any diff means a Rust
-        # build snuck in and the zero-dep invariant is at risk.
-        shell: bash
-        run: git diff --exit-code Cargo.lock
+          echo "Python native wheel workflow completed successfully."
