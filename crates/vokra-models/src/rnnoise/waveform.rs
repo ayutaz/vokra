@@ -19,6 +19,16 @@ const PITCH_MAX_PERIOD: usize = 768;
 const PITCH_FRAME_SIZE: usize = 960;
 const PITCH_BUF_SIZE: usize = PITCH_MAX_PERIOD + PITCH_FRAME_SIZE;
 
+type FeatureAnalysis = (
+    [Complex32; FREQ_SIZE],
+    [Complex32; FREQ_SIZE],
+    [f32; N_BANDS],
+    [f32; N_BANDS],
+    [f32; N_BANDS],
+    [f32; N_FEATURES],
+    bool,
+);
+
 /// v0.2 ERB-band edges in 50 Hz FFT bins.  The two guard bands are part of
 /// upstream's triangular energy distribution and must not be dropped.
 const BAND_EDGES: [usize; N_BANDS + 2] = [
@@ -142,18 +152,7 @@ impl RnnoiseStream {
         Ok(result.pcm[..pending_len].to_vec())
     }
 
-    fn compute_features(
-        &mut self,
-        input: &[f32; FRAME_SIZE],
-    ) -> (
-        [Complex32; FREQ_SIZE],
-        [Complex32; FREQ_SIZE],
-        [f32; N_BANDS],
-        [f32; N_BANDS],
-        [f32; N_BANDS],
-        [f32; N_FEATURES],
-        bool,
-    ) {
+    fn compute_features(&mut self, input: &[f32; FRAME_SIZE]) -> FeatureAnalysis {
         let x = self.frame_analysis(input);
         let ex = compute_band_energy(&x);
 
@@ -446,7 +445,7 @@ fn lpc(autocorr: &[f32; 5]) -> [f32; 4] {
         rr += autocorr[index + 1];
         let reflection = -rr / error;
         output[index] = reflection;
-        for inner in 0..(index + 1) / 2 {
+        for inner in 0..index.div_ceil(2) {
             let left = output[inner];
             let right = output[index - 1 - inner];
             output[inner] = left + reflection * right;
@@ -571,7 +570,7 @@ fn remove_doubling(
     let mut gain = base_gain;
     let mut best_period = candidate;
 
-    for divisor in 2..=15 {
+    for (divisor, &second_check) in SECOND_CHECK.iter().enumerate().skip(2) {
         let first = (2 * candidate + divisor) / (2 * divisor);
         if first < min_period {
             break;
@@ -583,7 +582,7 @@ fn remove_doubling(
                 candidate + first
             }
         } else {
-            (2 * SECOND_CHECK[divisor] * candidate + divisor) / (2 * divisor)
+            (2 * second_check * candidate + divisor) / (2 * divisor)
         };
         let xy_first = inner_product(current, &x[origin - first..origin - first + length]);
         let xy_second = inner_product(current, &x[origin - second..origin - second + length]);

@@ -2860,7 +2860,7 @@ mod tests {
                     "message must name the competing fairseq naming convention, got `{msg}`"
                 );
                 assert!(
-                    msg.contains("kaldi_fbank") && msg.contains("Povey"),
+                    msg.contains("KaldiFbankWindow") && msg.contains("Povey"),
                     "message must name the window mismatch and the op that hard-codes it, \
                      got `{msg}`"
                 );
