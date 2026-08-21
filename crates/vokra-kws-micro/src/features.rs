@@ -187,11 +187,14 @@ impl FeatureExtractor {
         }
 
         // (4) Mel filterbank matmul: mel_energy[m] = Σ_k mel_fb[m,k] · power[k].
-        // Iterate row-wise over the fixed-shape filterbank (`chunks_exact`
+        // Iterate row-wise over the fixed-shape filterbank (`as_chunks`
         // hands out one `[N_BINS]` row per iteration, so `enumerate()` is
         // not needed on `mel_energy` for indexing).
         let mut mel_energy = [0.0f32; N_MELS];
-        for (e, row) in mel_energy.iter_mut().zip(self.mel_fb.chunks_exact(N_BINS)) {
+        for (e, row) in mel_energy
+            .iter_mut()
+            .zip(self.mel_fb.as_chunks::<N_BINS>().0)
+        {
             let mut acc = 0.0f32;
             for (w, p) in row.iter().zip(power.iter()) {
                 acc += w * p;

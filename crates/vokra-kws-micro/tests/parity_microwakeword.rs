@@ -309,7 +309,9 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
         features::WINDOW_SAMPLES,
     );
     let pcm: Vec<i16> = pcm_bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
 
@@ -329,7 +331,9 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
         features::N_MELS,
     );
     let features_ref: Vec<f32> = ref_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
 

@@ -1431,12 +1431,8 @@ impl AecStreamHandle for NkfAecStream {
     }
 
     fn reset(&mut self) {
-        for v in &mut self.h_prior {
-            *v = Complex32::ZERO;
-        }
-        for v in &mut self.h_posterior {
-            *v = Complex32::ZERO;
-        }
+        self.h_prior.fill(Complex32::ZERO);
+        self.h_posterior.fill(Complex32::ZERO);
         for v in [
             &mut self.h_rr,
             &mut self.h_ir,
