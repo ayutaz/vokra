@@ -695,6 +695,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::VocoderHifiGan => {
+            return Err(
+                "bench: arch `speecht5_hifigan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]`"
+                    .to_owned(),
+            );
+        }
         ModelTask::Asr => {
             let path = args
                 .input

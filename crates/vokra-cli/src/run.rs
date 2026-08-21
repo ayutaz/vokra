@@ -47,6 +47,7 @@ USAGE:
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
+    vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
@@ -62,9 +63,10 @@ OPTIONS:
                                 signal and must be paired with --far-end.
                                 For Mimi encode it is a mono WAV; for Mimi
                                 decode it is a `VKRMCODE` v1 code container.
-                                For BigVGAN it is raw little-endian f32 mel
-                                data in channel-major `[n_mels, frames]`
-                                order; frames are derived exactly from length.
+                                For BigVGAN and SpeechT5 HiFi-GAN it is raw
+                                little-endian f32 mel data in channel-major
+                                `[n_mels, frames]` order; frames are derived
+                                exactly from length.
     --far-end <path>            nkf_aec only: sample-aligned far-end/reference
                                 mono WAV. It must have exactly the same sample
                                 rate and sample count as --input; no trim,
@@ -115,7 +117,7 @@ OPTIONS:
                                 writes alignment TSV; CT-Punc
                                 writes exact UTF-8 restored text when present.
                                 Mimi requires it: code container for encode,
-                                WAV for decode. BigVGAN writes vocoded WAV.
+                                WAV for decode. Vocoders write waveform WAV.
     --tokens <path>             ct_punc only: `vokra-ct-punc-tsv-v1` UTF-8
                                 side-car. Each record is `<u32 id><TAB><token>`;
                                 tokens allow literal Unicode plus `\\`, `\t`,
@@ -597,6 +599,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::AecNkf => Some("NKF acoustic echo cancellation"),
         ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
         ModelTask::VocoderBigVgan => Some("BigVGAN neural vocoder"),
+        ModelTask::VocoderHifiGan => Some("SpeechT5 HiFi-GAN neural vocoder"),
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
@@ -888,6 +891,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::VocoderBigVgan => {
             run_bigvgan(&session, &a)?;
+        }
+        ModelTask::VocoderHifiGan => {
+            run_hifigan(&session, &a)?;
         }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
@@ -1759,7 +1765,7 @@ fn run_bigvgan(session: &Session, a: &RunArgs) -> Result<(), String> {
     let n_mels = model.config().in_channels as usize;
     let bytes = std::fs::read(input_path)
         .map_err(|error| format!("run (bigvgan): --input {input_path}: {error}"))?;
-    let (mel, frames) = parse_bigvgan_mel_bytes(&bytes, n_mels, input_path)?;
+    let (mel, frames) = parse_vocoder_mel_bytes(&bytes, n_mels, input_path, "bigvgan")?;
     let pcm = model
         .decode(&mel, frames)
         .map_err(|error| error.to_string())?;
@@ -1771,14 +1777,42 @@ fn run_bigvgan(session: &Session, a: &RunArgs) -> Result<(), String> {
     )
 }
 
-fn parse_bigvgan_mel_bytes(
+/// SpeechT5 HiFi-GAN uses the same explicit file layout as BigVGAN. The
+/// strict model binder applies its checkpoint-owned mean/scale normalization;
+/// the CLI does not infer or duplicate it.
+fn run_hifigan(session: &Session, a: &RunArgs) -> Result<(), String> {
+    const TASK: &str = "speecht5_hifigan";
+    if a.text.is_some() || a.tokens.is_some() || a.codec_mode.is_some() {
+        return Err(
+            "run (speecht5_hifigan): --text/--tokens/--codec-mode are not vocoder inputs; pass a raw channel-major mel file with --input"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (speecht5_hifigan): --input <mel.f32> is required")?;
+    let model = vokra_models::hifigan::HiFiGan::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let n_mels = model.attrs().n_mels;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (speecht5_hifigan): --input {input_path}: {error}"))?;
+    let (mel, frames) = parse_vocoder_mel_bytes(&bytes, n_mels, input_path, TASK)?;
+    let pcm = model
+        .decode(&mel, frames)
+        .map_err(|error| error.to_string())?;
+    emit_audio(TASK, &pcm, model.sample_rate(), a.output.as_deref())
+}
+
+fn parse_vocoder_mel_bytes(
     bytes: &[u8],
     n_mels: usize,
     input_path: &str,
+    task: &str,
 ) -> Result<(Vec<f32>, usize), String> {
     if bytes.len() % 4 != 0 {
         return Err(format!(
-            "run (bigvgan): {input_path} has {} bytes, not a whole number of little-endian f32 values",
+            "run ({task}): {input_path} has {} bytes, not a whole number of little-endian f32 values",
             bytes.len()
         ));
     }
@@ -1788,7 +1822,7 @@ fn parse_bigvgan_mel_bytes(
         .collect();
     if mel.is_empty() || mel.len() % n_mels != 0 {
         return Err(format!(
-            "run (bigvgan): {input_path} contains {} floats; expected a positive exact multiple of n_mels={n_mels} in channel-major [n_mels, frames] order",
+            "run ({task}): {input_path} contains {} floats; expected a positive exact multiple of n_mels={n_mels} in channel-major [n_mels, frames] order",
             mel.len()
         ));
     }
@@ -1799,7 +1833,7 @@ fn parse_bigvgan_mel_bytes(
         .find(|(_, value)| !value.is_finite())
     {
         return Err(format!(
-            "run (bigvgan): {input_path} mel[{index}] is non-finite ({value})"
+            "run ({task}): {input_path} mel[{index}] is non-finite ({value})"
         ));
     }
     let frames = mel.len() / n_mels;
@@ -3949,6 +3983,10 @@ mod tests {
             cpu_only_engine_label(ModelTask::VocoderBigVgan),
             Some("BigVGAN neural vocoder")
         );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VocoderHifiGan),
+            Some("SpeechT5 HiFi-GAN neural vocoder")
+        );
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
@@ -3967,18 +4005,20 @@ mod tests {
             .into_iter()
             .flat_map(f32::to_le_bytes)
             .collect();
-        let (mel, frames) = parse_bigvgan_mel_bytes(&bytes, 2, "mel.f32").unwrap();
+        let (mel, frames) = parse_vocoder_mel_bytes(&bytes, 2, "mel.f32", "test-vocoder").unwrap();
         assert_eq!(mel, vec![0.25, -0.5, 1.0, 2.0]);
         assert_eq!(frames, 2);
 
-        let err = parse_bigvgan_mel_bytes(&bytes[..bytes.len() - 1], 2, "short.f32").unwrap_err();
+        let err =
+            parse_vocoder_mel_bytes(&bytes[..bytes.len() - 1], 2, "short.f32", "test-vocoder")
+                .unwrap_err();
         assert!(err.contains("whole number"), "{err}");
 
         let nan = f32::NAN.to_le_bytes();
-        let err = parse_bigvgan_mel_bytes(&nan, 1, "nan.f32").unwrap_err();
+        let err = parse_vocoder_mel_bytes(&nan, 1, "nan.f32", "test-vocoder").unwrap_err();
         assert!(err.contains("non-finite"), "{err}");
 
-        let err = parse_bigvgan_mel_bytes(&bytes, 3, "shape.f32").unwrap_err();
+        let err = parse_vocoder_mel_bytes(&bytes, 3, "shape.f32", "test-vocoder").unwrap_err();
         assert!(err.contains("exact multiple of n_mels=3"), "{err}");
     }
 

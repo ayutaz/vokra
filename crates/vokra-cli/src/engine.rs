@@ -204,6 +204,9 @@ pub(crate) enum ModelTask {
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
     VocoderBigVgan,
+    /// Microsoft SpeechT5 HiFi-GAN mel-to-waveform vocoder. The concrete
+    /// model is bound from the session GGUF in the `run` arm.
+    VocoderHifiGan,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -326,6 +329,8 @@ const ARCH_CT_PUNC: &str = "ct_punc";
 const ARCH_MIMI: &str = "mimi";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
+/// Microsoft SpeechT5 HiFi-GAN vocoder.
+const ARCH_SPEECHT5_HIFIGAN: &str = "speecht5_hifigan";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -759,6 +764,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             Ok((session, ModelTask::VocoderBigVgan))
+        }
+        ARCH_SPEECHT5_HIFIGAN => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SPEECHT5_HIFIGAN}`"
+                ));
+            }
+            Ok((session, ModelTask::VocoderHifiGan))
         }
         ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
             // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
@@ -1524,7 +1537,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // --- Vocoders / codecs -----------------------------------------------
     // BigVGAN left this registry on 2026-08-21 after its strict loader,
     // alias-free forward parity, and explicit mel-file CLI contract landed.
-    // The three rows below still fail at load time. Vocos additionally has a
+    // The two rows below still fail at load time. Vocos additionally has a
     // ConvNeXt-V2 forward blocker after that loader gap is closed.
     BoundArch {
         arch: "vocos",
@@ -1537,13 +1550,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     },
     BoundArch {
         arch: "hifigan_vocoder",
-        module: "vokra_models::hifigan",
-        entry: "HiFiGan::new(HifiGanWeights, HifiGanAttrs, HifiGanConfig, u32) → HiFiGan::decode",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
-    BoundArch {
-        arch: "speecht5_hifigan",
         module: "vokra_models::hifigan",
         entry: "HiFiGan::new(HifiGanWeights, HifiGanAttrs, HifiGanConfig, u32) → HiFiGan::decode",
         reason: BoundReason::NoGgufLoader,
@@ -1633,7 +1639,7 @@ fn bound_arch_error(bound: &BoundArch, gguf: &GgufFile) -> String {
         // Deliberately states only that no probe ran, not WHY. The rows
         // reaching this arm no longer share a single cause: some have no
         // loader at all, some have one that takes a filesystem path, and
-        // some (bigvgan, vocos, hifigan_vocoder, speecht5_hifigan) have a
+        // some (vocos, hifigan_vocoder) have a
         // `&GgufFile` loader that refuses on every path. The previous
         // wording asserted the second case for all of them, and also told
         // the reader the load "has to happen through the library entry
@@ -2410,17 +2416,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_session_routes_speecht5_hifigan_to_vocoder_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_SPEECHT5_HIFIGAN, "speecht5-hifigan-routed", |path| {
+                load_session(path).expect("SpeechT5 HiFi-GAN session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::VocoderHifiGan);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_SPEECHT5_HIFIGAN),
+            "SpeechT5 HiFi-GAN has a strict real-weight loader, complete forward, and CLI route"
+        );
+    }
+
     // ---- Wave K (2026-08-15) — remaining vocoder loader gaps -------------
     //
-    // `hifigan_vocoder` and `speecht5_hifigan` have complete forwards but
-    // loaders that refuse on every path. These tests pin the message a user
-    // sees, the binder behind it, and the rows' own data. BigVGAN left this
-    // block on 2026-08-21 when its strict binder and CLI route landed.
+    // `hifigan_vocoder` has a complete forward but a loader that refuses on
+    // every path. These tests pin the message a user sees, the binder behind
+    // it, and the row's own data. BigVGAN and SpeechT5 HiFi-GAN left this
+    // block on 2026-08-21 when their strict binders and CLI routes landed.
     //
     // Wave L (2026-08-15) folded `vocos` in as the fourth. Wave K had left it
     // on `LoudPartialForward` because its `decode` is a genuine loud-partial,
     // which named the SECOND of its two blockers — its `from_gguf` is as dead
-    // as the two HiFi-GAN variants. Its tests sit at the end of this block and are
+    // as the remaining SpeechBrain HiFi-GAN variant. Its tests sit at the end of this block and are
     // built to the same three-sided shape, so the exemption cannot return
     // quietly.
 
@@ -2453,43 +2474,35 @@ mod tests {
     }
 
     /// The claim the re-filed rows rest on, checked against the binder
-    /// itself: `HiFiGan::from_gguf` refuses a correctly stamped GGUF on BOTH
-    /// supported arches, binding no tensor.
+    /// itself: the remaining SpeechBrain arm refuses a correctly stamped
+    /// metadata-only GGUF, binding no tensor.
     ///
     /// If a real loader lands, this test fails — which is the point. The
     /// rows' `reason` and `entry` both assume nothing binds, so that commit
     /// has to revisit them rather than leave a stale claim in place.
     #[test]
-    fn hifigan_from_gguf_still_binds_nothing_on_either_arch() {
-        for arch in ["hifigan_vocoder", "speecht5_hifigan"] {
-            let tag = format!("hifigan-loader-probe-{arch}");
-            with_arch_only_gguf(arch, &tag, |p| {
-                let gguf = GgufFile::open(p).expect("arch-only fixture parses");
-                // let-else rather than `.unwrap_err()`: `HiFiGan` is `!Debug`.
-                let Err(err) = vokra_models::hifigan::HiFiGan::from_gguf(&gguf) else {
-                    panic!(
-                        "HiFiGan::from_gguf bound a metadata-only `{arch}` GGUF — if the \
-                         real binder landed, revisit the BOUND_ARCHES row: its reason \
-                         (NoGgufLoader) and entry (HiFiGan::new) both assume nothing binds"
-                    );
-                };
-                let msg = err.to_string();
-                assert!(
-                    msg.contains("real-weight loader is deferred"),
-                    "the refusal must still name the deferred loader: {msg}"
+    fn hifigan_vocoder_from_gguf_still_binds_nothing() {
+        with_arch_only_gguf("hifigan_vocoder", "hifigan-loader-probe", |p| {
+            let gguf = GgufFile::open(p).expect("arch-only fixture parses");
+            let Err(err) = vokra_models::hifigan::HiFiGan::from_gguf(&gguf) else {
+                panic!(
+                    "HiFiGan::from_gguf bound a metadata-only hifigan_vocoder GGUF — if the \
+                     real binder landed, revisit the BOUND_ARCHES row"
                 );
-            });
-        }
+            };
+            let msg = err.to_string();
+            assert!(
+                msg.contains("real-weight loader is deferred"),
+                "the refusal must still name the deferred loader: {msg}"
+            );
+        });
     }
 
     /// The rows' own data, asserted directly so a regression reports its
     /// cause rather than only the downstream message.
     #[test]
     fn bound_arch_registry_vocoder_rows_do_not_promise_a_gguf_load() {
-        for (arch, ctor) in [
-            ("hifigan_vocoder", "HiFiGan::new"),
-            ("speecht5_hifigan", "HiFiGan::new"),
-        ] {
+        for (arch, ctor) in [("hifigan_vocoder", "HiFiGan::new")] {
             let row = BOUND_ARCHES
                 .iter()
                 .find(|b| b.arch == arch)
@@ -2722,6 +2735,7 @@ mod tests {
             ARCH_CT_PUNC,
             ARCH_MIMI,
             ARCH_BIGVGAN,
+            ARCH_SPEECHT5_HIFIGAN,
             ARCH_CHARSIU,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,

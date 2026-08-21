@@ -36,33 +36,19 @@
 //! stable even as the op grows internal knobs (INT8 opt-in, `cond`
 //! layer, etc.).
 //!
-//! # Weight-load posture: loud-partial
+//! # Weight-load posture
 //!
-//! [`HiFiGan::from_gguf`] deliberately declines to fabricate an upstream
-//! hyperparameter transcription without primary-source verification —
-//! both `hifigan_vocoder` (SpeechBrain LibriTTS 22.05 kHz) and
-//! `speecht5_hifigan` (Microsoft SpeechT5 16 kHz) walk different tensor
-//! trees (`generator.*` vs `upsampler.*` / `resblocks.*`) with different
-//! `upsample_rates` / kernel-size / MRF-branch pins, and the
-//! `resblock_dilation_sizes` outer axis + `res_block_type = V1` +
-//! `normalize_before = true` (`mean` / `scale` scalars) shape checks
-//! are all silent-wrong hazards if a value drifts from upstream. The
-//! sibling converter modules
-//! (`crates/vokra-convert/src/models/{hifigan_vocoder, speecht5_hifigan}.rs`)
-//! carry the same posture on their side of the seam ("Real-weight
-//! parity vs the upstream ... Python forward is deferred to owner"),
-//! so this binder mirrors that discipline: [`HiFiGan::from_gguf`]
-//! dispatches on `vokra.model.arch`, returns [`VokraError::ModelLoad`]
-//! on missing / unknown arch, and returns
-//! [`VokraError::NotImplemented`] on either supported arch — naming the
-//! precise blocker (owner-verified upstream config transcription +
-//! tensor-name walk) so the follow-up wave lands as a delta rather
-//! than a silent-wrong forward. This is the **loud-partial** pattern
-//! (RMVPE precedent, CLAUDE.md `docs/handoff/model-publish-and-parity-*`
-//! §"loud-partial は fake-complete より honest"): construction succeeds
-//! for hand-built bundles and for [`HiFiGan::synthesized`] test
-//! fixtures, real-weight `from_gguf` fails loudly with a message
-//! that names the tensor tree the loader will walk when the wave lands.
+//! `speecht5_hifigan` is strict and complete: the official 16 kHz config is
+//! transcribed from `microsoft/speecht5_hifigan/config.json`, all 158 tensors
+//! are name/shape checked with no extras, and learned 80-bin `mean` / `scale`
+//! normalization is applied before the shared generator. The independent
+//! fixture runs the official Transformers forward.
+//!
+//! `hifigan_vocoder` remains loud-partial. SpeechBrain's 22.05 kHz release
+//! walks a distinct `generator.*` tree and still requires a primary-source
+//! prep/fold pass for its training checkpoint. [`HiFiGan::from_gguf`] returns
+//! [`VokraError::NotImplemented`] only for that arch rather than guessing its
+//! weight-normalization or hyperparameter contract.
 //!
 //! # Fixture posture — [`HiFiGan::synthesized`]
 //!
@@ -439,38 +425,17 @@ impl HiFiGan {
     /// Dispatches on the `vokra.model.arch` metadata chunk and loads a
     /// [`HiFiGan`] from a GGUF file.
     ///
-    /// # Current status — loud-partial
-    ///
-    /// This entry point is intentionally loud-partial today
-    /// (RMVPE / DFN3 Phase B precedent, CLAUDE.md
-    /// 「loud-partial は fake-complete より honest」): the arch
-    /// dispatch works (missing arch → [`VokraError::ModelLoad`],
-    /// unknown arch → [`VokraError::ModelLoad`]), but both supported
-    /// arches ([`ARCH_HIFIGAN_VOCODER`], [`ARCH_SPEECHT5_HIFIGAN`])
-    /// return [`VokraError::NotImplemented`] with a message that names
-    /// the precise blocker (owner-verified upstream config
-    /// transcription + tensor-name walk). This mirrors the sibling
-    /// converter modules' own "Real-weight parity vs the upstream
-    /// Python forward is deferred to owner" posture
-    /// (see `crates/vokra-convert/src/models/{hifigan_vocoder,
-    /// speecht5_hifigan}.rs`) — the CC side ships the binder shape and
-    /// the arch-dispatch discipline, and the follow-up wave lands the
-    /// real hyperparameter transcription + tensor-name walk as a
-    /// delta against a real upstream checkpoint rather than a
-    /// fabricated transcription.
-    ///
-    /// Hand-built [`HiFiGan::new`] and [`HiFiGan::synthesized`] work
-    /// today (they never touch this path); real-weight round-trips
-    /// through the sibling converters + this loader are the deferred
-    /// wave.
+    /// SpeechT5 HiFi-GAN binds its exact 158-tensor manifest and learned input
+    /// normalization. The SpeechBrain sibling remains an explicit
+    /// [`VokraError::NotImplemented`] until its separate checkpoint prep and
+    /// weight-norm fold are verified.
     ///
     /// # Errors
     ///
     /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is missing,
     ///   not a UTF-8 string, or does not match either supported arch
     ///   ([`ARCH_HIFIGAN_VOCODER`] or [`ARCH_SPEECHT5_HIFIGAN`]).
-    /// - [`VokraError::NotImplemented`] on either supported arch until
-    ///   the real-weight loader wave lands.
+    /// - [`VokraError::NotImplemented`] on [`ARCH_HIFIGAN_VOCODER`].
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let arch = file
             .get(chunks::KEY_MODEL_ARCH)
