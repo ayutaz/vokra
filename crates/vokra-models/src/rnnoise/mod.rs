@@ -385,16 +385,17 @@ fn quantized_matvec(
 }
 
 fn accumulate_i8_block(output: &mut [f32], weights: &[i8], input: &[i8]) {
-    for row in 0..8 {
+    for (row, output_value) in output.iter_mut().enumerate().take(8) {
         let base = 4 * row;
         let sum = i32::from(weights[base]) * i32::from(input[0])
             + i32::from(weights[base + 1]) * i32::from(input[1])
             + i32::from(weights[base + 2]) * i32::from(input[2])
             + i32::from(weights[base + 3]) * i32::from(input[3]);
-        output[row] += sum as f32;
+        *output_value += sum as f32;
     }
 }
 
+#[allow(clippy::excessive_precision)] // preserve Xiph's source-spelled rational coefficients
 fn tanh_approx(value: f32) -> f32 {
     let square = value * value;
     let numerator = ((0.608_630_42 * square + 96.392_36) * square + 952.528_0) * value;
