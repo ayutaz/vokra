@@ -605,7 +605,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 /// `ModelKind`. Vocos must preserve the selected raw slug because its two
 /// official artifacts have different manifests and input contracts; printing
 /// `ModelKind::as_arg()` would falsely label every Encodec conversion as Mel.
-fn conversion_display_model<'a>(model: ModelKind, raw_model_slug: &'a str) -> &'a str {
+fn conversion_display_model(model: ModelKind, raw_model_slug: &str) -> &str {
     match model {
         ModelKind::Vocos => raw_model_slug,
         _ => model.as_arg(),
