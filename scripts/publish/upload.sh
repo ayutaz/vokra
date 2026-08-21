@@ -311,7 +311,8 @@ mmc = importlib.util.module_from_spec(spec); spec.loader.exec_module(mmc)
 g = mmc.GgufReader(gguf)
 lic = g.get("vokra.provenance.license") or "unknown"
 src = g.get("vokra.provenance.source") or "(not recorded)"
-attribution = g.get("vokra.provenance.attribution")
+attribution = mmc.distribution_attribution(
+    lic, g.get("vokra.provenance.attribution"))
 h = hashlib.sha256()
 with gguf.open("rb") as f:
     for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
