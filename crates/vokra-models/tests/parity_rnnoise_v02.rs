@@ -47,7 +47,7 @@
 use std::env;
 use std::path::Path;
 
-use vokra_core::engines::{DenoiseEngine, DenoiseStreamHandle};
+use vokra_core::engines::DenoiseEngine;
 use vokra_models::rnnoise::{
     FRAME_SIZE, N_BANDS as V02_N_BANDS, N_FEATURES as V02_N_FEATURES, RnnoiseNetworkState,
     RnnoiseV02, SAMPLE_RATE,
