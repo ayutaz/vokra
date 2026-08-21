@@ -36,7 +36,7 @@ def test_every_current_header_function_has_one_prototype() -> None:
     parsed_names = [name for name, _, _ in parsed]
     discovered_names = generator.discover_function_names(source)
 
-    assert len(parsed_names) == 48
+    assert len(parsed_names) == 56
     assert len(parsed_names) == len(set(parsed_names))
     assert parsed_names == discovered_names
     assert set(bindings.PROTOTYPES) == set(parsed_names)
