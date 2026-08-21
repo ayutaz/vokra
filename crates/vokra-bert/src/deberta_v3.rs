@@ -168,7 +168,7 @@ impl DebertaV3Encoder {
         let n_pos_buckets = meta_u32("vokra.bert.deberta_v3.n_pos_buckets").unwrap_or(512) as i32;
         let max_pos_dist = meta_u32("vokra.bert.deberta_v3.max_pos_dist").unwrap_or(512) as i32;
 
-        if n_heads == 0 || !d_model.is_multiple_of(n_heads) {
+        if n_heads == 0 || d_model % n_heads != 0 {
             return Err(VokraError::ModelLoad(format!(
                 "vokra.bert.deberta_v3: d_model ({d_model}) not divisible by n_heads ({n_heads})"
             )));

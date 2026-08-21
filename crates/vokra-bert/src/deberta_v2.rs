@@ -809,7 +809,7 @@ impl DebertaV2Encoder {
         let n_pos_buckets = meta_u32("vokra.bert.deberta_v2.n_pos_buckets").unwrap_or(512) as i32;
         let max_pos_dist = meta_u32("vokra.bert.deberta_v2.max_pos_dist").unwrap_or(512) as i32;
 
-        if n_heads == 0 || !d_model.is_multiple_of(n_heads) {
+        if n_heads == 0 || d_model % n_heads != 0 {
             return Err(VokraError::ModelLoad(format!(
                 "vokra.bert.deberta_v2: d_model ({d_model}) not divisible by n_heads ({n_heads})"
             )));
@@ -850,7 +850,7 @@ impl DebertaV2Encoder {
         let encoder_conv = if g.tensor_info("bert.encoder.conv.weight").is_some() {
             let cw = load_tensor_f32("bert.encoder.conv.weight")?;
             let expected_hh = d_model * d_model;
-            if !cw.len().is_multiple_of(expected_hh) {
+            if cw.len() % expected_hh != 0 {
                 return Err(VokraError::ModelLoad(format!(
                     "bert.encoder.conv.weight: expected d_model² * kernel = {}*k floats, got {}",
                     expected_hh,
