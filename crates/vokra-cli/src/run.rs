@@ -12,6 +12,7 @@
 
 use std::process::ExitCode;
 
+use vokra_core::engines::KwsEngine;
 use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
@@ -33,6 +34,7 @@ USAGE:
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
     vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
+    vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
@@ -610,6 +612,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // non-CPU `--backend` would be a silent CPU run for them — same class
         // of gap as VAD / piper-plus / CSM / Moshi above.
         ModelTask::VadFsmn => Some("VAD (FSMN)"),
+        ModelTask::KwsOpenwakeword => Some("openWakeWord keyword spotting"),
         ModelTask::Denoise => Some("NSNet2 speech enhancement"),
         ModelTask::Segment => Some("pyannote speaker segmentation"),
         ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
@@ -906,6 +909,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TextNormalize => {
             run_text_normalize(&session, &a)?;
+        }
+        ModelTask::KwsOpenwakeword => {
+            run_openwakeword(&session, &a)?;
         }
         ModelTask::AecNkf => {
             run_nkf_aec(&session, &a)?;
@@ -2201,6 +2207,36 @@ fn run_sbv2(session: &Session, a: &RunArgs) -> Result<(), String> {
 fn run_vad(session: &Session, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>, String> {
     let mut handle = session.open_vad_stream().map_err(|e| e.to_string())?;
     handle.push_pcm(pcm, sample_rate).map_err(|e| e.to_string())
+}
+
+fn run_openwakeword(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (KWS): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != 16_000 {
+        return Err(format!(
+            "run (KWS): {path}: expected 16000 Hz mono WAV, got {} Hz — resample offline first",
+            clip.sample_rate
+        ));
+    }
+    let mut model = vokra_models::kws::openwakeword::OpenwakewordSession::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let predictions = model
+        .push_pcm16k(&clip.samples)
+        .map_err(|error| error.to_string())?;
+    let mut detections = 0usize;
+    for (name, probability) in &predictions {
+        if *probability >= 0.5 {
+            println!("kws: wakeword={name} probability={probability:.6}");
+            detections += 1;
+        }
+    }
+    let heads = model.wakeword_names().len();
+    let chunks = predictions.len().checked_div(heads).unwrap_or_default();
+    println!("kws: {chunks} chunks, detections={detections}, threshold=0.500000");
+    Ok(())
 }
 
 /// Transcribes the clip and returns the recognized text.

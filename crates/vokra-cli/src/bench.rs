@@ -666,6 +666,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::KwsOpenwakeword => {
+            return Err(
+                "bench: arch `openwakeword_op` has no settled streaming reset/timing contract yet — use `vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>` for real KWS inference"
+                    .to_owned(),
+            );
+        }
         ModelTask::AecNkf => {
             return Err(
                 "bench: arch `nkf_aec` requires paired mic/far-end WAVs, but bench has no \

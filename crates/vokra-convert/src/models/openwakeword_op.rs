@@ -110,11 +110,12 @@
 //! # Tensor naming contract
 //!
 //! GGUF tensor names are the keys the prepare script emits, verbatim.
-//! The four per-wake-word classifier tensors carry the runtime binder's
-//! own convention (`openwakeword.classifier.{i}.linear{1,2}.{weight,bias}`);
-//! any shared Google `speech_embedding` extractor weights ride along
-//! under the `openwakeword.embedding.*` prefix untouched, for the
-//! follow-up wave that lights the extractor up.
+//! Native v0.5.1 artifacts carry execution-order classifier tensors under
+//! `openwakeword.classifier.{i}.linear.{j}.{weight,bias}`, canonical learned
+//! DFT/mel tensors under `openwakeword.melspec.*`, and 20 canonical Conv2d
+//! groups under `openwakeword.embedding.conv.{0..19}.*`. The converter
+//! validates all fixed shapes before writing. The older
+//! `linear{1,2}` classifier-only layout remains readable for compatibility.
 //!
 //! # Arch tag distinctness
 //!
@@ -135,12 +136,9 @@
 //!
 //! # Wiring status
 //!
-//! The **load** half of the pair is now complete and pinned by tests:
-//! a GGUF from this converter binds in `OpenwakewordSession::from_gguf`,
-//! including real per-wake-word classifier weights. The runtime
-//! **forward** remains a loud-partial — the frozen Google
-//! `speech_embedding` extractor is not yet transcribed, so
-//! `EmbeddingExtractor::forward` returns `UnsupportedOp` (FR-EX-08).
+//! The native v0.5.1 load and streaming forward are complete. Official
+//! release weights remain user-provided and non-redistributed; the gated
+//! real-weight harness compares hop probabilities against ONNX Runtime.
 
 use std::path::Path;
 
@@ -222,6 +220,17 @@ pub const KEY_SAMPLE_RATE: &str = "vokra.openwakeword.sample_rate";
 pub const KEY_HOP_SAMPLES: &str = "vokra.openwakeword.hop_samples";
 /// GGUF metadata key: per-wake-word names (`Array<String>`).
 pub const KEY_WAKEWORD_NAMES: &str = "vokra.openwakeword.wakeword_names";
+/// GGUF metadata key: classifier tensor topology identifier (string).
+pub const KEY_CLASSIFIER_FORMAT: &str = "vokra.openwakeword.classifier_format";
+/// GGUF metadata key: rolling embedding frames consumed per prediction (u32).
+pub const KEY_CLASSIFIER_INPUT_FRAMES: &str = "vokra.openwakeword.classifier_input_frames";
+/// GGUF metadata key: dense-layer count for each wake-word (`Array<U32>`).
+pub const KEY_CLASSIFIER_LAYER_COUNTS: &str = "vokra.openwakeword.classifier_layer_counts";
+/// GGUF metadata key: PCM samples consumed per upstream prediction (u32).
+pub const KEY_PREDICT_CHUNK_SAMPLES: &str = "vokra.openwakeword.predict_chunk_samples";
+
+const CLASSIFIER_FORMAT_DNN: &str = "dnn-relu-sigmoid-v1";
+const CLASSIFIER_FORMAT_LEGACY: &str = "legacy-two-layer-v1";
 
 // ---- mirrored front-end defaults ----------------------------------------
 //
@@ -246,13 +255,9 @@ pub const KEY_WAKEWORD_NAMES: &str = "vokra.openwakeword.wakeword_names";
 //   2. A wrong `sample_rate` cannot run silently: the binder's
 //      `push_pcm16k` refuses any rate other than 16 kHz outright
 //      (FR-EX-08), so the failure is loud.
-//   3. Nothing consumes `window_frames` / `mel_bins` / `hop_samples`
-//      today — the embedding extractor above them is a loud-partial.
-//      When it lights up, the env-gated parity harness compares against
-//      upstream reference probabilities, which is what would catch a
-//      framing mismatch. That check is the reason these may be mirrored
-//      rather than demanded; it is not a claim that they are verified
-//      today.
+//   3. Native v0.5.1 artifacts consume all three axes and validate their
+//      fixed values at load. Legacy classifier-only artifacts retain the
+//      override surface for compatibility.
 //   4. Every one is overridable from the `--config` side-car, so a
 //      self-trained checkpoint with a different front-end is expressible
 //      without touching this file.
@@ -316,6 +321,14 @@ fn tensor_l2_bias(idx: usize) -> String {
     format!("openwakeword.classifier.{idx}.linear2.bias")
 }
 
+fn tensor_dnn_weight(idx: usize, layer: usize) -> String {
+    format!("openwakeword.classifier.{idx}.linear.{layer}.weight")
+}
+
+fn tensor_dnn_bias(idx: usize, layer: usize) -> String {
+    format!("openwakeword.classifier.{idx}.linear.{layer}.bias")
+}
+
 /// Outcome of an openWakeWord op-wiring conversion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OpenwakewordOpReport {
@@ -352,6 +365,14 @@ pub(crate) struct OpenwakewordOpConvertConfig {
     pub(crate) sample_rate: u32,
     /// Analysis hop between melspec frames, in samples.
     pub(crate) hop_samples: u32,
+    /// Classifier tensor topology.
+    pub(crate) classifier_format: String,
+    /// Rolling embedding frames flattened into each DNN.
+    pub(crate) classifier_input_frames: u32,
+    /// Dense-layer count for every classifier group.
+    pub(crate) classifier_layer_counts: Vec<u32>,
+    /// PCM samples consumed for one prediction.
+    pub(crate) predict_chunk_samples: u32,
 }
 
 impl OpenwakewordOpConvertConfig {
@@ -441,12 +462,82 @@ impl OpenwakewordOpConvertConfig {
             Ok(narrowed)
         };
 
+        let classifier_format = root
+            .get("classifier_format")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(CLASSIFIER_FORMAT_LEGACY)
+            .to_owned();
+        if classifier_format != CLASSIFIER_FORMAT_LEGACY
+            && classifier_format != CLASSIFIER_FORMAT_DNN
+        {
+            return Err(ConvertError::Parse(format!(
+                "openwakeword-op config: unsupported `classifier_format` `{classifier_format}`"
+            )));
+        }
+        let classifier_input_frames = opt_u32(
+            "classifier_input_frames",
+            if classifier_format == CLASSIFIER_FORMAT_DNN {
+                16
+            } else {
+                1
+            },
+        )?;
+        let classifier_layer_counts = match root.get("classifier_layer_counts") {
+            Some(value) => value
+                .as_array()
+                .ok_or_else(|| {
+                    ConvertError::Parse(
+                        "openwakeword-op config: `classifier_layer_counts` must be an array"
+                            .to_owned(),
+                    )
+                })?
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let raw = value.as_u64().ok_or_else(|| {
+                        ConvertError::Parse(format!(
+                            "openwakeword-op config: `classifier_layer_counts[{index}]` must be a positive integer"
+                        ))
+                    })?;
+                    let count = u32::try_from(raw).map_err(|_| {
+                        ConvertError::Parse(format!(
+                            "openwakeword-op config: `classifier_layer_counts[{index}]` overflows u32"
+                        ))
+                    })?;
+                    if count == 0 {
+                        return Err(ConvertError::Parse(format!(
+                            "openwakeword-op config: `classifier_layer_counts[{index}]` must be > 0"
+                        )));
+                    }
+                    Ok(count)
+                })
+                .collect::<Result<Vec<_>, ConvertError>>()?,
+            None if classifier_format == CLASSIFIER_FORMAT_DNN => {
+                return Err(ConvertError::Parse(
+                    "openwakeword-op config: DNN format requires `classifier_layer_counts`"
+                        .to_owned(),
+                ));
+            }
+            None => vec![2; wakeword_names.len()],
+        };
+        if classifier_layer_counts.len() != wakeword_names.len() {
+            return Err(ConvertError::Parse(format!(
+                "openwakeword-op config: classifier_layer_counts has {} entries, expected {} wake-word entries",
+                classifier_layer_counts.len(),
+                wakeword_names.len()
+            )));
+        }
+
         Ok(Self {
             wakeword_names,
             window_frames: opt_u32("window_frames", DEFAULT_WINDOW_FRAMES)?,
             mel_bins: opt_u32("mel_bins", DEFAULT_MEL_BINS)?,
             sample_rate: opt_u32("sample_rate", DEFAULT_SAMPLE_RATE)?,
             hop_samples: opt_u32("hop_samples", DEFAULT_HOP_SAMPLES)?,
+            classifier_format,
+            classifier_input_frames,
+            classifier_layer_counts,
+            predict_chunk_samples: opt_u32("predict_chunk_samples", 1_280)?,
         })
     }
 }
@@ -619,6 +710,160 @@ fn derive_classifier_axes(st: &SafetensorsFile) -> Result<ClassifierAxes, Conver
     })
 }
 
+fn derive_dnn_classifier_axes(
+    st: &SafetensorsFile,
+    cfg: &OpenwakewordOpConvertConfig,
+) -> Result<ClassifierAxes, ConvertError> {
+    let n_wakewords = cfg.classifier_layer_counts.len();
+    if n_wakewords == 0 {
+        return Err(ConvertError::Parse(
+            "openwakeword-op: DNN classifier list is empty".to_owned(),
+        ));
+    }
+    let input_frames = cfg.classifier_input_frames as usize;
+    let first_name = tensor_dnn_weight(0, 0);
+    let first = require_classifier_tensor(st, &first_name)?;
+    if first.shape.len() != 2 || first.shape[0] == 0 || first.shape[1] == 0 {
+        return Err(ConvertError::Parse(format!(
+            "openwakeword-op: tensor `{first_name}` has dims {:?}, expected non-empty [out, frames*embedding]",
+            first.shape
+        )));
+    }
+    let flattened = first.shape[1] as usize;
+    if !flattened.is_multiple_of(input_frames) {
+        return Err(ConvertError::Parse(format!(
+            "openwakeword-op: tensor `{first_name}` input width {flattened} is not divisible by classifier_input_frames={input_frames}"
+        )));
+    }
+    let embedding_dim = flattened / input_frames;
+
+    for (classifier, &layer_count) in cfg.classifier_layer_counts.iter().enumerate() {
+        let mut expected_input = input_frames * embedding_dim;
+        for layer in 0..layer_count as usize {
+            let weight_name = tensor_dnn_weight(classifier, layer);
+            let bias_name = tensor_dnn_bias(classifier, layer);
+            let weight = require_classifier_tensor(st, &weight_name)?;
+            let bias = require_classifier_tensor(st, &bias_name)?;
+            if weight.shape.len() != 2
+                || weight.shape[1] as usize != expected_input
+                || weight.shape[0] == 0
+            {
+                return Err(ConvertError::Parse(format!(
+                    "openwakeword-op: tensor `{weight_name}` has dims {:?}, expected [out, {expected_input}]",
+                    weight.shape
+                )));
+            }
+            if bias.shape.as_slice() != [weight.shape[0]] {
+                return Err(ConvertError::Parse(format!(
+                    "openwakeword-op: tensor `{bias_name}` has dims {:?}, expected [{}]",
+                    bias.shape, weight.shape[0]
+                )));
+            }
+            expected_input = weight.shape[0] as usize;
+        }
+        if expected_input != 1 {
+            return Err(ConvertError::Parse(format!(
+                "openwakeword-op: classifier {classifier} final width is {expected_input}, expected 1"
+            )));
+        }
+        let unexpected = tensor_dnn_weight(classifier, layer_count as usize);
+        if st.tensor_info(&unexpected).is_some() {
+            return Err(ConvertError::Parse(format!(
+                "openwakeword-op: classifier {classifier} has undeclared layer `{unexpected}`; update classifier_layer_counts"
+            )));
+        }
+    }
+
+    for tensor in st.tensors() {
+        let Some(rest) = tensor.name.strip_prefix(CLASSIFIER_PREFIX) else {
+            continue;
+        };
+        let index = rest
+            .split('.')
+            .next()
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| {
+                ConvertError::Parse(format!(
+                    "openwakeword-op: malformed classifier tensor `{}`",
+                    tensor.name
+                ))
+            })?;
+        if index >= n_wakewords {
+            return Err(ConvertError::Parse(format!(
+                "openwakeword-op: tensor `{}` carries classifier index {index}, but config declares {n_wakewords} groups",
+                tensor.name
+            )));
+        }
+    }
+
+    Ok(ClassifierAxes {
+        n_wakewords,
+        embedding_dim,
+    })
+}
+
+fn require_native_tensor_shape(
+    st: &SafetensorsFile,
+    name: &str,
+    expected: &[u64],
+) -> Result<(), ConvertError> {
+    let tensor = require_classifier_tensor(st, name)?;
+    if tensor.shape.as_slice() != expected {
+        return Err(ConvertError::Parse(format!(
+            "openwakeword-op: tensor `{name}` has dims {:?}, expected {expected:?}",
+            tensor.shape
+        )));
+    }
+    Ok(())
+}
+
+fn validate_native_frontend_bundle(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    require_native_tensor_shape(st, "openwakeword.melspec.dft_real", &[257, 512])?;
+    require_native_tensor_shape(st, "openwakeword.melspec.dft_imag", &[257, 512])?;
+    require_native_tensor_shape(st, "openwakeword.melspec.mel", &[257, 32])?;
+
+    const CONVS: [(u64, u64, u64, u64); 20] = [
+        (1, 24, 3, 3),
+        (24, 24, 1, 3),
+        (24, 24, 3, 1),
+        (24, 48, 1, 3),
+        (48, 48, 3, 1),
+        (48, 48, 1, 3),
+        (48, 48, 3, 1),
+        (48, 72, 1, 3),
+        (72, 72, 3, 1),
+        (72, 72, 1, 3),
+        (72, 72, 3, 1),
+        (72, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 3, 1),
+    ];
+    for (index, (input, output, kh, kw)) in CONVS.into_iter().enumerate() {
+        require_native_tensor_shape(
+            st,
+            &format!("openwakeword.embedding.conv.{index}.weight"),
+            &[output, input, kh, kw],
+        )?;
+        let bias_name = format!("openwakeword.embedding.conv.{index}.bias");
+        if index == 19 {
+            if st.tensor_info(&bias_name).is_some() {
+                return Err(ConvertError::Parse(format!(
+                    "openwakeword-op: final embedding convolution must not carry `{bias_name}`"
+                )));
+            }
+        } else {
+            require_native_tensor_shape(st, &bias_name, &[output])?;
+        }
+    }
+    Ok(())
+}
+
 /// Converts a parsed safetensors buffer plus its config side-car into a
 /// populated [`GgufBuilder`].
 ///
@@ -630,7 +875,12 @@ pub(crate) fn convert(
     license: Option<&str>,
 ) -> Result<(GgufBuilder, OpenwakewordOpReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
-    let axes = derive_classifier_axes(&st)?;
+    let axes = if cfg.classifier_format == CLASSIFIER_FORMAT_DNN {
+        validate_native_frontend_bundle(&st)?;
+        derive_dnn_classifier_axes(&st, cfg)?
+    } else {
+        derive_classifier_axes(&st)?
+    };
 
     if cfg.wakeword_names.len() != axes.n_wakewords {
         return Err(ConvertError::Usage(format!(
@@ -682,6 +932,23 @@ pub(crate) fn convert(
                 .collect(),
         }),
     );
+    if cfg.classifier_format == CLASSIFIER_FORMAT_DNN {
+        b.add_string(KEY_CLASSIFIER_FORMAT, &cfg.classifier_format);
+        b.add_u32(KEY_CLASSIFIER_INPUT_FRAMES, cfg.classifier_input_frames);
+        b.add_u32(KEY_PREDICT_CHUNK_SAMPLES, cfg.predict_chunk_samples);
+        b.add_metadata(
+            KEY_CLASSIFIER_LAYER_COUNTS,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U32,
+                values: cfg
+                    .classifier_layer_counts
+                    .iter()
+                    .copied()
+                    .map(GgufMetadataValue::U32)
+                    .collect(),
+            }),
+        );
+    }
 
     let effective_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
     let effective_class = LicenseClass::from_license_str(effective_spdx);
@@ -799,6 +1066,114 @@ mod tests {
     fn one_wakeword_config() -> OpenwakewordOpConvertConfig {
         OpenwakewordOpConvertConfig::parse(br#"{"wakeword_names":["alexa"]}"#)
             .expect("minimal config parses")
+    }
+
+    fn native_dnn_safetensors() -> Vec<u8> {
+        let mut tensors: Vec<(String, Vec<u64>)> = vec![
+            ("openwakeword.melspec.dft_real".to_owned(), vec![257, 512]),
+            ("openwakeword.melspec.dft_imag".to_owned(), vec![257, 512]),
+            ("openwakeword.melspec.mel".to_owned(), vec![257, 32]),
+        ];
+        const CONVS: [(u64, u64, u64, u64); 20] = [
+            (1, 24, 3, 3),
+            (24, 24, 1, 3),
+            (24, 24, 3, 1),
+            (24, 48, 1, 3),
+            (48, 48, 3, 1),
+            (48, 48, 1, 3),
+            (48, 48, 3, 1),
+            (48, 72, 1, 3),
+            (72, 72, 3, 1),
+            (72, 72, 1, 3),
+            (72, 72, 3, 1),
+            (72, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 3, 1),
+        ];
+        for (index, (input, output, kh, kw)) in CONVS.into_iter().enumerate() {
+            tensors.push((
+                format!("openwakeword.embedding.conv.{index}.weight"),
+                vec![output, input, kh, kw],
+            ));
+            if index != 19 {
+                tensors.push((
+                    format!("openwakeword.embedding.conv.{index}.bias"),
+                    vec![output],
+                ));
+            }
+        }
+        for (layer, (output, input)) in [(128, 1_536), (128, 128), (1, 128)].into_iter().enumerate()
+        {
+            tensors.push((
+                format!("openwakeword.classifier.0.linear.{layer}.weight"),
+                vec![output, input],
+            ));
+            tensors.push((
+                format!("openwakeword.classifier.0.linear.{layer}.bias"),
+                vec![output],
+            ));
+        }
+
+        let mut offset = 0usize;
+        let mut entries = Vec::with_capacity(tensors.len());
+        for (name, shape) in tensors {
+            let elements = shape.iter().product::<u64>() as usize;
+            let end = offset + elements * 4;
+            entries.push(format!(
+                "\"{name}\":{{\"dtype\":\"F32\",\"shape\":{shape:?},\"data_offsets\":[{offset},{end}]}}"
+            ));
+            offset = end;
+        }
+        let header = format!("{{{}}}", entries.join(","));
+        let mut bytes = Vec::with_capacity(8 + header.len() + offset);
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.resize(bytes.len() + offset, 0);
+        bytes
+    }
+
+    #[test]
+    fn native_dnn_bundle_stamps_additive_streaming_contract() {
+        let cfg = OpenwakewordOpConvertConfig::parse(
+            br#"{"wakeword_names":["alexa"],"classifier_format":"dnn-relu-sigmoid-v1","classifier_input_frames":16,"classifier_layer_counts":[3],"predict_chunk_samples":1280}"#,
+        )
+        .expect("native config parses");
+        let (builder, report) = convert(native_dnn_safetensors(), &cfg, Some("cc-by-nc-sa-4.0"))
+            .expect("native bundle converts");
+        assert_eq!(report.read, 48);
+        assert_eq!(report.n_wakewords, 1);
+        assert_eq!(report.embedding_dim, 96);
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get(KEY_CLASSIFIER_FORMAT)
+                .and_then(|value| value.as_str()),
+            Some(CLASSIFIER_FORMAT_DNN)
+        );
+        assert_eq!(
+            file.get(KEY_CLASSIFIER_INPUT_FRAMES)
+                .and_then(|value| value.as_u64()),
+            Some(16)
+        );
+        assert_eq!(
+            file.get(KEY_PREDICT_CHUNK_SAMPLES)
+                .and_then(|value| value.as_u64()),
+            Some(1_280)
+        );
+        let counts = file
+            .get(KEY_CLASSIFIER_LAYER_COUNTS)
+            .and_then(|value| value.as_array())
+            .expect("layer counts array");
+        assert_eq!(counts.element_type, GgufValueType::U32);
+        assert!(matches!(
+            counts.values.as_slice(),
+            [GgufMetadataValue::U32(3)]
+        ));
     }
 
     /// The regression this whole wave exists for: every key the runtime

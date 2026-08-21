@@ -211,6 +211,10 @@ pub(crate) enum ModelTask {
     /// 100-channel features; the Encodec variant consumes 128-channel
     /// features plus an explicit bandwidth condition.
     VocoderVocos,
+    /// openWakeWord streaming keyword spotting. The generic Session facade
+    /// has no KWS slot, so `run` binds the concrete mutable session once from
+    /// the already parsed GGUF and feeds the complete 16 kHz clip.
+    KwsOpenwakeword,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -303,6 +307,8 @@ const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
 /// [`vokra_models::fsmn_vad::ARCH`] and of what `vokra-cli convert --model
 /// fsmn-vad` writes.
 const ARCH_FSMN_VAD: &str = "fsmn-vad";
+/// openWakeWord native v0.5.1 KWS pipeline.
+const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
@@ -662,6 +668,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 })?;
             Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::VadFsmn))
         }
+        ARCH_OPENWAKEWORD_OP => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_OPENWAKEWORD_OP}`"
+                ));
+            }
+            Ok((session, ModelTask::KwsOpenwakeword))
+        }
         ARCH_NSNET2 => {
             if hint.is_some() {
                 return Err(format!(
@@ -889,6 +903,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
+                 `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
@@ -1103,36 +1118,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::smart_turn",
         entry: "SmartTurn::from_gguf → SmartTurn::predict_endpoint",
         probe: Some(|g: &GgufFile| vokra_models::smart_turn::SmartTurn::from_gguf(g).map(|_| ())),
-    },
-    // `LoudPartialForward` asserts something specific: that the LOAD
-    // works and only the forward is partial. Until 2026-08-15 that was
-    // false for this row, and not marginally so — the named converter
-    // (`vokra-convert/src/models/openwakeword_op.rs`) stamped none of the
-    // seven `vokra.openwakeword.*` keys `OpenwakewordConfig::from_gguf`
-    // requires, so no GGUF this workspace could produce reached the
-    // forward at all. The row described the second failure of a pipeline
-    // that never survived the first.
-    //
-    // Worth noting why the `probe` below did not catch it: it runs
-    // against a GGUF a caller supplies at runtime, so it can only fail on
-    // someone's machine, never in CI. The tests that now hold this row
-    // honest are `crates/vokra-convert/tests/openwakeword_op_roundtrip.rs`
-    // and `crates/vokra-models/tests/openwakeword_convert_bind.rs`, the
-    // latter running the real converter into the real binder.
-    //
-    // The claim is accurate as of the converter repair: the load binds
-    // real config and real per-wake-word classifier weights, and
-    // `push_pcm16k` is a genuine loud-partial (`UnsupportedOp` naming the
-    // frozen Google `speech_embedding` extractor and the env-gated parity
-    // harness). Note the converter now requires a `--config` side-car for
-    // the per-wake-word names, which are not derivable from the tensors.
-    BoundArch {
-        arch: "openwakeword_op",
-        module: "vokra_models::kws::openwakeword",
-        entry: "OpenwakewordSession::from_gguf → OpenwakewordSession::push_pcm16k",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::kws::openwakeword::OpenwakewordSession::from_gguf(g).map(|_| ())
-        }),
     },
     // --- TTS -------------------------------------------------------------
     BoundArch {
@@ -1996,6 +1981,21 @@ mod tests {
             load_session(p).expect("rmvpe session builds (bare)")
         });
         assert_eq!(task, ModelTask::F0Rmvpe);
+    }
+
+    #[test]
+    fn load_session_routes_openwakeword_to_kws_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_OPENWAKEWORD_OP, "openwakeword-routed", |path| {
+                load_session(path).expect("openwakeword returns a bare KWS session")
+            });
+        assert_eq!(task, ModelTask::KwsOpenwakeword);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_OPENWAKEWORD_OP),
+            "a runnable KWS arch must not remain in the loud-partial registry"
+        );
     }
 
     #[test]

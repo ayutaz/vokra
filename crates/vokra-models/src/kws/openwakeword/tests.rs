@@ -66,6 +66,103 @@ fn build_tiny_gguf(embedding_dim: usize, hidden_dim: usize, wakewords: &[&str]) 
     b.to_bytes().expect("serialise tiny GGUF")
 }
 
+fn build_native_zero_gguf() -> Vec<u8> {
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, DEFAULT_NAME);
+    builder.add_u32(KEY_N_WAKEWORDS, 1);
+    builder.add_u32(KEY_EMBEDDING_DIM, 96);
+    builder.add_u32(KEY_WINDOW_FRAMES, 76);
+    builder.add_u32(KEY_MEL_BINS, 32);
+    builder.add_u32(KEY_SAMPLE_RATE, 16_000);
+    builder.add_u32(KEY_HOP_SAMPLES, 160);
+    builder.add_metadata(KEY_WAKEWORD_NAMES, string_array_chunk(&["alexa"]));
+    builder.add_string(KEY_CLASSIFIER_FORMAT, CLASSIFIER_FORMAT_DNN);
+    builder.add_u32(KEY_CLASSIFIER_INPUT_FRAMES, 16);
+    builder.add_u32(KEY_PREDICT_CHUNK_SAMPLES, 1_280);
+    builder.add_metadata(
+        KEY_CLASSIFIER_LAYER_COUNTS,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: vec![GgufMetadataValue::U32(3)],
+        }),
+    );
+    let add = |builder: &mut GgufBuilder, name: &str, dimensions: &[u64]| {
+        let elements = dimensions.iter().product::<u64>() as usize;
+        builder
+            .add_tensor(
+                name,
+                GgmlType::F32,
+                dimensions.to_vec(),
+                vec![0; elements * 4],
+            )
+            .unwrap();
+    };
+    add(&mut builder, "openwakeword.melspec.dft_real", &[257, 512]);
+    add(&mut builder, "openwakeword.melspec.dft_imag", &[257, 512]);
+    add(&mut builder, "openwakeword.melspec.mel", &[257, 32]);
+    const CONVS: [(u64, u64, u64, u64); 20] = [
+        (1, 24, 3, 3),
+        (24, 24, 1, 3),
+        (24, 24, 3, 1),
+        (24, 48, 1, 3),
+        (48, 48, 3, 1),
+        (48, 48, 1, 3),
+        (48, 48, 3, 1),
+        (48, 72, 1, 3),
+        (72, 72, 3, 1),
+        (72, 72, 1, 3),
+        (72, 72, 3, 1),
+        (72, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 1, 3),
+        (96, 96, 3, 1),
+        (96, 96, 3, 1),
+    ];
+    for (index, (input, output, kh, kw)) in CONVS.into_iter().enumerate() {
+        add(
+            &mut builder,
+            &format!("openwakeword.embedding.conv.{index}.weight"),
+            &[output, input, kh, kw],
+        );
+        if index != 19 {
+            add(
+                &mut builder,
+                &format!("openwakeword.embedding.conv.{index}.bias"),
+                &[output],
+            );
+        }
+    }
+    for (layer, (output, input)) in [(128, 1_536), (128, 128), (1, 128)].into_iter().enumerate() {
+        add(
+            &mut builder,
+            &tensor_classifier_dnn_weight(0, layer),
+            &[output, input],
+        );
+        add(
+            &mut builder,
+            &tensor_classifier_dnn_bias(0, layer),
+            &[output],
+        );
+    }
+    builder.to_bytes().unwrap()
+}
+
+#[test]
+fn native_bundle_binds_and_emits_one_prediction_per_complete_chunk() {
+    let gguf = GgufFile::parse(build_native_zero_gguf()).unwrap();
+    let mut session = OpenwakewordSession::from_gguf(&gguf).unwrap();
+    assert!(session.classifiers().is_empty());
+    assert_eq!(session.dnn_classifiers().len(), 1);
+    assert!(session.push_pcm16k(&[0.0; 1_279]).unwrap().is_empty());
+    let output = session.push_pcm16k(&[0.0]).unwrap();
+    assert_eq!(output, vec![("alexa".to_owned(), 0.0)]);
+}
+
 /// Round-trip through `from_gguf`: config + classifier bind end-to-end.
 #[test]
 fn from_gguf_round_trips_config_and_classifiers() {

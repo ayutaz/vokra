@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 69 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **69** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 68 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **68** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -37,6 +37,29 @@ registry rows and implements the separate Godot VAD Object-return gap:
 These are blocker rows, not 79 equally sized implementation tickets. In
 particular, adding a loader must not close a row whose forward still refuses,
 and a structural/synthesized-weight test must not close real-weight parity.
+
+### 2026-08-22 openWakeWord closure
+
+`openwakeword_op` is no longer a partial-forward row. Audit of the official
+v0.5.1 ONNX graphs corrected two scaffold errors: the frontend is a learned
+512-sample DFT rather than a 1024-point Hann STFT, and the Alexa classifier is
+`16×96 → 128 → 128 → 1`, not a two-layer `96 → hidden → 1` head. The offline
+Python 3.12 bridge now extracts the learned DFT/mel tensors, all 20 embedding
+convolutions, and every Gemm in graph order. It also passes PCM16 values to
+the reference rather than normalized floats that upstream would quantize to
+almost all zeros.
+
+The native runtime binds all 48 canonical tensors and implements the exact
+1280-sample streaming state, 480-sample raw context, 76-frame mel window,
+16-embedding classifier window, first-five suppression, and per-head DNN.
+The embedding CNN uses the first-party CPU GEMM seam; the initial scalar path
+took 117.68 s for 37 debug hops, while the GEMM path took 12.16 s. The optimized
+release CLI processed the same 3 s / 37-hop WAV in 0.376 s (RTF 0.125). Both
+implementations measured max probability error `5.960464478e-8` against direct
+ONNX Runtime, under the unchanged `1e-4` gate. Official CC-BY-NC-SA-4.0 weights
+remained on the VAST validation instance and were not uploaded. The CLI now
+routes the arch to a real KWS task and prints detections at the documented 0.5
+threshold.
 
 ## Corrections to the previous ledger
 
@@ -351,7 +374,7 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 60 partial forwards
+## Wave 4 — 68 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
@@ -359,8 +382,8 @@ family as one completion checkbox.
 | Family | Count | Rows |
 |---|---:|---|
 | ASR / speech transcription | 14 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `moonshine`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
-| VAD / KWS / turn taking | 4 | `firered_vad`, `openwakeword_op`, `smart_turn`, `ten_vad` |
-| TTS / speech-to-speech | 8 | `chattts`, `cosyvoice2`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `voila` |
+| VAD / KWS / turn taking | 3 | `firered_vad`, `smart_turn`, `ten_vad` |
+| TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
 | Enhancement / separation / AEC | 9 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `rnnoise`, `sepformer`, `storm` |
 | Speaker / diarization | 3 | `redimnet`, `sortformer`, `speaker_3d` |

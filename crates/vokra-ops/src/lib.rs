@@ -521,7 +521,12 @@ pub use vocos::{
     VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode,
 };
 // ---- SoTA plan KWS binder openwakeword re-exports (2026-08-05) ----------
-pub use openwakeword::{OpenwakewordClassifierWeights, openwakeword_classifier_forward};
+pub use openwakeword::{
+    OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights,
+    OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights,
+    openwakeword_classifier_forward, openwakeword_dnn_classifier_forward,
+    openwakeword_embedding_forward, openwakeword_melspectrogram,
+};
 // -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq re-exports ------------------------------------------
 pub use mimi_rvq::{
