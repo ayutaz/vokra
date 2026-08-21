@@ -47,6 +47,7 @@ USAGE:
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
+    vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
 
 OPTIONS:
@@ -63,7 +64,7 @@ OPTIONS:
                                 signal and must be paired with --far-end.
                                 For Mimi encode it is a mono WAV; for Mimi
                                 decode it is a `VKRMCODE` v1 code container.
-                                For BigVGAN and SpeechT5 HiFi-GAN it is raw
+                                For BigVGAN and both HiFi-GAN variants it is raw
                                 little-endian f32 mel data in channel-major
                                 `[n_mels, frames]` order; frames are derived
                                 exactly from length.
@@ -599,7 +600,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::AecNkf => Some("NKF acoustic echo cancellation"),
         ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
         ModelTask::VocoderBigVgan => Some("BigVGAN neural vocoder"),
-        ModelTask::VocoderHifiGan => Some("SpeechT5 HiFi-GAN neural vocoder"),
+        ModelTask::VocoderHifiGan => Some("HiFi-GAN neural vocoder"),
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
@@ -1777,31 +1778,37 @@ fn run_bigvgan(session: &Session, a: &RunArgs) -> Result<(), String> {
     )
 }
 
-/// SpeechT5 HiFi-GAN uses the same explicit file layout as BigVGAN. The
-/// strict model binder applies its checkpoint-owned mean/scale normalization;
-/// the CLI does not infer or duplicate it.
+/// Both standalone HiFi-GAN variants use the same explicit file layout as
+/// BigVGAN. The strict model binder applies variant-owned preprocessing
+/// (SpeechT5 mean/scale normalization or SpeechBrain replicate padding); the
+/// CLI does not infer or duplicate it.
 fn run_hifigan(session: &Session, a: &RunArgs) -> Result<(), String> {
-    const TASK: &str = "speecht5_hifigan";
+    const TASK: &str = "hifigan";
     if a.text.is_some() || a.tokens.is_some() || a.codec_mode.is_some() {
         return Err(
-            "run (speecht5_hifigan): --text/--tokens/--codec-mode are not vocoder inputs; pass a raw channel-major mel file with --input"
+            "run (hifigan): --text/--tokens/--codec-mode are not vocoder inputs; pass a raw channel-major mel file with --input"
                 .to_owned(),
         );
     }
     let input_path = a
         .input
         .as_deref()
-        .ok_or("run (speecht5_hifigan): --input <mel.f32> is required")?;
+        .ok_or("run (hifigan): --input <mel.f32> is required")?;
     let model = vokra_models::hifigan::HiFiGan::from_gguf(session.gguf())
         .map_err(|error| error.to_string())?;
     let n_mels = model.attrs().n_mels;
     let bytes = std::fs::read(input_path)
-        .map_err(|error| format!("run (speecht5_hifigan): --input {input_path}: {error}"))?;
+        .map_err(|error| format!("run (hifigan): --input {input_path}: {error}"))?;
     let (mel, frames) = parse_vocoder_mel_bytes(&bytes, n_mels, input_path, TASK)?;
     let pcm = model
         .decode(&mel, frames)
         .map_err(|error| error.to_string())?;
-    emit_audio(TASK, &pcm, model.sample_rate(), a.output.as_deref())
+    let variant = match model.sample_rate() {
+        16_000 => "speecht5_hifigan",
+        22_050 => "hifigan_vocoder",
+        _ => TASK,
+    };
+    emit_audio(variant, &pcm, model.sample_rate(), a.output.as_deref())
 }
 
 fn parse_vocoder_mel_bytes(
@@ -3985,7 +3992,7 @@ mod tests {
         );
         assert_eq!(
             cpu_only_engine_label(ModelTask::VocoderHifiGan),
-            Some("SpeechT5 HiFi-GAN neural vocoder")
+            Some("HiFi-GAN neural vocoder")
         );
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.

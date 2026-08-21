@@ -331,6 +331,8 @@ const ARCH_MIMI: &str = "mimi";
 const ARCH_BIGVGAN: &str = "bigvgan";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
 const ARCH_SPEECHT5_HIFIGAN: &str = "speecht5_hifigan";
+/// SpeechBrain LibriTTS 22.05 kHz HiFi-GAN vocoder.
+const ARCH_HIFIGAN_VOCODER: &str = "hifigan_vocoder";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -765,7 +767,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::VocoderBigVgan))
         }
-        ARCH_SPEECHT5_HIFIGAN => {
+        ARCH_SPEECHT5_HIFIGAN | ARCH_HIFIGAN_VOCODER => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on arch `{ARCH_SPEECHT5_HIFIGAN}`"
@@ -1537,21 +1539,14 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // --- Vocoders / codecs -----------------------------------------------
     // BigVGAN left this registry on 2026-08-21 after its strict loader,
     // alias-free forward parity, and explicit mel-file CLI contract landed.
-    // The two rows below still fail at load time. Vocos additionally has a
-    // ConvNeXt-V2 forward blocker after that loader gap is closed.
+    // Vocos still fails at load time and additionally has a ConvNeXt-V2
+    // forward blocker after that loader gap is closed.
     BoundArch {
         arch: "vocos",
         module: "vokra_models::vocos",
         entry: "Vocos::new(VocosVariant, VocosConfig, u32) → Vocos::decode (a SECOND \
                 blocker, unlike its bigvgan / hifigan siblings: the ConvNeXt V2 backbone \
                 is absent from vokra-ops, so decode names that gap instead of returning PCM)",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
-    BoundArch {
-        arch: "hifigan_vocoder",
-        module: "vokra_models::hifigan",
-        entry: "HiFiGan::new(HifiGanWeights, HifiGanAttrs, HifiGanConfig, u32) → HiFiGan::decode",
         reason: BoundReason::NoGgufLoader,
         probe: None,
     },
@@ -2431,104 +2426,28 @@ mod tests {
         );
     }
 
-    // ---- Wave K (2026-08-15) — remaining vocoder loader gaps -------------
+    #[test]
+    fn load_session_routes_speechbrain_hifigan_to_vocoder_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_HIFIGAN_VOCODER, "hifigan-vocoder-routed", |path| {
+                load_session(path).expect("SpeechBrain HiFi-GAN session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::VocoderHifiGan);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_HIFIGAN_VOCODER),
+            "SpeechBrain HiFi-GAN has a strict real-weight loader, complete forward, and CLI route"
+        );
+    }
+
+    // ---- Wave K/L (2026-08-15) — remaining vocoder loader gap ------------
     //
-    // `hifigan_vocoder` has a complete forward but a loader that refuses on
-    // every path. These tests pin the message a user sees, the binder behind
-    // it, and the row's own data. BigVGAN and SpeechT5 HiFi-GAN left this
-    // block on 2026-08-21 when their strict binders and CLI routes landed.
-    //
-    // Wave L (2026-08-15) folded `vocos` in as the fourth. Wave K had left it
+    // Wave L folded `vocos` in as the fourth vocoder gap. Wave K had left it
     // on `LoudPartialForward` because its `decode` is a genuine loud-partial,
     // which named the SECOND of its two blockers — its `from_gguf` is as dead
-    // as the remaining SpeechBrain HiFi-GAN variant. Its tests sit at the end of this block and are
-    // built to the same three-sided shape, so the exemption cannot return
-    // quietly.
-
-    /// The `run` diagnostic names the blocker that actually fires (nothing
-    /// binds) rather than a forward gap, and points at the constructor a
-    /// caller can really reach.
-    #[test]
-    fn load_session_binds_hifigan_vocoder_as_unwired_loader_not_loud_partial_forward() {
-        let err = assert_bound_arch(
-            "hifigan_vocoder",
-            "hifigan-vocoder-arch",
-            "vokra_models::hifigan",
-            "HiFiGan::new",
-        );
-        assert!(
-            err.contains("no GGUF loader yet"),
-            "hifigan_vocoder's first blocker is that nothing binds from a converted \
-             artifact: {err}"
-        );
-        assert!(
-            !err.contains("runtime forward is a loud-partial"),
-            "`HiFiGan::decode` is one complete call into the landed `hifigan_generator` op \
-             — leading with a forward gap sends the reader hunting for a missing primitive \
-             that does not exist: {err}"
-        );
-        assert!(
-            !err.contains("HiFiGan::from_gguf"),
-            "the entry must not send a caller at a constructor that always errors: {err}"
-        );
-    }
-
-    /// The claim the re-filed rows rest on, checked against the binder
-    /// itself: the remaining SpeechBrain arm refuses a correctly stamped
-    /// metadata-only GGUF, binding no tensor.
-    ///
-    /// If a real loader lands, this test fails — which is the point. The
-    /// rows' `reason` and `entry` both assume nothing binds, so that commit
-    /// has to revisit them rather than leave a stale claim in place.
-    #[test]
-    fn hifigan_vocoder_from_gguf_still_binds_nothing() {
-        with_arch_only_gguf("hifigan_vocoder", "hifigan-loader-probe", |p| {
-            let gguf = GgufFile::open(p).expect("arch-only fixture parses");
-            let Err(err) = vokra_models::hifigan::HiFiGan::from_gguf(&gguf) else {
-                panic!(
-                    "HiFiGan::from_gguf bound a metadata-only hifigan_vocoder GGUF — if the \
-                     real binder landed, revisit the BOUND_ARCHES row"
-                );
-            };
-            let msg = err.to_string();
-            assert!(
-                msg.contains("real-weight loader is deferred"),
-                "the refusal must still name the deferred loader: {msg}"
-            );
-        });
-    }
-
-    /// The rows' own data, asserted directly so a regression reports its
-    /// cause rather than only the downstream message.
-    #[test]
-    fn bound_arch_registry_vocoder_rows_do_not_promise_a_gguf_load() {
-        for (arch, ctor) in [("hifigan_vocoder", "HiFiGan::new")] {
-            let row = BOUND_ARCHES
-                .iter()
-                .find(|b| b.arch == arch)
-                .unwrap_or_else(|| {
-                    panic!("`{arch}` has a vokra-models binder and must carry a row")
-                });
-            assert_eq!(
-                row.reason,
-                BoundReason::NoGgufLoader,
-                "`{arch}`: its loader refuses on every path, binding no tensor — \
-                 `LoudPartialForward` would assert a forward gap that its complete \
-                 `decode` does not have"
-            );
-            assert!(
-                !row.entry.contains("from_gguf"),
-                "`{arch}`: `entry` must name a reachable constructor, and its `from_gguf` \
-                 always errors: {}",
-                row.entry
-            );
-            assert!(
-                row.entry.contains(ctor),
-                "`{arch}`: the module names `{ctor}` as the reachable constructor: {}",
-                row.entry
-            );
-        }
-    }
+    // as the then-remaining HiFi-GAN variant. Both HiFi-GAN variants now have
+    // strict loaders and routes; only Vocos remains in this block.
 
     /// The `run` diagnostic for `vocos` names the blocker that actually fires
     /// FIRST — nothing binds — rather than the forward gap behind it.
