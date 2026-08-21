@@ -71,6 +71,31 @@ milestone below.
   frame hop matches the `[8,8,4,2,2]` generator product; sidecar and converter
   validate both independently.
 
+#### NanoCodec causal streaming decoder (2026-08-22)
+
+- Added a checkpoint-configured, stateful `CausalHifiGan` decoder for NVIDIA
+  NanoCodec. It binds the complete decoder-only `vokra.nanocodec.*` GGUF
+  schema through `from_gguf`, exposes `state` / allocation-free `decode_into`
+  / `reset`, emits the checkpoint's validated `frame_hop` without a hard-coded
+  sample count, and carries every
+  causal convolution history and transposed-convolution overlap tail.
+  Binding requires the converter's verified official-NeMo source URL and exact
+  pinned commit metadata; a merely shape-compatible foreign GGUF is rejected.
+- Pinned full-buffer versus frame-streaming bit identity, future-frame
+  causality, reset replay, loud shape/capacity failures, and a dedicated
+  counting-allocator gate. Added an offline official-NeMo reference bridge and
+  pre-registered real-checkpoint waveform bounds; large fixture generation and
+  `vokra-models` execution remain on the VAST workflow.
+- Added a fail-closed metadata/topology check. The published 21.5 fps archive
+  consistently declares a 1024-sample frame and `[8, 8, 4, 2, 2]` generator
+  strides (product 1024), verified from its fixed checkpoint config. Any
+  future mismatch is rejected instead of dropping or inventing waveform
+  samples.
+- Added a synthetic converter-schema GGUF bind/decode test that requires the
+  rebound decoder to emit PCM bit-identical to the same directly bound weight
+  bundle. Missing/foreign metadata, non-F32 tensors, and shape mismatches are
+  model-load errors rather than partially loaded models.
+
 #### Audio-wide coverage expansion (2026-07-24 → 2026-08-16)
 
 Vokra's scope widened from speech to audio: music generation, source

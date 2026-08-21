@@ -302,6 +302,40 @@ does not reuse or change the existing `vokra.wavtokenizer.*` or
 The converter also reuses the existing `vokra.provenance.*` namespace for the
 immutable source revision and checkpoint SHA-256. Those are not new prefixes.
 
+### 2026-08-22 — 1.0.0-rc.1-dev (NanoCodec causal HiFi-GAN streaming decoder — Rust surface only, advisory)
+
+Additive **Rust public API** only; `include/vokra.h` is untouched. The
+`vokra-models` crate now exports module `nanocodec` and the public
+`CausalHifiGan`, `CausalHifiGanConfig`, `CausalHifiGanState`, and checkpoint
+weight carrier types for causal Conv1d, dense-expanded grouped
+ConvTranspose1d, HalfSnake, residual blocks, stages, and the complete decoder.
+
+`CausalHifiGan` adds `new`, `from_gguf`, `config`, `expected_feature_dim`,
+`frame_hop`, `state`, `decode_into`, `reset`, and `decode_all`. `from_gguf`
+binds the complete decoder-only `vokra.nanocodec.*` schema emitted by the
+offline converter and rejects foreign architecture tags, unsupported transform
+markers, a foreign/missing NeMo source URL or commit, missing/non-F32 tensors,
+and exact-shape mismatches. `decode_into` is
+the allocation-free streaming surface and returns the exact sample count
+written. The config reads `frame_hop` independently from the checkpoint and
+requires it to equal both the stamped `generator_hop` and the checked generator
+stride product. The published 21.5 fps archive reports `frame_hop=1024` and
+`up_sample_rates=[8,8,4,2,2]` (product 1024), verified directly from the fixed
+official checkpoint config. A mismatched future artifact is rejected rather
+than silently dropping or inventing waveform samples. No known NanoCodec hop
+is embedded as a runtime default.
+
+The implementation is CPU-native. No GPU backend is selected implicitly and
+there is no silent CPU fallback. Backend capability registration is tracked by
+the sibling #51 change; the offline converter and its end-to-end conversion
+roundtrip are tracked by #47.
+
+The topology is transcribed from NVIDIA NeMo Speech (Apache-2.0) commit
+`4fcff72febec9395fdbd4bfa0747bfda2ecd3cef`, cross-checked with
+NeMo-Speech.cpp commit `4f9676226f667d14608487df744f375db87127f8`.
+No model weights are bundled and this entry makes no publication-license
+claim.
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 
 **Behaviour change** plus additive Rust surface. The C ABI
