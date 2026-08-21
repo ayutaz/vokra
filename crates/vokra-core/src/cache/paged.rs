@@ -258,9 +258,7 @@ impl<T: KvElement> KvPage<T> {
     }
 
     fn zero(&mut self) {
-        for slot in &mut self.data {
-            *slot = T::ZERO;
-        }
+        self.data.fill(T::ZERO);
     }
 
     fn capacity_bytes(&self) -> usize {
@@ -706,9 +704,7 @@ impl<T: KvElement> PagedKvCache<T> {
     /// happens to still match can only expose zeros). Rewriting them would be
     /// `O(pages · block_size · n_stream)` of pointless work.
     pub fn reset(&mut self) {
-        for slot in &mut self.page_table {
-            *slot = None;
-        }
+        self.page_table.fill(None);
         self.allocator.reset();
         self.pos = 0;
     }
