@@ -32,7 +32,7 @@
 //! separately-built bundles (not a method on some `HiFiGanGenerator`
 //! struct — see `SbV2Decoder`'s module docstring for the same
 //! observation); [`HiFiGan::decode`] is a thin
-//! [`hifigan_generator`] call that keeps the wrapper's surface
+//! [`vokra_ops::hifigan::hifigan_generator`] call that keeps the wrapper's surface
 //! stable even as the op grows internal knobs (INT8 opt-in, `cond`
 //! layer, etc.).
 //!
@@ -71,8 +71,8 @@ use vokra_core::gguf::chunks;
 use vokra_core::{Result, VokraError};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
-    HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer, UpsampleStageWeights,
-    hifigan_generator,
+    HifiGanConfig, HifiGanConvPadding, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
+    UpsampleStageWeights, hifigan_generator_with_conv_padding,
 };
 
 /// `vokra.model.arch` value emitted by the SpeechBrain LibriTTS 22.05 kHz
@@ -110,7 +110,7 @@ pub struct HiFiGan {
     weights: HifiGanWeights,
     /// Shape + upsample-ladder metadata. [`decode`](Self::decode)'s
     /// `mel.len()` must equal `n_frames * attrs.n_mels`, checked inside
-    /// [`hifigan_generator`] itself.
+    /// [`vokra_ops::hifigan::hifigan_generator`] itself.
     attrs: HifiGanAttrs,
     /// Precision policy — FP32 (default) or mixed-precision FP16 with
     /// FP32 accumulator. INT8 opt-in stays gated behind
@@ -130,6 +130,9 @@ pub struct HiFiGan {
     /// generator. SpeechBrain's public `inference()` contract uses 5;
     /// SpeechT5 feeds the unpadded mel directly.
     inference_padding: usize,
+    /// Boundary mode for every stride-1 Conv1d. SpeechBrain's wrapper uses
+    /// reflect; SpeechT5 and the public constructor retain zero padding.
+    conv_padding: HifiGanConvPadding,
 }
 
 #[derive(Debug, Clone)]
@@ -230,7 +233,15 @@ impl HiFiGan {
         config: HifiGanConfig,
         sample_rate: u32,
     ) -> Result<Self> {
-        Self::new_with_preprocessing(weights, attrs, config, sample_rate, None, 0)
+        Self::new_with_preprocessing(
+            weights,
+            attrs,
+            config,
+            sample_rate,
+            None,
+            0,
+            HifiGanConvPadding::Zero,
+        )
     }
 
     fn new_with_preprocessing(
@@ -240,6 +251,7 @@ impl HiFiGan {
         sample_rate: u32,
         normalization: Option<HifiGanInputNormalization>,
         inference_padding: usize,
+        conv_padding: HifiGanConvPadding,
     ) -> Result<Self> {
         attrs.validate_shape()?;
         config.validate()?;
@@ -280,6 +292,7 @@ impl HiFiGan {
             sample_rate,
             normalization,
             inference_padding,
+            conv_padding,
         })
     }
 
@@ -439,7 +452,7 @@ impl HiFiGan {
     ///
     /// # Errors
     ///
-    /// See [`hifigan_generator`]. In practice, once `self` has passed
+    /// See [`vokra_ops::hifigan::hifigan_generator`]. In practice, once `self` has passed
     /// [`Self::new`], the only reachable errors are
     /// [`VokraError::InvalidArgument`] on a `mel.len()` mismatch
     /// (caller sent the wrong `n_frames`) and
@@ -468,12 +481,13 @@ impl HiFiGan {
             )?;
             (padded.as_slice(), n_frames + self.inference_padding * 2)
         };
-        hifigan_generator(
+        hifigan_generator_with_conv_padding(
             input,
             input_frames,
             &self.weights,
             &self.attrs,
             &self.config,
+            self.conv_padding,
         )
     }
 
@@ -687,13 +701,20 @@ fn load_speechbrain_hifigan(file: &GgufFile) -> Result<HiFiGan> {
         conv_post_kernel: 7,
         cond: None,
     };
-    HiFiGan::new_with_preprocessing(weights, attrs, HifiGanConfig::fp32(), 22_050, None, 5).map_err(
-        |error| {
-            VokraError::ModelLoad(format!(
-                "HiFiGan::from_gguf(hifigan_vocoder): loaded tensor tree failed validation: {error}"
-            ))
-        },
+    HiFiGan::new_with_preprocessing(
+        weights,
+        attrs,
+        HifiGanConfig::fp32(),
+        22_050,
+        None,
+        5,
+        HifiGanConvPadding::Reflect,
     )
+    .map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "HiFiGan::from_gguf(hifigan_vocoder): loaded tensor tree failed validation: {error}"
+        ))
+    })
 }
 
 fn load_speecht5_hifigan(file: &GgufFile) -> Result<HiFiGan> {
@@ -828,6 +849,7 @@ fn load_speecht5_hifigan(file: &GgufFile) -> Result<HiFiGan> {
         16_000,
         Some(normalization),
         0,
+        HifiGanConvPadding::Zero,
     )
     .map_err(|error| {
         VokraError::ModelLoad(format!(
