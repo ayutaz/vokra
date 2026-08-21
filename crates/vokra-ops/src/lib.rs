@@ -486,8 +486,8 @@ pub use ddpm_sampler::{
 // -------------------------------------------------------------------------
 // ---- M4-16 fsq_codec re-exports ------------------------------------------
 pub use fsq_codec::{
-    FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes,
-    wavtokenizer_vq_decode, xcodec2_fsq_decode,
+    FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode,
+    group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 // ---------------------------------------------------------------------------
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};

@@ -250,6 +250,26 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-22 — 1.0.0-rc.1-dev (NanoCodec grouped FSQ decode — Rust surface only, additive)
+
+Issue #45 adds the allocating and caller-owned-buffer forms of NVIDIA
+NanoCodec's grouped, non-residual FSQ dequantizer. The C ABI and GGUF schema
+are unchanged. The Rust API is additive; `group_fsq_decode_into` is the
+steady-state zero-allocation entry and `group_fsq_decode` is its convenience
+wrapper. Both infer `n_groups` from the runtime `[time, n_groups]` code buffer,
+so the G=4/8/13 released variants share one API.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-ops::fsq_codec` | `group_fsq_decode` | Added | `pub fn group_fsq_decode(codes: &[u32], time: usize, levels_per_group: &[u32]) -> Result<Vec<f32>>` | Allocating convenience wrapper for #45; concatenates runtime groups and never applies an RVQ residual sum. | no | (TBD) |
+| `vokra-ops::fsq_codec` | `group_fsq_decode_into` | Added | `pub fn group_fsq_decode_into(codes: &[u32], time: usize, levels_per_group: &[u32], out: &mut [f32]) -> Result<()>` | Caller-owned per-frame path for #45, guarded by source scan and 1000-call counting allocator test. | no | (TBD) |
+
+Numerical parity is pinned at `atol = 1e-6` against the upstream
+`GroupFiniteScalarQuantizer.decode` restored from NVIDIA's real 0.6 kbps
+checkpoint. The fixture records the HF repo commit, checkpoint SHA-256 and
+NVIDIA-NeMo/Speech source commit; Python is offline-only under a dedicated
+Python 3.12 `uv.lock`. Root `Cargo.lock` remains first-party-only.
+
 ### 2026-08-21 — 1.0.0-rc.1-dev (stateful streaming resampler — Rust surface only, additive)
 
 Issue #50 adds a caller-owned-buffer streaming wrapper around Vokra's existing
