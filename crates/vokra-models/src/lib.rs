@@ -309,10 +309,8 @@ pub mod mimi;
 pub mod moshi;
 // Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551, MIT — 2026-08-05
 // runtime binder). A denoise-family runtime binder alongside DFN3
-// (`vokra_ops::denoise`). RNNoise v0.2 is NOT a sibling binder: it exists
-// only as the `vokra_ops::rnnoise` op set plus a converter
-// (`crates/vokra-convert/src/models/rnnoise.rs`, `ARCH = "rnnoise"`), with
-// no runtime binder. NSNet2 itself is a deliberately-weaker
+// (`vokra_ops::denoise`) and the RNNoise v0.2 real-weight neural binder.
+// NSNet2 itself is a deliberately-weaker
 // industry-baseline reference for quantization-CI cross-checks
 // (CLAUDE.md audio dialect §"Speech Enhancement / AGC / AEC"). REAL forward:
 // STFT (n_fft=512, hop=160, win=320, causal / non-center) → log-power

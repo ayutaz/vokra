@@ -56,37 +56,34 @@ including the synthetic test comment that names a non-existent
 `parity_deberta_v2_layer_bisect.rs`. Supporting another DeBERTa-v2 variant
 would be a new, separately scoped model task.
 
-### RNNoise must be corrected before its forward is implemented
+### RNNoise real-weight network closure (completed 2026-08-21)
 
-The current prep script writes one opaque tensor,
-`rnnoise.weights_blob_f32`, by reinterpreting the Xiph binary blob rather than
-decoding its layer records. It stores `prep_status=opaque-blob-placeholder` in
-the safetensors header, but the RNNoise converter does not propagate that
-metadata into GGUF.
+The old prep script wrote one opaque `rnnoise.weights_blob_f32` tensor and the
+converter silently accepted it. That route has been removed. The canonical
+prep now verifies the official v0.2 release tarball SHA-256 and parses the 36
+arrays embedded in `src/rnnoise_data.c`; the converter rejects missing, extra,
+renamed, wrong-sized, or non-F32-container arrays before writing GGUF.
 
 The public `vokra/rnnoise-v0.2` repository was checked on 2026-08-21. Its Hub
 API revision was `bedd79292105b7975ddb2383c24c06d4390c100b`, it remained
 public, and its 1.4 MB GGUF exposed `rnnoise.weights_blob_f32` but no
 `prep_status` marker. The runtime has RNNoise DSP/RNN primitives and a
 pass-through converter, but no `vokra-models` RNNoise binder; the env-gated
-denoise parity test intentionally panics when a GGUF is supplied.
+denoise parity test intentionally panicked when a GGUF was supplied.
 
-Treat this as an artifact-truth defect, not merely a missing forward. The
-implementation order is:
+The replacement binder implements Xiph's causal Conv1d pair, three 384-wide
+GRUs, signed-int8 8×4 sparse matrix walk, scale/bias/recurrent-diagonal
+handling, `[z,r,h]` gates, rational activations, 32 gain outputs, and VAD head.
+The real GGUF (36 tensors, 4,469,280 bytes) passed four sequential frames
+against an independent executable compiled from unmodified Xiph v0.2 C.
 
-1. Add a fail-closed converter/publication gate that rejects opaque-placeholder
-   prep. Preserve a machine-readable prep status through conversion, or remove
-   the placeholder route entirely.
-2. Decode Xiph v0.2's binary record layout into named dense/GRU/output tensors,
-   including exact int8 scales, gate ordering, and transpositions. Do not cast
-   arbitrary bytes to float values.
-3. Add the real GGUF binder and a stateful 480-sample/240-sample-hop denoise
-   path. Reconcile the current pitch implementation with upstream
-   downsampling and `remove_doubling` before waveform parity.
-4. Generate independent Xiph C reference fixtures for layer taps and complete
-   waveforms, then run the `vokra-models` parity consumer on VAST.
-5. Audit the already-public model repository. Any replacement/upload must go
-   through `publish-one.sh` and needs separate explicit authorization.
+Remaining RNNoise work is now narrower and explicit: replace the legacy
+22-band/42-feature waveform primitives in `vokra-ops::rnnoise` with v0.2's
+32-band/65-feature analysis, official downsampled pitch search and
+`remove_doubling`, delayed-spectrum gain application, and overlap-add
+synthesis; then add waveform parity. Auditing or replacing the already-public
+Hub artifact remains a separate publication action requiring explicit upload
+authorization and `publish-one.sh`.
 
 ## Wave 1 — small runtime surfaces (implemented on this branch)
 

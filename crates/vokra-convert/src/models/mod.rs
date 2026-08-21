@@ -251,18 +251,16 @@ pub mod neutts_air;
 // ecapa_tdnn / qwen3_tts / vibevoice pattern; real-weight parity is
 // deferred to owner sign-off (`docs/license-audit.md` §3.1).
 pub mod nkf_aec;
-// coverage-audit-2026-08-03 Wave A ticket: Xiph RNNoise v0.2
-// (BSD-3-Clause, ~90 KB `weights_blob_9.bin` from
-// `github.com/xiph/rnnoise/releases/tag/v0.2`). Real-time noise reduction
-// — a compact GRU stack over 22-band Bark filterbank features
+// Xiph RNNoise v0.2 (BSD-3-Clause). The 2024-04-15 release contains the
+// trained arrays in `src/rnnoise_data.c` (not a standalone weight asset).
+// Its 65-feature / 32-band network is Conv1d(128) + Conv1d(384) + 3×GRU(384)
 // (Valin 2018, arXiv:1709.08243). Distinct arch tag from DeepFilterNet3
 // (Vokra's existing `Denoise` ModelKind and `vokra.denoise.*` chunk
 // group): DFN3 is complex-Conv + ERB deep-filtering, RNNoise is tiny-GRU
 // + Bark, and silently sharing would mis-route the runtime dispatch.
-// BF16 pass-through skeleton mirroring `neucodec` / `emotion2vec`;
-// real-weight parity is deferred to owner once the future
-// `vokra-models/src/rnnoise/` native forward and Xiph reference-C parity
-// land. The upstream C-array blob is flattened to safetensors by
+// The strict 36-array converter and `vokra-models::rnnoise` real-weight
+// neural forward are pinned against the Xiph C implementation. The C arrays
+// are converted to canonical safetensors by
 // `tools/parity/rnnoise_prepare_checkpoint.py` before entering the
 // converter (same "prep to safetensors" contract as DAC / DFN3 / CSM —
 // no C / Python enters the runtime, NFR-DS-02).

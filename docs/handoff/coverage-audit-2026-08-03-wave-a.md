@@ -45,7 +45,7 @@
 | # | Slug | Size | Status | Notes |
 |---|------|------|--------|-------|
 | 1 | **nkf-aec** | 23.7 KB GGUF | ✅ **HTTP 200** published | upstream = `github.com/fjiang9/NKF-AEC/src/nkf_epoch70.pt` (README `pretrained/nkf.pt` 記述と異なる = 実 file は `src/`)、prep script 動作確認済 |
-| 2 | rnnoise-v0.2 | TBD | ⏸ upstream barrier | v0.2 release asset は source tarball のみ、`weights_blob_9.bin` は **build 必須** (`autogen.sh && ./configure && make`) or main branch checkout の別 path。**owner or 別 phase 対応** |
+| 2 | rnnoise-v0.2 | 4,469,280 B canonical GGUF (2026-08-21 local/VAST verification artifact) | ✅ real-weight network closure / ⚠ public artifact replacement not authorized | 2026-08-21 再監査で、release asset は source tarball 1件、weights は `src/rnnoise_data.c` の36 arrays と確定。旧 opaque blob prep を廃止し、strict converter + real binder + Xiph C network parity を完了。waveform DSP parity と既公開 Hub artifact の差替は別タスク。 |
 | 3 | nsnet2 | TBD | ⏸ upstream barrier | DNS-Challenge master にも interspeech2020/master にも `NSNet2-baseline` dir 不在。`download-dns-challenge-5-baseline.sh` 経由の **1.4 GB Baseline.zip** DL 要 (Azure blob URL、authorization 不要だが time cost 大)。**owner or 別 phase 対応** |
 | 4 | dnsmos-p808-p835 | ✅ **HTTP 200** published (2026-08-04) | commit `343750a` で prep script に empty-shape scalar + INT graph-metadata skip logic を追加、Wave A residual publish で published (UPDATE #1 参照)。 |
 | 5 | frcrn | TBD | ⏸ upstream barrier | `github.com/alibabasglab/FRCRN` は README のみで pretrained checkpoint 不在。ModelScope 経由 (`damo/speech_frcrn_ans_cirm_16k`) で `pytorch_model.bin` を DL 必要。HF mirror (`alibabasglab/FRCRN`) = 401 (不在)。**owner ModelScope authentication + `uv add modelscope`** |
@@ -59,16 +59,16 @@ credential-harvesting/manual-push recipe was removed from the live handoff.
 Any future rebuild uses the frozen `tools/parity` uv project on VAST and the
 current `publish-one.sh` dry-run → explicit upload-authorization flow.
 
-### 2b. rnnoise-v0.2 (C build 経由、~5 min)
-```bash
-cd ~/checkpoints/rnnoise
-tar -xzf rnnoise-0.2.tar.gz
-cd rnnoise-0.2
-./autogen.sh && ./configure && make
-# build 完了後、weights_blob_9.bin が root or .libs/ に生成
-find . -name "weights_blob_9.bin"
-# 次に prep + convert + publish (nkf-aec pattern)
-```
+### 2b. rnnoise-v0.2 — network closure complete (2026-08-21)
+
+The former build recipe was wrong: v0.2 does not ship a
+`weights_blob_9.bin` asset, and the build writes a version-neutral
+`weights_blob.bin` only as a serialization of the arrays already present in
+`src/rnnoise_data.c`. Use `tools/parity/rnnoise_prepare_checkpoint.py` directly
+on the official release tarball. It verifies the canonical tar SHA-256 and
+extracts the 36 arrays without compiling or executing upstream C. Upstream C
+is used independently only by `rnnoise_v02_network_reference.c` to generate
+the committed parity fixture.
 
 ### 2c. nsnet2 (DNS5 Baseline.zip 1.4 GB DL、~10 min)
 ```bash

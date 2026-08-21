@@ -1073,12 +1073,10 @@ pub enum ModelKind {
     /// owed) pending the primitive landing. Provenance = **MIT**
     /// (Permissive — `Copyright (c) 2021 Nils L. Westhausen`).
     DtlnAec,
-    /// **Xiph RNNoise v0.2** weight blob (coverage-audit 2026-08-03
-    /// Wave A ticket). Category = `denoise`. Real-time noise
-    /// reduction — a compact GRU stack (`input_dense` 42→24 →
-    /// `vad_gru` / `noise_gru` / `denoise_gru` → `denoise_output`
-    /// 96→22, plus a `vad_output` 24→1 auxiliary head) over 22-band
-    /// Bark filterbank features (Valin 2018, arXiv:1709.08243).
+    /// **Xiph RNNoise v0.2** (coverage-audit 2026-08-03 Wave A ticket).
+    /// Category = `denoise`. Real-time noise reduction — 65 features feed
+    /// causal Conv1d(128) + Conv1d(384) + three 384-wide GRUs, producing
+    /// 32 band gains plus a VAD probability (Valin 2018, arXiv:1709.08243).
     /// **Distinct arch tag from [`Self::Denoise`]** (DeepFilterNet3):
     /// DFN3 is complex-Conv + ERB deep-filtering + `vokra.denoise.*`,
     /// RNNoise is tiny-GRU + Bark + `vokra.rnnoise.*` (`ARCH =
@@ -1086,15 +1084,15 @@ pub enum ModelKind {
     /// runtime dispatch (a DFN3 loader would try to interpret
     /// RNNoise's `input_dense` as `enc_conv0`). Provenance =
     /// **BSD-3-Clause** (Permissive — `github.com/xiph/rnnoise/blob/
-    /// main/COPYING`). Upstream ships as a ~90 KB C-array blob
-    /// (`weights_blob_9.bin` in the v0.2 GitHub Release tarball) —
-    /// `tools/parity/rnnoise_prepare_checkpoint.py` flattens it to
-    /// safetensors before entering this converter (mirror of the
+    /// main/COPYING`). Upstream embeds 36 trained arrays in
+    /// `src/rnnoise_data.c` inside the official v0.2 release tarball.
+    /// `tools/parity/rnnoise_prepare_checkpoint.py` validates and extracts
+    /// them to canonical safetensors before entering this converter (the
     /// DAC / DFN3 / CSM prepared-checkpoint contract; no C / Python
-    /// enters the runtime, NFR-DS-02). BF16 pass-through skeleton —
-    /// every F32 / F16 / BF16 tensor passes through verbatim; the
-    /// runtime binding + real-weight parity are deferred to owner
-    /// (docs/license-audit.md §3.1 sign-off queue). Convert with
+    /// enters the runtime, NFR-DS-02). The converter requires the exact
+    /// manifest, and `vokra-models::rnnoise` binds the real quantized network;
+    /// its stateful outputs are pinned to an independent Xiph C fixture.
+    /// Convert with
     /// `convert_file(ModelKind::Rnnoise, …)`.
     Rnnoise,
     /// Microsoft **NSNet2** noise-suppression baseline (Coverage-audit
@@ -8073,11 +8071,8 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // Coverage-audit 2026-08-03 Wave A: Xiph RNNoise v0.2. BF16
-        // pass-through skeleton (mirror of neucodec / emotion2vec) —
-        // real-weight parity deferred to owner. The upstream weight
-        // blob is Xiph's C-array `weights_blob_9.bin`; the operator
-        // flattens it to safetensors with
+        // Xiph RNNoise v0.2 canonical 36-array converter. The operator
+        // extracts `src/rnnoise_data.c` from the official release tarball with
         // `tools/parity/rnnoise_prepare_checkpoint.py` before pointing
         // this converter at the safetensors output. Uses the
         // file-based early-return pattern (mirror of the Phase 5
@@ -8087,9 +8082,9 @@ pub fn convert_file_licensed(
         ModelKind::Rnnoise => {
             let report = models::rnnoise::convert_rnnoise_file(input, output, license)?;
             let notes = vec![format!(
-                "rnnoise: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "rnnoise: {} canonical v0.2 arrays written (quantized integers preserved \
+                 exactly in F32 containers)",
+                report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Rnnoise,
