@@ -13782,13 +13782,10 @@ pub fn convert_chatterbox_nano_file(
 ///
 /// # BF16 posture
 ///
-/// The upstream Qwen3-TTS-0.6B release ships **BF16** safetensors
-/// (README-declared "0.9B parameters in BF16"); today's pass-through
-/// arm handles only F32 / F16, so BF16 tensors reach the
-/// `skipped_non_float` counter and the converter surfaces the loud
-/// "no float tensors" note. Pre-widen offline (float32) or wait for
-/// the streaming BF16 pass-through path (T29-equivalent — the Moshi /
-/// Kyutai STT pattern) to convert the release build directly.
+/// The upstream Qwen3-TTS-0.6B release ships **BF16** safetensors.
+/// BF16 tensors pass through verbatim as GGUF type 30; the runtime widens
+/// individual tensors through the canonical decode path only when a bound
+/// block is requested. No offline F32 widening is required.
 ///
 /// Weight license = **apache-2.0** **end-to-end**
 /// (`huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base` model-card

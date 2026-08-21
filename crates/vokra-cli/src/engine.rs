@@ -1250,9 +1250,11 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "qwen3_tts",
         module: "vokra_models::qwen3_tts",
-        entry: "Qwen3TtsTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "Qwen3TtsCheckpoint::from_gguf → Qwen3TtsCheckpoint::synthesize",
+        reason: BoundReason::LoudPartialForward,
+        probe: Some(|g: &GgufFile| {
+            vokra_models::qwen3_tts::Qwen3TtsCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "vibevoice",
