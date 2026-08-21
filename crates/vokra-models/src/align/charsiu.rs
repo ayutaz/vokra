@@ -950,7 +950,7 @@ impl Charsiu {
 
 /// Feature projection: `[T, 512]` → `[T, hidden]`. Applies the pre-Linear
 /// LayerNorm iff `has_layer_norm`.
-fn feature_projection_forward(
+pub(crate) fn feature_projection_forward(
     features: &[f32],
     t: usize,
     feature_dim: usize,
@@ -994,7 +994,7 @@ fn feature_projection_forward(
 
 /// Grouped positional Conv1D + SamePad + exact GELU. The input/output are
 /// frame-major; the backend convolution is channel-major.
-fn positional_conv_forward(
+pub(crate) fn positional_conv_forward(
     hidden: &[f32],
     t: usize,
     cfg: &CharsiuConfig,
@@ -1046,6 +1046,22 @@ fn positional_conv_forward(
 ///
 /// `y = LN1(x + attn(x)); z = LN2(y + ffn(y))`.
 fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, b: &CharsiuBlock) {
+    transformer_block_forward_with_valid_keys(hidden, t, t, cfg, b);
+}
+
+/// Wav2Vec2 post-LayerNorm block with an explicit number of valid attention
+/// keys. SmartTurn v2 right-pads raw audio to a fixed 16-second window: the
+/// padded feature rows remain queries in the upstream encoder but must never
+/// be visible as keys. Charsiu passes `valid_keys == t` through the wrapper
+/// above, so its established unmasked behaviour is unchanged.
+pub(crate) fn transformer_block_forward_with_valid_keys(
+    hidden: &mut [f32],
+    t: usize,
+    valid_keys: usize,
+    cfg: &CharsiuConfig,
+    b: &CharsiuBlock,
+) {
+    debug_assert!(valid_keys > 0 && valid_keys <= t);
     let h = cfg.hidden_size;
     let n_head = cfg.n_head;
     let head_dim = h / n_head;
@@ -1059,26 +1075,28 @@ fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, 
 
     // MHA: reshape Q/K/V to [n_head, T, head_dim] and score.
     let mut attn_out = vec![0.0_f32; t * h];
-    // Work buffer for per-head [T, T] scores (reused across heads).
-    let mut scores = vec![0.0_f32; t * t];
+    // Work buffer for per-head [T query, valid_keys] scores (reused across
+    // heads). Padded SmartTurn rows are queries only; the upstream additive
+    // attention mask removes them from the key axis.
+    let mut scores = vec![0.0_f32; t * valid_keys];
     for hi in 0..n_head {
         // Compute Q_h K_h^T with the head slices interleaved in the
         // flat buffer as [T, n_head, head_dim].
         for ti in 0..t {
             let qi_base = ti * h + hi * head_dim;
-            for tj in 0..t {
+            for tj in 0..valid_keys {
                 let kj_base = tj * h + hi * head_dim;
                 let mut s = 0.0_f32;
                 for d in 0..head_dim {
                     s += q[qi_base + d] * k[kj_base + d];
                 }
-                scores[ti * t + tj] = s * head_scale;
+                scores[ti * valid_keys + tj] = s * head_scale;
             }
         }
         // softmax over each row (causal mask NOT applied — wav2vec2 CTC
         // uses full bidirectional attention).
         for ti in 0..t {
-            let row = &mut scores[ti * t..(ti + 1) * t];
+            let row = &mut scores[ti * valid_keys..(ti + 1) * valid_keys];
             let mut max_v = f32::NEG_INFINITY;
             for &v in row.iter() {
                 if v > max_v {
@@ -1097,11 +1115,11 @@ fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, 
         }
         // A_h @ V_h → contribution to attn_out per head slice.
         for ti in 0..t {
-            let ai_row = ti * t;
+            let ai_row = ti * valid_keys;
             let out_base = ti * h + hi * head_dim;
             for d in 0..head_dim {
                 let mut acc = 0.0_f32;
-                for tj in 0..t {
+                for tj in 0..valid_keys {
                     let vj_base = tj * h + hi * head_dim;
                     acc += scores[ai_row + tj] * v[vj_base + d];
                 }
@@ -1145,7 +1163,7 @@ fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, 
 
 /// `y = x @ W^T + b` where `x` is `[t, in_dim]`, `W` is `[out_dim,
 /// in_dim]`, `b` is `[out_dim]`.
-fn linear_forward(
+pub(crate) fn linear_forward(
     x: &[f32],
     t: usize,
     in_dim: usize,
@@ -1169,7 +1187,14 @@ fn linear_forward(
 }
 
 /// LayerNorm over the last axis in place. `x` is `[t, dim]` row-major.
-fn layer_norm_inplace(x: &mut [f32], t: usize, dim: usize, gamma: &[f32], beta: &[f32], eps: f32) {
+pub(crate) fn layer_norm_inplace(
+    x: &mut [f32],
+    t: usize,
+    dim: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) {
     let n = dim as f32;
     for ti in 0..t {
         let row = &mut x[ti * dim..(ti + 1) * dim];
@@ -1356,7 +1381,7 @@ fn charsiu_forced_align(
 /// as [`vokra_ops::waveform_frontend()`]; kept private here so the align
 /// module has no cross-crate constraints on the ops erf.
 #[inline]
-fn gelu_exact(x: f32) -> f32 {
+pub(crate) fn gelu_exact(x: f32) -> f32 {
     0.5 * x * (1.0 + erf_as(x * core::f32::consts::FRAC_1_SQRT_2))
 }
 

@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 67 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **67** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 66 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **66** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -84,6 +84,38 @@ bound. The same PCM error held when the WAV was pushed in 173-sample chunks,
 pinning recurrent and frontend remainder state. The CLI now routes the arch
 through the shared VAD run/bench contract.
 No model artifact was uploaded or published.
+
+### 2026-08-22 SmartTurn v2 closure
+
+`smart_turn` is no longer a partial-forward row. Inspection of the official
+`pipecat-ai/smart-turn-v2` checkpoint at revision
+`3267e96b50db03fe030b9869eb35f849a5eea1fa` corrected the stale scaffold: the
+model is raw-waveform Wav2Vec2-base, not w2v-BERT/Conformer. Its head is learned
+attention pooling followed by `768 → 256 → 64 → 1` classification and sigmoid.
+The strict converter consumes the exact 223-tensor F32 source manifest, folds
+the parametrized positional-convolution weight norm, omits only the eval-unused
+SpecAugment mask vector, and emits a canonical 221-tensor / 379,147,680-byte
+GGUF with pinned checkpoint, config, processor, and Pipecat source revisions.
+
+The native binder implements the complete convolutional feature encoder,
+feature projection, positional convolution, 12 Transformer blocks, pooling,
+and classifier. Pipecat right-pads every utterance to 16 seconds: the first
+Wav2Vec2 convolution's GroupNorm therefore depends on the padded time axis.
+The new first-party right-padding frontend path reproduces those statistics
+analytically without convolving the constant zero tail, while the Transformer
+evaluates only the 49 valid keys and 50 ratio-mask-selected queries for the
+one-second fixture. A focused op test matches a fully materialized zero tail
+within `1e-6`.
+
+The independent pinned Transformers reference produced completion probability
+`0.106821209192276`; its trimmed-query check differed from the full 799-query
+forward by only `4.470348358e-8`. The ratio-index fixture also pins PyTorch's
+`torch.float32` promotion, including the rare input-length boundaries where an
+F64 reimplementation would retain one wrong query. The native real-GGUF
+forward produced `0.1068216413`, for `max_abs=4.321336746e-7` under the fixed
+`1e-4` gate. The CLI now routes SmartTurn as an utterance-level endpoint task
+rather than pretending it is a frame-level `VadEngine`. No model artifact was
+uploaded or published.
 
 ## Corrections to the previous ledger
 
@@ -398,7 +430,7 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 67 partial forwards
+## Wave 4 — 66 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
@@ -406,7 +438,7 @@ family as one completion checkbox.
 | Family | Count | Rows |
 |---|---:|---|
 | ASR / speech transcription | 14 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `moonshine`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
-| VAD / KWS / turn taking | 2 | `smart_turn`, `ten_vad` |
+| VAD / KWS / turn taking | 1 | `ten_vad` |
 | TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
 | Enhancement / separation / AEC | 9 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `rnnoise`, `sepformer`, `storm` |

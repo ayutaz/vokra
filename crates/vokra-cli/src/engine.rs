@@ -220,6 +220,10 @@ pub(crate) enum ModelTask {
     /// has no KWS slot, so `run` binds the concrete mutable session once from
     /// the already parsed GGUF and feeds the complete 16 kHz clip.
     KwsOpenwakeword,
+    /// Pipecat smart-turn v2 semantic endpointing. The whole input utterance
+    /// maps to one completion probability; this is deliberately distinct
+    /// from the streaming frame-level VAD tasks.
+    SmartTurn,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -316,6 +320,8 @@ const ARCH_FSMN_VAD: &str = "fsmn-vad";
 const ARCH_FIRERED_VAD: &str = "firered_vad";
 /// openWakeWord native v0.5.1 KWS pipeline.
 const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
+/// Pipecat smart-turn v2 utterance-level endpoint classifier.
+const ARCH_SMART_TURN: &str = "smart_turn";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
@@ -696,6 +702,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::KwsOpenwakeword))
         }
+        ARCH_SMART_TURN => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SMART_TURN}`"
+                ));
+            }
+            // Bare session: the run/bench arm binds the 379 MB concrete model
+            // exactly once and calls its utterance-level endpoint surface.
+            Ok((session, ModelTask::SmartTurn))
+        }
         ARCH_NSNET2 => {
             if hint.is_some() {
                 return Err(format!(
@@ -925,6 +941,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
+                 `{ARCH_SMART_TURN}` / \
                  `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
@@ -1127,12 +1144,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::ten_vad",
         entry: "TenVad::from_gguf → TenVad::frame_probability",
         probe: Some(|g: &GgufFile| vokra_models::ten_vad::TenVad::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "smart_turn",
-        module: "vokra_models::smart_turn",
-        entry: "SmartTurn::from_gguf → SmartTurn::predict_endpoint",
-        probe: Some(|g: &GgufFile| vokra_models::smart_turn::SmartTurn::from_gguf(g).map(|_| ())),
     },
     // --- TTS -------------------------------------------------------------
     BoundArch {
@@ -2014,6 +2025,18 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_smart_turn_to_endpoint_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_SMART_TURN, "smart-turn-routed", |path| {
+            load_session(path).expect("smart-turn returns a bare endpoint session")
+        });
+        assert_eq!(task, ModelTask::SmartTurn);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_SMART_TURN),
+            "a runnable endpoint arch must not remain in the loud-partial registry"
+        );
+    }
+
+    #[test]
     fn load_session_detects_fcpe_crepe_and_nkf_tasks() {
         for (arch, tag, expected) in [
             (ARCH_FCPE, "fcpe-routed", ModelTask::F0Fcpe),
@@ -2488,6 +2511,7 @@ mod tests {
             ARCH_SBV2,
             ARCH_FSMN_VAD,
             ARCH_FIRERED_VAD,
+            ARCH_SMART_TURN,
             ARCH_NSNET2,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,

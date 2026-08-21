@@ -574,6 +574,25 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::SmartTurn => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (smart-turn): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let sample_rate = clip.sample_rate;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(sample_rate);
+            let pcm = clip.samples;
+            let model = vokra_models::smart_turn::SmartTurn::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .predict_endpoint(&pcm, sample_rate)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("smart-turn", audio_seconds, samples)
+        }
         // Wave G (2026-08-15): FSMN-VAD shares this arm verbatim — its binder
         // implements the same `VadEngine` trait Silero does and is injected
         // into the same session slot, so the Silero measurement path is

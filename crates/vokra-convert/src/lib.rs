@@ -2153,9 +2153,11 @@ pub enum ModelKind {
     /// pipecat-ai **smart-turn-v2** checkpoint (TIER 1 F wave,
     /// 2026-07-30). Category = `vad` (turn-taking = VAD variant for
     /// dialogue turn boundaries — Pipecat realtime pipelines).
-    /// Small classifier that decides when a user has finished
-    /// speaking, rather than raw voice activity. BF16 pass-through
-    /// skeleton. Provenance = **bsd-2-clause** (Permissive).
+    /// Raw-waveform Wav2Vec2-base encoder with attention pooling and a
+    /// binary endpoint head. The strict converter pins the official F32
+    /// manifest, folds positional-convolution weight norm, drops only the
+    /// eval-unused SpecAugment vector, and rejects manifest drift.
+    /// Provenance = **bsd-2-clause** (Permissive).
     SmartTurn,
     /// LAION **CLAP** (Contrastive Language-Audio Pretraining)
     /// checkpoint (TIER 1 F wave, 2026-07-30). Category =
@@ -11499,9 +11501,9 @@ pub fn convert_file_licensed(
         ModelKind::SmartTurn => {
             let report = models::smart_turn::convert_smart_turn_file(input, output, license)?;
             let notes = vec![format!(
-                "smart-turn: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped, {} tensors read",
-                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+                "smart-turn: {} canonical F32 tensors emitted from {} source tensors; \
+                 positional weight norm folded and eval-unused SpecAugment vector omitted",
+                report.written, report.read,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::SmartTurn,

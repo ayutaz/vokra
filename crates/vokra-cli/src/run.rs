@@ -34,6 +34,7 @@ USAGE:
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
     vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
+    vokra-cli run --model <smart-turn-v2.gguf> --input <16k-mono.wav>
     vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
@@ -614,6 +615,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::VadFsmn => Some("VAD (FSMN)"),
         ModelTask::VadFirered => Some("VAD (FireRedVAD)"),
         ModelTask::KwsOpenwakeword => Some("openWakeWord keyword spotting"),
+        ModelTask::SmartTurn => Some("SmartTurn v2 semantic endpointing"),
         ModelTask::Denoise => Some("NSNet2 speech enhancement"),
         ModelTask::Segment => Some("pyannote speaker segmentation"),
         ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
@@ -913,6 +915,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::KwsOpenwakeword => {
             run_openwakeword(&session, &a)?;
+        }
+        ModelTask::SmartTurn => {
+            run_smart_turn(&session, &a)?;
         }
         ModelTask::AecNkf => {
             run_nkf_aec(&session, &a)?;
@@ -2237,6 +2242,28 @@ fn run_openwakeword(session: &Session, args: &RunArgs) -> Result<(), String> {
     let heads = model.wakeword_names().len();
     let chunks = predictions.len().checked_div(heads).unwrap_or_default();
     println!("kws: {chunks} chunks, detections={detections}, threshold=0.500000");
+    Ok(())
+}
+
+/// Scores one complete utterance with SmartTurn v2. The single scalar output
+/// is intentionally not broadcast into the VAD frame contract.
+fn run_smart_turn(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (smart-turn): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let model = vokra_models::smart_turn::SmartTurn::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let prediction = model
+        .predict_endpoint(&clip.samples, clip.sample_rate)
+        .map_err(|error| error.to_string())?;
+    let probability = prediction.completion_probability();
+    println!(
+        "smart-turn: completion_probability={probability:.6} is_complete={} threshold={:.6}",
+        prediction.is_complete(vokra_models::smart_turn::DEFAULT_COMPLETION_THRESHOLD),
+        vokra_models::smart_turn::DEFAULT_COMPLETION_THRESHOLD,
+    );
     Ok(())
 }
 

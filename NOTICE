@@ -308,6 +308,26 @@ the TitaNet checkpoint is added to the official model zoo (owner
 sign-off, docs/license-audit.md §3.1 = 2026-07-30 yousan).
 
 --------------------------------------------------------------------------
+12. Pipecat SmartTurn v2 — BSD-2-Clause notice
+--------------------------------------------------------------------------
+Vokra's SmartTurn v2 converter, native endpoint classifier, and independent
+reference sidecar target Pipecat's released `pipecat-ai/smart-turn-v2`
+checkpoint and the endpoint head published in the Pipecat repository at
+commit c560a748b4213ca8db6f43a5d165d91aaa124a52.
+
+  Pipecat / SmartTurn
+  Copyright (c) 2024–2026, Daily
+  Licensed under the BSD 2-Clause License.
+  Source: https://github.com/pipecat-ai/pipecat
+          https://huggingface.co/pipecat-ai/smart-turn-v2
+
+The runtime remains dependency-free and does not compile or link Pipecat,
+Transformers, ONNX Runtime, or Python. The pinned Python sidecar is an offline
+parity oracle only. Official model weights are not bundled or published by
+this change. The complete license text is reproduced in
+tools/parity/THIRD_PARTY_LICENSES/pipecat-LICENSE.txt.
+
+--------------------------------------------------------------------------
 9. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new

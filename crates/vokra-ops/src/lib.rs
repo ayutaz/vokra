@@ -585,7 +585,7 @@ pub use stft::{Spectrogram, stft};
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend re-exports -----------
 pub use waveform_frontend::{
     ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights,
-    waveform_frontend,
+    waveform_frontend, waveform_frontend_with_right_padding,
 };
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 4 vae_continuous re-exports ------------------------
