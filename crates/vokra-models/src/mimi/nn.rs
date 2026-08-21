@@ -107,6 +107,14 @@ pub(crate) struct ConvState {
     t_cap: usize,
 }
 
+impl ConvState {
+    /// Clears the carried causal context without reallocating scratch.
+    pub(crate) fn reset(&mut self) {
+        self.hist.fill(0.0);
+        self.first = true;
+    }
+}
+
 impl CausalConv1d {
     /// Builds the block from a `[out_ch, in_ch, k]` row-major weight.
     ///
@@ -395,6 +403,13 @@ pub(crate) struct ConvTrState {
     /// GEMM result `[t_cap, out_ch * k]`.
     contrib: Vec<f32>,
     t_cap: usize,
+}
+
+impl ConvTrState {
+    /// Clears the overlap-add tail without reallocating scratch.
+    pub(crate) fn reset(&mut self) {
+        self.tail.fill(0.0);
+    }
 }
 
 impl CausalConvTranspose1d {

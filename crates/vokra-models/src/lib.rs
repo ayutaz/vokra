@@ -309,6 +309,7 @@ pub mod omniasr_ctc;
 pub(crate) mod mapped_weights;
 pub mod mimi;
 pub mod moshi;
+pub mod nanocodec;
 // Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551, MIT — 2026-08-05
 // runtime binder). A denoise-family runtime binder alongside DFN3
 // (`vokra_ops::denoise`). RNNoise v0.2 is NOT a sibling binder: it exists
