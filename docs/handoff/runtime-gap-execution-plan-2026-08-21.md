@@ -180,8 +180,12 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    one-frame mel-to-256-sample waveform parity at
    `max_abs=5.736947e-6` under the tightened `2e-5` bound. The CLI consumes
    explicit channel-major little-endian f32 mel data and emits 22.05/24/44.1
-   kHz WAV according to the pinned variant. The full GPU generator remains a
-   separate backend task; unsupported GPU execution has no CPU fallback.
+   kHz WAV according to the pinned variant. The VAST CLI smoke used the same
+   100-value mel row and produced an IEEE-float32 24,000 Hz WAV with exactly
+   256 samples; parsing that WAV independently measured
+   `max_abs=5.736514e-6` against the upstream output row. The full GPU
+   generator remains a separate backend task; unsupported GPU execution has
+   no CPU fallback.
 3. ASR (1): `parakeet-tdt`. Add the artifact binder before exposing its
    existing transcription entry point.
 4. TTS scaffolds (11): `chatterbox`, `chatterbox_nano`,
