@@ -307,6 +307,34 @@ Recommended dependency order:
    front ends, sampler contract, and terminal codec/vocoder are independently
    proven. Keep explicit errors in place meanwhile.
 
+### Wave 4 prerequisite repair — completed 2026-08-21
+
+The four harness/metadata blockers named in item 1 are repaired. This does not
+move any model row out of `LoudPartialForward`; it makes the later real-weight
+work testable and self-describing.
+
+- `openwakeword_op`: the real branch now parses the owner-generated reference
+  JSON with `vokra_core::json`, validates sample rate, 1,280-sample prediction
+  chunk width, wake-word ordering, non-empty finite probabilities, and compares
+  every emitted score at the existing `1e-4` bound. The old "embedding became
+  real, now panic and implement the parser" branch is gone.
+- flow sampler: the fixture-presence panic is replaced by committed independent
+  PyTorch float32 references for linear Euler and sway-scheduled Heun with
+  dual-forward CFG. The fixed maximum absolute-error gate is `2e-6`; all seven
+  focused `vokra-ops` tests pass locally.
+- `conv_tasnet`: the converter now stamps all twelve topology axes and the
+  runtime strictly reads and validates them, including the 50% overlap and
+  causal flag contracts. Metadata-free artifacts fail with the exact missing
+  key instead of silently taking constructor defaults.
+- `jasco_400m_chords_drums`: placeholder values were replaced from official
+  AudioCraft revision `896ec7c47f5e5d1e5aa1e4b260c4405328bf009d`.
+  The chord conditioner has card 194 plus one null row (vocabulary 195), the
+  drum conditioner consumes 128-wide EnCodec latents rather than a General-MIDI
+  vocabulary, the Euler fallback is 100 steps, and the all-condition CFG
+  coefficient is 5.0. The converter stamps the resulting topology group.
+  AudioCraft's normal default remains adaptive Dopri5 with `rtol=atol=1e-5`;
+  the actual JASCO forward must preserve that distinction when it lands.
+
 ## PyIN temporal smoothing — completed 2026-08-21
 
 The identity `viterbi_smooth_todo` scaffold was removed. `pyin_detailed`

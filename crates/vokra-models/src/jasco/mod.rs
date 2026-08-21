@@ -81,16 +81,9 @@
 //!     mis-route" [`VokraError::ModelLoad`] enumerating the whole
 //!     neighbourhood — silent aliasing would misroute the runtime
 //!     dispatch to a family with a different decoder loop (FR-EX-08).
-//!   - [`JascoConfig::from_gguf`] with primary-source constant fallback
-//!     **per variant** (the JASCO converter does NOT currently stamp
-//!     the `vokra.jasco.*` chunk group — only arch / name / category /
-//!     upstream_hf / provenance — so a *strict* reader would refuse the
-//!     already-published `huggingface.co/facebook/jasco-chords-drums-400M`
-//!     GGUF. Primary source is well-established (HF card + AudioCraft
-//!     code + paper), so fallback does not fabricate axes; a future
-//!     converter sub-wave that starts stamping the chunk group upgrades
-//!     this to real-stamped reads per-key with no runtime code change —
-//!     mirror of the MusicGen / Sortformer / PyanNet fallback pattern).
+//!   - [`JascoConfig::from_gguf`] with stamped topology reads on current
+//!     artifacts and primary-source constant fallback **per variant** for
+//!     GGUFs produced before the chunk contract landed.
 //!   - [`JascoWeights::from_gguf`] with a floor of non-empty tensor
 //!     count enforced loud (a GGUF that carries zero tensors is refused
 //!     rather than silently running an all-zero forward — FR-EX-08).
@@ -150,12 +143,9 @@
 //!
 //! The JASCO converter
 //! (`crates/vokra-convert/src/models/jasco_400m_chords_drums.rs`)
-//! currently stamps only the arch / name / category / upstream_hf /
-//! provenance chunks. The topology chunk group is READ by this binder
-//! but any absent key falls back to the **per-variant primary-source
-//! constant** so an already-published GGUF loads correctly. A future
-//! converter sub-wave that adds `vokra.jasco.*` stamps will override
-//! the fallback automatically per-key with no runtime code change.
+//! stamps the complete topology chunk group. The binder retains the
+//! per-variant fallback only for artifacts produced before that contract
+//! landed.
 //!
 //! - `vokra.model.arch` (`String`): must equal [`ARCH`]
 //!   (`"jasco_400m_chords_drums"`). Deliberately distinct from every
@@ -181,13 +171,10 @@
 //!   topology axes. Fallback constants transcribed from paper §3 (Tal et
 //!   al. 2024) + AudioCraft family convention (musicgen-small style
 //!   transformer axes) + the bundled EnCodec 32 kHz codec params.
-//!   Chord/drum-specific vocab axes are documented in the paper §3.2
-//!   but the exact vocabulary sizes require an audiocraft config fetch
-//!   — the defaults are placeholder anchors with `TODO(follow-up wave):
-//!   verify against audiocraft/config/model/jasco.yaml on next
-//!   audiocraft mirror walk` comments, and the tests soft-assert
-//!   positivity + finite invariants on those axes rather than hard-
-//!   pinning the exact values (mirror of melodyflow §D-1 practice).
+//!   Values are pinned to AudioCraft revision
+//!   `896ec7c47f5e5d1e5aa1e4b260c4405328bf009d`: chord card 194 plus one
+//!   null token (vocabulary 195), 128-wide drum EnCodec latents, the
+//!   100-step Euler fallback, and CFG(all)=5.0.
 //! - `vokra.provenance.*`: license class + raw license string, so the
 //!   runtime compliance gate (FR-CP-03 / M2-13) can classify the
 //!   artifact without re-inspecting the safetensors provenance. The
@@ -307,15 +294,13 @@ pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2406.10970";
 
 // ---------------------------------------------------------------------------
 // GGUF metadata key constants for the `vokra.jasco.*` chunk group.
-// Reader-side only — the converter does not currently stamp these
-// (fallback path via `JascoVariant::default_config()`).
+// Mirrored by the converter; fallback via `JascoVariant::default_config()`
+// remains for older artifacts.
 // ---------------------------------------------------------------------------
 
 /// `vokra.jasco.d_model` — flow-matching transformer hidden dim.
-/// Primary-source default (400M): 1024 (audiocraft musicgen-small style
-/// convention, 400M variant transcribes 1024 verbatim per Tal et al.
-/// 2024 §3 + audiocraft config family — verify against
-/// `audiocraft/config/model/jasco.yaml` on next audiocraft mirror walk).
+/// Primary-source default (400M): 1024, pinned by AudioCraft's
+/// `config/model/lm/model_scale/small.yaml`.
 pub const GGUF_KEY_D_MODEL: &str = "vokra.jasco.d_model";
 /// `vokra.jasco.num_layers` — flow-matching transformer depth.
 /// Primary-source default (400M): 24 (audiocraft musicgen-small style
@@ -345,38 +330,29 @@ pub const GGUF_KEY_SAMPLE_RATE_HZ: &str = "vokra.jasco.sample_rate_hz";
 /// conditioning prefix length in tokens (u32). Primary-source default:
 /// 512 (T5-base `max_position_embeddings = 512`).
 pub const GGUF_KEY_TEXT_PREFIX_LEN: &str = "vokra.jasco.text_prefix_len";
-/// `vokra.jasco.chord_vocab_size` — discrete chord-progression
-/// vocabulary size (u32). PLACEHOLDER default 25 (12 major + 12 minor +
-/// no-chord) pending audiocraft config verification —
-/// `TODO(follow-up wave): verify against
-/// audiocraft/config/model/jasco.yaml on next audiocraft mirror walk`.
-/// Tests soft-assert positivity + reasonable-upper-bound only.
+/// `vokra.jasco.chord_vocab_size` — chord embedding vocabulary including
+/// the null/dropout row. AudioCraft pins `card: 194` and constructs
+/// `nn.Embedding(card + 1, 16)`, so this value is exactly 195.
 pub const GGUF_KEY_CHORD_VOCAB_SIZE: &str = "vokra.jasco.chord_vocab_size";
-/// `vokra.jasco.drum_vocab_size` — discrete drum-track vocabulary size
-/// (u32). PLACEHOLDER default 128 (General MIDI drum kit size) pending
-/// audiocraft config verification — `TODO(follow-up wave): verify
-/// against audiocraft/config/model/jasco.yaml on next audiocraft mirror
-/// walk`. Tests soft-assert positivity + reasonable-upper-bound only.
+/// `vokra.jasco.drum_vocab_size` — legacy key name for the drum
+/// conditioner input width. JASCO does not use a General-MIDI token
+/// vocabulary here: the official config feeds 128-wide EnCodec latents.
 pub const GGUF_KEY_DRUM_VOCAB_SIZE: &str = "vokra.jasco.drum_vocab_size";
-/// `vokra.jasco.num_flow_steps` — default number of ODE solver steps
-/// for the flow-matching sampler. Primary-source default: 50 (typical
-/// flow-matching NFE — Tal et al. 2024 §4 sweeps 10..=100). Kept as an
-/// explicit attribute so runtime callers can sweep it without
-/// re-converting.
+/// `vokra.jasco.num_flow_steps` — Euler-mode fallback step count. The
+/// official API defaults to adaptive Dopri5; when `euler=true`, it pins
+/// `euler_steps=100`.
 pub const GGUF_KEY_NUM_FLOW_STEPS: &str = "vokra.jasco.num_flow_steps";
-/// `vokra.jasco.cfg_scale` — default classifier-free-guidance
-/// coefficient (f32). Primary-source default: 3.0 (typical flow-matching
-/// CFG). Kept as an explicit attribute so runtime callers can sweep it
-/// without re-converting.
+/// `vokra.jasco.cfg_scale` — official all-condition CFG coefficient.
+/// `JASCO::set_generation_params` pins `cfg_coef_all=5.0` and
+/// `cfg_coef_txt=0.0`; this legacy single-scale field records the all term.
 pub const GGUF_KEY_CFG_SCALE: &str = "vokra.jasco.cfg_scale";
 
 // Per-variant primary-source constants. The 400M Chords+Drums variant
 // axes are transcribed from paper §3 (Tal et al. 2024 arXiv:2406.10970)
 // + AudioCraft family convention (musicgen-small style transformer)
-// + the bundled EnCodec 32 kHz codec params. Chord/drum-specific vocab
-// axes are documented in the paper §3.2 but the exact vocabulary sizes
-// require an audiocraft config fetch — the defaults are placeholder
-// anchors flagged in the constant docs above.
+// + the bundled EnCodec 32 kHz codec params. Conditioner and sampling
+// values are pinned to AudioCraft revision
+// 896ec7c47f5e5d1e5aa1e4b260c4405328bf009d.
 
 /// 400M Chords+Drums variant flow-matching transformer hidden dim
 /// (`d_model`).
@@ -407,29 +383,18 @@ pub const SAMPLE_RATE_HZ: u32 = 32_000;
 /// Primary source: T5-base `max_position_embeddings = 512`.
 pub const DEFAULT_TEXT_PREFIX_LEN: u32 = 512;
 
-/// PLACEHOLDER discrete chord-progression vocabulary size. 25 = 12
-/// major + 12 minor + no-chord (paper §3.2 sketches the discrete chord
-/// vocabulary but the exact upstream cardinality requires an
-/// audiocraft config fetch to pin). `TODO(follow-up wave): verify
-/// against audiocraft/config/model/jasco.yaml on next audiocraft mirror
-/// walk`.
-pub const DEFAULT_CHORD_VOCAB_SIZE: u32 = 25;
+/// Chord embedding row count: config card 194 plus one null/dropout row.
+pub const DEFAULT_CHORD_VOCAB_SIZE: u32 = 195;
 
-/// PLACEHOLDER discrete drum-track vocabulary size. 128 = General MIDI
-/// drum kit size (paper §3.2 sketches the drum vocabulary but the
-/// exact upstream cardinality requires an audiocraft config fetch to
-/// pin). `TODO(follow-up wave): verify against
-/// audiocraft/config/model/jasco.yaml on next audiocraft mirror walk`.
+/// Official drum-condition EnCodec latent width. The public field/key name
+/// is retained for compatibility; this is not a discrete drum vocabulary.
 pub const DEFAULT_DRUM_VOCAB_SIZE: u32 = 128;
 
-/// Default number of ODE solver steps for the flow-matching sampler.
-/// Primary-source default: 50 (typical flow-matching NFE — Tal et al.
-/// 2024 §4 sweeps 10..=100 depending on quality-latency tradeoff).
-pub const DEFAULT_NUM_FLOW_STEPS: u32 = 50;
+/// Official Euler fallback step count (`FlowMatchingModel.generate`).
+pub const DEFAULT_NUM_FLOW_STEPS: u32 = 100;
 
-/// Default classifier-free-guidance coefficient. Primary-source
-/// default: 3.0 (typical flow-matching CFG scale).
-pub const DEFAULT_CFG_SCALE: f32 = 3.0;
+/// Official all-condition CFG coefficient (`JASCO::set_generation_params`).
+pub const DEFAULT_CFG_SCALE: f32 = 5.0;
 
 // ---------------------------------------------------------------------------
 // JascoVariant — the variant discriminator (name-based)
@@ -505,8 +470,8 @@ impl JascoVariant {
 
     /// Primary-source-transcribed axes for this variant as a const
     /// [`JascoConfig`]. Used by [`JascoConfig::from_gguf`] as the
-    /// per-key fallback when the topology chunk group is absent (the
-    /// current converter's default).
+    /// per-key fallback when the topology chunk group is absent in an
+    /// artifact produced before the current converter contract.
     #[must_use]
     pub const fn default_config(self) -> JascoConfig {
         match self {
@@ -545,11 +510,8 @@ impl JascoVariant {
 /// AudioCraft family convention. Numeric-count axes are `u32` in the
 /// GGUF; `cfg_scale` is `f32`.
 ///
-/// Chord/drum-specific vocab axes ([`chord_vocab_size`](Self::chord_vocab_size)
-/// / [`drum_vocab_size`](Self::drum_vocab_size)) carry PLACEHOLDER
-/// defaults with `TODO(follow-up wave)` markers on the underlying
-/// constants — a follow-up wave that fetches the audiocraft config
-/// pins them to the primary-source cardinality.
+/// The chord vocabulary and drum latent width are pinned to the official
+/// AudioCraft conditioner config; neither is inferred from a paper diagram.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JascoConfig {
     /// Which JASCO family variant this config represents.
@@ -574,17 +536,16 @@ pub struct JascoConfig {
     /// Frozen T5-base text encoder conditioning prefix length in tokens
     /// (default: 512 = T5-base `max_position_embeddings`).
     pub text_prefix_len: u32,
-    /// Discrete chord-progression vocabulary size (PLACEHOLDER 25;
-    /// paper §3.2 pending audiocraft config fetch).
+    /// Chord embedding vocabulary size including the null row (195).
     pub chord_vocab_size: u32,
-    /// Discrete drum-track vocabulary size (PLACEHOLDER 128 = GM drum
-    /// kit; paper §3.2 pending audiocraft config fetch).
+    /// Legacy-named drum conditioner width (128 EnCodec latent channels;
+    /// not a discrete vocabulary).
     pub drum_vocab_size: u32,
-    /// Default number of ODE solver steps for the flow-matching sampler
-    /// (default 50; paper §4 sweeps 10..=100).
+    /// Euler fallback step count (100; normal official default is adaptive
+    /// Dopri5 with 1e-5 rtol/atol).
     pub num_flow_steps: u32,
-    /// Default classifier-free-guidance coefficient (default 3.0;
-    /// typical flow-matching CFG).
+    /// All-condition classifier-free-guidance coefficient (5.0; text-only
+    /// coefficient is 0.0 in the official JASCO wrapper).
     pub cfg_scale: f32,
 }
 
@@ -599,12 +560,9 @@ impl JascoConfig {
     /// Reads every `vokra.jasco.*` chunk from `gguf`, falling back to
     /// the per-variant primary-source defaults per absent key.
     ///
-    /// The JASCO converter does not currently stamp this chunk group
-    /// (only arch / name / category / upstream_hf / provenance), so on
-    /// an already-published GGUF every axis falls through to its
-    /// primary-source default for the resolved variant. A future
-    /// converter sub-wave that adds the stamps upgrades this reader to
-    /// real-stamped reads per-key with no runtime code change.
+    /// The current converter stamps this complete chunk group. Per-key
+    /// fallback is retained only for artifacts produced before the
+    /// metadata contract landed.
     ///
     /// Mirror of
     /// [`crate::musicgen::MusicGenConfig::from_gguf`] fallback pattern.
@@ -1200,9 +1158,8 @@ mod tests {
     //! 1. **Variant discrimination**: name → enum → per-variant default
     //!    config.
     //! 2. **Config round-trip**: `from_gguf` reads every axis stamped by
-    //!    the converter (via the fallback path today; the strict path
-    //!    when a future converter sub-wave stamps the topology chunk
-    //!    group).
+    //!    the converter; a separate test pins compatibility fallback for
+    //!    older chunk-free artifacts.
     //! 3. **Loud-error negative-space round-trip**: every stated blocker
     //!    (missing arch / wrong arch / missing name / unsupported
     //!    variant / empty tensor list / empty symbolic conditioning /
@@ -1294,31 +1251,10 @@ mod tests {
         // AudioCraft "4× hidden" FFN convention invariant.
         assert_eq!(cfg.ffn_dim, 4 * cfg.d_model, "ffn_dim = 4 × d_model");
 
-        // Chord/drum vocab axes are PLACEHOLDER (paper §3.2, exact
-        // cardinality pending audiocraft config fetch) — soft-assert
-        // positivity + reasonable-upper-bound only rather than hard-
-        // pinning the placeholder values, per the melodyflow §D-1
-        // TODO-comment practice.
-        assert!(
-            cfg.chord_vocab_size > 0 && cfg.chord_vocab_size < 10_000,
-            "chord_vocab_size = {} not in reasonable [1, 10_000] bound",
-            cfg.chord_vocab_size
-        );
-        assert!(
-            cfg.drum_vocab_size > 0 && cfg.drum_vocab_size < 10_000,
-            "drum_vocab_size = {} not in reasonable [1, 10_000] bound",
-            cfg.drum_vocab_size
-        );
-        assert!(
-            cfg.num_flow_steps > 0 && cfg.num_flow_steps <= 1_000,
-            "num_flow_steps = {} not in reasonable [1, 1000] bound",
-            cfg.num_flow_steps
-        );
-        assert!(
-            cfg.cfg_scale.is_finite() && cfg.cfg_scale > 0.0,
-            "cfg_scale = {} must be finite and positive",
-            cfg.cfg_scale
-        );
+        assert_eq!(cfg.chord_vocab_size, 195, "194 chords + null row");
+        assert_eq!(cfg.drum_vocab_size, 128, "EnCodec drum latent width");
+        assert_eq!(cfg.num_flow_steps, 100, "official Euler fallback steps");
+        assert_eq!(cfg.cfg_scale, 5.0, "official all-condition CFG coefficient");
 
         // Variant discrimination via from_name matches the enum arm +
         // rejects known-unbound siblings + garbage strings.
@@ -1934,10 +1870,8 @@ mod tests {
 
     #[test]
     fn config_from_gguf_falls_back_to_primary_source_defaults_when_chunk_group_absent() {
-        // The JASCO converter does NOT currently stamp the
-        // `vokra.jasco.*` chunk group (only arch / name / category /
-        // upstream_hf / provenance). An already-published GGUF must
-        // still load — the fallback path reads the per-variant
+        // A GGUF produced before the `vokra.jasco.*` chunk group landed
+        // must still load — the fallback path reads the per-variant
         // primary-source constants transcribed from paper §3 +
         // AudioCraft family convention. Mirror of MusicGenConfig::from_gguf
         // fallback pattern.

@@ -113,6 +113,50 @@ const UPSTREAM_SOURCE: &str = "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k (Aste
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_N_FILTERS: &str = "vokra.conv_tasnet.n_filters";
+const KEY_N_KERNEL: &str = "vokra.conv_tasnet.n_kernel";
+const KEY_STRIDE: &str = "vokra.conv_tasnet.stride";
+const KEY_N_BLOCKS: &str = "vokra.conv_tasnet.n_blocks";
+const KEY_N_REPEATS: &str = "vokra.conv_tasnet.n_repeats";
+const KEY_BN_CHAN: &str = "vokra.conv_tasnet.bn_chan";
+const KEY_HID_CHAN: &str = "vokra.conv_tasnet.hid_chan";
+const KEY_SKIP_CHAN: &str = "vokra.conv_tasnet.skip_chan";
+const KEY_CONV_KERNEL_SIZE: &str = "vokra.conv_tasnet.conv_kernel_size";
+const KEY_SAMPLE_RATE: &str = "vokra.conv_tasnet.sample_rate";
+const KEY_N_SRC: &str = "vokra.conv_tasnet.n_src";
+const KEY_CAUSAL: &str = "vokra.conv_tasnet.causal";
+
+const N_FILTERS: u32 = 512;
+const N_KERNEL: u32 = 16;
+const STRIDE: u32 = 8;
+const N_BLOCKS: u32 = 8;
+const N_REPEATS: u32 = 3;
+const BN_CHAN: u32 = 128;
+const HID_CHAN: u32 = 512;
+const SKIP_CHAN: u32 = 128;
+const CONV_KERNEL_SIZE: u32 = 3;
+const SAMPLE_RATE: u32 = 16_000;
+const N_SRC: u32 = 1;
+const CAUSAL: u32 = 0;
+
+fn stamp_topology(builder: &mut GgufBuilder) {
+    for (key, value) in [
+        (KEY_N_FILTERS, N_FILTERS),
+        (KEY_N_KERNEL, N_KERNEL),
+        (KEY_STRIDE, STRIDE),
+        (KEY_N_BLOCKS, N_BLOCKS),
+        (KEY_N_REPEATS, N_REPEATS),
+        (KEY_BN_CHAN, BN_CHAN),
+        (KEY_HID_CHAN, HID_CHAN),
+        (KEY_SKIP_CHAN, SKIP_CHAN),
+        (KEY_CONV_KERNEL_SIZE, CONV_KERNEL_SIZE),
+        (KEY_SAMPLE_RATE, SAMPLE_RATE),
+        (KEY_N_SRC, N_SRC),
+        (KEY_CAUSAL, CAUSAL),
+    ] {
+        builder.add_u32(key, value);
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ConvTasnetLibri1mixReport {
@@ -134,6 +178,7 @@ pub fn convert_conv_tasnet_libri1mix_file(
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    stamp_topology(&mut b);
 
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
@@ -244,6 +289,26 @@ mod tests {
         assert_eq!(read_str(chunks::KEY_MODEL_NAME), NAME);
         assert_eq!(read_str(KEY_MODEL_CATEGORY), CATEGORY);
         assert_eq!(read_str(KEY_PROVENANCE_UPSTREAM_HF), UPSTREAM_HF);
+        for (key, expected) in [
+            (KEY_N_FILTERS, N_FILTERS),
+            (KEY_N_KERNEL, N_KERNEL),
+            (KEY_STRIDE, STRIDE),
+            (KEY_N_BLOCKS, N_BLOCKS),
+            (KEY_N_REPEATS, N_REPEATS),
+            (KEY_BN_CHAN, BN_CHAN),
+            (KEY_HID_CHAN, HID_CHAN),
+            (KEY_SKIP_CHAN, SKIP_CHAN),
+            (KEY_CONV_KERNEL_SIZE, CONV_KERNEL_SIZE),
+            (KEY_SAMPLE_RATE, SAMPLE_RATE),
+            (KEY_N_SRC, N_SRC),
+            (KEY_CAUSAL, CAUSAL),
+        ] {
+            assert_eq!(
+                g.get(key),
+                Some(&vokra_core::gguf::GgufMetadataValue::U32(expected)),
+                "{key}"
+            );
+        }
         assert_eq!(
             read_str(chunks::KEY_PROVENANCE_LICENSE),
             DEFAULT_LICENSE_SPDX

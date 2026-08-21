@@ -203,30 +203,27 @@ const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/1809.07454";
 /// enhancement Asteroid recipe).
 const PRIMARY_SOURCE_HF: &str = "huggingface.co/JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k";
 
+const KEY_N_FILTERS: &str = "vokra.conv_tasnet.n_filters";
+const KEY_N_KERNEL: &str = "vokra.conv_tasnet.n_kernel";
+const KEY_STRIDE: &str = "vokra.conv_tasnet.stride";
+const KEY_N_BLOCKS: &str = "vokra.conv_tasnet.n_blocks";
+const KEY_N_REPEATS: &str = "vokra.conv_tasnet.n_repeats";
+const KEY_BN_CHAN: &str = "vokra.conv_tasnet.bn_chan";
+const KEY_HID_CHAN: &str = "vokra.conv_tasnet.hid_chan";
+const KEY_SKIP_CHAN: &str = "vokra.conv_tasnet.skip_chan";
+const KEY_CONV_KERNEL_SIZE: &str = "vokra.conv_tasnet.conv_kernel_size";
+const KEY_SAMPLE_RATE: &str = "vokra.conv_tasnet.sample_rate";
+const KEY_N_SRC: &str = "vokra.conv_tasnet.n_src";
+const KEY_CAUSAL: &str = "vokra.conv_tasnet.causal";
+
 // ---------------------------------------------------------------------------
 // ConvTasnetConfig — primary-source-transcribed Asteroid ConvTasNet
 // Libri1Mix `enhsingle_16k` hparams.
 //
-// The Conv-TasNet converter (`crates/vokra-convert/src/models/
-// conv_tasnet_libri1mix.rs`) currently stamps only the arch / name /
-// category / upstream_hf / provenance chunks; it does NOT stamp any
-// `vokra.conv_tasnet.*` topology chunk group. The binder therefore
-// holds the primary-source constants transcribed from
-// `asteroid/models/conv_tasnet.py` `ConvTasNet.__init__` + the
-// Asteroid Libri1Mix `enhsingle_16k` recipe.
-//
-// This is a **documented deviation** from the RMVPE / ReDimNet
-// strict-read precedent (both those converters stamp the axes because
-// their upstream release ships a `config.yaml` transcribable into a
-// chunk group). Conv-TasNet's Asteroid recipe hardcodes its axes into
-// the Python constructor, so the primary-source constant hold is
-// honest — a future converter sub-wave that starts stamping the
-// axes upgrades this reader to strict axis read alongside the encoder-
-// masker-decoder walk. TODO(follow-up-wave): extend the converter to
-// stamp `vokra.conv_tasnet.{n_filters, n_kernel, stride, n_blocks,
-// n_repeats, bn_chan, hid_chan, skip_chan, conv_kernel_size,
-// sample_rate, n_src, causal}` + flip [`ConvTasnetConfig`] to strict
-// per-key GGUF read.
+// The converter stamps all twelve `vokra.conv_tasnet.*` axes transcribed
+// from `asteroid/models/conv_tasnet.py` + the Libri1Mix `enhsingle_16k`
+// recipe. The binder reads every key strictly; an older metadata-free GGUF
+// is rejected instead of silently assuming a topology.
 // ---------------------------------------------------------------------------
 
 /// Asteroid ConvTasNet `enhsingle_16k` hyperparameters, held as the
@@ -325,6 +322,66 @@ impl ConvTasnetConfig {
             causal: 0,
         }
     }
+
+    fn from_gguf(file: &GgufFile) -> Result<Self> {
+        fn required_u32(file: &GgufFile, key: &str) -> Result<u32> {
+            match file.get(key) {
+                Some(vokra_core::gguf::GgufMetadataValue::U32(value)) => Ok(*value),
+                Some(other) => Err(VokraError::ModelLoad(format!(
+                    "conv_tasnet: GGUF metadata `{key}` must be U32, got {other:?}"
+                ))),
+                None => Err(VokraError::ModelLoad(format!(
+                    "conv_tasnet: GGUF is missing required topology metadata `{key}`; \
+                     reconvert with the current conv-tasnet-libri1mix converter"
+                ))),
+            }
+        }
+
+        let config = Self {
+            n_filters: required_u32(file, KEY_N_FILTERS)?,
+            n_kernel: required_u32(file, KEY_N_KERNEL)?,
+            stride: required_u32(file, KEY_STRIDE)?,
+            n_blocks: required_u32(file, KEY_N_BLOCKS)?,
+            n_repeats: required_u32(file, KEY_N_REPEATS)?,
+            bn_chan: required_u32(file, KEY_BN_CHAN)?,
+            hid_chan: required_u32(file, KEY_HID_CHAN)?,
+            skip_chan: required_u32(file, KEY_SKIP_CHAN)?,
+            conv_kernel_size: required_u32(file, KEY_CONV_KERNEL_SIZE)?,
+            sample_rate: required_u32(file, KEY_SAMPLE_RATE)?,
+            n_src: required_u32(file, KEY_N_SRC)?,
+            causal: required_u32(file, KEY_CAUSAL)?,
+        };
+        if config.n_filters == 0
+            || config.n_kernel == 0
+            || config.stride == 0
+            || config.n_blocks == 0
+            || config.n_repeats == 0
+            || config.bn_chan == 0
+            || config.hid_chan == 0
+            || config.skip_chan == 0
+            || config.conv_kernel_size == 0
+            || config.sample_rate == 0
+            || config.n_src == 0
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "conv_tasnet: topology axes must be non-zero except causal; got {config:?}"
+            )));
+        }
+        if config.stride * 2 != config.n_kernel {
+            return Err(VokraError::ModelLoad(format!(
+                "conv_tasnet: stride={} must equal n_kernel/2={} for the 50% overlap contract",
+                config.stride,
+                config.n_kernel / 2
+            )));
+        }
+        if config.causal > 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "conv_tasnet: causal must be 0 or 1, got {}",
+                config.causal
+            )));
+        }
+        Ok(config)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -420,9 +477,8 @@ pub struct ConvTasnet {
 }
 
 impl ConvTasnet {
-    /// Binds a Conv-TasNet GGUF: validates arch, holds the primary-
-    /// source-transcribed [`ConvTasnetConfig`] (no chunk read — see
-    /// the module docstring), discovers tensors, and surfaces the
+    /// Binds a Conv-TasNet GGUF: validates arch, strictly reads the
+    /// source-transcribed [`ConvTasnetConfig`], discovers tensors, and surfaces the
     /// stamped weight-license class for compliance gate cross-checks.
     ///
     /// This binder is a *loud* validation step. Every failure is a
@@ -470,9 +526,9 @@ impl ConvTasnet {
             }
         }
 
-        // 2. Config hold — primary-source-transcribed Asteroid Libri1Mix
-        //    `enhsingle_16k` defaults (no GGUF read; see module doc).
-        let config = ConvTasnetConfig::asteroid_libri1mix_default();
+        // 2. Strict topology read. No fallback to constants: old GGUFs that
+        //    predate these chunks must be reconverted.
+        let config = ConvTasnetConfig::from_gguf(file)?;
 
         // 3. Load the tensor manifest with the non-emptiness gate.
         let weights = ConvTasnetWeights::from_gguf(file)?;
@@ -498,9 +554,7 @@ impl ConvTasnet {
         })
     }
 
-    /// The bound topology axes (primary-source-transcribed Asteroid
-    /// Libri1Mix `enhsingle_16k` defaults — no chunk read yet; see
-    /// module doc for the deviation rationale).
+    /// The bound topology axes read from the GGUF chunk group.
     #[inline]
     #[must_use]
     pub const fn config(&self) -> &ConvTasnetConfig {
@@ -604,9 +658,7 @@ fn separate_forward_loud_partial(cfg: &ConvTasnetConfig) -> VokraError {
          LayerNorm + PReLU primitives — what is missing is (i) the tensor-name walk from the \
          upstream `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k` state_dict prefixes to those \
          primitives' inputs (pending the manifest fetch — same posture as pyannote / Charsiu \
-         real-weight bind), (ii) the encoder-masker-decoder block composition itself, and \
-         (iii) a converter sub-wave that extends the Conv-TasNet converter to stamp the \
-         `vokra.conv_tasnet.*` chunk group so this binder can move to strict axis read. \
+         real-weight bind), and (ii) the encoder-masker-decoder block composition itself. \
          Config: n_filters={n_filters}, n_kernel={n_kernel}, stride={stride}, \
          n_blocks={n_blocks}, n_repeats={n_repeats}, bn_chan={bn_chan}, hid_chan={hid_chan}, \
          skip_chan={skip_chan}, conv_kernel_size={conv_kernel_size}, \
@@ -669,6 +721,25 @@ mod tests {
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
+    fn stamp_test_topology(builder: &mut GgufBuilder, config: ConvTasnetConfig) {
+        for (key, value) in [
+            (KEY_N_FILTERS, config.n_filters),
+            (KEY_N_KERNEL, config.n_kernel),
+            (KEY_STRIDE, config.stride),
+            (KEY_N_BLOCKS, config.n_blocks),
+            (KEY_N_REPEATS, config.n_repeats),
+            (KEY_BN_CHAN, config.bn_chan),
+            (KEY_HID_CHAN, config.hid_chan),
+            (KEY_SKIP_CHAN, config.skip_chan),
+            (KEY_CONV_KERNEL_SIZE, config.conv_kernel_size),
+            (KEY_SAMPLE_RATE, config.sample_rate),
+            (KEY_N_SRC, config.n_src),
+            (KEY_CAUSAL, config.causal),
+        ] {
+            builder.add_u32(key, value);
+        }
+    }
+
     /// Builds a Conv-TasNet GGUF carrying the arch tag + name +
     /// category + one representative encoder tensor. Optional
     /// `weight_license_class` is written under
@@ -678,6 +749,7 @@ mod tests {
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
         b.add_string("vokra.model.category", CATEGORY);
+        stamp_test_topology(&mut b, ConvTasnetConfig::asteroid_libri1mix_default());
         if let Some(cls) = weight_license_class {
             b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
         }
@@ -769,6 +841,20 @@ mod tests {
             ct.tensor_count() >= 1,
             "at least one tensor must be bound from the legitimate GGUF fixture"
         );
+    }
+
+    #[test]
+    fn from_gguf_rejects_missing_topology_key() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        b.add_tensor("x", GgmlType::F32, vec![1], vec![0; 4])
+            .expect("add tensor");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let err = ConvTasnet::from_gguf(&file).expect_err("metadata-free GGUF must fail");
+        match err {
+            VokraError::ModelLoad(message) => assert!(message.contains(KEY_N_FILTERS)),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -998,6 +1084,7 @@ mod tests {
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
         b.add_string("vokra.model.category", CATEGORY);
+        stamp_test_topology(&mut b, ConvTasnetConfig::asteroid_libri1mix_default());
         // NO tensors added.
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
         let Err(err) = ConvTasnet::from_gguf(&file) else {
