@@ -222,9 +222,7 @@ impl<T: KvElement> RingKvCache<T> {
     /// Rewinds to empty, retaining the pre-allocated storage (fast barge-in
     /// reset — the arena is reused, no realloc).
     pub fn reset(&mut self) {
-        for slot in &mut self.slot_pos {
-            *slot = None;
-        }
+        self.slot_pos.fill(None);
         self.highest = None;
         self.pos = 0;
     }
