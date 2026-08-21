@@ -16,9 +16,9 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `RealForwardNoCliTask` | 3 | 0 | 0 | 0 | Real forward exists; CLI routing is absent |
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
-| `NoGgufLoader` | 17 | 17 | 17 | 13 | No real artifact can be bound, even if a constructor/forward exists |
+| `NoGgufLoader` | 17 | 17 | 17 | 12 | No real artifact can be bound, even if a constructor/forward exists |
 | `LoudPartialForward` | 56 | 56 | 56 | 57 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **70** | `BOUND_ARCHES` registry rows |
+| **Total** | **79** | **75** | **73** | **69** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -158,7 +158,7 @@ Parser, binary round-trip, SHA-256 NIST-vector, dispatch, flag-scope, and CLI
 package tests are present. Real-weight CT-Punc/Mimi execution remains part of
 the final VAST evidence pass; it is not replaced by the structural tests.
 
-## Wave 3 — 13 of 17 GGUF loaders remaining
+## Wave 3 — 12 of 17 GGUF loaders remaining
 
 Implement loaders in dependency-aware families. Every loader needs a writer ↔
 reader tensor/metadata handshake, a real pinned checkpoint, license/provenance
@@ -174,9 +174,9 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    `vokra-models` package: lib `2533 passed / 0 failed / 1 ignored`, with all
    integration/doc-test suites green. Instance `48290692` was destroyed after
    the run; no weight upload occurred.
-2. Vocoder family (1 remaining): `vocos`. Share only genuinely identical
-   tensor conventions. Vocos also has a second
-   ConvNeXt-V2 forward blocker; loading it does not make decoding complete.
+2. Vocoder family: all four rows are closed. Shared code is limited to
+   genuinely identical tensor conventions; each checkpoint keeps its own
+   preprocessing, padding, normalization, and output-rate contract.
 
    `bigvgan` closed on 2026-08-21: the strict loader binds the official base
    checkpoint's 448-tensor folded manifest, including all 146 stored
@@ -216,6 +216,26 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    at `max_abs=3.1374395e-5` under the predeclared `5e-5` FP32 bound. The CLI
    smoke emitted mono IEEE-float32 WAV at 22,050 Hz with exactly 3072 samples;
    independent WAV parsing measured the same `max_abs=3.137439489e-5`.
+
+   `vocos` closed on 2026-08-21 for both official releases. Inspection of
+   `vocos==0.1.0` corrected the scaffold's stale “ConvNeXt V2 + GRN” claim:
+   the releases use eight ConvNeXt 1D blocks with LayerScale, plain LayerNorm
+   for Mel, and four-row bandwidth-conditioned AdaLayerNorm for Encodec. The
+   Mel revision `0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21` binds an exact
+   83-tensor manifest; its 54,346,208-byte GGUF
+   (`sha256=00586c971bb14d0b96aed1eebd2fc94637619fd718d52d78808d60cbc51116b9`)
+   matched the official five-frame feature decode over 1,024 PCM samples at
+   `max_abs=2.873130143e-7`. The Encodec revision
+   `4e61d082c08045a4c11e5b148ad93b1d0c591a14` binds its distinct 82-tensor
+   manifest, including `[16384,128]` codebook embeddings and AdaLayerNorm
+   tables; its 40,337,152-byte GGUF
+   (`sha256=53faa308126852eb8cea836651e54a5e3151091d1a1b9a746b32cb6037c4a6d0`)
+   matched bandwidth id 2 over 1,600 samples at
+   `max_abs=3.680586815e-6`. Both pass the fixed `1e-5` bound. The CLI consumes
+   channel-major little-endian f32 features, requires explicit
+   `--bandwidth-id 0..3` for Encodec, and emitted mono IEEE-float32 24 kHz WAVs
+   with the same sample counts and errors under independent parsing. No
+   Encodec neural encoder weights are bundled or silently substituted.
 3. ASR (1): `parakeet-tdt`. Add the artifact binder before exposing its
    existing transcription entry point.
 4. TTS scaffolds (11): `chatterbox`, `chatterbox_nano`,

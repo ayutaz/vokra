@@ -7,7 +7,7 @@
 //! **the top-downloaded HF vocoder audio release** as of 2026-08-01
 //! (2.85M mel-24khz downloads). Vocos is the Fourier-space vocoder
 //! (Siuzdak 2023, arXiv:2306.00814) that decodes mel spectrograms or
-//! EnCodec latents into 24 kHz PCM through a ConvNeXt V2 backbone +
+//! EnCodec latents into 24 kHz PCM through a ConvNeXt 1D backbone +
 //! **iSTFT head** — a fundamentally different topology from every
 //! HiFi-GAN family sibling (`bigvgan` / `hifigan_vocoder` /
 //! `speecht5_hifigan`) which upsample time-domain waveforms through
@@ -20,9 +20,9 @@
 //! 2026-08-01 — verified via `https://huggingface.co/api/models/
 //! charactr/vocos-mel-24khz` + `.../vocos-encodec-24khz`); callers
 //! pre-flatten to safetensors offline via
-//! `tools/parity/bin_to_safetensors.py`. A dedicated
-//! `tools/parity/vocos_prepare_checkpoint.py` thin wrapper over it is
-//! **not yet written** — the same pattern
+//! `tools/parity/bin_to_safetensors.py`. The dedicated
+//! `tools/parity/vocos_prepare_checkpoint.py` wrapper pins each audited
+//! upstream revision — the same pattern
 //! SpeechT5-HiFi-GAN / DeBERTa v3 large / VoxCPM-0.5B use, and the
 //! reason is the same: Vokra's Rust converter is safetensors-only by
 //! design so the runtime never grows a pickle parser, keeping the
@@ -31,8 +31,7 @@
 //! Output: a GGUF carrying every float tensor verbatim under its
 //! upstream state-dict name (`feature_extractor.*`, `backbone.*`,
 //! `head.*`), plus the `vokra.provenance.*`, `vokra.model.*`, and
-//! `vokra.vocos.*` metadata chunks a future native Vocos loader will
-//! read.
+//! `vokra.vocos.*` metadata chunks the native Vocos loader reads.
 //!
 //! # Provenance
 //!
@@ -60,7 +59,7 @@
 //! + MRF (leaky_relu / snake activation stacks). Instead:
 //!
 //! - The feature extractor emits mel or EnCodec latents.
-//! - A **ConvNeXt V2 backbone** (Vocos paper §3.2) processes the
+//! - A **ConvNeXt 1D backbone** (Vocos paper §3.2) processes the
 //!   spectral representation entirely in a shift-invariant feature
 //!   space.
 //! - The **iSTFTHead** projects to `(magnitude, phase)` (or
@@ -74,9 +73,10 @@
 //!
 //! # Variant identity
 //!
-//! Both variants share the same iSTFT head + ConvNeXt V2 backbone
-//! topology; they differ only in the frontend feature extractor
-//! (mel filterbank vs EnCodec RVQ decode). The [`VocosVariant`]
+//! Both variants share the eight-block ConvNeXt + iSTFT family, but their
+//! widths, Fourier axes, padding, and normalization differ. Mel uses plain
+//! LayerNorm; Encodec uses four-row bandwidth-conditioned AdaLayerNorm. The
+//! [`VocosVariant`]
 //! discriminator tags the emitted GGUF under `vokra.vocos.variant`
 //! so the runtime can pick the correct feature-extractor bind
 //! path; every hparam is a shape-derived value read at
@@ -113,25 +113,22 @@
 //! (the sibling BF16 pass-through contract — CSM / Kokoro /
 //! CosyVoice2 / Chatterbox / Qwen3-TTS / VibeVoice / VoxCPM /
 //! WeSpeaker / ECAPA-TDNN / hifigan_vocoder / speecht5_hifigan /
-//! bigvgan / focalcodec). Real-weight parity vs the upstream
-//! `charactr/vocos` Python `Vocos.from_pretrained(...).decode(...)`
-//! forward is deferred to owner (`docs/license-audit.md` §3.1
-//! sign-off queue).
+//! bigvgan / focalcodec). Real-weight parity against `vocos==0.1.0` is gated
+//! in `crates/vokra-models/tests/parity_vocos_real.rs`; both official
+//! variants pass the fixed `1e-5` bound.
 //!
 //! # No ONNX (permanent)
 //!
 //! Charactr AI ships PyTorch pickle checkpoints; this converter
 //! **never** touches ONNX (FR-LD-05); the pipeline is re-implemented
-//! natively in `crates/vokra-models/src/vocos/` (or folded into a
-//! shared iSTFT-head loader family) when the vocoder lands
+//! natively in `crates/vokra-models/src/vocos/` and `vokra-ops::vocos`
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 //!
-//! # Loud-partial precedent
+//! # Runtime handshake
 //!
-//! Real-weight forward binding is deferred: the runtime consumer
-//! will walk the emitted tensor names and either succeed or fail
-//! loudly per FR-EX-08. Today's converter surface is byte-exact
-//! provenance + tensor-name preservation only.
+//! `Vocos::from_gguf` walks the complete 83-tensor Mel or 82-tensor Encodec
+//! manifest and rejects missing, extra, renamed, or wrong-shaped tensors
+//! before constructing the native forward.
 
 use std::path::Path;
 
@@ -142,8 +139,8 @@ use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for Vocos GGUFs. Shared across every
-/// [`VocosVariant`] — the ConvNeXt V2 backbone + iSTFT head topology
-/// is identical, only the frontend feature extractor differs.
+/// [`VocosVariant`] — the releases share a ConvNeXt/iSTFT family but retain
+/// distinct widths, normalization, padding, and Fourier axes.
 ///
 /// Intentionally distinct from every HiFi-GAN family sibling
 /// (`bigvgan`, `hifigan_vocoder`, `speecht5_hifigan`) — Vocos is a
@@ -176,9 +173,8 @@ pub const KEY_VOCOS_VARIANT: &str = "vokra.vocos.variant";
 /// Which Vocos release the caller is converting. Selects the model
 /// name / upstream HF slug / variant tag written into the GGUF.
 ///
-/// Both variants share [`ARCH`] `vocos` — the topology is identical,
-/// only the frontend feature extractor differs (mel filterbank vs
-/// EnCodec RVQ decode).
+/// Both variants share [`ARCH`] `vocos`; the required variant tag selects the
+/// exact manifest and numerical contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VocosVariant {
     /// `charactr/vocos-mel-24khz`: `MelSpectrogramFeatures` frontend
@@ -435,7 +431,7 @@ mod tests {
 
         // Mirror a realistic upstream tensor name from Vocos's
         // `Vocos.state_dict()` walk — `backbone.norm.weight` is the
-        // final LayerNorm of the ConvNeXt V2 stack.
+        // initial LayerNorm of the ConvNeXt 1D stack.
         let input_bytes = safetensors_one_f32("backbone.norm.weight", &[2, 3], &f32_bytes);
         let input_path = write_temp("mel24-in", &input_bytes);
         let output_path = write_temp("mel24-out", &[]);

@@ -30,7 +30,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -89,7 +89,8 @@ OPTIONS:
                               qwen3-asr | wav2vec2 | moss-tts | melotts-english |
                               melotts-chinese | melotts-korean | speecht5 | parler-tts |
                               indic-parler-tts | vieneu-tts | bark | bark-small |
-                              hifigan-vocoder | speecht5-hifigan | bigvgan | focalcodec |
+                              hifigan-vocoder | speecht5-hifigan | bigvgan |
+                              vocos-mel-24khz | vocos-encodec-24khz | focalcodec |
                               snac | snac-24khz | snac-44khz |
                               tiger | tiger-speech | mp-senet | metricgan-plus |
                               sepformer | sepformer-wham16k | sepformer-whamr16k |
@@ -598,6 +599,17 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         license,
         silero_variant,
     })
+}
+
+/// Success-label contract for families whose variants collapse into one
+/// `ModelKind`. Vocos must preserve the selected raw slug because its two
+/// official artifacts have different manifests and input contracts; printing
+/// `ModelKind::as_arg()` would falsely label every Encodec conversion as Mel.
+fn conversion_display_model<'a>(model: ModelKind, raw_model_slug: &'a str) -> &'a str {
+    match model {
+        ModelKind::Vocos => raw_model_slug,
+        _ => model.as_arg(),
+    }
 }
 
 /// Entry point for `vokra-cli convert`.
@@ -1427,8 +1439,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
 
     match result {
         Ok(summary) => {
+            let display_model = conversion_display_model(model, &p.raw_model_slug);
             println!(
-                "converted {model}: {} tensors, {} metadata keys, {} bytes -> {}",
+                "converted {display_model}: {} tensors, {} metadata keys, {} bytes -> {}",
                 summary.tensor_count,
                 summary.metadata_count,
                 summary.output_bytes,
@@ -1545,6 +1558,22 @@ mod tests {
         assert_eq!(p.input, PathBuf::from("i"));
         assert_eq!(p.output, PathBuf::from("o"));
         assert_eq!(p.quant, Some(GgmlType::Q5K));
+    }
+
+    #[test]
+    fn vocos_success_label_preserves_selected_variant() {
+        assert_eq!(
+            conversion_display_model(ModelKind::Vocos, "vocos-encodec-24khz"),
+            "vocos-encodec-24khz"
+        );
+        assert_eq!(
+            conversion_display_model(ModelKind::Vocos, "vocos-mel-24khz"),
+            "vocos-mel-24khz"
+        );
+        assert_eq!(
+            conversion_display_model(ModelKind::Whisper, "whisper-base"),
+            "whisper"
+        );
     }
 
     #[test]

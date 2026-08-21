@@ -250,7 +250,7 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
-### 2026-08-21 — 1.0.0-rc.1-dev (Charsiu route and complete PyIN HMM)
+### 2026-08-21 — 1.0.0-rc.1-dev (runtime gap closure wave)
 
 Additive GGUF wire schema and Rust/CLI surface; the C ABI is untouched.  The
 new `vokra.charsiu.*` group binds one pinned
@@ -258,7 +258,11 @@ new `vokra.charsiu.*` group binds one pinned
 checkpoint SHA-256, all topology axes, the official 42-label inventory, and
 every tensor name/shape must agree before inference. The same branch completes
 PyIN temporal decoding and adds an additive detailed-result API; the historical
-`pyin(...) -> Vec<f32>` signature remains source-compatible.
+`pyin(...) -> Vec<f32>` signature remains source-compatible. The vocoder wave
+also adds the minimal public operator surfaces needed by strict BigVGAN,
+SpeechT5/SpeechBrain HiFi-GAN, and Vocos real-weight forwards. The existing
+`vokra.vocos.variant` wire key is unchanged; the runtime now enforces its two
+previously documented values against exact tensor manifests.
 
 | Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -266,9 +270,12 @@ PyIN temporal decoding and adds an additive detailed-result API; the historical
 | `vokra-convert` | `ModelKind::Charsiu` / `--model charsiu` | Added | canonical 213-tensor safetensors manifest → 211 F32 GGUF tensors | Consumes the eval-dead masking vector and folds positional-conv weight norm offline; missing, extra, retyped, or reshaped tensors are errors. | no | #44 |
 | `vokra-models::align::charsiu` | `Charsiu::from_file`, `Charsiu::logits`, canonical config/vocabulary fields | Added / Changed | strict GGUF binder + real frame-classification forward + upstream silence-mask/monotone-DTW alignment | Replaces the synthesized-only/unwired loader and the incorrect pre-norm/CTC description with the released post-norm topology and phone-alignment algorithm. This is pre-1.0 source churn; no C symbol changes. | yes (Rust source) | #44 |
 | `vokra-backend-cpu::kernels` | `grouped_conv1d_f32` | Added | checked grouped Conv1D composition over the existing dispatched dense kernel | Shared by Charsiu positional convolution and `vokra-eval`; invalid groups/extents fail loudly and no backend fallback is introduced. | no | #44 |
+| `vokra-ops::bigvgan_generator` | `AliasFreeActivationWeights` | Added | `pub struct AliasFreeActivationWeights { pub upsample_filter: Vec<f32>, pub downsample_filter: Vec<f32> }` | Binds the released checkpoint's per-activation Kaiser buffers instead of regenerating remembered constants. | no | #44 |
+| `vokra-ops::hifigan` | `HifiGanConvPadding` / `hifigan_generator_with_conv_padding` | Added | explicit `Zero` or `Reflect` stride-1 convolution padding | Preserves canonical zero padding while allowing SpeechBrain's released reflect-padding forward without a hidden compatibility mode. | no | #44 |
 | `vokra-ops::f0::pyin` | `PyinFrame` | Added | `pub struct PyinFrame { pub hz: f32, pub voiced: bool, pub confidence: f32 }` | Carries the decoded voiced state plus the real pre-decode voiced probability required by the CLI's shared F0 row contract. | no | #44 |
 | `vokra-ops::f0::pyin` | `pyin_detailed` | Added | `pub fn pyin_detailed(&[f32], u32, f32, f32) -> Result<Vec<PyinFrame>>` | Exposes full PyIN output without changing the compatibility wrapper; re-exported through `f0` and the crate root. | no | #44 |
 | `vokra-ops::f0::pyin` | `pyin` | Changed | `pub fn pyin(&[f32], u32, f32, f32) -> Result<Vec<f32>>` | Replaces per-frame first-dip argmax with all-trough Beta interval observations and voiced/unvoiced Viterbi smoothing; signature and `0.0` unvoiced convention are unchanged. | no | #44 |
+| `vokra-ops::vocos` | `VocosAttrs`, `VocosIstftPadding`, `VocosNormWeights`, `VocosBlockWeights`, `VocosWeights`, `vocos_decode` | Added | native ConvNeXt-1D feature decoder with conditional/plain normalization and center/same iSTFT trimming | Exposes the exact two official Vocos numerical contracts; validation rejects inconsistent axes and condition ids before arithmetic. | no | #44 |
 
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 

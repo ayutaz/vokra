@@ -59,5 +59,5 @@ fn real_vocos_feature_decode_matches_official() {
         model.variant(),
         actual.len()
     );
-    assert!(max_abs <= 2.0e-4, "Vocos max_abs {max_abs} exceeds 2e-4");
+    assert!(max_abs <= 1.0e-5, "Vocos max_abs {max_abs} exceeds 1e-5");
 }

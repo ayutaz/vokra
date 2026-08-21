@@ -198,6 +198,7 @@ ENUM vokra-ops::flow_sampler::ForwardPass|pub enum ForwardPass {
 ENUM vokra-ops::flow_sampler::OdeSolver|pub enum OdeSolver {
 ENUM vokra-ops::flow_sampler::Schedule|pub enum Schedule {
 ENUM vokra-ops::hifigan::CalibrationStrategy|pub enum CalibrationStrategy {
+ENUM vokra-ops::hifigan::HifiGanConvPadding|pub enum HifiGanConvPadding {
 ENUM vokra-ops::hifigan::HifiGanPrecision|pub enum HifiGanPrecision {
 ENUM vokra-ops::hifigan::SpectralCheckResult|pub enum SpectralCheckResult {
 ENUM vokra-ops::itn::token::ItnParseType|pub enum ItnParseType {
@@ -207,6 +208,7 @@ ENUM vokra-ops::rnnt_decode::RnntDecoderKind|pub enum RnntDecoderKind {
 ENUM vokra-ops::vit::GeluKind|pub enum GeluKind {
 ENUM vokra-ops::vit::PosEmbedPolicy|pub enum PosEmbedPolicy {
 ENUM vokra-ops::vit::ViTPooling|pub enum ViTPooling {
+ENUM vokra-ops::vocos::VocosIstftPadding|pub enum VocosIstftPadding {
 ENUM vokra-ops::voice_ref::VoiceRef|pub enum VoiceRef {
 ENUM vokra-ops::waveform_frontend::Norm|pub enum Norm {
 ENUM vokra-ops::wpe::StatisticsMode|pub enum StatisticsMode {
@@ -848,6 +850,7 @@ FN vokra-ops::hifigan::delta|pub fn delta(&self) -> f32 {
 FN vokra-ops::hifigan::fp16|pub fn fp16() -> Self {
 FN vokra-ops::hifigan::fp32|pub fn fp32() -> Self {
 FN vokra-ops::hifigan::hifigan_generator_conditioned|pub fn hifigan_generator_conditioned(
+FN vokra-ops::hifigan::hifigan_generator_with_conv_padding|pub fn hifigan_generator_with_conv_padding(
 FN vokra-ops::hifigan::hifigan_generator|pub fn hifigan_generator(
 FN vokra-ops::hifigan::is_passed|pub fn is_passed(&self) -> bool {
 FN vokra-ops::hifigan::new|pub fn new() -> Self {
@@ -1050,6 +1053,9 @@ FN vokra-ops::vit::vit_add_pos_embed|pub fn vit_add_pos_embed(
 FN vokra-ops::vit::vit_patch_embed|pub fn vit_patch_embed(
 FN vokra-ops::vit::vit_pool|pub fn vit_pool(
 FN vokra-ops::vit::weights|pub fn weights(&self) -> &ViTWeights {
+FN vokra-ops::vocos::validate|pub fn validate(&self) -> Result<()> {
+FN vokra-ops::vocos::validate|pub fn validate(&self, attrs: &VocosAttrs) -> Result<()> {
+FN vokra-ops::vocos::vocos_decode|pub fn vocos_decode(
 FN vokra-ops::voice_ref::fixed_voice|pub fn fixed_voice(name: impl Into<String>) -> Self {
 FN vokra-ops::voice_ref::reference_audio|pub fn reference_audio(pcm: Vec<f32>, sample_rate: u32) -> Result<Self> {
 FN vokra-ops::voice_ref::validate|pub fn validate(&self) -> Result<()> {
@@ -1197,6 +1203,7 @@ MOD vokra-ops::snake|pub mod snake;
 MOD vokra-ops::stft|pub mod stft;
 MOD vokra-ops::vae_continuous|pub mod vae_continuous;
 MOD vokra-ops::vit|pub mod vit;
+MOD vokra-ops::vocos|pub mod vocos;
 MOD vokra-ops::voice_ref|pub mod voice_ref;
 MOD vokra-ops::waveform_frontend|pub mod waveform_frontend;
 MOD vokra-ops::window|pub mod window;
@@ -1336,6 +1343,7 @@ STRUCT vokra-ops::aec::MultiChannelAecAttrs|pub struct MultiChannelAecAttrs {
 STRUCT vokra-ops::aec::MultiChannelAec|pub struct MultiChannelAec {
 STRUCT vokra-ops::agc::AgcAttrs|pub struct AgcAttrs {
 STRUCT vokra-ops::agc::AgcState|pub struct AgcState {
+STRUCT vokra-ops::bigvgan_generator::AliasFreeActivationWeights|pub struct AliasFreeActivationWeights {
 STRUCT vokra-ops::bigvgan_generator::AmpBlock1Weights|pub struct AmpBlock1Weights {
 STRUCT vokra-ops::bigvgan_generator::AmpBlock1|pub struct AmpBlock1 {
 STRUCT vokra-ops::bigvgan_generator::BigVGanConfig|pub struct BigVGanConfig {
@@ -1454,6 +1462,10 @@ STRUCT vokra-ops::vit::ViTBlockWeights|pub struct ViTBlockWeights {
 STRUCT vokra-ops::vit::ViTEncoder|pub struct ViTEncoder {
 STRUCT vokra-ops::vit::ViTMlpWeights|pub struct ViTMlpWeights {
 STRUCT vokra-ops::vit::ViTWeights|pub struct ViTWeights {
+STRUCT vokra-ops::vocos::VocosAttrs|pub struct VocosAttrs {
+STRUCT vokra-ops::vocos::VocosBlockWeights|pub struct VocosBlockWeights {
+STRUCT vokra-ops::vocos::VocosNormWeights|pub struct VocosNormWeights {
+STRUCT vokra-ops::vocos::VocosWeights|pub struct VocosWeights {
 STRUCT vokra-ops::waveform_frontend::ConvLayerAttrs|pub struct ConvLayerAttrs {
 STRUCT vokra-ops::waveform_frontend::ConvLayerWeights|pub struct ConvLayerWeights {
 STRUCT vokra-ops::waveform_frontend::WaveformFrontendAttrs|pub struct WaveformFrontendAttrs {
@@ -1630,6 +1642,7 @@ USE vokra-ops::snake::snake_activation_f32|pub use snake::snake_activation_f32;
 USE vokra-ops::snake::snake_beta_f32|pub use snake::snake_beta_f32;
 USE vokra-ops::stft::{Spectrogram, stft}|pub use stft::{Spectrogram, stft};
 USE vokra-ops::vae_continuous::{ ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder, ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode, }|pub use vae_continuous::{ ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder, ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode, };
+USE vokra-ops::vocos::{ VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, }|pub use vocos::{ VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, };
 USE vokra-ops::voice_ref::{VoiceRef, VoiceRefSource}|pub use voice_ref::{VoiceRef, VoiceRefSource};
 USE vokra-ops::vokra_core::Complex32|pub use vokra_core::Complex32;
 USE vokra-ops::waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, }|pub use waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, };

@@ -41,7 +41,7 @@
 #   29 of the 89 arch constants under vokra-models/src, and the regex did not
 #   match it — so this gate and `check-bound-arch-coverage.sh` both printed a
 #   confident "60 binder arches, all clean" over a population that was missing
-#   a third of the binders. `charsiu`, which has no converter at all, sat
+#   a third of the binders. `charsiu`, which had no converter at the time, sat
 #   inside that blind spot. A gate that is green because it did not look is
 #   worse than no gate: it actively certifies the thing it failed to check.
 #   `unseen_arch_spellings` now fails the run if ANY arch-shaped `&str`
@@ -369,7 +369,6 @@ declare -a NO_READER=(
   'openwakeword|publish-only BF16 pass-through for the raw wake-word weights (dscripka/openWakeWord, apache-2.0). openwakeword.rs:32-34 states the runtime port is deferred — the audio-dialect kws op consumes the artifact in a future WP. NOT to be confused with the SEPARATE openwakeword_op pair: vokra-convert/src/models/openwakeword_op.rs stamps "openwakeword_op" and vokra-models/src/kws/openwakeword/mod.rs verifies it on load at :394-404 against the mirrored constant at :116. Same family, two tags, only this one is unbound. CORRECTION 2026-08-15: this entry used to call that pair "fully bound", which was wrong twice over, and the error is instructive about the limit of THIS gate. What handshakes on the arch tag need not handshake on anything else: the binder also requires seven vokra.openwakeword.* metadata keys, the converter stamped none of them, and so every GGUF it produced failed to load — while this gate stayed green, because it only ever compared arch literals. That half is now repaired (the converter stamps the group, and a --config side-car supplies the per-wake-word names, which are not derivable from the tensors) and is pinned by crates/vokra-convert/tests/openwakeword_op_roundtrip.rs plus the convert-then-bind test crates/vokra-models/tests/openwakeword_convert_bind.rs. Even so "fully bound" would overstate it: the runtime FORWARD is a loud-partial, because the frozen Google speech_embedding extractor is still untranscribed. Load: yes. Forward: no.'
   'pyannote-speaker-diarization|converter-only BY DESIGN: this GGUF is a WEIGHTLESS pipeline orchestrator (clustering thresholds plus sub-model references, no sincnet.* / lstm.* tensors at all). vokra-models/src/pyannote/mod.rs:130 documents the refusal verbatim — EXPECTED_ARCH is deliberately "pyannote-segmentation" — and verify_arch names this tag in its rejection text so an operator who hands the pipeline to the backbone binder is told "you handed me a pipeline, not a backbone" instead of hitting a confusing empty-manifest error. A pipeline-level loader is a follow-up.'
   'reazonspeech_nemo_v2|publish-only BF16 pass-through (ReazonSpeech NeMo v2, apache-2.0). reazonspeech_nemo_v2.rs:53-54 names a future vokra-models::reazonspeech_nemo_v2 module (Longformer local-attention encoder + RNN-T / CTC head) and defers the forward to owner sign-off.'
-  'rnnoise|publish-only BF16 pass-through (RNNoise, permissive). rnnoise.rs:8-9 reserves the tag for a future vokra-models::rnnoise::* implementation and :70 states tensors pass through unchanged so a future RnnoiseWeights::from_gguf can walk them. The tag is deliberately NOT "denoise".'
   'stable_audio_open_small|publish-gated: the Stability AI Community License is not SPDX-registered, so the converter HARD-MAPS that string and its aliases to LicenseClass::NonCommercial ahead of the SPDX resolver (stable_audio_open_small.rs:77-81 documents the map, :140-158 is the is_sacl arm), which is why publish requires --allow-noncommercial. Same shape as the CPML / xtts_v2 precedent. stable_audio_open_small.rs:38 names a future vokra-models::stable_audio_open_small binder; none exists. CORRECTION 2026-08-15: this entry used to say from_license_str "returns Unknown". That is what the helper would do if it were reached, and it is exactly what the muq entry above correctly describes for ITS tag — but here the hard-map short-circuits it, and an Unknown would make publish refuse outright rather than merely demand a flag, so the old reason named a mechanism that contradicted the consequence in its own next clause.'
   'tiger_separator|publish-only BF16 pass-through (JusperLee TIGER-DnR, apache-2.0). tiger.rs:70 names a future crates/vokra-models/src/tiger/ module and :56 defers TigerSeparator::from_gguf to a follow-up on the RMVPE / Charsiu loud-partial precedent.'
   'titanet-large|publish-only BF16 pass-through (NVIDIA TitaNet-L, cc-by-4.0 so AttributionRequired). titanet.rs:59 states the runtime port is out of scope for the converter wave; :10 reserves the tag for a future native TitaNet loader.'
@@ -405,14 +404,13 @@ declare -a NO_READER=(
 # This ledger was empty until 2026-08-15 — not because there were no gaps, but
 # because the discovery regex could not see the 29 binders that spell the
 # constant `EXPECTED_ARCH` instead of `ARCH`. Widening it surfaced exactly one
-# real gap out of those 29 (`charsiu`); the other 28 were already emitted by a
-# converter and simply had nothing checking them. The guard added in the same
-# change (`unseen_arch_spellings`) is what stops the next spelling from
-# re-opening this hole.
+# real gap out of those 29 (`charsiu`), which the 2026-08-21 runtime closure
+# subsequently supplied. The other 28 were already emitted by a converter and
+# simply had nothing checking them. The guard added in the same change
+# (`unseen_arch_spellings`) is what stops the next spelling from re-opening
+# this hole.
 # ---------------------------------------------------------------------------
-declare -a NO_CONVERTER=(
-  'charsiu|reader-first by design, and the binder half is NOT wired either: no crates/vokra-convert/src/models/charsiu.rs exists, and every "charsiu" occurrence under vokra-convert/src is a doc comment citing the loud-partial precedent, never a stamped literal. Charsiu::from_gguf (align/charsiu.rs:509) verifies the arch tag and then refuses with LoadError::Gguf "from_gguf is not wired yet ... the upstream tensor-name manifest binder is a follow-up wave (T29-equivalent)", so this is NOT the dangerous shape of a working loader with no producer — nothing can be mis-bound, and the module is reachable only via Charsiu::new with caller-supplied weights. The tag is fixed reader-side first so the converter has exactly one string to match when it lands (align/charsiu.rs:76-94 states this verbatim), and it is deliberately distinct from wav2vec2_ctc because Charsiu head is an IPA phoneme inventory, not a letter vocab. Registered in engine.rs BOUND_ARCHES as BoundReason::NoGgufLoader — the variant whose explain() ends "there is nothing to bind from this artifact", i.e. the registry records the same refusal this reason opens with, which is what makes the two sides agree. That row shipped as NoCliShapedOutput ("the forward works, only the presentation blocks it") and was corrected in the same 2026-08-15 change that added this ledger line, so naming the old label here would have re-asserted, in the ledger, the exact claim that change deleted from the row. `charsiu` is correspondingly not a ModelKind::from_arg slug.'
-)
+declare -a NO_CONVERTER=()
 
 # ---------------------------------------------------------------------------
 # LEDGER (a-suppress): literal occurrences that are NOT reader evidence.
@@ -570,8 +568,8 @@ import os, re, sys
 # zonos, the whole chatterbox family, …). Until 2026-08-15 this regex matched
 # only the `ARCH` form, so this gate and its sibling both reported a confident
 # green over a population missing a third of the binders — `charsiu` among
-# them, which has no converter at all and is precisely the defect leg (b)
-# exists to catch. A gate that is green because it did not look is worse than
+# them, whose then-missing converter was precisely the defect leg (b) was
+# meant to catch. A gate that is green because it did not look is worse than
 # no gate: it certifies the thing it failed to check. LOOSE_ARCH_CONST below
 # is what keeps the NEXT spelling from going invisible the same way.
 ARCH_CONST = re.compile(

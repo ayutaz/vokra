@@ -2295,7 +2295,7 @@ pub enum ModelKind {
     /// MIT) safetensors checkpoint (2026-08-01 wave). Category = `vocoder`.
     /// **Highest-download HF vocoder audio release** as of 2026-08-01
     /// (2.85M mel-24khz downloads). Fourier-space vocoder
-    /// (Siuzdak 2023 arXiv:2306.00814) = ConvNeXt V2 backbone +
+    /// (Siuzdak 2023 arXiv:2306.00814) = ConvNeXt 1D backbone +
     /// **iSTFT head** — a fundamentally different topology from every
     /// HiFi-GAN family sibling (`bigvgan`, `hifigan_vocoder`,
     /// `speecht5_hifigan`) which upsample time-domain waveforms
@@ -2304,14 +2304,11 @@ pub enum ModelKind {
     /// upstream releases ship torch pickle `pytorch_model.bin` +
     /// `config.yaml` only (no `model.safetensors` mirror, verified
     /// 2026-08-01 via HF cardData API); callers pre-flatten to
-    /// safetensors offline via `tools/parity/bin_to_safetensors.py` —
-    /// a dedicated `tools/parity/vocos_prepare_checkpoint.py` thin
-    /// bridge over it (the SpeechT5-HiFi-GAN pattern) is **not yet
-    /// written**. BF16
-    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
-    /// through verbatim under its upstream state-dict name; runtime
-    /// binding + real-weight parity are deferred to owner
-    /// (`docs/license-audit.md` §3.1 sign-off queue). Provenance =
+    /// safetensors offline via the revision-pinned
+    /// `tools/parity/vocos_prepare_checkpoint.py` bridge. Every F32 / F16 /
+    /// BF16 tensor passes through verbatim under its upstream state-dict
+    /// name. Both strict runtime manifests and the native ConvNeXt/iSTFT
+    /// forward are covered by official real-weight parity. Provenance =
     /// **mit** for both variants (Permissive — verified 2026-08-01 via
     /// HF cardData API `license: mit`). Two variants collapse into
     /// this single ModelKind; [`convert_file_with_slug`] picks the
@@ -9800,14 +9797,10 @@ pub fn convert_file_licensed(
             // 2.85M dl; `charactr/vocos-encodec-24khz` = second
             // variant, both MIT). Distinct arch tag `vocos` from every
             // HiFi-GAN family sibling — Vocos is a Fourier-space
-            // vocoder (ConvNeXt V2 backbone + iSTFT head), not
-            // time-domain upsample + MRF. BF16 pass-through skeleton
-            // mirror of speecht5_hifigan / bigvgan / focalcodec;
-            // runtime binding is deferred to owner. Upstream ships
-            // torch pickle only — pre-flatten via
-            // tools/parity/bin_to_safetensors.py; a dedicated
-            // tools/parity/vocos_prepare_checkpoint.py is not yet
-            // written.
+            // vocoder (ConvNeXt 1D backbone + iSTFT head), not
+            // time-domain upsample + MRF. Upstream ships torch pickle only;
+            // pre-flatten it through the revision-pinned
+            // tools/parity/vocos_prepare_checkpoint.py bridge.
             //
             // This path is the enum-arm default (Mel24khz); the
             // encodec-24khz variant is picked from the raw `--model`
