@@ -1234,13 +1234,13 @@ mod tests {
         ));
         // Codebooks: layer sums are ramps; usages include one below-epsilon
         // entry (0.0) to exercise the clamp path.
-        for (split, layer, salt) in [
+        for (split, layer, scale) in [
             ("rvq_first", 0usize, 1.0f32),
             ("rvq_rest", 0, 2.0),
             ("rvq_rest", 1, 3.0),
         ] {
             let base = format!("quantizer.{split}.vq.layers.{layer}._codebook");
-            let sum: Vec<f32> = (0..4 * 2).map(|i| i as f32 * salt).collect();
+            let sum: Vec<f32> = (0..4 * 2).map(|i| i as f32 * scale).collect();
             let usage: Vec<f32> = vec![1.0, 2.0, 0.0, 4.0]; // 0.0 → clamped to 1e-5
             entries.push((format!("{base}.embedding_sum"), vec![4, 2], sum));
             entries.push((format!("{base}.cluster_usage"), vec![4], usage));
@@ -1318,7 +1318,7 @@ mod tests {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        // cb=0 (semantic, salt=1): entry i=1 → sum row [2, 3], usage 2.0 →
+        // cb=0 (semantic, scale=1): entry i=1 → sum row [2, 3], usage 2.0 →
         // emb [1.0, 1.5]; W rows: o0 [0.5, 1.5], o1 [1.0, 2.0], o2 [1.5, 2.5]
         // → table[0][1,:] = [0.5*1 + 1.5*1.5, 1.0*1 + 2.0*1.5, 1.5*1 + 2.5*1.5]
         //                 = [2.75, 4.0, 5.25]
@@ -1328,7 +1328,7 @@ mod tests {
         // sum row [4, 5] → emb [4e5, 5e5]; o0: 0.5*4e5 + 1.5*5e5 = 9.5e5.
         let base = (0 * 4 + 2) * 3;
         assert_eq!(vals[base], 0.5 * (4.0 / 1e-5) + 1.5 * (5.0 / 1e-5));
-        // cb=1 (acoustic 0, salt=2, negated proj): entry i=1 → sum [4, 6],
+        // cb=1 (acoustic 0, scale=2, negated proj): entry i=1 → sum [4, 6],
         // usage 2 → emb [2, 3]; o0: -(0.5*2 + 1.5*3) = -5.5.
         let base = (1 * 4 + 1) * 3;
         assert_eq!(vals[base], -5.5);
@@ -1354,18 +1354,18 @@ mod tests {
     /// n_res = 1, transformer d = 16 / ff = 32 / 1 layer, quantizer
     /// q_dim = 4 / bins = 4 / n_q = 3 (1 semantic + 2 acoustic).
     fn synthetic_mimi_full() -> Vec<(String, Vec<usize>, Vec<f32>)> {
-        // Deterministic fill: value at flat index i is (i as f32) * salt.
+        // Deterministic fill: value at flat index i is (i as f32) * scale.
         fn pushv(
             e: &mut Vec<(String, Vec<usize>, Vec<f32>)>,
             name: &str,
             shape: Vec<usize>,
-            salt: f32,
+            scale: f32,
         ) {
             let n: usize = shape.iter().product();
             e.push((
                 name.to_owned(),
                 shape,
-                (0..n).map(|i| i as f32 * salt).collect(),
+                (0..n).map(|i| i as f32 * scale).collect(),
             ));
         }
         let mut e: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
@@ -1837,13 +1837,13 @@ mod tests {
             vec![2, 3, 1],
             vec![0.0; 6],
         ));
-        for (split, layer, salt) in [
+        for (split, layer, scale) in [
             ("rvq_first", 0usize, 1.0f32),
             ("rvq_rest", 0, 2.0),
             ("rvq_rest", 1, 3.0),
         ] {
             let base = format!("quantizer.{split}.vq.layers.{layer}._codebook");
-            let sum: Vec<f32> = (0..4 * 2).map(|i| i as f32 * salt).collect();
+            let sum: Vec<f32> = (0..4 * 2).map(|i| i as f32 * scale).collect();
             let usage: Vec<f32> = vec![1.0, 2.0, 0.0, 4.0];
             entries.push((format!("{base}.embedding_sum"), vec![4, 2], sum));
             entries.push((format!("{base}.cluster_usage"), vec![4], usage));

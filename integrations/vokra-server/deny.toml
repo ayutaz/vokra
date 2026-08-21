@@ -77,41 +77,15 @@ deny = [
 
 [advisories]
 version = 2
-# All three entries below enter through ONE chain — the optional `--piper-g2p`
+# Both entries below enter through ONE chain — the optional `--piper-g2p`
 # front-end (off by default), i.e.
 #   vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus,
-#   rev 41f3696) -> jpreprocess / lindera / quick-xml
-# The real fix for all three is upstream in piper-plus, not here: this repo
-# pins piper-plus-g2p by rev and cannot bump ITS dependencies. Each entry
-# below records why it is safe to carry until that bump, and what would make
-# it unsafe. Re-check whenever the piper-plus rev is advanced.
+#   rev b86df3f920a880f2809a5c260d238028015d82c9) -> jpreprocess / lindera
+# The upstream rev now carries quick-xml 0.41.0 and crossbeam-epoch 0.9.20,
+# removing the three actionable advisories. The two remaining records are
+# maintenance-status notices without fixed releases; each exception is scoped
+# and documented below. Re-check whenever the piper-plus rev is advanced.
 ignore = [
-    # RUSTSEC-2026-0194 — quick-xml 0.37.5: quadratic time in the duplicate
-    # attribute-name check (`BytesStart::attributes()` with the default
-    # `with_checks(true)`), reachable remotely in the reporter's case via a
-    # crafted XML document. Fix requires quick-xml >= 0.41, which is a
-    # semver-INCOMPATIBLE bump for piper-plus-g2p's `^0.37` — `cargo update`
-    # cannot reach it from here.
-    #
-    # NOT REACHABLE FROM VOKRA. The only quick-xml user in that crate is its
-    # SSML parser (`piper-plus-g2p/src/ssml.rs`: `SsmlParser::parse` ->
-    # `parse_xml` -> `get_attr` -> `attributes()`), and neither
-    # `vokra-piper-g2p` nor `vokra-server` references `ssml` / `SsmlParser`
-    # anywhere — the server's TTS path calls `phonemize` on plain text and
-    # never enters the XML reader. Verified by grep over both crates at the
-    # time of writing.
-    #
-    # THIS BECOMES LIVE the moment anything here starts accepting SSML (an
-    # `<speak>` passthrough on /api/tts or /v1/audio/speech would do it),
-    # because the request body is attacker-controlled. Anyone wiring SSML must
-    # bump piper-plus first and drop this entry.
-    "RUSTSEC-2026-0194",
-    # RUSTSEC-2026-0195 — quick-xml 0.37.5: unbounded namespace-declaration
-    # allocation, memory-exhaustion DoS. Same crate, same upstream fix
-    # (>= 0.41). Doubly unreachable here: it is specific to `NsReader`, and
-    # piper-plus-g2p's ssml.rs uses plain `Reader` (grep: no `NsReader` in the
-    # crate) — on top of the SSML path itself being unreferenced by Vokra.
-    "RUSTSEC-2026-0195",
     # RUSTSEC-2025-0141 — bincode unmaintained (via jpreprocess-core). A
     # maintenance status, not a vulnerability; used to load the bundled NAIST
     # JDIC dictionary, whose bytes ship with the crate rather than arriving

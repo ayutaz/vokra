@@ -4,15 +4,19 @@ version = "0.1.0"
 description = "Pinned upstream DeepFilterNet3 reference environment for Vokra parity."
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    # Keep the exact upstream stack used to establish the committed Rust
-    # parity bounds. This project runs only as an offline reference oracle;
-    # none of these packages enter a Vokra runtime or distribution.
+    # Keep an exact, security-maintained upstream stack and revalidate the
+    # committed Rust parity bounds whenever these pins move. This project runs
+    # only as an offline reference oracle; none of these packages enter a
+    # Vokra runtime or distribution.
     "deepfilternet==0.5.6",
     "numpy==1.26.4",
     "soundfile==0.14.0",
-    "torch==2.1.2",
-    # torchaudio ships a compiled extension and must match torch's major/minor.
-    "torchaudio==2.1.2",
+    "torch==2.13.0",
+    # torchaudio releases are currently decoupled from torch. 2.11.0 removes
+    # the legacy backend metadata namespace that DeepFilterNet imports; the
+    # reference scripts restore that import-only type via
+    # dfn3_torchaudio_compat without changing any numerical operation.
+    "torchaudio==2.11.0",
 ]
 
 [tool.uv]

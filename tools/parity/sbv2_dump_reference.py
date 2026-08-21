@@ -893,16 +893,20 @@ def load_bert_encoders(args: argparse.Namespace, transformers):
     Keeping ZH conditional preserves the existing JA/EN workflow's download
     and memory footprint until the explicit four-file leg is requested.
     """
+    import torch
     from transformers import AutoModel, AutoTokenizer
 
+    # transformers 5 preserves fp16 source weights by default. All Vokra BERT
+    # GGUFs and the independent CPU oracle compare in float32, so pin the
+    # reference dtype rather than inheriting a version-dependent default.
     tok_ja = AutoTokenizer.from_pretrained(args.bert_ja_repo)
-    model_ja = AutoModel.from_pretrained(args.bert_ja_repo).eval()
+    model_ja = AutoModel.from_pretrained(args.bert_ja_repo, dtype=torch.float32).eval()
     tok_en = AutoTokenizer.from_pretrained(args.bert_en_repo)
-    model_en = AutoModel.from_pretrained(args.bert_en_repo).eval()
+    model_en = AutoModel.from_pretrained(args.bert_en_repo, dtype=torch.float32).eval()
     zh = None
     if args.language.lower() == "zh":
         tok_zh = AutoTokenizer.from_pretrained(args.bert_zh_repo)
-        model_zh = AutoModel.from_pretrained(args.bert_zh_repo).eval()
+        model_zh = AutoModel.from_pretrained(args.bert_zh_repo, dtype=torch.float32).eval()
         zh = (tok_zh, model_zh)
     return (tok_ja, model_ja), (tok_en, model_en), zh
 

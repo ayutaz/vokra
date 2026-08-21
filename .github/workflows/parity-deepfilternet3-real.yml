@@ -93,6 +93,7 @@ on:
       - "tools/parity/dfn3_prepare_checkpoint.py"
       - "tools/parity/dfn3_dump_reference.py"
       - "tools/parity/dfn3_prep_noisy.py"
+      - "tools/parity/dfn3_torchaudio_compat.py"
       - "tools/parity/dfn3/pyproject.toml"
       - "tools/parity/dfn3/uv.lock"
       - "tests/fixtures/audio/jfk-30s.wav"
@@ -217,6 +218,10 @@ jobs:
           uv sync --project "${PARITY_PROJECT}" --frozen --python 3.11
           uv run --project "${PARITY_PROJECT}" --frozen python - <<'PY'
           import numpy, soundfile, torch, torchaudio
+
+          from tools.parity.dfn3_torchaudio_compat import install_deepfilternet_import_compat
+
+          install_deepfilternet_import_compat()
           import df
 
           print(
