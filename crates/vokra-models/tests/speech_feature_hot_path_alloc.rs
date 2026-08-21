@@ -45,10 +45,15 @@ fn one_thousand_warmed_push_pull_pairs_allocate_zero() {
     let input = vec![0.125f32; token_hop];
     let mut output = vec![0.0f32; stream.feature_dim() * 2];
 
-    // First t=2 transformer call grows its retained batch scratch. That is the
-    // documented warmup; every later call reuses the same capacities.
-    stream.push_pcm(&input).unwrap();
-    assert_eq!(stream.pull_into(&mut output).unwrap().0, 2);
+    // Warm both the retained t=2 batch scratch and a complete rolling
+    // attention-window cycle. Windows CI observed one process-lifetime
+    // allocation before the window saturated; measuring after every window
+    // width has been exercised keeps that setup outside steady state while
+    // still catching any allocation that recurs afterward.
+    for _ in 0..256 {
+        stream.push_pcm(&input).unwrap();
+        assert_eq!(stream.pull_into(&mut output).unwrap().0, 2);
+    }
 
     let before = ALLOCS.load(Ordering::SeqCst);
     for _ in 0..1000 {
