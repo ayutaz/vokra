@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use vokra_core::gguf::GgufFile;
-use vokra_models::parakeet::ParakeetAsr;
+use vokra_models::parakeet::{ParakeetAsr, ParakeetTokenizer};
 
 /// Honest FP32 GEMV/LSTM accumulation envelope against PyTorch eager.
 ///
@@ -17,12 +17,30 @@ use vokra_models::parakeet::ParakeetAsr;
 const MAX_ABS_BOUND: f32 = 1.2e-3;
 const MEAN_ABS_BOUND: f32 = 2.0e-4;
 
+/// Full raw-PCM encoder accumulation envelope against PyTorch eager.
+///
+/// The 2026-08-22 VAST calibration used the pinned upstream revision and a
+/// deterministic 16,000-sample three-tone fixture. Across 13x1024 outputs it
+/// measured max-|Delta| 1.012161374e-5 and mean-|Delta| 1.245580734e-6. The
+/// fixed gates are about 2.5x those independently measured f32-order floors.
+const PCM_ENCODER_MAX_ABS_BOUND: f32 = 2.5e-5;
+const PCM_ENCODER_MEAN_ABS_BOUND: f32 = 3.0e-6;
+
 fn read_f32(path: &Path) -> Vec<f32> {
     let bytes = std::fs::read(path).expect("read parity f32 file");
     assert_eq!(bytes.len() % 4, 0, "f32 file must not be truncated");
     bytes
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
+fn read_u32(path: &Path) -> Vec<u32> {
+    let bytes = std::fs::read(path).expect("read parity u32 file");
+    assert_eq!(bytes.len() % 4, 0, "u32 file must not be truncated");
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()
 }
 
@@ -91,5 +109,63 @@ fn real_parakeet_tdt_head_step_matches_official() {
     assert!(
         mean_abs <= MEAN_ABS_BOUND,
         "Parakeet-TDT mean_abs {mean_abs} exceeds fixed {MEAN_ABS_BOUND} bound"
+    );
+}
+
+#[test]
+fn real_parakeet_tdt_pcm_encoder_and_tokens_match_official() {
+    let (Ok(gguf), Ok(reference_dir)) = (
+        std::env::var("VOKRA_PARAKEET_TDT_GGUF"),
+        std::env::var("VOKRA_PARAKEET_TDT_PCM_REFERENCE_DIR"),
+    ) else {
+        eprintln!(
+            "skipping Parakeet-TDT PCM parity: set VOKRA_PARAKEET_TDT_GGUF and VOKRA_PARAKEET_TDT_PCM_REFERENCE_DIR"
+        );
+        return;
+    };
+    let reference_dir = Path::new(&reference_dir);
+    let file = GgufFile::open(&gguf).expect("open Parakeet-TDT GGUF");
+    let model = ParakeetAsr::from_gguf(&file).expect("strict Parakeet-TDT bind");
+    let pcm = read_f32(&reference_dir.join("pcm.f32"));
+    let expected_encoder = read_f32(&reference_dir.join("encoder.f32"));
+    let expected_tokens = read_u32(&reference_dir.join("tokens.u32"));
+
+    let (actual_encoder, frames) = model.encode_pcm(&pcm).expect("native PCM encoder");
+    assert_eq!(frames, 13, "fixture encoder frame count");
+    assert_eq!(actual_encoder.len(), expected_encoder.len());
+    let (max_index, max_abs) = actual_encoder
+        .iter()
+        .zip(&expected_encoder)
+        .enumerate()
+        .map(|(index, (left, right))| (index, (left - right).abs()))
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("non-empty encoder output");
+    let mean_abs = actual_encoder
+        .iter()
+        .zip(&expected_encoder)
+        .map(|(left, right)| (left - right).abs())
+        .sum::<f32>()
+        / actual_encoder.len() as f32;
+    eprintln!(
+        "Parakeet-TDT PCM encoder: frames={frames}, max_abs={max_abs:.9e} at {max_index} (actual={:.9e}, reference={:.9e}), mean_abs={mean_abs:.9e}",
+        actual_encoder[max_index], expected_encoder[max_index]
+    );
+    assert!(
+        max_abs <= PCM_ENCODER_MAX_ABS_BOUND,
+        "Parakeet-TDT PCM encoder max_abs {max_abs} exceeds fixed {PCM_ENCODER_MAX_ABS_BOUND} bound"
+    );
+    assert!(
+        mean_abs <= PCM_ENCODER_MEAN_ABS_BOUND,
+        "Parakeet-TDT PCM encoder mean_abs {mean_abs} exceeds fixed {PCM_ENCODER_MEAN_ABS_BOUND} bound"
+    );
+
+    let actual_tokens = model.transcribe(&pcm).expect("native TDT greedy decode");
+    assert_eq!(actual_tokens, expected_tokens, "TDT emitted token ids");
+    let tokenizer = ParakeetTokenizer::from_gguf(&file, 8193).expect("embedded tokenizer");
+    assert_eq!(
+        tokenizer
+            .decode(&actual_tokens, 8192, 2, 3)
+            .expect("native tokenizer decode"),
+        "Oh"
     );
 }

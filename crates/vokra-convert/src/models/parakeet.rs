@@ -52,7 +52,9 @@
 //! 型, CLAUDE.md 設計判断 4). This converter never touches ONNX.
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -107,6 +109,7 @@ const KEY_DEC_D_MODEL: &str = "vokra.parakeet.arch.decoder.d_model";
 const KEY_JOINT_VOCAB_SIZE: &str = "vokra.parakeet.joint.vocab_size";
 const KEY_JOINT_BLANK_ID: &str = "vokra.parakeet.joint.blank_token_id";
 const KEY_JOINT_PAD_ID: &str = "vokra.parakeet.joint.pad_token_id";
+const KEY_JOINT_EOS_ID: &str = "vokra.parakeet.joint.eos_token_id";
 const KEY_JOINT_MAX_SYMBOLS_PER_STEP: &str = "vokra.parakeet.joint.max_symbols_per_step";
 const KEY_JOINT_ACT: &str = "vokra.parakeet.joint.hidden_act";
 
@@ -114,6 +117,7 @@ const KEY_JOINT_ACT: &str = "vokra.parakeet.joint.hidden_act";
 // array metadata).
 const KEY_N_DURATIONS: &str = "vokra.parakeet.joint.n_durations";
 const PREFIX_DURATION: &str = "vokra.parakeet.joint.duration.";
+const KEY_TOKENIZER_JSON: &str = "vokra.parakeet.tokenizer.json";
 
 // --- Transcribed constants (primary source: config.json fetched verbatim) --
 //
@@ -150,6 +154,7 @@ const DEC_D_MODEL: u32 = 640; // "decoder_hidden_size": 640
 const JOINT_VOCAB_SIZE: u32 = 8193; // "vocab_size": 8193 (8192 + 1 blank)
 const JOINT_BLANK_ID: u32 = 8192; // "blank_token_id": 8192
 const JOINT_PAD_ID: u32 = 2; // "pad_token_id": 2
+const JOINT_EOS_ID: u32 = 3; // generation_config.json: "eos_token_id": 3
 const JOINT_MAX_SYMBOLS_PER_STEP: u32 = 10; // "max_symbols_per_step": 10
 const JOINT_ACT: &str = "relu"; // "hidden_act": "relu" (top-level, joint post-activation)
 
@@ -194,6 +199,15 @@ pub(crate) struct ParakeetReport {
 /// `AttributionRequired` (CC-BY 4.0) and the FR-MD-09 attribution
 /// surface activates.
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, ParakeetReport), ConvertError> {
+    convert_with_tokenizer(bytes, None)
+}
+
+/// Converts the official weights and optionally embeds its byte-exact
+/// Hugging Face BPE + Metaspace `tokenizer.json`.
+pub(crate) fn convert_with_tokenizer(
+    bytes: Vec<u8>,
+    tokenizer_json: Option<&[u8]>,
+) -> Result<(GgufBuilder, ParakeetReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
 
     let mut b = GgufBuilder::new();
@@ -208,6 +222,20 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, ParakeetReport), C
         Some("https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3"),
     );
     vokra_core::stamp_attribution(&mut b, PARAKEET_ATTRIBUTION_TEXT);
+    if let Some(tokenizer_json) = tokenizer_json {
+        validate_tokenizer_json(tokenizer_json)?;
+        b.add_metadata(
+            KEY_TOKENIZER_JSON,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U8,
+                values: tokenizer_json
+                    .iter()
+                    .copied()
+                    .map(GgufMetadataValue::U8)
+                    .collect(),
+            }),
+        );
+    }
 
     let mut report = ParakeetReport::default();
     // Float tensors pass through **verbatim** — no convert-time widening.
@@ -250,6 +278,43 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, ParakeetReport), C
     Ok((b, report))
 }
 
+fn validate_tokenizer_json(bytes: &[u8]) -> Result<(), ConvertError> {
+    if bytes.is_empty() {
+        return Err(ConvertError::Parse(
+            "Parakeet tokenizer.json is empty".to_owned(),
+        ));
+    }
+    let root = vokra_core::json::parse(bytes).map_err(|error| {
+        ConvertError::Parse(format!("Parakeet tokenizer.json parse failed: {error}"))
+    })?;
+    if root
+        .get("model")
+        .and_then(|model| model.get("type"))
+        .and_then(|value| value.as_str())
+        != Some("BPE")
+    {
+        return Err(ConvertError::Parse(
+            "Parakeet tokenizer.json must use model.type=BPE".to_owned(),
+        ));
+    }
+    let decoder = root.get("decoder").ok_or_else(|| {
+        ConvertError::Parse("Parakeet tokenizer.json is missing decoder".to_owned())
+    })?;
+    if decoder.get("type").and_then(|value| value.as_str()) != Some("Metaspace")
+        || decoder.get("replacement").and_then(|value| value.as_str()) != Some("▁")
+        || decoder
+            .get("prepend_scheme")
+            .and_then(|value| value.as_str())
+            != Some("always")
+    {
+        return Err(ConvertError::Parse(
+            "Parakeet tokenizer.json must use the official Metaspace decoder (`▁`, prepend_scheme=always)"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Writes the `vokra.parakeet.*` chunk group from the transcribed
 /// constants above (primary source: `config.json`). Booleans ride as
 /// u32 0/1 for GGUF portability (the Zonos / CSM / Kyutai STT
@@ -283,6 +348,7 @@ fn write_hparams(b: &mut GgufBuilder) {
     b.add_u32(KEY_JOINT_VOCAB_SIZE, JOINT_VOCAB_SIZE);
     b.add_u32(KEY_JOINT_BLANK_ID, JOINT_BLANK_ID);
     b.add_u32(KEY_JOINT_PAD_ID, JOINT_PAD_ID);
+    b.add_u32(KEY_JOINT_EOS_ID, JOINT_EOS_ID);
     b.add_u32(KEY_JOINT_MAX_SYMBOLS_PER_STEP, JOINT_MAX_SYMBOLS_PER_STEP);
     b.add_string(KEY_JOINT_ACT, JOINT_ACT);
 
@@ -326,6 +392,11 @@ mod tests {
         out.extend_from_slice(&[0u8; 12]);
         out
     }
+
+    const MINI_TOKENIZER: &[u8] = br#"{
+      "model":{"type":"BPE","vocab":{"<unk>":0,"\u2581Oh":1}},
+      "decoder":{"type":"Metaspace","replacement":"\u2581","prepend_scheme":"always","split":true}
+    }"#;
 
     #[test]
     fn arch_string_matches_runtime_constant() {
@@ -374,6 +445,7 @@ mod tests {
             (KEY_JOINT_VOCAB_SIZE, JOINT_VOCAB_SIZE),
             (KEY_JOINT_BLANK_ID, JOINT_BLANK_ID),
             (KEY_JOINT_PAD_ID, JOINT_PAD_ID),
+            (KEY_JOINT_EOS_ID, JOINT_EOS_ID),
             (KEY_JOINT_MAX_SYMBOLS_PER_STEP, JOINT_MAX_SYMBOLS_PER_STEP),
             (KEY_N_DURATIONS, DURATIONS.len() as u32),
         ] {
@@ -421,6 +493,37 @@ mod tests {
             attr.contains("NVIDIA") && attr.contains("CC-BY 4.0"),
             "attribution names NVIDIA + CC-BY 4.0: {attr}"
         );
+    }
+
+    #[test]
+    fn tokenizer_is_validated_and_embedded_byte_exact() {
+        let (builder, _) =
+            convert_with_tokenizer(minimal_safetensors_one_f32(), Some(MINI_TOKENIZER))
+                .expect("convert with tokenizer");
+        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
+        let Some(GgufMetadataValue::Array(array)) = file.get(KEY_TOKENIZER_JSON) else {
+            panic!("embedded tokenizer u8 array");
+        };
+        let actual = array
+            .values
+            .iter()
+            .map(|value| match value {
+                GgufMetadataValue::U8(byte) => *byte,
+                other => panic!("tokenizer element must be u8, found {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, MINI_TOKENIZER);
+    }
+
+    #[test]
+    fn tokenizer_rejects_non_bpe_model() {
+        let tokenizer = std::str::from_utf8(MINI_TOKENIZER)
+            .expect("fixture is UTF-8")
+            .replacen("\"BPE\"", "\"Unigram\"", 1);
+        let error =
+            convert_with_tokenizer(minimal_safetensors_one_f32(), Some(tokenizer.as_bytes()))
+                .unwrap_err();
+        assert!(error.to_string().contains("model.type=BPE"));
     }
 
     #[test]

@@ -21,8 +21,9 @@ use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
     convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
     convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
-    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_piper_plus_file,
-    convert_sbv2_file, convert_utmos_file,
+    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file,
+    convert_parakeet_file_with_tokenizer, convert_piper_plus_file, convert_sbv2_file,
+    convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -36,6 +37,7 @@ USAGE:
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
     vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
+    vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -179,10 +181,18 @@ fn main() -> ExitCode {
         model,
         input,
         config,
+        tokenizer,
         output,
         quant,
         license,
     } = parsed;
+
+    if model != ModelKind::Parakeet && tokenizer.is_some() {
+        eprintln!(
+            "error: --tokenizer is only supported for --model parakeet-tdt in the standalone converter\n\n{USAGE}"
+        );
+        return ExitCode::from(2);
+    }
 
     let result = match model {
         ModelKind::PiperPlus => {
@@ -294,6 +304,25 @@ fn main() -> ExitCode {
                     "strict official Moonshine manifest validated; tokenizer.json embedded".into(),
                 ],
             })
+        }
+        ModelKind::Parakeet => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for parakeet-tdt\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            if config.is_some() {
+                eprintln!(
+                    "error: --model parakeet-tdt uses --tokenizer <tokenizer.json>, not --config\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-tdt requires --tokenizer <tokenizer.json>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_parakeet_file_with_tokenizer(&input, tokenizer, &output)
         }
         ModelKind::CosyVoice2 => {
             if quant.is_some() {
@@ -431,6 +460,7 @@ struct Parsed {
     model: ModelKind,
     input: PathBuf,
     config: Option<PathBuf>,
+    tokenizer: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
     license: Option<String>,
@@ -450,6 +480,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut tokenizer: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut license: Option<String> = None;
@@ -479,6 +510,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--tokenizer" => {
+                tokenizer = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--tokenizer requires a value")?,
                 ));
                 i += 2;
             }
@@ -512,6 +549,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         model: model.ok_or("--model is required")?,
         input: input.ok_or("--input is required")?,
         config,
+        tokenizer,
         output: output.ok_or("--output is required")?,
         quant,
         license,
@@ -3339,6 +3377,24 @@ mod tests {
         .expect("valid piper args");
         assert_eq!(parsed.model, ModelKind::PiperPlus);
         assert_eq!(parsed.config, Some(PathBuf::from("c.json")));
+    }
+
+    #[test]
+    fn parses_parakeet_tokenizer_sidecar() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "parakeet-tdt",
+            "--input",
+            "model.safetensors",
+            "--tokenizer",
+            "tokenizer.json",
+            "--output",
+            "model.gguf",
+        ]))
+        .expect("valid Parakeet args");
+        assert_eq!(parsed.model, ModelKind::Parakeet);
+        assert_eq!(parsed.tokenizer, Some(PathBuf::from("tokenizer.json")));
+        assert_eq!(parsed.config, None);
     }
 
     /// Campaign-1 P3 #11 (campaign-2 cli-enablers Fix B): every kind

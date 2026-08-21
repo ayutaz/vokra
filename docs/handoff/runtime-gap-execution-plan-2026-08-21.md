@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 63 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **63** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 62 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **62** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -399,12 +399,26 @@ evidence, negative shape/key tests, and an independent numerical consumer.
    argmax values matched. The fixed gates are `max_abs <= 1.2e-3`,
    `mean_abs <= 2e-4`, and exact argmax.
 
-   This moves the row to `LoudPartialForward`, not completion. The remaining
-   path is the exact 128-bin log-mel front end, three-stage depthwise-separable
-   Conv2D subsampler, relative-position FastConformer attention, eval
-   BatchNorm convolution modules, recurrent TDT decode state, and
-   SentencePiece detokenization. The generic stacking/RoPE Conformer scaffold
-   is not numerically equivalent and is not substituted.
+   The former `LoudPartialForward` row closed on 2026-08-22. Conversion now
+   requires and embeds the official byte-exact BPE + Metaspace
+   `tokenizer.json`, stamps the generation EOS id, and emits a strict
+   699-tensor / 40-metadata-key GGUF. The final VAST artifact was
+   2,509,444,768 bytes with SHA-256
+   `8ee4b0a9fcc070e1103384cd1db834ad6afc353d49d06c40055871bf09359400`;
+   it was not uploaded or published.
+
+   The native CPU forward implements the released 128-bin log-mel frontend,
+   three-stage depthwise-separable Conv2D subsampler, 24 relative-position
+   FastConformer blocks, eval BatchNorm convolution modules, recurrent
+   two-layer LSTM prediction state, duration-aware greedy TDT decode, EOS
+   termination, and tokenizer decode. Against Transformers 5.15.0 at the
+   pinned upstream revision, a deterministic 16,000-sample PCM fixture
+   produced 13 encoder frames. Across the 13x1024 encoder tensor,
+   `max_abs=1.012161374e-5` and `mean_abs=1.245580734e-6`; fixed gates are
+   `2.5e-5` and `3e-6`. Native emitted ids matched exactly (`[1922]`) and the
+   official BPE + Metaspace decode was `Oh`. The CLI now routes
+   `parakeet-tdt` through the ordinary ASR task on CPU and rejects unsupported
+   backends without fallback.
 4. The remaining TTS loader slice closed on 2026-08-22. Eight redistributable
    official GGUFs were mmap-bound and exercised on VAST instance `48305436`;
    every binder pins the complete sorted tensor name/shape manifest rather
@@ -495,14 +509,14 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 63 partial forwards
+## Wave 4 — 62 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
 
 | Family | Count | Rows |
 |---|---:|---|
-| ASR / speech transcription | 13 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
+| ASR / speech transcription | 12 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
 | TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
 | Enhancement / separation / AEC | 8 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `sepformer`, `storm` |

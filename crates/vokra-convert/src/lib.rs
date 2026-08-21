@@ -14242,13 +14242,10 @@ pub fn convert_kyutai_stt_file(
 ///
 /// This is the named entry point that mirrors `convert_kyutai_stt_file`
 /// / `convert_dia_file` / `convert_zonos_file`. It is functionally
-/// identical to `convert_file(ModelKind::Parakeet, input, output)` —
-/// Parakeet has no side-car config or tokenizer to embed at this
-/// scaffold stage (every hparam is transcribed as constants in
-/// `models::parakeet`; the SentencePiece tokenizer follows in a
-/// follow-up wave via the `--config` side-car pattern) — but the named
-/// entry keeps the `convert_*_file` naming symmetry with the other ASR
-/// / TTS models.
+/// identical to `convert_file(ModelKind::Parakeet, input, output)` and keeps
+/// the historical tokenizer-free artifact path available for decoder/head
+/// parity. An executable text-ASR GGUF should use
+/// [`convert_parakeet_file_with_tokenizer`] instead.
 ///
 /// The upstream Parakeet release ships raw safetensors (F32 per
 /// `config.json` `dtype: "float32"`); BF16-converted variants currently
@@ -14258,6 +14255,40 @@ pub fn convert_kyutai_stt_file(
 /// activates so a downstream must show the NVIDIA attribution.
 pub fn convert_parakeet_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Parakeet, input, output)
+}
+
+/// Converts Parakeet-TDT and embeds the official Hugging Face BPE + Metaspace
+/// `tokenizer.json` needed to render TDT emissions as text.
+pub fn convert_parakeet_file_with_tokenizer(
+    input: &Path,
+    tokenizer: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let tokenizer_bytes = std::fs::read(tokenizer)?;
+    let (builder, report) =
+        models::parakeet::convert_with_tokenizer(bytes, Some(&tokenizer_bytes))?;
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+    let mut notes = vec![format!(
+        "parakeet-tdt: {} float weights written verbatim, {} non-float skipped; official BPE+Metaspace tokenizer embedded",
+        report.written, report.skipped_non_float,
+    )];
+    notes.extend(
+        report
+            .notes
+            .iter()
+            .map(|note| format!("parakeet-tdt warning: {note}")),
+    );
+    Ok(ConvertSummary {
+        model: ModelKind::Parakeet,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
 }
 
 /// Convert an NVIDIA **Parakeet-CTC-1.1B** safetensors checkpoint into a

@@ -19,9 +19,9 @@ use vokra_convert::{
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
     convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_openwakeword_op_file_with_config,
-    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
-    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
-    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_parakeet_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
+    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
@@ -43,6 +43,8 @@ USAGE:
     vokra-cli convert --model voxcpm2 --input <complete.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model moonshine-<tiny|base> --input <model.safetensors> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model parakeet-tdt --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
@@ -652,11 +654,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::VoxCpm2
             | ModelKind::MoonshineTiny
             | ModelKind::MoonshineBase
+            | ModelKind::Parakeet
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -843,6 +846,25 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 // `--quantize` was rejected above).
                 (None, None, None) => convert_file(model, &p.input, &p.output),
             }
+        }
+        ModelKind::Parakeet => {
+            if p.quant.is_some() {
+                return Err("--quantize is not supported for --model parakeet-tdt".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for --model parakeet-tdt; its audited topology is fixed and text decoding uses --tokenizer <tokenizer.json>"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model parakeet-tdt requires --tokenizer <tokenizer.json> for executable text ASR"
+                    .to_owned()
+            })?;
+            convert_parakeet_file_with_tokenizer(&p.input, tokenizer, &p.output)
         }
         ModelKind::CosyVoice2 => {
             // Quantization surface is whisper-only; reject rather than
@@ -2125,6 +2147,37 @@ mod tests {
         ]))
         .expect("valid");
         assert_eq!(p.tokenizer, None);
+    }
+
+    #[test]
+    fn parses_parakeet_tokenizer_side_car() {
+        let p = parse_args(&args(&[
+            "--model",
+            "parakeet-tdt",
+            "--input",
+            "model.safetensors",
+            "--tokenizer",
+            "tokenizer.json",
+            "--output",
+            "parakeet.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Parakeet);
+        assert_eq!(p.tokenizer, Some(PathBuf::from("tokenizer.json")));
+    }
+
+    #[test]
+    fn parakeet_requires_tokenizer_before_reading_input() {
+        let error = main(&args(&[
+            "--model",
+            "parakeet-tdt",
+            "--input",
+            "missing.safetensors",
+            "--output",
+            "unused.gguf",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("requires --tokenizer"));
     }
 
     #[test]

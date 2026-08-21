@@ -17,6 +17,7 @@ use vokra_models::csm::{CsmEngine, EchoPath, FixtureByteTokenizer};
 use vokra_models::distil_whisper::DistilWhisperAsr;
 use vokra_models::kotoba_whisper::KotobaWhisperAsr;
 use vokra_models::moonshine::Moonshine;
+use vokra_models::parakeet::ParakeetAsr;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
@@ -390,6 +391,8 @@ const ARCH_DISTIL_WHISPER: &str = "distil-whisper";
 const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
 /// Moonshine Tiny/Base raw-waveform encoder-decoder ASR.
 const ARCH_MOONSHINE: &str = "moonshine";
+/// NVIDIA Parakeet-TDT-0.6B-v3 FastConformer + TDT ASR.
+const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -521,6 +524,27 @@ pub(crate) fn load_session_with_backend_and_mimi(
             let asr = Moonshine::from_gguf(session.gguf())
                 .map_err(|error| error.to_string())?
                 .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_PARAKEET_TDT => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_PARAKEET_TDT}`)"
+                ));
+            }
+            if backend != BackendKind::Cpu {
+                return Err(format!(
+                    "Parakeet-TDT currently implements the exact FastConformer/TDT forward on CPU only; backend {backend:?} is unsupported (no silent CPU fallback)"
+                ));
+            }
+            let asr = ParakeetAsr::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+            if !asr.has_tokenizer() {
+                return Err(
+                    "Parakeet-TDT GGUF has no embedded official tokenizer.json; reconvert with `vokra-cli convert --model parakeet-tdt --tokenizer tokenizer.json`"
+                        .to_owned(),
+                );
+            }
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_SILERO_VAD => {
@@ -1121,12 +1145,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| {
             vokra_models::parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf(g).map(|_| ())
         }),
-    },
-    BoundArch {
-        arch: "parakeet-tdt",
-        module: "vokra_models::parakeet",
-        entry: "ParakeetAsr::from_gguf → ParakeetAsr::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::parakeet::ParakeetAsr::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "sensevoicesmall",
@@ -2356,10 +2374,15 @@ mod tests {
     /// downstream symptom.
     #[test]
     fn bound_arch_registry_excludes_routed_asr_forwards() {
-        for arch in [ARCH_DISTIL_WHISPER, ARCH_KOTOBA_WHISPER, ARCH_MOONSHINE] {
+        for arch in [
+            ARCH_DISTIL_WHISPER,
+            ARCH_KOTOBA_WHISPER,
+            ARCH_MOONSHINE,
+            ARCH_PARAKEET_TDT,
+        ] {
             assert!(
                 BOUND_ARCHES.iter().all(|b| b.arch != arch),
-                "`{arch}` has a real forward (its binder delegates to WhisperAsr) and is \
+                "`{arch}` has a real ASR forward and is \
                  routed to ModelTask::Asr — a BOUND_ARCHES row for it is both unreachable \
                  and untrue"
             );
@@ -2543,6 +2566,7 @@ mod tests {
             ARCH_DISTIL_WHISPER,
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
+            ARCH_PARAKEET_TDT,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,
             ARCH_CSM,

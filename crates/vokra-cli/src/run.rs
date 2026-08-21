@@ -28,6 +28,7 @@ USAGE:
                   [--no-repeat-ngram <N>] [--fixture-tokenizer] [--interrupt-after <N>]
                   [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
+    vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
@@ -81,9 +82,10 @@ OPTIONS:
                                 ops [default cpu]. Mirrors `bench --backend`:
                                 honored by the whisper / voxtral ASR, kokoro TTS
                                 and speaker (CAM++) paths. VAD, piper-plus TTS
-                                and the CSM / Moshi S2S engines run on the CPU
-                                only, so a non-CPU --backend for them is a loud
-                                error rather than a silent CPU run (FR-EX-08).
+                                Parakeet-TDT ASR, and the CSM / Moshi S2S
+                                engines run on the CPU only, so a non-CPU
+                                --backend for them is a loud error rather than
+                                a silent CPU run (FR-EX-08).
                                 For the honoring paths, metal/cuda need the CLI
                                 built with that feature — an unavailable backend
                                 fails loudly at inference, never silently on CPU.

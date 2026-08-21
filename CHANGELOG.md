@@ -81,6 +81,12 @@ answer.
   FireRed-AED, Moonshine, SenseVoiceSmall; Chatterbox-Multilingual (+ Turbo,
   Nano), StyleTTS 2, Dia-1.6B, VibeVoice-1.5B, Zonos-v0.1, Irodori-TTS,
   ESPnet-family Japanese VITS, ChatTTS, Voila, LLaMA-Omni2.
+- **Parakeet-TDT-0.6B-v3 native ASR**: executable conversions embed the
+  official BPE + Metaspace tokenizer and bind all 699 inference tensors. The
+  CPU runtime now runs raw 16 kHz PCM through the exact log-mel,
+  depthwise-separable subsampler, 24-layer relative-position FastConformer,
+  recurrent TDT decoder, EOS handling, and text decode. Unsupported backends
+  fail explicitly; no CPU fallback or model artifact publication is implied.
 - **Style-Bert-VITS2 v2** completed end to end, including the per-language
   conditioning encoders (DeBERTa v2 / v3, Chinese-RoBERTa-wwm-ext).
 - **Text processing**: CT-Transformer punctuation restoration and
