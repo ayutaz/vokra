@@ -17,10 +17,10 @@ use vokra_convert::{
     convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
     convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
-    convert_llama_omni2_file_with_config, convert_openwakeword_op_file_with_config,
-    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
-    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
-    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_llama_omni2_file_with_config, convert_nanocodec_file,
+    convert_openwakeword_op_file_with_config, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
+    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
@@ -44,6 +44,7 @@ USAGE:
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
                       [--tokenizer <tekken-vocab.bin>] --output <out.gguf>
@@ -74,7 +75,7 @@ USAGE:
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
-                              campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
+                              campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
                               distil-whisper | kotoba-whisper |
@@ -499,7 +500,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
-                         campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
+                         campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | \
@@ -873,6 +874,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 None => {
                     return Err("--model dac requires --config <config.json> (from \
                                 tools/parity/dac_prepare_checkpoint.py)"
+                        .to_owned());
+                }
+            }
+        }
+        ModelKind::NanoCodec => {
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_nanocodec_file(&p.input, config, &p.output),
+                None => {
+                    return Err("--model nanocodec requires --config <config.json> (from \
+                         tools/parity/nanocodec/prepare_checkpoint.py)"
                         .to_owned());
                 }
             }
@@ -1768,6 +1785,7 @@ mod tests {
             ("cosyvoice3", ModelKind::CosyVoice3),
             ("voxtral", ModelKind::Voxtral),
             ("mimi", ModelKind::Mimi),
+            ("nanocodec", ModelKind::NanoCodec),
             ("dac", ModelKind::Dac),
             ("csm", ModelKind::Csm),
             ("moshi", ModelKind::Moshi),

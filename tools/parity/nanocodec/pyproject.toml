@@ -1,10 +1,12 @@
 [project]
 name = "vokra-nanocodec-parity"
 version = "0.1.0"
-description = "Pinned offline NeMo oracle for NanoCodec Group-FSQ fixtures; never shipped."
+description = "Pinned official-NeMo preparation and Group-FSQ parity tools for NanoCodec"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "nemo_toolkit[tts] @ git+https://github.com/NVIDIA-NeMo/Speech.git@4fcff72febec9395fdbd4bfa0747bfda2ecd3cef",
+    # The pinned NeMo TTS package imports PEFT while omitting it from its
+    # distribution metadata. Keep the import closure explicit and locked.
     "peft==0.20.0",
 ]
 

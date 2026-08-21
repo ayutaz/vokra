@@ -287,6 +287,21 @@ gate cover `process_into`.
 | `vokra-ops::resample` | `StreamingResampler::process_into` | Added | `pub fn process_into(&mut self, input: &[f32], out: &mut [f32]) -> Result<usize>` | Processes chunks without allocation and uses empty input as an explicit final flush. | no | (TBD) |
 | `vokra-ops::resample` | `StreamingResampler::reset` | Added | `pub fn reset(&mut self)` | Reuses the existing allocation for a new stream. | no | (TBD) |
 
+### 2026-08-22 — 1.0.0-rc.1-dev (NanoCodec decoder converter — additive GGUF schema)
+
+Additive on-disk GGUF metadata only. The C ABI, `vokra-core` public surface,
+and `vokra-ops` public surface are unchanged. The new converter writes the
+checkpoint-derived NanoCodec decoder contract under a dedicated prefix; it
+does not reuse or change the existing `vokra.wavtokenizer.*` or
+`vokra.xcodec2.*` FSQ schemas.
+
+| Chunk prefix | Keys | Kind | Status | Rationale | Introducing issue |
+| --- | --- | --- | --- | --- | --- |
+| `vokra.nanocodec.*` | `n_codebooks`, `embed_dim`, `sample_rate`, `frame_hop`, `generator_hop`, `base_channels`, `input_kernel_size`, `output_kernel_size`; `levels_per_group`, `upsample_rates`, `resblock_kernel_sizes`, `resblock_dilations`; `activation`, `output_activation`, `pad_mode`, `nemo_speech_commit`, `nemo_source_url`; `grouped_upsample_expanded` | `u32`; `u32-array`; `string`; `bool` | persisted | Complete checkpoint-derived decoder topology plus the verified official NeMo source identity for the pinned NanoCodec transform. `frame_hop` and `generator_hop` remain separate provenance fields, and conversion rejects disagreement; the published 1.89 kbps checkpoint records 1024 for both. | #47 (2026-08-22) |
+
+The converter also reuses the existing `vokra.provenance.*` namespace for the
+immutable source revision and checkpoint SHA-256. Those are not new prefixes.
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 
 **Behaviour change** plus additive Rust surface. The C ABI
