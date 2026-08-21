@@ -207,6 +207,10 @@ pub(crate) enum ModelTask {
     /// Microsoft SpeechT5 HiFi-GAN mel-to-waveform vocoder. The concrete
     /// model is bound from the session GGUF in the `run` arm.
     VocoderHifiGan,
+    /// Charactr Vocos feature-to-waveform vocoder. The mel variant consumes
+    /// 100-channel features; the Encodec variant consumes 128-channel
+    /// features plus an explicit bandwidth condition.
+    VocoderVocos,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -333,6 +337,8 @@ const ARCH_BIGVGAN: &str = "bigvgan";
 const ARCH_SPEECHT5_HIFIGAN: &str = "speecht5_hifigan";
 /// SpeechBrain LibriTTS 22.05 kHz HiFi-GAN vocoder.
 const ARCH_HIFIGAN_VOCODER: &str = "hifigan_vocoder";
+/// Charactr Fourier-space Vocos vocoder.
+const ARCH_VOCOS: &str = "vocos";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -774,6 +780,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             Ok((session, ModelTask::VocoderHifiGan))
+        }
+        ARCH_VOCOS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VOCOS}`"
+                ));
+            }
+            Ok((session, ModelTask::VocoderVocos))
         }
         ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
             // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
@@ -1546,19 +1560,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::squim::Squim::from_gguf(g).map(|_| ())),
     },
     // --- Vocoders / codecs -----------------------------------------------
-    // BigVGAN left this registry on 2026-08-21 after its strict loader,
-    // alias-free forward parity, and explicit mel-file CLI contract landed.
-    // Vocos still fails at load time and additionally has a ConvNeXt-V2
-    // forward blocker after that loader gap is closed.
-    BoundArch {
-        arch: "vocos",
-        module: "vokra_models::vocos",
-        entry: "Vocos::new(VocosVariant, VocosConfig, u32) → Vocos::decode (a SECOND \
-                blocker, unlike its bigvgan / hifigan siblings: the ConvNeXt V2 backbone \
-                is absent from vokra-ops, so decode names that gap instead of returning PCM)",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
+    // BigVGAN and Vocos left this registry on 2026-08-21 after strict
+    // loaders, real forwards, parity, and explicit feature-file CLI
+    // contracts landed.
     BoundArch {
         arch: "snac",
         module: "vokra_models::snac",
@@ -2450,129 +2454,15 @@ mod tests {
         );
     }
 
-    // ---- Wave K/L (2026-08-15) — remaining vocoder loader gap ------------
-    //
-    // Wave L folded `vocos` in as the fourth vocoder gap. Wave K had left it
-    // on `LoudPartialForward` because its `decode` is a genuine loud-partial,
-    // which named the SECOND of its two blockers — its `from_gguf` is as dead
-    // as the then-remaining HiFi-GAN variant. Both HiFi-GAN variants now have
-    // strict loaders and routes; only Vocos remains in this block.
-
-    /// The `run` diagnostic for `vocos` names the blocker that actually fires
-    /// FIRST — nothing binds — rather than the forward gap behind it.
-    ///
-    /// Wave K left this row on `LoudPartialForward` because `Vocos::decode`
-    /// really is a loud-partial. It is, but it is the SECOND blocker: a user
-    /// handed a `vocos` GGUF never reaches `decode`, because `Vocos::from_gguf`
-    /// refuses first. Promising a forward-blocker diagnostic and delivering a
-    /// load failure is the defect this pins shut.
     #[test]
-    fn load_session_binds_vocos_arch_as_unwired_loader_not_loud_partial_forward() {
-        let err = assert_bound_arch("vocos", "vocos-arch", "vokra_models::vocos", "Vocos::new");
+    fn load_session_routes_vocos_to_vocoder_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_VOCOS, "vocos-routed", |path| {
+            load_session(path).expect("Vocos session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::VocoderVocos);
         assert!(
-            err.contains("no GGUF loader yet"),
-            "vocos's first blocker is that nothing binds from a converted artifact — its \
-             `from_gguf` has no `Ok(` return on any path: {err}"
-        );
-        assert!(
-            !err.contains("runtime forward is a loud-partial"),
-            "leading with the forward gap asserts a working load this build cannot perform; \
-             the gap is real but second, and belongs in `entry`: {err}"
-        );
-        assert!(
-            !err.contains("Vocos::from_gguf"),
-            "the entry must not send a caller at a constructor that always errors: {err}"
-        );
-        assert!(
-            err.contains("ConvNeXt V2"),
-            "demoting the forward gap must not DELETE it — vocos is the one row here whose \
-             `decode` also refuses, and a caller past the constructor needs to know: {err}"
-        );
-    }
-
-    /// The claim the corrected row rests on, checked against the binder
-    /// itself. Stamping a valid variant walks past both dispatch gates to the
-    /// deepest reachable point (the deferred tensor walk), so this pins the
-    /// real blocker rather than an early metadata refusal that would still
-    /// fire under a real loader — the `bigvgan` precedent above.
-    ///
-    /// If a real loader lands, this test fails, which is the point: the row's
-    /// `reason` and `entry` both assume nothing binds.
-    #[test]
-    fn vocos_from_gguf_still_binds_nothing_past_variant_dispatch() {
-        let mut b = vokra_core::gguf::GgufBuilder::new();
-        b.add_string("vokra.model.arch", "vocos");
-        b.add_string(
-            vokra_models::vocos::KEY_VOCOS_VARIANT,
-            vokra_models::vocos::VARIANT_TAG_MEL24KHZ,
-        );
-        let bytes = b.to_bytes().expect("serialize gguf");
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "vokra-cli-vocos-variant-{}.gguf",
-            std::process::id()
-        ));
-        std::fs::write(&path, &bytes).unwrap();
-        let gguf = GgufFile::open(&path).expect("vocos variant fixture parses");
-        // let-else for symmetry with the sibling probes above. Here it is a
-        // style match rather than a necessity: `BigVGan` and `HiFiGan` are
-        // `!Debug`, whereas `Vocos` derives it.
-        let Err(err) = vokra_models::vocos::Vocos::from_gguf(&gguf) else {
-            let _ = std::fs::remove_file(&path);
-            panic!(
-                "Vocos::from_gguf bound a metadata-only GGUF past its variant gate — if the \
-                 real tensor walk landed, revisit the BOUND_ARCHES row: its reason \
-                 (NoGgufLoader) and entry (Vocos::new) both assume nothing binds"
-            );
-        };
-        let _ = std::fs::remove_file(&path);
-        let msg = err.to_string();
-        assert!(
-            msg.contains("real-weight loader is deferred"),
-            "the refusal must still name the deferred tensor walk: {msg}"
-        );
-    }
-
-    /// The row's own data, asserted directly so a regression reports its cause
-    /// rather than only the downstream message.
-    ///
-    /// Kept separate from
-    /// `bound_arch_registry_vocoder_rows_do_not_promise_a_gguf_load` above
-    /// because vocos carries one assertion its three siblings must NOT: its
-    /// `entry` has to record the second blocker, since its `decode` — unlike
-    /// theirs — does not work either.
-    #[test]
-    fn bound_arch_registry_vocos_row_does_not_promise_a_gguf_load() {
-        let row = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "vocos")
-            .expect("vocos has a vokra-models binder and must carry a row");
-        assert_eq!(
-            row.reason,
-            BoundReason::NoGgufLoader,
-            "`Vocos::from_gguf` has no `Ok(` return on any path, so nothing binds from a \
-             converted artifact — that fires BEFORE the (also real) forward gap, and \
-             `LoudPartialForward` states the second blocker as if it were the first"
-        );
-        assert!(
-            row.probe.is_none(),
-            "a row claiming nothing binds must not carry a probe that demonstrates a binder"
-        );
-        assert!(
-            !row.entry.contains("from_gguf"),
-            "`entry` must name a reachable constructor; `Vocos::from_gguf` always errors: {}",
-            row.entry
-        );
-        assert!(
-            row.entry.contains("Vocos::new"),
-            "the module names `Vocos::new` as the reachable constructor: {}",
-            row.entry
-        );
-        assert!(
-            row.entry.contains("ConvNeXt V2"),
-            "vocos is the only row in this family whose `decode` ALSO refuses; demoting that \
-             gap out of `reason` must move it into `entry`, not drop it: {}",
-            row.entry
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_VOCOS),
+            "Vocos has strict loaders for both variants, a real forward, and a CLI route"
         );
     }
 
@@ -2664,6 +2554,8 @@ mod tests {
             ARCH_MIMI,
             ARCH_BIGVGAN,
             ARCH_SPEECHT5_HIFIGAN,
+            ARCH_HIFIGAN_VOCODER,
+            ARCH_VOCOS,
             ARCH_CHARSIU,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,

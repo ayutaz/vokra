@@ -701,6 +701,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::VocoderVocos => {
+            return Err(
+                "bench: arch `vocos` consumes feature frames rather than timed PCM; no feature-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <vocos.gguf> --input <features.f32> [--bandwidth-id <0..3>] [--output <out.wav>]`"
+                    .to_owned(),
+            );
+        }
         ModelTask::Asr => {
             let path = args
                 .input

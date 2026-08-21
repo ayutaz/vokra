@@ -198,6 +198,12 @@ pub mod mfcc;
 // reference audio) — API surface only; adapter wiring per-engine is
 // follow-up.
 pub mod voice_ref;
+// ---- Vocos Fourier vocoder ------------------------------------------------
+// Native ConvNeXt-1D backbone + magnitude/phase iSTFT head. Runtime
+// function, not an OpKind variant, matching the hifigan/bigvgan generator
+// posture.
+pub mod vocos;
+// ---------------------------------------------------------------------------
 // ---- SoTA plan KWS binder (openwakeword classifier MLP, 2026-08-05) -----
 // Per-wake-word `Linear → ReLU → Linear → Sigmoid` classifier over a shared
 // 96-d speech embedding. First consumer is `vokra-models::kws::openwakeword`
@@ -511,6 +517,9 @@ pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
 pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+pub use vocos::{
+    VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode,
+};
 // ---- SoTA plan KWS binder openwakeword re-exports (2026-08-05) ----------
 pub use openwakeword::{OpenwakewordClassifierWeights, openwakeword_classifier_forward};
 // -------------------------------------------------------------------------

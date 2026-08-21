@@ -49,6 +49,7 @@ USAGE:
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
+    vokra-cli run --model <vocos.gguf> --input <features.f32> [--bandwidth-id <0..3>] [--output <out.wav>]
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
@@ -64,10 +65,10 @@ OPTIONS:
                                 signal and must be paired with --far-end.
                                 For Mimi encode it is a mono WAV; for Mimi
                                 decode it is a `VKRMCODE` v1 code container.
-                                For BigVGAN and both HiFi-GAN variants it is raw
-                                little-endian f32 mel data in channel-major
-                                `[n_mels, frames]` order; frames are derived
-                                exactly from length.
+                                For BigVGAN, both HiFi-GAN variants, and Vocos
+                                it is raw little-endian f32 feature data in
+                                channel-major `[channels, frames]` order;
+                                frames are derived exactly from length.
     --far-end <path>            nkf_aec only: sample-aligned far-end/reference
                                 mono WAV. It must have exactly the same sample
                                 rate and sample count as --input; no trim,
@@ -130,6 +131,8 @@ OPTIONS:
                                 The v1 container pins time-major `[frame,cb]`
                                 order, u32 little-endian codes, mono rate,
                                 frame rate, topology, and codebook SHA-256.
+    --bandwidth-id <0..3>       vocos-encodec-24khz only: required AdaLayerNorm
+                                condition. Maps to 1.5, 3.0, 6.0, or 12.0 kbps.
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Honored for `voxtral` (n-best beam) and, with
                                 --word-timestamps, for `whisper`. An arch whose
@@ -222,6 +225,8 @@ struct RunArgs {
     /// Standalone Mimi direction. Required on the `mimi` arch and rejected
     /// everywhere else.
     codec_mode: Option<CodecMode>,
+    /// Vocos Encodec AdaLayerNorm condition (`0..4`).
+    bandwidth_id: Option<usize>,
     /// Backend the model's hot ops run on (mirrors `bench --backend`).
     /// Honored by whisper / voxtral ASR, kokoro TTS, speaker (CAM++), and the
     /// standalone Mimi codec, whose dispatch binds `.with_backend(...)`. The
@@ -321,6 +326,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut output: Option<String> = None;
     let mut tokens: Option<String> = None;
     let mut codec_mode: Option<CodecMode> = None;
+    let mut bandwidth_id: Option<usize> = None;
     let mut backend = vokra_core::BackendKind::Cpu;
     let mut compare: Option<String> = None;
     let mut far_end: Option<String> = None;
@@ -375,6 +381,19 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     .get(i + 1)
                     .ok_or("--codec-mode requires encode or decode")?;
                 codec_mode = Some(CodecMode::parse(value)?);
+                i += 2;
+            }
+            "--bandwidth-id" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--bandwidth-id requires an integer in 0..3")?;
+                let parsed: usize = value
+                    .parse()
+                    .map_err(|error| format!("--bandwidth-id must be an integer: {error}"))?;
+                if parsed >= 4 {
+                    return Err(format!("--bandwidth-id must be in 0..3 (got {parsed})"));
+                }
+                bandwidth_id = Some(parsed);
                 i += 2;
             }
             "--backend" => {
@@ -530,6 +549,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         output,
         tokens,
         codec_mode,
+        bandwidth_id,
         backend,
         compare,
         far_end,
@@ -601,6 +621,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
         ModelTask::VocoderBigVgan => Some("BigVGAN neural vocoder"),
         ModelTask::VocoderHifiGan => Some("HiFi-GAN neural vocoder"),
+        ModelTask::VocoderVocos => Some("Vocos neural vocoder"),
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
@@ -666,6 +687,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             "run: --codec-mode is only supported for the standalone mimi arch — use \
              `--codec-mode encode|decode` with its portable code container"
                 .to_owned(),
+        );
+    }
+    if a.bandwidth_id.is_some() && task != ModelTask::VocoderVocos {
+        return Err(
+            "run: --bandwidth-id is only supported for the vocos encodec_24khz variant".to_owned(),
         );
     }
     // `--word-timestamps` is a Whisper-only surface (cross-attention DTW,
@@ -895,6 +921,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::VocoderHifiGan => {
             run_hifigan(&session, &a)?;
+        }
+        ModelTask::VocoderVocos => {
+            run_vocos(&session, &a)?;
         }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
@@ -1766,7 +1795,7 @@ fn run_bigvgan(session: &Session, a: &RunArgs) -> Result<(), String> {
     let n_mels = model.config().in_channels as usize;
     let bytes = std::fs::read(input_path)
         .map_err(|error| format!("run (bigvgan): --input {input_path}: {error}"))?;
-    let (mel, frames) = parse_vocoder_mel_bytes(&bytes, n_mels, input_path, "bigvgan")?;
+    let (mel, frames) = parse_vocoder_feature_bytes(&bytes, n_mels, input_path, "bigvgan")?;
     let pcm = model
         .decode(&mel, frames)
         .map_err(|error| error.to_string())?;
@@ -1799,7 +1828,7 @@ fn run_hifigan(session: &Session, a: &RunArgs) -> Result<(), String> {
     let n_mels = model.attrs().n_mels;
     let bytes = std::fs::read(input_path)
         .map_err(|error| format!("run (hifigan): --input {input_path}: {error}"))?;
-    let (mel, frames) = parse_vocoder_mel_bytes(&bytes, n_mels, input_path, TASK)?;
+    let (mel, frames) = parse_vocoder_feature_bytes(&bytes, n_mels, input_path, TASK)?;
     let pcm = model
         .decode(&mel, frames)
         .map_err(|error| error.to_string())?;
@@ -1811,7 +1840,48 @@ fn run_hifigan(session: &Session, a: &RunArgs) -> Result<(), String> {
     emit_audio(variant, &pcm, model.sample_rate(), a.output.as_deref())
 }
 
-fn parse_vocoder_mel_bytes(
+/// Vocos' explicit raw-feature contract. Encodec features are assumed to have
+/// already been produced by the matching Encodec quantizer; this runtime does
+/// not bundle or silently substitute that neural frontend.
+fn run_vocos(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() || a.codec_mode.is_some() {
+        return Err(
+            "run (vocos): --text/--tokens/--codec-mode are not vocoder inputs; pass raw channel-major features with --input"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (vocos): --input <features.f32> is required")?;
+    let model =
+        vokra_models::vocos::Vocos::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (vocos): --input {input_path}: {error}"))?;
+    let (features, frames) =
+        parse_vocoder_feature_bytes(&bytes, model.config().n_input, input_path, "vocos")?;
+    let pcm = match model.variant() {
+        vokra_models::vocos::VocosVariant::Mel24khz => {
+            if a.bandwidth_id.is_some() {
+                return Err(
+                    "run (vocos): --bandwidth-id is invalid for mel_24khz (plain LayerNorm)"
+                        .to_owned(),
+                );
+            }
+            model.decode(&features, frames)
+        }
+        vokra_models::vocos::VocosVariant::Encodec24khz => {
+            let bandwidth_id = a.bandwidth_id.ok_or(
+                "run (vocos): encodec_24khz requires --bandwidth-id <0..3> (1.5/3.0/6.0/12.0 kbps)",
+            )?;
+            model.decode_with_bandwidth(&features, frames, bandwidth_id)
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    emit_audio("vocos", &pcm, model.sample_rate(), a.output.as_deref())
+}
+
+fn parse_vocoder_feature_bytes(
     bytes: &[u8],
     n_mels: usize,
     input_path: &str,
@@ -1829,8 +1899,8 @@ fn parse_vocoder_mel_bytes(
         .collect();
     if mel.is_empty() || mel.len() % n_mels != 0 {
         return Err(format!(
-            "run ({task}): {input_path} contains {} floats; expected a positive exact multiple of n_mels={n_mels} in channel-major [n_mels, frames] order",
-            mel.len()
+            "run ({task}): {input_path} contains {} floats; expected a positive exact multiple of channels={n_mels} in channel-major [channels, frames] order",
+            mel.len(),
         ));
     }
     if let Some((index, value)) = mel
@@ -3994,6 +4064,10 @@ mod tests {
             cpu_only_engine_label(ModelTask::VocoderHifiGan),
             Some("HiFi-GAN neural vocoder")
         );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VocoderVocos),
+            Some("Vocos neural vocoder")
+        );
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
@@ -4007,26 +4081,27 @@ mod tests {
     }
 
     #[test]
-    fn vocoder_mel_bytes_enforce_shape_and_finite_contract() {
+    fn vocoder_feature_bytes_enforce_shape_and_finite_contract() {
         let bytes: Vec<u8> = [0.25_f32, -0.5, 1.0, 2.0]
             .into_iter()
             .flat_map(f32::to_le_bytes)
             .collect();
-        let (mel, frames) = parse_vocoder_mel_bytes(&bytes, 2, "mel.f32", "test-vocoder").unwrap();
+        let (mel, frames) =
+            parse_vocoder_feature_bytes(&bytes, 2, "mel.f32", "test-vocoder").unwrap();
         assert_eq!(mel, vec![0.25, -0.5, 1.0, 2.0]);
         assert_eq!(frames, 2);
 
         let err =
-            parse_vocoder_mel_bytes(&bytes[..bytes.len() - 1], 2, "short.f32", "test-vocoder")
+            parse_vocoder_feature_bytes(&bytes[..bytes.len() - 1], 2, "short.f32", "test-vocoder")
                 .unwrap_err();
         assert!(err.contains("whole number"), "{err}");
 
         let nan = f32::NAN.to_le_bytes();
-        let err = parse_vocoder_mel_bytes(&nan, 1, "nan.f32", "test-vocoder").unwrap_err();
+        let err = parse_vocoder_feature_bytes(&nan, 1, "nan.f32", "test-vocoder").unwrap_err();
         assert!(err.contains("non-finite"), "{err}");
 
-        let err = parse_vocoder_mel_bytes(&bytes, 3, "shape.f32", "test-vocoder").unwrap_err();
-        assert!(err.contains("exact multiple of n_mels=3"), "{err}");
+        let err = parse_vocoder_feature_bytes(&bytes, 3, "shape.f32", "test-vocoder").unwrap_err();
+        assert!(err.contains("exact multiple of channels=3"), "{err}");
     }
 
     /// (a) `--backend metal` on the silero VAD arch is a loud FR-EX-08 error
