@@ -116,10 +116,9 @@ pub enum BigVGanVariant {
     /// 100-band mel input, 256× total upsample.
     V2_24khz100Band256x,
     /// `nvidia/bigvgan_base_24khz_100band` (D5): v1 base 24 000 Hz
-    /// output, 100-band mel input. Distinct from D4 because the v1
-    /// base predates SnakeBeta + the v2 anti-aliased activation
-    /// wrapper (upstream `bigvgan.py:206-322` picks Snake vs
-    /// SnakeBeta by config).
+    /// output, 100-band mel input. Distinct from D4 by channel and stage
+    /// schedule; the released base config also uses SnakeBeta plus the
+    /// alias-free activation wrapper.
     BaseV1_24khz100Band,
 }
 

@@ -20,7 +20,7 @@ upstream tensor name verbatim (``conv_pre.weight``, ``ups.{i}.0.weight``,
 ``resblocks.{n}.convs1.{k}.weight``, ``resblocks.{n}.convs2.{k}.weight``,
 ``resblocks.{n}.activations.{k}.act.alpha`` (+ ``.beta`` for snakebeta),
 ``resblocks.{n}.activations.{k}.upsample.filter`` /
-``.downsample.filter`` for v2 anti-aliased Activation1d Kaiser buffers,
+``.downsample.lowpass.filter`` for anti-aliased Activation1d Kaiser buffers,
 ``conv_post.weight``, all biases). BF16 stays BF16, F16 stays F16, F32
 stays F32 — no convert-time widening (the Rust side owns dtype
 normalization at load; sibling mirror of ``convert_bigvgan_file``'s BF16

@@ -90,6 +90,7 @@ crates/vokra-backend-vulkan/kernels/precompiled/*.spv -filter -diff -merge
 # diffable and mergeable as the source files they are.
 *.wgsl text eol=lf
 *.comp text eol=lf
+tools/parity/fixtures/*.csv text eol=lf
 
 # Same reason, one level up: every TEXT file under tests/parity/ is either
 # hashed into a manifest or IS the manifest, so a CRLF checkout breaks the
