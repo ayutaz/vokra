@@ -1961,11 +1961,16 @@ mod tests {
     /// removes the file. Shared by the Wave G tests below (the older tests
     /// inline the same steps; they are left byte-identical on purpose).
     fn with_arch_only_gguf<T>(arch: &str, tag: &str, f: impl FnOnce(&str) -> T) -> T {
+        static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut b = vokra_core::gguf::GgufBuilder::new();
         b.add_string("vokra.model.arch", arch);
         let bytes = b.to_bytes().expect("serialize gguf");
         let mut path = std::env::temp_dir();
-        path.push(format!("vokra-cli-{tag}-{}.gguf", std::process::id()));
+        let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        path.push(format!(
+            "vokra-cli-{tag}-{}-{fixture_id}.gguf",
+            std::process::id()
+        ));
         std::fs::write(&path, &bytes).unwrap();
         let out = f(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
