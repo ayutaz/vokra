@@ -170,9 +170,9 @@ pub enum HotOp {
     /// `covered_by_metal` returns `true`; `covered_by_cuda` /
     /// `covered_by_vulkan` / `covered_by_webgpu` return `false`.
     Xcodec2Fsq,
-    /// NVIDIA NanoCodec grouped finite scalar quantizer dequantization
-    /// (`vokra_ops::group_fsq`) — the per-group mixed-radix code-to-latent
-    /// transform introduced by #45. It is deliberately distinct from
+    /// NVIDIA NanoCodec grouped finite scalar quantizer dequantization — the
+    /// per-group mixed-radix code-to-latent transform proposed in #45. It is
+    /// deliberately distinct from
     /// [`HotOp::Xcodec2Fsq`]: NanoCodec partitions the latent channels into
     /// independently configured groups and concatenates their dequantized
     /// values, rather than applying X-Codec 2's single grid and optional
