@@ -1298,7 +1298,7 @@ impl ParakeetAsr {
     pub fn tdt_head_step(&self, encoder_hidden: &[f32], token_id: u32) -> Result<Vec<f32>> {
         let ParakeetWeightStore::Bound(weights) = &self.weights else {
             return Err(VokraError::NotImplemented(
-                "ParakeetAsr::tdt_head_step requires a real GGUF-bound checkpoint".to_owned(),
+                "ParakeetAsr::tdt_head_step requires a real GGUF-bound checkpoint",
             ));
         };
         if encoder_hidden.len() != self.cfg.encoder.d_model {
