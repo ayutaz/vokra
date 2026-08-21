@@ -100,7 +100,7 @@
 //! encoder building block is Linear + RMSNorm + SwiGLU + RoPE + softmax
 //! attention, all covered by the existing kernel inventory.
 //!
-//! # What lands in this Phase 5 slice
+//! # Runtime status
 //!
 //! - [`IrodoriDitConfig`] / [`IrodoriTextEncoderConfig`] /
 //!   [`IrodoriSpeakerEncoderConfig`] / [`IrodoriDurationPredictorConfig`] /
@@ -108,15 +108,19 @@
 //!   from the primary sources. [`IrodoriConfig::validate_for_forward`]
 //!   fails loudly (FR-EX-08) on zeroed axes, non-even `head_dim` (RoPE
 //!   pairs), or malformed FFN inner widths.
-//! - [`IrodoriWeights`] — deterministic
-//!   [`IrodoriWeights::synthesized`] scaffold fixture (zero-initialized;
-//!   only the shape flow is exercised — the real safetensors walk is a
-//!   follow-up wave).
+//! - [`IrodoriCheckpoint`] validates all 30 topology axes plus the exact
+//!   official 637-tensor manifest without eagerly widening the 2.05 GB
+//!   artifact. [`IrodoriCheckpoint::load_text_block`] decodes a selected
+//!   layer lazily and [`irodori_text_block_forward`] runs the official
+//!   non-causal gated MHA + SwiGLU block natively.
+//! - [`IrodoriWeights`] remains a deterministic legacy shape fixture for
+//!   callers exercising the older scaffold API; it is never admitted as a
+//!   real checkpoint.
 //! - [`IrodoriTts`] — engine handle carrying config + weights + an
-//!   optional [`DacCodecGguf`] codec binding. The primary
+//!   optional [`DacCodecGguf`] codec binding. The legacy primary
 //!   [`IrodoriTts::synthesize`] entry point returns
 //!   [`VokraError::NotImplemented`] naming the blocker until real
-//!   weights are bound AND a codec GGUF is injected AND the full
+//!   codec GGUF is injected AND the full
 //!   text-encoder → speaker-encoder → RF-DiT → codec-decode chain is
 //!   wired end-to-end (T29-equivalent follow-up wave — never a silent
 //!   zero-fill, FR-EX-08).
@@ -132,6 +136,9 @@
 use vokra_core::{Result, VokraError};
 
 use crate::codec::DacCodecGguf;
+
+mod bound;
+pub use bound::{IrodoriCheckpoint, IrodoriTextBlockWeights, irodori_text_block_forward};
 
 // Public seam re-exports — shared with the RF sampler primitive.
 pub use vokra_ops::flow_sampler::{

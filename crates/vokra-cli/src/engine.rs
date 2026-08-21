@@ -1243,9 +1243,11 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "irodori-tts",
         module: "vokra_models::irodori",
-        entry: "IrodoriTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "IrodoriCheckpoint::from_gguf → IrodoriCheckpoint::synthesize",
+        reason: BoundReason::LoudPartialForward,
+        probe: Some(|g: &GgufFile| {
+            vokra_models::irodori::IrodoriCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "qwen3_tts",

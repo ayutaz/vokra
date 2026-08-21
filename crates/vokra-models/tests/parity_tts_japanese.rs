@@ -102,12 +102,13 @@
 
 use std::path::{Path, PathBuf};
 
-use vokra_core::VokraError;
 use vokra_core::gguf::{
     GgmlType, GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType, chunks,
 };
+use vokra_core::{LicenseClass, VokraError};
 use vokra_models::irodori::{
-    IRODORI_SAMPLE_RATE, IRODORI_TEXT_TOKENIZER_REPO, IrodoriConfig, IrodoriTts, IrodoriWeights,
+    IRODORI_SAMPLE_RATE, IRODORI_TEXT_TOKENIZER_REPO, IrodoriCheckpoint, IrodoriConfig,
+    irodori_text_block_forward,
 };
 use vokra_models::vits_ja::{
     VITS_JA_LEAKY_RELU_SLOPE, VITS_JA_SAMPLE_RATE, VitsJaConfig, VitsJaTts, VitsJaWeights,
@@ -554,15 +555,14 @@ fn compare_against_refdir(file: &GgufFile, refdir: &Path, ctx: &str) -> (usize, 
 ///
 /// Rectified-Flow DiT over a 32-dim continuous DACVAE latent driven by
 /// a Semantic-DACVAE-Japanese-32dim decoder (48 kHz mono PCM). Real-
-/// weight binding is a follow-up wave — until then this test proves:
+/// The strict binder and one native text block are live; this test proves:
 ///
 /// * GGUF opens + `vokra.model.arch = "irodori-tts"`;
 /// * every documented hparam in the `vokra.irodori.*` chunk group agrees
 ///   with [`IrodoriConfig::irodori_500m_v3`];
-/// * the converter shipped ≥1 float tensor through (no metadata-only
-///   GGUF);
-/// * `IrodoriTts::synthesize` refuses loudly (FR-EX-08 pin — synthesize
-///   MUST NOT return a hallucinated waveform from scaffold weights).
+/// * the exact official 637-tensor manifest binds;
+/// * layer 0 decodes and runs with real F32 weights;
+/// * `IrodoriCheckpoint::synthesize` names the remaining end-to-end pieces.
 ///
 /// If `VOKRA_IRODORI_REFDIR` is also set, the byte-level leg
 /// (`atol = 0.01`) fires as a bonus.
@@ -741,20 +741,42 @@ fn parity_tts_japanese_irodori() {
     assert_eq!(IRODORI_SAMPLE_RATE, 48_000);
     assert_eq!(IRODORI_TEXT_TOKENIZER_REPO, "llm-jp/llm-jp-3-150m");
 
-    // FR-EX-08 pin — the scaffold engine MUST refuse `synthesize`
-    // loudly. This assertion goes AWAY the moment a real-weight
-    // `from_gguf` walk lands and the engine can bind real weights (at
-    // which point this test's synthesize call would become a real
-    // forward + audio-bound sanity check).
-    let cfg = IrodoriConfig::irodori_500m_v3();
-    let weights = IrodoriWeights::synthesized(&cfg).expect("build irodori scaffold weights");
-    let tts = IrodoriTts::new(cfg, weights).expect("build irodori scaffold engine");
-    let err = tts
+    let checkpoint = IrodoriCheckpoint::from_gguf(&file).unwrap_or_else(|error| {
+        panic!("strict Irodori binder rejected {}: {error}", gguf.display())
+    });
+    assert_eq!(checkpoint.model_name(), "irodori-tts-500m-v3");
+    assert_eq!(checkpoint.tensor_count(), 637);
+    assert_eq!(checkpoint.weight_license(), LicenseClass::Permissive);
+    assert_eq!(checkpoint.config(), &canonical);
+
+    let block = checkpoint
+        .load_text_block(&file, 0)
+        .expect("decode real Irodori text block 0");
+    assert_eq!(block.wq.len(), 512 * 512);
+    assert_eq!(block.w1.len(), 1331 * 512);
+    let hidden: Vec<f32> = (0..2 * 512)
+        .map(|index| (index as f32 * 0.003).sin() * 0.2)
+        .collect();
+    let output = irodori_text_block_forward(&canonical.text, &block, &hidden, &[true, true])
+        .expect("run real Irodori text block 0");
+    assert_eq!(output.len(), hidden.len());
+    assert!(output.iter().all(|value| value.is_finite()));
+    assert!(
+        output
+            .iter()
+            .zip(&hidden)
+            .any(|(output, input)| output != input),
+        "real Irodori text block unexpectedly behaved as identity"
+    );
+
+    // Full PCM stays loud until the tokenizer, remaining stacks, RF loop,
+    // and separate Semantic-DACVAE artifact are bound.
+    let err = checkpoint
         .synthesize("こんにちは")
-        .expect_err("scaffold synthesize must refuse loudly");
+        .expect_err("partial Irodori synthesize must refuse loudly");
     assert!(
         matches!(err, VokraError::NotImplemented(_)),
-        "irodori: scaffold synthesize returned unexpected variant {err:?}"
+        "irodori: partial synthesize returned unexpected variant {err:?}"
     );
 
     // Optional flip-the-switch leg — byte-level parity against the
