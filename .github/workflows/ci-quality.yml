@@ -1035,6 +1035,7 @@ jobs:
           run "publish/check-converter-signoff" bash scripts/publish/check-converter-signoff.sh --self-test
           run "publish/check-model-size"      bash scripts/publish/check-model-size.sh   --self-test
           run "publish/fetch_license"         bash scripts/publish/fetch_license.sh      --self-test
+          run "license/nvidia-oml"            bash scripts/check-nvidia-oml-license.sh
           run "publish/upload"                bash scripts/publish/upload.sh             --self-test
           run "publish/make_model_card"       uv run --no-project --python 3.12 python scripts/publish/make_model_card.py --self-test
           run "publish/publishability-report" uv run --no-project --python 3.12 python scripts/publish/publishability-report.py --self-test

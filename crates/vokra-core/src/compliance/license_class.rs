@@ -271,6 +271,18 @@ impl LicenseClass {
         if norm.is_empty() {
             return Self::Unknown;
         }
+        // NVIDIA Open Model License (June 14, 2024 revision).  The licence
+        // permits commercial use and redistribution, including derivatives
+        // under different terms, but §3.1 requires both the agreement and an
+        // exact NVIDIA sentence in a Notice file.  That is attribution-only
+        // in this runtime taxonomy (same load/publish posture as CC-BY), not
+        // `Permissive` and not licence-preserving copyleft.
+        if matches!(
+            norm.as_str(),
+            "nvidia-open-model-license" | "nvidia-open-model-license-agreement"
+        ) {
+            return Self::AttributionRequired;
+        }
         let has_nc = norm.contains("-nc") || norm.contains("noncommercial") || norm.contains("nc-");
         let has_sa =
             norm.contains("-sa") || norm.contains("sharealike") || norm.contains("share-alike");
@@ -624,6 +636,21 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // fail-closed against silent commercial use.
         "dac" | "dac-24khz" | "dac-16khz" | "dac-44khz" | "wavtokenizer" => {
             LicenseClass::Permissive
+        }
+        // NVIDIA NeMo NanoCodec family. The three published 22.05 kHz
+        // checkpoints use the June-2024 NVIDIA Open Model License linked by
+        // their official HF cards. Issue #47 also names a 0.8 kbps id, but no
+        // such NVIDIA repository existed at the 2026-08-22 audit, so it stays
+        // unclassified. Exact ids are intentional: a future similarly named
+        // checkpoint must be audited rather than inheriting this class.
+        "nanocodec"
+        | "nemo-nano-codec-22khz-0.6kbps-12.5fps"
+        | "nemo-nano-codec-22khz-1.78kbps-12.5fps"
+        | "nemo-nano-codec-22khz-1.89kbps-21.5fps"
+        | "nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps"
+        | "nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps"
+        | "nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps" => {
+            LicenseClass::AttributionRequired
         }
         // 2026-08-01 Wave 8: SpeechBrain ECAPA-TDNN, voice-gender-classifier,
         // primeline whisper-de fine-tune, jonatasgrosman xlsr-53-arabic.
@@ -1975,6 +2002,55 @@ mod tests {
             LicenseClass::from_license_str("proprietary"),
             LicenseClass::Unknown
         );
+    }
+
+    /// NVIDIA's Open Model License is commercially usable and permits
+    /// redistribution, but §3.1 requires the agreement and an exact NOTICE
+    /// sentence to travel with every distributed model.  It is therefore the
+    /// same runtime class as CC-BY (loadable and redistributable, with an
+    /// attribution obligation), not `Permissive` and not fail-closed
+    /// `Unknown`.
+    #[test]
+    fn nvidia_open_model_license_is_attribution_required() {
+        for s in [
+            "nvidia-open-model-license",
+            "NVIDIA Open Model License",
+            "NVIDIA Open Model License Agreement",
+        ] {
+            let class = LicenseClass::from_license_str(s);
+            assert_eq!(class, LicenseClass::AttributionRequired, "{s}");
+            assert!(!class.requires_research_flag(), "{s}: commercial load");
+            assert!(class.commercial_ok(), "{s}: commercial use");
+            assert!(class.redistributable(), "{s}: redistribution permitted");
+            assert!(class.requires_attribution(), "{s}: NOTICE is mandatory");
+            assert!(
+                !class.requires_license_preserved(),
+                "{s}: derivatives may use different terms"
+            );
+        }
+    }
+
+    #[test]
+    fn nanocodec_registry_uses_nvidia_open_model_license_class() {
+        for id in [
+            "nanocodec",
+            "nemo-nano-codec-22khz-0.6kbps-12.5fps",
+            "nemo-nano-codec-22khz-1.78kbps-12.5fps",
+            "nemo-nano-codec-22khz-1.89kbps-21.5fps",
+            "nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::AttributionRequired),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            registry_lookup("nemo-nano-codec-22khz-0.8kbps-12.5fps"),
+            None,
+            "the issue-listed but unpublished 0.8 kbps id must stay fail-closed",
+        );
+        assert_eq!(registry_lookup("nemo-nano-codec-lookalike"), None);
     }
 
     #[test]
