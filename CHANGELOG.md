@@ -58,6 +58,19 @@ milestone below.
 
 ### Added
 
+#### NVIDIA NanoCodec decoder conversion (2026-08-22)
+
+- Added the pinned `.nemo` preparation sidecar and the dependency-free
+  `vokra-cli convert --model nanocodec` path. The converter derives the full
+  decoder topology from the restored checkpoint, accepts decoder tensors only,
+  folds weight normalization, expands grouped transposed convolutions, and
+  stamps immutable provenance plus the NVIDIA Open Model License attribution.
+- Audited the three NVIDIA-published 22.05 kHz profiles independently. The
+  unavailable issue-listed 0.8 kbps alias has no invented revision or fixture
+  and remains fail-closed. The 1.89 kbps checkpoint's declared 1024-sample
+  frame hop matches the `[8,8,4,2,2]` generator product; sidecar and converter
+  validate both independently.
+
 #### Audio-wide coverage expansion (2026-07-24 → 2026-08-16)
 
 Vokra's scope widened from speech to audio: music generation, source

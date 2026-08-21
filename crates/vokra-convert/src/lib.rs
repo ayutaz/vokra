@@ -136,6 +136,12 @@ pub enum ModelKind {
     /// `vokra.mimi.{n_codebooks,codebook_size,d_model}` from the checkpoint
     /// shapes (ADR M4-04 §D-f/§D-k).
     Mimi,
+    /// NVIDIA NeMo NanoCodec 22.05 kHz decoder-only checkpoint.  The upstream
+    /// `.nemo` archive is restored by the uv-managed
+    /// `tools/parity/nanocodec/prepare_checkpoint.py` sidecar, which emits
+    /// canonical F32 decoder tensors and checkpoint-derived JSON.  Convert
+    /// with [`convert_nanocodec_file`]; the Rust path never parses pickle.
+    NanoCodec,
     /// Standalone DAC (Descript Audio Codec) checkpoint (M4-04 T11): a
     /// **prepared** safetensors (from `tools/parity/dac_prepare_checkpoint.py`
     /// — the upstream release is a `.pth`) plus a JSON config side-car.
@@ -3965,6 +3971,13 @@ impl ModelKind {
             | "fun-cosyvoice3-0_5b-2512" => Some(Self::CosyVoice3),
             "voxtral" => Some(Self::Voxtral),
             "mimi" => Some(Self::Mimi),
+            "nanocodec"
+            | "nemo-nano-codec-22khz-0.6kbps-12.5fps"
+            | "nemo-nano-codec-22khz-1.78kbps-12.5fps"
+            | "nemo-nano-codec-22khz-1.89kbps-21.5fps"
+            | "nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps"
+            | "nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps"
+            | "nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps" => Some(Self::NanoCodec),
             "dac" | "dac-24khz" | "dac-16khz" | "dac-44khz" | "dac-44_1khz"
             | "descript/dac_24khz" | "descript/dac_16khz" | "descript/dac_44khz" => {
                 Some(Self::Dac)
@@ -5873,6 +5886,7 @@ impl ModelKind {
             Self::CosyVoice3 => "cosyvoice3",
             Self::Voxtral => "voxtral",
             Self::Mimi => "mimi",
+            Self::NanoCodec => "nanocodec",
             Self::Dac => "dac",
             Self::Csm => "csm",
             Self::Moshi => "moshi",
@@ -7149,6 +7163,14 @@ pub fn convert_file_licensed(
                 },
             )];
             (builder, notes)
+        }
+        ModelKind::NanoCodec => {
+            return Err(ConvertError::Usage(
+                "nanocodec needs a --config side-car from the pinned \
+                 tools/parity/nanocodec/prepare_checkpoint.py; use \
+                 convert_nanocodec_file"
+                    .to_owned(),
+            ));
         }
         ModelKind::Dac => {
             return Err(ConvertError::Usage(
@@ -12254,6 +12276,50 @@ pub fn convert_dac_file(
     })
 }
 
+/// Convert a prepared NVIDIA NeMo NanoCodec decoder checkpoint and its
+/// checkpoint-derived JSON side-car into a Vokra GGUF.
+///
+/// The source `.nemo` archive must first pass through the pinned uv-managed
+/// `tools/parity/nanocodec/prepare_checkpoint.py` bridge.  That bridge is the
+/// only code which imports NeMo/torch or opens pickle.  This function accepts
+/// dependency-free safetensors + JSON, verifies a total decoder tensor
+/// manifest and every shape, then stamps the NVIDIA Open Model License
+/// attribution required by the checkpoint's official model card.
+pub fn convert_nanocodec_file(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::nanocodec::NanoCodecConfig::parse(&config_bytes)?;
+    let (builder, report) = models::nanocodec::convert(bytes, &cfg)?;
+
+    let notes = vec![format!(
+        "nanocodec: {} decoder tensors written from {}@{}; {} codebook groups, embed_dim {}, sample_rate {}, frame_hop {} matches generator stride product",
+        report.written,
+        cfg.source_model_id,
+        cfg.source_revision,
+        cfg.n_codebooks,
+        cfg.embed_dim,
+        cfg.sample_rate,
+        cfg.frame_hop,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::NanoCodec,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
 /// Convert a prepared SaruLab UTMOS22-strong checkpoint into a Vokra GGUF
 /// (M5-15 T14).
 ///
@@ -14771,6 +14837,7 @@ mod modelkind_alias_and_roundtrip_tests {
             CosyVoice3,
             Voxtral,
             Mimi,
+            NanoCodec,
             Dac,
             Csm,
             Moshi,
@@ -15179,6 +15246,18 @@ mod modelkind_alias_and_roundtrip_tests {
             ),
             // Phase 1-4 / 1-5 aliases still present
             (ModelKind::Dia, &["dia", "dia-1.6b", "dia-1_6b"]),
+            (
+                ModelKind::NanoCodec,
+                &[
+                    "nanocodec",
+                    "nemo-nano-codec-22khz-0.6kbps-12.5fps",
+                    "nemo-nano-codec-22khz-1.78kbps-12.5fps",
+                    "nemo-nano-codec-22khz-1.89kbps-21.5fps",
+                    "nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps",
+                    "nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps",
+                    "nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps",
+                ],
+            ),
             (
                 ModelKind::Zonos,
                 &[
@@ -16033,6 +16112,9 @@ mod modelkind_alias_and_roundtrip_tests {
             "voxcpm3",                  // future major bump not aliased today
             "vits-en",                  // vits-* only covers the JA arm here
             "whisper-base.en",          // registry-only alias, not CLI arg
+            // Named by issue #47, but no NVIDIA repository existed in the
+            // 2026-08-22 audit. Do not pre-authorize provenance or licensing.
+            "nemo-nano-codec-22khz-0.8kbps-12.5fps",
             // SBV2 v2 plan Task 8 (2026-07-27) regression pin: the
             // nonexistent copy-paste alias that used to silently resolve
             // to Some(DebertaV3). MUST return None so a future re-add of
