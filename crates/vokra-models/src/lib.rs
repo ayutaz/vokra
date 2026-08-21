@@ -323,6 +323,8 @@ pub mod moshi;
 // (VOKRA_NSNET2_REAL_GGUF + VOKRA_NSNET2_REAL_WAV).
 pub mod nsnet2;
 pub mod piper_plus;
+/// Xiph RNNoise v0.2 canonical real-weight network binder.
+pub mod rnnoise;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // TTS (apache-2.0 end-to-end — LM + codec + tokenizer + speaker
 // encoder all under a single apache-2.0 grant, huggingface.co/Qwen/

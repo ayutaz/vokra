@@ -64,6 +64,8 @@
 use std::env;
 use std::path::Path;
 
+use vokra_models::rnnoise::{N_BANDS as V02_N_BANDS, N_FEATURES as V02_N_FEATURES};
+use vokra_models::rnnoise::{RnnoiseNetworkState, RnnoiseV02};
 use vokra_ops::rnnoise::{
     FRAME_HOP, FRAME_SIZE, MAX_LAG_SAMPLES, MIN_LAG_SAMPLES, N_BARK_BANDS, N_PITCH_BANDS,
     N_STFT_BINS, PITCH_BUF_SIZE, PitchState, SAMPLE_RATE, bark_filterbank, pitch_analysis,
@@ -155,20 +157,12 @@ fn bark_filterbank_partition_of_unity_pin() {
 // GATED — real RNNoise v0.2 GGUF fixture required
 // ---------------------------------------------------------------------------
 
-/// GATED: opens a real RNNoise v0.2 GGUF and verifies the runtime
-/// binder is a genuine bind (real config parse, real tensor bind).
+/// GATED: opens a real RNNoise v0.2 GGUF and verifies the runtime binder and
+/// stateful neural forward against the unmodified Xiph C implementation.
 ///
 /// Skips cleanly when [`GGUF_ENV`] is unset. Once set, all failures
 /// are hard: a missing / malformed / wrong-arch fixture fails loudly.
 ///
-/// # Loud-partial marker
-///
-/// The current landing exercises the pitch primitive + Bark filterbank
-/// end-to-end. The full denoise forward (STFT + Bark → per-frame
-/// features → GRU stack → sigmoid gain mask → gain application) is
-/// wave B; the harness marks the missing forward with an explicit
-/// pending message so an owner opt-in is directed straight at that
-/// follow-up wave rather than silently reporting "0 % SI-SNR".
 #[test]
 fn parity_rnnoise_v02_gguf_smoke() {
     let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
@@ -187,19 +181,37 @@ fn parity_rnnoise_v02_gguf_smoke() {
          hard fail (FR-EX-08)"
     );
 
-    // The RNNoise v0.2 GGUF runtime binder (`vokra-models::rnnoise` or
-    // an equivalent runtime crate) is not yet landed — the loud-partial
-    // marker below directs the opt-in owner to the follow-up wave. This
-    // is the honest posture: no `assert!(false)` fabricated pass, and
-    // no silent skip either.
-    panic!(
-        "rnnoise v0.2 GGUF opt-in received at {gguf_path}, but the runtime binder \
-         (full-denoise forward wave) is deferred to a follow-up. Bind the GGUF from \
-         `crates/vokra-models/src/rnnoise/` (add when the wave lands) and route \
-         the frames through `vokra_ops::rnnoise::{{pitch_analysis, bark_filterbank, \
-         gru_forward, dense_forward, pack_features}}` — every primitive is real \
-         today. Bark-band `max |Δ|` bound: {BARK_ENERGY_ATOL:e}. Pitch period \
-         fractional tolerance: {PITCH_PERIOD_FRACTIONAL_TOL:.0} %."
+    let model = RnnoiseV02::open(path).expect("bind canonical RNNoise v0.2 GGUF");
+    let mut state = RnnoiseNetworkState::default();
+    let fixture = include_str!("../../../tools/parity/fixtures/rnnoise_v02_network.csv");
+    let mut max_abs = 0.0f32;
+    let mut frames = 0usize;
+    for (frame_index, line) in fixture.lines().enumerate() {
+        let values: Vec<f32> = line
+            .split(',')
+            .map(|value| value.parse::<f32>().expect("fixture f32"))
+            .collect();
+        assert_eq!(
+            values.len(),
+            V02_N_FEATURES + V02_N_BANDS + 1,
+            "fixture frame {frame_index} width"
+        );
+        let features: [f32; V02_N_FEATURES] =
+            values[..V02_N_FEATURES].try_into().expect("65 features");
+        let actual = model
+            .forward_features(&mut state, &features)
+            .expect("stateful RNNoise network forward");
+        for band in 0..V02_N_BANDS {
+            max_abs = max_abs.max((actual.gains[band] - values[V02_N_FEATURES + band]).abs());
+        }
+        max_abs =
+            max_abs.max((actual.vad_probability - values[V02_N_FEATURES + V02_N_BANDS]).abs());
+        frames += 1;
+    }
+    assert_eq!(frames, 4);
+    assert!(
+        max_abs <= 2e-5,
+        "RNNoise network max |Δ| {max_abs:e} exceeds independent Xiph C bound 2e-5"
     );
 }
 
