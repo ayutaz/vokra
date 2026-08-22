@@ -640,6 +640,41 @@ measured full-posterior max absolute error `8.344650269e-7` and one-shot plus
 173-sample streaming PCM score error `1.370906830e-6`; the committed gates are
 `2e-6` and `5e-6`. No weight was uploaded or published.
 
+## Whisper-Medusa-v1 closure — native ASR and real parity complete
+
+Primary-source inspection corrected the old scaffold assumptions: the release
+is MIT, 6.25 GB F32, based on Whisper-large-v2, and contains 1,281 tensors.
+The 22 Medusa tensors form eleven `base_head` residual modules, not four plain
+future-token projections. Module 0 transforms the current-token hidden state
+as `hidden + SiLU(linear(hidden))` before the tied vocabulary projection, so a
+plain Whisper decode is not the official forward.
+
+The branch now has a config-required canonical converter, strict pinned
+metadata/head-manifest binder, CLI ASR route, native module-0 forward, official
+source reference dumper, committed bounded fixture, and real-GGUF parity
+harness. The two source shards, index, config, merged checkpoint, and upstream
+source revision are pinned in the model ticket.
+
+VAST converted the merged 1,281-tensor checkpoint to a 6,245,932,960-byte GGUF
+with SHA-256
+`d2ef72d36c37727f4e3fe663a69dbaaeb7ecde579015be389984d4252c3da079`.
+The independent pinned upstream implementation generated 51,865 module-0
+logits; the Rust full-logit maximum absolute error was `1.182556152e-4` at
+vocabulary index 14525 under the predeclared `5e-4` bound, and the greedy EOT
+token matched exactly. The committed-fixture release consumer passed in 85.02
+seconds, the converter integration file passed 2/2, and the real CLI route
+completed successfully (`asr:` with the intentionally non-speech tone input).
+On the same synced VAST tree, `cargo test --workspace`, workspace/all-target
+clippy with `-D warnings`, `cargo fmt --all -- --check`, `git diff --check`, the
+ABI/zero-dependency/residual/citation gates, and the parity uv-lock check all
+passed. This runtime row is closed. Accelerated module 1–10 tree decoding
+remains a separate explicit unsupported API; model publication remains
+unauthorized.
+The historical `vokra/whisper-medusa-v1` repository still returned HTTP 200 on
+2026-08-22, so its old SPDX/card/artifact contract also needs a separate
+read-only audit followed by an owner-authorized correct/replace/withdraw
+decision. Runtime completion does not grant that external-state permission.
+
 ## Definition of done and verification routing
 
 For every row moved out of `BOUND_ARCHES`:

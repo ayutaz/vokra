@@ -122,9 +122,10 @@ use encoder::EncoderOutput;
 ///
 /// Deliberately **excluded**: `whisper-medusa-v1`
 /// (`crates/vokra-convert/src/models/whisper_medusa_v1.rs::ARCH`) — it
-/// carries extra Medusa speculative-decoding heads that this binder has no
-/// runtime module for, so admitting it would bind the base tower and
-/// silently drop the heads.
+/// carries extra Medusa residual heads owned by
+/// [`crate::whisper_medusa::WhisperMedusa`]. Admitting it here would bypass
+/// that strict binder and silently drop the official module-0 output
+/// transform.
 ///
 /// These strings mirror the converter constants — the converter owns the
 /// writer contract, this module owns the reader contract (the deliberate
@@ -162,8 +163,8 @@ pub(crate) fn verify_arch(file: &GgufFile) -> Result<()> {
             "whisper: GGUF arch is `{other}`, expected one of {ACCEPTED_ARCHS:?}. Those four \
              families share the vanilla Whisper topology + `vokra.whisper.*` schema verbatim \
              and are the only ones this binder serves. `whisper-medusa-v1` is deliberately \
-             NOT accepted (its Medusa speculative-decoding heads have no runtime module — \
-             binding it would silently drop them). Any other arch would bind whatever \
+             NOT accepted (its Medusa heads belong to `whisper_medusa::WhisperMedusa`; \
+             binding it here would silently drop the module-0 output transform). Any other arch would bind whatever \
              HF-verbatim tensor names happen to overlap and transcribe noise (FR-EX-08 — no \
              silent partial load)."
         ))),

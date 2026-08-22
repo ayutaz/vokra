@@ -21,6 +21,7 @@ use vokra_models::parakeet::ParakeetAsr;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
+use vokra_models::whisper_medusa::WhisperMedusa;
 
 /// The task a loaded model performs (selected by its architecture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +394,8 @@ const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
 const ARCH_MOONSHINE: &str = "moonshine";
 /// NVIDIA Parakeet-TDT-0.6B-v3 FastConformer + TDT ASR.
 const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
+/// aiola Whisper-Medusa-v1 official module-0 ASR forward.
+const ARCH_WHISPER_MEDUSA_V1: &str = "whisper-medusa-v1";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -545,6 +548,23 @@ pub(crate) fn load_session_with_backend_and_mimi(
                         .to_owned(),
                 );
             }
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_WHISPER_MEDUSA_V1 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_WHISPER_MEDUSA_V1}`)"
+                ));
+            }
+            if backend != BackendKind::Cpu {
+                return Err(format!(
+                    "Whisper-Medusa module-0 output adaptation is CPU-only; backend \
+                     {backend:?} is unsupported (no silent CPU fallback)"
+                ));
+            }
+            let asr =
+                WhisperMedusa::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_SILERO_VAD => {
@@ -995,7 +1015,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
             Err(format!(
                 "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
                  `{ARCH_DISTIL_WHISPER}` / `{ARCH_KOTOBA_WHISPER}` / \
-                 `{ARCH_MOONSHINE}` / \
+                 `{ARCH_MOONSHINE}` / `{ARCH_PARAKEET_TDT}` / \
+                 `{ARCH_WHISPER_MEDUSA_V1}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
@@ -1114,14 +1135,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // instead (see `ARCH_DISTIL_WHISPER` / `ARCH_KOTOBA_WHISPER` above). Do
     // not re-add them: `bound_arch_registry_is_disjoint_from_the_routed_arches`
     // now fails on a row that shadows either arch.
-    BoundArch {
-        arch: "whisper-medusa-v1",
-        module: "vokra_models::whisper_medusa",
-        entry: "WhisperMedusa::from_gguf → WhisperMedusa::transcribe_tokens",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::whisper_medusa::WhisperMedusa::from_gguf(g).map(|_| ())
-        }),
-    },
     BoundArch {
         arch: "omniasr-ctc",
         module: "vokra_models::omniasr_ctc",
@@ -2108,6 +2121,7 @@ mod tests {
             ("nkf_aec", "nkf-aec-hint"),
             ("fsmn-vad", "fsmn-hint"),
             (ARCH_CHARSIU, "charsiu-hint"),
+            (ARCH_WHISPER_MEDUSA_V1, "whisper-medusa-hint"),
         ] {
             let err = with_arch_only_gguf(arch, tag, |p| {
                 // let-else rather than `.expect_err()`: `Session` is `!Debug`
@@ -2368,6 +2382,27 @@ mod tests {
         assert_routed_to_whisper_asr("crisper-whisper", "crisper-whisper-arch");
     }
 
+    #[test]
+    fn load_session_routes_whisper_medusa_to_its_strict_asr_binder() {
+        let error = with_arch_only_gguf(ARCH_WHISPER_MEDUSA_V1, "whisper-medusa-routed", |path| {
+            let Err(error) = load_session(path) else {
+                panic!("metadata-only Whisper-Medusa cannot bind");
+            };
+            error
+        });
+        assert!(
+            error.contains("vokra.medusa.revision"),
+            "route must reach the strict Medusa metadata reader: {error}"
+        );
+        assert!(!error.contains("unsupported model arch"), "{error}");
+        assert!(!error.contains("is BOUND"), "{error}");
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_WHISPER_MEDUSA_V1)
+        );
+    }
+
     /// The registry must not carry either arch again. `assert_routed_to_whisper_asr`
     /// checks the message a user sees; this checks the data behind it, so a
     /// re-added row fails here with a direct explanation rather than only as a
@@ -2379,6 +2414,7 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_WHISPER_MEDUSA_V1,
         ] {
             assert!(
                 BOUND_ARCHES.iter().all(|b| b.arch != arch),
@@ -2567,6 +2603,7 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_WHISPER_MEDUSA_V1,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,
             ARCH_CSM,

@@ -1479,103 +1479,18 @@ pub mod firered_vad;
 // `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
 pub mod parakeet_tdt_1_1b;
 
-// Wave C1 (2026-08-15) — aiola Whisper-Medusa-v1 runtime binder (LIB.RS RULE:
-// append at the END of the `pub mod` block with a Wave marker; do NOT
-// alphabetize — rustfmt has reordered these before and broken a commit).
+// Runtime-gap Wave 4 ASR (2026-08-22) — exact aiola Whisper-Medusa-v1
+// binder. The canonical converter removes the checkpoint's outer
+// `whisper_model.` wrapper, stamps the ordinary Whisper hparams/frontend/
+// tokenizer contract, and preserves all eleven `medusa_heads.*` modules.
+// This module owns the distinct arch so a vanilla Whisper loader cannot
+// silently omit the official module-0 residual-SiLU output transform.
 //
-// Closes a real gap: `crates/vokra-convert/src/models/whisper_medusa_v1.rs`
-// (coverage-audit wave-b, 2026-08-03) produced a GGUF stamped
-// `vokra.model.arch = "whisper-medusa-v1"` / `vokra.model.name =
-// "whisper-medusa-v1"` / `vokra.model.category = "asr"` /
-// `vokra.provenance.upstream_hf = "aiola/whisper-medusa-v1"` that a
-// workspace-wide grep proved NOTHING read back — every converted
-// Whisper-Medusa checkpoint was unloadable. This module is that consumer.
-//
-// Whisper-Medusa (`huggingface.co/aiola/whisper-medusa-v1`) is an unmodified
-// OpenAI Whisper backbone plus N Medusa speculative-decoding heads (Cai et al.
-// 2024, arXiv:2401.10774): extra LM heads each predicting one further future
-// token from the same final decoder hidden state, so a step proposes several
-// candidate continuations that the base decoder then verifies in one forward.
-// Speculation is a THROUGHPUT optimisation, not a different model — which is
-// why this binder deliberately does NOT fork the Whisper tower.
-//
-// REUSE POSTURE: the base tower loads through the existing, real
-// `whisper::WhisperAsr` path. Two facts make that work — (i) the Medusa
-// converter passes every tensor through under its verbatim upstream
-// safetensors name and `whisper::WhisperWeights` binds on exactly those
-// HF-Transformers names (`model.encoder.layers.{i}.self_attn.q_proj.weight`
-// …), so no rename layer is needed; (ii) `WhisperAsr::from_gguf` does not gate
-// on arch — the arch gate lives on `WhisperSession`, which is the same seam
-// `distil_whisper` / `kotoba_whisper` already delegate through. Do NOT "fix"
-// this by adding `whisper-medusa-v1` to `whisper::ACCEPTED_ARCHS`: that list
-// is documented as excluding this arch precisely so a bare `WhisperSession`
-// cannot bind a Medusa checkpoint and SILENTLY DROP the heads. The tower is
-// borrowed; the arch identity stays here. A test pins the exclusion.
-//
-// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
-// with BOTH tags named and the whole vanilla-Whisper-topology sibling fleet
-// enumerated (`whisper` / `crisper-whisper` / `distil-whisper` /
-// `kotoba-whisper` — those four share the tensor topology verbatim, so only
-// the arch tag can disambiguate them); a real prefix walk over the tensor
-// manifest that groups Medusa tensors per head index and refuses a malformed
-// index BY TENSOR NAME, a non-contiguous index set BY FIRST MISSING INDEX, a
-// mix of both `nn.ModuleList` spellings as ambiguous, and an artifact with no
-// Medusa tensors at all (a vanilla Whisper checkpoint mis-stamped); a
-// base-tower presence gate (heads without a Whisper encoder can never run);
-// the optional all-or-nothing `vokra.medusa.*` hyper-parameter group (absent →
-// `config()` is `None` and the checkpoint still binds, because refusing it
-// would re-open the very gap this module closes; partially stamped → loud
-// naming the missing key; `0` sentinel → loud) CROSS-CHECKED against the head
-// count actually found on disk; base Whisper tower delegation whose load
-// outcome is RECORDED rather than swallowed; and weight-license surfacing that
-// fail-closes to `LicenseClass::Unknown`.
-//
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」), two distinct gates:
-//   (1) `transcribe` / `transcribe_tokens` / `base_asr` — real when the base
-//       tower bound; otherwise `VokraError::UnsupportedOp` QUOTING the
-//       underlying whisper error. Root cause with today's converter: it is a
-//       pure tensor pass-through and stamps NEITHER the `vokra.whisper.*`
-//       hyper-parameter chunk `WhisperConfig::from_gguf` requires, NOR the
-//       `vokra.frontend.*` chunk the FR-LD-03 bit-exact front-end check
-//       requires, NOR a `vokra.tokenizer.model` blob. The tensor NAMES already
-//       line up, so the fix is METADATA, not weights: teach the converter to
-//       stamp those chunks (mirror of `models/whisper.rs`) and this binder
-//       transcribes with zero changes here. `base_status()` lets a caller
-//       check which world it is in before calling.
-//   (2) `transcribe_speculative` — ALWAYS `UnsupportedOp`, even when the base
-//       tower bound, because silently running plain decoding under a
-//       "speculative" name would misreport what the runtime did. Three
-//       blockers: no draft→verify→accept driver anywhere in
-//       `vokra_core::decode` and no tree/sparse attention mask op in
-//       `vokra-ops`; the Medusa `medusa_choices` candidate tree is recorded in
-//       NO metadata (the converter stamps no `vokra.medusa.*` at all) and a
-//       guessed tree yields a shape-valid decode that silently ACCEPTS WRONG
-//       TOKENS; and the per-head sub-module interior (residual depth,
-//       final-projection bias) is untranscribable from any source the
-//       converter records. The error states the honest fallback explicitly —
-//       since a correct speculative decode accepts exactly what plain decoding
-//       produces, `transcribe` gives the SAME output today, minus the speedup.
-//       No fabricated speculative tokens are ever emitted (FR-EX-08).
-//
-// LICENSING — UNVERIFIED, owner follow-up: the 2026-08-03 audit flagged this
-// row `要一次 (Apache-2.0 想定)` — primary source required, Apache-2.0 ASSUMED.
-// The converter's own docstring is explicit that its `apache-2.0` default is
-// the ticket-header value ("the aiola precedent") and NOT a transcription of
-// the `huggingface.co/aiola/whisper-medusa-v1` model-card front matter. This
-// binder therefore makes NO license claim: `CONVERTER_DEFAULT_LICENSE` is
-// named only as "what the converter writes absent a `--license` override", and
-// `weight_license()` merely SURFACES whatever class the artifact carries,
-// fail-closing to `Unknown`. `docs/license-audit.md` §3.1 sign-off stays BLANK
-// (owner-only per `[[feedback-license-signoff-primary-source]]` — CC does NOT
-// sign, and does not treat the converter's assumption as a sign-off).
-// Publishing a converted Whisper-Medusa GGUF stays blocked at that §3.1 gate.
-//
-// Cross-crate string handshake via duplicated `pub const ARCH =
-// "whisper-medusa-v1"` / `NAME` / `CATEGORY` / `UPSTREAM_HF` (mirror of the
-// converter's constants, preserving the layered convention `vokra-ops →
-// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
-// binder`, `vokra-convert → GGUF writer`).
+// `AsrEngine` executes that real module-0 forward. Accelerated future-token
+// draft/verify/accept remains an explicit separate unsupported API until a
+// tree-attention driver exists; it never aliases plain or module-0 decoding.
+// The pinned checkpoint and upstream source revisions, config hash, complete
+// 22-tensor head manifest, and MIT provenance are all validated fail-closed.
 pub mod whisper_medusa;
 
 // Wave C1 (2026-08-15) — runtime binder for the `firered_asr_aed_l` converter

@@ -1,0 +1,33 @@
+{
+  "hf_repo": "aiola/whisper-medusa-v1",
+  "hf_revision": "6ea7c2f47658cfc7f9c8d1c158a9fbdb33458462",
+  "source_repo": "https://github.com/aiola-lab/whisper-medusa",
+  "source_revision": "19819c37ab15db6e68826e406614a2c86fbb946e",
+  "sample_rate": 16000,
+  "pcm_samples": 16000,
+  "decoder_prefix": [
+    50258,
+    50259,
+    50359,
+    50363
+  ],
+  "logits": 51865,
+  "greedy_tokens": [
+    50257
+  ],
+  "max_new_tokens": 8,
+  "device": "cuda",
+  "reference_import": "whisper_medusa.models.WhisperMedusaModel",
+  "model_source": "whisper_medusa/models/model.py",
+  "config_source": "whisper_medusa/utils/config_and_args.py",
+  "training_utils_init": "bypassed; model/config modules are exact upstream files",
+  "python": "3.12.14",
+  "torch": "2.2.2+cu121",
+  "transformers": "4.49.0",
+  "cpu": "x86_64",
+  "cpu_count": 32,
+  "cuda": "12.1",
+  "gpu": "NVIDIA GeForce GTX 1070 Ti",
+  "text": "",
+  "max_abs_bound": 0.0005
+}

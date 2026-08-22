@@ -1228,9 +1228,10 @@ pub enum ModelKind {
     /// — Chinese SoTA ASR + LID + SER + AED multitask. License audit
     /// deferred to owner. Convert with `convert_sensevoicesmall_file`.
     SenseVoiceSmall,
-    /// aiola **whisper-medusa-v1** (Apache-2.0, ~500 MB–2 GB) — Whisper
-    /// + Medusa speculative decoding head, 20-80% latency reduction.
-    /// Convert with `convert_whisper_medusa_v1_file`.
+    /// aiola **whisper-medusa-v1** (MIT, 6.25 GB F32) — Whisper-large-v2
+    /// plus eleven Medusa `base_head` residual modules. Convert with
+    /// [`convert_whisper_medusa_v1_with_config`]; the exact pinned upstream
+    /// `config.json` is mandatory.
     WhisperMedusaV1,
     /// Meta **facebook-denoiser** (`facebookresearch/denoiser`,
     /// **cc-by-nc-4.0**, coverage-audit-2026-08-03 Wave D T4) —
@@ -6224,6 +6225,34 @@ pub struct ConvertSummary {
     pub notes: Vec<String>,
 }
 
+/// Converts the pinned `aiola/whisper-medusa-v1` merged safetensors together
+/// with its exact upstream `config.json`.
+///
+/// A dedicated entry point is required because the generic licensed
+/// dispatcher has no side-car parameter and silently omitting the Medusa
+/// geometry would produce an artifact the strict runtime must reject.
+pub fn convert_whisper_medusa_v1_with_config(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let report =
+        models::whisper_medusa_v1::convert_whisper_medusa_v1_file(input, output, config, license)?;
+    Ok(ConvertSummary {
+        model: ModelKind::WhisperMedusaV1,
+        tensor_count: report.written,
+        metadata_count: 0,
+        output_bytes: std::fs::metadata(output)?.len(),
+        notes: vec![format!(
+            "whisper-medusa-v1: {} tensors converted through the canonical Whisper writer \
+             ({} BF16 passthrough), {} non-float skipped; official Medusa base-head \
+             contract stamped",
+            report.written, report.bf16_passthrough, report.skipped_non_float,
+        )],
+    })
+}
+
 /// Errors that can occur while converting a checkpoint.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -6928,6 +6957,16 @@ pub fn convert_file_licensed(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ConvertSummary, ConvertError> {
+    // Whisper-Medusa needs an exact config side-car. Reject the legacy
+    // three-path dispatcher before reading the 6.25 GB checkpoint; the
+    // config-aware public entry point and CLI arm are the only valid routes.
+    if matches!(model, ModelKind::WhisperMedusaV1) {
+        return Err(ConvertError::Usage(
+            "whisper-medusa-v1 requires the exact upstream config.json; use \
+             convert_whisper_medusa_v1_with_config (CLI: --config <config.json>)"
+                .into(),
+        ));
+    }
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
     // through `convert_moshi_file` BEFORE the whole-file read below.
@@ -8398,20 +8437,7 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::WhisperMedusaV1 => {
-            let report =
-                models::whisper_medusa_v1::convert_whisper_medusa_v1_file(input, output, license)?;
-            let notes = vec![format!(
-                "whisper-medusa-v1: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
-            )];
-            return Ok(ConvertSummary {
-                model: ModelKind::WhisperMedusaV1,
-                tensor_count: report.written,
-                metadata_count: 0,
-                output_bytes: std::fs::metadata(output)?.len(),
-                notes,
-            });
+            unreachable!("whisper-medusa is rejected before whole-file input read")
         }
         // === coverage-audit-2026-08-03 Wave D T4 (non-commercial batch) ===
         ModelKind::FacebookDenoiser => {

@@ -23,7 +23,8 @@ use vokra_convert::{
     convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
     convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -77,13 +78,14 @@ USAGE:
     vokra-cli convert --model firered-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model whisper-medusa-v1 --input <merged.safetensors> --config <config.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
-                              distil-whisper | kotoba-whisper |
+                              distil-whisper | kotoba-whisper | whisper-medusa-v1 |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
                               qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
                               sbv2 | deberta-v2 | deberta-v3 | xcodec2 |
@@ -1357,6 +1359,35 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
+        ModelKind::WhisperMedusaV1 => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not yet supported for whisper-medusa-v1; convert the \
+                     canonical F32 artifact first so head-0 parity remains independently \
+                     auditable"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is not yet supported for whisper-medusa-v1".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_whisper_medusa_v1_with_config(
+                    &p.input,
+                    config,
+                    &p.output,
+                    p.license.as_deref(),
+                ),
+                None => {
+                    return Err(
+                        "--model whisper-medusa-v1 requires --config <config.json>; the \
+                         10 speculative heads, 11 base-head modules, choices tree and \
+                         init_from_proj contract are not inferred from tensor names"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
         ModelKind::SbV2 => {
             // SBV2 v2 plan (2026-07-26 / 2026-08-06): the generic
             // `convert_file_with_slug` fallthrough arm in
@@ -1890,6 +1921,7 @@ mod tests {
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
+            ("whisper-medusa-v1", ModelKind::WhisperMedusaV1),
             ("chatterbox", ModelKind::Chatterbox),
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
             ("chatterbox-nano", ModelKind::ChatterboxNano),
@@ -1970,6 +2002,21 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("requires --config"), "message: {e}");
         assert!(e.contains("sentinels"), "message must say why: {e}");
+    }
+
+    #[test]
+    fn whisper_medusa_without_config_is_a_loud_usage_error() {
+        let error = main(&args(&[
+            "--model",
+            "whisper-medusa-v1",
+            "--input",
+            "/nonexistent/ckpt.safetensors",
+            "--output",
+            "/nonexistent/out.gguf",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("requires --config"), "message: {error}");
+        assert!(error.contains("11 base-head modules"), "message: {error}");
     }
 
     /// The quantization surface widened to voxtral only — every other model
