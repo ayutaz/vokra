@@ -39,6 +39,11 @@ on:
         required: false
         type: boolean
         default: true
+      release_version:
+        description: "Candidate unprefixed SemVer for dry-run (empty = workspace version)"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: release-${{ github.ref }}
@@ -49,40 +54,35 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # X-07-T18: semver tag gate. The tag glob `v*` (on.push.tags) accepts any
-  # `v…` string, including a non-semver one like `vfoo` that the per-job version
-  # derivation (`GITHUB_REF_NAME#v`) silently mis-parses. This job rejects a
-  # non-semver tag fail-loud so the whole release train refuses to run on a
-  # malformed tag.
-  #
-  # CRITICAL — non-tag refs ANNOUNCED-SKIP (pass): the entire dry-run / dispatch
-  # verification path runs on `workflow_dispatch` (a non-tag ref). If this job
-  # failed on non-tag refs, then `needs: validate-tag` on every other job would
-  # block the whole dry-run path (and T35's regression verify with it). So on a
-  # non-tag ref it emits a ::notice:: and PASSES — an announced skip (the gate
-  # is inapplicable when there is no tag to judge), NOT a fabricated pass.
-  # The current default version is 0.1.0-alpha.0 (Cargo.toml:21); the first
-  # release tag must be a valid `vX.Y.Z[-prerelease]` (e.g. v1.0.0-rc.1).
+  # X-07-T18: single release-version contract. The workspace version is the
+  # source of truth for an effectful tag release; `vX.Y.Z` must match it exactly
+  # before release-notes can create a GitHub Release. workflow_dispatch accepts
+  # an optional candidate so dry-run exercises every package with one version
+  # without prematurely changing source metadata.
   # ---------------------------------------------------------------------------
   validate-tag:
     name: validate-tag
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    outputs:
+      version: ${{ steps.version-contract.outputs.version }}
     steps:
-      - name: Validate semver tag (announced-skip on non-tag refs)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: false
+      - name: Resolve and validate the canonical release version
+        id: version-contract
+        env:
+          DISPATCH_VERSION: ${{ inputs.release_version }}
         run: |
-          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
-            echo "::notice::validate-tag: non-tag ref (${GITHUB_REF}) — semver gate not applicable (workflow_dispatch / branch). Passing (announced skip, not a fabricated pass)."
-            exit 0
-          fi
-          TAG="${GITHUB_REF#refs/tags/}"
-          # v-prefixed semver: vX.Y.Z with optional -prerelease and +build.
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "validate-tag: OK — '$TAG' is a valid semver tag"
-          else
-            echo "validate-tag: FAIL — tag '$TAG' is not semver (expected vX.Y.Z[-prerelease][+build])" >&2
-            exit 1
-          fi
+          uv run --no-project --python 3.12 python \
+            tools/release/version_contract.py \
+            --github-ref "$GITHUB_REF" \
+            --dispatch-version "$DISPATCH_VERSION" \
+            --github-output "$GITHUB_OUTPUT"
 
   ios-xcframework:
     name: ios-xcframework
@@ -311,24 +311,11 @@ jobs:
         with:
           lookup-only: true
 
-      - name: Compute release version (semver from tag, v-prefix stripped)
-        id: version
+      - name: Stamp validated release version into Unity package
+        working-directory: bindings/unity/com.vokra.unity
         run: |
-          # Tag path: refs/tags/v0.1.0-preview.1 -> version=0.1.0-preview.1
-          # workflow_dispatch path: fall back to package.json version so
-          # dry-runs are still meaningful.
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            V="$(awk -F'"' '/^[[:space:]]*"version"[[:space:]]*:/ { print $4; exit }' \
-              bindings/unity/com.vokra.unity/package.json)"
-          fi
-          if [ -z "$V" ]; then
-            echo "unity-package-release: FAIL could not derive version" >&2
-            exit 1
-          fi
-          echo "version=${V}" >> "$GITHUB_OUTPUT"
-          echo "Release version: ${V}"
+          npm version --no-git-tag-version --allow-same-version \
+            "${{ needs.validate-tag.outputs.version }}"
 
       - name: Download iOS XCFramework artifact from ios-xcframework job
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -495,7 +482,7 @@ jobs:
       - name: Verify tarball + compute .sha256
         id: pack
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.validate-tag.outputs.version }}"
           # build-unity-plugin.sh names the tarball from package.json's
           # version. On tag push the CD flow expects that version to have
           # been bumped by a preceding commit; assert alignment or fail
@@ -570,7 +557,7 @@ jobs:
         if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
         run: |
           echo "== DRY RUN (unity-package-release) =="
-          echo "Version : ${{ steps.version.outputs.version }}"
+          echo "Version : ${{ needs.validate-tag.outputs.version }}"
           echo "Tarball : ${{ steps.pack.outputs.tarball }}"
           echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
           echo "Skipping: gh release upload, OpenUPM publish."
@@ -606,7 +593,7 @@ jobs:
     needs: validate-tag
     uses: ./.github/workflows/python-wheels.yml
     with:
-      version: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.0.dev0' }}
+      version: ${{ needs.validate-tag.outputs.version }}
 
   python-pypi-publish:
     name: python-pypi-publish
@@ -789,27 +776,6 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Compute release version (semver from tag, v-prefix stripped)
-        id: version
-        run: |
-          # Tag path: refs/tags/v0.1.0-preview.1 -> version=0.1.0-preview.1
-          # workflow_dispatch path: fall back to the Cargo.toml version so
-          # dry-runs are still meaningful. build-godot-gdextension.sh --pack
-          # names the zip from that Cargo.toml value; asserting alignment
-          # here surfaces version drift before the tarball ships silently.
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            V="$(awk -F'"' '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' \
-              integrations/vokra-godot/Cargo.toml)"
-          fi
-          if [ -z "$V" ]; then
-            echo "godot-package-release: FAIL could not derive version" >&2
-            exit 1
-          fi
-          echo "version=${V}" >> "$GITHUB_OUTPUT"
-          echo "Release version: ${V}"
-
       - name: Reuse per-target cdylibs from godot-crossbuild.yml matrix (advisory, record-only)
         id: reuse-godot-cdylibs
         # T16 crossbuild produces one vokra-godot-<triple> artifact per
@@ -905,6 +871,8 @@ jobs:
             --output dist/godot/vokra-godot/addons/vokra/vokra-godot-assetlib.spdx.json
 
       - name: Pack AssetLib zip (SOURCE_DATE_EPOCH pinned, --no-build)
+        env:
+          VOKRA_RELEASE_VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
           set -euo pipefail
           SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
@@ -916,7 +884,7 @@ jobs:
         id: pack
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.validate-tag.outputs.version }}"
           # build-godot-gdextension.sh names the zip from
           # integrations/vokra-godot/Cargo.toml's version. On tag push
           # the CD flow expects that version to have been bumped by a
@@ -984,7 +952,7 @@ jobs:
         if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
         run: |
           echo "== DRY RUN (godot-package-release) =="
-          echo "Version : ${{ steps.version.outputs.version }}"
+          echo "Version : ${{ needs.validate-tag.outputs.version }}"
           echo "Zip     : ${{ steps.pack.outputs.zip }}"
           echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
           echo "Skipping: gh release upload, Godot AssetLib API update."
@@ -1035,11 +1003,7 @@ jobs:
       - name: Compute release version (semver from tag, v-prefix stripped)
         id: version
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            V="0.0.0-dev.$(git rev-parse --short HEAD)"
-          fi
+          V="${{ needs.validate-tag.outputs.version }}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           case "$V" in
             *-rc.*) echo "disttag=rc" >> "$GITHUB_OUTPUT" ;;
@@ -1307,11 +1271,7 @@ jobs:
 
       - name: Extract release notes from CHANGELOG (X-07-T15/T16)
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="Unreleased"
-          fi
+          VERSION="${{ needs.validate-tag.outputs.version }}"
           # Prefer the rolled [X.Y.Z] section; fall back to [Unreleased]. Never
           # fabricate: if both are absent/empty, fail loud.
           if uv run --no-project --python 3.12 python scripts/release/extract-changelog.py --version "$VERSION" --output release-notes.md 2>/dev/null; then
@@ -1411,7 +1371,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"
+          V="${{ needs.validate-tag.outputs.version }}"
           mkdir -p dist/desktop
           # Linux glibc CLI (built here) + musl static CLI (deliverables §3.5).
           cargo build --release -p vokra-cli
@@ -1521,7 +1481,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"
+          V="${{ needs.validate-tag.outputs.version }}"
           bash scripts/build-android.sh
           # Assemble a minimal standalone AAR layout: jni/<abi>/libvokra.so +
           # AndroidManifest.xml. The persistentDataPath extraction helper
@@ -1545,7 +1505,7 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"
+          V="${{ needs.validate-tag.outputs.version }}"
           SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
           export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
