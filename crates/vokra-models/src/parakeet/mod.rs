@@ -2005,23 +2005,43 @@ fn layer_norm(input: &[f32], rows: usize, norm: &ParakeetBoundNorm) -> Result<Ve
     Ok(output)
 }
 
+struct FeedForwardWeights<'a> {
+    w1_t: &'a [f32],
+    b1: Option<&'a [f32]>,
+    w2_t: &'a [f32],
+    b2: Option<&'a [f32]>,
+}
+
 fn feed_forward(
     input: &[f32],
     frames: usize,
     width: usize,
     inner: usize,
-    w1_t: &[f32],
-    b1: Option<&[f32]>,
-    w2_t: &[f32],
-    b2: Option<&[f32]>,
+    weights: FeedForwardWeights<'_>,
 ) -> Result<Vec<f32>> {
     let mut expanded = vec![0.0; frames * inner];
-    kernels::gemm_f32(frames, inner, width, input, w1_t, b1, &mut expanded)?;
+    kernels::gemm_f32(
+        frames,
+        inner,
+        width,
+        input,
+        weights.w1_t,
+        weights.b1,
+        &mut expanded,
+    )?;
     for value in &mut expanded {
         *value *= sigmoid_f32(*value);
     }
     let mut output = vec![0.0; frames * width];
-    kernels::gemm_f32(frames, width, inner, &expanded, w2_t, b2, &mut output)?;
+    kernels::gemm_f32(
+        frames,
+        width,
+        inner,
+        &expanded,
+        weights.w2_t,
+        weights.b2,
+        &mut output,
+    )?;
     Ok(output)
 }
 
@@ -2174,10 +2194,12 @@ pub(crate) fn conformer_block_forward(
         frames,
         width,
         config.ffn_dim,
-        &block.ff1_w1_t,
-        block.ff1_b1.as_deref(),
-        &block.ff1_w2_t,
-        block.ff1_b2.as_deref(),
+        FeedForwardWeights {
+            w1_t: &block.ff1_w1_t,
+            b1: block.ff1_b1.as_deref(),
+            w2_t: &block.ff1_w2_t,
+            b2: block.ff1_b2.as_deref(),
+        },
     )?;
     for (value, branch) in hidden.iter_mut().zip(ff1) {
         *value += 0.5 * branch;
@@ -2198,10 +2220,12 @@ pub(crate) fn conformer_block_forward(
         frames,
         width,
         config.ffn_dim,
-        &block.ff2_w1_t,
-        block.ff2_b1.as_deref(),
-        &block.ff2_w2_t,
-        block.ff2_b2.as_deref(),
+        FeedForwardWeights {
+            w1_t: &block.ff2_w1_t,
+            b1: block.ff2_b1.as_deref(),
+            w2_t: &block.ff2_w2_t,
+            b2: block.ff2_b2.as_deref(),
+        },
     )?;
     for (value, branch) in hidden.iter_mut().zip(ff2) {
         *value += 0.5 * branch;
