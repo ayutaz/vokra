@@ -58,6 +58,64 @@ milestone below.
 
 ### Added
 
+#### NVIDIA NanoCodec decoder conversion (2026-08-22)
+
+- Added the pinned `.nemo` preparation sidecar and the dependency-free
+  `vokra-cli convert --model nanocodec` path. The converter derives the full
+  decoder topology from the restored checkpoint, accepts decoder tensors only,
+  folds weight normalization, expands grouped transposed convolutions, and
+  stamps immutable provenance plus the NVIDIA Open Model License attribution.
+- Audited the three NVIDIA-published 22.05 kHz profiles independently. The
+  unavailable issue-listed 0.8 kbps alias has no invented revision or fixture
+  and remains fail-closed. The 1.89 kbps checkpoint's declared 1024-sample
+  frame hop matches the `[8,8,4,2,2]` generator product; sidecar and converter
+  validate both independently.
+
+#### NanoCodec causal streaming decoder (2026-08-22)
+
+- Added a checkpoint-configured, stateful `CausalHifiGan` decoder for NVIDIA
+  NanoCodec. It binds the complete decoder-only `vokra.nanocodec.*` GGUF
+  schema through `from_gguf`, exposes `state` / allocation-free `decode_into`
+  / `reset`, emits the checkpoint's validated `frame_hop` without a hard-coded
+  sample count, and carries every
+  causal convolution history and transposed-convolution overlap tail.
+  Binding requires the converter's verified official-NeMo source URL and exact
+  pinned commit metadata; a merely shape-compatible foreign GGUF is rejected.
+- Pinned full-buffer versus frame-streaming bit identity, future-frame
+  causality, reset replay, loud shape/capacity failures, and a dedicated
+  counting-allocator gate. Added an offline official-NeMo reference bridge and
+  pre-registered real-checkpoint waveform bounds; large fixture generation and
+  `vokra-models` execution remain on the VAST workflow.
+- Added a fail-closed metadata/topology check. The published 21.5 fps archive
+  consistently declares a 1024-sample frame and `[8, 8, 4, 2, 2]` generator
+  strides (product 1024), verified from its fixed checkpoint config. Any
+  future mismatch is rejected instead of dropping or inventing waveform
+  samples.
+- Added a synthetic converter-schema GGUF bind/decode test that requires the
+  rebound decoder to emit PCM bit-identical to the same directly bound weight
+  bundle. Missing/foreign metadata, non-F32 tensors, and shape mismatches are
+  model-load errors rather than partially loaded models.
+
+#### Streaming continuous speech features (2026-08-22)
+
+- Added the model-independent `SpeechFeatureEngine` / `SpeechFeatureStream`
+  seam and the `vokra_feat_*` C ABI. Moshi's causal Mimi encoder is the first
+  native implementation, exposing its continuous pre-RVQ 25 Hz hidden grid
+  with sample-accurate source timestamps, bounded backpressure, reset, and
+  allocation-free post-warmup push/pull paths. The generated Python `ctypes`
+  table and C smoke suite cover the additive surface (#49).
+
+#### Generic streaming codec C ABI (2026-08-22)
+
+- Added `vokra_codec_decoder_*`: an opaque, single-owner streaming handle
+  accepting one call-time-sized codebook frame and yielding mono PCM. The
+  first complete family implementation is standalone Mimi; codec families
+  without a real terminal PCM decoder remain explicit unsupported errors.
+- Mimi code-frame streaming is bit-identical to whole-buffer decode, retains
+  checkpoint-derived sample rate / frame hop / codebook count, and reuses all
+  feature, causal-state, and PCM scratch after open. A counting-allocator test
+  pins zero allocations across warmed `push_codes` + `pull_pcm` calls.
+
 #### Audio-wide coverage expansion (2026-07-24 → 2026-08-16)
 
 Vokra's scope widened from speech to audio: music generation, source

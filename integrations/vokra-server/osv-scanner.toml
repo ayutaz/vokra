@@ -1,0 +1,11 @@
+# The server lock repeats the isolated vokra-piper-g2p dependency graph. These
+# are maintenance-status notices, not exploitable defects; see deny.toml and
+# docs/license-audit.md for the full reachability and license review.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+reason = "bincode 1.3.3 is unmaintained but complete; it only decodes the revision-pinned bundled NAIST JDIC dictionary, not request-controlled bytes."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2021-0153"
+reason = "encoding 0.2.33 is unmaintained; it supplies static legacy-CJK tables used by the bundled Japanese dictionary and has no fixed successor release in this transitive chain."

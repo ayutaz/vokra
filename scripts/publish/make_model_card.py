@@ -257,6 +257,31 @@ _HF_LICENSES = {
     "unlicense", "zlib", "unknown", "other",
 }
 
+NVIDIA_OML_NOTICE = (
+    "Licensed by NVIDIA Corporation under the NVIDIA Open Model License"
+)
+_NVIDIA_OML_IDS = {
+    "nvidia-open-model-license",
+    "nvidia open model license",
+    "nvidia open model license agreement",
+}
+
+
+def distribution_attribution(lic, attribution):
+    """Return the attribution text a redistributed artifact must carry.
+
+    OML §3.1 prescribes a fixed sentence, so it is safe to derive it from the
+    recognised licence id.  Preserve any more-specific converter attribution
+    and append the fixed sentence only when it is absent.  Other licences keep
+    the existing fail-closed behaviour: their author/citation cannot be
+    invented from the licence family alone.
+    """
+    text = (attribution or "").strip()
+    norm = (lic or "").strip().lower()
+    if norm in _NVIDIA_OML_IDS and NVIDIA_OML_NOTICE not in text:
+        return f"{text}\n{NVIDIA_OML_NOTICE}".strip()
+    return text or None
+
 
 def hf_license_tag(lic):
     """Maps a licence string to a value Hugging Face's YAML validator accepts.
@@ -280,7 +305,9 @@ def build_card(path, repo_name=None, allow_noncommercial=False):
     lic = g.get("vokra.provenance.license")
     src = g.get("vokra.provenance.source")
     model_id = g.get("vokra.provenance.model_id")
-    attribution = g.get("vokra.provenance.attribution")
+    attribution = distribution_attribution(
+        lic, g.get("vokra.provenance.attribution")
+    )
     schema = g.get("vokra.schema.version")
     producer = g.get("vokra.schema.producer")
 
@@ -311,12 +338,13 @@ def build_card(path, repo_name=None, allow_noncommercial=False):
             "explicit non-commercial banner."
         )
     if cls == "attribution-required" and not attribution:
-        # CC-BY obliges the *redistributor* to carry attribution. Publishing a
+        # Attribution licences oblige the *redistributor* to carry the exact
+        # required credit. Publishing a
         # weight whose file cannot state who to credit pushes that obligation
         # onto downstream users who have no way to discharge it.
         raise Refusal(
             f"{path}: licence class `{cls}` but no "
-            "`vokra.provenance.attribution` — a CC-BY weight cannot be "
+            "`vokra.provenance.attribution` — an attribution-required weight cannot be "
             "republished without the attribution it obliges. Re-convert with a "
             "converter that calls `stamp_attribution`."
         )
@@ -596,6 +624,20 @@ def self_test():
             failures.append("attribution-required without text was NOT refused")
         except Refusal:
             pass
+
+        # --- NVIDIA OML: the licence itself supplies the exact NOTICE ------
+        # Unlike CC-BY, OML §3.1 fixes the attribution sentence verbatim, so a
+        # publisher can derive it safely from the recognised licence id.  This
+        # must be present both in the card and in upload.sh's generated NOTICE.
+        p = write(td, "nvidia-oml.gguf", [
+            ("vokra.model.arch", "nanocodec"),
+            ("vokra.provenance.weight_license", "attribution-required"),
+            ("vokra.provenance.license", "nvidia-open-model-license"),
+        ])
+        cases += 1
+        card = build_card(p)
+        if "Licensed by NVIDIA Corporation under the NVIDIA Open Model License" not in card:
+            failures.append("NVIDIA OML card missing the exact §3.1 NOTICE sentence")
 
     if failures:
         for f in failures:

@@ -413,7 +413,30 @@ the committed numerical fixtures. This runtime change did not upload or
 replace any model artifact.
 
 --------------------------------------------------------------------------
-9. Maintaining this file
+16. NVIDIA NanoCodec — NVIDIA Open Model License attribution
+--------------------------------------------------------------------------
+The NVIDIA NeMo NanoCodec 22.05 kHz checkpoint family is distributed under
+the NVIDIA Open Model License Agreement, Version Release Date June 14, 2024.
+Commercial use and redistribution are permitted subject to that agreement.
+Section 3.1 requires every redistribution to include the agreement and the
+following exact sentence in a Notice text file:
+
+Licensed by NVIDIA Corporation under the NVIDIA Open Model License
+
+Source model family:
+  https://huggingface.co/nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps
+
+The controlling June-2024 agreement is vendored at
+third_party/nvidia-open-model-license-agreement-june-2024.txt. Its official
+source PDF SHA-256 is
+396d7de220f6b0e6fcfe33836f1b99a9943769b97c56330444f8efe1b441f607.
+The current NVIDIA web agreement was revised on October 24, 2025; NanoCodec's
+official model card links the June-2024 PDF, so distributors must not silently
+substitute the later text without re-auditing the checkpoint's governing
+terms.
+
+--------------------------------------------------------------------------
+17. Maintaining this file
 --------------------------------------------------------------------------
 
 Any pull request that adds support for a new model or introduces a new

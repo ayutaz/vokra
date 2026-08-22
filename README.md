@@ -407,10 +407,10 @@ Vokra never silently reroutes to a different backend or dtype.
   five-target cross-build matrix (macOS Intel + Apple Silicon, Linux x64,
   Windows MSVC, Android arm64) with an AssetLib-shaped release layout.
 - **Python (pre-alpha source)** — pure `ctypes` (no `pyo3`) under
-  [`bindings/python/`](bindings/python). The wheel scaffold exists, but the
-  checked-in binding still covers the earlier 14-function subset while the
-  current C header has 41 functions, and the package root does not yet export
-  `Session`. Treat PyPI publication as pending; see the binding README.
+  [`bindings/python/`](bindings/python). The generated table covers all 48
+  current C functions and the package root exports `Session`, `Stream`,
+  `Event`, and typed errors. Treat wheel verification and PyPI publication as
+  pending; see the binding README.
 - **HTTP server** — [`integrations/vokra-server`](integrations/vokra-server):
   an isolated workspace implementing **OpenAI Whisper**
   (`/v1/audio/transcriptions`), **piper-plus HTTP** (`/api/tts`), and

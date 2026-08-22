@@ -1,0 +1,21 @@
+[project]
+name = "vokra-nanocodec-parity"
+version = "0.1.0"
+description = "Pinned official-NeMo preparation, Group-FSQ, and causal HiFi-GAN parity tools for NanoCodec"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "nemo_toolkit[tts] @ git+https://github.com/NVIDIA-NeMo/Speech.git@4fcff72febec9395fdbd4bfa0747bfda2ecd3cef",
+    # The pinned NeMo TTS package imports PEFT while omitting it from its
+    # distribution metadata. Keep the import closure explicit and locked.
+    "peft==0.20.0",
+]
+
+[tool.uv]
+package = false
+# NeMo declares text-unidecode unconditionally for text normalization, but the
+# pinned AudioCodecModel oracle never imports that path.  Its license includes
+# GPL alternatives, so fail closed and omit it instead of allowing a GPL
+# package into the committed reference environment.
+override-dependencies = [
+    "text-unidecode ; python_version < '0'",
+]

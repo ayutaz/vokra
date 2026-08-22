@@ -505,7 +505,7 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 | M2-09 | vokra-server 4 互換 API | ✅ 完了 | — |
 | M2-10 | Discord bot デモ | ❌ descoped | Discord 全体を非採用（依頼者決定）。サーバ稼働実証は M2-15 review の別形態で扱う |
 | M2-11 | Unity official plugin | ✅ 完了（UPM CD） | § 7（Unity license）|
-| M2-12 | 言語バインディング（Python 初回） | ⚠️ wheel scaffold 完了。ただし current ABI 41 functions に対して生成済み binding は14 functions、generator は新構造体未対応、package root export 未完了 | binding drift 修復 + § 5（合意）+ § 6（PyPI reservation / publication）|
+| M2-12 | 言語バインディング（Python 初回） | ⚠️ source 実装は current ABI 48 functions に同期済み。package root export、4 native wheel の build/repair/arch smoke も実装済み | final-head wheel 検証 + § 5（合意）+ § 6（PyPI reservation / publication）|
 | M2-13 | compliance 拡張 | ✅ 完了 | — |
 | M2-14 | 実機ベンチ計測 | 引き渡し済み / CUDA reference 計測は完了、iOS 実機は依頼者側／**CUDA RTF variance harness は Phase 3 で CC-integrated + 実 vast.ai run 完了（hardware variance で M2-14 defer 決定）**（§ 2） | § 1 + § 2 |
 | M2-15 | 四半期 Go/No-go review | 継続監視 / metrics runbook 整備済（§ 4 参照） | § 8（Kill switch J — wire-level PASS）+ § 9（C/K）|

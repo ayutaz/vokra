@@ -125,7 +125,7 @@ Quantization presets available: `--quantize q4_k` / `q5_k` / `q6_k`
 ## 4. From `faster-whisper` (Python)
 
 The source Python package now exposes `Session` and its generated `ctypes`
-table covers all 41 current C functions. It remains an unpublished pre-1.0
+table covers all 48 current C functions. It remains an unpublished pre-1.0
 surface: the four native wheels must pass final-head CI, and no PyPI/TestPyPI
 destination has been authorized. See the
 [binding status](../bindings/python/README.md). Source-checkout evaluation is

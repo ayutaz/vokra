@@ -230,7 +230,22 @@ FN vokra-capi::aec::vokra_aec_ref_writer_destroy|pub unsafe extern "C" fn vokra_
 FN vokra-capi::aec::vokra_aec_reset|pub unsafe extern "C" fn vokra_aec_reset(aec: *mut vokra_aec_t) -> vokra_status_t {
 FN vokra-capi::asr::vokra_asr_transcribe|pub unsafe extern "C" fn vokra_asr_transcribe(
 FN vokra-capi::asr::vokra_string_free|pub unsafe extern "C" fn vokra_string_free(s: *mut c_char) {
+FN vokra-capi::codec::vokra_codec_decoder_destroy|pub unsafe extern "C" fn vokra_codec_decoder_destroy(decoder: *mut vokra_codec_decoder_t) {
+FN vokra-capi::codec::vokra_codec_decoder_frame_hop|pub unsafe extern "C" fn vokra_codec_decoder_frame_hop(
+FN vokra-capi::codec::vokra_codec_decoder_n_codebooks|pub unsafe extern "C" fn vokra_codec_decoder_n_codebooks(
+FN vokra-capi::codec::vokra_codec_decoder_open|pub unsafe extern "C" fn vokra_codec_decoder_open(
+FN vokra-capi::codec::vokra_codec_decoder_pull_pcm|pub unsafe extern "C" fn vokra_codec_decoder_pull_pcm(
+FN vokra-capi::codec::vokra_codec_decoder_push_codes|pub unsafe extern "C" fn vokra_codec_decoder_push_codes(
+FN vokra-capi::codec::vokra_codec_decoder_reset|pub unsafe extern "C" fn vokra_codec_decoder_reset(decoder: *mut vokra_codec_decoder_t) {
+FN vokra-capi::codec::vokra_codec_decoder_sample_rate|pub unsafe extern "C" fn vokra_codec_decoder_sample_rate(
 FN vokra-capi::error::vokra_last_error|pub extern "C" fn vokra_last_error() -> *const c_char {
+FN vokra-capi::feature::vokra_feat_destroy|pub unsafe extern "C" fn vokra_feat_destroy(feat: *mut vokra_feat_t) {
+FN vokra-capi::feature::vokra_feat_dim|pub unsafe extern "C" fn vokra_feat_dim(feat: *const vokra_feat_t) -> i32 {
+FN vokra-capi::feature::vokra_feat_frame_rate_mhz|pub unsafe extern "C" fn vokra_feat_frame_rate_mhz(feat: *const vokra_feat_t) -> i32 {
+FN vokra-capi::feature::vokra_feat_open|pub unsafe extern "C" fn vokra_feat_open(session: *const vokra_session_t) -> *mut vokra_feat_t {
+FN vokra-capi::feature::vokra_feat_pull|pub unsafe extern "C" fn vokra_feat_pull(
+FN vokra-capi::feature::vokra_feat_push_pcm|pub unsafe extern "C" fn vokra_feat_push_pcm(
+FN vokra-capi::feature::vokra_feat_reset|pub unsafe extern "C" fn vokra_feat_reset(feat: *mut vokra_feat_t) {
 FN vokra-capi::options::vokra_backend_available|pub extern "C" fn vokra_backend_available(backend: i32) -> bool {
 FN vokra-capi::options::vokra_session_options_create|pub extern "C" fn vokra_session_options_create() -> *mut vokra_session_options_t {
 FN vokra-capi::options::vokra_session_options_destroy|pub unsafe extern "C" fn vokra_session_options_destroy(opts: *mut vokra_session_options_t) {
@@ -663,14 +678,18 @@ FN vokra-core::session::from_gguf|pub fn from_gguf(gguf: GgufFile) -> SessionBui
 FN vokra-core::session::gguf|pub fn gguf(&self) -> &GgufFile {
 FN vokra-core::session::kv_quant|pub fn kv_quant(&self) -> KvQuant {
 FN vokra-core::session::model_path|pub fn model_path(&self) -> &Path {
+FN vokra-core::session::open_speech_feature_stream|pub fn open_speech_feature_stream(&self) -> Result<Box<dyn SpeechFeatureStream + Send>> {
+FN vokra-core::session::open_codec_decoder|pub fn open_codec_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>> {
 FN vokra-core::session::open_vad_stream|pub fn open_vad_stream(&self) -> Result<Box<dyn VadStreamHandle + Send>> {
 FN vokra-core::session::with_asr_engine|pub fn with_asr_engine(mut self, engine: Arc<dyn AsrEngine>) -> Self {
 FN vokra-core::session::with_attribution|pub fn with_attribution(mut self, attribution: AttributionInfo) -> Self {
 FN vokra-core::session::with_backend|pub fn with_backend(mut self, backend: BackendKind) -> Result<Session> {
+FN vokra-core::session::with_codec_decoder_engine|pub fn with_codec_decoder_engine(mut self, engine: Arc<dyn CodecDecoderEngine>) -> Self {
 FN vokra-core::session::with_kv_quant|pub fn with_kv_quant(mut self, kv_quant: KvQuant) -> Self {
 FN vokra-core::session::with_s2s_duplex_engine|pub fn with_s2s_duplex_engine(mut self, engine: Arc<dyn S2sDuplexEngine>) -> Self {
 FN vokra-core::session::with_s2s_engine|pub fn with_s2s_engine(mut self, engine: Arc<dyn S2sEngine>) -> Self {
 FN vokra-core::session::with_speaker_engine|pub fn with_speaker_engine(mut self, engine: Arc<dyn SpeakerEngine>) -> Self {
+FN vokra-core::session::with_speech_feature_engine|pub fn with_speech_feature_engine(mut self, engine: Arc<dyn SpeechFeatureEngine>) -> Self {
 FN vokra-core::session::with_tts_engine|pub fn with_tts_engine(mut self, engine: Arc<dyn TtsEngine>) -> Self {
 FN vokra-core::session::with_vad_engine|pub fn with_vad_engine(mut self, engine: Arc<dyn VadEngine>) -> Self {
 FN vokra-core::stream::active_stream_count|pub fn active_stream_count(&self) -> u64 {
@@ -854,6 +873,8 @@ FN vokra-ops::fsmn_vad::validate|pub fn validate(&self, cfg: &FsmnEncoderConfig)
 FN vokra-ops::fsmn_vad::zeros|pub fn zeros(cfg: &FsmnEncoderConfig) -> Result<Self> {
 FN vokra-ops::fsq_codec::effective_vocab|pub fn effective_vocab(&self) -> Result<usize> {
 FN vokra-ops::fsq_codec::fsq_index_to_grid_codes|pub fn fsq_index_to_grid_codes(index: u32, levels: &[u32], out: &mut [f32]) -> Result<()> {
+FN vokra-ops::fsq_codec::group_fsq_decode_into|pub fn group_fsq_decode_into(
+FN vokra-ops::fsq_codec::group_fsq_decode|pub fn group_fsq_decode(codes: &[u32], time: usize, levels_per_group: &[u32]) -> Result<Vec<f32>> {
 FN vokra-ops::fsq_codec::n_dims|pub fn n_dims(&self) -> usize {
 FN vokra-ops::fsq_codec::new|pub fn new(d_model: usize, n_dims: usize, weight: Vec<f32>, bias: Vec<f32>) -> Result<Self> {
 FN vokra-ops::fsq_codec::wavtokenizer_24k_4096|pub const fn wavtokenizer_24k_4096() -> Self {
@@ -1014,8 +1035,12 @@ FN vokra-ops::qwen3_tts_codec::quantizer_vocab_size|pub fn quantizer_vocab_size(
 FN vokra-ops::qwen3_tts_codec::qwen3_tts_12hz|pub const fn qwen3_tts_12hz() -> Self {
 FN vokra-ops::qwen3_tts_codec::qwen3_tts_codec_decode|pub fn qwen3_tts_codec_decode(
 FN vokra-ops::qwen3_tts_codec::tables|pub fn tables(&self) -> &[CodebookTable] {
+FN vokra-ops::resample::delay_samples|pub fn delay_samples(&self) -> usize {
+FN vokra-ops::resample::new|pub fn new(in_rate: u32, out_rate: u32, quality: u8) -> Result<Self> {
+FN vokra-ops::resample::process_into|pub fn process_into(&mut self, input: &[f32], out: &mut [f32]) -> Result<usize> {
 FN vokra-ops::resample::quality_params|pub fn quality_params(quality: u8) -> (usize, f64) {
 FN vokra-ops::resample::resample|pub fn resample(input: &[f32], in_rate: u32, out_rate: u32, quality: u8) -> Result<Vec<f32>> {
+FN vokra-ops::resample::reset|pub fn reset(&mut self) {
 FN vokra-ops::rnnoise::bark_dct|pub fn bark_dct(log_energies: &[f32; N_BARK_BANDS]) -> [f32; N_BARK_BANDS] {
 FN vokra-ops::rnnoise::bark_filterbank|pub fn bark_filterbank(magnitude: &[f32]) -> Result<[f32; N_BARK_BANDS]> {
 FN vokra-ops::rnnoise::dense_forward|pub fn dense_forward(
@@ -1242,6 +1267,8 @@ MOD vokra-ops::zipformer|pub mod zipformer;
 STRUCT vokra-capi::aec::vokra_aec_config_t|pub struct vokra_aec_config_t {
 STRUCT vokra-capi::aec::vokra_aec_ref_writer_t|pub struct vokra_aec_ref_writer_t {
 STRUCT vokra-capi::aec::vokra_aec_t|pub struct vokra_aec_t {
+STRUCT vokra-capi::handle::vokra_feat_t|pub struct vokra_feat_t {
+STRUCT vokra-capi::codec::vokra_codec_decoder_t|pub struct vokra_codec_decoder_t {
 STRUCT vokra-capi::handle::vokra_session_t|pub struct vokra_session_t {
 STRUCT vokra-capi::handle::vokra_stream_t|pub struct vokra_stream_t {
 STRUCT vokra-capi::options::vokra_session_options_t|pub struct vokra_session_options_t {
@@ -1481,6 +1508,7 @@ STRUCT vokra-ops::openwakeword::OpenwakewordMelspecWeights|pub struct Openwakewo
 STRUCT vokra-ops::prosody::ProsodyControl|pub struct ProsodyControl {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodecConfig|pub struct Qwen3TtsCodecConfig {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodec|pub struct Qwen3TtsCodec {
+STRUCT vokra-ops::resample::StreamingResampler|pub struct StreamingResampler {
 STRUCT vokra-ops::rnnoise::PitchState|pub struct PitchState {
 STRUCT vokra-ops::rnnt_decode::RnntAttrs|pub struct RnntAttrs {
 STRUCT vokra-ops::rnnt_decode::RnntHypothesis|pub struct RnntHypothesis {
@@ -1533,6 +1561,8 @@ TRAIT vokra-core::decode::wfst::semiring::Semiring|pub trait Semiring: Copy + Cl
 TRAIT vokra-core::engines::AecEngine|pub trait AecEngine: Send + Sync {
 TRAIT vokra-core::engines::AecStreamHandle|pub trait AecStreamHandle {
 TRAIT vokra-core::engines::AsrEngine|pub trait AsrEngine: Send + Sync {
+TRAIT vokra-core::engines::CodecDecoderEngine|pub trait CodecDecoderEngine: Send + Sync {
+TRAIT vokra-core::engines::CodecDecoderHandle|pub trait CodecDecoderHandle {
 TRAIT vokra-core::engines::DenoiseEngine|pub trait DenoiseEngine: Send + Sync {
 TRAIT vokra-core::engines::DenoiseStreamHandle|pub trait DenoiseStreamHandle {
 TRAIT vokra-core::engines::KwsEngine|pub trait KwsEngine: Send + Sync {
@@ -1541,6 +1571,8 @@ TRAIT vokra-core::engines::S2sDuplexEngine|pub trait S2sDuplexEngine: Send + Syn
 TRAIT vokra-core::engines::S2sDuplexHandle|pub trait S2sDuplexHandle {
 TRAIT vokra-core::engines::S2sEngine|pub trait S2sEngine: Send + Sync {
 TRAIT vokra-core::engines::SpeakerEngine|pub trait SpeakerEngine: Send + Sync {
+TRAIT vokra-core::engines::SpeechFeatureEngine|pub trait SpeechFeatureEngine: Send + Sync {
+TRAIT vokra-core::engines::SpeechFeatureStream|pub trait SpeechFeatureStream {
 TRAIT vokra-core::engines::TtsEngine|pub trait TtsEngine: Send + Sync {
 TRAIT vokra-core::engines::TtsStreamHandle|pub trait TtsStreamHandle {
 TRAIT vokra-core::engines::VadEngine|pub trait VadEngine: Send + Sync {
@@ -1584,7 +1616,7 @@ USE vokra-core::decode::wfst::semiring::{Semiring, TropicalWeight}|pub use semir
 USE vokra-core::decode::wfst::{ Arc, Fst, Label, Semiring, StateId, TropicalWeight, WfstDecodeConfig, WfstDecoder, WfstHypothesis, WfstLattice, read_openfst_vector, }|pub use wfst::{ Arc, Fst, Label, Semiring, StateId, TropicalWeight, WfstDecodeConfig, WfstDecoder, WfstHypothesis, WfstLattice, read_openfst_vector, };
 USE vokra-core::decode::word_timing::{ APPEND_PUNCTUATIONS, AlignmentParams, CrossAttention, PREPEND_PUNCTUATIONS, WordTiming, merge_punctuations, token_alignment, words_from_alignment, }|pub use word_timing::{ APPEND_PUNCTUATIONS, AlignmentParams, CrossAttention, PREPEND_PUNCTUATIONS, WordTiming, merge_punctuations, token_alignment, words_from_alignment, };
 USE vokra-core::decode::{ CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg, apply_cfg_inplace, argmax, sample_sequence, }|pub use decode::{ CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg, apply_cfg_inplace, argmax, sample_sequence, };
-USE vokra-core::engines::{ AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, }|pub use engines::{ AecEngine, AecStreamHandle, AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, };
+USE vokra-core::engines::{ AecEngine, AecStreamHandle, AsrEngine, CodecDecoderEngine, CodecDecoderHandle, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SpeechFeatureEngine, SpeechFeatureStream, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, }|pub use engines::{ AecEngine, AecStreamHandle, AsrEngine, CodecDecoderEngine, CodecDecoderHandle, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport, DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SpeakerEngine, SpeechFeatureEngine, SpeechFeatureStream, SynthesisRequest, TtsEngine, TtsStreamHandle, VadEngine, VadStreamHandle, };
 USE vokra-core::error::{Result, VokraError}|pub use error::{Result, VokraError};
 USE vokra-core::gguf::frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec}|pub use frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec};
 USE vokra-core::gguf::reader::{AsBytes, GgufFile}|pub use reader::{AsBytes, GgufFile};
@@ -1655,7 +1687,7 @@ USE vokra-ops::firered_vad::{ FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig
 USE vokra-ops::flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, }|pub use flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, };
 USE vokra-ops::frontend::{mel_attrs_from_spec, stft_attrs_from_spec}|pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 USE vokra-ops::fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, }|pub use fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, };
-USE vokra-ops::fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, wavtokenizer_vq_decode, xcodec2_fsq_decode, }|pub use fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, wavtokenizer_vq_decode, xcodec2_fsq_decode, };
+USE vokra-ops::fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode, group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode, }|pub use fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode, group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode, };
 USE vokra-ops::fused_logmel::fused_log_mel_scalar|pub use fused_logmel::fused_log_mel_scalar;
 USE vokra-ops::hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, }|pub use hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, };
 USE vokra-ops::hpf::{HpfAttrs, HpfState, hpf}|pub use hpf::{HpfAttrs, HpfState, hpf};
@@ -1679,7 +1711,7 @@ USE vokra-ops::openwakeword::{ OpenwakewordClassifierWeights, OpenwakewordConv2d
 USE vokra-ops::preprocess::{apply_frontend, dc_offset_remove, pre_emphasis}|pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 USE vokra-ops::prosody::{ApplyProsody, ProsodyControl}|pub use prosody::{ApplyProsody, ProsodyControl};
 USE vokra-ops::qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode}|pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
-USE vokra-ops::resample::resample|pub use resample::resample;
+USE vokra-ops::resample::{StreamingResampler, resample}|pub use resample::{StreamingResampler, resample};
 USE vokra-ops::rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, }|pub use rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, };
 USE vokra-ops::rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode}|pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 USE vokra-ops::snac_decode::{SnacConfig, SnacDecoder, SnacWeights}|pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};

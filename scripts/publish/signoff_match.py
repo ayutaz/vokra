@@ -111,6 +111,9 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
     ],
     "mimi": ["Mimi codec (Kyutai)"],
+    "nanocodec-22khz-0.6kbps-12.5fps": ["NVIDIA NanoCodec (NeMo, 22 kHz)"],
+    "nanocodec-22khz-1.78kbps-12.5fps": ["NVIDIA NanoCodec (NeMo, 22 kHz)"],
+    "nanocodec-22khz-1.89kbps-21.5fps": ["NVIDIA NanoCodec (NeMo, 22 kHz)"],
     "deepfilternet3": ["DeepFilterNet3"],
     "utmos22-strong": ["UTMOS22-strong (SaruLab)"],
     "moshiko-7b-bf16": ["Moshi (Helium + Mimi)"],
@@ -1155,6 +1158,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "csm": ["Sesame CSM-1B"],
     "moshi": ["Moshi (Helium + Mimi)"],
     "mimi": ["Mimi codec (Kyutai)"],
+    # The matching §3.1 row is deliberately blank until the owner records a
+    # decision, so converter coverage remains fail-closed for publication.
+    "nanocodec": ["NVIDIA NanoCodec (NeMo, 22 kHz)"],
     "dac": ["DAC 24khz (Descript)"],
     "denoise": ["DeepFilterNet3"],
     "utmos": ["UTMOS22-strong (SaruLab)"],

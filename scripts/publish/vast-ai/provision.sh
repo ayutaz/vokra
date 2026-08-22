@@ -42,6 +42,12 @@ VOKRA_REPO_URL="${VOKRA_REPO_URL:-https://github.com/ayutaz/vokra.git}"
 VOKRA_BRANCH="${VOKRA_BRANCH:-main}"
 VOKRA_ROOT="${VOKRA_ROOT:-$HOME/vokra}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
+RUSTUP_INIT_VERSION="1.29.0"
+RUSTUP_INIT_SHA256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+UV_VERSION="0.12.5"
+UV_ARCHIVE_SHA256="68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
+UV_ARCHIVE_URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
 
 log() { printf '[provision] %s\n' "$*" >&2; }
 step() { printf '\n\033[1;36m[provision] ==== %s ====\033[0m\n' "$*" >&2; }
@@ -175,7 +181,22 @@ install_rust() {
     log "rustup/cargo already present ($(cargo --version)) — skipping"
     return 0
   fi
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  local rustup_dir rustup_init actual_sha256
+  rustup_dir="$(mktemp -d "${TMPDIR:-/tmp}/vokra-rustup-init.XXXXXX")"
+  rustup_init="$rustup_dir/rustup-init"
+  curl --proto '=https' --tlsv1.2 -sSfL \
+    --output "$rustup_init" "$RUSTUP_INIT_URL"
+  actual_sha256="$(sha256sum "$rustup_init" | awk '{print $1}')"
+  if [[ "$actual_sha256" != "$RUSTUP_INIT_SHA256" ]]; then
+    rm -f "$rustup_init"
+    rmdir "$rustup_dir"
+    log "ERROR: rustup-init SHA-256 mismatch (expected $RUSTUP_INIT_SHA256, got $actual_sha256)"
+    exit 1
+  fi
+  chmod 700 "$rustup_init"
+  "$rustup_init" -y --default-toolchain stable
+  rm -f "$rustup_init"
+  rmdir "$rustup_dir"
   # shellcheck disable=SC1091
   source "$HOME/.cargo/env"
   log "installed: $(cargo --version)"
@@ -186,8 +207,25 @@ install_uv() {
   if have_uv; then
     log "uv already present ($(uv --version)) — skipping install"
   else
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # uv installer writes to ~/.local/bin. Not always on PATH in fresh shells.
+    local uv_archive uv_unpack actual_sha256
+    uv_archive="$(mktemp "${TMPDIR:-/tmp}/vokra-uv.XXXXXX.tar.gz")"
+    uv_unpack="$(mktemp -d "${TMPDIR:-/tmp}/vokra-uv-unpack.XXXXXX")"
+    curl --proto '=https' --tlsv1.2 -sSfL \
+      --output "$uv_archive" "$UV_ARCHIVE_URL"
+    actual_sha256="$(sha256sum "$uv_archive" | awk '{print $1}')"
+    if [[ "$actual_sha256" != "$UV_ARCHIVE_SHA256" ]]; then
+      rm -f "$uv_archive"
+      rm -rf "$uv_unpack"
+      log "ERROR: uv archive SHA-256 mismatch (expected $UV_ARCHIVE_SHA256, got $actual_sha256)"
+      exit 1
+    fi
+    tar -xzf "$uv_archive" -C "$uv_unpack"
+    mkdir -p "$HOME/.local/bin"
+    install -m 755 "$uv_unpack/uv-x86_64-unknown-linux-gnu/uv" "$HOME/.local/bin/uv"
+    install -m 755 "$uv_unpack/uv-x86_64-unknown-linux-gnu/uvx" "$HOME/.local/bin/uvx"
+    rm -f "$uv_archive"
+    rm -rf "$uv_unpack"
+    # The verified archive is installed to ~/.local/bin. Not always on PATH in fresh shells.
     export PATH="$HOME/.local/bin:$PATH"
     # shellcheck disable=SC1091
     [[ -f "$HOME/.local/bin/env" ]] && source "$HOME/.local/bin/env" || true
@@ -264,12 +302,13 @@ mark_as_vast_instance() {
 
 sanity_hf_token() {
   step "HF_TOKEN sanity"
-  if [[ -z "${HF_TOKEN:-${HF:-}}" ]]; then
+  local token="${HF_TOKEN:-${HF:-}}"
+  if [[ -z "$token" ]]; then
     log "WARN: HF_TOKEN / HF not set in env"
     log "  Publish will fail. Before run-one.sh:  export HF_TOKEN='hf_xxxxxx'"
     log "  (HF token has to be set per-session; a fresh instance will forget it.)"
   else
-    log "HF_TOKEN present (len=${#HF_TOKEN:-0}, first 6 chars: ${HF_TOKEN:0:6}...)"
+    log "HF_TOKEN present (len=${#token}, first 6 chars: ${token:0:6}...)"
   fi
 }
 
@@ -278,7 +317,7 @@ sanity_hf_token() {
 # can pre-check idempotency on an already-provisioned box without kicking
 # off any install.
 run_self_test() {
-  local cases=0 fail=0
+  local cases=0
   echo "provision.sh self-test — probes only, no installs"
   cases=$((cases + 1))
   if have_rust;        then echo "  [ok]   Rust:         $(cargo --version 2>/dev/null || echo 'unknown')"; else echo "  [need] Rust:         not installed"; fi

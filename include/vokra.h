@@ -139,6 +139,16 @@ typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t;
 // far-end queue. Owned by the inference thread. Opaque to C.
 typedef struct vokra_aec_t vokra_aec_t;
 
+// Opaque single-owner streaming codec decoder (module docs).
+typedef struct vokra_codec_decoder_t vokra_codec_decoder_t;
+
+// Opaque continuous speech-feature handle (#49).
+//
+// Created by `vokra_feat_open`, released by `vokra_feat_destroy`. It owns the
+// encoder's causal state and bounded pending-output ring, and retains the
+// originating session so model weights outlive the C handle.
+typedef struct vokra_feat_t vokra_feat_t;
+
 // Opaque duplex-session handle (module docs). Created by
 // `vokra_s2s_duplex_open`, released by `vokra_s2s_duplex_destroy`.
 typedef struct vokra_s2s_duplex_t vokra_s2s_duplex_t;
@@ -348,6 +358,93 @@ enum vokra_status_t vokra_asr_transcribe(const struct vokra_session_t *session,
 // not already been freed.
 void vokra_string_free(char *s);
 
+// Opens a fresh streaming codec decoder for `session`.
+//
+// Returns `NULL` and records detail in `vokra_last_error()` when the loaded
+// model does not expose a complete streaming token-to-PCM decoder. Currently
+// standalone Mimi and NVIDIA NanoCodec opt in; partial SNAC support remains
+// an explicit error until its terminal PCM decoder exists.
+//
+// # Safety
+//
+// `session` must be `NULL` or a live `vokra_session_t`. The returned handle,
+// when non-NULL, must be destroyed exactly once with
+// [`vokra_codec_decoder_destroy`].
+struct vokra_codec_decoder_t *vokra_codec_decoder_open(const struct vokra_session_t *session);
+
+// Returns PCM samples emitted per complete code frame, or `-1` on error.
+//
+// # Safety
+//
+// `decoder` must be a live handle or `NULL` (reported as `-1`).
+int32_t vokra_codec_decoder_frame_hop(const struct vokra_codec_decoder_t *decoder);
+
+// Returns the decoder PCM sample rate in Hz, or `-1` on error.
+//
+// # Safety
+//
+// `decoder` must be a live handle or `NULL` (reported as `-1`).
+int32_t vokra_codec_decoder_sample_rate(const struct vokra_codec_decoder_t *decoder);
+
+// Returns the checkpoint's codebook count, or `-1` on error. This value is
+// informational; callers must still pass the count to every push so shape
+// mismatches remain observable at the ABI boundary.
+//
+// # Safety
+//
+// `decoder` must be a live handle or `NULL` (reported as `-1`).
+int32_t vokra_codec_decoder_n_codebooks(const struct vokra_codec_decoder_t *decoder);
+
+// Pushes one complete code frame.
+//
+// `n_codebooks` is a required call-time shape and must exactly match
+// `vokra_codec_decoder_n_codebooks(decoder)`. On success,
+// `*out_frames_emitted` is `1`; pull the corresponding PCM before the next
+// push. The warmed successful push/pull path performs no heap allocation.
+//
+// # Safety
+//
+// `decoder` must be a live handle owned by the calling thread; `codes` must
+// point to `n_codebooks` readable `uint32_t` values; `out_frames_emitted`
+// must be valid and writable.
+enum vokra_status_t vokra_codec_decoder_push_codes(struct vokra_codec_decoder_t *decoder,
+                                                   const uint32_t *codes,
+                                                   size_t n_codebooks,
+                                                   int32_t *out_frames_emitted);
+
+// Pulls one pending PCM frame into `out`.
+//
+// `capacity` must be at least `vokra_codec_decoder_frame_hop(decoder)` when
+// a frame is pending. `*out_len == 0` means there was nothing to pull.
+//
+// # Safety
+//
+// `decoder` must be a live handle owned by the calling thread; when
+// `capacity > 0`, `out` must point to that many writable floats; `out_len`
+// must be valid and writable.
+enum vokra_status_t vokra_codec_decoder_pull_pcm(struct vokra_codec_decoder_t *decoder,
+                                                 float *out,
+                                                 size_t capacity,
+                                                 size_t *out_len);
+
+// Resets the causal decoder to its as-new state and discards pending PCM.
+// Errors (including `NULL`) are recorded in `vokra_last_error()`; this exact
+// pre-freeze API is void, matching the issue contract.
+//
+// # Safety
+//
+// `decoder` must be a live handle owned by the calling thread.
+void vokra_codec_decoder_reset(struct vokra_codec_decoder_t *decoder);
+
+// Destroys a decoder handle. `NULL` is a no-op; double-free or concurrent
+// use/destroy is undefined behaviour.
+//
+// # Safety
+//
+// `decoder` must be `NULL` or a live handle returned by
+// [`vokra_codec_decoder_open`] and not yet freed.
+void vokra_codec_decoder_destroy(struct vokra_codec_decoder_t *decoder);
+
 // Returns the calling thread's last error message as a NUL-terminated UTF-8
 // C string, or `NULL` if no error has been recorded on this thread.
 //
@@ -356,6 +453,82 @@ void vokra_string_free(char *s);
 // threads. `vokra_last_error` itself never fails and never allocates
 // (ADR-0003 §3-b).
 const char *vokra_last_error(void);
+
+// Opens a continuous speech-feature stream for `session`.
+//
+// The returned handle retains the session and must be released with
+// [`vokra_feat_destroy`]. Returns `NULL` with detail in `vokra_last_error()`
+// when the model family has no feature engine or construction fails.
+//
+// # Safety
+//
+// `session` must be a live session handle or `NULL` (the rejected branch).
+struct vokra_feat_t *vokra_feat_open(const struct vokra_session_t *session);
+
+// Returns the encoder's native frame rate in milli-Hertz (25 Hz = 25,000).
+// Returns `-1` on a NULL handle or internal failure.
+//
+// # Safety
+//
+// `feat` must be a live feature handle or `NULL` (the rejected branch).
+int32_t vokra_feat_frame_rate_mhz(const struct vokra_feat_t *feat);
+
+// Returns the number of `float` values in one feature frame, or `-1` on
+// failure.
+//
+// # Safety
+//
+// `feat` must be a live feature handle or `NULL` (the rejected branch).
+int32_t vokra_feat_dim(const struct vokra_feat_t *feat);
+
+// Appends arbitrary-length mono PCM at the model's native sample rate.
+//
+// A trailing partial encoder frame is retained. The handle owns a bounded
+// pending-feature queue; if the supplied PCM would overflow it, this returns
+// `VOKRA_ERROR_INVALID_ARGUMENT` without consuming input. Successful calls
+// allocate nothing after stream construction/warmup.
+//
+// # Safety
+//
+// `feat` must be live and uniquely accessed for the call. `pcm` must point to
+// `n` readable floats, or may be `NULL` only when `n == 0`.
+enum vokra_status_t vokra_feat_push_pcm(struct vokra_feat_t *feat,
+                                        const float *pcm,
+                                        size_t n);
+
+// Pulls whole feature frames into `out` without blocking.
+//
+// `cap` is a capacity in **floats**, not frames. Up to
+// `floor(cap / vokra_feat_dim(feat))` rows are written. `out_frames` receives
+// the row count, and `out_start_sample` receives the exact source-PCM sample
+// index of the first row (`-1` when no row was pending). A non-zero `cap`
+// smaller than one row is rejected without consuming queued output.
+//
+// # Safety
+//
+// `feat` must be live and uniquely accessed. `out` must point to `cap`
+// writable floats, or may be `NULL` only when `cap == 0`; both scalar output
+// pointers must be writable.
+enum vokra_status_t vokra_feat_pull(struct vokra_feat_t *feat,
+                                    float *out,
+                                    size_t cap,
+                                    size_t *out_frames,
+                                    int64_t *out_start_sample);
+
+// Discards PCM tail, queued frames, timestamps and recurrent state while
+// retaining all allocations.
+//
+// # Safety
+//
+// `feat` must be a live, uniquely accessed feature handle.
+void vokra_feat_reset(struct vokra_feat_t *feat);
+
+// Frees a feature handle. `NULL` is a no-op; double-free is undefined.
+//
+// # Safety
+//
+// `feat` must be `NULL` or a live pointer returned by [`vokra_feat_open`].
+void vokra_feat_destroy(struct vokra_feat_t *feat);
 
 // Allocates a session-options object preset to the library defaults (CPU
 // backend), or returns `NULL` if the allocation fails.

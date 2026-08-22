@@ -41,6 +41,95 @@ pub trait AsrEngine: Send + Sync {
     fn backend(&self) -> BackendKind;
 }
 
+/// A model that exposes a continuous streaming speech-encoder representation.
+///
+/// The engine is immutable and shared with its parent [`crate::Session`]; all
+/// recurrent state and bounded output buffering live in the returned
+/// [`SpeechFeatureStream`]. The `Arc<Self>` receiver keeps the trait object-safe
+/// while allowing a C handle to outlive the originating session handle.
+pub trait SpeechFeatureEngine: Send + Sync {
+    /// Opens a fresh, independently reset feature stream.
+    fn open_feature_stream(self: Arc<Self>) -> Result<Box<dyn SpeechFeatureStream + Send>>;
+}
+
+/// Stateful PCM → continuous-feature stream behind the `vokra_feat_*` C ABI.
+///
+/// Feature rows are contiguous `[frames, feature_dim]` `f32`s. Implementations
+/// buffer partial PCM frames, retain causal model state, and use bounded
+/// preallocated output storage: full queues return an explicit error rather
+/// than dropping or allocating.
+pub trait SpeechFeatureStream {
+    /// Source PCM sample rate in Hz.
+    fn sample_rate(&self) -> u32;
+
+    /// Native feature-frame rate in milli-Hertz (25 Hz = 25,000 mHz).
+    fn frame_rate_millihz(&self) -> u32;
+
+    /// PCM samples between consecutive feature timestamps.
+    fn feature_frame_hop(&self) -> usize;
+
+    /// Number of `f32` values in one feature row.
+    fn feature_dim(&self) -> usize;
+
+    /// Appends arbitrary-length mono PCM, buffering an incomplete model frame.
+    /// Successful steady-state calls allocate nothing.
+    fn push_pcm(&mut self, pcm: &[f32]) -> Result<()>;
+
+    /// Drains whole feature rows into caller-owned `out`.
+    ///
+    /// Returns `(frames_written, first_frame_start_sample)`. When no frame is
+    /// pending, `frames_written` is zero and the timestamp is the position the
+    /// next feature would carry. A non-empty output smaller than one full row
+    /// is rejected without consuming data.
+    fn pull_into(&mut self, out: &mut [f32]) -> Result<(usize, i64)>;
+
+    /// Discards partial PCM, queued features, timestamps and recurrent state
+    /// without releasing preallocated storage.
+    fn reset(&mut self);
+}
+
+/// A model family capable of opening a stateful streaming codec decoder.
+///
+/// The engine is immutable and session-shareable. Each call to
+/// [`Self::open_decoder`] creates an independently owned state machine, which
+/// is the unit exposed by the C ABI as `vokra_codec_decoder_t`. Codec families
+/// opt in only after their real token-to-PCM streaming path exists; a partial
+/// binder must fail loudly instead of masquerading as a decoder (FR-EX-08).
+pub trait CodecDecoderEngine: Send + Sync {
+    /// Opens a fresh token-to-PCM decoder state.
+    fn open_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>>;
+}
+
+/// One stateful streaming codec decoder (codes in, mono PCM out).
+///
+/// Handles are single-owner mutable objects. They are `Send` so ownership can
+/// move between threads, but callers must not use the same handle concurrently.
+/// All shape axes are queried from the loaded checkpoint; in particular,
+/// `n_codebooks` is never a build-time or ABI constant.
+pub trait CodecDecoderHandle {
+    /// PCM samples produced by one complete code frame.
+    fn frame_hop(&self) -> usize;
+
+    /// PCM sample rate in Hz.
+    fn sample_rate(&self) -> u32;
+
+    /// Number of token indices required by one code frame.
+    fn n_codebooks(&self) -> usize;
+
+    /// Pushes exactly one `[n_codebooks]` frame and returns the number of PCM
+    /// frames made available to [`Self::pull_pcm`] (currently zero or one).
+    /// The warmed successful path must not allocate.
+    fn push_codes(&mut self, codes: &[u32]) -> Result<usize>;
+
+    /// Copies one pending PCM frame into `out`, returning the number of samples
+    /// written (`0` when no frame is pending). The warmed successful path must
+    /// not allocate.
+    fn pull_pcm(&mut self, out: &mut [f32]) -> Result<usize>;
+
+    /// Restores as-new causal state and discards pending PCM.
+    fn reset(&mut self) -> Result<()>;
+}
+
 /// A speech-to-speech dialog engine (implemented natively in
 /// `vokra-models` — Sesame CSM-1B = M4-05; Moshi = M4-06).
 ///

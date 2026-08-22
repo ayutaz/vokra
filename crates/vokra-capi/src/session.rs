@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use vokra_core::gguf::{AsBytes, GgufFile};
 use vokra_core::{BackendKind, CompliancePolicy, Session, VokraError};
+use vokra_models::codec::{MimiStreamingCodec, NanoCodecStreamingCodec};
 use vokra_models::moshi::MoshiEngine;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
@@ -31,6 +32,10 @@ const ARCH_WHISPER: &str = "whisper";
 const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 const ARCH_MOSHI: &str = "moshi";
+/// Standalone Kyutai Mimi codec (`vokra-cli convert --model mimi`).
+const ARCH_MIMI: &str = "mimi";
+/// NVIDIA NanoCodec decoder-only GGUF (`vokra-cli convert --model nanocodec`).
+const ARCH_NANOCODEC: &str = "nanocodec";
 /// CAM++ speaker encoder (`crates/vokra-convert/src/models/campplus.rs`), the
 /// `speaker_encode` model behind `vokra_speaker_embed`.
 const ARCH_CAMPLUS: &str = "campplus";
@@ -174,15 +179,27 @@ fn inject_engine(
             let engine = Arc::new(engine);
             let mut session = session
                 .with_s2s_engine(engine.clone())
-                .with_s2s_duplex_engine(engine);
+                .with_s2s_duplex_engine(engine.clone())
+                .with_speech_feature_engine(engine);
             if let Some(info) = attribution {
                 session = session.with_attribution(info);
             }
             Ok(session)
         }
+        ARCH_MIMI => {
+            reject_cpu_only_backend(backend, "Mimi streaming codec decoder")?;
+            let decoder = MimiStreamingCodec::from_gguf(session.gguf())?;
+            Ok(session.with_codec_decoder_engine(Arc::new(decoder)))
+        }
+        ARCH_NANOCODEC => {
+            reject_cpu_only_backend(backend, "NanoCodec streaming codec decoder")?;
+            let decoder = NanoCodecStreamingCodec::from_gguf(session.gguf())?;
+            Ok(session.with_codec_decoder_engine(Arc::new(decoder)))
+        }
         other => Err(VokraError::InvalidArgument(format!(
             "unsupported model arch `{other}` (supported: `{ARCH_WHISPER}` / \
-             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}` / `{ARCH_CAMPLUS}`)"
+             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}` / `{ARCH_MIMI}` / \
+             `{ARCH_NANOCODEC}` / `{ARCH_CAMPLUS}`)"
         ))),
     }
 }
@@ -614,6 +631,31 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn build_session_binds_real_nanocodec_decoder_when_fixture_is_available() {
+        let Ok(model) = std::env::var("VOKRA_NANOCODEC_GGUF") else {
+            eprintln!("skipping NanoCodec leg: set VOKRA_NANOCODEC_GGUF to run");
+            return;
+        };
+        let session = build_session(&model, CPU).expect("NanoCodec session builds on CPU");
+        let mut decoder = session
+            .open_codec_decoder()
+            .expect("NanoCodec session injects codec decoder");
+        assert_eq!(decoder.sample_rate(), 22_050);
+        assert!(decoder.frame_hop() > 0);
+        assert!(decoder.n_codebooks() > 0);
+
+        let codes = vec![0; decoder.n_codebooks()];
+        let mut pcm = vec![0.0; decoder.frame_hop()];
+        assert_eq!(decoder.push_codes(&codes).unwrap(), 1);
+        assert_eq!(decoder.pull_pcm(&mut pcm).unwrap(), pcm.len());
+        assert!(pcm.iter().all(|sample| sample.is_finite()));
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 1.0e-8),
+            "real NanoCodec decode must not silently substitute zero PCM"
+        );
     }
 
     /// The guard itself: CPU passes, every GPU backend is refused, and the

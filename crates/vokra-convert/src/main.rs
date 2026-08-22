@@ -1,7 +1,7 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise|dia|zonos|kyutai-stt|charsiu>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|nanocodec|dac|csm|moshi|denoise|dia|zonos|kyutai-stt|charsiu>
 //!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
@@ -21,7 +21,7 @@ use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
     convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
     convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
-    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file,
+    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
     convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
     convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
 };
@@ -34,6 +34,7 @@ USAGE:
     vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
     vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
@@ -51,7 +52,9 @@ OPTIONS:
                        LLM safetensors), voxtral (Mistral Voxtral safetensors;
                        shape-only here — the config-aware / adapter path is
                        `vokra-cli convert`), mimi (Kyutai Mimi codec
-                       safetensors), dac (prepared DAC safetensors +
+                       safetensors), nanocodec (prepared NVIDIA NeMo
+                       NanoCodec decoder safetensors + checkpoint-derived
+                       config.json), dac (prepared DAC safetensors +
                        config.json), csm (Sesame CSM-1B safetensors),
                        moshi (Kyutai Moshi safetensors), dia (nari-labs
                        Dia-1.6B safetensors — SoTA plan Phase 1-4),
@@ -227,6 +230,22 @@ fn main() -> ExitCode {
                     eprintln!(
                         "error: --model dac requires --config <config.json> (from \
                          tools/parity/dac_prepare_checkpoint.py)\n\n{USAGE}"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        ModelKind::NanoCodec => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            match &config {
+                Some(config) => convert_nanocodec_file(&input, config, &output),
+                None => {
+                    eprintln!(
+                        "error: --model nanocodec requires --config <config.json> (from \
+                         tools/parity/nanocodec/prepare_checkpoint.py)\n\n{USAGE}"
                     );
                     return ExitCode::from(2);
                 }
@@ -809,6 +828,31 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             println!("; arch={arch} n_codebooks={n_cb} codebook_size={cb_size} d_model={d_model}");
+        }
+        ModelKind::NanoCodec => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_cb = file
+                .get("vokra.nanocodec.n_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let embed_dim = file
+                .get("vokra.nanocodec.embed_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.nanocodec.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hop = file
+                .get("vokra.nanocodec.frame_hop")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} n_codebooks={n_cb} embed_dim={embed_dim} sample_rate={sr} frame_hop={hop}"
+            );
         }
         ModelKind::Csm => {
             let arch = file
@@ -3450,6 +3494,7 @@ mod tests {
             ("cosyvoice2", ModelKind::CosyVoice2),
             ("voxtral", ModelKind::Voxtral),
             ("mimi", ModelKind::Mimi),
+            ("nanocodec", ModelKind::NanoCodec),
             ("dac", ModelKind::Dac),
             ("csm", ModelKind::Csm),
             ("moshi", ModelKind::Moshi),

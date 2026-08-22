@@ -13,8 +13,9 @@
 //!   [`dct()`], [`mfcc()`] and the [`dispatch()`] bridge to the IR;
 //! - **M0-05**: LSTM family needed by the Silero VAD subgraph;
 //! - **M0-06**: attention / decoder family needed by Whisper;
-//! - **M1-06** (landed): front-end preprocessing — [`resample()`] (a native
-//!   Kaiser-windowed-sinc converter, GPL-free by construction) and the
+//! - **M1-06** (landed): front-end preprocessing — [`resample()`] and
+//!   [`StreamingResampler`] (native Kaiser-windowed-sinc converters, GPL-free
+//!   by construction) and the
 //!   `frontend_spec`-driven [`dc_offset_remove`] / [`pre_emphasis`] chain
 //!   ([`apply_frontend`]);
 //! - **M1-03** (landed): the [`frontend`] `frontend_spec` → `StftAttrs` /
@@ -497,8 +498,8 @@ pub use ddpm_sampler::{
 // -------------------------------------------------------------------------
 // ---- M4-16 fsq_codec re-exports ------------------------------------------
 pub use fsq_codec::{
-    FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes,
-    wavtokenizer_vq_decode, xcodec2_fsq_decode,
+    FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode,
+    group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 // ---------------------------------------------------------------------------
 pub use firered_vad::{
@@ -555,7 +556,7 @@ pub use prosody::{ApplyProsody, ProsodyControl};
 // ---- SoTA plan Phase 3 qwen3_tts_codec re-exports -----------------------
 pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
 // -------------------------------------------------------------------------
-pub use resample::resample;
+pub use resample::{StreamingResampler, resample};
 // ---- SoTA plan denoise Wave A rnnoise re-exports (2026-08-05) -----------
 pub use rnnoise::{
     Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS,

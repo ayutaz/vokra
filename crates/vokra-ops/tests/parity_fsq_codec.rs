@@ -1,5 +1,5 @@
-//! FSQ codec family decode vs the pinned upstream reference code on
-//! **fixed-seed synthetic weights** (M4-16 T10/T11, NFR-QL-01 / FR-OP-31).
+//! FSQ codec family decode vs pinned upstream references (M4-16 T10/T11 +
+//! NanoCodec Group-FSQ #45, NFR-QL-01 / FR-OP-31).
 //!
 //! **No pretrained WavTokenizer / X-Codec 2 weight is downloaded or used in
 //! the fixture pipeline** — the committed fixtures are synthetic (seeded),
@@ -49,8 +49,8 @@
 //!   design-wide FP32 `atol = 0.01` (NFR-QL-01).
 
 use vokra_ops::{
-    CodebookTable, FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, wavtokenizer_vq_decode,
-    xcodec2_fsq_decode,
+    CodebookTable, FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, group_fsq_decode,
+    group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 
 fn fixtures_dir(sub: &str) -> std::path::PathBuf {
@@ -81,6 +81,11 @@ fn read_u32(sub: &str, name: &str) -> Vec<u32> {
         .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+fn read_text(sub: &str, name: &str) -> String {
+    let path = fixtures_dir(sub).join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"))
 }
 
 fn max_abs_delta(got: &[f32], want: &[f32]) -> f32 {
@@ -189,13 +194,75 @@ fn xcodec2_fsq_decode_matches_vq_pytorch_1_17_8_reference_on_synthetic_projectio
 }
 
 // ---------------------------------------------------------------------------
+// #45 — grouped FSQ vs the quantizer restored from NVIDIA's real checkpoint
+// ---------------------------------------------------------------------------
+
+const NANOCODEC_GROUPS: usize = 4;
+const NANOCODEC_DIMS_PER_GROUP: usize = 4;
+const NANOCODEC_TIME: usize = 16;
+const NANOCODEC_ATOL: f32 = 1e-6;
+
+#[test]
+fn group_fsq_matches_nemo_real_checkpoint_quantizer_reference() {
+    let levels = read_u32("nanocodec", "levels_per_group.u32");
+    assert_eq!(
+        levels,
+        vec![9, 8, 8, 7],
+        "fixture must pin the official 0.6 kbps checkpoint's levels",
+    );
+    let codes = read_u32("nanocodec", "codes_time_group.u32");
+    assert_eq!(codes.len(), NANOCODEC_TIME * NANOCODEC_GROUPS);
+    assert!(
+        codes.contains(&4031),
+        "fixture must exercise the top valid code in the real 4032-entry codebook",
+    );
+    let reference = read_f32("nanocodec", "decoded_features.f32");
+    assert_eq!(
+        reference.len(),
+        NANOCODEC_TIME * NANOCODEC_GROUPS * NANOCODEC_DIMS_PER_GROUP,
+    );
+
+    let got = group_fsq_decode(&codes, NANOCODEC_TIME, &levels).expect("group FSQ decode");
+    let mut into = vec![f32::NAN; reference.len()];
+    group_fsq_decode_into(&codes, NANOCODEC_TIME, &levels, &mut into)
+        .expect("group FSQ decode into");
+    assert_eq!(
+        got, into,
+        "allocating and caller-owned APIs must be identical"
+    );
+
+    let delta = max_abs_delta(&got, &reference);
+    println!("NanoCodec Group-FSQ parity max|Δ| = {delta:.3e} (ATOL = {NANOCODEC_ATOL:.1e})");
+    assert!(
+        delta <= NANOCODEC_ATOL,
+        "NanoCodec Group-FSQ parity FAIL: max|Δ| = {delta:.3e} > ATOL \
+         {NANOCODEC_ATOL:.1e}; inspect the worst group/dimension before changing the bound",
+    );
+
+    let manifest = read_text("nanocodec", "manifest.txt");
+    for required in [
+        "nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps",
+        "repo commit: 5c8e22ed763c14d81337fbe6ca74062f3d10f7e5",
+        "checkpoint sha256: bd5883099d0c74ceda760b6b7a1600b86da4d8a02531c9c282679951dcb08870",
+        "NVIDIA-NeMo/Speech commit: 4fcff72febec9395fdbd4bfa0747bfda2ecd3cef",
+        "oracle class: nemo.collections.tts.modules.audio_codec_modules.GroupFiniteScalarQuantizer",
+        "fixture kind: real checkpoint-loaded quantizer; deterministic synthetic indices",
+    ] {
+        assert!(
+            manifest.contains(required),
+            "manifest missing provenance pin: {required}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Fixture hygiene — the compliance scanner must stay inert on these files
 // (mirror of the M4-04 T15 assertion; fixtures are .f32/.u32/.txt only).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn fsq_fixture_dir_contains_no_weight_extension_files() {
-    for sub in ["wavtokenizer", "xcodec2"] {
+    for sub in ["wavtokenizer", "xcodec2", "nanocodec"] {
         let dir = fixtures_dir(sub);
         for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
             let name = entry.expect("entry").file_name();

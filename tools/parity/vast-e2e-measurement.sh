@@ -343,8 +343,24 @@ ssh -i "$SSH_IDENTITY" -o StrictHostKeyChecking=no -o IdentitiesOnly=yes $SSH_TA
         # not have this commit yet). rustup will install the *toolchain
         # specified* even if a pre-existing settings.toml pins a different
         # default — we pass an explicit --default-toolchain to be safe.
-        curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain 1.88.0 --profile minimal
+        rustup_dir="$(mktemp -d /tmp/vokra-rustup-init.XXXXXX)"
+        rustup_init="$rustup_dir/rustup-init"
+        curl --proto "=https" --tlsv1.2 -sSfL \
+            --output "$rustup_init" \
+            https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init
+        actual_sha256="$(sha256sum "$rustup_init")"
+        actual_sha256="${actual_sha256%% *}"
+        expected_sha256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+        if [ "$actual_sha256" != "$expected_sha256" ]; then
+            rm -f "$rustup_init"
+            rmdir "$rustup_dir"
+            echo "rustup-init SHA-256 mismatch" >&2
+            exit 1
+        fi
+        chmod 700 "$rustup_init"
+        "$rustup_init" -y --default-toolchain 1.88.0 --profile minimal
+        rm -f "$rustup_init"
+        rmdir "$rustup_dir"
     fi
     . "$HOME/.cargo/env"
     if [ ! -d /root/vokra ]; then

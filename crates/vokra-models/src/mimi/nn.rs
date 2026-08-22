@@ -107,6 +107,18 @@ pub(crate) struct ConvState {
     t_cap: usize,
 }
 
+impl ConvState {
+    /// Restores the causal boundary to a freshly constructed state without
+    /// releasing or reallocating scratch storage.
+    pub(crate) fn reset(&mut self) {
+        self.hist.fill(0.0);
+        self.first = true;
+        self.ctx.fill(0.0);
+        self.gather.fill(0.0);
+        self.gemm_out.fill(0.0);
+    }
+}
+
 impl CausalConv1d {
     /// Builds the block from a `[out_ch, in_ch, k]` row-major weight.
     ///
@@ -397,6 +409,13 @@ pub(crate) struct ConvTrState {
     t_cap: usize,
 }
 
+impl ConvTrState {
+    /// Clears the overlap-add tail without reallocating scratch.
+    pub(crate) fn reset(&mut self) {
+        self.tail.fill(0.0);
+    }
+}
+
 impl CausalConvTranspose1d {
     /// Builds from a `[in_ch, out_ch, k]` row-major weight.
     ///
@@ -618,6 +637,38 @@ pub(crate) struct MimiTransformerState {
     b_ff1: Vec<f32>,
     b_ff1_act: Vec<f32>,
     b_ff2: Vec<f32>,
+}
+
+impl MimiTransformerState {
+    /// Clears the rolling KV window and absolute position while retaining all
+    /// per-step and grow-only batch allocations.
+    pub(crate) fn reset(&mut self) {
+        self.k_ring.fill(0.0);
+        self.v_ring.fill(0.0);
+        self.pos = 0;
+        self.h.fill(0.0);
+        self.norm.fill(0.0);
+        self.q.fill(0.0);
+        self.k.fill(0.0);
+        self.v.fill(0.0);
+        self.rope_buf.fill(0.0);
+        self.scores.fill(0.0);
+        self.probs.fill(0.0);
+        self.attn_out.fill(0.0);
+        self.attn_o.fill(0.0);
+        self.ff1.fill(0.0);
+        self.ff1_act.fill(0.0);
+        self.ff2.fill(0.0);
+        self.b_norm.fill(0.0);
+        self.b_q.fill(0.0);
+        self.b_k.fill(0.0);
+        self.b_v.fill(0.0);
+        self.b_attn_out.fill(0.0);
+        self.b_attn_o.fill(0.0);
+        self.b_ff1.fill(0.0);
+        self.b_ff1_act.fill(0.0);
+        self.b_ff2.fill(0.0);
+    }
 }
 
 impl MimiTransformer {

@@ -95,9 +95,9 @@ fn dac_projs(attrs: DacRvqAttrs) -> Vec<DacOutProj> {
     projs
 }
 
-fn ramp_codes(time: usize, n_codebooks: usize, codebook_size: usize, salt: u32) -> Vec<u32> {
+fn ramp_codes(time: usize, n_codebooks: usize, codebook_size: usize, offset: u32) -> Vec<u32> {
     (0..(time * n_codebooks) as u32)
-        .map(|i| (i.wrapping_mul(31).wrapping_add(salt)) % codebook_size as u32)
+        .map(|i| (i.wrapping_mul(31).wrapping_add(offset)) % codebook_size as u32)
         .collect()
 }
 
@@ -586,7 +586,7 @@ fn dac_read_summed_range_multi_stream_and_empty_window() {
     let mut cache = PagedKvCache::<f32>::pre_allocate(dims, BlockSize::Four).unwrap();
 
     // Distinct constant codes per stream (0 vs 3, both < codebook_size=4) so
-    // the two streams genuinely differ — a ramp_codes salt pair could collide
+    // the two streams genuinely differ — a ramp_codes offset pair could collide
     // mod codebook_size.
     let c0 = vec![0u32; attrs.n_codebooks * 2];
     let c1 = vec![3u32; attrs.n_codebooks * 2];

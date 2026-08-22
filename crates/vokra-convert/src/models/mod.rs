@@ -108,6 +108,12 @@ pub(crate) mod crepe;
 pub(crate) mod cosyvoice3;
 pub(crate) mod csm;
 pub(crate) mod dac;
+// NVIDIA NeMo NanoCodec 22.05 kHz decoder-only conversion.  The upstream
+// `.nemo` tar contains a torch-pickle checkpoint, so an uv-managed Python
+// sidecar first emits canonical F32 decoder tensors plus checkpoint-derived
+// JSON.  Rust consumes only safetensors + JSON; pickle/NeMo never enters the
+// zero-dependency runtime or converter dependency graph.
+pub(crate) mod nanocodec;
 // SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 (`ku-nlp/deberta-v2-large-
 // japanese-char-wwm`, cc-by-sa-4.0) and v3 (`microsoft/deberta-v3-large`,
 // mit) safetensors → GGUF, category `bert`. BF16 pass-through mirror of

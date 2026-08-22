@@ -1,0 +1,17 @@
+#45 NanoCodec Group-FSQ reference fixture
+model repo: nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps
+repo commit: 5c8e22ed763c14d81337fbe6ca74062f3d10f7e5
+checkpoint sha256: bd5883099d0c74ceda760b6b7a1600b86da4d8a02531c9c282679951dcb08870
+checkpoint bytes: 421550080
+NVIDIA-NeMo/Speech commit: 4fcff72febec9395fdbd4bfa0747bfda2ecd3cef
+oracle source sha256: 2519dfa0a844a19e0a326a257c93631e16225d4d2a0a42eb1e645d6f9b1c0981
+oracle class: nemo.collections.tts.modules.audio_codec_modules.GroupFiniteScalarQuantizer
+oracle call: checkpoint.vector_quantizer.decode(indices=[G,B,T], input_len=[B])
+fixture kind: real checkpoint-loaded quantizer; deterministic synthetic indices
+versions: nemo-toolkit==3.1.0+4fcff72fe torch==2.13.0+cu130 numpy==2.5.2
+checkpoint shape: n_groups=4; levels_per_group=[9, 8, 8, 7]; codebook_size=4032; embed_dim=16
+fixture shapes: codes_time_group=(16, 4); decoded_features=(16, 16)
+indices: deterministic integer formula with code 0 and codebook_size-1 pinned; no learned or synthetic codebook weights (FSQ grid is implicit)
+sha256 levels_per_group.u32 503f4f02e60c9dc7726e778da4786fbedc76f7e93b38cc844680c8979b837187
+sha256 codes_time_group.u32 0de2ccfaa458e4f2ef33939db897d844904a14afb059f054e90ee5da76ef7599
+sha256 decoded_features.f32 9ffb7540df895f088809425ff263de86981159dcef8a57c1daa8be63a0a7b0c3

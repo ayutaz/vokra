@@ -403,9 +403,9 @@ Vokra は決して別のバックエンドや dtype に silently リルートし
   Linux x64、Windows MSVC、Android arm64）、AssetLib 形状のリリース
   レイアウト。
 - **Python（pre-alpha source）** — [`bindings/python/`](bindings/python) の
-  純粋 `ctypes` 実装（`pyo3` 非使用）。wheel scaffold はありますが、生成済み
-  binding は旧 14-function subset のまま（現行 C header は 41 functions）で、
-  package root もまだ `Session` を export しません。PyPI 公開は pending として
+  純粋 `ctypes` 実装（`pyo3` 非使用）。生成 table は現行 C header の48 functions
+  すべてを覆い、package root は `Session`、`Stream`、`Event`、typed error を
+  export します。wheel 検証と PyPI 公開は pending として
   [binding README](bindings/python/README.md) を参照してください。
 - **HTTP サーバ** — [`integrations/vokra-server`](integrations/vokra-server):
   **OpenAI Whisper** (`/v1/audio/transcriptions`)、**piper-plus HTTP**

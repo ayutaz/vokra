@@ -43,7 +43,7 @@ vokra-piper-plus = { path = "../../crates/vokra-piper-plus" }
 # `src/rust` workspace. Cargo resolves the subdir package by name. Pinned by rev
 # for reproducibility. `naist-jdic` bundles the Japanese dictionary into the
 # binary (no runtime download); the default features cover en/zh/ko/es/fr/pt/sv.
-piper-plus-g2p = { git = "https://github.com/ayutaz/piper-plus", rev = "41f3696", features = [
+piper-plus-g2p = { git = "https://github.com/ayutaz/piper-plus", rev = "b86df3f920a880f2809a5c260d238028015d82c9", features = [
     "japanese",
     "naist-jdic",
 ] }

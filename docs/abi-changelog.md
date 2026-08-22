@@ -353,6 +353,143 @@ released module-0 model rather than silently omitting it.
 | `vokra-models::voxcpm2` | `VoxCpm2Checkpoint`, `VoxCpm2StopProjection` | Added | exact 377-tensor binder plus native stop projection | Establishes a real checkpoint consumer while the MiniCPM/audio-VAE generation path remains loud-partial. No C symbol or GGUF key changes. | no | #44 |
 | `vokra-models::zonos` | `ZonosCheckpoint`, `ZonosSpeakerProjection` | Added | exact 246-tensor binder plus native speaker-conditioner projection | Establishes a real checkpoint consumer while conditioning, sampling, and DAC decode remain loud-partial. No C symbol or GGUF key changes. | no | #44 |
 
+### 2026-08-22 — 1.0.0-rc.1-dev (NanoCodec grouped FSQ decode — Rust surface only, additive)
+
+Issue #45 adds the allocating and caller-owned-buffer forms of NVIDIA
+NanoCodec's grouped, non-residual FSQ dequantizer. The C ABI and GGUF schema
+are unchanged. The Rust API is additive; `group_fsq_decode_into` is the
+steady-state zero-allocation entry and `group_fsq_decode` is its convenience
+wrapper. Both infer `n_groups` from the runtime `[time, n_groups]` code buffer,
+so the G=4/8/13 released variants share one API.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-ops::fsq_codec` | `group_fsq_decode` | Added | `pub fn group_fsq_decode(codes: &[u32], time: usize, levels_per_group: &[u32]) -> Result<Vec<f32>>` | Allocating convenience wrapper for #45; concatenates runtime groups and never applies an RVQ residual sum. | no | (TBD) |
+| `vokra-ops::fsq_codec` | `group_fsq_decode_into` | Added | `pub fn group_fsq_decode_into(codes: &[u32], time: usize, levels_per_group: &[u32], out: &mut [f32]) -> Result<()>` | Caller-owned per-frame path for #45, guarded by source scan and 1000-call counting allocator test. | no | (TBD) |
+
+Numerical parity is pinned at `atol = 1e-6` against the upstream
+`GroupFiniteScalarQuantizer.decode` restored from NVIDIA's real 0.6 kbps
+checkpoint. The fixture records the HF repo commit, checkpoint SHA-256 and
+NVIDIA-NeMo/Speech source commit; Python is offline-only under a dedicated
+Python 3.12 `uv.lock`. Root `Cargo.lock` remains first-party-only.
+
+### 2026-08-22 — 1.0.0-rc.1-dev (streaming continuous speech features — 7 new functions, 1 new typedef, additive)
+
+The C surface grows from **41 fn + 13 typedef to 48 fn + 14 typedef**. All
+changes are additive and the v1.0-rc baseline snapshot is intentionally not
+rotated before the M5-13 GA freeze. The first implementation is Moshi's causal
+Mimi input encoder: it exposes the continuous bottleneck-transformer grid at
+25 Hz, before token-rate resampling and RVQ. No GGUF key or runtime dependency
+is added.
+
+`push_pcm` accepts arbitrary chunks and retains a partial token frame. `pull`
+writes complete feature rows and reports the exact source-sample index of its
+first row; later rows follow the queried native frame rate. Both operations use
+bounded, preallocated storage after warmup. Queue overflow, undersized output,
+NULL arguments, and a session without a feature engine fail loudly without
+consuming queued data.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| ------------ | ------ | ---- | --------- | --------- | --------- | -- |
+| `include/vokra.h` | `vokra_feat_t` | Added | `typedef struct vokra_feat_t vokra_feat_t` | Opaque streaming-feature state retaining its session | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_open` | Added | `vokra_feat_t *(const vokra_session_t *)` | Open the feature stream selected by the session's native model family | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_frame_rate_mhz` | Added | `int32_t(const vokra_feat_t *)` | Query the encoder's native rate without caller hard-coding | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_dim` | Added | `int32_t(const vokra_feat_t *)` | Query floats per row for caller-owned output sizing | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_push_pcm` | Added | `vokra_status_t(vokra_feat_t *, const float *, size_t)` | Stream arbitrary mono PCM chunks into bounded causal state | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_pull` | Added | `vokra_status_t(vokra_feat_t *, float *, size_t, size_t *, int64_t *)` | Non-blocking complete-row pull plus sample-accurate start timestamp | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_reset` | Added | `void(vokra_feat_t *)` | Return PCM tail, queue, clock, and recurrent caches to as-new state | no | (TBD) |
+| `include/vokra.h` | `vokra_feat_destroy` | Added | `void(vokra_feat_t *)` | Release the opaque stream (`NULL` is a no-op) | no | (TBD) |
+| `vokra-core` | `SpeechFeatureEngine` / `SpeechFeatureStream` | Added | two public traits | Model-independent engine injection and streaming metadata/push/pull/reset contract | no | (TBD) |
+| `vokra-core` | `Session::with_speech_feature_engine` / `Session::open_speech_feature_stream` | Added | public methods | Attach or open the family-specific engine; absence is a loud `NotImplemented` | no | (TBD) |
+| `vokra-models` | `MimiEncoder::{feature_dim, feature_frame_hop, encode_features_into, encode_features_all}` / `MimiEncoderState::reset` | Added | public methods | Reuse the native causal encoder and expose its pre-RVQ continuous grid without changing codec output arithmetic | no | (TBD) |
+
+### 2026-08-21 — 1.0.0-rc.1-dev (stateful streaming resampler — Rust surface only, additive)
+
+Issue #50 adds a caller-owned-buffer streaming wrapper around Vokra's existing
+Kaiser-windowed-sinc resampler. The C ABI and GGUF schema are unchanged. The
+Rust API is additive, preserves the one-shot sample sequence across arbitrary
+chunk boundaries, and allocates all history storage in `new`; a
+1000-steady-state-call counting-allocator test and the zero-allocation source
+gate cover `process_into`.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-ops::resample` | `StreamingResampler` | Added | `pub struct StreamingResampler` | Owns the fixed history ring and absolute phase for #50 without exposing implementation fields. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::delay_samples` | Added | `pub fn delay_samples(&self) -> usize` | Reports centered-kernel look-ahead in output-rate samples for device latency budgeting. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::new` | Added | `pub fn new(in_rate: u32, out_rate: u32, quality: u8) -> Result<Self>` | Allocates and validates one fixed-rate streaming resampler. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::process_into` | Added | `pub fn process_into(&mut self, input: &[f32], out: &mut [f32]) -> Result<usize>` | Processes chunks without allocation and uses empty input as an explicit final flush. | no | (TBD) |
+| `vokra-ops::resample` | `StreamingResampler::reset` | Added | `pub fn reset(&mut self)` | Reuses the existing allocation for a new stream. | no | (TBD) |
+
+### 2026-08-22 — 1.0.0-rc.1-dev (NanoCodec decoder converter — additive GGUF schema)
+
+Additive on-disk GGUF metadata only. The C ABI, `vokra-core` public surface,
+and `vokra-ops` public surface are unchanged. The new converter writes the
+checkpoint-derived NanoCodec decoder contract under a dedicated prefix; it
+does not reuse or change the existing `vokra.wavtokenizer.*` or
+`vokra.xcodec2.*` FSQ schemas.
+
+| Chunk prefix | Keys | Kind | Status | Rationale | Introducing issue |
+| --- | --- | --- | --- | --- | --- |
+| `vokra.nanocodec.*` | `n_codebooks`, `embed_dim`, `sample_rate`, `frame_hop`, `generator_hop`, `base_channels`, `input_kernel_size`, `output_kernel_size`; `levels_per_group`, `upsample_rates`, `resblock_kernel_sizes`, `resblock_dilations`; `activation`, `output_activation`, `pad_mode`, `nemo_speech_commit`, `nemo_source_url`; `grouped_upsample_expanded` | `u32`; `u32-array`; `string`; `bool` | persisted | Complete checkpoint-derived decoder topology plus the verified official NeMo source identity for the pinned NanoCodec transform. `frame_hop` and `generator_hop` remain separate provenance fields, and conversion rejects disagreement; the published 1.89 kbps checkpoint records 1024 for both. | #47 (2026-08-22) |
+
+The converter also reuses the existing `vokra.provenance.*` namespace for the
+immutable source revision and checkpoint SHA-256. Those are not new prefixes.
+
+### 2026-08-22 — 1.0.0-rc.1-dev (NanoCodec causal HiFi-GAN streaming decoder — Rust surface only, advisory)
+
+Additive **Rust public API** only; `include/vokra.h` is untouched. The
+`vokra-models` crate now exports module `nanocodec` and the public
+`CausalHifiGan`, `CausalHifiGanConfig`, `CausalHifiGanState`, and checkpoint
+weight carrier types for causal Conv1d, dense-expanded grouped
+ConvTranspose1d, HalfSnake, residual blocks, stages, and the complete decoder.
+
+`CausalHifiGan` adds `new`, `from_gguf`, `config`, `expected_feature_dim`,
+`frame_hop`, `state`, `decode_into`, `reset`, and `decode_all`. `from_gguf`
+binds the complete decoder-only `vokra.nanocodec.*` schema emitted by the
+offline converter and rejects foreign architecture tags, unsupported transform
+markers, a foreign/missing NeMo source URL or commit, missing/non-F32 tensors,
+and exact-shape mismatches. `decode_into` is
+the allocation-free streaming surface and returns the exact sample count
+written. The config reads `frame_hop` independently from the checkpoint and
+requires it to equal both the stamped `generator_hop` and the checked generator
+stride product. The published 21.5 fps archive reports `frame_hop=1024` and
+`up_sample_rates=[8,8,4,2,2]` (product 1024), verified directly from the fixed
+official checkpoint config. A mismatched future artifact is rejected rather
+than silently dropping or inventing waveform samples. No known NanoCodec hop
+is embedded as a runtime default.
+
+The implementation is CPU-native. No GPU backend is selected implicitly and
+there is no silent CPU fallback. Backend capability registration is tracked by
+the sibling #51 change; the offline converter and its end-to-end conversion
+roundtrip are tracked by #47.
+
+The topology is transcribed from NVIDIA NeMo Speech (Apache-2.0) commit
+`4fcff72febec9395fdbd4bfa0747bfda2ecd3cef`, cross-checked with
+NeMo-Speech.cpp commit `4f9676226f667d14608487df744f375db87127f8`.
+No model weights are bundled and this entry makes no publication-license
+claim.
+
+### 2026-08-22 — 1.0.0-rc.1-dev (generic streaming codec decoder C ABI, issue #48)
+
+Additive prerelease C ABI and Rust engine contract. Codebook count is loaded
+from the GGUF and repeated as a call-time argument; no codec topology is frozen
+into the header. Each opaque decoder is single-owner-thread state retaining its
+source session. Standalone Mimi and NVIDIA NanoCodec provide complete native
+implementations; partial codec binders do not opt in.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `include/vokra.h` | `vokra_codec_decoder_t` | Added | opaque struct | Independently owned streaming token-to-PCM state (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_destroy` | Added | `void vokra_codec_decoder_destroy(struct vokra_codec_decoder_t *decoder)` | Release a decoder handle; NULL-tolerant (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_frame_hop` | Added | `int32_t vokra_codec_decoder_frame_hop(const struct vokra_codec_decoder_t *decoder)` | Query checkpoint-derived PCM frame size (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_n_codebooks` | Added | `int32_t vokra_codec_decoder_n_codebooks(const struct vokra_codec_decoder_t *decoder)` | Query model-specific codebook width without an ABI constant (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_open` | Added | `struct vokra_codec_decoder_t *vokra_codec_decoder_open(const struct vokra_session_t *session)` | Open independent causal codec state (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_pull_pcm` | Added | `enum vokra_status_t vokra_codec_decoder_pull_pcm(struct vokra_codec_decoder_t *decoder, float *out, size_t capacity, size_t *out_len)` | Copy pending mono PCM without allocation (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_push_codes` | Added | `enum vokra_status_t vokra_codec_decoder_push_codes(struct vokra_codec_decoder_t *decoder, const uint32_t *codes, size_t n_codebooks, int32_t *out_frames_emitted)` | Push one call-time-shaped code frame (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_reset` | Added | `void vokra_codec_decoder_reset(struct vokra_codec_decoder_t *decoder)` | Restore as-new causal state (#48) | no | #62 |
+| `include/vokra.h` | `vokra_codec_decoder_sample_rate` | Added | `int32_t vokra_codec_decoder_sample_rate(const struct vokra_codec_decoder_t *decoder)` | Query checkpoint-derived PCM rate (#48) | no | #62 |
+| `vokra-core::engines` | `CodecDecoderEngine` / `CodecDecoderHandle` | Added | public traits | Codec-family-neutral session injection and stateful push/pull contract (#48) | no | #62 |
+
 ### 2026-08-15 — 1.0.0-rc.1-dev (LLaMA-Omni2: the converter now stamps the full `vokra.llama_omni2.*` group its own binder reads, and refuses without `--config` — GGUF schema fill + Rust surface, advisory)
 
 **Behaviour change** plus additive Rust surface. The C ABI

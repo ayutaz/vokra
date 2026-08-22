@@ -24,7 +24,7 @@ def test_audit_requirements_covers_build_and_optional_dependencies() -> None:
     requirements = license_requirements.audit_requirements(_ROOT / "pyproject.toml")
     assert "hatchling==1.32.0" in requirements
     assert "numpy>=1.23,<2" in requirements
-    assert "pytest>=7.4" in requirements
+    assert "pytest>=9.0.3; python_version >= '3.10'" in requirements
     assert "pip-licenses>=4.3" in requirements
 
 

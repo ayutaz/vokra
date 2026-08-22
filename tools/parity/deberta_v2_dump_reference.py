@@ -68,7 +68,8 @@ says).
 # What this dumper does (``--do-dump``)
 
 1. Tokenizes ``--text`` with ``AutoTokenizer.from_pretrained(--hf-repo)``.
-2. Runs ``AutoModel.from_pretrained(--hf-repo, attn_implementation="eager")``
+2. Runs ``AutoModel.from_pretrained(--hf-repo, attn_implementation="eager",
+   dtype=torch.float32)``
    (eager attention — required for ``output_attentions=True`` to return
    real per-layer tensors; the sdpa/flash-attention-2 backends
    ``transformers`` may pick by default cannot materialize attention
@@ -365,8 +366,14 @@ def run_dump(args: argparse.Namespace) -> int:
         # instead (a documented transformers limitation, not a bug here);
         # this dumper's whole point is to capture those tensors, so it must
         # not let a faster backend silently degrade the dump (FR-EX-08).
+        # Keep the reference dtype stable across transformers major versions:
+        # v5 preserves a checkpoint's fp16 source dtype by default, while the
+        # Vokra GGUF/CPU comparison contract is explicitly float32.
         model = AutoModel.from_pretrained(
-            args.hf_repo, revision=args.revision, attn_implementation="eager"
+            args.hf_repo,
+            revision=args.revision,
+            attn_implementation="eager",
+            dtype=torch.float32,
         )
     except Exception as exc:  # noqa: BLE001 - from_pretrained raises many distinct types across huggingface_hub/transformers/requests versions; the message is what matters
         sys.exit(

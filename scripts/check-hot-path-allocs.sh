@@ -24,9 +24,23 @@ FILES=(
     "crates/vokra-models/src/whisper/nn.rs"
     "crates/vokra-models/src/whisper/decoder.rs"
     "crates/vokra-models/src/whisper/encoder.rs"
+    # #46: stateful NanoCodec causal HiFi-GAN frame decode. The counting-
+    # allocator proof lives in nanocodec_hot_path_alloc.rs.
+    "crates/vokra-models/src/nanocodec/causal_hifigan.rs"
+    # #49: bounded continuous-feature queue behind vokra_feat_push/pull.
+    "crates/vokra-models/src/moshi/feature.rs"
+    # #48: generic streaming codec handle. The Mimi implementation owns all
+    # codebook/decoder scratch before push/pull begins.
+    "crates/vokra-models/src/codec.rs"
     # M4-03: the AEC process()/DSP-kernel regions (FR-EX-05; the counting-
     # allocator proof lives in crates/vokra-ops/tests/aec_hot_path_alloc.rs).
     "crates/vokra-ops/src/aec.rs"
+    # #50: stateful streaming resampler; counting-allocator proof lives in
+    # crates/vokra-ops/tests/streaming_resampler_hot_path_alloc.rs.
+    "crates/vokra-ops/src/resample.rs"
+    # #45: caller-owned Group-FSQ per-frame decode; counting-allocator proof
+    # lives in crates/vokra-ops/tests/group_fsq_hot_path_alloc.rs.
+    "crates/vokra-ops/src/fsq_codec.rs"
 )
 
 # The forbidden allocating constructs, as a grep ERE. (Matching is done by grep,
