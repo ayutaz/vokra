@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: ""
+      enforce_publish_config:
+        description: "Require explicit channel variables and credentials during dry-run"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -92,6 +97,48 @@ jobs:
             tools/release/version_contract.py \
             --github-ref "$GITHUB_REF" \
             --dispatch-version "$DISPATCH_VERSION" \
+            --github-output "$GITHUB_OUTPUT"
+
+  release-config:
+    name: release-config
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      crates_io: ${{ steps.publish-config.outputs.crates_io }}
+      npm: ${{ steps.publish-config.outputs.npm }}
+      openupm: ${{ steps.publish-config.outputs.openupm }}
+      pypi: ${{ steps.publish-config.outputs.pypi }}
+      desktop_aar: ${{ steps.publish-config.outputs.desktop_aar }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: false
+      - name: Validate explicit publication-channel decisions
+        id: publish-config
+        env:
+          CRATES_IO_PUBLISH_ENABLED: ${{ vars.CRATES_IO_PUBLISH_ENABLED }}
+          NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
+          OPENUPM_PUBLISH_ENABLED: ${{ vars.OPENUPM_PUBLISH_ENABLED }}
+          PYPI_PUBLISH_ENABLED: ${{ vars.PYPI_PUBLISH_ENABLED }}
+          DESKTOP_AAR_ENABLED: ${{ vars.DESKTOP_AAR_ENABLED }}
+          PYPI_TRUSTED_PUBLISHER_CONFIGURED: ${{ vars.PYPI_TRUSTED_PUBLISHER_CONFIGURED }}
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          OPENUPM_TOKEN: ${{ secrets.OPENUPM_TOKEN }}
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          ENFORCE_DRY_RUN: ${{ inputs.enforce_publish_config }}
+        run: |
+          STRICT=false
+          if [[ "${GITHUB_REF}" == refs/tags/v* || "$ENFORCE_DRY_RUN" == "true" ]]; then
+            STRICT=true
+          fi
+          uv run --no-project --python 3.12 python \
+            tools/release/publish_config.py \
+            --strict "$STRICT" \
             --github-output "$GITHUB_OUTPUT"
 
   ios-xcframework:
@@ -269,7 +316,7 @@ jobs:
   #
   # Assembles the com.vokra.unity-<version>.tgz release-signed tarball on
   # tag push (v*), uploads it (plus .sha256) to the GitHub Release, and
-  # optionally publishes to OpenUPM when secrets.OPENUPM_TOKEN is present.
+  # publishes to OpenUPM only when explicitly enabled and configured.
   #
   # Cross-compile strategy: iOS device slice is reused from the
   # ios-xcframework job artifact (needs dep). Linux libvokra.so is built
@@ -510,15 +557,19 @@ jobs:
             bindings/unity/com.vokra.unity/vokra-unity-package.spdx.json \
             --clobber
 
-      - name: OpenUPM publish (optional, gated on secrets.OPENUPM_TOKEN)
+      - name: OpenUPM publish (explicitly enabled and token-gated)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
         env:
+          OPENUPM_PUBLISH_ENABLED: ${{ vars.OPENUPM_PUBLISH_ENABLED }}
           OPENUPM_TOKEN: ${{ secrets.OPENUPM_TOKEN }}
         run: |
-          if [ -z "${OPENUPM_TOKEN:-}" ]; then
-            echo "unity-package-release: OPENUPM_TOKEN not set — skipping OpenUPM publish."
-            echo "  (GitHub Release asset is the baseline distribution channel; OpenUPM is opt-in.)"
+          if [ "$OPENUPM_PUBLISH_ENABLED" != "true" ]; then
+            echo "::notice::unity-package-release: OpenUPM explicitly disabled by OPENUPM_PUBLISH_ENABLED=false."
             exit 0
+          fi
+          if [ -z "${OPENUPM_TOKEN:-}" ]; then
+            echo "unity-package-release: FAIL OPENUPM_PUBLISH_ENABLED=true but OPENUPM_TOKEN is absent" >&2
+            exit 1
           fi
           # Compose an authenticated .npmrc scoped to the OpenUPM registry.
           # npm is preinstalled on ubuntu-latest; no extra setup step needed.
@@ -584,6 +635,9 @@ jobs:
       attestations: write
       contents: write
       id-token: write  # OIDC for PyPI trusted publishing (T17)
+    environment:
+      name: pypi
+      url: https://pypi.org/p/vokra
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -658,7 +712,7 @@ jobs:
           sbom-path: dist/vokra-python-wheel.spdx.json
 
       - name: Publish to PyPI (OIDC trusted publishing preferred, token fallback)
-        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true && vars.PYPI_PUBLISH_ENABLED == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
           packages-dir: dist/
@@ -931,9 +985,10 @@ jobs:
   # semver into package.json, packs deterministically (SOURCE_DATE_EPOCH =
   # HEAD commit timestamp — the godot-package-release idiom), uploads the
   # tarball + SHA-256 as Release assets, and publishes to registry.npmjs.org
-  # **gated on secrets.NPM_TOKEN** (absent = honest skip annotation — the
-  # OPENUPM_TOKEN pattern; the owner registers the @vokra scope + token in
-  # M4-01-T27). Dry-run path (workflow_dispatch or no tag) runs
+  # **gated on vars.NPM_PUBLISH_ENABLED and secrets.NPM_TOKEN**. The variable
+  # must explicitly disable the channel or enable it with a configured token;
+  # the owner registers the @vokra scope + token in M4-01-T27. Dry-run path
+  # (workflow_dispatch or no tag) runs
   # `npm publish --dry-run` so the CD wiring is verifiable token-free.
   # Prerelease semver (1.0.0-rc.N) requires an explicit dist-tag: `rc` for
   # -rc.* tags, `dev` otherwise (npm refuses prerelease publishes to
@@ -1035,15 +1090,20 @@ jobs:
             web/pkg/vokra-npm-web.spdx.json \
             --clobber
 
-      - name: npm publish (gated on secrets.NPM_TOKEN)
+      - name: npm publish (explicitly enabled and token-gated)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
         env:
+          NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         working-directory: web/pkg
         run: |
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo "::notice::npm-web-release: NPM_TOKEN not set — skipping npm publish (the GitHub Release tarball is the baseline channel; registry publish is owner opt-in, M4-01-T27)."
+          if [ "$NPM_PUBLISH_ENABLED" != "true" ]; then
+            echo "::notice::npm-web-release: npm explicitly disabled by NPM_PUBLISH_ENABLED=false."
             exit 0
+          fi
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "npm-web-release: FAIL NPM_PUBLISH_ENABLED=true but NPM_TOKEN is absent" >&2
+            exit 1
           fi
           umask 077
           cat > "$HOME/.npmrc" <<EOF
@@ -1140,9 +1200,10 @@ jobs:
   # X-07-T12: crates.io real publish (NFR-MT-08 CD auto-publish, NFR-LC-02).
   #
   # Publishes the 18-crate set in topological order (deps before dependents) on
-  # tag push, gated on secrets.CRATES_IO_TOKEN. Token absent = honest ::notice::
-  # skip (the OPENUPM_TOKEN / NPM_TOKEN idiom) — the GitHub Release assets remain
-  # the baseline channel and the owner opts into crates.io in X-07-T14. crates.io
+  # tag push, gated on vars.CRATES_IO_PUBLISH_ENABLED and
+  # secrets.CRATES_IO_TOKEN. The variable must explicitly disable the channel
+  # or enable it with a configured token. The GitHub Release assets remain the
+  # baseline channel until the owner opts into crates.io in X-07-T14. crates.io
   # is an IMMUTABLE index, so a duplicate version FAILS LOUD (no --allow-dirty,
   # no skip-existing).
   #
@@ -1182,11 +1243,16 @@ jobs:
       - name: cargo publish (topo order, token-gated, immutable-index fail-loud)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
         env:
+          CRATES_IO_PUBLISH_ENABLED: ${{ vars.CRATES_IO_PUBLISH_ENABLED }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
-            echo "::notice::crates-io-publish: CRATES_IO_TOKEN not set — skipping crates.io publish (owner opt-in, X-07-T14). GitHub Release assets remain the baseline channel; crates-io-dry-run validated the package set."
+          if [ "$CRATES_IO_PUBLISH_ENABLED" != "true" ]; then
+            echo "::notice::crates-io-publish: crates.io explicitly disabled by CRATES_IO_PUBLISH_ENABLED=false."
             exit 0
+          fi
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "crates-io-publish: FAIL CRATES_IO_PUBLISH_ENABLED=true but CRATES_IO_TOKEN is absent" >&2
+            exit 1
           fi
           set -euo pipefail
           ORDER="$(uv run --no-project --python 3.12 python tools/release/crates_publish_order.py)"
@@ -1221,7 +1287,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release-notes:
     name: release-notes
-    needs: [validate-tag]
+    needs: [validate-tag, release-config]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
