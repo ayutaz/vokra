@@ -18,6 +18,7 @@ use vokra_models::distil_whisper::DistilWhisperAsr;
 use vokra_models::kotoba_whisper::KotobaWhisperAsr;
 use vokra_models::moonshine::Moonshine;
 use vokra_models::parakeet::ParakeetAsr;
+use vokra_models::parakeet_ctc::ParakeetCtcAsr;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
@@ -394,6 +395,8 @@ const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
 const ARCH_MOONSHINE: &str = "moonshine";
 /// NVIDIA Parakeet-TDT-0.6B-v3 FastConformer + TDT ASR.
 const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
+/// NVIDIA Parakeet-CTC-1.1B FastConformer + CTC ASR.
+const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
 /// aiola Whisper-Medusa-v1 official module-0 ASR forward.
 const ARCH_WHISPER_MEDUSA_V1: &str = "whisper-medusa-v1";
 
@@ -548,6 +551,22 @@ pub(crate) fn load_session_with_backend_and_mimi(
                         .to_owned(),
                 );
             }
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_PARAKEET_CTC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_PARAKEET_CTC}`)"
+                ));
+            }
+            if backend != BackendKind::Cpu {
+                return Err(format!(
+                    "Parakeet-CTC currently implements the exact FastConformer/CTC forward on CPU only; backend {backend:?} is unsupported (no silent CPU fallback)"
+                ));
+            }
+            let asr =
+                ParakeetCtcAsr::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_WHISPER_MEDUSA_V1 => {
@@ -1141,14 +1160,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "OmniasrCtcAsr::from_gguf → OmniasrCtcAsr::transcribe",
         probe: Some(|g: &GgufFile| {
             vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "parakeet-ctc",
-        module: "vokra_models::parakeet_ctc",
-        entry: "ParakeetCtcAsr::from_gguf → ParakeetCtcAsr::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::parakeet_ctc::ParakeetCtcAsr::from_gguf(g).map(|_| ())
         }),
     },
     BoundArch {
@@ -2414,6 +2425,7 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_CTC,
             ARCH_WHISPER_MEDUSA_V1,
         ] {
             assert!(
@@ -2603,6 +2615,7 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_CTC,
             ARCH_WHISPER_MEDUSA_V1,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,

@@ -35,6 +35,8 @@
 //!     `subsampling_conv_channels` = 256,
 //!   - `attention_bias` = **true** (**Q/K/V/out projections carry biases**
 //!     — differs from Parakeet-TDT-0.6B-v3 where this is false),
+//!   - `convolution_bias` = **true** (the field is omitted by this checkpoint's
+//!     config and therefore resolves to the pinned Transformers default),
 //!   - `scale_input` = **true** (**subsample stem scales the input** —
 //!     differs from Parakeet-TDT-0.6B-v3 where this is false),
 //!   - `initializer_range` = 0.02,
@@ -73,23 +75,17 @@
 //!   NeMo's `BeamCTCInfer` signature. Uses the `pad_token_id = 1024` as
 //!   `blank_id`.
 //!
-//! # What lands in this Phase 2 slice
+//! # Runtime support
 //!
 //! - [`ParakeetCtcConfig`] — every hparam transcribed from the primary
 //!   source (no hardcoded fabrication; sample-rate is inherited from the
 //!   preprocessor, documented on the field).
-//! - [`ParakeetCtcWeights`] — a scaffold weight store with a deterministic
-//!   [`ParakeetCtcWeights::synthesized`] fixture (SplitMix64 + Xavier) so
-//!   shape / dtype / size flow can be exercised without the real HF
-//!   checkpoint. Real-checkpoint parity is a follow-up wave gated on the
-//!   real-checkpoint tensor-name manifest (T29-equivalent — the Moshi /
-//!   CSM / Zonos / Kyutai STT / Parakeet-TDT pattern).
-//! - [`ParakeetCtcAsr`] — engine handle carrying config + weights.
-//!   [`ParakeetCtcAsr::transcribe`] returns [`VokraError::NotImplemented`]
-//!   until real weights are bound (the real forward — 80-bin log-mel →
-//!   FastConformer encoder → CTC vocab head → `ctc_decode_greedy(blank_id
-//!   = pad_token_id)` → SentencePiece detokenize — is a follow-up wave
-//!   gated on the real-checkpoint tensor manifest).
+//! - [`ParakeetCtcWeights::synthesized`] remains a deterministic, test-only
+//!   shape fixture and is intentionally rejected by inference entry points.
+//! - [`ParakeetCtcAsr::from_gguf`] strictly pins the authenticated checkpoint,
+//!   sidecars and Transformers source revision, binds all 1,652 inference
+//!   tensors plus the official tokenizer, and runs the native 80-bin log-mel →
+//!   FastConformer → CTC head → greedy blank-fold → text pipeline.
 //!
 //! # No ONNX (permanent)
 //!
@@ -97,9 +93,19 @@
 //! re-implemented natively in `vokra-models/src/parakeet_ctc/`
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
 
-use vokra_core::gguf::{GgufFile, chunks};
+use std::collections::BTreeSet;
+
+use vokra_backend_cpu::kernels;
+use vokra_core::gguf::{GgmlType, GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{LicenseClass, Result, VokraError};
+use vokra_core::{AsrEngine, BackendKind, LicenseClass, Result, Transcription, VokraError};
+use vokra_ops::ctc_decode_greedy;
+
+use crate::parakeet::{
+    ParakeetBoundEncoderBlock, ParakeetBoundNorm, ParakeetBoundSubsampling, ParakeetEncoderConfig,
+    ParakeetTokenizer, conformer_block_forward, parakeet_logmel, relative_positions,
+    subsampling_forward, transpose_out_in,
+};
 
 /// `vokra.model.arch` a Parakeet-CTC GGUF must carry. Written by
 /// `vokra-convert::models::parakeet_ctc::ARCH`; the compliance registry
@@ -149,6 +155,20 @@ const KEY_ENC_SCALE_INPUT: &str = "vokra.parakeet_ctc.arch.encoder.scale_input";
 // CTC head + vocab
 const KEY_HEAD_VOCAB_SIZE: &str = "vokra.parakeet_ctc.head.vocab_size";
 const KEY_HEAD_PAD_ID: &str = "vokra.parakeet_ctc.head.pad_token_id";
+const KEY_REVISION: &str = "vokra.parakeet_ctc.revision";
+const KEY_SOURCE_REVISION: &str = "vokra.parakeet_ctc.source_revision";
+const KEY_CONFIG_SHA256: &str = "vokra.parakeet_ctc.config_sha256";
+const KEY_PREPROCESSOR_SHA256: &str = "vokra.parakeet_ctc.preprocessor_sha256";
+const KEY_TOKENIZER_SHA256: &str = "vokra.parakeet_ctc.tokenizer_sha256";
+const KEY_CHECKPOINT_SHA256: &str = "vokra.parakeet_ctc.checkpoint_sha256";
+
+const UPSTREAM_REVISION: &str = "20e63a0fed6aedba145b74b826dbd41df0941730";
+const UPSTREAM_SOURCE_REVISION: &str = "d56c55bf564ddb176759eb6ec199442682564916";
+const CONFIG_SHA256: &str = "c33a8ddbf447d68d31b2f1d1e4efa061548813b7647913e67560a9b198f06ae1";
+const PREPROCESSOR_SHA256: &str =
+    "7f26808482a58d8dd187c4b87364810292b91ed7721e099bdbb05ca50da37a98";
+const TOKENIZER_SHA256: &str = "f3f1dd45c3889ed2b5bf67180caf05f51d7d7e4948c20e5f24d8c24df9cc47aa";
+const CHECKPOINT_SHA256: &str = "57e0bc26772f3360b7ae0c087f184364179906674d08fc8b71d48a54d4f52145";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -196,11 +216,10 @@ pub struct ParakeetCtcEncoderConfig {
     /// `attention_bias` — **true** for CTC-1.1B (Q/K/V/out projections
     /// carry biases — differs from Parakeet-TDT-0.6B-v3).
     pub attention_bias: bool,
-    /// `convolution_bias` — false for CTC-1.1B (depthwise + point-wise
-    /// convolutions are bias-free; upstream config does not list
-    /// `convolution_bias` for CTC, so it inherits the encoder default of
-    /// `false` — consistent with the NeMo `ConformerLayer` inference
-    /// path).
+    /// `convolution_bias` — **true** for CTC-1.1B. The checkpoint config
+    /// omits this field, so it resolves to the pinned Transformers
+    /// `ParakeetEncoderConfig` default; the official tensors contain the
+    /// depthwise and point-wise bias vectors.
     pub convolution_bias: bool,
     /// `scale_input` — **true** for CTC-1.1B (upstream `ParakeetEncoder`
     /// scales the subsample stem's input when this is on — differs from
@@ -297,7 +316,7 @@ impl ParakeetCtcConfig {
                 subsampling_conv_channels: 256,
                 max_position_embeddings: 5000,
                 attention_bias: true,
-                convolution_bias: false,
+                convolution_bias: true,
                 scale_input: true,
             },
             head: ParakeetCtcHeadConfig {
@@ -330,7 +349,7 @@ impl ParakeetCtcConfig {
                 subsampling_conv_channels: 16,
                 max_position_embeddings: 128,
                 attention_bias: true,
-                convolution_bias: false,
+                convolution_bias: true,
                 scale_input: true,
             },
             head: ParakeetCtcHeadConfig {
@@ -458,7 +477,7 @@ impl ParakeetCtcConfig {
                     ))
                 })
         }
-        Ok(Self {
+        let config = Self {
             encoder: ParakeetCtcEncoderConfig {
                 n_layer: req_u32(gguf, KEY_ENC_N_LAYER)? as usize,
                 d_model: req_u32(gguf, KEY_ENC_D_MODEL)? as usize,
@@ -481,7 +500,17 @@ impl ParakeetCtcConfig {
                 pad_token_id: req_u32(gguf, KEY_HEAD_PAD_ID)?,
             },
             sample_rate: req_u32(gguf, KEY_SAMPLE_RATE)?,
-        })
+        };
+        config.validate_for_forward().map_err(|error| {
+            VokraError::ModelLoad(format!("parakeet-ctc config is invalid: {error}"))
+        })?;
+        let canonical = Self::parakeet_ctc_1_1b();
+        if config != canonical {
+            return Err(VokraError::ModelLoad(format!(
+                "parakeet-ctc metadata does not match the pinned NVIDIA Parakeet-CTC-1.1B contract; found {config:?}, expected {canonical:?}"
+            )));
+        }
+        Ok(config)
     }
 }
 
@@ -687,6 +716,354 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 }
 
 // ---------------------------------------------------------------------------
+// Official real-weight binder
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct ParakeetCtcBoundWeights {
+    tensor_count: usize,
+    subsampling: ParakeetBoundSubsampling,
+    encoder: Vec<ParakeetBoundEncoderBlock>,
+    ctc_head_w_t: Vec<f32>,
+    ctc_head_b: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+enum ParakeetCtcWeightStore {
+    Synthesized(Box<ParakeetCtcWeights>),
+    Bound(Box<ParakeetCtcBoundWeights>),
+}
+
+fn shared_encoder_config(config: &ParakeetCtcEncoderConfig) -> ParakeetEncoderConfig {
+    ParakeetEncoderConfig {
+        n_layer: config.n_layer,
+        d_model: config.d_model,
+        n_head: config.n_head,
+        n_head_kv: config.n_head_kv,
+        ffn_dim: config.ffn_dim,
+        conv_kernel_size: config.conv_kernel_size,
+        in_dim: config.in_dim,
+        subsampling_factor: config.subsampling_factor,
+        subsampling_conv_kernel_size: config.subsampling_conv_kernel_size,
+        subsampling_conv_stride: config.subsampling_conv_stride,
+        subsampling_conv_channels: config.subsampling_conv_channels,
+        max_position_embeddings: config.max_position_embeddings,
+        attention_bias: config.attention_bias,
+        convolution_bias: config.convolution_bias,
+        scale_input: config.scale_input,
+    }
+}
+
+fn expected_real_manifest(config: &ParakeetCtcConfig) -> Vec<(String, Vec<usize>)> {
+    let enc = &config.encoder;
+    let channels = enc.subsampling_conv_channels;
+    let kernel = enc.subsampling_conv_kernel_size;
+    let stride = enc.subsampling_conv_stride;
+    let mut layers = 0usize;
+    let mut factor = enc.subsampling_factor;
+    while factor > 1 {
+        layers += 1;
+        factor /= 2;
+    }
+    let mut manifest = Vec::with_capacity(1_652);
+    manifest.push((
+        "encoder.subsampling.layers.0.weight".to_owned(),
+        vec![channels, 1, kernel, kernel],
+    ));
+    manifest.push((
+        "encoder.subsampling.layers.0.bias".to_owned(),
+        vec![channels],
+    ));
+    for stage in 1..layers {
+        let depthwise = 2 + (stage - 1) * 3;
+        let pointwise = depthwise + 1;
+        manifest.push((
+            format!("encoder.subsampling.layers.{depthwise}.weight"),
+            vec![channels, 1, kernel, kernel],
+        ));
+        manifest.push((
+            format!("encoder.subsampling.layers.{depthwise}.bias"),
+            vec![channels],
+        ));
+        manifest.push((
+            format!("encoder.subsampling.layers.{pointwise}.weight"),
+            vec![channels, channels, 1, 1],
+        ));
+        manifest.push((
+            format!("encoder.subsampling.layers.{pointwise}.bias"),
+            vec![channels],
+        ));
+    }
+    let padding = (kernel - 1) / 2;
+    let mut output_frequency = enc.in_dim;
+    for _ in 0..layers {
+        output_frequency = (output_frequency + 2 * padding - kernel) / stride + 1;
+    }
+    manifest.push((
+        "encoder.subsampling.linear.weight".to_owned(),
+        vec![enc.d_model, channels * output_frequency],
+    ));
+    manifest.push((
+        "encoder.subsampling.linear.bias".to_owned(),
+        vec![enc.d_model],
+    ));
+
+    for layer in 0..enc.n_layer {
+        let prefix = format!("encoder.layers.{layer}");
+        for branch in ["feed_forward1", "feed_forward2"] {
+            manifest.push((
+                format!("{prefix}.{branch}.linear1.weight"),
+                vec![enc.ffn_dim, enc.d_model],
+            ));
+            manifest.push((format!("{prefix}.{branch}.linear1.bias"), vec![enc.ffn_dim]));
+            manifest.push((
+                format!("{prefix}.{branch}.linear2.weight"),
+                vec![enc.d_model, enc.ffn_dim],
+            ));
+            manifest.push((format!("{prefix}.{branch}.linear2.bias"), vec![enc.d_model]));
+        }
+        for norm in [
+            "norm_feed_forward1",
+            "norm_self_att",
+            "norm_conv",
+            "norm_feed_forward2",
+            "norm_out",
+        ] {
+            manifest.push((format!("{prefix}.{norm}.weight"), vec![enc.d_model]));
+            manifest.push((format!("{prefix}.{norm}.bias"), vec![enc.d_model]));
+        }
+        for projection in ["q_proj", "k_proj", "v_proj", "o_proj"] {
+            manifest.push((
+                format!("{prefix}.self_attn.{projection}.weight"),
+                vec![enc.d_model, enc.d_model],
+            ));
+            manifest.push((
+                format!("{prefix}.self_attn.{projection}.bias"),
+                vec![enc.d_model],
+            ));
+        }
+        manifest.push((
+            format!("{prefix}.self_attn.relative_k_proj.weight"),
+            vec![enc.d_model, enc.d_model],
+        ));
+        manifest.push((
+            format!("{prefix}.self_attn.bias_u"),
+            vec![enc.n_head, enc.head_dim()],
+        ));
+        manifest.push((
+            format!("{prefix}.self_attn.bias_v"),
+            vec![enc.n_head, enc.head_dim()],
+        ));
+        manifest.push((
+            format!("{prefix}.conv.pointwise_conv1.weight"),
+            vec![2 * enc.d_model, enc.d_model, 1],
+        ));
+        manifest.push((
+            format!("{prefix}.conv.pointwise_conv1.bias"),
+            vec![2 * enc.d_model],
+        ));
+        manifest.push((
+            format!("{prefix}.conv.depthwise_conv.weight"),
+            vec![enc.d_model, 1, enc.conv_kernel_size],
+        ));
+        manifest.push((
+            format!("{prefix}.conv.depthwise_conv.bias"),
+            vec![enc.d_model],
+        ));
+        for stat in ["weight", "bias", "running_mean", "running_var"] {
+            manifest.push((format!("{prefix}.conv.norm.{stat}"), vec![enc.d_model]));
+        }
+        manifest.push((
+            format!("{prefix}.conv.pointwise_conv2.weight"),
+            vec![enc.d_model, enc.d_model, 1],
+        ));
+        manifest.push((
+            format!("{prefix}.conv.pointwise_conv2.bias"),
+            vec![enc.d_model],
+        ));
+    }
+    manifest.push((
+        "ctc_head.weight".to_owned(),
+        vec![config.head.vocab_size, enc.d_model, 1],
+    ));
+    manifest.push(("ctc_head.bias".to_owned(), vec![config.head.vocab_size]));
+    manifest
+}
+
+fn load_bound_weights(
+    file: &GgufFile,
+    config: &ParakeetCtcConfig,
+) -> Result<ParakeetCtcBoundWeights> {
+    let manifest = expected_real_manifest(config);
+    if manifest.len() != 1_652 {
+        return Err(VokraError::ModelLoad(format!(
+            "parakeet-ctc internal manifest has {} tensors, expected 1652",
+            manifest.len()
+        )));
+    }
+    let expected_names: BTreeSet<String> = manifest.iter().map(|(name, _)| name.clone()).collect();
+    for (name, expected_shape) in &manifest {
+        let info = file.tensor_info(name).ok_or_else(|| {
+            VokraError::ModelLoad(format!("parakeet-ctc: required tensor `{name}` is missing"))
+        })?;
+        if info.dtype != GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "parakeet-ctc: tensor `{name}` must be F32 in the pinned official checkpoint, found {:?}",
+                info.dtype
+            )));
+        }
+        let actual_shape: Vec<usize> = info.dimensions.iter().map(|&dim| dim as usize).collect();
+        if &actual_shape != expected_shape {
+            return Err(VokraError::ModelLoad(format!(
+                "parakeet-ctc: tensor `{name}` shape {actual_shape:?}, expected {expected_shape:?}"
+            )));
+        }
+    }
+    let actual_names: BTreeSet<String> = file
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.clone())
+        .collect();
+    if actual_names != expected_names {
+        let missing: Vec<&String> = expected_names.difference(&actual_names).take(4).collect();
+        let extra: Vec<&String> = actual_names.difference(&expected_names).take(4).collect();
+        return Err(VokraError::ModelLoad(format!(
+            "parakeet-ctc: tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected_names.len(),
+            actual_names.len(),
+        )));
+    }
+
+    let tensor = |name: &str| -> Result<Vec<f32>> {
+        file.tensor_f32(name).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "parakeet-ctc: tensor `{name}` decode failed: {error}"
+            ))
+        })
+    };
+    let enc = &config.encoder;
+    let channels = enc.subsampling_conv_channels;
+    let kernel = enc.subsampling_conv_kernel_size;
+    let mut output_frequency = enc.in_dim;
+    for _ in 0..3 {
+        output_frequency =
+            (output_frequency + 2 * ((kernel - 1) / 2) - kernel) / enc.subsampling_conv_stride + 1;
+    }
+    let subsampling = ParakeetBoundSubsampling {
+        conv0_w: tensor("encoder.subsampling.layers.0.weight")?,
+        conv0_b: tensor("encoder.subsampling.layers.0.bias")?,
+        depthwise_w: [
+            tensor("encoder.subsampling.layers.2.weight")?,
+            tensor("encoder.subsampling.layers.5.weight")?,
+        ],
+        depthwise_b: [
+            tensor("encoder.subsampling.layers.2.bias")?,
+            tensor("encoder.subsampling.layers.5.bias")?,
+        ],
+        pointwise_w_t: [
+            transpose_out_in(
+                tensor("encoder.subsampling.layers.3.weight")?,
+                channels,
+                channels,
+            ),
+            transpose_out_in(
+                tensor("encoder.subsampling.layers.6.weight")?,
+                channels,
+                channels,
+            ),
+        ],
+        pointwise_b: [
+            tensor("encoder.subsampling.layers.3.bias")?,
+            tensor("encoder.subsampling.layers.6.bias")?,
+        ],
+        linear_w_t: transpose_out_in(
+            tensor("encoder.subsampling.linear.weight")?,
+            enc.d_model,
+            channels * output_frequency,
+        ),
+        linear_b: tensor("encoder.subsampling.linear.bias")?,
+    };
+    let norm = |prefix: &str, name: &str| -> Result<ParakeetBoundNorm> {
+        Ok(ParakeetBoundNorm {
+            weight: tensor(&format!("{prefix}.{name}.weight"))?,
+            bias: tensor(&format!("{prefix}.{name}.bias"))?,
+        })
+    };
+    let mut encoder = Vec::with_capacity(enc.n_layer);
+    for layer in 0..enc.n_layer {
+        let prefix = format!("encoder.layers.{layer}");
+        let linear = |branch: &str, index: usize, output: usize, input: usize| {
+            tensor(&format!("{prefix}.{branch}.linear{index}.weight"))
+                .map(|weight| transpose_out_in(weight, output, input))
+        };
+        let linear_bias = |branch: &str, index: usize| {
+            tensor(&format!("{prefix}.{branch}.linear{index}.bias")).map(Some)
+        };
+        let projection = |name: &str| {
+            tensor(&format!("{prefix}.self_attn.{name}.weight"))
+                .map(|weight| transpose_out_in(weight, enc.d_model, enc.d_model))
+        };
+        let projection_bias =
+            |name: &str| tensor(&format!("{prefix}.self_attn.{name}.bias")).map(Some);
+        encoder.push(ParakeetBoundEncoderBlock {
+            ff1_w1_t: linear("feed_forward1", 1, enc.ffn_dim, enc.d_model)?,
+            ff1_b1: linear_bias("feed_forward1", 1)?,
+            ff1_w2_t: linear("feed_forward1", 2, enc.d_model, enc.ffn_dim)?,
+            ff1_b2: linear_bias("feed_forward1", 2)?,
+            ff2_w1_t: linear("feed_forward2", 1, enc.ffn_dim, enc.d_model)?,
+            ff2_b1: linear_bias("feed_forward2", 1)?,
+            ff2_w2_t: linear("feed_forward2", 2, enc.d_model, enc.ffn_dim)?,
+            ff2_b2: linear_bias("feed_forward2", 2)?,
+            norm_ff1: norm(&prefix, "norm_feed_forward1")?,
+            norm_attn: norm(&prefix, "norm_self_att")?,
+            norm_conv: norm(&prefix, "norm_conv")?,
+            norm_ff2: norm(&prefix, "norm_feed_forward2")?,
+            norm_out: norm(&prefix, "norm_out")?,
+            q_w_t: projection("q_proj")?,
+            q_b: projection_bias("q_proj")?,
+            k_w_t: projection("k_proj")?,
+            k_b: projection_bias("k_proj")?,
+            v_w_t: projection("v_proj")?,
+            v_b: projection_bias("v_proj")?,
+            o_w_t: projection("o_proj")?,
+            o_b: projection_bias("o_proj")?,
+            relative_k_w_t: projection("relative_k_proj")?,
+            bias_u: tensor(&format!("{prefix}.self_attn.bias_u"))?,
+            bias_v: tensor(&format!("{prefix}.self_attn.bias_v"))?,
+            conv_pw1_w_t: transpose_out_in(
+                tensor(&format!("{prefix}.conv.pointwise_conv1.weight"))?,
+                2 * enc.d_model,
+                enc.d_model,
+            ),
+            conv_pw1_b: Some(tensor(&format!("{prefix}.conv.pointwise_conv1.bias"))?),
+            conv_dw_w: tensor(&format!("{prefix}.conv.depthwise_conv.weight"))?,
+            conv_dw_b: Some(tensor(&format!("{prefix}.conv.depthwise_conv.bias"))?),
+            conv_bn_weight: tensor(&format!("{prefix}.conv.norm.weight"))?,
+            conv_bn_bias: tensor(&format!("{prefix}.conv.norm.bias"))?,
+            conv_bn_mean: tensor(&format!("{prefix}.conv.norm.running_mean"))?,
+            conv_bn_var: tensor(&format!("{prefix}.conv.norm.running_var"))?,
+            conv_pw2_w_t: transpose_out_in(
+                tensor(&format!("{prefix}.conv.pointwise_conv2.weight"))?,
+                enc.d_model,
+                enc.d_model,
+            ),
+            conv_pw2_b: Some(tensor(&format!("{prefix}.conv.pointwise_conv2.bias"))?),
+        });
+    }
+    Ok(ParakeetCtcBoundWeights {
+        tensor_count: manifest.len(),
+        subsampling,
+        encoder,
+        ctc_head_w_t: transpose_out_in(
+            tensor("ctc_head.weight")?,
+            config.head.vocab_size,
+            enc.d_model,
+        ),
+        ctc_head_b: tensor("ctc_head.bias")?,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
@@ -712,7 +1089,8 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 #[derive(Debug, Clone)]
 pub struct ParakeetCtcAsr {
     cfg: ParakeetCtcConfig,
-    weights: ParakeetCtcWeights,
+    weights: ParakeetCtcWeightStore,
+    tokenizer: Option<ParakeetTokenizer>,
     weight_license: LicenseClass,
 }
 
@@ -872,7 +1250,8 @@ impl ParakeetCtcAsr {
 
         Ok(Self {
             cfg,
-            weights,
+            weights: ParakeetCtcWeightStore::Synthesized(Box::new(weights)),
+            tokenizer: None,
             // Default weight-license class under `new()` mirrors the
             // compliance registry (`vokra_core::compliance::license_class`
             // maps `parakeet-ctc` / `parakeet-ctc-1.1b` to CC-BY 4.0 =
@@ -893,20 +1272,9 @@ impl ParakeetCtcAsr {
     /// key so a reader diagnosing a mis-produced GGUF has exactly one
     /// place to walk (FR-EX-08 — never a silent partial bind).
     ///
-    /// # Loud-partial contract
-    ///
-    /// After this returns `Ok(_)`, the resulting engine is a
-    /// **synthesized-weight** handle — the shape / dtype / size flow is
-    /// exercised end-to-end (config chunk validation, weight-store
-    /// construction, PCM boundary check), but calling
-    /// [`Self::transcribe`] still returns [`VokraError::NotImplemented`]
-    /// naming the real-checkpoint tensor-name manifest binding
-    /// (T29-equivalent — the Moshi / CSM / Zonos / Kyutai STT /
-    /// Parakeet-TDT pattern) as the follow-up wave's anchor. The
-    /// primitives named in that message ([`vokra_ops::conformer`] +
-    /// [`vokra_ops::ctc_decode`]) already exist; the missing piece is
-    /// the HF safetensors tensor-name → [`ParakeetCtcWeights`] mapping
-    /// plus SentencePiece detokenize (model-specific, not a shared op).
+    /// On success this returns a real-checkpoint engine with all official
+    /// inference tensors and tokenizer assets bound. Metadata-only or stale
+    /// GGUF files fail closed.
     ///
     /// # Errors
     ///
@@ -917,9 +1285,8 @@ impl ParakeetCtcAsr {
     ///   `Mt3::from_gguf` and `Snac::from_gguf`).
     /// - [`VokraError::ModelLoad`] when any `vokra.parakeet_ctc.*` chunk
     ///   is absent ([`ParakeetCtcConfig::from_gguf`] is strict).
-    /// - [`VokraError::InvalidArgument`] from
-    ///   [`ParakeetCtcConfig::validate_for_forward`] +
-    ///   [`ParakeetCtcAsr::new`] shape gates.
+    /// - [`VokraError::ModelLoad`] when pinned provenance, tokenizer assets,
+    ///   or any of the 1,652 inference tensors are missing or mismatched.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         // 1. Arch check — always first so a mis-typed model handed here
         //    fails with a specific message instead of a downstream
@@ -971,7 +1338,33 @@ impl ParakeetCtcAsr {
         //    group.
         let cfg = ParakeetCtcConfig::from_gguf(file)?;
 
-        // 3. Provenance surfacing — read the stamped weight-license class
+        // 3. The runtime contract is tied to one authenticated HF revision,
+        //    its official sidecars and the exact Transformers implementation
+        //    used for the independent parity oracle.
+        for (key, expected) in [
+            (KEY_REVISION, UPSTREAM_REVISION),
+            (KEY_SOURCE_REVISION, UPSTREAM_SOURCE_REVISION),
+            (KEY_CONFIG_SHA256, CONFIG_SHA256),
+            (KEY_PREPROCESSOR_SHA256, PREPROCESSOR_SHA256),
+            (KEY_TOKENIZER_SHA256, TOKENIZER_SHA256),
+            (KEY_CHECKPOINT_SHA256, CHECKPOINT_SHA256),
+        ] {
+            let actual = file
+                .get(key)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "parakeet-ctc: missing pinned provenance chunk `{key}`"
+                    ))
+                })?;
+            if actual != expected {
+                return Err(VokraError::ModelLoad(format!(
+                    "parakeet-ctc: `{key}` is `{actual}`, expected pinned value `{expected}`"
+                )));
+            }
+        }
+
+        // 4. Provenance surfacing — read the stamped weight-license class
         //    for compliance gate cross-checks (defaults to `Unknown` if
         //    absent, which is fail-closed at the outer M2-13 gate).
         //    Matches the MT3 / SNAC precedent — surface the class here,
@@ -982,15 +1375,17 @@ impl ParakeetCtcAsr {
             .and_then(LicenseClass::from_class_str)
             .unwrap_or(LicenseClass::Unknown);
 
-        // 4. Build synthesized weights against the freshly-read config
-        //    so the engine is constructible. `transcribe` still loud-
-        //    partials with the synthesized-weight blocker message —
-        //    binding real HF checkpoint tensor names is the follow-up
-        //    wave (T29-equivalent).
-        let weights = ParakeetCtcWeights::synthesized(&cfg, /* seed */ 0)?;
-        let mut asr = Self::new(cfg, weights)?;
-        asr.weight_license = weight_license;
-        Ok(asr)
+        // 5. Strictly bind all 1,652 inference tensors. The 42
+        //    `num_batches_tracked` I64 counters are training-only and are
+        //    removed by the pinned prepare script before GGUF conversion.
+        let tokenizer = ParakeetTokenizer::from_gguf(file, cfg.head.vocab_size)?;
+        let weights = load_bound_weights(file, &cfg)?;
+        Ok(Self {
+            cfg,
+            weights: ParakeetCtcWeightStore::Bound(Box::new(weights)),
+            tokenizer: Some(tokenizer),
+            weight_license,
+        })
     }
 
     /// The stamped weight-license class surfaced from the GGUF's
@@ -1019,55 +1414,163 @@ impl ParakeetCtcAsr {
     /// checkpoint).
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
-        self.weights.is_synthesized
+        match &self.weights {
+            ParakeetCtcWeightStore::Synthesized(weights) => weights.is_synthesized,
+            ParakeetCtcWeightStore::Bound(_) => false,
+        }
     }
 
-    /// Transcribes a mono `f32` PCM slice at [`Self::config`]'s sample
-    /// rate.
-    ///
-    /// This is the primary PCM → text entry point. **Real weights
-    /// required**: synthesized-weight builds cannot produce meaningful
-    /// text (they would be noise or a hallucinated fixed sequence), so
-    /// this returns [`VokraError::NotImplemented`] naming the blocker.
-    /// Callers verify the shape flow through [`ParakeetCtcAsr::new`] +
-    /// [`ParakeetCtcWeights::synthesized`] today; a follow-up wave binds
-    /// the real HF checkpoint tensor names and wires the forward.
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::InvalidArgument`] if `pcm` is empty.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
-    pub fn transcribe(&self, pcm: &[f32]) -> Result<Vec<u32>> {
+    /// Number of official inference tensors bound from GGUF.
+    #[must_use]
+    pub fn bound_tensor_count(&self) -> Option<usize> {
+        match &self.weights {
+            ParakeetCtcWeightStore::Synthesized(_) => None,
+            ParakeetCtcWeightStore::Bound(weights) => Some(weights.tensor_count),
+        }
+    }
+
+    /// Whether the official BPE + Metaspace tokenizer is embedded.
+    #[must_use]
+    pub fn has_tokenizer(&self) -> bool {
+        self.tokenizer.is_some()
+    }
+
+    /// Runs the official 80-bin frontend and 42-block FastConformer encoder.
+    /// Returns row-major `[encoder_frames, 1024]`.
+    pub fn encode_pcm(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
+        let ParakeetCtcWeightStore::Bound(weights) = &self.weights else {
+            return Err(VokraError::NotImplemented(
+                "ParakeetCtcAsr::encode_pcm requires a real GGUF-bound checkpoint",
+            ));
+        };
+        let shared = shared_encoder_config(&self.cfg.encoder);
+        let (features, frames) =
+            parakeet_logmel(pcm, self.cfg.sample_rate, self.cfg.encoder.in_dim)?;
+        let (mut hidden, encoded_frames) = subsampling_forward(
+            &features,
+            frames,
+            self.cfg.encoder.in_dim,
+            &weights.subsampling,
+            &shared,
+        )?;
+        if self.cfg.encoder.scale_input {
+            let scale = (self.cfg.encoder.d_model as f32).sqrt();
+            for value in &mut hidden {
+                *value *= scale;
+            }
+        }
+        if encoded_frames > self.cfg.encoder.max_position_embeddings {
+            return Err(VokraError::InvalidArgument(format!(
+                "parakeet-ctc: {encoded_frames} encoder frames exceed max_position_embeddings={} ",
+                self.cfg.encoder.max_position_embeddings
+            )));
+        }
+        let positions = relative_positions(encoded_frames, self.cfg.encoder.d_model);
+        for block in &weights.encoder {
+            conformer_block_forward(&mut hidden, encoded_frames, block, &positions, &shared)?;
+        }
+        Ok((hidden, encoded_frames))
+    }
+
+    /// Applies the official `Conv1d(kernel_size=1)` CTC projection.
+    pub fn logits(&self, encoder: &[f32], frames: usize) -> Result<Vec<f32>> {
+        let ParakeetCtcWeightStore::Bound(weights) = &self.weights else {
+            return Err(VokraError::NotImplemented(
+                "ParakeetCtcAsr::logits requires a real GGUF-bound checkpoint",
+            ));
+        };
+        let width = self.cfg.encoder.d_model;
+        if encoder.len() != frames * width {
+            return Err(VokraError::InvalidArgument(format!(
+                "parakeet-ctc logits: encoder len {} != frames {frames} * width {width}",
+                encoder.len()
+            )));
+        }
+        let mut logits = vec![0.0; frames * self.cfg.head.vocab_size];
+        kernels::gemm_f32(
+            frames,
+            self.cfg.head.vocab_size,
+            width,
+            encoder,
+            &weights.ctc_head_w_t,
+            Some(&weights.ctc_head_b),
+            &mut logits,
+        )?;
+        if let Some((index, value)) = logits
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "parakeet-ctc logits: non-finite value {value} at index {index}"
+            )));
+        }
+        Ok(logits)
+    }
+
+    /// Runs PCM through the real model and performs CTC blank/repeat folding.
+    pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "parakeet-ctc transcribe: pcm slice is empty".to_owned(),
             ));
         }
-        if self.weights.is_synthesized {
+        if matches!(&self.weights, ParakeetCtcWeightStore::Synthesized(_)) {
             return Err(VokraError::NotImplemented(
-                "parakeet-ctc transcribe: this engine holds synthesized weights \
-                 (deterministic fixture from ParakeetCtcWeights::synthesized) — \
-                 synthesized-weight text would be a hallucinated sequence, \
-                 not a real transcript. Bind real Parakeet-CTC-1.1B \
-                 weights (CC-BY 4.0, nvidia/parakeet-ctc-1.1b) before \
-                 invoking transcribe. The shape flow (config validation, \
-                 weight-store construction, PCM boundary check) is exercised \
-                 through ParakeetCtcAsr::new; the real-checkpoint tensor-name \
-                 manifest lands in a follow-up wave (T29-equivalent — the \
-                 Moshi / CSM / Zonos / Kyutai STT / Parakeet-TDT pattern).",
+                "parakeet-ctc transcribe: synthesized weights cannot produce a real transcript",
             ));
         }
-        Err(VokraError::NotImplemented(
-            "parakeet-ctc transcribe: real weights are bound but the log-mel \
-             front-end → FastConformer encoder (vokra_ops::conformer) → \
-             CTC vocab head → ctc_decode_greedy(blank_id = head.pad_token_id) \
-             → SentencePiece detokenize forward path has not landed yet. \
-             Follow-up wave: wire ParakeetCtcWeights to \
-             vokra_ops::conformer::ConformerEncoder + the CTC vocab head + \
-             vokra_ops::ctc_decode_greedy with blank_id = head.blank_id() \
-             (= head.pad_token_id).",
-        ))
+        let (encoder, frames) = self.encode_pcm(pcm)?;
+        let logits = self.logits(&encoder, frames)?;
+        ctc_decode_greedy(
+            &logits,
+            frames,
+            self.cfg.head.vocab_size,
+            self.cfg.head.blank_id() as usize,
+        )
+    }
+
+    /// Runs the complete PCM → tokens → official tokenizer text path.
+    pub fn transcribe_text(&self, pcm: &[f32]) -> Result<String> {
+        let tokens = self.transcribe_tokens(pcm)?;
+        let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "parakeet-ctc: official tokenizer is absent; reconvert with --tokenizer tokenizer.json"
+                    .to_owned(),
+            )
+        })?;
+        tokenizer.decode(
+            &tokens,
+            self.cfg.head.blank_id(),
+            self.cfg.head.pad_token_id,
+            u32::MAX,
+        )
+    }
+
+    /// Transcribes a mono `f32` PCM slice at [`Self::config`]'s sample
+    /// rate.
+    ///
+    /// This is the token-level PCM entry point. **Real weights required**:
+    /// synthesized-weight test fixtures cannot produce meaningful output,
+    /// so they return [`VokraError::NotImplemented`] naming the blocker.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] if `pcm` is empty.
+    /// - [`VokraError::NotImplemented`] for synthesized-weight fixtures.
+    pub fn transcribe(&self, pcm: &[f32]) -> Result<Vec<u32>> {
+        self.transcribe_tokens(pcm)
+    }
+}
+
+impl AsrEngine for ParakeetCtcAsr {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        Ok(Transcription::new(self.transcribe_text(pcm)?))
+    }
+
+    fn backend(&self) -> BackendKind {
+        BackendKind::Cpu
     }
 }
 
@@ -1102,7 +1605,7 @@ mod tests {
         assert_eq!(c.encoder.max_position_embeddings, 5000);
         // NOTE: attention_bias = true (differs from TDT-0.6B-v3 = false).
         assert!(c.encoder.attention_bias);
-        assert!(!c.encoder.convolution_bias);
+        assert!(c.encoder.convolution_bias);
         // NOTE: scale_input = true (differs from TDT-0.6B-v3 = false).
         assert!(c.encoder.scale_input);
         // CTC head.
@@ -1533,11 +2036,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Wave 4: `from_gguf` loud-partial contract (real config validation,
-    // arch + provenance surface, license class round-trip, engine
-    // constructibility from GGUF, `transcribe` still loud-partials on the
-    // synthesized-weight blocker so a follow-up wave has exactly one place
-    // to walk — mirror of MT3 / SNAC / vocos / bigvgan wave-3 precedent).
+    // Strict GGUF contract: topology validation is independently testable
+    // with a metadata-only artifact, while engine construction requires the
+    // authenticated pins, tokenizer and complete real tensor manifest.
     // -----------------------------------------------------------------------
 
     /// Builds a minimal Parakeet-CTC GGUF carrying the arch tag + full
@@ -1737,68 +2238,20 @@ mod tests {
         );
     }
 
-    /// A GGUF carrying `vokra.provenance.weight_license = "attribution-required"`
-    /// (the CC-BY 4.0 class the Parakeet-CTC converter stamps) surfaces
-    /// back through `Self::weight_license()` — the outer M2-13 gate can
-    /// then enforce.
+    /// A metadata-only artifact must not be promoted to a runnable engine:
+    /// the authenticated revision pins are checked before tokenizer/tensor
+    /// binding.
     #[test]
-    fn from_gguf_surfaces_stamped_attribution_required() {
+    fn from_gguf_rejects_missing_pinned_provenance() {
         let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
         let file = parakeet_ctc_gguf(&cfg, Some(LicenseClass::AttributionRequired));
-        let asr = ParakeetCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
-        assert_eq!(
-            asr.weight_license(),
-            LicenseClass::AttributionRequired,
-            "CC-BY 4.0 = AttributionRequired must surface"
-        );
-    }
-
-    /// A GGUF that omits `vokra.provenance.weight_license` reads back
-    /// as `LicenseClass::Unknown` (fail-closed at the outer M2-13 gate,
-    /// matching MT3 / SNAC precedent).
-    #[test]
-    fn from_gguf_defaults_missing_provenance_to_unknown() {
-        let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
-        let file = parakeet_ctc_gguf(&cfg, None);
-        let asr = ParakeetCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
-        assert_eq!(
-            asr.weight_license(),
-            LicenseClass::Unknown,
-            "missing provenance must default to Unknown (fail-closed at outer gate)"
-        );
-    }
-
-    /// After a full CTC-1.1B GGUF round-trip, `transcribe` still
-    /// returns `NotImplemented` naming the synthesized-weight blocker
-    /// (loud-partial contract preserved — the follow-up wave binds real
-    /// HF checkpoint tensor names via `tools/parity/
-    /// parakeet_ctc_prepare_checkpoint.py`, T29-equivalent).
-    #[test]
-    fn from_gguf_engine_transcribe_is_loud_not_implemented() {
-        let cfg = ParakeetCtcConfig::parakeet_ctc_1_1b();
-        let file = parakeet_ctc_gguf(&cfg, Some(LicenseClass::AttributionRequired));
-        let asr = ParakeetCtcAsr::from_gguf(&file).expect("valid GGUF must bind");
-        // Round-tripped engine is still synthesized-weight; the primary
-        // NotImplemented path fires (not the "real weights bound but
-        // forward path not landed" path — because the follow-up wave
-        // will replace the synthesized weights with real ones and flip
-        // the message).
-        assert!(asr.is_synthesized(), "from_gguf builds synthesized weights");
-
-        // 1 second of 16 kHz mono silence — legitimate input shape, so
-        // the loud-partial gate fires (not the empty-pcm gate).
-        let pcm = vec![0.0f32; 16_000];
-        let err = asr.transcribe(&pcm).unwrap_err();
+        let err = ParakeetCtcAsr::from_gguf(&file).unwrap_err();
         match err {
-            VokraError::NotImplemented(msg) => {
-                assert!(
-                    msg.contains("synthesized")
-                        && (msg.contains("nvidia/parakeet-ctc-1.1b")
-                            || msg.contains("real Parakeet-CTC-1.1B")),
-                    "message must name the synthesized-weight blocker + primary-source anchor: {msg}"
-                );
-            }
-            other => panic!("expected NotImplemented, got {other:?}"),
+            VokraError::ModelLoad(message) => assert!(
+                message.contains(KEY_REVISION),
+                "error must name the first missing authenticated pin: {message}"
+            ),
+            other => panic!("expected ModelLoad, got {other:?}"),
         }
     }
 }

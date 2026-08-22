@@ -19,9 +19,10 @@ use vokra_convert::{
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
     convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_openwakeword_op_file_with_config,
-    convert_parakeet_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
+    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
+    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
     parse_voxtral_hf_config,
@@ -46,6 +47,9 @@ USAGE:
     vokra-cli convert --model moonshine-<tiny|base> --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model parakeet-tdt --input <model.safetensors> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
+                      --config <config.json> --preprocessor <preprocessor_config.json> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
@@ -371,14 +375,21 @@ OPTIONS:
                               `rms_norm_eps`, `sample_rate`,
                               `speech_encoder_dim`, `speech_decoder_dim`
                               transcribed from the upstream config.json —
-                              six axes no tensor shape carries)
+                              six axes no tensor shape carries) OR the exact
+                              Parakeet-CTC config.json (required together with
+                              --preprocessor and --tokenizer)
+    --preprocessor <path>     Parakeet-CTC only: exact upstream
+                              preprocessor_config.json (80-bin Slaney mel,
+                              16 kHz, n_fft=512, hop=160, win=400,
+                              preemphasis=0.97)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
                               and routes ASR through the audio-conditioned
                               path (see docs/tickets/m3/M3-10*.md). Omit for
                               the honest LM-continuation path.
-    --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3.
+    --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3 | parakeet-tdt |
+                              parakeet-ctc.
                               (voxtral) raw tokenizer bytes embedded
                               verbatim into `vokra.tokenizer.model` (the
                               tekken compact-vocab blob). REQUIRED for a
@@ -443,6 +454,8 @@ struct Parsed {
     raw_model_slug: String,
     input: PathBuf,
     config: Option<PathBuf>,
+    /// Parakeet-CTC only: exact upstream `preprocessor_config.json`.
+    preprocessor: Option<PathBuf>,
     /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
     /// `convert_voxtral_file_with_adapter_config` and emits the adapter
     /// metadata chunk into the GGUF so the runtime binds real adapter tensors
@@ -490,6 +503,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut raw_model_slug: String = String::new();
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut preprocessor: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -533,6 +547,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--preprocessor" => {
+                preprocessor = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--preprocessor requires a value")?,
                 ));
                 i += 2;
             }
@@ -599,6 +619,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         raw_model_slug,
         input: input.ok_or("--input is required")?,
         config,
+        preprocessor,
         adapter_config,
         tokenizer,
         output: output.ok_or("--output is required")?,
@@ -657,13 +678,20 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::MoonshineTiny
             | ModelKind::MoonshineBase
             | ModelKind::Parakeet
+            | ModelKind::ParakeetCtc
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
+                .to_owned(),
+        );
+    }
+    if !matches!(model, ModelKind::ParakeetCtc) && p.preprocessor.is_some() {
+        return Err(
+            "--preprocessor is only supported for --model parakeet-ctc (it pins the exact upstream frontend contract)"
                 .to_owned(),
         );
     }
@@ -867,6 +895,31 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                     .to_owned()
             })?;
             convert_parakeet_file_with_tokenizer(&p.input, tokenizer, &p.output)
+        }
+        ModelKind::ParakeetCtc => {
+            if p.quant.is_some() {
+                return Err("--quantize is not supported for --model parakeet-ctc".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let config = p
+                .config
+                .as_deref()
+                .ok_or_else(|| "--model parakeet-ctc requires --config <config.json>".to_owned())?;
+            let preprocessor = p.preprocessor.as_deref().ok_or_else(|| {
+                "--model parakeet-ctc requires --preprocessor <preprocessor_config.json>".to_owned()
+            })?;
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model parakeet-ctc requires --tokenizer <tokenizer.json>".to_owned()
+            })?;
+            convert_parakeet_ctc_file_with_assets(
+                &p.input,
+                config,
+                preprocessor,
+                tokenizer,
+                &p.output,
+            )
         }
         ModelKind::CosyVoice2 => {
             // Quantization surface is whisper-only; reject rather than

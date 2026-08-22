@@ -835,50 +835,61 @@ struct ParakeetBoundLstmLayer {
 }
 
 #[derive(Debug, Clone)]
-struct ParakeetBoundSubsampling {
-    conv0_w: Vec<f32>,
-    conv0_b: Vec<f32>,
-    depthwise_w: [Vec<f32>; 2],
-    depthwise_b: [Vec<f32>; 2],
+pub(crate) struct ParakeetBoundSubsampling {
+    pub(crate) conv0_w: Vec<f32>,
+    pub(crate) conv0_b: Vec<f32>,
+    pub(crate) depthwise_w: [Vec<f32>; 2],
+    pub(crate) depthwise_b: [Vec<f32>; 2],
     /// `[in_channels, out_channels]`, transposed once at bind time for GEMM.
-    pointwise_w_t: [Vec<f32>; 2],
-    pointwise_b: [Vec<f32>; 2],
+    pub(crate) pointwise_w_t: [Vec<f32>; 2],
+    pub(crate) pointwise_b: [Vec<f32>; 2],
     /// `[channels * frequency, d_model]`, transposed once at bind time.
-    linear_w_t: Vec<f32>,
-    linear_b: Vec<f32>,
+    pub(crate) linear_w_t: Vec<f32>,
+    pub(crate) linear_b: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
-struct ParakeetBoundNorm {
-    weight: Vec<f32>,
-    bias: Vec<f32>,
+pub(crate) struct ParakeetBoundNorm {
+    pub(crate) weight: Vec<f32>,
+    pub(crate) bias: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
-struct ParakeetBoundEncoderBlock {
-    ff1_w1_t: Vec<f32>,
-    ff1_w2_t: Vec<f32>,
-    ff2_w1_t: Vec<f32>,
-    ff2_w2_t: Vec<f32>,
-    norm_ff1: ParakeetBoundNorm,
-    norm_attn: ParakeetBoundNorm,
-    norm_conv: ParakeetBoundNorm,
-    norm_ff2: ParakeetBoundNorm,
-    norm_out: ParakeetBoundNorm,
-    q_w_t: Vec<f32>,
-    k_w_t: Vec<f32>,
-    v_w_t: Vec<f32>,
-    o_w_t: Vec<f32>,
-    relative_k_w_t: Vec<f32>,
-    bias_u: Vec<f32>,
-    bias_v: Vec<f32>,
-    conv_pw1_w_t: Vec<f32>,
-    conv_dw_w: Vec<f32>,
-    conv_bn_weight: Vec<f32>,
-    conv_bn_bias: Vec<f32>,
-    conv_bn_mean: Vec<f32>,
-    conv_bn_var: Vec<f32>,
-    conv_pw2_w_t: Vec<f32>,
+pub(crate) struct ParakeetBoundEncoderBlock {
+    pub(crate) ff1_w1_t: Vec<f32>,
+    pub(crate) ff1_b1: Option<Vec<f32>>,
+    pub(crate) ff1_w2_t: Vec<f32>,
+    pub(crate) ff1_b2: Option<Vec<f32>>,
+    pub(crate) ff2_w1_t: Vec<f32>,
+    pub(crate) ff2_b1: Option<Vec<f32>>,
+    pub(crate) ff2_w2_t: Vec<f32>,
+    pub(crate) ff2_b2: Option<Vec<f32>>,
+    pub(crate) norm_ff1: ParakeetBoundNorm,
+    pub(crate) norm_attn: ParakeetBoundNorm,
+    pub(crate) norm_conv: ParakeetBoundNorm,
+    pub(crate) norm_ff2: ParakeetBoundNorm,
+    pub(crate) norm_out: ParakeetBoundNorm,
+    pub(crate) q_w_t: Vec<f32>,
+    pub(crate) q_b: Option<Vec<f32>>,
+    pub(crate) k_w_t: Vec<f32>,
+    pub(crate) k_b: Option<Vec<f32>>,
+    pub(crate) v_w_t: Vec<f32>,
+    pub(crate) v_b: Option<Vec<f32>>,
+    pub(crate) o_w_t: Vec<f32>,
+    pub(crate) o_b: Option<Vec<f32>>,
+    pub(crate) relative_k_w_t: Vec<f32>,
+    pub(crate) bias_u: Vec<f32>,
+    pub(crate) bias_v: Vec<f32>,
+    pub(crate) conv_pw1_w_t: Vec<f32>,
+    pub(crate) conv_pw1_b: Option<Vec<f32>>,
+    pub(crate) conv_dw_w: Vec<f32>,
+    pub(crate) conv_dw_b: Option<Vec<f32>>,
+    pub(crate) conv_bn_weight: Vec<f32>,
+    pub(crate) conv_bn_bias: Vec<f32>,
+    pub(crate) conv_bn_mean: Vec<f32>,
+    pub(crate) conv_bn_var: Vec<f32>,
+    pub(crate) conv_pw2_w_t: Vec<f32>,
+    pub(crate) conv_pw2_b: Option<Vec<f32>>,
 }
 
 /// All 699 official inference tensors, decoded into the exact released
@@ -1056,7 +1067,7 @@ fn expected_real_manifest(config: &ParakeetConfig) -> Vec<(String, Vec<usize>)> 
     manifest
 }
 
-fn transpose_out_in(weight: Vec<f32>, output: usize, input: usize) -> Vec<f32> {
+pub(crate) fn transpose_out_in(weight: Vec<f32>, output: usize, input: usize) -> Vec<f32> {
     debug_assert_eq!(weight.len(), output * input);
     let mut transposed = vec![0.0; weight.len()];
     for out in 0..output {
@@ -1165,18 +1176,26 @@ fn load_bound_weights(file: &GgufFile, config: &ParakeetConfig) -> Result<Parake
         };
         encoder.push(ParakeetBoundEncoderBlock {
             ff1_w1_t: ff("feed_forward1", 1, enc.ffn_dim, enc.d_model)?,
+            ff1_b1: None,
             ff1_w2_t: ff("feed_forward1", 2, enc.d_model, enc.ffn_dim)?,
+            ff1_b2: None,
             ff2_w1_t: ff("feed_forward2", 1, enc.ffn_dim, enc.d_model)?,
+            ff2_b1: None,
             ff2_w2_t: ff("feed_forward2", 2, enc.d_model, enc.ffn_dim)?,
+            ff2_b2: None,
             norm_ff1: norm(&prefix, "norm_feed_forward1")?,
             norm_attn: norm(&prefix, "norm_self_att")?,
             norm_conv: norm(&prefix, "norm_conv")?,
             norm_ff2: norm(&prefix, "norm_feed_forward2")?,
             norm_out: norm(&prefix, "norm_out")?,
             q_w_t: projection("q_proj")?,
+            q_b: None,
             k_w_t: projection("k_proj")?,
+            k_b: None,
             v_w_t: projection("v_proj")?,
+            v_b: None,
             o_w_t: projection("o_proj")?,
+            o_b: None,
             relative_k_w_t: projection("relative_k_proj")?,
             bias_u: tensor(&format!("{prefix}.self_attn.bias_u"))?,
             bias_v: tensor(&format!("{prefix}.self_attn.bias_v"))?,
@@ -1185,7 +1204,9 @@ fn load_bound_weights(file: &GgufFile, config: &ParakeetConfig) -> Result<Parake
                 2 * enc.d_model,
                 enc.d_model,
             ),
+            conv_pw1_b: None,
             conv_dw_w: tensor(&format!("{prefix}.conv.depthwise_conv.weight"))?,
+            conv_dw_b: None,
             conv_bn_weight: tensor(&format!("{prefix}.conv.norm.weight"))?,
             conv_bn_bias: tensor(&format!("{prefix}.conv.norm.bias"))?,
             conv_bn_mean: tensor(&format!("{prefix}.conv.norm.running_mean"))?,
@@ -1195,6 +1216,7 @@ fn load_bound_weights(file: &GgufFile, config: &ParakeetConfig) -> Result<Parake
                 enc.d_model,
                 enc.d_model,
             ),
+            conv_pw2_b: None,
         });
     }
 
@@ -1552,7 +1574,8 @@ impl ParakeetAsr {
                 "ParakeetAsr::encode_pcm requires a real GGUF-bound checkpoint",
             ));
         };
-        let (features, frames) = parakeet_logmel(pcm, self.cfg.sample_rate)?;
+        let (features, frames) =
+            parakeet_logmel(pcm, self.cfg.sample_rate, self.cfg.encoder.in_dim)?;
         let (mut hidden, encoded_frames) = subsampling_forward(
             &features,
             frames,
@@ -1754,11 +1777,14 @@ fn decoder_step(
     )
 }
 
-fn parakeet_logmel(pcm: &[f32], sample_rate: u32) -> Result<(Vec<f32>, usize)> {
+pub(crate) fn parakeet_logmel(
+    pcm: &[f32],
+    sample_rate: u32,
+    n_mels: usize,
+) -> Result<(Vec<f32>, usize)> {
     const N_FFT: usize = 512;
     const HOP: usize = 160;
     const WIN: usize = 400;
-    const N_MELS: usize = 128;
     const PREEMPHASIS: f32 = 0.97;
     const LOG_GUARD: f32 = 1.0 / 16_777_216.0;
     const EPSILON: f32 = 1e-5;
@@ -1800,26 +1826,26 @@ fn parakeet_logmel(pcm: &[f32], sample_rate: u32) -> Result<(Vec<f32>, usize)> {
     for (index, value) in power.iter_mut().enumerate() {
         *value = spectrum.re[index] * spectrum.re[index] + spectrum.im[index] * spectrum.im[index];
     }
-    let mel = MelFilterbank::new(&MelAttrs::new(sample_rate, N_FFT, N_MELS));
+    let mel = MelFilterbank::new(&MelAttrs::new(sample_rate, N_FFT, n_mels));
     let mut features = mel.apply(&power, frames);
     for value in &mut features {
         *value = (*value + LOG_GUARD).ln();
     }
-    for channel in 0..N_MELS {
+    for channel in 0..n_mels {
         let mut mean = 0.0f32;
         for frame in 0..frames {
-            mean += features[frame * N_MELS + channel];
+            mean += features[frame * n_mels + channel];
         }
         mean /= frames as f32;
         let mut variance = 0.0f32;
         for frame in 0..frames {
-            let delta = features[frame * N_MELS + channel] - mean;
+            let delta = features[frame * n_mels + channel] - mean;
             variance += delta * delta;
         }
         variance /= (frames - 1) as f32;
         let std = variance.sqrt();
         for frame in 0..frames {
-            let index = frame * N_MELS + channel;
+            let index = frame * n_mels + channel;
             features[index] = (features[index] - mean) / (std + EPSILON);
         }
     }
@@ -1830,7 +1856,7 @@ fn conv_output_size(input: usize, kernel: usize, stride: usize, padding: usize) 
     (input + 2 * padding - kernel) / stride + 1
 }
 
-fn subsampling_forward(
+pub(crate) fn subsampling_forward(
     input: &[f32],
     frames: usize,
     frequency: usize,
@@ -1948,7 +1974,7 @@ fn subsampling_forward(
     Ok((output, time))
 }
 
-fn relative_positions(frames: usize, width: usize) -> Vec<f32> {
+pub(crate) fn relative_positions(frames: usize, width: usize) -> Vec<f32> {
     let count = 2 * frames - 1;
     let mut output = vec![0.0; count * width];
     for position_index in 0..count {
@@ -1985,15 +2011,17 @@ fn feed_forward(
     width: usize,
     inner: usize,
     w1_t: &[f32],
+    b1: Option<&[f32]>,
     w2_t: &[f32],
+    b2: Option<&[f32]>,
 ) -> Result<Vec<f32>> {
     let mut expanded = vec![0.0; frames * inner];
-    kernels::gemm_f32(frames, inner, width, input, w1_t, None, &mut expanded)?;
+    kernels::gemm_f32(frames, inner, width, input, w1_t, b1, &mut expanded)?;
     for value in &mut expanded {
         *value *= sigmoid_f32(*value);
     }
     let mut output = vec![0.0; frames * width];
-    kernels::gemm_f32(frames, width, inner, &expanded, w2_t, None, &mut output)?;
+    kernels::gemm_f32(frames, width, inner, &expanded, w2_t, b2, &mut output)?;
     Ok(output)
 }
 
@@ -2007,14 +2035,14 @@ fn attention_forward(
     let width = config.d_model;
     let heads = config.n_head;
     let head_dim = config.head_dim();
-    let project = |weight: &[f32]| -> Result<Vec<f32>> {
+    let project = |weight: &[f32], bias: Option<&[f32]>| -> Result<Vec<f32>> {
         let mut output = vec![0.0; frames * width];
-        kernels::gemm_f32(frames, width, width, input, weight, None, &mut output)?;
+        kernels::gemm_f32(frames, width, width, input, weight, bias, &mut output)?;
         Ok(output)
     };
-    let q = project(&block.q_w_t)?;
-    let k = project(&block.k_w_t)?;
-    let v = project(&block.v_w_t)?;
+    let q = project(&block.q_w_t, block.q_b.as_deref())?;
+    let k = project(&block.k_w_t, block.k_b.as_deref())?;
+    let v = project(&block.v_w_t, block.v_b.as_deref())?;
     let position_count = 2 * frames - 1;
     let mut relative_k = vec![0.0; position_count * width];
     kernels::gemm_f32(
@@ -2069,7 +2097,7 @@ fn attention_forward(
         width,
         &context,
         &block.o_w_t,
-        None,
+        block.o_b.as_deref(),
         &mut output,
     )?;
     Ok(output)
@@ -2089,7 +2117,7 @@ fn convolution_forward(
         width,
         input,
         &block.conv_pw1_w_t,
-        None,
+        block.conv_pw1_b.as_deref(),
         &mut doubled,
     )?;
     let mut gated = vec![0.0; frames * width];
@@ -2104,7 +2132,7 @@ fn convolution_forward(
     let mut convolved = vec![0.0; gated.len()];
     for frame in 0..frames {
         for channel in 0..width {
-            let mut sum = 0.0f32;
+            let mut sum = block.conv_dw_b.as_ref().map_or(0.0, |bias| bias[channel]);
             for tap in 0..kernel {
                 let source = frame + tap;
                 if source >= padding && source - padding < frames {
@@ -2126,13 +2154,13 @@ fn convolution_forward(
         width,
         &convolved,
         &block.conv_pw2_w_t,
-        None,
+        block.conv_pw2_b.as_deref(),
         &mut output,
     )?;
     Ok(output)
 }
 
-fn conformer_block_forward(
+pub(crate) fn conformer_block_forward(
     hidden: &mut [f32],
     frames: usize,
     block: &ParakeetBoundEncoderBlock,
@@ -2147,7 +2175,9 @@ fn conformer_block_forward(
         width,
         config.ffn_dim,
         &block.ff1_w1_t,
+        block.ff1_b1.as_deref(),
         &block.ff1_w2_t,
+        block.ff1_b2.as_deref(),
     )?;
     for (value, branch) in hidden.iter_mut().zip(ff1) {
         *value += 0.5 * branch;
@@ -2169,7 +2199,9 @@ fn conformer_block_forward(
         width,
         config.ffn_dim,
         &block.ff2_w1_t,
+        block.ff2_b1.as_deref(),
         &block.ff2_w2_t,
+        block.ff2_b2.as_deref(),
     )?;
     for (value, branch) in hidden.iter_mut().zip(ff2) {
         *value += 0.5 * branch;

@@ -6967,6 +6967,12 @@ pub fn convert_file_licensed(
                 .into(),
         ));
     }
+    if matches!(model, ModelKind::ParakeetCtc) {
+        return Err(ConvertError::Usage(
+            "parakeet-ctc requires the exact config.json, preprocessor_config.json and tokenizer.json; use convert_parakeet_ctc_file_with_assets (CLI: --config, --preprocessor, --tokenizer)"
+                .into(),
+        ));
+    }
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
     // through `convert_moshi_file` BEFORE the whole-file read below.
@@ -14353,10 +14359,55 @@ pub fn convert_parakeet_file_with_tokenizer(
 /// and the FR-MD-09 attribution surface activates so a downstream must
 /// show the NVIDIA attribution.
 pub fn convert_parakeet_ctc_file(
+    _input: &Path,
+    _output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    Err(ConvertError::Usage(
+        "parakeet-ctc requires config.json, preprocessor_config.json and tokenizer.json; call convert_parakeet_ctc_file_with_assets"
+            .into(),
+    ))
+}
+
+/// Converts the exact pinned NVIDIA Parakeet-CTC-1.1B inference checkpoint.
+///
+/// `input` must be the output of
+/// `tools/parity/parakeet_ctc_prepare_checkpoint.py`: the official source
+/// SHA-256 is verified and exactly 42 training-only I64 BatchNorm counters are
+/// removed. The three official sidecars are validated and the tokenizer is
+/// embedded for executable text ASR.
+pub fn convert_parakeet_ctc_file_with_assets(
     input: &Path,
+    config: &Path,
+    preprocessor: &Path,
+    tokenizer: &Path,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
-    convert_file(ModelKind::ParakeetCtc, input, output)
+    let checkpoint_bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let preprocessor_bytes = std::fs::read(preprocessor)?;
+    let tokenizer_bytes = std::fs::read(tokenizer)?;
+    let (builder, report) = models::parakeet_ctc::convert_with_assets(
+        checkpoint_bytes,
+        &config_bytes,
+        &preprocessor_bytes,
+        &tokenizer_bytes,
+    )?;
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let output_bytes = builder.to_bytes()?;
+    std::fs::write(output, &output_bytes)?;
+    let mut notes = vec![format!(
+        "parakeet-ctc: {} strict F32 inference tensors written; official BPE+Metaspace tokenizer embedded; BF16 passthrough={}",
+        report.written, report.bf16_passthrough
+    )];
+    notes.extend(report.notes);
+    Ok(ConvertSummary {
+        model: ModelKind::ParakeetCtc,
+        tensor_count,
+        metadata_count,
+        output_bytes: output_bytes.len() as u64,
+        notes,
+    })
 }
 
 /// Convert an NVIDIA **Canary-1B-v2** safetensors checkpoint into a Vokra

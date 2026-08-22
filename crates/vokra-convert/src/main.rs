@@ -22,8 +22,8 @@ use vokra_convert::{
     convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
     convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file,
-    convert_parakeet_file_with_tokenizer, convert_piper_plus_file, convert_sbv2_file,
-    convert_utmos_file,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
+    convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -38,6 +38,7 @@ USAGE:
     vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
     vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -181,16 +182,21 @@ fn main() -> ExitCode {
         model,
         input,
         config,
+        preprocessor,
         tokenizer,
         output,
         quant,
         license,
     } = parsed;
 
-    if model != ModelKind::Parakeet && tokenizer.is_some() {
+    if !matches!(model, ModelKind::Parakeet | ModelKind::ParakeetCtc) && tokenizer.is_some() {
         eprintln!(
             "error: --tokenizer is only supported for --model parakeet-tdt in the standalone converter\n\n{USAGE}"
         );
+        return ExitCode::from(2);
+    }
+    if model != ModelKind::ParakeetCtc && preprocessor.is_some() {
+        eprintln!("error: --preprocessor is only supported for --model parakeet-ctc\n\n{USAGE}");
         return ExitCode::from(2);
     }
 
@@ -323,6 +329,29 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             };
             convert_parakeet_file_with_tokenizer(&input, tokenizer, &output)
+        }
+        ModelKind::ParakeetCtc => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for parakeet-ctc\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            let Some(config) = config.as_deref() else {
+                eprintln!("error: --model parakeet-ctc requires --config <config.json>\n\n{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some(preprocessor) = preprocessor.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-ctc requires --preprocessor <preprocessor_config.json>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-ctc requires --tokenizer <tokenizer.json>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_parakeet_ctc_file_with_assets(&input, config, preprocessor, tokenizer, &output)
         }
         ModelKind::CosyVoice2 => {
             if quant.is_some() {
@@ -460,6 +489,7 @@ struct Parsed {
     model: ModelKind,
     input: PathBuf,
     config: Option<PathBuf>,
+    preprocessor: Option<PathBuf>,
     tokenizer: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
@@ -480,6 +510,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut preprocessor: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
@@ -510,6 +541,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--preprocessor" => {
+                preprocessor = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--preprocessor requires a value")?,
                 ));
                 i += 2;
             }
@@ -549,6 +586,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         model: model.ok_or("--model is required")?,
         input: input.ok_or("--input is required")?,
         config,
+        preprocessor,
         tokenizer,
         output: output.ok_or("--output is required")?,
         quant,
