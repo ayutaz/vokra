@@ -65,6 +65,7 @@
 name: godot-crossbuild
 
 on:
+  workflow_call:
   workflow_dispatch:
   schedule:
     # Weekly Monday 08:30 UTC — the last slot in the weekly stagger (the

@@ -53,6 +53,16 @@ permissions:
   contents: read
 
 jobs:
+  release-desktop-preflight:
+    name: release-desktop-preflight
+    needs: validate-tag
+    uses: ./.github/workflows/release-desktop-preflight.yml
+
+  release-godot-preflight:
+    name: release-godot-preflight
+    needs: validate-tag
+    uses: ./.github/workflows/godot-crossbuild.yml
+
   # ---------------------------------------------------------------------------
   # X-07-T18: single release-version contract. The workspace version is the
   # source of truth for an effectful tag release; `vX.Y.Z` must match it exactly
@@ -289,7 +299,7 @@ jobs:
   # ---------------------------------------------------------------------------
   unity-package-release:
     name: unity-package-release
-    needs: [validate-tag, release-notes, ios-xcframework]
+    needs: [validate-tag, release-notes, ios-xcframework, release-desktop-preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -372,48 +382,17 @@ jobs:
           rustup component add llvm-tools
           bash scripts/build-unity-webgl-lib.sh
 
-      - name: Reuse macOS + Windows cdylibs from ci.yml artifacts (advisory, record-only, best-effort)
-        id: reuse-desktop-cdylibs
-        # T13 unity-package CI job produces per-OS cdylibs. Attempt to fetch
-        # them via `gh run download` scoped to the tag SHA so the release
-        # tarball ships all five platforms. Missing artifacts are non-fatal
-        # for this wire-up; the summary flags any absence for owner review.
-        # §8.2 canonical form: name suffix `(advisory, record-only)` + explicit
-        # `id:` — required by scripts/check-workflow-advisory-suffix.sh
-        # (§8.2 tripwire, Commit L). "best-effort" retained as an operational
-        # descriptor after the canonical suffix.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set +e
-          RUN_ID="$(gh run list \
-            --workflow=ci.yml \
-            --branch="${GITHUB_REF_NAME}" \
-            --limit=20 \
-            --json databaseId,headSha,conclusion \
-            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
-            | head -n 1)"
-          if [ -z "$RUN_ID" ]; then
-            echo "unity-package-release: no successful ci.yml run for SHA ${GITHUB_SHA}; skipping desktop reuse"
-            exit 0
-          fi
-          echo "unity-package-release: reusing ci.yml run ${RUN_ID} for desktop cdylibs"
-          for artifact in vokra-capi-macos vokra-capi-windows; do
-            gh run download "$RUN_ID" --name "$artifact" --dir "reuse/${artifact}" \
-              || echo "unity-package-release: ${artifact} not available (T13 pending?)"
-          done
-          if [ -f reuse/vokra-capi-macos/libvokra.dylib ]; then
-            mkdir -p bindings/unity/com.vokra.unity/Plugins/macOS
-            cp reuse/vokra-capi-macos/libvokra.dylib \
-              bindings/unity/com.vokra.unity/Plugins/macOS/libvokra.dylib
-          fi
-          if [ -f reuse/vokra-capi-windows/vokra.dll ]; then
-            mkdir -p bindings/unity/com.vokra.unity/Plugins/Windows/x86_64
-            cp reuse/vokra-capi-windows/vokra.dll \
-              bindings/unity/com.vokra.unity/Plugins/Windows/x86_64/vokra.dll
-          fi
-          set -e
+      - name: Download same-run macOS C ABI artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-macos
+          path: bindings/unity/com.vokra.unity/Plugins/macOS
+
+      - name: Download same-run Windows C ABI artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-windows
+          path: bindings/unity/com.vokra.unity/Plugins/Windows/x86_64
 
       - name: Enforce NVIDIA runtime non-bundled (D7 / T12 / NFR-LC-01)
         run: bash scripts/check-unity-package-no-nvidia.sh
@@ -760,7 +739,7 @@ jobs:
   # ---------------------------------------------------------------------------
   godot-package-release:
     name: godot-package-release
-    needs: [validate-tag, release-notes]
+    needs: [validate-tag, release-notes, release-godot-preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -776,49 +755,36 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Reuse per-target cdylibs from godot-crossbuild.yml matrix (advisory, record-only)
-        id: reuse-godot-cdylibs
-        # T16 crossbuild produces one vokra-godot-<triple> artifact per
-        # platform. Fetch each via `gh run download` scoped to the tag
-        # SHA and reassemble under integrations/vokra-godot/pkg/lib/.
-        # Missing artifacts are non-fatal so the release zip still
-        # assembles with whichever platforms did land — the T18 scan
-        # will then note the empty per-platform slot as a package
-        # completeness gap rather than a bundled-NVIDIA failure.
-        # §8.2 canonical form: name suffix + explicit `id:` — see the
-        # sibling step above.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download same-run Godot crossbuild artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: vokra-godot-*
+          path: staging/
+
+      - name: Require and stage all five Godot target artifacts
         run: |
-          set +e
-          RUN_ID="$(gh run list \
-            --workflow=godot-crossbuild.yml \
-            --branch="${GITHUB_REF_NAME}" \
-            --limit=20 \
-            --json databaseId,headSha,conclusion \
-            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
-            | head -n 1)"
-          if [ -z "$RUN_ID" ]; then
-            echo "godot-package-release: no successful godot-crossbuild.yml run for SHA ${GITHUB_SHA}; skipping matrix reuse"
-            exit 0
-          fi
-          echo "godot-package-release: reusing godot-crossbuild.yml run ${RUN_ID}"
+          set -euo pipefail
           mkdir -p integrations/vokra-godot/pkg/lib
-          for TRIPLE in \
-            x86_64-apple-darwin \
-            aarch64-apple-darwin \
-            x86_64-unknown-linux-gnu \
-            x86_64-pc-windows-msvc \
-            aarch64-linux-android; do
-            gh run download "$RUN_ID" \
-              --name "vokra-godot-${TRIPLE}" \
-              --dir "integrations/vokra-godot/pkg/lib/${TRIPLE}" \
-              || echo "godot-package-release: ${TRIPLE} artifact missing (crossbuild leg red?)"
+          for SPEC in \
+            x86_64-apple-darwin:libvokra_godot.dylib \
+            aarch64-apple-darwin:libvokra_godot.dylib \
+            x86_64-unknown-linux-gnu:libvokra_godot.so \
+            x86_64-pc-windows-msvc:vokra_godot.dll \
+            aarch64-linux-android:libvokra_godot.so; do
+            TRIPLE="${SPEC%%:*}"
+            LIB="${SPEC#*:}"
+            SRC_DIR="staging/vokra-godot-${TRIPLE}"
+            if [ ! -f "${SRC_DIR}/${LIB}" ]; then
+              echo "godot-package-release: FAIL missing same-run artifact ${TRIPLE}/${LIB}" >&2
+              find staging -maxdepth 3 -type f | LC_ALL=C sort >&2 || true
+              exit 1
+            fi
+            DEST="integrations/vokra-godot/pkg/lib/${TRIPLE}"
+            mkdir -p "$DEST"
+            cp -f "${SRC_DIR}/${LIB}" "${DEST}/${LIB}"
           done
           echo "== Collected per-target artifacts =="
           find integrations/vokra-godot/pkg/lib -type f | LC_ALL=C sort
-          set -e
 
       - name: Reassemble AssetLib layout from staged cdylibs
         run: |
@@ -834,10 +800,9 @@ jobs:
           for TRIPLE in "${!DEST_SUBDIR[@]}"; do
             SRC_DIR="integrations/vokra-godot/pkg/lib/${TRIPLE}"
             DEST="dist/godot/vokra-godot/addons/vokra/bin/${DEST_SUBDIR[$TRIPLE]}"
-            if [ -d "$SRC_DIR" ] && [ "$(ls -A "$SRC_DIR" 2>/dev/null)" ]; then
-              mkdir -p "$DEST"
-              cp -f "$SRC_DIR"/* "$DEST/" || true
-            fi
+            test -d "$SRC_DIR"
+            mkdir -p "$DEST"
+            cp -f "$SRC_DIR"/* "$DEST/"
           done
           ADDON=dist/godot/vokra-godot/addons/vokra
           cp -f integrations/vokra-godot/vokra.gdextension "$ADDON/vokra.gdextension"
@@ -1330,7 +1295,7 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop-release:
     name: desktop-release
-    needs: [validate-tag, release-notes]
+    needs: [validate-tag, release-notes, release-desktop-preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -1365,10 +1330,22 @@ jobs:
         with:
           lookup-only: true
 
-      - name: Build Linux CLI (glibc + musl static) and reuse ci.yml cdylibs
+      - name: Download same-run macOS C ABI artifact for desktop release
         if: steps.gate.outputs.enabled == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-macos
+          path: reuse/macos
+
+      - name: Download same-run Windows C ABI artifact for desktop release
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-windows
+          path: reuse/windows
+
+      - name: Build Linux CLI and assemble same-run desktop C ABI artifacts
+        if: steps.gate.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           V="${{ needs.validate-tag.outputs.version }}"
@@ -1384,20 +1361,12 @@ jobs:
           cargo build --release -p vokra-capi
           cp target/release/libvokra.so "dist/desktop/libvokra-${V}-x86_64-linux.so"
           cp include/vokra.h "dist/desktop/vokra.h"
-          # macOS/Windows cdylibs + CLI reused from the ci.yml run for this SHA
-          # (best-effort; a follow-up adds native macos/windows CLI builds).
-          RUN_ID="$(gh run list --workflow=ci.yml --branch="${GITHUB_REF_NAME}" \
-            --limit=20 --json databaseId,headSha,conclusion \
-            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
-            | head -n 1 || true)"
-          if [ -n "$RUN_ID" ]; then
-            gh run download "$RUN_ID" --name vokra-capi-macos --dir reuse/macos || true
-            gh run download "$RUN_ID" --name vokra-capi-windows --dir reuse/windows || true
-            [ -f reuse/macos/libvokra.dylib ] && cp reuse/macos/libvokra.dylib "dist/desktop/libvokra-${V}-macos.dylib" || echo "desktop-release: macOS cdylib not available (follow-up)"
-            [ -f reuse/windows/vokra.dll ] && cp reuse/windows/vokra.dll "dist/desktop/vokra-${V}-windows.dll" || echo "desktop-release: Windows cdylib not available (follow-up)"
-          else
-            echo "desktop-release: no ci.yml run for SHA ${GITHUB_SHA}; shipping Linux slices only this run."
-          fi
+          # macOS/Windows cdylibs are guaranteed by the same-run reusable
+          # preflight; download-artifact fails before this step if absent.
+          test -f reuse/macos/libvokra.dylib
+          test -f reuse/windows/vokra.dll
+          cp reuse/macos/libvokra.dylib "dist/desktop/libvokra-${V}-macos.dylib"
+          cp reuse/windows/vokra.dll "dist/desktop/vokra-${V}-windows.dll"
 
       - name: SBOM + sha256 for desktop assets
         if: steps.gate.outputs.enabled == 'true'
