@@ -359,11 +359,13 @@ jobs:
           cp target/release/libvokra.so \
             bindings/unity/com.vokra.unity/Plugins/Linux/x86_64/libvokra.so
 
+      - name: Set up Android SDK / NDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+
       - name: Build Android arm64-v8a vokra-capi via scripts/build-android.sh
-        env:
-          # ubuntu-latest ships the NDK under $ANDROID_NDK_ROOT; forward it
-          # to the script's expected ANDROID_NDK_HOME variable.
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+        # setup-android exports the script's expected ANDROID_NDK_HOME.
+        # Do not override it with the expression-time env context: that context
+        # cannot see variables exported by an earlier step.
         run: bash scripts/build-android.sh
 
       - name: Build WebGL staticlib via scripts/build-unity-webgl-lib.sh (M4-02)
