@@ -148,7 +148,7 @@ Whisper large-v3 on CUDA is RTF < 0.15 (measured 0.081–0.115 on RTX 4090).
 ## 5 min: Call from C ABI
 
 Include `include/vokra.h` and link `libvokra` (see the [C ABI
-example](../README.md#using-the-c-abi) in the top-level README):
+example](../README.md#library-integration) in the top-level README):
 
 ```sh
 cargo build --release -p vokra-capi

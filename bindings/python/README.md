@@ -7,7 +7,7 @@ keeps third-party Python runtime dependencies at zero.
 
 ## Status: source implementation current, package unpublished
 
-**Reviewed:** 2026-08-22 against the generated issue #49 C header.
+**Reviewed:** 2026-08-22 against `main` `42af7a90` and the generated C header.
 
 The package metadata is `0.1.0.dev0`; this checkout must not be documented as
 an installed `vokra==0.1.0` release. The source tree exports `Session`,
@@ -17,14 +17,14 @@ header has a runtime version function, not a separately versioned ABI symbol.
 
 The source-side C-ABI drift is closed in this worktree:
 
-- `include/vokra.h` currently exports 48 `vokra_*` functions;
-- `src/vokra/_bindings.py` contains one prototype for every function;
+- `include/vokra.h` is the canonical `vokra_*` function set;
+- `src/vokra/_bindings.py` contains exactly one prototype for every function;
 - the generator discovers all four enums, both concrete structs, and all eight
   opaque handles, including the `uint8_t`, `uint64_t`, plain-`bool`, and
   struct-pointer shapes that previously blocked generation;
 - the required `license` job runs the uv-only drift check, and the wheel smoke
-  loads the matching native library after asserting the public API and 48-entry
-  table.
+  loads the matching native library after asserting the public API and exact
+  generated table.
 
 This is still not a publication claim. A final branch CI run must prove the
 four release wheels against their bundled libraries, and PyPI/TestPyPI upload
@@ -104,7 +104,7 @@ bindings/python/
 ├── src/vokra/
 │   ├── __init__.py        # lazy public Session/Stream/Event/error exports
 │   ├── _native.py         # ctypes.CDLL loader
-│   ├── _bindings.py       # generated 48-function ctypes table
+│   ├── _bindings.py       # generated full C-function ctypes table
 │   ├── _handles.py        # opaque handle wrappers
 │   ├── session.py         # Session lifecycle + ASR/TTS wrapper
 │   ├── stream.py          # Stream lifecycle + push/poll/event wrapper

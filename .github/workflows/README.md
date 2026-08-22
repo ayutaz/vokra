@@ -125,9 +125,11 @@ gate と、変動しやすい nightly toolchain / advisory DB の定期監視を
 
 ### 2.3 Repository-native security controls
 
-2026-08-18 時点で GitHub 側の secret scanning、push protection、Dependabot alerts、
-Dependabot security updates、private vulnerability reporting を有効化済み。
-`SECURITY.md` の private advisory URL と repository setting は一致している。
+2026-08-18 時点で GitHub 側の secret scanning、push protection、Dependabot
+alerts、Dependabot security updates、private vulnerability reporting を有効化済み。
+private vulnerability reporting は 2026-08-22 に再照合し、root `SECURITY.md` の
+private advisory URL と repository setting が一致することを確認した。email や
+個人連絡先は公開しない。
 
 **2026-08-20 post-merge audit**: full-SHA workflow移行と`workflow-security`での検証、
 `workflow-security` / `dependency-review` / `documentation-links` / `codeql-rust`の

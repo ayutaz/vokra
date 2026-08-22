@@ -283,9 +283,10 @@ jobs:
   #      / nightly workflows. The checker PRINTS every tier-C block it skipped
   #      rather than quietly dropping it, so "verified" never overstates itself.
   #
-  # 126 blocks across 24 documents (en + ja for getting-started, web,
+  # The root OSS READMEs plus the en/ja guide set (getting-started, web,
   # migration-guide, python, ios, unity, and — added by X-09b-T23 — the
   # backend-guide, the cli/android/godot/server tutorials, and api-reference).
+  # The checker prints the live block/document count; do not duplicate it here.
   doc-examples:
     name: doc-examples
     runs-on: ubuntu-latest

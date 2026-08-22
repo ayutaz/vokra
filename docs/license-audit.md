@@ -1,9 +1,10 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-**現行状態レビュー**: 2026-08-18（`main` `6d64fdf`）。§3 の実装表を
+**現行状態レビュー**: 2026-08-22（`main` `42af7a90`）。§3 の実装表を
 converter / runtime / parity / publication の別に再照合し、
 `scripts/publish/check-catalog-reality.sh` は `★ 公式 zoo` 20 行・既知 gap
-0 を報告する。openWakeWord の upstream official weight は
+0 を報告する。PR #44 の runtime closure 後も publication と runtime proof は
+別判定のままである。openWakeWord の upstream official weight は
 CC-BY-NC-SA-4.0 で non-bundled、Apache-2.0 commercial 判定は
 converter/code と user-supplied custom weights に限る。pyannote は MIT
 sign-off 済だが numerical parity 未確定のため default-on ではない。

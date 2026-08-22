@@ -704,34 +704,18 @@ jobs:
           bash scripts/check-doc-references.sh
       - name: Contributor-funnel integrity check (advisory, record-only, X-05-T07)
         id: contributor-funnel-integrity
-        # Legs (b)-(f) catch real drift in the contributor funnel: dead
-        # relative links, a missing en/ja twin, an SSOT pointer whose target
-        # no longer exists, an absolute template URL that resolves nowhere.
-        # Leg (a) is different: CODE_OF_CONDUCT / SECURITY are deliberately
-        # NOT landed until the owner fixes the contact points (X-05-T04) —
-        # publishing a reporting channel that reaches nobody is worse than
-        # publishing none, and Vokra ships a C ABI, raw FFI and nine
-        # `unsafe`-permitted crates. The script separates the two states with
-        # a third exit code, so this step maps them explicitly:
-        #   exit 0 → green, exit 3 → PENDING (annotate, do not fail),
-        #   exit 1 → real drift, fail the step.
-        # Without that split the check would be permanently red until T04 and
-        # would train people to ignore it; without wiring it at all, legs
-        # (b)-(f) would go unenforced, which is the defect X-08 exists to fix.
+        # Checks the complete contributor funnel, including the root
+        # CODE_OF_CONDUCT / SECURITY English/Japanese pairs: required files,
+        # relative links, twin structure, SSOT pointers, Issue Form keys, and
+        # absolute template URLs. X-05-T04 is resolved without personal
+        # contact details: security uses GitHub Private Vulnerability
+        # Reporting and conduct moderation uses GitHub platform controls.
         # ADVISORY (continue-on-error) like its sibling doc checks above;
         # promotion to a required check is an owner decision (NFR-MT-07).
         continue-on-error: true
         run: |
           bash scripts/check-community-docs.sh --self-test
-          set +e
           bash scripts/check-community-docs.sh
-          rc=$?
-          set -e
-          if [ "$rc" -eq 3 ]; then
-            echo "::notice::contributor funnel: PENDING — files awaiting X-05-T04 (owner contact points). Drift legs (b)-(f) are green."
-            exit 0
-          fi
-          exit "$rc"
       - name: Owner-checklist drift check (advisory, record-only, M4-RESIDUAL-A-T01)
         id: owner-checklist-drift
         # Guards the owner hand-off surface (docs/m4-owner-verification-checklist.md,

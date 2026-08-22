@@ -66,11 +66,13 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# The 12 documents NFR-MT-04 covers: 3 "core" systems + 3 platform tutorials,
-# each in English and Japanese. Keeping en/ja adjacent is deliberate — the
-# requirement is explicitly a two-language one, and a translated doc drifting
-# away from its source is the exact failure this catches.
+# Public entry documents plus the NFR-MT-04 guide/tutorial set. Keeping en/ja
+# adjacent is deliberate — a translated example drifting away from its source
+# is the exact failure this catches. The root READMEs belong here because they
+# are the first commands an OSS evaluator will copy.
 DOCS = [
+    "README.md",
+    "README.ja.md",
     "docs/getting-started.md",
     "docs/getting-started.ja.md",
     "docs/tutorials/web.md",
@@ -337,6 +339,11 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
                             continue
                         if t.startswith("--") and len(t) > 2:
                             flag = t.split("=")[0]
+                            # Every subcommand handles help before its normal
+                            # argument parser, so it does not appear in the
+                            # source's `"--flag" =>` arms extracted above.
+                            if flag == "--help":
+                                continue
                             if flag not in subs[sub]:
                                 problems.append(
                                     f"{block.where()}: `vokra-cli {sub}` has no flag {flag}"
@@ -352,6 +359,21 @@ def check_tier_a(block: Block, subs, kinds, root, problems):
                                         f"{block.where()}: `--model {kind}` is not a known "
                                         f"ModelKind (have: {', '.join(sorted(kinds))})"
                                     )
+                    # `run` has no positional model argument. The old root
+                    # README used `vokra-cli run model.gguf --input ...`, which
+                    # looked plausible and escaped the flag-name-only checker.
+                    tail = toks[sub_idx + 1 :]
+                    help_only = "--help" in tail or "-h" in tail
+                    # `run` uses the hand-written parser in run.rs, which
+                    # accepts only the two-token `--model <path>` spelling.
+                    # Do not treat `--model=path` as equivalent.
+                    has_model = "--model" in tail
+                    if sub == "run" and not help_only and not has_model:
+                        problems.append(
+                            f"{block.where()}: `vokra-cli run` requires the separate "
+                            "`--model <model.gguf>` form; positional and `--model=...` "
+                            "spellings are unsupported"
+                        )
             i += 1
             continue
 
@@ -594,6 +616,8 @@ cargo run --release -p vokra-cli --features metal -- convert \\
   --model whisper \\
   --input model.safetensors \\
   --output whisper.gguf
+./target/release/vokra-cli run --model whisper.gguf --input audio.wav
+./target/release/vokra-cli run --help
 scripts/build-ios.sh
 ```
 
@@ -611,6 +635,8 @@ with Session.open("m.gguf") as s:
 RED_DOCS = {
     "bad-flag": '```sh\nvokra-cli convert --model whisper --input a --outpt b.gguf\n```\n',
     "bad-sub": '```sh\nvokra-cli transcribe --model whisper\n```\n',
+    "missing-run-model": '```sh\nvokra-cli run whisper.gguf --input audio.wav\n```\n',
+    "run-model-equals": '```sh\nvokra-cli run --model=whisper.gguf --input audio.wav\n```\n',
     "bad-kind": '```sh\nvokra-cli convert --model wisper --input a --output b.gguf\n```\n',
     "bad-kind-equals": '```sh\nvokra-cli convert --model=wisper --input a --output b.gguf\n```\n',
     "bad-multiline-cargo-run-flag": (

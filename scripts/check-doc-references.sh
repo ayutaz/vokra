@@ -163,6 +163,8 @@ X09B_PAIRS = [
 # Entry pages whose relative links must resolve (leg f): the top of the
 # hierarchy and the API index.
 X09B_LINK_DOCS = [
+    "README.md",
+    "README.ja.md",
     "docs/getting-started.md",
     "docs/getting-started.ja.md",
     "docs/api-reference.md",
@@ -458,6 +460,7 @@ self_test() {
         # Public docs cite three IDs, one of them 2-segment (IF-01) so the
         # regex's optional middle segment is genuinely exercised.
         printf '# readme\nSee FR-EX-08 and NFR-DS-02.\n' >"$dir/README.md"
+        cp "$dir/README.md" "$dir/README.ja.md"
         printf '# contributing\nAlso IF-01.\n' >"$dir/CONTRIBUTING.md"
         cat >"$dir/docs/requirement-ids.md" <<'MD'
 # glossary
@@ -691,8 +694,18 @@ MD
         rc=1
     fi
 
+    # (17) a dead relative link in the root OSS entry page -> leg (f)
+    d="$tmproot/root-readme-link"
+    _scaffold "$d"
+    printf '%s\n' '- [dead](docs/nonexistent.md)' >>"$d/README.ja.md"
+    git -C "$d" add -A >/dev/null 2>&1
+    if analyze "$d" verify >/dev/null 2>&1; then
+        echo "self-test FAILED: a dead root README link should fail leg (f)" >&2
+        rc=1
+    fi
+
     if [ "$rc" -eq 0 ]; then
-        echo "check-doc-references --self-test: OK (16 cases)"
+        echo "check-doc-references --self-test: OK (17 cases)"
     else
         echo "check-doc-references --self-test: FAILED" >&2
     fi

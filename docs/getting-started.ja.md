@@ -149,7 +149,7 @@ Whisper large-v3 は RTF < 0.15（RTX 4090 実測 0.081〜0.115）が目安で�
 ## 5 分: C ABI からの呼び出し
 
 `include/vokra.h` を include して `libvokra` にリンクするだけです（詳細は
-[README.md](../README.md#using-the-c-abi) の例を参照）。
+[README.md](../README.md#library-integration) の例を参照）。
 
 ```sh
 cargo build --release -p vokra-capi
