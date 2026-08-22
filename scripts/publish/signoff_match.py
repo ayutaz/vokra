@@ -257,7 +257,7 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "openwakeword": [
         "openWakeWord converter/code (`dscripka/openWakeWord`)"
     ],
-    # 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors, MIT). 27M
+    # 2026-08-02 Wave residual: Moonshine-Tiny (moonshine-ai, MIT). 27M
     # raw-audio transformer enc-dec ASR (arXiv:2410.15608). Distinct arch
     # tag `moonshine` from sibling Whisper (raw-audio Conv1D front-end +
     # rotary + SwiGLU vs mel + sinusoidal + GELU). Placeholder row — the
@@ -265,15 +265,15 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # once the audit doc is updated in a post-workflow batch. Scale
     # ~0.11 GB = local convert safe on M1 iMac (well below vast.ai
     # ≥8 GB cutoff).
-    "moonshine-tiny": ["Moonshine-Tiny (`UsefulSensors/moonshine-tiny`)"],
-    # 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors, MIT). 61.5M
+    "moonshine-tiny": ["Moonshine-Tiny (`moonshine-ai/moonshine-tiny`)"],
+    # 2026-08-02 Wave residual: Moonshine-Base (moonshine-ai, MIT). 61.5M
     # raw-audio transformer enc-dec ASR (arXiv:2410.15608). Sibling to
     # Moonshine-Tiny — same arch family (raw-audio Conv1D front-end +
     # rotary + SwiGLU), wider/deeper backbone. Placeholder row — the row
     # heading MUST match `docs/license-audit.md` §3.1 byte-for-byte once
     # the audit doc is updated in a post-workflow batch. Scale ~0.25 GB
     # = local convert safe on M1 iMac (well below vast.ai ≥8 GB cutoff).
-    "moonshine-base": ["Moonshine-Base (`UsefulSensors/moonshine-base`)"],
+    "moonshine-base": ["Moonshine-Base (`moonshine-ai/moonshine-base`)"],
     # 2026-08-02 Wave residual: Ultravox v0.5 (Llama-3.2-1B) (fixie-ai,
     # MIT). Audio-text-to-text multimodal = Llama-3.2-1B decoder +
     # Whisper encoder + projection adapter. Distinct arch tag `ultravox`
@@ -1349,8 +1349,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "chinese-roberta-wwm-ext-large (`hfl/chinese-roberta-wwm-ext-large`)"
     ],
     "fsmn_vad": [
-        "fsmn-vad (`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`)",
-        "FSMN-VAD (`funasr/fsmn-vad`)",
+        "FSMN-VAD (`funasr/fsmn-vad`; ModelScope `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`)"
     ],
     # The row is deliberately blank and records the checkpoint license as
     # UNKNOWN. Keeping converter coverage tied to that exact row catches
@@ -1715,8 +1714,15 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         "BosonAI Higgs-Audio v3 TTS 4B (`bosonai/higgs-audio-v3-tts-4b`)"
     ],
     "magpietts_v2602": ["MagpieTTS v2602 (`nvidia/magpietts-v2602`)"],
-    "moonshine_base": ["Moonshine-Base (`UsefulSensors/moonshine-base`)"],
-    "moonshine_tiny": ["Moonshine-Tiny (`UsefulSensors/moonshine-tiny`)"],
+    "moonshine_base": ["Moonshine-Base (`moonshine-ai/moonshine-base`)"],
+    # Shared strict manifest/metadata implementation consumed by both public
+    # variants. Changes to this helper affect either artifact, so both signed
+    # rows are required instead of excluding the file as a non-converter.
+    "moonshine_common": [
+        "Moonshine-Tiny (`moonshine-ai/moonshine-tiny`)",
+        "Moonshine-Base (`moonshine-ai/moonshine-base`)",
+    ],
+    "moonshine_tiny": ["Moonshine-Tiny (`moonshine-ai/moonshine-tiny`)"],
     "nemotron_speech_streaming_v2603": [
         "NVIDIA Nemotron-Speech-Streaming v2603 (`nvidia/nemotron-speech-streaming-v2603`)"
     ],

@@ -30,10 +30,10 @@ THE THREE TIERS
   tier C  DEFERRED, and announced as such on every run — never counted as a
           pass (fabricated-pass prohibition). These need a toolchain a PR
           runner does not have: `swift` blocks (Swift compiler), `csharp`
-          blocks (Unity/C#), and the `sh` blocks that download real upstream
-          checkpoints over the network and run real models. Those belong to
-          the gated / nightly workflows (parity-*-real.yml, nightly-*.yml),
-          not to a per-PR job.
+          blocks (Unity/C#), `gdscript` blocks (Godot runtime), and the `sh`
+          blocks that download real upstream checkpoints over the network and
+          run real models. Those belong to the gated / nightly workflows
+          (parity-*-real.yml, nightly-*.yml), not to a per-PR job.
 
 PYTHON ROOT-SURFACE RULE
 ------------------------
@@ -87,11 +87,9 @@ DOCS = [
     # tutorials X-09a left out (cli / android / godot / server) + the
     # api-reference index, each en/ja. Registered here so their shell / C /
     # JSON examples are execution-verified too (NFR-MT-04, X-09b-T23). The
-    # Rust and GDScript snippets in these docs are intentionally UNTAGGED:
-    # this checker has no rust/gdscript tier, so tagging them would trip the
-    # "unhandled language" guard — an untagged block is a deferred tier-C
-    # prose block, which is the honest classification for an illustrative
-    # snippet the PR runner cannot compile.
+    # Rust snippets in these docs are intentionally untagged. GDScript is an
+    # explicit tier-C language below: its examples are announced as deferred
+    # here and exercised by the dedicated Godot headless workflow.
     "docs/backend-guide.md",
     "docs/backend-guide.ja.md",
     "docs/tutorials/cli.md",
@@ -110,6 +108,7 @@ DOCS = [
 TIER_C_LANGS = {
     "swift": "needs a Swift compiler (owner / macOS toolchain)",
     "csharp": "needs the Unity C# toolchain (nightly-il2cpp.yml)",
+    "gdscript": "needs the Godot runtime (godot-headless.yml)",
     "(none)": "untagged prose block (UI steps / HTTP headers) — nothing to check",
 }
 
