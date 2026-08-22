@@ -5,7 +5,7 @@
  * high-pass, 32-band frontend, pitch search/remove_doubling, neural network,
  * delayed spectrum filter, and overlap-add synthesis in one pass.
  *
- *   cc -std=c99 -O0 -DDISABLE_NEON -Iinclude -Isrc \
+ *   cc -std=c99 -O0 -DDISABLE_NEON -I include -I src \
  *     /path/to/rnnoise_v02_waveform_reference.c \
  *     src/denoise.c src/rnn.c src/pitch.c src/kiss_fft.c src/celt_lpc.c \
  *     src/nnet.c src/nnet_default.c src/parse_lpcnet_weights.c \
